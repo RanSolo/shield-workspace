@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import LoadingDots from "./icons/loading-dots";
 import { ExternalLink } from "lucide-react";
 import { toast } from "sonner";
+import { Editor as SlateEditor } from "novel";
 
 type PostWithSite = Post & { site: { subdomain: string | null } | null };
 
@@ -40,7 +41,7 @@ export default function Editor({ post }: { post: PostWithSite }) {
 
   return (
     <div className="relative min-h-[500px] w-full max-w-screen-lg border-stone-200 p-12 px-8 dark:border-stone-700 sm:mb-[calc(20vh)] sm:rounded-lg sm:border sm:px-12 sm:shadow-lg">
-      <div className="absolute right-5 top-5 mb-5 flex items-center space-x-3">
+      <div className="absolute flex items-center mb-5 space-x-3 right-5 top-5">
         {data.published && (
           <a
             href={url}
@@ -48,10 +49,10 @@ export default function Editor({ post }: { post: PostWithSite }) {
             rel="noopener noreferrer"
             className="flex items-center space-x-1 text-sm text-stone-400 hover:text-stone-500"
           >
-            <ExternalLink className="h-4 w-4" />
+            <ExternalLink className="w-4 h-4" />
           </a>
         )}
-        <div className="rounded-lg bg-stone-100 px-2 py-1 text-sm text-stone-400 dark:bg-stone-800 dark:text-stone-500">
+        <div className="px-2 py-1 text-sm rounded-lg bg-stone-100 text-stone-400 dark:bg-stone-800 dark:text-stone-500">
           {isPendingSaving ? "Saving..." : "Saved"}
         </div>
         <button
@@ -87,20 +88,20 @@ export default function Editor({ post }: { post: PostWithSite }) {
           )}
         </button>
       </div>
-      <div className="mb-5 flex flex-col space-y-3 border-b border-stone-200 pb-5 dark:border-stone-700">
+      <div className="flex flex-col pb-5 mb-5 space-y-3 border-b border-stone-200 dark:border-stone-700">
         <input
           type="text"
           placeholder="Title"
           defaultValue={post?.title || ""}
           autoFocus
           onChange={(e) => setData({ ...data, title: e.target.value })}
-          className="dark:placeholder-text-600 border-none px-0 font-cal text-3xl placeholder:text-stone-400 focus:outline-none focus:ring-0 dark:bg-black dark:text-white"
+          className="px-0 text-3xl border-none dark:placeholder-text-600 font-cal placeholder:text-stone-400 focus:outline-none focus:ring-0 dark:bg-black dark:text-white"
         />
         <TextareaAutosize
           placeholder="Description"
           defaultValue={post?.description || ""}
           onChange={(e) => setData({ ...data, description: e.target.value })}
-          className="dark:placeholder-text-600 w-full resize-none border-none px-0 placeholder:text-stone-400 focus:outline-none focus:ring-0 dark:bg-black dark:text-white"
+          className="w-full px-0 border-none resize-none dark:placeholder-text-600 placeholder:text-stone-400 focus:outline-none focus:ring-0 dark:bg-black dark:text-white"
         />
       </div>
       <NovelEditor
@@ -125,6 +126,7 @@ export default function Editor({ post }: { post: PostWithSite }) {
           });
         }}
       />
+
     </div>
   );
 }
