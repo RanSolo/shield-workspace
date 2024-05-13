@@ -80,7 +80,7 @@ export default function Nav({ children }: { children: ReactNode }) {
     if (segments[0] === "site" && id) {
       return [
         {
-          name: "Back to All Sites",
+          name: "Back to All Band Sites",
           href: "/sites",
           icon: <ArrowLeft width={18} />,
         },
@@ -197,7 +197,7 @@ export default function Nav({ children }: { children: ReactNode }) {
             <div className="h-6 rotate-[30deg] border-l border-stone-400 dark:border-stone-500" />
             <Link
               href="/"
-              className="rounded-lg p-2 hover:bg-stone-200 dark:hover:bg-stone-700"
+              className="p-2 rounded-lg hover:bg-stone-200 dark:hover:bg-stone-700"
             >
               <Image
                 src="/logo.png"

@@ -71,6 +71,11 @@ model Band {
   baseUrl String?
   user    User?   @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   userId  String?
+  siteId  String?
+  site          Site?    @relation(fields: [siteId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  slug          String   @default(cuid())
+  @@unique([slug, siteId])
+  @@index([siteId])
 }
 
 model Account {
@@ -89,7 +94,6 @@ model Account {
   session_state            String?
   oauth_token_secret       String?
   oauth_token              String?
-
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
@@ -151,7 +155,7 @@ model Site {
   user          User?    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   userId        String?
   posts         Post[]
-
+  band          Band[]
   @@index([userId])
 }
 

@@ -6,11 +6,11 @@ import CreateSiteModal from "@/components/modal/create-site";
 
 export default function AllSites({ params }: { params: { id: string } }) {
   return (
-    <div className="flex max-w-screen-xl flex-col space-y-12 p-8">
+    <div className="flex flex-col max-w-screen-xl p-8 space-y-12">
       <div className="flex flex-col space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="font-cal text-3xl font-bold dark:text-white">
-            All Sites
+          <h1 className="text-3xl font-bold font-cal dark:text-white">
+            All Band Sites
           </h1>
           <CreateSiteButton>
             <CreateSiteModal />
