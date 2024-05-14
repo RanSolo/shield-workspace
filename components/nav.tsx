@@ -21,7 +21,7 @@ import {
   useSelectedLayoutSegments,
 } from "next/navigation";
 import { ReactNode, useEffect, useMemo, useState } from "react";
-import { getSiteFromPostId } from "@/lib/actions";
+import { getSiteFromPostId } from "@/lib/actions/actions";
 import Image from "next/image";
 
 const externalLinks = [

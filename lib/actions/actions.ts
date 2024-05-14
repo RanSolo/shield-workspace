@@ -3,7 +3,7 @@
 import prisma from "@/lib/prisma";
 import { Post, Site } from "@prisma/client";
 import { revalidateTag } from "next/cache";
-import { withPostAuth, withSiteAuth } from "./auth";
+import { withPostAuth, withSiteAuth } from "../auth";
 import { getSession } from "@/lib/auth";
 import {
   addDomainToVercel,
@@ -31,18 +31,22 @@ export const createSite = async (formData: FormData) => {
   const name = formData.get("name") as string;
   const description = formData.get("description") as string;
   const subdomain = formData.get("subdomain") as string;
+  const youTubeFeaturedEmbed = formData.get("featuredEmbed") as string;
 
   try {
+    console.log('session.user', session.user);
+    
     const response = await prisma.site.create({
       data: {
         name,
         description,
-        subdomain,
+        subdomain, 
         user: {
           connect: {
             id: session.user.id,
           },
         },
+        
       },
     });
     await revalidateTag(
