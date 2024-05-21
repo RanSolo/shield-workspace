@@ -99,6 +99,8 @@ export const getConfigResponse = async (
 export const verifyDomain = async (
   domain: string,
 ): Promise<DomainVerificationResponse> => {
+  console.log('domain', domain);
+  
   return await fetch(
     `https://api.vercel.com/v9/projects/${
       process.env.PROJECT_ID_VERCEL

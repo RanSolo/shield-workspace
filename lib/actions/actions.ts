@@ -41,6 +41,11 @@ export const createSite = async (formData: FormData) => {
         name,
         description,
         subdomain, 
+        socialMediaLinks: {
+          create: {
+            featuredEmbed: youTubeFeaturedEmbed,
+          },
+        },
         user: {
           connect: {
             id: session.user.id,

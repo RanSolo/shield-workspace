@@ -67,7 +67,10 @@ export default async function middleware(req: NextRequest) {
       new URL(`/home${path === "/" ? "" : path}`, req.url),
     );
   }
-
+  console.log('hostname', hostname);
+  console.log('path', path);
+  console.log('req.url', req.url);
+  
   // rewrite everything else to `/[domain]/[slug] dynamic route
   return NextResponse.rewrite(new URL(`/${hostname}${path}`, req.url));
 }

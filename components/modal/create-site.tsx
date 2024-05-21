@@ -16,6 +16,7 @@ export default function CreateSiteModal() {
 
   const [data, setData] = useState({
     name: "",
+    bandName: "",
     subdomain: "",
     description: "",
     featuredEmbed: "",
@@ -74,6 +75,26 @@ export default function CreateSiteModal() {
 
         <div className="flex flex-col space-y-2">
           <label
+            htmlFor="bandName"
+            className="text-sm font-medium text-stone-500 dark:text-stone-400"
+          >
+            Band Name
+          </label>
+          <input
+            name="bandName"
+            type="text"
+            placeholder="Band Name"
+            autoFocus
+            value={data.bandName}
+            onChange={(e) => setData({ ...data, bandName: e.target.value })}
+            maxLength={32}
+            required
+            className="w-full px-4 py-2 text-sm border rounded-md border-stone-200 bg-stone-50 text-stone-600 placeholder:text-stone-400 focus:border-black focus:outline-none focus:ring-black dark:border-stone-600 dark:bg-black dark:text-white dark:placeholder-stone-700 dark:focus:ring-white"
+          />
+        </div>
+
+        <div className="flex flex-col space-y-2">
+          <label
             htmlFor="subdomain"
             className="text-sm font-medium text-stone-500"
           >
@@ -84,7 +105,7 @@ export default function CreateSiteModal() {
               name="subdomain"
               type="text"
               placeholder="subdomain"
-              value={data.subdomain}
+              value={data.subdomain}  
               onChange={(e) => setData({ ...data, subdomain: e.target.value })}
               autoCapitalize="off"
               pattern="[a-zA-Z0-9\-]+" // only allow lowercase letters, numbers, and dashes
@@ -116,7 +137,7 @@ export default function CreateSiteModal() {
           />
 
         </div>
-        {/* <div className="flex flex-col space-y-2">
+        <div className="flex flex-col space-y-2">
           <label
             htmlFor="featuredEmbed"
             className="text-sm font-medium text-stone-500"
@@ -125,14 +146,14 @@ export default function CreateSiteModal() {
           </label>
           <textarea
             name="featuredEmbed"
-            placeholder="Link to Youtube Embed"
+            placeholder="Featured Youtube Embed Code"
             value={data?.featuredEmbed}
             onChange={(e) => setData({ ...data, featuredEmbed: e.target.value })}
 
             rows={3}
             className="w-full px-4 py-2 text-sm border rounded-md border-stone-200 bg-stone-50 text-stone-600 placeholder:text-stone-400 focus:border-black focus:outline-none focus:ring-black dark:border-stone-600 dark:bg-black dark:text-white dark:placeholder-stone-700 dark:focus:ring-white"
           />
-        </div> */}
+        </div>
         
       </div>
       <div className="flex items-center justify-end p-3 border-t rounded-b-lg border-stone-200 bg-stone-50 dark:border-stone-700 dark:bg-stone-800 md:px-10">

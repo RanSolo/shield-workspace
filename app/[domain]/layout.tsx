@@ -85,17 +85,17 @@ export default async function SiteLayout({
       <div className="ease left-0 right-0 top-0 z-30 flex h-16 bg-white transition-all duration-150 dark:bg-black dark:text-white">
         <div className="mx-auto flex h-full max-w-screen-xl items-center justify-center space-x-5 px-10 sm:px-20">
           <Link href="/" className="flex items-center justify-center">
-            <div className="inline-block h-8 w-8 overflow-hidden rounded-full align-middle">
+            <div className="mx-10 mt-20 overflow-hidden h-44 w-44 rounded-full align-middle">
               <Image
                 alt={data.name || ""}
-                height={40}
+                height={420}
                 src={data.logo || ""}
-                width={40}
+                width={420}
               />
             </div>
-            <span className="ml-3 inline-block truncate font-title font-medium">
+            <h1 className="ml-3 inline-block text-3xl header font-extrabold font-title">
               {data.name}
-            </span>
+            </h1>
           </Link>
         </div>
       </div>

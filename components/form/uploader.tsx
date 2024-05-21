@@ -25,6 +25,7 @@ export default function Uploader({
       if (file.size / 1024 / 1024 > 50) {
         toast.error("File size too big (max 50MB)");
       } else if (
+        !file.type.includes("gif") &&
         !file.type.includes("png") &&
         !file.type.includes("jpg") &&
         !file.type.includes("jpeg")
