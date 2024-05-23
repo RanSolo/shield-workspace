@@ -7,9 +7,9 @@ import { withPostAuth, withSiteAuth } from "../auth";
 import { getSession } from "@/lib/auth";
 import {
   addDomainToVercel,
-  // getApexDomain,
+  getApexDomain,
   removeDomainFromVercelProject,
-  // removeDomainFromVercelTeam,
+  removeDomainFromVercelTeam,
   validDomainRegex,
 } from "@/lib/domains";
 import { put } from "@vercel/blob";
@@ -116,7 +116,7 @@ export const updateSite = withSiteAuth(
         if (site.customDomain && site.customDomain !== value) {
           response = await removeDomainFromVercelProject(site.customDomain);
 
-          /* Optional: remove domain from Vercel team 
+          // Optional: remove domain from Vercel team 
 
           // first, we need to check if the apex domain is being used by other sites
           const apexDomain = getApexDomain(`https://${site.customDomain}`);
@@ -146,8 +146,6 @@ export const updateSite = withSiteAuth(
               site.customDomain
             );
           }
-          
-          */
         }
       } else if (key === "image" || key === "logo") {
         if (!process.env.BLOB_READ_WRITE_TOKEN) {
