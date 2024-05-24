@@ -79,31 +79,32 @@ export default async function SiteLayout({
   ) {
     return redirect(`https://${data.customDomain}`);
   }
-
+console.log('data', data)
   return (
     <div className={fontMapper[data.font]}>
-      <div className="ease left-0 right-0 top-0 z-30 flex h-16 bg-white transition-all duration-150 dark:bg-black dark:text-white">
-        <div className="mx-auto flex h-full max-w-screen-xl items-center justify-center space-x-5 px-10 sm:px-20">
+      <div className="top-0 left-0 right-0 z-30 flex h-16 transition-all duration-150 bg-white ease dark:bg-black dark:text-white">
+        <div className="flex items-center h-full max-w-screen-xl px-10 mt-10 space-x-5 sm:px-20">
           <Link href="/" className="flex items-center justify-center">
-            <div className="mx-10 mt-20 overflow-hidden h-44 w-44 rounded-full align-middle">
+            <div className="overflow-hidden align-middle rounded-full my-30">
               <Image
                 alt={data.name || ""}
-                height={420}
+                height={120}
                 src={data.logo || ""}
-                width={420}
+                width={120}
               />
             </div>
-            <h1 className="ml-3 inline-block text-3xl header font-extrabold font-title">
+          </Link>
+            <h1 className="inline-block ml-3 text-3xl font-extrabold header font-title">
               {data.name}
             </h1>
-          </Link>
+            <p>  {data.description}</p>
         </div>
       </div>
 
       <div className="mt-20">{children}</div>
 
       {domain == `demo.${process.env.NEXT_PUBLIC_ROOT_DOMAIN}` ||
-      domain == `platformize.co` ? (
+      domain == `multi-band.com` ? (
         <CTA />
       ) : (
         <ReportAbuse />
@@ -111,3 +112,4 @@ export default async function SiteLayout({
     </div>
   );
 }
+ 

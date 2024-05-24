@@ -50,49 +50,49 @@ export default async function SiteHomePage({
 
   return (
     <>
-      <div className="mb-20 w-full">
+      <div className="w-full mb-20">
         {posts.length > 0 ? (
-          <div className="mx-auto w-full max-w-screen-xl md:mb-28 lg:w-5/6">
+          <div className="w-full max-w-screen-xl mx-auto md:mb-28 lg:w-5/6">
             <Link href={`/${posts[0].slug}`}>
-              <div className="group relative mx-auto h-80 w-full overflow-hidden sm:h-150 lg:rounded-xl">
+              <div className="relative w-full mx-auto overflow-hidden group h-80 sm:h-150 lg:rounded-xl">
                 <BlurImage
                   alt={posts[0].title ?? ""}
                   blurDataURL={posts[0].imageBlurhash ?? placeholderBlurhash}
-                  className="h-full w-full object-cover group-hover:scale-105 group-hover:duration-300"
+                  className="object-cover w-full h-full group-hover:scale-105 group-hover:duration-300"
                   width={1300}
                   height={630}
                   placeholder="blur"
                   src={posts[0].image ?? "/placeholder.png"}
                 />
               </div>
-              <div className="mx-auto mt-10 w-5/6 lg:w-full">
-                <h2 className="my-10 font-title text-4xl dark:text-white md:text-6xl">
+              <div className="w-5/6 mx-auto mt-10 lg:w-full">
+                <h2 className="my-10 text-4xl font-title dark:text-white md:text-6xl">
                   {posts[0].title}
                 </h2>
                 <p className="w-full text-base dark:text-white md:text-lg lg:w-2/3">
                   {posts[0].description}
                 </p>
-                <div className="flex w-full items-center justify-start space-x-4">
-                  <div className="relative h-8 w-8 flex-none overflow-hidden rounded-full">
+                <div className="flex items-center justify-start w-full space-x-4">
+                  <div className="relative flex-none w-8 h-8 overflow-hidden rounded-full">
                     {data.user?.image ? (
                       <BlurImage
                         alt={data.user?.name ?? "User Avatar"}
                         width={100}
                         height={100}
-                        className="h-full w-full object-cover"
+                        className="object-cover w-full h-full"
                         src={data.user?.image}
                       />
                     ) : (
-                      <div className="absolute flex h-full w-full select-none items-center justify-center bg-stone-100 text-4xl text-stone-500">
+                      <div className="absolute flex items-center justify-center w-full h-full text-4xl select-none bg-stone-100 text-stone-500">
                         ?
                       </div>
                     )}
                   </div>
-                  <p className="ml-3 inline-block whitespace-nowrap align-middle text-sm font-semibold dark:text-white md:text-base">
+                  <p className="inline-block ml-3 text-sm font-semibold align-middle whitespace-nowrap dark:text-white md:text-base">
                     {data.user?.name}
                   </p>
                   <div className="h-6 border-l border-stone-600 dark:border-stone-400" />
-                  <p className="m-auto my-5 w-10/12 text-sm font-light text-stone-500 dark:text-stone-400 md:text-base">
+                  <p className="w-10/12 m-auto my-5 text-sm font-light text-stone-500 dark:text-stone-400 md:text-base">
                     {toDateString(posts[0].createdAt)}
                   </p>
                 </div>
@@ -115,7 +115,7 @@ export default async function SiteHomePage({
               height={400}
               className="hidden dark:block"
             />
-            <p className="font-title text-2xl text-stone-600 dark:text-stone-400">
+            <p className="text-2xl font-title text-stone-600 dark:text-stone-400">
               No posts yet.
             </p>
           </div>
@@ -123,8 +123,8 @@ export default async function SiteHomePage({
       </div>
 
       {posts.length > 1 && (
-        <div className="mx-5 mb-20 max-w-screen-xl lg:mx-24 2xl:mx-auto">
-          <h2 className="mb-10 font-title text-4xl dark:text-white md:text-5xl">
+        <div className="max-w-screen-xl mx-5 mb-20 lg:mx-24 2xl:mx-auto">
+          <h2 className="mb-10 text-4xl font-title dark:text-white md:text-5xl">
             More stories
           </h2>
           <div className="grid w-full grid-cols-1 gap-x-4 gap-y-8 md:grid-cols-2 xl:grid-cols-3">

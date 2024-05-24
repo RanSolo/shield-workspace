@@ -13,6 +13,7 @@ export default function CTA() {
     >
       <button
         onClick={() => setCloseCTA(!closeCTA)}
+        title="Close CTA"
         className={`${
           closeCTA ? "rotate-180" : "rotate-0"
         } absolute right-3 top-2 text-black transition-all duration-150 ease-in-out dark:text-white lg:hidden`}
@@ -32,48 +33,17 @@ export default function CTA() {
         </svg>
       </button>
       <div className="text-center lg:text-left">
-        <p className="font-title text-lg text-black dark:text-white sm:text-2xl">
-          Platforms Starter Kit Demo
+        <p className="text-lg text-black font-title dark:text-white sm:text-2xl">
+          Multi Band Platform
         </p>
         <p
           className={`${
             closeCTA ? "hidden lg:block" : ""
           } mt-2 text-sm text-stone-700 dark:text-stone-300 lg:mt-0`}
         >
-          This is a demo site showcasing how to build a multi-tenant application
-          with{" "}
-          <a
-            className="font-semibold text-black underline dark:text-white"
-            href="https://platformize.co"
-            rel="noreferrer"
-            target="_blank"
-          >
-            custom domain
-          </a>{" "}
-          support.
+          This is a multi-tenant site where users can create websites with a few parameters and media.
+          with custom domain support.
         </p>
-      </div>
-      <div
-        className={`${
-          closeCTA ? "hidden lg:flex" : ""
-        } flex w-full flex-col space-y-3 text-center sm:flex-row sm:space-x-3 sm:space-y-0 lg:w-auto`}
-      >
-        <a
-          className="whitespace-no-wrap flex-auto rounded-md border border-stone-200 px-5 py-1 font-title text-lg text-black transition-all duration-150 ease-in-out hover:border-black dark:border-stone-700 dark:text-white dark:hover:border-white sm:py-3"
-          href="https://app.vercel.pub"
-          rel="noreferrer"
-          target="_blank"
-        >
-          Create your publication
-        </a>
-        <a
-          className="whitespace-no-wrap flex-auto rounded-md border border-black bg-black px-5 py-1 font-title text-lg text-white transition-all duration-150 ease-in-out hover:bg-white hover:text-black dark:border-white dark:bg-white dark:text-black dark:hover:bg-black dark:hover:text-white sm:py-3"
-          href="https://vercel.com/guides/nextjs-multi-tenant-application"
-          rel="noreferrer"
-          target="_blank"
-        >
-          Clone and deploy
-        </a>
       </div>
     </div>
   );

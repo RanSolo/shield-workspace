@@ -9,6 +9,9 @@ module.exports = {
     "./lib/**/*.{js,ts,jsx,tsx}",
     "./node_modules/@tremor/**/*.{js,ts,jsx,tsx}", // Tremor module
   ],
+   daisyui: {
+    themes: ["light", "dark", "cupcake"],
+  },
   theme: {
     extend: {
       colors: {
@@ -181,5 +184,6 @@ module.exports = {
     require("@tailwindcss/typography"),
     require("@tailwindcss/forms"),
     require("tailwindcss-animate"),
+    require('daisyui'),
   ],
 };

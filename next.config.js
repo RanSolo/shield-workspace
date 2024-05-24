@@ -4,7 +4,7 @@
 module.exports = {
   experimental: {
     serverActions: {
-      allowedOrigins: ["app.localhost:3000", "app.nightowlnashville.com"],
+      allowedOrigins: ["app.localhost:3000", "app.multi-band.com"],
     },
   },
   images: {
