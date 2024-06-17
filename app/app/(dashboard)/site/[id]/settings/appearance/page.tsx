@@ -11,6 +11,7 @@ export default async function SiteSettingsAppearance({
     where: {
       id: decodeURIComponent(params.id),
     },
+    include: { socialMediaLinks : true }
   });
 
   return (
@@ -34,6 +35,17 @@ export default async function SiteSettingsAppearance({
           name: "logo",
           type: "file",
           defaultValue: data?.logo!,
+        }}
+        handleSubmit={updateSite}
+      />
+      <Form
+        title="featuredEmbed"
+        description="The featured Youtube embed code for your site."
+        helpText="Click share on youtube, then click embed and copy code."
+        inputAttrs={{
+          name: "featuredEmbed",
+          type: "text",
+          defaultValue: data?.featuredEmbed!,
         }}
         handleSubmit={updateSite}
       />

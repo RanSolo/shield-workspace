@@ -19,7 +19,7 @@ export default function CreateSiteModal() {
     bandName: "",
     subdomain: "",
     description: "",
-    featuredEmbed: "",
+    socialMediaLinks: { featuredEmbed: ""},
   });
 
   useEffect(() => {
@@ -147,8 +147,8 @@ export default function CreateSiteModal() {
           <textarea
             name="featuredEmbed"
             placeholder="Featured Youtube Embed Code"
-            value={data?.featuredEmbed}
-            onChange={(e) => setData({ ...data, featuredEmbed: e.target.value })}
+            value={data?.socialMediaLinks?.featuredEmbed}
+            onChange={(e) => setData({ ...data, socialMediaLinks: {featuredEmbed: e.target.value }})}
 
             rows={3}
             className="w-full px-4 py-2 text-sm border rounded-md border-stone-200 bg-stone-50 text-stone-600 placeholder:text-stone-400 focus:border-black focus:outline-none focus:ring-black dark:border-stone-600 dark:bg-black dark:text-white dark:placeholder-stone-700 dark:focus:ring-white"

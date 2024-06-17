@@ -13,9 +13,23 @@ export default async function SiteSettingsIndex({
       id: decodeURIComponent(params.id),
     },
   });
-
+  console.log('data', data);
+  
   return (
     <div className="flex flex-col space-y-6">
+      <Form
+        title="Band Name"
+        description="The name of Band."
+        helpText="Please use 32 characters maximum."
+        inputAttrs={{
+          name: "bandName",
+          type: "text",
+          defaultValue: data?.bandName!,
+          placeholder: "Band Name",
+          maxLength: 255,
+        }}
+        handleSubmit={updateSite}
+      />
       <Form
         title="Name"
         description="The name of your site. This will be used as the meta title on Google as well."
