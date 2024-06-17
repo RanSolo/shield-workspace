@@ -6,6 +6,7 @@ import { placeholderBlurhash, toDateString } from "@/lib/utils";
 import BlogCard from "@/components/blog-card";
 import { getPostsForSite, getSiteData } from "@/lib/fetchers";
 import Image from "next/image";
+import Iframe from 'react-iframe'
 
 export async function generateStaticParams() {
   const allSites = await prisma.site.findMany({
@@ -51,8 +52,32 @@ export default async function SiteHomePage({
   return (
     <>
       <div className="w-full mb-20">
+        <div className="relative w-full h-80 sm:h-150 lg:h-200">
+          <div className="relative w-full mx-auto overflow-hidden group h-80 sm:h-150 ">
+            {!data.featuredEmbed && (
+            <Image
+              alt='band photo'
+              blurDataURL={placeholderBlurhash}
+              className="object-cover w-full h-full group-hover:scale-105 group-hover:duration-300"
+              width={1300}
+              height={630}
+              placeholder="blur"
+              src={data.image ?? "/placeholder.png"} 
+            />
+            )
+          }
+        
+          <Iframe url={data.featuredEmbed as string}
+        width="100%"
+        height="100%"
+        id=""
+        className=""
+        display="block"
+        position="relative"/>
+          </div>
+        </div>
         {posts.length > 0 ? (
-          <div className="w-full max-w-screen-xl mx-auto md:mb-28 lg:w-5/6">
+          <div className="w-1/2 max-w-screen-xl mx-auto md:mb-28 lg:w-5/6">
             <Link href={`/${posts[0].slug}`}>
               <div className="relative w-full mx-auto overflow-hidden group h-80 sm:h-150 lg:rounded-xl">
                 <BlurImage

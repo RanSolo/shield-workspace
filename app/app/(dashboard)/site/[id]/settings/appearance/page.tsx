@@ -1,6 +1,6 @@
 import prisma from "@/lib/prisma";
 import Form from "@/components/form";
-import { updateSite } from "@/lib/actions/actions";
+import { updateSite, updateSocialMediaLink } from "@/lib/actions/actions";
 
 export default async function SiteSettingsAppearance({
   params,
@@ -11,8 +11,14 @@ export default async function SiteSettingsAppearance({
     where: {
       id: decodeURIComponent(params.id),
     },
+    include: { socialMediaLinks : true }
   });
-
+  // const socialMediaLinks = await prisma.socialMediaLink.findUnique({
+  //   where: {
+  //     siteId: decodeURIComponent(params.id),
+  //   },
+  // });
+  // console.log('data', data)
   return (
     <div className="flex flex-col space-y-6">
       <Form
@@ -34,6 +40,17 @@ export default async function SiteSettingsAppearance({
           name: "logo",
           type: "file",
           defaultValue: data?.logo!,
+        }}
+        handleSubmit={updateSite}
+      />
+      <Form
+        title="featuredEmbed"
+        description="The featured Youtube embed code for your site."
+        helpText="Click share on youtube, then click embed and copy code."
+        inputAttrs={{
+          name: "featuredEmbed",
+          type: "text",
+          defaultValue: data?.featuredEmbed!,
         }}
         handleSubmit={updateSite}
       />

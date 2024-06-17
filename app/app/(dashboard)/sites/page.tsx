@@ -5,6 +5,7 @@ import CreateSiteButton from "@/components/create-site-button";
 import CreateSiteModal from "@/components/modal/create-site";
 
 export default function AllSites({ params }: { params: { id: string } }) {
+  console.log('params', params)
   return (
     <div className="flex flex-col max-w-screen-xl p-8 space-y-12">
       <div className="flex flex-col space-y-6">
@@ -13,7 +14,6 @@ export default function AllSites({ params }: { params: { id: string } }) {
             All Band Sites
           </h1>
           <CreateSiteButton>
-            <CreateSiteModal />
           </CreateSiteButton>
         </div>
         <Suspense

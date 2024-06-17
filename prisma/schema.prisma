@@ -48,9 +48,10 @@ model Instagram {
 
 model SocialMediaLink {
   id            String      @id @default(cuid())
-  featuredEmbed String?
+  featuredEmbed String? @default("add your embed under settings")
+  link          String?
+  site              Site @relation(fields: [siteId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   siteId String
-  site              Site? @relation(fields: [siteId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   }
 
 model Account {
@@ -117,7 +118,8 @@ model Site {
   id            String   @id @default(cuid())
   name          String?
   bandName      String?
-  socialMediaLinks SocialMediaLink[]
+  featuredEmbed String?
+  bio           String?  @db.Text
   description   String?  @db.Text
   logo          String?  @default("https://public.blob.vercel-storage.com/eEZHAoPTOBSYGBE3/JRajRyC-PhBHEinQkupt02jqfKacBVHLWJq7Iy.png") @db.Text
   font          String   @default("font-cal")
@@ -131,6 +133,7 @@ model Site {
   user          User?    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   userId        String?
   posts         Post[]
+  socialMediaLinks SocialMediaLink[]
   @@index([userId])
 }
 
