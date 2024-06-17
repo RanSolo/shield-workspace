@@ -316,56 +316,6 @@ export const updatePost = async (data: Post) => {
   }
 };
 
-export const updateSocialMediaLink = async (data: SocialMediaLink) => {
-  const session = await getSession();
-  if (!session?.user.id) {
-    return {
-      error: "Not authenticated",
-    };
-  }
-  const socialMediaLink = await prisma.socialMediaLink.findUnique({
-    where: {
-      id: data.id,
-    },
-    include: {
-      site: true,
-    },
-  });
-  // if (!socialMediaLink || socialMediaLink.userId !== session.user.id) {
-    // return {
-    //   error: "Post not found",
-    // };
-  // }
-  try {
-    const response = await prisma.socialMediaLink.update({
-      where: {
-        id: data.id,
-      },
-      data: {
-        featuredEmbed: data.featuredEmbed,
-      },
-    });
-
-    await revalidateTag(
-      `${socialMediaLink.site?.subdomain}.${process.env.NEXT_PUBLIC_ROOT_DOMAIN}-socialMediaLinks`,
-    );
-    await revalidateTag(
-      `${socialMediaLink.site?.subdomain}.${process.env.NEXT_PUBLIC_ROOT_DOMAIN}-${socialMediaLink.slug}`,
-    );
-
-    // if the site has a custom domain, we need to revalidate those tags too
-    socialMediaLink.site?.customDomain &&
-      (await revalidateTag(`${socialMediaLink.site?.customDomain}-socialMediaLinks`),
-      await revalidateTag(`${socialMediaLink.site?.customDomain}-${socialMediaLink.slug}`));
-
-    return response;
-  } catch (error: any) {
-    return {
-      error: error.message,
-    };
-  }
-};
-
 export const updatePostMetadata = withPostAuth(
   async (
     formData: FormData,

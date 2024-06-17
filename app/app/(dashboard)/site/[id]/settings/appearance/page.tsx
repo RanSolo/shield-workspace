@@ -1,6 +1,6 @@
 import prisma from "@/lib/prisma";
 import Form from "@/components/form";
-import { updateSite, updateSocialMediaLink } from "@/lib/actions/actions";
+import { updateSite } from "@/lib/actions/actions";
 
 export default async function SiteSettingsAppearance({
   params,
@@ -13,12 +13,7 @@ export default async function SiteSettingsAppearance({
     },
     include: { socialMediaLinks : true }
   });
-  // const socialMediaLinks = await prisma.socialMediaLink.findUnique({
-  //   where: {
-  //     siteId: decodeURIComponent(params.id),
-  //   },
-  // });
-  // console.log('data', data)
+
   return (
     <div className="flex flex-col space-y-6">
       <Form
