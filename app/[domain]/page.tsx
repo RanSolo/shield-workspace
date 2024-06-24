@@ -51,10 +51,9 @@ export default async function SiteHomePage({
 
   return (
     <>
-      <div className="w-full mb-20">
-        <div className="relative w-full h-80 sm:h-150 lg:h-200">
-          <div className="relative w-full mx-auto overflow-hidden group h-80 sm:h-150 ">
-            {!data.featuredEmbed && (
+      <div className="w-full mt-20 mb-20">
+        <div className="relative w-full pb-5 h-fit">
+          <div className="relative w-full h-full mx-auto overflow-hidden group ">
             <Image
               alt='band photo'
               blurDataURL={placeholderBlurhash}
@@ -64,16 +63,6 @@ export default async function SiteHomePage({
               placeholder="blur"
               src={data.image ?? "/placeholder.png"} 
             />
-            )
-          }
-        
-          <Iframe url={data.featuredEmbed as string}
-        width="100%"
-        height="100%"
-        id=""
-        className=""
-        display="block"
-        position="relative"/>
           </div>
         </div>
         {posts.length > 0 ? (
@@ -159,6 +148,13 @@ export default async function SiteHomePage({
           </div>
         </div>
       )}
+                <Iframe url={data.featuredEmbed as string}
+            width="100%"
+            height="1000"
+            id=""
+            className=""
+            display="block"
+            position="relative"/>
     </>
   );
 }

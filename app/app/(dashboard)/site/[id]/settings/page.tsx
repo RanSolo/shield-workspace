@@ -52,6 +52,19 @@ export default async function SiteSettingsIndex({
           name: "description",
           type: "text",
           defaultValue: data?.description!,
+          placeholder: "Site Description.",
+        }}
+        handleSubmit={updateSite}
+      />
+      
+      <Form
+        title="Bio"
+        description="Bio of the band."
+        helpText="Include SEO-optimized keywords that you want to rank for."
+        inputAttrs={{
+          name: "description",
+          type: "text",
+          defaultValue: data?.description!,
           placeholder: "A blog about really interesting things.",
         }}
         handleSubmit={updateSite}
