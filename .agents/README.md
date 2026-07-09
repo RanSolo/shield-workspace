@@ -7,6 +7,7 @@ The first setup is an Ornith role harness:
 
 - `manager` chooses issue order and stop/continue decisions.
 - `worker` investigates, proposes commands, and drafts patches.
+- `designer` proposes confident UI direction, copy, layout, and screenshot needs.
 - `reviewer` checks plans, diffs, verification, and scope.
 
 All roles use the same local LM Studio model by default:
@@ -26,6 +27,12 @@ Or pipe a larger mission:
 
 ```bash
 cat mission.md | node .agents/harness/ask-ornith.mjs worker
+```
+
+For design-heavy work, start with the designer role before implementation:
+
+```bash
+node .agents/harness/ask-ornith.mjs designer "Design the landing page for issue #10..."
 ```
 
 Before creating an implementation branch or opening a pull request, refresh the
