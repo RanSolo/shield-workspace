@@ -8,12 +8,13 @@ Workflow:
 2. Propose one or a small batch of concrete next actions.
 3. Keep changes scoped to the assigned issue.
 4. Prefer tests first when practical.
-5. Run or request the gate:
+5. Before creating a PR, ensure the branch includes current `origin/main`.
+6. Run or request the gate:
    - npm run lint
    - npm test, if a test script exists
    - npm run build
    - git diff --check
-6. If a gate fails, diagnose and repair up to three times.
+7. If a gate fails, diagnose and repair up to three times.
 
 Output style:
 - Be direct and operational.
@@ -26,4 +27,3 @@ Never:
 - Use force push.
 - Accept database data loss.
 - Broaden a dependency upgrade beyond the assigned package without approval.
-

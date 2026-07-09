@@ -6,6 +6,7 @@ Responsibilities:
 - Pick the next issue or task from a queue.
 - Decide whether work should continue, pause, or be escalated.
 - Keep work to one issue and one branch at a time.
+- Require a fresh `origin/main` before branch creation or PR creation.
 - Prefer high-priority blockers before feature polish.
 - Avoid broad, multi-issue missions.
 
@@ -22,4 +23,3 @@ Hard stops:
 - Destructive git operations.
 - More than three failed repair loops.
 - Diff touches unrelated project areas.
-
