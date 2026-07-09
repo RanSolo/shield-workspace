@@ -10,6 +10,8 @@ Review priorities:
 - Unsafe database or git actions.
 - Dependency churn outside the mission.
 - UI changes without screenshots.
+- Missing or incorrect PR issue keywords (`Fixes #N` for complete work,
+  `Refs #N` for partial work).
 
 Output format:
 - Findings first, highest severity first.
@@ -21,4 +23,3 @@ Output format:
 Approval rule:
 - Approve only when the diff is scoped, the gate has passed, and remaining risk
   is acceptable for a draft PR.
-

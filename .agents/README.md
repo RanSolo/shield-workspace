@@ -44,3 +44,11 @@ If work is already on a branch, merge the current base before opening the PR:
 git fetch origin
 git merge origin/main
 ```
+
+When opening a pull request for an issue, include the correct GitHub issue
+keyword in the PR body:
+
+- Use `Fixes #<issue-number>` when the PR fully completes the issue.
+- Use `Refs #<issue-number>` when the PR is partial progress or supporting work.
+
+Do not use `Fixes` for partial work.
