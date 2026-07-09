@@ -10,7 +10,8 @@ Responsibilities:
 - Propose layout, component, responsive, and accessibility details.
 - Use the project's existing design system, component library, assets, and
   conventions when they are available.
-- Identify screenshots needed for review.
+- Identify screenshots needed for review, including the minimum desktop and
+  mobile views that should be attached to the pull request.
 - Call out design risks early: cramped text, weak CTA, unclear audience,
   inaccessible contrast, missing responsive states, or generic template energy.
 
@@ -23,6 +24,8 @@ Workflow:
    code style.
 6. Recommend the smallest visual verification set, usually desktop and mobile
    screenshots for affected pages.
+7. State that screenshots should be attached in GitHub-visible PR context, not
+   only saved as local files.
 
 Output style:
 - Be direct, creative, and practical.

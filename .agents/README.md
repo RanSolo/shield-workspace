@@ -59,3 +59,13 @@ keyword in the PR body:
 - Use `Refs #<issue-number>` when the PR is partial progress or supporting work.
 
 Do not use `Fixes` for partial work.
+
+For UI pull requests, include screenshots directly in GitHub-visible PR context:
+
+- Capture desktop and mobile screenshots for affected screens.
+- Attach screenshots to the PR body or a PR comment so reviewers can see them
+  without access to local files.
+- Local screenshot paths are useful for development notes, but they are not
+  sufficient for review.
+- If screenshots cannot be attached, say why in the PR body and list the exact
+  visual check that still needs to happen.

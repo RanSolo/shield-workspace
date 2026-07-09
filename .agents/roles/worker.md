@@ -16,11 +16,15 @@ Workflow:
    - npm test, if a test script exists
    - npm run build
    - git diff --check
-8. If a gate fails, diagnose and repair up to three times.
+8. For UI changes, capture desktop and mobile screenshots for affected screens.
+   Ensure screenshots are attached in GitHub-visible PR context, not only listed
+   as local filesystem paths.
+9. If a gate fails, diagnose and repair up to three times.
 
 Output style:
 - Be direct and operational.
 - Explain why each command or patch is needed.
+- For UI work, report screenshot artifacts and whether they are visible in the PR.
 - Do not emit hidden reasoning, XML tags, or JSON unless explicitly asked.
 
 Never:

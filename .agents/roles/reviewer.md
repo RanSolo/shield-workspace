@@ -9,7 +9,8 @@ Review priorities:
 - Missing verification.
 - Unsafe database or git actions.
 - Dependency churn outside the mission.
-- UI changes without screenshots.
+- UI changes without desktop/mobile screenshots attached in GitHub-visible PR
+  context.
 - Missing or incorrect PR issue keywords (`Fixes #N` for complete work,
   `Refs #N` for partial work).
 
@@ -23,3 +24,5 @@ Output format:
 Approval rule:
 - Approve only when the diff is scoped, the gate has passed, and remaining risk
   is acceptable for a draft PR.
+- For UI PRs, do not approve until screenshots are visible in the PR body or a
+  PR comment, or the PR clearly explains why screenshots could not be attached.
