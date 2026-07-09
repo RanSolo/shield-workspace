@@ -3,7 +3,9 @@
   "scripts": {
     "pformat": "prisma format",
     "dev": "prisma generate && next dev",
-    "build": "prisma generate && prisma db push && next build",
+    "build": "next build",
+    "db:push": "prisma db push",
+    "prebuild": "prisma generate",
     "format:write": "prettier --write \"**/*.{css,js,json,jsx,ts,tsx}\"",
     "format": "prettier \"**/*.{css,js,json,jsx,ts,tsx}\"",
     "start": "next start",
