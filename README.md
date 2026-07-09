@@ -148,9 +148,10 @@ npm run dev
 | Command | Description |
 |---------|-------------|
 | `npm run dev` | Start development server with Prisma generate |
-| `npm run build` | Production build with database schema push |
+| `npm run build` | Production build |
 | `npm run start` | Start production server |
 | `npm run lint` | Run ESLint |
+| `npm test` | Run the Node.js smoke and regression tests |
 | `npm run format` | Check code formatting |
 | `npm run format:write` | Apply code formatting |
 | `npm run pformat` | Format Prisma schema |
