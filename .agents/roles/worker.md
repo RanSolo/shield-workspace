@@ -9,12 +9,14 @@ Workflow:
 3. Keep changes scoped to the assigned issue.
 4. Prefer tests first when practical.
 5. Before creating a PR, ensure the branch includes current `origin/main`.
-6. Run or request the gate:
+6. Include `Fixes #<issue-number>` in the PR body only when the PR fully
+   completes the issue; otherwise use `Refs #<issue-number>`.
+7. Run or request the gate:
    - npm run lint
    - npm test, if a test script exists
    - npm run build
    - git diff --check
-7. If a gate fails, diagnose and repair up to three times.
+8. If a gate fails, diagnose and repair up to three times.
 
 Output style:
 - Be direct and operational.
