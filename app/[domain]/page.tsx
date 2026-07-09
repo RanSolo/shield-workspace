@@ -63,7 +63,16 @@ export default async function SiteHomePage({
             />
           </div>
         </div>
-          <div className="w-1/2 max-w-screen-xl mx-auto md:mb-28 lg:w-5/6">
+
+        {data.bio?.trim() && (
+          <section className="w-5/6 max-w-screen-xl mx-auto mb-12 text-center">
+            <p className="text-lg md:text-xl leading-relaxed text-stone-700 dark:text-stone-300">
+              {data.bio}
+            </p>
+          </section>
+        )}
+
+        <div className="w-1/2 max-w-screen-xl mx-auto md:mb-28 lg:w-5/6">
           {posts.map(post => (
 
             <Link  key={post.slug} href={`/${post.slug}`}>
