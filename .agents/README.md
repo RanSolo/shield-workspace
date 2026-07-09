@@ -28,3 +28,19 @@ Or pipe a larger mission:
 cat mission.md | node .agents/harness/ask-ornith.mjs worker
 ```
 
+Before creating an implementation branch or opening a pull request, refresh the
+base branch so agent work does not inherit stale CI or Vercel failures:
+
+```bash
+git fetch origin
+git switch main
+git pull --ff-only
+git switch -c <work-branch>
+```
+
+If work is already on a branch, merge the current base before opening the PR:
+
+```bash
+git fetch origin
+git merge origin/main
+```
