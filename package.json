@@ -6,6 +6,7 @@
     "build": "next build",
     "db:push": "prisma db push",
     "prebuild": "prisma generate",
+    "test": "node --test",
     "format:write": "prettier --write \"**/*.{css,js,json,jsx,ts,tsx}\"",
     "format": "prettier \"**/*.{css,js,json,jsx,ts,tsx}\"",
     "start": "next start",

@@ -62,10 +62,10 @@ export default async function SiteSettingsIndex({
         description="Bio of the band."
         helpText="Include SEO-optimized keywords that you want to rank for."
         inputAttrs={{
-          name: "description",
+          name: "bio",
           type: "text",
-          defaultValue: data?.description!,
-          placeholder: "A blog about really interesting things.",
+          defaultValue: data?.bio ?? "",
+          placeholder: "Tell fans what makes this band worth hearing.",
         }}
         handleSubmit={updateSite}
       />
