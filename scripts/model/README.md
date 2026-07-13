@@ -65,7 +65,61 @@ Run the adapter tests with:
 node --test tests/model-harness.test.mjs
 ```
 
-## Model escalation
+## Seat model selection
+
+Before starting a mission, create a project-local seat config.
+
+1. Copy:
+
+```bash
+cp scripts/model/seat-models.example.sh scripts/model/seat-models.sh
+```
+
+2. Edit `scripts/model/seat-models.sh` with the models actually available for
+that repo or machine.
+
+The repository should carry the example file. The real `seat-models.sh` is
+project-local and can differ between environments.
+
+Primary seats:
+
+- `DAISY_MODEL`
+- `HILL_MODEL`
+- `FURY_MODEL`
+- `MM_MODEL`
+
+Example defaults in `seat-models.example.sh`:
+
+- `DAISY_MODEL=ornith-1.0-35b`
+- `HILL_MODEL=ornith-1.0-35b`
+- `FURY_MODEL=gpt-5.3-codex`
+- `MM_MODEL=gpt-5.3-codex`
+
+Helpers:
+
+- `get_seat_model <daisy|hill|fury|mm>`
+- `select_seat_model <seat> [export]`
+
+Legacy SHIELD aliases are also available:
+
+- `stinger -> hill`
+- `jester -> daisy`
+- `viper -> fury`
+- `iceman -> fury`
+- `goose -> mm`
+
+Example usage:
+
+```bash
+source "$(dirname "$0")/model/escalation.sh"
+select_seat_model hill export
+echo "Hill is using: $SELECTED_MODEL"
+```
+
+If `scripts/model/seat-models.sh` does not exist, the helper falls back to the
+example defaults baked into `escalation.sh`.
+
+## Tier compatibility
 
 Behavior
 

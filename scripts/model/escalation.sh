@@ -1,36 +1,84 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Model escalation helper
-# Provides a small, portable way to pick a default / escalated model for orchestrator scripts.
+# Model selection helper
+# Provides a seat-first model config plus a compatibility layer for the older
+# cheap/standard/strong escalation flow.
 # Usage examples:
 #   source ./scripts/model/escalation.sh
+#   get_seat_model hill
 #   get_model cheap
-#   escalate_model failure   # prints the escalated model name for a failure trigger
+#   escalate_model failure
 
-DEFAULT_MODEL="${DEFAULT_MODEL:-claude-haiku-4.5}"
-CHEAP_MODEL="${CHEAP_MODEL:-claude-haiku-4.5}"
-STANDARD_MODEL="${STANDARD_MODEL:-claude-opus-4.6}"
-STRONG_MODEL="${STRONG_MODEL:-gpt-5.3-codex}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_MODEL_CONFIG="${SCRIPT_DIR}/seat-models.sh"
 
-# Returns the model name for a given level: cheap, standard, strong
+# Project-local config
+# Create scripts/model/seat-models.sh from seat-models.example.sh to set the
+# real models available in a given repo or environment.
+if [[ -f "${PROJECT_MODEL_CONFIG}" ]]; then
+  # shellcheck disable=SC1090
+  source "${PROJECT_MODEL_CONFIG}"
+fi
+
+# Seat-first routing
+# Set these before a mission when you want to swap model assignments.
+DAISY_MODEL="${DAISY_MODEL:-ornith-1.0-35b}"
+HILL_MODEL="${HILL_MODEL:-ornith-1.0-35b}"
+FURY_MODEL="${FURY_MODEL:-gpt-5.3-codex}"
+MM_MODEL="${MM_MODEL:-gpt-5.3-codex}"
+
+# Legacy SHIELD aliases
+STINGER_MODEL="${STINGER_MODEL:-${HILL_MODEL}}"
+JESTER_MODEL="${JESTER_MODEL:-${DAISY_MODEL}}"
+VIPER_MODEL="${VIPER_MODEL:-${FURY_MODEL}}"
+ICEMAN_MODEL="${ICEMAN_MODEL:-${FURY_MODEL}}"
+GOOSE_MODEL="${GOOSE_MODEL:-${MM_MODEL}}"
+MAVERICK_MODEL="${MAVERICK_MODEL:-human}"
+
+# Tier compatibility
+DEFAULT_MODEL="${DEFAULT_MODEL:-${HILL_MODEL}}"
+CHEAP_MODEL="${CHEAP_MODEL:-${DAISY_MODEL}}"
+STANDARD_MODEL="${STANDARD_MODEL:-${FURY_MODEL}}"
+STRONG_MODEL="${STRONG_MODEL:-${MM_MODEL}}"
+
+get_seat_model() {
+  case "${1:-hill}" in
+    daisy) printf "%s" "${DAISY_MODEL}" ;;
+    hill) printf "%s" "${HILL_MODEL}" ;;
+    fury) printf "%s" "${FURY_MODEL}" ;;
+    mm) printf "%s" "${MM_MODEL}" ;;
+    stinger) printf "%s" "${STINGER_MODEL}" ;;
+    jester) printf "%s" "${JESTER_MODEL}" ;;
+    viper) printf "%s" "${VIPER_MODEL}" ;;
+    iceman) printf "%s" "${ICEMAN_MODEL}" ;;
+    goose) printf "%s" "${GOOSE_MODEL}" ;;
+    maverick) printf "%s" "${MAVERICK_MODEL}" ;;
+    *) printf "%s" "${HILL_MODEL}" ;;
+  esac
+}
+
+select_seat_model() {
+  local m
+  m=$(get_seat_model "${1:-hill}")
+  if [[ "${2:-}" == "export" ]]; then
+    export SELECTED_MODEL="${m}"
+  fi
+  printf "%s" "${m}"
+}
+
+# Returns the model name for a given tier level: cheap, standard, strong
 get_model() {
   case "${1:-default}" in
-    cheap)  printf "%s" "${CHEAP_MODEL}" ;;
+    cheap) printf "%s" "${CHEAP_MODEL}" ;;
     standard) printf "%s" "${STANDARD_MODEL}" ;;
     strong) printf "%s" "${STRONG_MODEL}" ;;
     *) printf "%s" "${DEFAULT_MODEL}" ;;
   esac
 }
 
-# Given a trigger, print the recommended model. Triggers are advisory strings that
-# calling code can use to decide whether to escalate.
-# Known triggers:
-#  - token_limit: request close to token or cost limits
-#  - failure: previous attempt failed and should be retried with a stronger model
-#  - high_risk: public-facing, high-risk, or high-ambiguity decisions
-#  - code_review: technical peer review (use a stronger specialist)
-#  - default: returns the cheap/default model
+# Given a trigger, print the recommended model. Triggers are advisory strings
+# that calling code can use to decide whether to escalate.
 escalate_model() {
   case "${1:-default}" in
     token_limit|failure|high_risk)
@@ -42,8 +90,7 @@ escalate_model() {
   esac
 }
 
-# Helper to print a model and optionally export it as SELECTED_MODEL
-# Usage: selected=$(select_model token_limit)
+# Helper to print a tier model and optionally export it as SELECTED_MODEL
 select_model() {
   local m
   m=$(escalate_model "${1:-default}")
@@ -53,15 +100,23 @@ select_model() {
   printf "%s" "${m}"
 }
 
-# If script is invoked directly, print usage and chosen model for a sample trigger
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  echo "Model escalation helper"
-  echo "DEFAULT_MODEL=${DEFAULT_MODEL}"
-  echo "Cheap model: ${CHEAP_MODEL}"
-  echo "Standard model: ${STANDARD_MODEL}"
-  echo "Strong model: ${STRONG_MODEL}"
+  echo "Model selection helper"
+  echo "Seat models:"
+  echo "  DAISY_MODEL=${DAISY_MODEL}"
+  echo "  HILL_MODEL=${HILL_MODEL}"
+  echo "  FURY_MODEL=${FURY_MODEL}"
+  echo "  MM_MODEL=${MM_MODEL}"
   echo
-  echo "Examples:" 
+  echo "Tier compatibility:"
+  echo "  DEFAULT_MODEL=${DEFAULT_MODEL}"
+  echo "  CHEAP_MODEL=${CHEAP_MODEL}"
+  echo "  STANDARD_MODEL=${STANDARD_MODEL}"
+  echo "  STRONG_MODEL=${STRONG_MODEL}"
+  echo
+  echo "Examples:"
+  echo "  get_seat_model hill -> $(get_seat_model hill)"
+  echo "  get_seat_model daisy -> $(get_seat_model daisy)"
   echo "  get_model cheap -> $(get_model cheap)"
   echo "  escalate_model failure -> $(escalate_model failure)"
   exit 0
