@@ -58,7 +58,7 @@ accumulate as persistent LM Studio chat history.
 Role aliases map to the seat prompts in `agents/`: `orchestrator`/`hill`/`stinger`,
 `investigator`/`daisy`/`jester`, `architect`/`fury`/`viper`,
 `implementer`/`may`/`iceman`, `reviewer`/`fitz`/`goose`, `product`/`simmons`,
-and `human`/`coulson`.
+and `human`/`coulson`/`maverick`.
 
 Run the adapter tests with:
 

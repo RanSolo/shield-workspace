@@ -24,6 +24,7 @@ const ROLE_FILES = {
   simmons: "jemma-simmons-product-feedback.agent.md",
   human: "phil-coulson-human-player-1.agent.md",
   coulson: "phil-coulson-human-player-1.agent.md",
+  maverick: "phil-coulson-human-player-1.agent.md",
 };
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));

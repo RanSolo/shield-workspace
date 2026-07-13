@@ -13,6 +13,21 @@ test("maps SHIELD role aliases to their agent prompts", () => {
   assert.match(resolveRoleFile("product"), /jemma-simmons-product-feedback\.agent\.md$/);
 });
 
+test("preserves legacy compatibility aliases", () => {
+  const aliases = {
+    stinger: /maria-hill-orchestrator\.agent\.md$/,
+    jester: /daisy-johnson-debugger-recon\.agent\.md$/,
+    viper: /nick-fury-architect\.agent\.md$/,
+    iceman: /melinda-may-implementer\.agent\.md$/,
+    goose: /leo-fitz-technical-review\.agent\.md$/,
+    maverick: /phil-coulson-human-player-1\.agent\.md$/,
+  };
+
+  for (const [alias, pattern] of Object.entries(aliases)) {
+    assert.match(resolveRoleFile(alias), pattern);
+  }
+});
+
 test("extracts reasoning, message, and stats from LM Studio native output", () => {
   const result = parseNativeResponse({
     output: [
