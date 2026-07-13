@@ -39,11 +39,22 @@ Use this mode for:
    - implement only the approved plan
    - update focused tests when appropriate
    - report exact changes and recommended validation
+   - if blocked, report the blocker instead of handing implementation back to Maria Hill
 
 5. **Maria Hill validation**
    - run the requested Nx lint/test/build/affected or focused checks
    - gather results
    - summarize for Nick Fury and Phil Coulson
+
+## Stuck protocol
+
+If Melinda May is blocked:
+
+1. Melinda May reports blocked.
+2. Maria Hill requests additional reconnaissance from Daisy Johnson.
+3. Maria Hill consults Nick Fury if architecture is involved.
+4. Maria Hill reprioritizes or reassigns work.
+5. Melinda May resumes implementation.
 
 6. **Nick Fury readiness review**
    - decide whether the implementation is acceptable

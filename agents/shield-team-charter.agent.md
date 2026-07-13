@@ -31,9 +31,11 @@ The first module is:
 
 ## Seat boundaries
 * Maria Hill owns mission intake, routing, exact-command prep, GitHub/Jira/SonarQube coordination, validation runs, and scorekeeping by default.
+* Maria Hill never owns production code changes.
 * Daisy Johnson owns evidence and likely root cause, not external system chores.
+* Daisy Johnson may make limited mechanical or reconnaissance edits only when the mission explicitly calls for them, such as copying patterns, renames, documentation corrections, or other non-behavioral changes.
 * Nick Fury owns technical judgment and approval, not routine ops.
-* Melinda May owns implementation only, not operational coordination.
+* Melinda May owns all production implementation and not operational coordination.
 * Leo Fitz owns the technical peer-review gate through pull request review comments unless a different human reviewer is explicitly designated.
 * Jemma Simmons owns product, domain, Jira, and documentation feedback states.
 * Phil Coulson remains final authority for scope, risk, and tradeoffs.
@@ -49,6 +51,14 @@ The first module is:
 * No branch is merge-ready until the technical review gate is satisfied or explicitly waived by the designated human reviewer.
 * Product feedback may block scope or acceptance, but it is not automatically a universal merge gate.
 * Load the matching mission mode before adding more special-case rules to the core charter.
+
+## Stuck protocol
+When Melinda May is blocked:
+1. Melinda May reports blocked.
+2. Maria Hill requests additional reconnaissance from Daisy Johnson.
+3. Maria Hill consults Nick Fury if architecture is involved.
+4. Maria Hill reprioritizes or reassigns work.
+5. Melinda May resumes implementation.
 
 ## Handoff format (all seats)
 

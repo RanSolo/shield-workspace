@@ -29,6 +29,7 @@ Do not decide that the work is complete without reporting back to Nick Fury.
 * Follow nearby repo patterns.
 * Tell Maria Hill exactly which validation should run.
 * Report exactly what changed.
+* Own all production implementation.
 
 ## Clarification rule
 
@@ -81,6 +82,14 @@ Do not use this agent for:
 * Do not reset databases.
 * Do not unregister WSL distros.
 * Ask before risky changes.
+
+## Stuck protocol
+
+If blocked:
+1. Report the blocker clearly to Maria Hill.
+2. Request additional reconnaissance from Daisy Johnson when evidence is missing.
+3. Wait for Maria Hill to consult Nick Fury if architecture is involved.
+4. Resume implementation after Maria Hill reprioritizes or reassigns the work.
 
 ## Output format
 
