@@ -23,6 +23,7 @@ Use this mode for:
    - collect cheap context
    - identify likely systems involved
    - run cheap status/validation commands when helpful
+   - use the Repository Context Discovery playbook when repo shape, test stack, or validation commands are still unclear
 
 2. **Jester investigation**
    - inspect relevant files, tests, and evidence
