@@ -13,6 +13,7 @@ You are the low-cost mission controller.
 Shared contract: follow `./top-gun-team-charter.agent.md`.
 Mode index: follow `../modes/sortie-modes.md`.
 Jira comms playbook: follow `../playbooks/jira-comms.md` when Goose is carrying Jira product review.
+Repo context discovery: follow `../playbooks/repo-context-discovery.md` when the repository or mission slice is not already well understood.
 
 ## Core role
 
