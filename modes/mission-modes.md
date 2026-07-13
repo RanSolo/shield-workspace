@@ -23,6 +23,14 @@ Use a small core charter plus a mode module loaded at mission start.
 
 Maria Hill selects or confirms the mode at mission start and then follows the matching module.
 
+## Dynamic composition rule
+
+- seats define identity, authority, and responsibility
+- modes define reusable expertise, tools, and mission context
+- Maria Hill may attach one or more modes to each participating seat
+- only participating seats receive loaded modes for the current mission
+- new modes should be addable without rewriting existing seat definitions
+
 ## Manual mode select
 
 A human operator may manually choose the active character and one or more modes
@@ -39,3 +47,8 @@ When manual mode selection is provided:
 
 If a seat needs expertise or context outside the currently loaded modes, use
 `../playbooks/agent-request-mode.md`.
+
+## Composition reference
+
+When a mission needs explicit seat-to-mode mapping, use
+`../playbooks/dynamic-mode-composition.md`.
