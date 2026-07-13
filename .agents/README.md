@@ -3,37 +3,55 @@
 This directory contains local agent workflow support for the project. It is not
 application runtime code.
 
-The first setup is an Ornith role harness:
+The first setup is a role harness with model routing in
+`.agents/config/models.json`:
 
 - `manager` chooses issue order and stop/continue decisions.
 - `worker` investigates, proposes commands, and drafts patches.
 - `designer` proposes confident UI direction, copy, layout, and screenshot needs.
 - `reviewer` checks plans, diffs, verification, and scope.
 
-All roles use the same local LM Studio model by default:
+The repo currently defaults to:
 
 ```text
-http://127.0.0.1:1234/v1
-ornith-1.0-35b
+manager      -> local Ornith
+worker       -> local Ornith
+designer     -> local Ornith
+reviewer     -> local Ornith
+orchestrator -> local Ornith
+daisy        -> local Ornith
+fury         -> OpenAI GPT-5.6 Terra
+mm           -> OpenAI GPT-5.6
 ```
 
 Run a role:
 
 ```bash
-node .agents/harness/ask-ornith.mjs manager "Pick the next issue from this list..."
+node .agents/harness/ask-local.mjs manager "Pick the next issue from this list..."
 ```
 
 Or pipe a larger mission:
 
 ```bash
-cat mission.md | node .agents/harness/ask-ornith.mjs worker
+cat mission.md | node .agents/harness/ask-local.mjs worker
 ```
 
 For design-heavy work, start with the designer role before implementation:
 
 ```bash
-node .agents/harness/ask-ornith.mjs designer "Design the landing page for issue #10..."
+node .agents/harness/ask-local.mjs designer "Design the landing page for issue #10..."
 ```
+
+The role prompt and the model choice are separate concerns:
+
+- The role prompt still comes from `.agents/roles/<role>.md`.
+- The model and provider come from `.agents/config/models.json`.
+- Machine-specific overrides can come from environment variables like
+  `MODEL_MANAGER`, `MODEL_DAISY`, `MODEL_FURY`, `MODEL_MM`,
+  `LOCAL_MODEL_BASE_URL`, and `OPENAI_API_KEY`.
+
+This lets one project use only local models while another mixes local routing
+with stronger remote review models without changing the harness code.
 
 Before creating an implementation branch or opening a pull request, refresh the
 base branch so agent work does not inherit stale CI or Vercel failures:

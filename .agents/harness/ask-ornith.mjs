@@ -12,14 +12,25 @@ if (!role) {
   process.exit(1);
 }
 
-const baseUrl = process.env.ORNITH_BASE_URL ?? "http://127.0.0.1:1234/v1";
-const model = process.env.ORNITH_MODEL ?? "ornith-1.0-35b";
-const apiKey = process.env.ORNITH_API_KEY ?? "lm-studio";
-const temperature = Number(process.env.ORNITH_TEMPERATURE ?? "0.8");
-const maxTokens = Number(process.env.ORNITH_MAX_TOKENS ?? "1600");
-
 const here = dirname(fileURLToPath(import.meta.url));
-const rolePath = resolve(here, "..", "roles", `${role}.md`);
+const configPath = resolve(here, "..", "config", "models.json");
+
+function resolveEnvValue(name, fallback) {
+  if (!name) return fallback;
+  return process.env[name] ?? fallback;
+}
+
+function trimTrailingSlash(value) {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+async function loadConfig() {
+  const raw = await readFile(configPath, "utf8").catch((error) => {
+    throw new Error(`Missing model config at ${configPath}: ${error.message}`);
+  });
+
+  return JSON.parse(raw);
+}
 
 async function readStdin() {
   if (process.stdin.isTTY) return "";
@@ -32,6 +43,10 @@ async function readStdin() {
 }
 
 async function main() {
+  const config = await loadConfig();
+  const resolvedRole = config.roleAliases?.[role] ?? role;
+  const rolePath = resolve(here, "..", "roles", `${resolvedRole}.md`);
+
   const system = await readFile(rolePath, "utf8").catch((error) => {
     throw new Error(`Unknown role "${role}" at ${rolePath}: ${error.message}`);
   });
@@ -42,12 +57,48 @@ async function main() {
     throw new Error("Missing prompt. Pass it as an argument or pipe it on stdin.");
   }
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const defaults = config.defaults ?? {};
+  const modelConfig = config.models?.[role] ?? config.models?.[resolvedRole];
+
+  if (!modelConfig) {
+    throw new Error(`Missing model mapping for role "${role}" in ${configPath}.`);
+  }
+
+  const providerName = modelConfig.provider ?? defaults.provider;
+  const provider = config.providers?.[providerName];
+
+  if (!provider) {
+    throw new Error(`Unknown provider "${providerName}" for role "${role}".`);
+  }
+
+  const baseUrl = trimTrailingSlash(
+    resolveEnvValue(provider.baseUrlEnv, provider.baseUrl ?? ""),
+  );
+  const apiKey = resolveEnvValue(provider.apiKeyEnv, provider.apiKey ?? "");
+  const model = resolveEnvValue(modelConfig.modelEnv, modelConfig.model);
+  const temperature = Number(process.env.MODEL_TEMPERATURE ?? defaults.temperature ?? "0.8");
+  const maxTokens = Number(process.env.MODEL_MAX_TOKENS ?? defaults.maxTokens ?? "1600");
+  const chatPath = provider.chatCompletionsPath ?? "/chat/completions";
+
+  if (!baseUrl) {
+    throw new Error(`Missing base URL for provider "${providerName}".`);
+  }
+
+  if (!model) {
+    throw new Error(`Missing model name for role "${role}".`);
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  const response = await fetch(`${baseUrl}${chatPath}`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       model,
       messages: [
@@ -86,4 +137,3 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
-
