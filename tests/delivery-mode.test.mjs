@@ -14,6 +14,7 @@ test("delivery mode defines the planned-work contract and role boundaries", asyn
 
   assert.match(mode, /We know what we want to build\. Deliver it\./);
   assert.match(mode, /Use Debugger Mode instead when the primary task is to explain a defect/);
+  assert.match(mode, /Delivery Mode begins with `\.\.\/playbooks\/begin-mission\.md`/);
   assert.match(mode, /Maria Hill \(Orchestrator\).*owns intake, routing, operational coordination/s);
   assert.match(mode, /Melinda May \(Implementer\).*owns production implementation/s);
   assert.match(mode, /Daisy Johnson.*evidence that reduces implementation\s+uncertainty/s);
@@ -23,6 +24,9 @@ test("delivery mode defines the planned-work contract and role boundaries", asyn
   assert.match(mode, /Jemma Simmons.*reviews acceptance criteria/s);
   assert.match(mode, /Phil Coulson.*approves the Mission Brief/s);
   assert.match(mode, /Only participating seats receive Delivery Mode context/);
+  assert.match(mode, /Require explicit Phil Coulson approval before specialist dispatch/);
+  assert.match(mode, /Delivery Mode cannot use the lightweight operational timeout path/);
+  assert.match(mode, /Fury implementation sanity-review status/);
 });
 
 test("delivery playbook encodes stages, readiness, and validation gates", async () => {
@@ -37,7 +41,7 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
     "6. Fury Implementation Sanity Review",
     "7. Technical Review",
     "8. Product Review",
-    "9. Pull Request",
+    "9. Pull Request Finalization",
   ]) {
     assert.match(playbook, new RegExp(`### ${stage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   }
@@ -61,8 +65,28 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
   assert.match(playbook, /Architecture concerns return to Nick Fury/);
   assert.match(playbook, /gives brief, high-leverage guidance/);
   assert.match(playbook, /implementation still matches the approved plan/);
+  assert.match(playbook, /Delivery Mode begins with `\.\/begin-mission\.md`/);
+  assert.match(playbook, /requires explicit\s+Phil Coulson approval/);
+  assert.match(playbook, /cannot activate through the lightweight operational\s+timeout path/);
+  assert.match(playbook, /Delivery Mode is never eligible for the lightweight\s+operational timeout path/);
+  assert.match(playbook, /produces the draft Mission Brief/);
+  assert.match(playbook, /records recommended participants and modes in the Mission Brief/);
+  assert.match(playbook, /creates or updates a draft pull\s+request.*so Leo Fitz has a review surface/s);
+  assert.match(playbook, /Fury implementation sanity-review status/);
   assert.match(playbook, /Scope or acceptance ambiguity returns to Phil Coulson/);
   assert.match(playbook, /Maria Hill handles GitHub coordination/);
+});
+
+test("begin mission playbook is present for delivery mode intake", async () => {
+  const playbook = await readRepoFile("playbooks/begin-mission.md");
+  const template = await readRepoFile("playbooks/repo-context/mission-brief-template.md");
+
+  assert.match(playbook, /# Begin Mission/);
+  assert.match(playbook, /Mission Brief is the canonical intake artifact/);
+  assert.match(playbook, /all non-lightweight work require Phil Coulson's\s+explicit approval/);
+  assert.match(playbook, /does not authorize specialist dispatch/);
+  assert.match(template, /# Mission Brief Template/);
+  assert.match(template, /## Activation Status/);
 });
 
 test("delivery mode is registered for planned engineering work", async () => {

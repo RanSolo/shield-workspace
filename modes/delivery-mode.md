@@ -18,6 +18,7 @@ test, or unclear behavior before the correct change is known.
   Definition of Ready is satisfied and the plan is approved.
 
 Follow `../playbooks/delivery-mode.md` for the canonical delivery workflow.
+Delivery Mode begins with `../playbooks/begin-mission.md`.
 
 ## Participating-seat responsibilities
 
@@ -45,6 +46,8 @@ Only participating seats receive Delivery Mode context for a mission.
 ## Delivery contract
 
 - Do not begin implementation until the Definition of Ready is satisfied.
+- Require explicit Phil Coulson approval before specialist dispatch.
+- Delivery Mode cannot use the lightweight operational timeout path.
 - Do not expand scope without Phil Coulson's approval.
 - Prefer existing repository patterns and reusable components.
 - Keep reconnaissance separate from implementation ownership.
@@ -62,6 +65,7 @@ Delivery Mode should end with:
 - an approved architecture and implementation plan
 - a focused implementation with tests
 - recorded validation evidence
+- Fury implementation sanity-review status
 - technical and product review status
 - a review-ready pull request
 

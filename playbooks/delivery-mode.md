@@ -4,6 +4,11 @@ Use this playbook for planned engineering work whose desired outcome is known.
 It moves an approved objective through architecture, implementation,
 validation, review, and pull-request preparation.
 
+Delivery Mode begins with `./begin-mission.md`. Because Delivery Mode always
+involves specialist dispatch for planned engineering work, it requires explicit
+Phil Coulson approval and cannot activate through the lightweight operational
+timeout path.
+
 ## Goal
 
 Produce the smallest reviewable change that satisfies approved acceptance
@@ -13,14 +18,19 @@ criteria while preserving SHIELD seat boundaries and evidence at each gate.
 
 ### 1. Mission Intake
 
+Follow `./begin-mission.md` to create the Mission Brief, record recommended
+versus activated modes, and obtain Phil Coulson's explicit approval before
+specialist dispatch. Delivery Mode is never eligible for the lightweight
+operational timeout path.
+
 Maria Hill:
 
 - clarifies the objective
 - gathers the minimum repository and issue context
 - identifies dependencies and likely risks
-- selects participating seats
-- recommends only the modes those seats need
-- produces the Mission Brief for Phil Coulson's approval
+- produces the draft Mission Brief
+- records recommended participants and modes in the Mission Brief
+- presents the completed Mission Brief for Phil Coulson's approval
 
 ### 2. Requirements & Scope
 
@@ -65,7 +75,7 @@ Melinda May owns production implementation. She:
 - prepares the implementation summary and pull-request-ready change
 
 Only after every Definition of Ready condition is satisfied may Melinda May
-begin implementation.
+begin implementation. Delivery Mode cannot treat silence or timeout as approval.
 
 ### 5. Validation
 
@@ -92,6 +102,10 @@ review:
 - marks the change ready for technical review when the implementation remains
   small, safe, and aligned with the approved plan
 
+Before technical review begins, Maria Hill creates or updates a draft pull
+request with Melinda May's implementation summary, validation evidence, and the
+current scope statement so Leo Fitz has a review surface.
+
 ### 7. Technical Review
 
 Leo Fitz reviews:
@@ -115,17 +129,19 @@ Jemma Simmons reviews when product or domain feedback is required:
 Product feedback may block scope or acceptance, but it is not automatically a
 universal merge gate.
 
-### 9. Pull Request
+### 9. Pull Request Finalization
 
-Melinda May prepares the implementation summary, changed behavior, test
-evidence, and known limitations. Maria Hill handles GitHub coordination and
-creates or updates the pull request using that material.
+After technical and product review, Melinda May updates the implementation
+summary, changed behavior, test evidence, and known limitations as needed.
+Maria Hill handles GitHub coordination and updates the pull request using that
+material.
 
 The pull request must state:
 
 - what changed and why
 - the approved scope and acceptance criteria
 - validation results
+- Fury implementation sanity-review status
 - technical and product review status
 - remaining risks or follow-up work
 
@@ -157,6 +173,7 @@ Record:
 - per-seat mode attachments
 - architecture decision
 - implementation and validation summary
+- Fury implementation sanity-review status
 - Fitz and Simmons review status
 - pull request URL and target
 - Coulson's final decision
