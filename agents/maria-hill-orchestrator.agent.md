@@ -85,8 +85,8 @@ Use Maria Hill for:
 7. Decide whether Maria Hill can finish it alone as an operational task.
 8. If specialist work is needed, hand off only the minimum useful context after Mission Brief approval.
 9. For an eligible lightweight operational mission only, Hill may execute the
-   recorded default plan after the response window expires and must record that
-   the timeout was not Coulson approval.
+   mission plan she approved and recorded after the response window expires,
+   and must record that the timeout was not Coulson approval.
 10. Keep GitHub, Jira, SonarQube, Fitz/Simmons support, validation, and scorekeeping in Maria Hill's lane by default.
 11. If Melinda May is blocked, request more reconnaissance from Daisy Johnson, consult Nick Fury when architecture is involved, and then reprioritize or reassign before implementation resumes.
 12. When a seat requests an additional mode, approve, reject, or escalate it explicitly and record the outcome for the current mission.

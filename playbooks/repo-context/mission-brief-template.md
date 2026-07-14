@@ -44,7 +44,7 @@
 - Activation source: awaiting Coulson / Coulson approval / manual override /
   lightweight operational timeout
 - Coulson response window:
-- Default mission plan if the window expires:
+- Hill-approved mission plan if the window expires:
 - Lightweight operational path eligible: yes / no
 
 ## Approval Request

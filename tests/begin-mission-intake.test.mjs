@@ -44,7 +44,7 @@ test("mission brief template captures the required intake artifact", async () =>
   assert.match(template, /## Suggested Modes/);
   assert.match(template, /## Activation Status/);
   assert.match(template, /Coulson response window:/);
-  assert.match(template, /Default mission plan if the window expires:/);
+  assert.match(template, /Hill-approved mission plan if the window expires:/);
   assert.match(template, /## Approval Request/);
 });
 

@@ -36,18 +36,18 @@ they do not change production code, architecture, data, security, product
 behavior, or external commitments.
 
 For this path, the Mission Brief may be a compact inline record containing only
-the objective, scope boundary, validation, recommended default plan, response
+the objective, scope boundary, validation, Hill-approved mission plan, response
 window, and activation status.
 
 1. Maria Hill records the objective, boundaries, validation, recommended
-   default plan, and Coulson response window in the Mission Brief.
+   mission plan she approves, and Coulson response window in the Mission Brief.
 2. Hill presents the brief to Coulson and waits for the recorded response
    window.
 3. If Coulson intervenes, Hill follows the decision.
 4. If the window expires without a response, Hill may activate and execute only
-   the recorded default operational plan.
-5. Hill records that the default plan was activated by timeout. The timeout
-   does not count as Coulson approval.
+   the recorded Hill-approved mission plan.
+5. Hill records that her approved mission plan was activated by timeout. The
+   timeout does not count as Coulson approval.
 
 The default response window is five minutes unless the repository or human
 operator specifies another value. Implementation, architecture, security,
