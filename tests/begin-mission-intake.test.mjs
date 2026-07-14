@@ -23,6 +23,13 @@ test("begin mission playbook defines the canonical intake workflow", async () =>
   assert.match(playbook, /4\. Select and attach mission modes\./);
   assert.match(playbook, /5\. Present the Mission Brief to Phil Coulson for approval\./);
   assert.match(playbook, /6\. Dispatch the mission only after approval\./);
+  assert.match(playbook, /## Lightweight operational path/);
+  assert.match(playbook, /Low-risk, reversible operational missions/);
+  assert.match(playbook, /Coulson response window/);
+  assert.match(playbook, /does not count as Coulson approval/);
+  assert.match(playbook, /## Recommended versus activated modes/);
+  assert.match(playbook, /Recommended modes are proposals/);
+  assert.match(playbook, /Activated modes are the modes actually attached/);
 });
 
 test("mission brief template captures the required intake artifact", async () => {
@@ -35,6 +42,9 @@ test("mission brief template captures the required intake artifact", async () =>
   assert.match(template, /## Risks/);
   assert.match(template, /## Recommended Participants/);
   assert.match(template, /## Suggested Modes/);
+  assert.match(template, /## Activation Status/);
+  assert.match(template, /Coulson response window:/);
+  assert.match(template, /Default mission plan if the window expires:/);
   assert.match(template, /## Approval Request/);
 });
 
@@ -44,5 +54,8 @@ test("Hill and Coulson document intake before dispatch", async () => {
 
   assert.match(hill, /Begin mission intake: follow `\.\.\/playbooks\/begin-mission\.md`/);
   assert.match(hill, /Produce a Mission Brief before specialist implementation begins/);
+  assert.match(hill, /A recommended mode is not active until the Mission Brief records its activation/);
+  assert.match(hill, /Only low-risk, reversible operational missions may use the documented Coulson response window/);
   assert.match(coulson, /Approve or reject the Mission Brief before implementation is dispatched\./);
+  assert.match(coulson, /Silence during a lightweight operational response window is not approval/);
 });

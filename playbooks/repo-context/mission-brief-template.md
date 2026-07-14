@@ -35,8 +35,17 @@
 ## Suggested Modes
 
 - Seat:
-  - Mode:
+  - Recommended mode:
   - Reason:
+
+## Activation Status
+
+- Activated modes:
+- Activation source: awaiting Coulson / Coulson approval / manual override /
+  lightweight operational timeout
+- Coulson response window:
+- Default mission plan if the window expires:
+- Lightweight operational path eligible: yes / no
 
 ## Approval Request
 
