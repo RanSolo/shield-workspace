@@ -172,15 +172,9 @@ Award these when deserved:
 |  |  |  |  |  |
 
 #### Mode Attachments
-| Seat | Attached Modes | Reason |
+| Participating Seat | Attached Modes | Reason |
 | --- | --- | --- |
-| Maria Hill (Orchestrator) |  |  |
-| Nick Fury (Architect) |  |  |
-| Daisy Johnson (Debugger/Recon) |  |  |
-| Melinda May (Implementer) |  |  |
-| Leo Fitz (Technical Review) |  |  |
-| Jemma Simmons (Product Feedback) |  |  |
-| Phil Coulson (Human/Player 1) |  |  |
+|  |  |  |
 
 #### Token Burn
 | Seat | Callsign | Controller | Tokens |

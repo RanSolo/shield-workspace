@@ -26,6 +26,22 @@ test("Hill and the scorecard document per-seat mode attachments", async () => {
 
   assert.match(hill, /Attach one or more modes to each participating seat based on the mission\./);
   assert.match(hill, /documenting mode attachments for each participating seat/);
-  assert.match(scorecard, /#### Mode Attachments/);
-  assert.match(scorecard, /\| Seat \| Attached Modes \| Reason \|/);
+  const attachmentSection = scorecard.match(
+    /#### Mode Attachments[\s\S]*?(?=\n#### |\n### |$)/,
+  )?.[0] ?? "";
+
+  assert.match(attachmentSection, /\| Participating Seat \| Attached Modes \| Reason \|/);
+  assert.match(attachmentSection, /\|  \|  \|  \|/);
+
+  for (const seat of [
+    "Maria Hill",
+    "Nick Fury",
+    "Daisy Johnson",
+    "Melinda May",
+    "Leo Fitz",
+    "Jemma Simmons",
+    "Phil Coulson",
+  ]) {
+    assert.doesNotMatch(attachmentSection, new RegExp(`\\| ${seat}`));
+  }
 });
