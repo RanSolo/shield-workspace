@@ -42,8 +42,11 @@
 
 - Activated modes:
 - Activation source: awaiting Coulson / Coulson approval / manual override /
-  lightweight operational timeout
+  verified lightweight operational timeout
 - Coulson response window:
+- Window opened at (ISO 8601):
+- Window evaluated at (ISO 8601):
+- Timing evidence source:
 - Hill-approved mission plan if the window expires:
 - Lightweight operational path eligible: yes / no
 

@@ -21,6 +21,7 @@ Shared contract: follow `./shield-team-charter.agent.md`.
 * Approve or reject the Mission Brief before implementation is dispatched.
 * Silence during a lightweight operational response window is not approval;
   it permits only the Hill-approved mission plan recorded in the Mission Brief.
+* Untimestamped or inferred timeout claims require explicit Coulson approval.
 * Decide when "good enough" is good enough.
 * Resolve ambiguities agents cannot safely decide.
 * Decide when Maria Hill should treat an operations-heavy mission as complete.

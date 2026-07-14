@@ -39,13 +39,21 @@ For this path, the Mission Brief may be a compact inline record containing only
 the objective, scope boundary, validation, Hill-approved mission plan, response
 window, and activation status.
 
-1. Maria Hill records the objective, boundaries, validation, recommended
-   mission plan she approves, and Coulson response window in the Mission Brief.
-2. Hill presents the brief to Coulson and waits for the recorded response
-   window.
+This repository does not currently include a scheduler or persistent runner. A
+fully automatic runner is a future capability. Timeout activation is available
+only when the active host supplies trustworthy waiting and resumption evidence,
+or when a human operator records the window's opening and evaluation times in
+ISO 8601 format. Hill must not infer or merely claim that the window elapsed.
+Without that evidence, explicit Coulson approval remains required.
+
+1. Maria Hill records the objective, boundaries, validation, Hill-approved
+   mission plan, Coulson response window, opening time, and timing evidence
+   source in the Mission Brief.
+2. Hill presents the brief to Coulson. A supporting host may wait and resume the
+   mission, or a human operator may observe the recorded response window.
 3. If Coulson intervenes, Hill follows the decision.
-4. If the window expires without a response, Hill may activate and execute only
-   the recorded Hill-approved mission plan.
+4. If the evidence proves the window expired without a response, Hill may
+   activate and execute only the recorded Hill-approved mission plan.
 5. Hill records that her approved mission plan was activated by timeout. The
    timeout does not count as Coulson approval.
 
@@ -59,7 +67,7 @@ require explicit Coulson approval and cannot use this path.
 - Recommended modes are proposals included in the Mission Brief with a reason.
 - Activated modes are the modes actually attached to a seat for the mission.
 - The Mission Brief records who or what activated each mode: Coulson approval,
-  a manual operator override, or the lightweight operational timeout.
+  a manual operator override, or a verified lightweight operational timeout.
 - Hill must not describe a recommended mode as active before that record exists.
 
 ## Context gathering checklist
