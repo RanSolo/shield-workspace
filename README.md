@@ -8,6 +8,16 @@ Original source locations remain unchanged.
 This baseline uses the approved S.H.I.E.L.D. team mapping and keeps the team
 responsibilities, review gates, and operating workflow portable across repos.
 
+## Mission modes
+
+- **Debugger Mode** handles defect investigation when the correct change is not
+  yet known.
+- **Delivery Mode** handles planned engineering work from approved requirements
+  through a review-ready pull request.
+
+Maria Hill selects the matching mode from `modes/mission-modes.md` and loads it
+only for participating seats.
+
 ## Migration Notes
 
 Issue `#1` completes the approved thematic migration from the older Top Gun

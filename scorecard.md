@@ -155,6 +155,8 @@ Award these when deserved:
 - **Jemma Simmons (Product Feedback):**
 - **Player 1 Character:**  
 - **Player 1 Seat:**  
+- **Mode Selection Source:** Automatic / Manual
+- **Selected Modes:**
 - **Nick Fury (Architect):**
 - **Daisy Johnson (Debugger/Recon):**
 - **Melinda May (Implementer):**
@@ -163,6 +165,16 @@ Award these when deserved:
 #### Control Model
 - **User-Controlled Seats:**  
 - **AI-Controlled Seats:**  
+
+#### Mode Requests
+| Requested Mode | Requesting Agent | Reason | Approver | Outcome |
+| --- | --- | --- | --- | --- |
+|  |  |  |  |  |
+
+#### Mode Attachments
+| Participating Seat | Attached Modes | Reason |
+| --- | --- | --- |
+|  |  |  |
 
 #### Token Burn
 | Seat | Callsign | Controller | Tokens |

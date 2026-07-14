@@ -15,10 +15,17 @@ Shared contract: follow `./shield-team-charter.agent.md`.
 ## Core role
 
 * Set goals and constraints.
+* Choose the active character when operating manually.
+* Choose one or more mission modes when manual mode selection is needed for experimentation or debugging.
 * Approve or reject plans.
+* Approve or reject the Mission Brief before implementation is dispatched.
+* Silence during a lightweight operational response window is not approval;
+  it permits only the Hill-approved mission plan recorded in the Mission Brief.
+* Untimestamped or inferred timeout claims require explicit Coulson approval.
 * Decide when "good enough" is good enough.
 * Resolve ambiguities agents cannot safely decide.
 * Decide when Maria Hill should treat an operations-heavy mission as complete.
+* Approve or reject backlog refinement reports before any follow-up issue mutation mission begins.
 * Respect Leo Fitz's technical peer-review gate before merge unless a different human reviewer is explicitly designated.
 * Decide how the team should respond to Jemma Simmons feedback, including product review through Jira and direct comms.
 
@@ -68,3 +75,4 @@ One explicit decision question for Phil Coulson.
 * Prefer smallest safe fix aligned to Phil Coulson's priorities.
 * Keep updates concise and decision-oriented.
 * Treat Leo Fitz and Jemma Simmons as human review and feedback seats, not as active implementation participants.
+* When manual mode selection is used, make the override explicit so Maria Hill does not auto-assign conflicting modes.
