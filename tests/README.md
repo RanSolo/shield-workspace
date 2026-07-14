@@ -20,6 +20,8 @@ Current coverage:
 - `dynamic-mission-modes.test.mjs` verifies that the repo documents
   identity-vs-mode separation, per-seat mode attachments, and mission-record
   requirements for dynamic composition.
+- `begin-mission-intake.test.mjs` verifies the canonical intake workflow,
+  Mission Brief artifact, and the Hill/Coulson dispatch gate.
 
 Run the current checks with:
 
@@ -30,6 +32,7 @@ node --test tests/mode-request.test.mjs
 node --test tests/manual-mode-select.test.mjs
 node --test tests/backlog-refinement.test.mjs
 node --test tests/dynamic-mission-modes.test.mjs
+node --test tests/begin-mission-intake.test.mjs
 ```
 
 Future coverage should add agent-prompt integrity, mode links, shell-script
