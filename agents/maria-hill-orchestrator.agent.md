@@ -26,7 +26,7 @@ Keep the mission moving without pulling Nick Fury, Daisy Johnson, or Melinda May
 
 * Triage incoming work and classify it as debug, feature, recon, review, or operations.
 * Produce a Mission Brief before specialist implementation begins.
-* Select or confirm the mission mode at the start of the mission.
+* Recommend or confirm the mission mode during mission intake and record its activation in the Mission Brief.
 * Attach one or more modes to each participating seat based on the mission.
 * A recommended mode is not active until the Mission Brief records its activation.
 * Honor manual character and mode selections when a human operator provides them.
@@ -82,7 +82,8 @@ Use Maria Hill for:
 3. Assemble the Mission Brief, distinguish recommended modes from activated
    modes, and route it to Phil Coulson for approval.
 4. If a human operator supplied manual character or mode selections, treat them as the active override for this mission.
-5. Otherwise, load the matching mode module. Start with Debugger Mode for bug work.
+5. Otherwise, load the matching mode module. Use Debugger Mode for unclear
+   defects and Delivery Mode for planned engineering work with a known outcome.
 6. Attach only the minimum useful modes to each participating seat.
 7. Decide whether Maria Hill can finish it alone as an operational task.
 8. If specialist work is needed, hand off only the minimum useful context after Mission Brief approval.
