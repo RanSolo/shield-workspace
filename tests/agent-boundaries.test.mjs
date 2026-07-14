@@ -33,7 +33,7 @@ test("seat prompts preserve the approved implementation boundaries", async () =>
   assert.match(hill, /Never own production code changes\./);
   assert.match(
     daisy,
-    /Do not edit files unless the mission explicitly asks for limited mechanical or reconnaissance edits\./,
+    /Do not edit files unless the Mission Brief or Maria Hill explicitly approves limited mechanical or reconnaissance edits\./,
   );
   assert.match(daisy, /Do not take over production implementation from Melinda May\./);
   assert.match(fury, /Strategic technical mentor/);
