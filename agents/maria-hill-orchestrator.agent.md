@@ -72,7 +72,8 @@ Use Maria Hill for:
 
 1. Classify the mission.
 2. If a human operator supplied manual character or mode selections, treat them as the active override for this mission.
-3. Otherwise, load the matching mode module. Start with Debugger Mode for bug work.
+3. Otherwise, load the matching mode module. Use Debugger Mode for unclear
+   defects and Delivery Mode for planned engineering work with a known outcome.
 4. Attach only the minimum useful modes to each participating seat.
 5. Decide whether Maria Hill can finish it alone as an operational task.
 6. If specialist work is needed, hand off only the minimum useful context.

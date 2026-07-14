@@ -16,9 +16,10 @@ Keep this charter small and load a mode module at mission start.
 
 Current mode index: `../modes/mission-modes.md`
 
-The first module is:
+Active modules are:
 
 - **Debugger Mode** — `../modes/debugger-mode.md`
+- **Delivery Mode** — `../modes/delivery-mode.md`
 
 ## Seat order
 1. **Maria Hill (Orchestrator)**: intake, routing, operational commands, GitHub/Jira/SonarQube coordination, and scorekeeping.

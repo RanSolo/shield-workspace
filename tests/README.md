@@ -20,6 +20,9 @@ Current coverage:
 - `dynamic-mission-modes.test.mjs` verifies that the repo documents
   identity-vs-mode separation, per-seat mode attachments, and mission-record
   requirements for dynamic composition.
+- `delivery-mode.test.mjs` verifies the planned-work workflow, Definition of
+  Ready, role boundaries, implementation gate, validation flow, and mode
+  registration.
 
 Run the current checks with:
 
@@ -30,6 +33,7 @@ node --test tests/mode-request.test.mjs
 node --test tests/manual-mode-select.test.mjs
 node --test tests/backlog-refinement.test.mjs
 node --test tests/dynamic-mission-modes.test.mjs
+node --test tests/delivery-mode.test.mjs
 ```
 
 Future coverage should add agent-prompt integrity, mode links, shell-script
