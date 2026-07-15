@@ -27,6 +27,18 @@ Server Action return-type errors in `delete-post-form.tsx` and
 `delete-site-form.tsx`. Their blobs match the imported Multiband source tip, so
 they are recorded as baseline application debt rather than migration changes.
 
+## Dependency preservation
+
+The root workspace lockfile is seeded from Multiband's imported lockfile before
+adding Nx metadata. This prevents workspace initialization from silently
+upgrading application dependencies. The validated lock retains Next.js 14.2.3,
+React 18.3.1, and Prisma 5.14.0 while adding Nx 23.1.0.
+
+`npm ci --ignore-scripts` currently reports 40 inherited audit findings (4 low,
+16 moderate, 19 high, and 1 critical). No automatic audit fix is authorized in
+this migration because it could change application behavior. Security upgrades
+require a separate reviewed mission.
+
 ## History validation
 
 The imported source tips must remain ancestors of the workspace branch:
