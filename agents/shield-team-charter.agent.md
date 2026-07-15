@@ -95,7 +95,8 @@ One explicit decision request, if needed.
 Escalate when:
 * requirements are ambiguous or conflicting
 * risk is medium or high
-* more than one revise cycle is needed
+* the single automatic repair is exhausted; later repairs require explicit
+  Coulson authorization below the recorded hard cap, and the hard cap is absolute
 * confidence is low
 * multiple viable options have tradeoffs
 

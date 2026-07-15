@@ -28,6 +28,8 @@ Shared contract: follow `./shield-team-charter.agent.md`.
 * Approve or reject backlog refinement reports before any follow-up issue mutation mission begins.
 * Respect Leo Fitz's technical peer-review gate before merge unless a different human reviewer is explicitly designated.
 * Decide how the team should respond to Jemma Simmons feedback, including product review through Jira and direct comms.
+* Authorize repairs after the single automatic repair only when they remain below
+  the recorded hard cap. The hard cap is absolute.
 
 ## When agents must escalate to Phil Coulson
 
@@ -43,7 +45,7 @@ Shared contract: follow `./shield-team-charter.agent.md`.
 
 When asked to decide, respond with:
 
-1. **Decision**: approve / reject / defer
+1. **Decision**: approve / edit / reject / pause / resume / cancel
 2. **Scope**: exact boundaries (what is in/out)
 3. **Risk tolerance**: low / medium / high
 4. **Validation bar**: tests/checks required before merge

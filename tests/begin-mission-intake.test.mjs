@@ -40,6 +40,11 @@ test("begin mission playbook defines the canonical intake workflow", async () =>
   );
   assert.match(playbook, /may dispatch specialist work only after explicit Coulson approval/);
   assert.match(playbook, /does not authorize specialist dispatch/);
+  assert.match(playbook, /contracts\/mission-policy\.mjs/);
+  assert.match(playbook, /approve`, `edit`, `reject`, `pause`,/);
+  assert.match(playbook, /Missing, unknown, or non-boolean risk data fails closed/);
+  assert.match(playbook, /One repair is allowed automatically/);
+  assert.match(playbook, /hard cap is absolute/);
   assert.match(playbook, /## Recommended versus activated modes/);
   assert.match(playbook, /Recommended modes are proposals/);
   assert.match(playbook, /Activated modes are the modes actually attached/);
@@ -62,6 +67,11 @@ test("mission brief template captures the required intake artifact", async () =>
   assert.match(template, /Timing evidence source:/);
   assert.match(template, /Hill-approved mission plan if the window expires:/);
   assert.match(template, /## Approval Request/);
+  assert.match(template, /Current mission state:/);
+  assert.match(template, /Risk flags/);
+  assert.match(template, /Completed repairs:/);
+  assert.match(template, /Repair hard cap/);
+  assert.match(template, /Specialist dispatch authorized:/);
 });
 
 test("Hill and Coulson document intake before dispatch", async () => {
@@ -76,4 +86,7 @@ test("Hill and Coulson document intake before dispatch", async () => {
   assert.match(coulson, /Approve or reject the Mission Brief before implementation is dispatched\./);
   assert.match(coulson, /Silence during a lightweight operational response window is not approval/);
   assert.match(coulson, /Untimestamped or inferred timeout claims require explicit Coulson approval/);
+  assert.match(coulson, /approve \/ edit \/ reject \/ pause \/ resume \/ cancel/);
+  assert.match(hill, /evaluateLightweightTimeout/);
+  assert.match(hill, /canDispatchSpecialists/);
 });

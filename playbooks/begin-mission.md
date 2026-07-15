@@ -11,6 +11,9 @@ work.
 ## Rules
 
 - Maria Hill owns mission intake and context gathering.
+- `../contracts/mission-policy.mjs` is the executable, fail-closed authority for
+  mission decisions, risk classification, timeout activation, specialist
+  dispatch, and repair authorization.
 - Mission intake happens before implementation dispatch.
 - The Mission Brief is the canonical intake artifact for every mission.
 - Mission modes are selected after the brief is assembled, not before.
@@ -30,6 +33,20 @@ work.
 5. Present the Mission Brief to Phil Coulson for approval.
 6. After approval, activate and attach the approved modes, then dispatch the
    mission.
+
+## Mission decisions and risk
+
+Coulson decisions use the explicit `approve`, `edit`, `reject`, `pause`,
+`resume`, and `cancel` transitions in the executable policy. Rejected and
+cancelled missions are terminal. Hill must not infer or invent a transition when
+the policy returns `null`. A paused mission must record the valid resume state
+(`proposed` or `approved`) in the Mission Brief before Hill may resume it.
+
+Every Mission Brief records boolean values for the `production`, `destructive`,
+`migration`, `credentialsOrSecurity`, `externalCommunication`, `merge`,
+`deploy`, `release`, and `hillHighRisk` flags. Any true flag requires explicit
+Coulson approval. Missing, unknown, or non-boolean risk data fails closed as
+high risk and cannot use timeout activation.
 
 ## Lightweight operational path
 
@@ -63,6 +80,19 @@ The default response window is five minutes unless the repository or human
 operator specifies another value. Implementation, architecture, security,
 data, production, destructive, or externally consequential missions always
 require explicit Coulson approval and cannot use this path.
+
+Before timeout activation, Hill must use `evaluateLightweightTimeout` with the
+full boolean risk-flag set and the exact `operations` mission mode. Before
+specialist dispatch, Hill must use `canDispatchSpecialists`. A denied result
+cannot be overridden by Hill or by silence.
+
+## Repair policy
+
+- One repair is allowed automatically.
+- Later repairs require explicit Coulson authorization.
+- Every mission records a positive-integer repair hard cap.
+- A missing or invalid hard cap fails closed to `1`.
+- The hard cap is absolute and cannot be exceeded, even with authorization.
 
 ## Recommended versus activated modes
 

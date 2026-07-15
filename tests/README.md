@@ -22,6 +22,8 @@ Current coverage:
   requirements for dynamic composition.
 - `begin-mission-intake.test.mjs` verifies the canonical intake workflow,
   Mission Brief artifact, and the Hill/Coulson dispatch gate.
+- `mission-policy.test.mjs` verifies executable mission decisions, fail-closed
+  risk classification, timeout and specialist-dispatch gates, and repair limits.
 - `delivery-mode.test.mjs` verifies the planned-work workflow, Definition of
   Ready, role boundaries, implementation gate, validation flow, and mode
   registration.
@@ -35,6 +37,7 @@ node --test tests/mode-request.test.mjs
 node --test tests/manual-mode-select.test.mjs
 node --test tests/backlog-refinement.test.mjs
 node --test tests/dynamic-mission-modes.test.mjs
+node --test tests/mission-policy.test.mjs
 node --test tests/begin-mission-intake.test.mjs
 node --test tests/delivery-mode.test.mjs
 ```
