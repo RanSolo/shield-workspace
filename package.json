@@ -1,0 +1,22 @@
+{
+  "name": "shield-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "nx": "nx",
+    "graph": "nx graph",
+    "test": "nx run-many -t test",
+    "test:shield": "nx test @shield/team-system",
+    "test:multiband": "nx test @shield/multiband",
+    "build:multiband": "nx build @shield/multiband",
+    "affected:test": "nx affected -t test",
+    "affected:build": "nx affected -t build"
+  },
+  "devDependencies": {
+    "nx": "23.1.0"
+  }
+}
