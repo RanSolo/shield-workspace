@@ -1,0 +1,20 @@
+{
+  "name": "@shield/team-system",
+  "version": "0.1.0",
+  "description": "Portable operating framework for human and AI software delivery",
+  "private": true,
+  "type": "module",
+  "files": [
+    "agents",
+    "contracts",
+    "modes",
+    "playbooks",
+    "scripts",
+    "README.md",
+    "TECHNICAL_DESIGN.md",
+    "scorecard.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}
