@@ -75,6 +75,7 @@ test("risk classification is low only for complete all-false flags", () => {
 test("risk classification fails closed for incomplete or malformed inputs", () => {
   const allFalse = Object.fromEntries(RISK_FLAGS.map((flag) => [flag, false]));
   const missing = { ...allFalse };
+  const inheritedFalse = Object.create(allFalse);
   delete missing.production;
 
   for (const input of [
@@ -82,6 +83,7 @@ test("risk classification fails closed for incomplete or malformed inputs", () =
     null,
     [],
     missing,
+    inheritedFalse,
     { ...allFalse, unknown: false },
     { ...allFalse, production: "no" },
   ]) {
@@ -94,6 +96,7 @@ test("risk classification fails closed for incomplete or malformed inputs", () =
 
 test("verified lightweight timeout permits only the recorded low-risk Hill plan", () => {
   const lowRiskFlags = Object.fromEntries(RISK_FLAGS.map((flag) => [flag, false]));
+  const inheritedLowRiskFlags = Object.create(lowRiskFlags);
   const input = {
     riskFlags: lowRiskFlags,
     missionMode: "operations",
@@ -117,6 +120,7 @@ test("verified lightweight timeout permits only the recorded low-risk Hill plan"
       { ...input, riskFlags: { ...lowRiskFlags, production: true } },
       "high_risk_denied",
     ],
+    [{ ...input, riskFlags: inheritedLowRiskFlags }, "high_risk_denied"],
     [{ ...input, riskFlags: { ...lowRiskFlags, extra: false } }, "high_risk_denied"],
     [{ ...input, missionMode: "delivery" }, "operations_only"],
     [{ ...input, missionMode: "review" }, "operations_only"],

@@ -66,7 +66,7 @@ function failClosedRisk(reason) {
 }
 
 export function classifyMissionRisk(flags) {
-  if (flags === null || typeof flags !== "object" || Array.isArray(flags)) {
+  if (!isPlainObject(flags)) {
     return failClosedRisk("Input must be a plain object.");
   }
 
@@ -79,7 +79,7 @@ export function classifyMissionRisk(flags) {
     }
   }
 
-  const missing = RISK_FLAGS.filter((flag) => !(flag in flags));
+  const missing = RISK_FLAGS.filter((flag) => !Object.hasOwn(flags, flag));
   if (missing.length > 0) {
     return failClosedRisk(`Missing required flag(s): ${missing.join(", ")}.`);
   }
