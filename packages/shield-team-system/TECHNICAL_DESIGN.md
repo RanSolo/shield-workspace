@@ -122,6 +122,20 @@ enforcement, and Mission Control remain separate downstream layers. These pure
 contracts perform no filesystem, network, clock, GitHub, or model-provider
 operations.
 
+## Mission Journals
+
+`contracts/mission-journal.mjs` defines four closed evidence entries:
+governance events, execution transitions, recorded reviews, and completed-effect
+receipts. Governance remains derived through the mission-schema v2 replay API;
+execution status is an independent projection. Pure journal replay also returns
+ordered review evidence and deterministic completed-effect evidence.
+
+`adapters/journal-fs.mjs` persists one validated entry per JSONL line beneath an
+explicit `.shield/journals/` repository root. It uses traversal-safe mission
+filenames, atomic lockfile acquisition, append-and-sync writes, and fail-closed
+partial-tail detection. It never repairs, truncates, executes, retries, or skips
+effects; those responsibilities remain with later runner work.
+
 ## Current Capabilities
 
 - Shared charter and seven defined seats

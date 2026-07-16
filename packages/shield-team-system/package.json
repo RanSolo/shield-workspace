@@ -4,6 +4,7 @@
   "description": "Portable operating framework for human and AI software delivery",
   "type": "module",
   "files": [
+    "adapters",
     "agents",
     "contracts",
     "github",
