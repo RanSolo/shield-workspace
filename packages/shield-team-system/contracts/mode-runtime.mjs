@@ -99,6 +99,12 @@ function registryKey(modeId, modeVersion) {
   return `${modeId}\u0000${modeVersion}`;
 }
 
+function compareText(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 export function createModeRegistry(manifests) {
   if (!Array.isArray(manifests)) return invalid("Mode manifests must be an array.");
   const errors = [];
@@ -128,7 +134,7 @@ export function createModeRegistry(manifests) {
     },
     contextRefs: [...manifest.contextRefs],
   })).sort((left, right) =>
-    left.modeId.localeCompare(right.modeId) || left.modeVersion.localeCompare(right.modeVersion));
+    compareText(left.modeId, right.modeId) || compareText(left.modeVersion, right.modeVersion));
   return valid({ schemaVersion: MODE_MANIFEST_SCHEMA_VERSION, manifests: normalized });
 }
 

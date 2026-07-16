@@ -73,9 +73,13 @@ test("rejects malformed compatibility metadata and unbounded or duplicate refere
 
 test("creates a deterministic JSON registry and rejects duplicate exact versions", () => {
   const second = manifest({ modeId: "architecture", modeVersion: "2.0.0" });
-  const first = createModeRegistry([manifest(), second]);
-  const reversed = createModeRegistry([second, manifest()]);
+  const unicode = manifest({ modeId: "ä-mode", modeVersion: "1.0.0" });
+  const first = createModeRegistry([manifest(), unicode, second]);
+  const reversed = createModeRegistry([second, unicode, manifest()]);
   assert.deepEqual(first, reversed);
+  assert.deepEqual(first.value.manifests.map(({ modeId }) => modeId), [
+    "architecture", "delivery", "ä-mode",
+  ]);
   assert.doesNotThrow(() => JSON.stringify(first.value));
   assert.equal(createModeRegistry([manifest(), manifest()]).state, "invalid");
 });
@@ -121,4 +125,5 @@ test("runtime contract has no environmental dependency", async () => {
   const source = await readFile(new URL("../contracts/mode-runtime.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /from\s+["']node:/);
   assert.doesNotMatch(source, /\b(?:fetch|process|GitHub|provider|filesystem|Date\.now)\b/i);
+  assert.doesNotMatch(source, /localeCompare/);
 });
