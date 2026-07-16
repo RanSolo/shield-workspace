@@ -104,6 +104,20 @@ stateless calls. It does not scan the repository automatically. These controls
 reduce accidental disclosure, but prompt rules alone are not a security
 boundary. Any future tool-enabled runner must enforce allowlists in code.
 
+## Mission Data Contract
+
+`contracts/mission-record.mjs` defines the versioned, JSON-serializable mission
+record and the initial `mission.created` and `mission.decision` event types. Its
+pure validators reject malformed, inherited, missing, and unknown data. Replay
+uses explicit integer sequence and caller-supplied timestamp provenance, and
+delegates every decision to `mission-policy.mjs:getMissionTransition`.
+
+The mission record contains participant and activated-mode references, but it
+does not validate or load mode manifests. Persistence and recovery, event
+journals, runner dispatch, scheduling, host adapters, permission enforcement,
+and Mission Control remain separate downstream layers. The contract performs no
+filesystem, network, clock, GitHub, or model-provider operations.
+
 ## Current Capabilities
 
 - Shared charter and seven defined seats
