@@ -6,6 +6,7 @@
   "files": [
     "agents",
     "contracts",
+    "github",
     "modes",
     "playbooks",
     "scripts",

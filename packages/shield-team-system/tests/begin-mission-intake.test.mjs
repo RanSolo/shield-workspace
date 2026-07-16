@@ -24,8 +24,12 @@ test("begin mission playbook defines the canonical intake workflow", async () =>
   assert.match(playbook, /5\. Present the Mission Brief to Phil Coulson for approval\./);
   assert.match(
     playbook,
-    /6\. After approval, activate and attach the approved modes, then dispatch the\s+mission\./,
+    /6\. After approval, activate and attach the approved modes\./,
   );
+  assert.match(playbook, /## PR Mission Workspace/);
+  assert.match(playbook, /workspace-contract\.mjs:validateMissionWorkspaceInput/);
+  assert.match(playbook, /pr-workspace\.mjs:createOrUpdatePR/);
+  assert.match(playbook, /successful GitHub readback/);
   assert.match(playbook, /## Lightweight operational path/);
   assert.match(playbook, /Low-risk, reversible operational missions/);
   assert.match(playbook, /Coulson response window/);

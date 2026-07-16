@@ -27,6 +27,11 @@ Current coverage:
 - `delivery-mode.test.mjs` verifies the planned-work workflow, Definition of
   Ready, role boundaries, implementation gate, validation flow, and mode
   registration.
+- `workspace-contract.test.mjs` verifies strict workspace input validation,
+  GitHub content safety, risk handling, and deterministic PR body generation.
+- `github-pr-workspace.test.mjs` verifies the injected command boundary,
+  idempotent draft-PR creation and reuse, GitHub readback, and fail-closed
+  behavior without calling GitHub or the network.
 
 Run the current checks with:
 
@@ -40,6 +45,8 @@ node --test tests/dynamic-mission-modes.test.mjs
 node --test tests/mission-policy.test.mjs
 node --test tests/begin-mission-intake.test.mjs
 node --test tests/delivery-mode.test.mjs
+node --test tests/workspace-contract.test.mjs
+node --test tests/github-pr-workspace.test.mjs
 ```
 
 Future coverage should add agent-prompt integrity, mode links, shell-script

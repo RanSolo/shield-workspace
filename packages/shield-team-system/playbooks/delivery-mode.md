@@ -64,7 +64,21 @@ Nick Fury then:
 
 Architecture approval is required before implementation begins.
 
-### 4. Implementation
+### 4. PR Mission Workspace
+
+Maria Hill validates the approved workspace plan through
+`../contracts/workspace-contract.mjs`, then creates or refreshes the open draft
+pull request through `../github/pr-workspace.mjs`. The approved Mission Brief
+must already be tracked, clean, and committed on the expected mission branch.
+The PR body records objective, approval, participants, activated modes,
+validation status, pending decisions, and the team handoff without publishing
+secrets or private model reasoning.
+
+If GitHub lookup, branch push, PR creation, update, or verification fails, Hill
+records the blocked result and returns to Coulson. Specialist implementation
+does not begin without the verified PR workspace.
+
+### 5. Implementation
 
 Melinda May owns production implementation. She:
 
@@ -77,7 +91,7 @@ Melinda May owns production implementation. She:
 Only after every Definition of Ready condition is satisfied may Melinda May
 begin implementation. Delivery Mode cannot treat silence or timeout as approval.
 
-### 5. Validation
+### 6. Validation
 
 Melinda May identifies focused validation for the implemented behavior. Maria
 Hill runs the approved, repeatable checks and records exact results.
@@ -90,7 +104,7 @@ Hill runs the approved, repeatable checks and records exact results.
 Validation must cover the acceptance criteria and complete successfully, or its
 limitations must be explicitly accepted, before technical review begins.
 
-### 6. Fury Implementation Sanity Review
+### 7. Fury Implementation Sanity Review
 
 Nick Fury performs a brief final architecture sanity pass before technical
 review:
@@ -106,7 +120,7 @@ Before technical review begins, Maria Hill creates or updates a draft pull
 request with Melinda May's implementation summary, validation evidence, and the
 current scope statement so Leo Fitz has a review surface.
 
-### 7. Technical Review
+### 8. Technical Review
 
 Leo Fitz reviews:
 
@@ -118,7 +132,7 @@ Leo Fitz reviews:
 Technical review is a merge-readiness gate unless the designated human reviewer
 explicitly waives it.
 
-### 8. Product Review
+### 9. Product Review
 
 Jemma Simmons reviews when product or domain feedback is required:
 
@@ -129,7 +143,7 @@ Jemma Simmons reviews when product or domain feedback is required:
 Product feedback may block scope or acceptance, but it is not automatically a
 universal merge gate.
 
-### 9. Pull Request Finalization
+### 10. Pull Request Finalization
 
 After technical and product review, Melinda May updates the implementation
 summary, changed behavior, test evidence, and known limitations as needed.
@@ -160,6 +174,8 @@ Before implementation begins:
 - [ ] Required modes are attached to participating seats.
 - [ ] Validation plan exists.
 - [ ] Pull request target is known.
+- [ ] Approved Mission Brief is committed on the mission branch.
+- [ ] Verified draft PR Mission Workspace exists.
 
 If any condition is unmet, Maria Hill keeps the mission in intake, requirements,
 reconnaissance, or architecture review rather than dispatching implementation.
