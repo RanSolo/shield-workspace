@@ -31,8 +31,27 @@ work.
 3. Produce the Mission Brief.
 4. Recommend mission modes and proposed seat attachments.
 5. Present the Mission Brief to Phil Coulson for approval.
-6. After approval, activate and attach the approved modes, then dispatch the
-   mission.
+6. After approval, activate and attach the approved modes.
+7. For Delivery Mode, create or update the draft PR Mission Workspace before
+   specialist implementation dispatch.
+8. Dispatch the approved mission.
+
+## PR Mission Workspace
+
+Delivery Mode uses a draft pull request as the visible team communication
+surface from the start of implementation. After Coulson's explicit approval,
+Hill validates the exact input with
+`../contracts/workspace-contract.mjs:validateMissionWorkspaceInput`, generates
+the body with a caller-supplied ISO 8601 UTC timestamp, and calls
+`../github/pr-workspace.mjs:createOrUpdatePR`.
+
+The adapter requires the approved Mission Brief to be tracked, clean, and
+committed on the expected mission branch. It creates a draft PR when none
+exists, updates exactly one matching open draft, and blocks on lookup failures,
+ambiguous matches, or a non-draft match. Hill may report a PR URL only after a
+successful GitHub readback. A blocked workspace suspends specialist
+implementation dispatch; it never authorizes Hill to fabricate progress or use
+the lightweight timeout path.
 
 ## Mission decisions and risk
 

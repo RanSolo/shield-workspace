@@ -36,12 +36,13 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
     "1. Mission Intake",
     "2. Requirements & Scope",
     "3. Architecture Review",
-    "4. Implementation",
-    "5. Validation",
-    "6. Fury Implementation Sanity Review",
-    "7. Technical Review",
-    "8. Product Review",
-    "9. Pull Request Finalization",
+    "4. PR Mission Workspace",
+    "5. Implementation",
+    "6. Validation",
+    "7. Fury Implementation Sanity Review",
+    "8. Technical Review",
+    "9. Product Review",
+    "10. Pull Request Finalization",
   ]) {
     assert.match(playbook, new RegExp(`### ${stage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   }
@@ -55,6 +56,8 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
     "Required modes are attached to participating seats.",
     "Validation plan exists.",
     "Pull request target is known.",
+    "Approved Mission Brief is committed on the mission branch.",
+    "Verified draft PR Mission Workspace exists.",
   ]) {
     assert.match(playbook, new RegExp(condition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -75,6 +78,9 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
   assert.match(playbook, /Fury implementation sanity-review status/);
   assert.match(playbook, /Scope or acceptance ambiguity returns to Phil Coulson/);
   assert.match(playbook, /Maria Hill handles GitHub coordination/);
+  assert.match(playbook, /workspace-contract\.mjs/);
+  assert.match(playbook, /pr-workspace\.mjs/);
+  assert.match(playbook, /Specialist implementation\s+does not begin without the verified PR workspace/);
 });
 
 test("begin mission playbook is present for delivery mode intake", async () => {
