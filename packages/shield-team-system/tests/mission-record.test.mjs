@@ -17,7 +17,7 @@ const stamp = (value) => ({ value, provenance: "humanRecorded" });
 
 function created(overrides = {}) {
   return {
-    schemaVersion: 1, eventId: "event-0", missionId: ID, sequence: 0,
+    schemaVersion: 2, eventId: "event-0", missionId: ID, sequence: 0,
     type: "mission.created", actor: "coulson", previousState: null,
     resultingState: "proposed", timestamp: stamp(TIMES[0]), ...overrides,
   };
@@ -25,7 +25,7 @@ function created(overrides = {}) {
 
 function decision(sequence, previousState, name, resultingState, overrides = {}) {
   return {
-    schemaVersion: 1, eventId: `event-${sequence}`, missionId: ID, sequence,
+    schemaVersion: 2, eventId: `event-${sequence}`, missionId: ID, sequence,
     type: "mission.decision", actor: "coulson", previousState, resultingState,
     timestamp: stamp(TIMES[Math.min(sequence, 3)]), decision: name, ...overrides,
   };
@@ -35,17 +35,19 @@ const flags = () => Object.fromEntries(RISK_FLAGS.map((flag) => [flag, false]));
 
 function record(events = [created()], overrides = {}) {
   return {
-    schemaVersion: 1, missionId: ID, objective: "Define deterministic replay.",
+    schemaVersion: 2, missionId: ID, objective: "Define deterministic replay.",
     state: events.at(-1).resultingState, riskFlags: flags(),
     participants: [{ seatId: "hill" }, { seatId: "may" }],
-    activatedModes: [{ modeId: "delivery", seatId: "may", activationSource: "coulson" }],
+    activatedModes: [{
+      modeId: "delivery", modeVersion: "1.0.0", seatId: "may", activationSource: "coulson",
+    }],
     createdAt: stamp(TIMES[0]), updatedAt: stamp(events.at(-1).timestamp.value),
     events, ...overrides,
   };
 }
 
 test("exposes and validates the approved initial schema", () => {
-  assert.equal(MISSION_SCHEMA_VERSION, 1);
+  assert.equal(MISSION_SCHEMA_VERSION, 2);
   assert.deepEqual(MISSION_EVENT_TYPES, ["mission.created", "mission.decision"]);
   assert.equal(validateMissionEvent(created()).state, "valid");
   assert.equal(validateMissionRecord(record()).state, "valid");
@@ -203,6 +205,25 @@ test("rejects malformed nested records and record/event chronology conflicts", (
     record(undefined, { riskFlags: missingFlag }),
     record(undefined, { riskFlags: { ...flags(), unknown: false } }),
     record([created(), decision(1, "proposed", "approve", "approved")], { updatedAt: stamp("2025-01-01T00:00:00Z") }),
+  ];
+  for (const value of candidates) assert.equal(validateMissionRecord(value).state, "invalid");
+});
+
+test("rejects schema v1 with an explicit unsupported-version result", () => {
+  const result = validateMissionRecord(record(undefined, { schemaVersion: 1 }));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "unsupported_schema_version");
+  assert.match(result.errors[0], /schemaVersion 1 is unsupported; expected 2/);
+});
+
+test("rejects duplicate participants, duplicate activations, and non-participant activations", () => {
+  const activation = {
+    modeId: "delivery", modeVersion: "1.0.0", seatId: "may", activationSource: "coulson",
+  };
+  const candidates = [
+    record(undefined, { participants: [{ seatId: "may" }, { seatId: "may" }] }),
+    record(undefined, { activatedModes: [activation, { ...activation }] }),
+    record(undefined, { activatedModes: [{ ...activation, seatId: "daisy" }] }),
   ];
   for (const value of candidates) assert.equal(validateMissionRecord(value).state, "invalid");
 });

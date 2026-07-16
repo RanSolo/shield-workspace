@@ -112,11 +112,15 @@ pure validators reject malformed, inherited, missing, and unknown data. Replay
 uses explicit integer sequence and caller-supplied timestamp provenance, and
 delegates every decision to `mission-policy.mjs:getMissionTransition`.
 
-The mission record contains participant and activated-mode references, but it
-does not validate or load mode manifests. Persistence and recovery, event
-journals, runner dispatch, scheduling, host adapters, permission enforcement,
-and Mission Control remain separate downstream layers. The contract performs no
-filesystem, network, clock, GitHub, or model-provider operations.
+The mission record contains participant and exact-version activated-mode
+references. `contracts/mode-runtime.mjs` separately validates closed mode
+manifests, constructs a deterministic exact-version registry, and resolves only
+the context references activated for participating, compatible seats.
+Filesystem-backed context loading remains an adapter concern. Persistence and
+recovery, event journals, runner dispatch, scheduling, host adapters, permission
+enforcement, and Mission Control remain separate downstream layers. These pure
+contracts perform no filesystem, network, clock, GitHub, or model-provider
+operations.
 
 ## Current Capabilities
 
