@@ -35,6 +35,9 @@ Current coverage:
 - `mission-record.test.mjs` verifies versioned mission and event schemas,
   deterministic policy-backed replay, chronology and sequence rules, and
   fail-closed validation of malformed or inherited records.
+- `mode-runtime.test.mjs` verifies versioned mode manifests, deterministic
+  exact-version registry construction, mission schema v2 integration, and
+  isolated per-seat context resolution.
 
 Run the current checks with:
 
@@ -51,6 +54,7 @@ node --test tests/delivery-mode.test.mjs
 node --test tests/workspace-contract.test.mjs
 node --test tests/github-pr-workspace.test.mjs
 node --test tests/mission-record.test.mjs
+node --test tests/mode-runtime.test.mjs
 ```
 
 Future coverage should add agent-prompt integrity, mode links, shell-script

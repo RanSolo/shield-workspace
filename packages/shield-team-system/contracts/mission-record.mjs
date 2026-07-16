@@ -6,7 +6,7 @@ import {
   getMissionTransition,
 } from "./mission-policy.mjs";
 
-export const MISSION_SCHEMA_VERSION = 1;
+export const MISSION_SCHEMA_VERSION = 2;
 export const MISSION_EVENT_TYPES = Object.freeze(["mission.created", "mission.decision"]);
 
 const COMMON_EVENT_FIELDS = Object.freeze([
@@ -22,7 +22,7 @@ const RECORD_FIELDS = new Set([
 ]);
 const TIMESTAMP_FIELDS = new Set(["value", "provenance"]);
 const PARTICIPANT_FIELDS = new Set(["seatId"]);
-const MODE_FIELDS = new Set(["modeId", "seatId", "activationSource"]);
+const MODE_FIELDS = new Set(["modeId", "modeVersion", "seatId", "activationSource"]);
 const ISO_8601_UTC =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
 
@@ -210,10 +210,46 @@ function referenceErrors(values, fields, label) {
   return errors;
 }
 
+function uniqueReferenceErrors(record) {
+  const errors = [];
+  const participantSeats = new Set();
+  for (const participant of record.participants) {
+    if (participantSeats.has(participant.seatId)) {
+      errors.push(`participants duplicates seatId: ${participant.seatId}.`);
+    }
+    participantSeats.add(participant.seatId);
+  }
+
+  const activations = new Set();
+  for (const activation of record.activatedModes) {
+    if (!participantSeats.has(activation.seatId)) {
+      errors.push(`activatedModes seatId is not a participant: ${activation.seatId}.`);
+    }
+    const key = `${activation.seatId}\u0000${activation.modeId}\u0000${activation.modeVersion}`;
+    if (activations.has(key)) {
+      errors.push(
+        `activatedModes duplicates exact reference for ${activation.seatId}: ` +
+        `${activation.modeId}@${activation.modeVersion}.`,
+      );
+    }
+    activations.add(key);
+  }
+  return errors;
+}
+
 export function validateMissionRecord(record) {
   const errors = fieldErrors(record, RECORD_FIELDS, "Mission record");
   if (errors.length > 0) return invalid(errors);
-  if (record.schemaVersion !== MISSION_SCHEMA_VERSION) errors.push("Mission record schemaVersion is unsupported.");
+  if (record.schemaVersion !== MISSION_SCHEMA_VERSION) {
+    return {
+      state: "invalid",
+      code: "unsupported_schema_version",
+      errors: [
+        `Mission record schemaVersion ${String(record.schemaVersion)} is unsupported; ` +
+        `expected ${MISSION_SCHEMA_VERSION}.`,
+      ],
+    };
+  }
   if (!isNonEmptyString(record.missionId)) errors.push("missionId must be a non-empty string.");
   if (!isNonEmptyString(record.objective)) errors.push("objective must be a non-empty string.");
   if (!MISSION_STATES.includes(record.state)) errors.push("state is unknown.");
@@ -224,6 +260,7 @@ export function validateMissionRecord(record) {
   errors.push(...timestampErrors(record.updatedAt, "updatedAt"));
   if (!Array.isArray(record.events)) errors.push("events must be an array.");
   if (errors.length > 0) return invalid(errors);
+  errors.push(...uniqueReferenceErrors(record));
 
   const created = Date.parse(record.createdAt.value);
   const updated = Date.parse(record.updatedAt.value);
