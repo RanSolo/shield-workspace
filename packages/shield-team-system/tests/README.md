@@ -32,6 +32,9 @@ Current coverage:
 - `github-pr-workspace.test.mjs` verifies the injected command boundary,
   idempotent draft-PR creation and reuse, GitHub readback, and fail-closed
   behavior without calling GitHub or the network.
+- `mission-record.test.mjs` verifies versioned mission and event schemas,
+  deterministic policy-backed replay, chronology and sequence rules, and
+  fail-closed validation of malformed or inherited records.
 
 Run the current checks with:
 
@@ -47,6 +50,7 @@ node --test tests/begin-mission-intake.test.mjs
 node --test tests/delivery-mode.test.mjs
 node --test tests/workspace-contract.test.mjs
 node --test tests/github-pr-workspace.test.mjs
+node --test tests/mission-record.test.mjs
 ```
 
 Future coverage should add agent-prompt integrity, mode links, shell-script
