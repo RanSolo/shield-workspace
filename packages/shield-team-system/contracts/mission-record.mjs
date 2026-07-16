@@ -23,7 +23,8 @@ const RECORD_FIELDS = new Set([
 const TIMESTAMP_FIELDS = new Set(["value", "provenance"]);
 const PARTICIPANT_FIELDS = new Set(["seatId"]);
 const MODE_FIELDS = new Set(["modeId", "seatId", "activationSource"]);
-const ISO_8601_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const ISO_8601_UTC =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
 
 const valid = (value) => ({ state: "valid", value });
 const invalid = (...errors) => ({ state: "invalid", errors: errors.flat() });
@@ -50,7 +51,35 @@ function isNonEmptyString(value) {
 }
 
 function isIsoUtc(value) {
-  return typeof value === "string" && ISO_8601_UTC.test(value) && Number.isFinite(Date.parse(value));
+  if (typeof value !== "string") return false;
+  const match = ISO_8601_UTC.exec(value);
+  if (match === null) return false;
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth[month - 1]) return false;
+  if (hour > 23 || minute > 59 || second > 59) return false;
+
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return false;
+  const date = new Date(parsed);
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() + 1 === month &&
+    date.getUTCDate() === day &&
+    date.getUTCHours() === hour &&
+    date.getUTCMinutes() === minute &&
+    date.getUTCSeconds() === second
+  );
 }
 
 function timestampErrors(timestamp, label) {

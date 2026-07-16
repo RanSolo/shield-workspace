@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { RISK_FLAGS, getMissionTransition } from "../contracts/mission-policy.mjs";
@@ -52,12 +53,48 @@ test("exposes and validates the approved initial schema", () => {
 
 test("replays creation deterministically without environmental inputs", () => {
   const events = [created()];
-  const first = replayMissionEvents(ID, events);
-  assert.deepEqual(first, replayMissionEvents(ID, events));
+  const originalNow = Date.now;
+  const originalFetch = globalThis.fetch;
+  Date.now = () => { throw new Error("hidden clock access"); };
+  globalThis.fetch = () => { throw new Error("hidden network access"); };
+  let first;
+  try {
+    first = replayMissionEvents(ID, events);
+    assert.deepEqual(first, replayMissionEvents(ID, events));
+  } finally {
+    Date.now = originalNow;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+  }
   assert.deepEqual(first, {
     state: "valid",
     value: { missionState: "proposed", lastSequence: 0, lastTimestamp: stamp(TIMES[0]) },
   });
+});
+
+test("contract has no filesystem, host, provider, or network imports", async () => {
+  const source = await readFile(new URL("../contracts/mission-record.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /from\s+["']node:/);
+  assert.doesNotMatch(source, /\b(?:fetch|process|GitHub|provider|filesystem)\b/i);
+  assert.doesNotMatch(source, /Date\.now\s*\(/);
+});
+
+test("timestamp validation rejects impossible calendar values and accepts leap-day fractions", () => {
+  const invalidValues = [
+    "2026-13-01T00:00:00Z",
+    "2026-02-31T00:00:00Z",
+    "2026-01-01T24:00:00Z",
+    "2026-01-01T00:60:00Z",
+    "2026-01-01T00:00:60Z",
+    "2023-02-29T00:00:00Z",
+  ];
+  for (const value of invalidValues) {
+    assert.equal(validateMissionEvent(created({ timestamp: stamp(value) })).state, "invalid");
+  }
+  assert.equal(
+    validateMissionEvent(created({ timestamp: stamp("2024-02-29T23:59:59.123Z") })).state,
+    "valid",
+  );
 });
 
 test("replays valid approve, pause, resume, reject, and cancel policy paths", () => {
