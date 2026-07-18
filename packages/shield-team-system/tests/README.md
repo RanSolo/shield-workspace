@@ -38,6 +38,10 @@ Current coverage:
 - `mode-runtime.test.mjs` verifies versioned mode manifests, deterministic
   exact-version registry construction, mission schema v2 integration, and
   isolated per-seat context resolution.
+- `mission-journal.test.mjs` verifies closed journal entries, deterministic
+  governance/execution replay, evidence projections, and recovery diagnostics.
+- `journal-fs.test.mjs` verifies repository-confined JSONL persistence,
+  single-writer locking, durable append/read behavior, and partial-tail safety.
 
 Run the current checks with:
 
@@ -55,6 +59,8 @@ node --test tests/workspace-contract.test.mjs
 node --test tests/github-pr-workspace.test.mjs
 node --test tests/mission-record.test.mjs
 node --test tests/mode-runtime.test.mjs
+node --test tests/mission-journal.test.mjs
+node --test tests/journal-fs.test.mjs
 ```
 
 Future coverage should add agent-prompt integrity, mode links, shell-script
