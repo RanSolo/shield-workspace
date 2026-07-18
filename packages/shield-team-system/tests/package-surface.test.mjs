@@ -19,6 +19,7 @@ test("exports only the documented public package specifiers", async () => {
     "./modes",
     "./workspace",
     "./config",
+    "./supervision",
   ]);
   for (const target of Object.values(manifest.exports)) {
     assert.deepEqual(Object.keys(target), ["types", "import"]);
@@ -32,6 +33,7 @@ test("loads every supported runtime specifier", async () => {
   const modes = await import("@shield/team-system/modes");
   const workspace = await import("@shield/team-system/workspace");
   const config = await import("@shield/team-system/config");
+  const supervision = await import("@shield/team-system/supervision");
 
   assert.equal(root.MISSION_SCHEMA_VERSION, 2);
   assert.equal(mission.classifyMissionRisk, root.classifyMissionRisk);
@@ -40,6 +42,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof workspace.validateMissionWorkspaceInput, "function");
   assert.equal(config.CONFIG_SCHEMA_VERSION, 1);
   assert.equal(root.validateShieldConfig, config.validateShieldConfig);
+  assert.equal(supervision.SUPERVISED_JOURNAL_SCHEMA_VERSION, 2);
+  assert.equal(typeof supervision.createSupervisedMissionBrief, "function");
 });
 
 test("blocks undocumented deep package imports", async () => {
@@ -69,9 +73,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "public/workspace.d.mts",
     "dist/config.mjs",
     "dist/config.d.mts",
+    "dist/mission-v2.mjs",
+    "dist/mission-v2.d.mts",
     "dist/cli.mjs",
     "INSTALLATION.md",
     "PUBLIC_API.md",
+    "SUPERVISED_MISSION.md",
   ]) {
     assert.ok(packedPaths.has(path), `packed artifact is missing ${path}`);
   }
@@ -99,6 +106,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
     import { CONFIG_SCHEMA_VERSION, type ShieldConfig } from "@shield/team-system/config";
+    import { SUPERVISED_JOURNAL_SCHEMA_VERSION, createSupervisedMissionBrief, type SupervisedMissionBrief } from "@shield/team-system/supervision";
 
     const schema: 2 = MISSION_SCHEMA_VERSION;
     const state: MissionState = "approved";
@@ -115,6 +123,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const input = null as unknown as MissionWorkspaceInput;
     const configSchema: 1 = CONFIG_SCHEMA_VERSION;
     const config = null as unknown as ShieldConfig;
+    const supervisedSchema: 2 = SUPERVISED_JOURNAL_SCHEMA_VERSION;
+    const supervisedBrief = null as unknown as SupervisedMissionBrief;
+    const createBrief = createSupervisedMissionBrief;
     validateMissionWorkspaceInput(input);
     const validResume: MissionDecisionEvent = {
       schemaVersion: 2, eventId: "event-1", missionId: "mission-1", sequence: 1,
@@ -126,7 +137,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, supervisedBrief, createBrief, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

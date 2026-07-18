@@ -99,9 +99,9 @@ test("doctor returns one for an unhealthy repository and usage errors return two
     /malformed json/i,
   );
 
-  const unsupported = run(["mission", "begin"], root);
+  const unsupported = run(["mission", "launch"], root);
   assert.equal(unsupported.status, 2);
-  assert.match(unsupported.stderr, /unsupported command/i);
+  assert.match(unsupported.stderr, /unsupported .*command/i);
 });
 
 test("init and doctor require the exact Git package root without ancestor search", async () => {

@@ -7,17 +7,18 @@ package artifact.
 
 | Specifier | Supported capability |
 | --- | --- |
-| `@shield/team-system` | Combined public contract surface |
+| `@shield/team-system` | Combined V0.3-2 contract and configuration surface |
 | `@shield/team-system/mission` | Mission policy, records, validation, and replay |
 | `@shield/team-system/journal` | Journal validation, serialization, parsing, and replay |
 | `@shield/team-system/modes` | Mode manifests, registries, and seat-context resolution |
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
 | `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
+| `@shield/team-system/supervision` | Journal v2, canonical mission briefs, Ed25519 human evidence, readiness, and no-effect supervised-step contracts |
 
 All entry points provide TypeScript declarations. Existing `.mjs` contract
-modules remain their runtime source of truth. V0.3-3 adds an isolated TypeScript
-build only for the new configuration contract and CLI; it does not migrate the
-existing package runtime.
+modules remain their runtime source of truth. The isolated TypeScript build
+contains the additive configuration, CLI, and V0.3-4 supervision contracts; it
+does not migrate or reinterpret the existing package runtime.
 
 ## Capability status
 
@@ -28,12 +29,17 @@ existing package runtime.
 | Mode references | Supported through `/modes` |
 | Review-workspace validation | Supported through `/workspace` |
 | Repository configuration validation | Supported through `/config` |
-| General human-evidence requirements and readiness | Unavailable; specification exists but runtime is deferred |
+| Bounded local human-evidence requirements and readiness | Supported through `/supervision` for the V0.3-4 mission-plan subject |
 | General permission decisions | Unavailable; only documented mission-policy decisions exist |
 | Host-adapter candidate envelope | Unavailable; no host-neutral runtime contract exists yet |
 
 Unavailable capabilities are not exported as placeholders. Their absence is a
 truthful boundary, not a future commitment.
+
+Journal v1 remains supported through `/journal`. Journal v2 is additive and is
+used only by the bounded supervised-mission workflow. Mixed-version journals,
+automatic migration, waivers, supersession, general effects, runners, permission
+brokers, and host communication remain unsupported.
 
 ## Compatibility and breaking changes
 
