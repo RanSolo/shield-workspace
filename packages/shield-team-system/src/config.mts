@@ -330,6 +330,15 @@ export function formatShieldConfig(config: unknown): string {
 export function evaluateDoctor(input: DoctorInput): DoctorReport {
   const validation = input.configPresent ? validateShieldConfig(input.config) : null;
   const issues = validation?.state === "invalid" ? validation.issues : [];
+  const classifiedPrefixes = [
+    "config.schemaVersion",
+    "config.repositoryId",
+    "config.adapterId",
+    "config.supportedSeatIds",
+    "config.supportedModeIds",
+    "config.trustedHumanBindingRefs",
+    "config.paths",
+  ] as const;
   const check = (id: DoctorCheckId, ok: boolean, message: string): DoctorCheck => ({ id, ok, message });
   const category = (id: DoctorCheckId, prefixes: readonly string[], success: string): DoctorCheck => {
     const matching = issues.filter(({ path }) => prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}.`) || path.startsWith(`${prefix}[`)));
@@ -369,11 +378,14 @@ export function evaluateDoctor(input: DoctorInput): DoctorReport {
     ),
     category("paths", ["config.paths"], "Configured SHIELD paths are safe and distinct."),
   ];
-  if (validation?.state === "invalid" && validation.issues.some(({ path }) => path === "config")) {
+  const unclassified = issues.find(({ path }) => !classifiedPrefixes.some((prefix) =>
+    path === prefix || path.startsWith(`${prefix}.`) || path.startsWith(`${prefix}[`)
+  ));
+  if (unclassified !== undefined) {
     const schema = checks.find(({ id }) => id === "config-schema");
     if (schema !== undefined) {
       schema.ok = false;
-      schema.message = validation.issues.find(({ path }) => path === "config")?.message ?? "Configuration is invalid.";
+      schema.message = unclassified.message;
     }
   }
   if (!input.configPresent) {

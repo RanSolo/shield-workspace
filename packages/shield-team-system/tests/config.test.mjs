@@ -86,4 +86,13 @@ test("doctor reports checks in a stable order and fails closed", () => {
   assert.equal(missing.ok, false);
   assert.deepEqual(missing.checks.map(({ id }) => id), expectedOrder);
   assert.equal(missing.checks.find(({ id }) => id === "config-schema")?.ok, false);
+
+  const unknownField = evaluateDoctor({
+    repositoryRootReady: true,
+    packageVersion: SHIELD_PACKAGE_VERSION,
+    configPresent: true,
+    config: { ...canonicalConfig(), unknownField: true },
+  });
+  assert.equal(unknownField.ok, false);
+  assert.equal(unknownField.checks.find(({ id }) => id === "config-schema")?.ok, false);
 });
