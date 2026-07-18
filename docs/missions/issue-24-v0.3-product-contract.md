@@ -127,7 +127,9 @@ does not transfer to the Git commit or future PR head.
 
 ## Explicit non-goals
 
-- Branch creation, commits, pushes, pull requests, or GitHub/Jira mutation
+- Repository or GitHub mutation outside the authorized review branch, the two
+  authorized documentation paths, their documentation commit and push, and the
+  review-only draft pull request; all Jira mutation remains out of scope
 - CLI, runtime, adapter, installer, package, or product implementation
 - Scheduler, provider routing, seat prompts, Mission Control, Oracle, Mack,
   testing modes, plugin architecture, or publishing administration
