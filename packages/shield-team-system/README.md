@@ -8,6 +8,16 @@ Original source locations remain unchanged.
 This baseline uses the approved S.H.I.E.L.D. team mapping and keeps the team
 responsibilities, review gates, and operating workflow portable across repos.
 
+## Public package surface
+
+The supported V0.3 consumer entry points are the package root plus `/mission`,
+`/journal`, `/modes`, and `/workspace`. Each entry point includes TypeScript
+declarations. Deep imports into package directories are unsupported and blocked
+by the closed package export map.
+
+See [PUBLIC_API.md](./PUBLIC_API.md) for the complete capability matrix,
+compatibility guarantees, and breaking-change policy.
+
 ## Mission modes
 
 - **Debugger Mode** handles defect investigation when the correct change is not

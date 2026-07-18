@@ -3,6 +3,30 @@
   "version": "0.1.0",
   "description": "Portable operating framework for human and AI software delivery",
   "type": "module",
+  "main": "./public/index.mjs",
+  "types": "./public/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./public/index.d.mts",
+      "import": "./public/index.mjs"
+    },
+    "./mission": {
+      "types": "./public/mission.d.mts",
+      "import": "./public/mission.mjs"
+    },
+    "./journal": {
+      "types": "./public/journal.d.mts",
+      "import": "./public/journal.mjs"
+    },
+    "./modes": {
+      "types": "./public/modes.d.mts",
+      "import": "./public/modes.mjs"
+    },
+    "./workspace": {
+      "types": "./public/workspace.d.mts",
+      "import": "./public/workspace.mjs"
+    }
+  },
   "files": [
     "adapters",
     "agents",
@@ -10,12 +34,17 @@
     "github",
     "modes",
     "playbooks",
+    "public",
     "scripts",
     "README.md",
+    "PUBLIC_API.md",
     "TECHNICAL_DESIGN.md",
     "scorecard.md"
   ],
   "scripts": {
     "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.4.5"
   }
 }
