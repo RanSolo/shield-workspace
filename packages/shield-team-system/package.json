@@ -5,6 +5,9 @@
   "type": "module",
   "main": "./public/index.mjs",
   "types": "./public/index.d.mts",
+  "bin": {
+    "shield": "./dist/cli.mjs"
+  },
   "exports": {
     ".": {
       "types": "./public/index.d.mts",
@@ -25,26 +28,36 @@
     "./workspace": {
       "types": "./public/workspace.d.mts",
       "import": "./public/workspace.mjs"
+    },
+    "./config": {
+      "types": "./dist/config.d.mts",
+      "import": "./dist/config.mjs"
     }
   },
   "files": [
     "adapters",
     "agents",
     "contracts",
+    "dist",
     "github",
     "modes",
     "playbooks",
     "public",
     "scripts",
     "README.md",
+    "INSTALLATION.md",
     "PUBLIC_API.md",
     "TECHNICAL_DESIGN.md",
     "scorecard.md"
   ],
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "build": "tsc -p tsconfig.build.json",
+    "pretest": "npm run build",
+    "test": "node --test tests/*.test.mjs",
+    "prepack": "npm run build"
   },
   "devDependencies": {
+    "@types/node": "20.12.12",
     "typescript": "5.4.5"
   }
 }

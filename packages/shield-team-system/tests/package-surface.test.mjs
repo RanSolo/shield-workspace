@@ -18,6 +18,7 @@ test("exports only the documented public package specifiers", async () => {
     "./journal",
     "./modes",
     "./workspace",
+    "./config",
   ]);
   for (const target of Object.values(manifest.exports)) {
     assert.deepEqual(Object.keys(target), ["types", "import"]);
@@ -30,12 +31,15 @@ test("loads every supported runtime specifier", async () => {
   const journal = await import("@shield/team-system/journal");
   const modes = await import("@shield/team-system/modes");
   const workspace = await import("@shield/team-system/workspace");
+  const config = await import("@shield/team-system/config");
 
   assert.equal(root.MISSION_SCHEMA_VERSION, 2);
   assert.equal(mission.classifyMissionRisk, root.classifyMissionRisk);
   assert.equal(journal.JOURNAL_SCHEMA_VERSION, 1);
   assert.equal(modes.MODE_MANIFEST_SCHEMA_VERSION, 1);
   assert.equal(typeof workspace.validateMissionWorkspaceInput, "function");
+  assert.equal(config.CONFIG_SCHEMA_VERSION, 1);
+  assert.equal(root.validateShieldConfig, config.validateShieldConfig);
 });
 
 test("blocks undocumented deep package imports", async () => {
@@ -61,6 +65,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "public/journal.d.mts",
     "public/modes.d.mts",
     "public/workspace.d.mts",
+    "dist/config.mjs",
+    "dist/config.d.mts",
+    "dist/cli.mjs",
+    "INSTALLATION.md",
     "PUBLIC_API.md",
   ]) {
     assert.ok(packedPaths.has(path), `packed artifact is missing ${path}`);
@@ -88,6 +96,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { JOURNAL_SCHEMA_VERSION, type JournalEntry } from "@shield/team-system/journal";
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
+    import { CONFIG_SCHEMA_VERSION, type ShieldConfig } from "@shield/team-system/config";
 
     const schema: 2 = MISSION_SCHEMA_VERSION;
     const state: MissionState = "approved";
@@ -102,6 +111,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const entry = null as unknown as JournalEntry;
     const manifest = null as unknown as ModeManifest;
     const input = null as unknown as MissionWorkspaceInput;
+    const configSchema: 1 = CONFIG_SCHEMA_VERSION;
+    const config = null as unknown as ShieldConfig;
     validateMissionWorkspaceInput(input);
     const validResume: MissionDecisionEvent = {
       schemaVersion: 2, eventId: "event-1", missionId: "mission-1", sequence: 1,
@@ -113,12 +124,46 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
   execFileSync(process.execPath, [tsc, "--project", join(fixture, "tsconfig.json")], {
     cwd: fixture,
+    stdio: "pipe",
+  });
+
+  const bin = join(fixture, "node_modules", ".bin", "shield");
+  execFileSync(bin, [
+    "init",
+    "--repository-id", "fixture/typescript-consumer",
+    "--coulson-binding-ref", "github:user:coulson",
+    "--fitz-binding-ref", "github:user:fitz",
+  ], { cwd: fixture, stdio: "pipe" });
+  const doctor = JSON.parse(execFileSync(bin, ["doctor", "--json"], {
+    cwd: fixture,
+    encoding: "utf8",
+  }));
+  assert.equal(doctor.ok, true);
+
+  const javascriptFixture = await mkdtemp(join(tmpdir(), "shield-js-consumer-"));
+  execFileSync(
+    "npm",
+    ["install", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    { cwd: javascriptFixture, stdio: "pipe" },
+  );
+  await writeFile(join(javascriptFixture, "consumer.mjs"), `
+    import { CONFIG_SCHEMA_VERSION, createShieldConfig } from "@shield/team-system/config";
+    if (CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected config schema");
+    const config = createShieldConfig({
+      repositoryId: "fixture/javascript-consumer",
+      coulsonBindingRef: "github:user:coulson",
+      fitzBindingRef: "github:user:fitz",
+    });
+    if (config.adapterId !== "github") throw new Error("unexpected adapter");
+  `);
+  execFileSync(process.execPath, [join(javascriptFixture, "consumer.mjs")], {
+    cwd: javascriptFixture,
     stdio: "pipe",
   });
 });

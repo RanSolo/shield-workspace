@@ -12,10 +12,12 @@ package artifact.
 | `@shield/team-system/journal` | Journal validation, serialization, parsing, and replay |
 | `@shield/team-system/modes` | Mode manifests, registries, and seat-context resolution |
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
+| `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
 
-All entry points provide TypeScript declarations. The existing `.mjs` contract
-modules remain the runtime source of truth; V0.3-2 does not introduce a package
-compilation step or migrate those modules.
+All entry points provide TypeScript declarations. Existing `.mjs` contract
+modules remain their runtime source of truth. V0.3-3 adds an isolated TypeScript
+build only for the new configuration contract and CLI; it does not migrate the
+existing package runtime.
 
 ## Capability status
 
@@ -25,7 +27,7 @@ compilation step or migrate those modules.
 | Mission journals and deterministic replay | Supported through `/journal` |
 | Mode references | Supported through `/modes` |
 | Review-workspace validation | Supported through `/workspace` |
-| Repository configuration validation | Unavailable; no runtime contract exists yet |
+| Repository configuration validation | Supported through `/config` |
 | General human-evidence requirements and readiness | Unavailable; specification exists but runtime is deferred |
 | General permission decisions | Unavailable; only documented mission-policy decisions exist |
 | Host-adapter candidate envelope | Unavailable; no host-neutral runtime contract exists yet |

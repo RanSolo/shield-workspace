@@ -11,12 +11,16 @@ responsibilities, review gates, and operating workflow portable across repos.
 ## Public package surface
 
 The supported V0.3 consumer entry points are the package root plus `/mission`,
-`/journal`, `/modes`, and `/workspace`. Each entry point includes TypeScript
+`/journal`, `/modes`, `/workspace`, and `/config`. Each entry point includes TypeScript
 declarations. Deep imports into package directories are unsupported and blocked
 by the closed package export map.
 
 See [PUBLIC_API.md](./PUBLIC_API.md) for the complete capability matrix,
 compatibility guarantees, and breaking-change policy.
+
+See [INSTALLATION.md](./INSTALLATION.md) for the bounded `shield init` and
+read-only `shield doctor` workflow. No mission execution, migration, upgrade,
+rollback, or uninstall mutation command is part of V0.3-3.
 
 ## Mission modes
 
