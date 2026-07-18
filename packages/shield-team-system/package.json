@@ -32,6 +32,10 @@
     "./config": {
       "types": "./dist/config.d.mts",
       "import": "./dist/config.mjs"
+    },
+    "./supervision": {
+      "types": "./dist/mission-v2.d.mts",
+      "import": "./dist/mission-v2.mjs"
     }
   },
   "files": [
@@ -46,6 +50,7 @@
     "scripts",
     "README.md",
     "INSTALLATION.md",
+    "SUPERVISED_MISSION.md",
     "PUBLIC_API.md",
     "TECHNICAL_DESIGN.md",
     "scorecard.md"

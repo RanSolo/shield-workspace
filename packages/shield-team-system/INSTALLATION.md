@@ -25,8 +25,8 @@ the required human authority bindings:
 ```sh
 npx shield init \
   --repository-id owner/repository \
-  --coulson-binding-ref github:user:coulson \
-  --fitz-binding-ref github:user:fitz
+  --coulson-binding-ref ed25519:sha256:<coulson-spki-digest> \
+  --fitz-binding-ref ed25519:sha256:<fitz-spki-digest>
 ```
 
 Use `--root <path>` to name a repository root explicitly. Use
@@ -46,6 +46,12 @@ npx shield doctor --json
 Exit status `0` means healthy, `1` means a diagnostic failed, and `2` means the
 command or environment could not be evaluated. Doctor performs no network
 requests and makes no repository changes.
+
+For the local supervised mission workflow, the binding references must be the
+content-addressed Ed25519 references described in
+[SUPERVISED_MISSION.md](./SUPERVISED_MISSION.md). A future host adapter may
+establish human identity through its own trusted binding mechanism without
+changing kernel evidence semantics.
 
 ## Upgrade, rollback, and uninstall
 

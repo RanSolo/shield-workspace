@@ -14,6 +14,7 @@ import {
   parseShieldConfig,
   type DoctorReport,
 } from "./config.mjs";
+import { MissionCliError, missionUsage, runMissionCli } from "./mission-cli.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".shield", "config.json");
 const IGNORE_RELATIVE_PATH = join(".shield", ".gitignore");
@@ -55,7 +56,7 @@ function usage(): string {
     "  shield init --repository-id <owner/name> --coulson-binding-ref <ref> --fitz-binding-ref <ref> [--simmons-binding-ref <ref>] [--root <path>]",
     "  shield doctor [--root <path>] [--json]",
     "",
-    "V0.3-3 supports only init and doctor.",
+    missionUsage(),
   ].join("\n");
 }
 
@@ -295,6 +296,7 @@ export async function runCli(args: string[]): Promise<number> {
   }
   if (command === "init") return runInit(rest);
   if (command === "doctor") return runDoctor(rest);
+  if (command === "mission" || command === "evidence") return runMissionCli([command, ...rest]);
   throw new CliError(`Unsupported command: ${command}.\n${usage()}`);
 }
 
@@ -303,7 +305,7 @@ try {
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`SHIELD: ${message}\n`);
-  process.exitCode = error instanceof CliError ? error.exitCode : 2;
+  process.exitCode = error instanceof CliError || error instanceof MissionCliError ? error.exitCode : 2;
 }
 
 export { SHIELD_PACKAGE_VERSION };
