@@ -16,6 +16,15 @@ Nx layers task discovery, caching, and affected execution over npm workspaces.
 The migration deliberately does not add an Nx framework plugin or rewrite the
 existing project scripts.
 
+## Kernel constitution
+
+The portable framework applies the host-neutral boundary established by
+[ADR 0001 — Define the SHIELD Kernel Boundary](adr/0001-define-shield-kernel-boundary.md).
+Human authority, evidence validation, readiness, permission decisions, and
+authoritative replay retain identical meaning across hosts. Communication,
+model invocation, runner dispatch, and external effects remain outside the
+kernel.
+
 ## Provenance
 
 Both source repositories were imported without squashing:
