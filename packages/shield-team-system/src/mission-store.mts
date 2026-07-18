@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, realpath, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, realpath, unlink } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import {
   parseSupervisedJournalJsonl,
@@ -59,11 +60,18 @@ async function verifyConfinement(repositoryRoot: string, journalRoot: string): P
 }
 
 async function readExisting(path: string): Promise<ContractResult<{ entries: SupervisedJournalEntry[]; projection: SupervisedMissionProjection }> | null> {
+  let handle;
   try {
-    return parseSupervisedJournalJsonl(await readFile(path, "utf8"));
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stats = await handle.stat();
+    if (!stats.isFile()) return invalid("unsafe_path", "Mission journal must be a regular file.");
+    return parseSupervisedJournalJsonl(await handle.readFile("utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") return invalid("unsafe_path", "Mission journal must not be a symlink.");
     return invalid("journal_unavailable", `Journal read failed: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
@@ -115,13 +123,22 @@ export async function appendSupervisedMissionEntry(input: {
     if (candidate.state === "invalid") return candidate;
     let journalHandle;
     try {
-      journalHandle = await open(paths.value.journalPath, "a");
+      journalHandle = await open(
+        paths.value.journalPath,
+        constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
+        0o644,
+      );
+      const stats = await journalHandle.stat();
+      if (!stats.isFile()) throw Object.assign(new Error("unsafe journal target"), { code: "UNSAFE_PATH" });
       const serialized = serializeSupervisedJournalEntry(input.entry);
       const write = await journalHandle.write(serialized, null, "utf8");
       if (write.bytesWritten !== Buffer.byteLength(serialized, "utf8")) throw Object.assign(new Error("short write"), { code: "SHORT_WRITE" });
       await journalHandle.sync();
     } catch (error) {
-      return invalid("recovery_required", `Journal append or sync is uncertain: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+      const code = (error as NodeJS.ErrnoException).code ?? "unknown_error";
+      return code === "ELOOP" || code === "UNSAFE_PATH"
+        ? invalid("unsafe_path", "Mission journal must be a regular file and must not be a symlink.")
+        : invalid("recovery_required", `Journal append or sync is uncertain: ${code}.`);
     } finally {
       await journalHandle?.close().catch(() => undefined);
     }

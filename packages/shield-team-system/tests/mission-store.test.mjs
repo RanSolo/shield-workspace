@@ -111,3 +111,25 @@ test("a symlinked journal root cannot escape the repository", async () => {
   assert.equal(result.state, "invalid");
   assert.equal(result.code, "unsafe_path");
 });
+
+test("a per-mission journal symlink cannot escape on read or append", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-file-symlink-"));
+  const outside = await mkdtemp(join(tmpdir(), "shield-store-file-outside-"));
+  const { brief, entry } = fixtureEntry();
+  const paths = resolveSupervisedMissionPaths(repositoryRoot, ".shield/journals", brief.missionId).value;
+  await mkdir(paths.root, { recursive: true });
+  const outsideJournal = join(outside, "captured.jsonl");
+  const outsideBytes = serializeSupervisedJournalEntry(entry);
+  await writeFile(outsideJournal, outsideBytes);
+  await symlink(outsideJournal, paths.journalPath);
+
+  const input = { repositoryRoot, configuredJournalPath: ".shield/journals", missionId: brief.missionId };
+  const readResult = await readSupervisedMissionJournal(input);
+  assert.equal(readResult.state, "invalid");
+  assert.equal(readResult.code, "unsafe_path");
+
+  const appendResult = await appendSupervisedMissionEntry({ ...input, entry });
+  assert.equal(appendResult.state, "invalid");
+  assert.equal(appendResult.code, "unsafe_path");
+  assert.equal(await readFile(outsideJournal, "utf8"), outsideBytes);
+});

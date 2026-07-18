@@ -81,6 +81,7 @@ payload:
     "seatId": "coulson",
     "evidenceKind": "mission_authorization",
     "decision": "approved",
+    "governanceTarget": "approved",
     "humanPrincipalId": "human:maintainer-1",
     "bindingId": "binding:coulson",
     "signingKeyRef": "ed25519:sha256:<spki-digest>",
@@ -101,8 +102,11 @@ npx shield evidence record --mission-id mission:example --evidence fitz-review.j
 ```
 
 Every governance command requires fresh Coulson-signed evidence bound to its
-intended sequence and exact brief revision. Prior records remain append-only
-history.
+intended sequence, exact brief revision, and exact resulting governance state.
+For example, signed `resumed` evidence must name `governanceTarget` as either
+`proposed` or `approved`, and `--resume-state` must match it. Non-governance
+Fitz and Simmons evidence uses `governanceTarget: null`. Prior records remain
+append-only history.
 
 ## Step, status, and report
 

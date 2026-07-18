@@ -115,6 +115,7 @@ export interface HumanEvidencePayload {
   seatId: HumanSeat;
   evidenceKind: EvidenceKind;
   decision: EvidenceDecision;
+  governanceTarget: GovernanceState | null;
   humanPrincipalId: string;
   bindingId: string;
   signingKeyRef: string;
@@ -449,7 +450,7 @@ function validateEvidencePayload(input: unknown): ContractResult<HumanEvidencePa
   const fields = [
     "schemaVersion", "evidenceId", "requirementId", "missionId", "subjectKind",
     "subjectId", "revisionId", "seatId", "evidenceKind", "decision",
-    "humanPrincipalId", "bindingId", "signingKeyRef", "sourceRef", "timestamp",
+    "governanceTarget", "humanPrincipalId", "bindingId", "signingKeyRef", "sourceRef", "timestamp",
     "journalSequence",
   ];
   const errors = exactFields(input, fields, "Evidence payload");
@@ -462,6 +463,9 @@ function validateEvidencePayload(input: unknown): ContractResult<HumanEvidencePa
   if (!HUMAN_SEATS.includes(input.seatId as HumanSeat)) errors.push("Evidence payload seatId is unsupported.");
   if (!EVIDENCE_KINDS.includes(input.evidenceKind as EvidenceKind)) errors.push("Evidence payload evidenceKind is unsupported.");
   if (!EVIDENCE_DECISIONS.includes(input.decision as EvidenceDecision)) errors.push("Evidence payload decision is unsupported.");
+  if (input.governanceTarget !== null && !["proposed", "approved", "paused", "cancelled"].includes(String(input.governanceTarget))) {
+    errors.push("Evidence payload governanceTarget is unsupported.");
+  }
   if (typeof input.signingKeyRef !== "string" || !KEY_REF.test(input.signingKeyRef)) errors.push("Evidence payload signingKeyRef is invalid.");
   if (!Number.isInteger(input.journalSequence) || (input.journalSequence as number) < 1) errors.push("Evidence payload journalSequence is invalid.");
   errors.push(...timestampErrors(input.timestamp, "Evidence payload timestamp"));
@@ -544,6 +548,13 @@ function transitionGovernance(state: GovernanceState, decision: string, resumeSt
 
 function evidenceDecisionForGovernance(decision: string): EvidenceDecision {
   return decision === "approve" ? "approved" : decision === "pause" ? "paused" : decision === "resume" ? "resumed" : "cancelled";
+}
+
+function evidenceTargetForGovernance(decision: string, resumeState: unknown): GovernanceState {
+  if (decision === "approve") return "approved";
+  if (decision === "pause") return "paused";
+  if (decision === "resume") return resumeState as "proposed" | "approved";
+  return "cancelled";
 }
 
 export function createMissionBegunEntry(
@@ -632,6 +643,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       const checked = verifySignedHumanEvidence(input.payload.evidence, current, index);
       if (checked.state === "invalid") return checked;
       if (checked.value.seatId !== "coulson" || checked.value.evidenceKind !== "mission_authorization" || checked.value.decision !== evidenceDecisionForGovernance(String(input.payload.decision))) return invalid("seat_mismatch", `Entry ${index} does not contain matching Coulson authority evidence.`);
+      if (checked.value.governanceTarget !== evidenceTargetForGovernance(String(input.payload.decision), input.payload.resumeState)) return invalid("decision_mismatch", `Entry ${index} governance target is not authorized by its signed evidence.`);
       if (canonicalJson(input.timestamp) !== canonicalJson(checked.value.timestamp)) return invalid("malformed", `Entry ${index} timestamp does not match its evidence.`);
       if (evidenceIds.has(checked.value.evidenceId)) return invalid("duplicate_evidence", `Entry ${index} duplicates evidenceId.`);
       evidenceIds.add(checked.value.evidenceId);
@@ -650,6 +662,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       const checked = verifySignedHumanEvidence(input.payload.evidence, current, index);
       if (checked.state === "invalid") return checked;
       if (checked.value.seatId === "coulson") return invalid("seat_mismatch", "Coulson governance evidence must use a mission command.");
+      if (checked.value.governanceTarget !== null) return invalid("decision_mismatch", `Entry ${index} non-governance evidence cannot authorize a governance target.`);
       if (canonicalJson(input.timestamp) !== canonicalJson(checked.value.timestamp)) return invalid("malformed", `Entry ${index} timestamp does not match its evidence.`);
       if (evidenceIds.has(checked.value.evidenceId)) return invalid("duplicate_evidence", `Entry ${index} duplicates evidenceId.`);
       evidenceIds.add(checked.value.evidenceId);
@@ -690,6 +703,7 @@ export function createGovernanceEntry(
   const checked = verifySignedHumanEvidence(evidence, projection, projection.lastSequence + 1);
   if (checked.state === "invalid") return checked;
   if (checked.value.seatId !== "coulson" || checked.value.evidenceKind !== "mission_authorization" || checked.value.decision !== evidenceDecisionForGovernance(decision)) return invalid("seat_mismatch", "Governance command requires matching Coulson evidence.");
+  if (checked.value.governanceTarget !== evidenceTargetForGovernance(decision, resumeState)) return invalid("decision_mismatch", "Governance command target is not authorized by its signed evidence.");
   return valid({
     schemaVersion: 2,
     entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
@@ -708,6 +722,7 @@ export function createEvidenceEntry(
   const checked = verifySignedHumanEvidence(evidence, projection, projection.lastSequence + 1);
   if (checked.state === "invalid") return checked;
   if (checked.value.seatId === "coulson") return invalid("seat_mismatch", "Coulson evidence must use a mission governance command.");
+  if (checked.value.governanceTarget !== null) return invalid("decision_mismatch", "Non-governance evidence cannot authorize a governance target.");
   return valid({
     schemaVersion: 2,
     entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,

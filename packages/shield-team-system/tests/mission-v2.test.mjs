@@ -74,7 +74,15 @@ function replay(entries) {
   return result.value;
 }
 
-function evidence(authority, projection, requirement, decision, sequence, suffix = String(sequence)) {
+function governanceTarget(decision, resumeState = "approved") {
+  if (decision === "approved") return "approved";
+  if (decision === "paused") return "paused";
+  if (decision === "resumed") return resumeState;
+  if (decision === "cancelled") return "cancelled";
+  return null;
+}
+
+function evidence(authority, projection, requirement, decision, sequence, suffix = String(sequence), resumeState = "approved") {
   const payload = {
     schemaVersion: 1,
     evidenceId: `evidence:${authority.binding.seatId}:${suffix}`,
@@ -86,6 +94,7 @@ function evidence(authority, projection, requirement, decision, sequence, suffix
     seatId: authority.binding.seatId,
     evidenceKind: requirement.evidenceKind,
     decision,
+    governanceTarget: authority.binding.seatId === "coulson" ? governanceTarget(decision, resumeState) : null,
     humanPrincipalId: authority.binding.humanPrincipalId,
     bindingId: authority.binding.bindingId,
     signingKeyRef: authority.binding.signingKeyRef,
@@ -196,7 +205,9 @@ test("pause, resume, and cancel require fresh Coulson evidence and append histor
   projection = replay(entries);
   assert.equal(projection.governance.state, "paused");
   assert.equal(planMissionStep(projection, { value: "2026-07-18T20:03:00Z", provenance: "hostTrusted" }).state, "invalid");
-  entries.push(createGovernanceEntry(projection, "resume", evidence(coulson, projection, requirement, "resumed", 3), "approved").value);
+  const resumeEvidence = evidence(coulson, projection, requirement, "resumed", 3);
+  assert.equal(createGovernanceEntry(projection, "resume", resumeEvidence, "proposed").state, "invalid");
+  entries.push(createGovernanceEntry(projection, "resume", resumeEvidence, "approved").value);
   projection = replay(entries);
   entries.push(createGovernanceEntry(projection, "cancel", evidence(coulson, projection, requirement, "cancelled", 4), null).value);
   projection = replay(entries);

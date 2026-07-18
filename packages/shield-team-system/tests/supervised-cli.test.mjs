@@ -87,7 +87,15 @@ function run(root, args) {
   return spawnSync(process.execPath, [cli, ...args], { cwd: root, encoding: "utf8" });
 }
 
-function signedEvidence(authorityRecord, projection, requirement, decision, sequence, timestamp) {
+function evidenceGovernanceTarget(decision, resumeState = "approved") {
+  if (decision === "approved") return "approved";
+  if (decision === "paused") return "paused";
+  if (decision === "resumed") return resumeState;
+  if (decision === "cancelled") return "cancelled";
+  return null;
+}
+
+function signedEvidence(authorityRecord, projection, requirement, decision, sequence, timestamp, resumeState = "approved") {
   const payload = {
     schemaVersion: 1,
     evidenceId: `evidence:${authorityRecord.binding.seatId}:${sequence}`,
@@ -99,6 +107,7 @@ function signedEvidence(authorityRecord, projection, requirement, decision, sequ
     seatId: authorityRecord.binding.seatId,
     evidenceKind: requirement.evidenceKind,
     decision,
+    governanceTarget: authorityRecord.binding.seatId === "coulson" ? evidenceGovernanceTarget(decision, resumeState) : null,
     humanPrincipalId: authorityRecord.binding.humanPrincipalId,
     bindingId: authorityRecord.binding.bindingId,
     signingKeyRef: authorityRecord.binding.signingKeyRef,
@@ -205,6 +214,14 @@ test("pause, resume, and cancel are signed append-only governance commands", asy
     ["cancel", "cancelled", 4, "2020-01-01T00:04:00Z", []],
   ]) {
     const path = await writeEvidence(root, `${command}.json`, signedEvidence(coulson, projection, requirement, decision, sequence, timestamp));
+    if (command === "resume") {
+      const journalPath = join(root, ".shield", "journals", `${Buffer.from(brief.missionId).toString("base64url")}.jsonl`);
+      const beforeMismatchedResume = await readFile(journalPath, "utf8");
+      const mismatched = run(root, ["mission", "resume", "--mission-id", brief.missionId, "--evidence", path, "--resume-state", "proposed", "--json"]);
+      assert.equal(mismatched.status, 1, mismatched.stderr);
+      assert.match(mismatched.stderr, /decision_mismatch/);
+      assert.equal(await readFile(journalPath, "utf8"), beforeMismatchedResume);
+    }
     const result = run(root, ["mission", command, "--mission-id", brief.missionId, "--evidence", path, ...extra, "--json"]);
     assert.equal(result.status, 0, result.stderr);
     projection = JSON.parse(result.stdout);
