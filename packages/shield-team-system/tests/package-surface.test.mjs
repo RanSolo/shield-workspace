@@ -83,7 +83,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     include: ["consumer.mts"],
   }));
   await writeFile(join(fixture, "consumer.mts"), `
-    import { MISSION_SCHEMA_VERSION, type MissionState } from "@shield/team-system";
+    import { MISSION_SCHEMA_VERSION, type MissionDecisionEvent, type MissionState } from "@shield/team-system";
     import { classifyMissionRisk, type RiskFlags } from "@shield/team-system/mission";
     import { JOURNAL_SCHEMA_VERSION, type JournalEntry } from "@shield/team-system/journal";
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
@@ -103,7 +103,17 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const manifest = null as unknown as ModeManifest;
     const input = null as unknown as MissionWorkspaceInput;
     validateMissionWorkspaceInput(input);
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest];
+    const validResume: MissionDecisionEvent = {
+      schemaVersion: 2, eventId: "event-1", missionId: "mission-1", sequence: 1,
+      type: "mission.decision", actor: "coulson", previousState: "paused",
+      resultingState: "approved", timestamp: { value: "2026-07-18T18:00:00Z", provenance: "humanRecorded" },
+      decision: "resume", resumeState: "approved",
+    };
+    // @ts-expect-error A resume decision requires an explicit resumeState.
+    const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
+    // @ts-expect-error A non-resume decision cannot carry resumeState.
+    const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

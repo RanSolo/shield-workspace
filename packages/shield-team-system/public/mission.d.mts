@@ -68,7 +68,7 @@ export interface MissionCreatedEvent {
   timestamp: TrustedTimestamp;
 }
 
-export interface MissionDecisionEvent {
+interface MissionDecisionEventBase {
   schemaVersion: 2;
   eventId: string;
   missionId: string;
@@ -78,9 +78,19 @@ export interface MissionDecisionEvent {
   previousState: MissionState;
   resultingState: MissionState;
   timestamp: TrustedTimestamp;
-  decision: MissionDecision;
-  resumeState?: "proposed" | "approved";
 }
+
+export interface MissionResumeEvent extends MissionDecisionEventBase {
+  decision: "resume";
+  resumeState: "proposed" | "approved";
+}
+
+export interface MissionNonResumeDecisionEvent extends MissionDecisionEventBase {
+  decision: Exclude<MissionDecision, "resume">;
+  resumeState?: never;
+}
+
+export type MissionDecisionEvent = MissionResumeEvent | MissionNonResumeDecisionEvent;
 
 export type MissionEvent = MissionCreatedEvent | MissionDecisionEvent;
 
