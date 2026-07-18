@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
+import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, link, lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   SHIELD_PACKAGE_VERSION,
   createShieldConfig,
@@ -16,6 +18,14 @@ import {
 const CONFIG_RELATIVE_PATH = join(".shield", "config.json");
 const IGNORE_RELATIVE_PATH = join(".shield", ".gitignore");
 const IGNORE_CONTENT = "/journals/\n/reports/\n/tmp/\n";
+const execFileAsync = promisify(execFile);
+const GIT_CONTEXT_VARIABLES = [
+  "GIT_COMMON_DIR",
+  "GIT_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_WORK_TREE",
+] as const;
 
 class CliError extends Error {
   constructor(message: string, readonly exitCode = 2) {
@@ -31,6 +41,12 @@ interface ParsedOptions {
 interface TargetState {
   exists: boolean;
   content?: string;
+}
+
+function cleanGitEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  for (const name of GIT_CONTEXT_VARIABLES) delete environment[name];
+  return environment;
 }
 
 function usage(): string {
@@ -99,6 +115,36 @@ async function inspectRoot(rootArgument: string | undefined, writable: boolean):
   return root;
 }
 
+async function repositoryRootIssue(root: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: root,
+      encoding: "utf8",
+      env: cleanGitEnvironment(),
+    });
+    if (resolve(stdout.trim()) !== root) {
+      return `Selected root is not the Git worktree root: ${root}.`;
+    }
+  } catch {
+    return `Repository root is not an accessible Git worktree: ${root}.`;
+  }
+
+  const manifestPath = join(root, "package.json");
+  try {
+    const stats = await lstat(manifestPath);
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      return `Repository root requires a regular package.json: ${manifestPath}.`;
+    }
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as unknown;
+    if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
+      return `Repository package.json must contain a JSON object: ${manifestPath}.`;
+    }
+  } catch {
+    return `Repository root is missing a readable, parseable package.json: ${manifestPath}.`;
+  }
+  return null;
+}
+
 async function inspectDirectory(path: string): Promise<boolean> {
   try {
     const stats = await lstat(path);
@@ -152,6 +198,8 @@ async function runInit(args: string[]): Promise<number> {
     "--simmons-binding-ref",
   ]);
   const root = await inspectRoot(options.values.get("--root"), true);
+  const rootIssue = await repositoryRootIssue(root);
+  if (rootIssue !== null) throw new CliError(rootIssue);
   const config = createShieldConfig({
     repositoryId: required(options, "--repository-id"),
     coulsonBindingRef: required(options, "--coulson-binding-ref"),
@@ -212,13 +260,15 @@ function renderDoctor(report: DoctorReport): string {
 async function runDoctor(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root"], ["--json"]);
   const root = await inspectRoot(options.values.get("--root"), false);
+  const rootIssue = await repositoryRootIssue(root);
   const shieldDirectory = join(root, ".shield");
   const configPath = join(root, CONFIG_RELATIVE_PATH);
   await inspectDirectory(shieldDirectory);
   const configState = await inspectTarget(configPath);
   const parsed = configState.exists ? parseShieldConfig(configState.content) : null;
   const report = evaluateDoctor({
-    repositoryRootReady: true,
+    repositoryRootReady: rootIssue === null,
+    ...(rootIssue === null ? {} : { repositoryRootIssue: rootIssue }),
     packageVersion: await installedPackageVersion(),
     configPresent: configState.exists,
     ...(parsed?.state === "valid" ? { config: parsed.value } : parsed ? { config: {} } : {}),

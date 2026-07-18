@@ -75,6 +75,7 @@ export interface DoctorCheck {
 
 export interface DoctorInput {
   repositoryRootReady: boolean;
+  repositoryRootIssue?: string;
   packageVersion: string | null;
   configPresent: boolean;
   config?: unknown;
@@ -349,7 +350,9 @@ export function evaluateDoctor(input: DoctorInput): DoctorReport {
     check(
       "repository-root",
       input.repositoryRootReady,
-      input.repositoryRootReady ? "Repository root is accessible." : "Repository root is missing, inaccessible, or a symlink.",
+      input.repositoryRootReady
+        ? "Repository root is an accessible Git JavaScript/TypeScript repository."
+        : input.repositoryRootIssue ?? "Repository root is missing, inaccessible, or incompatible.",
     ),
     check(
       "package-version",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { lstat, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -21,6 +21,8 @@ function run(args, cwd) {
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "shield-init-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  await writeFile(join(root, "package.json"), "{\"private\":true}\n");
   await writeFile(join(root, "existing.txt"), "preserve me\n");
   return root;
 }
@@ -29,7 +31,7 @@ test("init creates only the deterministic SHIELD files and repeated init is a no
   const root = await fixture();
   const first = run(initArgs, root);
   assert.equal(first.status, 0, first.stderr);
-  assert.deepEqual((await readdir(root)).sort(), [".shield", "existing.txt"]);
+  assert.deepEqual((await readdir(root)).sort(), [".git", ".shield", "existing.txt", "package.json"]);
   assert.deepEqual((await readdir(join(root, ".shield"))).sort(), [".gitignore", "config.json"]);
   assert.equal(await readFile(join(root, "existing.txt"), "utf8"), "preserve me\n");
   assert.equal(await readFile(join(root, ".shield", ".gitignore"), "utf8"), "/journals/\n/reports/\n/tmp/\n");
@@ -100,4 +102,44 @@ test("doctor returns one for an unhealthy repository and usage errors return two
   const unsupported = run(["mission", "begin"], root);
   assert.equal(unsupported.status, 2);
   assert.match(unsupported.stderr, /unsupported command/i);
+});
+
+test("init and doctor require the exact Git package root without ancestor search", async () => {
+  const bare = await mkdtemp(join(tmpdir(), "shield-bare-"));
+  const bareDoctor = run(["doctor", "--json"], bare);
+  assert.equal(bareDoctor.status, 1, bareDoctor.stderr);
+  assert.match(
+    JSON.parse(bareDoctor.stdout).checks.find(({ id }) => id === "repository-root").message,
+    /Git worktree/i,
+  );
+  const bareInit = run(initArgs, bare);
+  assert.equal(bareInit.status, 2);
+  assert.match(bareInit.stderr, /Git worktree/i);
+
+  execFileSync("git", ["init", "--quiet"], { cwd: bare });
+  const missingPackage = run(["doctor", "--json"], bare);
+  assert.equal(missingPackage.status, 1, missingPackage.stderr);
+  assert.match(
+    JSON.parse(missingPackage.stdout).checks.find(({ id }) => id === "repository-root").message,
+    /package\.json/i,
+  );
+
+  await writeFile(join(bare, "package.json"), "not json\n");
+  const malformedPackage = run(["doctor", "--json"], bare);
+  assert.equal(malformedPackage.status, 1, malformedPackage.stderr);
+  assert.match(
+    JSON.parse(malformedPackage.stdout).checks.find(({ id }) => id === "repository-root").message,
+    /parseable package\.json/i,
+  );
+
+  await writeFile(join(bare, "package.json"), "{\"private\":true}\n");
+  const nested = join(bare, "nested");
+  await mkdir(nested);
+  await writeFile(join(nested, "package.json"), "{\"private\":true}\n");
+  const wrongRoot = run(["doctor", "--root", nested, "--json"], bare);
+  assert.equal(wrongRoot.status, 1, wrongRoot.stderr);
+  assert.match(
+    JSON.parse(wrongRoot.stdout).checks.find(({ id }) => id === "repository-root").message,
+    /not the Git worktree root/i,
+  );
 });

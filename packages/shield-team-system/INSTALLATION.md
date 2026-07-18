@@ -8,7 +8,16 @@ npm install --save-dev --save-exact @shield/team-system@<exact-version>
 ```
 
 During pre-release evaluation, an exact local package tarball produced by
-`npm pack` may be used instead. Registry publication is not part of V0.3-3.
+`npm pack` may be used instead. Copy the produced artifact into the adopting
+repository and install that exact file:
+
+```sh
+npm install --save-dev --save-exact ./shield-team-system-0.1.0.tgz
+```
+
+The packed-consumer validation exercises this command's `--save-dev` and
+`--save-exact` semantics against the exact generated tarball. Registry
+publication is not part of V0.3-3.
 
 Initialize the current repository with explicit, credential-free references to
 the required human authority bindings:

@@ -51,6 +51,8 @@ test("blocks undocumented deep package imports", async () => {
 
 test("packs declarations and type-checks an external strict TypeScript consumer", async () => {
   const fixture = await mkdtemp(join(tmpdir(), "shield-package-consumer-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: fixture });
+  await writeFile(join(fixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
   const packOutput = JSON.parse(execFileSync(
     "npm",
     ["pack", packageRoot, "--json", "--pack-destination", fixture, "--cache", npmCache],
@@ -77,7 +79,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const tarball = join(fixture, packed.filename);
   execFileSync(
     "npm",
-    ["install", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    ["install", "--save-dev", "--save-exact", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
     { cwd: fixture, stdio: "pipe" },
   );
   await writeFile(join(fixture, "tsconfig.json"), JSON.stringify({
@@ -147,9 +149,11 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   assert.equal(doctor.ok, true);
 
   const javascriptFixture = await mkdtemp(join(tmpdir(), "shield-js-consumer-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: javascriptFixture });
+  await writeFile(join(javascriptFixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
   execFileSync(
     "npm",
-    ["install", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    ["install", "--save-dev", "--save-exact", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
     { cwd: javascriptFixture, stdio: "pipe" },
   );
   await writeFile(join(javascriptFixture, "consumer.mjs"), `
