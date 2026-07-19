@@ -32,6 +32,12 @@ Current coverage:
 - `github-pr-workspace.test.mjs` verifies the injected command boundary,
   idempotent draft-PR creation and reuse, GitHub readback, and fail-closed
   behavior without calling GitHub or the network.
+- `adapter-v1.test.mjs` verifies the closed host-neutral candidate and
+  communication request contracts, exact revision identifiers, and stable
+  failure reasons.
+- `github-adapter-v1.test.mjs` verifies journal-gated GitHub delivery, exact-head
+  publication through the existing PR workspace, and candidate-only evidence
+  translation.
 - `mission-record.test.mjs` verifies versioned mission and event schemas,
   deterministic policy-backed replay, chronology and sequence rules, and
   fail-closed validation of malformed or inherited records.
@@ -57,6 +63,8 @@ node --test tests/begin-mission-intake.test.mjs
 node --test tests/delivery-mode.test.mjs
 node --test tests/workspace-contract.test.mjs
 node --test tests/github-pr-workspace.test.mjs
+node --test tests/adapter-v1.test.mjs
+node --test tests/github-adapter-v1.test.mjs
 node --test tests/mission-record.test.mjs
 node --test tests/mode-runtime.test.mjs
 node --test tests/mission-journal.test.mjs

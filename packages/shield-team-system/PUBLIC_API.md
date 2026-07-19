@@ -15,6 +15,8 @@ package artifact.
 | `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
 | `@shield/team-system/supervision` | Journal v2, canonical mission briefs, Ed25519 human evidence, readiness, and no-effect supervised-step contracts |
 | `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
+| `@shield/team-system/adapter` | Closed host-neutral adapter v1 candidate, communication, and validation contracts |
+| `@shield/team-system/github` | Journal-gated GitHub publication and signed-evidence candidate translation |
 
 All entry points provide TypeScript declarations. Existing `.mjs` contract
 modules remain their runtime source of truth. The isolated TypeScript build
@@ -32,15 +34,16 @@ does not migrate or reinterpret the existing package runtime.
 | Repository configuration validation | Supported through `/config` |
 | Bounded local human-evidence requirements and readiness | Supported through `/supervision` for the V0.3-4 mission-plan subject |
 | General permission decisions | Unavailable; only documented mission-policy decisions exist |
-| Host-adapter candidate envelope | Unavailable; no host-neutral runtime contract exists yet |
+| Host-adapter candidate envelope | Supported through `/adapter`; GitHub translation and delivery are supported through `/github` |
 
 Unavailable capabilities are not exported as placeholders. Their absence is a
 truthful boundary, not a future commitment.
 
 Journal v1 remains supported through `/journal`. Journal v2 is additive and is
-used only by the bounded supervised-mission workflow. Mixed-version journals,
-automatic migration, waivers, supersession, general effects, runners, permission
-brokers, and host communication remain unsupported.
+used only by the bounded supervised-mission workflow. Journal v3 adds Wheels
+Off authorization and journal v4 adds communication requests and results.
+Mixed-version journals, automatic migration, waivers, supersession, general
+effects, runners, and permission brokers remain unsupported.
 
 Delegated missions use journal schema v3 while schema-v2 supervised journals
 remain supported without reinterpretation. Wheels Off exposes standing

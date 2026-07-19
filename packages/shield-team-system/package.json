@@ -40,6 +40,14 @@
     "./delegation": {
       "types": "./dist/delegation-v1.d.mts",
       "import": "./dist/delegation-v1.mjs"
+    },
+    "./adapter": {
+      "types": "./dist/adapter-v1.d.mts",
+      "import": "./dist/adapter-v1.mjs"
+    },
+    "./github": {
+      "types": "./public/github.d.mts",
+      "import": "./public/github.mjs"
     }
   },
   "files": [
