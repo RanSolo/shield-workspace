@@ -1,6 +1,16 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
+import {
+  DELEGATED_INVALIDATION_REASONS,
+  evaluateWheelsOffEligibility,
+  verifyWheelsOffDelegationEnvelope,
+  type DelegatedInvalidationReason,
+  type SignedWheelsOffDelegation,
+  type WheelsOffEligibility,
+  type WheelsOffEvaluation,
+} from "./delegation-v1.mjs";
 
 export const SUPERVISED_JOURNAL_SCHEMA_VERSION = 2 as const;
+export const DELEGATED_JOURNAL_SCHEMA_VERSION = 3 as const;
 export const SUPERVISED_BRIEF_SCHEMA_VERSION = 1 as const;
 export const HUMAN_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const TRUSTED_BINDING_SCHEMA_VERSION = 1 as const;
@@ -26,6 +36,8 @@ export type GovernanceState = "proposed" | "approved" | "paused" | "cancelled";
 export type ExecutionStatus = "not-started" | "running" | "completed";
 export type RequirementStatus = "pending" | "satisfied" | "blocked";
 export type ReadinessState = "ready" | "waiting" | "blocked" | "invalid";
+export type AuthorizationSource = "none" | "supervised" | "delegated";
+export type AuthorizationState = "waiting" | "authorized" | "ineligible" | "invalidated";
 
 export interface EvidenceTimestamp {
   value: string;
@@ -131,7 +143,7 @@ export interface SignedHumanEvidence {
 
 export type SupervisedJournalEntry =
   | {
-    schemaVersion: 2;
+    schemaVersion: 2 | 3;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -144,7 +156,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2;
+    schemaVersion: 2 | 3;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -157,7 +169,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2;
+    schemaVersion: 2 | 3;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -166,13 +178,37 @@ export type SupervisedJournalEntry =
     payload: { from: ExecutionStatus; to: ExecutionStatus; reason: string };
   }
   | {
-    schemaVersion: 2;
+    schemaVersion: 2 | 3;
     entryId: string;
     missionId: string;
     sequence: number;
     type: "evidence.recorded";
     timestamp: EvidenceTimestamp;
     payload: { evidence: SignedHumanEvidence };
+  }
+  | {
+    schemaVersion: 3;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "authorization.delegated_evaluated";
+    timestamp: EvidenceTimestamp;
+    payload: {
+      repositoryId: string;
+      delegationState: "active" | "revoked" | "superseded";
+      delegationEnvelope: SignedWheelsOffDelegation;
+      eligibility: WheelsOffEligibility;
+      evaluation: WheelsOffEvaluation;
+    };
+  }
+  | {
+    schemaVersion: 3;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "authorization.delegated_invalidated";
+    timestamp: EvidenceTimestamp;
+    payload: { reason: DelegatedInvalidationReason };
   };
 
 export interface RequirementProjection extends EvidenceRequirement {
@@ -190,10 +226,20 @@ export interface ReadinessProjection {
 }
 
 export interface SupervisedMissionProjection {
-  journalSchemaVersion: 2;
+  journalSchemaVersion: 2 | 3;
   missionId: string;
   brief: SupervisedMissionBrief;
   governance: { state: GovernanceState };
+  authorization: {
+    source: AuthorizationSource;
+    state: AuthorizationState;
+    missionRevisionId: string;
+    delegationId: string | null;
+    delegationRevisionId: string | null;
+    eligibilityRevisionId: string | null;
+    evaluatedThroughSequence: number;
+    reasons: string[];
+  };
   execution: { status: ExecutionStatus };
   readiness: {
     execute: ReadinessProjection;
@@ -560,9 +606,10 @@ function evidenceTargetForGovernance(decision: string, resumeState: unknown): Go
 export function createMissionBegunEntry(
   brief: SupervisedMissionBrief,
   bindings: TrustedHumanBinding[],
+  journalSchemaVersion: 2 | 3 = 2,
 ): SupervisedJournalEntry {
   return {
-    schemaVersion: 2,
+    schemaVersion: journalSchemaVersion,
     entryId: `entry:${brief.missionId}:0`,
     missionId: brief.missionId,
     sequence: 0,
@@ -574,10 +621,11 @@ export function createMissionBegunEntry(
 
 export function replaySupervisedMissionJournal(entries: unknown): ContractResult<SupervisedMissionProjection> {
   if (!Array.isArray(entries) || entries.length === 0) return invalid("malformed", "Supervised journal must contain entries.");
-  if (!isPlainObject(entries[0]) || entries[0].type !== "mission.begun") return invalid("malformed", "First v2 entry must be mission.begun.");
+  if (!isPlainObject(entries[0]) || entries[0].type !== "mission.begun") return invalid("malformed", "First mission entry must be mission.begun.");
   const begun = entries[0];
+  const journalSchemaVersion = begun.schemaVersion;
   const begunErrors = exactFields(begun, ["schemaVersion", "entryId", "missionId", "sequence", "type", "timestamp", "payload"], "Entry 0");
-  if (begunErrors.length > 0 || begun.schemaVersion !== 2 || begun.sequence !== 0 || !isPlainObject(begun.payload)) return invalid("malformed", ...begunErrors, "Entry 0 is invalid.");
+  if (begunErrors.length > 0 || (journalSchemaVersion !== 2 && journalSchemaVersion !== 3) || begun.sequence !== 0 || !isPlainObject(begun.payload)) return invalid("malformed", ...begunErrors, "Entry 0 is invalid.");
   const payloadErrors = exactFields(begun.payload, ["brief", "trustedBindings", "requirements"], "mission.begun payload");
   if (payloadErrors.length > 0) return invalid("malformed", ...payloadErrors);
   const briefResult = validateSupervisedMissionBrief(begun.payload.brief);
@@ -595,6 +643,11 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
 
   let governance: GovernanceState = "proposed";
   let execution: ExecutionStatus = "not-started";
+  let authorization: SupervisedMissionProjection["authorization"] = {
+    source: "none", state: "waiting", missionRevisionId: briefResult.value.revisionId,
+    delegationId: null, delegationRevisionId: null, eligibilityRevisionId: null,
+    evaluatedThroughSequence: 0, reasons: ["supervised_authorization_required"],
+  };
   const evidence: HumanEvidencePayload[] = [];
   const evidenceIds = new Set<string>();
   const entryIds = new Set<string>([String(begun.entryId)]);
@@ -602,12 +655,18 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   const baseProjection = (sequence: number): SupervisedMissionProjection => {
     const projected = expectedRequirements.map((requirement) => requirementProjection(requirement, evidence));
     return {
-      journalSchemaVersion: 2,
+      journalSchemaVersion: journalSchemaVersion as 2 | 3,
       missionId: briefResult.value.missionId,
       brief: briefResult.value,
       governance: { state: governance },
+      authorization: { ...authorization, evaluatedThroughSequence: sequence },
       execution: { status: execution },
-      readiness: { execute: readiness("execute", projected, sequence), accept: readiness("accept", projected, sequence) },
+      readiness: {
+        execute: authorization.state === "authorized"
+          ? { ...readiness("execute", projected, sequence), state: "ready", reasons: [] }
+          : readiness("execute", projected, sequence),
+        accept: readiness("accept", projected, sequence),
+      },
       communication: { state: "not-configured" },
       trustedBindings: registryResult.value.bindings,
       requirements: expectedRequirements,
@@ -621,7 +680,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
     const input = entries[index];
     const structural = exactFields(input, ["schemaVersion", "entryId", "missionId", "sequence", "type", "timestamp", "payload"], `Entry ${index}`);
     if (structural.length > 0 || !isPlainObject(input)) return invalid("malformed", ...structural);
-    if (input.schemaVersion !== 2) return invalid("unsupported_schema", `Entry ${index} schemaVersion is unsupported.`);
+    if (input.schemaVersion !== journalSchemaVersion) return invalid("unsupported_schema", `Entry ${index} schemaVersion does not match its journal.`);
     if (input.sequence !== index) return invalid("sequence_invalid", `Entry ${index} sequence must be ${index}.`);
     if (input.missionId !== briefResult.value.missionId) return invalid("mission_mismatch", `Entry ${index} missionId does not match.`);
     if (!identifier(input.entryId) || entryIds.has(input.entryId)) return invalid("sequence_invalid", `Entry ${index} entryId is invalid or duplicated.`);
@@ -649,6 +708,11 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       evidenceIds.add(checked.value.evidenceId);
       evidence.push(checked.value);
       governance = next;
+      if (String(input.payload.decision) === "approve") authorization = {
+        source: "supervised", state: "authorized", missionRevisionId: briefResult.value.revisionId,
+        delegationId: null, delegationRevisionId: null, eligibilityRevisionId: null,
+        evaluatedThroughSequence: index, reasons: [],
+      };
     } else if (input.type === "execution.transition") {
       const nested = exactFields(input.payload, ["from", "to", "reason"], `Entry ${index} execution payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
@@ -667,6 +731,38 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (evidenceIds.has(checked.value.evidenceId)) return invalid("duplicate_evidence", `Entry ${index} duplicates evidenceId.`);
       evidenceIds.add(checked.value.evidenceId);
       evidence.push(checked.value);
+    } else if (input.type === "authorization.delegated_evaluated") {
+      if (journalSchemaVersion !== 3 || index !== 1 || governance !== "proposed") return invalid("malformed", "Delegated authorization must be entry 1 of a v3 proposed mission.");
+      const nested = exactFields(input.payload, ["repositoryId", "delegationState", "delegationEnvelope", "eligibility", "evaluation"], `Entry ${index} delegated authorization payload`);
+      if (nested.length > 0 || !identifier(input.payload.repositoryId) || !["active","revoked","superseded"].includes(String(input.payload.delegationState))) return invalid("malformed", ...nested, "Delegated repository or lifecycle state is invalid.");
+      const delegatedPayload = input.payload as Record<string, unknown>;
+      const envelope = delegatedPayload.delegationEnvelope as SignedWheelsOffDelegation;
+      const coulson = registryResult.value.bindings.filter((binding) => binding.seatId === "coulson" && binding.signingKeyRef === envelope?.payload?.signingKeyRef);
+      if (coulson.length !== 1) return invalid("binding_missing", "Delegated authorization requires one matching Coulson binding.");
+      const delegation = verifyWheelsOffDelegationEnvelope(envelope, coulson[0], String(delegatedPayload.repositoryId));
+      if (delegation.state === "invalid") return invalid(delegation.code, ...delegation.errors);
+      const evaluated = evaluateWheelsOffEligibility({
+        brief: briefResult.value,
+        delegation: delegation.value,
+        eligibility: delegatedPayload.eligibility as WheelsOffEligibility,
+        repositoryId: String(delegatedPayload.repositoryId),
+        delegationState: delegatedPayload.delegationState as "active" | "revoked" | "superseded",
+      });
+      if (evaluated.state === "invalid") return invalid(evaluated.code, ...evaluated.errors);
+      if (canonicalJson(evaluated.value) !== canonicalJson(delegatedPayload.evaluation)) return invalid("eligibility_failed", "Recorded delegation evaluation is not deterministic.");
+      authorization = {
+        source: "delegated", state: evaluated.value.result === "eligible" ? "authorized" : "ineligible",
+        missionRevisionId: briefResult.value.revisionId, delegationId: delegation.value.delegationId,
+        delegationRevisionId: delegation.value.revisionId, eligibilityRevisionId: evaluated.value.eligibilityRevisionId,
+        evaluatedThroughSequence: index, reasons: evaluated.value.reasons,
+      };
+      if (evaluated.value.result === "eligible") governance = "approved";
+    } else if (input.type === "authorization.delegated_invalidated") {
+      if (journalSchemaVersion !== 3 || authorization.source !== "delegated" || authorization.state !== "authorized") return invalid("authorization_invalidated", "Only active delegated authorization can be invalidated.");
+      const nested = exactFields(input.payload, ["reason"], `Entry ${index} invalidation payload`);
+      if (nested.length > 0 || !DELEGATED_INVALIDATION_REASONS.includes(input.payload.reason as DelegatedInvalidationReason)) return invalid("malformed", ...nested, "Invalidation reason is unsupported.");
+      governance = "proposed";
+      authorization = { ...authorization, state: "invalidated", evaluatedThroughSequence: index, reasons: [String(input.payload.reason)] };
     } else {
       return invalid("malformed", `Entry ${index} type is unsupported.`);
     }
@@ -705,7 +801,7 @@ export function createGovernanceEntry(
   if (checked.value.seatId !== "coulson" || checked.value.evidenceKind !== "mission_authorization" || checked.value.decision !== evidenceDecisionForGovernance(decision)) return invalid("seat_mismatch", "Governance command requires matching Coulson evidence.");
   if (checked.value.governanceTarget !== evidenceTargetForGovernance(decision, resumeState)) return invalid("decision_mismatch", "Governance command target is not authorized by its signed evidence.");
   return valid({
-    schemaVersion: 2,
+    schemaVersion: projection.journalSchemaVersion,
     entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
     missionId: projection.missionId,
     sequence: projection.lastSequence + 1,
@@ -724,7 +820,7 @@ export function createEvidenceEntry(
   if (checked.value.seatId === "coulson") return invalid("seat_mismatch", "Coulson evidence must use a mission governance command.");
   if (checked.value.governanceTarget !== null) return invalid("decision_mismatch", "Non-governance evidence cannot authorize a governance target.");
   return valid({
-    schemaVersion: 2,
+    schemaVersion: projection.journalSchemaVersion,
     entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
     missionId: projection.missionId,
     sequence: projection.lastSequence + 1,
@@ -745,7 +841,7 @@ export function planMissionStep(
   const to: ExecutionStatus = projection.execution.status === "not-started" ? "running" : "completed";
   return valid({
     entry: {
-      schemaVersion: 2,
+      schemaVersion: projection.journalSchemaVersion,
       entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
       missionId: projection.missionId,
       sequence: projection.lastSequence + 1,
@@ -759,4 +855,35 @@ export function planMissionStep(
     },
     outcome: "advanced",
   });
+}
+
+export function createDelegatedAuthorizationEntry(input: {
+  projection: SupervisedMissionProjection;
+  repositoryId: string;
+  delegationEnvelope: SignedWheelsOffDelegation;
+  eligibility: WheelsOffEligibility;
+  delegationState: "active" | "revoked" | "superseded";
+  evaluatedAt: EvidenceTimestamp;
+}): ContractResult<SupervisedJournalEntry> {
+  if (input.projection.journalSchemaVersion !== 3 || input.projection.lastSequence !== 0 || input.projection.governance.state !== "proposed") return invalid("governance_denied", "Delegated authorization must immediately follow a v3 mission begin.");
+  const timeErrors = timestampErrors(input.evaluatedAt, "Delegated evaluation timestamp"); if (timeErrors.length) return invalid("malformed", ...timeErrors);
+  const coulson = input.projection.trustedBindings.filter((binding) => binding.seatId === "coulson" && binding.signingKeyRef === input.delegationEnvelope.payload.signingKeyRef);
+  if (coulson.length !== 1) return invalid("binding_missing", "Delegated authorization requires one matching Coulson binding.");
+  const delegation = verifyWheelsOffDelegationEnvelope(input.delegationEnvelope, coulson[0], input.repositoryId);
+  if (delegation.state === "invalid") return invalid(delegation.code, ...delegation.errors);
+  const evaluation = evaluateWheelsOffEligibility({ brief: input.projection.brief, delegation: delegation.value, eligibility: input.eligibility, repositoryId: input.repositoryId, delegationState: input.delegationState });
+  if (evaluation.state === "invalid") return invalid(evaluation.code, ...evaluation.errors);
+  return valid({
+    schemaVersion: 3,
+    entryId: `entry:${input.projection.missionId}:1`, missionId: input.projection.missionId, sequence: 1,
+    type: "authorization.delegated_evaluated", timestamp: input.evaluatedAt,
+    payload: { repositoryId: input.repositoryId, delegationState: input.delegationState, delegationEnvelope: input.delegationEnvelope, eligibility: input.eligibility, evaluation: evaluation.value },
+  });
+}
+
+export function createDelegatedInvalidationEntry(projection: SupervisedMissionProjection, reason: DelegatedInvalidationReason, timestamp: EvidenceTimestamp): ContractResult<SupervisedJournalEntry> {
+  if (projection.journalSchemaVersion !== 3 || projection.authorization.source !== "delegated" || projection.authorization.state !== "authorized") return invalid("authorization_invalidated", "Mission does not have active delegated authorization.");
+  if (!DELEGATED_INVALIDATION_REASONS.includes(reason)) return invalid("malformed", "Invalidation reason is unsupported.");
+  const timeErrors = timestampErrors(timestamp, "Invalidation timestamp"); if (timeErrors.length) return invalid("malformed", ...timeErrors);
+  return valid({ schemaVersion: 3, entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`, missionId: projection.missionId, sequence: projection.lastSequence + 1, type: "authorization.delegated_invalidated", timestamp, payload: { reason } });
 }

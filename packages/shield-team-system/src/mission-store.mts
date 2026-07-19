@@ -148,3 +148,33 @@ export async function appendSupervisedMissionEntry(input: {
     await unlink(paths.value.lockPath).catch(() => undefined);
   }
 }
+
+export async function initializeSupervisedMissionJournal(input: {
+  repositoryRoot: string;
+  configuredJournalPath: string;
+  missionId: string;
+  entries: SupervisedJournalEntry[];
+}): Promise<ContractResult<{ journalPath: string; projection: SupervisedMissionProjection }>> {
+  const paths = resolveSupervisedMissionPaths(input.repositoryRoot, input.configuredJournalPath, input.missionId);
+  if (paths.state === "invalid") return paths;
+  if (input.entries.length === 0 || input.entries.some((entry, index) => entry.missionId !== input.missionId || entry.sequence !== index)) return invalid("sequence_invalid", "Initial mission entries must be contiguous and match the mission.");
+  try { await mkdir(paths.value.root, { recursive: true }); }
+  catch (error) { return invalid("journal_unavailable", `Journal directory creation failed: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`); }
+  const confinement = await verifyConfinement(input.repositoryRoot, paths.value.root); if (confinement.state === "invalid") return confinement;
+  let lockHandle;
+  try { lockHandle = await open(paths.value.lockPath, "wx"); }
+  catch (error) { return invalid((error as NodeJS.ErrnoException).code === "EEXIST" ? "journal_lock_held" : "journal_unavailable", "Journal lock acquisition failed."); }
+  try {
+    const existing = await readExisting(paths.value.journalPath); if (existing !== null) return invalid("mission_exists", `Mission journal already exists: ${input.missionId}.`);
+    const serialized = input.entries.map(serializeSupervisedJournalEntry).join("");
+    const candidate = parseSupervisedJournalJsonl(serialized); if (candidate.state === "invalid") return candidate;
+    let handle;
+    try {
+      handle = await open(paths.value.journalPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
+      const write = await handle.write(serialized, null, "utf8"); if (write.bytesWritten !== Buffer.byteLength(serialized)) throw Object.assign(new Error("short write"), { code: "SHORT_WRITE" });
+      await handle.sync();
+    } catch (error) { return invalid("recovery_required", `Journal initialization or sync is uncertain: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`); }
+    finally { await handle?.close().catch(() => undefined); }
+    return valid({ journalPath: paths.value.journalPath, projection: candidate.value.projection });
+  } finally { await lockHandle.close().catch(() => undefined); await unlink(paths.value.lockPath).catch(() => undefined); }
+}

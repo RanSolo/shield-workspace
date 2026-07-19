@@ -296,7 +296,7 @@ export async function runCli(args: string[]): Promise<number> {
   }
   if (command === "init") return runInit(rest);
   if (command === "doctor") return runDoctor(rest);
-  if (command === "mission" || command === "evidence") return runMissionCli([command, ...rest]);
+  if (command === "mission" || command === "evidence" || command === "delegation") return runMissionCli([command, ...rest]);
   throw new CliError(`Unsupported command: ${command}.\n${usage()}`);
 }
 

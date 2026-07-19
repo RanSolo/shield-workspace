@@ -14,6 +14,7 @@ package artifact.
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
 | `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
 | `@shield/team-system/supervision` | Journal v2, canonical mission briefs, Ed25519 human evidence, readiness, and no-effect supervised-step contracts |
+| `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
 
 All entry points provide TypeScript declarations. Existing `.mjs` contract
 modules remain their runtime source of truth. The isolated TypeScript build
@@ -40,6 +41,11 @@ Journal v1 remains supported through `/journal`. Journal v2 is additive and is
 used only by the bounded supervised-mission workflow. Mixed-version journals,
 automatic migration, waivers, supersession, general effects, runners, permission
 brokers, and host communication remain unsupported.
+
+Delegated missions use journal schema v3 while schema-v2 supervised journals
+remain supported without reinterpretation. Wheels Off exposes standing
+pre-authorization only; it does not expose a runner, policy DSL, host inspection,
+or merge/deploy/release authority.
 
 ## Compatibility and breaking changes
 
