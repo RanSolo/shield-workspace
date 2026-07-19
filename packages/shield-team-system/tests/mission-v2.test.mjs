@@ -48,7 +48,7 @@ function fixture(requireSimmons = false) {
     schemaVersion: 1,
     missionId: requireSimmons ? "mission:with-simmons" : "mission:fixture",
     objective: "Complete one no-effect supervised fixture mission.",
-    subjectId: "mission-plan:fixture",
+    subjectId: "issue:39",
     riskFlags: {
       production: false,
       destructive: false,
@@ -268,6 +268,19 @@ test("Kernel derives revoked and superseded lifecycle from the verified delegati
     assert.equal(result.governance.state, "proposed");
     assert.equal(result.authorization.state, "ineligible");
   }
+});
+
+test("unrelated issue eligibility cannot authorize the verified mission subject", () => {
+  const data = delegatedFixture(); const projection = replay(data.entries);
+  const { revisionId: _revisionId, ...eligibilityContent } = data.eligibility;
+  const eligibility = createWheelsOffEligibility({ ...eligibilityContent, issueId: "issue:unrelated" });
+  const authorization = createDelegatedAuthorizationEntry({ projection, repositoryId: data.grant.repositoryId, delegationRevisionId: data.grant.revisionId, delegationLog: data.delegationLog, eligibility, evaluatedAt: { value: "2026-07-18T20:00:30Z", provenance: "hostTrusted" } });
+  assert.equal(authorization.state, "valid", authorization.errors?.join(" "));
+  assert.equal(authorization.value.payload.evaluation.result, "ineligible");
+  assert.ok(authorization.value.payload.evaluation.reasons.includes("subject_mismatch"));
+  const result = replay([...data.entries, authorization.value]);
+  assert.equal(result.governance.state, "proposed");
+  assert.equal(result.authorization.state, "ineligible");
 });
 
 test("ineligible delegated begin remains proposed and names deterministic failures", () => {

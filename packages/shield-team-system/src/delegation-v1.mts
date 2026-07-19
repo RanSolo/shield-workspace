@@ -112,6 +112,7 @@ export interface WheelsOffEvaluation {
 export interface EligibilityMissionBrief {
   missionId: string;
   revisionId: string;
+  subjectId: string;
   requireSimmons: boolean;
   participants: { seatId: string }[];
   riskFlags: object;
@@ -267,7 +268,9 @@ export function evaluateWheelsOffEligibility(input:{brief:EligibilityMissionBrie
   const checked=validateWheelsOffEligibility(input.eligibility);if(checked.state==="invalid")return checked; const e=checked.value; const rules:WheelsOffRuleResult[]=[];
   const rule=(ruleId:WheelsOffRuleId,ok:boolean,...reasons:string[])=>rules.push({ruleId,state:ok?"satisfied":"failed",reasons:ok?[]:reasons});
   rule("delegation_active",input.delegationState==="active"&&input.delegation.policyId===WHEELS_OFF_POLICY_ID,input.delegationState==="revoked"?"delegation_revoked":input.delegationState==="superseded"?"delegation_superseded":"delegation_missing");
-  rule("exact_revisions",e.missionId===input.brief.missionId&&e.missionRevisionId===input.brief.revisionId&&e.delegationId===input.delegation.delegationId&&e.delegationRevisionId===input.delegation.revisionId&&e.repositoryId===input.repositoryId&&input.delegation.repositoryId===input.repositoryId,"revision_mismatch");
+  const revisionsMatch=e.missionId===input.brief.missionId&&e.missionRevisionId===input.brief.revisionId&&e.delegationId===input.delegation.delegationId&&e.delegationRevisionId===input.delegation.revisionId&&e.repositoryId===input.repositoryId&&input.delegation.repositoryId===input.repositoryId;
+  const subjectMatches=e.issueId===input.brief.subjectId;
+  rule("exact_revisions",revisionsMatch&&subjectMatches,...[...(!revisionsMatch?["revision_mismatch"]:[]),...(!subjectMatches?["subject_mismatch"]:[])]);
   rule("bounded_scope",e.scopeItems.length>0&&e.acceptanceChecks.length>0,"eligibility_ambiguous");
   rule("dependencies_satisfied",e.dependencies.every((item)=>item.status==="satisfied"),"dependency_unsatisfied");
   rule("architecture_resolved",e.architecturalDecisions.every((item)=>item.status==="resolved"),"architecture_unresolved");

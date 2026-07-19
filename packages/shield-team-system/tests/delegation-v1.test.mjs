@@ -26,7 +26,7 @@ function envelope(auth, payload) { return { payload, signatureBase64: sign(null,
 function eligibility(brief, grant, overrides = {}) {
   return createWheelsOffEligibility({ schemaVersion: 1, eligibilityId: "eligibility:fixture", missionId: brief.missionId, missionRevisionId: brief.revisionId, delegationId: grant.delegationId, delegationRevisionId: grant.revisionId, repositoryId: grant.repositoryId, issueId: "issue:39", issueRevisionId: "sha256:issue39", issueSourceRef: "github:RanSolo/shield-workspace/issues/39", scopeItems: ["Implement closed delegated initiation."], acceptanceChecks: ["Delegated begin is replayable."], dependencies: [{ dependencyId: "issue:27", revisionId: "sha256:merged", status: "satisfied" }], architecturalDecisions: [{ decisionId: "fury:issue39", revisionId: "sha256:pass", status: "resolved" }], requestedAuthorities: ["implementation", "review_publication"], requireSimmons: false, ...overrides });
 }
-const brief = { missionId: "mission:wheels-off", revisionId: "sha256:brief", requireSimmons: false, participants: ["coulson", "fury", "fitz", "hill", "may"].map((seatId) => ({ seatId })), riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false } };
+const brief = { missionId: "mission:wheels-off", revisionId: "sha256:brief", subjectId: "issue:39", requireSimmons: false, participants: ["coulson", "fury", "fitz", "hill", "may"].map((seatId) => ({ seatId })), riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false } };
 
 test("closed delegation and eligibility revisions are canonical and detect drift", () => {
   const auth = authority(); const grant = delegation(auth);
@@ -69,6 +69,15 @@ test("eligibility uses a fixed ordered rule table and all risk flags fail closed
     assert.equal(result.value.result, "ineligible", risk);
     assert.ok(result.value.reasons.includes("risk_not_delegable"));
   }
+});
+
+test("eligibility binds the canonical issue to the verified mission subject", () => {
+  const auth = authority(); const grant = delegation(auth);
+  const matching = evaluateWheelsOffEligibility({ brief, delegation: grant, eligibility: eligibility(brief, grant), repositoryId: grant.repositoryId, delegationState: "active" });
+  assert.equal(matching.state, "valid"); assert.equal(matching.value.result, "eligible");
+  const mismatched = evaluateWheelsOffEligibility({ brief, delegation: grant, eligibility: eligibility(brief, grant, { issueId: "issue:unrelated" }), repositoryId: grant.repositoryId, delegationState: "active" });
+  assert.equal(mismatched.state, "valid"); assert.equal(mismatched.value.result, "ineligible");
+  assert.deepEqual(mismatched.value.rules.find(({ ruleId }) => ruleId === "exact_revisions").reasons, ["subject_mismatch"]);
 });
 
 test("closed negative eligibility facts produce ordered auditable rule failures", () => {

@@ -62,7 +62,7 @@ async function fixture(requireSimmons = false) {
     schemaVersion: 1,
     missionId: requireSimmons ? "mission:cli-simmons" : "mission:cli",
     objective: "Exercise one local supervised mission with no external effects.",
-    subjectId: "mission-plan:cli",
+    subjectId: "issue:39",
     riskFlags: {
       production: false,
       destructive: false,
