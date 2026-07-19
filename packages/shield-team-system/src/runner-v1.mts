@@ -11,7 +11,7 @@ export const RUNNER_STOP_REASONS = [
   "governance_not_approved", "mission_not_authorized", "execution_not_active", "execute_not_ready",
   "identity_mismatch", "journal_sequence_mismatch", "seat_not_participating", "seat_not_executable",
   "implementation_owner_mismatch", "mode_context_mismatch", "action_not_allowlisted",
-  "effect_already_completed", "authorization_wait", "authorization_denied", "authorization_failed",
+  "effect_already_completed", "effect_outcome_uncertain", "authorization_wait", "authorization_denied", "authorization_failed",
   "authorization_malformed", "authorization_stale", "executor_failed", "executor_uncertain",
   "executor_malformed", "executor_identity_mismatch", "validator_failed", "validator_malformed",
   "validator_identity_mismatch",
@@ -22,6 +22,14 @@ export type RunnerPermissionOutcome = (typeof RUNNER_PERMISSION_OUTCOMES)[number
 export type RunnerExecutorOutcome = (typeof RUNNER_EXECUTOR_OUTCOMES)[number];
 export type RunnerValidatorOutcome = (typeof RUNNER_VALIDATOR_OUTCOMES)[number];
 export type RunnerStopReason = (typeof RUNNER_STOP_REASONS)[number];
+export type RunnerJsonValue = null | boolean | number | string | RunnerJsonValue[] | { [key: string]: RunnerJsonValue };
+
+export interface RunnerOpaqueAuthorizationArtifact {
+  artifactSchemaVersion: 1;
+  artifactId: string;
+  contentType: "application/json";
+  payload: { [key: string]: RunnerJsonValue };
+}
 
 export interface RunnerModeReference {
   modeId: string;
@@ -32,6 +40,7 @@ export interface RunnerModeReference {
 
 export interface RunnerProjectionSnapshot {
   runnerContractVersion: 1;
+  journalSchemaVersion: 5;
   missionId: string;
   subjectId: string;
   revisionId: string;
@@ -42,6 +51,7 @@ export interface RunnerProjectionSnapshot {
   executeReadiness: "ready" | "waiting" | "blocked" | "invalid";
   participantSeatIds: string[];
   activatedModes: RunnerModeReference[];
+  effectRecords: RunnerAuthoritativeEffectRecord[];
 }
 
 export interface RunnerResolvedModeContext {
@@ -71,7 +81,6 @@ export interface RunnerCycleInput {
   projection: RunnerProjectionSnapshot;
   resolvedModeContext: RunnerResolvedModeContext;
   actionAllowlist: string[];
-  completedEffectKeys: string[];
   plan: RunnerCyclePlan;
 }
 
@@ -89,6 +98,7 @@ export interface RunnerPermissionDecision {
   effectClass: RunnerEffectClass;
   effectKey: string;
   reasonCode: string;
+  authorizationArtifact: RunnerOpaqueAuthorizationArtifact;
 }
 
 export interface RunnerExecutorResult {
@@ -104,7 +114,7 @@ export interface RunnerExecutorResult {
   effectClass: RunnerEffectClass;
   effectKey: string;
   summary: string;
-  evidenceRef: string | null;
+  evidenceRefs: string[];
 }
 
 export interface RunnerValidatorResult {
@@ -120,39 +130,44 @@ export interface RunnerValidatorResult {
   summary: string;
 }
 
-export interface RunnerEffectEvidenceCandidate {
+export interface RunnerExecutionEffectPayload {
   runnerContractVersion: 1;
-  candidateKind: "runner.effect_completed";
-  missionId: string;
+  cycleId: string;
   subjectId: string;
   revisionId: string;
   evaluatedThroughSequence: number;
-  intendedJournalSequence: number;
-  cycleId: string;
   seatId: string;
   actionId: string;
-  effectClass: RunnerEffectClass;
+  effectClass: string;
   effectKey: string;
-  validationId: string;
-  executorEvidenceRef: string;
-  executorSummary: string;
-  validationSummary: string;
+  authorizationDecisionId: string;
+  outcome: "completed" | "uncertain";
+  reasonCode: string;
+  summary: string;
+  evidenceRefs: string[];
 }
 
-export interface RunnerEffectCompletedAppendCandidate {
+export interface RunnerSupervisedEffectCandidate {
   runnerContractVersion: 1;
-  candidateKind: "runner.effect_completed_append_candidate";
+  candidateKind: "runner.supervised_effect_record";
   authority: "non_authoritative";
+  journalSchemaVersion: 5;
   missionId: string;
+  subjectId: string;
   revisionId: string;
   expectedPreviousSequence: number;
   intendedJournalSequence: number;
-  entryType: "effect.completed";
-  payload: {
-    effectKey: string;
-    resultSummary: string;
+  payload: RunnerExecutionEffectPayload;
+}
+
+export interface RunnerAuthoritativeEffectRecord extends RunnerExecutionEffectPayload {
+  entryId: string;
+  missionId: string;
+  journalSequence: number;
+  timestamp: {
+    value: string;
+    provenance: "humanRecorded" | "hostTrusted";
   };
-  runnerEvidence: RunnerEffectEvidenceCandidate;
 }
 
 export interface RunnerStoppedResult {
@@ -167,8 +182,7 @@ export interface RunnerStoppedResult {
   cycleId: string;
   actionId: string;
   effectKey: string;
-  evidence: null;
-  journalAppendCandidate: null;
+  effectRecordCandidate: RunnerSupervisedEffectCandidate | null;
 }
 
 export interface RunnerAdvancedResult {
@@ -183,8 +197,7 @@ export interface RunnerAdvancedResult {
   cycleId: string;
   actionId: string;
   effectKey: string;
-  evidence: RunnerEffectEvidenceCandidate;
-  journalAppendCandidate: RunnerEffectCompletedAppendCandidate;
+  effectRecordCandidate: RunnerSupervisedEffectCandidate;
 }
 
 export type RunnerCycleResult = RunnerStoppedResult | RunnerAdvancedResult;
@@ -205,6 +218,10 @@ const PERMISSION_OUTCOMES = new Set<string>(RUNNER_PERMISSION_OUTCOMES);
 const EXECUTOR_OUTCOMES = new Set<string>(RUNNER_EXECUTOR_OUTCOMES);
 const VALIDATOR_OUTCOMES = new Set<string>(RUNNER_VALIDATOR_OUTCOMES);
 const STOP_REASONS = new Set<string>(RUNNER_STOP_REASONS);
+const POST_DISPATCH_STOP_REASONS = new Set<string>([
+  "executor_failed", "executor_uncertain", "executor_malformed", "executor_identity_mismatch",
+  "validator_failed", "validator_malformed", "validator_identity_mismatch",
+]);
 
 function valid<T>(value: T): RunnerContractResult<T> {
   return { state: "valid", value };
@@ -266,6 +283,65 @@ function deepCopyAndFreeze<T>(value: T): T {
   return value;
 }
 
+function jsonPayloadErrors(value: unknown): string[] {
+  const errors: string[] = [];
+  const visiting = new WeakSet<object>();
+  let nodes = 0;
+  const visit = (current: unknown, path: string, depth: number): void => {
+    nodes += 1;
+    if (nodes > 2_048) { errors.push("Authorization artifact payload exceeds 2048 JSON nodes."); return; }
+    if (depth > 16) { errors.push(`${path} exceeds maximum JSON depth 16.`); return; }
+    if (current === null || typeof current === "boolean") return;
+    if (typeof current === "string") {
+      if (current.length > 16_384) errors.push(`${path} exceeds maximum JSON string length.`);
+      return;
+    }
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) errors.push(`${path} must be a finite JSON number.`);
+      return;
+    }
+    if (typeof current !== "object") { errors.push(`${path} is not JSON-safe.`); return; }
+    if (visiting.has(current)) { errors.push(`${path} contains a JSON cycle.`); return; }
+    visiting.add(current);
+    if (Array.isArray(current)) {
+      errors.push(...arrayShapeErrors(current, path));
+      current.forEach((item, index) => visit(item, `${path}[${index}]`, depth + 1));
+    } else if (isPlainObject(current)) {
+      if (Object.keys(current).length > 256) errors.push(`${path} exceeds 256 JSON object fields.`);
+      for (const key of Reflect.ownKeys(current)) {
+        if (typeof key !== "string" || key.length === 0 || key.length > 256) {
+          errors.push(`${path} has an invalid JSON object key.`);
+          continue;
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
+        if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
+          errors.push(`${path}.${key} must be an enumerable JSON data field.`);
+          continue;
+        }
+        visit(descriptor.value, `${path}.${key}`, depth + 1);
+      }
+    } else errors.push(`${path} must be a plain JSON object or array.`);
+    visiting.delete(current);
+  };
+  if (!isPlainObject(value)) return ["Authorization artifact payload must be a plain JSON object."];
+  visit(value, "Authorization artifact payload", 0);
+  return errors;
+}
+
+export function validateRunnerOpaqueAuthorizationArtifact(
+  input: unknown,
+): RunnerContractResult<RunnerOpaqueAuthorizationArtifact> {
+  const errors = exactFields(input, AUTHORIZATION_ARTIFACT_FIELDS, "Runner authorization artifact");
+  if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_authorization_artifact", errors);
+  if (input.artifactSchemaVersion !== 1) errors.push("Runner authorization artifact schema version is unsupported.");
+  if (!identifier(input.artifactId)) errors.push("Runner authorization artifact artifactId is invalid.");
+  if (input.contentType !== "application/json") errors.push("Runner authorization artifact contentType is unsupported.");
+  errors.push(...jsonPayloadErrors(input.payload));
+  return errors.length > 0
+    ? invalid("malformed_authorization_artifact", errors)
+    : valid(input as unknown as RunnerOpaqueAuthorizationArtifact);
+}
+
 function identifier(value: unknown): value is string {
   return typeof value === "string" && IDENTIFIER.test(value);
 }
@@ -279,12 +355,24 @@ function nonEmpty(value: unknown): value is string {
 }
 
 function nonEmptyJournalSummary(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= 65_536;
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 512;
 }
 
 function sequence(value: unknown): value is number {
   // Successful cycles reserve the immediately following journal sequence.
   return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) < Number.MAX_SAFE_INTEGER;
+}
+
+function isoUtcTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/.exec(value);
+  if (match === null) return false;
+  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
+  const hour = Number(match[4]), minute = Number(match[5]), second = Number(match[6]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1] &&
+    hour <= 23 && minute <= 59 && second <= 59;
 }
 
 function validateStringSet(value: unknown, label: string, allowEmpty: boolean): string[] {
@@ -298,6 +386,12 @@ function validateStringSet(value: unknown, label: string, allowEmpty: boolean): 
     else if (seen.has(item)) errors.push(`${label} duplicates ${item}.`);
     else seen.add(item);
   });
+  return errors;
+}
+
+function validateEffectEvidenceRefs(value: unknown, label: string): string[] {
+  const errors = validateStringSet(value, label, false);
+  if (Array.isArray(value) && value.length > 16) errors.push(`${label} must contain at most 16 references.`);
   return errors;
 }
 
@@ -323,9 +417,9 @@ function validateModeReferences(value: unknown, label: string): string[] {
 }
 
 const PROJECTION_FIELDS = [
-  "runnerContractVersion", "missionId", "subjectId", "revisionId", "evaluatedThroughSequence",
+  "runnerContractVersion", "journalSchemaVersion", "missionId", "subjectId", "revisionId", "evaluatedThroughSequence",
   "governanceState", "missionAuthorizationState", "executionStatus", "executeReadiness",
-  "participantSeatIds", "activatedModes",
+  "participantSeatIds", "activatedModes", "effectRecords",
 ] as const;
 const MODE_CONTEXT_FIELDS = ["runnerContractVersion", "seatId", "modes"] as const;
 const PLAN_FIELDS = [
@@ -333,39 +427,45 @@ const PLAN_FIELDS = [
   "seatId", "activatedModes", "actionId", "effectClass", "effectKey", "validationId", "stopCondition",
 ] as const;
 const INPUT_FIELDS = [
-  "runnerContractVersion", "projection", "resolvedModeContext", "actionAllowlist", "completedEffectKeys", "plan",
+  "runnerContractVersion", "projection", "resolvedModeContext", "actionAllowlist", "plan",
 ] as const;
 const PERMISSION_FIELDS = [
   "runnerContractVersion", "decisionId", "outcome", "missionId", "subjectId", "revisionId",
   "evaluatedThroughSequence", "cycleId", "seatId", "actionId", "effectClass", "effectKey", "reasonCode",
+  "authorizationArtifact",
 ] as const;
 const EXECUTOR_FIELDS = [
   "runnerContractVersion", "outcome", "missionId", "subjectId", "revisionId", "evaluatedThroughSequence",
-  "cycleId", "seatId", "actionId", "effectClass", "effectKey", "summary", "evidenceRef",
+  "cycleId", "seatId", "actionId", "effectClass", "effectKey", "summary", "evidenceRefs",
 ] as const;
 const VALIDATOR_FIELDS = [
   "runnerContractVersion", "outcome", "missionId", "subjectId", "revisionId", "evaluatedThroughSequence",
   "cycleId", "validationId", "effectKey", "summary",
 ] as const;
-const EVIDENCE_FIELDS = [
-  "runnerContractVersion", "candidateKind", "missionId", "subjectId", "revisionId",
-  "evaluatedThroughSequence", "intendedJournalSequence", "cycleId", "seatId", "actionId", "effectClass",
-  "effectKey", "validationId", "executorEvidenceRef", "executorSummary", "validationSummary",
+const AUTHORIZATION_ARTIFACT_FIELDS = ["artifactSchemaVersion", "artifactId", "contentType", "payload"] as const;
+const EFFECT_PAYLOAD_FIELDS = [
+  "runnerContractVersion", "cycleId", "subjectId", "revisionId", "evaluatedThroughSequence", "seatId",
+  "actionId", "effectClass", "effectKey", "authorizationDecisionId", "outcome", "reasonCode", "summary",
+  "evidenceRefs",
 ] as const;
-const APPEND_CANDIDATE_FIELDS = [
-  "runnerContractVersion", "candidateKind", "authority", "missionId", "revisionId",
-  "expectedPreviousSequence", "intendedJournalSequence", "entryType", "payload", "runnerEvidence",
+const EFFECT_CANDIDATE_FIELDS = [
+  "runnerContractVersion", "candidateKind", "authority", "journalSchemaVersion", "missionId", "subjectId",
+  "revisionId", "expectedPreviousSequence", "intendedJournalSequence", "payload",
 ] as const;
-const APPEND_PAYLOAD_FIELDS = ["effectKey", "resultSummary"] as const;
+const EFFECT_RECORD_FIELDS = [
+  ...EFFECT_PAYLOAD_FIELDS, "entryId", "missionId", "journalSequence", "timestamp",
+] as const;
+const TIMESTAMP_FIELDS = ["value", "provenance"] as const;
 const RESULT_FIELDS = [
   "runnerContractVersion", "outcome", "reason", "nextRoute", "missionId", "subjectId", "revisionId",
-  "evaluatedThroughSequence", "cycleId", "actionId", "effectKey", "evidence", "journalAppendCandidate",
+  "evaluatedThroughSequence", "cycleId", "actionId", "effectKey", "effectRecordCandidate",
 ] as const;
 
 function validateProjection(input: unknown): RunnerContractResult<RunnerProjectionSnapshot> {
   const errors = exactFields(input, PROJECTION_FIELDS, "Runner projection");
   if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_projection", errors);
   if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push("Runner projection contract version is unsupported.");
+  if (input.journalSchemaVersion !== 5) errors.push("Runner projection requires supervised journal schema v5.");
   for (const field of ["missionId", "subjectId"] as const) if (!identifier(input[field])) errors.push(`Runner projection ${field} is invalid.`);
   if (!revision(input.revisionId)) errors.push("Runner projection revisionId is invalid.");
   if (!sequence(input.evaluatedThroughSequence)) errors.push("Runner projection evaluatedThroughSequence is invalid.");
@@ -375,6 +475,23 @@ function validateProjection(input: unknown): RunnerContractResult<RunnerProjecti
   if (!["ready", "waiting", "blocked", "invalid"].includes(input.executeReadiness as string)) errors.push("Runner projection executeReadiness is unsupported.");
   errors.push(...validateStringSet(input.participantSeatIds, "Runner projection participantSeatIds", false));
   errors.push(...validateModeReferences(input.activatedModes, "Runner projection activatedModes"));
+  if (!Array.isArray(input.effectRecords)) errors.push("Runner projection effectRecords must be an array.");
+  else {
+    errors.push(...arrayShapeErrors(input.effectRecords, "Runner projection effectRecords"));
+    const effectKeys = new Set<string>();
+    input.effectRecords.forEach((record, index) => {
+      const checked = validateRunnerAuthoritativeEffectRecord(record);
+      if (checked.state === "invalid") errors.push(...checked.errors.map((error) => `effectRecords[${index}]: ${error}`));
+      else {
+        if (checked.value.missionId !== input.missionId || checked.value.subjectId !== input.subjectId ||
+            checked.value.revisionId !== input.revisionId || checked.value.journalSequence > (input.evaluatedThroughSequence as number)) {
+          errors.push(`effectRecords[${index}] does not belong to the exact projection revision and sequence.`);
+        }
+        if (effectKeys.has(checked.value.effectKey)) errors.push(`effectRecords[${index}] duplicates effectKey ${checked.value.effectKey}.`);
+        effectKeys.add(checked.value.effectKey);
+      }
+    });
+  }
   return errors.length > 0 ? invalid("malformed_projection", errors) : valid(input as unknown as RunnerProjectionSnapshot);
 }
 
@@ -413,7 +530,6 @@ export function validateRunnerCycleInput(input: unknown): RunnerContractResult<R
   if (context.state === "invalid") errors.push(...context.errors);
   if (plan.state === "invalid") errors.push(...plan.errors);
   errors.push(...validateStringSet(input.actionAllowlist, "Runner cycle input actionAllowlist", false));
-  errors.push(...validateStringSet(input.completedEffectKeys, "Runner cycle input completedEffectKeys", true));
   return errors.length > 0 ? invalid("malformed_input", errors) : valid(input as unknown as RunnerCycleInput);
 }
 
@@ -428,6 +544,8 @@ export function validateRunnerPermissionDecision(input: unknown): RunnerContract
   if (!sequence(input.evaluatedThroughSequence)) errors.push("Runner permission decision evaluatedThroughSequence is invalid.");
   if (!PERMISSION_OUTCOMES.has(input.outcome as string)) errors.push("Runner permission decision outcome is unsupported.");
   if (!EFFECT_CLASSES.has(input.effectClass as string)) errors.push("Runner permission decision effectClass is unsupported.");
+  const artifact = validateRunnerOpaqueAuthorizationArtifact(input.authorizationArtifact);
+  if (artifact.state === "invalid") errors.push(...artifact.errors);
   return errors.length > 0 ? invalid("malformed_permission", errors) : valid(input as unknown as RunnerPermissionDecision);
 }
 
@@ -443,9 +561,13 @@ export function validateRunnerExecutorResult(input: unknown): RunnerContractResu
   if (!EXECUTOR_OUTCOMES.has(input.outcome as string)) errors.push("Runner executor result outcome is unsupported.");
   if (!EFFECT_CLASSES.has(input.effectClass as string)) errors.push("Runner executor result effectClass is unsupported.");
   if (!nonEmpty(input.summary)) errors.push("Runner executor result summary must be non-empty.");
-  if (input.evidenceRef !== null && !identifier(input.evidenceRef)) errors.push("Runner executor result evidenceRef is invalid.");
-  if (input.outcome === "completed" && input.evidenceRef === null) errors.push("Completed executor result requires evidenceRef.");
-  if (input.outcome !== "completed" && input.evidenceRef !== null) errors.push("Non-completed executor result cannot include evidenceRef.");
+  errors.push(...validateStringSet(input.evidenceRefs, "Runner executor result evidenceRefs", true));
+  if (input.outcome === "completed" && Array.isArray(input.evidenceRefs) && input.evidenceRefs.length === 0) {
+    errors.push("Completed executor result requires at least one evidenceRef.");
+  }
+  if (Array.isArray(input.evidenceRefs) && input.evidenceRefs.length > 15) {
+    errors.push("Runner executor result supports at most 15 evidenceRefs in addition to its cycle attempt reference.");
+  }
   return errors.length > 0 ? invalid("malformed_executor_result", errors) : valid(input as unknown as RunnerExecutorResult);
 }
 
@@ -463,102 +585,73 @@ export function validateRunnerValidatorResult(input: unknown): RunnerContractRes
   return errors.length > 0 ? invalid("malformed_validator_result", errors) : valid(input as unknown as RunnerValidatorResult);
 }
 
-export function validateRunnerEffectEvidenceCandidate(input: unknown): RunnerContractResult<RunnerEffectEvidenceCandidate> {
-  const errors = exactFields(input, EVIDENCE_FIELDS, "Runner effect evidence candidate");
-  if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_effect_evidence", errors);
-  if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push("Runner effect evidence contract version is unsupported.");
-  if (input.candidateKind !== "runner.effect_completed") errors.push("Runner effect evidence candidateKind is unsupported.");
-  for (const field of [
-    "missionId", "subjectId", "cycleId", "seatId", "actionId", "effectKey", "validationId", "executorEvidenceRef",
-  ] as const) {
-    if (!identifier(input[field])) errors.push(`Runner effect evidence ${field} is invalid.`);
+function effectPayloadValueErrors(input: Record<string, unknown>, label: string): string[] {
+  const errors: string[] = [];
+  if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push(`${label} runnerContractVersion is unsupported.`);
+  for (const field of ["cycleId", "subjectId", "seatId", "actionId", "effectKey", "authorizationDecisionId", "reasonCode"] as const) {
+    if (!identifier(input[field])) errors.push(`${label} ${field} is invalid.`);
   }
-  if (!revision(input.revisionId)) errors.push("Runner effect evidence revisionId is invalid.");
-  if (!sequence(input.evaluatedThroughSequence)) errors.push("Runner effect evidence evaluatedThroughSequence is invalid.");
-  if (!sequence(input.intendedJournalSequence) ||
-      input.intendedJournalSequence !== (input.evaluatedThroughSequence as number) + 1) {
-    errors.push("Runner effect evidence intendedJournalSequence must immediately follow its evaluated sequence.");
-  }
-  if (!EFFECT_CLASSES.has(input.effectClass as string)) errors.push("Runner effect evidence effectClass is unsupported.");
-  if (!nonEmpty(input.executorSummary)) errors.push("Runner effect evidence executorSummary must be non-empty.");
-  if (!nonEmpty(input.validationSummary)) errors.push("Runner effect evidence validationSummary must be non-empty.");
-  return errors.length > 0 ? invalid("malformed_effect_evidence", errors) : valid(input as unknown as RunnerEffectEvidenceCandidate);
+  if (!revision(input.revisionId)) errors.push(`${label} revisionId is invalid.`);
+  if (!sequence(input.evaluatedThroughSequence)) errors.push(`${label} evaluatedThroughSequence is invalid.`);
+  if (!EFFECT_CLASSES.has(input.effectClass as string)) errors.push(`${label} effectClass is unsupported.`);
+  if (input.outcome !== "completed" && input.outcome !== "uncertain") errors.push(`${label} outcome is unsupported.`);
+  if (!nonEmptyJournalSummary(input.summary)) errors.push(`${label} summary must be non-empty.`);
+  errors.push(...validateEffectEvidenceRefs(input.evidenceRefs, `${label} evidenceRefs`));
+  return errors;
 }
 
-function effectResultSummary(evidence: RunnerEffectEvidenceCandidate): string {
-  return JSON.stringify({
-    runnerContractVersion: evidence.runnerContractVersion,
-    cycleId: evidence.cycleId,
-    revisionId: evidence.revisionId,
-    evaluatedThroughSequence: evidence.evaluatedThroughSequence,
-    seatId: evidence.seatId,
-    actionId: evidence.actionId,
-    effectClass: evidence.effectClass,
-    validationId: evidence.validationId,
-    executorEvidenceRef: evidence.executorEvidenceRef,
-    executorSummary: evidence.executorSummary,
-    validationSummary: evidence.validationSummary,
-  });
-}
-
-export function translateRunnerEffectEvidenceCandidate(
+export function validateRunnerExecutionEffectPayload(
   input: unknown,
-): RunnerContractResult<RunnerEffectCompletedAppendCandidate> {
-  const checked = validateRunnerEffectEvidenceCandidate(input);
-  if (checked.state === "invalid") return checked;
-  const evidence = deepCopyAndFreeze(checked.value);
-  return valid(deepCopyAndFreeze({
-    runnerContractVersion: RUNNER_CONTRACT_VERSION,
-    candidateKind: "runner.effect_completed_append_candidate",
-    authority: "non_authoritative",
-    missionId: evidence.missionId,
-    revisionId: evidence.revisionId,
-    expectedPreviousSequence: evidence.evaluatedThroughSequence,
-    intendedJournalSequence: evidence.intendedJournalSequence,
-    entryType: "effect.completed",
-    payload: {
-      effectKey: evidence.effectKey,
-      resultSummary: effectResultSummary(evidence),
-    },
-    runnerEvidence: evidence,
-  }));
+): RunnerContractResult<RunnerExecutionEffectPayload> {
+  const errors = exactFields(input, EFFECT_PAYLOAD_FIELDS, "Runner execution effect payload");
+  if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_effect_payload", errors);
+  errors.push(...effectPayloadValueErrors(input, "Runner execution effect payload"));
+  return errors.length > 0 ? invalid("malformed_effect_payload", errors) : valid(input as unknown as RunnerExecutionEffectPayload);
 }
 
-export function validateRunnerEffectCompletedAppendCandidate(
+export function validateRunnerSupervisedEffectCandidate(
   input: unknown,
-): RunnerContractResult<RunnerEffectCompletedAppendCandidate> {
-  const errors = exactFields(input, APPEND_CANDIDATE_FIELDS, "Runner journal append candidate");
-  if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_append_candidate", errors);
-  if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push("Runner journal append candidate contract version is unsupported.");
-  if (input.candidateKind !== "runner.effect_completed_append_candidate") errors.push("Runner journal append candidateKind is unsupported.");
-  if (input.authority !== "non_authoritative") errors.push("Runner journal append candidate must be explicitly non-authoritative.");
-  if (!identifier(input.missionId)) errors.push("Runner journal append candidate missionId is invalid.");
-  if (!revision(input.revisionId)) errors.push("Runner journal append candidate revisionId is invalid.");
-  if (!sequence(input.expectedPreviousSequence)) errors.push("Runner journal append candidate expectedPreviousSequence is invalid.");
-  if (!sequence(input.intendedJournalSequence) ||
+): RunnerContractResult<RunnerSupervisedEffectCandidate> {
+  const errors = exactFields(input, EFFECT_CANDIDATE_FIELDS, "Runner supervised effect candidate");
+  if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_effect_candidate", errors);
+  if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push("Runner effect candidate contract version is unsupported.");
+  if (input.candidateKind !== "runner.supervised_effect_record") errors.push("Runner effect candidate kind is unsupported.");
+  if (input.authority !== "non_authoritative") errors.push("Runner effect candidate must be explicitly non-authoritative.");
+  if (input.journalSchemaVersion !== 5) errors.push("Runner effect candidate requires supervised journal v5.");
+  if (!identifier(input.missionId) || !identifier(input.subjectId)) errors.push("Runner effect candidate mission identity is invalid.");
+  if (!revision(input.revisionId)) errors.push("Runner effect candidate revisionId is invalid.");
+  if (!sequence(input.expectedPreviousSequence) || !sequence(input.intendedJournalSequence) ||
       input.intendedJournalSequence !== (input.expectedPreviousSequence as number) + 1) {
-    errors.push("Runner journal append candidate intendedJournalSequence must immediately follow its expected previous sequence.");
+    errors.push("Runner effect candidate journal sequence is invalid.");
   }
-  if (input.entryType !== "effect.completed") errors.push("Runner journal append candidate entryType is unsupported.");
-  const payloadErrors = exactFields(input.payload, APPEND_PAYLOAD_FIELDS, "Runner journal append payload");
-  errors.push(...payloadErrors);
-  if (payloadErrors.length === 0 && isPlainObject(input.payload)) {
-    if (!identifier(input.payload.effectKey)) errors.push("Runner journal append payload effectKey is invalid.");
-    if (!nonEmptyJournalSummary(input.payload.resultSummary)) {
-      errors.push("Runner journal append payload resultSummary must be non-empty.");
+  const payload = validateRunnerExecutionEffectPayload(input.payload);
+  if (payload.state === "invalid") errors.push(...payload.errors);
+  else if (input.subjectId !== payload.value.subjectId || input.revisionId !== payload.value.revisionId ||
+      input.expectedPreviousSequence !== payload.value.evaluatedThroughSequence) {
+    errors.push("Runner effect candidate identity does not match its payload.");
+  }
+  return errors.length > 0 ? invalid("malformed_effect_candidate", errors) : valid(input as unknown as RunnerSupervisedEffectCandidate);
+}
+
+export function validateRunnerAuthoritativeEffectRecord(
+  input: unknown,
+): RunnerContractResult<RunnerAuthoritativeEffectRecord> {
+  const errors = exactFields(input, EFFECT_RECORD_FIELDS, "Runner authoritative effect record");
+  if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_effect_record", errors);
+  errors.push(...effectPayloadValueErrors(input, "Runner authoritative effect record"));
+  if (!identifier(input.entryId) || !identifier(input.missionId)) errors.push("Runner authoritative effect record journal identity is invalid.");
+  if (!sequence(input.journalSequence) || input.journalSequence !== (input.evaluatedThroughSequence as number) + 1) {
+    errors.push("Runner authoritative effect record journal sequence is invalid.");
+  }
+  const timestampErrors = exactFields(input.timestamp, TIMESTAMP_FIELDS, "Runner authoritative effect record timestamp");
+  errors.push(...timestampErrors);
+  if (timestampErrors.length === 0 && isPlainObject(input.timestamp)) {
+    if (!isoUtcTimestamp(input.timestamp.value)) errors.push("Runner authoritative effect record timestamp value is invalid.");
+    if (input.timestamp.provenance !== "humanRecorded" && input.timestamp.provenance !== "hostTrusted") {
+      errors.push("Runner authoritative effect record timestamp provenance is unsupported.");
     }
   }
-  const evidence = validateRunnerEffectEvidenceCandidate(input.runnerEvidence);
-  if (evidence.state === "invalid") errors.push(...evidence.errors);
-  else if (isPlainObject(input.payload)) {
-    if (input.missionId !== evidence.value.missionId || input.revisionId !== evidence.value.revisionId ||
-        input.expectedPreviousSequence !== evidence.value.evaluatedThroughSequence ||
-        input.intendedJournalSequence !== evidence.value.intendedJournalSequence ||
-        input.payload.effectKey !== evidence.value.effectKey || input.payload.resultSummary !== effectResultSummary(evidence.value)) {
-      errors.push("Runner journal append candidate does not exactly translate its runner evidence.");
-    }
-  }
-  return errors.length > 0 ? invalid("malformed_append_candidate", errors) : valid(input as unknown as RunnerEffectCompletedAppendCandidate);
+  return errors.length > 0 ? invalid("malformed_effect_record", errors) : valid(input as unknown as RunnerAuthoritativeEffectRecord);
 }
 
 export function validateRunnerCycleResult(input: unknown): RunnerContractResult<RunnerCycleResult> {
@@ -573,27 +666,30 @@ export function validateRunnerCycleResult(input: unknown): RunnerContractResult<
   if (input.outcome === "stopped") {
     if (!STOP_REASONS.has(input.reason as string)) errors.push("Stopped runner result reason is unsupported.");
     if (input.nextRoute !== "coulson") errors.push("Stopped runner result must route to Coulson.");
-    if (input.evidence !== null) errors.push("Stopped runner result cannot include completion evidence.");
-    if (input.journalAppendCandidate !== null) errors.push("Stopped runner result cannot include a journal append candidate.");
+    if (input.effectRecordCandidate !== null) {
+      const candidate = validateRunnerSupervisedEffectCandidate(input.effectRecordCandidate);
+      if (candidate.state === "invalid") errors.push(...candidate.errors);
+      else if (candidate.value.payload.outcome !== "uncertain") errors.push("Stopped runner effect candidate must be uncertain.");
+    }
+    if (POST_DISPATCH_STOP_REASONS.has(input.reason as string) !== (input.effectRecordCandidate !== null)) {
+      errors.push("Runner stop must carry an uncertain effect candidate exactly when executor dispatch occurred.");
+    }
   } else if (input.outcome === "advanced") {
     if (input.reason !== "effect_completed") errors.push("Advanced runner result reason is unsupported.");
     if (input.nextRoute !== "journal") errors.push("Advanced runner result must route to the journal boundary.");
-    const evidence = validateRunnerEffectEvidenceCandidate(input.evidence);
-    const append = validateRunnerEffectCompletedAppendCandidate(input.journalAppendCandidate);
-    if (evidence.state === "invalid") errors.push(...evidence.errors);
-    if (append.state === "invalid") errors.push(...append.errors);
-    if (evidence.state === "valid" && append.state === "valid") {
-      const appendEvidenceMatches = EVIDENCE_FIELDS.every((field) =>
-        append.value.runnerEvidence[field] === evidence.value[field]);
-      if (input.missionId !== evidence.value.missionId || input.subjectId !== evidence.value.subjectId ||
-          input.revisionId !== evidence.value.revisionId || input.evaluatedThroughSequence !== evidence.value.evaluatedThroughSequence ||
-          input.cycleId !== evidence.value.cycleId || input.actionId !== evidence.value.actionId ||
-          input.effectKey !== evidence.value.effectKey || !appendEvidenceMatches) {
-        errors.push("Advanced runner result identity does not match its evidence and append candidate.");
-      }
-    }
+    const candidate = validateRunnerSupervisedEffectCandidate(input.effectRecordCandidate);
+    if (candidate.state === "invalid") errors.push(...candidate.errors);
+    else if (candidate.value.payload.outcome !== "completed") errors.push("Advanced runner effect candidate must be completed.");
   } else {
     errors.push("Runner cycle result outcome is unsupported.");
+  }
+  if (isPlainObject(input.effectRecordCandidate)) {
+    const candidate = validateRunnerSupervisedEffectCandidate(input.effectRecordCandidate);
+    if (candidate.state === "valid" && (input.missionId !== candidate.value.missionId ||
+        input.subjectId !== candidate.value.subjectId || input.revisionId !== candidate.value.revisionId ||
+        input.evaluatedThroughSequence !== candidate.value.expectedPreviousSequence ||
+        input.cycleId !== candidate.value.payload.cycleId || input.actionId !== candidate.value.payload.actionId ||
+        input.effectKey !== candidate.value.payload.effectKey)) errors.push("Runner result identity does not match its effect candidate.");
   }
   return errors.length > 0 ? invalid("malformed_cycle_result", errors) : valid(input as unknown as RunnerCycleResult);
 }
@@ -622,7 +718,11 @@ function sameValidationIdentity(candidate: RunnerValidatorResult, plan: RunnerCy
     candidate.cycleId === plan.cycleId && candidate.validationId === plan.validationId && candidate.effectKey === plan.effectKey;
 }
 
-function stopped(plan: RunnerCyclePlan, reason: RunnerStopReason): RunnerCycleResult {
+function stopped(
+  plan: RunnerCyclePlan,
+  reason: RunnerStopReason,
+  effectRecordCandidate: RunnerSupervisedEffectCandidate | null = null,
+): RunnerCycleResult {
   return {
     runnerContractVersion: RUNNER_CONTRACT_VERSION,
     outcome: "stopped",
@@ -635,8 +735,7 @@ function stopped(plan: RunnerCyclePlan, reason: RunnerStopReason): RunnerCycleRe
     cycleId: plan.cycleId,
     actionId: plan.actionId,
     effectKey: plan.effectKey,
-    evidence: null,
-    journalAppendCandidate: null,
+    effectRecordCandidate,
   };
 }
 
@@ -661,15 +760,92 @@ function preAuthorizationStop(input: RunnerCycleInput): RunnerStopReason | null 
   if (resolvedModeContext.seatId !== plan.seatId || !sameModeReferences(projectedModes, plan.activatedModes) ||
       !sameModeReferences(resolvedModeContext.modes, plan.activatedModes)) return "mode_context_mismatch";
   if (!input.actionAllowlist.includes(plan.actionId)) return "action_not_allowlisted";
-  if (input.completedEffectKeys.includes(plan.effectKey)) return "effect_already_completed";
+  const priorEffect = projection.effectRecords.find((record) => record.effectKey === plan.effectKey);
+  if (priorEffect?.outcome === "completed") return "effect_already_completed";
+  if (priorEffect?.outcome === "uncertain") return "effect_outcome_uncertain";
   return null;
+}
+
+function effectEvidenceRefs(plan: RunnerCyclePlan, executorResult?: RunnerExecutorResult): string[] {
+  return [...new Set([plan.cycleId, ...(executorResult?.evidenceRefs ?? [])])].slice(0, 16);
+}
+
+function effectSummary(
+  reasonCode: string,
+  executorResult?: RunnerExecutorResult,
+  validatorResult?: RunnerValidatorResult,
+): string {
+  const details = [
+    `Runner outcome: ${reasonCode}.`,
+    executorResult === undefined ? "Executor result unavailable." : `Executor: ${executorResult.summary}`,
+    validatorResult === undefined ? "Validator result unavailable." : `Validator: ${validatorResult.summary}`,
+  ].join(" ");
+  return details.slice(0, 512);
+}
+
+function effectCandidate(
+  plan: RunnerCyclePlan,
+  decision: RunnerPermissionDecision,
+  outcome: "completed" | "uncertain",
+  reasonCode: string,
+  executorResult?: RunnerExecutorResult,
+  validatorResult?: RunnerValidatorResult,
+): RunnerSupervisedEffectCandidate {
+  return {
+    runnerContractVersion: RUNNER_CONTRACT_VERSION,
+    candidateKind: "runner.supervised_effect_record",
+    authority: "non_authoritative",
+    journalSchemaVersion: 5,
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    revisionId: plan.revisionId,
+    expectedPreviousSequence: plan.evaluatedThroughSequence,
+    intendedJournalSequence: plan.evaluatedThroughSequence + 1,
+    payload: {
+      runnerContractVersion: RUNNER_CONTRACT_VERSION,
+      cycleId: plan.cycleId,
+      subjectId: plan.subjectId,
+      revisionId: plan.revisionId,
+      evaluatedThroughSequence: plan.evaluatedThroughSequence,
+      seatId: plan.seatId,
+      actionId: plan.actionId,
+      effectClass: plan.effectClass,
+      effectKey: plan.effectKey,
+      authorizationDecisionId: decision.decisionId,
+      outcome,
+      reasonCode,
+      summary: effectSummary(reasonCode, executorResult, validatorResult),
+      evidenceRefs: effectEvidenceRefs(plan, executorResult),
+    },
+  };
+}
+
+function postDispatchStop(
+  plan: RunnerCyclePlan,
+  decision: RunnerPermissionDecision,
+  reason: Extract<RunnerStopReason,
+    | "executor_failed" | "executor_uncertain" | "executor_malformed" | "executor_identity_mismatch"
+    | "validator_failed" | "validator_malformed" | "validator_identity_mismatch">,
+  executorResult?: RunnerExecutorResult,
+  validatorResult?: RunnerValidatorResult,
+): RunnerContractResult<RunnerCycleResult> {
+  return finalizedResult(stopped(
+    plan,
+    reason,
+    effectCandidate(plan, decision, "uncertain", reason, executorResult, validatorResult),
+  ));
 }
 
 export async function runRunnerCycle(
   input: unknown,
   dependencies: RunnerCycleDependencies,
 ): Promise<RunnerContractResult<RunnerCycleResult>> {
-  const checked = validateRunnerCycleInput(input);
+  let checked: RunnerContractResult<RunnerCycleInput>;
+  try {
+    checked = validateRunnerCycleInput(input);
+  } catch {
+    return invalid("malformed_input", ["Runner cycle input could not be safely inspected."]);
+  }
   if (checked.state === "invalid") return checked;
   const cycle = deepCopyAndFreeze(checked.value);
   const earlyStop = preAuthorizationStop(cycle);
@@ -681,7 +857,12 @@ export async function runRunnerCycle(
   } catch {
     return finalizedResult(stopped(cycle.plan, "authorization_failed"));
   }
-  const checkedDecision = validateRunnerPermissionDecision(rawDecision);
+  let checkedDecision: RunnerContractResult<RunnerPermissionDecision>;
+  try {
+    checkedDecision = validateRunnerPermissionDecision(rawDecision);
+  } catch {
+    return finalizedResult(stopped(cycle.plan, "authorization_malformed"));
+  }
   if (checkedDecision.state === "invalid") return finalizedResult(stopped(cycle.plan, "authorization_malformed"));
   const decision = deepCopyAndFreeze(checkedDecision.value);
   if (!samePlanIdentity(decision, cycle.plan)) return finalizedResult(stopped(cycle.plan, "authorization_stale"));
@@ -692,47 +873,43 @@ export async function runRunnerCycle(
   try {
     rawExecutorResult = await dependencies.execute(cycle.plan, decision);
   } catch {
-    return finalizedResult(stopped(cycle.plan, "executor_failed"));
+    return postDispatchStop(cycle.plan, decision, "executor_failed");
   }
-  const checkedExecutor = validateRunnerExecutorResult(rawExecutorResult);
-  if (checkedExecutor.state === "invalid") return finalizedResult(stopped(cycle.plan, "executor_malformed"));
+  let checkedExecutor: RunnerContractResult<RunnerExecutorResult>;
+  try {
+    checkedExecutor = validateRunnerExecutorResult(rawExecutorResult);
+  } catch {
+    return postDispatchStop(cycle.plan, decision, "executor_malformed");
+  }
+  if (checkedExecutor.state === "invalid") return postDispatchStop(cycle.plan, decision, "executor_malformed");
   const executorResult = deepCopyAndFreeze(checkedExecutor.value);
-  if (!samePlanIdentity(executorResult, cycle.plan)) return finalizedResult(stopped(cycle.plan, "executor_identity_mismatch"));
-  if (executorResult.outcome === "uncertain") return finalizedResult(stopped(cycle.plan, "executor_uncertain"));
-  if (executorResult.outcome === "failed") return finalizedResult(stopped(cycle.plan, "executor_failed"));
+  if (!samePlanIdentity(executorResult, cycle.plan)) return postDispatchStop(cycle.plan, decision, "executor_identity_mismatch");
+  if (executorResult.outcome === "uncertain") return postDispatchStop(cycle.plan, decision, "executor_uncertain", executorResult);
+  if (executorResult.outcome === "failed") return postDispatchStop(cycle.plan, decision, "executor_failed", executorResult);
 
   let rawValidatorResult: unknown;
   try {
     rawValidatorResult = await dependencies.validate(cycle.plan, executorResult);
   } catch {
-    return finalizedResult(stopped(cycle.plan, "validator_failed"));
+    return postDispatchStop(cycle.plan, decision, "validator_failed", executorResult);
   }
-  const checkedValidator = validateRunnerValidatorResult(rawValidatorResult);
-  if (checkedValidator.state === "invalid") return finalizedResult(stopped(cycle.plan, "validator_malformed"));
+  let checkedValidator: RunnerContractResult<RunnerValidatorResult>;
+  try {
+    checkedValidator = validateRunnerValidatorResult(rawValidatorResult);
+  } catch {
+    return postDispatchStop(cycle.plan, decision, "validator_malformed", executorResult);
+  }
+  if (checkedValidator.state === "invalid") return postDispatchStop(cycle.plan, decision, "validator_malformed", executorResult);
   const validatorResult = deepCopyAndFreeze(checkedValidator.value);
-  if (!sameValidationIdentity(validatorResult, cycle.plan)) return finalizedResult(stopped(cycle.plan, "validator_identity_mismatch"));
-  if (validatorResult.outcome === "failed") return finalizedResult(stopped(cycle.plan, "validator_failed"));
-
-  const evidence: RunnerEffectEvidenceCandidate = {
-    runnerContractVersion: RUNNER_CONTRACT_VERSION,
-    candidateKind: "runner.effect_completed",
-    missionId: cycle.plan.missionId,
-    subjectId: cycle.plan.subjectId,
-    revisionId: cycle.plan.revisionId,
-    evaluatedThroughSequence: cycle.plan.evaluatedThroughSequence,
-    intendedJournalSequence: cycle.plan.evaluatedThroughSequence + 1,
-    cycleId: cycle.plan.cycleId,
-    seatId: cycle.plan.seatId,
-    actionId: cycle.plan.actionId,
-    effectClass: cycle.plan.effectClass,
-    effectKey: cycle.plan.effectKey,
-    validationId: cycle.plan.validationId,
-    executorEvidenceRef: executorResult.evidenceRef as string,
-    executorSummary: executorResult.summary,
-    validationSummary: validatorResult.summary,
-  };
-  const appendCandidate = translateRunnerEffectEvidenceCandidate(evidence);
-  if (appendCandidate.state === "invalid") return finalizedResult(stopped(cycle.plan, "validator_malformed"));
+  if (!sameValidationIdentity(validatorResult, cycle.plan)) {
+    return postDispatchStop(cycle.plan, decision, "validator_identity_mismatch", executorResult);
+  }
+  if (validatorResult.outcome === "failed") {
+    return postDispatchStop(cycle.plan, decision, "validator_failed", executorResult, validatorResult);
+  }
+  const completedCandidate = effectCandidate(
+    cycle.plan, decision, "completed", "effect_completed", executorResult, validatorResult,
+  );
   return finalizedResult({
     runnerContractVersion: RUNNER_CONTRACT_VERSION,
     outcome: "advanced",
@@ -745,7 +922,6 @@ export async function runRunnerCycle(
     cycleId: cycle.plan.cycleId,
     actionId: cycle.plan.actionId,
     effectKey: cycle.plan.effectKey,
-    evidence,
-    journalAppendCandidate: appendCandidate.value,
+    effectRecordCandidate: completedCandidate,
   });
 }
