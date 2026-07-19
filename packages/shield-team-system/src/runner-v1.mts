@@ -275,7 +275,13 @@ function arrayShapeErrors(value: unknown, label: string): string[] {
 }
 
 function deepCopyAndFreeze<T>(value: T): T {
-  if (Array.isArray(value)) return Object.freeze(value.map((item) => deepCopyAndFreeze(item))) as T;
+  if (Array.isArray(value)) {
+    const copy: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      copy.push(deepCopyAndFreeze(Object.getOwnPropertyDescriptor(value, String(index))?.value));
+    }
+    return Object.freeze(copy) as T;
+  }
   if (isPlainObject(value)) {
     const copy = Object.fromEntries(Object.keys(value).map((key) => [key, deepCopyAndFreeze(value[key])])) as T;
     return Object.freeze(copy);
@@ -304,8 +310,12 @@ function jsonPayloadErrors(value: unknown): string[] {
     if (visiting.has(current)) { errors.push(`${path} contains a JSON cycle.`); return; }
     visiting.add(current);
     if (Array.isArray(current)) {
-      errors.push(...arrayShapeErrors(current, path));
-      current.forEach((item, index) => visit(item, `${path}[${index}]`, depth + 1));
+      const shapeErrors = arrayShapeErrors(current, path);
+      errors.push(...shapeErrors);
+      if (shapeErrors.length > 0) { visiting.delete(current); return; }
+      for (let index = 0; index < current.length; index += 1) {
+        visit(Object.getOwnPropertyDescriptor(current, String(index))?.value, `${path}[${index}]`, depth + 1);
+      }
     } else if (isPlainObject(current)) {
       if (Object.keys(current).length > 256) errors.push(`${path} exceeds 256 JSON object fields.`);
       for (const key of Reflect.ownKeys(current)) {
@@ -376,21 +386,25 @@ function isoUtcTimestamp(value: unknown): value is string {
 }
 
 function validateStringSet(value: unknown, label: string, allowEmpty: boolean): string[] {
-  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+  if (!Array.isArray(value)) {
     return [`${label} must be ${allowEmpty ? "an" : "a non-empty"} array.`];
   }
   const errors = arrayShapeErrors(value, label);
+  if (errors.length > 0) return errors;
+  if (!allowEmpty && value.length === 0) return [`${label} must be a non-empty array.`];
   const seen = new Set<string>();
-  value.forEach((item, index) => {
+  for (let index = 0; index < value.length; index += 1) {
+    const item = Object.getOwnPropertyDescriptor(value, String(index))?.value;
     if (!identifier(item)) errors.push(`${label}[${index}] is invalid.`);
     else if (seen.has(item)) errors.push(`${label} duplicates ${item}.`);
     else seen.add(item);
-  });
+  }
   return errors;
 }
 
 function validateEffectEvidenceRefs(value: unknown, label: string): string[] {
   const errors = validateStringSet(value, label, false);
+  if (errors.length > 0) return errors;
   if (Array.isArray(value) && value.length > 16) errors.push(`${label} must contain at most 16 references.`);
   return errors;
 }
@@ -398,12 +412,14 @@ function validateEffectEvidenceRefs(value: unknown, label: string): string[] {
 function validateModeReferences(value: unknown, label: string): string[] {
   if (!Array.isArray(value)) return [`${label} must be an array.`];
   const errors = arrayShapeErrors(value, label);
+  if (errors.length > 0) return errors;
   const seen = new Set<string>();
-  value.forEach((item, index) => {
+  for (let index = 0; index < value.length; index += 1) {
+    const item = Object.getOwnPropertyDescriptor(value, String(index))?.value;
     const itemLabel = `${label}[${index}]`;
     const nested = exactFields(item, ["modeId", "modeVersion", "seatId", "activationSource"], itemLabel);
     errors.push(...nested);
-    if (nested.length > 0 || !isPlainObject(item)) return;
+    if (nested.length > 0 || !isPlainObject(item)) continue;
     for (const field of ["modeId", "modeVersion", "seatId", "activationSource"] as const) {
       if (!identifier(item[field])) errors.push(`${itemLabel}.${field} is invalid.`);
     }
@@ -412,7 +428,7 @@ function validateModeReferences(value: unknown, label: string): string[] {
       if (seen.has(key)) errors.push(`${label} contains a duplicate exact mode reference.`);
       else seen.add(key);
     }
-  });
+  }
   return errors;
 }
 
@@ -477,20 +493,24 @@ function validateProjection(input: unknown): RunnerContractResult<RunnerProjecti
   errors.push(...validateModeReferences(input.activatedModes, "Runner projection activatedModes"));
   if (!Array.isArray(input.effectRecords)) errors.push("Runner projection effectRecords must be an array.");
   else {
-    errors.push(...arrayShapeErrors(input.effectRecords, "Runner projection effectRecords"));
-    const effectKeys = new Set<string>();
-    input.effectRecords.forEach((record, index) => {
-      const checked = validateRunnerAuthoritativeEffectRecord(record);
-      if (checked.state === "invalid") errors.push(...checked.errors.map((error) => `effectRecords[${index}]: ${error}`));
-      else {
-        if (checked.value.missionId !== input.missionId || checked.value.subjectId !== input.subjectId ||
-            checked.value.revisionId !== input.revisionId || checked.value.journalSequence > (input.evaluatedThroughSequence as number)) {
-          errors.push(`effectRecords[${index}] does not belong to the exact projection revision and sequence.`);
+    const shapeErrors = arrayShapeErrors(input.effectRecords, "Runner projection effectRecords");
+    errors.push(...shapeErrors);
+    if (shapeErrors.length === 0) {
+      const effectKeys = new Set<string>();
+      for (let index = 0; index < input.effectRecords.length; index += 1) {
+        const record = Object.getOwnPropertyDescriptor(input.effectRecords, String(index))?.value;
+        const checked = validateRunnerAuthoritativeEffectRecord(record);
+        if (checked.state === "invalid") errors.push(...checked.errors.map((error) => `effectRecords[${index}]: ${error}`));
+        else {
+          if (checked.value.missionId !== input.missionId || checked.value.subjectId !== input.subjectId ||
+              checked.value.revisionId !== input.revisionId || checked.value.journalSequence > (input.evaluatedThroughSequence as number)) {
+            errors.push(`effectRecords[${index}] does not belong to the exact projection revision and sequence.`);
+          }
+          if (effectKeys.has(checked.value.effectKey)) errors.push(`effectRecords[${index}] duplicates effectKey ${checked.value.effectKey}.`);
+          effectKeys.add(checked.value.effectKey);
         }
-        if (effectKeys.has(checked.value.effectKey)) errors.push(`effectRecords[${index}] duplicates effectKey ${checked.value.effectKey}.`);
-        effectKeys.add(checked.value.effectKey);
       }
-    });
+    }
   }
   return errors.length > 0 ? invalid("malformed_projection", errors) : valid(input as unknown as RunnerProjectionSnapshot);
 }

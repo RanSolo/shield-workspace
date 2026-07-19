@@ -351,7 +351,7 @@ test("every validator-side post-dispatch failure returns an uncertain supervised
   }
 });
 
-test("runner and supervision reject sparse or extended effect evidence references identically", async () => {
+test("runner and supervision reject malformed effect evidence-reference arrays without throwing", async () => {
   const { result } = await run();
   const valid = result.effectRecordCandidate;
   assert.equal(validateRunnerSupervisedEffectCandidate(valid).state, "valid");
@@ -361,13 +361,44 @@ test("runner and supervision reject sparse or extended effect evidence reference
   sparseRefs.length = 1;
   const extendedRefs = [...valid.payload.evidenceRefs];
   extendedRefs.extra = "not-json-array-data";
-  for (const evidenceRefs of [sparseRefs, extendedRefs]) {
+  const symbolRefs = [...valid.payload.evidenceRefs];
+  symbolRefs[Symbol("hidden-ref")] = "not-json-array-data";
+  const accessorRefs = [];
+  Object.defineProperty(accessorRefs, 0, {
+    enumerable: true,
+    configurable: true,
+    get() { throw new Error("evidenceRefs accessor must not execute"); },
+  });
+  const nonEnumerableRefs = [];
+  Object.defineProperty(nonEnumerableRefs, 0, {
+    enumerable: false,
+    configurable: true,
+    value: "artifact:hidden",
+  });
+  const nullPrototypeRefs = [...valid.payload.evidenceRefs];
+  Object.setPrototypeOf(nullPrototypeRefs, null);
+  class ExtendedArray extends Array {}
+  const nonPlainRefs = new ExtendedArray(...valid.payload.evidenceRefs);
+
+  const malformed = [
+    ["sparse", sparseRefs],
+    ["extended property", extendedRefs],
+    ["symbol property", symbolRefs],
+    ["accessor index", accessorRefs],
+    ["non-enumerable index", nonEnumerableRefs],
+    ["null-prototype array", nullPrototypeRefs],
+    ["non-plain array", nonPlainRefs],
+  ];
+  for (const [label, evidenceRefs] of malformed) {
     const candidate = {
       ...valid,
       payload: { ...valid.payload, evidenceRefs },
     };
-    assert.equal(validateRunnerSupervisedEffectCandidate(candidate).state, "invalid");
-    assert.equal(validateSupervisionEffectCandidate(candidate).state, "invalid");
+    for (const validate of [validateRunnerSupervisedEffectCandidate, validateSupervisionEffectCandidate]) {
+      let checked;
+      assert.doesNotThrow(() => { checked = validate(candidate); }, `${label} must not throw`);
+      assert.equal(checked.state, "invalid", label);
+    }
   }
 });
 
