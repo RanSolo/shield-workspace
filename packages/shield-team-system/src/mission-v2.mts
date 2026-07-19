@@ -2,9 +2,9 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import {
   DELEGATED_INVALIDATION_REASONS,
   evaluateWheelsOffEligibility,
-  verifyWheelsOffDelegationEnvelope,
+  resolveWheelsOffDelegationRevision,
+  type DelegationLogEntry,
   type DelegatedInvalidationReason,
-  type SignedWheelsOffDelegation,
   type WheelsOffEligibility,
   type WheelsOffEvaluation,
 } from "./delegation-v1.mjs";
@@ -195,8 +195,8 @@ export type SupervisedJournalEntry =
     timestamp: EvidenceTimestamp;
     payload: {
       repositoryId: string;
-      delegationState: "active" | "revoked" | "superseded";
-      delegationEnvelope: SignedWheelsOffDelegation;
+      delegationRevisionId: string;
+      delegationLog: DelegationLogEntry[];
       eligibility: WheelsOffEligibility;
       evaluation: WheelsOffEvaluation;
     };
@@ -733,27 +733,26 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       evidence.push(checked.value);
     } else if (input.type === "authorization.delegated_evaluated") {
       if (journalSchemaVersion !== 3 || index !== 1 || governance !== "proposed") return invalid("malformed", "Delegated authorization must be entry 1 of a v3 proposed mission.");
-      const nested = exactFields(input.payload, ["repositoryId", "delegationState", "delegationEnvelope", "eligibility", "evaluation"], `Entry ${index} delegated authorization payload`);
-      if (nested.length > 0 || !identifier(input.payload.repositoryId) || !["active","revoked","superseded"].includes(String(input.payload.delegationState))) return invalid("malformed", ...nested, "Delegated repository or lifecycle state is invalid.");
+      const nested = exactFields(input.payload, ["repositoryId", "delegationRevisionId", "delegationLog", "eligibility", "evaluation"], `Entry ${index} delegated authorization payload`);
+      if (nested.length > 0 || !identifier(input.payload.repositoryId) || !identifier(input.payload.delegationRevisionId) || !Array.isArray(input.payload.delegationLog)) return invalid("malformed", ...nested, "Delegated repository, revision, or log snapshot is invalid.");
       const delegatedPayload = input.payload as Record<string, unknown>;
-      const envelope = delegatedPayload.delegationEnvelope as SignedWheelsOffDelegation;
-      const coulson = registryResult.value.bindings.filter((binding) => binding.seatId === "coulson" && binding.signingKeyRef === envelope?.payload?.signingKeyRef);
-      if (coulson.length !== 1) return invalid("binding_missing", "Delegated authorization requires one matching Coulson binding.");
-      const delegation = verifyWheelsOffDelegationEnvelope(envelope, coulson[0], String(delegatedPayload.repositoryId));
-      if (delegation.state === "invalid") return invalid(delegation.code, ...delegation.errors);
+      const coulson = registryResult.value.bindings.filter((binding) => binding.seatId === "coulson" && binding.missionScope === "*");
+      if (coulson.length !== 1) return invalid("binding_missing", "Delegated authorization requires one repository-wide Coulson binding.");
+      const resolved = resolveWheelsOffDelegationRevision({ entries: delegatedPayload.delegationLog, binding: coulson[0], repositoryId: String(delegatedPayload.repositoryId), delegationRevisionId: String(delegatedPayload.delegationRevisionId) });
+      if (resolved.state === "invalid") return invalid(resolved.code, ...resolved.errors);
       const evaluated = evaluateWheelsOffEligibility({
         brief: briefResult.value,
-        delegation: delegation.value,
+        delegation: resolved.value.delegation,
         eligibility: delegatedPayload.eligibility as WheelsOffEligibility,
         repositoryId: String(delegatedPayload.repositoryId),
-        delegationState: delegatedPayload.delegationState as "active" | "revoked" | "superseded",
+        delegationState: resolved.value.state,
       });
       if (evaluated.state === "invalid") return invalid(evaluated.code, ...evaluated.errors);
       if (canonicalJson(evaluated.value) !== canonicalJson(delegatedPayload.evaluation)) return invalid("eligibility_failed", "Recorded delegation evaluation is not deterministic.");
       authorization = {
         source: "delegated", state: evaluated.value.result === "eligible" ? "authorized" : "ineligible",
-        missionRevisionId: briefResult.value.revisionId, delegationId: delegation.value.delegationId,
-        delegationRevisionId: delegation.value.revisionId, eligibilityRevisionId: evaluated.value.eligibilityRevisionId,
+        missionRevisionId: briefResult.value.revisionId, delegationId: resolved.value.delegation.delegationId,
+        delegationRevisionId: resolved.value.delegation.revisionId, eligibilityRevisionId: evaluated.value.eligibilityRevisionId,
         evaluatedThroughSequence: index, reasons: evaluated.value.reasons,
       };
       if (evaluated.value.result === "eligible") governance = "approved";
@@ -860,24 +859,24 @@ export function planMissionStep(
 export function createDelegatedAuthorizationEntry(input: {
   projection: SupervisedMissionProjection;
   repositoryId: string;
-  delegationEnvelope: SignedWheelsOffDelegation;
+  delegationRevisionId: string;
+  delegationLog: DelegationLogEntry[];
   eligibility: WheelsOffEligibility;
-  delegationState: "active" | "revoked" | "superseded";
   evaluatedAt: EvidenceTimestamp;
 }): ContractResult<SupervisedJournalEntry> {
   if (input.projection.journalSchemaVersion !== 3 || input.projection.lastSequence !== 0 || input.projection.governance.state !== "proposed") return invalid("governance_denied", "Delegated authorization must immediately follow a v3 mission begin.");
   const timeErrors = timestampErrors(input.evaluatedAt, "Delegated evaluation timestamp"); if (timeErrors.length) return invalid("malformed", ...timeErrors);
-  const coulson = input.projection.trustedBindings.filter((binding) => binding.seatId === "coulson" && binding.signingKeyRef === input.delegationEnvelope.payload.signingKeyRef);
-  if (coulson.length !== 1) return invalid("binding_missing", "Delegated authorization requires one matching Coulson binding.");
-  const delegation = verifyWheelsOffDelegationEnvelope(input.delegationEnvelope, coulson[0], input.repositoryId);
-  if (delegation.state === "invalid") return invalid(delegation.code, ...delegation.errors);
-  const evaluation = evaluateWheelsOffEligibility({ brief: input.projection.brief, delegation: delegation.value, eligibility: input.eligibility, repositoryId: input.repositoryId, delegationState: input.delegationState });
+  const coulson = input.projection.trustedBindings.filter((binding) => binding.seatId === "coulson" && binding.missionScope === "*");
+  if (coulson.length !== 1) return invalid("binding_missing", "Delegated authorization requires one repository-wide Coulson binding.");
+  const resolved = resolveWheelsOffDelegationRevision({ entries: input.delegationLog, binding: coulson[0], repositoryId: input.repositoryId, delegationRevisionId: input.delegationRevisionId });
+  if (resolved.state === "invalid") return invalid(resolved.code, ...resolved.errors);
+  const evaluation = evaluateWheelsOffEligibility({ brief: input.projection.brief, delegation: resolved.value.delegation, eligibility: input.eligibility, repositoryId: input.repositoryId, delegationState: resolved.value.state });
   if (evaluation.state === "invalid") return invalid(evaluation.code, ...evaluation.errors);
   return valid({
     schemaVersion: 3,
     entryId: `entry:${input.projection.missionId}:1`, missionId: input.projection.missionId, sequence: 1,
     type: "authorization.delegated_evaluated", timestamp: input.evaluatedAt,
-    payload: { repositoryId: input.repositoryId, delegationState: input.delegationState, delegationEnvelope: input.delegationEnvelope, eligibility: input.eligibility, evaluation: evaluation.value },
+    payload: { repositoryId: input.repositoryId, delegationRevisionId: input.delegationRevisionId, delegationLog: input.delegationLog, eligibility: input.eligibility, evaluation: evaluation.value },
   });
 }
 

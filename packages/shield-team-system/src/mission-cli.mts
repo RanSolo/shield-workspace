@@ -155,18 +155,14 @@ async function begin(args: string[]): Promise<number> {
     const eligibility = await jsonFile(resolve(root, required(options, "--eligibility")), "Wheels Off eligibility") as WheelsOffEligibility;
     const coulson = bindings.find(({ seatId }) => seatId === "coulson"); if (!coulson) throw new MissionCliError("Configured Coulson binding is missing.", 1);
     const log = unwrap(await readDelegationLog({ repositoryRoot: root, repositoryId: config.repositoryId, binding: coulson }));
-    const grants = log.entries.filter((entry) => entry.type === "delegation.granted" && entry.envelope.payload.revisionId === delegationRef);
-    if (grants.length !== 1) throw new MissionCliError("delegation_missing: Exact delegation revision is missing or ambiguous.", 1);
-    const envelope = grants[0].envelope as SignedWheelsOffDelegation;
-    const delegationState = log.active.some(({ revisionId }) => revisionId === delegationRef) ? "active" : log.revokedRevisionIds.includes(delegationRef) ? "revoked" : "superseded";
     const begun = createMissionBegunEntry(brief, bindings, 3);
     const begunProjection = unwrap(replaySupervisedMissionJournal([begun]));
     const delegated = unwrap(createDelegatedAuthorizationEntry({
       projection: begunProjection,
       repositoryId: config.repositoryId,
-      delegationEnvelope: envelope,
+      delegationRevisionId: delegationRef,
+      delegationLog: log.entries,
       eligibility,
-      delegationState,
       evaluatedAt: { value: new Date().toISOString(), provenance: "hostTrusted" },
     }));
     appended = unwrap(await initializeSupervisedMissionJournal({ ...missionPaths(root, config, brief.missionId), entries: [begun, delegated] }));

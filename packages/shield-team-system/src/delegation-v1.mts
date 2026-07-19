@@ -77,8 +77,9 @@ export interface DelegationLogProjection {
   supersededRevisionIds: string[];
   lastSequence: number;
 }
-export interface EligibilityDependency { dependencyId: string; revisionId: string; status: "satisfied"; }
-export interface EligibilityArchitectureDecision { decisionId: string; revisionId: string; status: "resolved"; }
+export interface EligibilityDependency { dependencyId: string; revisionId: string; status: "satisfied" | "unsatisfied"; }
+export interface EligibilityArchitectureDecision { decisionId: string; revisionId: string; status: "resolved" | "unresolved"; }
+export type WheelsOffRequestedAuthority = "implementation" | "review_publication" | "merge" | "deploy" | "release";
 export interface WheelsOffEligibilityContent {
   schemaVersion: 1;
   eligibilityId: string;
@@ -94,7 +95,7 @@ export interface WheelsOffEligibilityContent {
   acceptanceChecks: string[];
   dependencies: EligibilityDependency[];
   architecturalDecisions: EligibilityArchitectureDecision[];
-  requestedAuthorities: ["implementation", "review_publication"];
+  requestedAuthorities: WheelsOffRequestedAuthority[];
   requireSimmons: boolean;
 }
 export interface WheelsOffEligibility extends WheelsOffEligibilityContent { revisionId: string; }
@@ -223,6 +224,25 @@ export function replayDelegationLog(input: unknown, binding: TrustedCoulsonBindi
   return valid({entries,active:[...active.values()],revokedRevisionIds:[...revoked],supersededRevisionIds:[...superseded],lastSequence:entries.length-1});
 }
 
+export function resolveWheelsOffDelegationRevision(input: {
+  entries: unknown;
+  binding: TrustedCoulsonBinding;
+  repositoryId: string;
+  delegationRevisionId: string;
+}): ContractResult<{ delegation: WheelsOffDelegation; state: "active" | "revoked" | "superseded" }> {
+  const projection = replayDelegationLog(input.entries, input.binding, input.repositoryId);
+  if (projection.state === "invalid") return projection;
+  const grants = projection.value.entries.filter((entry) => entry.type === "delegation.granted" && entry.envelope.payload.revisionId === input.delegationRevisionId);
+  if (grants.length !== 1) return invalid("delegation_missing", "Exact delegation revision is missing or ambiguous in the verified log snapshot.");
+  const delegation = grants[0].envelope.payload as WheelsOffDelegation;
+  const state = projection.value.active.some(({ revisionId }) => revisionId === input.delegationRevisionId)
+    ? "active"
+    : projection.value.revokedRevisionIds.includes(input.delegationRevisionId)
+      ? "revoked"
+      : "superseded";
+  return valid({ delegation, state });
+}
+
 export function createDelegationLogEntry(envelope: SignedWheelsOffDelegation | SignedWheelsOffRevocation, type: "delegation.granted"|"delegation.revoked"): DelegationLogEntry {
   const payload=envelope.payload; const sequence=payload.logSequence; const timestamp=type==="delegation.granted"?(payload as WheelsOffDelegation).issuedAt:(payload as WheelsOffRevocation).revokedAt;
   return {schemaVersion:1,entryId:`delegation-entry:${sequence}`,sequence,type,timestamp,envelope} as DelegationLogEntry;
@@ -233,10 +253,11 @@ export function validateWheelsOffEligibility(input: unknown): ContractResult<Whe
   const errors=exact(input,fields,"Eligibility"); if(!plain(input)) return invalid("malformed",...errors);
   if(input.schemaVersion!==1) errors.push("Eligibility schemaVersion is unsupported.");
   for(const field of ["eligibilityId","missionId","missionRevisionId","delegationId","delegationRevisionId","repositoryId","issueId","issueRevisionId","issueSourceRef","revisionId"]) if(!id(input[field])) errors.push(`Eligibility ${field} is invalid.`);
-  for(const field of ["scopeItems","acceptanceChecks"]){const value=input[field];if(!Array.isArray(value)||value.length===0||value.length>64||value.some((item)=>typeof item!=="string"||item.trim()===""||item.length>512)||new Set(value).size!==value.length) errors.push(`Eligibility ${field} must contain unique bounded non-empty strings.`);}
-  const validateRecords=(value:unknown,status:string,label:string)=>{if(!Array.isArray(value)||value.length>64){errors.push(`Eligibility ${label} is invalid.`);return;} const identities=new Set<string>(); value.forEach((record,index)=>{const nested=exact(record,[label==="dependencies"?"dependencyId":"decisionId","revisionId","status"],`${label}[${index}]`);errors.push(...nested);if(plain(record)){const idField=label==="dependencies"?"dependencyId":"decisionId";const identity=String(record[idField]);if(identities.has(identity))errors.push(`${label}[${index}] is duplicated.`);identities.add(identity);if(!id(record[idField])||!id(record.revisionId)||record.status!==status)errors.push(`${label}[${index}] is unresolved or invalid.`);}});};
-  validateRecords(input.dependencies,"satisfied","dependencies"); validateRecords(input.architecturalDecisions,"resolved","architecturalDecisions");
-  if(canonicalDelegationJson(input.requestedAuthorities)!==canonicalDelegationJson(["implementation","review_publication"])) errors.push("Eligibility requestedAuthorities is unsupported.");
+  for(const field of ["scopeItems","acceptanceChecks"]){const value=input[field];if(!Array.isArray(value)||value.length>64||value.some((item)=>typeof item!=="string"||item.trim()===""||item.length>512)||new Set(value).size!==value.length) errors.push(`Eligibility ${field} must be a bounded collection of unique non-empty strings.`);}
+  const validateRecords=(value:unknown,statuses:readonly string[],label:string)=>{if(!Array.isArray(value)||value.length>64){errors.push(`Eligibility ${label} is invalid.`);return;} const identities=new Set<string>(); value.forEach((record,index)=>{const nested=exact(record,[label==="dependencies"?"dependencyId":"decisionId","revisionId","status"],`${label}[${index}]`);errors.push(...nested);if(plain(record)){const idField=label==="dependencies"?"dependencyId":"decisionId";const identity=String(record[idField]);if(identities.has(identity))errors.push(`${label}[${index}] is duplicated.`);identities.add(identity);if(!id(record[idField])||!id(record.revisionId)||!statuses.includes(String(record.status)))errors.push(`${label}[${index}] has an unknown or invalid state.`);}});};
+  validateRecords(input.dependencies,["satisfied","unsatisfied"],"dependencies"); validateRecords(input.architecturalDecisions,["resolved","unresolved"],"architecturalDecisions");
+  const authorities=input.requestedAuthorities; const authoritySet=new Set(["implementation","review_publication","merge","deploy","release"]);
+  if(!Array.isArray(authorities)||authorities.length>5||authorities.some((item)=>typeof item!=="string"||!authoritySet.has(item))||new Set(authorities).size!==authorities.length) errors.push("Eligibility requestedAuthorities contains unknown or duplicate authority.");
   if(typeof input.requireSimmons!=="boolean") errors.push("Eligibility requireSimmons is invalid.");
   if(errors.length) return invalid("malformed",...errors); const value=input as unknown as WheelsOffEligibility;
   return value.revisionId===revision(withoutRevision(value))?valid(value):invalid("revision_mismatch","Eligibility revisionId does not match canonical content.");

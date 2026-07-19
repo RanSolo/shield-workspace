@@ -9,6 +9,7 @@ import {
   evaluateWheelsOffEligibility,
   replayDelegationLog,
   validateWheelsOffDelegation,
+  validateWheelsOffEligibility,
 } from "../dist/delegation-v1.mjs";
 import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 
@@ -68,4 +69,24 @@ test("eligibility uses a fixed ordered rule table and all risk flags fail closed
     assert.equal(result.value.result, "ineligible", risk);
     assert.ok(result.value.reasons.includes("risk_not_delegable"));
   }
+});
+
+test("closed negative eligibility facts produce ordered auditable rule failures", () => {
+  const auth = authority(); const grant = delegation(auth);
+  const snapshot = eligibility(brief, grant, {
+    scopeItems: [],
+    acceptanceChecks: [],
+    dependencies: [{ dependencyId: "issue:27", revisionId: "sha256:merged", status: "unsatisfied" }],
+    architecturalDecisions: [{ decisionId: "fury:issue39", revisionId: "sha256:pending", status: "unresolved" }],
+    requestedAuthorities: ["implementation", "review_publication", "merge"],
+  });
+  assert.equal(validateWheelsOffEligibility(snapshot).state, "valid");
+  const result = evaluateWheelsOffEligibility({ brief, delegation: grant, eligibility: snapshot, repositoryId: grant.repositoryId, delegationState: "active" });
+  assert.equal(result.state, "valid");
+  assert.equal(result.value.result, "ineligible");
+  assert.deepEqual(result.value.rules.filter(({ state }) => state === "failed").map(({ ruleId }) => ruleId), ["bounded_scope", "dependencies_satisfied", "architecture_resolved", "authority_bounded"]);
+  assert.deepEqual(result.value.reasons, ["eligibility_ambiguous", "dependency_unsatisfied", "architecture_unresolved", "authority_not_delegable"]);
+  const { revisionId: _revisionId, ...content } = snapshot;
+  assert.equal(validateWheelsOffEligibility(createWheelsOffEligibility({ ...content, dependencies: [{ dependencyId: "issue:27", revisionId: "sha256:merged", status: "unknown" }] })).state, "invalid");
+  assert.equal(validateWheelsOffEligibility(createWheelsOffEligibility({ ...content, requestedAuthorities: ["implementation", "database_admin"] })).state, "invalid");
 });
