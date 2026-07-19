@@ -2,6 +2,60 @@ import { execFileSync } from "node:child_process";
 
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
 
+const RECEIPT_FIELDS = Object.freeze([
+  "schemaVersion",
+  "repositoryOwner",
+  "repositoryName",
+  "baseBranch",
+  "branchSlug",
+  "artifactRevisionId",
+  "prNumber",
+  "prUrl",
+  "state",
+  "isDraft",
+]);
+const IMMUTABLE_GIT_REVISION = /^[0-9a-f]{40,64}$/;
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype;
+}
+
+export function validatePRWorkspaceReceipt(receipt, expected) {
+  if (!isPlainObject(receipt) || !isPlainObject(expected)) {
+    return { state: "invalid", reason: "receipt_and_expected_workspace_required" };
+  }
+  if (Object.keys(receipt).length !== RECEIPT_FIELDS.length ||
+      RECEIPT_FIELDS.some((field) => !Object.hasOwn(receipt, field))) {
+    return { state: "invalid", reason: "receipt_shape_mismatch" };
+  }
+  const expectedFields = [
+    "repositoryOwner", "repositoryName", "baseBranch", "branchSlug", "artifactRevisionId",
+  ];
+  if (expectedFields.some((field) => typeof expected[field] !== "string" || expected[field].length === 0)) {
+    return { state: "invalid", reason: "expected_workspace_invalid" };
+  }
+  if (receipt.schemaVersion !== 1 || receipt.state !== "OPEN" || receipt.isDraft !== true ||
+      !Number.isInteger(receipt.prNumber) || receipt.prNumber < 1 ||
+      typeof receipt.prUrl !== "string" || receipt.prUrl.length === 0 ||
+      !IMMUTABLE_GIT_REVISION.test(receipt.artifactRevisionId)) {
+    return { state: "invalid", reason: "receipt_value_invalid" };
+  }
+  for (const field of expectedFields) {
+    if (receipt[field] !== expected[field]) {
+      return { state: "invalid", reason: `receipt_${field}_mismatch` };
+    }
+  }
+  if (Object.hasOwn(expected, "prNumber") && receipt.prNumber !== expected.prNumber) {
+    return { state: "invalid", reason: "receipt_prNumber_mismatch" };
+  }
+  const expectedUrl = `https://github.com/${expected.repositoryOwner}/${expected.repositoryName}/pull/${receipt.prNumber}`;
+  if (receipt.prUrl !== expectedUrl) {
+    return { state: "invalid", reason: "receipt_prUrl_mismatch" };
+  }
+  return { state: "valid", receipt: Object.freeze({ ...receipt }) };
+}
+
 export function defaultRun(executable, args, options = {}) {
   try {
     const stdout = execFileSync(executable, args, {
@@ -51,7 +105,7 @@ function readMatchingPRs(run, commands, plan, cwd) {
     [
       "pr", "list", "--repo", `${plan.repositoryOwner}/${plan.repositoryName}`,
       "--head", plan.branchSlug, "--state", "all",
-      "--json", "number,title,url,isDraft,state,headRefName,baseRefName",
+      "--json", "number,title,url,isDraft,state,headRefName,headRefOid,baseRefName",
     ],
     { cwd },
   );
@@ -73,8 +127,34 @@ function readMatchingPRs(run, commands, plan, cwd) {
       value.headRefName === plan.branchSlug &&
       value.baseRefName === plan.baseBranch,
   );
+  if (values.length > 0 && matches.length === 0) {
+    return { state: "error", reason: "pr_lookup_mismatch" };
+  }
   if (matches.length > 1) return { state: "error", reason: "multiple_matching_prs" };
   return { state: "ok", pr: matches[0] ?? null };
+}
+
+function verifiedReceipt(plan, artifactRevisionId, pr) {
+  const candidate = {
+    schemaVersion: 1,
+    repositoryOwner: plan.repositoryOwner,
+    repositoryName: plan.repositoryName,
+    baseBranch: pr?.baseRefName,
+    branchSlug: pr?.headRefName,
+    artifactRevisionId: pr?.headRefOid,
+    prNumber: pr?.number,
+    prUrl: pr?.url,
+    state: pr?.state,
+    isDraft: pr?.isDraft,
+  };
+  return validatePRWorkspaceReceipt(candidate, {
+    repositoryOwner: plan.repositoryOwner,
+    repositoryName: plan.repositoryName,
+    baseBranch: plan.baseBranch,
+    branchSlug: plan.branchSlug,
+    artifactRevisionId,
+    ...(Number.isInteger(pr?.number) ? { prNumber: pr.number } : {}),
+  });
 }
 
 /**
@@ -125,6 +205,12 @@ export function createOrUpdatePR(plan, options = {}) {
     return blocked("mission_brief_not_committed", commands);
   }
 
+  const revision = call(run, commands, "git", ["rev-parse", "HEAD"], { cwd });
+  const artifactRevisionId = revision.stdout.trim();
+  if (revision.exitCode !== 0 || !IMMUTABLE_GIT_REVISION.test(artifactRevisionId)) {
+    return blocked("artifact_revision_unavailable", commands);
+  }
+
   const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
   if (push.exitCode !== 0) return blocked("branch_push_failed", commands);
 
@@ -147,14 +233,18 @@ export function createOrUpdatePR(plan, options = {}) {
 
     const verified = readMatchingPRs(run, commands, plan, cwd);
     if (verified.state === "error") return blocked(verified.reason, commands);
-    if (!verified.pr?.url || verified.pr.isDraft !== true || verified.pr.state !== "OPEN") {
+    const receipt = verified.state === "ok"
+      ? verifiedReceipt(plan, artifactRevisionId, verified.pr)
+      : { state: "invalid" };
+    if (receipt.state !== "valid") {
       return blocked("created_pr_failed_readback", commands);
     }
     return {
       state: "success",
       action: "created_draft_pr",
-      prNumber: verified.pr.number,
-      prUrl: verified.pr.url,
+      prNumber: receipt.receipt.prNumber,
+      prUrl: receipt.receipt.prUrl,
+      receipt: receipt.receipt,
       commands,
     };
   }
@@ -173,11 +263,18 @@ export function createOrUpdatePR(plan, options = {}) {
     { cwd, input: body },
   );
   if (edited.exitCode !== 0) return blocked("pr_update_failed", commands);
+  const verified = readMatchingPRs(run, commands, plan, cwd);
+  if (verified.state === "error") return blocked(verified.reason, commands);
+  const receipt = verifiedReceipt(plan, artifactRevisionId, verified.pr);
+  if (receipt.state !== "valid" || receipt.receipt.prNumber !== lookup.pr.number) {
+    return blocked("updated_pr_failed_readback", commands);
+  }
   return {
     state: "reused",
     action: "updated_existing_draft_pr",
-    prNumber: lookup.pr.number,
-    prUrl: lookup.pr.url,
+    prNumber: receipt.receipt.prNumber,
+    prUrl: receipt.receipt.prUrl,
+    receipt: receipt.receipt,
     commands,
   };
 }

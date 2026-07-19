@@ -54,6 +54,9 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(adapter.ADAPTER_CONTRACT_VERSION, 1);
   assert.equal(typeof adapter.validateAdapterCandidate, "function");
   assert.equal(typeof github.deliverGitHubCommunication, "function");
+  assert.equal(typeof github.prepareDeliveryWorkspaceForDispatch, "function");
+  assert.equal(typeof github.validatePRWorkspaceReceipt, "function");
+  assert.equal(typeof github.renderMissionHandoff, "function");
 });
 
 test("blocks undocumented deep package imports", async () => {
@@ -90,6 +93,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/adapter-v1.mjs",
     "dist/adapter-v1.d.mts",
     "github/adapter-v1.mjs",
+    "github/delivery-workspace.mjs",
+    "github/pr-workspace.mjs",
     "public/github.mjs",
     "public/github.d.mts",
     "dist/cli.mjs",
@@ -127,7 +132,15 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { SUPERVISED_JOURNAL_SCHEMA_VERSION, createSupervisedMissionBrief, type SupervisedMissionBrief } from "@shield/team-system/supervision";
     import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
-    import { deliverGitHubCommunication, type JournaledCommunicationRequest } from "@shield/team-system/github";
+    import {
+      deliverGitHubCommunication,
+      prepareDeliveryWorkspaceForDispatch,
+      renderMissionHandoff,
+      validatePRWorkspaceReceipt,
+      type DeliveryWorkspaceResult,
+      type JournaledCommunicationRequest,
+      type PRWorkspaceReceipt,
+    } from "@shield/team-system/github";
 
     const schema: 2 = MISSION_SCHEMA_VERSION;
     const state: MissionState = "approved";
@@ -153,6 +166,11 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const adapterCandidate = null as unknown as AdapterCandidateEnvelope;
     const journaledRequest = null as unknown as JournaledCommunicationRequest;
     const deliver = deliverGitHubCommunication;
+    const prepareWorkspace = prepareDeliveryWorkspaceForDispatch;
+    const validateReceipt = validatePRWorkspaceReceipt;
+    const renderHandoff = renderMissionHandoff;
+    const workspaceReceipt = null as unknown as PRWorkspaceReceipt;
+    const workspaceResult = null as unknown as DeliveryWorkspaceResult;
     validateMissionWorkspaceInput(input);
     const validResume: MissionDecisionEvent = {
       schemaVersion: 2, eventId: "event-1", missionId: "mission-1", sequence: 1,
@@ -164,7 +182,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, supervisedBrief, createBrief, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, journaledRequest, deliver, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, supervisedBrief, createBrief, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, journaledRequest, deliver, prepareWorkspace, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

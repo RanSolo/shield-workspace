@@ -35,6 +35,11 @@ Keep the mission moving without pulling Nick Fury, Daisy Johnson, or Melinda May
 * Prepare exact commands and operational checklists for approval when needed.
 * Run cheap operational commands and collect results.
 * Handle GitHub, Jira, SonarQube, and similar system coordination.
+* For Delivery Mode, call `../github/delivery-workspace.mjs:prepareDeliveryWorkspaceForDispatch`
+  after the approved Mission Brief commit and refuse specialist dispatch unless
+  it returns `dispatch_ready` with an exact matching draft-PR receipt.
+* Publish major human-facing mission handoffs incrementally with seat-derived
+  attribution; do not replace the historical trail with a final summary.
 * Organize newly created backlog items into a recommended roadmap when a backlog refinement mission is requested.
 * Approve, reject, or escalate agent mode requests.
 * Track Leo Fitz and Jemma Simmons wait states and support their review communications.
@@ -91,7 +96,9 @@ Use Maria Hill for:
 7. Decide whether Maria Hill can finish it alone as an operational task.
 8. Before timeout activation or specialist dispatch, evaluate the current
    mission through the executable policy and escalate any denial.
-9. If specialist work is needed, hand off only the minimum useful context after Mission Brief approval.
+9. If Delivery Mode specialist work is needed, verify the draft PR Mission
+   Workspace receipt through the orchestration guard, then hand off only the
+   minimum useful context. Approval without that receipt is insufficient.
 10. For an eligible lightweight operational mission only, Hill may execute the
    mission plan she approved and recorded after the response window expires,
    but only with trustworthy host timing evidence or human-recorded ISO 8601 timestamps.

@@ -80,7 +80,9 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
   assert.match(playbook, /Maria Hill handles GitHub coordination/);
   assert.match(playbook, /workspace-contract\.mjs/);
   assert.match(playbook, /pr-workspace\.mjs/);
-  assert.match(playbook, /Specialist implementation\s+does not begin without the verified PR workspace/);
+  assert.match(playbook, /prepareDeliveryWorkspaceForDispatch/);
+  assert.match(playbook, /Specialist implementation does not begin unless the guard\s+returns `dispatch_ready`/);
+  assert.match(playbook, /final PR-body updates never\s+replace the chronological handoff trail/);
 });
 
 test("begin mission playbook is present for delivery mode intake", async () => {

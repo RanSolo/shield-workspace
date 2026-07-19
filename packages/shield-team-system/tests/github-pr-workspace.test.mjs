@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { createOrUpdatePR } from "../github/pr-workspace.mjs";
 
+const head = "0123456789012345678901234567890123456789";
+
 function plan() {
   return {
     repositoryOwner: "RanSolo",
@@ -33,7 +35,8 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
     ok(plan().branchSlug),
     ok(),
     ok(plan().missionBriefPath),
-    ok("abc123"),
+    ok(head),
+    ok(head),
     ok(),
     ok("[]"),
     ok("https://github.com/RanSolo/shield-workspace/pull/4"),
@@ -44,6 +47,7 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
       isDraft: true,
       state: "OPEN",
       headRefName: plan().branchSlug,
+      headRefOid: head,
       baseRefName: "main",
     }])),
   ]);
@@ -51,18 +55,20 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
 
   assert.equal(result.state, "success");
   assert.equal(result.prNumber, 4);
+  assert.equal(result.receipt.artifactRevisionId, head);
   assert.deepEqual(run.calls.map(({ executable, args }) => [executable, args[0], args[1]]), [
     ["git", "branch", "--show-current"],
     ["git", "status", "--porcelain"],
     ["git", "ls-files", "--error-unmatch"],
     ["git", "log", "-1"],
+    ["git", "rev-parse", "HEAD"],
     ["git", "push", "-u"],
     ["gh", "pr", "list"],
     ["gh", "pr", "create"],
     ["gh", "pr", "list"],
   ]);
-  assert.equal(run.calls[6].options.input, "Mission body");
-  assert.ok(run.calls[6].args.includes("--draft"));
+  assert.equal(run.calls[7].options.input, "Mission body");
+  assert.ok(run.calls[7].args.includes("--draft"));
 });
 
 test("reuses exactly one open draft PR and updates its body", () => {
@@ -73,17 +79,19 @@ test("reuses exactly one open draft PR and updates its body", () => {
     isDraft: true,
     state: "OPEN",
     headRefName: plan().branchSlug,
+    headRefOid: head,
     baseRefName: "main",
   }];
   const run = runner([
-    ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok("abc123"), ok(),
-    ok(JSON.stringify(existing)), ok(),
+    ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
+    ok(JSON.stringify(existing)), ok(), ok(JSON.stringify(existing)),
   ]);
   const result = createOrUpdatePR(plan(), { run, body: "Updated body" });
   assert.equal(result.state, "reused");
   assert.equal(result.prNumber, 4);
-  assert.deepEqual(run.calls.at(-1).args.slice(0, 4), ["pr", "edit", "4", "--repo"]);
-  assert.equal(run.calls.at(-1).options.input, "Updated body");
+  assert.deepEqual(run.calls.at(-2).args.slice(0, 4), ["pr", "edit", "4", "--repo"]);
+  assert.equal(run.calls.at(-2).options.input, "Updated body");
+  assert.equal(result.receipt.prNumber, 4);
 });
 
 test("blocks on unsafe repository state and ambiguous or non-draft PRs", () => {
@@ -92,13 +100,14 @@ test("blocks on unsafe repository state and ambiguous or non-draft PRs", () => {
 
   for (const prs of [
     [
-      { number: 4, url: "u1", isDraft: true, state: "OPEN", headRefName: plan().branchSlug, baseRefName: "main" },
-      { number: 5, url: "u2", isDraft: true, state: "OPEN", headRefName: plan().branchSlug, baseRefName: "main" },
+      { number: 4, url: "u1", isDraft: true, state: "OPEN", headRefName: plan().branchSlug, headRefOid: head, baseRefName: "main" },
+      { number: 5, url: "u2", isDraft: true, state: "OPEN", headRefName: plan().branchSlug, headRefOid: head, baseRefName: "main" },
     ],
-    [{ number: 4, url: "u1", isDraft: false, state: "OPEN", headRefName: plan().branchSlug, baseRefName: "main" }],
+    [{ number: 4, url: "u1", isDraft: false, state: "OPEN", headRefName: plan().branchSlug, headRefOid: head, baseRefName: "main" }],
+    [{ number: 4, url: "u1", isDraft: true, state: "OPEN", headRefName: "other/branch", headRefOid: head, baseRefName: "main" }],
   ]) {
     const run = runner([
-      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok("abc123"), ok(), ok(JSON.stringify(prs)),
+      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(), ok(JSON.stringify(prs)),
     ]);
     assert.equal(createOrUpdatePR(plan(), { run, body: "body" }).state, "blocked");
   }
@@ -107,15 +116,15 @@ test("blocks on unsafe repository state and ambiguous or non-draft PRs", () => {
 test("lookup, creation, and readback failures never fabricate a PR URL", () => {
   const cases = [
     [
-      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok("abc123"), ok(),
+      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
       { exitCode: 1, stdout: "", stderr: "offline" },
     ],
     [
-      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok("abc123"), ok(),
+      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
       ok("[]"), { exitCode: 1, stdout: "", stderr: "denied" },
     ],
     [
-      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok("abc123"), ok(),
+      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
       ok("[]"), ok("created"), ok("[]"),
     ],
   ];
