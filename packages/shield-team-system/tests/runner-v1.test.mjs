@@ -24,6 +24,7 @@ import {
   createSupervisedMissionBrief,
   planMissionStep,
   replaySupervisedMissionJournal,
+  validateRunnerSupervisedEffectCandidate as validateSupervisionEffectCandidate,
 } from "../dist/mission-v2.mjs";
 
 const revisionId = "0123456789012345678901234567890123456789";
@@ -350,6 +351,26 @@ test("every validator-side post-dispatch failure returns an uncertain supervised
   }
 });
 
+test("runner and supervision reject sparse or extended effect evidence references identically", async () => {
+  const { result } = await run();
+  const valid = result.effectRecordCandidate;
+  assert.equal(validateRunnerSupervisedEffectCandidate(valid).state, "valid");
+  assert.equal(validateSupervisionEffectCandidate(valid).state, "valid");
+
+  const sparseRefs = [];
+  sparseRefs.length = 1;
+  const extendedRefs = [...valid.payload.evidenceRefs];
+  extendedRefs.extra = "not-json-array-data";
+  for (const evidenceRefs of [sparseRefs, extendedRefs]) {
+    const candidate = {
+      ...valid,
+      payload: { ...valid.payload, evidenceRefs },
+    };
+    assert.equal(validateRunnerSupervisedEffectCandidate(candidate).state, "invalid");
+    assert.equal(validateSupervisionEffectCandidate(candidate).state, "invalid");
+  }
+});
+
 function keyBinding(seatId, humanPrincipalId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
@@ -468,6 +489,7 @@ function runnerInputFromProjection(projection, overrides = {}) {
 
 test("journal v5 append and replay make an uncertain dispatched effect block the next invocation", async () => {
   const mission = approvedRunningV5Mission();
+  assert.equal(mission.projection.execution.status, "running");
   const first = await run(runnerInputFromProjection(mission.projection), {
     execute: () => { throw new Error("connection lost after dispatch"); },
   });

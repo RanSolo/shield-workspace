@@ -393,6 +393,28 @@ function timestampErrors(value: unknown, label: string): string[] {
   return errors;
 }
 
+function arrayShapeErrors(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    return [`${label} must be a plain array.`];
+  }
+  const errors: string[] = [];
+  for (const field of Reflect.ownKeys(value)) {
+    if (field === "length") continue;
+    if (typeof field !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(field)) {
+      errors.push(`${label} has unknown field: ${String(field)}.`);
+      continue;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
+      errors.push(`${label}[${field}] must be an enumerable data field.`);
+    }
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) errors.push(`${label} must not contain sparse positions.`);
+  }
+  return errors;
+}
+
 function executionEffectPayloadErrors(value: unknown, label: string): string[] {
   const fields = [
     "runnerContractVersion", "cycleId", "subjectId", "revisionId", "evaluatedThroughSequence",
@@ -416,9 +438,15 @@ function executionEffectPayloadErrors(value: unknown, label: string): string[] {
   }
   if (value.outcome !== "completed" && value.outcome !== "uncertain") errors.push(`${label}.outcome is unsupported.`);
   if (!nonEmpty(value.summary)) errors.push(`${label}.summary must be non-empty and bounded.`);
-  if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.length === 0 || value.evidenceRefs.length > 16) {
-    errors.push(`${label}.evidenceRefs must contain between 1 and 16 references.`);
-  } else {
+  const evidenceRefShapeErrors = arrayShapeErrors(value.evidenceRefs, `${label}.evidenceRefs`);
+  errors.push(...evidenceRefShapeErrors);
+  if (evidenceRefShapeErrors.length > 0) {
+    // Shape failures are terminal for element inspection so accessors are never invoked.
+  } else if (Array.isArray(value.evidenceRefs)) {
+    if (value.evidenceRefs.length === 0 || value.evidenceRefs.length > 16) {
+      errors.push(`${label}.evidenceRefs must contain between 1 and 16 references.`);
+      return errors;
+    }
     const refs = new Set<string>();
     value.evidenceRefs.forEach((ref, index) => {
       if (!identifier(ref)) errors.push(`${label}.evidenceRefs[${index}] is invalid.`);
@@ -973,6 +1001,12 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (governance !== "approved" || authorization.state !== "authorized") {
         return invalid("governance_denied", `Entry ${index} execution effect requires active mission authorization.`);
       }
+      if (execution !== "running") {
+        return invalid("execution_not_running", `Entry ${index} execution effect requires running execution.`);
+      }
+      if (current.readiness.execute.state !== "ready" || current.readiness.execute.evaluatedThroughSequence !== index - 1) {
+        return invalid("readiness_blocked", `Entry ${index} execution effect requires current execute readiness at the immediately previous sequence.`);
+      }
       const effectErrors = executionEffectPayloadErrors(input.payload, `Entry ${index} execution effect payload`);
       if (effectErrors.length > 0) return invalid("malformed", ...effectErrors);
       const effect = input.payload as unknown as ExecutionEffectPayload;
@@ -1201,6 +1235,13 @@ export function createExecutionEffectEntry(
   }
   if (projection.governance.state !== "approved" || projection.authorization.state !== "authorized") {
     return invalid("governance_denied", "Execution effect recording requires active mission authorization.");
+  }
+  if (projection.execution.status !== "running") {
+    return invalid("execution_not_running", "Execution effect recording requires running execution.");
+  }
+  if (projection.readiness.execute.state !== "ready" ||
+      projection.readiness.execute.evaluatedThroughSequence !== projection.lastSequence) {
+    return invalid("readiness_blocked", "Execution effect recording requires execute readiness at the current journal sequence.");
   }
   const checked = validateRunnerSupervisedEffectCandidate(candidateInput);
   if (checked.state === "invalid") return checked;
