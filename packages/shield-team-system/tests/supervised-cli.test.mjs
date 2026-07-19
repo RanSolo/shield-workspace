@@ -12,6 +12,7 @@ import {
   computeEd25519SigningKeyRef,
   createSupervisedMissionBrief,
 } from "../dist/mission-v2.mjs";
+import { canonicalDelegationJson, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
@@ -61,7 +62,7 @@ async function fixture(requireSimmons = false) {
     schemaVersion: 1,
     missionId: requireSimmons ? "mission:cli-simmons" : "mission:cli",
     objective: "Exercise one local supervised mission with no external effects.",
-    subjectId: "mission-plan:cli",
+    subjectId: "issue:39",
     riskFlags: {
       production: false,
       destructive: false,
@@ -239,4 +240,41 @@ test("conditional Simmons is waiting only when declared by the immutable brief",
   assert.deepEqual(projection.readiness.accept.requirementStatuses.map(({ requiredSeatId }) => requiredSeatId), ["fitz", "simmons"]);
   assert.equal(projection.requirements.filter(({ requiredSeatId }) => requiredSeatId === "simmons").length, 1);
   assert.equal(projection.missionId, brief.missionId);
+});
+
+test("Wheels Off grants, delegates begin deterministically, reports source, and invalidates fail closed", async () => {
+  const { root, brief, coulson } = await fixture();
+  const grant = createWheelsOffDelegation({ schemaVersion: 1, delegationId: "delegation:cli", previousRevisionId: null, repositoryId: "RanSolo/fixture", authorityClass: "mission_initiation", policyId: "wheels_off.v1", humanPrincipalId: coulson.binding.humanPrincipalId, bindingId: coulson.binding.bindingId, signingKeyRef: coulson.binding.signingKeyRef, issuedAt: { value: "2020-01-01T00:00:00Z", provenance: "humanRecorded" }, logSequence: 0 });
+  const envelope = { payload: grant, signatureBase64: sign(null, Buffer.from(canonicalDelegationJson(grant)), coulson.privateKey).toString("base64") };
+  await writeEvidence(root, "delegation.json", envelope);
+  const granted = run(root, ["delegation", "grant", "--evidence", "delegation.json", "--json"]);
+  assert.equal(granted.status, 0, granted.stderr);
+  const eligibility = createWheelsOffEligibility({ schemaVersion: 1, eligibilityId: "eligibility:cli", missionId: brief.missionId, missionRevisionId: brief.revisionId, delegationId: grant.delegationId, delegationRevisionId: grant.revisionId, repositoryId: "RanSolo/fixture", issueId: "issue:39", issueRevisionId: "sha256:issue39", issueSourceRef: "github:issue:39", scopeItems: ["Bounded Wheels Off implementation"], acceptanceChecks: ["Delegated begin is replayable"], dependencies: [], architecturalDecisions: [], requestedAuthorities: ["implementation", "review_publication"], requireSimmons: false });
+  await writeFile(join(root, "eligibility.json"), `${JSON.stringify(eligibility, null, 2)}\n`);
+  const begun = run(root, ["mission", "begin", "--authorization", "delegated", "--brief", "mission-brief.json", "--delegation", grant.revisionId, "--eligibility", "eligibility.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  let projection = JSON.parse(begun.stdout).projection;
+  assert.equal(projection.journalSchemaVersion, 3); assert.equal(projection.governance.state, "approved"); assert.equal(projection.authorization.source, "delegated"); assert.equal(projection.authorization.state, "authorized"); assert.equal(projection.evidence.length, 0);
+  const report = run(root, ["mission", "report", "--mission-id", brief.missionId, "--json"]); assert.equal(report.status, 0, report.stderr); assert.equal(JSON.parse(report.stdout).entries.length, 2);
+  const invalidated = run(root, ["mission", "invalidate", "--mission-id", brief.missionId, "--reason", "scope_changed", "--json"]); assert.equal(invalidated.status, 0, invalidated.stderr);
+  projection = JSON.parse(invalidated.stdout); assert.equal(projection.governance.state, "proposed"); assert.equal(projection.authorization.state, "invalidated");
+  const blocked = run(root, ["mission", "step", "--mission-id", brief.missionId, "--json"]); assert.equal(blocked.status, 1);
+});
+
+test("revoked delegation begins ineligible and falls back to signed supervised approval", async () => {
+  const { root, brief, coulson } = await fixture();
+  const grant = createWheelsOffDelegation({ schemaVersion: 1, delegationId: "delegation:revoked", previousRevisionId: null, repositoryId: "RanSolo/fixture", authorityClass: "mission_initiation", policyId: "wheels_off.v1", humanPrincipalId: coulson.binding.humanPrincipalId, bindingId: coulson.binding.bindingId, signingKeyRef: coulson.binding.signingKeyRef, issuedAt: { value: "2020-01-01T00:00:00Z", provenance: "humanRecorded" }, logSequence: 0 });
+  const grantEnvelope = { payload: grant, signatureBase64: sign(null, Buffer.from(canonicalDelegationJson(grant)), coulson.privateKey).toString("base64") }; await writeEvidence(root, "grant.json", grantEnvelope);
+  assert.equal(run(root, ["delegation", "grant", "--evidence", "grant.json", "--json"]).status, 0);
+  const revocation = { schemaVersion: 1, revocationId: "revocation:cli", delegationId: grant.delegationId, delegationRevisionId: grant.revisionId, repositoryId: grant.repositoryId, reason: "maintainer_requested", humanPrincipalId: coulson.binding.humanPrincipalId, bindingId: coulson.binding.bindingId, signingKeyRef: coulson.binding.signingKeyRef, revokedAt: { value: "2020-01-01T00:01:00Z", provenance: "humanRecorded" }, logSequence: 1 };
+  const revokeEnvelope = { payload: revocation, signatureBase64: sign(null, Buffer.from(canonicalDelegationJson(revocation)), coulson.privateKey).toString("base64") }; await writeEvidence(root, "revoke.json", revokeEnvelope);
+  const revoked = run(root, ["delegation", "revoke", "--evidence", "revoke.json", "--json"]); assert.equal(revoked.status, 0, revoked.stderr);
+  const eligibility = createWheelsOffEligibility({ schemaVersion: 1, eligibilityId: "eligibility:revoked", missionId: brief.missionId, missionRevisionId: brief.revisionId, delegationId: grant.delegationId, delegationRevisionId: grant.revisionId, repositoryId: grant.repositoryId, issueId: "issue:39", issueRevisionId: "sha256:issue39", issueSourceRef: "github:issue:39", scopeItems: ["Bounded work"], acceptanceChecks: ["Fail closed"], dependencies: [], architecturalDecisions: [], requestedAuthorities: ["implementation", "review_publication"], requireSimmons: false }); await writeFile(join(root, "eligibility.json"), `${JSON.stringify(eligibility)}\n`);
+  const begun = run(root, ["mission", "begin", "--authorization", "delegated", "--brief", "mission-brief.json", "--delegation", grant.revisionId, "--eligibility", "eligibility.json", "--json"]);
+  assert.equal(begun.status, 1, begun.stderr); let projection = JSON.parse(begun.stdout).projection; assert.equal(projection.authorization.state, "ineligible"); assert.ok(projection.authorization.reasons.includes("delegation_revoked"));
+  const report = run(root, ["mission", "report", "--mission-id", brief.missionId, "--json"]); assert.equal(report.status, 0, report.stderr);
+  const evaluatedAt = JSON.parse(report.stdout).entries[1].timestamp.value;
+  const approvalAt = new Date(Date.parse(evaluatedAt) + 1_000).toISOString();
+  const requirement = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"); const approval = signedEvidence(coulson, projection, requirement, "approved", 2, approvalAt); await writeEvidence(root, "approval.json", approval);
+  const approved = run(root, ["mission", "approve", "--mission-id", brief.missionId, "--evidence", "approval.json", "--json"]); assert.equal(approved.status, 0, approved.stderr); projection = JSON.parse(approved.stdout); assert.equal(projection.authorization.source, "supervised"); assert.equal(projection.governance.state, "approved");
 });

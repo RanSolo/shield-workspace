@@ -5,6 +5,8 @@ import {
   canonicalJson,
   computeEd25519SigningKeyRef,
   createEvidenceEntry,
+  createDelegatedAuthorizationEntry,
+  createDelegatedInvalidationEntry,
   createGovernanceEntry,
   createMissionBegunEntry,
   createSupervisedMissionBrief,
@@ -14,6 +16,7 @@ import {
   validateSupervisedMissionBrief,
   verifySignedHumanEvidence,
 } from "../dist/mission-v2.mjs";
+import { canonicalDelegationJson, createDelegationLogEntry, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
 
 function keyBinding(seatId, humanPrincipalId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -45,7 +48,7 @@ function fixture(requireSimmons = false) {
     schemaVersion: 1,
     missionId: requireSimmons ? "mission:with-simmons" : "mission:fixture",
     objective: "Complete one no-effect supervised fixture mission.",
-    subjectId: "mission-plan:fixture",
+    subjectId: "issue:39",
     riskFlags: {
       production: false,
       destructive: false,
@@ -213,4 +216,79 @@ test("pause, resume, and cancel require fresh Coulson evidence and append histor
   projection = replay(entries);
   assert.equal(projection.governance.state, "cancelled");
   assert.equal(entries.length, 5);
+});
+
+function delegatedFixture() {
+  const data = fixture();
+  const grant = createWheelsOffDelegation({ schemaVersion: 1, delegationId: "delegation:fixture", previousRevisionId: null, repositoryId: "RanSolo/shield-workspace", authorityClass: "mission_initiation", policyId: "wheels_off.v1", humanPrincipalId: data.coulson.binding.humanPrincipalId, bindingId: data.coulson.binding.bindingId, signingKeyRef: data.coulson.binding.signingKeyRef, issuedAt: { value: "2026-07-18T20:00:00Z", provenance: "humanRecorded" }, logSequence: 0 });
+  const envelope = { payload: grant, signatureBase64: sign(null, Buffer.from(canonicalDelegationJson(grant)), data.coulson.privateKey).toString("base64") };
+  const delegationLog = [createDelegationLogEntry(envelope, "delegation.granted")];
+  const eligibility = createWheelsOffEligibility({ schemaVersion: 1, eligibilityId: "eligibility:fixture", missionId: data.brief.missionId, missionRevisionId: data.brief.revisionId, delegationId: grant.delegationId, delegationRevisionId: grant.revisionId, repositoryId: grant.repositoryId, issueId: "issue:39", issueRevisionId: "sha256:issue", issueSourceRef: "github:issue:39", scopeItems: ["Bounded implementation"], acceptanceChecks: ["Tests pass"], dependencies: [], architecturalDecisions: [], requestedAuthorities: ["implementation", "review_publication"], requireSimmons: false });
+  const entries = [createMissionBegunEntry(data.brief, [data.coulson.binding, data.fitz.binding], 3)];
+  return { ...data, grant, envelope, delegationLog, eligibility, entries };
+}
+
+test("delegated authorization is deterministic, distinct from human evidence, and invalidates to supervised fallback", () => {
+  const data = delegatedFixture(); let projection = replay(data.entries);
+  const evaluatedAt = { value: "2026-07-18T20:00:30Z", provenance: "hostTrusted" };
+  const authorized = createDelegatedAuthorizationEntry({ projection, repositoryId: data.grant.repositoryId, delegationRevisionId: data.grant.revisionId, delegationLog: data.delegationLog, eligibility: data.eligibility, evaluatedAt });
+  assert.equal(authorized.state, "valid", authorized.errors?.join(" ")); data.entries.push(authorized.value); projection = replay(data.entries);
+  assert.deepEqual(authorized.value.timestamp, evaluatedAt);
+  assert.equal(projection.journalSchemaVersion, 3); assert.equal(projection.governance.state, "approved");
+  assert.deepEqual(projection.authorization, { source: "delegated", state: "authorized", missionRevisionId: data.brief.revisionId, delegationId: data.grant.delegationId, delegationRevisionId: data.grant.revisionId, eligibilityRevisionId: data.eligibility.revisionId, evaluatedThroughSequence: 1, reasons: [] });
+  assert.equal(projection.evidence.length, 0); assert.equal(projection.readiness.execute.state, "ready");
+  const invalidated = createDelegatedInvalidationEntry(projection, "scope_changed", { value: "2026-07-18T20:01:00Z", provenance: "hostTrusted" });
+  data.entries.push(invalidated.value); projection = replay(data.entries);
+  assert.equal(projection.governance.state, "proposed"); assert.equal(projection.authorization.state, "invalidated"); assert.equal(projection.readiness.execute.state, "waiting");
+  const requirement = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  data.entries.push(createGovernanceEntry(projection, "approve", evidence(data.coulson, projection, requirement, "approved", 3)).value);
+  projection = replay(data.entries); assert.equal(projection.authorization.source, "supervised"); assert.equal(projection.authorization.state, "authorized");
+});
+
+test("Kernel derives revoked and superseded lifecycle from the verified delegation log", () => {
+  for (const lifecycle of ["revoked", "superseded"]) {
+    const data = delegatedFixture();
+    if (lifecycle === "revoked") {
+      const revocation = { schemaVersion: 1, revocationId: "revocation:fixture", delegationId: data.grant.delegationId, delegationRevisionId: data.grant.revisionId, repositoryId: data.grant.repositoryId, reason: "maintainer_requested", humanPrincipalId: data.coulson.binding.humanPrincipalId, bindingId: data.coulson.binding.bindingId, signingKeyRef: data.coulson.binding.signingKeyRef, revokedAt: { value: "2026-07-18T20:00:10Z", provenance: "humanRecorded" }, logSequence: 1 };
+      const envelope = { payload: revocation, signatureBase64: sign(null, Buffer.from(canonicalDelegationJson(revocation)), data.coulson.privateKey).toString("base64") };
+      data.delegationLog.push(createDelegationLogEntry(envelope, "delegation.revoked"));
+    } else {
+      const { revisionId: _revisionId, ...grantContent } = data.grant;
+      const replacement = createWheelsOffDelegation({ ...grantContent, previousRevisionId: data.grant.revisionId, issuedAt: { value: "2026-07-18T20:00:10Z", provenance: "humanRecorded" }, logSequence: 1 });
+      const envelope = { payload: replacement, signatureBase64: sign(null, Buffer.from(canonicalDelegationJson(replacement)), data.coulson.privateKey).toString("base64") };
+      data.delegationLog.push(createDelegationLogEntry(envelope, "delegation.granted"));
+    }
+    const projection = replay(data.entries);
+    const authorization = createDelegatedAuthorizationEntry({ projection, repositoryId: data.grant.repositoryId, delegationRevisionId: data.grant.revisionId, delegationLog: data.delegationLog, eligibility: data.eligibility, evaluatedAt: { value: "2026-07-18T20:00:30Z", provenance: "hostTrusted" } });
+    assert.equal(authorization.state, "valid", authorization.errors?.join(" "));
+    assert.equal(authorization.value.payload.evaluation.result, "ineligible");
+    assert.ok(authorization.value.payload.evaluation.reasons.includes(`delegation_${lifecycle}`));
+    assert.equal(Object.hasOwn(authorization.value.payload, "delegationState"), false);
+    const result = replay([...data.entries, authorization.value]);
+    assert.equal(result.governance.state, "proposed");
+    assert.equal(result.authorization.state, "ineligible");
+  }
+});
+
+test("unrelated issue eligibility cannot authorize the verified mission subject", () => {
+  const data = delegatedFixture(); const projection = replay(data.entries);
+  const { revisionId: _revisionId, ...eligibilityContent } = data.eligibility;
+  const eligibility = createWheelsOffEligibility({ ...eligibilityContent, issueId: "issue:unrelated" });
+  const authorization = createDelegatedAuthorizationEntry({ projection, repositoryId: data.grant.repositoryId, delegationRevisionId: data.grant.revisionId, delegationLog: data.delegationLog, eligibility, evaluatedAt: { value: "2026-07-18T20:00:30Z", provenance: "hostTrusted" } });
+  assert.equal(authorization.state, "valid", authorization.errors?.join(" "));
+  assert.equal(authorization.value.payload.evaluation.result, "ineligible");
+  assert.ok(authorization.value.payload.evaluation.reasons.includes("subject_mismatch"));
+  const result = replay([...data.entries, authorization.value]);
+  assert.equal(result.governance.state, "proposed");
+  assert.equal(result.authorization.state, "ineligible");
+});
+
+test("ineligible delegated begin remains proposed and names deterministic failures", () => {
+  const data = delegatedFixture(); const { revisionId: _briefRevision, ...briefContent } = data.brief;
+  const riskyBrief = createSupervisedMissionBrief({ ...briefContent, riskFlags: { ...data.brief.riskFlags, deploy: true } });
+  const { revisionId: _eligibilityRevision, ...eligibilityContent } = data.eligibility;
+  const eligibility = createWheelsOffEligibility({ ...eligibilityContent, missionRevisionId: riskyBrief.revisionId });
+  const entries = [createMissionBegunEntry(riskyBrief, [data.coulson.binding, data.fitz.binding], 3)]; const projection = replay(entries);
+  entries.push(createDelegatedAuthorizationEntry({ projection, repositoryId: data.grant.repositoryId, delegationRevisionId: data.grant.revisionId, delegationLog: data.delegationLog, eligibility, evaluatedAt: { value: "2026-07-18T20:00:30Z", provenance: "hostTrusted" } }).value);
+  const result = replay(entries); assert.equal(result.governance.state, "proposed"); assert.equal(result.authorization.state, "ineligible"); assert.ok(result.authorization.reasons.includes("risk_not_delegable"));
 });

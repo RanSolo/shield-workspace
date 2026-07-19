@@ -3,10 +3,13 @@ import { access, lstat, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseShieldConfig, type ShieldConfig } from "./config.mjs";
 import {
+  createDelegatedAuthorizationEntry,
+  createDelegatedInvalidationEntry,
   createEvidenceEntry,
   createGovernanceEntry,
   createMissionBegunEntry,
   planMissionStep,
+  replaySupervisedMissionJournal,
   validateRepositoryBindings,
   validateSupervisedMissionBrief,
   validateTrustedBindingRegistry,
@@ -15,7 +18,9 @@ import {
   type SupervisedMissionProjection,
   type TrustedBindingRegistry,
 } from "./mission-v2.mjs";
-import { appendSupervisedMissionEntry, readSupervisedMissionJournal } from "./mission-store.mjs";
+import { appendSupervisedMissionEntry, initializeSupervisedMissionJournal, readSupervisedMissionJournal } from "./mission-store.mjs";
+import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
+import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 
 const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
@@ -121,6 +126,8 @@ function statusText(projection: SupervisedMissionProjection): string {
     `Mission: ${projection.missionId}`,
     `Revision: ${projection.brief.revisionId}`,
     `Governance: ${projection.governance.state}`,
+    `Authorization: ${projection.authorization.source}/${projection.authorization.state}`,
+    `Authorization revisions: mission=${projection.authorization.missionRevisionId}, delegation=${projection.authorization.delegationRevisionId ?? "none"}, eligibility=${projection.authorization.eligibilityRevisionId ?? "none"}`,
     `Execution: ${projection.execution.status}`,
     `Readiness (execute): ${projection.readiness.execute.state}`,
     `Readiness (accept): ${projection.readiness.accept.state}`,
@@ -131,22 +138,63 @@ function statusText(projection: SupervisedMissionProjection): string {
 }
 
 async function begin(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root", "--brief"], ["--json"]);
+  const options = parseOptions(args, ["--root", "--brief", "--authorization", "--delegation", "--eligibility"], ["--json"]);
   const root = await exactRoot(options.values.get("--root"), true);
   const config = await repositoryConfig(root);
   const brief = unwrap(validateSupervisedMissionBrief(await jsonFile(resolve(root, required(options, "--brief")), "Mission brief")));
   const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
   const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, brief.missionId, brief.requireSimmons));
-  const appended = unwrap(await appendSupervisedMissionEntry({
-    ...missionPaths(root, config, brief.missionId),
-    entry: createMissionBegunEntry(brief, bindings),
-  }));
+  const authorization = options.values.get("--authorization") ?? "supervised";
+  if (authorization !== "supervised" && authorization !== "delegated") throw new MissionCliError("--authorization must be supervised or delegated.");
+  if (authorization === "supervised" && (options.values.has("--delegation") || options.values.has("--eligibility"))) throw new MissionCliError("Supervised begin cannot include delegation inputs.");
+  let appended;
+  if (authorization === "supervised") {
+    appended = unwrap(await appendSupervisedMissionEntry({ ...missionPaths(root, config, brief.missionId), entry: createMissionBegunEntry(brief, bindings) }));
+  } else {
+    const delegationRef = required(options, "--delegation");
+    const eligibility = await jsonFile(resolve(root, required(options, "--eligibility")), "Wheels Off eligibility") as WheelsOffEligibility;
+    const coulson = bindings.find(({ seatId }) => seatId === "coulson"); if (!coulson) throw new MissionCliError("Configured Coulson binding is missing.", 1);
+    const log = unwrap(await readDelegationLog({ repositoryRoot: root, repositoryId: config.repositoryId, binding: coulson }));
+    const begun = createMissionBegunEntry(brief, bindings, 3);
+    const begunProjection = unwrap(replaySupervisedMissionJournal([begun]));
+    const delegated = unwrap(createDelegatedAuthorizationEntry({
+      projection: begunProjection,
+      repositoryId: config.repositoryId,
+      delegationRevisionId: delegationRef,
+      delegationLog: log.entries,
+      eligibility,
+      evaluatedAt: { value: new Date().toISOString(), provenance: "hostTrusted" },
+    }));
+    appended = unwrap(await initializeSupervisedMissionJournal({ ...missionPaths(root, config, brief.missionId), entries: [begun, delegated] }));
+  }
   output(
     { journalPath: appended.journalPath, projection: appended.projection },
     options.flags.has("--json"),
     `Mission ${brief.missionId} proposed at ${brief.revisionId}.\n${statusText(appended.projection)}`,
   );
-  return 0;
+  return appended.projection.authorization.state === "ineligible" ? 1 : 0;
+}
+
+async function delegation(command: "grant" | "revoke", args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--evidence"], ["--json"]);
+  const root = await exactRoot(options.values.get("--root"), true); const config = await repositoryConfig(root);
+  const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
+  const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, "*", false));
+  const coulson = bindings.find(({ seatId }) => seatId === "coulson"); if (!coulson) throw new MissionCliError("Configured Coulson binding is missing.", 1);
+  const envelope = await jsonFile(resolve(root, required(options, "--evidence")), "Signed delegation evidence") as SignedWheelsOffDelegation | SignedWheelsOffRevocation;
+  const entry = createDelegationLogEntry(envelope, command === "grant" ? "delegation.granted" : "delegation.revoked");
+  const projection = unwrap(await appendDelegationEntry({ repositoryRoot: root, repositoryId: config.repositoryId, binding: coulson, entry }));
+  output(projection, options.flags.has("--json"), `Delegation ${command} recorded at sequence ${entry.sequence}.`); return 0;
+}
+
+async function invalidate(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--reason"], ["--json"]);
+  const root = await exactRoot(options.values.get("--root"), true); const config = await repositoryConfig(root); const missionId = required(options, "--mission-id");
+  const reason = required(options, "--reason"); if (!DELEGATED_INVALIDATION_REASONS.includes(reason as never)) throw new MissionCliError("Unsupported delegated invalidation reason.");
+  const current = await currentMission(root, config, missionId);
+  const entry = unwrap(createDelegatedInvalidationEntry(current.projection, reason as never, { value: new Date().toISOString(), provenance: "hostTrusted" }));
+  const appended = unwrap(await appendSupervisedMissionEntry({ ...missionPaths(root, config, missionId), entry }));
+  output(appended.projection, options.flags.has("--json"), statusText(appended.projection)); return 0;
 }
 
 async function governance(command: "approve" | "pause" | "resume" | "cancel", args: string[]): Promise<number> {
@@ -222,10 +270,13 @@ async function show(command: "status" | "report", args: string[]): Promise<numbe
 export function missionUsage(): string {
   return [
     "  shield mission begin --brief <file> [--root <path>] [--json]",
+    "  shield mission begin --authorization delegated --brief <file> --delegation <revision> --eligibility <file> [--root <path>] [--json]",
     "  shield mission approve|pause|cancel --mission-id <id> --evidence <file> [--root <path>] [--json]",
     "  shield mission resume --mission-id <id> --evidence <file> --resume-state <proposed|approved> [--root <path>] [--json]",
     "  shield mission status|step|report --mission-id <id> [--root <path>] [--json]",
     "  shield evidence record --mission-id <id> --evidence <file> [--root <path>] [--json]",
+    "  shield mission invalidate --mission-id <id> --reason <reason> [--root <path>] [--json]",
+    "  shield delegation grant|revoke --evidence <file> [--root <path>] [--json]",
   ].join("\n");
 }
 
@@ -235,8 +286,10 @@ export async function runMissionCli(args: string[]): Promise<number> {
     if (action === "begin") return begin(rest);
     if (action === "approve" || action === "pause" || action === "resume" || action === "cancel") return governance(action, rest);
     if (action === "step") return step(rest);
+    if (action === "invalidate") return invalidate(rest);
     if (action === "status" || action === "report") return show(action, rest);
   }
   if (group === "evidence" && action === "record") return recordEvidence(rest);
+  if (group === "delegation" && (action === "grant" || action === "revoke")) return delegation(action, rest);
   throw new MissionCliError(`Unsupported supervised mission command.\n${missionUsage()}`);
 }

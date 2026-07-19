@@ -20,6 +20,7 @@ test("exports only the documented public package specifiers", async () => {
     "./workspace",
     "./config",
     "./supervision",
+    "./delegation",
   ]);
   for (const target of Object.values(manifest.exports)) {
     assert.deepEqual(Object.keys(target), ["types", "import"]);
@@ -34,6 +35,7 @@ test("loads every supported runtime specifier", async () => {
   const workspace = await import("@shield/team-system/workspace");
   const config = await import("@shield/team-system/config");
   const supervision = await import("@shield/team-system/supervision");
+  const delegation = await import("@shield/team-system/delegation");
 
   assert.equal(root.MISSION_SCHEMA_VERSION, 2);
   assert.equal(mission.classifyMissionRisk, root.classifyMissionRisk);
@@ -44,6 +46,7 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(root.validateShieldConfig, config.validateShieldConfig);
   assert.equal(supervision.SUPERVISED_JOURNAL_SCHEMA_VERSION, 2);
   assert.equal(typeof supervision.createSupervisedMissionBrief, "function");
+  assert.equal(delegation.WHEELS_OFF_POLICY_ID, "wheels_off.v1");
 });
 
 test("blocks undocumented deep package imports", async () => {
@@ -75,10 +78,13 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/config.d.mts",
     "dist/mission-v2.mjs",
     "dist/mission-v2.d.mts",
+    "dist/delegation-v1.mjs",
+    "dist/delegation-v1.d.mts",
     "dist/cli.mjs",
     "INSTALLATION.md",
     "PUBLIC_API.md",
     "SUPERVISED_MISSION.md",
+    "WHEELS_OFF.md",
   ]) {
     assert.ok(packedPaths.has(path), `packed artifact is missing ${path}`);
   }
@@ -107,6 +113,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
     import { CONFIG_SCHEMA_VERSION, type ShieldConfig } from "@shield/team-system/config";
     import { SUPERVISED_JOURNAL_SCHEMA_VERSION, createSupervisedMissionBrief, type SupervisedMissionBrief } from "@shield/team-system/supervision";
+    import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
 
     const schema: 2 = MISSION_SCHEMA_VERSION;
     const state: MissionState = "approved";
@@ -126,6 +133,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const supervisedSchema: 2 = SUPERVISED_JOURNAL_SCHEMA_VERSION;
     const supervisedBrief = null as unknown as SupervisedMissionBrief;
     const createBrief = createSupervisedMissionBrief;
+    const wheelsOffPolicy: "wheels_off.v1" = WHEELS_OFF_POLICY_ID;
+    const delegation = null as unknown as WheelsOffDelegation;
     validateMissionWorkspaceInput(input);
     const validResume: MissionDecisionEvent = {
       schemaVersion: 2, eventId: "event-1", missionId: "mission-1", sequence: 1,
@@ -137,7 +146,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, supervisedBrief, createBrief, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, supervisedBrief, createBrief, wheelsOffPolicy, delegation, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
