@@ -67,16 +67,24 @@ Architecture approval is required before implementation begins.
 ### 4. PR Mission Workspace
 
 Maria Hill validates the approved workspace plan through
-`../contracts/workspace-contract.mjs`, then creates or refreshes the open draft
-pull request through `../github/pr-workspace.mjs`. The approved Mission Brief
+`../contracts/workspace-contract.mjs`, then calls
+`../github/delivery-workspace.mjs:prepareDeliveryWorkspaceForDispatch`. The
+guard creates or refreshes the open draft pull request through the existing
+`../github/pr-workspace.mjs` publication mechanics. The approved Mission Brief
 must already be tracked, clean, and committed on the expected mission branch.
 The PR body records objective, approval, participants, activated modes,
 validation status, pending decisions, and the team handoff without publishing
 secrets or private model reasoning.
 
-If GitHub lookup, branch push, PR creation, update, or verification fails, Hill
-records the blocked result and returns to Coulson. Specialist implementation
-does not begin without the verified PR workspace.
+If GitHub lookup, branch push, PR creation, update, or exact receipt verification
+fails, Hill records the blocked result and returns to Coulson. Repository,
+branch, artifact revision, pull-request identity, open state, and draft state
+must all match. Specialist implementation does not begin unless the guard
+returns `dispatch_ready` with the verified PR workspace receipt.
+
+Hill appends major human-facing handoffs with seat-derived attribution. Routine
+internal journal events are not published, and final PR-body updates never
+replace the chronological handoff trail.
 
 ### 5. Implementation
 

@@ -90,10 +90,11 @@ test("mission brief publication delegates to the existing draft PR workspace", (
   const pr = {
     number: 28,
     title: workspacePlan.prTitle,
-    url: "github:RanSolo:shield-workspace:pull:28",
+    url: "https://github.com/RanSolo/shield-workspace/pull/28",
     isDraft: true,
     state: "OPEN",
     headRefName: branchSlug,
+    headRefOid: head,
     baseRefName: "main",
   };
   const run = runner([
@@ -101,6 +102,7 @@ test("mission brief publication delegates to the existing draft PR workspace", (
     ok(branchSlug),
     ok(),
     ok(workspacePlan.missionBriefPath),
+    ok(head),
     ok(head),
     ok(),
     ok("[]"),

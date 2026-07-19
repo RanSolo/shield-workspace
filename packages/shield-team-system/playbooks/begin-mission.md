@@ -43,7 +43,9 @@ surface from the start of implementation. After Coulson's explicit approval,
 Hill validates the exact input with
 `../contracts/workspace-contract.mjs:validateMissionWorkspaceInput`, generates
 the body with a caller-supplied ISO 8601 UTC timestamp, and calls
-`../github/pr-workspace.mjs:createOrUpdatePR`.
+`../github/delivery-workspace.mjs:prepareDeliveryWorkspaceForDispatch`. That
+orchestration guard delegates publication mechanics to
+`../github/pr-workspace.mjs:createOrUpdatePR`; it does not duplicate them.
 
 The adapter requires the approved Mission Brief to be tracked, clean, and
 committed on the expected mission branch. It creates a draft PR when none
@@ -52,6 +54,20 @@ ambiguous matches, or a non-draft match. Hill may report a PR URL only after a
 successful GitHub readback. A blocked workspace suspends specialist
 implementation dispatch; it never authorizes Hill to fabricate progress or use
 the lightweight timeout path.
+
+Successful readback returns a closed receipt containing the repository, base
+branch, mission branch, exact artifact revision, pull-request number and URL,
+open state, and draft state. Hill may dispatch a Delivery Mode specialist only
+when the guard returns `dispatch_ready` with a receipt matching every expected
+field. Missing, stale, ambiguous, malformed, or mismatched receipts fail
+closed. Repeated publication must update and reverify the one existing open
+draft PR.
+
+After the workspace is verified, Hill publishes major human-facing handoffs as
+the mission progresses. Attribution is derived from the participating seat;
+models, runtimes, adapters, and tool executors are never relabeled as seats.
+Routine internal events stay out of GitHub, and final PR-body summaries do not
+replace the historical handoff comments.
 
 ## Mission decisions and risk
 

@@ -16,7 +16,7 @@ package artifact.
 | `@shield/team-system/supervision` | Journal v2, canonical mission briefs, Ed25519 human evidence, readiness, and no-effect supervised-step contracts |
 | `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
 | `@shield/team-system/adapter` | Closed host-neutral adapter v1 candidate, communication, and validation contracts |
-| `@shield/team-system/github` | Journal-gated GitHub publication and signed-evidence candidate translation |
+| `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 
 All entry points provide TypeScript declarations. Existing `.mjs` contract
 modules remain their runtime source of truth. The isolated TypeScript build
