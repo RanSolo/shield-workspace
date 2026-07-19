@@ -22,6 +22,7 @@ test("exports only the documented public package specifiers", async () => {
     "./supervision",
     "./delegation",
     "./adapter",
+    "./runner",
     "./github",
   ]);
   for (const target of Object.values(manifest.exports)) {
@@ -39,6 +40,7 @@ test("loads every supported runtime specifier", async () => {
   const supervision = await import("@shield/team-system/supervision");
   const delegation = await import("@shield/team-system/delegation");
   const adapter = await import("@shield/team-system/adapter");
+  const runner = await import("@shield/team-system/runner");
   const github = await import("@shield/team-system/github");
 
   assert.equal(root.MISSION_SCHEMA_VERSION, 2);
@@ -53,6 +55,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(delegation.WHEELS_OFF_POLICY_ID, "wheels_off.v1");
   assert.equal(adapter.ADAPTER_CONTRACT_VERSION, 1);
   assert.equal(typeof adapter.validateAdapterCandidate, "function");
+  assert.equal(runner.RUNNER_CONTRACT_VERSION, 1);
+  assert.equal(typeof runner.runRunnerCycle, "function");
   assert.equal(typeof github.deliverGitHubCommunication, "function");
   assert.equal(typeof github.prepareDeliveryWorkspaceForDispatch, "function");
   assert.equal(typeof github.validatePRWorkspaceReceipt, "function");
@@ -92,6 +96,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/delegation-v1.d.mts",
     "dist/adapter-v1.mjs",
     "dist/adapter-v1.d.mts",
+    "dist/runner-v1.mjs",
+    "dist/runner-v1.d.mts",
     "github/adapter-v1.mjs",
     "github/delivery-workspace.mjs",
     "github/pr-workspace.mjs",
@@ -132,6 +138,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { SUPERVISED_JOURNAL_SCHEMA_VERSION, createSupervisedMissionBrief, type SupervisedMissionBrief } from "@shield/team-system/supervision";
     import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
+    import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import {
       deliverGitHubCommunication,
       prepareDeliveryWorkspaceForDispatch,
@@ -164,6 +171,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const delegation = null as unknown as WheelsOffDelegation;
     const adapterContract: 1 = ADAPTER_CONTRACT_VERSION;
     const adapterCandidate = null as unknown as AdapterCandidateEnvelope;
+    const runnerContract: 1 = RUNNER_CONTRACT_VERSION;
+    const runnerInput = null as unknown as RunnerCycleInput;
+    const runCycle = runRunnerCycle;
     const journaledRequest = null as unknown as JournaledCommunicationRequest;
     const deliver = deliverGitHubCommunication;
     const prepareWorkspace = prepareDeliveryWorkspaceForDispatch;
@@ -182,7 +192,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, supervisedBrief, createBrief, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, journaledRequest, deliver, prepareWorkspace, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, supervisedBrief, createBrief, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, runCycle, journaledRequest, deliver, prepareWorkspace, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
