@@ -5,10 +5,13 @@ import {
   canonicalJson,
   computeEd25519SigningKeyRef,
   createEvidenceEntry,
+  createCommunicationRequestEntry,
+  createCommunicationResultEntry,
   createDelegatedAuthorizationEntry,
   createDelegatedInvalidationEntry,
   createGovernanceEntry,
   createMissionBegunEntry,
+  createHumanEvidenceEntryFromAdapterCandidate,
   createSupervisedMissionBrief,
   planMissionStep,
   replaySupervisedMissionJournal,
@@ -136,6 +139,7 @@ test("approval and no-effect steps keep execution separate from human acceptance
   assert.equal(projection.readiness.execute.state, "waiting");
   assert.equal(projection.readiness.accept.state, "waiting");
   assert.equal(projection.communication.state, "not-configured");
+  assert.deepEqual(projection.communication.requests, []);
 
   const authorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
   const approval = evidence(coulson, projection, authorization, "approved", 1);
@@ -176,6 +180,129 @@ test("conditional Simmons remains an exact pending requirement until signed evid
   entries.push(createGovernanceEntry(projection, "approve", evidence(coulson, projection, authorization, "approved", 1)).value);
   projection = replay(entries);
   assert.deepEqual(projection.readiness.accept.requirementStatuses.map(({ requiredSeatId }) => requiredSeatId), ["fitz", "simmons"]);
+});
+
+test("journal v4 keeps communication delivery separate from evidence readiness", () => {
+  const data = fixture();
+  data.entries[0] = createMissionBegunEntry(data.brief, [data.coulson.binding, data.fitz.binding], 4);
+  let projection = replay(data.entries);
+  const authorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  data.entries.push(createGovernanceEntry(
+    projection,
+    "approve",
+    evidence(data.coulson, projection, authorization, "approved", 1),
+  ).value);
+  projection = replay(data.entries);
+
+  const request = {
+    requestId: "request:fitz:2",
+    adapterContractVersion: 1,
+    adapterId: "github",
+    operation: "request_human_evidence",
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    artifactRevisionId: "0123456789012345678901234567890123456789",
+    targetRef: "github:pr:28",
+  };
+  const requestEntry = createCommunicationRequestEntry(
+    projection,
+    request,
+    { value: "2026-07-18T20:02:00Z", provenance: "hostTrusted" },
+  );
+  assert.equal(requestEntry.state, "valid", requestEntry.errors?.join(" "));
+  assert.equal(createCommunicationRequestEntry(
+    projection,
+    { ...request, revisionId: "sha256:stale-revision" },
+    { value: "2026-07-18T20:02:00Z", provenance: "hostTrusted" },
+  ).state, "invalid");
+  data.entries.push(requestEntry.value);
+  projection = replay(data.entries);
+  assert.equal(projection.communication.state, "queued");
+  assert.equal(projection.readiness.accept.state, "waiting");
+  assert.equal(createCommunicationRequestEntry(
+    projection,
+    request,
+    { value: "2026-07-18T20:02:30Z", provenance: "hostTrusted" },
+  ).state, "invalid");
+
+  const failure = {
+    adapterContractVersion: 1,
+    adapterId: "github",
+    candidateId: "candidate:fitz-request:3",
+    candidateKind: "communication_result",
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    humanPrincipalId: null,
+    bindingId: null,
+    sourceRef: "github:pr:28",
+    capturedAt: { value: "2026-07-18T20:03:00Z", provenance: "hostTrusted" },
+    payload: {
+      requestId: request.requestId,
+      outcome: "failed",
+      failureReason: "adapter_unavailable",
+      receiptRef: null,
+    },
+  };
+  const resultEntry = createCommunicationResultEntry(projection, failure);
+  assert.equal(resultEntry.state, "valid", resultEntry.errors?.join(" "));
+  data.entries.push(resultEntry.value);
+  projection = replay(data.entries);
+  assert.equal(projection.communication.state, "failed");
+  assert.equal(projection.communication.requests[0].failureReason, "adapter_unavailable");
+  assert.equal(projection.readiness.accept.state, "waiting");
+  assert.equal(projection.evidence.length, 1);
+  assert.equal(createCommunicationResultEntry(projection, failure).state, "invalid");
+});
+
+test("GitHub and manual signed evidence have identical Kernel meaning", () => {
+  const data = fixture();
+  data.entries[0] = createMissionBegunEntry(data.brief, [data.coulson.binding, data.fitz.binding], 4);
+  let projection = replay(data.entries);
+  const authorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  data.entries.push(createGovernanceEntry(
+    projection,
+    "approve",
+    evidence(data.coulson, projection, authorization, "approved", 1),
+  ).value);
+  projection = replay(data.entries);
+  const fitzRequirement = projection.requirements.find(({ evidenceKind }) => evidenceKind === "technical_review");
+  const signed = evidence(data.fitz, projection, fitzRequirement, "approved", 2, "adapter-path");
+  const baseCandidate = {
+    adapterContractVersion: 1,
+    candidateId: signed.payload.evidenceId,
+    candidateKind: "human_evidence",
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    humanPrincipalId: data.fitz.binding.humanPrincipalId,
+    bindingId: data.fitz.binding.bindingId,
+    sourceRef: signed.payload.sourceRef,
+    capturedAt: signed.payload.timestamp,
+    payload: { evidence: signed },
+  };
+  const githubEntry = createHumanEvidenceEntryFromAdapterCandidate(projection, {
+    ...baseCandidate,
+    adapterId: "github",
+  });
+  const manualEntry = createHumanEvidenceEntryFromAdapterCandidate(projection, {
+    ...baseCandidate,
+    adapterId: "manual",
+  });
+  assert.equal(githubEntry.state, "valid", githubEntry.errors?.join(" "));
+  assert.equal(manualEntry.state, "valid", manualEntry.errors?.join(" "));
+  assert.deepEqual(githubEntry.value, manualEntry.value);
+  const accepted = replay([...data.entries, manualEntry.value]);
+  assert.equal(accepted.readiness.accept.state, "ready");
+
+  const stale = createHumanEvidenceEntryFromAdapterCandidate(projection, {
+    ...baseCandidate,
+    adapterId: "github",
+    revisionId: "sha256:stale-revision",
+  });
+  assert.equal(stale.state, "invalid");
+  assert.equal(data.entries.length, 2);
 });
 
 test("tampered, wrong-revision, wrong-seat, and wrong-sequence evidence fails closed", () => {
@@ -235,6 +362,7 @@ test("delegated authorization is deterministic, distinct from human evidence, an
   assert.equal(authorized.state, "valid", authorized.errors?.join(" ")); data.entries.push(authorized.value); projection = replay(data.entries);
   assert.deepEqual(authorized.value.timestamp, evaluatedAt);
   assert.equal(projection.journalSchemaVersion, 3); assert.equal(projection.governance.state, "approved");
+  assert.deepEqual(projection.communication, { state: "not-configured", requests: [] });
   assert.deepEqual(projection.authorization, { source: "delegated", state: "authorized", missionRevisionId: data.brief.revisionId, delegationId: data.grant.delegationId, delegationRevisionId: data.grant.revisionId, eligibilityRevisionId: data.eligibility.revisionId, evaluatedThroughSequence: 1, reasons: [] });
   assert.equal(projection.evidence.length, 0); assert.equal(projection.readiness.execute.state, "ready");
   const invalidated = createDelegatedInvalidationEntry(projection, "scope_changed", { value: "2026-07-18T20:01:00Z", provenance: "hostTrusted" });

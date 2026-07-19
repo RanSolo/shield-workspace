@@ -119,8 +119,17 @@ npx shield mission report --mission-id mission:example --json
 The first step records `not-started → running`; the second records
 `running → completed`; further steps are deterministic no-ops. Execution may be
 complete while acceptance readiness remains `waiting` for Fitz or conditional
-Simmons. Communication is `not-configured` until a later host-adapter mission.
+Simmons. Existing journal v2/v3 missions keep communication `not-configured`.
+Journal v4 records a communication request before an adapter effect and then
+records its correlated `delivered`, `failed`, or `unknown` result. Those states
+never satisfy evidence or alter governance, execution, or readiness.
+
+GitHub and manual signed evidence enter through the same
+`createHumanEvidenceEntryFromAdapterCandidate` Kernel boundary. The adapter
+envelope must preserve the signed evidence's exact mission, subject, revision,
+principal, binding, evidence identifier, and source reference. A rejected
+candidate produces no journal entry.
 
 Journal v1 replay remains available through the existing `/journal` contract.
-V0.3-4 creates journal v2 only; it does not mix versions, migrate, or rewrite
-prior journal evidence.
+The adapter workflow creates journal v4 explicitly; it does not mix versions,
+migrate, or rewrite prior v2/v3 journal evidence.
