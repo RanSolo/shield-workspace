@@ -35,9 +35,13 @@ Keep the mission moving without pulling Nick Fury, Daisy Johnson, or Melinda May
 * Prepare exact commands and operational checklists for approval when needed.
 * Run cheap operational commands and collect results.
 * Handle GitHub, Jira, SonarQube, and similar system coordination.
-* For Delivery Mode, call `../github/delivery-workspace.mjs:prepareDeliveryWorkspaceForDispatch`
-  after the approved Mission Brief commit and refuse specialist dispatch unless
-  it returns `dispatch_ready` with an exact matching draft-PR receipt.
+* For Delivery Mode, first call
+  `../github/delivery-workspace.mjs:prepareDeliveryWorkspaceForDispatch` with
+  explicit `planGate: null` after the approved Mission Brief commit. Treat
+  `workspace_ready` as review-pending, never as implementation permission.
+  Reuse the guard after Fury's exact-revision plan review and dispatch only when
+  it returns literal `dispatch_ready` with an eligible gate and exact matching
+  draft-PR receipt.
 * Publish major human-facing mission handoffs incrementally with seat-derived
   attribution; do not replace the historical trail with a final summary.
 * Organize newly created backlog items into a recommended roadmap when a backlog refinement mission is requested.

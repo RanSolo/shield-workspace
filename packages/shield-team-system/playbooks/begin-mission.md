@@ -32,9 +32,11 @@ work.
 4. Recommend mission modes and proposed seat attachments.
 5. Present the Mission Brief to Phil Coulson for approval.
 6. After approval, activate and attach the approved modes.
-7. For Delivery Mode, create or update the draft PR Mission Workspace before
-   specialist implementation dispatch.
-8. Dispatch the approved mission.
+7. For Delivery Mode, commit May's blueprint in the Mission Brief and create or
+   update the draft PR Mission Workspace.
+8. Obtain Fury's plan review against that exact verified head and reconcile its
+   bounded required changes when applicable.
+9. Dispatch only when the Delivery Workspace guard returns `dispatch_ready`.
 
 ## PR Mission Workspace
 
@@ -55,13 +57,17 @@ successful GitHub readback. A blocked workspace suspends specialist
 implementation dispatch; it never authorizes Hill to fabricate progress or use
 the lightweight timeout path.
 
-Successful readback returns a closed receipt containing the repository, base
+The first call supplies literal `planGate: null`. Successful readback returns
+`workspace_ready` and a closed receipt containing the repository, base
 branch, mission branch, exact artifact revision, pull-request number and URL,
 open state, and draft state. Hill may dispatch a Delivery Mode specialist only
 when the guard returns `dispatch_ready` with a receipt matching every expected
-field. Missing, stale, ambiguous, malformed, or mismatched receipts fail
-closed. Repeated publication must update and reverify the one existing open
-draft PR.
+field. `workspace_ready` is not specialist-dispatch permission. Hill obtains
+Fury's host-asserted non-authoritative plan review and calls the guard again;
+only an exact eligible review and bounded reconciliation can produce
+`dispatch_ready`. Missing, stale, failed, ambiguous, malformed, or mismatched
+evidence fails closed. Repeated publication must update and reverify the one
+existing open draft PR.
 
 After the workspace is verified, Hill publishes major human-facing handoffs as
 the mission progresses. Attribution is derived from the participating seat;

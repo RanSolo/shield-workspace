@@ -32,6 +32,11 @@ Current coverage:
 - `github-pr-workspace.test.mjs` verifies the injected command boundary,
   idempotent draft-PR creation and reuse, GitHub readback, and fail-closed
   behavior without calling GitHub or the network.
+- `fury-plan-gate-v1.test.mjs` verifies the pure exact-binding Fury gate,
+  bounded reconciliation, derived seats, replay/staleness handling, and hostile
+  input safety.
+- `delivery-workspace.test.mjs` verifies pre-command structural rejection,
+  explicit `workspace_ready`, exact Fury eligibility, and unchanged PR reuse.
 - `adapter-v1.test.mjs` verifies the closed host-neutral candidate and
   communication request contracts, exact revision identifiers, and stable
   failure reasons.
@@ -63,6 +68,8 @@ node --test tests/begin-mission-intake.test.mjs
 node --test tests/delivery-mode.test.mjs
 node --test tests/workspace-contract.test.mjs
 node --test tests/github-pr-workspace.test.mjs
+node --test tests/fury-plan-gate-v1.test.mjs
+node --test tests/delivery-workspace.test.mjs
 node --test tests/adapter-v1.test.mjs
 node --test tests/github-adapter-v1.test.mjs
 node --test tests/mission-record.test.mjs

@@ -28,10 +28,9 @@ Delivery Mode begins with `../playbooks/begin-mission.md`.
 - **Daisy Johnson** finds similar implementations, reusable components,
   existing APIs, relevant tests, and other evidence that reduces implementation
   uncertainty.
-- **Nick Fury** reviews the architecture, hidden dependencies, reuse of existing
-  patterns, unnecessary complexity, whether the mission should be split, and
-  whether the implementation still matches the approved plan before technical
-  review.
+- **Nick Fury** reviews the exact committed May-owned blueprint before
+  production implementation, then separately checks exact-head conformance
+  before technical review.
 - **Melinda May** executes only the approved plan, writes or updates tests, and
   prepares the implementation summary and pull-request-ready change.
 - **Leo Fitz** performs the technical review for maintainability, simplicity,
@@ -47,6 +46,8 @@ Only participating seats receive Delivery Mode context for a mission.
 
 - Do not begin implementation until the Definition of Ready is satisfied.
 - Require explicit Phil Coulson approval before specialist dispatch.
+- Require a verified draft workspace and eligible exact-revision Fury plan gate
+  before production implementation; `workspace_ready` is not dispatch-ready.
 - Delivery Mode cannot use the lightweight operational timeout path.
 - Do not expand scope without Phil Coulson's approval.
 - Prefer existing repository patterns and reusable components.

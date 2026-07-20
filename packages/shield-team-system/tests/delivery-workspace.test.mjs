@@ -41,8 +41,90 @@ function input(overrides = {}) {
     artifactRevisionId: head,
     workspacePlan: plan(),
     body: "Issue 44 Mission Workspace",
+    missionId: "mission-44",
+    subjectId: "issue-44",
+    blueprintArtifact: {
+      artifactId: "issue-44-blueprint",
+      artifactPath: plan().missionBriefPath,
+      artifactKind: "implementation_blueprint",
+      owningSeatId: "may",
+    },
+    planGate: null,
     ...overrides,
   };
+}
+
+function passingGate(overrides = {}) {
+  return {
+    planGateSchemaVersion: 1,
+    contractVersion: "fury.plan-gate.v1",
+    review: {
+      reviewSchemaVersion: 1,
+      contractVersion: "fury.plan-gate.v1",
+      assuranceKind: "host_asserted_non_authoritative",
+      reviewId: "review-44-1",
+      missionId: "mission-44",
+      subjectId: "issue-44",
+      repositoryOwner: "RanSolo",
+      repositoryName: "shield-workspace",
+      baseBranch: "main",
+      missionBranch: plan().branchSlug,
+      prNumber: 45,
+      blueprintArtifactId: "issue-44-blueprint",
+      blueprintArtifactPath: plan().missionBriefPath,
+      blueprintArtifactKind: "implementation_blueprint",
+      blueprintOwningSeatId: "may",
+      reviewedRevisionId: head,
+      verdict: "PASS",
+      findings: [],
+      reasoningRuntimeId: "runtime:ornith",
+      toolExecutorId: "executor:codex-host",
+      ...overrides,
+    },
+    reconciliation: null,
+  };
+}
+
+function reconciledGate() {
+  const reviewedRevisionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const value = passingGate({
+    reviewedRevisionId,
+    verdict: "PASS_WITH_REQUIRED_CHANGES",
+    findings: [{
+      findingId: "finding-1",
+      findingClass: "fail_closedness",
+      evidenceRefs: ["pr:45#fury-review"],
+    }],
+  });
+  value.reconciliation = {
+    reconciliationSchemaVersion: 1,
+    contractVersion: "fury.plan-gate.v1",
+    assuranceKind: "host_asserted_non_authoritative",
+    reconciliationId: "reconciliation-44-1",
+    reviewId: "review-44-1",
+    missionId: "mission-44",
+    subjectId: "issue-44",
+    repositoryOwner: "RanSolo",
+    repositoryName: "shield-workspace",
+    baseBranch: "main",
+    missionBranch: plan().branchSlug,
+    prNumber: 45,
+    blueprintArtifactId: "issue-44-blueprint",
+    blueprintArtifactPath: plan().missionBriefPath,
+    blueprintArtifactKind: "implementation_blueprint",
+    blueprintOwningSeatId: "may",
+    reviewedRevisionId,
+    correctedRevisionId: head,
+    additionalArchitectureChange: false,
+    dispositions: [{
+      findingId: "finding-1",
+      disposition: "incorporated",
+      evidenceRefs: [`commit:${head}`],
+    }],
+    reasoningRuntimeId: "runtime:ornith",
+    toolExecutorId: "executor:codex-host",
+  };
+  return value;
 }
 
 function runner(responses) {
@@ -62,13 +144,14 @@ const initialChecks = () => [
   ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
 ];
 
-test("approval, committed brief, and verified draft receipt open specialist dispatch", () => {
+test("approval and verified draft receipt produce workspace_ready while Fury is pending", () => {
   const run = runner([
     ...initialChecks(), ok("[]"), ok(pr().url), ok(JSON.stringify([pr()])),
   ]);
   const result = prepareDeliveryWorkspaceForDispatch(input(), { run });
 
-  assert.equal(result.state, "dispatch_ready");
+  assert.equal(result.state, "workspace_ready");
+  assert.deepEqual(result.planGateEvaluation.reasonCodes, ["PLAN_REVIEW_REQUIRED"]);
   assert.equal(result.publicationAction, "created_draft_pr");
   assert.deepEqual(result.receipt, {
     schemaVersion: 1,
@@ -135,11 +218,66 @@ test("repeated publication reuses and verifies the existing draft PR", () => {
   ]);
   const result = prepareDeliveryWorkspaceForDispatch(input(), { run });
 
-  assert.equal(result.state, "dispatch_ready");
+  assert.equal(result.state, "workspace_ready");
   assert.equal(result.publicationAction, "updated_existing_draft_pr");
   assert.equal(result.receipt.prNumber, 45);
   assert.equal(run.calls.filter(({ args }) => args[0] === "pr" && args[1] === "create").length, 0);
   assert.equal(run.calls.filter(({ args }) => args[0] === "pr" && args[1] === "edit").length, 1);
+});
+
+test("an exact Fury PASS opens dispatch after verified readback", () => {
+  const run = runner([
+    ...initialChecks(), ok(JSON.stringify([pr()])), ok(), ok(JSON.stringify([pr()])),
+  ]);
+  const result = prepareDeliveryWorkspaceForDispatch(input({ planGate: passingGate() }), { run });
+  assert.equal(result.state, "dispatch_ready");
+  assert.equal(result.planGateEvaluation.dispatchEligibility, "eligible");
+  assert.equal(result.planGateEvaluation.reviewerSeatId, "fury");
+});
+
+test("bounded reconciliation opens dispatch while Fury FAIL remains workspace_ready", () => {
+  const reconciled = prepareDeliveryWorkspaceForDispatch(
+    input({ planGate: reconciledGate() }),
+    { run: runner([...initialChecks(), ok(JSON.stringify([pr()])), ok(), ok(JSON.stringify([pr()]))]) },
+  );
+  assert.equal(reconciled.state, "dispatch_ready");
+  assert.equal(reconciled.planGateEvaluation.verifierSeatId, "hill");
+
+  const failed = prepareDeliveryWorkspaceForDispatch(
+    input({
+      planGate: passingGate({
+        verdict: "FAIL",
+        findings: [{
+          findingId: "finding-1",
+          findingClass: "architecture",
+          evidenceRefs: ["pr:45#fury-fail"],
+        }],
+      }),
+    }),
+    { run: runner([...initialChecks(), ok(JSON.stringify([pr()])), ok(), ok(JSON.stringify([pr()]))]) },
+  );
+  assert.equal(failed.state, "workspace_ready");
+  assert.deepEqual(failed.planGateEvaluation.reasonCodes, ["REVIEW_FAILED"]);
+});
+
+test("malformed blueprint and non-null gate block before any command", () => {
+  for (const [value, reason] of [
+    [input({ blueprintArtifact: { ...input().blueprintArtifact, artifactPath: "docs/other.md" } }), "blueprint_path_mismatch"],
+    [input({ planGate: { planGateSchemaVersion: 1 } }), "invalid_fury_plan_gate_input"],
+    [input({ planGate: undefined }), "invalid_fury_plan_gate_input"],
+  ]) {
+    const run = runner([]);
+    const result = prepareDeliveryWorkspaceForDispatch(value, { run });
+    assert.equal(result.state, "blocked");
+    assert.equal(result.reason, reason);
+    assert.deepEqual(result.commands, []);
+    assert.equal(run.calls.length, 0);
+  }
+  const getter = input();
+  Object.defineProperty(getter.blueprintArtifact, "artifactId", { get() { throw new Error("no"); } });
+  const result = prepareDeliveryWorkspaceForDispatch(getter, { run: runner([]) });
+  assert.equal(result.state, "blocked");
+  assert.deepEqual(result.commands, []);
 });
 
 test("receipt identity and expected revision mismatches fail closed", () => {

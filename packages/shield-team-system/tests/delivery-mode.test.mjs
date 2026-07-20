@@ -18,8 +18,8 @@ test("delivery mode defines the planned-work contract and role boundaries", asyn
   assert.match(mode, /Maria Hill \(Orchestrator\).*owns intake, routing, operational coordination/s);
   assert.match(mode, /Melinda May \(Implementer\).*owns production implementation/s);
   assert.match(mode, /Daisy Johnson.*evidence that reduces implementation\s+uncertainty/s);
-  assert.match(mode, /Nick Fury.*reviews the architecture/s);
-  assert.match(mode, /Nick Fury.*implementation still matches the approved plan/s);
+  assert.match(mode, /Nick Fury.*reviews the exact committed May-owned blueprint/s);
+  assert.match(mode, /Nick Fury.*exact-head conformance/s);
   assert.match(mode, /Leo Fitz.*performs the technical review/s);
   assert.match(mode, /Jemma Simmons.*reviews acceptance criteria/s);
   assert.match(mode, /Phil Coulson.*approves the Mission Brief/s);
@@ -35,7 +35,7 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
   for (const stage of [
     "1. Mission Intake",
     "2. Requirements & Scope",
-    "3. Architecture Review",
+    "3. Blueprint and Early Fury Architecture Gate",
     "4. PR Mission Workspace",
     "5. Implementation",
     "6. Validation",
@@ -58,6 +58,7 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
     "Pull request target is known.",
     "Approved Mission Brief is committed on the mission branch.",
     "Verified draft PR Mission Workspace exists.",
+    "Fury plan review binds the exact current May-owned blueprint revision.",
   ]) {
     assert.match(playbook, new RegExp(condition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -67,7 +68,8 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
   assert.match(playbook, /Missing evidence returns to Daisy Johnson/);
   assert.match(playbook, /Architecture concerns return to Nick Fury/);
   assert.match(playbook, /gives brief, high-leverage guidance/);
-  assert.match(playbook, /implementation still matches the approved plan/);
+  assert.match(playbook, /PASS_WITH_REQUIRED_CHANGES/);
+  assert.match(playbook, /workspace_ready.*not implementation\s+permission/s);
   assert.match(playbook, /Delivery Mode begins with `\.\/begin-mission\.md`/);
   assert.match(playbook, /requires explicit\s+Phil Coulson approval/);
   assert.match(playbook, /cannot activate through the lightweight operational\s+timeout path/);
@@ -81,7 +83,7 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
   assert.match(playbook, /workspace-contract\.mjs/);
   assert.match(playbook, /pr-workspace\.mjs/);
   assert.match(playbook, /prepareDeliveryWorkspaceForDispatch/);
-  assert.match(playbook, /Specialist implementation does not begin unless the guard\s+returns `dispatch_ready`/);
+  assert.match(playbook, /Specialist implementation does not begin unless the guard\s+returns literal `dispatch_ready`/);
   assert.match(playbook, /final PR-body updates never\s+replace the chronological handoff trail/);
 });
 

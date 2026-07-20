@@ -46,7 +46,7 @@ Jemma Simmons may review product intent or acceptance criteria when the mission
 needs product or domain judgment. Phil Coulson resolves ambiguity and approves
 scope or tradeoffs.
 
-### 3. Architecture Review
+### 3. Blueprint and Early Fury Architecture Gate
 
 Daisy Johnson performs planned-work reconnaissance:
 
@@ -54,15 +54,23 @@ Daisy Johnson performs planned-work reconnaissance:
 - locates existing APIs and relevant tests
 - gathers evidence that reduces implementation uncertainty
 
-Nick Fury then:
+Melinda May owns the implementation blueprint embedded in the committed Mission
+Brief. After Hill creates and verifies the early draft PR Mission Workspace,
+Nick Fury reviews that exact blueprint head. Fury then:
 
 - validates the proposed design against repository patterns
 - identifies hidden dependencies and unnecessary complexity
 - decides whether the mission should be split
 - gives brief, high-leverage guidance that sharpens Daisy Johnson's findings and Melinda May's execution plan
-- approves or revises the implementation plan
+- records `PASS`, `PASS_WITH_REQUIRED_CHANGES`, or `FAIL` against the exact
+  repository, branches, PR, artifact identity, ownership, and revision
 
-Architecture approval is required before implementation begins.
+`PASS_WITH_REQUIRED_CHANGES` permits one bounded May correction only when Hill
+verifies that every prescribed finding was incorporated and no additional
+unprescribed change occurred. A genuine architecture, scope, authority,
+subject, or ownership change requires renewed Fury review. The gate is
+host-asserted, stateless, and non-authoritative; Coulson approval remains
+independently required.
 
 ### 4. PR Mission Workspace
 
@@ -79,8 +87,13 @@ secrets or private model reasoning.
 If GitHub lookup, branch push, PR creation, update, or exact receipt verification
 fails, Hill records the blocked result and returns to Coulson. Repository,
 branch, artifact revision, pull-request identity, open state, and draft state
-must all match. Specialist implementation does not begin unless the guard
-returns `dispatch_ready` with the verified PR workspace receipt.
+must all match. Hill first calls the guard with explicit `planGate: null`.
+Successful readback returns `workspace_ready`, which is not implementation
+permission. Hill calls the guard again with the exact Fury record and any
+bounded reconciliation; repeated publication reuses and reverifies the
+existing draft. Specialist implementation does not begin unless the guard
+returns literal `dispatch_ready` with the verified receipt and eligible
+plan-gate evaluation.
 
 Hill appends major human-facing handoffs with seat-derived attribution. Routine
 internal journal events are not published, and final PR-body updates never
@@ -184,6 +197,9 @@ Before implementation begins:
 - [ ] Pull request target is known.
 - [ ] Approved Mission Brief is committed on the mission branch.
 - [ ] Verified draft PR Mission Workspace exists.
+- [ ] Fury plan review binds the exact current May-owned blueprint revision.
+- [ ] The Fury plan gate is eligible, including complete bounded reconciliation
+      when the verdict requires changes.
 
 If any condition is unmet, Maria Hill keeps the mission in intake, requirements,
 reconnaissance, or architecture review rather than dispatching implementation.
@@ -196,6 +212,7 @@ Record:
 - Definition of Ready status
 - per-seat mode attachments
 - architecture decision
+- exact Fury plan-gate verdict and reconciliation status
 - implementation and validation summary
 - Fury implementation sanity-review status
 - Fitz and Simmons review status
