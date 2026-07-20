@@ -55,6 +55,26 @@ Configuration:
 Calls are stateless by default (`store: false`) so repository missions do not
 accumulate as persistent LM Studio chat history.
 
+## Governed Daisy reconnaissance tools
+
+`@shield/team-system/local-tools` exposes the Phase 1 host API for bounded local
+Daisy reconnaissance. It provides only `readFile`, `listFiles`, and
+`searchRepo`. Custom tools use LM Studio's `/v1/chat/completions` endpoint after
+an exact `/api/v1/models` capability probe; the existing text-only CLI continues
+to use `/api/v1/chat`.
+
+Tool mode is intentionally programmatic. A standalone CLI flag cannot establish
+authoritative runtime bindings, fresh journal state, durable permission
+consumption, or audited result receipts. The trusted host must inject the Issue
+#10 context provider, append-only permission ledger, pre-authorized call slots,
+and non-authoritative broker event sink. Missing dependencies fail closed and
+never fall back to text mode.
+
+Repository paths are canonical-root confined, sensitive paths are excluded,
+results are bounded, and raw tool output is released to the model only after the
+audited executor reports `completed`. Final model prose is labeled untrusted
+model output rather than verified reconnaissance evidence.
+
 Role aliases map to the seat prompts in `agents/`: `orchestrator`/`hill`/`stinger`,
 `investigator`/`daisy`/`jester`, `architect`/`fury`/`viper`,
 `implementer`/`may`/`iceman`, `reviewer`/`fitz`/`goose`, `product`/`simmons`,

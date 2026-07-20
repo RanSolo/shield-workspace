@@ -4,6 +4,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+export { runLocalToolSession } from "./local-tool-broker.mjs";
+
 const ROLE_FILES = {
   orchestrator: "maria-hill-orchestrator.agent.md",
   hill: "maria-hill-orchestrator.agent.md",
