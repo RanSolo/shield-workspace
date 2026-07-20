@@ -44,11 +44,12 @@ test("runner v6 dispatches exactly once through fresh permission and preserves t
   const appendIfAbsent = (record) => {
     if (ledger.some(({ recordId }) => recordId === record.recordId)) return { appended: false };
     ledger.push(record);
-    return { schemaVersion: 1, recordId: record.recordId, digest: record.digest, appended: true, ledgerSequence: ledger.length - 1 };
+    return { schemaVersion: 1, ledgerId: record.ledgerId, recordId: record.recordId, decisionId: record.decisionId, digest: record.digest, appended: true, ledgerSequence: ledger.length - 1 };
   };
-  const authorize = createPermissionAuthorizer({ getContext: () => context(), appendIfAbsent });
+  const authorize = createPermissionAuthorizer({ ledgerId: "ledger:permission:integration", getContext: () => context(), appendIfAbsent });
   let invocations = 0;
   const execute = createAuditedExecutor({
+    ledgerId: "ledger:permission:integration",
     getContext: () => context(), appendIfAbsent,
     execute: () => { invocations += 1; return { runnerContractVersion: 1, outcome: "completed", missionId: "mission:issue-10", subjectId: "issue:10", revisionId, evaluatedThroughSequence: 5, cycleId: "cycle:permission:1", seatId: "may", actionId: "edit-permission-boundary", effectClass: "behavioral_implementation", effectKey: "effect:issue-10:permission", summary: "Implementation completed.", evidenceRefs: ["test:permission-integration"] }; },
     nextRecordId: () => "audit:result:permission:1", now: () => "2026-07-20T02:06:00Z",
@@ -58,19 +59,20 @@ test("runner v6 dispatches exactly once through fresh permission and preserves t
   assert.equal(result.value.outcome, "advanced");
   assert.equal(result.value.effectRecordCandidate.journalSchemaVersion, 6);
   assert.equal(invocations, 1);
-  assert.equal(ledger.length, 2);
+  assert.equal(ledger.length, 3);
   assert.equal(replayPermissionAuditLedger(ledger).state, "valid");
   assert.deepEqual(ledger.map(({ seatId, reasoningRuntimeId, toolExecutorId }) => ({ seatId, reasoningRuntimeId, toolExecutorId })), [
+    { seatId: "may", reasoningRuntimeId: "runtime:ornith:may", toolExecutorId: "executor:codex-host" },
     { seatId: "may", reasoningRuntimeId: "runtime:ornith:may", toolExecutorId: "executor:codex-host" },
     { seatId: "may", reasoningRuntimeId: "runtime:ornith:may", toolExecutorId: "executor:codex-host" },
   ]);
 });
 
 test("runner v6 does not invoke the tool when the fresh executor binding is substituted", async () => {
-  const appendIfAbsent = (record) => ({ schemaVersion: 1, recordId: record.recordId, digest: record.digest, appended: true, ledgerSequence: 0 });
-  const authorize = createPermissionAuthorizer({ getContext: () => context(), appendIfAbsent });
+  const appendIfAbsent = (record) => ({ schemaVersion: 1, ledgerId: record.ledgerId, recordId: record.recordId, decisionId: record.decisionId, digest: record.digest, appended: true, ledgerSequence: 0 });
+  const authorize = createPermissionAuthorizer({ ledgerId: "ledger:permission:integration", getContext: () => context(), appendIfAbsent });
   let invocations = 0;
-  const execute = createAuditedExecutor({ getContext: () => context({ reasoningRuntimeId: "runtime:substituted" }), appendIfAbsent, execute: () => { invocations += 1; }, nextRecordId: () => "audit:result:substituted", now: () => "2026-07-20T02:06:00Z" });
+  const execute = createAuditedExecutor({ ledgerId: "ledger:permission:integration", getContext: () => context({ reasoningRuntimeId: "runtime:substituted" }), appendIfAbsent, execute: () => { invocations += 1; }, nextRecordId: () => "audit:result:substituted", now: () => "2026-07-20T02:06:00Z" });
   const result = await runRunnerCycle(input(), { authorize, execute, validate: validatorResult });
   assert.equal(result.state, "valid");
   assert.equal(result.value.outcome, "stopped");

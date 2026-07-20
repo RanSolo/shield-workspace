@@ -125,6 +125,7 @@ const valid = <T,>(value: T): PermissionResult<T> => ({ state: "valid", value })
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/;
 const HUMAN_ONLY_SEATS = new Set(["coulson", "fitz", "simmons"]);
+const SEAT_IDS = new Set(["hill", "daisy", "fury", "may", "coulson", "fitz", "simmons"]);
 const EFFECT_CLASSES = new Set(["behavioral_implementation", "verification", "coordination"]);
 const BINDING_FIELDS = ["bindingSchemaVersion", "bindingId", "bindingVersion", "missionId", "subjectId", "missionRevisionId", "seatId", "reasoningRuntimeId", "toolExecutorId", "repositoryId", "canonicalWritableRoot", "branch", "artifactRevisionId", "recordedAtSequence", "activeThroughSequence", "lifecycleState", "approvedScope", "coulsonAuthorizationRef"] as const;
 const SCOPE_FIELDS = ["actionIds", "effectClasses", "effectKeys", "capabilities"] as const;
@@ -156,6 +157,12 @@ function time(value: unknown): value is string { return typeof value === "string
 function stringSet(value: unknown, label: string, allowEmpty = true): string[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return [`${label} must be a plain array.`];
   const errors: string[] = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === "length") continue;
+    const descriptor = typeof key === "string" ? Object.getOwnPropertyDescriptor(value, key) : undefined;
+    if (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(key) || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) errors.push(`${label} has an unsafe array field.`);
+  }
+  if (errors.length > 0) return errors;
   const seen = new Set<string>();
   if (!allowEmpty && value.length === 0) errors.push(`${label} must not be empty.`);
   for (let index = 0; index < value.length; index += 1) {
@@ -165,8 +172,22 @@ function stringSet(value: unknown, label: string, allowEmpty = true): string[] {
     else if (seen.has(item)) errors.push(`${label} duplicates ${item}.`);
     else seen.add(item);
   }
-  if (value.every((item) => typeof item === "string") && value.some((item, index) => index > 0 && String(value[index - 1]).localeCompare(String(item)) >= 0)) errors.push(`${label} must be sorted and unique.`);
+  const items = value.map((_item, index) => Object.getOwnPropertyDescriptor(value, String(index))?.value);
+  if (items.every((item) => typeof item === "string") && items.some((item, index) => index > 0 && String(items[index - 1]).localeCompare(String(item)) >= 0)) errors.push(`${label} must be sorted and unique.`);
   return errors;
+}
+
+function arrayValues(value: unknown, label: string): { values: unknown[]; errors: string[] } {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return { values: [], errors: [`${label} must be a plain array.`] };
+  const errors: string[] = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === "length") continue;
+    const descriptor = typeof key === "string" ? Object.getOwnPropertyDescriptor(value, key) : undefined;
+    if (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(key) || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) errors.push(`${label} has an unsafe array field.`);
+  }
+  for (let index = 0; index < value.length; index += 1) if (!Object.hasOwn(value, index)) errors.push(`${label} must not be sparse.`);
+  if (errors.length > 0) return { values: [], errors };
+  return { values: Array.from({ length: value.length }, (_item, index) => Object.getOwnPropertyDescriptor(value, String(index))?.value), errors: [] };
 }
 
 function scopeErrors(value: unknown, label: string): string[] {
@@ -183,7 +204,7 @@ export function validateRuntimeBinding(input: unknown): PermissionResult<Runtime
   if (input.bindingSchemaVersion !== 1) errors.push("Runtime binding schema version is unsupported.");
   for (const field of ["bindingId", "missionId", "subjectId", "seatId", "reasoningRuntimeId", "toolExecutorId", "repositoryId", "branch", "coulsonAuthorizationRef"] as const) if (!id(input[field])) errors.push(`Runtime binding ${field} is invalid.`);
   if (HUMAN_ONLY_SEATS.has(String(input.seatId))) errors.push("Human-only seats cannot receive runtime bindings.");
-  if (input.seatId === input.reasoningRuntimeId || input.seatId === input.toolExecutorId) errors.push("Runtime and executor identities cannot be seats.");
+  if (SEAT_IDS.has(String(input.reasoningRuntimeId)) || SEAT_IDS.has(String(input.toolExecutorId)) || input.seatId === input.reasoningRuntimeId || input.seatId === input.toolExecutorId || input.reasoningRuntimeId === input.toolExecutorId) errors.push("Seat, runtime, and executor identities must be disjoint and runtimes/executors cannot be seats.");
   if (!REVISION.test(String(input.missionRevisionId ?? "")) || !REVISION.test(String(input.artifactRevisionId ?? ""))) errors.push("Runtime binding revisions are invalid.");
   if (!root(input.canonicalWritableRoot)) errors.push("Runtime binding writable root is invalid.");
   if (!Number.isSafeInteger(input.bindingVersion) || (input.bindingVersion as number) < 1 || !Number.isSafeInteger(input.recordedAtSequence) || (input.recordedAtSequence as number) < 1) errors.push("Runtime binding version or sequence is invalid.");
@@ -214,12 +235,14 @@ export function validatePermissionInvocationContext(input: unknown): PermissionR
   if (!REVISION.test(String(input.missionRevisionId ?? "")) || !REVISION.test(String(input.artifactRevisionId ?? ""))) errors.push("Permission context revisions are invalid.");
   if (!root(input.canonicalWritableRoot) || !time(input.evaluatedAt) || !Number.isSafeInteger(input.evaluatedThroughSequence) || (input.evaluatedThroughSequence as number) < 0) errors.push("Permission context root, time, or sequence is invalid.");
   errors.push(...stringSet(input.requiredCapabilities, "Permission context requiredCapabilities"));
-  if (!Array.isArray(input.activeBindings) || Object.getPrototypeOf(input.activeBindings) !== Array.prototype) errors.push("Permission context activeBindings must be a plain array.");
-  else input.activeBindings.forEach((binding, index) => { const checked = validateRuntimeBinding(binding); if (checked.state === "invalid") errors.push(...checked.errors.map((error) => `activeBindings[${index}]: ${error}`)); else if (checked.value.lifecycleState !== "active") errors.push(`activeBindings[${index}] is not active.`); });
-  if (!Array.isArray(input.attestations) || Object.getPrototypeOf(input.attestations) !== Array.prototype) errors.push("Permission context attestations must be a plain array.");
-  else {
+  const bindings = arrayValues(input.activeBindings, "Permission context activeBindings");
+  errors.push(...bindings.errors);
+  if (bindings.errors.length === 0) bindings.values.forEach((binding, index) => { const checked = validateRuntimeBinding(binding); if (checked.state === "invalid") errors.push(...checked.errors.map((error) => `activeBindings[${index}]: ${error}`)); else if (checked.value.lifecycleState !== "active") errors.push(`activeBindings[${index}] is not active.`); });
+  const attestations = arrayValues(input.attestations, "Permission context attestations");
+  errors.push(...attestations.errors);
+  if (attestations.errors.length === 0) {
     const ids = new Set<string>();
-    input.attestations.forEach((attestation, index) => { const checked = validateHostPermissionAttestation(attestation); if (checked.state === "invalid") errors.push(...checked.errors.map((error) => `attestations[${index}]: ${error}`)); else if (ids.has(checked.value.attestationId)) errors.push(`attestations duplicates ${checked.value.attestationId}.`); else ids.add(checked.value.attestationId); });
+    attestations.values.forEach((attestation, index) => { const checked = validateHostPermissionAttestation(attestation); if (checked.state === "invalid") errors.push(...checked.errors.map((error) => `attestations[${index}]: ${error}`)); else if (ids.has(checked.value.attestationId)) errors.push(`attestations duplicates ${checked.value.attestationId}.`); else ids.add(checked.value.attestationId); });
   }
   return errors.length > 0 ? invalid("permission_context_malformed", ...errors) : valid(input as unknown as PermissionInvocationContext);
 }
@@ -285,8 +308,8 @@ function artifact(plan: RunnerCyclePlan, context: PermissionInvocationContext, e
   return { artifactSchemaVersion: 1, artifactId: `permission-artifact:${context.decisionId}`, contentType: "application/json", payload: payload as unknown as { [key: string]: RunnerJsonValue } };
 }
 
-function auditRecord(plan: RunnerCyclePlan, context: PermissionInvocationContext, binding: RuntimeBinding, recordType: "permission.decision" | "tool.result", outcome: "allow" | "deny" | "completed" | "failed" | "uncertain", recordId: string, recordedAt: string, summary: string | null, evidenceRefs: string[]): PermissionAuditRecord {
-  return createPermissionAuditRecord({ recordId, recordType, recordedAt, decisionId: context.decisionId, outcome,
+function auditRecord(plan: RunnerCyclePlan, context: PermissionInvocationContext, binding: RuntimeBinding, ledgerId: string, recordType: "permission.decision" | "tool.invocation" | "tool.result", outcome: "allow" | "deny" | "completed" | "failed" | "uncertain", recordId: string, recordedAt: string, summary: string | null, evidenceRefs: string[]): PermissionAuditRecord {
+  return createPermissionAuditRecord({ ledgerId, recordId, recordType, recordedAt, decisionId: context.decisionId, outcome,
     missionId: plan.missionId, subjectId: plan.subjectId, seatId: plan.seatId, reasoningRuntimeId: context.reasoningRuntimeId,
     toolExecutorId: context.toolExecutorId, bindingId: binding.bindingId, bindingVersion: binding.bindingVersion,
     repositoryId: context.repositoryId, canonicalWritableRoot: context.canonicalWritableRoot, branch: context.branch,
@@ -310,7 +333,7 @@ export function createPermissionAuthorizer(dependencies: PermissionAuthorizerDep
       missionId: plan.missionId, subjectId: plan.subjectId, revisionId: plan.revisionId, evaluatedThroughSequence: plan.evaluatedThroughSequence,
       cycleId: plan.cycleId, seatId: plan.seatId, actionId: plan.actionId, effectClass: plan.effectClass, effectKey: plan.effectKey,
       reasonCode: evaluation.reasonCode, authorizationArtifact: artifact(plan, context, evaluation, binding) };
-    const record = auditRecord(plan, context, binding, "permission.decision", evaluation.outcome, `audit:${context.decisionId}`, context.evaluatedAt, null, evaluation.attestationIds);
+    const record = auditRecord(plan, context, binding, dependencies.ledgerId, "permission.decision", evaluation.outcome, `audit:${context.decisionId}`, context.evaluatedAt, null, evaluation.attestationIds);
     const receipt = await dependencies.appendIfAbsent(record);
     if (validatePermissionAuditReceipt(receipt, record).state === "invalid") throw new Error("audit_receipt_mismatch");
     used.add(context.decisionId);
@@ -340,12 +363,17 @@ export function createAuditedExecutor(dependencies: AuditedExecutorDependencies)
     } catch { return failed("Fresh permission context could not be acquired; tool invocation was not attempted."); }
     const binding = exactDecision(plan, decision, context);
     if (binding === null) return failed("Permission changed after authorization; tool invocation was not attempted.");
+    const invocation = auditRecord(plan, context, binding, dependencies.ledgerId, "tool.invocation", "allow", `audit-invocation:${decision.decisionId}`, context.evaluatedAt, null, context.attestations.map(({ attestationId }) => attestationId).sort());
+    try {
+      const receipt = await dependencies.appendIfAbsent(invocation);
+      if (validatePermissionAuditReceipt(receipt, invocation).state === "invalid") throw new Error("receipt");
+    } catch { return failed("Permission decision was already consumed or its invocation receipt was not verified; tool invocation was not attempted."); }
     let raw: unknown;
     try { raw = await dependencies.execute(plan, decision); }
     catch { raw = null; }
     const checked = validateRunnerExecutorResult(raw);
     const result: RunnerExecutorResult = checked.state === "valid" ? checked.value : { ...failed("Executor result is unavailable or malformed; effect outcome is uncertain."), outcome: "uncertain", evidenceRefs: [plan.cycleId] };
-    const record = auditRecord(plan, context, binding, "tool.result", result.outcome, dependencies.nextRecordId(decision), dependencies.now(), result.summary, result.evidenceRefs);
+    const record = auditRecord(plan, context, binding, dependencies.ledgerId, "tool.result", result.outcome, dependencies.nextRecordId(decision), dependencies.now(), result.summary, result.evidenceRefs);
     try {
       const receipt = await dependencies.appendIfAbsent(record);
       if (validatePermissionAuditReceipt(receipt, record).state === "invalid") throw new Error("receipt");

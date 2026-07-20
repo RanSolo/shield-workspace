@@ -1169,6 +1169,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
       const binding = checked.value;
       if (!briefResult.value.participants.some(({ seatId }) => seatId === binding.seatId)) return invalid("seat_mismatch", "Runtime binding seat is not a mission participant.");
+      if (briefResult.value.participants.some(({ seatId }) => seatId === binding.reasoningRuntimeId || seatId === binding.toolExecutorId)) return invalid("seat_mismatch", "Runtime and executor identities cannot be mission seats.");
       if (binding.bindingVersion !== 1 || binding.lifecycleState !== "active" || binding.activeThroughSequence !== null) return invalid("binding_invalid", "Initial runtime binding must be active version 1.");
       if (runtimeBindings.some((candidate) => candidate.bindingId === binding.bindingId || (candidate.lifecycleState === "active" && candidate.seatId === binding.seatId))) return invalid("binding_ambiguous", "Initial runtime binding identity or active seat is duplicated.");
       const authorized = verifySignedRuntimeBindingAuthorization(input.payload.authorization, binding, current, null, null);
@@ -1186,6 +1187,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
       const replacement = checked.value;
       if (!briefResult.value.participants.some(({ seatId }) => seatId === replacement.seatId)) return invalid("seat_mismatch", "Runtime binding replacement seat is not a mission participant.");
+      if (briefResult.value.participants.some(({ seatId }) => seatId === replacement.reasoningRuntimeId || seatId === replacement.toolExecutorId)) return invalid("seat_mismatch", "Runtime and executor identities cannot be mission seats.");
       if (replacement.bindingId !== prior[0].bindingId || replacement.bindingVersion !== prior[0].bindingVersion + 1 || replacement.seatId !== prior[0].seatId || replacement.lifecycleState !== "active" || replacement.activeThroughSequence !== null) return invalid("binding_invalid", "Runtime binding replacement must atomically increment the same active binding.");
       const authorized = verifySignedRuntimeBindingAuthorization(input.payload.authorization, replacement, current, prior[0].bindingId, prior[0].bindingVersion);
       if (authorized.state === "invalid") return authorized;
@@ -1444,6 +1446,7 @@ export function createRuntimeBindingEntry(
   if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
   const binding = checked.value;
   if (!projection.brief.participants.some(({ seatId }) => seatId === binding.seatId)) return invalid("seat_mismatch", "Runtime binding seat is not a mission participant.");
+  if (projection.brief.participants.some(({ seatId }) => seatId === binding.reasoningRuntimeId || seatId === binding.toolExecutorId)) return invalid("seat_mismatch", "Runtime and executor identities cannot be mission seats.");
   if (binding.bindingVersion !== 1 || binding.lifecycleState !== "active" || binding.activeThroughSequence !== null) return invalid("binding_invalid", "Initial runtime binding must be active version 1.");
   if (projection.runtimeBindings.some((candidate) => candidate.bindingId === binding.bindingId) || projection.activeRuntimeBindings.some((candidate) => candidate.seatId === binding.seatId)) return invalid("binding_ambiguous", "Runtime binding identity or active seat is duplicated.");
   const authorized = verifySignedRuntimeBindingAuthorization(authorization, binding, projection, null, null);
@@ -1464,6 +1467,7 @@ export function createRuntimeBindingSupersessionEntry(
   const checked = validateRuntimeBinding(bindingInput);
   if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
   const replacement = checked.value;
+  if (projection.brief.participants.some(({ seatId }) => seatId === replacement.reasoningRuntimeId || seatId === replacement.toolExecutorId)) return invalid("seat_mismatch", "Runtime and executor identities cannot be mission seats.");
   if (replacement.bindingId !== priorBindingId || replacement.bindingVersion !== priorBindingVersion + 1 || replacement.seatId !== prior[0].seatId || replacement.lifecycleState !== "active" || replacement.activeThroughSequence !== null) return invalid("binding_invalid", "Runtime binding replacement must atomically increment the same active binding.");
   const authorized = verifySignedRuntimeBindingAuthorization(authorization, replacement, projection, priorBindingId, priorBindingVersion);
   if (authorized.state === "invalid") return authorized;

@@ -36,8 +36,9 @@ owns real broker and probe production; this package validates supplied evidence.
 
 The authorizer writes a closed decision record through atomic
 `appendIfAbsent` and verifies the exact receipt before returning `allow`.
-Decision IDs are single-use. The audited executor obtains a fresh context and
-revalidates the exact decision immediately before dispatch. Missing, stale,
+Decision IDs are single-use. The audited executor obtains a fresh context,
+revalidates the exact decision, and atomically appends a deterministic
+invocation-consumption record immediately before dispatch. Missing, stale,
 malformed, ambiguous, substituted, mismatched, reused, or out-of-scope inputs
 fail closed without invoking the tool.
 
@@ -45,7 +46,9 @@ fail closed without invoking the tool.
 
 `@shield/team-system/permission-audit` defines a separate append-only,
 digest-bound ledger for permission decisions and sanitized tool results. The
-records preserve truthful seat/runtime/executor attribution and exclude raw
+designated ledger identity is carried by every record and verified receipt;
+cross-ledger receipts fail closed. Records preserve truthful
+seat/runtime/executor attribution and exclude raw
 tool output, secrets, and private reasoning. A tool result can follow only its
 exact preceding allow decision. An unverified result receipt becomes
 `uncertain`.

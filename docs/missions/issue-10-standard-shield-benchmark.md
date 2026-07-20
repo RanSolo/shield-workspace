@@ -157,31 +157,36 @@ Metrics use `measured`, `derived`, `estimated`, or `not observable` labels.
 - supplied Daisy context: 190,485 bytes / 3,856 lines
 - Daisy time to first token: 115.826 seconds
 - elapsed intake through Daisy completion: 3m 59s
-- local May calls: 3 (one non-actionable terminal request, one connection
-  failure, one successful bounded implementation blueprint)
-- successful local May input tokens: 52,727
-- successful local May output tokens: 4,759
-- successful local May reasoning tokens: 1,259
+- local May calls: 4 (one non-actionable terminal request, one connection
+  failure, one successful bounded implementation blueprint, and one successful
+  Fury-correction blueprint)
+- successful local May input tokens: 63,076
+- successful local May output tokens: 6,766
+- successful local May reasoning tokens: 1,776
 - first May repository context: 193,774 bytes / 3,918 lines, plus the 3,556
   byte / 112 line May role prompt
 - failed redirected May repository context: 130,574 bytes / 2,536 lines,
   plus the role prompt; token counts were not returned
 - successful bounded May context: 6,979 bytes / 169 lines, plus the role prompt
 - successful bounded May time to first token: 2.473 seconds
-- total successful local-model usage (Daisy + May): 101,148 input tokens,
-  7,336 output tokens, and 1,966 reasoning tokens
-- premium subagent invocations: 0
+- May correction context: 38,210 bytes / 527 lines, plus the role prompt;
+  16.271 seconds to first token
+- total successful local-model usage (Daisy + May): 111,497 input tokens,
+  9,343 output tokens, and 2,483 reasoning tokens
+- premium subagent invocations: 1 (single sequential Fury review)
 - primary Codex token count and dollar cost: not observable
 - implementation cycles: 1
-- Fury correction cycles: 0
+- Fury correction cycles: 1
 - files changed: 14 total / 13 implementation
-- focused tests added: 11 across 3 files
-- integration verification: 158 team-system tests and 9 multiband tests pass;
+- focused tests added: 13 across 3 files
+- integration verification: 160 team-system tests and 9 multiband tests pass;
   packed strict consumer and `git diff --check` pass
 - elapsed benchmark start through integration: 40m 46s
 - elapsed Coulson authorization through integration: 27m 46s
-- human interventions: 2 (planned Wheels Up authorization and one folder
-  verification question)
+- elapsed benchmark start through Fury correction completion: 54m 52s
+- elapsed Coulson authorization through Fury correction completion: 41m 52s
+- human interventions: 3 (planned Wheels Up authorization, one folder
+  verification question, and one PR review-visibility correction)
 
 ## Stop condition
 
