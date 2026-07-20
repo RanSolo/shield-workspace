@@ -138,6 +138,12 @@ test("closed permission and audit shapes reject hostile accessors without invoki
   hostileScope.approvedScope.actionIds = actions;
   assert.equal(validateRuntimeBinding(hostileScope).state, "invalid");
 
+  const hostileEffectClasses = binding();
+  const effectClasses = [];
+  Object.defineProperty(effectClasses, 0, { enumerable: true, get() { touched += 1; return "behavioral_implementation"; } });
+  hostileEffectClasses.approvedScope.effectClasses = effectClasses;
+  assert.equal(validateRuntimeBinding(hostileEffectClasses).state, "invalid");
+
   const hostileAttestation = attestation("capability");
   Object.defineProperty(hostileAttestation, "observedValue", { enumerable: true, get() { touched += 1; return true; } });
   assert.equal(validateHostPermissionAttestation(hostileAttestation).state, "invalid");

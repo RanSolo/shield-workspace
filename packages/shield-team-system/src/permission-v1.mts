@@ -193,8 +193,12 @@ function arrayValues(value: unknown, label: string): { values: unknown[]; errors
 function scopeErrors(value: unknown, label: string): string[] {
   const errors = exact(value, SCOPE_FIELDS, label);
   if (errors.length > 0 || !plain(value)) return errors;
-  errors.push(...stringSet(value.actionIds, `${label} actionIds`, false), ...stringSet(value.effectClasses, `${label} effectClasses`, false), ...stringSet(value.effectKeys, `${label} effectKeys`, false), ...stringSet(value.capabilities, `${label} capabilities`));
-  if (Array.isArray(value.effectClasses) && value.effectClasses.some((item) => !EFFECT_CLASSES.has(String(item)))) errors.push(`${label} effectClasses are invalid.`);
+  const effectClassErrors = stringSet(value.effectClasses, `${label} effectClasses`, false);
+  errors.push(...stringSet(value.actionIds, `${label} actionIds`, false), ...effectClassErrors, ...stringSet(value.effectKeys, `${label} effectKeys`, false), ...stringSet(value.capabilities, `${label} capabilities`));
+  if (effectClassErrors.length === 0) {
+    const effectClasses = arrayValues(value.effectClasses, `${label} effectClasses`);
+    if (effectClasses.errors.length === 0 && effectClasses.values.some((item) => !EFFECT_CLASSES.has(String(item)))) errors.push(`${label} effectClasses are invalid.`);
+  }
   return errors;
 }
 

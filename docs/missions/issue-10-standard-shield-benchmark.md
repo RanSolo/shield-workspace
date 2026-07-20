@@ -176,7 +176,8 @@ Metrics use `measured`, `derived`, `estimated`, or `not observable` labels.
 - premium subagent invocations: 1 (single sequential Fury review)
 - primary Codex token count and dollar cost: not observable
 - implementation cycles: 1
-- Fury correction cycles: 1
+- Fury correction cycles: 2 (the final review found one residual hostile-array
+  traversal in the first correction)
 - files changed: 14 total / 13 implementation
 - focused tests added: 13 across 3 files
 - integration verification: 160 team-system tests and 9 multiband tests pass;
@@ -185,6 +186,8 @@ Metrics use `measured`, `derived`, `estimated`, or `not observable` labels.
 - elapsed Coulson authorization through integration: 27m 46s
 - elapsed benchmark start through Fury correction completion: 54m 52s
 - elapsed Coulson authorization through Fury correction completion: 41m 52s
+- elapsed benchmark start through residual correction completion: 58m 57s
+- elapsed Coulson authorization through residual correction completion: 45m 57s
 - human interventions: 3 (planned Wheels Up authorization, one folder
   verification question, and one PR review-visibility correction)
 
