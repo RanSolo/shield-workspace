@@ -1,3 +1,5 @@
+"S.H.I.E.L.D. governs autonomous coding agents for enterprise software development."
+
 # shield-workspace
 
 Canonical Nx workspace for the SHIELD Team System and its proving-ground
