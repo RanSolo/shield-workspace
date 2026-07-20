@@ -15,11 +15,13 @@ import {
   type CommunicationRequestPayload,
   type CommunicationResultAdapterCandidate,
 } from "./adapter-v1.mjs";
+import { validateRuntimeBinding, type RuntimeBinding } from "./permission-v1.mjs";
 
 export const SUPERVISED_JOURNAL_SCHEMA_VERSION = 2 as const;
 export const DELEGATED_JOURNAL_SCHEMA_VERSION = 3 as const;
 export const ADAPTER_JOURNAL_SCHEMA_VERSION = 4 as const;
 export const RUNNER_JOURNAL_SCHEMA_VERSION = 5 as const;
+export const PERMISSION_JOURNAL_SCHEMA_VERSION = 6 as const;
 export const SUPERVISED_BRIEF_SCHEMA_VERSION = 1 as const;
 export const HUMAN_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const TRUSTED_BINDING_SCHEMA_VERSION = 1 as const;
@@ -153,6 +155,33 @@ export interface SignedHumanEvidence {
   signatureBase64: string;
 }
 
+export interface RuntimeBindingAuthorizationPayload {
+  schemaVersion: 1;
+  authorizationId: string;
+  missionId: string;
+  subjectId: string;
+  seatId: string;
+  bindingId: string;
+  bindingVersion: number;
+  priorBindingId: string | null;
+  priorBindingVersion: number | null;
+  bindingDigest: string;
+  artifactRevisionId: string;
+  decision: "approved";
+  previousJournalSequence: number;
+  journalSequence: number;
+  humanPrincipalId: string;
+  humanBindingId: string;
+  signingKeyRef: string;
+  sourceRef: string;
+  timestamp: EvidenceTimestamp;
+}
+
+export interface SignedRuntimeBindingAuthorization {
+  payload: RuntimeBindingAuthorizationPayload;
+  signatureBase64: string;
+}
+
 export interface ExecutionEffectPayload {
   runnerContractVersion: 1;
   cycleId: string;
@@ -174,7 +203,7 @@ export interface RunnerSupervisedEffectCandidate {
   runnerContractVersion: 1;
   candidateKind: "runner.supervised_effect_record";
   authority: "non_authoritative";
-  journalSchemaVersion: 5;
+  journalSchemaVersion: 5 | 6;
   missionId: string;
   subjectId: string;
   revisionId: string;
@@ -192,7 +221,7 @@ export interface ExecutionEffectRecord extends ExecutionEffectPayload {
 
 export type SupervisedJournalEntry =
   | {
-    schemaVersion: 2 | 3 | 4 | 5;
+    schemaVersion: 2 | 3 | 4 | 5 | 6;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -205,7 +234,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5;
+    schemaVersion: 2 | 3 | 4 | 5 | 6;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -218,7 +247,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5;
+    schemaVersion: 2 | 3 | 4 | 5 | 6;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -227,7 +256,7 @@ export type SupervisedJournalEntry =
     payload: { from: ExecutionStatus; to: ExecutionStatus; reason: string };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5;
+    schemaVersion: 2 | 3 | 4 | 5 | 6;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -260,7 +289,7 @@ export type SupervisedJournalEntry =
     payload: { reason: DelegatedInvalidationReason };
   }
   | {
-    schemaVersion: 4 | 5;
+    schemaVersion: 4 | 5 | 6;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -269,7 +298,7 @@ export type SupervisedJournalEntry =
     payload: { request: CommunicationRequestPayload };
   }
   | {
-    schemaVersion: 4 | 5;
+    schemaVersion: 4 | 5 | 6;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -278,13 +307,31 @@ export type SupervisedJournalEntry =
     payload: { candidate: CommunicationResultAdapterCandidate };
   }
   | {
-    schemaVersion: 5;
+    schemaVersion: 5 | 6;
     entryId: string;
     missionId: string;
     sequence: number;
     type: "execution.effect_recorded";
     timestamp: EvidenceTimestamp;
     payload: ExecutionEffectPayload;
+  }
+  | {
+    schemaVersion: 6;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "runtime.binding_recorded";
+    timestamp: EvidenceTimestamp;
+    payload: { binding: RuntimeBinding; authorization: SignedRuntimeBindingAuthorization };
+  }
+  | {
+    schemaVersion: 6;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "runtime.binding_superseded";
+    timestamp: EvidenceTimestamp;
+    payload: { priorBindingId: string; priorBindingVersion: number; binding: RuntimeBinding; authorization: SignedRuntimeBindingAuthorization };
   };
 
 export interface RequirementProjection extends EvidenceRequirement {
@@ -310,7 +357,7 @@ export interface CommunicationRequestProjection extends CommunicationRequestPayl
 }
 
 export interface SupervisedMissionProjection {
-  journalSchemaVersion: 2 | 3 | 4 | 5;
+  journalSchemaVersion: 2 | 3 | 4 | 5 | 6;
   missionId: string;
   brief: SupervisedMissionBrief;
   governance: { state: GovernanceState };
@@ -334,6 +381,8 @@ export interface SupervisedMissionProjection {
     requests: CommunicationRequestProjection[];
   };
   effectRecords: ExecutionEffectRecord[];
+  runtimeBindings: RuntimeBinding[];
+  activeRuntimeBindings: RuntimeBinding[];
   trustedBindings: TrustedHumanBinding[];
   requirements: EvidenceRequirement[];
   evidence: HumanEvidencePayload[];
@@ -467,7 +516,7 @@ export function validateRunnerSupervisedEffectCandidate(input: unknown): Contrac
   if (input.runnerContractVersion !== 1) errors.push("Runner candidate runnerContractVersion is unsupported.");
   if (input.candidateKind !== "runner.supervised_effect_record") errors.push("Runner candidate kind is unsupported.");
   if (input.authority !== "non_authoritative") errors.push("Runner candidate must be explicitly non-authoritative.");
-  if (input.journalSchemaVersion !== 5) errors.push("Runner candidate requires journal schema v5.");
+  if (input.journalSchemaVersion !== 5 && input.journalSchemaVersion !== 6) errors.push("Runner candidate requires journal schema v5 or v6.");
   for (const field of ["missionId", "subjectId", "revisionId"]) {
     if (!identifier(input[field])) errors.push(`Runner candidate ${field} is invalid.`);
   }
@@ -739,6 +788,94 @@ export function verifySignedHumanEvidence(
   return valid(payload);
 }
 
+export function computeRuntimeBindingDigest(binding: RuntimeBinding): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(binding)).digest("base64url")}`;
+}
+
+function copyRuntimeBinding(binding: RuntimeBinding): RuntimeBinding {
+  return {
+    ...binding,
+    approvedScope: {
+      actionIds: [...binding.approvedScope.actionIds],
+      effectClasses: [...binding.approvedScope.effectClasses],
+      effectKeys: [...binding.approvedScope.effectKeys],
+      capabilities: [...binding.approvedScope.capabilities],
+    },
+  };
+}
+
+function copyRuntimeBindingAuthorization(authorization: SignedRuntimeBindingAuthorization): SignedRuntimeBindingAuthorization {
+  return {
+    payload: {
+      ...authorization.payload,
+      timestamp: { ...authorization.payload.timestamp },
+    },
+    signatureBase64: authorization.signatureBase64,
+  };
+}
+
+function validateRuntimeBindingAuthorizationPayload(input: unknown): ContractResult<RuntimeBindingAuthorizationPayload> {
+  const fields = [
+    "schemaVersion", "authorizationId", "missionId", "subjectId", "seatId", "bindingId",
+    "bindingVersion", "priorBindingId", "priorBindingVersion", "bindingDigest", "artifactRevisionId", "decision",
+    "previousJournalSequence", "journalSequence", "humanPrincipalId", "humanBindingId",
+    "signingKeyRef", "sourceRef", "timestamp",
+  ];
+  const errors = exactFields(input, fields, "Runtime binding authorization payload");
+  if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed", ...errors);
+  if (input.schemaVersion !== 1) errors.push("Runtime binding authorization schemaVersion is unsupported.");
+  for (const field of ["authorizationId", "missionId", "subjectId", "seatId", "bindingId", "artifactRevisionId", "humanPrincipalId", "humanBindingId", "sourceRef"] as const) {
+    if (!identifier(input[field])) errors.push(`Runtime binding authorization ${field} is invalid.`);
+  }
+  if (typeof input.bindingDigest !== "string" || !/^sha256:[A-Za-z0-9_-]{43}$/.test(input.bindingDigest)) errors.push("Runtime binding authorization bindingDigest is invalid.");
+  if (typeof input.signingKeyRef !== "string" || !KEY_REF.test(input.signingKeyRef)) errors.push("Runtime binding authorization signingKeyRef is invalid.");
+  if (input.decision !== "approved") errors.push("Runtime binding authorization decision must be approved.");
+  if (!Number.isSafeInteger(input.bindingVersion) || (input.bindingVersion as number) < 1) errors.push("Runtime binding authorization bindingVersion is invalid.");
+  if (input.priorBindingVersion !== null && (!Number.isSafeInteger(input.priorBindingVersion) || (input.priorBindingVersion as number) < 1)) errors.push("Runtime binding authorization priorBindingVersion is invalid.");
+  if (input.priorBindingId !== null && !identifier(input.priorBindingId)) errors.push("Runtime binding authorization priorBindingId is invalid.");
+  if ((input.priorBindingId === null) !== (input.priorBindingVersion === null)) errors.push("Runtime binding authorization prior identity must be wholly null or present.");
+  if (!Number.isSafeInteger(input.previousJournalSequence) || (input.previousJournalSequence as number) < 0 ||
+      !Number.isSafeInteger(input.journalSequence) || input.journalSequence !== (input.previousJournalSequence as number) + 1) errors.push("Runtime binding authorization journal sequence is invalid.");
+  errors.push(...timestampErrors(input.timestamp, "Runtime binding authorization timestamp"));
+  return errors.length > 0 ? invalid("malformed", ...errors) : valid(input as unknown as RuntimeBindingAuthorizationPayload);
+}
+
+export function verifySignedRuntimeBindingAuthorization(
+  envelope: unknown,
+  bindingInput: unknown,
+  projection: Pick<SupervisedMissionProjection, "missionId" | "brief" | "trustedBindings" | "lastSequence">,
+  priorBindingId: string | null,
+  priorBindingVersion: number | null,
+): ContractResult<RuntimeBindingAuthorizationPayload> {
+  const envelopeErrors = exactFields(envelope, ["payload", "signatureBase64"], "Signed runtime binding authorization");
+  if (envelopeErrors.length > 0 || !isPlainObject(envelope)) return invalid("malformed", ...envelopeErrors);
+  const bindingResult = validateRuntimeBinding(bindingInput);
+  if (bindingResult.state === "invalid") return invalid(bindingResult.code, ...bindingResult.errors);
+  const payloadResult = validateRuntimeBindingAuthorizationPayload(envelope.payload);
+  if (payloadResult.state === "invalid") return payloadResult;
+  const payload = payloadResult.value;
+  const binding = bindingResult.value;
+  if (payload.missionId !== projection.missionId || payload.subjectId !== projection.brief.subjectId ||
+      binding.missionId !== projection.missionId || binding.subjectId !== projection.brief.subjectId) return invalid("mission_mismatch", "Runtime binding authorization does not match the mission subject.");
+  if (payload.seatId !== binding.seatId || payload.bindingId !== binding.bindingId || payload.bindingVersion !== binding.bindingVersion) return invalid("binding_invalid", "Runtime binding authorization identity does not match its binding.");
+  if (binding.missionRevisionId !== projection.brief.revisionId || payload.artifactRevisionId !== binding.artifactRevisionId) return invalid("revision_mismatch", "Runtime binding mission or artifact revision is stale or mismatched.");
+  if (payload.priorBindingId !== priorBindingId || payload.priorBindingVersion !== priorBindingVersion) return invalid("binding_invalid", "Runtime binding authorization prior identity is mismatched.");
+  if (payload.previousJournalSequence !== projection.lastSequence || payload.journalSequence !== projection.lastSequence + 1 || binding.recordedAtSequence !== payload.journalSequence) return invalid("sequence_invalid", "Runtime binding authorization is not bound to the next journal sequence.");
+  if (payload.bindingDigest !== computeRuntimeBindingDigest(binding) || binding.coulsonAuthorizationRef !== payload.authorizationId) return invalid("binding_invalid", "Runtime binding authorization does not cover the exact binding.");
+  const matches = projection.trustedBindings.filter((candidate) => candidate.seatId === "coulson" && candidate.bindingId === payload.humanBindingId);
+  if (matches.length !== 1) return invalid("binding_missing", "Runtime binding authorization requires one trusted Coulson binding.");
+  const human = matches[0];
+  if (human.humanPrincipalId !== payload.humanPrincipalId || human.signingKeyRef !== payload.signingKeyRef ||
+      (human.missionScope !== "*" && human.missionScope !== payload.missionId) ||
+      payload.journalSequence < human.validFromSequence || (human.validThroughSequence !== null && payload.journalSequence > human.validThroughSequence)) return invalid("binding_invalid", "Coulson binding does not authorize this runtime binding.");
+  if (typeof envelope.signatureBase64 !== "string" || envelope.signatureBase64.length === 0) return invalid("provenance_missing", "Runtime binding authorization signature is missing.");
+  try {
+    const publicKey = createPublicKey({ key: Buffer.from(human.publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
+    if (!verify(null, Buffer.from(canonicalJson(payload)), publicKey, Buffer.from(envelope.signatureBase64, "base64"))) return invalid("binding_invalid", "Runtime binding authorization signature verification failed.");
+  } catch { return invalid("binding_invalid", "Runtime binding authorization signature or key is malformed."); }
+  return valid(payload);
+}
+
 function requirementProjection(requirement: EvidenceRequirement, evidence: HumanEvidencePayload[]): RequirementProjection {
   const relevant = evidence.filter((record) => record.requirementId === requirement.requirementId &&
     (record.decision === "approved" || record.decision === "changes_requested" || record.decision === "rejected"));
@@ -791,7 +928,7 @@ function evidenceTargetForGovernance(decision: string, resumeState: unknown): Go
 export function createMissionBegunEntry(
   brief: SupervisedMissionBrief,
   bindings: TrustedHumanBinding[],
-  journalSchemaVersion: 2 | 3 | 4 | 5 = 2,
+  journalSchemaVersion: 2 | 3 | 4 | 5 | 6 = 2,
 ): SupervisedJournalEntry {
   return {
     schemaVersion: journalSchemaVersion,
@@ -810,7 +947,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   const begun = entries[0];
   const journalSchemaVersion = begun.schemaVersion;
   const begunErrors = exactFields(begun, ["schemaVersion", "entryId", "missionId", "sequence", "type", "timestamp", "payload"], "Entry 0");
-  if (begunErrors.length > 0 || (journalSchemaVersion !== 2 && journalSchemaVersion !== 3 && journalSchemaVersion !== 4 && journalSchemaVersion !== 5) || begun.sequence !== 0 || !isPlainObject(begun.payload)) return invalid("malformed", ...begunErrors, "Entry 0 is invalid.");
+  if (begunErrors.length > 0 || (journalSchemaVersion !== 2 && journalSchemaVersion !== 3 && journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6) || begun.sequence !== 0 || !isPlainObject(begun.payload)) return invalid("malformed", ...begunErrors, "Entry 0 is invalid.");
   const payloadErrors = exactFields(begun.payload, ["brief", "trustedBindings", "requirements"], "mission.begun payload");
   if (payloadErrors.length > 0) return invalid("malformed", ...payloadErrors);
   const briefResult = validateSupervisedMissionBrief(begun.payload.brief);
@@ -838,10 +975,11 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   const candidateIds = new Set<string>();
   const communicationRequests: CommunicationRequestProjection[] = [];
   const effectRecords: ExecutionEffectRecord[] = [];
+  const runtimeBindings: RuntimeBinding[] = [];
   const entryIds = new Set<string>([String(begun.entryId)]);
   let previousTime = Date.parse((begun.timestamp as unknown as EvidenceTimestamp).value);
   const communicationState = (): CommunicationState => {
-    if ((journalSchemaVersion !== 4 && journalSchemaVersion !== 5) || communicationRequests.length === 0) return "not-configured";
+    if ((journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6) || communicationRequests.length === 0) return "not-configured";
     if (communicationRequests.some((request) => request.state === "queued")) return "queued";
     if (communicationRequests.some((request) => request.state === "failed")) return "failed";
     if (communicationRequests.some((request) => request.state === "unknown")) return "unknown";
@@ -854,7 +992,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       ? { ...readiness("execute", projected, sequence), state: "ready" as const, reasons: [] }
       : readiness("execute", projected, sequence);
     return {
-      journalSchemaVersion: journalSchemaVersion as 2 | 3 | 4 | 5,
+      journalSchemaVersion: journalSchemaVersion as 2 | 3 | 4 | 5 | 6,
       missionId: briefResult.value.missionId,
       brief: briefResult.value,
       governance: { state: governance },
@@ -875,6 +1013,24 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         ...record,
         evidenceRefs: [...record.evidenceRefs],
         timestamp: { ...record.timestamp },
+      })),
+      runtimeBindings: runtimeBindings.map((binding) => ({
+        ...binding,
+        approvedScope: {
+          actionIds: [...binding.approvedScope.actionIds],
+          effectClasses: [...binding.approvedScope.effectClasses],
+          effectKeys: [...binding.approvedScope.effectKeys],
+          capabilities: [...binding.approvedScope.capabilities],
+        },
+      })),
+      activeRuntimeBindings: runtimeBindings.filter(({ lifecycleState }) => lifecycleState === "active").map((binding) => ({
+        ...binding,
+        approvedScope: {
+          actionIds: [...binding.approvedScope.actionIds],
+          effectClasses: [...binding.approvedScope.effectClasses],
+          effectKeys: [...binding.approvedScope.effectKeys],
+          capabilities: [...binding.approvedScope.capabilities],
+        },
       })),
       trustedBindings: registryResult.value.bindings,
       requirements: expectedRequirements,
@@ -940,7 +1096,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       evidenceIds.add(checked.value.evidenceId);
       evidence.push(checked.value);
     } else if (input.type === "communication.requested") {
-      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5) return invalid("unsupported_schema", "Communication requests require journal v4 or v5.");
+      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6) return invalid("unsupported_schema", "Communication requests require journal v4, v5, or v6.");
       if (governance !== "approved" || authorization.state !== "authorized") {
         return invalid("governance_denied", `Entry ${index} communication request requires active mission authorization.`);
       }
@@ -967,7 +1123,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         sourceRef: null,
       });
     } else if (input.type === "communication.result_recorded") {
-      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5) return invalid("unsupported_schema", "Communication results require journal v4 or v5.");
+      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6) return invalid("unsupported_schema", "Communication results require journal v4, v5, or v6.");
       const nested = exactFields(input.payload, ["candidate"], `Entry ${index} communication result payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
       const checked = validateAdapterCandidate(input.payload.candidate);
@@ -997,7 +1153,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       request.receiptRef = candidate.payload.receiptRef;
       request.sourceRef = candidate.sourceRef;
     } else if (input.type === "execution.effect_recorded") {
-      if (journalSchemaVersion !== 5) return invalid("unsupported_schema", "Execution effect records require journal v5.");
+      if (journalSchemaVersion !== 5 && journalSchemaVersion !== 6) return invalid("unsupported_schema", "Execution effect records require journal v5 or v6.");
       if (governance !== "approved" || authorization.state !== "authorized") {
         return invalid("governance_denied", `Entry ${index} execution effect requires active mission authorization.`);
       }
@@ -1036,6 +1192,38 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         journalSequence: index,
         timestamp: input.timestamp as unknown as EvidenceTimestamp,
       });
+    } else if (input.type === "runtime.binding_recorded") {
+      if (journalSchemaVersion !== 6) return invalid("unsupported_schema", "Runtime bindings require journal v6.");
+      const nested = exactFields(input.payload, ["binding", "authorization"], `Entry ${index} runtime binding payload`);
+      if (nested.length > 0) return invalid("malformed", ...nested);
+      const checkedBinding = validateRuntimeBinding(input.payload.binding);
+      if (checkedBinding.state === "invalid") return invalid(checkedBinding.code, ...checkedBinding.errors);
+      const binding = checkedBinding.value;
+      if (!briefResult.value.participants.some(({ seatId }) => seatId === binding.seatId)) return invalid("seat_mismatch", "Runtime binding seat is not a mission participant.");
+      if (binding.bindingVersion !== 1 || binding.lifecycleState !== "active" || binding.activeThroughSequence !== null) return invalid("binding_invalid", "Initial runtime binding must be active version 1.");
+      if (runtimeBindings.some((candidate) => candidate.bindingId === binding.bindingId || (candidate.lifecycleState === "active" && candidate.seatId === binding.seatId))) return invalid("binding_ambiguous", "Initial runtime binding identity or active seat is duplicated.");
+      const authorized = verifySignedRuntimeBindingAuthorization(input.payload.authorization, binding, current, null, null);
+      if (authorized.state === "invalid") return authorized;
+      if (canonicalJson(input.timestamp) !== canonicalJson(authorized.value.timestamp)) return invalid("malformed", "Runtime binding entry timestamp does not match authorization.");
+      runtimeBindings.push(copyRuntimeBinding(binding));
+    } else if (input.type === "runtime.binding_superseded") {
+      if (journalSchemaVersion !== 6) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6.");
+      const nested = exactFields(input.payload, ["priorBindingId", "priorBindingVersion", "binding", "authorization"], `Entry ${index} runtime supersession payload`);
+      if (nested.length > 0) return invalid("malformed", ...nested);
+      const supersessionPayload = input.payload;
+      const prior = runtimeBindings.filter((candidate) => candidate.bindingId === supersessionPayload.priorBindingId && candidate.bindingVersion === supersessionPayload.priorBindingVersion && candidate.lifecycleState === "active");
+      if (prior.length !== 1) return invalid("binding_ambiguous", "Runtime binding supersession requires exactly one active prior binding.");
+      const checkedBinding = validateRuntimeBinding(input.payload.binding);
+      if (checkedBinding.state === "invalid") return invalid(checkedBinding.code, ...checkedBinding.errors);
+      const replacement = checkedBinding.value;
+      if (!briefResult.value.participants.some(({ seatId }) => seatId === replacement.seatId)) return invalid("seat_mismatch", "Runtime binding replacement seat is not a mission participant.");
+      if (replacement.bindingId !== prior[0].bindingId || replacement.bindingVersion !== prior[0].bindingVersion + 1 || replacement.seatId !== prior[0].seatId || replacement.lifecycleState !== "active" || replacement.activeThroughSequence !== null) return invalid("binding_invalid", "Runtime binding replacement must atomically increment the same active binding.");
+      const authorized = verifySignedRuntimeBindingAuthorization(input.payload.authorization, replacement, current, prior[0].bindingId, prior[0].bindingVersion);
+      if (authorized.state === "invalid") return authorized;
+      if (canonicalJson(input.timestamp) !== canonicalJson(authorized.value.timestamp)) return invalid("malformed", "Runtime supersession timestamp does not match authorization.");
+      prior[0].lifecycleState = "superseded";
+      prior[0].activeThroughSequence = index - 1;
+      runtimeBindings.push(copyRuntimeBinding(replacement));
     } else if (input.type === "authorization.delegated_evaluated") {
       if (journalSchemaVersion !== 3 || index !== 1 || governance !== "proposed") return invalid("malformed", "Delegated authorization must be entry 1 of a v3 proposed mission.");
       const nested = exactFields(input.payload, ["repositoryId", "delegationRevisionId", "delegationLog", "eligibility", "evaluation"], `Entry ${index} delegated authorization payload`);
@@ -1161,7 +1349,7 @@ export function createCommunicationRequestEntry(
   requestInput: unknown,
   timestamp: EvidenceTimestamp,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5) return invalid("unsupported_schema", "Communication requests require journal v4 or v5.");
+  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6) return invalid("unsupported_schema", "Communication requests require journal v4, v5, or v6.");
   if (projection.governance.state !== "approved" || projection.authorization.state !== "authorized") {
     return invalid("governance_denied", "Communication request requires active mission authorization.");
   }
@@ -1194,7 +1382,7 @@ export function createCommunicationResultEntry(
   projection: SupervisedMissionProjection,
   candidateInput: unknown,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5) return invalid("unsupported_schema", "Communication results require journal v4 or v5.");
+  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6) return invalid("unsupported_schema", "Communication results require journal v4, v5, or v6.");
   const checked = validateAdapterCandidate(candidateInput);
   if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
   const candidate = checked.value;
@@ -1230,8 +1418,8 @@ export function createExecutionEffectEntry(
   candidateInput: unknown,
   timestamp: EvidenceTimestamp,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 5) {
-    return invalid("unsupported_schema", "Execution effect records require journal v5.");
+  if (projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6) {
+    return invalid("unsupported_schema", "Execution effect records require journal v5 or v6.");
   }
   if (projection.governance.state !== "approved" || projection.authorization.state !== "authorized") {
     return invalid("governance_denied", "Execution effect recording requires active mission authorization.");
@@ -1246,6 +1434,9 @@ export function createExecutionEffectEntry(
   const checked = validateRunnerSupervisedEffectCandidate(candidateInput);
   if (checked.state === "invalid") return checked;
   const candidate = checked.value;
+  if (candidate.journalSchemaVersion !== projection.journalSchemaVersion) {
+    return invalid("unsupported_schema", "Runner effect candidate journal version does not match the projection.");
+  }
   const timeErrors = timestampErrors(timestamp, "Execution effect timestamp");
   if (timeErrors.length > 0) return invalid("malformed", ...timeErrors);
   if (candidate.missionId !== projection.missionId || candidate.subjectId !== projection.brief.subjectId) {
@@ -1266,13 +1457,71 @@ export function createExecutionEffectEntry(
     return invalid("duplicate_effect", "Runner effect candidate duplicates a recorded cycle or effect key.");
   }
   return valid({
-    schemaVersion: 5,
+    schemaVersion: projection.journalSchemaVersion,
     entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
     missionId: projection.missionId,
     sequence: projection.lastSequence + 1,
     type: "execution.effect_recorded",
     timestamp,
     payload: { ...candidate.payload, evidenceRefs: [...candidate.payload.evidenceRefs] },
+  });
+}
+
+export function createRuntimeBindingEntry(
+  projection: SupervisedMissionProjection,
+  bindingInput: unknown,
+  authorization: SignedRuntimeBindingAuthorization,
+): ContractResult<SupervisedJournalEntry> {
+  if (projection.journalSchemaVersion !== 6) return invalid("unsupported_schema", "Runtime bindings require journal v6.");
+  const checked = validateRuntimeBinding(bindingInput);
+  if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
+  const binding = checked.value;
+  if (!projection.brief.participants.some(({ seatId }) => seatId === binding.seatId)) return invalid("seat_mismatch", "Runtime binding seat is not a mission participant.");
+  if (binding.bindingVersion !== 1 || binding.lifecycleState !== "active" || binding.activeThroughSequence !== null) return invalid("binding_invalid", "Initial runtime binding must be active version 1.");
+  if (projection.runtimeBindings.some((candidate) => candidate.bindingId === binding.bindingId) || projection.activeRuntimeBindings.some((candidate) => candidate.seatId === binding.seatId)) return invalid("binding_ambiguous", "Runtime binding identity or active seat is duplicated.");
+  const authorized = verifySignedRuntimeBindingAuthorization(authorization, binding, projection, null, null);
+  if (authorized.state === "invalid") return authorized;
+  return valid({
+    schemaVersion: 6,
+    entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
+    missionId: projection.missionId,
+    sequence: projection.lastSequence + 1,
+    type: "runtime.binding_recorded",
+    timestamp: authorized.value.timestamp,
+    payload: { binding: copyRuntimeBinding(binding), authorization: copyRuntimeBindingAuthorization(authorization) },
+  });
+}
+
+export function createRuntimeBindingSupersessionEntry(
+  projection: SupervisedMissionProjection,
+  priorBindingId: string,
+  priorBindingVersion: number,
+  bindingInput: unknown,
+  authorization: SignedRuntimeBindingAuthorization,
+): ContractResult<SupervisedJournalEntry> {
+  if (projection.journalSchemaVersion !== 6) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6.");
+  const prior = projection.activeRuntimeBindings.filter((candidate) => candidate.bindingId === priorBindingId && candidate.bindingVersion === priorBindingVersion);
+  if (prior.length !== 1) return invalid("binding_ambiguous", "Runtime binding supersession requires exactly one active prior binding.");
+  const checked = validateRuntimeBinding(bindingInput);
+  if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
+  const replacement = checked.value;
+  if (!projection.brief.participants.some(({ seatId }) => seatId === replacement.seatId)) return invalid("seat_mismatch", "Runtime binding replacement seat is not a mission participant.");
+  if (replacement.bindingId !== priorBindingId || replacement.bindingVersion !== priorBindingVersion + 1 || replacement.seatId !== prior[0].seatId || replacement.lifecycleState !== "active" || replacement.activeThroughSequence !== null) return invalid("binding_invalid", "Runtime binding replacement must atomically increment the same active binding.");
+  const authorized = verifySignedRuntimeBindingAuthorization(authorization, replacement, projection, priorBindingId, priorBindingVersion);
+  if (authorized.state === "invalid") return authorized;
+  return valid({
+    schemaVersion: 6,
+    entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
+    missionId: projection.missionId,
+    sequence: projection.lastSequence + 1,
+    type: "runtime.binding_superseded",
+    timestamp: authorized.value.timestamp,
+    payload: {
+      priorBindingId,
+      priorBindingVersion,
+      binding: copyRuntimeBinding(replacement),
+      authorization: copyRuntimeBindingAuthorization(authorization),
+    },
   });
 }
 

@@ -94,7 +94,20 @@ an autonomous coding loop yet.
 
 ## Safety Model
 
-Current safety controls are primarily procedural. The charter and seat prompts
+The charter and seat prompts provide procedural controls. The supervised
+journal and one-cycle runner add executable state, identity, revision,
+allowlist, replay, and pre-executor checks. Journal v6 adds a deny-by-default
+runtime-binding boundary that distinguishes seat authority from the reasoning
+runtime and actual tool executor.
+
+Each allowed tool call requires an exact active binding, fresh host-observed
+capability/root/writability attestations, and an atomic append-if-absent audit
+receipt before dispatch. Runtime substitution is represented only by a signed
+Coulson-authorized supersession event. The Mission Journal remains
+authoritative; the audit ledger is append-only operational evidence and cannot
+alter governance, readiness, or binding state.
+
+Other safety controls remain procedural. The charter and seat prompts
 prohibit unapproved scope expansion, destructive operations, secret handling,
 database resets, unrelated refactors, and unsupported claims. Human authority
 and technical review remain mandatory at defined boundaries.
@@ -102,7 +115,9 @@ and technical review remain mandatory at defined boundaries.
 The local adapter strengthens privacy by using explicit context files and
 stateless calls. It does not scan the repository automatically. These controls
 reduce accidental disclosure, but prompt rules alone are not a security
-boundary. Any future tool-enabled runner must enforce allowlists in code.
+boundary. The permission contract does not implement host probes, canonical
+path discovery, or durable ledger storage. Those capabilities are injected at
+the host boundary and must preserve the exact journal head through invocation.
 
 ## Mission Data Contract
 
@@ -135,6 +150,13 @@ explicit `.shield/journals/` repository root. It uses traversal-safe mission
 filenames, atomic lockfile acquisition, append-and-sync writes, and fail-closed
 partial-tail detection. It never repairs, truncates, executes, retries, or skips
 effects; those responsibilities remain with later runner work.
+
+The additive supervised journal versions in `src/mission-v2.mts` keep each
+journal homogeneous. Version 5 records runner effects; version 6 also records
+initial runtime bindings and atomic binding supersession. A separate signed
+Coulson authorization covers the exact binding digest, prior binding identity,
+mission and artifact revisions, and next sequence. Replay derives active
+bindings without reinterpreting v2-v5 history.
 
 ## Current Capabilities
 

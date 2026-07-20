@@ -11,9 +11,10 @@ responsibilities, review gates, and operating workflow portable across repos.
 ## Public package surface
 
 The supported V0.3 consumer entry points are the package root plus `/mission`,
-`/journal`, `/modes`, `/workspace`, `/config`, `/supervision`, and `/delegation`. Each entry point includes TypeScript
-declarations. Deep imports into package directories are unsupported and blocked
-by the closed package export map.
+`/journal`, `/modes`, `/workspace`, `/config`, `/supervision`, `/delegation`,
+`/adapter`, `/runner`, `/permission`, `/permission-audit`, and `/github`. Each
+entry point includes TypeScript declarations. Deep imports into package
+directories are unsupported and blocked by the closed package export map.
 
 See [PUBLIC_API.md](./PUBLIC_API.md) for the complete capability matrix,
 compatibility guarantees, and breaking-change policy.
@@ -30,6 +31,16 @@ operation, or external effect.
 See [WHEELS_OFF.md](./WHEELS_OFF.md) for the signed standing-delegation
 workflow. Wheels Off changes mission initiation only and preserves all human
 review and final merge gates.
+
+The `/permission` and `/permission-audit` entry points implement the Issue #10
+runtime-binding boundary on top of the `/runner` authorization seam. The
+Mission Journal is authoritative for binding state; host attestations and the
+append-only audit ledger are bounded operational evidence and never grant seat
+authority.
+
+See [PERMISSION_BOUNDARY.md](./PERMISSION_BOUNDARY.md) for the three-identity
+model, binding lifecycle, evaluator inputs, audit ordering, and fail-closed
+matrix.
 
 ## Mission modes
 

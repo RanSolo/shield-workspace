@@ -49,6 +49,14 @@
       "types": "./dist/runner-v1.d.mts",
       "import": "./dist/runner-v1.mjs"
     },
+    "./permission": {
+      "types": "./dist/permission-v1.d.mts",
+      "import": "./dist/permission-v1.mjs"
+    },
+    "./permission-audit": {
+      "types": "./dist/permission-audit-v1.d.mts",
+      "import": "./dist/permission-audit-v1.mjs"
+    },
     "./github": {
       "types": "./public/github.d.mts",
       "import": "./public/github.mjs"
@@ -69,6 +77,7 @@
     "SUPERVISED_MISSION.md",
     "WHEELS_OFF.md",
     "PUBLIC_API.md",
+    "PERMISSION_BOUNDARY.md",
     "TECHNICAL_DESIGN.md",
     "scorecard.md"
   ],
