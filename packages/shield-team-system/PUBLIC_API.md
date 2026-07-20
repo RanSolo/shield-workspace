@@ -12,6 +12,7 @@ package artifact.
 | `@shield/team-system/journal` | Journal validation, serialization, parsing, and replay |
 | `@shield/team-system/modes` | Mode manifests, registries, and seat-context resolution |
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
+| `@shield/team-system/hill-readiness` | Pure advisory `hill.readiness.v1` classification for exact seat-owned artifact revisions using closed, host-asserted evidence |
 | `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
 | `@shield/team-system/supervision` | Supervised journals v2-v6, including authoritative runtime-binding lifecycle, canonical mission briefs, Ed25519 human evidence, readiness, communication, and execution-effect replay |
 | `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
@@ -35,6 +36,7 @@ does not migrate or reinterpret the existing package runtime.
 | Mission journals and deterministic replay | Supported through `/journal` |
 | Mode references | Supported through `/modes` |
 | Review-workspace validation | Supported through `/workspace` |
+| Hill operational-readiness classification | Supported through `/hill-readiness` as non-authoritative evidence only; it does not verify host assertions, route work, grant authority, mutate journals, or compare Hill with Fury |
 | Repository configuration validation | Supported through `/config` |
 | Bounded local human-evidence requirements and readiness | Supported through `/supervision` for the V0.3-4 mission-plan subject |
 | One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |

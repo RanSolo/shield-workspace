@@ -85,6 +85,8 @@ assuranceKind: host_asserted_non_authoritative
 missionId
 subjectId
 currentRevisionId
+artifactKind
+owningSeatId
 journalSchemaVersion
 evaluatedThroughSequence
 journalHeadEntryId
@@ -93,11 +95,12 @@ reasoningRuntimeId: string | null
 toolExecutorId: string | null
 ```
 
-Candidate and observation mission and subject IDs must match. The candidate
-revision must exactly equal the observation's current revision. This binds the
-freshness assertion to contract version, mission, subject, revision, journal
-schema, evaluated sequence, and asserted journal-head entry rather than
-accepting a revision-only value replayable across artifacts.
+Candidate and observation mission ID, subject ID, artifact kind, and owning
+seat must match. The candidate revision must exactly equal the observation's
+current revision. This binds the freshness assertion to contract version,
+mission, subject, artifact type, artifact owner, revision, journal schema,
+evaluated sequence, and asserted journal-head entry rather than accepting a
+revision-only value replayable across artifacts or owners.
 
 The observation remains asserted and non-authoritative. The evaluator does not
 authenticate or replay the journal, prove the refinement count, verify runtime
@@ -180,7 +183,8 @@ normalization ambiguity are rejected.
 ### Deterministic outcome precedence
 
 1. Invalid structure returns one generic invalid `BLOCKED_ESCALATE` value.
-2. A mission/subject replay-binding mismatch returns `BLOCKED_ESCALATE`.
+2. A mission, subject, artifact-kind, or owning-seat replay-binding mismatch
+   returns `BLOCKED_ESCALATE`.
 3. A stale revision returns `BLOCKED_ESCALATE`.
 4. Any `escalation_required` dimension returns `BLOCKED_ESCALATE`.
 5. Any `refinement_required` dimension with zero completed passes returns
