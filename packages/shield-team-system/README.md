@@ -11,7 +11,8 @@ responsibilities, review gates, and operating workflow portable across repos.
 ## Public package surface
 
 The supported V0.3 consumer entry points are the package root plus `/mission`,
-`/journal`, `/modes`, `/workspace`, `/config`, `/supervision`, and `/delegation`. Each entry point includes TypeScript
+`/journal`, `/modes`, `/workspace`, `/config`, `/supervision`, `/delegation`,
+`/runner`, `/permission`, `/permission-audit`, and `/github`. Each entry point includes TypeScript
 declarations. Deep imports into package directories are unsupported and blocked
 by the closed package export map.
 
@@ -30,6 +31,10 @@ operation, or external effect.
 See [WHEELS_OFF.md](./WHEELS_OFF.md) for the signed standing-delegation
 workflow. Wheels Off changes mission initiation only and preserves all human
 review and final merge gates.
+
+See [PERMISSION_BOUNDARY.md](./PERMISSION_BOUNDARY.md) for journal-v6 runtime
+bindings, deny-by-default per-call enforcement, and the non-authoritative audit
+ledger.
 
 ## Mission modes
 

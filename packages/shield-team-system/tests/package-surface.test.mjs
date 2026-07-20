@@ -23,6 +23,8 @@ test("exports only the documented public package specifiers", async () => {
     "./delegation",
     "./adapter",
     "./runner",
+    "./permission",
+    "./permission-audit",
     "./github",
   ]);
   for (const target of Object.values(manifest.exports)) {
@@ -41,6 +43,8 @@ test("loads every supported runtime specifier", async () => {
   const delegation = await import("@shield/team-system/delegation");
   const adapter = await import("@shield/team-system/adapter");
   const runner = await import("@shield/team-system/runner");
+  const permission = await import("@shield/team-system/permission");
+  const permissionAudit = await import("@shield/team-system/permission-audit");
   const github = await import("@shield/team-system/github");
 
   assert.equal(root.MISSION_SCHEMA_VERSION, 2);
@@ -59,6 +63,10 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof adapter.validateAdapterCandidate, "function");
   assert.equal(runner.RUNNER_CONTRACT_VERSION, 1);
   assert.equal(typeof runner.runRunnerCycle, "function");
+  assert.equal(permission.PERMISSION_CONTRACT_VERSION, 1);
+  assert.equal(typeof permission.evaluatePermission, "function");
+  assert.equal(permissionAudit.PERMISSION_AUDIT_SCHEMA_VERSION, 1);
+  assert.equal(typeof permissionAudit.replayPermissionAuditLedger, "function");
   assert.equal(typeof github.deliverGitHubCommunication, "function");
   assert.equal(typeof github.prepareDeliveryWorkspaceForDispatch, "function");
   assert.equal(typeof github.validatePRWorkspaceReceipt, "function");
@@ -100,6 +108,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/adapter-v1.d.mts",
     "dist/runner-v1.mjs",
     "dist/runner-v1.d.mts",
+    "dist/permission-v1.mjs",
+    "dist/permission-v1.d.mts",
+    "dist/permission-audit-v1.mjs",
+    "dist/permission-audit-v1.d.mts",
     "github/adapter-v1.mjs",
     "github/delivery-workspace.mjs",
     "github/pr-workspace.mjs",
@@ -110,6 +122,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "PUBLIC_API.md",
     "SUPERVISED_MISSION.md",
     "WHEELS_OFF.md",
+    "PERMISSION_BOUNDARY.md",
   ]) {
     assert.ok(packedPaths.has(path), `packed artifact is missing ${path}`);
   }
@@ -141,6 +154,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
+    import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
+    import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import {
       deliverGitHubCommunication,
       prepareDeliveryWorkspaceForDispatch,
@@ -178,6 +193,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const adapterCandidate = null as unknown as AdapterCandidateEnvelope;
     const runnerContract: 1 = RUNNER_CONTRACT_VERSION;
     const runnerInput = null as unknown as RunnerCycleInput;
+    const permissionContract: 1 = PERMISSION_CONTRACT_VERSION;
+    const runtimeBinding = null as unknown as RuntimeBinding;
+    const evaluate = evaluatePermission;
+    const auditSchema: 1 = PERMISSION_AUDIT_SCHEMA_VERSION;
+    const auditRecord = null as unknown as PermissionAuditRecord;
+    const replayAudit = replayPermissionAuditLedger;
     const runCycle = runRunnerCycle;
     const journaledRequest = null as unknown as JournaledCommunicationRequest;
     const deliver = deliverGitHubCommunication;
@@ -197,7 +218,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, runCycle, journaledRequest, deliver, prepareWorkspace, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, runCycle, journaledRequest, deliver, prepareWorkspace, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
