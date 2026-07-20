@@ -60,34 +60,60 @@ evaluateHillReadinessV1(candidate, freshness)
 No clock, randomness, environment, filesystem, network, Git, journal, or global
 mutable state is consulted.
 
-### Candidate identity and attribution
+### Frozen wire shapes and assurance
 
-The closed candidate binds:
+The candidate has exactly these fields:
 
-- schema and rubric version;
-- mission ID;
-- artifact ID and type;
-- immutable artifact-owning seat ID;
-- exact artifact revision;
-- Hill as the assessing seat;
-- reasoning-runtime and tool-executor IDs, each independently nullable only
-  when not observable;
-- completed refinement passes, restricted to `0` or `1`;
-- exactly one assessment for every dimension in canonical order.
+```text
+readinessContractVersion: 1
+missionId
+subjectId
+revisionId
+artifactKind
+owningSeatId
+dimensions
+```
 
-Seats, reasoning runtimes, and tool executors remain distinct. A runtime or
-executor cannot be substituted for a seat, and model branding cannot occupy a
-human seat.
+It contains no assessor, runtime, executor, refinement count, outcome, reason,
+next owner, timestamp, or Fury data.
 
-### Exact freshness
+The separate host observation has exactly these fields:
 
-The host supplies a separate closed observation containing the current artifact
-revision. Exact inequality between the candidate revision and that observation
-returns `BLOCKED_ESCALATE` with `ARTIFACT_REVISION_STALE`. Missing, malformed,
-or ambiguous freshness evidence fails closed. The evaluator does not discover
-the current revision itself.
+```text
+observationContractVersion: 1
+assuranceKind: host_asserted_non_authoritative
+missionId
+subjectId
+currentRevisionId
+journalSchemaVersion
+evaluatedThroughSequence
+journalHeadEntryId
+refinementPassesCompleted: 0 | 1
+reasoningRuntimeId: string | null
+toolExecutorId: string | null
+```
 
-### Closed dimensions
+Candidate and observation mission and subject IDs must match. The candidate
+revision must exactly equal the observation's current revision. This binds the
+freshness assertion to contract version, mission, subject, revision, journal
+schema, evaluated sequence, and asserted journal-head entry rather than
+accepting a revision-only value replayable across artifacts.
+
+The observation remains asserted and non-authoritative. The evaluator does not
+authenticate or replay the journal, prove the refinement count, verify runtime
+assignment, or discover the current revision. It classifies supplied state and
+binds that state into its result. Durable history and cross-call enforcement
+remain outside this pure module.
+
+The evaluator derives `assessorSeatId: hill`; callers cannot claim an assessor.
+Every valid result declares `authority: non_authoritative`, evidence assurance
+as reference-only, and runtime/executor assurance as
+`host_asserted_non_authoritative`. It proves neither that Hill acted nor that a
+referenced artifact exists. Non-null runtime and executor IDs matching any
+closed seat ID (`coulson`, `hill`, `daisy`, `may`, `fury`, `fitz`, or `simmons`)
+are malformed.
+
+### Closed dimensions, statuses, and reasons
 
 Every candidate contains these dimensions exactly once and in this order:
 
@@ -100,34 +126,88 @@ Every candidate contains these dimensions exactly once and in this order:
 7. `ownership_continuity`
 8. `escalation_fitness`
 
-Each assessment uses exactly one closed status:
+Each assessment contains exactly `dimension`, `status`, `evidenceRefs`, and
+`operationalNotApplicableRationale`. It uses exactly one status:
 
 - `satisfied`
 - `refinement_required`
 - `escalation_required`
 - `not_applicable`
 
-`not_applicable` is permitted only for `operational_completeness` and requires
-bounded evidence establishing why. Callers supply statuses and opaque evidence
-references; they cannot supply outcomes, next owners, reason codes, timestamps,
-Fury findings, or free-form private reasoning.
+`not_applicable` is permitted only for `operational_completeness`. It requires
+at least one bounded opaque evidence reference and one closed rationale:
+`pure_value_contract`, `documentation_only_artifact`, or
+`no_runtime_or_persistent_effects`. The rationale is `null` for every other
+dimension/status combination. References and rationales are checked for syntax
+only; they are never dereferenced or verified for truth.
+
+| Dimension | Refinement | Escalation |
+| --- | --- | --- |
+| `scope_completeness` | `SCOPE_INCOMPLETE` | `SCOPE_DECISION_REQUIRED` |
+| `authority_safety` | `AUTHORITY_SAFETY_INCOMPLETE` | `AUTHORITY_DECISION_REQUIRED` |
+| `contract_consistency` | `CONTRACT_INCONSISTENT` | `CONTRACT_DECISION_REQUIRED` |
+| `implementation_boundedness` | `IMPLEMENTATION_UNBOUNDED` | `IMPLEMENTATION_SCOPE_DECISION_REQUIRED` |
+| `validation_readiness` | `VALIDATION_INCOMPLETE` | `VALIDATION_DECISION_REQUIRED` |
+| `operational_completeness` | `OPERATIONAL_DETAILS_INCOMPLETE` | `OPERATIONAL_ARCHITECTURE_DECISION_REQUIRED` |
+| `ownership_continuity` | `OWNERSHIP_CONTINUITY_INCOMPLETE` | `OWNERSHIP_DECISION_REQUIRED` |
+| `escalation_fitness` | `ESCALATION_PREPARATION_INCOMPLETE` | `ESCALATION_TARGET_DECISION_REQUIRED` |
+
+Global semantic reasons are `ARTIFACT_REVISION_STALE`,
+`REPLAY_BINDING_MISMATCH`, and `REFINEMENT_LIMIT_REACHED`. Structural, bounds,
+version, and hostile-inspection failures use only `INVALID_EVIDENCE_RECORD`.
+
+### Grammars and bounds
+
+Mission, subject, revision, artifact-kind, owning-seat, journal-entry, runtime,
+and executor identifiers use this ASCII grammar and are at most 128 UTF-8 bytes:
+
+```text
+^[A-Za-z0-9](?:[A-Za-z0-9._:/-]{0,126}[A-Za-z0-9])?$
+```
+
+Evidence references use this grammar and are 1-256 UTF-8 bytes:
+
+```text
+^[A-Za-z0-9][A-Za-z0-9._:/#@-]{0,255}$
+```
+
+Each dimension has 1-8 unique references and the candidate has no more than 64
+references total. `journalSchemaVersion` is an integer from 1 through 255;
+`evaluatedThroughSequence` is a non-negative safe integer. Whitespace, control
+characters, backslashes, percent encoding, query strings, coercion, and Unicode
+normalization ambiguity are rejected.
 
 ### Deterministic outcome precedence
 
-1. Invalid structure returns invalid `BLOCKED_ESCALATE` evidence and never
-   `GOOD_ENOUGH`.
-2. A stale revision returns `BLOCKED_ESCALATE`.
-3. Any `escalation_required` dimension returns `BLOCKED_ESCALATE`.
-4. Any `refinement_required` dimension with zero completed passes returns
+1. Invalid structure returns one generic invalid `BLOCKED_ESCALATE` value.
+2. A mission/subject replay-binding mismatch returns `BLOCKED_ESCALATE`.
+3. A stale revision returns `BLOCKED_ESCALATE`.
+4. Any `escalation_required` dimension returns `BLOCKED_ESCALATE`.
+5. Any `refinement_required` dimension with zero completed passes returns
    `NEEDS_REFINEMENT`.
-5. A required refinement after one completed pass returns `BLOCKED_ESCALATE`
+6. A required refinement after one completed pass returns `BLOCKED_ESCALATE`
    with `REFINEMENT_LIMIT_REACHED`.
-6. Otherwise the result is `GOOD_ENOUGH`.
+7. Otherwise the result is `GOOD_ENOUGH`.
 
-Reason codes and requested-refinement entries are derived by the evaluator in
-canonical dimension order. A `NEEDS_REFINEMENT` result sets its next owner to
-the artifact's existing owning seat. The caller cannot select or change that
-owner. Other outcomes do not perform routing.
+Reason codes and requested-refinement entries are derived in canonical
+dimension order. A `NEEDS_REFINEMENT` result sets its next owner to the
+artifact's existing owning seat. The caller cannot select or change that owner.
+Other outcomes do not perform routing.
+
+Every malformed or hostile input returns the same deeply frozen value:
+
+```text
+state: invalid
+readinessContractVersion: 1
+outcome: BLOCKED_ESCALATE
+reasonCodes: [INVALID_EVIDENCE_RECORD]
+nextOwnerSeatId: null
+```
+
+It contains no field path, rejected value, partial identity, or varying
+diagnostic. Valid results use one exact frozen shape containing the replay
+tuple, derived Hill assessor, explicit assurance markers, ordered reasons,
+derived refinement requests, and next owner where applicable.
 
 ### Evidence and analytics boundary
 
@@ -154,6 +234,8 @@ claim measured prediction accuracy.
 - Bound identifiers, revisions, evidence references, array counts, and total
   evidence.
 - Never invoke caller coercion hooks or echo hostile values in errors.
+- Catch every reflective or proxy inspection failure and return the generic
+  invalid result rather than throwing.
 - Return immutable normalized output.
 - Missing, malformed, ambiguous, or hostile evidence never produces
   `GOOD_ENOUGH`.
@@ -180,13 +262,19 @@ returns the mission to Coulson.
 - [ ] Missing, malformed, stale, ambiguous, hostile, or unsupported input fails
       closed and never produces `GOOD_ENOUGH`.
 - [ ] Exact revision freshness is supplied explicitly and cannot be inferred.
+- [ ] The observation is replay-bound to mission, subject, revision, and its
+      asserted journal position while remaining explicitly non-authoritative.
 - [ ] Escalation takes precedence over refinement.
 - [ ] One refinement returns only to the immutable artifact-owning seat.
 - [ ] A second required refinement escalates rather than recursing.
 - [ ] Seat, reasoning-runtime, and tool-executor attribution remain distinct.
+- [ ] Hill identity is derived and runtime/executor assertions cannot use seat
+      IDs.
 - [ ] Callers cannot inject an outcome, reason, next owner, Fury finding, or
       authority claim.
 - [ ] Output and nested data are immutable and repeatable for identical input.
+- [ ] Malformed inputs return one generic non-echoing invalid result and never
+      throw.
 - [ ] #34 is a truthful retrospective, prediction-ineligible fixture.
 - [ ] Focused tests cover every outcome, each refinement reason, escalation
       precedence, staleness, hostile shapes, bounds, attribution, and package
@@ -214,4 +302,5 @@ remain unauthorized.
 Implementation stops if the slice would grant authority, mutate authoritative
 state, transfer artifact ownership, exceed one refinement, depend on ambient
 freshness, mix Fury findings into Hill's decision, misrepresent retrospective
-evidence, or change any excluded subsystem.
+evidence, require journal replay or signed receipts inside the evaluator, or
+change any excluded subsystem.
