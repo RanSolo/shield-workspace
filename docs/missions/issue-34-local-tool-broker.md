@@ -95,6 +95,32 @@ network tools, MCP publication, and general routing are deferred.
   bodies, raw model output, secrets, or private reasoning.
 - Missing or malformed authority-provider dependencies disable tools. Existing
   text-only `ask-local.mjs` behavior remains available.
+- The authority provider supplies a unique pre-authorized `cycleId` and
+  `effectKey` slot for every requested call. The broker never invents fallback
+  identifiers or expands the approved number of calls.
+- Calls execute sequentially through the same durable `appendIfAbsent` ledger
+  across process restarts. Missing durable consumption evidence disables tool
+  mode.
+
+The fixed runner mapping is:
+
+| Tool | Action ID | Effect class | Required capability |
+| --- | --- | --- | --- |
+| `readFile` | `repository.read_file` | `verification` | `filesystem_read` |
+| `listFiles` | `repository.list_files` | `verification` | `filesystem_list` |
+| `searchRepo` | `repository.search` | `verification` | `filesystem_search` |
+
+### Raw-result release gate
+
+`RunnerExecutorResult` contains only a bounded sanitized summary and evidence
+references. Raw file, listing, and search output is held in broker memory while
+the Issue #10 audited executor completes. The broker may release that output to
+LM Studio only after `createAuditedExecutor` returns `completed`, proving that
+the invocation was consumed and the result audit receipt was verified.
+
+On `failed`, `uncertain`, timeout, exception, invalid receipt, or restart, the
+broker discards the raw output, stops tool mode, and never reuses the decision.
+Raw output is never stored in the permission ledger or broker event sink.
 
 ### LM Studio boundary
 
@@ -107,6 +133,86 @@ network tools, MCP publication, and general routing are deferred.
 - Parse assistant tool calls as untrusted input. Add the assistant tool-call
   message and bounded tool results to the next request exactly as required by
   the compatible protocol.
+- Tool mode accepts only an IP-literal loopback LM Studio base URL, rejects
+  redirects, and binds all inference requests to the exact loaded-instance ID
+  returned by the capability probe.
+- A requested tool-mode session never silently falls back to text mode.
+- Legacy `--context`, file-based prompt input, `--output`, and reasoning display
+  are disabled in tool mode. Their existing behavior remains unchanged in text
+  mode.
+
+### Filesystem race boundary
+
+For every filesystem operation the broker verifies the canonical repository
+root and its device/inode before and after access. File reads use a final-
+component no-follow open, read through the descriptor, validate a regular file
+after opening, and suppress output on any identity mismatch. Directory walks do
+not follow symlinks and repeat root identity verification before releasing a
+result.
+
+Direct `rg` remains acceptable only for the Phase 1 same-user host model: the
+broker uses the trusted canonical executable, prevents symlink traversal, and
+revalidates the root before releasing output. A malicious same-host process
+capable of namespace swap-and-restore attacks is explicitly outside Phase 1.
+If that attacker enters scope, direct `rg` cannot prove confinement and the
+mission stops for an OS-sandbox redesign.
+
+### Sensitive-path and subprocess controls
+
+All three tools deny `.git/**`, `.env*`, private keys, credential stores,
+tokens, authentication material, and equivalent sensitive paths by closed
+case-insensitive path rules. Denied paths and patterns are never recorded in an
+event body.
+
+`searchRepo` resolves one trusted canonical `rg` executable before the session,
+uses `shell: false`, `--no-config`, a fixed argument vector, `--` before every
+model-controlled value, and a minimal controlled environment. The model cannot
+select flags, executables, working directories, environment variables, or
+configuration files.
+
+### Normative limits
+
+Limits are measured in UTF-8 encoded bytes and enforced while input or output
+is streaming rather than after unbounded buffering.
+
+| Limit | Maximum |
+| --- | ---: |
+| Tool argument JSON | 4,096 bytes; depth 4 |
+| Repository-relative path | 512 bytes |
+| Search pattern | 512 bytes |
+| `readFile` result | 65,536 bytes; 2,000 lines |
+| `listFiles` result | 1,000 items; 65,536 bytes |
+| `searchRepo` result | 500 matches; 131,072 bytes; 2,000 lines |
+| Aggregate released tool output | 262,144 bytes |
+| LM Studio response | 1,048,576 bytes |
+| Returned error | 512 bytes |
+| Tool rounds | 8 |
+| Total tool calls | 16 |
+| `rg` subprocess | 5 seconds |
+| One inference request | 120 seconds |
+| Whole tool-mode session | 300 seconds |
+
+Raw tool arguments are parsed with duplicate-key detection before conversion
+to closed plain data. Duplicate keys, duplicate tool-call IDs anywhere in the
+session, sparse or accessor-backed arrays/objects, non-plain prototypes,
+non-finite numbers, control characters, unknown fields, excessive nesting, or
+oversized values fail closed without invoking accessors or tools.
+
+### Protocol completion and broker events
+
+Multiple tool calls in one assistant response execute sequentially in declared
+order. A terminal assistant message is accepted only when no call is
+outstanding and at least one tool invocation completed with verified decision,
+invocation, and result audit receipts. Final model text is labeled untrusted
+model output; it is not itself verified reconnaissance evidence.
+
+An injected durable append-only broker event sink records conditions that occur
+before a valid runner plan exists: malformed calls, pre-authorization denials,
+caps, timeouts, truncation, capability failure, and protocol failure. It is
+non-authoritative and cannot grant permission or alter journal state. Events
+contain only closed codes, counters, opaque identifiers, and evidence
+references—never arguments, paths, patterns, file bodies, tool output, model
+output, credentials, or private reasoning. Event append failure stops tool mode.
 
 ## Threat model
 
@@ -141,12 +247,23 @@ authority semantics stops implementation and returns to Coulson.
   closed read-only tools when a valid Issue #10 authority provider is present.
 - [ ] A fresh permission decision and verified pre-invocation audit receipt are
   required for every individual tool call.
+- [ ] Every call consumes one authority-provider-supplied cycle/effect slot
+  through the durable Issue #10 ledger; the broker mints no authority IDs.
+- [ ] Raw tool output is released only after the audited executor returns
+  `completed`; every other outcome discards it and stops tool mode.
 - [ ] Missing, stale, mismatched, replayed, substituted, malformed, excessive,
   or unauthorized calls do not invoke a tool.
 - [ ] Paths remain within the exact canonical repository root and symlink
   escapes fail closed.
 - [ ] `searchRepo` invokes only `rg` with a closed argument vector and no shell.
+- [ ] Root identity, descriptor-based file safety, the same-host threat-model
+  limit, sensitive-path exclusions, and controlled `rg` environment match the
+  frozen architecture.
 - [ ] Outputs, errors, time, rounds, and total calls are bounded and auditable.
+- [ ] Strict parsing rejects duplicate keys and IDs, hostile shapes, control
+  characters, and unknown or oversized values without invoking accessors.
+- [ ] Protocol completion requires an audited tool result, and pre-plan broker
+  failures are durably recorded without sensitive arguments or output.
 - [ ] Audit attribution preserves Daisy seat, actual reasoning runtime, and
   actual broker executor without recording secrets, private reasoning, or raw
   file bodies.
