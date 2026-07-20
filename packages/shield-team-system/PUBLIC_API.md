@@ -19,6 +19,7 @@ package artifact.
 | `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
+| `@shield/team-system/local-tools` | Host-side Daisy read-only repository broker with LM Studio capability probing, closed tools, and injected Issue #10 authorization/audit dependencies |
 | `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 
 All entry points provide TypeScript declarations. Existing `.mjs` contract
@@ -39,6 +40,7 @@ does not migrate or reinterpret the existing package runtime.
 | One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |
 | Per-call runtime-bound permission decisions | Supported through `/permission`; real environmental probes remain owned by Issue #34 |
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
+| Daisy local reconnaissance tools | Supported through `/local-tools` only with a trusted authority provider; standalone CLI tool authority is intentionally unavailable |
 | Host-adapter candidate envelope | Supported through `/adapter`; GitHub translation and delivery are supported through `/github` |
 
 Unavailable capabilities are not exported as placeholders. Their absence is a
@@ -50,7 +52,9 @@ Off authorization, journal v4 adds communication requests and results, and
 journal v5 adds completed or uncertain execution-effect records. Journal v6
 adds separately Coulson-authorized runtime-binding and atomic supersession
 events. Mixed-version journals, automatic migration, waivers, a general policy
-DSL, multi-cycle orchestration, and permission brokers remain unsupported.
+DSL and general multi-cycle orchestration remain unsupported. The bounded Daisy
+broker is supported only through `/local-tools`; Git tools, writes, other seats,
+and caller-supplied authority remain unsupported.
 The runner returns a validated, non-authoritative v5 or v6 effect candidate; it does
 not append entries or grant the candidate authority. The trusted supervision
 boundary supplies the entry ID and timestamp, rechecks exact mission, subject,

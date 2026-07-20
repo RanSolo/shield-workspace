@@ -57,6 +57,10 @@
       "types": "./dist/permission-audit-v1.d.mts",
       "import": "./dist/permission-audit-v1.mjs"
     },
+    "./local-tools": {
+      "types": "./public/local-tools.d.mts",
+      "import": "./public/local-tools.mjs"
+    },
     "./github": {
       "types": "./public/github.d.mts",
       "import": "./public/github.mjs"
