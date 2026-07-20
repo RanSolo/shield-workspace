@@ -157,11 +157,31 @@ Metrics use `measured`, `derived`, `estimated`, or `not observable` labels.
 - supplied Daisy context: 190,485 bytes / 3,856 lines
 - Daisy time to first token: 115.826 seconds
 - elapsed intake through Daisy completion: 3m 59s
+- local May calls: 3 (one non-actionable terminal request, one connection
+  failure, one successful bounded implementation blueprint)
+- successful local May input tokens: 52,727
+- successful local May output tokens: 4,759
+- successful local May reasoning tokens: 1,259
+- first May repository context: 193,774 bytes / 3,918 lines, plus the 3,556
+  byte / 112 line May role prompt
+- failed redirected May repository context: 130,574 bytes / 2,536 lines,
+  plus the role prompt; token counts were not returned
+- successful bounded May context: 6,979 bytes / 169 lines, plus the role prompt
+- successful bounded May time to first token: 2.473 seconds
+- total successful local-model usage (Daisy + May): 101,148 input tokens,
+  7,336 output tokens, and 1,966 reasoning tokens
 - premium subagent invocations: 0
-- implementation cycles: 0
+- primary Codex token count and dollar cost: not observable
+- implementation cycles: 1
 - Fury correction cycles: 0
-- files changed before implementation: this Mission Brief only
-- primary Codex tokens and dollar cost: not observable
+- files changed: 14 total / 13 implementation
+- focused tests added: 11 across 3 files
+- integration verification: 158 team-system tests and 9 multiband tests pass;
+  packed strict consumer and `git diff --check` pass
+- elapsed benchmark start through integration: 40m 46s
+- elapsed Coulson authorization through integration: 27m 46s
+- human interventions: 2 (planned Wheels Up authorization and one folder
+  verification question)
 
 ## Stop condition
 

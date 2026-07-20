@@ -124,6 +124,12 @@ operations.
 
 ## Mission Journals
 
+The supervised TypeScript journal extends this baseline through homogeneous
+schema v6. Its runtime-binding events are authoritative and separately signed
+by Coulson; the permission audit ledger is derived evidence and can never
+modify journal, governance, authorization, or readiness state. See
+`PERMISSION_BOUNDARY.md` for the three-identity and per-call contracts.
+
 `contracts/mission-journal.mjs` defines four closed evidence entries:
 governance events, execution transitions, recorded reviews, and completed-effect
 receipts. Governance remains derived through the mission-schema v2 replay API;
