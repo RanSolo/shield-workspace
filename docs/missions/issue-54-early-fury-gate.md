@@ -168,6 +168,143 @@ The following fail closed without implementation dispatch:
 Errors use bounded closed codes and never contain secrets, private reasoning,
 raw model output, or caller-controlled diagnostic prose.
 
+## May implementation blueprint
+
+### Mandatory guard inputs
+
+The Delivery Workspace guard adds required `missionId`, `subjectId`,
+`blueprintArtifact`, and `planGate` fields. `planGate: null` is the sole explicit
+review-pending state; omission is invalid and cannot preserve the old fail-open
+dispatch behavior.
+
+The blueprint assertion contains exactly:
+
+```text
+artifactId
+artifactPath
+artifactKind: implementation_blueprint
+owningSeatId: may
+```
+
+The path is a bounded normalized repository-relative assertion. The existing
+PR adapter continues to prove the committed Git head, not the independent
+contents of the asserted blueprint path.
+
+### Review and workspace binding
+
+The review record contains exact closed fields for:
+
+- schema, contract, and non-authoritative assurance;
+- review ID, mission ID, and subject ID;
+- repository owner/name, base branch, mission branch, and PR number;
+- blueprint artifact ID/path/kind, May ownership, and reviewed revision;
+- verdict, findings, reasoning runtime, and tool executor.
+
+Fury's reviewer seat is derived rather than caller supplied. Runtime and
+executor IDs are nullable assertions, cannot equal a S.H.I.E.L.D. seat ID, and
+must differ when both are non-null.
+
+A finding contains one unique ID, one closed class, and bounded opaque evidence
+references. Closed finding classes are:
+
+- `architecture`
+- `authority`
+- `compatibility`
+- `replay_safety`
+- `fail_closedness`
+- `implementation_boundary`
+- `validation_readiness`
+- `operational_completeness`
+
+`PASS` has zero findings and no reconciliation. `PASS_WITH_REQUIRED_CHANGES`
+has 1-16 findings. `FAIL` has 1-16 findings and no reconciliation.
+
+### Reconciliation record
+
+The closed reconciliation repeats the complete workspace, mission, subject,
+artifact, owner, review, and original-revision binding. It adds a distinct
+corrected revision, `architectureChanged: false`, and one `incorporated`
+disposition for every Fury finding. Hill's verifier seat is derived rather than
+caller supplied.
+
+The corrected revision must differ from the reviewed revision. Missing,
+duplicate, unknown, or extra dispositions; any other disposition; changed
+architecture; a changed binding; or a current head different from the corrected
+revision denies dispatch.
+
+### Normative bounds
+
+- Identifiers: 1-128 UTF-8 bytes under a closed ASCII grammar.
+- Evidence references: 1-256 UTF-8 bytes, unique within their record.
+- Blueprint path: at most 512 UTF-8 bytes with no absolute path, backslash,
+  empty segment, dot segment, traversal, control byte, or percent-encoded
+  ambiguity.
+- Git revisions: 40-64 lowercase hexadecimal characters.
+- PR number: safe integer from 1 through 2,147,483,647.
+- Findings/dispositions: at most 16.
+- Evidence references: at most 8 per record and 64 across the gate.
+- Objects: exact own data properties only.
+- Arrays: dense native arrays without extra properties.
+
+Accessors, symbols, inherited fields, non-plain prototypes, sparse arrays,
+throwing proxies, unknown fields, unsupported versions, excessive values, and
+reflective failures return bounded non-echoing ineligible results.
+
+### Closed gate reasons
+
+Evaluation uses these bounded reasons in priority order:
+
+```text
+INVALID_EXPECTED_BINDING
+PLAN_REVIEW_REQUIRED
+INVALID_PLAN_REVIEW
+REPLAY_BINDING_MISMATCH
+REVIEW_REVISION_STALE
+REVIEW_FAILED
+RECONCILIATION_REQUIRED
+INVALID_RECONCILIATION
+RECONCILIATION_BINDING_MISMATCH
+CORRECTED_REVISION_NOT_DISTINCT
+ARCHITECTURE_CHANGED_REVIEW_REQUIRED
+REQUIRED_CHANGE_SET_MISMATCH
+RECONCILIATION_REVISION_STALE
+```
+
+The normalized result derives Fury and, where applicable, Hill seat IDs; labels
+authority as non-authoritative and evidence as reference-only; preserves the
+exact binding; and reports only `eligible` or `ineligible`. Invalid results do
+not echo partially inspected identity or evidence.
+
+### Guard order and result union
+
+The guard order is fixed:
+
+1. Strictly validate the new required top-level fields without invoking caller
+   accessors.
+2. Apply the unchanged Coulson specialist-dispatch approval veto.
+3. Call the unchanged create-or-update PR adapter.
+4. Require and revalidate the exact draft-workspace receipt.
+5. Construct the expected plan binding from normalized host assertions and the
+   verified receipt.
+6. Evaluate the pure Fury plan gate.
+7. Return `dispatch_ready` only for literal gate eligibility.
+8. Otherwise return `workspace_ready` with the verified receipt and bounded
+   ineligible evaluation.
+
+Authorization, publication, and receipt failures remain `blocked` and preserve
+their current semantics. Callers must dispatch only on literal
+`state === "dispatch_ready"`; treating any non-blocked result as permission is
+invalid.
+
+This is an intentional pre-1.0 hardening of the public GitHub guard. All current
+repository consumers, declarations, examples, and tests migrate together. No
+optional overload or transitional fail-open default is permitted.
+
+Contextual reuse of the same review ID against the same exact binding is
+deterministic and idempotent. Reuse against any changed binding is denied.
+Global uniqueness, durable consumption, and cross-process replay detection are
+explicitly outside v1 and trigger the mission stop condition if required.
+
 ## Expected implementation surface
 
 - one internal pure Fury plan-gate contract;
