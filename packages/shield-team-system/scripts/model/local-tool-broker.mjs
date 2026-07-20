@@ -123,13 +123,13 @@ async function fetchJson(fetchImpl, url, options, { timeoutMs, maxBytes }) {
   }
 }
 
-export async function probeLocalToolModel({ baseUrl, model, fetchImpl = fetch, apiToken }) {
+export async function probeLocalToolModel({ baseUrl, model, fetchImpl = fetch, apiToken, timeoutMs = LOCAL_TOOL_LIMITS.inferenceTimeoutMs }) {
   const origin = validateLoopbackBaseUrl(baseUrl);
   if (origin === null || typeof model !== "string" || !IDENTIFIER.test(model)) throw new Error("lm_probe_input_invalid");
   const data = await fetchJson(fetchImpl, `${origin}/api/v1/models`, {
     method: "GET",
     headers: apiToken ? { Authorization: `Bearer ${apiToken}` } : {},
-  }, { timeoutMs: LOCAL_TOOL_LIMITS.inferenceTimeoutMs, maxBytes: LOCAL_TOOL_LIMITS.responseBytes });
+  }, { timeoutMs, maxBytes: LOCAL_TOOL_LIMITS.responseBytes });
   if (!exactPlain(data, ["models"])) throw new Error("lm_models_response_malformed");
   const models = denseArray(data.models);
   if (models === null) throw new Error("lm_models_response_malformed");
@@ -207,7 +207,26 @@ function validateAuthorityContextIdentity(context, expected, actionId) {
   return context;
 }
 
-async function appendBrokerEvent(dependencies, sessionId, counter, code, identifiers = {}) {
+function remainingTime(deadline, clock) {
+  const remaining = deadline - clock();
+  if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("tool_session_timeout");
+  return remaining;
+}
+
+async function withinDeadline(operation, deadline, clock) {
+  const timeoutMs = remainingTime(deadline, clock);
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("tool_session_timeout")), timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function appendBrokerEvent(dependencies, sessionId, counter, code, identifiers = {}, timing = null) {
   const event = Object.freeze({
     brokerEventSchemaVersion: 1,
     authority: "non_authoritative",
@@ -220,7 +239,9 @@ async function appendBrokerEvent(dependencies, sessionId, counter, code, identif
     decisionId: identifiers.decisionId ?? null,
     evidenceRefs: Object.freeze([`broker:${sessionId}`]),
   });
-  const receipt = await dependencies.appendBrokerEvent(event);
+  const receipt = timing === null
+    ? await dependencies.appendBrokerEvent(event)
+    : await withinDeadline(() => dependencies.appendBrokerEvent(event), timing.deadline, timing.clock);
   if (!exactPlain(receipt, ["eventId", "appended"]) || receipt.eventId !== event.eventId || receipt.appended !== true) throw new Error("broker_event_receipt_invalid");
 }
 
@@ -230,24 +251,34 @@ function releasedToolContent(raw) {
 }
 
 export async function runLocalToolSession(request, dependencies) {
-  if (!exactPlain(request, ["baseUrl", "model", "systemPrompt", "userPrompt", "sessionId", "repositoryRoot", "rgExecutable"])) throw new Error("tool_session_request_malformed");
-  for (const field of ["baseUrl", "model", "systemPrompt", "userPrompt", "sessionId", "repositoryRoot", "rgExecutable"]) if (typeof request[field] !== "string") throw new Error("tool_session_request_malformed");
+  if (!exactPlain(request, ["baseUrl", "model", "systemPrompt", "userPrompt", "sessionId", "repositoryRoot"])) throw new Error("tool_session_request_malformed");
+  for (const field of ["baseUrl", "model", "systemPrompt", "userPrompt", "sessionId", "repositoryRoot"]) if (typeof request[field] !== "string") throw new Error("tool_session_request_malformed");
   if (!IDENTIFIER.test(request.sessionId) || !plain(dependencies)) throw new Error("tool_session_request_malformed");
-  for (const name of ["nextCallSlot", "getAuthorizationContext", "getExecutionContext", "appendIfAbsent", "nextResultRecordId", "appendBrokerEvent", "now"]) if (typeof dependencies[name] !== "function") throw new Error("tool_session_dependency_missing");
+  for (const name of ["getRgExecutable", "monotonicNow", "nextCallSlot", "getAuthorizationContext", "getExecutionContext", "appendIfAbsent", "nextResultRecordId", "appendBrokerEvent", "now"]) if (typeof dependencies[name] !== "function") throw new Error("tool_session_dependency_missing");
   if (typeof dependencies.ledgerId !== "string" || !IDENTIFIER.test(dependencies.ledgerId)) throw new Error("tool_session_dependency_missing");
   for (const field of ["repositoryId", "toolExecutorId"]) if (typeof dependencies[field] !== "string" || !IDENTIFIER.test(dependencies[field])) throw new Error("tool_session_dependency_missing");
 
   const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const clock = dependencies.monotonicNow;
+  const deadline = clock() + LOCAL_TOOL_LIMITS.sessionTimeoutMs;
+  const timing = { deadline, clock };
   let eventCounter = 0;
   let capability;
   let repository;
   try {
-    capability = await probeLocalToolModel({ baseUrl: request.baseUrl, model: request.model, fetchImpl, apiToken: dependencies.apiToken });
-    repository = await createRepositoryTools(request.repositoryRoot, { rgExecutable: request.rgExecutable });
+    capability = await withinDeadline(() => probeLocalToolModel({
+      baseUrl: request.baseUrl, model: request.model, fetchImpl, apiToken: dependencies.apiToken,
+      timeoutMs: Math.min(LOCAL_TOOL_LIMITS.inferenceTimeoutMs, remainingTime(deadline, clock)),
+    }), deadline, clock);
+    const rgExecutable = await withinDeadline(() => dependencies.getRgExecutable(), deadline, clock);
+    repository = await withinDeadline(() => createRepositoryTools(request.repositoryRoot, {
+      rgExecutable,
+      rgProbeTimeoutMs: Math.min(2_000, remainingTime(deadline, clock)),
+    }), deadline, clock);
   } catch (error) {
     eventCounter += 1;
     const code = boundedError(error instanceof Error ? error.message : "tool_session_setup_failed");
-    await appendBrokerEvent(dependencies, request.sessionId, eventCounter, code);
+    await appendBrokerEvent(dependencies, request.sessionId, eventCounter, code, {}, timing);
     throw new Error(code);
   }
   const expectedIdentity = {
@@ -256,7 +287,6 @@ export async function runLocalToolSession(request, dependencies) {
     reasoningRuntimeId: capability.loadedInstanceId,
     toolExecutorId: dependencies.toolExecutorId,
   };
-  const startedAt = Date.now();
   const seenCallIds = new Set();
   const seenCycleIds = new Set();
   const seenEffectKeys = new Set();
@@ -270,48 +300,65 @@ export async function runLocalToolSession(request, dependencies) {
   ];
   const authorizer = createPermissionAuthorizer({
     ledgerId: dependencies.ledgerId,
-    appendIfAbsent: dependencies.appendIfAbsent,
-    getContext: async (plan) => validateAuthorityContextIdentity(await dependencies.getAuthorizationContext(plan), expectedIdentity, plan.actionId),
+    appendIfAbsent: (record) => withinDeadline(() => dependencies.appendIfAbsent(record), deadline, clock),
+    getContext: async (plan) => validateAuthorityContextIdentity(
+      await withinDeadline(() => dependencies.getAuthorizationContext(plan), deadline, clock), expectedIdentity, plan.actionId,
+    ),
   });
 
   try {
     for (let round = 0; round < LOCAL_TOOL_LIMITS.rounds; round += 1) {
-      if (Date.now() - startedAt > LOCAL_TOOL_LIMITS.sessionTimeoutMs) throw new Error("tool_session_timeout");
-      const data = await fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
+      const inferenceTimeout = Math.min(LOCAL_TOOL_LIMITS.inferenceTimeoutMs, remainingTime(deadline, clock));
+      const data = await withinDeadline(() => fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(dependencies.apiToken ? { Authorization: `Bearer ${dependencies.apiToken}` } : {}) },
         body: JSON.stringify({ model: capability.loadedInstanceId, messages, tools: DAISY_TOOL_DEFINITIONS, tool_choice: "auto" }),
-      }, { timeoutMs: LOCAL_TOOL_LIMITS.inferenceTimeoutMs, maxBytes: LOCAL_TOOL_LIMITS.responseBytes });
+      }, { timeoutMs: inferenceTimeout, maxBytes: LOCAL_TOOL_LIMITS.responseBytes }), deadline, clock);
       const assistant = parseAssistantResponse(data);
       if (assistant.toolCalls.length === 0) {
         if (completedCalls === 0 || typeof assistant.content !== "string" || assistant.content.trim().length === 0) throw new Error("tool_protocol_incomplete");
         return Object.freeze({ message: assistant.content, attribution: "untrusted_model_output", completedToolCalls: completedCalls, releasedBytes });
       }
       messages.push(assistant.assistantMessage);
-      for (const call of assistant.toolCalls) {
-        callCount += 1;
-        if (callCount > LOCAL_TOOL_LIMITS.calls) throw new Error("tool_call_cap_reached");
-        if (seenCallIds.has(call.id)) throw new Error("tool_call_id_reused");
-        seenCallIds.add(call.id);
+      if (callCount + assistant.toolCalls.length > LOCAL_TOOL_LIMITS.calls) throw new Error("tool_call_cap_reached");
+      const batchCallIds = new Set();
+      const prepared = assistant.toolCalls.map((call) => {
+        if (seenCallIds.has(call.id) || batchCallIds.has(call.id)) throw new Error("tool_call_id_reused");
+        batchCallIds.add(call.id);
         const mapping = DAISY_TOOL_MAPPINGS[call.function.name];
         if (!mapping) throw new Error("tool_unknown");
         const args = parseToolArguments(call.function.name, call.function.arguments);
-        const slot = await dependencies.nextCallSlot(Object.freeze({ sessionId: request.sessionId, toolCallId: call.id, toolName: call.function.name, ...mapping }));
+        return { call, mapping, args };
+      });
+      const batchCycleIds = new Set();
+      const batchEffectKeys = new Set();
+      for (const item of prepared) {
+        const { call, mapping } = item;
+        const slot = await withinDeadline(() => dependencies.nextCallSlot(Object.freeze({ sessionId: request.sessionId, toolCallId: call.id, toolName: call.function.name, ...mapping })), deadline, clock);
         const plan = validateSlot(slot, mapping);
-        if (seenCycleIds.has(plan.cycleId) || seenEffectKeys.has(plan.effectKey)) throw new Error("authority_slot_reused");
-        seenCycleIds.add(plan.cycleId);
-        seenEffectKeys.add(plan.effectKey);
+        if (seenCycleIds.has(plan.cycleId) || seenEffectKeys.has(plan.effectKey) || batchCycleIds.has(plan.cycleId) || batchEffectKeys.has(plan.effectKey)) throw new Error("authority_slot_reused");
+        batchCycleIds.add(plan.cycleId);
+        batchEffectKeys.add(plan.effectKey);
+        item.plan = plan;
+      }
+      callCount += prepared.length;
+      for (const id of batchCallIds) seenCallIds.add(id);
+      for (const id of batchCycleIds) seenCycleIds.add(id);
+      for (const key of batchEffectKeys) seenEffectKeys.add(key);
+      for (const { call, args, plan } of prepared) {
         const decision = await authorizer(plan);
         if (decision.outcome !== "allow") throw new Error("tool_permission_denied");
         const auditedExecutor = createAuditedExecutor({
           ledgerId: dependencies.ledgerId,
-          appendIfAbsent: dependencies.appendIfAbsent,
-          getContext: async (decision) => validateAuthorityContextIdentity(await dependencies.getExecutionContext(decision), expectedIdentity, decision.actionId),
+          appendIfAbsent: (record) => withinDeadline(() => dependencies.appendIfAbsent(record), deadline, clock),
+          getContext: async (decision) => validateAuthorityContextIdentity(
+            await withinDeadline(() => dependencies.getExecutionContext(decision), deadline, clock), expectedIdentity, decision.actionId,
+          ),
           nextRecordId: dependencies.nextResultRecordId,
           now: dependencies.now,
           execute: async () => {
             const operation = repository[call.function.name];
-            const raw = await operation(args);
+            const raw = await withinDeadline(() => operation(args, timing), deadline, clock);
             if (raw.state !== "completed") return {
               runnerContractVersion: 1, outcome: "failed", missionId: plan.missionId, subjectId: plan.subjectId,
               revisionId: plan.revisionId, evaluatedThroughSequence: plan.evaluatedThroughSequence, cycleId: plan.cycleId,
@@ -323,7 +370,10 @@ export async function runLocalToolSession(request, dependencies) {
               runnerContractVersion: 1, outcome: "completed", missionId: plan.missionId, subjectId: plan.subjectId,
               revisionId: plan.revisionId, evaluatedThroughSequence: plan.evaluatedThroughSequence, cycleId: plan.cycleId,
               seatId: plan.seatId, actionId: plan.actionId, effectClass: plan.effectClass, effectKey: plan.effectKey,
-              summary: "Repository tool execution completed with bounded output escrowed.", evidenceRefs: [`broker:${request.sessionId}`],
+              summary: raw.truncated
+                ? "Repository tool execution completed with bounded truncated output escrowed."
+                : "Repository tool execution completed with bounded output escrowed.",
+              evidenceRefs: [`broker:${request.sessionId}`],
             };
           },
         });
@@ -334,6 +384,12 @@ export async function runLocalToolSession(request, dependencies) {
         }
         const raw = escrow.get(plan.cycleId);
         escrow.delete(plan.cycleId);
+        if (raw.truncated === true) {
+          eventCounter += 1;
+          await appendBrokerEvent(dependencies, request.sessionId, eventCounter, "tool_output_truncated", {
+            toolCallId: call.id, cycleId: plan.cycleId, decisionId: decision.decisionId,
+          }, timing);
+        }
         const content = releasedToolContent(raw);
         if (content === null || releasedBytes + Buffer.byteLength(content, "utf8") > LOCAL_TOOL_LIMITS.aggregateOutputBytes) throw new Error("tool_output_cap_reached");
         releasedBytes += Buffer.byteLength(content, "utf8");
@@ -345,7 +401,7 @@ export async function runLocalToolSession(request, dependencies) {
   } catch (error) {
     escrow.clear();
     eventCounter += 1;
-    await appendBrokerEvent(dependencies, request.sessionId, eventCounter, boundedError(error instanceof Error ? error.message : "tool_session_failed"));
+    await appendBrokerEvent(dependencies, request.sessionId, eventCounter, boundedError(error instanceof Error ? error.message : "tool_session_failed"), {}, timing);
     throw new Error(boundedError(error instanceof Error ? error.message : "tool_session_failed"));
   }
 }

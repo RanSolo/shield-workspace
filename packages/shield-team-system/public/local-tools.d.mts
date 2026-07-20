@@ -9,7 +9,6 @@ export interface LocalToolSessionRequest {
   userPrompt: string;
   sessionId: string;
   repositoryRoot: string;
-  rgExecutable: string;
 }
 
 export interface LocalToolCallRequest {
@@ -40,6 +39,8 @@ export interface LocalToolSessionDependencies {
   toolExecutorId: string;
   apiToken?: string;
   fetchImpl?: typeof fetch;
+  getRgExecutable(): string | Promise<string>;
+  monotonicNow(): number;
   nextCallSlot(request: Readonly<LocalToolCallRequest>): RunnerCyclePlan | Promise<RunnerCyclePlan>;
   getAuthorizationContext(plan: RunnerCyclePlan): PermissionInvocationContext | Promise<PermissionInvocationContext>;
   getExecutionContext(decision: RunnerPermissionDecision): PermissionInvocationContext | Promise<PermissionInvocationContext>;
@@ -70,6 +71,7 @@ export function probeLocalToolModel(input: {
   model: string;
   fetchImpl?: typeof fetch;
   apiToken?: string;
+  timeoutMs?: number;
 }): Promise<LocalToolModelProbe>;
 
 export function runLocalToolSession(

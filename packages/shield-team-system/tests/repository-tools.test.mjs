@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,10 +70,38 @@ test("searchRepo uses bounded rg and excludes sensitive paths", async (context) 
   });
   await writeFile(join(root, "visible.txt"), "needle\n", "utf8");
   await writeFile(join(root, ".env"), "needle-secret\n", "utf8");
+  await mkdir(join(root, ".GIT"));
+  await mkdir(join(root, ".GNUPG"));
+  for (const file of [".ENV.local", "secret.P12", "secret.pFx", "authentication.json"]) await writeFile(join(root, file), "needle-secret\n", "utf8");
+  await writeFile(join(root, ".GIT", "config"), "needle-secret\n", "utf8");
+  await writeFile(join(root, ".GNUPG", "keyring"), "needle-secret\n", "utf8");
   const tools = await createRepositoryTools(root, { rgExecutable: rg });
   const searched = await tools.searchRepo({ pattern: "needle" });
   assert.equal(searched.state, "completed");
   assert.match(searched.data, /visible\.txt/u);
-  assert.doesNotMatch(searched.data, /\.env|secret/u);
+  assert.doesNotMatch(searched.data, /\.env|\.git|\.gnupg|secret|authentication/iu);
   assert.equal((await tools.searchRepo({ pattern: "--files" })).state, "completed");
+});
+
+test("repository root replacement invalidates an existing tool set", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "shield-broker-replace-"));
+  const displaced = `${root}-old`;
+  context.after(async () => { await rm(root, { recursive: true, force: true }); await rm(displaced, { recursive: true, force: true }); });
+  await writeFile(join(root, "visible.txt"), "original\n", "utf8");
+  const tools = await createRepositoryTools(root);
+  await rename(root, displaced);
+  await mkdir(root);
+  await writeFile(join(root, "visible.txt"), "replacement\n", "utf8");
+  assert.equal((await tools.readFile({ path: "visible.txt" })).code, "root_identity_changed");
+});
+
+test("search executable must prove ripgrep identity and times out fail closed", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "shield-broker-rg-root-"));
+  const fake = join(await mkdtemp(join(tmpdir(), "shield-broker-rg-bin-")), "rg");
+  context.after(async () => { await rm(root, { recursive: true, force: true }); await rm(fake.slice(0, fake.lastIndexOf("/")), { recursive: true, force: true }); });
+  await assert.rejects(() => createRepositoryTools(root, { rgExecutable: "/bin/echo" }), /rg_executable_invalid/u);
+  await writeFile(fake, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'ripgrep 1.0.0'; exit 0; fi\nwhile true; do :; done\n", "utf8");
+  await chmod(fake, 0o755);
+  const tools = await createRepositoryTools(root, { rgExecutable: fake, searchTimeoutMs: 10 });
+  assert.equal((await tools.searchRepo({ pattern: "needle" })).code, "search_timeout");
 });
