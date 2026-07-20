@@ -13,9 +13,10 @@ package artifact.
 | `@shield/team-system/modes` | Mode manifests, registries, and seat-context resolution |
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
 | `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
-| `@shield/team-system/supervision` | Journal v2, canonical mission briefs, Ed25519 human evidence, readiness, and no-effect supervised-step contracts |
+| `@shield/team-system/supervision` | Supervised journals v2-v5, canonical mission briefs, Ed25519 human evidence, readiness, communication, and authoritative execution-effect replay |
 | `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
 | `@shield/team-system/adapter` | Closed host-neutral adapter v1 candidate, communication, and validation contracts |
+| `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
 | `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 
 All entry points provide TypeScript declarations. Existing `.mjs` contract
@@ -33,6 +34,7 @@ does not migrate or reinterpret the existing package runtime.
 | Review-workspace validation | Supported through `/workspace` |
 | Repository configuration validation | Supported through `/config` |
 | Bounded local human-evidence requirements and readiness | Supported through `/supervision` for the V0.3-4 mission-plan subject |
+| One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |
 | General permission decisions | Unavailable; only documented mission-policy decisions exist |
 | Host-adapter candidate envelope | Supported through `/adapter`; GitHub translation and delivery are supported through `/github` |
 
@@ -41,14 +43,20 @@ truthful boundary, not a future commitment.
 
 Journal v1 remains supported through `/journal`. Journal v2 is additive and is
 used only by the bounded supervised-mission workflow. Journal v3 adds Wheels
-Off authorization and journal v4 adds communication requests and results.
-Mixed-version journals, automatic migration, waivers, supersession, general
-effects, runners, and permission brokers remain unsupported.
+Off authorization, journal v4 adds communication requests and results, and
+journal v5 adds completed or uncertain execution-effect records. Mixed-version
+journals, automatic migration, waivers, supersession, general permission
+policy, multi-cycle orchestration, and permission brokers remain unsupported.
+The runner returns a validated, non-authoritative v5 effect candidate; it does
+not append entries or grant the candidate authority. The trusted supervision
+boundary supplies the entry ID and timestamp, rechecks exact mission, subject,
+revision, and sequence identity, and appends the authoritative record. Replay
+then blocks both completed and uncertain effect keys from re-execution.
 
 Delegated missions use journal schema v3 while schema-v2 supervised journals
 remain supported without reinterpretation. Wheels Off exposes standing
-pre-authorization only; it does not expose a runner, policy DSL, host inspection,
-or merge/deploy/release authority.
+pre-authorization only; it does not grant runner execution, define a policy DSL,
+perform host inspection, or confer merge/deploy/release authority.
 
 ## Compatibility and breaking changes
 

@@ -5,6 +5,7 @@ import {
   canonicalJson,
   computeEd25519SigningKeyRef,
   createEvidenceEntry,
+  createExecutionEffectEntry,
   createCommunicationRequestEntry,
   createCommunicationResultEntry,
   createDelegatedAuthorizationEntry,
@@ -15,6 +16,7 @@ import {
   createSupervisedMissionBrief,
   planMissionStep,
   replaySupervisedMissionJournal,
+  validateRunnerSupervisedEffectCandidate,
   validateRepositoryBindings,
   validateSupervisedMissionBrief,
   verifySignedHumanEvidence,
@@ -254,6 +256,387 @@ test("journal v4 keeps communication delivery separate from evidence readiness",
   assert.equal(projection.readiness.accept.state, "waiting");
   assert.equal(projection.evidence.length, 1);
   assert.equal(createCommunicationResultEntry(projection, failure).state, "invalid");
+});
+
+test("journal v5 finalizes non-authoritative runner effects into deterministic authoritative records", () => {
+  const data = fixture();
+  data.entries[0] = createMissionBegunEntry(data.brief, [data.coulson.binding, data.fitz.binding], 5);
+  let projection = replay(data.entries);
+  const authorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  data.entries.push(createGovernanceEntry(
+    projection,
+    "approve",
+    evidence(data.coulson, projection, authorization, "approved", 1),
+  ).value);
+  projection = replay(data.entries);
+  assert.deepEqual(projection.effectRecords, []);
+  data.entries.push(planMissionStep(
+    projection,
+    { value: "2026-07-18T20:02:00Z", provenance: "hostTrusted" },
+  ).value.entry);
+  projection = replay(data.entries);
+  assert.equal(projection.execution.status, "running");
+
+  const payload = {
+    runnerContractVersion: 1,
+    cycleId: "cycle:fixture:1",
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    evaluatedThroughSequence: projection.lastSequence,
+    seatId: "may",
+    actionId: "action:implement",
+    effectClass: "behavioral_implementation",
+    effectKey: "effect:fixture:1",
+    authorizationDecisionId: "decision:fixture:1",
+    outcome: "completed",
+    reasonCode: "executor_completed",
+    summary: "Applied the bounded fixture change.",
+    evidenceRefs: ["receipt:fixture:1"],
+  };
+  const candidate = {
+    runnerContractVersion: 1,
+    candidateKind: "runner.supervised_effect_record",
+    authority: "non_authoritative",
+    journalSchemaVersion: 5,
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    expectedPreviousSequence: projection.lastSequence,
+    intendedJournalSequence: projection.lastSequence + 1,
+    payload,
+  };
+  assert.equal(validateRunnerSupervisedEffectCandidate(candidate).state, "valid");
+  const timestamp = { value: "2026-07-18T20:03:00Z", provenance: "hostTrusted" };
+  const finalized = createExecutionEffectEntry(projection, candidate, timestamp);
+  assert.equal(finalized.state, "valid", finalized.errors?.join(" "));
+  data.entries.push(finalized.value);
+  projection = replay(data.entries);
+  assert.deepEqual(projection.effectRecords, [{
+    ...payload,
+    entryId: `entry:${projection.missionId}:3`,
+    missionId: projection.missionId,
+    journalSequence: 3,
+    timestamp,
+  }]);
+
+  const duplicatePayload = {
+    ...payload,
+    cycleId: "cycle:fixture:duplicate",
+    evaluatedThroughSequence: projection.lastSequence,
+    authorizationDecisionId: "decision:fixture:duplicate",
+    evidenceRefs: [...payload.evidenceRefs],
+  };
+  const duplicateReplay = replaySupervisedMissionJournal([...data.entries, {
+    schemaVersion: 5,
+    entryId: `entry:${projection.missionId}:4`,
+    missionId: projection.missionId,
+    sequence: 4,
+    type: "execution.effect_recorded",
+    timestamp: { value: "2026-07-18T20:04:00Z", provenance: "hostTrusted" },
+    payload: duplicatePayload,
+  }]);
+  assert.equal(duplicateReplay.state, "invalid");
+  assert.equal(duplicateReplay.code, "duplicate_effect");
+});
+
+test("journal v5 effect recording requires running execution and exact current readiness", () => {
+  const data = fixture();
+  data.entries[0] = createMissionBegunEntry(data.brief, [data.coulson.binding, data.fitz.binding], 5);
+  let projection = replay(data.entries);
+  const authorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  data.entries.push(createGovernanceEntry(
+    projection,
+    "approve",
+    evidence(data.coulson, projection, authorization, "approved", 1),
+  ).value);
+  projection = replay(data.entries);
+
+  const candidateFor = (current, suffix) => ({
+    runnerContractVersion: 1,
+    candidateKind: "runner.supervised_effect_record",
+    authority: "non_authoritative",
+    journalSchemaVersion: 5,
+    missionId: current.missionId,
+    subjectId: current.brief.subjectId,
+    revisionId: current.brief.revisionId,
+    expectedPreviousSequence: current.lastSequence,
+    intendedJournalSequence: current.lastSequence + 1,
+    payload: {
+      runnerContractVersion: 1,
+      cycleId: `cycle:gate:${suffix}`,
+      subjectId: current.brief.subjectId,
+      revisionId: current.brief.revisionId,
+      evaluatedThroughSequence: current.lastSequence,
+      seatId: "may",
+      actionId: "action:implement",
+      effectClass: "behavioral_implementation",
+      effectKey: `effect:gate:${suffix}`,
+      authorizationDecisionId: `decision:gate:${suffix}`,
+      outcome: "completed",
+      reasonCode: "executor_completed",
+      summary: "Bounded effect gate fixture.",
+      evidenceRefs: [`receipt:gate:${suffix}`],
+    },
+  });
+  const at = (minute) => ({ value: `2026-07-18T20:0${minute}:00Z`, provenance: "hostTrusted" });
+
+  const notStartedCandidate = candidateFor(projection, "not-started");
+  assert.equal(createExecutionEffectEntry(projection, notStartedCandidate, at(2)).code, "execution_not_running");
+  const notStartedReplay = replaySupervisedMissionJournal([...data.entries, {
+    schemaVersion: 5,
+    entryId: `entry:${projection.missionId}:2`,
+    missionId: projection.missionId,
+    sequence: 2,
+    type: "execution.effect_recorded",
+    timestamp: at(2),
+    payload: notStartedCandidate.payload,
+  }]);
+  assert.equal(notStartedReplay.state, "invalid");
+  assert.equal(notStartedReplay.code, "execution_not_running");
+
+  data.entries.push(planMissionStep(projection, at(2)).value.entry);
+  projection = replay(data.entries);
+  data.entries.push(planMissionStep(projection, at(3)).value.entry);
+  projection = replay(data.entries);
+  assert.equal(projection.execution.status, "completed");
+  const completedCandidate = candidateFor(projection, "completed");
+  assert.equal(createExecutionEffectEntry(projection, completedCandidate, at(4)).code, "execution_not_running");
+  const completedReplay = replaySupervisedMissionJournal([...data.entries, {
+    schemaVersion: 5,
+    entryId: `entry:${projection.missionId}:4`,
+    missionId: projection.missionId,
+    sequence: 4,
+    type: "execution.effect_recorded",
+    timestamp: at(4),
+    payload: completedCandidate.payload,
+  }]);
+  assert.equal(completedReplay.state, "invalid");
+  assert.equal(completedReplay.code, "execution_not_running");
+
+  const staleReadiness = {
+    ...projection,
+    execution: { status: "running" },
+    readiness: {
+      ...projection.readiness,
+      execute: { ...projection.readiness.execute, state: "ready", evaluatedThroughSequence: projection.lastSequence - 1 },
+    },
+  };
+  assert.equal(createExecutionEffectEntry(staleReadiness, candidateFor(staleReadiness, "stale-readiness"), at(4)).code, "readiness_blocked");
+});
+
+test("journal v5 evidenceRefs apply the runner closed-array shape rules without invoking accessors", () => {
+  const data = fixture();
+  data.entries[0] = createMissionBegunEntry(data.brief, [data.coulson.binding, data.fitz.binding], 5);
+  let projection = replay(data.entries);
+  const authorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  data.entries.push(createGovernanceEntry(
+    projection,
+    "approve",
+    evidence(data.coulson, projection, authorization, "approved", 1),
+  ).value);
+  projection = replay(data.entries);
+  data.entries.push(planMissionStep(
+    projection,
+    { value: "2026-07-18T20:02:00Z", provenance: "hostTrusted" },
+  ).value.entry);
+  projection = replay(data.entries);
+  const candidate = {
+    runnerContractVersion: 1,
+    candidateKind: "runner.supervised_effect_record",
+    authority: "non_authoritative",
+    journalSchemaVersion: 5,
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    expectedPreviousSequence: projection.lastSequence,
+    intendedJournalSequence: projection.lastSequence + 1,
+    payload: {
+      runnerContractVersion: 1,
+      cycleId: "cycle:array-shape",
+      subjectId: projection.brief.subjectId,
+      revisionId: projection.brief.revisionId,
+      evaluatedThroughSequence: projection.lastSequence,
+      seatId: "may",
+      actionId: "action:implement",
+      effectClass: "behavioral_implementation",
+      effectKey: "effect:array-shape",
+      authorizationDecisionId: "decision:array-shape",
+      outcome: "completed",
+      reasonCode: "executor_completed",
+      summary: "Closed array validation fixture.",
+      evidenceRefs: ["receipt:array-shape"],
+    },
+  };
+  const withRefs = (evidenceRefs) => ({
+    ...candidate,
+    payload: { ...candidate.payload, evidenceRefs },
+  });
+
+  const nonPlain = ["receipt:array-shape"];
+  Object.setPrototypeOf(nonPlain, null);
+  const sparse = new Array(1);
+  const symbolProperty = ["receipt:array-shape"];
+  symbolProperty[Symbol("extra")] = true;
+  const extraProperty = ["receipt:array-shape"];
+  extraProperty.extra = true;
+  const nonEnumerable = [];
+  Object.defineProperty(nonEnumerable, "0", { value: "receipt:array-shape", enumerable: false });
+  const accessor = [];
+  Object.defineProperty(accessor, "0", {
+    enumerable: true,
+    get() { throw new Error("authoritative validator invoked evidenceRefs accessor"); },
+  });
+
+  for (const malformed of [nonPlain, sparse, symbolProperty, extraProperty, nonEnumerable, accessor]) {
+    assert.doesNotThrow(() => validateRunnerSupervisedEffectCandidate(withRefs(malformed)));
+    assert.equal(validateRunnerSupervisedEffectCandidate(withRefs(malformed)).state, "invalid");
+    assert.equal(createExecutionEffectEntry(
+      projection,
+      withRefs(malformed),
+      { value: "2026-07-18T20:03:00Z", provenance: "hostTrusted" },
+    ).state, "invalid");
+  }
+});
+
+test("journal v5 preserves the v4 communication request and result contract", () => {
+  const data = fixture();
+  data.entries[0] = createMissionBegunEntry(data.brief, [data.coulson.binding, data.fitz.binding], 5);
+  let projection = replay(data.entries);
+  const authorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  data.entries.push(createGovernanceEntry(
+    projection,
+    "approve",
+    evidence(data.coulson, projection, authorization, "approved", 1),
+  ).value);
+  projection = replay(data.entries);
+  const request = {
+    requestId: "request:v5:2",
+    adapterContractVersion: 1,
+    adapterId: "github",
+    operation: "request_human_evidence",
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    artifactRevisionId: "0123456789012345678901234567890123456789",
+    targetRef: "github:pr:47",
+  };
+  data.entries.push(createCommunicationRequestEntry(
+    projection,
+    request,
+    { value: "2026-07-18T20:02:00Z", provenance: "hostTrusted" },
+  ).value);
+  projection = replay(data.entries);
+  const result = {
+    adapterContractVersion: 1,
+    adapterId: "github",
+    candidateId: "candidate:v5:3",
+    candidateKind: "communication_result",
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    humanPrincipalId: null,
+    bindingId: null,
+    sourceRef: "github:pr:47",
+    capturedAt: { value: "2026-07-18T20:03:00Z", provenance: "hostTrusted" },
+    payload: {
+      requestId: request.requestId,
+      outcome: "delivered",
+      failureReason: null,
+      receiptRef: "github:comment:47:1",
+    },
+  };
+  data.entries.push(createCommunicationResultEntry(projection, result).value);
+  projection = replay(data.entries);
+  assert.equal(projection.journalSchemaVersion, 5);
+  assert.equal(projection.communication.state, "delivered");
+  assert.equal(projection.communication.requests[0].receiptRef, result.payload.receiptRef);
+});
+
+test("journal v5 rejects effect drift, stale continuity, duplicates, and uncertain-to-completed replay", () => {
+  const data = fixture();
+  data.entries[0] = createMissionBegunEntry(data.brief, [data.coulson.binding, data.fitz.binding], 5);
+  let projection = replay(data.entries);
+  const authorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  data.entries.push(createGovernanceEntry(
+    projection,
+    "approve",
+    evidence(data.coulson, projection, authorization, "approved", 1),
+  ).value);
+  projection = replay(data.entries);
+  data.entries.push(planMissionStep(
+    projection,
+    { value: "2026-07-18T20:02:00Z", provenance: "hostTrusted" },
+  ).value.entry);
+  projection = replay(data.entries);
+  const candidate = {
+    runnerContractVersion: 1,
+    candidateKind: "runner.supervised_effect_record",
+    authority: "non_authoritative",
+    journalSchemaVersion: 5,
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    expectedPreviousSequence: 2,
+    intendedJournalSequence: 3,
+    payload: {
+      runnerContractVersion: 1,
+      cycleId: "cycle:uncertain:1",
+      subjectId: projection.brief.subjectId,
+      revisionId: projection.brief.revisionId,
+      evaluatedThroughSequence: 2,
+      seatId: "may",
+      actionId: "action:implement",
+      effectClass: "behavioral_implementation",
+      effectKey: "effect:uncertain:1",
+      authorizationDecisionId: "decision:uncertain:1",
+      outcome: "uncertain",
+      reasonCode: "executor_result_uncertain",
+      summary: "The executor did not produce a trustworthy completion receipt.",
+      evidenceRefs: ["receipt:uncertain:1"],
+    },
+  };
+  const stale = structuredClone(candidate);
+  stale.expectedPreviousSequence = 0;
+  assert.equal(validateRunnerSupervisedEffectCandidate(stale).state, "invalid");
+  const drift = structuredClone(candidate);
+  drift.payload.revisionId = "sha256:drift";
+  assert.equal(validateRunnerSupervisedEffectCandidate(drift).state, "invalid");
+
+  const first = createExecutionEffectEntry(
+    projection,
+    candidate,
+    { value: "2026-07-18T20:03:00Z", provenance: "hostTrusted" },
+  );
+  data.entries.push(first.value);
+  projection = replay(data.entries);
+  assert.equal(projection.effectRecords[0].outcome, "uncertain");
+  assert.equal(projection.readiness.execute.state, "blocked");
+  assert.deepEqual(projection.readiness.execute.reasons, ["uncertain_effect:effect:uncertain:1"]);
+
+  const retry = structuredClone(candidate);
+  retry.expectedPreviousSequence = 3;
+  retry.intendedJournalSequence = 4;
+  retry.payload.evaluatedThroughSequence = 3;
+  retry.payload.cycleId = "cycle:uncertain:retry";
+  retry.payload.effectKey = "effect:uncertain:retry";
+  retry.payload.outcome = "completed";
+  retry.payload.authorizationDecisionId = "decision:uncertain:retry";
+  assert.equal(createExecutionEffectEntry(
+    projection,
+    retry,
+    { value: "2026-07-18T20:04:00Z", provenance: "hostTrusted" },
+  ).code, "readiness_blocked");
+
+  const duplicateEntry = {
+    ...first.value,
+    entryId: `entry:${projection.missionId}:4`,
+    sequence: 4,
+    timestamp: { value: "2026-07-18T20:04:00Z", provenance: "hostTrusted" },
+    payload: { ...retry.payload, evidenceRefs: [...retry.payload.evidenceRefs] },
+  };
+  const duplicateReplay = replaySupervisedMissionJournal([...data.entries, duplicateEntry]);
+  assert.equal(duplicateReplay.state, "invalid");
+  assert.equal(duplicateReplay.code, "readiness_blocked");
 });
 
 test("GitHub and manual signed evidence have identical Kernel meaning", () => {

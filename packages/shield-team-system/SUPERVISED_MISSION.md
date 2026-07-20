@@ -1,10 +1,11 @@
 # Bounded supervised mission
 
 V0.3-4 provides one local, durable mission workflow. It proves governance,
-execution, readiness, and communication as separate projections. It is not a
-runner: `mission step` records one journal-only fixture transition and performs
-no model invocation, seat dispatch, tool or executor call, network access, host
-adapter behavior, or external effect.
+execution, readiness, communication, and execution-effect replay as separate
+projections. The `mission step` CLI remains a journal-only fixture transition;
+it performs no model invocation, seat dispatch, tool or executor call, network
+access, host-adapter behavior, or external effect. The separate `/runner`
+contract can produce a non-authoritative effect candidate for this journal.
 
 ## Trust setup
 
@@ -124,6 +125,15 @@ Journal v4 records a communication request before an adapter effect and then
 records its correlated `delivered`, `failed`, or `unknown` result. Those states
 never satisfy evidence or alter governance, execution, or readiness.
 
+Journal v5 carries the v4 communication contract forward and adds
+`execution.effect_recorded`. The runner candidate is bound to the exact mission,
+subject, revision, prior sequence, cycle, seat, action, authorization decision,
+effect class, and effect key. `createExecutionEffectEntry(...)` supplies the
+trusted entry ID and timestamp only after rechecking that binding against the
+current projection. Replay exposes both `completed` and `uncertain` records;
+either outcome blocks the same effect key from another runner dispatch until a
+future explicitly authorized recovery contract exists.
+
 GitHub and manual signed evidence enter through the same
 `createHumanEvidenceEntryFromAdapterCandidate` Kernel boundary. The adapter
 envelope must preserve the signed evidence's exact mission, subject, revision,
@@ -131,5 +141,6 @@ principal, binding, evidence identifier, and source reference. A rejected
 candidate produces no journal entry.
 
 Journal v1 replay remains available through the existing `/journal` contract.
-The adapter workflow creates journal v4 explicitly; it does not mix versions,
-migrate, or rewrite prior v2/v3 journal evidence.
+Adapter workflows create journal v4 explicitly and runner workflows create
+journal v5 explicitly. Neither path mixes versions, migrates, or rewrites prior
+v2/v3 journal evidence.

@@ -45,6 +45,10 @@
       "types": "./dist/adapter-v1.d.mts",
       "import": "./dist/adapter-v1.mjs"
     },
+    "./runner": {
+      "types": "./dist/runner-v1.d.mts",
+      "import": "./dist/runner-v1.mjs"
+    },
     "./github": {
       "types": "./public/github.d.mts",
       "import": "./public/github.mjs"
