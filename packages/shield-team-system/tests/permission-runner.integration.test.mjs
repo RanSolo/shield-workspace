@@ -251,3 +251,31 @@ test("an unverifiable pre-call audit receipt fails closed before the executor", 
   assert.equal(result.value.effectRecordCandidate, null);
   assert.equal(executorCalls, 0);
 });
+
+test("executor context acquisition failure records explicit not-attempted evidence with zero tool calls", async () => {
+  const authorize = createPermissionAuthorizer({
+    getContext: () => context(),
+    appendAuditIfAbsent: (record) => appendReceipt(record, 0),
+  });
+  let toolCalls = 0;
+  const execute = createAuditedExecutor({
+    execute: () => { toolCalls += 1; return executorResult(); },
+    getContext: () => { throw new Error("journal-head-unavailable"); },
+    appendAuditIfAbsent: (record) => appendReceipt(record, 1),
+    nextRecordId: () => "audit:tool-result:not-attempted",
+    now: () => "2026-07-19T20:00:01Z",
+  });
+  const result = await runRunnerCycle(runnerInput(), {
+    authorize,
+    execute,
+    validate: () => validatorResult(),
+  });
+
+  assert.equal(result.state, "valid");
+  assert.equal(result.value.outcome, "stopped");
+  assert.equal(result.value.reason, "executor_failed");
+  assert.equal(toolCalls, 0);
+  assert.equal(result.value.effectRecordCandidate.payload.outcome, "uncertain");
+  assert.ok(result.value.effectRecordCandidate.payload.evidenceRefs.includes(`not-attempted:${plan.cycleId}`));
+  assert.match(result.value.effectRecordCandidate.payload.summary, /not attempted/);
+});

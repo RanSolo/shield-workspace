@@ -144,6 +144,7 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/;
 const EFFECT_CLASSES = new Set<string>(["behavioral_implementation", "verification", "coordination"]);
 const ATTESTATION_KINDS = new Set<string>(PERMISSION_ATTESTATION_KINDS);
+const HUMAN_ONLY_SEATS = new Set(["coulson", "fitz", "simmons"]);
 const CONTEXT_FIELDS = [
   "permissionContractVersion", "journalSchemaVersion", "missionId", "subjectId", "missionRevisionId",
   "artifactRevisionId", "evaluatedThroughSequence", "reasoningRuntimeId", "toolExecutorId", "repositoryId",
@@ -230,6 +231,7 @@ export function validateRuntimeBinding(input: unknown): { state: "valid"; value:
   if (input.reasoningRuntimeId === input.seatId || input.toolExecutorId === input.seatId) {
     errors.push("Runtime and executor identities must not be represented as seat identities.");
   }
+  if (HUMAN_ONLY_SEATS.has(String(input.seatId))) errors.push("Human-only seats cannot receive runtime bindings.");
   if (!REVISION.test(String(input.missionRevisionId ?? ""))) errors.push("Runtime binding missionRevisionId is invalid.");
   if (!REVISION.test(String(input.artifactRevisionId ?? ""))) errors.push("Runtime binding artifactRevisionId is invalid.");
   if (!validAbsoluteRoot(input.canonicalWritableRoot)) errors.push("Runtime binding canonicalWritableRoot must be canonical and absolute.");
@@ -490,7 +492,27 @@ export function createToolResultAuditRecord(input: ToolResultAuditInput): Permis
 
 export function createAuditedExecutor(dependencies: AuditedExecutorDependencies) {
   return async (plan: RunnerCyclePlan, decision: RunnerPermissionDecision): Promise<unknown> => {
-    const context = await dependencies.getContext(decision);
+    const notAttempted = (summary: string): RunnerExecutorResult => ({
+      runnerContractVersion: 1,
+      outcome: "failed",
+      missionId: plan.missionId,
+      subjectId: plan.subjectId,
+      revisionId: plan.revisionId,
+      evaluatedThroughSequence: plan.evaluatedThroughSequence,
+      cycleId: plan.cycleId,
+      seatId: plan.seatId,
+      actionId: plan.actionId,
+      effectClass: plan.effectClass,
+      effectKey: plan.effectKey,
+      summary,
+      evidenceRefs: [`not-attempted:${plan.cycleId}`],
+    });
+    let context: PermissionInvocationContext;
+    try {
+      context = await dependencies.getContext(decision);
+    } catch {
+      return notAttempted("Permission context could not be acquired; tool invocation was not attempted.");
+    }
     try {
       createToolResultAuditRecord({
         plan,
@@ -502,21 +524,7 @@ export function createAuditedExecutor(dependencies: AuditedExecutorDependencies)
         recordId: `audit-preflight:${decision.decisionId}`,
       });
     } catch {
-      return {
-        runnerContractVersion: 1,
-        outcome: "failed",
-        missionId: plan.missionId,
-        subjectId: plan.subjectId,
-        revisionId: plan.revisionId,
-        evaluatedThroughSequence: plan.evaluatedThroughSequence,
-        cycleId: plan.cycleId,
-        seatId: plan.seatId,
-        actionId: plan.actionId,
-        effectClass: plan.effectClass,
-        effectKey: plan.effectKey,
-        summary: "Permission context changed after authorization; tool invocation was not attempted.",
-        evidenceRefs: [plan.cycleId],
-      } satisfies RunnerExecutorResult;
+      return notAttempted("Permission context changed after authorization; tool invocation was not attempted.");
     }
     let raw: unknown;
     let forcedOutcome: "failed" | null = null;

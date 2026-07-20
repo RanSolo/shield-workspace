@@ -200,6 +200,20 @@ test("runtime binding intake rejects tampering and exact prior, sequence, seat, 
   );
 });
 
+test("human-only Coulson, Fitz, and Simmons seats cannot receive runtime bindings", () => {
+  for (const seatId of ["coulson", "fitz", "simmons"]) {
+    const data = fixture();
+    const projection = replay([createMissionBegunEntry(data.brief, [data.coulson], 6)]);
+    const candidate = runtimeBinding(data.brief, 1, 1, {
+      seatId,
+      reasoningRuntimeId: `runtime:${seatId}`,
+    });
+    const result = createRuntimeBindingEntry(projection, candidate, authorization(data, candidate, 0));
+    assert.equal(result.state, "invalid");
+    assert.equal(result.code, "binding_malformed");
+  }
+});
+
 test("journal versions v2 through v5 retain their original zero-runtime-binding replay behavior", () => {
   for (const version of [2, 3, 4, 5]) {
     const data = fixture();

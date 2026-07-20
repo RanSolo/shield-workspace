@@ -159,6 +159,7 @@ export function replayPermissionAuditLedger(input: unknown): PermissionAuditResu
       const decision = decisions.get(checked.value.decisionId);
       if (decision === undefined) errors.push(`Record ${index}: tool result has no preceding permission decision.`);
       else {
+        if (decision.decision !== "allow") errors.push(`Record ${index}: tool result follows a non-allow permission decision.`);
         for (const field of IDENTITY_FIELDS) {
           if (checked.value[field] !== decision[field]) errors.push(`Record ${index}: tool result ${field} does not match its permission decision.`);
         }

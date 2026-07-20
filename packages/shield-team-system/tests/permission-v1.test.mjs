@@ -242,6 +242,9 @@ test("audit replay rejects attribution drift, duplicate results, sparse input, a
     recordId: "audit:tool-result:10:1",
   });
   assert.equal(replayPermissionAuditLedger([...decisions, result]).state, "valid");
+  for (const deniedOutcome of ["deny", "wait"]) {
+    assert.equal(replayPermissionAuditLedger([{ ...decisions[0], decision: deniedOutcome }, result]).state, "invalid");
+  }
   assert.equal(replayPermissionAuditLedger([...decisions, { ...result, toolExecutorId: "executor:other" }]).state, "invalid");
   assert.equal(replayPermissionAuditLedger([...decisions, result, { ...result, recordId: "audit:tool-result:10:2" }]).state, "invalid");
   const sparse = [...decisions, result];
