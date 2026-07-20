@@ -72,14 +72,14 @@ test("searchRepo uses bounded rg and excludes sensitive paths", async (context) 
   await writeFile(join(root, ".env"), "needle-secret\n", "utf8");
   await mkdir(join(root, ".GIT"));
   await mkdir(join(root, ".GNUPG"));
-  for (const file of [".ENV.local", "secret.P12", "secret.pFx", "authentication.json"]) await writeFile(join(root, file), "needle-secret\n", "utf8");
+  for (const file of [".ENV.local", "secret.P12", "secret.pFx", "authentication.json", "id_rsa", "id_ed25519.pub"]) await writeFile(join(root, file), "needle-secret\n", "utf8");
   await writeFile(join(root, ".GIT", "config"), "needle-secret\n", "utf8");
   await writeFile(join(root, ".GNUPG", "keyring"), "needle-secret\n", "utf8");
   const tools = await createRepositoryTools(root, { rgExecutable: rg });
   const searched = await tools.searchRepo({ pattern: "needle" });
   assert.equal(searched.state, "completed");
   assert.match(searched.data, /visible\.txt/u);
-  assert.doesNotMatch(searched.data, /\.env|\.git|\.gnupg|secret|authentication/iu);
+  assert.doesNotMatch(searched.data, /\.env|\.git|\.gnupg|secret|authentication|id_rsa|id_ed25519/iu);
   assert.equal((await tools.searchRepo({ pattern: "--files" })).state, "completed");
 });
 

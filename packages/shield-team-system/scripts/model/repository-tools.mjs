@@ -234,6 +234,8 @@ export async function createRepositoryTools(repositoryRoot, options = {}) {
       "--glob", "!**/*.[kK][eE][yY]", "--glob", "!**/*.[pP]12", "--glob", "!**/*.[pP][fF][xX]",
       "--glob", "!**/[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL][sS]*",
       "--glob", "!**/[tT][oO][kK][eE][nN]*", "--glob", "!**/[aA][uU][tT][hH]*",
+      "--glob", "!**/[iI][dD]_[rR][sS][aA]*", "--glob", "!**/[iI][dD]_[dD][sS][aA]*",
+      "--glob", "!**/[iI][dD]_[eE][cC][dD][sS][aA]*", "--glob", "!**/[iI][dD]_[eE][dD]25519*",
       "--", pattern, ".",
     ];
     const execution = await new Promise((resolveExecution) => {

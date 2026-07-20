@@ -324,9 +324,37 @@ test("session deadline covers setup before inference or authorization", async (c
   context.after(() => rm(root, { recursive: true, force: true }));
   let tick = 0;
   const deps = dependencies(await realpath(root), async () => { throw new Error("fetch_must_not_run"); }, {
-    monotonicNow: () => tick++ === 0 ? 0 : LOCAL_TOOL_LIMITS.sessionTimeoutMs + 1,
+    monotonicNow: () => tick++ === 0 ? 0 : LOCAL_TOOL_LIMITS.sessionTimeoutMs - LOCAL_TOOL_LIMITS.terminalEventReserveMs + 1,
   });
   await assert.rejects(() => runLocalToolSession(request(root), deps), /tool_session_timeout/u);
+  assert.equal(deps.ledger.length, 0);
+  assert.equal(deps.events.length, 1);
+  assert.equal(deps.events[0].code, "tool_session_timeout");
+});
+
+test("hostile dependency and request accessors are rejected without invocation", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "shield-tool-accessor-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const canonicalRoot = await realpath(root);
+  let dependencyAccesses = 0;
+  const hostileDependencies = dependencies(canonicalRoot, async () => { throw new Error("fetch_must_not_run"); });
+  Object.defineProperty(hostileDependencies, "getRgExecutable", { enumerable: true, get() { dependencyAccesses += 1; return findRg; } });
+  await assert.rejects(() => runLocalToolSession(request(root), hostileDependencies), /tool_session_dependency_missing/u);
+  assert.equal(dependencyAccesses, 0);
+
+  let requestAccesses = 0;
+  const hostileRequest = request(root);
+  Object.defineProperty(hostileRequest, "baseUrl", { enumerable: true, get() { requestAccesses += 1; return "http://127.0.0.1:1234"; } });
+  await assert.rejects(() => runLocalToolSession(hostileRequest, dependencies(canonicalRoot, async () => { throw new Error("fetch_must_not_run"); })), /tool_session_request_malformed/u);
+  assert.equal(requestAccesses, 0);
+});
+
+test("sparse JSON-like model arrays fail before authorization", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "shield-tool-sparse-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const responses = [jsonResponse(modelResponse()), new Response('{"choices":[,{"message":{"role":"assistant","content":"unsafe"}}]}')];
+  const deps = dependencies(await realpath(root), async () => responses.shift());
+  await assert.rejects(() => runLocalToolSession(request(root), deps), /lm_response_malformed/u);
   assert.equal(deps.ledger.length, 0);
 });
 

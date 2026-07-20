@@ -13,6 +13,7 @@ export const LOCAL_TOOL_LIMITS = Object.freeze({
   calls: 16,
   inferenceTimeoutMs: 120_000,
   sessionTimeoutMs: 300_000,
+  terminalEventReserveMs: 1_000,
 });
 
 export const DAISY_TOOL_MAPPINGS = Object.freeze({
@@ -54,6 +55,31 @@ function exactPlain(value, fields) {
     if (typeof key !== "string" || !allowed.has(key) || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return false;
   }
   return true;
+}
+
+function ownDataValue(value, field) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, field);
+  return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+}
+
+function normalizeDependencies(value) {
+  if (!plain(value)) throw new Error("tool_session_request_malformed");
+  const output = {};
+  for (const name of ["getRgExecutable", "monotonicNow", "nextCallSlot", "getAuthorizationContext", "getExecutionContext", "appendIfAbsent", "nextResultRecordId", "appendBrokerEvent", "now"]) {
+    const dependency = ownDataValue(value, name);
+    if (typeof dependency !== "function") throw new Error("tool_session_dependency_missing");
+    output[name] = dependency;
+  }
+  for (const name of ["ledgerId", "repositoryId", "toolExecutorId"]) {
+    const dependency = ownDataValue(value, name);
+    if (typeof dependency !== "string" || !IDENTIFIER.test(dependency)) throw new Error("tool_session_dependency_missing");
+    output[name] = dependency;
+  }
+  const fetchImpl = ownDataValue(value, "fetchImpl");
+  if (fetchImpl !== undefined && typeof fetchImpl !== "function") throw new Error("tool_session_dependency_missing");
+  const apiToken = ownDataValue(value, "apiToken");
+  if (apiToken !== undefined && typeof apiToken !== "string") throw new Error("tool_session_dependency_missing");
+  return Object.freeze({ ...output, ...(fetchImpl === undefined ? {} : { fetchImpl }), ...(apiToken === undefined ? {} : { apiToken }) });
 }
 
 function denseArray(value) {
@@ -253,15 +279,15 @@ function releasedToolContent(raw) {
 export async function runLocalToolSession(request, dependencies) {
   if (!exactPlain(request, ["baseUrl", "model", "systemPrompt", "userPrompt", "sessionId", "repositoryRoot"])) throw new Error("tool_session_request_malformed");
   for (const field of ["baseUrl", "model", "systemPrompt", "userPrompt", "sessionId", "repositoryRoot"]) if (typeof request[field] !== "string") throw new Error("tool_session_request_malformed");
-  if (!IDENTIFIER.test(request.sessionId) || !plain(dependencies)) throw new Error("tool_session_request_malformed");
-  for (const name of ["getRgExecutable", "monotonicNow", "nextCallSlot", "getAuthorizationContext", "getExecutionContext", "appendIfAbsent", "nextResultRecordId", "appendBrokerEvent", "now"]) if (typeof dependencies[name] !== "function") throw new Error("tool_session_dependency_missing");
-  if (typeof dependencies.ledgerId !== "string" || !IDENTIFIER.test(dependencies.ledgerId)) throw new Error("tool_session_dependency_missing");
-  for (const field of ["repositoryId", "toolExecutorId"]) if (typeof dependencies[field] !== "string" || !IDENTIFIER.test(dependencies[field])) throw new Error("tool_session_dependency_missing");
+  if (!IDENTIFIER.test(request.sessionId)) throw new Error("tool_session_request_malformed");
+  dependencies = normalizeDependencies(dependencies);
 
   const fetchImpl = dependencies.fetchImpl ?? fetch;
   const clock = dependencies.monotonicNow;
-  const deadline = clock() + LOCAL_TOOL_LIMITS.sessionTimeoutMs;
+  const sessionDeadline = clock() + LOCAL_TOOL_LIMITS.sessionTimeoutMs;
+  const deadline = sessionDeadline - LOCAL_TOOL_LIMITS.terminalEventReserveMs;
   const timing = { deadline, clock };
+  const terminalTiming = { deadline: sessionDeadline, clock };
   let eventCounter = 0;
   let capability;
   let repository;
@@ -278,7 +304,7 @@ export async function runLocalToolSession(request, dependencies) {
   } catch (error) {
     eventCounter += 1;
     const code = boundedError(error instanceof Error ? error.message : "tool_session_setup_failed");
-    await appendBrokerEvent(dependencies, request.sessionId, eventCounter, code, {}, timing);
+    await appendBrokerEvent(dependencies, request.sessionId, eventCounter, code, {}, terminalTiming);
     throw new Error(code);
   }
   const expectedIdentity = {
@@ -401,7 +427,7 @@ export async function runLocalToolSession(request, dependencies) {
   } catch (error) {
     escrow.clear();
     eventCounter += 1;
-    await appendBrokerEvent(dependencies, request.sessionId, eventCounter, boundedError(error instanceof Error ? error.message : "tool_session_failed"), {}, timing);
+    await appendBrokerEvent(dependencies, request.sessionId, eventCounter, boundedError(error instanceof Error ? error.message : "tool_session_failed"), {}, terminalTiming);
     throw new Error(boundedError(error instanceof Error ? error.message : "tool_session_failed"));
   }
 }
