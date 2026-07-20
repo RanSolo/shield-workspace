@@ -72,6 +72,13 @@ Add one closed `fury.plan-gate.v1` contract. A plan-review record binds:
 - bounded required-change records and opaque evidence references;
 - explicit `host_asserted_non_authoritative` assurance.
 
+For Phase 1, the blueprint path must exactly equal
+`workspacePlan.missionBriefPath`. The reviewed blueprint is the May-owned plan
+embedded in this committed Mission Brief, so existing clean, tracked,
+committed, and exact-head checks cover its path without another verification
+mechanism. Artifact identity, path, and May ownership remain trusted-host
+assertions bound to that head, not content or authorship proof.
+
 The three verdicts are:
 
 - `PASS`
@@ -102,13 +109,15 @@ that binds:
 - May as the unchanged artifact owner;
 - Hill as operational verifier;
 - every required change ID exactly once with an `incorporated` disposition;
-- `architectureChanged: false`;
+- `additionalArchitectureChange: false`;
 - explicit `host_asserted_non_authoritative` assurance.
 
-Missing, duplicate, unknown, or undisposed changes deny dispatch. A reconciliation
-that changes architecture, scope, ownership, or the reviewed subject requires a
-new Fury plan review. A revision after the reconciled exact revision also makes
-the gate stale.
+`additionalArchitectureChange: false` means the correction contains no
+architecture change beyond the exact bounded changes Fury prescribed. Missing,
+duplicate, unknown, or undisposed changes deny dispatch. Any unprescribed
+architecture, scope, authority, mission, subject, artifact, ownership,
+workspace-identity, or unrelated design change requires a new Fury plan review.
+A revision after the reconciled exact revision also makes the gate stale.
 
 The reconciliation avoids an automatic second broad review only for the exact
 bounded corrections Fury already required. It does not permit Hill or May to
@@ -116,15 +125,27 @@ classify a genuine redesign as a correction.
 
 ### Trust boundary
 
-Review and reconciliation inputs are host-asserted operational evidence. The
-contract validates, normalizes, binds, and labels them; it does not prove that
-Fury acted, authenticate a model, verify a GitHub comment, replay the Mission
-Journal, or grant authority.
+A trusted orchestrating host is the Phase 1 provenance boundary. It constructs
+the expected binding from configured mission inputs and the verified workspace
+receipt, supplies Fury review and Hill reconciliation as host-asserted evidence,
+asserts whether any additional unprescribed change occurred, and enforces the
+mission-wide correction cap.
+
+The contract validates, normalizes, binds, and labels those assertions; it does
+not prove Fury or Hill acted, authenticate a model or person, verify a GitHub
+comment, inspect semantic content, replay the Mission Journal, or grant
+authority.
 
 The gate is an additional veto inside the already authorized Delivery Mode
 dispatch path. Coulson approval and the verified PR workspace receipt remain
 independently required. Missing or false host assertions cannot be repaired by
 this pure value contract.
+
+The evaluator is stateless. It cannot enforce global review or reconciliation
+ID uniqueness, detect same-binding reuse, maintain durable consumption state,
+prove the absence of unprescribed changes, or enforce the correction cap across
+calls. Same-context evaluation is intentionally deterministic and idempotent.
+Contextual mismatch and staleness are the complete v1 replay boundary.
 
 If implementation proves that the plan decision must become authoritative
 mission state or requires a new signed receipt, work stops and returns to
@@ -140,6 +161,20 @@ The guard continues to create or reuse and verify the draft PR after Coulson
 approval and the committed Mission Brief. Before a valid Fury gate exists, it
 returns a closed `workspace_ready` result containing the verified receipt but
 never `dispatch_ready`.
+
+Before any Git or GitHub command, the guard uses descriptor-safe inspection to
+normalize the outer input, `workspacePlan`, `blueprintArtifact`, and every
+nested record and array in a non-null `planGate`. Missing or unknown fields,
+accessors, inherited substitutes, symbols, sparse or extra-property arrays,
+non-plain prototypes, excessive values, and reflective failures are rejected.
+The normalized blueprint path must equal the normalized Mission Brief path.
+
+Literal `planGate: null` is the sole valid pending-review form and may create or
+reuse the early draft workspace. A missing or malformed non-null gate,
+malformed blueprint assertion, or path mismatch returns `blocked` with no
+runner commands. Receipt-dependent semantic checks occur after verified
+publication and use only the normalized snapshot rather than rereading caller
+objects.
 
 On a later call, the same guard reuses and reverifies the draft PR, evaluates
 the exact plan gate against the current blueprint revision, and returns
@@ -168,6 +203,10 @@ The following fail closed without implementation dispatch:
 Errors use bounded closed codes and never contain secrets, private reasoning,
 raw model output, or caller-controlled diagnostic prose.
 
+Structurally invalid pre-command input is `blocked` with an empty command list.
+A structurally valid workspace with a pending, stale, failed, mismatched, or
+incompletely reconciled gate is `workspace_ready`, never `dispatch_ready`.
+
 ## May implementation blueprint
 
 ### Mandatory guard inputs
@@ -186,9 +225,10 @@ artifactKind: implementation_blueprint
 owningSeatId: may
 ```
 
-The path is a bounded normalized repository-relative assertion. The existing
-PR adapter continues to prove the committed Git head, not the independent
-contents of the asserted blueprint path.
+The path is bounded and repository-relative, and must exactly equal
+`workspacePlan.missionBriefPath`. The existing adapter proves that combined
+Mission Brief/blueprint artifact is clean, tracked, committed, and bound to the
+receipt head. It does not prove semantic contents or authorship.
 
 ### Review and workspace binding
 
@@ -223,13 +263,14 @@ has 1-16 findings. `FAIL` has 1-16 findings and no reconciliation.
 
 The closed reconciliation repeats the complete workspace, mission, subject,
 artifact, owner, review, and original-revision binding. It adds a distinct
-corrected revision, `architectureChanged: false`, and one `incorporated`
+corrected revision, `additionalArchitectureChange: false`, and one `incorporated`
 disposition for every Fury finding. Hill's verifier seat is derived rather than
 caller supplied.
 
 The corrected revision must differ from the reviewed revision. Missing,
-duplicate, unknown, or extra dispositions; any other disposition; changed
-architecture; a changed binding; or a current head different from the corrected
+duplicate, unknown, or extra dispositions; any other disposition; any
+additional or unprescribed architecture/scope/authority/subject/ownership
+change; a changed binding; or a current head different from the corrected
 revision denies dispatch.
 
 ### Normative bounds
@@ -265,7 +306,7 @@ RECONCILIATION_REQUIRED
 INVALID_RECONCILIATION
 RECONCILIATION_BINDING_MISMATCH
 CORRECTED_REVISION_NOT_DISTINCT
-ARCHITECTURE_CHANGED_REVIEW_REQUIRED
+ADDITIONAL_ARCHITECTURE_CHANGE_REVIEW_REQUIRED
 REQUIRED_CHANGE_SET_MISMATCH
 RECONCILIATION_REVISION_STALE
 ```
@@ -279,8 +320,9 @@ not echo partially inspected identity or evidence.
 
 The guard order is fixed:
 
-1. Strictly validate the new required top-level fields without invoking caller
-   accessors.
+1. Descriptor-safely normalize the complete blueprint assertion and non-null
+   gate without invoking caller accessors, and require the blueprint path to
+   equal the Mission Brief path. Invalid input blocks with zero commands.
 2. Apply the unchanged Coulson specialist-dispatch approval veto.
 3. Call the unchanged create-or-update PR adapter.
 4. Require and revalidate the exact draft-workspace receipt.
@@ -326,16 +368,24 @@ GitHub publication-mechanics change is expected.
       implementation.
 - [ ] The draft workspace may exist while Fury review is pending, but the guard
       cannot return `dispatch_ready`.
+- [ ] The Phase 1 blueprint path exactly equals the verified Mission Brief path.
+- [ ] Malformed blueprint or non-null gate input blocks before any runner
+      command; literal `null` still permits the early workspace.
 - [ ] An exact current `PASS` permits dispatch only alongside Coulson approval
       and a verified matching PR receipt.
 - [ ] `PASS_WITH_REQUIRED_CHANGES` requires a complete exact-revision bounded
       reconciliation owned by May and verified by Hill.
 - [ ] `FAIL` always denies dispatch.
 - [ ] A changed blueprint or reconciled revision invalidates the prior gate.
-- [ ] Architecture-changing reconciliation requires renewed Fury review.
+- [ ] Any additional or unprescribed architecture, scope, authority, subject,
+      ownership, workspace, or unrelated design change requires renewed Fury
+      review.
 - [ ] Missing, malformed, stale, replayed, mismatched, hostile, or ambiguous
       evidence fails closed.
 - [ ] Review and reconciliation evidence remain explicitly non-authoritative.
+- [ ] Documentation states that the trusted host owns provenance and the
+      mission-wide correction cap, while global replay and semantic proof remain
+      outside the stateless evaluator.
 - [ ] Fury findings and final conformance findings are recorded separately.
 - [ ] May remains sole implementation owner.
 - [ ] Repeated publication reuses the existing draft PR.
@@ -370,6 +420,8 @@ Measured, derived, estimated, and not-observable values remain distinct.
 - making Fury authoritative or human;
 - redesigning Issue #10 permission or runtime-binding contracts;
 - changing the Mission Journal or Kernel authority;
+- global replay registries, durable review consumption, authenticated Fury/Hill
+  provenance, semantic diff proof, or stateful correction-cap enforcement;
 - Mission Control, dashboards, analytics products, runtime profiles, parallel
   orchestration, merge, deployment, release, or production effects.
 
@@ -396,4 +448,6 @@ unauthorized.
 
 Implementation stops if the slice requires authoritative Fury state, signed
 Fury evidence, Mission Journal or Kernel changes, duplicated GitHub adapter
-behavior, unbounded review cycles, ownership transfer, or any excluded system.
+behavior, global replay or durable consumption state, semantic diff proof,
+stateful correction-cycle enforcement, unbounded review cycles, ownership
+transfer, or any excluded system.
