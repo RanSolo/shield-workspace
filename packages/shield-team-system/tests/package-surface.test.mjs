@@ -18,6 +18,7 @@ test("exports only the documented public package specifiers", async () => {
     "./journal",
     "./modes",
     "./workspace",
+    "./hill-readiness",
     "./config",
     "./supervision",
     "./delegation",
@@ -39,6 +40,7 @@ test("loads every supported runtime specifier", async () => {
   const journal = await import("@shield/team-system/journal");
   const modes = await import("@shield/team-system/modes");
   const workspace = await import("@shield/team-system/workspace");
+  const hillReadiness = await import("@shield/team-system/hill-readiness");
   const config = await import("@shield/team-system/config");
   const supervision = await import("@shield/team-system/supervision");
   const delegation = await import("@shield/team-system/delegation");
@@ -54,6 +56,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(journal.JOURNAL_SCHEMA_VERSION, 1);
   assert.equal(modes.MODE_MANIFEST_SCHEMA_VERSION, 1);
   assert.equal(typeof workspace.validateMissionWorkspaceInput, "function");
+  assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
+  assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
   assert.equal(config.CONFIG_SCHEMA_VERSION, 1);
   assert.equal(root.validateShieldConfig, config.validateShieldConfig);
   assert.equal(supervision.SUPERVISED_JOURNAL_SCHEMA_VERSION, 2);
@@ -102,6 +106,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "public/journal.d.mts",
     "public/modes.d.mts",
     "public/workspace.d.mts",
+    "public/hill-readiness.mjs",
+    "public/hill-readiness.d.mts",
     "dist/config.mjs",
     "dist/config.d.mts",
     "dist/mission-v2.mjs",
@@ -155,6 +161,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { JOURNAL_SCHEMA_VERSION, type JournalEntry } from "@shield/team-system/journal";
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
+    import { HILL_READINESS_SCHEMA_VERSION, evaluateHillReadinessV1, type HillReadinessCandidateV1, type HillReadinessHostObservationV1 } from "@shield/team-system/hill-readiness";
     import { CONFIG_SCHEMA_VERSION, type ShieldConfig } from "@shield/team-system/config";
     import { RUNNER_JOURNAL_SCHEMA_VERSION, SUPERVISED_JOURNAL_SCHEMA_VERSION, createExecutionEffectEntry, createSupervisedMissionBrief, type RunnerSupervisedEffectCandidate, type SupervisedMissionBrief } from "@shield/team-system/supervision";
     import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
@@ -186,6 +193,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const entry = null as unknown as JournalEntry;
     const manifest = null as unknown as ModeManifest;
     const input = null as unknown as MissionWorkspaceInput;
+    const hillReadinessSchema: 1 = HILL_READINESS_SCHEMA_VERSION;
+    const hillCandidate = null as unknown as HillReadinessCandidateV1;
+    const hillObservation = null as unknown as HillReadinessHostObservationV1;
+    const hillEvaluation = evaluateHillReadinessV1(hillCandidate, hillObservation);
     const configSchema: 1 = CONFIG_SCHEMA_VERSION;
     const config = null as unknown as ShieldConfig;
     const supervisedSchema: 2 = SUPERVISED_JOURNAL_SCHEMA_VERSION;
@@ -227,7 +238,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, runCycle, journaledRequest, deliver, prepareWorkspace, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, runCycle, journaledRequest, deliver, prepareWorkspace, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

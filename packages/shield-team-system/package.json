@@ -29,6 +29,10 @@
       "types": "./public/workspace.d.mts",
       "import": "./public/workspace.mjs"
     },
+    "./hill-readiness": {
+      "types": "./public/hill-readiness.d.mts",
+      "import": "./public/hill-readiness.mjs"
+    },
     "./config": {
       "types": "./dist/config.d.mts",
       "import": "./dist/config.mjs"
