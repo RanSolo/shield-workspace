@@ -170,14 +170,19 @@ function assertedIdentity(value) {
   return value === null || (identifier(value) && !SEAT_IDS.includes(value.toLowerCase()));
 }
 
+function seatIdentity(value) {
+  return typeof value === "string" && SEAT_IDS.includes(value);
+}
+
 function normalizeCandidate(input) {
   const candidate = dataRecord(input, CANDIDATE_FIELDS);
   if (candidate === null || candidate.readinessContractVersion !== HILL_READINESS_SCHEMA_VERSION) {
     return null;
   }
-  for (const field of ["missionId", "subjectId", "revisionId", "artifactKind", "owningSeatId"]) {
+  for (const field of ["missionId", "subjectId", "revisionId", "artifactKind"]) {
     if (!identifier(candidate[field])) return null;
   }
+  if (!seatIdentity(candidate.owningSeatId)) return null;
   const dimensions = denseDataArray(candidate.dimensions, HILL_READINESS_DIMENSIONS.length);
   if (dimensions === null || dimensions.length !== HILL_READINESS_DIMENSIONS.length) return null;
 
@@ -226,11 +231,11 @@ function normalizeObservation(input) {
   if (observation === null || observation.observationContractVersion !== 1 ||
       observation.assuranceKind !== "host_asserted_non_authoritative") return null;
   for (const field of [
-    "missionId", "subjectId", "currentRevisionId", "artifactKind", "owningSeatId",
-    "journalHeadEntryId",
+    "missionId", "subjectId", "currentRevisionId", "artifactKind", "journalHeadEntryId",
   ]) {
     if (!identifier(observation[field])) return null;
   }
+  if (!seatIdentity(observation.owningSeatId)) return null;
   if (!Number.isSafeInteger(observation.journalSchemaVersion) ||
       observation.journalSchemaVersion < 1 || observation.journalSchemaVersion > 255 ||
       !Number.isSafeInteger(observation.evaluatedThroughSequence) ||
@@ -238,7 +243,9 @@ function normalizeObservation(input) {
       (observation.refinementPassesCompleted !== 0 &&
        observation.refinementPassesCompleted !== HILL_READINESS_MAX_REFINEMENTS) ||
       !assertedIdentity(observation.reasoningRuntimeId) ||
-      !assertedIdentity(observation.toolExecutorId)) return null;
+      !assertedIdentity(observation.toolExecutorId) ||
+      (observation.reasoningRuntimeId !== null &&
+       observation.reasoningRuntimeId === observation.toolExecutorId)) return null;
 
   return Object.freeze({ ...observation });
 }

@@ -114,7 +114,10 @@ as reference-only, and runtime/executor assurance as
 `host_asserted_non_authoritative`. It proves neither that Hill acted nor that a
 referenced artifact exists. Non-null runtime and executor IDs matching any
 closed seat ID (`coulson`, `hill`, `daisy`, `may`, `fury`, `fitz`, or `simmons`)
-are malformed.
+are malformed, as is one non-null identifier asserted as both reasoning runtime
+and tool executor. Candidate and observation owners must each use one exact
+lowercase ID from that closed seat registry. Unknown, runtime-shaped,
+executor-shaped, and differently cased owner IDs are malformed.
 
 ### Closed dimensions, statuses, and reasons
 

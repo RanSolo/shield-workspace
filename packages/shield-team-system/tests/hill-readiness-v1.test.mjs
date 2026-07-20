@@ -155,6 +155,26 @@ test("runtime and executor assurances cannot claim a seat identity", () => {
   ).outcome, "GOOD_ENOUGH");
 });
 
+test("artifact ownership accepts only a closed SHIELD seat identity", () => {
+  for (const owningSeatId of ["unknown-seat", "runtime:ornith-1.0-35b", "executor:host", "May"] ) {
+    assert.equal(evaluateHillReadinessV1(
+      { ...candidate(), owningSeatId }, observation(),
+    ).state, "invalid");
+    assert.equal(evaluateHillReadinessV1(
+      candidate(), observation({ owningSeatId }),
+    ).state, "invalid");
+  }
+});
+
+test("one non-null identity cannot be both reasoning runtime and tool executor", () => {
+  const result = evaluateHillReadinessV1(candidate(), observation({
+    reasoningRuntimeId: "runtime:codex",
+    toolExecutorId: "runtime:codex",
+  }));
+  assert.equal(result.state, "invalid");
+  assert.deepEqual(result.reasonCodes, ["INVALID_EVIDENCE_RECORD"]);
+});
+
 test("malformed and hostile inputs return one generic value and never throw", () => {
   const accessor = candidate();
   Object.defineProperty(accessor, "missionId", { get() { throw new Error("must not run"); } });

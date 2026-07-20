@@ -40,8 +40,12 @@ revision mismatch produces `ARTIFACT_REVISION_STALE`.
 
 The evaluator derives `assessorSeatId: hill`. A caller cannot provide an
 assessor. Non-null runtime and executor identifiers must not equal a S.H.I.E.L.D.
-seat ID, case-insensitively. Runtime and executor values remain asserted
-attribution, not seat occupancy, capability, or authority.
+seat ID, case-insensitively, and one non-null identifier cannot occupy both the
+reasoning-runtime and tool-executor fields. Candidate and observation owners
+must each be one exact lowercase ID from the closed S.H.I.E.L.D. seat registry;
+unknown, runtime-shaped, executor-shaped, and differently cased owners are
+malformed. Runtime and executor values remain asserted attribution, not seat
+occupancy, capability, or authority.
 
 ## Dimensions and statuses
 
