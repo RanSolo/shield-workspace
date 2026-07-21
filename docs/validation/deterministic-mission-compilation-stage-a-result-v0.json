@@ -1,0 +1,59 @@
+{
+  "resultVersion": "deterministic-mission-compilation-stage-a-result.v0",
+  "experimentId": "deterministic-mission-compilation",
+  "trialId": "stage-a-trial-001",
+  "sourceCommit": "f0bd16c1d2c832977a1be4cde319e48a95a246f1",
+  "freezeManifestCommit": "19f6a7a872a86f41eac517eca388341e7798069e",
+  "measurement": {
+    "source": "second clean git archive of the freeze-manifest commit",
+    "dependencyInstallation": "existing workspace installation bound by the frozen dependency-lock digest",
+    "runtime": "Node.js v24.18.0 with TypeScript 5.4.5",
+    "packageTests": {
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0
+    },
+    "staticBoundary": "PASS",
+    "compilerGraphFiles": 8,
+    "frozenIdentityChecks": {
+      "passed": 17,
+      "failed": 0
+    }
+  },
+  "verifiedIdentities": [
+    "compiler source tree",
+    "compiler implementation",
+    "compiled artifact",
+    "dependency lock",
+    "runtime requirement",
+    "validator implementation",
+    "renderer specification",
+    "renderer implementation",
+    "target profile",
+    "instruction registry",
+    "historical fixture",
+    "grading rubric",
+    "governance contract",
+    "isolation contract",
+    "compiled prompt",
+    "provenance map",
+    "deterministic compilation manifest"
+  ],
+  "deterministicOutputs": {
+    "promptDigest": "cf1d176e314d7ea258102e7338ad26ad7bd6b6c600d8a4e90c824ed03ff24802",
+    "provenanceDigest": "fc38677513a29b088ce4d134508ded92d9761b3919f095d23b01751df4c50e11",
+    "manifestDigest": "dfe2d16350538307a6c7bdc626544152d6b671435c5abfc12bc64a8a150f86e1"
+  },
+  "outcomes": {
+    "stageA": "PASS",
+    "governanceEquivalent": "NOT_EVALUATED_STAGE_A",
+    "implementationQuality": "NOT_EVALUATED_STAGE_A",
+    "stageB": "CONDITIONALLY_ELIGIBLE_PENDING_FURY_CONFORMANCE_AND_TRUSTED_HOST_PREDISPATCH_RECHECK"
+  },
+  "limitations": [
+    "Stage A invoked no model and makes no governance-equivalence claim.",
+    "The dependency installation was reused but was bound to the frozen dependency-lock digest.",
+    "One Stage B replay would be exploratory evidence, not statistical proof."
+  ],
+  "productionEffects": "NONE"
+}

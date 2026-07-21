@@ -1,0 +1,58 @@
+{
+  "resultVersion": "deterministic-mission-compilation-stage-a-result.v1",
+  "experimentId": "deterministic-mission-compilation-v1",
+  "trialId": "stage-a-trial-002",
+  "freezeRevision": "884102cbd33774dc860f36b8d6948e459303502b",
+  "sourceRevision": "6f68b1c38aeda0430c769377eebb3f46b9c3e730",
+  "stageA": "FAIL_CLOSED",
+  "failure": {
+    "gate": "FROZEN_IDENTITY_CHECK",
+    "check": "runtime-message-envelope specification digest",
+    "expectedByFreezeManifest": "53f9c64740263f29cd2aaf38e90dd3d36951d0b450aae42e4e1a4eedb5b2874c",
+    "actualArtifactSha256": "53f9c64740263f4b533f41a34f0ba3cfa06a10f1c13a3744cd991adbfc7fd0c6",
+    "cause": "freeze-manifest digest transcription error",
+    "artifactBytesChangedAfterFreeze": false,
+    "manifestCorrectedInPlace": false,
+    "measurementStoppedImmediately": true
+  },
+  "evidenceBeforeStop": {
+    "cleanMeasurementExtraction": true,
+    "v1Tests": { "passed": 15, "failed": 0, "skipped": 0 },
+    "v0RegressionTests": { "passed": 8, "failed": 0, "skipped": 0 },
+    "staticCompilerClosure": "PASS",
+    "compilerGraphFiles": 1,
+    "artifactRegeneration": "BYTE_IDENTICAL",
+    "identityChecksPassedBeforeFailure": 21,
+    "identityCheckFailed": 22,
+    "constructionProductionValidation": {
+      "teamSystemPassed": 218,
+      "multibandPassed": 9,
+      "failed": 0,
+      "note": "Construction evidence only; measurement stopped before a post-freeze production rerun was needed."
+    }
+  },
+  "retainedIsolation": {
+    "controlRepository": "/private/tmp/shield-dmc-control.hzhY49",
+    "compiledRepository": "/private/tmp/shield-dmc-compiled.6JakXb",
+    "baseRevision": "afdbf71b8ece2a2506a0b6a7b213267c7896f8d1",
+    "clean": true,
+    "detachedBaseOnly": true,
+    "remotesPresent": false,
+    "acceptedCommitAbsent": true,
+    "acceptedTreeAbsent": true,
+    "workspaceInaccessibleFromArms": true,
+    "oppositeArmInaccessible": true,
+    "sealedOutputInaccessible": true
+  },
+  "modelInvocations": {
+    "may": 0,
+    "stageBTotal": 0
+  },
+  "outcomes": {
+    "governanceEquivalent": "NOT_EVALUATED",
+    "implementationQuality": "NOT_EVALUATED",
+    "stageB": "BLOCKED",
+    "stageBEligibilityRestored": false
+  },
+  "requiredDisposition": "Do not amend the frozen v1 identity. Any corrected candidate requires new experimental and affected artifact identities, a complete Stage A restart, and renewed review before measurement continues. V0 and v1 evidence remain preserved and must not be combined with a future run."
+}

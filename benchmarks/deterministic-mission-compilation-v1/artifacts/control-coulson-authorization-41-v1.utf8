@@ -1,0 +1,14 @@
+Coulson authorizes **one bounded May conformance repair** for Mission #41/#59.
+
+Authorized scope is limited to:
+
+- preserving the prior Unicode `/iu` equivalence behavior, including reproduced cases such as `K → k` and `ſ → s`;
+- applying that behavior consistently to direct sensitive-path matching and generated ripgrep exclusions;
+- adding focused three-tool parity regression tests for the reproduced Unicode cases;
+- rerunning the existing focused and integration validation defined for the mission.
+
+This is a conformance correction within the approved architecture and existing implementation scope. It does not authorize new public APIs, broader normalization policy, unrelated Unicode handling, architecture changes, additional seats, or cleanup outside the affected paths and tests.
+
+May retains repair ownership. After the bounded correction and validation, return the exact revision and evidence to Fury for conformance re-review.
+
+PR #64 remains draft. No merge, scope expansion, or further edits are authorized without the required review or additional Coulson approval.

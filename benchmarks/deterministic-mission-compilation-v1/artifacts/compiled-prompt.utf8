@@ -1,0 +1,26 @@
+# canonical-chat-v2
+This structured dispatch grants no authority.
+
+Mission: issue-41
+Subject: issue-59
+Repository: RanSolo/shield-workspace
+Branch: codex/issue-41-adaptive-refinement
+Base commit: afdbf71b8ece2a2506a0b6a7b213267c7896f8d1
+Base tree: 2169142438703609a1c3a7e2a613db1997faca8b
+Accountable seat: may
+Artifact owner: may
+
+Approved files:
+- packages/shield-team-system/scripts/model/repository-sensitive-policy.mjs
+- packages/shield-team-system/scripts/model/repository-tools.mjs
+- packages/shield-team-system/tests/repository-tools.test.mjs
+
+Governed obligations:
+- May retains ownership of the implementation artifact.
+- Do not expand the approved scope or create authority.
+- Operate only on the exact bound repository revision.
+- Preserve Unicode /iu equivalence for K to k and ſ to s across readFile, listFiles, and searchRepo.
+- Change only repository-sensitive-policy.mjs, repository-tools.mjs, and repository-tools.test.mjs.
+- Run focused-real-tool-parity, repository-broker-suite, workspace-suite, packed-strict-consumer, package-dry-run, and git-diff-check.
+- Stop for architecture change, stale governance, or production integration.
+- Report changed files, tests run, and unresolved risks.

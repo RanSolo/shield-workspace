@@ -1,0 +1,110 @@
+{
+  "freezeManifestVersion": "deterministic-mission-compilation-stage-a-freeze.v1",
+  "freezeState": "FROZEN",
+  "priorResult": {
+    "trialId": "stage-a-trial-001",
+    "resultRevision": "0b2f1a9494002ccebba455637762ff4e68e80de9",
+    "preserved": true,
+    "combinedWithThisRun": false
+  },
+  "experimentId": "deterministic-mission-compilation-v1",
+  "trialId": "stage-a-trial-002",
+  "sourceCommit": "6f68b1c38aeda0430c769377eebb3f46b9c3e730",
+  "sourceCommitFull": "6f68b1c38aeda0430c769377eebb3f46b9c3e730",
+  "sourceTreeDigest": "41b9ec6d84e14672013e8d5f899b3eec0ac3a715cad9af3c6f25b6b17e68ebdd",
+  "compiler": {
+    "name": "shield-compiler",
+    "experimentalVersion": "0.2.0-experiment",
+    "identity": "shield-compiler@0.2.0-experiment",
+    "sourceCommit": "6f68b1c38aeda0430c769377eebb3f46b9c3e730",
+    "implementationSha256": "15c292a0965557256cd26f5c5da73b7d00de04516772732a49e076536c90bcf7",
+    "compiledArtifactSha256": "032e877695c1f199ed2ca5f75b546bb9a0f0eb672c51fa9d521ed281eb2a2451",
+    "dependencyLockSha256": "3f2dae1c800a524fdfa15c44b6c86a02ee760fefdc896dec988cc01149526828",
+    "runtimeRequirement": "Node.js v24.18.0 with Ed25519 and Web UTF-8 APIs; TypeScript 5.4.5"
+  },
+  "validator": {
+    "identity": "shield-dispatch-validator@0.2.0-experiment",
+    "implementationSha256": "15c292a0965557256cd26f5c5da73b7d00de04516772732a49e076536c90bcf7"
+  },
+  "renderer": {
+    "identity": "canonical-chat-v2",
+    "specificationSha256": "d05a8331ed11356bac5bd438c186efc53e9e51db3ef42026a02080d6a40b57d0",
+    "implementationSha256": "15c292a0965557256cd26f5c5da73b7d00de04516772732a49e076536c90bcf7",
+    "targetProfileId": "codex-text.v1",
+    "targetProfileSha256": "4774fb7a3f5a91971719ec7641b05699eef9fcdc6383a96500027a6dcad69c13"
+  },
+  "controlArtifact": {
+    "identity": "human-control-handoff.v1",
+    "assemblerIdentity": "shield-control-assembler@0.1.0-experiment",
+    "assemblySpecificationSha256": "22a96f171a4e46aaa5f464030b09656a9001913e8b5149edd8fca98f3bae63d6",
+    "sourceOrder": [
+      "control:fury-finding-41-v1",
+      "control:coulson-authorization-41-v1",
+      "control:validation-and-output-41-v1"
+    ],
+    "sourceDigests": [
+      "9ed260496b3e5172ce5dc32ecb32e5d571edabce83dc5048b18cd65c1e0f13bf",
+      "05e56caba79d9ed9c4f454757ebb0f9d1a5aefa3c8ad7e98210bc65d02cd9110",
+      "f3990844ddd7a3b77505e2a2e0be7c2a9ef033472687c7519b3ca841c48def83"
+    ],
+    "promptDigest": "1a163698ce8671d3430e9732e6dda46ceca345dada7ed4cd4fdeaeefa284ea06",
+    "promptArtifactSha256": "430ab5a60ceb82ece87caa67016d5976d2fa12d1b7c706425ef4f42e63ffd0b9"
+  },
+  "compiledArtifacts": {
+    "promptDigest": "941805842048682f559f235bde05ef598e629f3ecf621d49bd480660b877199e",
+    "promptArtifactSha256": "ae88f4ab2c3d3d0ab2706aa866f73812ef8103ad6477def8389f44f44e2ab91f",
+    "provenanceDigest": "1564fa7408ec96e618df7ef3bf52b52573987e562944a320d7e943f62d012e3f",
+    "provenanceArtifactSha256": "09e0f43380e32129f4dbdc27f8d5e38715e548f4f193bb56050c69b98182d246",
+    "manifestDigest": "1423d9e29be91c8ab49cee91281069671d3a0514a24e1dd7e2850a567a8ed3c6",
+    "manifestArtifactSha256": "aeedebf63cd20fff1e25d722db7aeb8742650b88e5525709a6c39e3ba1631861"
+  },
+  "sharedRuntime": {
+    "instructionIdentity": "shared-runtime-instructions.v1",
+    "instructionDigest": "5963f3292ef48940a568e8dd91237b2b30e9209fb7af61bf229bd3c00f84eea0",
+    "instructionArtifactSha256": "a8b0990eaf7b5054da6b56247f8c79bb93fe3c240a8eef944e6f9a7dee69fcea",
+    "wrapperIdentity": "common-runtime-wrapper.v1",
+    "wrapperDigest": "e7b1501bc2bc2a9ea80982c82e73457cdd28d83699b70a454f7cd43f2ddac52f",
+    "wrapperArtifactSha256": "dcd8fb3434d87f9a4bcdb11ba424f284a05ba75580aaff6e9e4fc882f7a59f0c"
+  },
+  "runtimeMessageEnvelope": {
+    "identity": "runtime-message-envelope.v1",
+    "specificationSha256": "53f9c64740263f29cd2aaf38e90dd3d36951d0b450aae42e4e1a4eedb5b2874c",
+    "controlDigest": "36dd8610d988b06b829e35a8f65a3a88ac118d80003ec4265f957ff21794666d",
+    "controlArtifactSha256": "3d4a58605970ac7b9c033cca5e2aa35cac0f9305ca4eb47f1590e5ecbbb18574",
+    "compiledDigest": "eff850e455a16b2a34d665c2f516142ab0f9e3744686a068516e8b289c611c9f",
+    "compiledArtifactSha256": "3a955383b794167f2942c6f79891f8945b17c19e82ce26e15dbb6b1ac71583d8"
+  },
+  "fixture": {
+    "identity": "issue-41-59-unicode-conformance-repair-v1",
+    "constructionIdentitySha256": "527994272afa6791eb21ed90a6c4404ef488b1f18d065fe20344b7e060c1b3b7",
+    "baseRevision": "afdbf71b8ece2a2506a0b6a7b213267c7896f8d1",
+    "baseTree": "2169142438703609a1c3a7e2a613db1997faca8b",
+    "acceptedRevisionIdentityOnly": "200251bb8730cad3f1e0e70d8830ce2d52c532ba",
+    "acceptedTreeIdentityOnly": "dfc46bfaabdedf8d8ef05d1d50ad8f186fe52a1d",
+    "acceptedRevisionContentsReadByExperiment": false
+  },
+  "contracts": {
+    "v1ProtocolSha256": "a77ac0db011197431e66a42541498bb9d39a48c512a74ce2d9d292aa43cf2721",
+    "missionBriefSha256": "0b03ee81cd457545e1e8b6d290bca5c93f8ee45d2e3129cc66d2635423bc079e",
+    "inheritedFrozenRubricSha256": "028a7eb8fe54e8dfd37b7511a9eb840989ec0eba6baf7905d1f5b8f5547c615f",
+    "priorFreezeSha256": "828af9ba21ad147ee3bf9d7a02f2e96c2ee5295297c27fa70352e211763eeae6",
+    "v0EvidenceCombined": false
+  },
+  "constructionVerification": {
+    "source": "clean Git archive of source commit 6f68b1c",
+    "dependencyInstallation": "existing workspace installation bound by dependencyLockSha256",
+    "artifactComparison": "byte-identical to committed v1 artifacts",
+    "v1Tests": { "passed": 15, "failed": 0, "skipped": 0 },
+    "v0RegressionTests": { "passed": 8, "failed": 0, "skipped": 0 },
+    "staticBoundary": "PASS",
+    "compilerGraphFiles": 1,
+    "productionTests": { "teamSystemPassed": 218, "multibandPassed": 9, "failed": 0 }
+  },
+  "outcomes": {
+    "stageA": "READY_FOR_FROZEN_MEASUREMENT",
+    "governanceEquivalent": "NOT_EVALUATED_STAGE_A",
+    "implementationQuality": "NOT_EVALUATED_STAGE_A",
+    "stageB": "BLOCKED_PENDING_STAGE_A_V1_PASS_AND_FURY_CONFORMANCE"
+  },
+  "invalidationRule": "Any post-freeze change to the compiler, validator, renderer, registry, dependencies, target profile, fixture, control sources, source order, concatenation grammar, delimiters, control prompt, compiled prompt, shared instructions, common wrapper, runtime envelope, grading rubric, isolation method, or governance contract invalidates this run. A correction requires a new identity, complete Stage A restart, and renewed review. V0 and v1 results must not be combined."
+}

@@ -1,0 +1,14 @@
+Validation obligations:
+- focused-real-tool-parity
+- repository-broker-suite
+- workspace-suite
+- packed-strict-consumer
+- package-dry-run
+- git-diff-check
+
+Stop conditions:
+- architecture-change-required
+- stale-governance
+- production-integration-required
+
+Output contract: report changed files, tests run, and unresolved risks.

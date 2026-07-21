@@ -1,0 +1,171 @@
+{
+  "freezeManifestVersion": "deterministic-mission-compilation-stage-a-freeze.v2",
+  "freezeState": "FROZEN",
+  "experimentId": "deterministic-mission-compilation-v2",
+  "trialId": "stage-a-trial-003",
+  "candidateId": "deterministic-mission-compilation-candidate.v2",
+  "sourceCommit": "8a0543bf5ae7e2c190f94e94e7336fb8b4399304",
+  "sourceTreeSha256": "e7b85d971fda6fb533293b4a2cacc7780e3cdd393aa7909cd0b6603e31e567ee",
+  "digestDerivation": "SHA-256 over exact artifact bytes; no expected artifact hashes accepted as generator input",
+  "identities": {
+    "experiment": "deterministic-mission-compilation-v2",
+    "trial": "stage-a-trial-003",
+    "candidate": "deterministic-mission-compilation-candidate.v2",
+    "freeze": "deterministic-mission-compilation-stage-a-freeze.v2",
+    "wrapper": "common-runtime-wrapper.v2",
+    "runtimeEnvelope": "runtime-message-envelope.v2",
+    "runtimeEnvelopeSpec": "runtime-message-envelope-spec.v2",
+    "targetProfile": "codex-text.v2"
+  },
+  "semantic": {
+    "runtimeEnvelopeSpecSha256": "268261bf4b8b08d9c978cc58500977702186f230f8d9fb97c4b0bafbdfd51aef",
+    "controlEnvelopeSpecBinding": "PASS",
+    "compiledEnvelopeSpecBinding": "PASS"
+  },
+  "artifactBindings": [
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/artifacts/compiled-manifest.json",
+      "byteLength": 371,
+      "sha256": "1da70f4c2531eb540b5110590bb982eb6cb3f3448d79205c40c5ebc0f613b1b5"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/artifacts/compiled-prompt.utf8",
+      "byteLength": 1214,
+      "sha256": "c869fa0bf626c067a66f5f2b484e309f0771b8694b0736b6724be1b612406bc3"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/artifacts/compiled-provenance.json",
+      "byteLength": 8028,
+      "sha256": "00a0ed9c6859f59ae1a51be0726c32898b780c56fc2771e47e145de511ddbf4f"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/artifacts/control-assembly-spec.json",
+      "byteLength": 453,
+      "sha256": "22a96f171a4e46aaa5f464030b09656a9001913e8b5149edd8fca98f3bae63d6"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/artifacts/control-prompt.utf8",
+      "byteLength": 2327,
+      "sha256": "57e38ba2da0128734b1e9243753b9cb52aa5baf3bd819ec0e7aef81acb893bfb"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/artifacts/renderer-spec.json",
+      "byteLength": 140,
+      "sha256": "d05a8331ed11356bac5bd438c186efc53e9e51db3ef42026a02080d6a40b57d0"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/artifacts/shared-runtime-instructions.utf8",
+      "byteLength": 607,
+      "sha256": "cd53327fe211f38f84bda82b8ce0fdc1fce0a5fca5e4a0b3525f7e014917cafb"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/artifacts/target-profile.json",
+      "byteLength": 127,
+      "sha256": "4774fb7a3f5a91971719ec7641b05699eef9fcdc6383a96500027a6dcad69c13"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/dist/experiment.js",
+      "byteLength": 22054,
+      "sha256": "032e877695c1f199ed2ca5f75b546bb9a0f0eb672c51fa9d521ed281eb2a2451"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v1/src/experiment.ts",
+      "byteLength": 24628,
+      "sha256": "15c292a0965557256cd26f5c5da73b7d00de04516772732a49e076536c90bcf7"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v2/artifacts/common-runtime-wrapper-v2.utf8",
+      "byteLength": 304,
+      "sha256": "81e324cad1904114958c074c6410bde5bcb90893df4913894752c3332c6e2113"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v2/artifacts/compiled-runtime-envelope-v2.json",
+      "byteLength": 3640,
+      "sha256": "2d8ab10b613943d113507202f39379c6cdcd24333ae942f75f0f32943214609e"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v2/artifacts/construction-identity-v2.json",
+      "byteLength": 2065,
+      "sha256": "129679ddcd79f6c13819ca9f96d0f376398ffa77665f1d23e73ec7177a77aa80"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v2/artifacts/control-runtime-envelope-v2.json",
+      "byteLength": 5123,
+      "sha256": "b17463ae44903bf170035e82dbd3f5357ca1ee066b8ca3c52336133a0957981d"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v2/artifacts/runtime-message-envelope-spec-v2.json",
+      "byteLength": 388,
+      "sha256": "268261bf4b8b08d9c978cc58500977702186f230f8d9fb97c4b0bafbdfd51aef"
+    },
+    {
+      "path": "benchmarks/deterministic-mission-compilation-v2/artifacts/target-profile-v2.json",
+      "byteLength": 127,
+      "sha256": "7f032f5f2db1f7b73d249252510622dd3e8acd2daf5e72c7a788f3cb2c4e8d8a"
+    },
+    {
+      "path": "docs/missions/deterministic-mission-compilation-stage-a-v2.md",
+      "byteLength": 2177,
+      "sha256": "317b8445623896a8f47ddcd915b5406a379783f28bbc85238204b145cb9ed43d"
+    },
+    {
+      "path": "docs/validation/deterministic-mission-compilation-protocol-v0.md",
+      "byteLength": 7995,
+      "sha256": "028a7eb8fe54e8dfd37b7511a9eb840989ec0eba6baf7905d1f5b8f5547c615f"
+    },
+    {
+      "path": "docs/validation/deterministic-mission-compilation-protocol-v1.md",
+      "byteLength": 6959,
+      "sha256": "a77ac0db011197431e66a42541498bb9d39a48c512a74ce2d9d292aa43cf2721"
+    },
+    {
+      "path": "docs/validation/deterministic-mission-compilation-protocol-v2.md",
+      "byteLength": 3340,
+      "sha256": "beb4e028dd7b5b9a3be7a15c644412e5696b7a77444df24a8bba4c8385892fc2"
+    },
+    {
+      "path": "docs/validation/deterministic-mission-compilation-stage-a-freeze-v0.json",
+      "byteLength": 3691,
+      "sha256": "828af9ba21ad147ee3bf9d7a02f2e96c2ee5295297c27fa70352e211763eeae6"
+    },
+    {
+      "path": "docs/validation/deterministic-mission-compilation-stage-a-freeze-v1.json",
+      "byteLength": 6483,
+      "sha256": "d2e66630d424b31a1f1ada30e897eb0220bbfaa4bc0eb7b9d96d1f87901476d7"
+    },
+    {
+      "path": "docs/validation/deterministic-mission-compilation-stage-a-result-v0.json",
+      "byteLength": 2133,
+      "sha256": "41463a1f50d2e39974e689b30c5977b6bfe9a71df0bd7a5a76ae0d72cd243c48"
+    },
+    {
+      "path": "docs/validation/deterministic-mission-compilation-stage-a-result-v1.json",
+      "byteLength": 2490,
+      "sha256": "08088e00bc759493ad1818a0000d46addb731a92eced5edecc2d834cb8a25fc9"
+    },
+    {
+      "path": "package-lock.json",
+      "byteLength": 661710,
+      "sha256": "3f2dae1c800a524fdfa15c44b6c86a02ee760fefdc896dec988cc01149526828"
+    }
+  ],
+  "preservedEvidence": {
+    "v0Combined": false,
+    "failedV1Combined": false,
+    "v0ResultPath": "docs/validation/deterministic-mission-compilation-stage-a-result-v0.json",
+    "failedV1ResultPath": "docs/validation/deterministic-mission-compilation-stage-a-result-v1.json"
+  },
+  "expectedValidation": {
+    "v0Tests": 8,
+    "v1Tests": 15,
+    "v2Tests": 6,
+    "teamSystemTests": 218,
+    "multibandTests": 9
+  },
+  "outcomes": {
+    "governanceEquivalent": "NOT_EVALUATED_STAGE_A",
+    "implementationQuality": "NOT_EVALUATED_STAGE_A",
+    "stageB": "BLOCKED_PENDING_STAGE_A_V2_PASS_AND_FURY_CONFORMANCE"
+  },
+  "invalidationRule": "Any post-freeze artifact, identity, dependency, protocol, fixture, isolation, rubric, wrapper, prompt, specification, or envelope change invalidates this run and requires a new identity and complete Stage A restart."
+}

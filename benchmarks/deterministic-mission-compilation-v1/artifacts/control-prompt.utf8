@@ -1,0 +1,43 @@
+# Human-authored May handoff v1
+
+### FURY-41-CONFORMANCE-001 — Unicode case-fold compatibility regression
+
+The prior direct policy used Unicode-aware `/iu` matching. The replacement uses ASCII-only folding, so paths formerly denied are now readable, listed, and searchable. Independently reproduced examples: `private.Key`, `id_rſa`, and `toKen.json`. This weakens the accepted Issue #34 boundary and violates the frozen compatibility rule; parity cannot be achieved by weakening the stricter tools.
+
+Required disposition: preserve the former Unicode case-fold equivalents in the canonical direct matcher and generated ripgrep exclusions, with three-tool parity tests for the affected equivalence classes, or obtain explicit Coulson authority to narrow the threat boundary.
+
+--- SHIELD GOVERNED ARTIFACT BOUNDARY ---
+
+Coulson authorizes **one bounded May conformance repair** for Mission #41/#59.
+
+Authorized scope is limited to:
+
+- preserving the prior Unicode `/iu` equivalence behavior, including reproduced cases such as `K → k` and `ſ → s`;
+- applying that behavior consistently to direct sensitive-path matching and generated ripgrep exclusions;
+- adding focused three-tool parity regression tests for the reproduced Unicode cases;
+- rerunning the existing focused and integration validation defined for the mission.
+
+This is a conformance correction within the approved architecture and existing implementation scope. It does not authorize new public APIs, broader normalization policy, unrelated Unicode handling, architecture changes, additional seats, or cleanup outside the affected paths and tests.
+
+May retains repair ownership. After the bounded correction and validation, return the exact revision and evidence to Fury for conformance re-review.
+
+PR #64 remains draft. No merge, scope expansion, or further edits are authorized without the required review or additional Coulson approval.
+
+--- SHIELD GOVERNED ARTIFACT BOUNDARY ---
+
+Validation obligations:
+- focused-real-tool-parity
+- repository-broker-suite
+- workspace-suite
+- packed-strict-consumer
+- package-dry-run
+- git-diff-check
+
+Stop conditions:
+- architecture-change-required
+- stale-governance
+- production-integration-required
+
+Output contract: report changed files, tests run, and unresolved risks.
+
+--- END HUMAN-AUTHORED HANDOFF ---

@@ -1,0 +1,75 @@
+{
+  "freezeManifestVersion": "deterministic-mission-compilation-stage-a-freeze.v0",
+  "freezeState": "FROZEN",
+  "experimentId": "deterministic-mission-compilation",
+  "trialId": "stage-a-trial-001",
+  "sourceCommit": "f0bd16c1d2c832977a1be4cde319e48a95a246f1",
+  "compiler": {
+    "name": "shield-compiler",
+    "experimentalVersion": "0.1.0-experiment",
+    "identity": "shield-compiler@0.1.0-experiment",
+    "sourceCommit": "f0bd16c1d2c832977a1be4cde319e48a95a246f1",
+    "sourceTreeDigest": "0b8944b59bd77cd514b1cdfdebf4942f016f5693ce7251af52455cffbf36bddb",
+    "implementationDigest": "117f547ef2dc8b43f7e951cfd58bd544db40b07dbbaa5c78284cbc906cd7fd15",
+    "compiledArtifactDigest": "add054883f1e68c97b2e5aa5d5a9cf0f3bd123792f4a30214e8821cd2f799c63",
+    "dependencyLockDigest": "60dd203586f076c960ff489c449c7e6555975c8baf047623e4600f19dca0193b",
+    "runtimeRequirement": "Node.js v24.18.0 with Ed25519/Web UTF-8 APIs; TypeScript 5.4.5"
+  },
+  "validator": {
+    "identity": "shield-dispatch-validator@0.1.0-experiment",
+    "implementationDigest": "1baa6f7a684e48fc417f9e1caf221b9d3342f9ca6a28751ac0463de65738edbb"
+  },
+  "renderer": {
+    "id": "canonical-chat-v1",
+    "version": "1",
+    "specificationDigest": "c21daa894ad3a3701d78121f4eb1de4a5c2f625794c02b884ffc9f61e3bb0ba1",
+    "implementationDigest": "4985b27f95761cc53c7ba62e29da0da32a95444a51c716ac33c06b97661acf03",
+    "targetProfileId": "codex-text.v0",
+    "targetProfileDigest": "928d1aebae2ef6edde4868c03a695fc002f5cdec7f866d263c3c1fd8d60f67bf"
+  },
+  "instructionRegistry": {
+    "id": "shield-dispatch-registry.v0",
+    "digest": "5e716ecb1b3c7d6f26b6621a88a9b4076ed21896086416575ec779bb769c439f"
+  },
+  "fixture": {
+    "id": "issue-41-59-unicode-conformance-repair",
+    "baseRevision": "afdbf71b8ece2a2506a0b6a7b213267c7896f8d1",
+    "acceptedRevisionIdentityOnly": "200251bb8730cad3f1e0e70d8830ce2d52c532ba",
+    "digest": "bd26e282927c840be84b01cc1f9d2dfe1db8bc7041f73490b4dc29d65fe20427",
+    "acceptedRevisionContentsRead": false,
+    "compilerEnvelopeContainsRawGovernanceProse": false
+  },
+  "contracts": {
+    "gradingRubricDigest": "c719b606dfd42c0ee545de2ea4c33fd0fa86e969843212dbd8b8a41ce1554e4d",
+    "governanceContractDigest": "e5c5a99ee4f7da423a73bfcfecffe09cb37e68e62d6c738e40a37af8fae3f396",
+    "isolationContractDigest": "106e1dddb935929e977854b7f6cbdd0fd2d6336d27f123b709e9ee4b6a6a9570"
+  },
+  "expectedDeterministicOutputs": {
+    "promptDigest": "cf1d176e314d7ea258102e7338ad26ad7bd6b6c600d8a4e90c824ed03ff24802",
+    "provenanceDigest": "fc38677513a29b088ce4d134508ded92d9761b3919f095d23b01751df4c50e11",
+    "manifestDigest": "dfe2d16350538307a6c7bdc626544152d6b671435c5abfc12bc64a8a150f86e1"
+  },
+  "constructionVerification": {
+    "source": "clean git archive of the exact source commit",
+    "dependencyInstallation": "existing workspace installation bound by dependencyLockDigest",
+    "packageTests": {
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0
+    },
+    "staticBoundary": "PASS",
+    "compilerGraphFiles": 8,
+    "productionTests": {
+      "teamSystemPassed": 218,
+      "multibandPassed": 9,
+      "failed": 0
+    }
+  },
+  "outcomes": {
+    "stageAStaticBoundary": "READY_FOR_FROZEN_MEASUREMENT",
+    "governanceEquivalent": "NOT_EVALUATED_STAGE_A",
+    "implementationQuality": "NOT_EVALUATED_STAGE_A",
+    "stageB": "BLOCKED_PENDING_STAGE_A_PASS_AND_FURY_CONFORMANCE"
+  },
+  "invalidationRule": "Any post-freeze change to compiler, validator, renderer, registry, dependency lock, target profile, fixture, grading rubric, isolation method, or governance contract invalidates this run and requires a new identity, complete Stage A restart, and renewed review."
+}
