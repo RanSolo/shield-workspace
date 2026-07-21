@@ -1,0 +1,11 @@
+{
+  "name": "@shield/deterministic-mission-compilation-v2",
+  "version": "0.0.0-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "construct": "node scripts/construct.mjs",
+    "test": "node --test test/*.test.mjs",
+    "verify:source": "node scripts/derive-freeze.mjs --verify-source"
+  }
+}

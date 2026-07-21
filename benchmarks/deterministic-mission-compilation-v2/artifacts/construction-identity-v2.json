@@ -1,0 +1,45 @@
+{
+  "format": "stage-a-v2-construction-identity",
+  "identities": {
+    "experiment": "deterministic-mission-compilation-v2",
+    "trial": "stage-a-trial-003",
+    "candidate": "deterministic-mission-compilation-candidate.v2",
+    "freeze": "deterministic-mission-compilation-stage-a-freeze.v2",
+    "wrapper": "common-runtime-wrapper.v2",
+    "runtimeEnvelope": "runtime-message-envelope.v2",
+    "runtimeEnvelopeSpec": "runtime-message-envelope-spec.v2",
+    "targetProfile": "codex-text.v2"
+  },
+  "reusedImmutableInputs": {
+    "sharedRuntimeInstructionsSha256": "cd53327fe211f38f84bda82b8ce0fdc1fce0a5fca5e4a0b3525f7e014917cafb",
+    "controlPromptSha256": "57e38ba2da0128734b1e9243753b9cb52aa5baf3bd819ec0e7aef81acb893bfb",
+    "compiledPromptSha256": "c869fa0bf626c067a66f5f2b484e309f0771b8694b0736b6724be1b612406bc3"
+  },
+  "runtimeEnvelopeSpecSha256": "268261bf4b8b08d9c978cc58500977702186f230f8d9fb97c4b0bafbdfd51aef",
+  "wrapperDigest": "9c05c71dd8cfae20294d8d5f254a43076ed071e77a89d3baae9822e7d03af74a",
+  "targetProfileDigest": "f1764075f169ffae8f9639730050a74973818d032b4c953403606bb21fe165e1",
+  "controlRuntimeEnvelopeDigest": "4a89acace62ff27b314e539e9fe305be7a270d6a78619ba6955ee6ad4e16e200",
+  "compiledRuntimeEnvelopeDigest": "e7de790f5a63d24fe2632054c5f4c689cdafdf96e18ef761003e4240fdae5237",
+  "artifactSha256": [
+    {
+      "name": "common-runtime-wrapper-v2.utf8",
+      "sha256": "81e324cad1904114958c074c6410bde5bcb90893df4913894752c3332c6e2113"
+    },
+    {
+      "name": "target-profile-v2.json",
+      "sha256": "7f032f5f2db1f7b73d249252510622dd3e8acd2daf5e72c7a788f3cb2c4e8d8a"
+    },
+    {
+      "name": "runtime-message-envelope-spec-v2.json",
+      "sha256": "268261bf4b8b08d9c978cc58500977702186f230f8d9fb97c4b0bafbdfd51aef"
+    },
+    {
+      "name": "control-runtime-envelope-v2.json",
+      "sha256": "b17463ae44903bf170035e82dbd3f5357ca1ee066b8ca3c52336133a0957981d"
+    },
+    {
+      "name": "compiled-runtime-envelope-v2.json",
+      "sha256": "2d8ab10b613943d113507202f39379c6cdcd24333ae942f75f0f32943214609e"
+    }
+  ]
+}
