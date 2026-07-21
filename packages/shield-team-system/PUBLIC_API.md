@@ -21,7 +21,15 @@ package artifact.
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
 | `@shield/team-system/local-tools` | Host-side Daisy read-only repository broker with LM Studio capability probing, closed tools, and injected Issue #10 authorization/audit dependencies |
-| `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
+| `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
+
+The pre-1.0 Delivery Workspace guard requires explicit mission/subject,
+May-owned blueprint, and `planGate` inputs. Literal `null` creates or reuses the
+early draft workspace and returns `workspace_ready`; only an exact eligible
+Fury plan gate returns `dispatch_ready`. Callers must discriminate those states
+literally. The gate is stateless host-asserted evidence: it does not provide
+global replay prevention, authenticated provenance, durable consumption,
+semantic diff proof, correction-cap enforcement across calls, or authority.
 
 All entry points provide TypeScript declarations. Existing `.mjs` contract
 modules remain their runtime source of truth. The isolated TypeScript build

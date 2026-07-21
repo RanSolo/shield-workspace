@@ -31,6 +31,8 @@ test("begin mission playbook defines the canonical intake workflow", async () =>
   assert.match(playbook, /delivery-workspace\.mjs:prepareDeliveryWorkspaceForDispatch/);
   assert.match(playbook, /pr-workspace\.mjs:createOrUpdatePR/);
   assert.match(playbook, /`dispatch_ready` with a receipt matching every expected\s+field/);
+  assert.match(playbook, /literal `planGate: null`/);
+  assert.match(playbook, /`workspace_ready` is not specialist-dispatch permission/);
   assert.match(playbook, /final PR-body summaries do not\s+replace the historical handoff comments/);
   assert.match(playbook, /successful GitHub readback/);
   assert.match(playbook, /## Lightweight operational path/);

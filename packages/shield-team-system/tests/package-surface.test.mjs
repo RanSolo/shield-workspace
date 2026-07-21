@@ -77,6 +77,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(localTools.DAISY_TOOL_DEFINITIONS.length, 3);
   assert.equal(typeof github.deliverGitHubCommunication, "function");
   assert.equal(typeof github.prepareDeliveryWorkspaceForDispatch, "function");
+  assert.equal(github.FURY_PLAN_GATE_CONTRACT_VERSION, "fury.plan-gate.v1");
+  assert.equal(typeof github.evaluateFuryPlanGateV1, "function");
   assert.equal(typeof github.validatePRWorkspaceReceipt, "function");
   assert.equal(typeof github.renderMissionHandoff, "function");
 });
@@ -171,11 +173,14 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import { runLocalToolSession, type LocalToolSessionRequest } from "@shield/team-system/local-tools";
     import {
+      FURY_PLAN_GATE_CONTRACT_VERSION,
       deliverGitHubCommunication,
+      evaluateFuryPlanGateV1,
       prepareDeliveryWorkspaceForDispatch,
       renderMissionHandoff,
       validatePRWorkspaceReceipt,
       type DeliveryWorkspaceResult,
+      type FuryPlanGateEnvelopeV1,
       type JournaledCommunicationRequest,
       type PRWorkspaceReceipt,
     } from "@shield/team-system/github";
@@ -223,6 +228,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const journaledRequest = null as unknown as JournaledCommunicationRequest;
     const deliver = deliverGitHubCommunication;
     const prepareWorkspace = prepareDeliveryWorkspaceForDispatch;
+    const furyContract: "fury.plan-gate.v1" = FURY_PLAN_GATE_CONTRACT_VERSION;
+    const furyGate = null as unknown as FuryPlanGateEnvelopeV1;
+    const evaluateFury = evaluateFuryPlanGateV1;
     const validateReceipt = validatePRWorkspaceReceipt;
     const renderHandoff = renderMissionHandoff;
     const workspaceReceipt = null as unknown as PRWorkspaceReceipt;
@@ -238,7 +246,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, runCycle, journaledRequest, deliver, prepareWorkspace, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, runCycle, journaledRequest, deliver, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
