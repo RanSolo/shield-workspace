@@ -211,6 +211,11 @@ function iterationIdentifier(value) {
   return typeof value === "string" && ITERATION_IDENTIFIER.test(value);
 }
 
+function routingSeatIdentifier(value) {
+  return iterationIdentifier(value) && value === value.toLowerCase() && value !== "hill" &&
+    !/^(?:runtime|executor|host|model|provider)(?:[:._/-]|$)/iu.test(value);
+}
+
 function iterationEvidenceRefs(value) {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length < 1 || value.length > 16) return null;
   const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -267,11 +272,12 @@ function iterationResult(input, outcome, nextSeatId, requiresCoulson, reason) {
 function evaluateSpecialistIterationUnchecked(inputValue) {
   const input = closedDataObject(inputValue, ITERATION_FIELDS);
   if (input === null || input.iterationContractVersion !== SPECIALIST_ITERATION_CONTRACT_VERSION) return INVALID_ITERATION;
-  for (const field of ["missionId", "subjectId", "approvedObjectiveId", "currentObjectiveId", "artifactRevisionId", "approvedOwningSeatId", "currentOwningSeatId"]) {
+  for (const field of ["missionId", "subjectId", "approvedObjectiveId", "currentObjectiveId", "artifactRevisionId"]) {
     if (!iterationIdentifier(input[field])) return INVALID_ITERATION;
   }
+  if (!routingSeatIdentifier(input.approvedOwningSeatId) || !routingSeatIdentifier(input.currentOwningSeatId)) return INVALID_ITERATION;
   if (!SPECIALIST_ITERATION_DISPOSITIONS.includes(input.requestedDisposition) ||
-      (input.proposedNextSeatId !== null && !iterationIdentifier(input.proposedNextSeatId)) ||
+      (input.proposedNextSeatId !== null && !routingSeatIdentifier(input.proposedNextSeatId)) ||
       input.approvedOwningSeatId === "coulson" || input.currentOwningSeatId === "coulson" ||
       ITERATION_BOOLEAN_FIELDS.some((field) => typeof input[field] !== "boolean")) return INVALID_ITERATION;
   input.evidenceRefs = iterationEvidenceRefs(input.evidenceRefs);

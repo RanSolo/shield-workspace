@@ -296,6 +296,9 @@ test("specialist iteration rejects malformed, unknown, inherited, and accessor e
   hostileEvidence.evidenceRefs = new Proxy(["test:evidence"], { getOwnPropertyDescriptor: () => { throw new Error("trap"); } });
   for (const value of [null, [], {}, unknown, inherited, accessor, hostileProxy, hostileEvidence,
     { ...iteration(), approvedOwningSeatId: "coulson", currentOwningSeatId: "coulson" },
+    { ...iteration(), approvedOwningSeatId: "runtime:ornith", currentOwningSeatId: "runtime:ornith", proposedNextSeatId: "runtime:ornith" },
+    { ...iteration(), proposedNextSeatId: "executor:local" },
+    { ...iteration(), proposedNextSeatId: "hill" },
     { ...iteration(), evidenceRefs: [] },
     { ...iteration(), evidenceRefs: ["test:duplicate", "test:duplicate"] },
   ]) {
