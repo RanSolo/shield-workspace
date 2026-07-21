@@ -240,6 +240,8 @@ const INVALID_ITERATION = Object.freeze({
 });
 
 function iterationResult(input, outcome, nextSeatId, requiresCoulson, reason) {
+  const evidenceFacts = {};
+  for (const field of ITERATION_BOOLEAN_FIELDS) evidenceFacts[field] = input[field];
   return Object.freeze({
     state: "evaluated",
     iterationContractVersion: SPECIALIST_ITERATION_CONTRACT_VERSION,
@@ -252,6 +254,8 @@ function iterationResult(input, outcome, nextSeatId, requiresCoulson, reason) {
     approvedOwningSeatId: input.approvedOwningSeatId,
     currentOwningSeatId: input.currentOwningSeatId,
     evidenceRefs: input.evidenceRefs,
+    evidenceAssurance: "reference_only_unverified",
+    evidenceFacts: Object.freeze(evidenceFacts),
     outcome,
     requestedDisposition: input.requestedDisposition,
     nextSeatId,

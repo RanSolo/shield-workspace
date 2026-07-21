@@ -75,6 +75,20 @@ export interface SpecialistIterationEvaluatedV1 {
   readonly approvedOwningSeatId: string;
   readonly currentOwningSeatId: string;
   readonly evidenceRefs: readonly string[];
+  readonly evidenceAssurance: "reference_only_unverified";
+  readonly evidenceFacts: Readonly<{
+    newConcreteEvidence: boolean;
+    observableProgress: boolean;
+    problemCategoryChanged: boolean;
+    validationObligationsSatisfied: boolean;
+    sameUnresolvedFailureRepeating: boolean;
+    materialScopeChange: boolean;
+    materialRiskIncrease: boolean;
+    authorityDecisionRequired: boolean;
+    destructiveOrExternalEffect: boolean;
+    unresolvedTradeoff: boolean;
+    finalHumanGate: boolean;
+  }>;
   readonly outcome: "eligible" | "hold_for_evidence" | "escalate_coulson";
   readonly requestedDisposition: SpecialistIterationDisposition;
   readonly nextSeatId: string | null;

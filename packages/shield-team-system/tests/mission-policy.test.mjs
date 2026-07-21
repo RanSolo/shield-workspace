@@ -211,6 +211,9 @@ test("routine second and later evidence-backed corrections remain with the ownin
       }));
       assert.equal(result.state, "evaluated");
       assert.equal(result.authority, "non_authoritative");
+      assert.equal(result.evidenceAssurance, "reference_only_unverified");
+      assert.equal(result.evidenceFacts.newConcreteEvidence, true);
+      assert.equal(Object.isFrozen(result.evidenceFacts), true);
       assert.equal(result.outcome, "eligible");
       assert.equal(result.nextSeatId, owner);
       assert.equal(result.requiresCoulson, false);
