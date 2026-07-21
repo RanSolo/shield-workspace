@@ -254,6 +254,21 @@ The compiler produces two immutable artifacts from that one representation:
    extension exclusions. `searchRepo` inserts those generated values only as
    repeated `--glob`, value pairs in its existing closed argument vector.
 
+`repository-tools.mjs` binds those compiled artifacts into one private frozen
+tool-enforcement record with three explicit entries: the predicate used by
+`readFile`, the same predicate used by both the requested-directory and
+recursive-child checks in `listFiles`, and the generated exclusion arguments
+used by `searchRepo`. The entries are not exported, configurable, replaceable,
+or derived from options. They make each real enforcement path independently
+identifiable for the mutation test without duplicating the policy.
+
+`readFile` and `listFiles` apply their named private binding after relative-path
+syntax validation and before filesystem resolution or traversal.
+`resolveConfined` retains root identity, lstat, symlink, type, and escape
+enforcement but no longer owns a shared sensitive-policy decision that would
+make a one-tool mutation ambiguous. This is an internal separation of existing
+checks, not a change to denial order or results.
+
 No regex or glob is constructed from repository paths, search patterns, model
 output, environment values, or other caller-controlled data. Existing
 relative-path validation runs before the direct predicate. The trusted `rg`
@@ -267,7 +282,8 @@ environment, root verification, timeouts, and output bounds remain unchanged.
 - Modify
   `packages/shield-team-system/scripts/model/repository-tools.mjs` only to
   import/re-export the direct predicate, consume the generated exclusion
-  globs, and remove the duplicated constants and hard-coded exclusion block.
+  globs through the private frozen per-tool enforcement bindings, and remove
+  the duplicated constants and hard-coded exclusion block.
 - Modify
   `packages/shield-team-system/tests/repository-tools.test.mjs` to add the
   frozen three-tool parity harness, safe controls, and mutation-sensitivity
@@ -295,12 +311,25 @@ The same assertion requires successful reads and listing/search visibility for
 current search-only substring false positives.
 
 The frozen `nested/.AWS/credentials.backup` mutation is appended once to that
-shared denied table. After the real tools pass, three targeted test-only
-mutants alter one observed result at a time: allow its read, insert it into the
-listing, or insert its marker into search output. The shared assertion must
-fail for the corresponding tool in each case. The production module exposes
-no mutation switch and the test does not maintain three separate expected
-lists.
+shared denied table. After the unmodified tools pass, the test creates three
+isolated temporary ESM copies of `repository-tools.mjs` and its policy module.
+For each copy it performs one exact, count-checked source mutation to the
+private enforcement record: replace only the `readFile` predicate with an
+always-allow predicate, replace only the `listFiles` predicate with an
+always-allow predicate, or replace only the `searchRepo` exclusion arguments
+with an empty frozen array. Failure to find exactly one expected mutation site
+fails the test.
+
+Each mutated module is imported under a unique file URL, constructs the real
+repository tools against a fresh fixture, and runs the same shared parity
+assertion. The assertion must reject the read mutant because the frozen file
+is readable, the list mutant because the frozen nested file is emitted, and
+the search mutant because its unique marker is returned. These are mutations
+of the actual tool enforcement paths before execution, not altered
+post-execution observations or three copied expectation lists. Mutant source
+exists only under the test temporary directory and is removed by test cleanup;
+the production module exposes no mutation switch, policy injection option, or
+test-only export.
 
 The parity integration test uses the same trusted, identity-probed `rg` path as
 the existing search test. The acceptance run must execute it on a host with
