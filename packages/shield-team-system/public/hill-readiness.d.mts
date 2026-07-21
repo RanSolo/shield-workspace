@@ -1,6 +1,5 @@
 export declare const HILL_READINESS_SCHEMA_VERSION: 1;
 export declare const HILL_READINESS_RUBRIC_VERSION: "hill.readiness.v1";
-export declare const HILL_READINESS_MAX_REFINEMENTS: 1;
 
 export declare const HILL_READINESS_DIMENSIONS: readonly [
   "scope_completeness",
@@ -35,7 +34,6 @@ export declare const HILL_READINESS_REASON_CODES: readonly [
   "INVALID_EVIDENCE_RECORD",
   "REPLAY_BINDING_MISMATCH",
   "ARTIFACT_REVISION_STALE",
-  "REFINEMENT_LIMIT_REACHED",
   "SCOPE_INCOMPLETE",
   "SCOPE_DECISION_REQUIRED",
   "AUTHORITY_SAFETY_INCOMPLETE",
@@ -83,7 +81,7 @@ export interface HillReadinessHostObservationV1 {
   readonly journalSchemaVersion: number;
   readonly evaluatedThroughSequence: number;
   readonly journalHeadEntryId: string;
-  readonly refinementPassesCompleted: 0 | 1;
+  readonly refinementPassesCompleted: number;
   readonly reasoningRuntimeId: string | null;
   readonly toolExecutorId: string | null;
 }
@@ -126,7 +124,7 @@ export interface HillReadinessEvaluatedResultV1 {
     kind: "host_asserted_non_authoritative";
     toolExecutorId: string | null;
   }>;
-  readonly refinementPassesCompleted: 0 | 1;
+  readonly refinementPassesCompleted: number;
   readonly outcome: HillReadinessOutcome;
   readonly reasonCodes: readonly HillReadinessReasonCode[];
   readonly refinementRequests: readonly HillReadinessRefinementRequestV1[];

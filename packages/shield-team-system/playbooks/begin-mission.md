@@ -13,7 +13,7 @@ work.
 - Maria Hill owns mission intake and context gathering.
 - `../contracts/mission-policy.mjs` is the executable, fail-closed authority for
   mission decisions, risk classification, timeout activation, specialist
-  dispatch, and repair authorization.
+  dispatch, and non-authoritative specialist-iteration eligibility.
 - Mission intake happens before implementation dispatch.
 - The Mission Brief is the canonical intake artifact for every mission.
 - Mission modes are selected after the brief is assembled, not before.
@@ -127,13 +127,21 @@ full boolean risk-flag set and the exact `operations` mission mode. Before
 specialist dispatch, Hill must use `canDispatchSpecialists`. A denied result
 cannot be overridden by Hill or by silence.
 
-## Repair policy
+## Specialist iteration policy
 
-- One repair is allowed automatically.
-- Later repairs require explicit Coulson authorization.
-- Every mission records a positive-integer repair hard cap.
-- A missing or invalid hard cap fails closed to `1`.
-- The hard cap is absolute and cannot be exceeded, even with authorization.
+- After every specialist handoff, Hill records one requested disposition:
+  return to the same owner, reroute after a problem-category change, advance
+  after validation, or escalate a material decision to Coulson.
+- Hill evaluates the request through `evaluateSpecialistIteration`; the result
+  is non-authoritative routing eligibility and grants no dispatch or tool access.
+- Continued correction requires an unchanged approved objective and owning seat,
+  new concrete evidence, observable progress, no material risk increase, and no
+  merely repeating unresolved failure.
+- A stalled iteration holds for more evidence or a supported reroute. Iteration
+  count alone never requires Coulson.
+- Material scope, risk, authority, destructive/external effects, unresolved
+  tradeoffs, merge/deploy/release, and designated final human gates require
+  Coulson.
 
 ## Recommended versus activated modes
 

@@ -9,7 +9,7 @@ async function readRepoFile(path) {
   return readFile(resolve(repoRoot, path), "utf8");
 }
 
-test("charter encodes Hill, Daisy, and May boundaries plus stuck protocol", async () => {
+test("charter encodes seat boundaries plus Hill-controlled specialist iteration", async () => {
   const charter = await readRepoFile("agents/shield-team-charter.agent.md");
 
   assert.match(charter, /Maria Hill never owns production code changes\./);
@@ -19,9 +19,9 @@ test("charter encodes Hill, Daisy, and May boundaries plus stuck protocol", asyn
   );
   assert.match(charter, /Melinda May owns all production implementation/);
   assert.match(charter, /Nick Fury owns technical judgment, plan shaping, and brief mentoring review passes/);
-  assert.match(charter, /## Stuck protocol/);
-  assert.match(charter, /Melinda May reports blocked\./);
-  assert.match(charter, /Maria Hill requests additional reconnaissance from Daisy Johnson\./);
+  assert.match(charter, /## Specialist iteration protocol/);
+  assert.match(charter, /return the artifact to the same owner/);
+  assert.match(charter, /A stall is held for evidence or\s+rerouted/);
 });
 
 test("seat prompts preserve the approved implementation boundaries", async () => {
@@ -42,11 +42,10 @@ test("seat prompts preserve the approved implementation boundaries", async () =>
   assert.match(may, /## Stuck protocol/);
 });
 
-test("debugger mode documents the stuck protocol", async () => {
+test("debugger mode applies evidence-based iteration across specialist seats", async () => {
   const debuggerMode = await readRepoFile("modes/debugger-mode.md");
 
-  assert.match(debuggerMode, /## Stuck protocol/);
-  assert.match(debuggerMode, /Melinda May reports blocked\./);
-  assert.match(debuggerMode, /Maria Hill requests additional reconnaissance from Daisy Johnson\./);
-  assert.match(debuggerMode, /Maria Hill consults Nick Fury if architecture is involved\./);
+  assert.match(debuggerMode, /## Evidence-based iteration/);
+  assert.match(debuggerMode, /Daisy, May, or Fury handoff/);
+  assert.match(debuggerMode, /fixed\s+repair count never determines the route/);
 });

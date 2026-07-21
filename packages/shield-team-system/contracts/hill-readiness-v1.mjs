@@ -1,6 +1,5 @@
 export const HILL_READINESS_SCHEMA_VERSION = 1;
 export const HILL_READINESS_RUBRIC_VERSION = "hill.readiness.v1";
-export const HILL_READINESS_MAX_REFINEMENTS = 1;
 
 export const HILL_READINESS_DIMENSIONS = Object.freeze([
   "scope_completeness",
@@ -36,7 +35,6 @@ export const HILL_READINESS_REASON_CODES = Object.freeze([
   "INVALID_EVIDENCE_RECORD",
   "REPLAY_BINDING_MISMATCH",
   "ARTIFACT_REVISION_STALE",
-  "REFINEMENT_LIMIT_REACHED",
   "SCOPE_INCOMPLETE",
   "SCOPE_DECISION_REQUIRED",
   "AUTHORITY_SAFETY_INCOMPLETE",
@@ -240,8 +238,9 @@ function normalizeObservation(input) {
       observation.journalSchemaVersion < 1 || observation.journalSchemaVersion > 255 ||
       !Number.isSafeInteger(observation.evaluatedThroughSequence) ||
       observation.evaluatedThroughSequence < 0 ||
-      (observation.refinementPassesCompleted !== 0 &&
-       observation.refinementPassesCompleted !== HILL_READINESS_MAX_REFINEMENTS) ||
+      !Number.isSafeInteger(observation.refinementPassesCompleted) ||
+      observation.refinementPassesCompleted < 0 ||
+      observation.refinementPassesCompleted > 1_000_000 ||
       !assertedIdentity(observation.reasoningRuntimeId) ||
       !assertedIdentity(observation.toolExecutorId) ||
       (observation.reasoningRuntimeId !== null &&
@@ -329,16 +328,6 @@ export function evaluateHillReadinessV1(candidateInput, observationInput) {
       );
     }
     if (refinementRequests.length > 0) {
-      if (observation.refinementPassesCompleted === HILL_READINESS_MAX_REFINEMENTS) {
-        return evaluatedResult(
-          candidate,
-          observation,
-          "BLOCKED_ESCALATE",
-          [...reasonCodes, "REFINEMENT_LIMIT_REACHED"],
-          refinementRequests,
-          null,
-        );
-      }
       return evaluatedResult(
         candidate,
         observation,

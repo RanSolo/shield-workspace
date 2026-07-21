@@ -54,6 +54,8 @@ Only participating seats receive Delivery Mode context for a mission.
 - Keep reconnaissance separate from implementation ownership.
 - Record validation evidence before technical or product review is declared
   complete.
+- Route later specialist corrections through Hill's evidence-based iteration
+  policy; iteration count alone is neither escalation nor permission.
 - Do not declare the branch merge-ready until the required technical review is
   satisfied or explicitly waived by the designated human reviewer.
 

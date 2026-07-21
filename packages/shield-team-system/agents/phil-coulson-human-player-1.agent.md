@@ -28,8 +28,8 @@ Shared contract: follow `./shield-team-charter.agent.md`.
 * Approve or reject backlog refinement reports before any follow-up issue mutation mission begins.
 * Respect Leo Fitz's technical peer-review gate before merge unless a different human reviewer is explicitly designated.
 * Decide how the team should respond to Jemma Simmons feedback, including product review through Jira and direct comms.
-* Authorize repairs after the single automatic repair only when they remain below
-  the recorded hard cap. The hard cap is absolute.
+* Decide specialist iteration only when Hill identifies a material scope, risk,
+  authority, destructive/external, tradeoff, or final human-gate decision.
 
 ## When agents must escalate to Phil Coulson
 
@@ -37,7 +37,8 @@ Shared contract: follow `./shield-team-charter.agent.md`.
 * Multiple valid fixes exist with meaningful tradeoffs.
 * Risk is medium/high (data loss, security, prod impact, migration).
 * Scope creep is detected.
-* More than one revise loop is needed.
+* Hill reports that iteration requires a material decision or cannot be routed
+  safely from concrete evidence.
 * Agent confidence is low.
 * Fitz or Simmons feedback creates a scope or priority conflict.
 

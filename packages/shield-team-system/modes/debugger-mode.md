@@ -46,15 +46,13 @@ Use this mode for:
    - gather results
    - summarize for Nick Fury and Phil Coulson
 
-## Stuck protocol
+## Evidence-based iteration
 
-If Melinda May is blocked:
-
-1. Melinda May reports blocked.
-2. Maria Hill requests additional reconnaissance from Daisy Johnson.
-3. Maria Hill consults Nick Fury if architecture is involved.
-4. Maria Hill reprioritizes or reassigns work.
-5. Melinda May resumes implementation.
+After any Daisy, May, or Fury handoff, Maria Hill evaluates the next route under
+the shared specialist iteration policy. Missing investigation evidence returns
+to Daisy, directly coupled implementation defects return to May, architecture
+category changes route to Fury, and satisfied validation advances. A fixed
+repair count never determines the route.
 
 6. **Nick Fury readiness review**
    - decide whether the implementation is acceptable

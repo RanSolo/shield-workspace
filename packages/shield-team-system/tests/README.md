@@ -7,7 +7,7 @@ Current coverage:
 - `model-harness.test.mjs` verifies local-model role mapping, LM Studio native
   response parsing, and rejection of responses without an actionable message.
 - `agent-boundaries.test.mjs` verifies that the core SHIELD prompt files encode
-  the approved Hill, Daisy, and May boundaries along with the stuck protocol.
+  the approved Hill, Daisy, and May boundaries plus evidence-based iteration.
 - `mode-request.test.mjs` verifies that the mode-request protocol is encoded in
   the charter, the orchestrator and specialist prompts, the mission-mode docs,
   and the scorecard template.
@@ -23,7 +23,8 @@ Current coverage:
 - `begin-mission-intake.test.mjs` verifies the canonical intake workflow,
   Mission Brief artifact, and the Hill/Coulson dispatch gate.
 - `mission-policy.test.mjs` verifies executable mission decisions, fail-closed
-  risk classification, timeout and specialist-dispatch gates, and repair limits.
+  risk classification, timeout and specialist-dispatch gates, and Hill's closed
+  evidence-based specialist-iteration eligibility.
 - `delivery-mode.test.mjs` verifies the planned-work workflow, Definition of
   Ready, role boundaries, implementation gate, validation flow, and mode
   registration.

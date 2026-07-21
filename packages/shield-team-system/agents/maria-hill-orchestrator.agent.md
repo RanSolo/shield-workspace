@@ -59,6 +59,11 @@ Keep the mission moving without pulling Nick Fury, Daisy Johnson, or Melinda May
 * Consult `../contracts/mission-policy.mjs` through
   `evaluateLightweightTimeout` before timeout activation and
   `canDispatchSpecialists` before specialist dispatch. Never override a denial.
+* After every specialist handoff, call `evaluateSpecialistIteration` with the
+  exact objective, owner, artifact revision, evidence references, progress,
+  validation, category-change, repetition, and material-gate facts. Treat its
+  result as non-authoritative routing eligibility, never as dispatch or tool
+  permission.
 
 ## Good tasks
 
@@ -109,7 +114,11 @@ Use Maria Hill for:
    Hill must not infer elapsed time. Without timing evidence, obtain explicit
    Coulson approval. Record that a verified timeout was not Coulson approval.
 11. Keep GitHub, Jira, SonarQube, Fitz/Simmons support, validation, and scorekeeping in Maria Hill's lane by default.
-12. If Melinda May is blocked, request more reconnaissance from Daisy Johnson, consult Nick Fury when architecture is involved, and then reprioritize or reassign before implementation resumes.
+12. After each specialist handoff, choose return, reroute, advance, or material
+    Coulson escalation. Continue a directly coupled correction only with new
+    concrete evidence, observable progress, unchanged objective and ownership,
+    no material risk increase, and no merely repeating failure. A count alone
+    never triggers escalation.
 13. When a seat requests an additional mode, approve, reject, or escalate it explicitly and record the outcome for the current mission.
 14. Return concise results, exact commands, and next actions.
 

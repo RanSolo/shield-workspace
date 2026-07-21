@@ -8,7 +8,7 @@ package artifact.
 | Specifier | Supported capability |
 | --- | --- |
 | `@shield/team-system` | Combined V0.3-2 contract and configuration surface |
-| `@shield/team-system/mission` | Mission policy, records, validation, and replay |
+| `@shield/team-system/mission` | Mission policy, records, validation, replay, and non-authoritative evidence-based specialist-iteration eligibility |
 | `@shield/team-system/journal` | Journal validation, serialization, parsing, and replay |
 | `@shield/team-system/modes` | Mode manifests, registries, and seat-context resolution |
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
@@ -41,6 +41,7 @@ does not migrate or reinterpret the existing package runtime.
 | Product-contract capability | V0.3-2 status |
 | --- | --- |
 | Mission records and governance | Supported through `/mission` |
+| Hill-controlled specialist iteration | Supported through `/mission` as non-authoritative disposition eligibility; it does not dispatch seats, mutate mission state, transfer ownership, or grant tool authority |
 | Mission journals and deterministic replay | Supported through `/journal` |
 | Mode references | Supported through `/modes` |
 | Review-workspace validation | Supported through `/workspace` |
@@ -68,7 +69,10 @@ broker and single-call May executor are supported only through `/local-tools`.
 The May executor exposes no Git, merge, deployment, release, network,
 caller-selected command, shell, or independent authority surface. Its local
 model tool loop remains unavailable until the next Issue #42 integration slice.
-Caller-supplied authority remains unsupported.
+Caller-supplied authority remains unsupported. Specialist iteration uses no
+repair count or hard cap: Hill supplies a closed evidence packet and requested
+disposition, while material scope, risk, authority, destructive/external,
+tradeoff, and final human gates fail to Coulson.
 The runner returns a validated, non-authoritative v5 or v6 effect candidate; it does
 not append entries or grant the candidate authority. The trusted supervision
 boundary supplies the entry ID and timestamp, rechecks exact mission, subject,

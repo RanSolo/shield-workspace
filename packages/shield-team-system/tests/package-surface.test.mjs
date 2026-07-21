@@ -53,6 +53,7 @@ test("loads every supported runtime specifier", async () => {
 
   assert.equal(root.MISSION_SCHEMA_VERSION, 2);
   assert.equal(mission.classifyMissionRisk, root.classifyMissionRisk);
+  assert.equal(typeof mission.evaluateSpecialistIteration, "function");
   assert.equal(journal.JOURNAL_SCHEMA_VERSION, 1);
   assert.equal(modes.MODE_MANIFEST_SCHEMA_VERSION, 1);
   assert.equal(typeof workspace.validateMissionWorkspaceInput, "function");
@@ -162,7 +163,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   }));
   await writeFile(join(fixture, "consumer.mts"), `
     import { MISSION_SCHEMA_VERSION, type MissionDecisionEvent, type MissionState } from "@shield/team-system";
-    import { classifyMissionRisk, type RiskFlags } from "@shield/team-system/mission";
+    import { classifyMissionRisk, evaluateSpecialistIteration, type RiskFlags, type SpecialistIterationEvidenceV1 } from "@shield/team-system/mission";
     import { JOURNAL_SCHEMA_VERSION, type JournalEntry } from "@shield/team-system/journal";
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
@@ -196,6 +197,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       merge: false, deploy: false, release: false, hillHighRisk: false,
     };
     const risk = classifyMissionRisk(flags);
+    const iterationEvidence = null as unknown as SpecialistIterationEvidenceV1;
+    const iterationEvaluation = evaluateSpecialistIteration(iterationEvidence);
     const journalSchema: 1 = JOURNAL_SCHEMA_VERSION;
     const modeSchema: 1 = MODE_MANIFEST_SCHEMA_VERSION;
     const entry = null as unknown as JournalEntry;
@@ -252,7 +255,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, runCycle, journaledRequest, deliver, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, runCycle, journaledRequest, deliver, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

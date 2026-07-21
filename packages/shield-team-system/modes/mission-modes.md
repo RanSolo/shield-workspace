@@ -25,6 +25,13 @@ Use a small core charter plus a mode module loaded at mission start.
 
 Maria Hill selects or confirms the mode at mission start and then follows the matching module.
 
+## Shared iteration rule
+
+Every mode uses the charter's Hill-controlled specialist iteration policy.
+Modes may add evidence or validation obligations, but they cannot replace the
+policy with a fixed repair count, grant routing authority, or bypass a material
+Coulson or final human gate.
+
 ## Dynamic composition rule
 
 - seats define identity, authority, and responsibility

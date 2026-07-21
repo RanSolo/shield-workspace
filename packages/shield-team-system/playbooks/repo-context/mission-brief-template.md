@@ -53,8 +53,13 @@
 - Current mission state: proposed / approved / paused / rejected / cancelled
 - Resume state if paused: proposed / approved / n/a
 - Coulson decision and history:
-- Completed repairs:
-- Repair hard cap (positive integer; missing or invalid defaults to 1):
+- Approved objective ID:
+- Current owning seat:
+- Latest specialist disposition: return_same_owner / reroute / advance /
+  escalate_coulson / n/a
+- Iteration evidence references:
+- Observable progress:
+- Material Coulson gate present: yes / no
 - Specialist dispatch authorized: yes / no
 - Activated modes:
 - Activation source: awaiting Coulson / Coulson approval / manual override /

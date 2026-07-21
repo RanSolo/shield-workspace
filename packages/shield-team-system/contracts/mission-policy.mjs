@@ -170,52 +170,150 @@ export function canDispatchSpecialists(input) {
   );
 }
 
-export function authorizeRepair(input) {
-  const fail = (reason, requiresCoulson = true) => ({
-    allowed: false,
+export const SPECIALIST_ITERATION_CONTRACT_VERSION = 1;
+
+export const SPECIALIST_ITERATION_DISPOSITIONS = Object.freeze([
+  "return_same_owner",
+  "reroute",
+  "advance",
+  "escalate_coulson",
+]);
+
+const ITERATION_FIELDS = Object.freeze([
+  "iterationContractVersion", "missionId", "subjectId", "approvedObjectiveId",
+  "currentObjectiveId", "artifactRevisionId", "approvedOwningSeatId",
+  "currentOwningSeatId",
+  "requestedDisposition", "proposedNextSeatId", "evidenceRefs",
+  "newConcreteEvidence", "observableProgress", "problemCategoryChanged",
+  "validationObligationsSatisfied", "sameUnresolvedFailureRepeating",
+  "materialScopeChange", "materialRiskIncrease", "authorityDecisionRequired",
+  "destructiveOrExternalEffect", "unresolvedTradeoff", "finalHumanGate",
+]);
+const ITERATION_BOOLEAN_FIELDS = Object.freeze(ITERATION_FIELDS.slice(11));
+const ITERATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/;
+const ITERATION_EVIDENCE_REF = /^[A-Za-z0-9][A-Za-z0-9._:/#@-]{0,255}$/;
+
+function closedDataObject(value, fields) {
+  if (!isPlainObject(value)) return null;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== fields.length || keys.some((key) => typeof key !== "string" || !fields.includes(key))) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const output = {};
+  for (const field of fields) {
+    const descriptor = descriptors[field];
+    if (!descriptor || !descriptor.enumerable || !("value" in descriptor) || descriptor.get || descriptor.set) return null;
+    output[field] = descriptor.value;
+  }
+  return output;
+}
+
+function iterationIdentifier(value) {
+  return typeof value === "string" && ITERATION_IDENTIFIER.test(value);
+}
+
+function iterationEvidenceRefs(value) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length < 1 || value.length > 16) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const expectedKeys = Array.from({ length: value.length }, (_, index) => String(index));
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== expectedKeys.length + 1 || !keys.includes("length") || expectedKeys.some((key) => !keys.includes(key))) return null;
+  const refs = [];
+  const seen = new Set();
+  for (const key of expectedKeys) {
+    const descriptor = descriptors[key];
+    if (!descriptor || !("value" in descriptor) || descriptor.get || descriptor.set || typeof descriptor.value !== "string" || !ITERATION_EVIDENCE_REF.test(descriptor.value) || seen.has(descriptor.value)) return null;
+    seen.add(descriptor.value);
+    refs.push(descriptor.value);
+  }
+  return Object.freeze(refs);
+}
+
+const INVALID_ITERATION = Object.freeze({
+  state: "invalid",
+  iterationContractVersion: SPECIALIST_ITERATION_CONTRACT_VERSION,
+  authority: "non_authoritative",
+  outcome: "escalate_coulson",
+  requestedDisposition: null,
+  nextSeatId: null,
+  requiresCoulson: true,
+  reason: "invalid_evidence_packet",
+});
+
+function iterationResult(input, outcome, nextSeatId, requiresCoulson, reason) {
+  return Object.freeze({
+    state: "evaluated",
+    iterationContractVersion: SPECIALIST_ITERATION_CONTRACT_VERSION,
+    authority: "non_authoritative",
+    missionId: input.missionId,
+    subjectId: input.subjectId,
+    approvedObjectiveId: input.approvedObjectiveId,
+    currentObjectiveId: input.currentObjectiveId,
+    artifactRevisionId: input.artifactRevisionId,
+    approvedOwningSeatId: input.approvedOwningSeatId,
+    currentOwningSeatId: input.currentOwningSeatId,
+    evidenceRefs: input.evidenceRefs,
+    outcome,
+    requestedDisposition: input.requestedDisposition,
+    nextSeatId,
     requiresCoulson,
     reason,
-    hardCap: 1,
   });
+}
 
-  if (!isPlainObject(input)) return fail("invalid_input");
+function evaluateSpecialistIterationUnchecked(inputValue) {
+  const input = closedDataObject(inputValue, ITERATION_FIELDS);
+  if (input === null || input.iterationContractVersion !== SPECIALIST_ITERATION_CONTRACT_VERSION) return INVALID_ITERATION;
+  for (const field of ["missionId", "subjectId", "approvedObjectiveId", "currentObjectiveId", "artifactRevisionId", "approvedOwningSeatId", "currentOwningSeatId"]) {
+    if (!iterationIdentifier(input[field])) return INVALID_ITERATION;
+  }
+  if (!SPECIALIST_ITERATION_DISPOSITIONS.includes(input.requestedDisposition) ||
+      (input.proposedNextSeatId !== null && !iterationIdentifier(input.proposedNextSeatId)) ||
+      input.approvedOwningSeatId === "coulson" || input.currentOwningSeatId === "coulson" ||
+      ITERATION_BOOLEAN_FIELDS.some((field) => typeof input[field] !== "boolean")) return INVALID_ITERATION;
+  input.evidenceRefs = iterationEvidenceRefs(input.evidenceRefs);
+  if (input.evidenceRefs === null) return INVALID_ITERATION;
 
-  const { completedRepairs, coulsonAuthorized, hardCap: suppliedHardCap } = input;
-  if (!Number.isInteger(completedRepairs) || completedRepairs < 0) {
-    return fail("invalid_completed_repairs");
+  if (input.approvedObjectiveId !== input.currentObjectiveId) return iterationResult(input, "escalate_coulson", "coulson", true, "objective_changed");
+  if (input.approvedOwningSeatId !== input.currentOwningSeatId) return iterationResult(input, "escalate_coulson", "coulson", true, "ownership_changed");
+  for (const [field, reason] of [
+    ["materialScopeChange", "material_scope_change"],
+    ["materialRiskIncrease", "material_risk_increase"],
+    ["authorityDecisionRequired", "authority_decision_required"],
+    ["destructiveOrExternalEffect", "destructive_or_external_effect"],
+    ["unresolvedTradeoff", "unresolved_tradeoff"],
+    ["finalHumanGate", "final_human_gate"],
+  ]) if (input[field]) return iterationResult(input, "escalate_coulson", "coulson", true, reason);
+
+  if (input.proposedNextSeatId === "coulson") return iterationResult(input, "hold_for_evidence", null, false, "material_gate_not_established");
+  if (input.requestedDisposition === "escalate_coulson") return iterationResult(input, "hold_for_evidence", null, false, "material_gate_not_established");
+  if (input.sameUnresolvedFailureRepeating) return iterationResult(input, "hold_for_evidence", null, false, "same_failure_repeating");
+  if (!input.newConcreteEvidence) return iterationResult(input, "hold_for_evidence", null, false, "new_evidence_required");
+  if (!input.observableProgress) return iterationResult(input, "hold_for_evidence", null, false, "observable_progress_required");
+
+  if (input.requestedDisposition === "return_same_owner") {
+    if (input.proposedNextSeatId !== input.currentOwningSeatId) return iterationResult(input, "hold_for_evidence", null, false, "same_owner_required");
+    if (input.problemCategoryChanged) return iterationResult(input, "hold_for_evidence", null, false, "category_change_requires_reroute");
+    if (input.validationObligationsSatisfied) return iterationResult(input, "hold_for_evidence", null, false, "validated_work_should_advance");
+    return iterationResult(input, "eligible", input.currentOwningSeatId, false, "evidence_backed_same_owner");
   }
 
-  const hardCap =
-    Number.isInteger(suppliedHardCap) && suppliedHardCap > 0 ? suppliedHardCap : 1;
+  if (input.requestedDisposition === "reroute") {
+    if (input.proposedNextSeatId === null || input.proposedNextSeatId === input.currentOwningSeatId) return iterationResult(input, "hold_for_evidence", null, false, "distinct_reroute_seat_required");
+    if (!input.problemCategoryChanged) return iterationResult(input, "hold_for_evidence", null, false, "category_change_not_established");
+    if (input.validationObligationsSatisfied) return iterationResult(input, "hold_for_evidence", null, false, "validated_work_should_advance");
+    return iterationResult(input, "eligible", input.proposedNextSeatId, false, "evidence_backed_reroute");
+  }
 
-  if (completedRepairs >= hardCap) {
-    return {
-      allowed: false,
-      requiresCoulson: false,
-      reason: "hard_cap_reached",
-      hardCap,
-    };
+  if (input.proposedNextSeatId === null || input.proposedNextSeatId === input.currentOwningSeatId) return iterationResult(input, "hold_for_evidence", null, false, "next_stage_seat_required");
+  if (input.problemCategoryChanged) return iterationResult(input, "hold_for_evidence", null, false, "category_change_requires_reroute");
+  if (!input.validationObligationsSatisfied) return iterationResult(input, "hold_for_evidence", null, false, "validation_not_satisfied");
+  return iterationResult(input, "eligible", input.proposedNextSeatId, false, "validation_gate_satisfied");
+}
+
+export function evaluateSpecialistIteration(inputValue) {
+  try {
+    return evaluateSpecialistIterationUnchecked(inputValue);
+  } catch {
+    return INVALID_ITERATION;
   }
-  if (completedRepairs === 0) {
-    return {
-      allowed: true,
-      requiresCoulson: false,
-      reason: "automatic_repair",
-      hardCap,
-    };
-  }
-  if (coulsonAuthorized === true) {
-    return {
-      allowed: true,
-      requiresCoulson: false,
-      reason: "manual_repair",
-      hardCap,
-    };
-  }
-  return {
-    allowed: false,
-    requiresCoulson: true,
-    reason: "coulson_authorization_required",
-    hardCap,
-  };
 }
