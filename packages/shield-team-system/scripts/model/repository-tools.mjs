@@ -3,6 +3,13 @@ import { open, lstat, realpath, opendir, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import {
+  isSensitiveRepositoryPath,
+  SENSITIVE_REPOSITORY_RG_ARGUMENTS,
+} from "./repository-sensitive-policy.mjs";
+
+export { isSensitiveRepositoryPath } from "./repository-sensitive-policy.mjs";
+
 export const REPOSITORY_TOOL_LIMITS = Object.freeze({
   pathBytes: 512,
   patternBytes: 512,
@@ -18,8 +25,11 @@ export const REPOSITORY_TOOL_LIMITS = Object.freeze({
   searchTimeoutMs: 5_000,
 });
 
-const SENSITIVE_SEGMENTS = new Set([".git", ".ssh", ".aws", ".gnupg", "credentials"]);
-const SENSITIVE_BASENAME = /^(?:\.env(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\..*)?|.*\.(?:pem|key|p12|pfx)|credentials(?:\..*)?|tokens?(?:\..*)?|auth(?:entication)?(?:\..*)?)$/iu;
+const SENSITIVE_TOOL_ENFORCEMENT = Object.freeze({
+  readFile: isSensitiveRepositoryPath,
+  listFiles: isSensitiveRepositoryPath,
+  searchRepo: SENSITIVE_REPOSITORY_RG_ARGUMENTS,
+});
 
 function result(code, details = {}) {
   return { state: code === "completed" ? "completed" : "denied", code, ...details };
@@ -66,12 +76,6 @@ export function validateRepositoryRelativePath(value, { allowDot = false } = {})
   return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
-export function isSensitiveRepositoryPath(value) {
-  if (typeof value !== "string") return true;
-  const segments = value.split("/").filter(Boolean).map((segment) => segment.toLowerCase());
-  return segments.some((segment) => SENSITIVE_SEGMENTS.has(segment) || SENSITIVE_BASENAME.test(segment));
-}
-
 async function verifyRoot(root) {
   try {
     const [canonical, info] = await Promise.all([realpath(root.input), stat(root.input)]);
@@ -82,7 +86,7 @@ async function verifyRoot(root) {
 }
 
 async function resolveConfined(root, relativePath, { allowDot = false, finalType = "any" } = {}) {
-  if (!validateRepositoryRelativePath(relativePath, { allowDot }) || isSensitiveRepositoryPath(relativePath)) return result("path_denied");
+  if (!validateRepositoryRelativePath(relativePath, { allowDot })) return result("path_denied");
   if (!(await verifyRoot(root))) return result("root_identity_changed");
   const segments = relativePath === "." ? [] : relativePath.split("/");
   let current = root.canonical;
@@ -147,6 +151,9 @@ export async function createRepositoryTools(repositoryRoot, options = {}) {
 
   const readFile = async ({ path }, operation = {}) => {
     if (deadlineExpired(operation)) return result("session_timeout");
+    if (!validateRepositoryRelativePath(path) || SENSITIVE_TOOL_ENFORCEMENT.readFile(path)) {
+      return result("path_denied");
+    }
     const checked = await resolveConfined(root, path, { finalType: "file" });
     if (checked.state !== "completed") return checked;
     let handle;
@@ -180,6 +187,8 @@ export async function createRepositoryTools(repositoryRoot, options = {}) {
 
   const listFiles = async ({ directory }, operation = {}) => {
     if (deadlineExpired(operation)) return result("session_timeout");
+    if (!validateRepositoryRelativePath(directory, { allowDot: true }) ||
+        SENSITIVE_TOOL_ENFORCEMENT.listFiles(directory)) return result("path_denied");
     const checked = await resolveConfined(root, directory, { allowDot: true, finalType: "directory" });
     if (checked.state !== "completed") return checked;
     const entries = [];
@@ -203,7 +212,7 @@ export async function createRepositoryTools(repositoryRoot, options = {}) {
       children.sort((left, right) => left.name.localeCompare(right.name));
       for (const child of children) {
         const childRelative = next.relativePath ? `${next.relativePath}/${child.name}` : child.name;
-        if (child.isSymbolicLink() || isSensitiveRepositoryPath(childRelative)) continue;
+        if (child.isSymbolicLink() || SENSITIVE_TOOL_ENFORCEMENT.listFiles(childRelative)) continue;
         if (child.isDirectory()) pending.push({ absolute: join(next.absolute, child.name), relativePath: childRelative });
         else if (child.isFile()) entries.push(childRelative);
         if (entries.length > REPOSITORY_TOOL_LIMITS.listItems) { truncated = true; break; }
@@ -228,14 +237,7 @@ export async function createRepositoryTools(repositoryRoot, options = {}) {
     if (!rgInfo?.isFile() || rootIdentity(rgInfo) !== rg.identity) return result("rg_identity_changed");
     const args = [
       "--no-config", "--hidden", "--color", "never", "--line-number", "--no-heading",
-      "--glob", "!**/.[gG][iI][tT]/**", "--glob", "!**/.[eE][nN][vV]*",
-      "--glob", "!**/.[sS][sS][hH]/**", "--glob", "!**/.[aA][wW][sS]/**",
-      "--glob", "!**/.[gG][nN][uU][pP][gG]/**", "--glob", "!**/*.[pP][eE][mM]",
-      "--glob", "!**/*.[kK][eE][yY]", "--glob", "!**/*.[pP]12", "--glob", "!**/*.[pP][fF][xX]",
-      "--glob", "!**/[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL][sS]*",
-      "--glob", "!**/[tT][oO][kK][eE][nN]*", "--glob", "!**/[aA][uU][tT][hH]*",
-      "--glob", "!**/[iI][dD]_[rR][sS][aA]*", "--glob", "!**/[iI][dD]_[dD][sS][aA]*",
-      "--glob", "!**/[iI][dD]_[eE][cC][dD][sS][aA]*", "--glob", "!**/[iI][dD]_[eE][dD]25519*",
+      ...SENSITIVE_TOOL_ENFORCEMENT.searchRepo,
       "--", pattern, ".",
     ];
     const execution = await new Promise((resolveExecution) => {
