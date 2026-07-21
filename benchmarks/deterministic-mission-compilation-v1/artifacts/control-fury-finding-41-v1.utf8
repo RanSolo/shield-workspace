@@ -1,0 +1,5 @@
+### FURY-41-CONFORMANCE-001 — Unicode case-fold compatibility regression
+
+The prior direct policy used Unicode-aware `/iu` matching. The replacement uses ASCII-only folding, so paths formerly denied are now readable, listed, and searchable. Independently reproduced examples: `private.Key`, `id_rſa`, and `toKen.json`. This weakens the accepted Issue #34 boundary and violates the frozen compatibility rule; parity cannot be achieved by weakening the stricter tools.
+
+Required disposition: preserve the former Unicode case-fold equivalents in the canonical direct matcher and generated ripgrep exclusions, with three-tool parity tests for the affected equivalence classes, or obtain explicit Coulson authority to narrow the threat boundary.

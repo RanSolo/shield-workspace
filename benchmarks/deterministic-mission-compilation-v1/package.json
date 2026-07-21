@@ -1,0 +1,16 @@
+{
+  "name": "@shield/deterministic-mission-compilation-v1",
+  "version": "0.0.0-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "construct": "node scripts/construct.mjs",
+    "test": "npm run build && node --test test/stage-a-v1.test.mjs",
+    "static": "node scripts/static-boundary-check.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "format": "stage-a-v1-construction-identity",
+  "identities": {
+    "experiment": "deterministic-mission-compilation-v1",
+    "trial": "stage-a-trial-002",
+    "ir": "mission-dispatch-ir.v1",
+    "envelope": "validated-dispatch.v1",
+    "validator": "shield-dispatch-validator@0.2.0-experiment",
+    "compiler": "shield-compiler@0.2.0-experiment",
+    "renderer": "canonical-chat-v2",
+    "controlArtifact": "human-control-handoff.v1",
+    "controlAssembler": "shield-control-assembler@0.1.0-experiment",
+    "assembly": "control-assembly.v1",
+    "sharedInstructions": "shared-runtime-instructions.v1",
+    "wrapper": "common-runtime-wrapper.v1",
+    "messageEnvelope": "runtime-message-envelope.v1",
+    "registry": "shield-dispatch-registry.v1",
+    "target": "codex-text.v1",
+    "provenance": "dispatch-provenance.v1",
+    "manifest": "compilation-manifest.v1",
+    "receipt": "dispatch-validation-receipt.v1"
+  },
+  "irDigest": "a0defada20c70e988f8074c9c6078abfef22761369d0dffe17cbde49a5a1ec24",
+  "controlSourceOrder": [
+    "control:fury-finding-41-v1",
+    "control:coulson-authorization-41-v1",
+    "control:validation-and-output-41-v1"
+  ],
+  "controlSourceDigests": [
+    {
+      "artifactId": "control:fury-finding-41-v1",
+      "digest": "9ed260496b3e5172ce5dc32ecb32e5d571edabce83dc5048b18cd65c1e0f13bf"
+    },
+    {
+      "artifactId": "control:coulson-authorization-41-v1",
+      "digest": "05e56caba79d9ed9c4f454757ebb0f9d1a5aefa3c8ad7e98210bc65d02cd9110"
+    },
+    {
+      "artifactId": "control:validation-and-output-41-v1",
+      "digest": "f3990844ddd7a3b77505e2a2e0be7c2a9ef033472687c7519b3ca841c48def83"
+    }
+  ],
+  "controlAssemblySpecDigest": "c1686829d0f983402b78f2aee5be8053530d06e4f856afa421941bf39e39c1f5",
+  "controlPromptDigest": "1a163698ce8671d3430e9732e6dda46ceca345dada7ed4cd4fdeaeefa284ea06",
+  "compiledPromptDigest": "941805842048682f559f235bde05ef598e629f3ecf621d49bd480660b877199e",
+  "compiledProvenanceDigest": "1564fa7408ec96e618df7ef3bf52b52573987e562944a320d7e943f62d012e3f",
+  "compiledManifestDigest": "1423d9e29be91c8ab49cee91281069671d3a0514a24e1dd7e2850a567a8ed3c6",
+  "sharedInstructionDigest": "5963f3292ef48940a568e8dd91237b2b30e9209fb7af61bf229bd3c00f84eea0",
+  "commonWrapperDigest": "e7b1501bc2bc2a9ea80982c82e73457cdd28d83699b70a454f7cd43f2ddac52f",
+  "controlRuntimeEnvelopeDigest": "36dd8610d988b06b829e35a8f65a3a88ac118d80003ec4265f957ff21794666d",
+  "compiledRuntimeEnvelopeDigest": "eff850e455a16b2a34d665c2f516142ab0f9e3744686a068516e8b289c611c9f",
+  "artifactDigests": [
+    {
+      "name": "control-prompt.utf8",
+      "digest": "430ab5a60ceb82ece87caa67016d5976d2fa12d1b7c706425ef4f42e63ffd0b9"
+    },
+    {
+      "name": "compiled-prompt.utf8",
+      "digest": "ae88f4ab2c3d3d0ab2706aa866f73812ef8103ad6477def8389f44f44e2ab91f"
+    },
+    {
+      "name": "compiled-provenance.json",
+      "digest": "09e0f43380e32129f4dbdc27f8d5e38715e548f4f193bb56050c69b98182d246"
+    },
+    {
+      "name": "compiled-manifest.json",
+      "digest": "aeedebf63cd20fff1e25d722db7aeb8742650b88e5525709a6c39e3ba1631861"
+    },
+    {
+      "name": "shared-runtime-instructions.utf8",
+      "digest": "a8b0990eaf7b5054da6b56247f8c79bb93fe3c240a8eef944e6f9a7dee69fcea"
+    },
+    {
+      "name": "common-runtime-wrapper.utf8",
+      "digest": "dcd8fb3434d87f9a4bcdb11ba424f284a05ba75580aaff6e9e4fc882f7a59f0c"
+    },
+    {
+      "name": "control-runtime-envelope.json",
+      "digest": "3d4a58605970ac7b9c033cca5e2aa35cac0f9305ca4eb47f1590e5ecbbb18574"
+    },
+    {
+      "name": "compiled-runtime-envelope.json",
+      "digest": "3a955383b794167f2942c6f79891f8945b17c19e82ce26e15dbb6b1ac71583d8"
+    },
+    {
+      "name": "control-assembly-spec.json",
+      "digest": "7a0eaef84592c96c0e82d4c95c37d19d21bb81aa295d1daaeba969af982e584f"
+    },
+    {
+      "name": "runtime-message-envelope-spec.json",
+      "digest": "881607fc3c253f29cd2aaf38e90dd3d36951d0b450aae42e4e1a4eedb5b2874c"
+    },
+    {
+      "name": "renderer-spec.json",
+      "digest": "a4e207cf8e9e79e86f2b45e0e61d1a297dea3233366d813e41a30d593b8b6a3f"
+    },
+    {
+      "name": "target-profile.json",
+      "digest": "acbcf6aad13c7037f3e7149f9344ac2b7223fe293bee2f227c460730889da72d"
+    }
+  ]
+}

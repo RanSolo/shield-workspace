@@ -1,0 +1,1 @@
+{"format":"runtime-message-envelope.v1","encoding":"canonical-json-utf8","messageOrder":["system","user"],"systemAssembly":["common-runtime-wrapper.v1","shared-runtime-instructions.v1"],"userAssembly":"exact-arm-prompt-bytes","additionalMessages":"forbidden","normalization":"none","targetProfileId":"codex-text.v1"}
