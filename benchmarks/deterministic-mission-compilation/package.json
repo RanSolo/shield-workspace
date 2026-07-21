@@ -1,0 +1,16 @@
+{
+  "name": "@shield/benchmark-deterministic-mission-compilation",
+  "version": "0.1.0-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "check": "npm run build && node scripts/static-boundary-check.mjs",
+    "report": "npm run build && node scripts/construction-report.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "20.12.12",
+    "typescript": "5.4.5"
+  }
+}
