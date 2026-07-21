@@ -1,0 +1,78 @@
+{
+  "resultVersion": "deterministic-mission-compilation-stage-a-result.v2",
+  "experimentId": "deterministic-mission-compilation-v2",
+  "trialId": "stage-a-trial-003",
+  "candidateId": "deterministic-mission-compilation-candidate.v2",
+  "sourceRevision": "8a0543bf5ae7e2c190f94e94e7336fb8b4399304",
+  "freezeRevision": "c2d40ea3b7468dfe43acc50186123d4e45446c4d",
+  "stageA": "PASS",
+  "historicalEvidence": {
+    "v0Preserved": true,
+    "failedV1Preserved": true,
+    "v0CombinedWithV2": false,
+    "failedV1CombinedWithV2": false
+  },
+  "frozenIdentity": {
+    "artifactBindings": { "passed": 25, "failed": 0 },
+    "semanticBindings": { "passed": 3, "failed": 0 },
+    "runtimeEnvelopeSpecSha256": "268261bf4b8b08d9c978cc58500977702186f230f8d9fb97c4b0bafbdfd51aef",
+    "sourceTreeSha256": "e7b85d971fda6fb533293b4a2cacc7780e3cdd393aa7909cd0b6603e31e567ee",
+    "manifestDerivedFromExactBytes": true,
+    "expectedArtifactHashesAcceptedAsGeneratorInput": false,
+    "sourceCommitDerivedFromRepository": true,
+    "postFreezeSourceChanges": false,
+    "artifactRegeneration": "BYTE_IDENTICAL"
+  },
+  "validation": {
+    "cleanMeasurementExtraction": true,
+    "v0Tests": { "passed": 8, "failed": 0, "skipped": 0 },
+    "v1Tests": { "passed": 15, "failed": 0, "skipped": 0 },
+    "v2Tests": { "passed": 6, "failed": 0, "skipped": 0 },
+    "focusedDigestRegression": {
+      "mistypedDigestFailsClosed": true,
+      "substitutedSpecificationFailsClosed": true,
+      "malformedDigestFailsClosed": true,
+      "crossArmSubstitutionFailsClosed": true,
+      "appendedRuntimeMessageFailsClosed": true
+    },
+    "production": {
+      "teamSystemPassed": 218,
+      "multibandPassed": 9,
+      "failed": 0,
+      "nxCacheHits": 0
+    }
+  },
+  "constructionCorrectionsBeforeFreeze": [
+    {
+      "finding": "The initial typo regression replaced a digest character with the same value.",
+      "disposition": "Changed the test to always flip the first digest nibble and reran construction."
+    },
+    {
+      "finding": "The first uncommitted manifest draft accepted a manually supplied source commit and exposed a transcription hazard.",
+      "disposition": "Deleted the uncommitted draft, removed the source-commit argument, derived HEAD from Git, required committed inputs, created a new source commit, and restarted clean construction before freeze."
+    }
+  ],
+  "retainedIsolation": {
+    "controlRepository": "/private/tmp/shield-dmc-control.hzhY49",
+    "compiledRepository": "/private/tmp/shield-dmc-compiled.6JakXb",
+    "baseRevision": "afdbf71b8ece2a2506a0b6a7b213267c7896f8d1",
+    "clean": true,
+    "detachedBaseOnly": true,
+    "remotesPresent": false,
+    "acceptedCommitAbsent": true,
+    "acceptedTreeAbsent": true,
+    "workspaceInaccessibleFromArms": true,
+    "oppositeArmInaccessible": true,
+    "sealedOutputInaccessible": true
+  },
+  "modelInvocations": {
+    "may": 0,
+    "stageBTotal": 0
+  },
+  "outcomes": {
+    "governanceEquivalent": "NOT_EVALUATED_STAGE_A",
+    "implementationQuality": "NOT_EVALUATED_STAGE_A",
+    "stageB": "BLOCKED_PENDING_FURY_CONFORMANCE",
+    "stageBEligibility": "NOT_YET_GRANTED"
+  }
+}
