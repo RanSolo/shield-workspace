@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,6 +117,18 @@ async function derive(sourceCommit) {
   });
 }
 
+function deriveSourceCommitFromRepository() {
+  const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: workspaceRoot,
+    encoding: "utf8",
+  }).trim();
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit)) throw new Error("SOURCE_COMMIT_MALFORMED");
+  execFileSync("git", ["diff", "--quiet", "HEAD", "--", ...bindingPaths, "benchmarks/deterministic-mission-compilation-v2"], {
+    cwd: workspaceRoot,
+  });
+  return sourceCommit;
+}
+
 async function verify(manifest) {
   if (manifest.freezeManifestVersion !== IDS.freeze || manifest.experimentId !== IDS.experiment || manifest.candidateId !== IDS.candidate) {
     throw new Error("FREEZE_IDENTITY_MISMATCH");
@@ -130,7 +143,8 @@ async function verify(manifest) {
 
 const [mode, value] = process.argv.slice(2);
 if (mode === "--write-freeze") {
-  const manifest = await derive(value);
+  if (value !== undefined) throw new Error("SOURCE_COMMIT_ARGUMENT_FORBIDDEN");
+  const manifest = await derive(deriveSourceCommitFromRepository());
   await writeFile(freezePath, `${JSON.stringify(manifest, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify({ state: "WROTE", path: freezePath, artifactBindings: manifest.artifactBindings.length })}\n`);
 } else if (mode === "--verify") {
@@ -140,5 +154,5 @@ if (mode === "--write-freeze") {
   const bindings = Object.freeze(await Promise.all(bindingPaths.map(fileBinding)));
   process.stdout.write(`${JSON.stringify({ state: "PASS", artifactBindings: bindings.length, semantic: await semanticChecks(bindings), sourceTreeSha256: await packageTreeDigest() })}\n`);
 } else {
-  throw new Error("USAGE: --verify-source | --write-freeze <source-commit> | --verify [manifest-path]");
+  throw new Error("USAGE: --verify-source | --write-freeze | --verify [manifest-path]");
 }
