@@ -60,6 +60,11 @@ const EXACT_SEGMENT_PATH_CASES = Object.freeze([
   [".GNUPG", "shield-denied-segment-03"],
   ["CREDENTIALS", "shield-denied-segment-04"],
 ]);
+const UNICODE_CASE_EQUIVALENT_PATH_CASES = Object.freeze([
+  ["private.Key", "shield-denied-unicode-00"],
+  ["id_rſa", "shield-denied-unicode-01"],
+  ["toKen.json", "shield-denied-unicode-02"],
+]);
 const SAFE_PATH_CASES = Object.freeze([
   ["src/visible.txt", "shield-visible-00"],
   ["docs/authors.md", "shield-visible-01"],
@@ -291,6 +296,17 @@ test("exact sensitive-segment files have read, list, and search parity", async (
   const tools = await createRepositoryTools(root, { rgExecutable: rg });
   const observation = await observeParity(tools, EXACT_SEGMENT_PATH_CASES);
   assert.deepEqual(parityMismatches(observation, EXACT_SEGMENT_PATH_CASES), []);
+});
+
+test("simple Unicode case equivalents preserve read, list, and search parity", async (context) => {
+  const rg = await findRg();
+  assert.ok(rg, "trusted rg is required for Unicode case-equivalence parity acceptance");
+  const root = await mkdtemp(join(tmpdir(), "shield-repository-unicode-case-parity-"));
+  context.after(async () => { await rm(root, { recursive: true, force: true }); });
+  await writeCases(root, [...UNICODE_CASE_EQUIVALENT_PATH_CASES, ...SAFE_PATH_CASES]);
+  const tools = await createRepositoryTools(root, { rgExecutable: rg });
+  const observation = await observeParity(tools, UNICODE_CASE_EQUIVALENT_PATH_CASES);
+  assert.deepEqual(parityMismatches(observation, UNICODE_CASE_EQUIVALENT_PATH_CASES), []);
 });
 
 test("one-tool source mutations produce only the frozen tool/path/marker mismatch", async (context) => {

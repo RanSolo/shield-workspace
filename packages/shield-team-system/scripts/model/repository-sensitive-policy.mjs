@@ -82,12 +82,26 @@ function asciiFold(value) {
   return value.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
 }
 
-function globLiteral(value) {
-  return [...value].map((character) => {
-    if (character === ".") return "[.]";
-    if (/[a-z]/u.test(character)) return `[${character}${character.toUpperCase()}]`;
-    return character;
-  }).join("");
+function simpleUnicodeFold(value) {
+  return value.replace(/[A-Z\u017f\u212a]/gu, (letter) => {
+    if (letter === "ſ") return "s";
+    if (letter === "K") return "k";
+    return letter.toLowerCase();
+  });
+}
+
+function globLiterals(value, { simpleUnicodeCaseEquivalence = false } = {}) {
+  let literals = [""];
+  for (const character of value) {
+    let fragments;
+    if (character === ".") fragments = ["[.]"];
+    else if (character === "k" && simpleUnicodeCaseEquivalence) fragments = ["[kK]", "K"];
+    else if (character === "s" && simpleUnicodeCaseEquivalence) fragments = ["[sS]", "ſ"];
+    else if (/[a-z]/u.test(character)) fragments = [`[${character}${character.toUpperCase()}]`];
+    else fragments = [character];
+    literals = literals.flatMap((literal) => fragments.map((fragment) => `${literal}${fragment}`));
+  }
+  return literals;
 }
 
 function compilePolicy(input) {
@@ -100,8 +114,8 @@ function compilePolicy(input) {
     if (typeof value !== "string") return true;
     for (const rawSegment of value.split("/")) {
       if (rawSegment.length === 0) continue;
-      const segment = asciiFold(rawSegment);
-      if (segments.has(segment)) return true;
+      if (segments.has(asciiFold(rawSegment))) return true;
+      const segment = simpleUnicodeFold(rawSegment);
       for (const stem of basenameStems) {
         if (segment === stem || segment.startsWith(`${stem}.`)) return true;
       }
@@ -113,15 +127,18 @@ function compilePolicy(input) {
 
   const globs = [];
   for (const segment of policy.deniedSegments) {
-    const literal = globLiteral(segment);
+    const [literal] = globLiterals(segment);
     globs.push(`!**/${literal}`, `!**/${literal}/**`);
   }
   for (const stem of policy.deniedBasenameStems) {
-    const literal = globLiteral(stem);
-    globs.push(`!**/${literal}`, `!**/${literal}[.]*`);
+    for (const literal of globLiterals(stem, { simpleUnicodeCaseEquivalence: true })) {
+      globs.push(`!**/${literal}`, `!**/${literal}[.]*`);
+    }
   }
   for (const extension of policy.deniedExtensions) {
-    globs.push(`!**/*.${globLiteral(extension)}`);
+    for (const literal of globLiterals(extension, { simpleUnicodeCaseEquivalence: true })) {
+      globs.push(`!**/*.${literal}`);
+    }
   }
 
   return Object.freeze({
