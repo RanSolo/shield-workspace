@@ -75,6 +75,31 @@ results are bounded, and raw tool output is released to the model only after the
 audited executor reports `completed`. Final model prose is labeled untrusted
 model output rather than verified reconnaissance evidence.
 
+## Governed May implementation calls
+
+`@shield/team-system/local-tools` also exports `runMayToolCall` as the first
+Issue #42 executor slice. It accepts exactly one `writeFile` or `runValidation`
+call from a trusted host:
+
+- `writeFile` requires a host-approved relative path, the bound workspace Git
+  revision, and either the exact current SHA-256 or an explicit `absent`
+  precondition;
+- `runValidation` accepts only a host-owned command ID whose executable,
+  argument vector, timeout, and executable identity were pinned before the
+  permission request;
+- both operations derive an exact effect key, receive a fresh Issue #10
+  permission decision, and release their bounded result only after the
+  invocation and result audits are verified.
+
+The model cannot select a repository root, executable, arguments, environment,
+working directory, approved file list, revision, or authority context. The
+executor has no shell, GitHub, merge, deployment, release, or external
+communication tool.
+
+This slice is a host-callable executor contract, not yet the iterative May LM
+Studio session. Issue #42 remains open until the model-to-executor loop proves
+the complete inspect, edit, validate, correct, and report workflow.
+
 Role aliases map to the seat prompts in `agents/`: `orchestrator`/`hill`/`stinger`,
 `investigator`/`daisy`/`jester`, `architect`/`fury`/`viper`,
 `implementer`/`may`/`iceman`, `reviewer`/`fitz`/`goose`, `product`/`simmons`,

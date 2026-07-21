@@ -75,6 +75,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof permissionAudit.replayPermissionAuditLedger, "function");
   assert.equal(typeof localTools.runLocalToolSession, "function");
   assert.equal(localTools.DAISY_TOOL_DEFINITIONS.length, 3);
+  assert.equal(typeof localTools.runMayToolCall, "function");
+  assert.equal(localTools.MAY_TOOL_DEFINITIONS.length, 2);
   assert.equal(typeof github.deliverGitHubCommunication, "function");
   assert.equal(typeof github.prepareDeliveryWorkspaceForDispatch, "function");
   assert.equal(github.FURY_PLAN_GATE_CONTRACT_VERSION, "fury.plan-gate.v1");
@@ -126,6 +128,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/permission-audit-v1.d.mts",
     "public/local-tools.mjs",
     "public/local-tools.d.mts",
+    "scripts/model/may-tool-executor.mjs",
     "github/adapter-v1.mjs",
     "github/delivery-workspace.mjs",
     "github/pr-workspace.mjs",
@@ -171,7 +174,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
-    import { runLocalToolSession, type LocalToolSessionRequest } from "@shield/team-system/local-tools";
+    import { runLocalToolSession, runMayToolCall, type LocalToolSessionRequest, type MayToolCallRequest, type MayToolExecutorDependencies } from "@shield/team-system/local-tools";
     import {
       FURY_PLAN_GATE_CONTRACT_VERSION,
       deliverGitHubCommunication,
@@ -224,6 +227,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const replayAudit = replayPermissionAuditLedger;
     const localToolRequest = null as unknown as LocalToolSessionRequest;
     const runTools = runLocalToolSession;
+    const mayToolRequest = null as unknown as MayToolCallRequest;
+    const mayToolDependencies = null as unknown as MayToolExecutorDependencies;
+    const runMayTools = runMayToolCall;
     const runCycle = runRunnerCycle;
     const journaledRequest = null as unknown as JournaledCommunicationRequest;
     const deliver = deliverGitHubCommunication;
@@ -246,7 +252,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, runCycle, journaledRequest, deliver, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, runCycle, journaledRequest, deliver, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

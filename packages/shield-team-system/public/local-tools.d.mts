@@ -78,3 +78,77 @@ export function runLocalToolSession(
   request: LocalToolSessionRequest,
   dependencies: LocalToolSessionDependencies,
 ): Promise<LocalToolSessionResult>;
+
+export interface MayToolCallRequest {
+  sessionId: string;
+  toolCallId: string;
+  toolName: "writeFile" | "runValidation";
+  arguments: string;
+  repositoryRoot: string;
+  baseRevision: string;
+}
+
+export interface MayToolSlotRequest {
+  sessionId: string;
+  toolCallId: string;
+  toolName: "writeFile" | "runValidation";
+  actionId: "repository.write_file" | "repository.run_validation";
+  effectClass: "behavioral_implementation" | "verification";
+  capability: "filesystem_write" | "process_execute";
+  effectKey: string;
+}
+
+export interface MayValidationCommand {
+  commandId: string;
+  executable: string;
+  args: string[];
+  timeoutMs: number;
+}
+
+export interface MayToolExecutorDependencies {
+  ledgerId: string;
+  repositoryId: string;
+  reasoningRuntimeId: string;
+  toolExecutorId: string;
+  approvedFiles: string[];
+  validationCommands: MayValidationCommand[];
+  monotonicNow?(): number;
+  nextCallSlot(request: Readonly<MayToolSlotRequest>): RunnerCyclePlan | Promise<RunnerCyclePlan>;
+  getAuthorizationContext(plan: RunnerCyclePlan): PermissionInvocationContext | Promise<PermissionInvocationContext>;
+  getExecutionContext(decision: RunnerPermissionDecision): PermissionInvocationContext | Promise<PermissionInvocationContext>;
+  appendIfAbsent(record: PermissionAuditRecord): PermissionAuditReceipt | Promise<PermissionAuditReceipt>;
+  nextResultRecordId(decision: RunnerPermissionDecision): string;
+  now(): string;
+  readWorkspaceRevision(canonicalRoot: string): string | Promise<string>;
+  nextTemporaryName(request: Readonly<Pick<MayToolCallRequest, "sessionId" | "toolCallId">>): string;
+}
+
+export interface MayFileWriteResult {
+  state: "completed";
+  code: "file_written";
+  path: string;
+  bytes: number;
+  sha256: string;
+  attribution: "host_observed_tool_result";
+}
+
+export interface MayValidationResult {
+  state: "completed";
+  code: "validation_completed";
+  commandId: string;
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  attribution: "host_observed_tool_result";
+}
+
+export const MAY_EXECUTOR_LIMITS: Readonly<Record<string, number>>;
+export const MAY_TOOL_MAPPINGS: Readonly<Record<string, Readonly<{ actionId: string; effectClass: "behavioral_implementation" | "verification"; capability: string }>>>;
+export const MAY_TOOL_DEFINITIONS: readonly Readonly<Record<string, unknown>>[];
+
+export function runMayToolCall(
+  request: MayToolCallRequest,
+  dependencies: MayToolExecutorDependencies,
+): Promise<MayFileWriteResult | MayValidationResult>;

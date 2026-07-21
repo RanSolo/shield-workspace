@@ -41,6 +41,9 @@ contexts, or command definitions.
   the trusted host.
 - The write-and-test executor has a separate executor identity.
 - Every tool call consumes a unique host-issued runner slot.
+- The requested effect key binds the exact path, expected digest, and content
+  digest for writes, or the exact command ID, executable identity, arguments,
+  and timeout for validation.
 - Every tool call receives a fresh permission decision immediately before
   invocation.
 - The decision and invocation contexts must match the mission, subject, seat,
