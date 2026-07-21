@@ -207,7 +207,143 @@ substitution, and expanded correction cycles remain unauthorized.
 
 ## May implementation blueprint
 
-This section is intentionally unscored and empty at initial publication. After
-the initial brief, benchmark manifest, and evidence-log schema are committed
-and the draft PR receipt is verified, May owns the complete blueprint added
-here. Hill must not author or repair that content.
+### Implementation slice
+
+Replace the two independently maintained sensitive-path implementations in
+`repository-tools.mjs` with one internal, declarative policy compiled into both
+forms required by the existing tools. The change remains inside the Issue #34
+repository-tool implementation and its focused tests. It does not add a
+package subpath, public broker capability, runtime option, caller-selectable
+policy, or new authority source.
+
+### Canonical representation and compilation
+
+Add `scripts/model/repository-sensitive-policy.mjs` as the single production
+policy source. Its closed, frozen representation contains three unique,
+lowercase ASCII literal sets:
+
+- exact denied path segments: `.git`, `.ssh`, `.aws`, `.gnupg`, and
+  `credentials`;
+- basenames denied either exactly or with a dot suffix: `.env`,
+  `credentials`, `token`, `tokens`, `auth`, `authentication`, `id_rsa`,
+  `id_dsa`, `id_ecdsa`, and `id_ed25519`;
+- denied final extensions: `pem`, `key`, `p12`, and `pfx`.
+
+The overlap for `credentials` is intentional: the segment rule denies a
+directory and all descendants, while the basename rule also denies names such
+as `credentials.json`. The policy does not use unanchored substring matching;
+`authors.md`, `tokenization.md`, and `keys/public.txt` therefore remain safe.
+
+At module initialization, a private compiler validates that the policy has the
+exact closed fields, dense arrays, unique non-empty lowercase ASCII literals,
+and no glob metacharacters outside the permitted leading dot. A violated
+developer invariant throws before tools can be created. Callers cannot supply
+or mutate the policy.
+
+The compiler produces two immutable artifacts from that one representation:
+
+1. A direct-path predicate. It splits the repository-relative path into
+   segments, applies ASCII case folding, and denies any exact sensitive
+   segment, any exact/dot-suffixed sensitive basename, or any denied final
+   extension. `repository-tools.mjs` continues to export
+   `isSensitiveRepositoryPath` as a compatibility-preserving re-export.
+2. A deterministic array of ripgrep exclusion globs. Literal letters are
+   expanded into explicit case pairs, literal dots are escaped as glob
+   literals, segment rules become exclusions for descendants, basename rules
+   become exact and `.<suffix>` exclusions, and extension rules become final
+   extension exclusions. `searchRepo` inserts those generated values only as
+   repeated `--glob`, value pairs in its existing closed argument vector.
+
+No regex or glob is constructed from repository paths, search patterns, model
+output, environment values, or other caller-controlled data. Existing
+relative-path validation runs before the direct predicate. The trusted `rg`
+identity probe, `--no-config`, `--hidden`, `--`, no-shell spawn, controlled
+environment, root verification, timeouts, and output bounds remain unchanged.
+
+### Exact file surface
+
+- Add
+  `packages/shield-team-system/scripts/model/repository-sensitive-policy.mjs`.
+- Modify
+  `packages/shield-team-system/scripts/model/repository-tools.mjs` only to
+  import/re-export the direct predicate, consume the generated exclusion
+  globs, and remove the duplicated constants and hard-coded exclusion block.
+- Modify
+  `packages/shield-team-system/tests/repository-tools.test.mjs` to add the
+  frozen three-tool parity harness, safe controls, and mutation-sensitivity
+  checks while preserving all existing Issue #34 adversarial tests.
+
+No declaration, package export, broker, runner, LM Studio, authority, Journal,
+Kernel, documentation outside this Mission Brief, generated `dist`, or
+workspace application file is expected to change.
+
+### Externally graded parity tests
+
+The focused test owns one black-box fixture table copied from the already
+frozen benchmark manifest, not generated from the production policy. A single
+temporary repository contains every denied case and the four safe controls;
+each file contains a unique bounded search marker. One shared assertion checks
+each denied path across all three real tool observations:
+
+- `readFile` returns `path_denied`;
+- recursive `listFiles({ directory: "." })` omits the path;
+- `searchRepo` output omits the path and its marker.
+
+The same assertion requires successful reads and listing/search visibility for
+`src/visible.txt`, `docs/authors.md`, `docs/tokenization.md`, and
+`keys/public.txt`. This independently detects both false negatives and the
+current search-only substring false positives.
+
+The frozen `nested/.AWS/credentials.backup` mutation is appended once to that
+shared denied table. After the real tools pass, three targeted test-only
+mutants alter one observed result at a time: allow its read, insert it into the
+listing, or insert its marker into search output. The shared assertion must
+fail for the corresponding tool in each case. The production module exposes
+no mutation switch and the test does not maintain three separate expected
+lists.
+
+The parity integration test uses the same trusted, identity-probed `rg` path as
+the existing search test. The acceptance run must execute it on a host with
+trusted `rg`; a skipped search parity test is not a passing acceptance result.
+Existing confinement, symlink, root-replacement, executable-identity, timeout,
+bounds, UTF-8, and closed-argument tests remain in place.
+
+### Compatibility and failure behavior
+
+The three tool names, inputs, result unions, denial codes, bounds, ordering,
+and public package surface remain unchanged. Direct reads and listings retain
+their current deny-before-effect behavior. Search remains fail closed when
+`rg` is absent, replaced, invalid, or times out. The only intended observable
+expansion is that safe basenames previously over-excluded by broad search
+globs, including `authors.md` and `tokenization.md`, become searchable; no
+frozen sensitive case becomes visible.
+
+An invalid built-in policy is a developer/build defect and prevents module
+initialization rather than silently compiling a partial policy. Runtime path,
+filesystem, root, and executable failures continue to return the existing
+bounded non-echoing tool results. No denied path contents are logged or added
+to assertions.
+
+### Validation sequence
+
+1. Run the focused repository-tool suite and confirm every external case, safe
+   control, and all three one-tool mutants behave as specified.
+2. Re-run the existing Issue #34 broker and repository-tool adversarial tests.
+3. Run the complete `@shield/team-system` package tests and workspace tests.
+4. Run the packed strict-consumer validation and package dry run only if the
+   package surface or packing result is affected; otherwise record them as
+   unchanged/not applicable rather than fabricating execution.
+5. Run `git diff --check` and report exact tests, skips, files, diff size,
+   revision, runtime, executor, time, and observable usage under the frozen
+   benchmark labels.
+
+### Stop conditions
+
+Stop and return to Coulson if exact direct-path semantics cannot be represented
+by closed ripgrep globs without a false positive or negative; trusted `rg` is
+unavailable for the acceptance parity run; a public API or caller-selectable
+policy becomes necessary; preserving parity requires changing root,
+symlink/race, executable-identity, bounds, deadlines, broker, permission,
+authority, Journal, Kernel, or runtime semantics; the external fixture or
+grading rules must change; implementation ownership moves from May; or the
+slice requires architecture beyond a Fury-reviewed blueprint reconciliation.
