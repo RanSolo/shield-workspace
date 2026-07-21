@@ -86,10 +86,13 @@ call from a trusted host:
   precondition;
 - `runValidation` accepts only a host-owned command ID whose executable,
   argument vector, timeout, and executable identity were pinned before the
-  permission request;
+  permission request, and reports an uncertain stop if validation changes the
+  workspace status;
 - both operations derive an exact effect key, receive a fresh Issue #10
   permission decision, and release their bounded result only after the
-  invocation and result audits are verified.
+  invocation and result audits are verified;
+- a trusted workspace-status provider must prove that every dirty path remains
+  inside the host-approved file set before and after an effect.
 
 The model cannot select a repository root, executable, arguments, environment,
 working directory, approved file list, revision, or authority context. The

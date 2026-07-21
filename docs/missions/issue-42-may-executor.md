@@ -57,9 +57,14 @@ contexts, or command definitions.
   from a host-owned allowlist.
 - Parent symlinks, target symlinks, root identity changes, revision changes,
   stale content digests, and malformed UTF-8 input fail before writes.
+- Trusted workspace status must contain only host-approved paths before a call
+  and after an effect; any other dirty path fails closed or records the
+  already-attempted effect as uncertain.
 - Writes are bounded and replaced atomically within the verified parent.
 - Validation uses no shell, configuration discovery, caller-provided command,
   inherited environment, or network-specific command surface.
+- Validation is observational: any workspace-status change during the command
+  records an uncertain result and terminates the session.
 - Executable identity is pinned at setup and rechecked before every launch.
 - Output, duration, rounds, and calls are bounded.
 - A failed validation result may be returned to May for one iterative repair;

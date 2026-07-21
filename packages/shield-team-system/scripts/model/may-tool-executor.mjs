@@ -117,6 +117,7 @@ function validUtf8String(value) {
   if (typeof value !== "string") return false;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
+    if (code === 0) return false;
     if (code >= 0xd800 && code <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
       if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
@@ -226,7 +227,7 @@ async function normalizeCommands(value) {
 function normalizeDependencies(value) {
   if (!plain(value)) throw new Error("may_executor_configuration_malformed");
   const output = {};
-  for (const name of ["nextCallSlot", "getAuthorizationContext", "getExecutionContext", "appendIfAbsent", "nextResultRecordId", "now", "readWorkspaceRevision", "nextTemporaryName"]) {
+  for (const name of ["nextCallSlot", "getAuthorizationContext", "getExecutionContext", "appendIfAbsent", "nextResultRecordId", "now", "readWorkspaceRevision", "readWorkspaceStatus", "nextTemporaryName"]) {
     const item = data(value, name);
     if (typeof item !== "function") throw new Error("may_executor_configuration_malformed");
     output[name] = item;
@@ -265,6 +266,20 @@ async function verifyRevision(dependencies, root, baseRevision) {
   if (!(await verifyRoot(root))) throw new Error("may_repository_root_changed");
   const revision = await dependencies.readWorkspaceRevision(root.canonical);
   if (revision !== baseRevision) throw new Error("may_workspace_revision_mismatch");
+}
+
+async function verifyWorkspaceState(dependencies, root, baseRevision) {
+  await verifyRevision(dependencies, root, baseRevision);
+  const changed = denseArray(await dependencies.readWorkspaceStatus(root.canonical));
+  if (changed === null) throw new Error("may_workspace_status_malformed");
+  const seen = new Set();
+  for (const path of changed) {
+    if (!validateRepositoryRelativePath(path) || isSensitiveRepositoryPath(path) || seen.has(path)) throw new Error("may_workspace_status_malformed");
+    if (!dependencies.approvedFiles.includes(path)) throw new Error("may_workspace_scope_mismatch");
+    seen.add(path);
+  }
+  if ([...seen].some((path, index, values) => index > 0 && values[index - 1].localeCompare(path) >= 0)) throw new Error("may_workspace_status_malformed");
+  return Object.freeze([...seen]);
 }
 
 async function confinedTarget(root, relativePath) {
@@ -310,11 +325,11 @@ async function currentDigest(target) {
 
 async function writeApprovedFile(root, request, args, dependencies) {
   if (!dependencies.approvedFiles.includes(args.path)) throw new Error("may_path_not_approved");
-  await verifyRevision(dependencies, root, request.baseRevision);
+  await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const target = await confinedTarget(root, args.path);
   const digest = await currentDigest(target);
   if ((args.expectedSha256 === "absent" && digest !== null) || (args.expectedSha256 !== "absent" && digest !== args.expectedSha256)) throw new Error("may_file_digest_mismatch");
-  await verifyRevision(dependencies, root, request.baseRevision);
+  await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const temporaryName = dependencies.nextTemporaryName(Object.freeze({ sessionId: request.sessionId, toolCallId: request.toolCallId }));
   if (typeof temporaryName !== "string" || !/^\.shield-may-[A-Za-z0-9_-]{8,64}\.tmp$/u.test(temporaryName)) throw new Error("may_temporary_name_invalid");
   const temporaryPath = join(target.parent, temporaryName);
@@ -327,12 +342,16 @@ async function writeApprovedFile(root, request, args, dependencies) {
     await handle.sync();
     await handle.close();
     handle = null;
-    await verifyRevision(dependencies, root, request.baseRevision);
+    await verifyWorkspaceState(dependencies, root, request.baseRevision);
     const rechecked = await confinedTarget(root, args.path);
     const recheckedDigest = await currentDigest(rechecked);
     if (recheckedDigest !== digest) throw new Error("may_file_identity_changed");
     await rename(temporaryPath, target.path);
-    if (!(await verifyRoot(root))) throw executorError("may_repository_root_changed", "uncertain");
+    try {
+      await verifyWorkspaceState(dependencies, root, request.baseRevision);
+    } catch (error) {
+      throw executorError(error instanceof Error ? error.message : "may_workspace_scope_mismatch", "uncertain");
+    }
     const written = await lstat(target.path);
     if (!written.isFile() || written.isSymbolicLink()) throw executorError("may_file_identity_changed", "uncertain");
     return Object.freeze({ state: "completed", code: "file_written", path: args.path, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
@@ -344,7 +363,7 @@ async function writeApprovedFile(root, request, args, dependencies) {
 
 async function runApprovedValidation(root, request, args, dependencies, commands) {
   const command = commands.get(args.commandId);
-  await verifyRevision(dependencies, root, request.baseRevision);
+  const workspaceBefore = await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const currentExecutable = await stat(command.executable).catch(() => null);
   if (!currentExecutable?.isFile() || executableIdentity(currentExecutable) !== command.executableIdentity) throw new Error("may_validation_executable_changed");
   const startedAt = dependencies.monotonicNow();
@@ -389,7 +408,10 @@ async function runApprovedValidation(root, request, args, dependencies, commands
     });
   });
   try {
-    await verifyRevision(dependencies, root, request.baseRevision);
+    const workspaceAfter = await verifyWorkspaceState(dependencies, root, request.baseRevision);
+    if (workspaceAfter.length !== workspaceBefore.length || workspaceAfter.some((path, index) => path !== workspaceBefore[index])) {
+      throw new Error("may_validation_workspace_changed");
+    }
   } catch (error) {
     throw executorError(error instanceof Error ? error.message : "may_workspace_revision_mismatch", "uncertain");
   }
@@ -438,7 +460,7 @@ export async function runMayToolCall(requestInput, dependenciesInput) {
     reasoningRuntimeId: dependencies.reasoningRuntimeId, toolExecutorId: dependencies.toolExecutorId,
     baseRevision: request.baseRevision, mapping,
   });
-  await verifyRevision(dependencies, root, request.baseRevision);
+  await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const plan = validateSlot(await dependencies.nextCallSlot(Object.freeze({
     sessionId: request.sessionId, toolCallId: request.toolCallId, toolName: request.toolName, effectKey, ...mapping,
   })), mapping, effectKey);

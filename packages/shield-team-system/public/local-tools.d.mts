@@ -120,6 +120,7 @@ export interface MayToolExecutorDependencies {
   nextResultRecordId(decision: RunnerPermissionDecision): string;
   now(): string;
   readWorkspaceRevision(canonicalRoot: string): string | Promise<string>;
+  readWorkspaceStatus(canonicalRoot: string): string[] | Promise<string[]>;
   nextTemporaryName(request: Readonly<Pick<MayToolCallRequest, "sessionId" | "toolCallId">>): string;
 }
 

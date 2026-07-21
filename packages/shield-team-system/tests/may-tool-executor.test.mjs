@@ -102,6 +102,7 @@ function dependencies(root, toolName, overrides = {}) {
     getExecutionContext: async () => permissionContext(root, toolName, requestedEffectKey),
     appendIfAbsent, nextResultRecordId: () => `audit:result:issue-42:${toolName}`,
     now: () => "2026-07-21T20:06:00Z", readWorkspaceRevision: async () => baseRevision,
+    readWorkspaceStatus: async () => [],
     nextTemporaryName: () => ".shield-may-12345678.tmp", monotonicNow: () => Date.now(),
     ...overrides,
   };
@@ -162,6 +163,9 @@ test("fails before permission or effects for stale revision, stale digest, unapp
   const staleRevision = dependencies(root, "writeFile", { readWorkspaceRevision: async () => "1111111111111111111111111111111111111111" });
   await assert.rejects(() => runMayToolCall(request(root, "writeFile", { path: "src/approved.txt", content: "x", expectedSha256: digest("before\n") }), staleRevision), /may_workspace_revision_mismatch/u);
   assert.equal(staleRevision.ledger.length, 0);
+  const dirtyOutsideScope = dependencies(root, "writeFile", { readWorkspaceStatus: async () => ["src/unapproved.txt"] });
+  await assert.rejects(() => runMayToolCall(request(root, "writeFile", { path: "src/approved.txt", content: "x", expectedSha256: digest("before\n") }), dirtyOutsideScope), /may_workspace_scope_mismatch/u);
+  assert.equal(dirtyOutsideScope.ledger.length, 0);
   const staleDigest = dependencies(root, "writeFile");
   await assert.rejects(() => runMayToolCall(request(root, "writeFile", { path: "src/approved.txt", content: "x", expectedSha256: digest("other") }), staleDigest), /may_file_digest_mismatch/u);
   assert.equal(await readFile(join(root, "src/approved.txt"), "utf8"), "before\n");
@@ -183,6 +187,7 @@ test("denies sensitive, traversing, duplicate-key, oversized, and unpaired-surro
   }
   await assert.rejects(() => runMayToolCall(request(root, "writeFile", { path: "src/approved.txt", content: "x".repeat(262_145), expectedSha256: "absent" }), deps), /may_tool_arguments_malformed/u);
   await assert.rejects(() => runMayToolCall(request(root, "writeFile", { path: "src/approved.txt", content: "\ud800", expectedSha256: "absent" }), deps), /may_tool_arguments_malformed/u);
+  await assert.rejects(() => runMayToolCall(request(root, "writeFile", { path: "src/approved.txt", content: "a\u0000b", expectedSha256: "absent" }), deps), /may_tool_arguments_malformed/u);
   assert.equal(deps.ledger.length, 0);
 });
 
@@ -245,6 +250,34 @@ test("withholds validation output when the result audit receipt is not verified"
   deps.appendIfAbsent = async (record) => record.recordType === "tool.result" ? { appended: false } : original(record);
   await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps), /may_tool_result_not_releasable/u);
   assert.deepEqual(deps.ledger.map((item) => item.recordType), ["permission.decision", "tool.invocation"]);
+});
+
+test("post-effect workspace scope drift is recorded uncertain and stops output release", async (context) => {
+  const root = await workspace(context);
+  let observations = 0;
+  const deps = dependencies(root, "runValidation", {
+    readWorkspaceStatus: async () => {
+      observations += 1;
+      return observations >= 3 ? ["src/unapproved.txt"] : [];
+    },
+  });
+  await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps), /may_workspace_scope_mismatch/u);
+  assert.equal(deps.ledger.at(-1).outcome, "uncertain");
+  assert.match(deps.ledger.at(-1).summary, /uncertain \(may_workspace_scope_mismatch\)/u);
+});
+
+test("validation is observational and stops if an allowlisted command changes an approved path", async (context) => {
+  const root = await workspace(context);
+  let observations = 0;
+  const deps = dependencies(root, "runValidation", {
+    readWorkspaceStatus: async () => {
+      observations += 1;
+      return observations >= 3 ? ["src/approved.txt"] : [];
+    },
+  });
+  await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps), /may_validation_workspace_changed/u);
+  assert.equal(deps.ledger.at(-1).outcome, "uncertain");
+  assert.match(deps.ledger.at(-1).summary, /uncertain \(may_validation_workspace_changed\)/u);
 });
 
 test("validation timeout and executable replacement fail closed", async (context) => {
