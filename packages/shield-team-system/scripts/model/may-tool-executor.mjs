@@ -109,6 +109,10 @@ function rootIdentity(info) {
   return `${info.dev}:${info.ino}`;
 }
 
+function regularFileIdentity(info) {
+  return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+}
+
 function executableIdentity(info) {
   return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}`;
 }
@@ -304,7 +308,7 @@ async function currentDigest(target) {
   const handle = await open(target.path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try {
     const opened = await handle.stat();
-    if (!opened.isFile() || rootIdentity(opened) !== rootIdentity(target.info)) throw new Error("may_file_identity_changed");
+    if (!opened.isFile() || regularFileIdentity(opened) !== regularFileIdentity(target.info)) throw new Error("may_file_identity_changed");
     const chunks = [];
     let total = 0;
     while (true) {
@@ -316,11 +320,29 @@ async function currentDigest(target) {
       chunks.push(chunk.subarray(0, bytesRead));
     }
     const closed = await handle.stat();
-    if (rootIdentity(opened) !== rootIdentity(closed)) throw new Error("may_file_identity_changed");
+    if (regularFileIdentity(opened) !== regularFileIdentity(closed)) throw new Error("may_file_identity_changed");
     return createHash("sha256").update(Buffer.concat(chunks)).digest("hex");
   } finally {
     await handle.close().catch(() => {});
   }
+}
+
+async function snapshotWorkspace(root, changedPaths) {
+  const snapshot = [];
+  for (const path of changedPaths) {
+    const target = await confinedTarget(root, path);
+    if (target.info === null) {
+      snapshot.push(Object.freeze({ path, state: "absent" }));
+      continue;
+    }
+    snapshot.push(Object.freeze({
+      path,
+      state: "file",
+      identity: regularFileIdentity(target.info),
+      sha256: await currentDigest(target),
+    }));
+  }
+  return JSON.stringify(snapshot);
 }
 
 async function writeApprovedFile(root, request, args, dependencies) {
@@ -364,6 +386,7 @@ async function writeApprovedFile(root, request, args, dependencies) {
 async function runApprovedValidation(root, request, args, dependencies, commands) {
   const command = commands.get(args.commandId);
   const workspaceBefore = await verifyWorkspaceState(dependencies, root, request.baseRevision);
+  const snapshotBefore = await snapshotWorkspace(root, workspaceBefore);
   const currentExecutable = await stat(command.executable).catch(() => null);
   if (!currentExecutable?.isFile() || executableIdentity(currentExecutable) !== command.executableIdentity) throw new Error("may_validation_executable_changed");
   const startedAt = dependencies.monotonicNow();
@@ -409,7 +432,8 @@ async function runApprovedValidation(root, request, args, dependencies, commands
   });
   try {
     const workspaceAfter = await verifyWorkspaceState(dependencies, root, request.baseRevision);
-    if (workspaceAfter.length !== workspaceBefore.length || workspaceAfter.some((path, index) => path !== workspaceBefore[index])) {
+    const snapshotAfter = await snapshotWorkspace(root, workspaceAfter);
+    if (workspaceAfter.length !== workspaceBefore.length || workspaceAfter.some((path, index) => path !== workspaceBefore[index]) || snapshotAfter !== snapshotBefore) {
       throw new Error("may_validation_workspace_changed");
     }
   } catch (error) {

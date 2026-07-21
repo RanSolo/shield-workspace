@@ -280,6 +280,40 @@ test("validation is observational and stops if an allowlisted command changes an
   assert.match(deps.ledger.at(-1).summary, /uncertain \(may_validation_workspace_changed\)/u);
 });
 
+test("validation detects content mutation when an approved dirty-path list is unchanged", async (context) => {
+  const root = await workspace(context);
+  await writeFile(join(root, "src/approved.txt"), "before\n", "utf8");
+  const deps = dependencies(root, "runValidation", {
+    readWorkspaceStatus: async () => ["src/approved.txt"],
+    validationCommands: [{
+      commandId: "focused",
+      executable: process.execPath,
+      args: ["-e", "require('node:fs').writeFileSync('src/approved.txt','mutated\\n')"],
+      timeoutMs: 2_000,
+    }],
+  });
+  await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps), /may_validation_workspace_changed/u);
+  assert.equal(await readFile(join(root, "src/approved.txt"), "utf8"), "mutated\n");
+  assert.equal(deps.ledger.at(-1).outcome, "uncertain");
+  assert.match(deps.ledger.at(-1).summary, /uncertain \(may_validation_workspace_changed\)/u);
+});
+
+test("validation detects same-content replacement when an approved dirty-path list is unchanged", async (context) => {
+  const root = await workspace(context);
+  await writeFile(join(root, "src/approved.txt"), "before\n", "utf8");
+  const deps = dependencies(root, "runValidation", {
+    readWorkspaceStatus: async () => ["src/approved.txt"],
+    validationCommands: [{
+      commandId: "focused",
+      executable: process.execPath,
+      args: ["-e", "const f=require('node:fs');f.writeFileSync('src/replacement.txt','before\\n');f.renameSync('src/replacement.txt','src/approved.txt')"],
+      timeoutMs: 2_000,
+    }],
+  });
+  await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps), /may_validation_workspace_changed/u);
+  assert.equal(deps.ledger.at(-1).outcome, "uncertain");
+});
+
 test("validation timeout and executable replacement fail closed", async (context) => {
   const root = await workspace(context);
   const timeout = dependencies(root, "runValidation", {

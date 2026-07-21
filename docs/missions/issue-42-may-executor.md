@@ -63,8 +63,9 @@ contexts, or command definitions.
 - Writes are bounded and replaced atomically within the verified parent.
 - Validation uses no shell, configuration discovery, caller-provided command,
   inherited environment, or network-specific command surface.
-- Validation is observational: any workspace-status change during the command
-  records an uncertain result and terminates the session.
+- Validation is observational: the host snapshots the type, identity, size,
+  and SHA-256 of every approved dirty path, and any path-set or content change
+  during the command records an uncertain result and terminates the session.
 - Executable identity is pinned at setup and rechecked before every launch.
 - Output, duration, rounds, and calls are bounded.
 - A failed validation result may be returned to May for one iterative repair;

@@ -51,7 +51,7 @@ does not migrate or reinterpret the existing package runtime.
 | Per-call runtime-bound permission decisions | Supported through `/permission`; real environmental probes remain owned by Issue #34 |
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
 | Daisy local reconnaissance tools | Supported through `/local-tools` only with a trusted authority provider; standalone CLI tool authority is intentionally unavailable |
-| May revision-bound write and validation calls | Supported through `/local-tools` only with host-owned file and command allowlists, exact effect binding, clean-scope status observation, observational validation, and a fresh permission decision per call; the iterative LM Studio session remains unavailable |
+| May revision-bound write and validation calls | Supported through `/local-tools` only with host-owned file and command allowlists, exact effect binding, clean-scope status observation, content-identity snapshots for observational validation, and a fresh permission decision per call; the iterative LM Studio session remains unavailable |
 | Host-adapter candidate envelope | Supported through `/adapter`; GitHub translation and delivery are supported through `/github` |
 
 Unavailable capabilities are not exported as placeholders. Their absence is a

@@ -86,8 +86,9 @@ call from a trusted host:
   precondition;
 - `runValidation` accepts only a host-owned command ID whose executable,
   argument vector, timeout, and executable identity were pinned before the
-  permission request, and reports an uncertain stop if validation changes the
-  workspace status;
+  permission request, snapshots the identity and SHA-256 of every approved
+  dirty path, and reports an uncertain stop if validation changes the path set
+  or any snapshotted file;
 - both operations derive an exact effect key, receive a fresh Issue #10
   permission decision, and release their bounded result only after the
   invocation and result audits are verified;
