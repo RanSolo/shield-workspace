@@ -235,10 +235,14 @@ as `credentials.json`. The policy does not use unanchored substring matching;
 `authors.md`, `tokenization.md`, and `keys/public.txt` therefore remain safe.
 
 At module initialization, a private compiler validates that the policy has the
-exact closed fields, dense arrays, unique non-empty lowercase ASCII literals,
-and no glob metacharacters outside the permitted leading dot. A violated
-developer invariant throws before tools can be created. Callers cannot supply
-or mutate the policy.
+exact closed fields, dense arrays, and unique literals. Segment and basename
+literals must match the allowlist grammar
+`^(?:\.)?[a-z0-9][a-z0-9_-]{0,63}$`; extension literals must match the narrower
+grammar `^[a-z0-9]{1,8}$`. These grammars reject path separators, controls,
+whitespace, a leading `!`, extra dots, and every glob operator including `*`,
+`?`, `[`, `]`, `{`, and `}` before any immutable direct matcher or exclusion
+glob is generated. A violated developer invariant throws before tools can be
+created. Callers cannot supply or mutate the policy.
 
 The compiler produces two immutable artifacts from that one representation:
 
@@ -311,20 +315,32 @@ The same assertion requires successful reads and listing/search visibility for
 current search-only substring false positives.
 
 The frozen `nested/.AWS/credentials.backup` mutation is appended once to that
-shared denied table. After the unmodified tools pass, the test creates three
-isolated temporary ESM copies of `repository-tools.mjs` and its policy module.
-For each copy it performs one exact, count-checked source mutation to the
-private enforcement record: replace only the `readFile` predicate with an
-always-allow predicate, replace only the `listFiles` predicate with an
-always-allow predicate, or replace only the `searchRepo` exclusion arguments
-with an empty frozen array. Failure to find exactly one expected mutation site
-fails the test.
+shared denied table. After the complete unmodified fixture passes, mutation
+sensitivity uses a fresh minimal fixture containing that one frozen denied
+path and the unchanged safe controls. The test creates three isolated
+temporary ESM copies of `repository-tools.mjs` and its policy module. For each
+copy it performs one exact, count-checked source mutation to the private
+enforcement record: replace only the `readFile` predicate with an always-allow
+predicate, replace only the `listFiles` predicate with an always-allow
+predicate, or replace only the `searchRepo` exclusion arguments with an empty
+frozen array. Failure to find exactly one expected mutation site fails the
+test.
 
-Each mutated module is imported under a unique file URL, constructs the real
-repository tools against a fresh fixture, and runs the same shared parity
-assertion. The assertion must reject the read mutant because the frozen file
-is readable, the list mutant because the frozen nested file is emitted, and
-the search mutant because its unique marker is returned. These are mutations
+Each mutated module must import successfully and construct the real repository
+tools with the trusted, identity-probed `rg` before it is scored. The harness
+first records successful unmodified observations for the same minimal fixture.
+For a mutant, every safe-control observation and both unaffected tool
+observations must equal that baseline. The remaining difference must be
+exactly one structured mismatch naming the expected tool,
+`nested/.AWS/credentials.backup`, and its unique marker: readable content for
+the read mutant, one emitted list path for the list mutant, or one returned
+search marker for the search mutant. The test must compare this exact mismatch
+record; it must not use a broad rejection assertion that could pass because of
+an import, construction, filesystem, timeout, or assertion error.
+
+Unavailable `rg`, failed identity probing, a non-completed baseline search,
+mutant import or construction failure, an unrelated mismatch, a changed safe
+control, or any second mismatch fails the mutation test. These are mutations
 of the actual tool enforcement paths before execution, not altered
 post-execution observations or three copied expectation lists. Mutant source
 exists only under the test temporary directory and is removed by test cleanup;
@@ -352,6 +368,18 @@ initialization rather than silently compiling a partial policy. Runtime path,
 filesystem, root, and executable failures continue to return the existing
 bounded non-echoing tool results. No denied path contents are logged or added
 to assertions.
+
+### Post-reconciliation gate order
+
+After this final corrected blueprint is committed, the trusted orchestrating
+host obtains the exact new repository head and Hill reevaluates that head with
+`hill.readiness.v1`, `refinementPassesCompleted: 1`, and the current truthful
+observation binding. Hill publishes the resulting exact-revision readiness
+evidence to the Mission Workspace without creating another repository commit.
+The host then verifies that the repository head is unchanged before Fury
+verifies the corrected plan and its complete finding reconciliation. Any
+stale head, second requested Hill refinement, publication commit, or ambiguous
+observation stops under the frozen mission rules.
 
 ### Validation sequence
 
