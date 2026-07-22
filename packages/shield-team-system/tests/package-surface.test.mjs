@@ -26,6 +26,7 @@ test("exports only the documented public package specifiers", async () => {
     "./runner",
     "./permission",
     "./permission-audit",
+    "./sonarqube",
     "./local-tools",
     "./github",
   ]);
@@ -48,6 +49,7 @@ test("loads every supported runtime specifier", async () => {
   const runner = await import("@shield/team-system/runner");
   const permission = await import("@shield/team-system/permission");
   const permissionAudit = await import("@shield/team-system/permission-audit");
+  const sonarqube = await import("@shield/team-system/sonarqube");
   const localTools = await import("@shield/team-system/local-tools");
   const github = await import("@shield/team-system/github");
 
@@ -74,6 +76,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof permission.evaluatePermission, "function");
   assert.equal(permissionAudit.PERMISSION_AUDIT_SCHEMA_VERSION, 1);
   assert.equal(typeof permissionAudit.replayPermissionAuditLedger, "function");
+  assert.equal(sonarqube.SONARQUBE_EVIDENCE_CONTRACT_VERSION, "sonarqube.evidence.v1");
+  assert.equal(typeof sonarqube.evaluateSonarQubeEvidenceV1, "function");
   assert.equal(typeof localTools.runLocalToolSession, "function");
   assert.equal(localTools.DAISY_TOOL_DEFINITIONS.length, 3);
   assert.equal(typeof localTools.runMayToolCall, "function");
@@ -127,6 +131,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/permission-v1.d.mts",
     "dist/permission-audit-v1.mjs",
     "dist/permission-audit-v1.d.mts",
+    "dist/sonarqube-evidence-v1.mjs",
+    "dist/sonarqube-evidence-v1.d.mts",
     "public/local-tools.mjs",
     "public/local-tools.d.mts",
     "scripts/model/may-tool-executor.mjs",
@@ -175,6 +181,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
+    import { SONARQUBE_EVIDENCE_CONTRACT_VERSION, evaluateSonarQubeEvidenceV1, type SonarQubeEvidenceV1 } from "@shield/team-system/sonarqube";
     import { runLocalToolSession, runMayToolCall, type LocalToolSessionRequest, type MayToolCallRequest, type MayToolExecutorDependencies } from "@shield/team-system/local-tools";
     import {
       FURY_PLAN_GATE_CONTRACT_VERSION,
@@ -228,6 +235,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const auditSchema: 1 = PERMISSION_AUDIT_SCHEMA_VERSION;
     const auditRecord = null as unknown as PermissionAuditRecord;
     const replayAudit = replayPermissionAuditLedger;
+    const sonarContract: "sonarqube.evidence.v1" = SONARQUBE_EVIDENCE_CONTRACT_VERSION;
+    const sonarEvidence = null as unknown as SonarQubeEvidenceV1;
+    const evaluateSonar = evaluateSonarQubeEvidenceV1;
     const localToolRequest = null as unknown as LocalToolSessionRequest;
     const runTools = runLocalToolSession;
     const mayToolRequest = null as unknown as MayToolCallRequest;
@@ -255,7 +265,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, runCycle, journaledRequest, deliver, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, sonarContract, sonarEvidence, evaluateSonar, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, runCycle, journaledRequest, deliver, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
