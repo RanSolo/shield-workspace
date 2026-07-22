@@ -211,6 +211,14 @@ export interface RunnerCycleDependencies {
   validate(input: RunnerCyclePlan, result: RunnerExecutorResult): unknown | Promise<unknown>;
 }
 
+const {
+  validateExecutionEffectPayloadCommon,
+  validateRunnerSupervisedEffectCandidateCommon,
+} = await import("./runner-supervision-shared-v1.mjs") as typeof import("./runner-supervision-shared-v1.mjs");
+
+type ExecutionEffectPayloadValidationMessages = import("./runner-supervision-shared-v1.mjs").ExecutionEffectPayloadValidationMessages;
+type RunnerSupervisedEffectCandidateValidationMessages = import("./runner-supervision-shared-v1.mjs").RunnerSupervisedEffectCandidateValidationMessages;
+
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/;
 const EFFECT_CLASSES = new Set<string>(RUNNER_EFFECT_CLASSES);
@@ -605,19 +613,43 @@ export function validateRunnerValidatorResult(input: unknown): RunnerContractRes
   return errors.length > 0 ? invalid("malformed_validator_result", errors) : valid(input as unknown as RunnerValidatorResult);
 }
 
-function effectPayloadValueErrors(input: Record<string, unknown>, label: string): string[] {
-  const errors: string[] = [];
-  if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push(`${label} runnerContractVersion is unsupported.`);
-  for (const field of ["cycleId", "subjectId", "seatId", "actionId", "effectKey", "authorizationDecisionId", "reasonCode"] as const) {
-    if (!identifier(input[field])) errors.push(`${label} ${field} is invalid.`);
-  }
-  if (!revision(input.revisionId)) errors.push(`${label} revisionId is invalid.`);
-  if (!sequence(input.evaluatedThroughSequence)) errors.push(`${label} evaluatedThroughSequence is invalid.`);
-  if (!EFFECT_CLASSES.has(input.effectClass as string)) errors.push(`${label} effectClass is unsupported.`);
-  if (input.outcome !== "completed" && input.outcome !== "uncertain") errors.push(`${label} outcome is unsupported.`);
-  if (!nonEmptyJournalSummary(input.summary)) errors.push(`${label} summary must be non-empty.`);
-  errors.push(...validateEffectEvidenceRefs(input.evidenceRefs, `${label} evidenceRefs`));
-  return errors;
+const RUNNER_EXECUTION_EFFECT_PAYLOAD_MESSAGES: ExecutionEffectPayloadValidationMessages = {
+  contractVersionUnsupported: (label) => `${label} runnerContractVersion is unsupported.`,
+  fieldInvalid: (label, field) => `${label} ${field} is invalid.`,
+  effectClassUnsupported: (label) => `${label} effectClass is unsupported.`,
+  outcomeUnsupported: (label) => `${label} outcome is unsupported.`,
+  summaryInvalid: (label) => `${label} summary must be non-empty.`,
+  evidenceRefsMustBeArray: (label) => `${label} must be a non-empty array.`,
+  evidenceRefsInvalid: (label, index) => `${label}[${index}] is invalid.`,
+  evidenceRefsDuplicate: (label, value) => `${label} duplicates ${value}.`,
+  evidenceRefsTooMany: (label) => `${label} must contain at most 16 references.`,
+};
+
+const RUNNER_EFFECT_CANDIDATE_MESSAGES: RunnerSupervisedEffectCandidateValidationMessages = {
+  contractVersionUnsupported: (label) => `${label} contract version is unsupported.`,
+  kindUnsupported: (label) => `${label} kind is unsupported.`,
+  authorityUnsupported: (label) => `${label} must be explicitly non-authoritative.`,
+  journalSchemaUnsupported: (label) => `${label} requires supervised journal v5 or v6.`,
+  missionIdentityInvalid: (label) => `${label} mission identity is invalid.`,
+  revisionInvalid: (label) => `${label} revisionId is invalid.`,
+  expectedPreviousSequenceInvalid: (label) => `${label} journal sequence is invalid.`,
+  intendedJournalSequenceInvalid: (label) => `${label} journal sequence is invalid.`,
+  payloadIdentityDrift: (label) => `${label} identity does not match its payload.`,
+  sequenceBindingInvalid: () => "Runner effect candidate journal sequence is invalid.",
+};
+
+function effectPayloadValueErrors(input: unknown, label: string): string[] {
+  return validateExecutionEffectPayloadCommon(
+    input,
+    label,
+    identifier,
+    revision,
+    sequence,
+    (value) => EFFECT_CLASSES.has(value as string),
+    nonEmptyJournalSummary,
+    (nestedLabel) => `${nestedLabel} evidenceRefs`,
+    RUNNER_EXECUTION_EFFECT_PAYLOAD_MESSAGES,
+  );
 }
 
 export function validateRunnerExecutionEffectPayload(
@@ -634,22 +666,14 @@ export function validateRunnerSupervisedEffectCandidate(
 ): RunnerContractResult<RunnerSupervisedEffectCandidate> {
   const errors = exactFields(input, EFFECT_CANDIDATE_FIELDS, "Runner supervised effect candidate");
   if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_effect_candidate", errors);
-  if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push("Runner effect candidate contract version is unsupported.");
-  if (input.candidateKind !== "runner.supervised_effect_record") errors.push("Runner effect candidate kind is unsupported.");
-  if (input.authority !== "non_authoritative") errors.push("Runner effect candidate must be explicitly non-authoritative.");
-  if (input.journalSchemaVersion !== 5 && input.journalSchemaVersion !== 6) errors.push("Runner effect candidate requires supervised journal v5 or v6.");
-  if (!identifier(input.missionId) || !identifier(input.subjectId)) errors.push("Runner effect candidate mission identity is invalid.");
-  if (!revision(input.revisionId)) errors.push("Runner effect candidate revisionId is invalid.");
-  if (!sequence(input.expectedPreviousSequence) || !sequence(input.intendedJournalSequence) ||
-      input.intendedJournalSequence !== (input.expectedPreviousSequence as number) + 1) {
-    errors.push("Runner effect candidate journal sequence is invalid.");
-  }
-  const payload = validateRunnerExecutionEffectPayload(input.payload);
-  if (payload.state === "invalid") errors.push(...payload.errors);
-  else if (input.subjectId !== payload.value.subjectId || input.revisionId !== payload.value.revisionId ||
-      input.expectedPreviousSequence !== payload.value.evaluatedThroughSequence) {
-    errors.push("Runner effect candidate identity does not match its payload.");
-  }
+  errors.push(...validateRunnerSupervisedEffectCandidateCommon(
+    input,
+    "Runner effect candidate",
+    identifier,
+    effectPayloadValueErrors,
+    () => "Runner execution effect payload",
+    RUNNER_EFFECT_CANDIDATE_MESSAGES,
+  ));
   return errors.length > 0 ? invalid("malformed_effect_candidate", errors) : valid(input as unknown as RunnerSupervisedEffectCandidate);
 }
 
