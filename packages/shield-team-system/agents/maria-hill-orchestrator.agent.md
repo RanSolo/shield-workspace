@@ -58,7 +58,11 @@ Keep the mission moving without pulling Nick Fury, Daisy Johnson, or Melinda May
   before activating a Hill-approved mission plan by timeout.
 * Consult `../contracts/mission-policy.mjs` through
   `evaluateLightweightTimeout` before timeout activation and
-  `canDispatchSpecialists` before specialist dispatch. Never override a denial.
+  `canDispatchSpecialists` before specialist dispatch. Under Training Wheels
+  Off, dispatch may proceed after Coulson Mission Brief approval and Fury's
+  exact-revision in-scope plan approval without a separate post-plan Coulson
+  approval, but only when the policy confirms all bounded evidence. Never
+  override a denial.
 * After every specialist handoff, call `evaluateSpecialistIteration` with the
   exact objective, owner, artifact revision, evidence references, progress,
   validation, category-change, repetition, and material-gate facts. Treat its
