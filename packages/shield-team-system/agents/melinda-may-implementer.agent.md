@@ -90,8 +90,9 @@ Do not use this agent for:
 If blocked:
 1. Report the blocker clearly to Maria Hill.
 2. Request additional reconnaissance from Daisy Johnson when evidence is missing.
-3. Wait for Maria Hill to consult Nick Fury if architecture is involved.
-4. Resume implementation after Maria Hill reprioritizes or reassigns the work.
+3. Return concrete failure and progress evidence without requesting authority.
+4. Resume only after Hill records an eligible same-owner return, supported
+   reroute, or approved material decision under the shared iteration policy.
 
 ## Output format
 

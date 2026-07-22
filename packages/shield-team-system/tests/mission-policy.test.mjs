@@ -4,10 +4,10 @@ import test from "node:test";
 import {
   MISSION_DECISIONS,
   RISK_FLAGS,
-  authorizeRepair,
   canDispatchSpecialists,
   classifyMissionRisk,
   evaluateLightweightTimeout,
+  evaluateSpecialistIteration,
   getMissionTransition,
 } from "../contracts/mission-policy.mjs";
 
@@ -172,54 +172,141 @@ test("specialist dispatch requires explicit Coulson approval", () => {
   }
 });
 
-test("repair policy allows one automatic cycle and enforces authorization and cap", () => {
-  assert.deepEqual(authorizeRepair({ completedRepairs: 0, hardCap: 3 }), {
-    allowed: true,
-    requiresCoulson: false,
-    reason: "automatic_repair",
-    hardCap: 3,
-  });
+function iteration(overrides = {}) {
+  return {
+    iterationContractVersion: 1,
+    missionId: "mission:67",
+    subjectId: "issue:67",
+    approvedObjectiveId: "objective:hill-iteration",
+    currentObjectiveId: "objective:hill-iteration",
+    artifactRevisionId: "revision:abc123",
+    approvedOwningSeatId: "may",
+    currentOwningSeatId: "may",
+    requestedDisposition: "return_same_owner",
+    proposedNextSeatId: "may",
+    evidenceRefs: ["test:validation:new-failure"],
+    newConcreteEvidence: true,
+    observableProgress: true,
+    problemCategoryChanged: false,
+    validationObligationsSatisfied: false,
+    sameUnresolvedFailureRepeating: false,
+    materialScopeChange: false,
+    materialRiskIncrease: false,
+    authorityDecisionRequired: false,
+    destructiveOrExternalEffect: false,
+    unresolvedTradeoff: false,
+    finalHumanGate: false,
+    ...overrides,
+  };
+}
 
-  assert.deepEqual(authorizeRepair({ completedRepairs: 1, hardCap: 3 }), {
-    allowed: false,
-    requiresCoulson: true,
-    reason: "coulson_authorization_required",
-    hardCap: 3,
-  });
-  assert.deepEqual(
-    authorizeRepair({
-      completedRepairs: 1,
-      hardCap: 3,
-      coulsonAuthorized: true,
-    }),
-    {
-      allowed: true,
-      requiresCoulson: false,
-      reason: "manual_repair",
-      hardCap: 3,
-    },
-  );
+test("routine second and later evidence-backed corrections remain with the owning seat", () => {
+  for (const owner of ["daisy", "may", "fury", "fitz", "simmons", "future-specialist"]) {
+    for (const cycle of [2, 3, 9]) {
+      const result = evaluateSpecialistIteration(iteration({
+        approvedOwningSeatId: owner,
+        currentOwningSeatId: owner,
+        proposedNextSeatId: owner,
+        evidenceRefs: [`cycle:${owner}:${cycle}`],
+      }));
+      assert.equal(result.state, "evaluated");
+      assert.equal(result.authority, "non_authoritative");
+      assert.equal(result.evidenceAssurance, "reference_only_unverified");
+      assert.equal(result.evidenceFacts.newConcreteEvidence, true);
+      assert.equal(Object.isFrozen(result.evidenceFacts), true);
+      assert.equal(result.outcome, "eligible");
+      assert.equal(result.nextSeatId, owner);
+      assert.equal(result.requiresCoulson, false);
+      assert.equal(result.reason, "evidence_backed_same_owner");
+    }
+  }
+});
 
-  for (const input of [
-    { completedRepairs: 3, hardCap: 3 },
-    { completedRepairs: 3, hardCap: 3, coulsonAuthorized: true },
-    { completedRepairs: 4, hardCap: 3, coulsonAuthorized: true },
+test("Hill can reroute changed problem categories or advance satisfied validation", () => {
+  const reroute = evaluateSpecialistIteration(iteration({
+    requestedDisposition: "reroute",
+    proposedNextSeatId: "daisy",
+    problemCategoryChanged: true,
+  }));
+  assert.equal(reroute.outcome, "eligible");
+  assert.equal(reroute.nextSeatId, "daisy");
+  assert.equal(reroute.reason, "evidence_backed_reroute");
+
+  const advance = evaluateSpecialistIteration(iteration({
+    requestedDisposition: "advance",
+    proposedNextSeatId: "fury",
+    validationObligationsSatisfied: true,
+  }));
+  assert.equal(advance.outcome, "eligible");
+  assert.equal(advance.nextSeatId, "fury");
+  assert.equal(advance.reason, "validation_gate_satisfied");
+});
+
+test("material gates take precedence over every Hill disposition", () => {
+  const materialCases = [
+    ["currentObjectiveId", "objective:changed", "objective_changed"],
+    ["currentOwningSeatId", "daisy", "ownership_changed"],
+    ["materialScopeChange", true, "material_scope_change"],
+    ["materialRiskIncrease", true, "material_risk_increase"],
+    ["authorityDecisionRequired", true, "authority_decision_required"],
+    ["destructiveOrExternalEffect", true, "destructive_or_external_effect"],
+    ["unresolvedTradeoff", true, "unresolved_tradeoff"],
+    ["finalHumanGate", true, "final_human_gate"],
+  ];
+  for (const requestedDisposition of ["return_same_owner", "reroute", "advance", "escalate_coulson"]) {
+    for (const [field, value, reason] of materialCases) {
+      const result = evaluateSpecialistIteration(iteration({ requestedDisposition, [field]: value }));
+      assert.equal(result.outcome, "escalate_coulson");
+      assert.equal(result.requiresCoulson, true);
+      assert.equal(result.reason, reason);
+      assert.equal(result.nextSeatId, "coulson");
+    }
+  }
+});
+
+test("unsupported, stalled, and contradictory iteration requests hold without count escalation", () => {
+  const cases = [
+    [{ sameUnresolvedFailureRepeating: true }, "same_failure_repeating"],
+    [{ newConcreteEvidence: false }, "new_evidence_required"],
+    [{ observableProgress: false }, "observable_progress_required"],
+    [{ proposedNextSeatId: "daisy" }, "same_owner_required"],
+    [{ problemCategoryChanged: true }, "category_change_requires_reroute"],
+    [{ validationObligationsSatisfied: true }, "validated_work_should_advance"],
+    [{ requestedDisposition: "reroute", proposedNextSeatId: "may", problemCategoryChanged: true }, "distinct_reroute_seat_required"],
+    [{ requestedDisposition: "reroute", proposedNextSeatId: "daisy" }, "category_change_not_established"],
+    [{ requestedDisposition: "advance", proposedNextSeatId: "fury" }, "validation_not_satisfied"],
+    [{ requestedDisposition: "reroute", proposedNextSeatId: "coulson", problemCategoryChanged: true }, "material_gate_not_established"],
+    [{ requestedDisposition: "escalate_coulson" }, "material_gate_not_established"],
+  ];
+  for (const [overrides, reason] of cases) {
+    const result = evaluateSpecialistIteration(iteration(overrides));
+    assert.equal(result.outcome, "hold_for_evidence");
+    assert.equal(result.requiresCoulson, false);
+    assert.equal(result.reason, reason);
+  }
+});
+
+test("specialist iteration rejects malformed, unknown, inherited, and accessor evidence", () => {
+  const unknown = { ...iteration(), unknown: true };
+  const inherited = Object.assign(Object.create({ inherited: true }), iteration());
+  const accessor = iteration();
+  Object.defineProperty(accessor, "missionId", { enumerable: true, get: () => "mission:67" });
+  const hostileProxy = new Proxy(iteration(), { ownKeys: () => { throw new Error("trap"); } });
+  const hostileEvidence = iteration();
+  hostileEvidence.evidenceRefs = new Proxy(["test:evidence"], { getOwnPropertyDescriptor: () => { throw new Error("trap"); } });
+  for (const value of [null, [], {}, unknown, inherited, accessor, hostileProxy, hostileEvidence,
+    { ...iteration(), approvedOwningSeatId: "coulson", currentOwningSeatId: "coulson" },
+    { ...iteration(), approvedOwningSeatId: "runtime:ornith", currentOwningSeatId: "runtime:ornith", proposedNextSeatId: "runtime:ornith" },
+    { ...iteration(), proposedNextSeatId: "executor:local" },
+    { ...iteration(), proposedNextSeatId: "hill" },
+    { ...iteration(), evidenceRefs: [] },
+    { ...iteration(), evidenceRefs: ["test:duplicate", "test:duplicate"] },
   ]) {
-    assert.deepEqual(authorizeRepair(input), {
-      allowed: false,
-      requiresCoulson: false,
-      reason: "hard_cap_reached",
-      hardCap: 3,
+    const result = evaluateSpecialistIteration(value);
+    assert.deepEqual(result, {
+      state: "invalid", iterationContractVersion: 1, authority: "non_authoritative",
+      outcome: "escalate_coulson", requestedDisposition: null, nextSeatId: null,
+      requiresCoulson: true, reason: "invalid_evidence_packet",
     });
-  }
-
-  for (const hardCap of [undefined, null, 0, -1, 1.5, "3"]) {
-    assert.equal(authorizeRepair({ completedRepairs: 0, hardCap }).hardCap, 1);
-  }
-  for (const completedRepairs of [undefined, null, -1, 1.5, "1"]) {
-    const result = authorizeRepair({ completedRepairs });
-    assert.equal(result.allowed, false);
-    assert.equal(result.requiresCoulson, true);
-    assert.equal(result.reason, "invalid_completed_repairs");
   }
 });

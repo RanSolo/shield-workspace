@@ -103,14 +103,17 @@ test("escalation takes precedence over refinement and preserves canonical reason
   assert.equal(result.nextOwnerSeatId, null);
 });
 
-test("a second asserted refinement need escalates instead of recurring", () => {
-  const result = evaluateHillReadinessV1(
-    candidate({ validation_readiness: "refinement_required" }),
-    observation({ refinementPassesCompleted: 1 }),
-  );
-  assert.equal(result.outcome, "BLOCKED_ESCALATE");
-  assert.deepEqual(result.reasonCodes, ["VALIDATION_INCOMPLETE", "REFINEMENT_LIMIT_REACHED"]);
-  assert.equal(result.nextOwnerSeatId, null);
+test("refinement count remains advisory telemetry and never forces escalation", () => {
+  for (const refinementPassesCompleted of [1, 2, 9, 1_000_000]) {
+    const result = evaluateHillReadinessV1(
+      candidate({ validation_readiness: "refinement_required" }),
+      observation({ refinementPassesCompleted }),
+    );
+    assert.equal(result.outcome, "NEEDS_REFINEMENT");
+    assert.deepEqual(result.reasonCodes, ["VALIDATION_INCOMPLETE"]);
+    assert.equal(result.nextOwnerSeatId, "may");
+    assert.equal(result.refinementPassesCompleted, refinementPassesCompleted);
+  }
 });
 
 test("replay identity mismatch and stale revision fail closed before dimensions", () => {
@@ -237,7 +240,7 @@ test("identifier, evidence, observation, order, and version bounds fail generica
     { ...observation(), assuranceKind: "verified" },
     { ...observation(), journalSchemaVersion: 256 },
     { ...observation(), evaluatedThroughSequence: -1 },
-    { ...observation(), refinementPassesCompleted: 2 },
+    { ...observation(), refinementPassesCompleted: 1_000_001 },
   ];
   for (const value of candidates) assert.equal(
     evaluateHillReadinessV1(value, observation()).state, "invalid",
@@ -261,6 +264,6 @@ test("the Issue #34 fixture is retrospective and prediction-ineligible", () => {
 test("the reason registry contains every emitted reason", () => {
   for (const reason of [
     "INVALID_EVIDENCE_RECORD", "REPLAY_BINDING_MISMATCH", "ARTIFACT_REVISION_STALE",
-    "REFINEMENT_LIMIT_REACHED", "SCOPE_INCOMPLETE", "AUTHORITY_DECISION_REQUIRED",
+    "SCOPE_INCOMPLETE", "AUTHORITY_DECISION_REQUIRED",
   ]) assert.ok(HILL_READINESS_REASON_CODES.includes(reason));
 });

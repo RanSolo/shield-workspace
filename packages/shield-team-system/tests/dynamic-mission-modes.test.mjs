@@ -18,6 +18,8 @@ test("dynamic mode composition keeps identity separate from expertise", async ()
   assert.match(missionModes, /seats define identity, authority, and responsibility/);
   assert.match(missionModes, /modes define reusable expertise, tools, and mission context/);
   assert.match(missionModes, /only participating seats receive loaded modes for the current mission/);
+  assert.match(missionModes, /## Shared iteration rule/);
+  assert.match(missionModes, /cannot replace the\s+policy with a fixed repair count/);
 });
 
 test("Hill and the scorecard document per-seat mode attachments", async () => {

@@ -31,12 +31,85 @@ export interface TimeoutEvaluation {
   reason: string;
 }
 
-export interface RepairAuthorization {
-  allowed: boolean;
-  requiresCoulson: boolean;
-  reason: string;
-  hardCap: number;
+export const SPECIALIST_ITERATION_CONTRACT_VERSION: 1;
+export const SPECIALIST_ITERATION_DISPOSITIONS: readonly [
+  "return_same_owner", "reroute", "advance", "escalate_coulson",
+];
+export type SpecialistIterationDisposition =
+  (typeof SPECIALIST_ITERATION_DISPOSITIONS)[number];
+
+export interface SpecialistIterationEvidenceV1 {
+  readonly iterationContractVersion: 1;
+  readonly missionId: string;
+  readonly subjectId: string;
+  readonly approvedObjectiveId: string;
+  readonly currentObjectiveId: string;
+  readonly artifactRevisionId: string;
+  readonly approvedOwningSeatId: string;
+  readonly currentOwningSeatId: string;
+  readonly requestedDisposition: SpecialistIterationDisposition;
+  readonly proposedNextSeatId: string | null;
+  readonly evidenceRefs: readonly string[];
+  readonly newConcreteEvidence: boolean;
+  readonly observableProgress: boolean;
+  readonly problemCategoryChanged: boolean;
+  readonly validationObligationsSatisfied: boolean;
+  readonly sameUnresolvedFailureRepeating: boolean;
+  readonly materialScopeChange: boolean;
+  readonly materialRiskIncrease: boolean;
+  readonly authorityDecisionRequired: boolean;
+  readonly destructiveOrExternalEffect: boolean;
+  readonly unresolvedTradeoff: boolean;
+  readonly finalHumanGate: boolean;
 }
+
+export interface SpecialistIterationEvaluatedV1 {
+  readonly state: "evaluated";
+  readonly iterationContractVersion: 1;
+  readonly authority: "non_authoritative";
+  readonly missionId: string;
+  readonly subjectId: string;
+  readonly approvedObjectiveId: string;
+  readonly currentObjectiveId: string;
+  readonly artifactRevisionId: string;
+  readonly approvedOwningSeatId: string;
+  readonly currentOwningSeatId: string;
+  readonly evidenceRefs: readonly string[];
+  readonly evidenceAssurance: "reference_only_unverified";
+  readonly evidenceFacts: Readonly<{
+    newConcreteEvidence: boolean;
+    observableProgress: boolean;
+    problemCategoryChanged: boolean;
+    validationObligationsSatisfied: boolean;
+    sameUnresolvedFailureRepeating: boolean;
+    materialScopeChange: boolean;
+    materialRiskIncrease: boolean;
+    authorityDecisionRequired: boolean;
+    destructiveOrExternalEffect: boolean;
+    unresolvedTradeoff: boolean;
+    finalHumanGate: boolean;
+  }>;
+  readonly outcome: "eligible" | "hold_for_evidence" | "escalate_coulson";
+  readonly requestedDisposition: SpecialistIterationDisposition;
+  readonly nextSeatId: string | null;
+  readonly requiresCoulson: boolean;
+  readonly reason: string;
+}
+
+export interface SpecialistIterationInvalidV1 {
+  readonly state: "invalid";
+  readonly iterationContractVersion: 1;
+  readonly authority: "non_authoritative";
+  readonly outcome: "escalate_coulson";
+  readonly requestedDisposition: null;
+  readonly nextSeatId: null;
+  readonly requiresCoulson: true;
+  readonly reason: "invalid_evidence_packet";
+}
+
+export type SpecialistIterationEvaluationV1 =
+  | SpecialistIterationEvaluatedV1
+  | SpecialistIterationInvalidV1;
 
 export interface ValidResult<T> {
   state: "valid";
@@ -135,7 +208,7 @@ export function getMissionTransition(
 export function classifyMissionRisk(flags: unknown): RiskAssessment;
 export function evaluateLightweightTimeout(input: unknown): TimeoutEvaluation;
 export function canDispatchSpecialists(input: unknown): boolean;
-export function authorizeRepair(input: unknown): RepairAuthorization;
+export function evaluateSpecialistIteration(input: unknown): SpecialistIterationEvaluationV1;
 export function validateMissionEvent(event: unknown): ValidationResult<MissionEvent>;
 export function replayMissionEvents(
   missionId: string,

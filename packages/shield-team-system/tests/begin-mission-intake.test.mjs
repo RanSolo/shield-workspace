@@ -52,8 +52,9 @@ test("begin mission playbook defines the canonical intake workflow", async () =>
   assert.match(playbook, /contracts\/mission-policy\.mjs/);
   assert.match(playbook, /approve`, `edit`, `reject`, `pause`,/);
   assert.match(playbook, /Missing, unknown, or non-boolean risk data fails closed/);
-  assert.match(playbook, /One repair is allowed automatically/);
-  assert.match(playbook, /hard cap is absolute/);
+  assert.match(playbook, /## Specialist iteration policy/);
+  assert.match(playbook, /evaluateSpecialistIteration/);
+  assert.match(playbook, /Iteration\s+count alone never requires Coulson/);
   assert.match(playbook, /## Recommended versus activated modes/);
   assert.match(playbook, /Recommended modes are proposals/);
   assert.match(playbook, /Activated modes are the modes actually attached/);
@@ -78,8 +79,9 @@ test("mission brief template captures the required intake artifact", async () =>
   assert.match(template, /## Approval Request/);
   assert.match(template, /Current mission state:/);
   assert.match(template, /Risk flags/);
-  assert.match(template, /Completed repairs:/);
-  assert.match(template, /Repair hard cap/);
+  assert.match(template, /Approved objective ID:/);
+  assert.match(template, /Latest specialist disposition:/);
+  assert.match(template, /Material Coulson gate present:/);
   assert.match(template, /Specialist dispatch authorized:/);
 });
 
@@ -98,6 +100,9 @@ test("Hill and Coulson document intake before dispatch", async () => {
   assert.match(coulson, /approve \/ edit \/ reject \/ pause \/ resume \/ cancel/);
   assert.match(hill, /evaluateLightweightTimeout/);
   assert.match(hill, /canDispatchSpecialists/);
+  assert.match(hill, /evaluateSpecialistIteration/);
+  assert.match(hill, /A count alone\s+never triggers escalation/);
+  assert.match(coulson, /material scope, risk,\s+authority, destructive\/external, tradeoff, or final human-gate decision/);
   assert.match(hill, /prepareDeliveryWorkspaceForDispatch/);
   assert.match(hill, /Approval without that receipt is insufficient/);
 });

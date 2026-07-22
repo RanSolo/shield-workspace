@@ -89,7 +89,8 @@ Evidence references are 1-256 ASCII bytes and match:
 There are at most eight references per dimension and 64 total.
 `journalSchemaVersion` is a safe integer from 1 through 255;
 `evaluatedThroughSequence` is a non-negative safe integer; and
-`refinementPassesCompleted` is exactly zero or one.
+`refinementPassesCompleted` is non-negative bounded telemetry. It does not
+authorize, deny, or limit another refinement.
 
 Only ordinary own-property data objects and dense ordinary arrays are
 accepted. Unknown or inherited fields, symbols, accessors, sparse arrays,
@@ -105,19 +106,18 @@ The evaluator applies this order:
    `REPLAY_BINDING_MISMATCH`;
 3. revision mismatch → `BLOCKED_ESCALATE` / `ARTIFACT_REVISION_STALE`;
 4. any escalation status → `BLOCKED_ESCALATE`;
-5. refinement status with zero completed passes → `NEEDS_REFINEMENT`;
-6. refinement status with one completed pass → `BLOCKED_ESCALATE` plus
-   `REFINEMENT_LIMIT_REACHED`;
-7. otherwise → `GOOD_ENOUGH`.
+5. any refinement status → `NEEDS_REFINEMENT` for the unchanged artifact owner;
+6. otherwise → `GOOD_ENOUGH`.
 
 Dimension reason codes are derived by the evaluator in canonical dimension
 order. Callers cannot provide outcomes, reason codes, refinement requests, or
 the next owner. `NEEDS_REFINEMENT` always names the unchanged artifact owner as
 `nextOwnerSeatId`; this is evidence for the surrounding workflow, not routing.
 
-The evaluator cannot enforce the refinement count across calls. The host must
-derive that count from durable workflow history. A false host assertion cannot
-be repaired by this pure value contract.
+The evaluator reports the host-asserted refinement count for analysis only.
+Issue #67 supersedes Issue #58's fixed one-refinement escalation rule. The
+separate `evaluateSpecialistIteration` policy evaluates Hill's requested route;
+this readiness result remains advisory and cannot grant authority.
 
 ## Evidence and later analysis
 

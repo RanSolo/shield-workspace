@@ -55,13 +55,18 @@ Active modules are:
 * Agents do not silently attach modes to themselves during execution.
 * Approved mode requests are mission-scoped unless explicitly promoted to a permanent workflow rule.
 
-## Stuck protocol
-When Melinda May is blocked:
-1. Melinda May reports blocked.
-2. Maria Hill requests additional reconnaissance from Daisy Johnson.
-3. Maria Hill consults Nick Fury if architecture is involved.
-4. Maria Hill reprioritizes or reassigns work.
-5. Melinda May resumes implementation.
+## Specialist iteration protocol
+After every specialist handoff, Maria Hill uses concrete evidence to choose one
+disposition: return the artifact to the same owner, reroute because the problem
+category changed, advance after the current gate passes, or escalate a material
+decision to Phil Coulson. The owning seat keeps artifact responsibility through
+directly coupled corrections.
+
+Iteration continues without a numeric limit only while the approved objective
+and owning seat remain unchanged, each cycle responds to new concrete evidence,
+progress is observable, risk does not materially increase, and the same
+unresolved failure is not merely repeating. A stall is held for evidence or
+rerouted; it is not escalated merely because another cycle occurred.
 
 ## Mode request protocol
 When a seat discovers that the current mission needs expertise or context not already loaded:
@@ -95,8 +100,8 @@ One explicit decision request, if needed.
 Escalate when:
 * requirements are ambiguous or conflicting
 * risk is medium or high
-* the single automatic repair is exhausted; later repairs require explicit
-  Coulson authorization below the recorded hard cap, and the hard cap is absolute
+* scope, risk, authority, destructive or external effects, unresolved tradeoffs,
+  or a designated final human gate requires a material decision
 * confidence is low
 * multiple viable options have tradeoffs
 
