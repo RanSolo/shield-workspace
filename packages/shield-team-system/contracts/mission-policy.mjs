@@ -165,8 +165,22 @@ export function evaluateLightweightTimeout(input) {
 
 export function canDispatchSpecialists(input) {
   if (!isPlainObject(input)) return false;
+  if (input.missionState !== "approved" || input.approvalSource !== "coulson") return false;
+  if (input.specialistDispatchApprovalSource === "coulson") return true;
+  if (input.trainingWheelsOff !== true) return true;
   return (
-    input.missionState === "approved" && input.approvalSource === "coulson"
+    input.furyPlanGate === "approved" &&
+    input.planWithinApprovedScope === true &&
+    input.repositoryIdentityVerified === true &&
+    input.branchRevisionVerified === true &&
+    input.validationObligationsBound === true &&
+    input.runtimeExecutorBindingCurrent === true &&
+    input.materialScopeChange === false &&
+    input.materialRiskIncrease === false &&
+    input.authorityDecisionRequired === false &&
+    input.destructiveOrExternalEffect === false &&
+    input.unresolvedTradeoff === false &&
+    input.finalHumanGate === false
   );
 }
 

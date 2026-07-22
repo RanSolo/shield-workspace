@@ -124,6 +124,33 @@ export interface MayToolExecutorDependencies {
   nextTemporaryName(request: Readonly<Pick<MayToolCallRequest, "sessionId" | "toolCallId">>): string;
 }
 
+export interface MayControlLoopRequest {
+  baseUrl: string;
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  sessionId: string;
+  repositoryRoot: string;
+  baseRevision: string;
+}
+
+export interface MayControlEvent {
+  mayControlEventSchemaVersion: 1;
+  authority: "non_authoritative";
+  eventId: string;
+  sessionId: string;
+  code: string;
+  counter: number;
+  toolCallId: string | null;
+  evidenceRefs: readonly string[];
+}
+
+export interface MayControlLoopDependencies extends MayToolExecutorDependencies {
+  apiToken?: string;
+  fetchImpl?: typeof fetch;
+  appendControlEvent(event: MayControlEvent): { eventId: string; appended: true } | Promise<{ eventId: string; appended: true }>;
+}
+
 export interface MayFileWriteResult {
   state: "completed";
   code: "file_written";
@@ -145,6 +172,16 @@ export interface MayValidationResult {
   attribution: "host_observed_tool_result";
 }
 
+export interface MayControlLoopResult {
+  message: string;
+  attribution: "untrusted_model_output";
+  completedToolCalls: number;
+  writeCalls: number;
+  validationCalls: number;
+  releasedBytes: number;
+}
+
+export const MAY_CONTROL_LOOP_LIMITS: Readonly<Record<string, number>>;
 export const MAY_EXECUTOR_LIMITS: Readonly<Record<string, number>>;
 export const MAY_TOOL_MAPPINGS: Readonly<Record<string, Readonly<{ actionId: string; effectClass: "behavioral_implementation" | "verification"; capability: string }>>>;
 export const MAY_TOOL_DEFINITIONS: readonly Readonly<Record<string, unknown>>[];
@@ -153,3 +190,8 @@ export function runMayToolCall(
   request: MayToolCallRequest,
   dependencies: MayToolExecutorDependencies,
 ): Promise<MayFileWriteResult | MayValidationResult>;
+
+export function runMayControlLoop(
+  request: MayControlLoopRequest,
+  dependencies: MayControlLoopDependencies,
+): Promise<MayControlLoopResult>;
