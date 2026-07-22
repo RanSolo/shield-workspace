@@ -600,7 +600,24 @@ test("journal v5 rejects effect drift, stale continuity, duplicates, and uncerta
   assert.equal(validateRunnerSupervisedEffectCandidate(stale).state, "invalid");
   const drift = structuredClone(candidate);
   drift.payload.revisionId = "sha256:drift";
-  assert.equal(validateRunnerSupervisedEffectCandidate(drift).state, "invalid");
+  const driftResult = validateRunnerSupervisedEffectCandidate(drift);
+  assert.equal(driftResult.state, "invalid");
+  if (driftResult.state === "invalid") assert.equal(driftResult.code, "candidate_drift");
+  const sequenceMismatch = structuredClone(candidate);
+  sequenceMismatch.payload.evaluatedThroughSequence = 1;
+  const sequenceResult = validateRunnerSupervisedEffectCandidate(sequenceMismatch);
+  assert.equal(sequenceResult.state, "invalid");
+  if (sequenceResult.state === "invalid") assert.equal(sequenceResult.code, "sequence_invalid");
+  const mixedDrift = structuredClone(drift);
+  mixedDrift.authority = "invalid";
+  const mixedDriftResult = validateRunnerSupervisedEffectCandidate(mixedDrift);
+  assert.equal(mixedDriftResult.state, "invalid");
+  if (mixedDriftResult.state === "invalid") assert.equal(mixedDriftResult.code, "malformed");
+  const mixedSequence = structuredClone(sequenceMismatch);
+  mixedSequence.runnerContractVersion = 2;
+  const mixedSequenceResult = validateRunnerSupervisedEffectCandidate(mixedSequence);
+  assert.equal(mixedSequenceResult.state, "invalid");
+  if (mixedSequenceResult.state === "invalid") assert.equal(mixedSequenceResult.code, "malformed");
 
   const first = createExecutionEffectEntry(
     projection,
