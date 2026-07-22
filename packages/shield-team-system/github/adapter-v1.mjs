@@ -23,6 +23,41 @@ function blocked(reason, commands = []) {
   return { state: "blocked", reason, commands };
 }
 
+function exactPlain(value, fields) {
+  return value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    Object.keys(value).length === fields.length &&
+    fields.every((field) => Object.hasOwn(value, field));
+}
+
+function classifyFinding(source) {
+  if (!exactPlain(source, ["findingId", "sourceKind", "sourceRef", "headRefOid", "classification", "blocking", "summary"])) {
+    return null;
+  }
+  const routeToSeatId = {
+    implementation: "may",
+    evidence: "daisy",
+    architecture_conformance: "fury",
+    advisory: "hill",
+    false_positive: "hill",
+    human_decision: "coulson",
+  }[source.classification];
+  if (!routeToSeatId) return null;
+  return {
+    findingId: source.findingId,
+    sourceKind: source.sourceKind,
+    sourceRef: source.sourceRef,
+    headRefOid: source.headRefOid,
+    classification: source.classification,
+    routeToSeatId,
+    blocking: source.blocking,
+    requiresFuryFollowUp: source.classification === "architecture_conformance",
+    summary: source.summary,
+  };
+}
+
 function call(run, commands, executable, args, options) {
   let result;
   try {
@@ -174,6 +209,72 @@ export function createGitHubHumanEvidenceCandidate(input) {
     sourceRef: input.sourceRef,
     capturedAt: input.capturedAt,
     payload: { evidence: input.evidence },
+  };
+  const checked = validateAdapterCandidate(candidate);
+  return checked.state === "valid"
+    ? { state: "candidate", candidate: checked.value }
+    : { state: "blocked", reason: checked.code, errors: checked.errors };
+}
+
+/**
+ * Converts exact-head GitHub review/check activity into a non-authoritative
+ * Follow-up Mode snapshot. The adapter reports unresolved facts only; Hill and
+ * the Kernel retain routing, readiness, authority, merge, and completion.
+ */
+export function createGitHubFollowUpCandidate(input) {
+  if (!exactPlain(input, [
+    "candidateId",
+    "missionId",
+    "subjectId",
+    "revisionId",
+    "sourceRef",
+    "capturedAt",
+    "repository",
+    "branch",
+    "prNumber",
+    "headRefOid",
+    "reviewSourceRefs",
+    "findings",
+  ])) {
+    return blocked("follow_up_snapshot_required");
+  }
+  if (input.revisionId !== input.headRefOid) return blocked("follow_up_head_mismatch");
+  if (!Array.isArray(input.findings) || !Array.isArray(input.reviewSourceRefs)) return blocked("follow_up_snapshot_required");
+
+  const findings = [];
+  for (const source of input.findings) {
+    const finding = classifyFinding(source);
+    if (!finding) return blocked("follow_up_finding_malformed");
+    findings.push(finding);
+  }
+
+  const candidate = {
+    adapterContractVersion: 1,
+    adapterId: "github",
+    candidateId: input.candidateId,
+    candidateKind: "follow_up_snapshot",
+    missionId: input.missionId,
+    subjectId: input.subjectId,
+    revisionId: input.revisionId,
+    humanPrincipalId: null,
+    bindingId: null,
+    sourceRef: input.sourceRef,
+    capturedAt: input.capturedAt,
+    payload: {
+      lifecycleState: findings.length === 0 ? "awaiting_review" : "follow_up_required",
+      repository: input.repository,
+      branch: input.branch,
+      prNumber: input.prNumber,
+      headRefOid: input.headRefOid,
+      reviewSourceRefs: input.reviewSourceRefs,
+      findings,
+      replyRequirements: {
+        concise: true,
+        includeResolution: true,
+        includeValidation: true,
+        includeUnresolved: true,
+      },
+    },
   };
   const checked = validateAdapterCandidate(candidate);
   return checked.state === "valid"

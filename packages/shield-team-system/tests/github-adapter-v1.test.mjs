@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createGitHubFollowUpCandidate,
   createGitHubHumanEvidenceCandidate,
   deliverGitHubCommunication,
 } from "../public/github.mjs";
@@ -167,4 +168,136 @@ test("GitHub review input remains a candidate and cannot assign authority", () =
   assert.equal(result.state, "candidate");
   assert.equal(Object.hasOwn(result.candidate, "decision"), false);
   assert.equal(Object.hasOwn(result.candidate, "readiness"), false);
+});
+
+test("GitHub Follow-up Mode records awaiting-review state at the exact PR head", () => {
+  const result = createGitHubFollowUpCandidate({
+    candidateId: "candidate:follow-up:awaiting",
+    missionId: "mission:fixture",
+    subjectId: "issue:71",
+    revisionId: head,
+    sourceRef: "github:pr:71",
+    capturedAt: { value: "2026-07-19T06:02:00Z", provenance: "hostTrusted" },
+    repository: "RanSolo/shield-workspace",
+    branch: "codex/issue-71-follow-up-mode",
+    prNumber: 71,
+    headRefOid: head,
+    reviewSourceRefs: [],
+    findings: [],
+  });
+  assert.equal(result.state, "candidate");
+  assert.equal(result.candidate.candidateKind, "follow_up_snapshot");
+  assert.equal(result.candidate.payload.lifecycleState, "awaiting_review");
+  assert.equal(result.candidate.payload.headRefOid, head);
+  assert.equal(result.candidate.humanPrincipalId, null);
+  assert.equal(result.candidate.bindingId, null);
+});
+
+test("GitHub Follow-up Mode classifies unresolved findings for the owning seat", () => {
+  const result = createGitHubFollowUpCandidate({
+    candidateId: "candidate:follow-up:required",
+    missionId: "mission:fixture",
+    subjectId: "issue:71",
+    revisionId: head,
+    sourceRef: "github:pr:71",
+    capturedAt: { value: "2026-07-19T06:03:00Z", provenance: "hostTrusted" },
+    repository: "RanSolo/shield-workspace",
+    branch: "codex/issue-71-follow-up-mode",
+    prNumber: 71,
+    headRefOid: head,
+    reviewSourceRefs: ["github:pr:71:review:9", "github:pr:71:check:lint"],
+    findings: [
+      {
+        findingId: "finding:implementation:1",
+        sourceKind: "review_comment",
+        sourceRef: "github:pr:71:comment:100",
+        headRefOid: head,
+        classification: "implementation",
+        blocking: true,
+        summary: "May must repair the implementation without broadening scope.",
+      },
+      {
+        findingId: "finding:architecture:1",
+        sourceKind: "review",
+        sourceRef: "github:pr:71:review:9",
+        headRefOid: head,
+        classification: "architecture_conformance",
+        blocking: true,
+        summary: "Fury must re-check conformance because the authority boundary changed.",
+      },
+      {
+        findingId: "finding:evidence:1",
+        sourceKind: "check_run",
+        sourceRef: "github:pr:71:check:lint",
+        headRefOid: head,
+        classification: "evidence",
+        blocking: false,
+        summary: "Daisy should collect missing validation evidence.",
+      },
+    ],
+  });
+  assert.equal(result.state, "candidate");
+  assert.equal(result.candidate.payload.lifecycleState, "follow_up_required");
+  assert.deepEqual(
+    result.candidate.payload.findings.map((finding) => [
+      finding.findingId,
+      finding.routeToSeatId,
+      finding.requiresFuryFollowUp,
+    ]),
+    [
+      ["finding:implementation:1", "may", false],
+      ["finding:architecture:1", "fury", true],
+      ["finding:evidence:1", "daisy", false],
+    ],
+  );
+  assert.deepEqual(result.candidate.payload.replyRequirements, {
+    concise: true,
+    includeResolution: true,
+    includeValidation: true,
+    includeUnresolved: true,
+  });
+});
+
+test("GitHub Follow-up Mode fails closed on stale or malformed review snapshots", () => {
+  const stale = createGitHubFollowUpCandidate({
+    candidateId: "candidate:follow-up:stale",
+    missionId: "mission:fixture",
+    subjectId: "issue:71",
+    revisionId: head,
+    sourceRef: "github:pr:71",
+    capturedAt: { value: "2026-07-19T06:04:00Z", provenance: "hostTrusted" },
+    repository: "RanSolo/shield-workspace",
+    branch: "codex/issue-71-follow-up-mode",
+    prNumber: 71,
+    headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    reviewSourceRefs: [],
+    findings: [],
+  });
+  assert.deepEqual(stale, { state: "blocked", reason: "follow_up_head_mismatch", commands: [] });
+
+  const malformed = createGitHubFollowUpCandidate({
+    candidateId: "candidate:follow-up:bad",
+    missionId: "mission:fixture",
+    subjectId: "issue:71",
+    revisionId: head,
+    sourceRef: "github:pr:71",
+    capturedAt: { value: "2026-07-19T06:04:00Z", provenance: "hostTrusted" },
+    repository: "RanSolo/shield-workspace",
+    branch: "codex/issue-71-follow-up-mode",
+    prNumber: 71,
+    headRefOid: head,
+    reviewSourceRefs: [],
+    findings: [{
+      findingId: "finding:bad",
+      sourceKind: "review_comment",
+      sourceRef: "github:pr:71:comment:bad",
+      headRefOid: head,
+      classification: "implementation",
+      blocking: true,
+      summary: "Missing no fields except this object has an unexpected owner.",
+      routeToSeatId: "fury",
+    }],
+  });
+  assert.equal(malformed.state, "blocked");
+  assert.equal(malformed.reason, "follow_up_finding_malformed");
 });
