@@ -8,7 +8,9 @@ export {
 
 export {
   MAY_EXECUTOR_LIMITS,
+  MAY_CONTROL_LOOP_LIMITS,
   MAY_TOOL_DEFINITIONS,
   MAY_TOOL_MAPPINGS,
+  runMayControlLoop,
   runMayToolCall,
 } from "../scripts/model/may-tool-executor.mjs";
