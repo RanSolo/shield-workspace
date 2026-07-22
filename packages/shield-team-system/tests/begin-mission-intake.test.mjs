@@ -42,12 +42,11 @@ test("begin mission playbook defines the canonical intake workflow", async () =>
   assert.match(playbook, /fully automatic runner is a future capability/);
   assert.match(playbook, /must not infer or merely claim that the window elapsed/);
   assert.match(playbook, /explicit Coulson approval remains required/);
-  assert.match(playbook, /all non-lightweight work require Phil Coulson's\s+explicit approval/);
-  assert.match(
-    playbook,
-    /eligible lightweight operational mission may instead\s+activate only through the verified-timeout path/,
-  );
-  assert.match(playbook, /may dispatch specialist work only after explicit Coulson approval/);
+  assert.match(playbook, /Non-lightweight work requires Phil Coulson Mission Brief approval/);
+  assert.match(playbook, /Training Wheels Off evidence after Fury approves an in-scope plan/);
+  assert.match(playbook, /verified-timeout path documented below/);
+  assert.match(playbook, /Training Wheels Off removes only the post-plan Coulson dispatch gate/);
+  assert.match(playbook, /material-gate evidence fails closed through `canDispatchSpecialists`/);
   assert.match(playbook, /does not authorize specialist dispatch/);
   assert.match(playbook, /contracts\/mission-policy\.mjs/);
   assert.match(playbook, /approve`, `edit`, `reject`, `pause`,/);

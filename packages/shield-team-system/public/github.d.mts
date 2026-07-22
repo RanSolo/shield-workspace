@@ -39,6 +39,40 @@ export type GitHubAdapterResult =
   | { state: "candidate"; candidate: AdapterCandidateEnvelope; commands: Array<{ executable: string; args: string[]; exitCode: number }> }
   | { state: "blocked"; reason: string; commands: Array<{ executable: string; args: string[]; exitCode: number }> };
 
+export type GitHubFollowUpSourceKind = "review" | "review_comment" | "check_run" | "status_check";
+export type GitHubFollowUpFindingClass =
+  | "implementation"
+  | "evidence"
+  | "architecture_conformance"
+  | "advisory"
+  | "false_positive"
+  | "human_decision";
+
+export interface GitHubFollowUpSourceFinding {
+  findingId: string;
+  sourceKind: GitHubFollowUpSourceKind;
+  sourceRef: string;
+  headRefOid: string;
+  classification: GitHubFollowUpFindingClass;
+  blocking: boolean;
+  summary: string;
+}
+
+export interface GitHubFollowUpCandidateInput {
+  candidateId: string;
+  missionId: string;
+  subjectId: string;
+  revisionId: string;
+  sourceRef: string;
+  capturedAt: AdapterTimestamp;
+  repository: string;
+  branch: string;
+  prNumber: number;
+  headRefOid: string;
+  reviewSourceRefs: readonly string[];
+  findings: readonly GitHubFollowUpSourceFinding[];
+}
+
 export interface PRWorkspaceReceipt {
   schemaVersion: 1;
   repositoryOwner: string;
@@ -235,6 +269,10 @@ export function createGitHubHumanEvidenceCandidate(input: {
   capturedAt: AdapterTimestamp;
   evidence: unknown;
 }): { state: "candidate"; candidate: AdapterCandidateEnvelope } | { state: "blocked"; reason: string; errors: string[] };
+
+export function createGitHubFollowUpCandidate(
+  input: GitHubFollowUpCandidateInput,
+): { state: "candidate"; candidate: AdapterCandidateEnvelope } | { state: "blocked"; reason: string; errors?: string[]; commands?: [] };
 
 export function prepareDeliveryWorkspaceForDispatch(
   input: {

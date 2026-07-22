@@ -24,7 +24,8 @@ test("delivery mode defines the planned-work contract and role boundaries", asyn
   assert.match(mode, /Jemma Simmons.*reviews acceptance criteria/s);
   assert.match(mode, /Phil Coulson.*approves the Mission Brief/s);
   assert.match(mode, /Only participating seats receive Delivery Mode context/);
-  assert.match(mode, /Require explicit Phil Coulson approval before specialist dispatch/);
+  assert.match(mode, /Require Phil Coulson Mission Brief approval before specialist dispatch/);
+  assert.match(mode, /Training Wheels Off allows Hill to dispatch May without a separate\s+post-plan Coulson approval/);
   assert.match(mode, /Delivery Mode cannot use the lightweight operational timeout path/);
   assert.match(mode, /Fury implementation sanity-review status/);
 });
@@ -93,7 +94,8 @@ test("begin mission playbook is present for delivery mode intake", async () => {
 
   assert.match(playbook, /# Begin Mission/);
   assert.match(playbook, /Mission Brief is the canonical intake artifact/);
-  assert.match(playbook, /all non-lightweight work require Phil Coulson's\s+explicit approval/);
+  assert.match(playbook, /Non-lightweight work requires Phil Coulson Mission Brief approval/);
+  assert.match(playbook, /Training Wheels Off evidence after Fury approves an in-scope plan/);
   assert.match(playbook, /does not authorize specialist dispatch/);
   assert.match(template, /# Mission Brief Template/);
   assert.match(template, /## Activation Status/);

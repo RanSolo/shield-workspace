@@ -21,8 +21,8 @@ package artifact.
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
 | `@shield/team-system/sonarqube` | Non-authoritative exact-revision SonarQube evidence evaluation, closed finding classification, owner routing, exception attribution, and fail-closed advancement eligibility |
-| `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write-and-validation tool-call executor, with injected Issue #10 authorization/audit dependencies |
-| `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
+| `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write, validation, and LM Studio control-loop executor, with injected Issue #10 authorization/audit dependencies |
+| `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, non-authoritative Follow-up Mode review snapshots, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 
 The pre-1.0 Delivery Workspace guard requires explicit mission/subject,
 May-owned blueprint, and `planGate` inputs. Literal `null` creates or reuses the
@@ -54,8 +54,9 @@ does not migrate or reinterpret the existing package runtime.
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
 | SonarQube validation and follow-up evidence | Supported through `/sonarqube` as host-asserted non-authoritative evidence; live scanner retrieval, credentials, dashboarding, GitHub replies, and merge authority remain outside the evaluator |
 | Daisy local reconnaissance tools | Supported through `/local-tools` only with a trusted authority provider; standalone CLI tool authority is intentionally unavailable |
-| May revision-bound write and validation calls | Supported through `/local-tools` only with host-owned file and command allowlists, exact effect binding, clean-scope status observation, content-identity snapshots for observational validation, and a fresh permission decision per call; the iterative LM Studio session remains unavailable |
+| May revision-bound write, validation, and bounded control loop | Supported through `/local-tools` only with host-owned file and command allowlists, exact effect binding, clean-scope status observation, content-identity snapshots for observational validation, a fresh permission decision per call, loopback LM Studio capability verification, bounded tool rounds, non-authoritative control events, and untrusted final model attribution |
 | Host-adapter candidate envelope | Supported through `/adapter`; GitHub translation and delivery are supported through `/github` |
+| Follow-up Mode review snapshots | Supported through `/github` as non-authoritative exact-head evidence; it does not grant routing, repair, merge, rereview, or completion authority |
 
 Unavailable capabilities are not exported as placeholders. Their absence is a
 truthful boundary, not a future commitment.
@@ -68,9 +69,10 @@ adds separately Coulson-authorized runtime-binding and atomic supersession
 events. Mixed-version journals, automatic migration, waivers, a general policy
 DSL and general multi-cycle orchestration remain unsupported. The bounded Daisy
 broker and single-call May executor are supported only through `/local-tools`.
-The May executor exposes no Git, merge, deployment, release, network,
-caller-selected command, shell, or independent authority surface. Its local
-model tool loop remains unavailable until the next Issue #42 integration slice.
+The May executor exposes no Git, merge, deployment, release, caller-selected
+command, shell, broad network, or independent authority surface. Its local model
+control loop is limited to loopback LM Studio inference plus the same
+revision-bound `writeFile` and exact allowlisted `runValidation` calls.
 Caller-supplied authority remains unsupported. Specialist iteration uses no
 repair count or hard cap: Hill supplies a closed evidence packet and requested
 disposition, while material scope, risk, authority, destructive/external,

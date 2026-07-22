@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { createAuditedExecutor, createPermissionAuthorizer } from "../../dist/permission-v1.mjs";
 import { validateRunnerCyclePlan } from "../../dist/runner-v1.mjs";
+import { probeLocalToolModel } from "./local-tool-broker.mjs";
 import { isSensitiveRepositoryPath } from "./repository-sensitive-policy.mjs";
 import { validateRepositoryRelativePath } from "./repository-tools.mjs";
 import { strictParseJson } from "./strict-json.mjs";
@@ -18,6 +19,16 @@ export const MAY_EXECUTOR_LIMITS = Object.freeze({
   commandArgumentBytes: 4_096,
   commandOutputBytes: 262_144,
   commandTimeoutMs: 120_000,
+});
+
+export const MAY_CONTROL_LOOP_LIMITS = Object.freeze({
+  aggregateOutputBytes: 262_144,
+  calls: 8,
+  inferenceTimeoutMs: 120_000,
+  responseBytes: 1_048_576,
+  rounds: 8,
+  sessionTimeoutMs: 300_000,
+  terminalEventReserveMs: 1_000,
 });
 
 export const MAY_TOOL_MAPPINGS = Object.freeze({
@@ -139,6 +150,138 @@ function executorError(code, outcome = "failed") {
   const error = new Error(code);
   error.executorOutcome = outcome;
   return error;
+}
+
+function boundedError(code) {
+  const value = String(code);
+  return /^[a-z][a-z0-9_]{0,127}$/u.test(value) ? value : "may_control_loop_failed";
+}
+
+function remainingTime(deadline, clock) {
+  const remaining = deadline - clock();
+  if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("may_control_loop_timeout");
+  return remaining;
+}
+
+async function withinDeadline(operation, deadline, clock) {
+  const timeoutMs = remainingTime(deadline, clock);
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("may_control_loop_timeout")), timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readBoundedResponse(response, maxBytes) {
+  if (!response?.body || typeof response.body.getReader !== "function") throw new Error("lm_response_body_missing");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!(value instanceof Uint8Array)) throw new Error("lm_response_chunk_invalid");
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new Error("lm_response_too_large");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function fetchJson(fetchImpl, url, options, { timeoutMs, maxBytes }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(url, { ...options, redirect: "error", signal: controller.signal });
+    const raw = await readBoundedResponse(response, maxBytes);
+    if (!response.ok) throw new Error("lm_request_failed");
+    const parsed = strictParseJson(raw, { maxBytes, maxDepth: 16, rejectControlCharacters: false });
+    if (parsed.state !== "valid") throw new Error("lm_response_malformed");
+    return parsed.value;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("lm_request_timeout");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseAssistantResponse(data) {
+  if (!plain(data)) throw new Error("lm_response_malformed");
+  const choices = denseArray(Object.getOwnPropertyDescriptor(data, "choices")?.value);
+  if (choices === null || choices.length !== 1 || !plain(choices[0])) throw new Error("lm_response_malformed");
+  const message = Object.getOwnPropertyDescriptor(choices[0], "message")?.value;
+  if (!plain(message) || Object.getOwnPropertyDescriptor(message, "role")?.value !== "assistant") throw new Error("lm_response_malformed");
+  const content = Object.getOwnPropertyDescriptor(message, "content")?.value;
+  if (content !== null && typeof content !== "string") throw new Error("lm_response_malformed");
+  if (typeof content === "string" && Buffer.byteLength(content, "utf8") > MAY_CONTROL_LOOP_LIMITS.responseBytes) throw new Error("lm_response_too_large");
+  const rawCalls = Object.hasOwn(message, "tool_calls") ? denseArray(Object.getOwnPropertyDescriptor(message, "tool_calls").value) : [];
+  if (rawCalls === null) throw new Error("lm_tool_calls_malformed");
+  const toolCalls = rawCalls.map((call) => {
+    if (!exactPlain(call, ["id", "type", "function"])) throw new Error("lm_tool_call_malformed");
+    const fn = Object.getOwnPropertyDescriptor(call, "function").value;
+    const id = Object.getOwnPropertyDescriptor(call, "id").value;
+    if (Object.getOwnPropertyDescriptor(call, "type").value !== "function" || !IDENTIFIER.test(String(id)) || !exactPlain(fn, ["name", "arguments"])) throw new Error("lm_tool_call_malformed");
+    const name = Object.getOwnPropertyDescriptor(fn, "name").value;
+    const args = Object.getOwnPropertyDescriptor(fn, "arguments").value;
+    if (typeof name !== "string" || typeof args !== "string" || !Object.hasOwn(MAY_TOOL_MAPPINGS, name)) throw new Error("lm_tool_call_malformed");
+    return Object.freeze({ id, type: "function", function: Object.freeze({ name, arguments: args }) });
+  });
+  if (toolCalls.length > 0 && content !== null && content.trim().length > 0) throw new Error("lm_response_ambiguous");
+  return { content, toolCalls, assistantMessage: { role: "assistant", content, ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}) } };
+}
+
+function normalizeControlRequest(value) {
+  if (!exactPlain(value, ["baseUrl", "model", "systemPrompt", "userPrompt", "sessionId", "repositoryRoot", "baseRevision"])) throw new Error("may_control_request_malformed");
+  for (const field of ["baseUrl", "model", "systemPrompt", "userPrompt", "sessionId", "repositoryRoot"]) {
+    if (typeof data(value, field) !== "string") throw new Error("may_control_request_malformed");
+  }
+  if (!IDENTIFIER.test(data(value, "sessionId")) || !REVISION.test(data(value, "baseRevision"))) throw new Error("may_control_request_malformed");
+  return Object.freeze({
+    baseUrl: data(value, "baseUrl"), model: data(value, "model"), systemPrompt: data(value, "systemPrompt"),
+    userPrompt: data(value, "userPrompt"), sessionId: data(value, "sessionId"),
+    repositoryRoot: data(value, "repositoryRoot"), baseRevision: data(value, "baseRevision"),
+  });
+}
+
+function normalizeControlDependencies(value) {
+  const output = normalizeDependencies(value);
+  const fetchImpl = data(value, "fetchImpl");
+  if (fetchImpl !== undefined && typeof fetchImpl !== "function") throw new Error("may_executor_configuration_malformed");
+  const apiToken = data(value, "apiToken");
+  if (apiToken !== undefined && typeof apiToken !== "string") throw new Error("may_executor_configuration_malformed");
+  const appendControlEvent = data(value, "appendControlEvent");
+  if (typeof appendControlEvent !== "function") throw new Error("may_executor_configuration_malformed");
+  return Object.freeze({ ...output, ...(fetchImpl === undefined ? {} : { fetchImpl }), ...(apiToken === undefined ? {} : { apiToken }), appendControlEvent });
+}
+
+async function appendControlEvent(dependencies, sessionId, counter, code, identifiers = {}, timing = null) {
+  const event = Object.freeze({
+    mayControlEventSchemaVersion: 1,
+    authority: "non_authoritative",
+    eventId: `may-control-event:${sessionId}:${counter}`,
+    sessionId,
+    code,
+    counter,
+    toolCallId: identifiers.toolCallId ?? null,
+    evidenceRefs: Object.freeze([`may-control:${sessionId}`]),
+  });
+  const receipt = timing === null
+    ? await dependencies.appendControlEvent(event)
+    : await withinDeadline(() => dependencies.appendControlEvent(event), timing.deadline, timing.clock);
+  if (!exactPlain(receipt, ["eventId", "appended"]) || receipt.eventId !== event.eventId || receipt.appended !== true) throw new Error("may_control_event_receipt_invalid");
+}
+
+function releasedToolContent(raw) {
+  const body = JSON.stringify({ state: "completed", result: raw });
+  return Buffer.byteLength(body, "utf8") <= MAY_CONTROL_LOOP_LIMITS.aggregateOutputBytes ? body : null;
 }
 
 function mayEffectKey(request, args, commands) {
@@ -524,4 +667,99 @@ export async function runMayToolCall(requestInput, dependenciesInput) {
     throw new Error(operationError ?? "may_tool_result_not_releasable");
   }
   return Object.freeze({ ...escrow, attribution: "host_observed_tool_result" });
+}
+
+export async function runMayControlLoop(requestInput, dependenciesInput) {
+  const request = normalizeControlRequest(requestInput);
+  const dependencies = normalizeControlDependencies(dependenciesInput);
+  const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const clock = dependencies.monotonicNow;
+  const sessionDeadline = clock() + MAY_CONTROL_LOOP_LIMITS.sessionTimeoutMs;
+  const deadline = sessionDeadline - MAY_CONTROL_LOOP_LIMITS.terminalEventReserveMs;
+  const timing = Object.freeze({ deadline, clock });
+  const terminalTiming = Object.freeze({ deadline: sessionDeadline, clock });
+  let eventCounter = 0;
+  let capability;
+  try {
+    capability = await withinDeadline(() => probeLocalToolModel({
+      baseUrl: request.baseUrl, model: request.model, fetchImpl, apiToken: dependencies.apiToken,
+      timeoutMs: Math.min(MAY_CONTROL_LOOP_LIMITS.inferenceTimeoutMs, remainingTime(deadline, clock)),
+    }), deadline, clock);
+    if (capability.loadedInstanceId !== dependencies.reasoningRuntimeId) throw new Error("may_control_runtime_mismatch");
+    eventCounter += 1;
+    await appendControlEvent(dependencies, request.sessionId, eventCounter, "may_control_started", {}, timing);
+  } catch (error) {
+    eventCounter += 1;
+    const code = boundedError(error instanceof Error ? error.message : "may_control_setup_failed");
+    await appendControlEvent(dependencies, request.sessionId, eventCounter, code, {}, terminalTiming);
+    throw new Error(code);
+  }
+  const messages = [
+    { role: "system", content: request.systemPrompt },
+    { role: "user", content: request.userPrompt },
+  ];
+  const seenCallIds = new Set();
+  let callCount = 0;
+  let completedToolCalls = 0;
+  let writeCalls = 0;
+  let validationCalls = 0;
+  let releasedBytes = 0;
+  try {
+    for (let round = 0; round < MAY_CONTROL_LOOP_LIMITS.rounds; round += 1) {
+      const inferenceTimeout = Math.min(MAY_CONTROL_LOOP_LIMITS.inferenceTimeoutMs, remainingTime(deadline, clock));
+      const response = await withinDeadline(() => fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(dependencies.apiToken ? { Authorization: `Bearer ${dependencies.apiToken}` } : {}) },
+        body: JSON.stringify({ model: capability.loadedInstanceId, messages, tools: MAY_TOOL_DEFINITIONS, tool_choice: "auto" }),
+      }, { timeoutMs: inferenceTimeout, maxBytes: MAY_CONTROL_LOOP_LIMITS.responseBytes }), deadline, clock);
+      const assistant = parseAssistantResponse(response);
+      if (assistant.toolCalls.length === 0) {
+        if (completedToolCalls === 0 || validationCalls === 0 || typeof assistant.content !== "string" || assistant.content.trim().length === 0) throw new Error("may_control_protocol_incomplete");
+        eventCounter += 1;
+        await appendControlEvent(dependencies, request.sessionId, eventCounter, "may_control_completed", {}, timing);
+        return Object.freeze({
+          message: assistant.content,
+          attribution: "untrusted_model_output",
+          completedToolCalls,
+          writeCalls,
+          validationCalls,
+          releasedBytes,
+        });
+      }
+      messages.push(assistant.assistantMessage);
+      if (callCount + assistant.toolCalls.length > MAY_CONTROL_LOOP_LIMITS.calls) throw new Error("may_control_call_cap_reached");
+      const batchIds = new Set();
+      for (const call of assistant.toolCalls) {
+        if (seenCallIds.has(call.id) || batchIds.has(call.id)) throw new Error("may_control_tool_call_id_reused");
+        batchIds.add(call.id);
+      }
+      for (const id of batchIds) seenCallIds.add(id);
+      callCount += assistant.toolCalls.length;
+      for (const call of assistant.toolCalls) {
+        const result = await withinDeadline(() => runMayToolCall({
+          sessionId: request.sessionId,
+          toolCallId: call.id,
+          toolName: call.function.name,
+          arguments: call.function.arguments,
+          repositoryRoot: request.repositoryRoot,
+          baseRevision: request.baseRevision,
+        }, dependencies), deadline, clock);
+        const content = releasedToolContent(result);
+        if (content === null || releasedBytes + Buffer.byteLength(content, "utf8") > MAY_CONTROL_LOOP_LIMITS.aggregateOutputBytes) throw new Error("may_control_output_cap_reached");
+        releasedBytes += Buffer.byteLength(content, "utf8");
+        completedToolCalls += 1;
+        if (call.function.name === "writeFile") writeCalls += 1;
+        if (call.function.name === "runValidation") validationCalls += 1;
+        eventCounter += 1;
+        await appendControlEvent(dependencies, request.sessionId, eventCounter, `may_control_${call.function.name}_completed`, { toolCallId: call.id }, timing);
+        messages.push({ role: "tool", tool_call_id: call.id, content });
+      }
+    }
+    throw new Error("may_control_round_cap_reached");
+  } catch (error) {
+    eventCounter += 1;
+    const code = boundedError(error instanceof Error ? error.message : "may_control_loop_failed");
+    await appendControlEvent(dependencies, request.sessionId, eventCounter, code, {}, terminalTiming);
+    throw new Error(code);
+  }
 }

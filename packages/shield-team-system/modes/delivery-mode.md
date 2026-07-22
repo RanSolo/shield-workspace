@@ -45,7 +45,11 @@ Only participating seats receive Delivery Mode context for a mission.
 ## Delivery contract
 
 - Do not begin implementation until the Definition of Ready is satisfied.
-- Require explicit Phil Coulson approval before specialist dispatch.
+- Require Phil Coulson Mission Brief approval before specialist dispatch.
+- After Fury approves an in-scope implementation plan at the exact current
+  revision, Training Wheels Off allows Hill to dispatch May without a separate
+  post-plan Coulson approval when `canDispatchSpecialists` confirms repository,
+  branch, revision, validation, runtime/executor, scope, and risk evidence.
 - Require a verified draft workspace and eligible exact-revision Fury plan gate
   before production implementation; `workspace_ready` is not dispatch-ready.
 - Delivery Mode cannot use the lightweight operational timeout path.
