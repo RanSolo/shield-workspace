@@ -151,19 +151,54 @@ test("verified lightweight timeout permits only the recorded low-risk Hill plan"
   }
 });
 
-test("specialist dispatch requires explicit Coulson approval", () => {
+function trainingWheelsOffDispatch(overrides = {}) {
+  return {
+    missionState: "approved",
+    approvalSource: "coulson",
+    trainingWheelsOff: true,
+    furyPlanGate: "approved",
+    planWithinApprovedScope: true,
+    repositoryIdentityVerified: true,
+    branchRevisionVerified: true,
+    validationObligationsBound: true,
+    runtimeExecutorBindingCurrent: true,
+    materialScopeChange: false,
+    materialRiskIncrease: false,
+    authorityDecisionRequired: false,
+    destructiveOrExternalEffect: false,
+    unresolvedTradeoff: false,
+    finalHumanGate: false,
+    ...overrides,
+  };
+}
+
+test("specialist dispatch supports explicit approval or bounded Training Wheels Off", () => {
   assert.equal(
     canDispatchSpecialists({
       missionState: "approved",
       approvalSource: "coulson",
+      specialistDispatchApprovalSource: "coulson",
     }),
     true,
   );
+  assert.equal(canDispatchSpecialists(trainingWheelsOffDispatch()), true);
 
   for (const input of [
     { missionState: "approved", approvalSource: "timeout" },
     { missionState: "approved", approvalSource: "hill" },
     { missionState: "proposed", approvalSource: "coulson" },
+    trainingWheelsOffDispatch({ furyPlanGate: "pending" }),
+    trainingWheelsOffDispatch({ planWithinApprovedScope: false }),
+    trainingWheelsOffDispatch({ repositoryIdentityVerified: false }),
+    trainingWheelsOffDispatch({ branchRevisionVerified: false }),
+    trainingWheelsOffDispatch({ validationObligationsBound: false }),
+    trainingWheelsOffDispatch({ runtimeExecutorBindingCurrent: false }),
+    trainingWheelsOffDispatch({ materialScopeChange: true }),
+    trainingWheelsOffDispatch({ materialRiskIncrease: true }),
+    trainingWheelsOffDispatch({ authorityDecisionRequired: true }),
+    trainingWheelsOffDispatch({ destructiveOrExternalEffect: true }),
+    trainingWheelsOffDispatch({ unresolvedTradeoff: true }),
+    trainingWheelsOffDispatch({ finalHumanGate: true }),
     {},
     null,
     [],

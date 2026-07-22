@@ -65,6 +65,10 @@
       "types": "./dist/pipeline-profile-v1.d.mts",
       "import": "./dist/pipeline-profile-v1.mjs"
     },
+    "./sonarqube": {
+      "types": "./dist/sonarqube-evidence-v1.d.mts",
+      "import": "./dist/sonarqube-evidence-v1.mjs"
+    },
     "./local-tools": {
       "types": "./public/local-tools.d.mts",
       "import": "./public/local-tools.mjs"
