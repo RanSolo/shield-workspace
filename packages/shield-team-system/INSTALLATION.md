@@ -36,6 +36,13 @@ a conditional product/domain authority. Initialization creates only
 existing targets, unsupported values, credentials, and unsafe paths. Repeating
 the identical command is a no-op.
 
+When you want SHIELD to capture an initial execution lane profile, add
+`--starter-pipeline <minimal|web-app|service-api|database-backed-app|enterprise>`.
+In that mode, initialization also writes `.shield/pipeline-profile.json` by
+matching the selected starter lanes against real `package.json` scripts. Lanes
+without a matching script are recorded as unavailable rather than invented, and
+repeating the identical command remains a no-op.
+
 Run deterministic, read-only diagnostics with either human or JSON output:
 
 ```sh

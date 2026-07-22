@@ -1,5 +1,11 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
 import {
+  validateExecutionEffectPayloadCommon,
+  validateRunnerSupervisedEffectCandidateCommon,
+  type ExecutionEffectPayloadValidationMessages,
+  type RunnerSupervisedEffectCandidateValidationMessages,
+} from "./runner-supervision-shared-v1.mjs";
+import {
   DELEGATED_INVALIDATION_REASONS,
   evaluateWheelsOffEligibility,
   resolveWheelsOffDelegationRevision,
@@ -465,45 +471,34 @@ function arrayShapeErrors(value: unknown, label: string): string[] {
 }
 
 function executionEffectPayloadErrors(value: unknown, label: string): string[] {
-  const fields = [
+  const messages: ExecutionEffectPayloadValidationMessages = {
+    contractVersionUnsupported: (nestedLabel) => `${nestedLabel}.runnerContractVersion is unsupported.`,
+    fieldInvalid: (nestedLabel, field) => `${nestedLabel}.${field} is invalid.`,
+    effectClassUnsupported: (nestedLabel) => `${nestedLabel}.effectClass is unsupported.`,
+    outcomeUnsupported: (nestedLabel) => `${nestedLabel}.outcome is unsupported.`,
+    summaryInvalid: (nestedLabel) => `${nestedLabel}.summary must be non-empty and bounded.`,
+    evidenceRefsMustBeArray: (nestedLabel) => `${nestedLabel} must be a plain array.`,
+    evidenceRefsInvalid: (nestedLabel, index) => `${nestedLabel}[${index}] is invalid.`,
+    evidenceRefsDuplicate: (nestedLabel, value) => `${nestedLabel} duplicates ${value}.`,
+    evidenceRefsTooMany: (nestedLabel) => `${nestedLabel} must contain between 1 and 16 references.`,
+  };
+  const errors = exactFields(value, [
     "runnerContractVersion", "cycleId", "subjectId", "revisionId", "evaluatedThroughSequence",
     "seatId", "actionId", "effectClass", "effectKey", "authorizationDecisionId", "outcome",
     "reasonCode", "summary", "evidenceRefs",
-  ];
-  const errors = exactFields(value, fields, label);
+  ], label);
   if (errors.length > 0 || !isPlainObject(value)) return errors;
-  if (value.runnerContractVersion !== 1) errors.push(`${label}.runnerContractVersion is unsupported.`);
-  for (const field of [
-    "cycleId", "subjectId", "revisionId", "seatId", "actionId", "effectKey",
-    "authorizationDecisionId", "reasonCode",
-  ]) {
-    if (!identifier(value[field])) errors.push(`${label}.${field} is invalid.`);
-  }
-  if (!(["behavioral_implementation", "verification", "coordination"] as const).includes(value.effectClass as ExecutionEffectClass)) {
-    errors.push(`${label}.effectClass is unsupported.`);
-  }
-  if (!Number.isInteger(value.evaluatedThroughSequence) || (value.evaluatedThroughSequence as number) < 0) {
-    errors.push(`${label}.evaluatedThroughSequence is invalid.`);
-  }
-  if (value.outcome !== "completed" && value.outcome !== "uncertain") errors.push(`${label}.outcome is unsupported.`);
-  if (!nonEmpty(value.summary)) errors.push(`${label}.summary must be non-empty and bounded.`);
-  const evidenceRefShapeErrors = arrayShapeErrors(value.evidenceRefs, `${label}.evidenceRefs`);
-  errors.push(...evidenceRefShapeErrors);
-  if (evidenceRefShapeErrors.length > 0) {
-    // Shape failures are terminal for element inspection so accessors are never invoked.
-  } else if (Array.isArray(value.evidenceRefs)) {
-    if (value.evidenceRefs.length === 0 || value.evidenceRefs.length > 16) {
-      errors.push(`${label}.evidenceRefs must contain between 1 and 16 references.`);
-      return errors;
-    }
-    const refs = new Set<string>();
-    value.evidenceRefs.forEach((ref, index) => {
-      if (!identifier(ref)) errors.push(`${label}.evidenceRefs[${index}] is invalid.`);
-      else if (refs.has(ref)) errors.push(`${label}.evidenceRefs duplicates ${ref}.`);
-      else refs.add(ref);
-    });
-  }
-  return errors;
+  return validateExecutionEffectPayloadCommon(
+    value,
+    label,
+    identifier,
+    identifier,
+    (sequence) => Number.isInteger(sequence) && (sequence as number) >= 0,
+    (effectClass) => (["behavioral_implementation", "verification", "coordination"] as const).includes(effectClass as ExecutionEffectClass),
+    nonEmpty,
+    (nestedLabel) => `${nestedLabel}.evidenceRefs`,
+    messages,
+  );
 }
 
 export function validateRunnerSupervisedEffectCandidate(input: unknown): ContractResult<RunnerSupervisedEffectCandidate> {
@@ -513,30 +508,34 @@ export function validateRunnerSupervisedEffectCandidate(input: unknown): Contrac
   ];
   const errors = exactFields(input, fields, "Runner supervised effect candidate");
   if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed", ...errors);
-  if (input.runnerContractVersion !== 1) errors.push("Runner candidate runnerContractVersion is unsupported.");
-  if (input.candidateKind !== "runner.supervised_effect_record") errors.push("Runner candidate kind is unsupported.");
-  if (input.authority !== "non_authoritative") errors.push("Runner candidate must be explicitly non-authoritative.");
-  if (input.journalSchemaVersion !== 5 && input.journalSchemaVersion !== 6) errors.push("Runner candidate requires journal schema v5 or v6.");
-  for (const field of ["missionId", "subjectId", "revisionId"]) {
-    if (!identifier(input[field])) errors.push(`Runner candidate ${field} is invalid.`);
-  }
-  if (!Number.isInteger(input.expectedPreviousSequence) || (input.expectedPreviousSequence as number) < 0) {
-    errors.push("Runner candidate expectedPreviousSequence is invalid.");
-  }
-  if (!Number.isInteger(input.intendedJournalSequence) || (input.intendedJournalSequence as number) < 1) {
-    errors.push("Runner candidate intendedJournalSequence is invalid.");
-  }
-  errors.push(...executionEffectPayloadErrors(input.payload, "Runner candidate payload"));
-  if (errors.length > 0) return invalid("malformed", ...errors);
-  const candidate = input as unknown as RunnerSupervisedEffectCandidate;
-  if (candidate.payload.subjectId !== candidate.subjectId || candidate.payload.revisionId !== candidate.revisionId) {
+  const candidateMessages: RunnerSupervisedEffectCandidateValidationMessages = {
+    contractVersionUnsupported: (label) => `${label} runnerContractVersion is unsupported.`,
+    kindUnsupported: (label) => `${label} kind is unsupported.`,
+    authorityUnsupported: (label) => `${label} must be explicitly non-authoritative.`,
+    journalSchemaUnsupported: (label) => `${label} requires journal schema v5 or v6.`,
+    missionIdentityInvalid: (label) => `${label} mission identity is invalid.`,
+    revisionInvalid: (label) => `${label} revisionId is invalid.`,
+    expectedPreviousSequenceInvalid: (label) => `${label} expectedPreviousSequence is invalid.`,
+    intendedJournalSequenceInvalid: (label) => `${label} intendedJournalSequence is invalid.`,
+    payloadIdentityDrift: (label) => `${label} payload identity drifts from its envelope.`,
+    sequenceBindingInvalid: (label) => `${label} sequence binding is not contiguous.`,
+  };
+  const payloadErrors = (payload: unknown, payloadLabel: string) => executionEffectPayloadErrors(payload, payloadLabel);
+  const candidateErrors = validateRunnerSupervisedEffectCandidateCommon(
+    input,
+    "Runner candidate",
+    identifier,
+    payloadErrors,
+    (candidateLabel) => `${candidateLabel} payload`,
+    candidateMessages,
+  );
+  if (candidateErrors.length === 1 && candidateErrors[0] === candidateMessages.payloadIdentityDrift("Runner candidate")) {
     return invalid("candidate_drift", "Runner candidate payload identity drifts from its envelope.");
   }
-  if (candidate.payload.evaluatedThroughSequence !== candidate.expectedPreviousSequence ||
-      candidate.intendedJournalSequence !== candidate.expectedPreviousSequence + 1) {
+  if (candidateErrors.length === 1 && candidateErrors[0] === candidateMessages.sequenceBindingInvalid("Runner candidate")) {
     return invalid("sequence_invalid", "Runner candidate sequence binding is not contiguous.");
   }
-  return valid(candidate);
+  return candidateErrors.length > 0 ? invalid("malformed", ...candidateErrors) : valid(input as unknown as RunnerSupervisedEffectCandidate);
 }
 
 function canonicalValue(value: unknown): unknown {

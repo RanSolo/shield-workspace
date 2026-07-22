@@ -14,9 +14,16 @@ import {
   parseShieldConfig,
   type DoctorReport,
 } from "./config.mjs";
+import {
+  STARTER_PIPELINE_IDS,
+  createStarterPipelineSelectionV1,
+  validateStarterPipelineId,
+  type StarterPipelineId,
+} from "./pipeline-starter-v1.mjs";
 import { MissionCliError, missionUsage, runMissionCli } from "./mission-cli.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".shield", "config.json");
+const PIPELINE_PROFILE_RELATIVE_PATH = join(".shield", "pipeline-profile.json");
 const IGNORE_RELATIVE_PATH = join(".shield", ".gitignore");
 const IGNORE_CONTENT = "/journals/\n/reports/\n/tmp/\n";
 const execFileAsync = promisify(execFile);
@@ -53,7 +60,7 @@ function cleanGitEnvironment(): NodeJS.ProcessEnv {
 function usage(): string {
   return [
     "Usage:",
-    "  shield init --repository-id <owner/name> --coulson-binding-ref <ref> --fitz-binding-ref <ref> [--simmons-binding-ref <ref>] [--root <path>]",
+    `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> --fitz-binding-ref <ref> [--simmons-binding-ref <ref>] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
     "  shield doctor [--root <path>] [--json]",
     "",
     missionUsage(),
@@ -116,7 +123,7 @@ async function inspectRoot(rootArgument: string | undefined, writable: boolean):
   return root;
 }
 
-async function repositoryRootIssue(root: string): Promise<string | null> {
+async function repositoryRootIssue(root: string, options: { allowMissingPackage?: boolean } = {}): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
       cwd: root,
@@ -140,7 +147,8 @@ async function repositoryRootIssue(root: string): Promise<string | null> {
     if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
       return `Repository package.json must contain a JSON object: ${manifestPath}.`;
     }
-  } catch {
+  } catch (error) {
+    if (options.allowMissingPackage && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
     return `Repository root is missing a readable, parseable package.json: ${manifestPath}.`;
   }
   return null;
@@ -172,6 +180,30 @@ async function inspectTarget(path: string): Promise<TargetState> {
   }
 }
 
+async function readPackageScripts(root: string): Promise<Record<string, string>> {
+  const manifestPath = join(root, "package.json");
+  let manifestText: string;
+  try {
+    manifestText = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const manifest = JSON.parse(manifestText) as {
+    scripts?: unknown;
+  };
+  if (manifest.scripts === undefined || manifest.scripts === null || typeof manifest.scripts !== "object" || Array.isArray(manifest.scripts)) {
+    return {};
+  }
+  const scripts: Record<string, string> = {};
+  for (const [name, value] of Object.entries(manifest.scripts)) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      scripts[name] = value;
+    }
+  }
+  return scripts;
+}
+
 async function createFileWithoutOverwrite(path: string, content: string): Promise<void> {
   const temporary = join(
     dirname(path),
@@ -197,9 +229,14 @@ async function runInit(args: string[]): Promise<number> {
     "--coulson-binding-ref",
     "--fitz-binding-ref",
     "--simmons-binding-ref",
+    "--starter-pipeline",
   ]);
+  const starterPipelineId = options.values.get("--starter-pipeline");
+  if (starterPipelineId !== undefined && !validateStarterPipelineId(starterPipelineId)) {
+    throw new CliError(`Unsupported starter pipeline: ${starterPipelineId}.`);
+  }
   const root = await inspectRoot(options.values.get("--root"), true);
-  const rootIssue = await repositoryRootIssue(root);
+  const rootIssue = await repositoryRootIssue(root, { allowMissingPackage: starterPipelineId !== undefined });
   if (rootIssue !== null) throw new CliError(rootIssue);
   const config = createShieldConfig({
     repositoryId: required(options, "--repository-id"),
@@ -212,10 +249,12 @@ async function runInit(args: string[]): Promise<number> {
   const configContent = formatShieldConfig(config);
   const shieldDirectory = join(root, ".shield");
   const configPath = join(root, CONFIG_RELATIVE_PATH);
+  const pipelineProfilePath = join(root, PIPELINE_PROFILE_RELATIVE_PATH);
   const ignorePath = join(root, IGNORE_RELATIVE_PATH);
 
   const shieldExists = await inspectDirectory(shieldDirectory);
   const configState = await inspectTarget(configPath);
+  const pipelineProfileState = starterPipelineId !== undefined ? await inspectTarget(pipelineProfilePath) : { exists: false };
   const ignoreState = await inspectTarget(ignorePath);
   if (configState.exists && configState.content !== configContent) {
     throw new CliError(`Existing configuration differs; refusing to overwrite: ${configPath}.`);
@@ -223,8 +262,28 @@ async function runInit(args: string[]): Promise<number> {
   if (ignoreState.exists && ignoreState.content !== IGNORE_CONTENT) {
     throw new CliError(`Existing SHIELD ignore file differs; refusing to overwrite: ${ignorePath}.`);
   }
-
   if (!shieldExists) await mkdir(shieldDirectory);
+  if (starterPipelineId !== undefined) {
+    const packageScripts = await readPackageScripts(root);
+    const starterSelection = createStarterPipelineSelectionV1({
+      repositoryId: config.repositoryId,
+      starterPipelineId: starterPipelineId as StarterPipelineId,
+      packageScripts,
+      discoveredAt: new Date(0).toISOString(),
+    });
+    const pipelineProfileContent = `${JSON.stringify(starterSelection.profile, null, 2)}\n`;
+    if (pipelineProfileState.exists && pipelineProfileState.content !== pipelineProfileContent) {
+      throw new CliError(`Existing starter pipeline profile differs; refusing to overwrite: ${pipelineProfilePath}.`);
+    }
+    if (!pipelineProfileState.exists && starterSelection.profile.supported.length === 0) {
+      process.stdout.write(
+        `Starter pipeline ${starterPipelineId} selected, but no matching package scripts were discovered; lanes were recorded as unavailable.\n`,
+      );
+    }
+    if (!pipelineProfileState.exists) {
+      await createFileWithoutOverwrite(pipelineProfilePath, pipelineProfileContent);
+    }
+  }
   const created: string[] = [];
   if (!ignoreState.exists) {
     await createFileWithoutOverwrite(ignorePath, IGNORE_CONTENT);
@@ -233,6 +292,9 @@ async function runInit(args: string[]): Promise<number> {
   if (!configState.exists) {
     await createFileWithoutOverwrite(configPath, configContent);
     created.push(CONFIG_RELATIVE_PATH);
+  }
+  if (starterPipelineId !== undefined && !pipelineProfileState.exists) {
+    created.push(PIPELINE_PROFILE_RELATIVE_PATH);
   }
   if (created.length === 0) {
     process.stdout.write("SHIELD is already initialized; no files changed.\n");

@@ -27,6 +27,27 @@ async function fixture() {
   return root;
 }
 
+async function starterFixture() {
+  const root = await fixture();
+  await writeFile(
+    join(root, "package.json"),
+    JSON.stringify(
+      {
+        private: true,
+        scripts: {
+          lint: "eslint .",
+          typecheck: "tsc --noEmit",
+          test: "node --test",
+          build: "vite build",
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  return root;
+}
+
 test("init creates only the deterministic SHIELD files and repeated init is a no-op", async () => {
   const root = await fixture();
   const first = run(initArgs, root);
@@ -43,6 +64,53 @@ test("init creates only the deterministic SHIELD files and repeated init is a no
   assert.equal(await readFile(join(root, ".shield", "config.json"), "utf8"), before);
 });
 
+test("init can select a starter pipeline and records a deterministic pipeline profile", async () => {
+  const root = await starterFixture();
+  const args = [...initArgs, "--starter-pipeline", "minimal"];
+
+  const first = run(args, root);
+  assert.equal(first.status, 0, first.stderr);
+  assert.deepEqual((await readdir(join(root, ".shield"))).sort(), [".gitignore", "config.json", "pipeline-profile.json"]);
+
+  const profile = JSON.parse(await readFile(join(root, ".shield", "pipeline-profile.json"), "utf8"));
+  assert.equal(profile.contractVersion, "pipeline.profile.v1");
+  assert.equal(profile.profileId, "pipeline:starter:minimal");
+  assert.equal(profile.repository, "RanSolo/fixture");
+  assert.deepEqual(profile.defaultModes, ["lint", "typecheck", "unit-test"]);
+  assert.deepEqual(profile.supported.map(({ modeId }) => modeId), ["lint", "typecheck", "unit-test"]);
+  assert.deepEqual(profile.unavailable, []);
+  assert.equal(profile.supported.find(({ modeId }) => modeId === "lint").command.executable, "npm");
+  assert.deepEqual(profile.supported.find(({ modeId }) => modeId === "lint").command.args, ["run", "lint"]);
+  assert.match(profile.artifactRevisionId, /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(profile.staleWhenChanged, [
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lockb",
+  ]);
+
+  const second = run(args, root);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /no files changed/i);
+  assert.equal(
+    await readFile(join(root, ".shield", "pipeline-profile.json"), "utf8"),
+    `${JSON.stringify(profile, null, 2)}\n`,
+  );
+});
+
+test("starter selection records all lanes unavailable when package.json is absent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-starter-no-package-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  const result = run([...initArgs, "--starter-pipeline", "minimal"], root);
+  assert.equal(result.status, 0, result.stderr);
+  const profile = JSON.parse(await readFile(join(root, ".shield", "pipeline-profile.json"), "utf8"));
+  assert.deepEqual(profile.supported, []);
+  assert.deepEqual(profile.defaultModes, []);
+  assert.deepEqual(profile.unavailable.map(({ modeId }) => modeId), ["lint", "typecheck", "unit-test"]);
+});
+
 test("init refuses divergent targets without overwriting them", async () => {
   const root = await fixture();
   await mkdir(join(root, ".shield"));
@@ -52,6 +120,18 @@ test("init refuses divergent targets without overwriting them", async () => {
   assert.match(result.stderr, /refusing to overwrite/i);
   assert.equal(await readFile(join(root, ".shield", "config.json"), "utf8"), "{\"owned\":true}\n");
   await assert.rejects(lstat(join(root, ".shield", ".gitignore")), { code: "ENOENT" });
+});
+
+test("starter selection is fail-atomic when .shield/.gitignore diverges", async () => {
+  const root = await starterFixture();
+  await mkdir(join(root, ".shield"));
+  await writeFile(join(root, ".shield", ".gitignore"), "different\n");
+  const result = run([...initArgs, "--starter-pipeline", "minimal"], root);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /ignore file differs/i);
+  await assert.rejects(lstat(join(root, ".shield", "pipeline-profile.json")), { code: "ENOENT" });
+  await assert.rejects(lstat(join(root, ".shield", "config.json")), { code: "ENOENT" });
+  assert.equal(await readFile(join(root, ".shield", ".gitignore"), "utf8"), "different\n");
 });
 
 test("init rejects a symlinked SHIELD directory", async () => {
