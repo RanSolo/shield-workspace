@@ -30,6 +30,31 @@ const HANDOFF_KINDS = new Set([
   "product-review",
   "mission-decision",
 ]);
+const HANDOFF_OPTIONAL_FIELDS = new Set([
+  "mission",
+  "status",
+  "repository",
+  "branch",
+  "prNumber",
+  "prState",
+  "currentOwnerSeatId",
+  "workspaceVerification",
+  "blockedState",
+  "architectureState",
+  "humanInterventions",
+  "localSeatInvocations",
+  "premiumAgentInvocations",
+  "deliveryMode",
+  "missionConfidence",
+  "nextCheckpoint",
+  "missionContext",
+  "changesSinceLastCheckpoint",
+  "completed",
+  "evidence",
+  "next",
+  "risks",
+  "coulsonAction",
+]);
 const IMMUTABLE_REVISION = /^[0-9a-f]{40,64}$/;
 const GATE_IDENTIFIER = /^[A-Za-z0-9](?:[A-Za-z0-9._:/#@-]{0,126}[A-Za-z0-9])?$/;
 const DELIVERY_INPUT_FIELDS = Object.freeze([
@@ -68,6 +93,22 @@ function dataRecord(value, fields) {
 function gateIdentifier(value) {
   return typeof value === "string" && Buffer.byteLength(value, "utf8") <= 128 &&
     GATE_IDENTIFIER.test(value);
+}
+
+function titleCaseKind(kind) {
+  return kind.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
+
+function textOr(value, fallback) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function countOr(value, fallback) {
+  return Number.isInteger(value) && value >= 0 ? String(value) : fallback;
+}
+
+function seatLabelOr(value, fallback) {
+  return typeof value === "string" && Object.hasOwn(SEAT_NAMES, value) ? SEAT_NAMES[value] : fallback;
 }
 
 function normalizeDeliveryInput(input) {
@@ -186,7 +227,9 @@ export function renderMissionHandoff(input) {
     return { state: "invalid", reason: "handoff_input_required" };
   }
   const fields = ["seatId", "kind", "summary", "artifactRevisionId"];
-  if (Object.keys(input).length !== fields.length || fields.some((field) => !Object.hasOwn(input, field))) {
+  const keys = Object.keys(input);
+  if (keys.some((field) => !fields.includes(field) && !HANDOFF_OPTIONAL_FIELDS.has(field)) ||
+      fields.some((field) => !Object.hasOwn(input, field))) {
     return { state: "invalid", reason: "handoff_shape_mismatch" };
   }
   const seatName = SEAT_NAMES[input.seatId];
@@ -196,18 +239,75 @@ export function renderMissionHandoff(input) {
       !IMMUTABLE_REVISION.test(input.artifactRevisionId)) {
     return { state: "invalid", reason: "handoff_value_invalid" };
   }
-  if (!isSafeGitHubContent([input.summary]).safe) {
+  if (input.currentOwnerSeatId !== undefined && !SEAT_NAMES[input.currentOwnerSeatId]) {
+    return { state: "invalid", reason: "unknown_seat" };
+  }
+  if (input.prNumber !== undefined && (!Number.isInteger(input.prNumber) || input.prNumber < 1)) {
+    return { state: "invalid", reason: "handoff_value_invalid" };
+  }
+  for (const field of HANDOFF_OPTIONAL_FIELDS) {
+    if (field === "prNumber" || field === "humanInterventions" || field === "localSeatInvocations" || field === "premiumAgentInvocations") continue;
+    if (input[field] !== undefined && typeof input[field] !== "string") {
+      return { state: "invalid", reason: "handoff_value_invalid" };
+    }
+  }
+  if (typeof input.humanInterventions !== "undefined" && (!Number.isInteger(input.humanInterventions) || input.humanInterventions < 0)) {
+    return { state: "invalid", reason: "handoff_value_invalid" };
+  }
+  if (typeof input.localSeatInvocations !== "undefined" && (!Number.isInteger(input.localSeatInvocations) || input.localSeatInvocations < 0)) {
+    return { state: "invalid", reason: "handoff_value_invalid" };
+  }
+  if (typeof input.premiumAgentInvocations !== "undefined" && (!Number.isInteger(input.premiumAgentInvocations) || input.premiumAgentInvocations < 0)) {
+    return { state: "invalid", reason: "handoff_value_invalid" };
+  }
+  const body = [
+    `## ${seatName} — ${titleCaseKind(input.kind)}`,
+    "",
+    "## Mission Status",
+    "",
+    `Mission: ${textOr(input.mission, "Unknown")}`,
+    `Stage/Status: ${textOr(input.status, titleCaseKind(input.kind))}`,
+    `Repository: ${textOr(input.repository, "Not observable")}`,
+    `Branch: ${textOr(input.branch, "Not observable")}`,
+    `PR: ${input.prNumber !== undefined ? `#${input.prNumber} — ${textOr(input.prState, "Unknown")}` : "Not observable"}`,
+    `Current Owner: ${seatLabelOr(input.currentOwnerSeatId, "Not observable")}`,
+    `Workspace: ${textOr(input.workspaceVerification, "Not observable")}`,
+    `Blocked: ${textOr(input.blockedState, "Unknown")}`,
+    `Architecture: ${textOr(input.architectureState, "Unknown")}`,
+    `Human Interventions: ${countOr(input.humanInterventions, "Not observable")}`,
+    `Local Seat Invocations: ${countOr(input.localSeatInvocations, "Not observable")}`,
+    `Premium Agent Invocations: ${countOr(input.premiumAgentInvocations, "Not observable")}`,
+    `Delivery Mode: ${textOr(input.deliveryMode, "Not observable")}`,
+    `Mission Confidence: ${textOr(input.missionConfidence, "Not observable")}`,
+    `Next Checkpoint: ${textOr(input.nextCheckpoint, "Not observable")}`,
+    "",
+    "## Mission Context",
+    "",
+    textOr(input.missionContext, input.summary.trim()),
+    "",
+    "## Changes Since Last Checkpoint",
+    "",
+    textOr(input.changesSinceLastCheckpoint, "No additional changes reported."),
+    "",
+    "## Completed / Evidence / Next",
+    "",
+    `Completed: ${textOr(input.completed, "Not observable")}`,
+    `Evidence: ${textOr(input.evidence, "Not observable")}`,
+    `Next: ${textOr(input.next, "Not observable")}`,
+    "",
+    "## Risks",
+    "",
+    textOr(input.risks, "No new architectural or delivery risks identified."),
+    "",
+    "## Coulson Action",
+    "",
+    textOr(input.coulsonAction, "None"),
+  ].join("\n");
+  if (!isSafeGitHubContent([body]).safe) {
     return { state: "invalid", reason: "unsafe_handoff_content" };
   }
   return {
     state: "valid",
-    body: [
-      `## ${seatName} — ${input.kind}`,
-      "",
-      `- **Seat:** \`${input.seatId}\``,
-      `- **Artifact revision:** \`${input.artifactRevisionId}\``,
-      "",
-      input.summary.trim(),
-    ].join("\n"),
+    body,
   };
 }
