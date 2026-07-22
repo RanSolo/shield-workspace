@@ -100,6 +100,17 @@ test("init can select a starter pipeline and records a deterministic pipeline pr
   );
 });
 
+test("starter selection records all lanes unavailable when package.json is absent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-starter-no-package-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  const result = run([...initArgs, "--starter-pipeline", "minimal"], root);
+  assert.equal(result.status, 0, result.stderr);
+  const profile = JSON.parse(await readFile(join(root, ".shield", "pipeline-profile.json"), "utf8"));
+  assert.deepEqual(profile.supported, []);
+  assert.deepEqual(profile.defaultModes, []);
+  assert.deepEqual(profile.unavailable.map(({ modeId }) => modeId), ["lint", "typecheck", "unit-test"]);
+});
+
 test("init refuses divergent targets without overwriting them", async () => {
   const root = await fixture();
   await mkdir(join(root, ".shield"));

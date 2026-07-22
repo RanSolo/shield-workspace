@@ -123,7 +123,7 @@ async function inspectRoot(rootArgument: string | undefined, writable: boolean):
   return root;
 }
 
-async function repositoryRootIssue(root: string): Promise<string | null> {
+async function repositoryRootIssue(root: string, options: { allowMissingPackage?: boolean } = {}): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
       cwd: root,
@@ -147,7 +147,8 @@ async function repositoryRootIssue(root: string): Promise<string | null> {
     if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
       return `Repository package.json must contain a JSON object: ${manifestPath}.`;
     }
-  } catch {
+  } catch (error) {
+    if (options.allowMissingPackage && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
     return `Repository root is missing a readable, parseable package.json: ${manifestPath}.`;
   }
   return null;
@@ -181,7 +182,14 @@ async function inspectTarget(path: string): Promise<TargetState> {
 
 async function readPackageScripts(root: string): Promise<Record<string, string>> {
   const manifestPath = join(root, "package.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+  let manifestText: string;
+  try {
+    manifestText = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const manifest = JSON.parse(manifestText) as {
     scripts?: unknown;
   };
   if (manifest.scripts === undefined || manifest.scripts === null || typeof manifest.scripts !== "object" || Array.isArray(manifest.scripts)) {
@@ -223,13 +231,13 @@ async function runInit(args: string[]): Promise<number> {
     "--simmons-binding-ref",
     "--starter-pipeline",
   ]);
-  const root = await inspectRoot(options.values.get("--root"), true);
-  const rootIssue = await repositoryRootIssue(root);
-  if (rootIssue !== null) throw new CliError(rootIssue);
   const starterPipelineId = options.values.get("--starter-pipeline");
   if (starterPipelineId !== undefined && !validateStarterPipelineId(starterPipelineId)) {
     throw new CliError(`Unsupported starter pipeline: ${starterPipelineId}.`);
   }
+  const root = await inspectRoot(options.values.get("--root"), true);
+  const rootIssue = await repositoryRootIssue(root, { allowMissingPackage: starterPipelineId !== undefined });
+  if (rootIssue !== null) throw new CliError(rootIssue);
   const config = createShieldConfig({
     repositoryId: required(options, "--repository-id"),
     coulsonBindingRef: required(options, "--coulson-binding-ref"),
