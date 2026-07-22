@@ -61,6 +61,10 @@
       "types": "./dist/permission-audit-v1.d.mts",
       "import": "./dist/permission-audit-v1.mjs"
     },
+    "./pipeline": {
+      "types": "./dist/pipeline-profile-v1.d.mts",
+      "import": "./dist/pipeline-profile-v1.mjs"
+    },
     "./local-tools": {
       "types": "./public/local-tools.d.mts",
       "import": "./public/local-tools.mjs"
