@@ -20,6 +20,9 @@ package artifact.
 | `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
+| `@shield/team-system/pipeline` | Closed composable pipeline-mode taxonomy, evidence-bound repository pipeline profiles, stale-profile detection, and non-authoritative required-mode selection |
+| `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write-and-validation tool-call executor, with injected Issue #10 authorization/audit dependencies |
+| `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 | `@shield/team-system/sonarqube` | Non-authoritative exact-revision SonarQube evidence evaluation, closed finding classification, owner routing, exception attribution, and fail-closed advancement eligibility |
 | `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write, validation, and LM Studio control-loop executor, with injected Issue #10 authorization/audit dependencies |
 | `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, non-authoritative Follow-up Mode review snapshots, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
@@ -52,6 +55,7 @@ does not migrate or reinterpret the existing package runtime.
 | One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |
 | Per-call runtime-bound permission decisions | Supported through `/permission`; real environmental probes remain owned by Issue #34 |
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
+| Pipeline modes and repository pipeline profiles | Supported through `/pipeline`; Mack execution, live discovery, setup prompts, GitHub replies, and Mission Control UI remain unavailable |
 | SonarQube validation and follow-up evidence | Supported through `/sonarqube` as host-asserted non-authoritative evidence; live scanner retrieval, credentials, dashboarding, GitHub replies, and merge authority remain outside the evaluator |
 | Daisy local reconnaissance tools | Supported through `/local-tools` only with a trusted authority provider; standalone CLI tool authority is intentionally unavailable |
 | May revision-bound write, validation, and bounded control loop | Supported through `/local-tools` only with host-owned file and command allowlists, exact effect binding, clean-scope status observation, content-identity snapshots for observational validation, a fresh permission decision per call, loopback LM Studio capability verification, bounded tool rounds, non-authoritative control events, and untrusted final model attribution |
