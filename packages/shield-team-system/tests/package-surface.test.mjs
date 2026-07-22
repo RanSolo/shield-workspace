@@ -179,6 +179,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { runLocalToolSession, runMayControlLoop, runMayToolCall, type LocalToolSessionRequest, type MayControlLoopDependencies, type MayControlLoopRequest, type MayToolCallRequest, type MayToolExecutorDependencies } from "@shield/team-system/local-tools";
     import {
       FURY_PLAN_GATE_CONTRACT_VERSION,
+      createGitHubFollowUpCandidate,
       deliverGitHubCommunication,
       evaluateFuryPlanGateV1,
       prepareDeliveryWorkspaceForDispatch,
@@ -186,6 +187,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       validatePRWorkspaceReceipt,
       type DeliveryWorkspaceResult,
       type FuryPlanGateEnvelopeV1,
+      type GitHubFollowUpCandidateInput,
       type JournaledCommunicationRequest,
       type PRWorkspaceReceipt,
     } from "@shield/team-system/github";
@@ -240,6 +242,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const runCycle = runRunnerCycle;
     const journaledRequest = null as unknown as JournaledCommunicationRequest;
     const deliver = deliverGitHubCommunication;
+    const followUpInput = null as unknown as GitHubFollowUpCandidateInput;
+    const createFollowUp = createGitHubFollowUpCandidate;
     const prepareWorkspace = prepareDeliveryWorkspaceForDispatch;
     const furyContract: "fury.plan-gate.v1" = FURY_PLAN_GATE_CONTRACT_VERSION;
     const furyGate = null as unknown as FuryPlanGateEnvelopeV1;
@@ -259,7 +263,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, journaledRequest, deliver, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, journaledRequest, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
