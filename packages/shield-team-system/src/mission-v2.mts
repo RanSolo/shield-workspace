@@ -529,19 +529,11 @@ export function validateRunnerSupervisedEffectCandidate(input: unknown): Contrac
     (candidateLabel) => `${candidateLabel} payload`,
     candidateMessages,
   );
-  if (candidateErrors.length > 0 && isPlainObject(input) && isPlainObject(input.payload)) {
-    const payload = input.payload;
-    if (identifier(input.subjectId) && identifier(input.revisionId) &&
-        identifier(payload.subjectId) && identifier(payload.revisionId) &&
-        (payload.subjectId !== input.subjectId || payload.revisionId !== input.revisionId)) {
-      return invalid("candidate_drift", "Runner candidate payload identity drifts from its envelope.");
-    }
-    if (Number.isInteger(input.expectedPreviousSequence) && Number.isInteger(input.intendedJournalSequence) &&
-        Number.isInteger(payload.evaluatedThroughSequence) &&
-        (payload.evaluatedThroughSequence !== (input.expectedPreviousSequence as number) ||
-         (input.intendedJournalSequence as number) !== (input.expectedPreviousSequence as number) + 1)) {
-      return invalid("sequence_invalid", "Runner candidate sequence binding is not contiguous.");
-    }
+  if (candidateErrors.length === 1 && candidateErrors[0] === candidateMessages.payloadIdentityDrift("Runner candidate")) {
+    return invalid("candidate_drift", "Runner candidate payload identity drifts from its envelope.");
+  }
+  if (candidateErrors.length === 1 && candidateErrors[0] === candidateMessages.sequenceBindingInvalid("Runner candidate")) {
+    return invalid("sequence_invalid", "Runner candidate sequence binding is not contiguous.");
   }
   return candidateErrors.length > 0 ? invalid("malformed", ...candidateErrors) : valid(input as unknown as RunnerSupervisedEffectCandidate);
 }

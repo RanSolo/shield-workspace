@@ -608,6 +608,16 @@ test("journal v5 rejects effect drift, stale continuity, duplicates, and uncerta
   const sequenceResult = validateRunnerSupervisedEffectCandidate(sequenceMismatch);
   assert.equal(sequenceResult.state, "invalid");
   if (sequenceResult.state === "invalid") assert.equal(sequenceResult.code, "sequence_invalid");
+  const mixedDrift = structuredClone(drift);
+  mixedDrift.authority = "invalid";
+  const mixedDriftResult = validateRunnerSupervisedEffectCandidate(mixedDrift);
+  assert.equal(mixedDriftResult.state, "invalid");
+  if (mixedDriftResult.state === "invalid") assert.equal(mixedDriftResult.code, "malformed");
+  const mixedSequence = structuredClone(sequenceMismatch);
+  mixedSequence.runnerContractVersion = 2;
+  const mixedSequenceResult = validateRunnerSupervisedEffectCandidate(mixedSequence);
+  assert.equal(mixedSequenceResult.state, "invalid");
+  if (mixedSequenceResult.state === "invalid") assert.equal(mixedSequenceResult.code, "malformed");
 
   const first = createExecutionEffectEntry(
     projection,
