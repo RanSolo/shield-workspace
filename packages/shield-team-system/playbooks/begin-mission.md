@@ -19,9 +19,11 @@ work.
 - Mission modes are selected after the brief is assembled, not before.
 - Recommended modes are proposals. They are not active until the Mission Brief
   records their activation.
-- Specialist dispatch and all non-lightweight work require Phil Coulson's
-  explicit approval. An eligible lightweight operational mission may instead
-  activate only through the verified-timeout path documented below.
+- Non-lightweight work requires Phil Coulson Mission Brief approval. Specialist
+  dispatch additionally requires either explicit Coulson dispatch approval or
+  Training Wheels Off evidence after Fury approves an in-scope plan. An eligible
+  lightweight operational mission may instead activate only through the
+  verified-timeout path documented below.
 - Melinda May does not begin implementation until the brief is approved.
 
 ## Workflow
@@ -173,6 +175,14 @@ cannot be overridden by Hill or by silence.
 
 Mission intake ends when the Mission Brief is explicitly approved, or when an
 eligible lightweight operational plan is activated through a verified timeout.
-Maria Hill may dispatch specialist work only after explicit Coulson approval. A
-verified timeout authorizes Hill to execute only the recorded lightweight plan;
-it does not authorize specialist dispatch.
+Maria Hill may dispatch specialist work after explicit Coulson dispatch
+approval, or under Training Wheels Off after Coulson has approved the Mission
+Brief and Fury has approved an in-scope implementation plan at the exact current
+revision. Training Wheels Off removes only the post-plan Coulson dispatch gate:
+it does not remove Mission Brief approval, Fury review, validation, Fitz review,
+or final Coulson gates. Missing, stale, ambiguous, substituted, out-of-scope, or
+material-gate evidence fails closed through `canDispatchSpecialists`. A verified
+timeout authorizes Hill to execute only the recorded lightweight plan; it does
+not authorize specialist dispatch.
+
+Timeout activation does not authorize specialist dispatch.
