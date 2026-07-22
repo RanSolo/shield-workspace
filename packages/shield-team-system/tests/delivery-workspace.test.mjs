@@ -334,10 +334,38 @@ test("handoff rendering derives truthful names from closed seat identity", () =>
     kind: "implementation-start",
     summary: "May accepted the approved Issue 44 implementation scope.",
     artifactRevisionId: head,
+    mission: "Issue 44 — Minimum safe executor contract",
+    status: "Implementation Start",
+    repository: "RanSolo/shield-workspace",
+    branch: "codex/issue-44-minimum-safe-executor",
+    prNumber: 66,
+    prState: "Draft",
+    currentOwnerSeatId: "may",
+    workspaceVerification: "Verified",
+    blockedState: "No",
+    architectureState: "Approved",
+    humanInterventions: 1,
+    localSeatInvocations: 2,
+    premiumAgentInvocations: 0,
+    deliveryMode: "Standard S.H.I.E.L.D.",
+    missionConfidence: "High",
+    nextCheckpoint: "First vertical slice",
+    missionContext: "May accepted the approved Issue 44 implementation scope.",
+    changesSinceLastCheckpoint: "Initial implementation slice is complete.",
+    completed: "Bounded executor contract implemented.",
+    evidence: "Validated workspace scope and audit evidence.",
+    next: "Fury conformance review.",
+    risks: "No new architectural or delivery risks identified.",
+    coulsonAction: "Review the draft PR.",
   });
   assert.equal(handoff.state, "valid");
-  assert.match(handoff.body, /Melinda May — implementation-start/);
-  assert.match(handoff.body, /\*\*Seat:\*\* `may`/);
+  assert.match(handoff.body, /Melinda May — Implementation Start/);
+  assert.match(handoff.body, /## Mission Status/);
+  assert.match(handoff.body, /Mission: Issue 44 — Minimum safe executor contract/);
+  assert.match(handoff.body, /Current Owner: Melinda May/);
+  assert.match(handoff.body, /## Mission Context/);
+  assert.match(handoff.body, /## Completed \/ Evidence \/ Next/);
+  assert.match(handoff.body, /## Coulson Action/);
 
   assert.equal(renderMissionHandoff({
     seatId: "runtime:codex",
