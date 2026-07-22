@@ -6,8 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  MAY_CONTROL_LOOP_LIMITS,
   MAY_TOOL_DEFINITIONS,
   MAY_TOOL_MAPPINGS,
+  runMayControlLoop,
   runMayToolCall,
 } from "../scripts/model/may-tool-executor.mjs";
 
@@ -75,7 +77,7 @@ function permissionContext(root, toolName, effectKey = `effect:issue-42:${toolNa
       attestation(root, "repository_root", mapping.capability),
       attestation(root, "writability", mapping.capability),
     ],
-    evaluatedAt: "2026-07-21T20:05:00Z", decisionId: `decision:issue-42:${toolName}:1`,
+    evaluatedAt: "2026-07-21T20:05:00Z", decisionId: `decision:issue-42:${toolName}:${digest(effectKey).slice(0, 12)}`,
     ...overrides,
   };
 }
@@ -334,4 +336,160 @@ test("validation timeout and executable replacement fail closed", async (context
     return baseRevision;
   };
   await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), changed), /may_validation_executable_changed/u);
+});
+
+function jsonResponse(value, init = {}) {
+  return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" }, ...init });
+}
+
+function modelResponse() {
+  return {
+    models: [{
+      key: "ornith-1.0-35b",
+      loaded_instances: [{ id: "ornith-1.0-35b:2" }],
+      capabilities: { trained_for_tool_use: true },
+    }],
+  };
+}
+
+function toolCall(id, name, args) {
+  return {
+    choices: [{ message: { role: "assistant", content: null, tool_calls: [
+      { id, type: "function", function: { name, arguments: JSON.stringify(args) } },
+    ] } }],
+  };
+}
+
+function finalMayResponse() {
+  return { choices: [{ message: { role: "assistant", content: "May report: fixture repaired and focused validation passes." } }] };
+}
+
+function controlRequest(root) {
+  return {
+    baseUrl: "http://127.0.0.1:1234",
+    model: "ornith-1.0-35b",
+    systemPrompt: "Implement only the approved fixture repair.",
+    userPrompt: "Repair src/approved.txt and run focused validation.",
+    sessionId: "session:issue-42:loop",
+    repositoryRoot: root,
+    baseRevision,
+  };
+}
+
+function controlDependencies(root, fetchImpl, overrides = {}) {
+  let resultCounter = 0;
+  const events = [];
+  return {
+    ...dependencies(root, "writeFile", {
+      fetchImpl,
+      appendControlEvent: async (event) => {
+        events.push(event);
+        return { eventId: event.eventId, appended: true };
+      },
+      readWorkspaceStatus: async () => {
+        try {
+          await readFile(join(root, "src/approved.txt"), "utf8");
+          return ["src/approved.txt"];
+        } catch {
+          return [];
+        }
+      },
+      nextCallSlot: async (slot) => {
+        const mapping = MAY_TOOL_MAPPINGS[slot.toolName];
+        return {
+          ...plan(slot.toolName, slot.effectKey),
+          cycleId: `cycle:issue-42:${slot.toolCallId}`,
+          validationId: `validation:issue-42:${slot.toolCallId}`,
+          actionId: mapping.actionId,
+          effectClass: mapping.effectClass,
+        };
+      },
+      getAuthorizationContext: async (activePlan) => {
+        const toolName = activePlan.actionId === "repository.write_file" ? "writeFile" : "runValidation";
+        return permissionContext(root, toolName, activePlan.effectKey, { decisionId: `decision:issue-42:${activePlan.cycleId}:authorize` });
+      },
+      getExecutionContext: async (decision) => {
+        const toolName = decision.actionId === "repository.write_file" ? "writeFile" : "runValidation";
+        return permissionContext(root, toolName, decision.effectKey, { decisionId: decision.decisionId });
+      },
+      nextResultRecordId: () => {
+        resultCounter += 1;
+        return `audit:result:issue-42:loop:${resultCounter}`;
+      },
+      validationCommands: [{
+        commandId: "focused",
+        executable: process.execPath,
+        args: ["-e", "const f=require('node:fs');const v=f.readFileSync('src/approved.txt','utf8');if(v!=='fixed\\n'){console.error('not fixed');process.exit(2)}console.log('validation ok')"],
+        timeoutMs: 2_000,
+      }],
+      ...overrides,
+    }),
+    events,
+  };
+}
+
+test("May control loop performs one bounded repair cycle and final report", async (context) => {
+  const root = await workspace(context);
+  const responses = [
+    modelResponse(),
+    toolCall("call:write:bad", "writeFile", { path: "src/approved.txt", content: "bad\n", expectedSha256: "absent" }),
+    toolCall("call:validate:bad", "runValidation", { commandId: "focused" }),
+    toolCall("call:write:fix", "writeFile", { path: "src/approved.txt", content: "fixed\n", expectedSha256: digest("bad\n") }),
+    toolCall("call:validate:ok", "runValidation", { commandId: "focused" }),
+    finalMayResponse(),
+  ];
+  const fetchImpl = async () => jsonResponse(responses.shift());
+  const deps = controlDependencies(root, fetchImpl);
+  const result = await runMayControlLoop(controlRequest(root), deps);
+  assert.equal(await readFile(join(root, "src/approved.txt"), "utf8"), "fixed\n");
+  assert.equal(result.attribution, "untrusted_model_output");
+  assert.equal(result.completedToolCalls, 4);
+  assert.equal(result.writeCalls, 2);
+  assert.equal(result.validationCalls, 2);
+  assert.match(result.message, /fixture repaired/u);
+  assert.equal(deps.ledger.filter((item) => item.recordType === "permission.decision").length, 4);
+  assert.equal(deps.events.at(0).code, "may_control_started");
+  assert.equal(deps.events.at(-1).code, "may_control_completed");
+});
+
+test("May control loop requires runtime identity, validation before final report, and event receipts", async (context) => {
+  const root = await workspace(context);
+  await assert.rejects(() => runMayControlLoop(controlRequest(root), controlDependencies(root, async () => jsonResponse(modelResponse()), {
+    reasoningRuntimeId: "ornith-1.0-35b:other",
+  })), /may_control_runtime_mismatch/u);
+
+  const earlyFinal = [modelResponse(), finalMayResponse()];
+  await assert.rejects(() => runMayControlLoop(controlRequest(root), controlDependencies(root, async () => jsonResponse(earlyFinal.shift()))), /may_control_protocol_incomplete/u);
+
+  const badReceipt = [modelResponse()];
+  await assert.rejects(() => runMayControlLoop(controlRequest(root), controlDependencies(root, async () => jsonResponse(badReceipt.shift()), {
+    appendControlEvent: async (event) => ({ eventId: event.eventId, appended: false }),
+  })), /may_control_event_receipt_invalid/u);
+});
+
+test("May control loop fails closed on duplicate calls and uncertain executor outcomes", async (context) => {
+  const root = await workspace(context);
+  const duplicate = [
+    modelResponse(),
+    { choices: [{ message: { role: "assistant", content: null, tool_calls: [
+      { id: "call:dup", type: "function", function: { name: "writeFile", arguments: JSON.stringify({ path: "src/approved.txt", content: "bad\n", expectedSha256: "absent" }) } },
+      { id: "call:dup", type: "function", function: { name: "runValidation", arguments: JSON.stringify({ commandId: "focused" }) } },
+    ] } }] },
+  ];
+  await assert.rejects(() => runMayControlLoop(controlRequest(root), controlDependencies(root, async () => jsonResponse(duplicate.shift()))), /may_control_tool_call_id_reused/u);
+
+  const drift = [
+    modelResponse(),
+    toolCall("call:validate:uncertain", "runValidation", { commandId: "focused" }),
+  ];
+  const deps = controlDependencies(root, async () => jsonResponse(drift.shift()), {
+    readWorkspaceStatus: async () => ["src/unapproved.txt"],
+  });
+  await assert.rejects(() => runMayControlLoop(controlRequest(root), deps), /may_workspace_scope_mismatch/u);
+  assert.equal(deps.events.at(-1).code, "may_workspace_scope_mismatch");
+});
+
+test("May control loop publishes bounded limits and closed tool set", () => {
+  assert.equal(MAY_CONTROL_LOOP_LIMITS.calls, 8);
+  assert.deepEqual(MAY_TOOL_DEFINITIONS.map((item) => item.function.name), ["writeFile", "runValidation"]);
 });
