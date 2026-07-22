@@ -122,6 +122,18 @@ test("init refuses divergent targets without overwriting them", async () => {
   await assert.rejects(lstat(join(root, ".shield", ".gitignore")), { code: "ENOENT" });
 });
 
+test("starter selection is fail-atomic when .shield/.gitignore diverges", async () => {
+  const root = await starterFixture();
+  await mkdir(join(root, ".shield"));
+  await writeFile(join(root, ".shield", ".gitignore"), "different\n");
+  const result = run([...initArgs, "--starter-pipeline", "minimal"], root);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /ignore file differs/i);
+  await assert.rejects(lstat(join(root, ".shield", "pipeline-profile.json")), { code: "ENOENT" });
+  await assert.rejects(lstat(join(root, ".shield", "config.json")), { code: "ENOENT" });
+  assert.equal(await readFile(join(root, ".shield", ".gitignore"), "utf8"), "different\n");
+});
+
 test("init rejects a symlinked SHIELD directory", async () => {
   const root = await fixture();
   const outside = await mkdtemp(join(tmpdir(), "shield-outside-"));

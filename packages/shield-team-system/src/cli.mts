@@ -253,13 +253,16 @@ async function runInit(args: string[]): Promise<number> {
   const ignorePath = join(root, IGNORE_RELATIVE_PATH);
 
   const shieldExists = await inspectDirectory(shieldDirectory);
-  if (!shieldExists) await mkdir(shieldDirectory);
   const configState = await inspectTarget(configPath);
   const pipelineProfileState = starterPipelineId !== undefined ? await inspectTarget(pipelineProfilePath) : { exists: false };
   const ignoreState = await inspectTarget(ignorePath);
   if (configState.exists && configState.content !== configContent) {
     throw new CliError(`Existing configuration differs; refusing to overwrite: ${configPath}.`);
   }
+  if (ignoreState.exists && ignoreState.content !== IGNORE_CONTENT) {
+    throw new CliError(`Existing SHIELD ignore file differs; refusing to overwrite: ${ignorePath}.`);
+  }
+  if (!shieldExists) await mkdir(shieldDirectory);
   if (starterPipelineId !== undefined) {
     const packageScripts = await readPackageScripts(root);
     const starterSelection = createStarterPipelineSelectionV1({
@@ -281,10 +284,6 @@ async function runInit(args: string[]): Promise<number> {
       await createFileWithoutOverwrite(pipelineProfilePath, pipelineProfileContent);
     }
   }
-  if (ignoreState.exists && ignoreState.content !== IGNORE_CONTENT) {
-    throw new CliError(`Existing SHIELD ignore file differs; refusing to overwrite: ${ignorePath}.`);
-  }
-
   const created: string[] = [];
   if (!ignoreState.exists) {
     await createFileWithoutOverwrite(ignorePath, IGNORE_CONTENT);
