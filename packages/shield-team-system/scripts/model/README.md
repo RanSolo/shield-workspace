@@ -140,6 +140,7 @@ Primary seats:
 - `FITZ_MODEL`
 - `SIMMONS_MODEL`
 - `COULSON_MODEL`
+- `MACK_MODEL`
 
 Example defaults in `seat-models.example.sh`:
 
@@ -153,7 +154,7 @@ Example defaults in `seat-models.example.sh`:
 
 Helpers:
 
-- `get_seat_model <daisy|hill|fury|mm|fitz|simmons|coulson>`
+- `get_seat_model <daisy|hill|fury|mm|mack|fitz|simmons|coulson>`
 - `select_seat_model <seat> [export]`
 
 Compatibility aliases are also available:

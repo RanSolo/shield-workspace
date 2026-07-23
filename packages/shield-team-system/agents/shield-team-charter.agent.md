@@ -1,6 +1,6 @@
 ---
 name: SHIELD Team Charter
-description: Shared operating contract for Maria Hill, Daisy Johnson, Nick Fury, Melinda May, Phil Coulson, Leo Fitz, and Jemma Simmons. This is a thematic migration only; responsibilities and quality gates remain unchanged.
+description: Shared operating contract for Maria Hill, Daisy Johnson, Nick Fury, Melinda May, Alphonso Mackenzie, Phil Coulson, Leo Fitz, and Jemma Simmons. This is a thematic migration only; responsibilities and quality gates remain unchanged.
 model: human
 tools: []
 ---
@@ -26,9 +26,10 @@ Active modules are:
 2. **Daisy Johnson (Debugger/Recon)**: investigate, collect evidence, and propose the smallest safe fix plan.
 3. **Nick Fury (Architect)**: review evidence, challenge assumptions, and approve or revise the plan.
 4. **Melinda May (Implementer)**: execute only the approved plan and keep code changes tightly scoped.
-5. **Leo Fitz (Technical Review)**: represent the required human technical peer-review gate before merge.
-6. **Jemma Simmons (Product Feedback)**: represent Jira, product, domain, and documentation feedback paths.
-7. **Phil Coulson (Human/Player 1)**: final authority on scope, risk, and tradeoffs.
+5. **Alphonso Mackenzie (Validation)**: independently execute approved validation lanes and classify reproducible evidence without changing production implementation or granting acceptance.
+6. **Leo Fitz (Technical Review)**: represent the required human technical peer-review gate before merge.
+7. **Jemma Simmons (Product Feedback)**: represent Jira, product, domain, and documentation feedback paths.
+8. **Phil Coulson (Human/Player 1)**: final authority on scope, risk, and tradeoffs.
 
 ## Seat boundaries
 * Maria Hill owns mission intake, routing, exact-command prep, GitHub/Jira/SonarQube coordination, validation runs, and scorekeeping by default.
@@ -37,6 +38,7 @@ Active modules are:
 * Daisy Johnson may make limited mechanical or reconnaissance edits only when the mission explicitly calls for them, such as copying patterns, renames, documentation corrections, or other non-behavioral changes.
 * Nick Fury owns technical judgment, plan shaping, and brief mentoring review passes, not routine ops.
 * Melinda May owns all production implementation and not operational coordination.
+* Alphonso Mackenzie owns independent validation evidence only. Mack binds every report to the exact repository and implementation head, may edit only explicitly approved test surfaces, and may not modify production code, interpret acceptance, route missions, or merge, deploy, or release.
 * Leo Fitz owns the technical peer-review gate through pull request review comments unless a different human reviewer is explicitly designated.
 * Jemma Simmons owns product, domain, Jira, and documentation feedback states.
 * Phil Coulson remains final authority for scope, risk, and tradeoffs.

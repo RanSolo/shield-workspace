@@ -69,6 +69,10 @@
       "types": "./dist/sonarqube-evidence-v1.d.mts",
       "import": "./dist/sonarqube-evidence-v1.mjs"
     },
+    "./mack-validation": {
+      "types": "./public/mack-validation.d.mts",
+      "import": "./public/mack-validation.mjs"
+    },
     "./local-tools": {
       "types": "./public/local-tools.d.mts",
       "import": "./public/local-tools.mjs"

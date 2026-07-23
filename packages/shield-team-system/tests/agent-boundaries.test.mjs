@@ -29,6 +29,7 @@ test("seat prompts preserve the approved implementation boundaries", async () =>
   const daisy = await readRepoFile("agents/daisy-johnson-debugger-recon.agent.md");
   const may = await readRepoFile("agents/melinda-may-implementer.agent.md");
   const fury = await readRepoFile("agents/nick-fury-architect.agent.md");
+  const mack = await readRepoFile("agents/alphonso-mack-validation.agent.md");
 
   assert.match(hill, /Never own production code changes\./);
   assert.match(
@@ -40,6 +41,9 @@ test("seat prompts preserve the approved implementation boundaries", async () =>
   assert.match(fury, /default move is to improve it first when the path is recoverable/);
   assert.match(may, /Own all production implementation\./);
   assert.match(may, /## Stuck protocol/);
+  assert.match(mack, /Independent validation specialist/);
+  assert.match(mack, /You do not implement production behavior/);
+  assert.match(mack, /exact repository and implementation HEAD/);
 });
 
 test("debugger mode applies evidence-based iteration across specialist seats", async () => {

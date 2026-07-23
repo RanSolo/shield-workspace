@@ -27,6 +27,7 @@ DAISY_MODEL="${DAISY_MODEL:-ornith-1.0-35b}"
 HILL_MODEL="${HILL_MODEL:-ornith-1.0-35b}"
 FURY_MODEL="${FURY_MODEL:-gpt-5.3-codex}"
 MM_MODEL="${MM_MODEL:-gpt-5.3-codex}"
+MACK_MODEL="${MACK_MODEL:-${DAISY_MODEL}}"
 FITZ_MODEL="${FITZ_MODEL:-${MM_MODEL}}"
 SIMMONS_MODEL="${SIMMONS_MODEL:-human}"
 COULSON_MODEL="${COULSON_MODEL:-human}"
@@ -51,6 +52,7 @@ get_seat_model() {
     hill) printf "%s" "${HILL_MODEL}" ;;
     fury) printf "%s" "${FURY_MODEL}" ;;
     mm) printf "%s" "${MM_MODEL}" ;;
+    mack) printf "%s" "${MACK_MODEL}" ;;
     fitz) printf "%s" "${FITZ_MODEL}" ;;
     simmons) printf "%s" "${SIMMONS_MODEL}" ;;
     coulson) printf "%s" "${COULSON_MODEL}" ;;
@@ -113,6 +115,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "  HILL_MODEL=${HILL_MODEL}"
   echo "  FURY_MODEL=${FURY_MODEL}"
   echo "  MM_MODEL=${MM_MODEL}"
+  echo "  MACK_MODEL=${MACK_MODEL}"
   echo "  FITZ_MODEL=${FITZ_MODEL}"
   echo "  SIMMONS_MODEL=${SIMMONS_MODEL}"
   echo "  COULSON_MODEL=${COULSON_MODEL}"

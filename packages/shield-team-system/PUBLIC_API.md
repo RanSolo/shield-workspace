@@ -24,6 +24,7 @@ package artifact.
 | `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write-and-validation tool-call executor, with injected Issue #10 authorization/audit dependencies |
 | `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 | `@shield/team-system/sonarqube` | Non-authoritative exact-revision SonarQube evidence evaluation, closed finding classification, owner routing, exception attribution, and fail-closed advancement eligibility |
+| `@shield/team-system/mack-validation` | Closed Mack validation reports, exact-head binding, outcome classification, and non-authoritative routing |
 | `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write, validation, and LM Studio control-loop executor, with injected Issue #10 authorization/audit dependencies |
 | `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, non-authoritative Follow-up Mode review snapshots, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 

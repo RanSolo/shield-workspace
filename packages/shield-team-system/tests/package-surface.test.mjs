@@ -28,6 +28,7 @@ test("exports only the documented public package specifiers", async () => {
     "./permission-audit",
     "./pipeline",
     "./sonarqube",
+    "./mack-validation",
     "./local-tools",
     "./github",
   ]);
@@ -52,6 +53,7 @@ test("loads every supported runtime specifier", async () => {
   const permissionAudit = await import("@shield/team-system/permission-audit");
   const pipeline = await import("@shield/team-system/pipeline");
   const sonarqube = await import("@shield/team-system/sonarqube");
+  const mackValidation = await import("@shield/team-system/mack-validation");
   const localTools = await import("@shield/team-system/local-tools");
   const github = await import("@shield/team-system/github");
 
@@ -82,6 +84,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof pipeline.selectPipelineModesV1, "function");
   assert.equal(sonarqube.SONARQUBE_EVIDENCE_CONTRACT_VERSION, "sonarqube.evidence.v1");
   assert.equal(typeof sonarqube.evaluateSonarQubeEvidenceV1, "function");
+  assert.equal(mackValidation.MACK_VALIDATION_CONTRACT_VERSION, "mack.validation.v0");
+  assert.equal(typeof mackValidation.evaluateMackValidationV0, "function");
   assert.equal(typeof localTools.runLocalToolSession, "function");
   assert.equal(localTools.DAISY_TOOL_DEFINITIONS.length, 3);
   assert.equal(typeof localTools.runMayToolCall, "function");
