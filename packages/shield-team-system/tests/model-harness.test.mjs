@@ -9,6 +9,7 @@ import {
 test("maps SHIELD role aliases to their agent prompts", () => {
   assert.match(resolveRoleFile("orchestrator"), /maria-hill-orchestrator\.agent\.md$/);
   assert.match(resolveRoleFile("implementer"), /melinda-may-implementer\.agent\.md$/);
+  assert.match(resolveRoleFile("mack"), /alphonso-mack-validation\.agent\.md$/);
   assert.match(resolveRoleFile("reviewer"), /leo-fitz-technical-review\.agent\.md$/);
   assert.match(resolveRoleFile("product"), /jemma-simmons-product-feedback\.agent\.md$/);
 });
