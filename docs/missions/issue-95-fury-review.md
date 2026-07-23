@@ -18,6 +18,13 @@ cannot become passing, and test-surface edits are checked against the approved
 allowlist. The evaluator is explicitly non-authoritative and does not invoke
 production code, route work, grant acceptance, or perform external effects.
 
-Evidence reviewed: focused Mack tests 4/4, full team-system tests 275/275,
+Evidence reviewed: focused Mack tests 5/5, full team-system tests 276/276,
 TypeScript build pass, and the bounded proving report at
 `docs/missions/issue-95-mack-proving-report.md`.
+
+## Repair conformance — revision `98567ca`
+
+**PASS.** Explicit `inconclusive` lane outcomes now emit the dedicated
+`VALIDATION_INCONCLUSIVE` reason and can never produce an eligible pass. The
+new regression test covers an overall claimed pass containing an inconclusive
+lane. No route semantics or authority boundaries were expanded.

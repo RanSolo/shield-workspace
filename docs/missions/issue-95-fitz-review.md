@@ -2,7 +2,7 @@
 
 ## Exact revision
 
-`7fe3db4`
+`98567ca`
 
 ## Verdict
 
@@ -21,10 +21,11 @@ scope:
   merge, deploy, or release permission;
 - public exports, declarations, role registration, and tests are consistent.
 
-Validation evidence: full `@shield/team-system` suite 275/275 pass, focused
-Mack proving tests 4/4 pass, build pass, and `git diff --check` pass before the
+Validation evidence: full `@shield/team-system` suite 276/276 pass, focused
+Mack proving tests 5/5 pass, build pass, and `git diff --check` pass before the
 review commit. No production implementation files were edited by the proving
-mission.
+mission. The bounded repair also proves an explicit `inconclusive` lane cannot
+become an eligible overall pass.
 
 No remaining technical blocker was found. Mack v0 is ready for Coulson’s draft
 PR review and merge decision.

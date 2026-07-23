@@ -25,8 +25,8 @@ test; it does not alter the Helicarrier implementation or grant readiness.
 
 ## Evidence
 
-- Focused Mack proving tests: 4/4 pass.
-- Full `@shield/team-system` validation: 275/275 pass.
+- Focused Mack proving tests: 5/5 pass.
+- Full `@shield/team-system` validation: 276/276 pass.
 - TypeScript build: pass.
 - `git diff --check`: pass.
 - Stale/mismatched handoff: `invalid_handoff`, with `BINDING_MISMATCH`.
