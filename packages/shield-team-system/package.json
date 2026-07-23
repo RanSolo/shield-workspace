@@ -73,6 +73,10 @@
       "types": "./public/mack-validation.d.mts",
       "import": "./public/mack-validation.mjs"
     },
+    "./qa-mode": {
+      "types": "./public/qa-mode.d.mts",
+      "import": "./public/qa-mode.mjs"
+    },
     "./local-tools": {
       "types": "./public/local-tools.d.mts",
       "import": "./public/local-tools.mjs"
