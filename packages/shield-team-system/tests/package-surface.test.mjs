@@ -29,6 +29,7 @@ test("exports only the documented public package specifiers", async () => {
     "./pipeline",
     "./sonarqube",
     "./mack-validation",
+    "./qa-mode",
     "./local-tools",
     "./github",
   ]);
@@ -54,6 +55,7 @@ test("loads every supported runtime specifier", async () => {
   const pipeline = await import("@shield/team-system/pipeline");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
+  const qaMode = await import("@shield/team-system/qa-mode");
   const localTools = await import("@shield/team-system/local-tools");
   const github = await import("@shield/team-system/github");
 
@@ -86,6 +88,9 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof sonarqube.evaluateSonarQubeEvidenceV1, "function");
   assert.equal(mackValidation.MACK_VALIDATION_CONTRACT_VERSION, "mack.validation.v0");
   assert.equal(typeof mackValidation.evaluateMackValidationV0, "function");
+  assert.equal(qaMode.QA_MODE_CONTRACT_VERSION, "qa.mode.v0");
+  assert.equal(typeof qaMode.createQaHandoffV0, "function");
+  assert.equal(typeof qaMode.evaluateQaValidationV0, "function");
   assert.equal(typeof localTools.runLocalToolSession, "function");
   assert.equal(localTools.DAISY_TOOL_DEFINITIONS.length, 3);
   assert.equal(typeof localTools.runMayToolCall, "function");
@@ -144,6 +149,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/pipeline-profile-v1.d.mts",
     "dist/sonarqube-evidence-v1.mjs",
     "dist/sonarqube-evidence-v1.d.mts",
+    "public/qa-mode.mjs",
+    "public/qa-mode.d.mts",
     "public/local-tools.mjs",
     "public/local-tools.d.mts",
     "scripts/model/may-tool-executor.mjs",
@@ -194,6 +201,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import { PIPELINE_PROFILE_CONTRACT_VERSION, selectPipelineModesV1, type RepositoryPipelineProfileV1 } from "@shield/team-system/pipeline";
     import { SONARQUBE_EVIDENCE_CONTRACT_VERSION, evaluateSonarQubeEvidenceV1, type SonarQubeEvidenceV1 } from "@shield/team-system/sonarqube";
+    import { QA_MODE_CONTRACT_VERSION, createQaHandoffV0, evaluateQaValidationV0, type QaHandoffInputV0 } from "@shield/team-system/qa-mode";
     import { runLocalToolSession, runMayControlLoop, runMayToolCall, type LocalToolSessionRequest, type MayControlLoopDependencies, type MayControlLoopRequest, type MayToolCallRequest, type MayToolExecutorDependencies } from "@shield/team-system/local-tools";
     import {
       FURY_PLAN_GATE_CONTRACT_VERSION,
@@ -287,7 +295,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const missingResumeState: MissionDecisionEvent = { ...validResume, resumeState: undefined };
     // @ts-expect-error A non-resume decision cannot carry resumeState.
     const unexpectedResumeState: MissionDecisionEvent = { ...validResume, decision: "approve" };
-    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, journaledRequest, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    const qaContract: "qa.mode.v0" = QA_MODE_CONTRACT_VERSION;
+    const qaHandoff = null as unknown as QaHandoffInputV0;
+    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, journaledRequest, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
