@@ -58,6 +58,16 @@ test("unavailable validation cannot become pass", () => {
   assert.equal(result.advancementEligibility, "ineligible");
 });
 
+test("an explicitly inconclusive lane cannot become an eligible pass", () => {
+  const result = evaluateMackValidationV0(
+    report({ lanes: [{ laneId: "e2e", commandId: "e2e", outcome: "inconclusive" }] }),
+    expected,
+  );
+  assert.equal(result.status, "inconclusive");
+  assert.ok(result.reasonCodes.includes("VALIDATION_INCONCLUSIVE"));
+  assert.equal(result.advancementEligibility, "ineligible");
+});
+
 test("production-surface edits are rejected while approved test edits remain bounded", () => {
   const result = evaluateMackValidationV0(report({ editedTestSurfaces: ["packages/shield-team-system/src/mission-v2.mts"] }), expected);
   assert.equal(result.status, "invalid_handoff");

@@ -57,6 +57,7 @@ const REASONS = {
   binding: "BINDING_MISMATCH",
   missingScenario: "REQUIRED_SCENARIO_UNCOVERED",
   unavailable: "VALIDATION_UNAVAILABLE",
+  inconclusive: "VALIDATION_INCONCLUSIVE",
   laneFailure: "VALIDATION_LANE_FAILED",
   editScope: "TEST_SURFACE_OUT_OF_SCOPE",
   route: "INVALID_ROUTE",
@@ -99,15 +100,16 @@ export function evaluateMackValidationV0(reportInput: unknown, expectedInput: un
   const editScopeValid = report.editedTestSurfaces.every((surface) => expected.approvedTestSurfaces.includes(surface));
   const requiredCovered = report.scenarios.filter((scenario) => scenario.required).every((scenario) => scenario.covered);
   const unavailable = report.lanes.some((lane) => ["unavailable", "misconfigured", "environment_blocked"].includes(lane.outcome));
+  const inconclusive = report.lanes.some((lane) => lane.outcome === "inconclusive");
   const laneFailed = report.lanes.some((lane) => lane.outcome === "fail");
   const reasons: string[] = [];
   if (!bindingMatches) reasons.push(REASONS.binding);
   if (!editScopeValid) reasons.push(REASONS.editScope);
   if (!requiredCovered) reasons.push(REASONS.missingScenario);
   if (unavailable) reasons.push(REASONS.unavailable);
+  if (inconclusive) reasons.push(REASONS.inconclusive);
   if (laneFailed) reasons.push(REASONS.laneFailure);
   const status = reasons.length > 0 ? (bindingMatches && editScopeValid ? "inconclusive" : "invalid_handoff") : report.status;
   const eligible = status === "pass" && report.status === "pass" && reasons.length === 0;
   return { state: "evaluated", contractVersion: MACK_VALIDATION_CONTRACT_VERSION, authority: "non_authoritative", advancementEligibility: eligible ? "eligible" : "ineligible", status, reasonCodes: Object.freeze(reasons), binding: Object.freeze({ ...expected, approvedTestSurfaces: Object.freeze([...expected.approvedTestSurfaces]) }), report: Object.freeze({ ...report }) };
 }
-
