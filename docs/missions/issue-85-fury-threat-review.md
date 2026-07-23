@@ -10,6 +10,8 @@
 
 The adapter must require the certification record identity (`Stage A Certification v1` at commit `5fce3051d774c3315eeb86445f6d3724e630cf9b`) and independently verify the nested frozen experiment/compiler/renderer identities recorded by that certification. A v1/v2 label mismatch must fail closed rather than be normalized.
 
+The certification input must also carry the complete frozen digest bundle. The validated compiler identity must repeat every digest, and all entries must match before compilation. Symbolic IDs alone are insufficient.
+
 ### Receipt forgery or replay
 
 The kernel must accept public key, counter, revocation, and current-authorization state only from an injected trusted host. It must call the certified receipt verifier and reject missing, malformed, expired, revoked, substituted, or cross-dispatch receipts. It must not mint authority or treat replay identity as permission.
@@ -44,4 +46,4 @@ May may implement only this shape. Any need for new authority semantics, new cer
 
 ## Final conformance
 
-**PASS** for the reviewed implementation shape. The adapter is side-effect-free, requires the fixed certification and nested identities, invokes validation before compilation, copies output bytes, emits deterministic digest receipts, and converts callback failures into closed results. No model, repository, GitHub, merge, deployment, or release path is present.
+**PASS** for the reviewed implementation shape after the bounded digest-binding repair. The adapter is side-effect-free, requires the fixed certification, nested identities, and complete frozen digest bundle, invokes validation before compilation, copies output bytes, emits deterministic digest receipts containing the bundle, and converts callback failures into closed results. No model, repository, GitHub, merge, deployment, or release path is present.

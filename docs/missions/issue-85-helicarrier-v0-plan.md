@@ -18,6 +18,7 @@ The adapter must not reconstruct candidate IR, parse Markdown, call a model, dis
 ## Host-owned inputs
 
 - exact certification commit and freeze-manifest identity;
+- exact frozen digest bundle for compiler source, validator source, renderer specification, registry artifact, and target profile;
 - trusted public key and revocation/counter state;
 - current authorization and governance binding;
 - validated dispatch envelope and receipt;
@@ -28,6 +29,7 @@ Missing or inconsistent host inputs fail closed.
 ## Validation obligations
 
 - certification record and nested v2 identities match exactly;
+- every frozen source/artifact digest in the certification bundle matches the validated compiler identity;
 - envelope is structurally closed and receipt verifies;
 - all content/governance/registry/renderer/target/fixture/context digests match;
 - compiler and validator identities are not substituted;
@@ -38,4 +40,3 @@ Missing or inconsistent host inputs fail closed.
 ## Stop conditions
 
 Return to Coulson if the implementation needs new authority semantics, a new certification, IR v1, notebook behavior, replay execution, model invocation, mutable repository access, external communication, or changes to the certified compiler/artifacts.
-

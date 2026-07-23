@@ -11,6 +11,13 @@ const certification = {
   rendererId: "canonical-chat-v1",
   targetProfileId: "codex-text.v0",
   registryId: "shield-dispatch-registry.v0",
+  frozenDigests: {
+    compilerSourceTreeSha256: "4d5d2e21178f1f8edee61b162a8fa3e4df82cd83d04eeb51efa9906887ae5e5f",
+    validatorSourceTreeSha256: "eee02a6c9dca56c781382ffe6a7d7e161e993f8a4baa8566064512f914f4abaa",
+    rendererSpecSha256: "d05a8331ed11356bac5bd438c186efc53e9e51db3ef42026a02080d6a40b57d0",
+    registrySha256: "57aecedb7a4f8740a6cc7328e334d5c8e1fea5b8620e692310ca3b170c52ce33",
+    targetProfileSha256: "7f032f5f2db1f7b73d249252510622dd3e8acd2daf5e72c7a788f3cb2c4e8d8a",
+  },
 };
 
 function dependencies(overrides = {}) {
@@ -22,6 +29,7 @@ function dependencies(overrides = {}) {
       rendererId: certification.rendererId,
       targetProfileId: certification.targetProfileId,
       registryId: certification.registryId,
+      frozenDigests: { ...certification.frozenDigests },
     } } }),
     compile: () => ({ state: "ok", value: {
       promptBytes: Uint8Array.from([1, 2]),
@@ -43,6 +51,7 @@ test("runs the certified compiler only after identity-bound validation", () => {
   assert.equal(result.value.platformId, HELICARRIER_V0_ID);
   assert.equal(result.value.receipt.dispatchId, "dispatch-1");
   assert.equal(result.value.receipt.certificationCommit, certification.certificationCommit);
+  assert.deepEqual(result.value.receipt.frozenDigests, certification.frozenDigests);
 });
 
 test("fails closed before compilation on validation failure", () => {
@@ -61,6 +70,16 @@ test("fails closed on nested compiler identity substitution", () => {
   }));
   assert.deepEqual(result, { state: "invalid", reason: "NESTED_IDENTITY_MISMATCH" });
 });
+
+for (const field of Object.keys(certification.frozenDigests)) {
+  test(`fails closed on same-ID different-digest substitution: ${field}`, () => {
+    const substituted = { ...certification.frozenDigests, [field]: "f".repeat(64) };
+    const result = runHelicarrierV0({ dispatchId: "dispatch-1", envelope: {}, trust: {} }, dependencies({
+      validate: () => ({ state: "ok", value: { value: {}, identity: { ...dependencies().validate().value.identity, frozenDigests: substituted } } }),
+    }));
+    assert.deepEqual(result, { state: "invalid", reason: "NESTED_IDENTITY_MISMATCH" });
+  });
+}
 
 test("fails closed on malformed compiler output", () => {
   const result = runHelicarrierV0({ dispatchId: "dispatch-1", envelope: {}, trust: {} }, dependencies({ compile: () => ({ state: "ok", value: { promptBytes: new Uint8Array(1), provenanceBytes: new Uint8Array(1) } }) }));
