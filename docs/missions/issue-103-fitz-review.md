@@ -11,6 +11,7 @@ Simmons/Coulson review authority. Exact-head and approved-lane mismatches fail
 closed; missing, failed, unavailable, and inconclusive evidence cannot produce
 an eligible pass.
 
-Validation: focused QA tests 5/5, full workspace tests 281/281, build pass, and
+Validation: focused QA tests 7/7, full workspace tests 283/283, build pass, and
 `git diff --check` pass. No external effects or production edits by Mack were
-introduced.
+introduced. The repaired envelope binds the Mission Brief revision and
+criterion/lane evidence provenance without adding a general command runner.

@@ -38,8 +38,10 @@ Stop and return to Coulson if QA Mode would redefine requirements, weaken valida
 ## Implementation slice
 
 `qa.mode.v0` is a pure handoff/evaluation boundary layered over Mack v0. It
-does not execute commands or grant authority. Hill freezes the mission brief,
-acceptance criteria, exact repository/head, scenario set, approved lane/command
-IDs, and approved test surfaces. Mack evidence is evaluated against that exact
-packet; stale, mismatched, unapproved, missing, failed, unavailable, or
-inconclusive evidence cannot advance as pass.
+prepares a side-effect-free approved-lane execution plan but does not execute
+commands or grant authority. Hill freezes the mission brief, acceptance
+criteria, exact repository/head, scenario set, approved lane/command IDs, lane
+evidence references, and approved test surfaces. Mack evidence is evaluated
+against that exact packet, including the Mission Brief revision; stale,
+mismatched, unapproved, missing, failed, unavailable, or inconclusive evidence
+cannot advance as pass.

@@ -19,4 +19,13 @@ Mack’s non-authoritative evaluator; and routes invalid, inconclusive, or
 unavailable results without granting advancement. No command execution,
 production editing, routing authority, or human acceptance was added.
 
-Evidence: focused QA tests 5/5 and full team-system validation 281/281 pass.
+Evidence: focused QA tests 7/7 and full team-system validation 283/283 pass.
+
+## Bounded repair conformance
+
+**PASS.** The repaired contract binds the Mission Brief revision into the QA
+envelope, validates every scenario’s criterion identifier, requires each
+asserted lane’s evidence reference, enforces the closed finding-route policy,
+and exposes only a side-effect-free approved execution plan. Synthetic reports
+are explicitly separate from host-executed evidence; QA Mode never claims a
+command ran merely because a report was supplied.

@@ -9,6 +9,7 @@
 - Validation owner: Mack
 - Production implementation owner: May
 - QA contract: `qa.mode.v0`
+- Execution mode: synthetic proving fixture; no command execution is claimed.
 
 ## Required scenarios
 
@@ -29,8 +30,13 @@ The handoff required and evaluated all six bounded scenario kinds:
 - Unapproved lane or command: `invalid_handoff`, ineligible.
 - Missing required scenario: `inconclusive`, ineligible.
 - Explicit inconclusive Mack lane: `inconclusive`, ineligible.
-- Focused QA tests: 5/5 pass.
-- Full `@shield/team-system` tests: 281/281 pass.
+- Stale Mission Brief revision: `invalid_handoff`, ineligible.
+- Missing lane evidence reference: `inconclusive`, ineligible.
+- Finding route conflicting with classification: `inconclusive`, ineligible.
+- Unknown acceptance-criterion reference: malformed handoff, ineligible.
+- Approved execution plan: generated side-effect-free; only the Hill-approved lane/command set is exposed.
+- Focused QA tests: 7/7 pass.
+- Full `@shield/team-system` tests: 283/283 pass.
 - TypeScript build: pass.
 - `git diff --check`: pass.
 

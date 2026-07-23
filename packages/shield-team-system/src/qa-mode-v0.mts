@@ -12,8 +12,12 @@ export const QA_SCENARIO_KINDS = ["happy_path", "boundary_null", "binding_mismat
 export const QA_REASON_CODES = [
   "MALFORMED_HANDOFF",
   "HANDOFF_BINDING_MISMATCH",
+  "BRIEF_BINDING_MISMATCH",
+  "ACCEPTANCE_CRITERION_MISMATCH",
   "REQUIRED_SCENARIO_MISSING",
   "APPROVED_LANE_MISMATCH",
+  "EVIDENCE_REFERENCE_MISMATCH",
+  "ROUTE_MISMATCH",
   "MACK_VALIDATION_INELIGIBLE",
 ] as const;
 
@@ -35,6 +39,11 @@ export interface QaApprovedLaneV0 {
   readonly evidenceRef: string;
 }
 
+export interface QaAcceptanceCriterionV0 {
+  readonly criterionId: string;
+  readonly text: string;
+}
+
 export interface QaHandoffInputV0 {
   readonly schemaVersion: 1;
   readonly contractVersion: typeof QA_MODE_CONTRACT_VERSION;
@@ -44,10 +53,26 @@ export interface QaHandoffInputV0 {
   readonly repository: string;
   readonly branch: string;
   readonly artifactRevisionId: string;
-  readonly acceptanceCriteria: readonly string[];
+  readonly acceptanceCriteria: readonly QaAcceptanceCriterionV0[];
   readonly scenarios: readonly QaScenarioV0[];
   readonly approvedLanes: readonly QaApprovedLaneV0[];
   readonly approvedTestSurfaces: readonly string[];
+}
+
+export interface QaValidationEnvelopeV0 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: typeof QA_MODE_CONTRACT_VERSION;
+  readonly missionBriefRevisionId: string;
+  readonly mackReport: unknown;
+}
+
+export interface QaExecutionPlanV0 {
+  readonly state: "ready" | "invalid";
+  readonly authority: "non_authoritative";
+  readonly missionId: string;
+  readonly artifactRevisionId: string;
+  readonly lanes: readonly QaApprovedLaneV0[];
+  readonly reasonCodes: readonly QaReasonCodeV0[];
 }
 
 export interface QaHandoffV0 extends QaHandoffInputV0 {
@@ -114,9 +139,12 @@ function validScenario(value: unknown): value is QaScenarioV0 {
 function validLane(value: unknown): value is QaApprovedLaneV0 {
   return exact(value, ["laneId", "commandId", "evidenceRef"]) && id(value.laneId) && id(value.commandId) && id(value.evidenceRef);
 }
+function validCriterion(value: unknown): value is QaAcceptanceCriterionV0 {
+  return exact(value, ["criterionId", "text"]) && id(value.criterionId) && text(value.text);
+}
 function validHandoff(value: unknown): value is QaHandoffInputV0 {
   return exact(value, ["schemaVersion", "contractVersion", "missionId", "subjectId", "missionBriefRevisionId", "repository", "branch", "artifactRevisionId", "acceptanceCriteria", "scenarios", "approvedLanes", "approvedTestSurfaces"]) &&
-    value.schemaVersion === 1 && value.contractVersion === QA_MODE_CONTRACT_VERSION && id(value.missionId) && id(value.subjectId) && id(value.missionBriefRevisionId) && typeof value.repository === "string" && REPOSITORY.test(value.repository) && id(value.branch) && typeof value.artifactRevisionId === "string" && REVISION.test(value.artifactRevisionId) && uniqueStrings(value.acceptanceCriteria, text, 128) && Array.isArray(value.scenarios) && value.scenarios.length > 0 && value.scenarios.length <= 128 && value.scenarios.every(validScenario) && new Set(value.scenarios.map((scenario) => scenario.scenarioId)).size === value.scenarios.length && Array.isArray(value.approvedLanes) && value.approvedLanes.length > 0 && value.approvedLanes.length <= 128 && value.approvedLanes.every(validLane) && new Set(value.approvedLanes.map((lane) => lane.laneId)).size === value.approvedLanes.length && Array.isArray(value.approvedTestSurfaces) && value.approvedTestSurfaces.length <= 128 && value.approvedTestSurfaces.every(path) && new Set(value.approvedTestSurfaces).size === value.approvedTestSurfaces.length;
+    value.schemaVersion === 1 && value.contractVersion === QA_MODE_CONTRACT_VERSION && id(value.missionId) && id(value.subjectId) && id(value.missionBriefRevisionId) && typeof value.repository === "string" && REPOSITORY.test(value.repository) && id(value.branch) && typeof value.artifactRevisionId === "string" && REVISION.test(value.artifactRevisionId) && Array.isArray(value.acceptanceCriteria) && value.acceptanceCriteria.length > 0 && value.acceptanceCriteria.length <= 128 && value.acceptanceCriteria.every(validCriterion) && new Set((value.acceptanceCriteria as readonly QaAcceptanceCriterionV0[]).map((criterion) => criterion.criterionId)).size === value.acceptanceCriteria.length && Array.isArray(value.scenarios) && value.scenarios.length > 0 && value.scenarios.length <= 128 && value.scenarios.every(validScenario) && new Set(value.scenarios.map((scenario) => scenario.scenarioId)).size === value.scenarios.length && value.scenarios.every((scenario) => (value.acceptanceCriteria as readonly QaAcceptanceCriterionV0[]).some((criterion) => criterion.criterionId === scenario.acceptanceCriterionRef)) && Array.isArray(value.approvedLanes) && value.approvedLanes.length > 0 && value.approvedLanes.length <= 128 && value.approvedLanes.every(validLane) && new Set(value.approvedLanes.map((lane) => lane.laneId)).size === value.approvedLanes.length && Array.isArray(value.approvedTestSurfaces) && value.approvedTestSurfaces.length <= 128 && value.approvedTestSurfaces.every(path) && new Set(value.approvedTestSurfaces).size === value.approvedTestSurfaces.length;
 }
 
 export function createQaHandoffV0(input: unknown): QaHandoffResultV0 {
@@ -126,17 +154,29 @@ export function createQaHandoffV0(input: unknown): QaHandoffResultV0 {
     ownership: { implementationSeatId: "may", validationSeatId: "mack", routingSeatId: "hill" },
     routePolicy: { production_defect: "may", test_defect: "mack", environment_limitation: "daisy", coverage_gap: "mack", advisory_gap: "hill" },
   };
-  return { state: "ready", authority: "non_authoritative", handoff: Object.freeze({ ...handoff, scenarios: Object.freeze([...handoff.scenarios]), approvedLanes: Object.freeze([...handoff.approvedLanes]), acceptanceCriteria: Object.freeze([...handoff.acceptanceCriteria]), approvedTestSurfaces: Object.freeze([...handoff.approvedTestSurfaces]) }) };
+  return { state: "ready", authority: "non_authoritative", handoff: Object.freeze({ ...handoff, scenarios: Object.freeze([...handoff.scenarios]), approvedLanes: Object.freeze([...handoff.approvedLanes]), acceptanceCriteria: Object.freeze(handoff.acceptanceCriteria.map((criterion) => Object.freeze({ ...criterion }))), approvedTestSurfaces: Object.freeze([...handoff.approvedTestSurfaces]) }) };
+}
+
+export function prepareQaExecutionPlanV0(handoffInput: unknown): QaExecutionPlanV0 {
+  if (!validHandoff(handoffInput)) return { state: "invalid", authority: "non_authoritative", missionId: "invalid", artifactRevisionId: "invalid", lanes: [], reasonCodes: ["MALFORMED_HANDOFF"] };
+  return { state: "ready", authority: "non_authoritative", missionId: handoffInput.missionId, artifactRevisionId: handoffInput.artifactRevisionId, lanes: Object.freeze(handoffInput.approvedLanes.map((lane) => Object.freeze({ ...lane }))), reasonCodes: [] };
+}
+
+function validEnvelope(value: unknown): value is QaValidationEnvelopeV0 {
+  return exact(value, ["schemaVersion", "contractVersion", "missionBriefRevisionId", "mackReport"]) && value.schemaVersion === 1 && value.contractVersion === QA_MODE_CONTRACT_VERSION && id(value.missionBriefRevisionId) && value.mackReport !== undefined;
 }
 
 function expectedBinding(handoff: QaHandoffInputV0): MackExpectedBindingV0 {
   return { missionId: handoff.missionId, subjectId: handoff.subjectId, repository: handoff.repository, branch: handoff.branch, artifactRevisionId: handoff.artifactRevisionId, approvedTestSurfaces: handoff.approvedTestSurfaces };
 }
 
-export function evaluateQaValidationV0(handoffInput: unknown, reportInput: unknown): QaEvaluationV0 {
+export function evaluateQaValidationV0(handoffInput: unknown, envelopeInput: unknown): QaEvaluationV0 {
   if (!validHandoff(handoffInput)) return { state: "invalid", authority: "non_authoritative", outcome: "invalid_handoff", advancementEligibility: "ineligible", reasonCodes: ["MALFORMED_HANDOFF"], route: "coulson", routeEvidence: [] };
   const handoff = handoffInput;
-  const mackEvaluation = evaluateMackValidationV0(reportInput, expectedBinding(handoff));
+  if (!validEnvelope(envelopeInput)) return { state: "invalid", authority: "non_authoritative", outcome: "invalid_handoff", advancementEligibility: "ineligible", reasonCodes: ["BRIEF_BINDING_MISMATCH"], route: "hill", routeEvidence: [] };
+  const envelope = envelopeInput;
+  if (envelope.missionBriefRevisionId !== handoff.missionBriefRevisionId) return { state: "invalid", authority: "non_authoritative", outcome: "invalid_handoff", advancementEligibility: "ineligible", reasonCodes: ["BRIEF_BINDING_MISMATCH"], route: "hill", routeEvidence: [] };
+  const mackEvaluation = evaluateMackValidationV0(envelope.mackReport, expectedBinding(handoff));
   if (mackEvaluation.state === "invalid") return { state: "invalid", authority: "non_authoritative", outcome: "invalid_handoff", advancementEligibility: "ineligible", reasonCodes: ["MACK_VALIDATION_INELIGIBLE"], route: "hill", routeEvidence: [] };
   const report = mackEvaluation.report as MackValidationReportV0;
   const requiredIds = new Set(handoff.scenarios.map((scenario) => scenario.scenarioId));
@@ -144,7 +184,11 @@ export function evaluateQaValidationV0(handoffInput: unknown, reportInput: unkno
   const allowedLanes = new Map(handoff.approvedLanes.map((lane) => [lane.laneId, lane.commandId]));
   const reasons: QaReasonCodeV0[] = [];
   if ([...requiredIds].some((scenarioId) => !reportedIds.has(scenarioId))) reasons.push("REQUIRED_SCENARIO_MISSING");
+  if ([...requiredIds].some((scenarioId) => !report.scenarios.some((scenario) => scenario.scenarioId === scenarioId && scenario.covered))) reasons.push("REQUIRED_SCENARIO_MISSING");
   if (report.lanes.some((lane) => allowedLanes.get(lane.laneId) !== lane.commandId)) reasons.push("APPROVED_LANE_MISMATCH");
+  if (report.lanes.some((lane) => !report.evidenceRefs.includes(handoff.approvedLanes.find((approved) => approved.laneId === lane.laneId)?.evidenceRef ?? ""))) reasons.push("EVIDENCE_REFERENCE_MISMATCH");
+  const routePolicy = { production_defect: "may", test_defect: "mack", environment_limitation: "daisy", coverage_gap: "mack", advisory_gap: "hill" } as const;
+  if (report.findings.some((finding) => routePolicy[finding.classification] !== finding.route)) reasons.push("ROUTE_MISMATCH");
   if (mackEvaluation.advancementEligibility === "ineligible") reasons.push("MACK_VALIDATION_INELIGIBLE");
   const bindingMismatch = mackEvaluation.reasonCodes.includes("BINDING_MISMATCH");
   const outcome: QaOutcomeV0 = reasons.length === 0 ? report.status : (bindingMismatch || reasons.includes("APPROVED_LANE_MISMATCH") ? "invalid_handoff" : (reasons.includes("MACK_VALIDATION_INELIGIBLE") && report.status === "invalid_handoff" ? "invalid_handoff" : "inconclusive"));
