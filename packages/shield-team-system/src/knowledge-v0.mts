@@ -160,12 +160,18 @@ export function verifyKnowledgeSliceV0(envelopeInput: unknown, approvedManifestI
   const envelope = envelopeInput;
   const approvedManifest = approvedManifestInput;
   const reasons: KnowledgeReasonCodeV0[] = [];
-  if (envelope.manifest.manifestId !== approvedManifest.manifestId || envelope.manifest.missionId !== approvedManifest.missionId || envelope.manifest.seatId !== approvedManifest.seatId || envelope.manifest.sliceDigest !== approvedManifest.sliceDigest || JSON.stringify(envelope.manifest.members) !== JSON.stringify(approvedManifest.members)) reasons.push("SLICE_BINDING_MISMATCH");
-  const memberByEntry = new Map(envelope.manifest.members.map((member) => [member.entryId, member]));
-  for (const entry of envelope.entries) {
-    const member = memberByEntry.get(entry.entryId);
+  if (
+    envelope.manifest.manifestId !== approvedManifest.manifestId ||
+    envelope.manifest.missionId !== approvedManifest.missionId ||
+    envelope.manifest.seatId !== approvedManifest.seatId ||
+    JSON.stringify(envelope.manifest.curatorProposal) !== JSON.stringify(approvedManifest.curatorProposal) ||
+    envelope.manifest.sliceDigest !== approvedManifest.sliceDigest ||
+    JSON.stringify(envelope.manifest.members) !== JSON.stringify(approvedManifest.members)
+  ) reasons.push("SLICE_BINDING_MISMATCH");
+  for (const [index, entry] of envelope.entries.entries()) {
+    const member = envelope.manifest.members[index];
     const entryResult = validateKnowledgeEntryV0(entry, evaluatedAtInput);
-    if (!member || member.revisionId !== entry.revisionId) reasons.push("SLICE_MEMBER_MISMATCH");
+    if (!member || member.entryId !== entry.entryId || member.revisionId !== entry.revisionId || member.ordinal !== index) reasons.push("SLICE_MEMBER_MISMATCH");
     if (!member || member.contentDigest !== entry.contentDigest) reasons.push("SLICE_DIGEST_MISMATCH");
     reasons.push(...entryResult.reasonCodes);
   }

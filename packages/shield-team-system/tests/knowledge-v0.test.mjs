@@ -33,12 +33,22 @@ const entry = {
   conflict: { state: "none", conflictSetId: null, disposition: "none" },
   nonAuthoritative: true,
 };
+const secondEntry = {
+  ...entry,
+  entryId: "entry:fixture:2",
+  revisionId: "revision:fixture:2",
+  contentRef: "content:fixture:2",
+  contentDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+};
 const manifest = {
   manifestId: "manifest:fixture",
   missionId: "mission:102",
   seatId: "may",
   curatorProposal: { proposalId: "proposal:fixture", curatorSeatId: "hill", proposedAt: "2026-07-23T22:30:00Z" },
-  members: [{ entryId: entry.entryId, revisionId: entry.revisionId, contentDigest: entry.contentDigest, ordinal: 0 }],
+  members: [
+    { entryId: entry.entryId, revisionId: entry.revisionId, contentDigest: entry.contentDigest, ordinal: 0 },
+    { entryId: secondEntry.entryId, revisionId: secondEntry.revisionId, contentDigest: secondEntry.contentDigest, ordinal: 1 },
+  ],
   sliceDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 };
 const envelope = {
@@ -46,7 +56,7 @@ const envelope = {
   contractVersion: KNOWLEDGE_SLICE_CONTRACT_VERSION,
   envelopeId: "envelope:fixture",
   manifest,
-  entries: [entry],
+  entries: [entry, secondEntry],
   nonAuthoritative: true,
 };
 
@@ -74,12 +84,30 @@ test("verified slice binds approved membership, revisions, and digests", () => {
 });
 
 test("substituted revision or manifest fails closed", () => {
-  const substituted = verifyKnowledgeSliceV0({ ...envelope, entries: [{ ...entry, revisionId: "revision:fixture:2" }] }, manifest, now);
+  const substituted = verifyKnowledgeSliceV0({ ...envelope, entries: [{ ...entry, revisionId: "revision:fixture:9" }, secondEntry] }, manifest, now);
   assert.equal(substituted.state, "invalid");
   assert.ok(substituted.reasonCodes.includes("SLICE_MEMBER_MISMATCH"));
   const changedManifest = { ...manifest, sliceDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" };
   const changed = verifyKnowledgeSliceV0({ ...envelope, manifest: changedManifest }, manifest, now);
   assert.ok(changed.reasonCodes.includes("SLICE_BINDING_MISMATCH"));
+});
+
+test("substituted curator proposal metadata fails closed", () => {
+  const substitutedProposal = verifyKnowledgeSliceV0({
+    ...envelope,
+    manifest: {
+      ...manifest,
+      curatorProposal: { ...manifest.curatorProposal, proposalId: "proposal:substituted" },
+    },
+  }, manifest, now);
+  assert.equal(substitutedProposal.state, "invalid");
+  assert.ok(substitutedProposal.reasonCodes.includes("SLICE_BINDING_MISMATCH"));
+});
+
+test("reordered entries fail closed against manifest ordinals", () => {
+  const reordered = verifyKnowledgeSliceV0({ ...envelope, entries: [secondEntry, entry] }, manifest, now);
+  assert.equal(reordered.state, "invalid");
+  assert.ok(reordered.reasonCodes.includes("SLICE_MEMBER_MISMATCH"));
 });
 
 test("Helicarrier opaque consumption rejects interpretation attempts", () => {
