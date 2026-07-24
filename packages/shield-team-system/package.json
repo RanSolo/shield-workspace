@@ -77,6 +77,10 @@
       "types": "./public/qa-mode.d.mts",
       "import": "./public/qa-mode.mjs"
     },
+    "./knowledge": {
+      "types": "./public/knowledge.d.mts",
+      "import": "./public/knowledge.mjs"
+    },
     "./local-tools": {
       "types": "./public/local-tools.d.mts",
       "import": "./public/local-tools.mjs"
