@@ -75,6 +75,41 @@ results are bounded, and raw tool output is released to the model only after the
 audited executor reports `completed`. Final model prose is labeled untrusted
 model output rather than verified reconnaissance evidence.
 
+Before a trusted host relies on local Daisy broker evidence, it should run the
+broker compatibility probe exposed by `probeLocalToolCompatibility(...)`. The
+metadata probe checks that LM Studio has exactly one loaded tool-capable model
+instance, but metadata such as `trained_for_tool_use: true` is not sufficient.
+The compatibility probe also verifies that the selected model/template can emit:
+
+- a clean assistant tool-call turn with no assistant prose in `content`; and
+- a clean final assistant message after tool results with no tool call.
+
+Dedicated reasoning fields such as `reasoning` or `reasoning_content` may be
+normalized, ignored, or quarantined by the host when the turn is otherwise
+clean. Reasoning or prose leaked into assistant `content` alongside a tool call
+remains ambiguous and fails closed as `lm_response_ambiguous`. In LM Studio,
+reasoning/thinking mode and chat-template behavior can affect this boundary.
+
+Operator-facing diagnostics are intentionally narrow:
+
+- `model_unavailable` means the endpoint, model load, ambiguity, or timeout
+  prevents a trusted broker session. Chat endpoint HTTP 5xx responses remain in
+  this category.
+- `model_not_tool_capable` means the loaded model did not advertise tool-use
+  training.
+- `endpoint_or_template_incompatible` means the response shape or protocol turn
+  does not match the broker contract. A chat endpoint HTTP 4xx rejection of the
+  bounded probe is reported here with only its numeric status and probe phase;
+  the response body is never exposed.
+- `ambiguous_tool_response` means the model mixed assistant `content` with a
+  tool call.
+- `broker_policy_denied` means the model requested an operation outside the
+  active authority policy.
+
+When compatibility fails, use `ask-local` with explicit context files as the
+fallback for context-supplied reconnaissance. That fallback does not produce
+governed broker evidence and must not be treated as readiness.
+
 ## Governed May implementation calls
 
 `@shield/team-system/local-tools` also exports `runMayToolCall` as the first

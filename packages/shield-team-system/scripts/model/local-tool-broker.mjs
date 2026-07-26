@@ -41,6 +41,80 @@ export const DAISY_TOOL_DEFINITIONS = Object.freeze(Object.entries({
 })));
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/u;
+const DEDICATED_REASONING_FIELDS = Object.freeze(["reasoning", "reasoning_content"]);
+
+export const LOCAL_TOOL_DIAGNOSTICS = Object.freeze({
+  lm_probe_input_invalid: Object.freeze({
+    category: "endpoint_or_template_incompatible",
+    message: "Local model probe input is not a safe loopback model request.",
+    fallback: "Use ask-local with explicit context files, or select a valid loopback LM Studio endpoint and model identifier.",
+  }),
+  lm_request_failed: Object.freeze({
+    category: "model_unavailable",
+    message: "Local model endpoint could not complete the request.",
+    fallback: "Confirm LM Studio is running, the model is loaded, and the endpoint is reachable.",
+  }),
+  lm_chat_request_rejected: Object.freeze({
+    category: "endpoint_or_template_incompatible",
+    message: "Local model chat endpoint rejected the broker protocol request.",
+    fallback: "Use ask-local with supplied context, or adjust the endpoint/template settings before governed broker use.",
+  }),
+  lm_request_timeout: Object.freeze({
+    category: "model_unavailable",
+    message: "Local model endpoint did not answer within the bounded timeout.",
+    fallback: "Use ask-local with supplied context or retry after confirming LM Studio health.",
+  }),
+  lm_tool_model_unavailable: Object.freeze({
+    category: "model_unavailable",
+    message: "The selected model is not loaded as exactly one tool-capable instance.",
+    fallback: "Load one compatible LM Studio model instance or select a different model.",
+  }),
+  lm_tool_model_not_tool_capable: Object.freeze({
+    category: "model_not_tool_capable",
+    message: "The selected loaded model does not advertise tool-use training.",
+    fallback: "Use ask-local with supplied context or select a model/template trained for tool use.",
+  }),
+  lm_tool_model_ambiguous: Object.freeze({
+    category: "model_unavailable",
+    message: "The selected model matched more than one loaded tool-capable instance.",
+    fallback: "Unload duplicate instances or select the exact loaded instance identifier.",
+  }),
+  lm_models_response_malformed: Object.freeze({
+    category: "endpoint_or_template_incompatible",
+    message: "LM Studio model metadata did not match the expected response shape.",
+    fallback: "Use ask-local with supplied context or update the local runtime integration.",
+  }),
+  lm_response_malformed: Object.freeze({
+    category: "endpoint_or_template_incompatible",
+    message: "LM Studio chat completion response did not match the expected response shape.",
+    fallback: "Use ask-local with supplied context or adjust the endpoint/template before governed broker use.",
+  }),
+  lm_tool_calls_malformed: Object.freeze({
+    category: "endpoint_or_template_incompatible",
+    message: "Tool-call data was present but malformed.",
+    fallback: "Use ask-local with supplied context or adjust the model template/tool-call format.",
+  }),
+  lm_tool_call_malformed: Object.freeze({
+    category: "endpoint_or_template_incompatible",
+    message: "A model tool call did not match the expected OpenAI-compatible function-call shape.",
+    fallback: "Use ask-local with supplied context or adjust the model template/tool-call format.",
+  }),
+  lm_response_ambiguous: Object.freeze({
+    category: "ambiguous_tool_response",
+    message: "The model returned assistant content and a tool call in the same turn.",
+    fallback: "Use ask-local with supplied context, disable thinking/prose leakage, or select a template that emits clean tool-only turns.",
+  }),
+  tool_protocol_incomplete: Object.freeze({
+    category: "endpoint_or_template_incompatible",
+    message: "The model did not complete the expected tool-then-final-message protocol.",
+    fallback: "Use ask-local with supplied context or select a model/template that can complete tool sessions.",
+  }),
+  tool_permission_denied: Object.freeze({
+    category: "broker_policy_denied",
+    message: "The broker denied the requested tool call under the active authority policy.",
+    fallback: "Do not retry with broader model authority; reconcile the mission binding and approved scope.",
+  }),
+});
 
 function plain(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
@@ -102,6 +176,19 @@ function boundedError(code) {
   return /^[a-z][a-z0-9_]{0,127}$/u.test(value) ? value : "tool_session_failed";
 }
 
+export function explainLocalToolFailure(code) {
+  const bounded = boundedError(code);
+  const diagnostic = LOCAL_TOOL_DIAGNOSTICS[bounded];
+  return Object.freeze(diagnostic === undefined
+    ? {
+        code: bounded,
+        category: "endpoint_or_template_incompatible",
+        message: "The local tool broker failed closed.",
+        fallback: "Use ask-local with supplied context while the broker incompatibility is investigated.",
+      }
+    : { code: bounded, ...diagnostic });
+}
+
 function validateLoopbackBaseUrl(value) {
   try {
     const url = new URL(value);
@@ -135,9 +222,27 @@ async function fetchJson(fetchImpl, url, options, { timeoutMs, maxBytes }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(url, { ...options, redirect: "error", signal: controller.signal });
+    let response;
+    try {
+      response = await fetchImpl(url, { ...options, redirect: "error", signal: controller.signal });
+    } catch {
+      if (controller.signal.aborted) throw new Error("lm_request_timeout");
+      throw new Error("lm_request_failed");
+    }
+    if (!response.ok) {
+      await response.body?.cancel?.().catch(() => {});
+      const httpStatus = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599
+        ? response.status
+        : null;
+      const isChatRequest = new URL(url).pathname === "/v1/chat/completions";
+      const code = isChatRequest && httpStatus !== null && httpStatus >= 400 && httpStatus <= 499
+        ? "lm_chat_request_rejected"
+        : "lm_request_failed";
+      const error = new Error(code);
+      if (httpStatus !== null) Object.defineProperty(error, "httpStatus", { value: httpStatus, enumerable: true });
+      throw error;
+    }
     const raw = await readBoundedResponse(response, maxBytes);
-    if (!response.ok) throw new Error("lm_request_failed");
     const parsed = strictParseJson(raw, { maxBytes, maxDepth: 16, rejectControlCharacters: false });
     if (parsed.state !== "valid") throw new Error("lm_response_malformed");
     return parsed.value;
@@ -160,6 +265,7 @@ export async function probeLocalToolModel({ baseUrl, model, fetchImpl = fetch, a
   const models = denseArray(data.models);
   if (models === null) throw new Error("lm_models_response_malformed");
   const matches = [];
+  let loadedButNotToolCapable = false;
   for (const item of models) {
     if (!plain(item)) continue;
     const key = Object.getOwnPropertyDescriptor(item, "key")?.value;
@@ -168,14 +274,29 @@ export async function probeLocalToolModel({ baseUrl, model, fetchImpl = fetch, a
     if (typeof key !== "string" || !plain(capabilities) || loaded === null) continue;
     const trained = Object.getOwnPropertyDescriptor(capabilities, "trained_for_tool_use")?.value === true;
     const instanceIds = loaded.map((entry) => plain(entry) ? Object.getOwnPropertyDescriptor(entry, "id")?.value : null).filter((id) => typeof id === "string" && IDENTIFIER.test(id));
+    if ((model === key && instanceIds.length > 0 && !trained) || (!trained && instanceIds.includes(model))) {
+      loadedButNotToolCapable = true;
+    }
     if (model === key) {
       if (trained && instanceIds.length === 1) matches.push(instanceIds[0]);
     } else if (trained && instanceIds.includes(model)) {
       matches.push(model);
     }
   }
+  if (matches.length === 0 && loadedButNotToolCapable) throw new Error("lm_tool_model_not_tool_capable");
   if (matches.length !== 1) throw new Error(matches.length === 0 ? "lm_tool_model_unavailable" : "lm_tool_model_ambiguous");
   return Object.freeze({ origin, loadedInstanceId: matches[0] });
+}
+
+function readDedicatedReasoning(message) {
+  const values = [];
+  for (const field of DEDICATED_REASONING_FIELDS) {
+    const value = Object.getOwnPropertyDescriptor(message, field)?.value;
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string") throw new Error("lm_response_malformed");
+    values.push(value);
+  }
+  return values.join("\n\n");
 }
 
 function parseAssistantResponse(data) {
@@ -187,6 +308,7 @@ function parseAssistantResponse(data) {
   const content = Object.getOwnPropertyDescriptor(message, "content")?.value;
   if (content !== null && typeof content !== "string") throw new Error("lm_response_malformed");
   if (typeof content === "string" && Buffer.byteLength(content, "utf8") > LOCAL_TOOL_LIMITS.responseBytes) throw new Error("lm_response_too_large");
+  const reasoning = readDedicatedReasoning(message);
   const rawCalls = Object.hasOwn(message, "tool_calls") ? denseArray(Object.getOwnPropertyDescriptor(message, "tool_calls").value) : [];
   if (rawCalls === null) throw new Error("lm_tool_calls_malformed");
   const toolCalls = rawCalls.map((call) => {
@@ -200,7 +322,101 @@ function parseAssistantResponse(data) {
     return Object.freeze({ id, type: "function", function: Object.freeze({ name, arguments: args }) });
   });
   if (toolCalls.length > 0 && content !== null && content.trim().length > 0) throw new Error("lm_response_ambiguous");
-  return { content, toolCalls, assistantMessage: { role: "assistant", content, ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}) } };
+  return { content, reasoning, toolCalls, assistantMessage: { role: "assistant", content, ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}) } };
+}
+
+export async function probeLocalToolCompatibility({
+  baseUrl,
+  model,
+  fetchImpl = fetch,
+  apiToken,
+  timeoutMs = LOCAL_TOOL_LIMITS.inferenceTimeoutMs,
+}) {
+  const incompatibility = (error, phase, details = {}) => {
+    const code = boundedError(error instanceof Error ? error.message : "tool_protocol_incomplete");
+    const httpStatus = error instanceof Error
+      && Number.isInteger(error.httpStatus)
+      && error.httpStatus >= 100
+      && error.httpStatus <= 599
+      ? error.httpStatus
+      : null;
+    return Object.freeze({
+      state: "incompatible",
+      phase,
+      ...details,
+      diagnostic: Object.freeze({
+        ...explainLocalToolFailure(code),
+        ...(httpStatus === null ? {} : { httpStatus }),
+      }),
+    });
+  };
+  let capability;
+  try {
+    capability = await probeLocalToolModel({ baseUrl, model, fetchImpl, apiToken, timeoutMs });
+  } catch (error) {
+    return incompatibility(error, "metadata", { checks: Object.freeze([]) });
+  }
+  const headers = { "Content-Type": "application/json", ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {}) };
+  const checks = [];
+  const toolCallId = "compat-call-read-file";
+  try {
+    const toolData = await fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: capability.loadedInstanceId,
+        messages: [
+          { role: "system", content: "You are a compatibility probe. When a tool is required, emit only the tool call and no prose." },
+          { role: "user", content: "Call readFile for visible.txt. Do not answer in prose." },
+        ],
+        tools: DAISY_TOOL_DEFINITIONS,
+        tool_choice: "required",
+      }),
+    }, { timeoutMs, maxBytes: LOCAL_TOOL_LIMITS.responseBytes });
+    const toolAssistant = parseAssistantResponse(toolData);
+    if (toolAssistant.toolCalls.length !== 1 || toolAssistant.toolCalls[0].function.name !== "readFile") throw new Error("tool_protocol_incomplete");
+    const probeArguments = parseToolArguments("readFile", toolAssistant.toolCalls[0].function.arguments);
+    if (probeArguments.path !== "visible.txt") throw new Error("tool_protocol_incomplete");
+    checks.push(Object.freeze({
+      name: "tool_only_turn",
+      state: "passed",
+      reasoningChannel: toolAssistant.reasoning.length > 0 ? "dedicated" : "absent",
+    }));
+    const finalData = await fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: capability.loadedInstanceId,
+        messages: [
+          { role: "system", content: "You are a compatibility probe. After tool results, emit only a concise final message and no tool call." },
+          { role: "user", content: "Read visible.txt and summarize whether the tool result was received." },
+          { role: "assistant", content: null, tool_calls: [{ ...toolAssistant.toolCalls[0], id: toolCallId }] },
+          { role: "tool", tool_call_id: toolCallId, content: JSON.stringify({ state: "completed", result: { data: "bounded evidence\n", truncated: false } }) },
+        ],
+        tools: DAISY_TOOL_DEFINITIONS,
+        tool_choice: "none",
+      }),
+    }, { timeoutMs, maxBytes: LOCAL_TOOL_LIMITS.responseBytes });
+    const finalAssistant = parseAssistantResponse(finalData);
+    if (finalAssistant.toolCalls.length !== 0 || typeof finalAssistant.content !== "string" || finalAssistant.content.trim().length === 0) throw new Error("tool_protocol_incomplete");
+    checks.push(Object.freeze({
+      name: "final_message_turn",
+      state: "passed",
+      reasoningChannel: finalAssistant.reasoning.length > 0 ? "dedicated" : "absent",
+    }));
+    return Object.freeze({
+      state: "compatible",
+      origin: capability.origin,
+      loadedInstanceId: capability.loadedInstanceId,
+      checks: Object.freeze(checks),
+    });
+  } catch (error) {
+    return incompatibility(error, checks.length === 0 ? "tool_only_turn" : "final_message_turn", {
+      origin: capability.origin,
+      loadedInstanceId: capability.loadedInstanceId,
+      checks: Object.freeze(checks),
+    });
+  }
 }
 
 function parseToolArguments(name, raw) {

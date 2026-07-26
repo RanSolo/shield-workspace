@@ -8,6 +8,8 @@ import test from "node:test";
 import {
   DAISY_TOOL_DEFINITIONS,
   LOCAL_TOOL_LIMITS,
+  explainLocalToolFailure,
+  probeLocalToolCompatibility,
   probeLocalToolModel,
   runLocalToolSession,
 } from "../scripts/model/local-tool-broker.mjs";
@@ -44,8 +46,24 @@ function toolCallResponse(argumentsJson = '{"path":"visible.txt"}') {
   };
 }
 
+function reasoningToolCallResponse(reasoning = "I should inspect the file.") {
+  return {
+    choices: [{ message: { role: "assistant", content: null, reasoning_content: reasoning, tool_calls: [{ id: "call:1", type: "function", function: { name: "readFile", arguments: '{"path":"visible.txt"}' } }] } }],
+  };
+}
+
+function ambiguousToolCallResponse(content = "I will read the file first.") {
+  return {
+    choices: [{ message: { role: "assistant", content, tool_calls: [{ id: "call:1", type: "function", function: { name: "readFile", arguments: '{"path":"visible.txt"}' } }] } }],
+  };
+}
+
 function finalResponse() {
   return { choices: [{ message: { role: "assistant", content: "Repository reconnaissance completed.\nEvidence remains bounded." } }] };
+}
+
+function reasoningFinalResponse() {
+  return { choices: [{ message: { role: "assistant", reasoning_content: "I can now summarize.", content: "Repository reconnaissance completed." } }] };
 }
 
 function repeatedSlotResponse() {
@@ -156,8 +174,119 @@ test("capability probe exact-matches one loaded tool-trained instance and reject
     origin: "http://127.0.0.1:1234", loadedInstanceId: "ornith-instance",
   });
   await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://example.com", model: "ornith", fetchImpl }), /lm_probe_input_invalid/u);
-  await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl: async () => jsonResponse(modelResponse({ trained: false })) }), /lm_tool_model_unavailable/u);
+  await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl: async () => jsonResponse(modelResponse({ trained: false })) }), /lm_tool_model_not_tool_capable/u);
   await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl: async () => jsonResponse(modelResponse({ instances: ["a", "b"] })) }), /lm_tool_model_unavailable/u);
+});
+
+test("diagnostics classify local broker failures for Hill without granting authority", () => {
+  assert.deepEqual(explainLocalToolFailure("lm_tool_model_unavailable"), {
+    code: "lm_tool_model_unavailable",
+    category: "model_unavailable",
+    message: "The selected model is not loaded as exactly one tool-capable instance.",
+    fallback: "Load one compatible LM Studio model instance or select a different model.",
+  });
+  assert.equal(explainLocalToolFailure("lm_tool_model_not_tool_capable").category, "model_not_tool_capable");
+  assert.equal(explainLocalToolFailure("lm_response_ambiguous").category, "ambiguous_tool_response");
+  assert.equal(explainLocalToolFailure("tool_permission_denied").category, "broker_policy_denied");
+  assert.equal(explainLocalToolFailure("<script>").code, "tool_session_failed");
+});
+
+test("compatibility probe verifies clean tool-only and final-message-only turns", async () => {
+  const responses = [modelResponse(), reasoningToolCallResponse(), reasoningFinalResponse()];
+  const requests = [];
+  const result = await probeLocalToolCompatibility({
+    baseUrl: "http://127.0.0.1:1234",
+    model: "ornith",
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return jsonResponse(responses.shift());
+    },
+  });
+  assert.equal(result.state, "compatible");
+  assert.deepEqual(result.checks.map(({ name, state }) => [name, state]), [
+    ["tool_only_turn", "passed"],
+    ["final_message_turn", "passed"],
+  ]);
+  assert.deepEqual(result.checks.map(({ reasoningChannel }) => reasoningChannel), ["dedicated", "dedicated"]);
+  assert.equal(requests[1].url, "http://127.0.0.1:1234/v1/chat/completions");
+  assert.equal(JSON.parse(requests[1].options.body).tool_choice, "required");
+  assert.equal(JSON.parse(requests[2].options.body).tool_choice, "none");
+});
+
+test("compatibility probe fails clearly when metadata passes but behavior is ambiguous", async () => {
+  const responses = [modelResponse(), ambiguousToolCallResponse()];
+  const result = await probeLocalToolCompatibility({
+    baseUrl: "http://127.0.0.1:1234",
+    model: "ornith",
+    fetchImpl: async () => jsonResponse(responses.shift()),
+  });
+  assert.equal(result.state, "incompatible");
+  assert.equal(result.phase, "tool_only_turn");
+  assert.equal(result.diagnostic.code, "lm_response_ambiguous");
+  assert.equal(result.diagnostic.category, "ambiguous_tool_response");
+  assert.deepEqual(result.checks, []);
+});
+
+test("compatibility probe rejects malformed or unexpected readFile arguments", async () => {
+  for (const [argumentsJson, expectedCode] of [
+    ["{}", "tool_arguments_malformed"],
+    ['{"path":"other.txt"}', "tool_protocol_incomplete"],
+  ]) {
+    const responses = [modelResponse(), toolCallResponse(argumentsJson)];
+    const result = await probeLocalToolCompatibility({
+      baseUrl: "http://127.0.0.1:1234",
+      model: "ornith",
+      fetchImpl: async () => jsonResponse(responses.shift()),
+    });
+    assert.equal(result.state, "incompatible");
+    assert.equal(result.phase, "tool_only_turn");
+    assert.equal(result.diagnostic.code, expectedCode);
+    assert.equal(result.diagnostic.category, "endpoint_or_template_incompatible");
+    assert.deepEqual(result.checks, []);
+  }
+});
+
+test("compatibility probe separates chat protocol rejection from model availability", async () => {
+  for (const [status, expectedCode, expectedCategory] of [
+    [400, "lm_chat_request_rejected", "endpoint_or_template_incompatible"],
+    [503, "lm_request_failed", "model_unavailable"],
+  ]) {
+    const responses = [jsonResponse(modelResponse()), new Response("sensitive response body", { status })];
+    const result = await probeLocalToolCompatibility({
+      baseUrl: "http://127.0.0.1:1234",
+      model: "ornith",
+      fetchImpl: async () => responses.shift(),
+    });
+    assert.equal(result.state, "incompatible");
+    assert.equal(result.phase, "tool_only_turn");
+    assert.equal(result.diagnostic.code, expectedCode);
+    assert.equal(result.diagnostic.category, expectedCategory);
+    assert.equal(result.diagnostic.httpStatus, status);
+    assert.equal(JSON.stringify(result).includes("sensitive response body"), false);
+    assert.deepEqual(result.checks, []);
+  }
+});
+
+test("compatibility probe distinguishes metadata and final-turn failures", async () => {
+  const metadata = await probeLocalToolCompatibility({
+    baseUrl: "http://127.0.0.1:1234",
+    model: "ornith",
+    fetchImpl: async () => jsonResponse(modelResponse({ trained: false })),
+  });
+  assert.equal(metadata.state, "incompatible");
+  assert.equal(metadata.phase, "metadata");
+  assert.equal(metadata.diagnostic.category, "model_not_tool_capable");
+
+  const responses = [modelResponse(), toolCallResponse(), toolCallResponse()];
+  const finalTurn = await probeLocalToolCompatibility({
+    baseUrl: "http://127.0.0.1:1234",
+    model: "ornith",
+    fetchImpl: async () => jsonResponse(responses.shift()),
+  });
+  assert.equal(finalTurn.state, "incompatible");
+  assert.equal(finalTurn.phase, "final_message_turn");
+  assert.equal(finalTurn.diagnostic.code, "tool_protocol_incomplete");
+  assert.equal(finalTurn.checks[0].name, "tool_only_turn");
 });
 
 test("capability probe enforces its inference timeout", async () => {
@@ -189,6 +318,26 @@ test("tool session consumes one fresh permission and releases raw output only af
   assert.equal(requests[1].options.redirect, "error");
   const followup = JSON.parse(requests[2].options.body);
   assert.match(followup.messages.at(-1).content, /bounded evidence/u);
+});
+
+test("dedicated reasoning channel is compatible but content plus tool calls fails closed", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "shield-tool-reasoning-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "visible.txt"), "bounded evidence\n", "utf8");
+  const dedicatedResponses = [modelResponse(), reasoningToolCallResponse(), finalResponse()];
+  const dedicatedDeps = dependencies(await realpath(root), async () => jsonResponse(dedicatedResponses.shift()));
+  const completed = await runLocalToolSession(request(root), dedicatedDeps);
+  assert.equal(completed.completedToolCalls, 1);
+  assert.equal(dedicatedDeps.events.length, 0);
+
+  for (const content of ["I will read the file first.", "<think>\nI should inspect the file.\n</think>"]) {
+    const responses = [modelResponse(), ambiguousToolCallResponse(content)];
+    const deps = dependencies(await realpath(root), async () => jsonResponse(responses.shift()));
+    await assert.rejects(() => runLocalToolSession(request(root), deps), /lm_response_ambiguous/u);
+    assert.equal(deps.ledger.length, 0);
+    assert.equal(deps.events.length, 1);
+    assert.equal(deps.events[0].code, "lm_response_ambiguous");
+  }
 });
 
 test("malformed duplicate arguments fail before authorization and emit one non-sensitive broker event", async (context) => {
@@ -237,10 +386,10 @@ test("capability failure is durably recorded before tools are advertised", async
   context.after(() => rm(root, { recursive: true, force: true }));
   const canonicalRoot = await realpath(root);
   const deps = dependencies(canonicalRoot, async () => jsonResponse(modelResponse({ trained: false })));
-  await assert.rejects(() => runLocalToolSession(request(root), deps), /lm_tool_model_unavailable/u);
+  await assert.rejects(() => runLocalToolSession(request(root), deps), /lm_tool_model_not_tool_capable/u);
   assert.equal(deps.ledger.length, 0);
   assert.equal(deps.events.length, 1);
-  assert.equal(deps.events[0].code, "lm_tool_model_unavailable");
+  assert.equal(deps.events[0].code, "lm_tool_model_not_tool_capable");
 });
 
 test("a reused authority slot preflights the entire response before any invocation", async (context) => {
