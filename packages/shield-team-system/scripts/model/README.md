@@ -93,11 +93,14 @@ reasoning/thinking mode and chat-template behavior can affect this boundary.
 Operator-facing diagnostics are intentionally narrow:
 
 - `model_unavailable` means the endpoint, model load, ambiguity, or timeout
-  prevents a trusted broker session.
+  prevents a trusted broker session. Chat endpoint HTTP 5xx responses remain in
+  this category.
 - `model_not_tool_capable` means the loaded model did not advertise tool-use
   training.
 - `endpoint_or_template_incompatible` means the response shape or protocol turn
-  does not match the broker contract.
+  does not match the broker contract. A chat endpoint HTTP 4xx rejection of the
+  bounded probe is reported here with only its numeric status and probe phase;
+  the response body is never exposed.
 - `ambiguous_tool_response` means the model mixed assistant `content` with a
   tool call.
 - `broker_policy_denied` means the model requested an operation outside the

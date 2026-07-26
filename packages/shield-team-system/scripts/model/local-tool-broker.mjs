@@ -51,8 +51,13 @@ export const LOCAL_TOOL_DIAGNOSTICS = Object.freeze({
   }),
   lm_request_failed: Object.freeze({
     category: "model_unavailable",
-    message: "Local model endpoint rejected the request.",
+    message: "Local model endpoint could not complete the request.",
     fallback: "Confirm LM Studio is running, the model is loaded, and the endpoint is reachable.",
+  }),
+  lm_chat_request_rejected: Object.freeze({
+    category: "endpoint_or_template_incompatible",
+    message: "Local model chat endpoint rejected the broker protocol request.",
+    fallback: "Use ask-local with supplied context, or adjust the endpoint/template settings before governed broker use.",
   }),
   lm_request_timeout: Object.freeze({
     category: "model_unavailable",
@@ -217,9 +222,27 @@ async function fetchJson(fetchImpl, url, options, { timeoutMs, maxBytes }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(url, { ...options, redirect: "error", signal: controller.signal });
+    let response;
+    try {
+      response = await fetchImpl(url, { ...options, redirect: "error", signal: controller.signal });
+    } catch {
+      if (controller.signal.aborted) throw new Error("lm_request_timeout");
+      throw new Error("lm_request_failed");
+    }
+    if (!response.ok) {
+      await response.body?.cancel?.().catch(() => {});
+      const httpStatus = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599
+        ? response.status
+        : null;
+      const isChatRequest = new URL(url).pathname === "/v1/chat/completions";
+      const code = isChatRequest && httpStatus !== null && httpStatus >= 400 && httpStatus <= 499
+        ? "lm_chat_request_rejected"
+        : "lm_request_failed";
+      const error = new Error(code);
+      if (httpStatus !== null) Object.defineProperty(error, "httpStatus", { value: httpStatus, enumerable: true });
+      throw error;
+    }
     const raw = await readBoundedResponse(response, maxBytes);
-    if (!response.ok) throw new Error("lm_request_failed");
     const parsed = strictParseJson(raw, { maxBytes, maxDepth: 16, rejectControlCharacters: false });
     if (parsed.state !== "valid") throw new Error("lm_response_malformed");
     return parsed.value;
@@ -309,17 +332,29 @@ export async function probeLocalToolCompatibility({
   apiToken,
   timeoutMs = LOCAL_TOOL_LIMITS.inferenceTimeoutMs,
 }) {
+  const incompatibility = (error, phase, details = {}) => {
+    const code = boundedError(error instanceof Error ? error.message : "tool_protocol_incomplete");
+    const httpStatus = error instanceof Error
+      && Number.isInteger(error.httpStatus)
+      && error.httpStatus >= 100
+      && error.httpStatus <= 599
+      ? error.httpStatus
+      : null;
+    return Object.freeze({
+      state: "incompatible",
+      phase,
+      ...details,
+      diagnostic: Object.freeze({
+        ...explainLocalToolFailure(code),
+        ...(httpStatus === null ? {} : { httpStatus }),
+      }),
+    });
+  };
   let capability;
   try {
     capability = await probeLocalToolModel({ baseUrl, model, fetchImpl, apiToken, timeoutMs });
   } catch (error) {
-    const code = boundedError(error instanceof Error ? error.message : "lm_probe_failed");
-    return Object.freeze({
-      state: "incompatible",
-      phase: "metadata",
-      diagnostic: explainLocalToolFailure(code),
-      checks: Object.freeze([]),
-    });
+    return incompatibility(error, "metadata", { checks: Object.freeze([]) });
   }
   const headers = { "Content-Type": "application/json", ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {}) };
   const checks = [];
@@ -340,6 +375,8 @@ export async function probeLocalToolCompatibility({
     }, { timeoutMs, maxBytes: LOCAL_TOOL_LIMITS.responseBytes });
     const toolAssistant = parseAssistantResponse(toolData);
     if (toolAssistant.toolCalls.length !== 1 || toolAssistant.toolCalls[0].function.name !== "readFile") throw new Error("tool_protocol_incomplete");
+    const probeArguments = parseToolArguments("readFile", toolAssistant.toolCalls[0].function.arguments);
+    if (probeArguments.path !== "visible.txt") throw new Error("tool_protocol_incomplete");
     checks.push(Object.freeze({
       name: "tool_only_turn",
       state: "passed",
@@ -374,13 +411,9 @@ export async function probeLocalToolCompatibility({
       checks: Object.freeze(checks),
     });
   } catch (error) {
-    const code = boundedError(error instanceof Error ? error.message : "tool_protocol_incomplete");
-    return Object.freeze({
-      state: "incompatible",
-      phase: checks.length === 0 ? "tool_only_turn" : "final_message_turn",
+    return incompatibility(error, checks.length === 0 ? "tool_only_turn" : "final_message_turn", {
       origin: capability.origin,
       loadedInstanceId: capability.loadedInstanceId,
-      diagnostic: explainLocalToolFailure(code),
       checks: Object.freeze(checks),
     });
   }

@@ -227,6 +227,46 @@ test("compatibility probe fails clearly when metadata passes but behavior is amb
   assert.deepEqual(result.checks, []);
 });
 
+test("compatibility probe rejects malformed or unexpected readFile arguments", async () => {
+  for (const [argumentsJson, expectedCode] of [
+    ["{}", "tool_arguments_malformed"],
+    ['{"path":"other.txt"}', "tool_protocol_incomplete"],
+  ]) {
+    const responses = [modelResponse(), toolCallResponse(argumentsJson)];
+    const result = await probeLocalToolCompatibility({
+      baseUrl: "http://127.0.0.1:1234",
+      model: "ornith",
+      fetchImpl: async () => jsonResponse(responses.shift()),
+    });
+    assert.equal(result.state, "incompatible");
+    assert.equal(result.phase, "tool_only_turn");
+    assert.equal(result.diagnostic.code, expectedCode);
+    assert.equal(result.diagnostic.category, "endpoint_or_template_incompatible");
+    assert.deepEqual(result.checks, []);
+  }
+});
+
+test("compatibility probe separates chat protocol rejection from model availability", async () => {
+  for (const [status, expectedCode, expectedCategory] of [
+    [400, "lm_chat_request_rejected", "endpoint_or_template_incompatible"],
+    [503, "lm_request_failed", "model_unavailable"],
+  ]) {
+    const responses = [jsonResponse(modelResponse()), new Response("sensitive response body", { status })];
+    const result = await probeLocalToolCompatibility({
+      baseUrl: "http://127.0.0.1:1234",
+      model: "ornith",
+      fetchImpl: async () => responses.shift(),
+    });
+    assert.equal(result.state, "incompatible");
+    assert.equal(result.phase, "tool_only_turn");
+    assert.equal(result.diagnostic.code, expectedCode);
+    assert.equal(result.diagnostic.category, expectedCategory);
+    assert.equal(result.diagnostic.httpStatus, status);
+    assert.equal(JSON.stringify(result).includes("sensitive response body"), false);
+    assert.deepEqual(result.checks, []);
+  }
+});
+
 test("compatibility probe distinguishes metadata and final-turn failures", async () => {
   const metadata = await probeLocalToolCompatibility({
     baseUrl: "http://127.0.0.1:1234",
