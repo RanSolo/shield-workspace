@@ -20,18 +20,27 @@ become available.
 ## Prepare a fresh external repository
 
 1. Copy `template/` into a new empty directory outside this workspace.
-2. Run `git init`, set the operator-selected default branch, and commit the
-   untouched fixture as the exact base revision.
-3. Record the repository, base revision, host configuration, and whether the run
-   is blind, partially informed, or non-blind. Record whether prior solutions,
-   diffs, findings, or benchmark results were visible.
-4. Pack the exact `@shield/team-system` source under evaluation and record the
+2. Run `git init` and set the operator-selected default branch. Do not define
+   the mission base yet.
+3. Pack the exact `@shield/team-system` source under evaluation and record the
    tarball SHA-256. Install only that exact artifact as a development dependency.
-5. Run `shield init`, inspect every changed path, repeat `shield init`, and run
+4. Run `shield init`, inspect every changed path, repeat `shield init`, and run
    `shield doctor`. Record installation friction and every human intervention.
+5. Commit the clean post-install, post-initialization adoption state. This
+   commit—not the untouched template commit—is the exact mission base.
+6. Record the repository, adoption-base revision, host configuration, and
+   whether the run is blind, partially informed, or non-blind. Record whether
+   prior solutions, diffs, findings, or benchmark results were visible. A blind
+   run cannot record prior solutions as visible.
+7. Create the mission candidate as one later commit whose only changed path
+   relative to the adoption base is `src/greeting.mjs`. Record that commit as
+   the exact current head.
 
-The initial `node --test` lane must fail only the whitespace-normalization test.
-The approved mission change set is exactly `src/greeting.mjs`.
+At the adoption base, `src/greeting.mjs` and `test/greeting.test.mjs` must match
+the frozen template bytes. The exact baseline lane is
+`node --test test/greeting.test.mjs` and must fail only the
+whitespace-normalization test. The approved mission change set is exactly
+`src/greeting.mjs`.
 
 ## Compose without host effects
 
@@ -66,12 +75,16 @@ baseRevision, headRevision })`.
 The fixture-only grader:
 
 1. verifies and records the exact base, current head, and Git-derived paths;
-2. records the candidate digest;
-3. replaces only `src/greeting.mjs` with the frozen defective bytes;
-4. requires the deterministic lane to fail;
-5. restores the exact candidate bytes in a `finally` path;
-6. requires the lane to pass again; and
-7. proves the restored digest equals the original candidate digest.
+2. verifies the frozen defective source and exact test bytes at the adoption
+   base and rejects unexpected untracked files while respecting normal Git
+   ignore rules;
+3. records the candidate digest;
+4. executes only `test/greeting.test.mjs`;
+5. replaces only `src/greeting.mjs` with the frozen defective bytes;
+6. requires the deterministic lane to fail;
+7. restores the exact candidate bytes in a `finally` path;
+8. requires the lane to pass again; and
+9. proves the restored digest equals the original candidate digest.
 
 Immediately before injection and rollback, the grader reopens the target with
 no-follow semantics and verifies that the open file is the confined,
@@ -79,6 +92,9 @@ non-symlink regular file it inspected. Replacement of the target causes a
 blocking result; the grader never follows the replacement.
 
 If injection, rollback, or validation is unavailable, stop. Do not claim pass.
+Candidate execution has no network sandbox, so its result reports network
+effects as not observable. Operators must not reinterpret that state as proof
+that no network effect occurred.
 
 ## Evidence inventory
 

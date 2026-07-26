@@ -13,7 +13,7 @@ export const FIXTURE_MANIFEST = deepFreeze({
   campaignScope: "minimum-v0.3-release-fixture",
   template: {
     runtime: "node-esm",
-    testLane: "node --test",
+    testLane: "node --test test/greeting.test.mjs",
     paths: [
       "package.json",
       "src/greeting.mjs",

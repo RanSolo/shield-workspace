@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -37,14 +37,43 @@ function git(cwd, args) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-async function createExternalRepository(directory, { testSource } = {}) {
+async function createExternalRepository(directory, { baseGreetingSource, baseTestSource } = {}) {
   await cp(template, directory, { recursive: true });
-  if (testSource) await writeFile(join(directory, "test/greeting.test.mjs"), testSource);
+  if (baseGreetingSource) {
+    await writeFile(join(directory, "src/greeting.mjs"), baseGreetingSource);
+  }
+  if (baseTestSource) {
+    await writeFile(join(directory, "test/greeting.test.mjs"), baseTestSource);
+  }
   git(directory, ["init", "--quiet"]);
   git(directory, ["config", "user.name", "SHIELD fixture"]);
   git(directory, ["config", "user.email", "fixture@shield.invalid"]);
+  await mkdir(join(directory, ".shield"), { recursive: true });
+  await writeFile(join(directory, ".shield/config.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    repositoryId: "fixture/external-v03",
+    adapterId: "github",
+    supportedSeatIds: ["hill", "daisy", "fury", "may", "coulson", "fitz", "simmons"],
+    supportedModeIds: ["delivery", "debugger"],
+    trustedHumanBindingRefs: [
+      { seatId: "coulson", bindingRef: "fixture:human:coulson" },
+      { seatId: "fitz", bindingRef: "fixture:human:fitz" }
+    ],
+    paths: {
+      journals: ".shield/journals",
+      artifacts: ".shield/artifacts",
+      reports: ".shield/reports",
+      temp: ".shield/tmp"
+    }
+  }, null, 2)}\n`);
+  await writeFile(join(directory, ".shield/.gitignore"), "/journals/\n/reports/\n/tmp/\n");
+  await writeFile(join(directory, ".gitignore"), [
+    "node_modules/",
+    "test/extra.test.mjs",
+    ""
+  ].join("\n"));
   git(directory, ["add", "."]);
-  git(directory, ["commit", "--quiet", "-m", "fixture base"]);
+  git(directory, ["commit", "--quiet", "-m", "post-adoption fixture base"]);
   const baseRevision = git(directory, ["rev-parse", "HEAD"]);
   await writeFile(join(directory, "src/greeting.mjs"), [
     "export function greeting(name) {",
@@ -83,6 +112,7 @@ test("fixture manifest is closed, frozen, versioned, and separates the later cam
   assert.equal(Object.isFrozen(FIXTURE_MANIFEST.dependencyBlockers), true);
   assert.equal(FIXTURE_MANIFEST.ownerIssue, "#12");
   assert.equal(FIXTURE_MANIFEST.excludedCampaign.issue, "#14");
+  assert.equal(FIXTURE_MANIFEST.template.testLane, "node --test test/greeting.test.mjs");
 
   const extra = clone(FIXTURE_MANIFEST);
   extra.unexpected = true;
@@ -195,7 +225,84 @@ test("baseline defect fails and fixture-only injection restores the exact passin
   assert.equal(result.rollbackOutcome, "passed");
   assert.equal(result.candidateSha256, result.restoredSha256);
   assert.deepEqual(result.externalRevision.changedPaths, ["src/greeting.mjs"]);
-  assert.equal(result.networkEffectsPerformed, false);
+  assert.deepEqual(result.networkObservability, {
+    state: "not-observable",
+    reason: "no_network_sandbox"
+  });
+  assert.equal(Object.hasOwn(result, "networkEffectsPerformed"), false);
+  assert.equal(
+    JSON.parse(git(directory, ["show", `${revisions.baseRevision}:.shield/config.json`])).repositoryId,
+    "fixture/external-v03"
+  );
+});
+
+test("frozen adoption base rejects arbitrary source and exact-test substitution", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-frozen-base-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const substitutedSource = join(directory, "source");
+  const sourceRevisions = await createExternalRepository(substitutedSource, {
+    baseGreetingSource: "export const greeting = () => 'substituted';\n"
+  });
+  assert.equal((await gradeCandidateWithFailureInjection({
+    fixtureRoot: substitutedSource,
+    ...sourceRevisions
+  })).reason, "frozen_base_content_mismatch:src/greeting.mjs");
+
+  const substitutedTest = join(directory, "test");
+  const testRevisions = await createExternalRepository(substitutedTest, {
+    baseTestSource: [
+      'import test from "node:test";',
+      'test("substituted", () => {});',
+      ""
+    ].join("\n")
+  });
+  assert.equal((await gradeCandidateWithFailureInjection({
+    fixtureRoot: substitutedTest,
+    ...testRevisions
+  })).reason, "frozen_base_content_mismatch:test/greeting.test.mjs");
+});
+
+test("unexpected untracked files block while ignored files do not expand exact test selection", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-untracked-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const revisions = await createExternalRepository(directory);
+  await writeFile(join(directory, "test/untracked.test.mjs"), "throw new Error('untracked');\n");
+  assert.equal((await gradeCandidateWithFailureInjection({
+    fixtureRoot: directory,
+    ...revisions
+  })).reason, "external_revision_not_clean");
+  await rm(join(directory, "test/untracked.test.mjs"));
+  await writeFile(join(directory, "notes.txt"), "unexpected untracked file\n");
+  assert.equal((await gradeCandidateWithFailureInjection({
+    fixtureRoot: directory,
+    ...revisions
+  })).reason, "external_revision_not_clean");
+  await rm(join(directory, "notes.txt"));
+
+  await writeFile(join(directory, "test/extra.test.mjs"), "throw new Error('must not execute');\n");
+  const result = await gradeCandidateWithFailureInjection({
+    fixtureRoot: directory,
+    ...revisions
+  });
+  assert.equal(result.state, "passed", JSON.stringify(result));
+});
+
+test("blind classification rejects visible prior solutions", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-blind-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const artifact = join(directory, "artifact.tgz");
+  await writeFile(artifact, "artifact\n");
+  const external = join(directory, "external");
+  const revisions = await createExternalRepository(external);
+  const result = await composeMinimumFixture(fixtureInput(
+    artifact,
+    await digest(artifact),
+    external,
+    revisions,
+    { blindStatus: "blind", priorSolutionsVisible: true }
+  ));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.reason, "blind_status_contradiction");
 });
 
 test("evidence inventory names human gates without manufacturing their evidence", () => {
@@ -289,28 +396,30 @@ test("fixture-only grader never follows a symlink substituted during failure inj
   context.after(() => rm(outside, { recursive: true, force: true }));
   const outsideTarget = join(outside, "greeting.mjs");
   await writeFile(outsideTarget, "outside bytes\n");
-  const testSource = [
-    'import assert from "node:assert/strict";',
-    'import { rm, symlink } from "node:fs/promises";',
-    'import test from "node:test";',
-    'import { greeting } from "../src/greeting.mjs";',
-    `const outside = ${JSON.stringify(outsideTarget)};`,
-    'const candidate = new URL("../src/greeting.mjs", import.meta.url);',
-    'test("normalizes whitespace", async () => {',
-    '  const actual = greeting("  Agent  ");',
-    '  if (actual !== "Hello, Agent!") {',
-    "    await rm(candidate);",
-    "    await symlink(outside, candidate);",
-    "  }",
-    '  assert.equal(actual, "Hello, Agent!");',
-    "});",
-    ""
-  ].join("\n");
-  const revisions = await createExternalRepository(directory, { testSource });
+  const revisions = await createExternalRepository(directory);
+  const defectBytes = await readFile(join(template, "src/greeting.mjs"));
+  let watching = true;
+  const watcher = (async () => {
+    while (watching) {
+      try {
+        const candidatePath = join(directory, "src/greeting.mjs");
+        if ((await readFile(candidatePath)).equals(defectBytes)) {
+          await rm(candidatePath);
+          await symlink(outsideTarget, candidatePath);
+          return;
+        }
+      } catch {
+        return;
+      }
+      await new Promise((done) => setImmediate(done));
+    }
+  })();
   const result = await gradeCandidateWithFailureInjection({
     fixtureRoot: directory,
     ...revisions
   });
+  watching = false;
+  await watcher;
   assert.equal(result.state, "blocked");
   assert.equal(result.reason, "fixture_target_changed_before_rollback");
   assert.equal(await readFile(outsideTarget, "utf8"), "outside bytes\n");

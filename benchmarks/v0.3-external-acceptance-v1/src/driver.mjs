@@ -14,6 +14,8 @@ const execFileAsync = promisify(execFile);
 const benchmarkRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const templateRoot = resolve(benchmarkRoot, "template");
 const templateDefectPath = resolve(templateRoot, "src/greeting.mjs");
+const templateTestPath = resolve(templateRoot, "test/greeting.test.mjs");
+const FIXTURE_TEST_PATH = "test/greeting.test.mjs";
 const REVISION = /^[0-9a-f]{40,64}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
@@ -131,6 +133,20 @@ async function gitOutcome(cwd, args) {
   }
 }
 
+async function gitBytesOutcome(cwd, args) {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd,
+      encoding: "buffer",
+      timeout: 10_000,
+      maxBuffer: 256 * 1024
+    });
+    return Object.freeze({ state: "passed", stdout });
+  } catch {
+    return Object.freeze({ state: "failed", stdout: Buffer.alloc(0) });
+  }
+}
+
 async function inspectExternalRevision({ externalRepositoryRoot, baseRevision, headRevision }) {
   if (typeof externalRepositoryRoot !== "string" ||
       !REVISION.test(baseRevision) || !REVISION.test(headRevision)) {
@@ -164,10 +180,26 @@ async function inspectExternalRevision({ externalRepositoryRoot, baseRevision, h
   ])).state !== "passed") {
     return Object.freeze({ state: "blocked", reason: "base_revision_not_ancestor" });
   }
-  const trackedStatus = await gitOutcome(repositoryRoot, [
-    "status", "--porcelain", "--untracked-files=no"
+  const frozenBaseEntries = [
+    ["src/greeting.mjs", templateDefectPath],
+    [FIXTURE_TEST_PATH, templateTestPath]
+  ];
+  for (const [repositoryPath, templatePath] of frozenBaseEntries) {
+    const baseBytes = await gitBytesOutcome(repositoryRoot, [
+      "show", `${baseRevision}:${repositoryPath}`
+    ]);
+    if (baseBytes.state !== "passed" ||
+        !baseBytes.stdout.equals(await readFile(templatePath))) {
+      return Object.freeze({
+        state: "blocked",
+        reason: `frozen_base_content_mismatch:${repositoryPath}`
+      });
+    }
+  }
+  const repositoryStatus = await gitOutcome(repositoryRoot, [
+    "status", "--porcelain=v1", "-z", "--untracked-files=all"
   ]);
-  if (trackedStatus.state !== "passed" || trackedStatus.stdout.length !== 0) {
+  if (repositoryStatus.state !== "passed" || repositoryStatus.stdout.length !== 0) {
     return Object.freeze({ state: "blocked", reason: "external_revision_not_clean" });
   }
   const changed = await gitOutcome(repositoryRoot, [
@@ -343,7 +375,7 @@ async function commandOutcome(cwd) {
   const environment = { ...process.env };
   delete environment.NODE_TEST_CONTEXT;
   try {
-    await execFileAsync(process.execPath, ["--test"], {
+    await execFileAsync(process.execPath, ["--test", FIXTURE_TEST_PATH], {
       cwd,
       encoding: "utf8",
       env: environment,
@@ -377,6 +409,9 @@ export async function composeMinimumFixture(input) {
       typeof input.requireSimmons !== "boolean" ||
       !FIXTURE_MANIFEST.blindStatus.allowedValues.includes(input.blindStatus)) {
     return Object.freeze({ state: "invalid", reason: "fixture_identity_malformed" });
+  }
+  if (input.blindStatus === "blind" && input.priorSolutionsVisible) {
+    return Object.freeze({ state: "invalid", reason: "blind_status_contradiction" });
   }
   if (!exact(input.hostConfiguration, ["adapterId", "repository", "branch"]) ||
       input.hostConfiguration.adapterId !== "github" ||
@@ -513,6 +548,9 @@ export async function gradeCandidateWithFailureInjection(input) {
     injectedOutcome,
     rollbackOutcome,
     restoredSha256,
-    networkEffectsPerformed: false
+    networkObservability: Object.freeze({
+      state: "not-observable",
+      reason: "no_network_sandbox"
+    })
   });
 }
