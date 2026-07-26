@@ -1,8 +1,12 @@
 const DEFINITIONS = Object.freeze([
   Object.freeze({ evidenceId: "package.artifact.digest", authority: "measured", requirement: "required" }),
   Object.freeze({ evidenceId: "external.base.revision", authority: "measured", requirement: "required" }),
+  Object.freeze({ evidenceId: "external.head.revision", authority: "measured", requirement: "required" }),
   Object.freeze({ evidenceId: "host.configuration", authority: "measured", requirement: "required" }),
   Object.freeze({ evidenceId: "blind.status", authority: "operator-recorded", requirement: "required" }),
+  Object.freeze({ evidenceId: "model.runtime.executor.identity", authority: "operator-recorded", requirement: "required" }),
+  Object.freeze({ evidenceId: "clocks.timing", authority: "measured", requirement: "required" }),
+  Object.freeze({ evidenceId: "usage.observability", authority: "operator-recorded", requirement: "required" }),
   Object.freeze({ evidenceId: "installation.friction", authority: "operator-recorded", requirement: "required" }),
   Object.freeze({ evidenceId: "human.interventions", authority: "operator-recorded", requirement: "required" }),
   Object.freeze({ evidenceId: "coulson.authorization", authority: "human-only", requirement: "required" }),
@@ -12,6 +16,7 @@ const DEFINITIONS = Object.freeze([
   Object.freeze({ evidenceId: "stale.evidence", authority: "revision-bound-contract", requirement: "required" }),
   Object.freeze({ evidenceId: "review.publish.scope", authority: "permission-contract", requirement: "required" }),
   Object.freeze({ evidenceId: "host.adapter.failure", authority: "adapter-candidate", requirement: "required" }),
+  Object.freeze({ evidenceId: "host.manual-fallback", authority: "operator-recorded", requirement: "required" }),
   Object.freeze({ evidenceId: "defect.failure-injection", authority: "fixture-grader", requirement: "required" }),
   Object.freeze({ evidenceId: "defect.rollback", authority: "fixture-grader", requirement: "required" })
 ]);

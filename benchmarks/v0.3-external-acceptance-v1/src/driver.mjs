@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,12 +26,13 @@ const PUBLIC_SPECIFIERS = Object.freeze([
 const INPUT_FIELDS = [
   "packageArtifactPath",
   "packageArtifactSha256",
+  "externalRepositoryRoot",
   "baseRevision",
+  "headRevision",
   "hostConfiguration",
   "blindStatus",
   "priorSolutionsVisible",
-  "requireSimmons",
-  "changedPaths"
+  "requireSimmons"
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -115,6 +117,128 @@ async function regularFile(path) {
   }
 }
 
+async function gitOutcome(cwd, args) {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd,
+      encoding: "utf8",
+      timeout: 10_000,
+      maxBuffer: 256 * 1024
+    });
+    return Object.freeze({ state: "passed", stdout });
+  } catch {
+    return Object.freeze({ state: "failed", stdout: "" });
+  }
+}
+
+async function inspectExternalRevision({ externalRepositoryRoot, baseRevision, headRevision }) {
+  if (typeof externalRepositoryRoot !== "string" ||
+      !REVISION.test(baseRevision) || !REVISION.test(headRevision)) {
+    return Object.freeze({ state: "invalid", reason: "external_revision_identity_malformed" });
+  }
+  const requestedRoot = resolve(externalRepositoryRoot);
+  let repositoryRoot;
+  try {
+    const rootInfo = await lstat(requestedRoot);
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("unsafe_root");
+    repositoryRoot = await realpath(requestedRoot);
+  } catch {
+    return Object.freeze({ state: "blocked", reason: "external_repository_unavailable" });
+  }
+  const topLevel = await gitOutcome(repositoryRoot, ["rev-parse", "--show-toplevel"]);
+  if (topLevel.state !== "passed" || resolve(topLevel.stdout.trim()) !== repositoryRoot) {
+    return Object.freeze({ state: "blocked", reason: "external_repository_identity_mismatch" });
+  }
+  if ((await gitOutcome(repositoryRoot, ["cat-file", "-e", `${baseRevision}^{commit}`])).state !== "passed") {
+    return Object.freeze({ state: "blocked", reason: "base_revision_unavailable" });
+  }
+  if ((await gitOutcome(repositoryRoot, ["cat-file", "-e", `${headRevision}^{commit}`])).state !== "passed") {
+    return Object.freeze({ state: "blocked", reason: "head_revision_unavailable" });
+  }
+  const currentHead = await gitOutcome(repositoryRoot, ["rev-parse", "HEAD"]);
+  if (currentHead.state !== "passed" || currentHead.stdout.trim() !== headRevision) {
+    return Object.freeze({ state: "blocked", reason: "head_revision_not_current" });
+  }
+  if ((await gitOutcome(repositoryRoot, [
+    "merge-base", "--is-ancestor", baseRevision, headRevision
+  ])).state !== "passed") {
+    return Object.freeze({ state: "blocked", reason: "base_revision_not_ancestor" });
+  }
+  const trackedStatus = await gitOutcome(repositoryRoot, [
+    "status", "--porcelain", "--untracked-files=no"
+  ]);
+  if (trackedStatus.state !== "passed" || trackedStatus.stdout.length !== 0) {
+    return Object.freeze({ state: "blocked", reason: "external_revision_not_clean" });
+  }
+  const changed = await gitOutcome(repositoryRoot, [
+    "diff", "--name-only", "-z", "--diff-filter=ACDMRTUXB", baseRevision, headRevision, "--"
+  ]);
+  if (changed.state !== "passed") {
+    return Object.freeze({ state: "blocked", reason: "external_revision_diff_unavailable" });
+  }
+  const changedPaths = changed.stdout.length === 0
+    ? []
+    : changed.stdout.split("\0").filter((path) => path.length > 0).sort();
+  if (JSON.stringify(changedPaths) !==
+      JSON.stringify(FIXTURE_MANIFEST.template.allowedMissionChangePaths)) {
+    return Object.freeze({ state: "blocked", reason: "scope_drift" });
+  }
+  return Object.freeze({
+    state: "measured",
+    repositoryRoot,
+    baseRevision,
+    headRevision,
+    changedPaths: Object.freeze(changedPaths)
+  });
+}
+
+async function openConfinedRegularFile(root, targetPath, flags) {
+  const expectedTarget = resolve(root, "src/greeting.mjs");
+  if (targetPath !== expectedTarget || !Number.isInteger(constants.O_NOFOLLOW)) {
+    throw new Error("unsafe_target");
+  }
+  const before = await lstat(targetPath);
+  if (!before.isFile() || before.isSymbolicLink() ||
+      await realpath(targetPath) !== expectedTarget) {
+    throw new Error("unsafe_target");
+  }
+  const handle = await open(targetPath, flags | constants.O_NOFOLLOW);
+  try {
+    const opened = await handle.stat();
+    const after = await lstat(targetPath);
+    if (!opened.isFile() || !after.isFile() || after.isSymbolicLink() ||
+        opened.dev !== before.dev || opened.ino !== before.ino ||
+        after.dev !== opened.dev || after.ino !== opened.ino ||
+        await realpath(targetPath) !== expectedTarget) {
+      throw new Error("target_changed");
+    }
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function readConfinedRegularFile(root, targetPath) {
+  const handle = await openConfinedRegularFile(root, targetPath, constants.O_RDONLY);
+  try {
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function replaceConfinedRegularFile(root, targetPath, bytes) {
+  const handle = await openConfinedRegularFile(root, targetPath, constants.O_WRONLY);
+  try {
+    await handle.truncate(0);
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 async function composeInstalledArtifact(artifactBytes, input) {
   const consumerRoot = await mkdtemp(join(tmpdir(), "shield-v03-public-consumer-"));
   const installedArtifact = join(consumerRoot, "shield-team-system.tgz");
@@ -164,7 +288,7 @@ async function composeInstalledArtifact(artifactBytes, input) {
     const consumerPath = join(consumerRoot, "consumer.mjs");
     await writeFile(consumerInputPath, `${JSON.stringify({
       repository: input.hostConfiguration.repository,
-      baseRevision: input.baseRevision,
+      baseRevision: input.headRevision,
       requireSimmons: input.requireSimmons
     })}\n`);
     await writeFile(consumerPath, CONSUMER_SOURCE);
@@ -248,7 +372,8 @@ export async function composeMinimumFixture(input) {
     return Object.freeze({ state: "invalid", reason: "fixture_input_not_closed" });
   }
   if (typeof input.packageArtifactPath !== "string" || !SHA256.test(input.packageArtifactSha256) ||
-      !REVISION.test(input.baseRevision) || typeof input.priorSolutionsVisible !== "boolean" ||
+      !REVISION.test(input.baseRevision) || !REVISION.test(input.headRevision) ||
+      typeof input.priorSolutionsVisible !== "boolean" ||
       typeof input.requireSimmons !== "boolean" ||
       !FIXTURE_MANIFEST.blindStatus.allowedValues.includes(input.blindStatus)) {
     return Object.freeze({ state: "invalid", reason: "fixture_identity_malformed" });
@@ -260,11 +385,8 @@ export async function composeMinimumFixture(input) {
       input.hostConfiguration.branch.length === 0) {
     return Object.freeze({ state: "invalid", reason: "host_configuration_malformed" });
   }
-  if (!Array.isArray(input.changedPaths) ||
-      JSON.stringify([...input.changedPaths].sort()) !==
-        JSON.stringify(FIXTURE_MANIFEST.template.allowedMissionChangePaths)) {
-    return Object.freeze({ state: "blocked", reason: "scope_drift" });
-  }
+  const externalRevision = await inspectExternalRevision(input);
+  if (externalRevision.state !== "measured") return externalRevision;
   if (!await regularFile(input.packageArtifactPath)) {
     return Object.freeze({ state: "blocked", reason: "package_artifact_unavailable" });
   }
@@ -288,7 +410,11 @@ export async function composeMinimumFixture(input) {
       fixtureId: FIXTURE_MANIFEST.fixtureId,
       packageArtifactSha256: packageDigest,
       installedPackage: composition.installedPackage,
-      baseRevision: input.baseRevision,
+      externalRevision: Object.freeze({
+        baseRevision: externalRevision.baseRevision,
+        headRevision: externalRevision.headRevision,
+        changedPaths: externalRevision.changedPaths
+      }),
       hostConfiguration: Object.freeze({ ...input.hostConfiguration }),
       blindStatus: input.blindStatus,
       priorSolutionsVisible: input.priorSolutionsVisible
@@ -298,11 +424,18 @@ export async function composeMinimumFixture(input) {
   });
 }
 
-export async function gradeCandidateWithFailureInjection(fixtureRoot) {
-  if (typeof fixtureRoot !== "string") {
-    return Object.freeze({ state: "invalid", reason: "fixture_root_malformed" });
+export async function gradeCandidateWithFailureInjection(input) {
+  if (!exact(input, ["fixtureRoot", "baseRevision", "headRevision"]) ||
+      typeof input.fixtureRoot !== "string") {
+    return Object.freeze({ state: "invalid", reason: "fixture_grading_input_not_closed" });
   }
-  const requestedRoot = resolve(fixtureRoot);
+  const externalRevision = await inspectExternalRevision({
+    externalRepositoryRoot: input.fixtureRoot,
+    baseRevision: input.baseRevision,
+    headRevision: input.headRevision
+  });
+  if (externalRevision.state !== "measured") return externalRevision;
+  const requestedRoot = resolve(input.fixtureRoot);
   let root;
   let target;
   try {
@@ -317,7 +450,12 @@ export async function gradeCandidateWithFailureInjection(fixtureRoot) {
     return Object.freeze({ state: "blocked", reason: "fixture_target_unavailable" });
   }
   const defectBytes = await readFile(templateDefectPath);
-  const candidateBytes = await readFile(target);
+  let candidateBytes;
+  try {
+    candidateBytes = await readConfinedRegularFile(root, target);
+  } catch {
+    return Object.freeze({ state: "blocked", reason: "fixture_target_unavailable" });
+  }
   const candidateSha256 = sha256(candidateBytes);
   if (candidateBytes.equals(defectBytes)) {
     return Object.freeze({ state: "blocked", reason: "candidate_still_contains_frozen_defect" });
@@ -328,14 +466,34 @@ export async function gradeCandidateWithFailureInjection(fixtureRoot) {
 
   let injectedOutcome = "unavailable";
   let rollbackOutcome = "unavailable";
+  let injectionError = false;
+  let rollbackError = false;
   try {
-    await writeFile(target, defectBytes);
+    await replaceConfinedRegularFile(root, target, defectBytes);
     injectedOutcome = await commandOutcome(root);
+  } catch {
+    injectionError = true;
   } finally {
-    await writeFile(target, candidateBytes);
-    rollbackOutcome = await commandOutcome(root);
+    try {
+      await replaceConfinedRegularFile(root, target, candidateBytes);
+      rollbackOutcome = await commandOutcome(root);
+    } catch {
+      rollbackError = true;
+    }
   }
-  const restoredSha256 = sha256(await readFile(target));
+  if (rollbackError) {
+    return Object.freeze({ state: "blocked", reason: "fixture_target_changed_before_rollback" });
+  }
+  if (injectionError) {
+    return Object.freeze({ state: "blocked", reason: "fixture_target_changed_before_injection" });
+  }
+  let restoredBytes;
+  try {
+    restoredBytes = await readConfinedRegularFile(root, target);
+  } catch {
+    return Object.freeze({ state: "blocked", reason: "fixture_target_unavailable" });
+  }
+  const restoredSha256 = sha256(restoredBytes);
   if (injectedOutcome !== "failed") {
     return Object.freeze({ state: "blocked", reason: "failure_injection_not_observed" });
   }
@@ -345,7 +503,11 @@ export async function gradeCandidateWithFailureInjection(fixtureRoot) {
   return Object.freeze({
     state: "passed",
     authority: "fixture-only-non-authoritative",
-    changedPath: "src/greeting.mjs",
+    externalRevision: Object.freeze({
+      baseRevision: externalRevision.baseRevision,
+      headRevision: externalRevision.headRevision,
+      changedPaths: externalRevision.changedPaths
+    }),
     candidateSha256,
     injectedDefectSha256: sha256(defectBytes),
     injectedOutcome,

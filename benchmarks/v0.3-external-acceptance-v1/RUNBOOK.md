@@ -36,8 +36,11 @@ The approved mission change set is exactly `src/greeting.mjs`.
 ## Compose without host effects
 
 Call `composeMinimumFixture(...)` from `src/driver.mjs` with the measured
-artifact digest, external base revision, GitHub host configuration, blind
-classification, conditional Simmons choice, and exact changed-path set.
+artifact digest, external repository root, exact base and current head
+revisions, GitHub host configuration, blind classification, and conditional
+Simmons choice. The driver verifies both commits, requires the supplied head to
+be current, and derives the exact changed-path set from Git. Caller-supplied
+changed paths are not accepted.
 
 The current v1 driver:
 
@@ -57,16 +60,23 @@ The current v1 driver:
 ## Candidate grading, failure injection, and rollback
 
 After the human-authorized mission produces a candidate that passes
-`node --test`, call `gradeCandidateWithFailureInjection(externalRoot)`.
+`node --test`, call `gradeCandidateWithFailureInjection({ fixtureRoot,
+baseRevision, headRevision })`.
 
 The fixture-only grader:
 
-1. records the candidate digest;
-2. replaces only `src/greeting.mjs` with the frozen defective bytes;
-3. requires the deterministic lane to fail;
-4. restores the exact candidate bytes in a `finally` path;
-5. requires the lane to pass again; and
-6. proves the restored digest equals the original candidate digest.
+1. verifies and records the exact base, current head, and Git-derived paths;
+2. records the candidate digest;
+3. replaces only `src/greeting.mjs` with the frozen defective bytes;
+4. requires the deterministic lane to fail;
+5. restores the exact candidate bytes in a `finally` path;
+6. requires the lane to pass again; and
+7. proves the restored digest equals the original candidate digest.
+
+Immediately before injection and rollback, the grader reopens the target with
+no-follow semantics and verifies that the open file is the confined,
+non-symlink regular file it inspected. Replacement of the target causes a
+blocking result; the grader never follows the replacement.
 
 If injection, rollback, or validation is unavailable, stop. Do not claim pass.
 
