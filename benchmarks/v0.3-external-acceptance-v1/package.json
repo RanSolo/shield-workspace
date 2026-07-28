@@ -1,0 +1,10 @@
+{
+  "name": "@shield/v0.3-external-acceptance-v1",
+  "version": "0.0.0-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "npm run build --prefix ../../packages/shield-team-system",
+    "test": "node --test test/*.test.mjs"
+  }
+}
