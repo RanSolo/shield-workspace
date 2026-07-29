@@ -39,6 +39,8 @@ export interface RunnerModeReference {
   activationSource: string;
 }
 
+import { validateRoleAssignment } from "./role-taxonomy-v1.mjs";
+
 export interface RunnerProjectionSnapshot {
   runnerContractVersion: 1;
   journalSchemaVersion: 5 | 6 | 7 | 8 | 9;
@@ -837,10 +839,10 @@ function preAuthorizationStop(input: RunnerCycleInput): RunnerStopReason | null 
   if (projection.missionAuthorizationState !== "authorized") return "mission_not_authorized";
   if (projection.executionStatus !== "running") return "execution_not_active";
   if (projection.executeReadiness !== "ready") return "execute_not_ready";
+  if (validateRoleAssignment(plan.seatId, "dispatch", { requireV03Enabled: true }).state === "invalid") return "seat_not_executable";
   if (projection.missionId !== plan.missionId || projection.subjectId !== plan.subjectId || projection.revisionId !== plan.revisionId) return "identity_mismatch";
   if (projection.evaluatedThroughSequence !== plan.evaluatedThroughSequence) return "journal_sequence_mismatch";
   if (!projection.participantSeatIds.includes(plan.seatId)) return "seat_not_participating";
-  if (plan.seatId === "fitz" || plan.seatId === "simmons") return "seat_not_executable";
   if (plan.effectClass === "behavioral_implementation" && plan.seatId !== "may") return "implementation_owner_mismatch";
   const projectedModes = projection.activatedModes.filter((mode) => mode.seatId === plan.seatId);
   if (resolvedModeContext.seatId !== plan.seatId || !sameModeReferences(projectedModes, plan.activatedModes) ||

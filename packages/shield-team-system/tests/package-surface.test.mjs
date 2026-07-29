@@ -26,6 +26,7 @@ test("exports only the documented public package specifiers", async () => {
     "./adapter",
     "./runner",
     "./permission",
+    "./roles",
     "./permission-audit",
     "./review-publication",
     "./pipeline",
@@ -58,6 +59,7 @@ test("loads every supported runtime specifier", async () => {
   const adapter = await import("@shield/team-system/adapter");
   const runner = await import("@shield/team-system/runner");
   const permission = await import("@shield/team-system/permission");
+  const roles = await import("@shield/team-system/roles");
   const permissionAudit = await import("@shield/team-system/permission-audit");
   const reviewPublication = await import("@shield/team-system/review-publication");
   const pipeline = await import("@shield/team-system/pipeline");
@@ -103,6 +105,19 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof runner.runRunnerCycle, "function");
   assert.equal(permission.PERMISSION_CONTRACT_VERSION, 1);
   assert.equal(typeof permission.evaluatePermission, "function");
+  assert.equal(roles.ROLE_TAXONOMY_SCHEMA_VERSION, 1);
+  assert.equal(roles.ROLE_TAXONOMY_CONTRACT_VERSION, "roles.v1");
+  assert.deepEqual(roles.CANONICAL_ROLE_IDS, [
+    "hill",
+    "daisy",
+    "fury",
+    "may",
+    "mack",
+    "oracle",
+    "coulson",
+    "fitz",
+    "simmons",
+  ]);
   assert.equal(permissionAudit.PERMISSION_AUDIT_SCHEMA_VERSION, 1);
   assert.equal(typeof permissionAudit.replayPermissionAuditLedger, "function");
   assert.equal(reviewPublication.REVIEW_PUBLICATION_CONTRACT_VERSION, "review-publication.v1");
@@ -172,6 +187,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/runner-v1.d.mts",
     "dist/permission-v1.mjs",
     "dist/permission-v1.d.mts",
+    "dist/role-taxonomy-v1.mjs",
+    "dist/role-taxonomy-v1.d.mts",
     "dist/permission-audit-v1.mjs",
     "dist/permission-audit-v1.d.mts",
     "dist/mission-runtime-v1.mjs",
@@ -234,6 +251,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
+    import { CANONICAL_ROLE_IDS, CANONICAL_ROLE_REGISTRY_V1, ROLE_TAXONOMY_CONTRACT_VERSION, isCanonicalRoleId, validateRoleAssignment, type CanonicalRoleId, type RoleAssignmentScope, type RoleRoute } from "@shield/team-system/roles";
+    import { MISSION_PROFILE_CONTRACT_VERSION, type MissionProfileV1, type MissionRoleDefinitionV1, type MissionRoleId, MISSION_ROLE_IDS, CANONICAL_MISSION_ROLE_REGISTRY_V1 } from "@shield/team-system/mission-profile";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import { deriveMissionCycleIdentityV1, runMissionCycle, type MissionCycleInputV1, type MissionCycleResultV1 } from "@shield/team-system/mission-runtime";
     import { REVIEW_PUBLICATION_CONTRACT_VERSION, evaluateReviewPublicationV1, type ReviewPublicationAuthorityV1, type ReviewPublicationProposalV1 } from "@shield/team-system/review-publication";
@@ -332,6 +351,22 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const renderHandoff = renderMissionHandoff;
     const workspaceReceipt = null as unknown as PRWorkspaceReceipt;
     const workspaceResult = null as unknown as DeliveryWorkspaceResult;
+    const roleTaxonomyContract: "roles.v1" = ROLE_TAXONOMY_CONTRACT_VERSION;
+    const dispatchSeatOnly: RoleAssignmentScope = "dispatch";
+    const route: RoleRoute = "dispatch_seat";
+    const validatedRole: MissionProfileV1["contractVersion"] = MISSION_PROFILE_CONTRACT_VERSION;
+    const canonicalRole: CanonicalRoleId = CANONICAL_ROLE_IDS[0];
+    const profileRole: MissionRoleId = "coulson";
+    const profileRoleContract: "mission.profile.v1" = MISSION_PROFILE_CONTRACT_VERSION;
+    const profileRoleDiscriminant: MissionProfileV1["contractVersion"] = MISSION_PROFILE_CONTRACT_VERSION;
+    const legacyRoleDefinition: MissionRoleDefinitionV1 = CANONICAL_MISSION_ROLE_REGISTRY_V1[0];
+    const legacyRoleKind: "human_authority" = legacyRoleDefinition.kind;
+    const legacyProfileRole: MissionRoleId = MISSION_ROLE_IDS[0];
+    const legacyProfileRoleRegistry: CanonicalRoleId = CANONICAL_MISSION_ROLE_REGISTRY_V1[0].roleId;
+    const firstCanonicalRole = CANONICAL_ROLE_REGISTRY_V1[0];
+    const isKnownRole: boolean = isCanonicalRoleId("may");
+    const assignment = validateRoleAssignment("may", dispatchSeatOnly, { requireV03Enabled: true });
+    const canDispatch = assignment.state === "valid" && assignment.value === "may";
     validateMissionWorkspaceInput(input);
     const validResume: MissionDecisionEvent = {
       schemaVersion: 2, eventId: "event-1", missionId: "mission-1", sequence: 1,
@@ -347,7 +382,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { RunnerCyclePlan, RunnerEffectClass, RunnerPermissionDecision, RunnerExecutorResult, RunnerInvocationClaimResult, RunnerOpaqueAuthorizationArtifact, RunnerJsonValue } from "./runner-v1.mjs";
 import { validateRunnerCyclePlan, validateRunnerExecutorResult, validateRunnerPermissionDecision } from "./runner-v1.mjs";
+import { CANONICAL_ROLE_IDS, validateRoleAssignment } from "./role-taxonomy-v1.mjs";
 import {
   createPermissionAuditRecord,
   replayPermissionAuditLedger,
@@ -134,8 +135,7 @@ const invalid = <T = never,>(code: string, ...errors: string[]): PermissionResul
 const valid = <T,>(value: T): PermissionResult<T> => ({ state: "valid", value });
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/;
-const HUMAN_ONLY_SEATS = new Set(["coulson", "fitz", "simmons"]);
-const SEAT_IDS = new Set(["hill", "daisy", "fury", "may", "coulson", "fitz", "simmons"]);
+const CANONICAL_ROLE_ID_SET = new Set<string>(CANONICAL_ROLE_IDS);
 const EFFECT_CLASSES = new Set(["behavioral_implementation", "verification", "coordination"]);
 const BINDING_FIELDS = ["bindingSchemaVersion", "bindingId", "bindingVersion", "missionId", "subjectId", "missionRevisionId", "seatId", "reasoningRuntimeId", "toolExecutorId", "repositoryId", "canonicalWritableRoot", "branch", "artifactRevisionId", "recordedAtSequence", "activeThroughSequence", "lifecycleState", "approvedScope", "coulsonAuthorizationRef"] as const;
 const SCOPE_FIELDS = ["actionIds", "effectClasses", "effectKeys", "capabilities"] as const;
@@ -257,8 +257,18 @@ export function validateRuntimeBinding(input: unknown): PermissionResult<Runtime
   if (errors.length > 0 || !plain(input)) return invalid("binding_malformed", ...errors);
   if (input.bindingSchemaVersion !== 1) errors.push("Runtime binding schema version is unsupported.");
   for (const field of ["bindingId", "missionId", "subjectId", "seatId", "reasoningRuntimeId", "toolExecutorId", "repositoryId", "branch", "coulsonAuthorizationRef"] as const) if (!id(input[field])) errors.push(`Runtime binding ${field} is invalid.`);
-  if (HUMAN_ONLY_SEATS.has(String(input.seatId))) errors.push("Human-only seats cannot receive runtime bindings.");
-  if (SEAT_IDS.has(String(input.reasoningRuntimeId)) || SEAT_IDS.has(String(input.toolExecutorId)) || input.seatId === input.reasoningRuntimeId || input.seatId === input.toolExecutorId || input.reasoningRuntimeId === input.toolExecutorId) errors.push("Seat, runtime, and executor identities must be disjoint and runtimes/executors cannot be seats.");
+  const owner = validateRoleAssignment(
+    input.seatId,
+    "dispatch",
+    { requireV03Enabled: true },
+  );
+  if (owner.state === "invalid") errors.push("Runtime binding seatId is not a canonical dispatchable V0.3 role.");
+  if (CANONICAL_ROLE_ID_SET.has(String(input.reasoningRuntimeId)) || CANONICAL_ROLE_ID_SET.has(String(input.toolExecutorId))) {
+    errors.push("Runtime binding reasoning/runtime identities must be non-executable anti-impersonation seats.");
+  }
+  if (new Set([String(input.seatId), String(input.reasoningRuntimeId), String(input.toolExecutorId)]).size !== 3) {
+    errors.push("Seat, runtime, and executor identities must be disjoint.");
+  }
   if (!REVISION.test(String(input.missionRevisionId ?? "")) || !REVISION.test(String(input.artifactRevisionId ?? ""))) errors.push("Runtime binding revisions are invalid.");
   if (!root(input.canonicalWritableRoot)) errors.push("Runtime binding writable root is invalid.");
   if (!Number.isSafeInteger(input.bindingVersion) || (input.bindingVersion as number) < 1 || !Number.isSafeInteger(input.recordedAtSequence) || (input.recordedAtSequence as number) < 1) errors.push("Runtime binding version or sequence is invalid.");

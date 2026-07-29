@@ -10,6 +10,8 @@ import {
   createCommunicationResultEntry,
   createDelegatedAuthorizationEntry,
   createDelegatedInvalidationEntry,
+  createRuntimeBindingEntry,
+  createRuntimeBindingSupersessionEntry,
   createGovernanceEntry,
   createMissionBegunEntry,
   createHumanEvidenceEntryFromAdapterCandidate,
@@ -22,6 +24,8 @@ import {
   verifySignedHumanEvidence,
 } from "../dist/mission-v2.mjs";
 import { canonicalDelegationJson, createDelegationLogEntry, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
+
+const artifactRevisionId = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
 function keyBinding(seatId, humanPrincipalId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -76,6 +80,35 @@ function fixture(requireSimmons = false) {
   return { brief, entries, coulson, fitz, simmons };
 }
 
+function runtimeBinding(overrides = {}) {
+  return {
+    bindingSchemaVersion: 1,
+    bindingId: "runtime-binding:may",
+    bindingVersion: 1,
+    missionId: "mission:fixture",
+    subjectId: "issue:39",
+    missionRevisionId: "0123456789abcdef0123456789abcdef01234567",
+    seatId: "may",
+    reasoningRuntimeId: "runtime:ornith:may",
+    toolExecutorId: "executor:fixture-host",
+    repositoryId: "repo:RanSolo/shield-workspace",
+    canonicalWritableRoot: "/workspace/shield-workspace",
+    branch: "codex/issue-39-canonical-mission-runtime",
+    artifactRevisionId,
+    recordedAtSequence: 6,
+    activeThroughSequence: null,
+    lifecycleState: "active",
+    approvedScope: {
+      actionIds: ["implement-issue-39"],
+      effectClasses: ["behavioral_implementation"],
+      effectKeys: ["effect:issue-39-runtime"],
+      capabilities: ["filesystem_write"],
+    },
+    coulsonAuthorizationRef: "authorization:runtime-binding:may:1",
+    ...overrides,
+  };
+}
+
 function replay(entries) {
   const result = replaySupervisedMissionJournal(entries);
   assert.equal(result.state, "valid", result.errors?.join(" "));
@@ -122,6 +155,37 @@ test("canonical brief revisions ignore JSON key ordering and detect content drif
   assert.equal(canonicalJson({ z: 1, a: { y: 2, b: 3 } }), canonicalJson({ a: { b: 3, y: 2 }, z: 1 }));
 });
 
+test("supervised brief activations reject human gates and V0.3-disabled dispatch seats", () => {
+  const { brief } = fixture();
+  for (const seatId of ["coulson", "mack", "oracle"]) {
+    const withInvalidActivation = {
+      ...brief,
+      activatedModes: [{
+        ...brief.activatedModes[0],
+        seatId,
+      }],
+    };
+    assert.equal(validateSupervisedMissionBrief(withInvalidActivation).state, "invalid");
+  }
+  assert.equal(validateSupervisedMissionBrief(brief).state, "valid");
+});
+
+test("supervised brief participants reject unknown and V0.3-disabled dispatch seats", () => {
+  const { brief } = fixture();
+  assert.equal(validateSupervisedMissionBrief({
+    ...brief,
+    participants: [...brief.participants, { seatId: "mack" }],
+  }).state, "invalid");
+  assert.equal(validateSupervisedMissionBrief({
+    ...brief,
+    participants: [...brief.participants, { seatId: "oracle" }],
+  }).state, "invalid");
+  assert.equal(validateSupervisedMissionBrief({
+    ...brief,
+    participants: [...brief.participants, { seatId: "x" }],
+  }).state, "invalid");
+});
+
 test("repository configuration selects exact content-addressed Ed25519 bindings", () => {
   const { brief, coulson, fitz } = fixture();
   const registry = { schemaVersion: 1, bindings: [coulson.binding, fitz.binding] };
@@ -131,6 +195,57 @@ test("repository configuration selects exact content-addressed Ed25519 bindings"
   ];
   assert.equal(validateRepositoryBindings(registry, configured, brief.missionId, false).state, "valid");
   assert.equal(validateRepositoryBindings(registry, [{ ...configured[0], bindingRef: fitz.binding.signingKeyRef }, configured[1]], brief.missionId, false).state, "invalid");
+});
+
+test("runtime binding recording path rejects non-canonical binding seat IDs", () => {
+  const { brief, coulson, fitz } = fixture();
+  const projection = replay([createMissionBegunEntry(brief, [coulson.binding, fitz.binding], 6)]);
+  for (const seat of ["coulson", "fitz", "simmons", "mack", "oracle", "x", "runtime:bad"]) {
+    assert.equal(
+      createRuntimeBindingEntry(
+        projection,
+        runtimeBinding({ seatId: seat }),
+        { payload: {}, signatureBase64: "" },
+      ).state,
+      "invalid",
+    );
+  }
+});
+
+test("runtime binding replay and supersession paths inherit runtime binding validation", () => {
+  const { brief, coulson, fitz } = fixture();
+  const missionBegin = createMissionBegunEntry(brief, [coulson.binding, fitz.binding], 6);
+  const begunReplay = replay([missionBegin]);
+  const badRecorded = replaySupervisedMissionJournal([
+    missionBegin,
+    {
+      schemaVersion: 6,
+      entryId: `entry:${brief.missionId}:1`,
+      missionId: brief.missionId,
+      sequence: 1,
+      type: "runtime.binding_recorded",
+      timestamp: brief.createdAt,
+      payload: {
+        binding: runtimeBinding({ seatId: "oracle" }),
+        authorization: { payload: {}, signatureBase64: "" },
+      },
+    },
+  ]);
+  assert.equal(badRecorded.state, "invalid");
+
+  const supersessionProjection = {
+    ...begunReplay,
+    activeRuntimeBindings: [runtimeBinding({ bindingVersion: 1, lifecycleState: "active" })],
+    runtimeBindings: [runtimeBinding({ bindingVersion: 1, lifecycleState: "active" })],
+  };
+  const invalidSupersession = createRuntimeBindingSupersessionEntry(
+    supersessionProjection,
+    "runtime-binding:may",
+    1,
+    runtimeBinding({ bindingVersion: 2, seatId: "oracle" }),
+    { payload: {}, signatureBase64: "" },
+  );
+  assert.equal(invalidSupersession.state, "invalid");
 });
 
 test("approval and no-effect steps keep execution separate from human acceptance readiness", () => {

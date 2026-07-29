@@ -226,6 +226,49 @@ test("allowed cycle preserves the opaque authorization artifact unchanged for ex
   assert.equal(validateRunnerCycleResult(result).state, "valid");
 });
 
+test("non-executable, malformed, unknown, and disabled dispatch seats fail pre-authorization with zero callback calls", async () => {
+  const nonExecutableSeats = ["coulson", "fitz", "simmons", "mack", "oracle", "x", "executor:bad"];
+  for (const seatId of nonExecutableSeats) {
+    const calls = { authorize: 0, claim: 0, execute: 0, validate: 0 };
+    const input = cycleInput({
+      projection: {
+        participantSeatIds: [seatId],
+      },
+      resolvedModeContext: {
+        seatId,
+        modes: [deliveryMode],
+      },
+      plan: { seatId },
+    });
+    const result = await runRunnerCycle(input, {
+      authorize: () => {
+        calls.authorize += 1;
+        return permission({ ...plan(input.plan), seatId });
+      },
+      claim: () => {
+        calls.claim += 1;
+        return {
+          runnerContractVersion: 1,
+          outcome: "blocked",
+          reason: "invocation_claim_conflict",
+        };
+      },
+      execute: () => {
+        calls.execute += 1;
+        return executorResult(plan(input.plan));
+      },
+      validate: () => {
+        calls.validate += 1;
+        return validatorResult(plan(input.plan));
+      },
+    });
+    assert.equal(result.state, "valid", result.errors?.join(" "));
+    assert.equal(result.value.reason, "seat_not_executable");
+    assert.equal(result.value.outcome, "stopped");
+    assert.deepEqual(calls, { authorize: 0, claim: 0, execute: 0, validate: 0 });
+  }
+});
+
 test("optional invocation claim stops before executor dispatch and carries no effect candidate", async () => {
   const input = cycleInput({ projection: { journalSchemaVersion: 9 } });
   let executions = 0;
@@ -607,7 +650,9 @@ test("callback mutation cannot alter bound action or effect identities", async (
 test("pure runner source has no environmental, host, model, clock, or GitHub dependency", async () => {
   const testDirectory = dirname(fileURLToPath(import.meta.url));
   const source = await readFile(resolve(testDirectory, "../src/runner-v1.mts"), "utf8");
-  assert.doesNotMatch(source, /^\s*import\s/m);
+  const imports = source.match(/^\s*import .+$/gm) ?? [];
+  assert.equal(imports.length, 1);
+  assert.match(imports[0].trim(), /^import \{ validateRoleAssignment \} from "\.\/role-taxonomy-v1\.mjs"\;?$/);
   assert.doesNotMatch(source, /\b(?:fetch|process|Date|setTimeout|setInterval|GitHub)\b/);
   assert.doesNotMatch(source, /(?:node:|from\s+["'](?:fs|path|child_process|http|https|net|tls|dns|os)["'])/);
 });

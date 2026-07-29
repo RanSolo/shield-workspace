@@ -118,6 +118,10 @@ function receipt(record, ledgerSequence = 0) {
 test("closed binding, attestation, and context contracts reject authority drift", () => {
   assert.equal(validateRuntimeBinding(binding()).state, "valid");
   assert.equal(validateRuntimeBinding({ ...binding(), seatId: "coulson" }).state, "invalid");
+  assert.equal(validateRuntimeBinding({ ...binding(), seatId: "mack" }).state, "invalid");
+  assert.equal(validateRuntimeBinding({ ...binding(), seatId: "oracle" }).state, "invalid");
+  assert.equal(validateRuntimeBinding({ ...binding(), seatId: "user:invalid" }).state, "invalid");
+  assert.equal(validateRuntimeBinding({ ...binding(), seatId: "x" }).state, "invalid");
   assert.equal(validateRuntimeBinding({ ...binding(), future: true }).state, "invalid");
   assert.equal(validateHostPermissionAttestation(attestation("capability")).state, "valid");
   assert.equal(validateHostPermissionAttestation({ ...attestation("writability"), capabilityId: "filesystem_write" }).state, "invalid");
@@ -126,6 +130,10 @@ test("closed binding, attestation, and context contracts reject authority drift"
   assert.equal(validatePermissionInvocationContext(context({ journalSchemaVersion: 9 })).state, "valid");
   assert.equal(validatePermissionInvocationContext({ ...context(), journalSchemaVersion: 5 }).state, "invalid");
   for (const seatId of ["coulson", "fitz", "simmons"]) {
+    assert.equal(validateRuntimeBinding(binding({ reasoningRuntimeId: seatId })).state, "invalid");
+    assert.equal(validateRuntimeBinding(binding({ toolExecutorId: seatId })).state, "invalid");
+  }
+  for (const seatId of ["mack", "oracle"]) {
     assert.equal(validateRuntimeBinding(binding({ reasoningRuntimeId: seatId })).state, "invalid");
     assert.equal(validateRuntimeBinding(binding({ toolExecutorId: seatId })).state, "invalid");
   }

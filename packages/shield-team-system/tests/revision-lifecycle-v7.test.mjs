@@ -346,6 +346,57 @@ test("v7 rejects A to B to A revision reuse before stale authority can reactivat
   assert.equal(replaySupervisedMissionJournal([...data.entries, rawReuse]).state, "invalid");
 });
 
+test("v7 rejects fabricated, stale, and replayed human evidence in review lifecycle", () => {
+  const data = fixture();
+  let projection = replay(data.entries);
+  data.entries.push(furyReview(projection, "approved", 1));
+  projection = replay(data.entries);
+  const fitzRequirement = projection.requirements.find(({ requiredSeatId }) => requiredSeatId === "fitz");
+
+  const accepted = createEvidenceEntry(
+    projection,
+    signedReviewEvidence(data.fitz, projection, fitzRequirement, 2),
+  );
+  assert.equal(accepted.state, "valid", accepted.errors?.join(" "));
+  const acceptedEvidence = accepted.value.payload.evidence;
+
+  const forged = structuredClone(acceptedEvidence);
+  forged.payload.humanPrincipalId = "human:imposter";
+  forged.signatureBase64 = sign(
+    null,
+    Buffer.from(canonicalJson(forged.payload)),
+    data.fitz.privateKey,
+  ).toString("base64");
+  assert.equal(createEvidenceEntry(projection, forged).code, "binding_invalid");
+
+  data.entries.push(accepted.value);
+  projection = replay(data.entries);
+
+  const duplicatePayload = structuredClone(accepted.value.payload.evidence.payload);
+  duplicatePayload.journalSequence = 3;
+  duplicatePayload.timestamp.value = "2026-07-28T11:03:00Z";
+  duplicatePayload.sourceRef = "github:review:3";
+  const duplicateEvidence = {
+    payload: duplicatePayload,
+    signatureBase64: "",
+  };
+  duplicateEvidence.signatureBase64 = sign(
+    null,
+    Buffer.from(canonicalJson(duplicateEvidence.payload)),
+    data.fitz.privateKey,
+  ).toString("base64");
+  assert.equal(createEvidenceEntry(projection, duplicateEvidence).code, "duplicate_evidence");
+
+  const stale = signedReviewEvidence(data.fitz, projection, fitzRequirement, 3);
+  stale.payload.revisionId = "git:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  stale.signatureBase64 = sign(
+    null,
+    Buffer.from(canonicalJson(stale.payload)),
+    data.fitz.privateKey,
+  ).toString("base64");
+  assert.equal(createEvidenceEntry(projection, stale).code, "revision_mismatch");
+});
+
 test("v7 fails closed on stale, contradictory, or malformed review lifecycle records", () => {
   const data = fixture();
   let projection = replay(data.entries);

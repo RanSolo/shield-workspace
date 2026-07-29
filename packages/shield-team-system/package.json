@@ -61,6 +61,10 @@
       "types": "./dist/permission-v1.d.mts",
       "import": "./dist/permission-v1.mjs"
     },
+    "./roles": {
+      "types": "./dist/role-taxonomy-v1.d.mts",
+      "import": "./dist/role-taxonomy-v1.mjs"
+    },
     "./permission-audit": {
       "types": "./dist/permission-audit-v1.d.mts",
       "import": "./dist/permission-audit-v1.mjs"

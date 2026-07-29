@@ -55,12 +55,60 @@ test("profile selection/version and predecessor digest are frozen into the brief
   assert.equal(MISSION_130_JOURNAL_DIGEST, predecessorDigest);
 });
 
+test("profile-aware brief participants reject disabled and unknown dispatch seats", () => {
+  const { revisionId, ...current } = brief("standard");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief(current)).state, "valid");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({
+    ...current,
+    participants: [...current.participants, { seatId: "mack" }],
+  })).state, "invalid");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({
+    ...current,
+    participants: [...current.participants, { seatId: "oracle" }],
+  })).state, "invalid");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({
+    ...current,
+    participants: [...current.participants, { seatId: "user:bad" }],
+  })).state, "invalid");
+});
+
 test("standard, high-assurance, and product-sensitive readiness use only frozen gates", () => {
   for (const [profileId, expected] of [["standard", ["coulson", "final_acceptance"]], ["high_assurance", ["coulson", "fitz", "final_acceptance"]], ["product_sensitive", ["coulson", "simmons", "final_acceptance"]]]) {
     const current = brief(profileId);
     assert.deepEqual(createProfileRequirementsV1(current).map(({ requiredRoleId, evidenceKind }) => requiredRoleId === "coulson" && evidenceKind === "final_acceptance" ? "final_acceptance" : requiredRoleId), expected);
     assert.equal(replay([createProfileAwareMissionBegunEntry(current, [authority("coulson").binding])]).readiness.execute, "waiting");
   }
+});
+
+test("profile-aware brief activations reject human gates and V0.3-disabled dispatch seats", () => {
+  const { revisionId, ...baseContent } = brief("standard");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({
+    ...baseContent,
+    activatedModes: [{
+      modeId: "delivery",
+      modeVersion: "1.0.0",
+      seatId: "mack",
+      activationSource: "mission-brief",
+    }],
+  })).state, "invalid");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({
+    ...baseContent,
+    activatedModes: [{
+      modeId: "delivery",
+      modeVersion: "1.0.0",
+      seatId: "coulson",
+      activationSource: "mission-brief",
+    }],
+  })).state, "invalid");
+  assert.equal(validateProfileAwareMissionBrief(createProfileAwareMissionBrief({
+    ...baseContent,
+    activatedModes: [{
+      modeId: "delivery",
+      modeVersion: "1.0.0",
+      seatId: "may",
+      activationSource: "mission-brief",
+    }],
+  })).state, "valid");
 });
 
 test("Coulson authorization is distinct from final acceptance and ordering is replayed", () => {
