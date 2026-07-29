@@ -2,12 +2,12 @@
 
 ## Review target
 
-- Implementation commits: `d5d27b6`, `d7ef4fb`
+- Implementation commits: `d5d27b6`, `d7ef4fb`, `e0cdb23`
 - Branch: `codex/issue-130-canonical-mission-runtime`
 - Mission #130 journal: `.shield/journals/bWlzc2lvbjppc3N1ZS0xMzA.jsonl`
 - Mission #130 journal digest: `sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9`
 - Successor journal: `.shield/journals/bWlzc2lvbjppc3N1ZS0xMzEtcHJvZmlsZS12MQ.jsonl`
-- Fury verdict: pending
+- Fury verdict: first review `REVISE`; follow-up review pending
 - Publication/merge/deploy authority: not requested and not exercised
 
 ## Implemented contract
@@ -29,11 +29,12 @@ Mission #130 was not opened, appended, rewritten, or reserialized.
 
 - `npm run build` — passed.
 - `node --test tests/profile-aware-mission-v1.test.mjs tests/package-surface.test.mjs` — 9 passed.
-- `npm test` — 342 passed, 0 failed.
+- `npm test` — 343 passed, 0 failed.
 - Focused predecessor test replayed Mission #130 successfully and verified the exact SHA-256 digest above.
 - `d7ef4fb` additionally rejects a well-formed but stale predecessor digest.
 - Successor journal replay is valid at sequence 0 and remains waiting for Coulson authorization.
 - Committed predecessor evidence: `docs/missions/issue-130-predecessor-evidence.json`.
+- First Fury `REVISE` findings are addressed in `e0cdb23`: closed trusted-binding validation, exact nested payload validation, committed successor journal, and committed predecessor evidence.
 
 This handoff is an implementation report only. It is not Fury approval,
 Coulson authorization, final acceptance, merge permission, or publication.
