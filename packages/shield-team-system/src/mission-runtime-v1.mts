@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types as utilTypes } from "node:util";
 
 import {
   canonicalJson,
@@ -175,6 +176,7 @@ const DEPENDENCY_FIELDS = [
   "now",
 ] as const;
 const PERMISSION_AUDIT_FIELDS = ["ledgerId", "read", "appendIfAbsent"] as const;
+const SNAPSHOT_FIELDS = ["entries", "projection", "journalDigest"] as const;
 const MODE_FIELDS = ["modeId", "modeVersion", "seatId", "activationSource"] as const;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/;
@@ -192,6 +194,7 @@ function safeDataObject(
   try {
     if (value === null ||
         typeof value !== "object" ||
+        utilTypes.isProxy(value) ||
         Array.isArray(value) ||
         Object.getPrototypeOf(value) !== Object.prototype) {
       return { state: "invalid" };
@@ -217,7 +220,9 @@ function safeDataObject(
 
 function safeArrayValues(value: unknown): unknown[] | null {
   try {
-    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return null;
+    if (!Array.isArray(value) ||
+        utilTypes.isProxy(value) ||
+        Object.getPrototypeOf(value) !== Array.prototype) return null;
     const keys = Reflect.ownKeys(value);
     if (keys.some((key) =>
       key !== "length" &&
@@ -256,6 +261,7 @@ function safeJsonCopy(value: unknown): unknown | null {
   try {
     if (value === null ||
         typeof value !== "object" ||
+        utilTypes.isProxy(value) ||
         Object.getPrototypeOf(value) !== Object.prototype) {
       return null;
     }
@@ -278,10 +284,15 @@ function validIdentifier(value: unknown): value is string {
   return typeof value === "string" && IDENTIFIER.test(value);
 }
 
+function safeFunction(value: unknown): value is (...args: never[]) => unknown {
+  return typeof value === "function" && !utilTypes.isProxy(value);
+}
+
 function inspectIdentityEnvelope(input: unknown): MissionIdentityEnvelopeV1 | null {
   try {
     if (input === null ||
         typeof input !== "object" ||
+        utilTypes.isProxy(input) ||
         Array.isArray(input) ||
         Object.getPrototypeOf(input) !== Object.prototype) {
       return null;
@@ -368,10 +379,10 @@ function validateAndFreezeDependencies(
   const audit = safeDataObject(checked.values.permissionAudit, PERMISSION_AUDIT_FIELDS);
   if (audit.state === "invalid" ||
       !validIdentifier(audit.values.ledgerId) ||
-      typeof audit.values.read !== "function" ||
-      typeof audit.values.appendIfAbsent !== "function" ||
+      !safeFunction(audit.values.read) ||
+      !safeFunction(audit.values.appendIfAbsent) ||
       DEPENDENCY_FIELDS.filter((field) => field !== "permissionAudit")
-        .some((field) => typeof checked.values[field] !== "function")) {
+        .some((field) => !safeFunction(checked.values[field]))) {
     return null;
   }
   return Object.freeze({
@@ -536,7 +547,13 @@ async function readValidated(
       configuredJournalPath: input.configuredJournalPath,
       missionId: input.missionId,
     });
-    const copied = safeJsonCopy(rawSnapshot);
+    const shape = safeDataObject(rawSnapshot, SNAPSHOT_FIELDS);
+    if (shape.state === "invalid") return null;
+    const copied = safeJsonCopy({
+      entries: shape.values.entries,
+      projection: shape.values.projection,
+      journalDigest: shape.values.journalDigest,
+    });
     if (copied === null || typeof copied !== "object") return null;
     const snapshot = copied as ProfileAwareJournalSnapshotV1;
     if (typeof snapshot.journalDigest !== "string" ||
@@ -558,24 +575,34 @@ async function readValidated(
 function appendResult(value: unknown): MissionJournalAppendResultV1 | null {
   const copied = safeJsonCopy(value);
   if (copied === null || typeof copied !== "object" || Array.isArray(copied)) return null;
-  const result = copied as MissionJournalAppendResultV1;
-  if (result.state === "appended") {
-    return typeof result.journalPath === "string" ? result : null;
-  }
-  if (result.state === "blocked") {
-    return (result.code === "journal_lock_held" ||
-      result.code === "journal_unavailable" ||
-      result.code === "stale_sequence") &&
-      Array.isArray(result.errors) &&
-      result.errors.every((error) => typeof error === "string")
-      ? result
+  const stateDescriptor = Object.getOwnPropertyDescriptor(copied, "state");
+  if (!stateDescriptor?.enumerable || !Object.hasOwn(stateDescriptor, "value")) return null;
+  if (stateDescriptor.value === "appended") {
+    const checked = safeDataObject(copied, ["state", "journalPath"]);
+    return checked.state === "valid" && typeof checked.values.journalPath === "string"
+      ? copied as MissionJournalAppendResultV1
       : null;
   }
-  if (result.state === "uncertain") {
-    return result.code === "recovery_required" &&
-      Array.isArray(result.errors) &&
-      result.errors.every((error) => typeof error === "string")
-      ? result
+  if (stateDescriptor.value === "blocked") {
+    const checked = safeDataObject(copied, ["state", "code", "errors"]);
+    const errors = checked.state === "valid" ? safeArrayValues(checked.values.errors) : null;
+    return checked.state === "valid" &&
+      (checked.values.code === "journal_lock_held" ||
+       checked.values.code === "journal_unavailable" ||
+       checked.values.code === "stale_sequence") &&
+      errors !== null &&
+      errors.every((error) => typeof error === "string")
+      ? copied as MissionJournalAppendResultV1
+      : null;
+  }
+  if (stateDescriptor.value === "uncertain") {
+    const checked = safeDataObject(copied, ["state", "code", "errors"]);
+    const errors = checked.state === "valid" ? safeArrayValues(checked.values.errors) : null;
+    return checked.state === "valid" &&
+      checked.values.code === "recovery_required" &&
+      errors !== null &&
+      errors.every((error) => typeof error === "string")
+      ? copied as MissionJournalAppendResultV1
       : null;
   }
   return null;
@@ -781,7 +808,14 @@ async function runMissionCycleValidated(
       return current.value;
     },
   });
-  phase.postClaim = true;
+  const claim = async (
+    planInput: RunnerCyclePlan,
+    decisionInput: import("./runner-v1.mjs").RunnerPermissionDecision,
+  ) => {
+    const result = await claimed.claim(planInput, decisionInput);
+    if (result.outcome === "claimed") phase.postClaim = true;
+    return result;
+  };
   const runner = await runRunnerCycle({
     runnerContractVersion: 1,
     projection: runnerProjection(projection),
@@ -794,7 +828,7 @@ async function runMissionCycleValidated(
     plan,
   }, {
     authorize,
-    claim: claimed.claim,
+    claim,
     execute: claimed.execute,
     validate: dependencies.validate,
   });

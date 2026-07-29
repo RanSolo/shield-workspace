@@ -409,6 +409,46 @@ test("runtime claim execution rejects plan or context substitution before the ra
   assert.equal(calls, 1);
 });
 
+test("runtime claim rejects plan and decision identity substitution before invocation append", async () => {
+  const records = new Map();
+  const appendIfAbsent = async (record) => {
+    if (records.has(record.recordId)) return { appended: false };
+    records.set(record.recordId, record);
+    return receipt(record, records.size - 1);
+  };
+  const currentPlan = plan();
+  const currentContext = context({ journalSchemaVersion: 9 });
+  const decision = await createPermissionAuthorizer({
+    ledgerId: "ledger:runtime-claim-identity:test",
+    appendIfAbsent,
+    getContext: () => currentContext,
+  })(currentPlan);
+  let calls = 0;
+  const claimed = createRuntimeClaimedExecutorV1({
+    ledgerId: "ledger:runtime-claim-identity:test",
+    appendIfAbsent,
+    getContext: () => currentContext,
+    execute: () => { calls += 1; },
+    now: () => "2026-07-20T02:06:00Z",
+  });
+  const substituted = {
+    ...currentPlan,
+    validationId: "validation:substituted-before-claim",
+    actionId: "substituted-action",
+  };
+  const result = await claimed.claim(substituted, decision);
+  assert.deepEqual(result, {
+    runnerContractVersion: 1,
+    outcome: "blocked",
+    reason: "invocation_claim_failed",
+  });
+  assert.equal(
+    [...records.values()].filter(({ recordType }) => recordType === "tool.invocation").length,
+    0,
+  );
+  assert.equal(calls, 0);
+});
+
 test("legacy audit-invocation records remain legacy in runtime-claim replay", () => {
   const base = {
     ledgerId: "ledger:legacy-runtime:test",

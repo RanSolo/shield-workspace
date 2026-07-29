@@ -410,6 +410,21 @@ function exactDecision(plan: RunnerCyclePlan, decision: RunnerPermissionDecision
   return binding;
 }
 
+function decisionMatchesPlan(
+  plan: RunnerCyclePlan,
+  decision: RunnerPermissionDecision,
+): boolean {
+  return decision.missionId === plan.missionId &&
+    decision.subjectId === plan.subjectId &&
+    decision.revisionId === plan.revisionId &&
+    decision.evaluatedThroughSequence === plan.evaluatedThroughSequence &&
+    decision.cycleId === plan.cycleId &&
+    decision.seatId === plan.seatId &&
+    decision.actionId === plan.actionId &&
+    decision.effectClass === plan.effectClass &&
+    decision.effectKey === plan.effectKey;
+}
+
 function runtimeInvocationClaimDigest(
   missionId: string,
   revisionId: string,
@@ -507,6 +522,9 @@ export function createRuntimeClaimedExecutorV1(
       }
       const planSnapshot = immutableJsonCopy(checkedPlan.value);
       const decisionSnapshot = immutableJsonCopy(checkedDecision.value);
+      if (!decisionMatchesPlan(planSnapshot, decisionSnapshot)) {
+        return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_failed" };
+      }
       if (claims.has(decisionSnapshot.decisionId) || consumed.has(decisionSnapshot.decisionId)) {
         return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_conflict" };
       }

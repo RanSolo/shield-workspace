@@ -267,6 +267,19 @@ test("input validation distinguishes unbound identity from bound malformed input
   });
   assert.equal(accesses, 0);
 
+  let dependencyCalls = 0;
+  const proxied = await runMissionCycle(
+    new Proxy(input(current.brief), {}),
+    inertDependencies(current, {
+      readJournal: async () => {
+        dependencyCalls += 1;
+        throw new Error("must not read");
+      },
+    }),
+  );
+  assert.deepEqual(proxied, unbound);
+  assert.equal(dependencyCalls, 0);
+
   const bound = await runMissionCycle(
     { ...input(current.brief), unexpected: true },
     inertDependencies(current),
@@ -280,6 +293,57 @@ test("input validation distinguishes unbound identity from bound malformed input
     accountableNextSeat: "coulson",
     reasonCode: "input_invalid",
   });
+});
+
+test("journal snapshot and transition append outputs require exact closed shapes", async () => {
+  const current = fixture();
+  const extraSnapshot = await runMissionCycle(
+    input(current.brief),
+    inertDependencies(current, {
+      readJournal: async () => ({
+        entries: current.entries,
+        projection: current.projection,
+        journalDigest: digest(current.entries),
+        extra: true,
+      }),
+    }),
+  );
+  assert.equal(extraSnapshot.outcome, "blocked");
+  assert.equal(extraSnapshot.reasonCode, "journal_unavailable");
+
+  let accesses = 0;
+  const accessorSnapshot = {};
+  Object.defineProperties(accessorSnapshot, {
+    entries: {
+      enumerable: true,
+      get() {
+        accesses += 1;
+        return current.entries;
+      },
+    },
+    projection: { enumerable: true, value: current.projection },
+    journalDigest: { enumerable: true, value: digest(current.entries) },
+  });
+  const accessorResult = await runMissionCycle(
+    input(current.brief),
+    inertDependencies(current, { readJournal: async () => accessorSnapshot }),
+  );
+  assert.equal(accessorResult.reasonCode, "journal_unavailable");
+  assert.equal(accesses, 0);
+
+  const authorized = authorize(fixture());
+  const extraAppend = await runMissionCycle(
+    input(authorized.brief, { expectedSequence: 1 }),
+    inertDependencies(authorized, {
+      appendJournal: async () => ({
+        state: "appended",
+        journalPath: ".shield/runtime-test.jsonl",
+        extra: true,
+      }),
+    }),
+  );
+  assert.equal(extraAppend.outcome, "blocked");
+  assert.equal(extraAppend.reasonCode, "journal_unavailable");
 });
 
 test("subject identity is frozen and stale subject evidence fails before gates", async () => {
