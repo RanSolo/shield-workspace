@@ -16,6 +16,8 @@ import {
 export const PROFILE_AWARE_BRIEF_SCHEMA_VERSION = 2 as const;
 export const PROFILE_AWARE_JOURNAL_SCHEMA_VERSION = 9 as const;
 export const PROFILE_AWARE_CONTRACT_VERSION = "mission.profile-aware.v1" as const;
+export const MISSION_130_PREDECESSOR_ID = "mission:issue-130" as const;
+export const MISSION_130_JOURNAL_DIGEST = "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9" as const;
 
 type GateRole = "coulson" | "fitz" | "simmons";
 type EvidenceKind = "mission_authorization" | "technical_review" | "product_domain_review" | "final_acceptance";
@@ -125,7 +127,7 @@ export function validateProfileAwareMissionBrief(input: unknown): ProfileAwareRe
   const errors: string[] = [];
   if (value.schemaVersion !== 2 || !ID.test(value.missionId) || !ID.test(value.subjectId) || !ID.test(value.predecessorMissionId) || !ID.test(value.revisionId)) errors.push("Profile-aware brief identity is invalid.");
   if (typeof value.objective !== "string" || value.objective.length === 0 || value.objective.length > 512) errors.push("Profile-aware brief objective is invalid.");
-  if (!timestamp(value.createdAt) || !DIGEST.test(value.predecessorJournalDigest)) errors.push("Profile-aware brief timestamp or predecessor digest is invalid.");
+  if (!timestamp(value.createdAt) || !DIGEST.test(value.predecessorJournalDigest) || value.predecessorMissionId !== MISSION_130_PREDECESSOR_ID || value.predecessorJournalDigest !== MISSION_130_JOURNAL_DIGEST) errors.push("Profile-aware brief timestamp or predecessor digest is invalid or stale.");
   if (value.profileVersion !== 1 || !profile || value.profileId !== profile.profileId) errors.push("Profile-aware brief profile is invalid.");
   if (!Array.isArray(value.requiredExecutionGateRoleIds) || value.requiredExecutionGateRoleIds.join(",") !== profile?.requiredExecutionGateRoleIds.join(",")) errors.push("Profile-aware brief execution gates are not frozen canonically.");
   if (!Array.isArray(value.requiredFinalAcceptanceGateRoleIds) || value.requiredFinalAcceptanceGateRoleIds.length !== 1 || value.requiredFinalAcceptanceGateRoleIds[0] !== "coulson") errors.push("Final acceptance gate must be Coulson.");

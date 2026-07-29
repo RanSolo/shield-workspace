@@ -11,6 +11,7 @@ import {
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   createProfileRequirementsV1,
+  MISSION_130_JOURNAL_DIGEST,
   replayProfileAwareMissionJournal,
   validateProfileAwareMissionBrief,
 } from "../dist/profile-aware-mission-v1.mjs";
@@ -49,7 +50,8 @@ test("profile selection/version and predecessor digest are frozen into the brief
   assert.deepEqual(selected.requiredExecutionGateRoleIds, ["coulson", "fitz"]);
   const tampered = { ...selected, profileId: "standard" };
   assert.equal(validateProfileAwareMissionBrief(tampered).state, "invalid");
-  assert.equal(validateProfileAwareMissionBrief({ ...selected, predecessorJournalDigest: "sha256:stale" }).state, "invalid");
+  assert.equal(validateProfileAwareMissionBrief({ ...selected, predecessorJournalDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }).state, "invalid");
+  assert.equal(MISSION_130_JOURNAL_DIGEST, predecessorDigest);
 });
 
 test("standard, high-assurance, and product-sensitive readiness use only frozen gates", () => {
