@@ -3,7 +3,11 @@ import {
   validateAdapterCandidate,
   validateCommunicationRequest,
 } from "../dist/adapter-v1.mjs";
-import { createOrUpdatePR, defaultRun } from "./pr-workspace.mjs";
+import {
+  createOrUpdatePR,
+  defaultRun,
+  evaluatePRPublicationScope,
+} from "./pr-workspace.mjs";
 
 const FAILURE_REASONS = new Set([
   "adapter_unavailable",
@@ -83,9 +87,9 @@ function failureReason(result) {
   return "host_rejected";
 }
 
-function resultCandidate(request, publication, outcome, reason, receiptRef) {
+function resultCandidate(request, publication, outcome, reason, receiptRef, scope) {
   return {
-    adapterContractVersion: 1,
+    adapterContractVersion: 2,
     adapterId: "github",
     candidateId: publication.candidateId,
     candidateKind: "communication_result",
@@ -101,6 +105,8 @@ function resultCandidate(request, publication, outcome, reason, receiptRef) {
       outcome,
       failureReason: reason,
       receiptRef,
+      scopeDigest: scope.scopeDigest,
+      publicationBinding: scope.binding,
     },
   };
 }
@@ -114,7 +120,7 @@ function checkedCandidate(candidate, commands) {
 
 function validateJournaledRequest(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
-      entry.schemaVersion !== 4 || entry.type !== "communication.requested" ||
+      (entry.schemaVersion !== 4 && entry.schemaVersion !== 8) || entry.type !== "communication.requested" ||
       !entry.payload || typeof entry.payload !== "object" || Array.isArray(entry.payload)) {
     return { state: "invalid", reason: "journaled_request_required" };
   }
@@ -129,6 +135,9 @@ function validateJournaledRequest(entry) {
   }
   const checked = validateCommunicationRequest(entry.payload.request);
   if (checked.state === "invalid") return { state: "invalid", reason: "invalid_communication_request" };
+  if (entry.schemaVersion === 8 ? checked.value.adapterContractVersion !== 2 : checked.value.adapterContractVersion !== 1) {
+    return { state: "invalid", reason: "journaled_request_adapter_mismatch" };
+  }
   if (entry.missionId !== checked.value.missionId) return { state: "invalid", reason: "journaled_request_mission_mismatch" };
   return { state: "valid", request: checked.value };
 }
@@ -142,6 +151,7 @@ export function deliverGitHubCommunication(journaledRequest, publication, option
   if (checked.state === "invalid") return blocked(checked.reason);
   const request = checked.request;
   if (request.adapterId !== "github") return blocked("github_request_required");
+  if (request.adapterContractVersion !== 2) return blocked("publication_scope_required");
   if (!publication || typeof publication !== "object" || Array.isArray(publication)) return blocked("publication_required");
   if (typeof publication.candidateId !== "string" || typeof publication.sourceRef !== "string" ||
       !publication.capturedAt || typeof publication.capturedAt !== "object") return blocked("publication_identity_required");
@@ -151,21 +161,40 @@ export function deliverGitHubCommunication(journaledRequest, publication, option
   const commands = [];
   const head = call(run, commands, "git", ["rev-parse", "HEAD"], { cwd });
   if (head.exitCode !== 0) {
-    return checkedCandidate(resultCandidate(request, publication, "failed", failureReason(head), null), commands);
+    return blocked(failureReason(head), commands);
   }
   if (head.stdout.trim() !== request.artifactRevisionId) {
-    return checkedCandidate(resultCandidate(request, publication, "failed", "ambiguous_response", null), commands);
+    return blocked("publication_binding_mismatch", commands);
   }
 
   if (request.operation === "publish_mission_brief") {
     if (!publication.workspacePlan || typeof publication.body !== "string") return blocked("mission_brief_publication_required", commands);
-    const published = createOrUpdatePR(publication.workspacePlan, { run, cwd, body: publication.body });
+    const published = createOrUpdatePR(publication.workspacePlan, {
+      run,
+      cwd,
+      body: publication.body,
+      publicationScope: {
+        authority: request.publicationAuthority,
+        proposedChangedPaths: publication.proposedChangedPaths,
+        canonicalRepositoryRoot: publication.canonicalRepositoryRoot,
+      },
+    });
     commands.push(...published.commands);
     if (published.state === "success" || published.state === "reused") {
-      return checkedCandidate(resultCandidate(request, publication, "delivered", null, published.prUrl), commands);
+      return checkedCandidate(
+        resultCandidate(
+          request,
+          publication,
+          "delivered",
+          null,
+          published.prUrl,
+          published.publicationScope,
+        ),
+        commands,
+      );
     }
     const reason = FAILURE_REASONS.has(published.reason) ? published.reason : "host_rejected";
-    return checkedCandidate(resultCandidate(request, publication, "failed", reason, null), commands);
+    return blocked(reason, commands);
   }
 
   if (!Number.isInteger(publication.prNumber) || publication.prNumber < 1 || typeof publication.body !== "string") {
@@ -176,6 +205,15 @@ export function deliverGitHubCommunication(journaledRequest, publication, option
   if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
     return blocked("repository_required", commands);
   }
+  const scope = evaluatePRPublicationScope(
+    request.publicationAuthority,
+    publication.proposedChangedPaths,
+    ["review.comment.publish"],
+    { run, cwd, canonicalRepositoryRoot: publication.canonicalRepositoryRoot },
+  );
+  commands.push(...scope.commands);
+  if (scope.state !== "allowed") return blocked(scope.reason, commands);
+  if (scope.binding.repositoryId !== repository) return blocked("publication_binding_mismatch", commands);
   const delivered = call(
     run,
     commands,
@@ -184,13 +222,13 @@ export function deliverGitHubCommunication(journaledRequest, publication, option
     { cwd, input: publication.body },
   );
   if (delivered.exitCode !== 0) {
-    return checkedCandidate(resultCandidate(request, publication, "failed", failureReason(delivered), null), commands);
+    return checkedCandidate(resultCandidate(request, publication, "failed", failureReason(delivered), null, scope), commands);
   }
   const receipt = delivered.stdout.trim();
   if (receipt.length === 0) {
-    return checkedCandidate(resultCandidate(request, publication, "unknown", "ambiguous_response", null), commands);
+    return checkedCandidate(resultCandidate(request, publication, "unknown", "ambiguous_response", null, scope), commands);
   }
-  return checkedCandidate(resultCandidate(request, publication, "delivered", null, receipt), commands);
+  return checkedCandidate(resultCandidate(request, publication, "delivered", null, receipt, scope), commands);
 }
 
 /** Converts a GitHub review/comment record into a host-neutral candidate. */

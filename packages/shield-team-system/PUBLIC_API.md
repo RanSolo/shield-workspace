@@ -14,15 +14,16 @@ package artifact.
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
 | `@shield/team-system/hill-readiness` | Pure advisory `hill.readiness.v1` classification for exact seat-owned artifact revisions using closed, host-asserted evidence |
 | `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
-| `@shield/team-system/supervision` | Supervised journals v2-v7, including revision-bound Fury review and supersession history, authoritative runtime-binding lifecycle, canonical mission briefs, Ed25519 human evidence, readiness, communication, and execution-effect replay |
+| `@shield/team-system/supervision` | Supervised journals v2-v8, including revision-bound Fury review and supersession history, publication-bound v8 communication, authoritative runtime-binding lifecycle, canonical mission briefs, Ed25519 human evidence, readiness, communication, and execution-effect replay |
 | `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
-| `@shield/team-system/adapter` | Closed host-neutral adapter v1 candidate, communication, and validation contracts |
+| `@shield/team-system/adapter` | Closed host-neutral adapter v1 contracts plus publication-bound adapter v2 communication requests and result evidence |
 | `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
+| `@shield/team-system/review-publication` | Pure host-neutral exact-path and permitted-effect evaluation for `review.publish` and Wheels Up review publication |
 | `@shield/team-system/pipeline` | Closed composable pipeline-mode taxonomy, evidence-bound repository pipeline profiles, stale-profile detection, and non-authoritative required-mode selection |
 | `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write-and-validation tool-call executor, with injected Issue #10 authorization/audit dependencies |
-| `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
+| `@shield/team-system/github` | Journal-gated GitHub publication with pre-effect exact-path/effect enforcement, exact draft-PR workspace receipts, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 | `@shield/team-system/sonarqube` | Non-authoritative exact-revision SonarQube evidence evaluation, closed finding classification, owner routing, exception attribution, and fail-closed advancement eligibility |
 | `@shield/team-system/mack-validation` | Closed Mack validation reports, exact-head binding, outcome classification, and non-authoritative routing |
 | `@shield/team-system/qa-mode` | QA Mode v0 handoff and Mack result evaluation contract |
@@ -58,6 +59,7 @@ does not migrate or reinterpret the existing package runtime.
 | One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |
 | Per-call runtime-bound permission decisions | Supported through `/permission`; real environmental probes remain owned by Issue #34 |
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
+| Exact-scope review publication | Supported through `/review-publication`; the pure evaluator binds authority and observed proposals, while `/github` performs host observation before push, draft-PR mutation, or review-comment publication |
 | Pipeline modes and repository pipeline profiles | Supported through `/pipeline`; Mack execution, live discovery, setup prompts, GitHub replies, and Mission Control UI remain unavailable |
 | SonarQube validation and follow-up evidence | Supported through `/sonarqube` as host-asserted non-authoritative evidence; live scanner retrieval, credentials, dashboarding, GitHub replies, and merge authority remain outside the evaluator |
 | Daisy local reconnaissance tools | Supported through `/local-tools` only with a trusted authority provider; standalone CLI tool authority is intentionally unavailable |
@@ -76,7 +78,10 @@ adds separately Coulson-authorized runtime-binding and atomic supersession
 events. Journal v7 preserves those semantics and adds append-only
 repository-artifact revision supersession, exact-revision Fury review records,
 historical/stale review projections, and deterministic routing to the Fitz
-human gate. Mixed-version journals, automatic migration, waivers, a general policy
+human gate. Journal v8 preserves v7 and requires publication-bound adapter v2
+requests and results for live review publication; historical journals remain
+replayable without authorizing new unscoped effects. Mixed-version journals,
+automatic migration, waivers, a general policy
 DSL and general multi-cycle orchestration remain unsupported. The bounded Daisy
 broker and single-call May executor are supported only through `/local-tools`.
 The May executor exposes no Git, merge, deployment, release, caller-selected
@@ -87,7 +92,7 @@ Caller-supplied authority remains unsupported. Specialist iteration uses no
 repair count or hard cap: Hill supplies a closed evidence packet and requested
 disposition, while material scope, risk, authority, destructive/external,
 tradeoff, and final human gates fail to Coulson.
-The runner returns a validated, non-authoritative v5, v6, or v7 effect candidate; it does
+The runner returns a validated, non-authoritative v5, v6, v7, or v8 effect candidate; it does
 not append entries or grant the candidate authority. The trusted supervision
 boundary supplies the entry ID and timestamp, rechecks exact mission, subject,
 revision, and sequence identity, and appends the authoritative record. Replay

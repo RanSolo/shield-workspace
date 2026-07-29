@@ -26,6 +26,7 @@ test("exports only the documented public package specifiers", async () => {
     "./runner",
     "./permission",
     "./permission-audit",
+    "./review-publication",
     "./pipeline",
     "./sonarqube",
     "./mack-validation",
@@ -53,6 +54,7 @@ test("loads every supported runtime specifier", async () => {
   const runner = await import("@shield/team-system/runner");
   const permission = await import("@shield/team-system/permission");
   const permissionAudit = await import("@shield/team-system/permission-audit");
+  const reviewPublication = await import("@shield/team-system/review-publication");
   const pipeline = await import("@shield/team-system/pipeline");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
@@ -87,6 +89,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof permission.evaluatePermission, "function");
   assert.equal(permissionAudit.PERMISSION_AUDIT_SCHEMA_VERSION, 1);
   assert.equal(typeof permissionAudit.replayPermissionAuditLedger, "function");
+  assert.equal(reviewPublication.REVIEW_PUBLICATION_CONTRACT_VERSION, "review-publication.v1");
+  assert.equal(typeof reviewPublication.evaluateReviewPublicationV1, "function");
   assert.equal(pipeline.PIPELINE_PROFILE_CONTRACT_VERSION, "pipeline.profile.v1");
   assert.equal(typeof pipeline.selectPipelineModesV1, "function");
   assert.equal(sonarqube.SONARQUBE_EVIDENCE_CONTRACT_VERSION, "sonarqube.evidence.v1");
@@ -152,6 +156,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/permission-v1.d.mts",
     "dist/permission-audit-v1.mjs",
     "dist/permission-audit-v1.d.mts",
+    "dist/review-publication-v1.mjs",
+    "dist/review-publication-v1.d.mts",
     "dist/pipeline-profile-v1.mjs",
     "dist/pipeline-profile-v1.d.mts",
     "dist/sonarqube-evidence-v1.mjs",
@@ -208,6 +214,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
+    import { REVIEW_PUBLICATION_CONTRACT_VERSION, evaluateReviewPublicationV1, type ReviewPublicationAuthorityV1, type ReviewPublicationProposalV1 } from "@shield/team-system/review-publication";
     import { PIPELINE_PROFILE_CONTRACT_VERSION, selectPipelineModesV1, type RepositoryPipelineProfileV1 } from "@shield/team-system/pipeline";
     import { SONARQUBE_EVIDENCE_CONTRACT_VERSION, evaluateSonarQubeEvidenceV1, type SonarQubeEvidenceV1 } from "@shield/team-system/sonarqube";
     import { QA_MODE_CONTRACT_VERSION, createQaHandoffV0, evaluateQaValidationV0, type QaHandoffInputV0 } from "@shield/team-system/qa-mode";
@@ -267,6 +274,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const auditSchema: 1 = PERMISSION_AUDIT_SCHEMA_VERSION;
     const auditRecord = null as unknown as PermissionAuditRecord;
     const replayAudit = replayPermissionAuditLedger;
+    const reviewPublicationContract: "review-publication.v1" = REVIEW_PUBLICATION_CONTRACT_VERSION;
+    const reviewPublicationAuthority = null as unknown as ReviewPublicationAuthorityV1;
+    const reviewPublicationProposal = null as unknown as ReviewPublicationProposalV1;
+    const evaluateReviewPublication = evaluateReviewPublicationV1;
     const pipelineContract: "pipeline.profile.v1" = PIPELINE_PROFILE_CONTRACT_VERSION;
     const pipelineProfile = null as unknown as RepositoryPipelineProfileV1;
     const selectPipeline = selectPipelineModesV1;
@@ -309,7 +320,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, journaledRequest, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, journaledRequest, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

@@ -8,6 +8,7 @@ import {
 } from "../public/github.mjs";
 
 const head = "0123456789012345678901234567890123456789";
+const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 function plan() {
   return {
@@ -35,6 +36,30 @@ function pr(overrides = {}) {
 }
 
 function input(overrides = {}) {
+  const publicationScope = {
+    authority: {
+      publicationScopeSchemaVersion: 1,
+      contractVersion: "review-publication.v1",
+      authorityKind: "review.publish",
+      authorityRef: "authorization:issue-44",
+      missionId: "mission-44",
+      subjectId: "issue-44",
+      missionRevisionId: "sha256:mission-issue-44",
+      repositoryId: "RanSolo/shield-workspace",
+      canonicalRepositoryRoot: "/workspace/shield-workspace",
+      branch: plan().branchSlug,
+      baseRevisionId: base,
+      headRevisionId: head,
+      authorizedPaths: [plan().missionBriefPath],
+      permittedEffects: [
+        "review.branch.push",
+        "review.pull_request.create_draft",
+        "review.pull_request.update_draft",
+      ],
+    },
+    proposedChangedPaths: [plan().missionBriefPath],
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+  };
   return {
     missionState: "approved",
     approvalSource: "coulson",
@@ -50,6 +75,7 @@ function input(overrides = {}) {
       owningSeatId: "may",
     },
     planGate: null,
+    publicationScope,
     ...overrides,
   };
 }
@@ -141,12 +167,16 @@ function runner(responses) {
 
 const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
 const initialChecks = () => [
-  ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
+  ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head),
+];
+const scopeChecks = () => [
+  ok(plan().branchSlug), ok(head), ok(base), ok(),
+  ok(`${plan().missionBriefPath}\0`), ok(), ok(),
 ];
 
 test("approval and verified draft receipt produce workspace_ready while Fury is pending", () => {
   const run = runner([
-    ...initialChecks(), ok("[]"), ok(pr().url), ok(JSON.stringify([pr()])),
+    ...initialChecks(), ok("[]"), ...scopeChecks(), ok(), ok(pr().url), ok(JSON.stringify([pr()])),
   ]);
   const result = prepareDeliveryWorkspaceForDispatch(input(), { run });
 
@@ -178,7 +208,8 @@ test("approval and verified draft receipt produce workspace_ready while Fury is 
 test("creation, update, and verification failures deny specialist dispatch", () => {
   const creation = prepareDeliveryWorkspaceForDispatch(input(), {
     run: runner([
-      ...initialChecks(), ok("[]"), { exitCode: 1, stdout: "", stderr: "denied" },
+      ...initialChecks(), ok("[]"), ...scopeChecks(), ok(),
+      { exitCode: 1, stdout: "", stderr: "denied" },
     ]),
   });
   assert.equal(creation.state, "blocked");
@@ -186,7 +217,7 @@ test("creation, update, and verification failures deny specialist dispatch", () 
 
   const update = prepareDeliveryWorkspaceForDispatch(input(), {
     run: runner([
-      ...initialChecks(), ok(JSON.stringify([pr()])),
+      ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(),
       { exitCode: 1, stdout: "", stderr: "denied" },
     ]),
   });
@@ -195,7 +226,7 @@ test("creation, update, and verification failures deny specialist dispatch", () 
 
   const verification = prepareDeliveryWorkspaceForDispatch(input(), {
     run: runner([
-      ...initialChecks(), ok("[]"), ok(pr().url),
+      ...initialChecks(), ok("[]"), ...scopeChecks(), ok(), ok(pr().url),
       ok(JSON.stringify([pr({ headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" })])),
     ]),
   });
@@ -204,7 +235,7 @@ test("creation, update, and verification failures deny specialist dispatch", () 
 
   const updateVerification = prepareDeliveryWorkspaceForDispatch(input(), {
     run: runner([
-      ...initialChecks(), ok(JSON.stringify([pr()])), ok(),
+      ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(),
       ok(JSON.stringify([pr({ headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" })])),
     ]),
   });
@@ -214,7 +245,7 @@ test("creation, update, and verification failures deny specialist dispatch", () 
 
 test("repeated publication reuses and verifies the existing draft PR", () => {
   const run = runner([
-    ...initialChecks(), ok(JSON.stringify([pr()])), ok(), ok(JSON.stringify([pr()])),
+    ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(), ok(JSON.stringify([pr()])),
   ]);
   const result = prepareDeliveryWorkspaceForDispatch(input(), { run });
 
@@ -227,7 +258,7 @@ test("repeated publication reuses and verifies the existing draft PR", () => {
 
 test("an exact Fury PASS opens dispatch after verified readback", () => {
   const run = runner([
-    ...initialChecks(), ok(JSON.stringify([pr()])), ok(), ok(JSON.stringify([pr()])),
+    ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(), ok(JSON.stringify([pr()])),
   ]);
   const result = prepareDeliveryWorkspaceForDispatch(input({ planGate: passingGate() }), { run });
   assert.equal(result.state, "dispatch_ready");
@@ -238,7 +269,10 @@ test("an exact Fury PASS opens dispatch after verified readback", () => {
 test("bounded reconciliation opens dispatch while Fury FAIL remains workspace_ready", () => {
   const reconciled = prepareDeliveryWorkspaceForDispatch(
     input({ planGate: reconciledGate() }),
-    { run: runner([...initialChecks(), ok(JSON.stringify([pr()])), ok(), ok(JSON.stringify([pr()]))]) },
+    { run: runner([
+      ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(),
+      ok(JSON.stringify([pr()])),
+    ]) },
   );
   assert.equal(reconciled.state, "dispatch_ready");
   assert.equal(reconciled.planGateEvaluation.verifierSeatId, "hill");
@@ -254,7 +288,10 @@ test("bounded reconciliation opens dispatch while Fury FAIL remains workspace_re
         }],
       }),
     }),
-    { run: runner([...initialChecks(), ok(JSON.stringify([pr()])), ok(), ok(JSON.stringify([pr()]))]) },
+    { run: runner([
+      ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(),
+      ok(JSON.stringify([pr()])),
+    ]) },
   );
   assert.equal(failed.state, "workspace_ready");
   assert.deepEqual(failed.planGateEvaluation.reasonCodes, ["REVIEW_FAILED"]);
@@ -322,10 +359,10 @@ test("receipt identity and expected revision mismatches fail closed", () => {
 
   const staleExpectedRevision = prepareDeliveryWorkspaceForDispatch(
     input({ artifactRevisionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }),
-    { run: runner([...initialChecks(), ok("[]"), ok(pr().url), ok(JSON.stringify([pr()]))]) },
+    { run: runner([]) },
   );
   assert.equal(staleExpectedRevision.state, "blocked");
-  assert.equal(staleExpectedRevision.reason, "receipt_artifactRevisionId_mismatch");
+  assert.equal(staleExpectedRevision.reason, "publication_binding_mismatch");
 });
 
 test("handoff rendering derives truthful names from closed seat identity", () => {

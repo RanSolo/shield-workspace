@@ -1,6 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
+import {
+  evaluateReviewPublicationV1,
+  validateReviewPublicationAuthorityV1,
+} from "../dist/review-publication-v1.mjs";
 
 const RECEIPT_FIELDS = Object.freeze([
   "schemaVersion",
@@ -95,6 +100,110 @@ function call(run, commands, executable, args, options) {
   }
   commands.push({ executable, args: [...args], exitCode: result.exitCode });
   return result;
+}
+
+function nulPaths(value) {
+  if (typeof value !== "string") return null;
+  if (value.length === 0) return [];
+  if (!value.endsWith("\0")) return null;
+  return value.slice(0, -1).split("\0").sort();
+}
+
+function treePathKinds(value) {
+  const records = nulPaths(value);
+  if (records === null) return null;
+  const symlinks = [];
+  const gitlinks = [];
+  for (const record of records) {
+    const match = /^(?<mode>[0-9]{6}) (?<type>[a-z]+) [0-9a-f]+\t(?<path>[\s\S]+)$/u.exec(record);
+    if (!match?.groups) return null;
+    if (match.groups.mode === "120000") symlinks.push(match.groups.path);
+    if (match.groups.mode === "160000" || match.groups.type === "commit") gitlinks.push(match.groups.path);
+  }
+  return { symlinks, gitlinks };
+}
+
+/**
+ * Observes one committed base-to-head change set and evaluates the shared,
+ * host-neutral review-publication contract before any repository mutation.
+ */
+export function evaluatePRPublicationScope(
+  authorityInput,
+  proposedChangedPaths,
+  requestedEffects,
+  options = {},
+) {
+  const commands = [];
+  const checked = validateReviewPublicationAuthorityV1(authorityInput);
+  if (checked.state === "blocked") {
+    return { state: "blocked", reason: checked.reasonCode, scopeDigest: null, commands };
+  }
+  const authority = checked.value;
+  const run = options.run ?? defaultRun;
+  const cwd = options.cwd;
+  let canonicalRepositoryRoot;
+  try {
+    canonicalRepositoryRoot = options.canonicalRepositoryRoot ?? realpathSync(cwd ?? process.cwd());
+  } catch {
+    return { state: "blocked", reason: "observation_failed", scopeDigest: null, commands };
+  }
+  const branch = call(run, commands, "git", ["branch", "--show-current"], { cwd });
+  const head = call(run, commands, "git", ["rev-parse", "HEAD"], { cwd });
+  const base = call(run, commands, "git", ["rev-parse", `${authority.baseRevisionId}^{commit}`], { cwd });
+  const status = call(run, commands, "git", ["status", "--porcelain"], { cwd });
+  const changed = call(
+    run,
+    commands,
+    "git",
+    ["diff", "--name-only", "--no-renames", "-z", authority.baseRevisionId, authority.headRevisionId, "--"],
+    { cwd },
+  );
+  const baseTree = call(
+    run,
+    commands,
+    "git",
+    ["ls-tree", "-rz", authority.baseRevisionId, "--", ...authority.authorizedPaths],
+    { cwd },
+  );
+  const headTree = call(
+    run,
+    commands,
+    "git",
+    ["ls-tree", "-rz", authority.headRevisionId, "--", ...authority.authorizedPaths],
+    { cwd },
+  );
+  if ([branch, head, base, status, changed, baseTree, headTree].some((result) => result.exitCode !== 0)) {
+    return { state: "blocked", reason: "observation_failed", scopeDigest: null, commands };
+  }
+  const observedChangedPaths = nulPaths(changed.stdout);
+  const before = treePathKinds(baseTree.stdout);
+  const after = treePathKinds(headTree.stdout);
+  if (observedChangedPaths === null || before === null || after === null) {
+    return { state: "blocked", reason: "observation_failed", scopeDigest: null, commands };
+  }
+  const observedSymlinkPaths = [...new Set([...before.symlinks, ...after.symlinks])].sort();
+  const observedGitlinkPaths = [...new Set([...before.gitlinks, ...after.gitlinks])].sort();
+  const evaluation = evaluateReviewPublicationV1(authority, {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    repositoryId: authority.repositoryId,
+    canonicalRepositoryRoot,
+    branch: branch.stdout.trim(),
+    baseRevisionId: base.stdout.trim(),
+    headRevisionId: head.stdout.trim(),
+    proposedChangedPaths,
+    observedChangedPaths,
+    requestedEffects,
+    observedSymlinkPaths,
+    observedGitlinkPaths,
+    workspaceClean: status.stdout.trim() === "",
+  });
+  return evaluation.state === "allowed"
+    ? { ...evaluation, commands }
+    : { state: "blocked", reason: evaluation.reasonCode, scopeDigest: null, commands };
 }
 
 function readMatchingPRs(run, commands, plan, cwd) {
@@ -211,11 +320,44 @@ export function createOrUpdatePR(plan, options = {}) {
     return blocked("artifact_revision_unavailable", commands);
   }
 
-  const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
-  if (push.exitCode !== 0) return blocked("branch_push_failed", commands);
-
   const lookup = readMatchingPRs(run, commands, plan, cwd);
   if (lookup.state === "error") return blocked(lookup.reason, commands);
+  if (lookup.pr !== null && lookup.pr.state !== "OPEN") {
+    return blocked("matching_pr_is_not_open", commands);
+  }
+  if (lookup.pr !== null && lookup.pr.isDraft !== true) {
+    return blocked("matching_pr_is_not_draft", commands);
+  }
+  const publicationScope = options.publicationScope;
+  if (!isPlainObject(publicationScope) || !Array.isArray(publicationScope.proposedChangedPaths)) {
+    return blocked("publication_scope_required", commands);
+  }
+  const requestedEffects = [
+    "review.branch.push",
+    lookup.pr === null
+      ? "review.pull_request.create_draft"
+      : "review.pull_request.update_draft",
+  ].sort();
+  const scope = evaluatePRPublicationScope(
+    publicationScope.authority,
+    publicationScope.proposedChangedPaths,
+    requestedEffects,
+    {
+      run,
+      cwd,
+      canonicalRepositoryRoot: publicationScope.canonicalRepositoryRoot,
+    },
+  );
+  commands.push(...scope.commands);
+  if (scope.state !== "allowed") return blocked(scope.reason, commands);
+  if (scope.binding.repositoryId !== `${plan.repositoryOwner}/${plan.repositoryName}` ||
+      scope.binding.branch !== plan.branchSlug ||
+      scope.binding.headRevisionId !== artifactRevisionId) {
+    return blocked("publication_binding_mismatch", commands);
+  }
+
+  const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
+  if (push.exitCode !== 0) return blocked("branch_push_failed", commands);
 
   if (lookup.pr === null) {
     const created = call(
@@ -245,12 +387,14 @@ export function createOrUpdatePR(plan, options = {}) {
       prNumber: receipt.receipt.prNumber,
       prUrl: receipt.receipt.prUrl,
       receipt: receipt.receipt,
+      publicationScope: {
+        scopeDigest: scope.scopeDigest,
+        binding: scope.binding,
+      },
       commands,
     };
   }
 
-  if (lookup.pr.state !== "OPEN") return blocked("matching_pr_is_not_open", commands);
-  if (lookup.pr.isDraft !== true) return blocked("matching_pr_is_not_draft", commands);
   const edited = call(
     run,
     commands,
@@ -275,6 +419,10 @@ export function createOrUpdatePR(plan, options = {}) {
     prNumber: receipt.receipt.prNumber,
     prUrl: receipt.receipt.prUrl,
     receipt: receipt.receipt,
+    publicationScope: {
+      scopeDigest: scope.scopeDigest,
+      binding: scope.binding,
+    },
     commands,
   };
 }

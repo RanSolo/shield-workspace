@@ -2,6 +2,12 @@ import type {
   AdapterCandidateEnvelope,
   AdapterTimestamp,
 } from "../dist/adapter-v1.mjs";
+import type {
+  ReviewPublicationAuthorityV1,
+  ReviewPublicationBindingV1,
+} from "../dist/review-publication-v1.mjs";
+
+export * from "../dist/review-publication-v1.mjs";
 
 export interface CommandResult {
   exitCode: number;
@@ -16,7 +22,7 @@ export type CommandRunner = (
 ) => CommandResult;
 
 export interface JournaledCommunicationRequest {
-  schemaVersion: 4;
+  schemaVersion: 4 | 8;
   entryId: string;
   missionId: string;
   sequence: number;
@@ -33,6 +39,8 @@ export interface GitHubPublication {
   repository?: string;
   prNumber?: number;
   workspacePlan?: Record<string, unknown>;
+  proposedChangedPaths: string[];
+  canonicalRepositoryRoot: string;
 }
 
 export type GitHubAdapterResult =
@@ -236,6 +244,10 @@ export type DeliveryWorkspaceResult =
       state: "workspace_ready";
       publicationAction: "created_draft_pr" | "updated_existing_draft_pr";
       receipt: PRWorkspaceReceipt;
+      publicationScope?: {
+        scopeDigest: string;
+        binding: Readonly<ReviewPublicationBindingV1>;
+      };
       planGateEvaluation: FuryPlanGateEvaluationV1;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
@@ -243,6 +255,10 @@ export type DeliveryWorkspaceResult =
       state: "dispatch_ready";
       publicationAction: "created_draft_pr" | "updated_existing_draft_pr";
       receipt: PRWorkspaceReceipt;
+      publicationScope?: {
+        scopeDigest: string;
+        binding: Readonly<ReviewPublicationBindingV1>;
+      };
       planGateEvaluation: FuryPlanGateEvaluationV1;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
@@ -285,6 +301,11 @@ export function prepareDeliveryWorkspaceForDispatch(
     subjectId: string;
     blueprintArtifact: BlueprintArtifactAssertionV1;
     planGate: FuryPlanGateEnvelopeV1 | null;
+    publicationScope: {
+      authority: ReviewPublicationAuthorityV1;
+      proposedChangedPaths: string[];
+      canonicalRepositoryRoot: string;
+    };
   },
   options?: { run?: CommandRunner; cwd?: string },
 ): DeliveryWorkspaceResult;

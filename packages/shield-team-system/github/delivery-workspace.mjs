@@ -5,6 +5,7 @@ import {
   normalizeFuryPlanGateInputV1,
 } from "../contracts/fury-plan-gate-v1.mjs";
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
+import { validateReviewPublicationAuthorityV1 } from "../dist/review-publication-v1.mjs";
 import { createOrUpdatePR, validatePRWorkspaceReceipt } from "./pr-workspace.mjs";
 
 const SEAT_NAMES = Object.freeze({
@@ -59,13 +60,16 @@ const IMMUTABLE_REVISION = /^[0-9a-f]{40,64}$/;
 const GATE_IDENTIFIER = /^[A-Za-z0-9](?:[A-Za-z0-9._:/#@-]{0,126}[A-Za-z0-9])?$/;
 const DELIVERY_INPUT_FIELDS = Object.freeze([
   "missionState", "approvalSource", "artifactRevisionId", "workspacePlan", "body",
-  "missionId", "subjectId", "blueprintArtifact", "planGate",
+  "missionId", "subjectId", "blueprintArtifact", "planGate", "publicationScope",
 ]);
 const WORKSPACE_PLAN_FIELDS = Object.freeze([
   "repositoryOwner", "repositoryName", "baseBranch", "branchSlug", "missionBriefPath", "prTitle",
 ]);
 const BLUEPRINT_FIELDS = Object.freeze([
   "artifactId", "artifactPath", "artifactKind", "owningSeatId",
+]);
+const PUBLICATION_SCOPE_FIELDS = Object.freeze([
+  "authority", "proposedChangedPaths", "canonicalRepositoryRoot",
 ]);
 
 function blocked(reason, commands = []) {
@@ -133,9 +137,25 @@ function normalizeDeliveryInput(input) {
     if (blueprintArtifact.artifactPath !== workspacePlan.missionBriefPath) {
       return { state: "invalid", reason: "blueprint_path_mismatch" };
     }
+    const publicationScope = dataRecord(outer.publicationScope, PUBLICATION_SCOPE_FIELDS);
+    if (publicationScope === null || !Array.isArray(publicationScope.proposedChangedPaths) ||
+        typeof publicationScope.canonicalRepositoryRoot !== "string") {
+      return { state: "invalid", reason: "publication_scope_required" };
+    }
+    const authority = validateReviewPublicationAuthorityV1(publicationScope.authority);
+    if (authority.state === "blocked") {
+      return { state: "invalid", reason: authority.reasonCode };
+    }
     if (!gateIdentifier(outer.missionId) || !gateIdentifier(outer.subjectId) ||
         !IMMUTABLE_REVISION.test(outer.artifactRevisionId)) {
       return { state: "invalid", reason: "invalid_fury_plan_gate_binding" };
+    }
+    if (authority.value.missionId !== outer.missionId ||
+        authority.value.subjectId !== outer.subjectId ||
+        authority.value.headRevisionId !== outer.artifactRevisionId ||
+        authority.value.repositoryId !== `${workspacePlan.repositoryOwner}/${workspacePlan.repositoryName}` ||
+        authority.value.branch !== workspacePlan.branchSlug) {
+      return { state: "invalid", reason: "publication_binding_mismatch" };
     }
     const planGate = normalizeFuryPlanGateInputV1(outer.planGate);
     if (planGate.state !== "valid") {
@@ -148,6 +168,11 @@ function normalizeDeliveryInput(input) {
         workspacePlan: Object.freeze(workspacePlan),
         blueprintArtifact: Object.freeze(blueprintArtifact),
         planGate: planGate.planGate,
+        publicationScope: Object.freeze({
+          authority: authority.value,
+          proposedChangedPaths: Object.freeze([...publicationScope.proposedChangedPaths]),
+          canonicalRepositoryRoot: publicationScope.canonicalRepositoryRoot,
+        }),
       }),
     };
   } catch {
@@ -174,6 +199,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     run: options.run,
     cwd: options.cwd,
     body: snapshot.body,
+    publicationScope: snapshot.publicationScope,
   });
   if (published.state !== "success" && published.state !== "reused") {
     return blocked(published.reason, published.commands);

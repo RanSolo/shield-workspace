@@ -8,6 +8,9 @@ import {
 } from "../public/github.mjs";
 
 const head = "0123456789012345678901234567890123456789";
+const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const branchSlug = "codex/issue-28-github-host-adapter";
+const missionBriefPath = "docs/missions/issue-28-v0.3-5-github-adapter.md";
 
 function journaledRequest(operation = "publish_status") {
   return {
@@ -33,7 +36,46 @@ function journaledRequest(operation = "publish_status") {
   };
 }
 
-function publication() {
+function publicationAuthority() {
+  return {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: "authorization:issue-28",
+    missionId: "mission:fixture",
+    subjectId: "issue:28",
+    missionRevisionId: "sha256:mission-revision",
+    repositoryId: "RanSolo/shield-workspace",
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    branch: branchSlug,
+    baseRevisionId: base,
+    headRevisionId: head,
+    authorizedPaths: [missionBriefPath],
+    permittedEffects: [
+      "review.branch.push",
+      "review.comment.publish",
+      "review.pull_request.create_draft",
+      "review.pull_request.update_draft",
+    ],
+  };
+}
+
+function journaledRequestV2(operation = "publish_status") {
+  const legacy = journaledRequest(operation);
+  return {
+    ...legacy,
+    schemaVersion: 8,
+    payload: {
+      request: {
+        ...legacy.payload.request,
+        adapterContractVersion: 2,
+        publicationAuthority: publicationAuthority(),
+      },
+    },
+  };
+}
+
+function publication(overrides = {}) {
   return {
     candidateId: "candidate:publication:1",
     sourceRef: "github:pr:28",
@@ -41,6 +83,9 @@ function publication() {
     repository: "RanSolo/shield-workspace",
     prNumber: 28,
     body: "Human-readable mission status for the exact revision.",
+    proposedChangedPaths: [missionBriefPath],
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    ...overrides,
   };
 }
 
@@ -57,35 +102,40 @@ function runner(responses) {
 }
 
 const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
+const scopeChecks = () => [
+  ok(branchSlug), ok(head), ok(base), ok(), ok(`${missionBriefPath}\0`), ok(), ok(),
+];
 
 test("GitHub performs no effect without an exact journaled request", () => {
   const run = runner([]);
   const result = deliverGitHubCommunication(journaledRequest().payload.request, publication(), { run });
   assert.deepEqual(result, { state: "blocked", reason: "journaled_request_required", commands: [] });
   assert.equal(run.calls.length, 0);
+
+  assert.deepEqual(
+    deliverGitHubCommunication(journaledRequest(), publication(), { run }),
+    { state: "blocked", reason: "publication_scope_required", commands: [] },
+  );
 });
 
 test("GitHub publishes human-readable status only at the requested exact head", () => {
-  const run = runner([ok(head), ok("github:pr:28:comment:44")]);
-  const result = deliverGitHubCommunication(journaledRequest(), publication(), { run });
+  const run = runner([ok(head), ...scopeChecks(), ok("github:pr:28:comment:44")]);
+  const result = deliverGitHubCommunication(journaledRequestV2(), publication(), { run });
   assert.equal(result.state, "candidate");
   assert.equal(result.candidate.payload.outcome, "delivered");
   assert.equal(result.candidate.payload.receiptRef, "github:pr:28:comment:44");
-  assert.deepEqual(run.calls.map(({ executable, args }) => [executable, ...args.slice(0, 2)]), [
-    ["git", "rev-parse", "HEAD"],
-    ["gh", "pr", "comment"],
-  ]);
-  assert.equal(run.calls[1].options.input, publication().body);
+  assert.equal(run.calls.at(-1).executable, "gh");
+  assert.deepEqual(run.calls.at(-1).args.slice(0, 2), ["pr", "comment"]);
+  assert.equal(run.calls.at(-1).options.input, publication().body);
 });
 
 test("mission brief publication delegates to the existing draft PR workspace", () => {
-  const branchSlug = "codex/issue-28-github-host-adapter";
   const workspacePlan = {
     repositoryOwner: "RanSolo",
     repositoryName: "shield-workspace",
     baseBranch: "main",
     branchSlug,
-    missionBriefPath: "docs/missions/issue-28-v0.3-5-github-adapter.md",
+    missionBriefPath,
     prTitle: "feat: add GitHub host adapter",
   };
   const pr = {
@@ -105,13 +155,14 @@ test("mission brief publication delegates to the existing draft PR workspace", (
     ok(workspacePlan.missionBriefPath),
     ok(head),
     ok(head),
-    ok(),
     ok("[]"),
+    ...scopeChecks(),
+    ok(),
     ok(pr.url),
     ok(JSON.stringify([pr])),
   ]);
   const result = deliverGitHubCommunication(
-    journaledRequest("publish_mission_brief"),
+    journaledRequestV2("publish_mission_brief"),
     { ...publication(), workspacePlan },
     { run },
   );
@@ -123,22 +174,17 @@ test("mission brief publication delegates to the existing draft PR workspace", (
 
 test("GitHub reports stale and unavailable delivery without fabricating evidence", () => {
   const staleRun = runner([ok("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]);
-  const stale = deliverGitHubCommunication(journaledRequest(), publication(), { run: staleRun });
-  assert.equal(stale.state, "candidate");
-  assert.deepEqual(stale.candidate.payload, {
-    requestId: "request:publish_status",
-    outcome: "failed",
-    failureReason: "ambiguous_response",
-    receiptRef: null,
+  const stale = deliverGitHubCommunication(journaledRequestV2(), publication(), { run: staleRun });
+  assert.deepEqual(stale, {
+    state: "blocked",
+    reason: "publication_binding_mismatch",
+    commands: [{ executable: "git", args: ["rev-parse", "HEAD"], exitCode: 0 }],
   });
 
   const unavailableRun = runner([{ exitCode: 1, stdout: "", stderr: "not logged into GitHub" }]);
-  const unavailable = deliverGitHubCommunication(journaledRequest(), publication(), { run: unavailableRun });
-  assert.equal(unavailable.state, "candidate");
-  assert.equal(unavailable.candidate.payload.outcome, "failed");
-  assert.equal(unavailable.candidate.payload.failureReason, "authentication_failed");
-  assert.equal(Object.hasOwn(unavailable.candidate, "humanPrincipalId"), true);
-  assert.equal(unavailable.candidate.humanPrincipalId, null);
+  const unavailable = deliverGitHubCommunication(journaledRequestV2(), publication(), { run: unavailableRun });
+  assert.equal(unavailable.state, "blocked");
+  assert.equal(unavailable.reason, "authentication_failed");
 });
 
 test("GitHub review input remains a candidate and cannot assign authority", () => {

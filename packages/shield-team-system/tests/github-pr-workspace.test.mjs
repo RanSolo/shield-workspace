@@ -4,6 +4,7 @@ import test from "node:test";
 import { createOrUpdatePR } from "../github/pr-workspace.mjs";
 
 const head = "0123456789012345678901234567890123456789";
+const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 function plan() {
   return {
@@ -13,6 +14,33 @@ function plan() {
     branchSlug: "agent/issue-3-pr-mission-workspace-mvp",
     missionBriefPath: "docs/missions/issue-3-pr-mission-workspace-mvp.md",
     prTitle: "feat: mission workspace",
+  };
+}
+
+function publicationScope() {
+  return {
+    authority: {
+      publicationScopeSchemaVersion: 1,
+      contractVersion: "review-publication.v1",
+      authorityKind: "review.publish",
+      authorityRef: "authorization:issue-3",
+      missionId: "mission:issue-3",
+      subjectId: "issue:3",
+      missionRevisionId: "sha256:mission-issue-3",
+      repositoryId: "RanSolo/shield-workspace",
+      canonicalRepositoryRoot: "/workspace/shield-workspace",
+      branch: plan().branchSlug,
+      baseRevisionId: base,
+      headRevisionId: head,
+      authorizedPaths: [plan().missionBriefPath],
+      permittedEffects: [
+        "review.branch.push",
+        "review.pull_request.create_draft",
+        "review.pull_request.update_draft",
+      ],
+    },
+    proposedChangedPaths: [plan().missionBriefPath],
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
   };
 }
 
@@ -29,16 +57,20 @@ function runner(responses) {
 }
 
 const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
+const initialChecks = () => [
+  ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head),
+];
+const scopeChecks = () => [
+  ok(plan().branchSlug), ok(head), ok(base), ok(),
+  ok(`${plan().missionBriefPath}\0`), ok(), ok(),
+];
 
 test("creates a draft PR and verifies it through GitHub readback", () => {
   const run = runner([
-    ok(plan().branchSlug),
-    ok(),
-    ok(plan().missionBriefPath),
-    ok(head),
-    ok(head),
-    ok(),
+    ...initialChecks(),
     ok("[]"),
+    ...scopeChecks(),
+    ok(),
     ok("https://github.com/RanSolo/shield-workspace/pull/4"),
     ok(JSON.stringify([{
       number: 4,
@@ -51,24 +83,23 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
       baseRefName: "main",
     }])),
   ]);
-  const result = createOrUpdatePR(plan(), { run, body: "Mission body" });
+  const result = createOrUpdatePR(plan(), {
+    run,
+    body: "Mission body",
+    publicationScope: publicationScope(),
+  });
 
   assert.equal(result.state, "success");
   assert.equal(result.prNumber, 4);
   assert.equal(result.receipt.artifactRevisionId, head);
-  assert.deepEqual(run.calls.map(({ executable, args }) => [executable, args[0], args[1]]), [
-    ["git", "branch", "--show-current"],
-    ["git", "status", "--porcelain"],
-    ["git", "ls-files", "--error-unmatch"],
-    ["git", "log", "-1"],
-    ["git", "rev-parse", "HEAD"],
-    ["git", "push", "-u"],
-    ["gh", "pr", "list"],
-    ["gh", "pr", "create"],
-    ["gh", "pr", "list"],
-  ]);
-  assert.equal(run.calls[7].options.input, "Mission body");
-  assert.ok(run.calls[7].args.includes("--draft"));
+  const create = run.calls.find(({ executable, args }) =>
+    executable === "gh" && args[0] === "pr" && args[1] === "create");
+  assert.equal(create.options.input, "Mission body");
+  assert.ok(create.args.includes("--draft"));
+  assert.ok(run.calls.findIndex(({ executable, args }) =>
+    executable === "git" && args[0] === "diff") <
+    run.calls.findIndex(({ executable, args }) =>
+      executable === "git" && args[0] === "push"));
 });
 
 test("reuses exactly one open draft PR and updates its body", () => {
@@ -83,10 +114,14 @@ test("reuses exactly one open draft PR and updates its body", () => {
     baseRefName: "main",
   }];
   const run = runner([
-    ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
-    ok(JSON.stringify(existing)), ok(), ok(JSON.stringify(existing)),
+    ...initialChecks(), ok(JSON.stringify(existing)), ...scopeChecks(),
+    ok(), ok(), ok(JSON.stringify(existing)),
   ]);
-  const result = createOrUpdatePR(plan(), { run, body: "Updated body" });
+  const result = createOrUpdatePR(plan(), {
+    run,
+    body: "Updated body",
+    publicationScope: publicationScope(),
+  });
   assert.equal(result.state, "reused");
   assert.equal(result.prNumber, 4);
   assert.deepEqual(run.calls.at(-2).args.slice(0, 4), ["pr", "edit", "4", "--repo"]);
@@ -107,29 +142,37 @@ test("blocks on unsafe repository state and ambiguous or non-draft PRs", () => {
     [{ number: 4, url: "u1", isDraft: true, state: "OPEN", headRefName: "other/branch", headRefOid: head, baseRefName: "main" }],
   ]) {
     const run = runner([
-      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(), ok(JSON.stringify(prs)),
+      ...initialChecks(), ok(JSON.stringify(prs)),
     ]);
-    assert.equal(createOrUpdatePR(plan(), { run, body: "body" }).state, "blocked");
+    assert.equal(createOrUpdatePR(plan(), {
+      run,
+      body: "body",
+      publicationScope: publicationScope(),
+    }).state, "blocked");
   }
 });
 
 test("lookup, creation, and readback failures never fabricate a PR URL", () => {
   const cases = [
     [
-      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
+      ...initialChecks(),
       { exitCode: 1, stdout: "", stderr: "offline" },
     ],
     [
-      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
-      ok("[]"), { exitCode: 1, stdout: "", stderr: "denied" },
+      ...initialChecks(), ok("[]"), ...scopeChecks(), ok(),
+      { exitCode: 1, stdout: "", stderr: "denied" },
     ],
     [
-      ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head), ok(),
-      ok("[]"), ok("created"), ok("[]"),
+      ...initialChecks(), ok("[]"), ...scopeChecks(), ok(),
+      ok("created"), ok("[]"),
     ],
   ];
   for (const responses of cases) {
-    const result = createOrUpdatePR(plan(), { run: runner(responses), body: "body" });
+    const result = createOrUpdatePR(plan(), {
+      run: runner(responses),
+      body: "body",
+      publicationScope: publicationScope(),
+    });
     assert.equal(result.state, "blocked");
     assert.equal(Object.hasOwn(result, "prUrl"), false);
   }

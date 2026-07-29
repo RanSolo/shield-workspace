@@ -17,9 +17,10 @@ import {
 import {
   validateAdapterCandidate,
   validateCommunicationRequest,
+  type AnyCommunicationRequestPayload,
   type CommunicationFailureReason,
-  type CommunicationRequestPayload,
   type CommunicationResultAdapterCandidate,
+  type ReviewPublicationCommunicationResultAdapterCandidate,
 } from "./adapter-v1.mjs";
 import { validateRuntimeBinding, type RuntimeBinding } from "./permission-v1.mjs";
 
@@ -29,6 +30,7 @@ export const ADAPTER_JOURNAL_SCHEMA_VERSION = 4 as const;
 export const RUNNER_JOURNAL_SCHEMA_VERSION = 5 as const;
 export const PERMISSION_JOURNAL_SCHEMA_VERSION = 6 as const;
 export const REVIEW_JOURNAL_SCHEMA_VERSION = 7 as const;
+export const REVIEW_PUBLICATION_JOURNAL_SCHEMA_VERSION = 8 as const;
 export const SUPERVISED_BRIEF_SCHEMA_VERSION = 1 as const;
 export const HUMAN_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const TRUSTED_BINDING_SCHEMA_VERSION = 1 as const;
@@ -214,7 +216,7 @@ export interface RunnerSupervisedEffectCandidate {
   runnerContractVersion: 1;
   candidateKind: "runner.supervised_effect_record";
   authority: "non_authoritative";
-  journalSchemaVersion: 5 | 6 | 7;
+  journalSchemaVersion: 5 | 6 | 7 | 8;
   missionId: string;
   subjectId: string;
   revisionId: string;
@@ -318,7 +320,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 7;
+    schemaVersion: 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -332,7 +334,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
+    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -345,7 +347,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
+    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -354,7 +356,7 @@ export type SupervisedJournalEntry =
     payload: { from: ExecutionStatus; to: ExecutionStatus; reason: string };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
+    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -387,25 +389,25 @@ export type SupervisedJournalEntry =
     payload: { reason: DelegatedInvalidationReason };
   }
   | {
-    schemaVersion: 4 | 5 | 6 | 7;
+    schemaVersion: 4 | 5 | 6 | 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
     type: "communication.requested";
     timestamp: EvidenceTimestamp;
-    payload: { request: CommunicationRequestPayload };
+    payload: { request: AnyCommunicationRequestPayload };
   }
   | {
-    schemaVersion: 4 | 5 | 6 | 7;
+    schemaVersion: 4 | 5 | 6 | 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
     type: "communication.result_recorded";
     timestamp: EvidenceTimestamp;
-    payload: { candidate: CommunicationResultAdapterCandidate };
+    payload: { candidate: CommunicationResultAdapterCandidate | ReviewPublicationCommunicationResultAdapterCandidate };
   }
   | {
-    schemaVersion: 5 | 6 | 7;
+    schemaVersion: 5 | 6 | 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -414,7 +416,7 @@ export type SupervisedJournalEntry =
     payload: ExecutionEffectPayload;
   }
   | {
-    schemaVersion: 6 | 7;
+    schemaVersion: 6 | 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -423,7 +425,7 @@ export type SupervisedJournalEntry =
     payload: { binding: RuntimeBinding; authorization: SignedRuntimeBindingAuthorization };
   }
   | {
-    schemaVersion: 6 | 7;
+    schemaVersion: 6 | 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -432,7 +434,7 @@ export type SupervisedJournalEntry =
     payload: { priorBindingId: string; priorBindingVersion: number; binding: RuntimeBinding; authorization: SignedRuntimeBindingAuthorization };
   }
   | {
-    schemaVersion: 7;
+    schemaVersion: 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -444,7 +446,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 7;
+    schemaVersion: 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -453,7 +455,7 @@ export type SupervisedJournalEntry =
     payload: { review: FuryReviewRecord };
   }
   | {
-    schemaVersion: 7;
+    schemaVersion: 7 | 8;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -476,16 +478,16 @@ export interface ReadinessProjection {
   evaluatedThroughSequence: number;
 }
 
-export interface CommunicationRequestProjection extends CommunicationRequestPayload {
+export type CommunicationRequestProjection = AnyCommunicationRequestPayload & {
   state: "queued" | "delivered" | "failed" | "unknown";
   candidateId: string | null;
   failureReason: CommunicationFailureReason | null;
   receiptRef: string | null;
   sourceRef: string | null;
-}
+};
 
 export interface SupervisedMissionProjection {
-  journalSchemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
+  journalSchemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8;
   missionId: string;
   brief: SupervisedMissionBrief;
   governance: { state: GovernanceState };
@@ -1231,24 +1233,24 @@ export function createMissionBegunEntry(
 export function createMissionBegunEntry(
   brief: SupervisedMissionBrief,
   bindings: TrustedHumanBinding[],
-  journalSchemaVersion: 7,
+  journalSchemaVersion: 7 | 8,
   reviewSubject: ReviewSubjectRevision,
 ): SupervisedJournalEntry;
 export function createMissionBegunEntry(
   brief: SupervisedMissionBrief,
   bindings: TrustedHumanBinding[],
-  journalSchemaVersion: 2 | 3 | 4 | 5 | 6 | 7 = 2,
+  journalSchemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 = 2,
   reviewSubject?: ReviewSubjectRevision,
 ): SupervisedJournalEntry {
-  if (journalSchemaVersion === 7) {
-    if (reviewSubject === undefined) throw new Error("Schema 7 requires a review subject.");
+  if (journalSchemaVersion === 7 || journalSchemaVersion === 8) {
+    if (reviewSubject === undefined) throw new Error(`Schema ${journalSchemaVersion} requires a review subject.`);
     const errors = reviewSubjectErrors(reviewSubject, "mission.begun reviewSubject");
     if (errors.length > 0) throw new Error(errors.join(" "));
     if (reviewSubject.supersedesRevisionId !== null) {
       throw new Error("Initial review subject cannot supersede another revision.");
     }
     return {
-      schemaVersion: 7,
+      schemaVersion: journalSchemaVersion,
       entryId: `entry:${brief.missionId}:0`,
       missionId: brief.missionId,
       sequence: 0,
@@ -1262,7 +1264,7 @@ export function createMissionBegunEntry(
       },
     };
   }
-  if (reviewSubject !== undefined) throw new Error("Review subjects require journal schema 7.");
+  if (reviewSubject !== undefined) throw new Error("Review subjects require journal schema 7 or 8.");
   return {
     schemaVersion: journalSchemaVersion,
     entryId: `entry:${brief.missionId}:0`,
@@ -1280,10 +1282,10 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   const begun = entries[0];
   const journalSchemaVersion = begun.schemaVersion;
   const begunErrors = exactFields(begun, ["schemaVersion", "entryId", "missionId", "sequence", "type", "timestamp", "payload"], "Entry 0");
-  if (begunErrors.length > 0 || (journalSchemaVersion !== 2 && journalSchemaVersion !== 3 && journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) || begun.sequence !== 0 || !isPlainObject(begun.payload)) return invalid("malformed", ...begunErrors, "Entry 0 is invalid.");
+  if (begunErrors.length > 0 || (journalSchemaVersion !== 2 && journalSchemaVersion !== 3 && journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7 && journalSchemaVersion !== 8) || begun.sequence !== 0 || !isPlainObject(begun.payload)) return invalid("malformed", ...begunErrors, "Entry 0 is invalid.");
   const payloadErrors = exactFields(
     begun.payload,
-    journalSchemaVersion === 7
+    journalSchemaVersion === 7 || journalSchemaVersion === 8
       ? ["brief", "trustedBindings", "requirements", "reviewSubject"]
       : ["brief", "trustedBindings", "requirements"],
     "mission.begun payload",
@@ -1297,7 +1299,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   const registryResult = validateTrustedBindingRegistry({ schemaVersion: 1, bindings: begun.payload.trustedBindings });
   if (registryResult.state === "invalid") return registryResult;
   let reviewSubject: ReviewSubjectRevision | undefined;
-  if (journalSchemaVersion === 7) {
+  if (journalSchemaVersion === 7 || journalSchemaVersion === 8) {
     const errors = reviewSubjectErrors(begun.payload.reviewSubject, "mission.begun reviewSubject");
     if (errors.length > 0) return invalid("malformed", ...errors);
     reviewSubject = begun.payload.reviewSubject as unknown as ReviewSubjectRevision;
@@ -1305,7 +1307,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       return invalid("malformed", "Initial review subject cannot supersede another revision.");
     }
   }
-  const initialRequirements = journalSchemaVersion === 7
+  const initialRequirements = journalSchemaVersion === 7 || journalSchemaVersion === 8
     ? createReviewEvidenceRequirements(briefResult.value, reviewSubject as ReviewSubjectRevision, 0)
     : createEvidenceRequirements(briefResult.value);
   if (canonicalJson(begun.payload.requirements) !== canonicalJson(initialRequirements)) return invalid("malformed", "mission.begun requirements are not canonical.");
@@ -1339,7 +1341,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   const entryIds = new Set<string>([String(begun.entryId)]);
   let previousTime = Date.parse((begun.timestamp as unknown as EvidenceTimestamp).value);
   const communicationState = (): CommunicationState => {
-    if ((journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) || communicationRequests.length === 0) return "not-configured";
+    if ((journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7 && journalSchemaVersion !== 8) || communicationRequests.length === 0) return "not-configured";
     if (communicationRequests.some((request) => request.state === "queued")) return "queued";
     if (communicationRequests.some((request) => request.state === "failed")) return "failed";
     if (communicationRequests.some((request) => request.state === "unknown")) return "unknown";
@@ -1389,7 +1391,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
             evaluatedThroughSequence: sequence,
           };
     return {
-      journalSchemaVersion: journalSchemaVersion as 2 | 3 | 4 | 5 | 6 | 7,
+      journalSchemaVersion: journalSchemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8,
       missionId: briefResult.value.missionId,
       brief: briefResult.value,
       governance: { state: governance },
@@ -1416,7 +1418,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       trustedBindings: registryResult.value.bindings,
       requirements: activeRequirements.map((requirement) => ({ ...requirement })),
       evidence: [...evidence],
-      ...(journalSchemaVersion === 7 && currentReviewSubject !== undefined && routeToFitz !== undefined
+      ...((journalSchemaVersion === 7 || journalSchemaVersion === 8) && currentReviewSubject !== undefined && routeToFitz !== undefined
         ? {
           reviewSubject: { ...currentReviewSubject },
           reviewRevisions: reviewRevisions.map((revision) => ({ ...revision })),
@@ -1463,8 +1465,8 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
     const current = baseProjection(index - 1);
 
     if (input.type === "subject.revision_superseded") {
-      if (journalSchemaVersion !== 7 || currentReviewSubject === undefined) {
-        return invalid("unsupported_schema", "Review-subject supersession requires journal v7.");
+      if ((journalSchemaVersion !== 7 && journalSchemaVersion !== 8) || currentReviewSubject === undefined) {
+        return invalid("unsupported_schema", "Review-subject supersession requires journal v7 or v8.");
       }
       const nested = exactFields(input.payload, ["reviewSubject", "requirements"], `Entry ${index} review-subject payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
@@ -1515,8 +1517,8 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       activeRequirements = nextRequirements;
       currentReviewSubject = replacement;
     } else if (input.type === "fury.review_changes_requested" || input.type === "fury.review_approved") {
-      if (journalSchemaVersion !== 7 || currentReviewSubject === undefined) {
-        return invalid("unsupported_schema", "Fury review records require journal v7.");
+      if ((journalSchemaVersion !== 7 && journalSchemaVersion !== 8) || currentReviewSubject === undefined) {
+        return invalid("unsupported_schema", "Fury review records require journal v7 or v8.");
       }
       const nested = exactFields(input.payload, ["review"], `Entry ${index} Fury review payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
@@ -1594,7 +1596,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       const checked = verifySignedHumanEvidence(input.payload.evidence, current, index);
       if (checked.state === "invalid") return checked;
       if (checked.value.seatId === "coulson") return invalid("seat_mismatch", "Coulson governance evidence must use a mission command.");
-      if (journalSchemaVersion === 7 &&
+      if ((journalSchemaVersion === 7 || journalSchemaVersion === 8) &&
           (checked.value.seatId === "fitz" || checked.value.seatId === "simmons") &&
           (current.routeToFitz?.state !== "ready" ||
            current.routeToFitz.revisionId !== checked.value.revisionId)) {
@@ -1606,7 +1608,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       evidenceIds.add(checked.value.evidenceId);
       evidence.push(checked.value);
     } else if (input.type === "communication.requested") {
-      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Communication requests require journal v4, v5, v6, or v7.");
+      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7 && journalSchemaVersion !== 8) return invalid("unsupported_schema", "Communication requests require journal v4 through v8.");
       if (governance !== "approved" || authorization.state !== "authorized") {
         return invalid("governance_denied", `Entry ${index} communication request requires active mission authorization.`);
       }
@@ -1615,6 +1617,9 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       const checked = validateCommunicationRequest(input.payload.request);
       if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
       const request = checked.value;
+      if (journalSchemaVersion === 8 ? request.adapterContractVersion !== 2 : request.adapterContractVersion !== 1) {
+        return invalid("unsupported_schema", `Entry ${index} communication request adapter version does not match its journal.`);
+      }
       if (request.missionId !== briefResult.value.missionId || request.subjectId !== briefResult.value.subjectId) {
         return invalid("mission_mismatch", `Entry ${index} communication request does not match the canonical mission subject.`);
       }
@@ -1633,12 +1638,15 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         sourceRef: null,
       });
     } else if (input.type === "communication.result_recorded") {
-      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Communication results require journal v4, v5, v6, or v7.");
+      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7 && journalSchemaVersion !== 8) return invalid("unsupported_schema", "Communication results require journal v4 through v8.");
       const nested = exactFields(input.payload, ["candidate"], `Entry ${index} communication result payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
       const checked = validateAdapterCandidate(input.payload.candidate);
       if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
       const candidate = checked.value;
+      if (journalSchemaVersion === 8 ? candidate.adapterContractVersion !== 2 : candidate.adapterContractVersion !== 1) {
+        return invalid("unsupported_schema", `Entry ${index} communication result adapter version does not match its journal.`);
+      }
       if (candidate.candidateKind !== "communication_result") {
         return invalid("candidate_kind_mismatch", `Entry ${index} requires a communication-result candidate.`);
       }
@@ -1663,7 +1671,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       request.receiptRef = candidate.payload.receiptRef;
       request.sourceRef = candidate.sourceRef;
     } else if (input.type === "execution.effect_recorded") {
-      if (journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Execution effect records require journal v5, v6, or v7.");
+      if (journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7 && journalSchemaVersion !== 8) return invalid("unsupported_schema", "Execution effect records require journal v5 through v8.");
       if (governance !== "approved" || authorization.state !== "authorized") {
         return invalid("governance_denied", `Entry ${index} execution effect requires active mission authorization.`);
       }
@@ -1703,7 +1711,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         timestamp: input.timestamp as unknown as EvidenceTimestamp,
       });
     } else if (input.type === "runtime.binding_recorded") {
-      if (journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Runtime bindings require journal v6 or v7.");
+      if (journalSchemaVersion !== 6 && journalSchemaVersion !== 7 && journalSchemaVersion !== 8) return invalid("unsupported_schema", "Runtime bindings require journal v6 through v8.");
       const nested = exactFields(input.payload, ["binding", "authorization"], `Entry ${index} runtime binding payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
       const checked = validateRuntimeBinding(input.payload.binding);
@@ -1718,7 +1726,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (canonicalJson(input.timestamp) !== canonicalJson(authorized.value.timestamp)) return invalid("malformed", "Runtime binding timestamp does not match its authorization.");
       runtimeBindings.push(copyRuntimeBinding(binding));
     } else if (input.type === "runtime.binding_superseded") {
-      if (journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6 or v7.");
+      if (journalSchemaVersion !== 6 && journalSchemaVersion !== 7 && journalSchemaVersion !== 8) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6 through v8.");
       const nested = exactFields(input.payload, ["priorBindingId", "priorBindingVersion", "binding", "authorization"], `Entry ${index} runtime supersession payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
       const supersession = input.payload as Record<string, unknown>;
@@ -1825,7 +1833,7 @@ export function createEvidenceEntry(
     return invalid("duplicate_evidence", "Evidence has already been recorded.");
   }
   if (checked.value.seatId === "coulson") return invalid("seat_mismatch", "Coulson evidence must use a mission governance command.");
-  if (projection.journalSchemaVersion === 7 &&
+  if ((projection.journalSchemaVersion === 7 || projection.journalSchemaVersion === 8) &&
       (checked.value.seatId === "fitz" || checked.value.seatId === "simmons") &&
       (projection.routeToFitz?.state !== "ready" ||
        projection.routeToFitz.revisionId !== checked.value.revisionId)) {
@@ -1848,8 +1856,8 @@ export function createReviewSubjectSupersessionEntry(
   reviewSubjectInput: unknown,
   timestamp: EvidenceTimestamp,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 7 || projection.reviewSubject === undefined) {
-    return invalid("unsupported_schema", "Review-subject supersession requires journal v7.");
+  if ((projection.journalSchemaVersion !== 7 && projection.journalSchemaVersion !== 8) || projection.reviewSubject === undefined) {
+    return invalid("unsupported_schema", "Review-subject supersession requires journal v7 or v8.");
   }
   const subjectErrors = reviewSubjectErrors(reviewSubjectInput, "Review subject");
   if (subjectErrors.length > 0) return invalid("malformed", ...subjectErrors);
@@ -1880,7 +1888,7 @@ export function createReviewSubjectSupersessionEntry(
     return invalid("missing_requirement", error instanceof Error ? error.message : "Review requirements are ambiguous.");
   }
   return valid({
-    schemaVersion: 7,
+    schemaVersion: projection.journalSchemaVersion,
     entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
     missionId: projection.missionId,
     sequence: projection.lastSequence + 1,
@@ -1894,8 +1902,8 @@ export function createFuryReviewEntry(
   projection: SupervisedMissionProjection,
   reviewInput: unknown,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 7 || projection.reviewSubject === undefined) {
-    return invalid("unsupported_schema", "Fury review records require journal v7.");
+  if ((projection.journalSchemaVersion !== 7 && projection.journalSchemaVersion !== 8) || projection.reviewSubject === undefined) {
+    return invalid("unsupported_schema", "Fury review records require journal v7 or v8.");
   }
   const errors = furyReviewErrors(reviewInput, "Fury review");
   if (errors.length > 0) return invalid("malformed", ...errors);
@@ -1917,7 +1925,7 @@ export function createFuryReviewEntry(
     return invalid("decision_mismatch", "A final Fury record already exists for this revision.");
   }
   return valid({
-    schemaVersion: 7,
+    schemaVersion: projection.journalSchemaVersion,
     entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
     missionId: projection.missionId,
     sequence: projection.lastSequence + 1,
@@ -1937,7 +1945,7 @@ export function createHumanEvidenceEntryFromAdapterCandidate(
   if (candidate.candidateKind !== "human_evidence") {
     return invalid("candidate_kind_mismatch", "Human evidence intake requires a human-evidence candidate.");
   }
-  const evidenceSubject = projection.journalSchemaVersion === 7
+  const evidenceSubject = projection.journalSchemaVersion === 7 || projection.journalSchemaVersion === 8
     ? projection.reviewSubject
     : { subjectId: projection.brief.subjectId, revisionId: projection.brief.revisionId };
   if (evidenceSubject === undefined ||
@@ -1956,13 +1964,16 @@ export function createCommunicationRequestEntry(
   requestInput: unknown,
   timestamp: EvidenceTimestamp,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) return invalid("unsupported_schema", "Communication requests require journal v4, v5, v6, or v7.");
+  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7 && projection.journalSchemaVersion !== 8) return invalid("unsupported_schema", "Communication requests require journal v4 through v8.");
   if (projection.governance.state !== "approved" || projection.authorization.state !== "authorized") {
     return invalid("governance_denied", "Communication request requires active mission authorization.");
   }
   const checked = validateCommunicationRequest(requestInput);
   if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
   const request = checked.value;
+  if (projection.journalSchemaVersion === 8 ? request.adapterContractVersion !== 2 : request.adapterContractVersion !== 1) {
+    return invalid("unsupported_schema", "Communication request adapter version does not match its journal.");
+  }
   const timeErrors = timestampErrors(timestamp, "Communication request timestamp");
   if (timeErrors.length > 0) return invalid("malformed", ...timeErrors);
   if (request.missionId !== projection.missionId || request.subjectId !== projection.brief.subjectId) {
@@ -1989,10 +2000,13 @@ export function createCommunicationResultEntry(
   projection: SupervisedMissionProjection,
   candidateInput: unknown,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) return invalid("unsupported_schema", "Communication results require journal v4, v5, v6, or v7.");
+  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7 && projection.journalSchemaVersion !== 8) return invalid("unsupported_schema", "Communication results require journal v4 through v8.");
   const checked = validateAdapterCandidate(candidateInput);
   if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
   const candidate = checked.value;
+  if (projection.journalSchemaVersion === 8 ? candidate.adapterContractVersion !== 2 : candidate.adapterContractVersion !== 1) {
+    return invalid("unsupported_schema", "Communication result adapter version does not match its journal.");
+  }
   if (candidate.candidateKind !== "communication_result") {
     return invalid("candidate_kind_mismatch", "Communication result intake requires a communication-result candidate.");
   }
@@ -2025,8 +2039,8 @@ export function createExecutionEffectEntry(
   candidateInput: unknown,
   timestamp: EvidenceTimestamp,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) {
-    return invalid("unsupported_schema", "Execution effect records require journal v5, v6, or v7.");
+  if (projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7 && projection.journalSchemaVersion !== 8) {
+    return invalid("unsupported_schema", "Execution effect records require journal v5 through v8.");
   }
   if (projection.governance.state !== "approved" || projection.authorization.state !== "authorized") {
     return invalid("governance_denied", "Execution effect recording requires active mission authorization.");
@@ -2077,7 +2091,7 @@ export function createRuntimeBindingEntry(
   bindingInput: unknown,
   authorization: SignedRuntimeBindingAuthorization,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) return invalid("unsupported_schema", "Runtime bindings require journal v6 or v7.");
+  if (projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7 && projection.journalSchemaVersion !== 8) return invalid("unsupported_schema", "Runtime bindings require journal v6 through v8.");
   const checked = validateRuntimeBinding(bindingInput);
   if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
   const binding = checked.value;
@@ -2097,7 +2111,7 @@ export function createRuntimeBindingSupersessionEntry(
   bindingInput: unknown,
   authorization: SignedRuntimeBindingAuthorization,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6 or v7.");
+  if (projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7 && projection.journalSchemaVersion !== 8) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6 through v8.");
   const prior = projection.activeRuntimeBindings.filter((candidate) => candidate.bindingId === priorBindingId && candidate.bindingVersion === priorBindingVersion);
   if (prior.length !== 1) return invalid("binding_ambiguous", "Runtime binding supersession requires exactly one active prior binding.");
   const checked = validateRuntimeBinding(bindingInput);
