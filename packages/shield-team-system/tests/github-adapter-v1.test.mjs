@@ -151,6 +151,59 @@ test("GitHub rejects stateful publication identity before any effect", () => {
   assert.equal(run.calls.length, 0);
 });
 
+test("GitHub rejects stateful effect inputs before any effect", () => {
+  const fixture = publicationFixture();
+  const stateful = publication();
+  let reads = 0;
+  Object.defineProperty(stateful, "prNumber", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? 28 : 29;
+    },
+  });
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    stateful,
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_input_required");
+  assert.equal(reads, 0);
+  assert.equal(run.calls.length, 0);
+});
+
+test("GitHub rejects a stateful mission workspace plan before any effect", () => {
+  const fixture = publicationFixture("publish_mission_brief", "create");
+  const workspacePlan = {
+    repositoryOwner: "RanSolo",
+    repositoryName: "shield-workspace",
+    baseBranch: "main",
+    branchSlug,
+    missionBriefPath,
+    prTitle: "feat: add GitHub host adapter",
+  };
+  let reads = 0;
+  Object.defineProperty(workspacePlan, "branchSlug", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? branchSlug : "codex/changed";
+    },
+  });
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({ workspacePlan }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_input_required");
+  assert.equal(reads, 0);
+  assert.equal(run.calls.length, 0);
+});
+
 test("mission brief publication delegates to the existing draft PR workspace", () => {
   const fixture = publicationFixture("publish_mission_brief", "create");
   const workspacePlan = {

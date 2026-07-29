@@ -21,9 +21,60 @@ const FAILURE_REASONS = new Set([
   "network_failed",
   "unknown",
 ]);
+const WORKSPACE_PLAN_FIELDS = Object.freeze([
+  "repositoryOwner",
+  "repositoryName",
+  "baseBranch",
+  "branchSlug",
+  "missionBriefPath",
+  "prTitle",
+]);
 
 function blocked(reason, commands = []) {
   return { state: "blocked", reason, commands };
+}
+
+function dataValues(value, fields, exact = false) {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype) {
+      return null;
+    }
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string") ||
+        fields.some((field) => !keys.includes(field)) ||
+        (exact && (keys.length !== fields.length ||
+          keys.some((key) => !fields.includes(key))))) {
+      return null;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const result = {};
+    for (const field of fields) {
+      const descriptor = descriptors[field];
+      if (!descriptor || !("value" in descriptor) || descriptor.get || descriptor.set) {
+        return null;
+      }
+      result[field] = descriptor.value;
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotPublicationEffectInput(operation, publication) {
+  if (operation === "publish_mission_brief") {
+    const input = dataValues(publication, ["workspacePlan", "body"]);
+    if (input === null) return null;
+    const workspacePlan = dataValues(input.workspacePlan, WORKSPACE_PLAN_FIELDS, true);
+    if (workspacePlan === null) return null;
+    return Object.freeze({
+      workspacePlan: Object.freeze(workspacePlan),
+      body: input.body,
+    });
+  }
+  const input = dataValues(publication, ["prNumber", "body", "repository"]);
+  return input === null ? null : Object.freeze(input);
 }
 
 function exactPlain(value, fields) {
@@ -232,6 +283,8 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
   if (resolved.state !== "allowed") return blocked(resolved.reason);
   const request = resolved.request;
   if (request.adapterId !== "github") return blocked("github_request_required");
+  const publicationEffect = snapshotPublicationEffectInput(request.operation, publication);
+  if (publicationEffect === null) return blocked("publication_input_required");
   const identity = validateGitHubPublicationResultIdentity(resolved, publication);
   if (identity.state !== "valid") return blocked(identity.reason);
   const publicationIdentity = identity.value;
@@ -240,11 +293,11 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
   const cwd = options.cwd;
   const commands = [];
   if (request.operation === "publish_mission_brief") {
-    if (!publication.workspacePlan || typeof publication.body !== "string") return blocked("mission_brief_publication_required", commands);
-    const published = createOrUpdatePR(publication.workspacePlan, {
+    if (typeof publicationEffect.body !== "string") return blocked("mission_brief_publication_required", commands);
+    const published = createOrUpdatePR(publicationEffect.workspacePlan, {
       run,
       cwd,
-      body: publication.body,
+      body: publicationEffect.body,
       publicationRequestId,
       loadJournal: options.loadJournal,
       realpath: options.realpath,
@@ -280,18 +333,19 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
     return blocked(published.reason, commands);
   }
 
-  if (!Number.isInteger(publication.prNumber) || publication.prNumber < 1 || typeof publication.body !== "string") {
+  if (!Number.isInteger(publicationEffect.prNumber) || publicationEffect.prNumber < 1 ||
+      typeof publicationEffect.body !== "string") {
     return blocked("pr_publication_required", commands);
   }
-  if (!isSafeGitHubContent([publication.body]).safe) return blocked("unsafe_github_content", commands);
-  const repository = publication.repository;
+  if (!isSafeGitHubContent([publicationEffect.body]).safe) return blocked("unsafe_github_content", commands);
+  const repository = publicationEffect.repository;
   if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
     return blocked("repository_required", commands);
   }
   if (JSON.stringify(request.requestedEffects) !== JSON.stringify(["review.comment.publish"])) {
     return blocked("publication_effect_mismatch", commands);
   }
-  if (request.targetRef !== `github:pr:${publication.prNumber}`) {
+  if (request.targetRef !== `github:pr:${publicationEffect.prNumber}`) {
     return blocked("publication_target_mismatch", commands);
   }
   const scope = evaluatePRPublicationScope(
@@ -307,8 +361,8 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
     run,
     commands,
     "gh",
-    ["pr", "comment", String(publication.prNumber), "--repo", repository, "--body-file", "-"],
-    { cwd, input: publication.body },
+    ["pr", "comment", String(publicationEffect.prNumber), "--repo", repository, "--body-file", "-"],
+    { cwd, input: publicationEffect.body },
   );
   if (delivered.exitCode !== 0) {
     return checkedCandidate(resultCandidate(request, publicationIdentity, "failed", failureReason(delivered), null, scope), commands);
