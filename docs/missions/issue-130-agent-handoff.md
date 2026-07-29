@@ -27,9 +27,18 @@ specialists return bounded findings rather than rewriting this file directly.
   `docs/missions/issue-130-shared-runtime-instructions.md`
 - Intake v1 dogfood result:
   `docs/missions/issue-130-mission-intake-v1-result.json`
+- Local machine-readable brief:
+  `.shield/artifacts/issue-130-mission-brief.json`
+- Local journal:
+  `.shield/journals/bWlzc2lvbjppc3N1ZS0xMzA.jsonl`
+- Local journal verification report:
+  `.shield/reports/issue-130-journal-initialization.json`
 
 The trusted host must supply the current exact repository revision at each
 dispatch. This file must not be used to infer that mutable value.
+
+The `.shield/` paths above are local operational state ignored by the repository
+root. They are durable on this host but are not Git-tracked evidence.
 
 ## Human direction
 
@@ -37,16 +46,16 @@ Coulson instructed the team to begin Mission #130 "meta style": create the
 smallest executable `missionIntake(...)` seam, then use it to intake Issue #130
 itself.
 
-This direction was supplied through the active human conversation. It is not
-signed journal evidence because the runtime intake path does not yet exist.
-That limitation must remain visible.
+This direction was supplied through the active human conversation. The intake
+runtime now exists and the journal is initialized, but the original direction
+has not been converted into signed Coulson journal evidence. That authority
+boundary remains visible.
 
 ## Current objective
 
-Inventory all existing package functions that may participate in mission
-intake. Freeze a closed intake request/result that composes those functions
-without granting authority, dispatching a seat, invoking tools, or publishing
-externally.
+Operate the smallest executable mission-intake slice, preserve its evidence,
+and identify the next authoritative lifecycle transition without granting
+authority, dispatching a seat, invoking tools, or publishing runtime effects.
 
 ## Current route
 
@@ -60,8 +69,11 @@ manual bootstrap intake
 → human sponsor bounded implementation approval
 → bounded implementation
 → self-intake of Issue #130
-→ report runtime participation and remaining workarounds
-→ stop at the next human gate
+→ provision local repository configuration and trusted public bindings
+→ rerun intake: no blockers, initialize_journal
+→ create exact machine-readable brief
+→ initialize and verify journal sequence 0
+→ stop: waiting for signed Coulson mission authorization
 ```
 
 ## Communication surfaces
@@ -86,11 +98,11 @@ Mission Workspace yet.
 
 ### Journaled communication
 
-External review publication now requires journal v8 exact signed publication
+External review publication requires journal v8 exact signed publication
 authority, a publication-bound communication request, full replay before the
-effect, adapter delivery, and correlated result evidence. The current mission
-has no initialized S.H.I.E.L.D. journal and must not claim journaled
-communication or review-publication authority.
+effect, adapter delivery, and correlated result evidence. Mission #130 now has
+an initialized local journal v2 with only `mission.begun`. Communication remains
+`not-configured`; the journal grants no review-publication authority.
 
 ## Runtime participation ledger
 
@@ -98,12 +110,14 @@ communication or review-publication authority.
 | --- | --- | --- |
 | Issue #130 creation | human-directed plus direct GitHub CLI | GitHub Issue #130 |
 | Mission branch creation | human-directed plus direct Git | local Git branch |
-| Mission Brief and Hill Plan drafting | prompt-directed bootstrap workaround | repository files, not yet committed |
+| Mission Brief and Hill Plan drafting | prompt-directed bootstrap workaround | committed repository files |
 | Intake API candidate audit | prompt-directed bootstrap workaround using direct repository reads | repository audit file |
 | Shared runtime instruction preservation | human-directed bootstrap input | repository file |
 | PR #129 base integration | framework code merged by human; incorporated through direct Git | merge `68defc3fed912dda663d00438ce68c249fe39d5c` |
 | `missionIntakeV1(...)` execution | package runtime executed against Issue #130 at exact implementation revision | `docs/missions/issue-130-mission-intake-v1-result.json` |
-| SHIELD journal initialization | blocked: repository not initialized | none |
+| Repository provisioning | human-authorized local initialization plus validated public binding registry | local `.shield/config.json` and `.shield/trusted-human-bindings.json`; `shield doctor` healthy |
+| Provisioned `missionIntakeV1(...)` rerun | package runtime observed repository configuration and returned no blockers | host output: `nextAction: initialize_journal` |
+| SHIELD journal initialization | human-authorized `shield mission begin`; one durable `mission.begun` entry | local journal and verification report listed above |
 | Daisy or May runtime dispatch | not performed | none |
 | Fury architecture verdict | advisory Fury review through direct host subagent dispatch/await; not a formal journaled gate | `docs/missions/issue-130-fury-intake-v1-review.md` |
 | Draft PR Mission Workspace publication | not performed | none |
@@ -155,7 +169,7 @@ communication or review-publication authority.
 - Reused package APIs: configuration validation, risk classification,
   canonical brief creation/validation, and evidence requirements.
 - No CLI, journal write, dispatch, model, tool, adapter, or publication effect.
-- Current gate: Fury architecture review.
+- Gate at that time: Fury architecture review.
 - Enforcement: plan artifact only.
 - Runtime proof: none until the public function is implemented and dogfooded.
 
@@ -252,6 +266,45 @@ communication or review-publication authority.
 - Runtime proof: yes, limited to executable intake participation.
 - Canonical mission-loop proof: no.
 
+### Repository provisioning — verified
+
+- The human initialized S.H.I.E.L.D. at the workspace root.
+- `shield doctor --json` passed every check.
+- The human explicitly assigned `human:ransolo` to Coulson and Fitz.
+- Separate Ed25519 public keys were bound to the two seats.
+- The closed trusted binding registry and its exact configuration references
+  validated successfully.
+- Private keys and passphrases remain outside the repository.
+- A provisioned `missionIntakeV1(...)` rerun returned:
+  - `state: candidate`;
+  - `authority: non_authoritative`;
+  - `persistence: not_persisted`;
+  - `blockers: []`;
+  - `nextAction: initialize_journal`.
+
+### Journal initialization — verified
+
+- Human authority was explicit and limited to creating the exact
+  machine-readable brief, running `shield mission begin`, and initializing and
+  verifying the journal.
+- The machine-readable brief exactly matched the brief produced by the first
+  intake run:
+  `sha256:O4Cmf5kUC7cXMgJ5FZZw1Ho8KUJupLmAF3W78drNfiI`.
+- `shield mission begin` wrote one `mission.begun` entry.
+- Independent `shield mission status` and mission-store readback both verified:
+  - journal schema v2;
+  - one entry;
+  - last sequence 0;
+  - governance `proposed`;
+  - authorization `none/waiting`;
+  - execution `not-started`;
+  - execute readiness waiting for Coulson;
+  - acceptance readiness waiting for Fitz;
+  - zero human evidence records;
+  - zero execution-effect records.
+- No implementation, dispatch, Fitz approval, merge, deployment, release, or
+  review-publication authority was exercised.
+
 ## Reported environment observation
 
 The human operator reported that local May and Daisy were healthy on the prior
@@ -261,12 +314,10 @@ required before either runtime can be credited with mission participation.
 
 ## Current stop condition
 
-Do not implement `missionIntake(...)` until the contract identifies:
+The journal-derived route is waiting for fresh signed Coulson mission
+authorization at sequence 1.
 
-- every reused package function;
-- every host-supplied assertion;
-- candidate versus authoritative persistence;
-- recommendation versus mode activation;
-- dispatchable seats versus human-gate stops;
-- the exact file-backed and external communication artifacts;
-- fail-closed behavior for missing repository configuration and bindings.
+Do not create or record that evidence without explicit human authorization and
+a valid Coulson signature bound to the exact requirement, brief revision,
+principal, binding, and journal sequence. Do not dispatch, record Fitz approval,
+merge, deploy, release, or publish review artifacts.

@@ -13,6 +13,14 @@ authorized only the bounded implementation and dogfooding of
 merge, dispatch, journaled Fury enforcement, Fitz review, deployment, or
 release.
 
+The implementation subsequently passed the full package suite and was
+dogfooded against Issue #130. After a separate explicit human authorization,
+the repository was provisioned locally, the intake rerun returned no blockers
+and `nextAction: "initialize_journal"`, and `shield mission begin` initialized a
+verified one-entry journal. Current journal state is proposed,
+authorization-waiting, and execution-not-started. No dispatch, Fitz approval,
+merge, deployment, release, or journaled Fury enforcement occurred.
+
 ## Public position
 
 Add one supported package entry point:
