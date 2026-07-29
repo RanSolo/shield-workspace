@@ -286,13 +286,25 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       const errors = verifyEvidence(signed, matches[0], bindingRegistry.value.bindings, brief.missionId, index); if (errors.length) return invalid("evidence_invalid", ...errors);
       if (entry.type === "governance.decided") { if (authorization !== "waiting" || execution !== "not-started") return invalid("sequence_invalid", "Authorization is duplicated or late."); authorization = "authorized"; }
       if (entry.type === "evidence.recorded") { if (execution !== "not-started") return invalid("ordering_invalid", "Execution gate evidence must be frozen before execution."); if (matches[0].phase !== "execution") return invalid("evidence_invalid", "Only profile execution gates may be recorded here."); }
-      if (entry.type === "final_acceptance.recorded") { if (authorization !== "authorized" || execution !== "completed" || finalAcceptance === "accepted") return invalid("ordering_invalid", "Final acceptance requires authorized successful execution and is single-use."); finalAcceptance = "accepted"; }
+      if (entry.type === "final_acceptance.recorded") {
+        if (authorization !== "authorized" ||
+            execution !== "completed" ||
+            !effects.some(({ outcome }) => outcome === "completed") ||
+            finalAcceptance === "accepted") {
+          return invalid("ordering_invalid", "Final acceptance requires one authoritative completed execution effect and is single-use.");
+        }
+        finalAcceptance = "accepted";
+      }
       evidenceIds.add(signed.payload.evidenceId); evidence.push(signed.payload);
     } else if (entry.type === "execution.transition") {
       if (!exact(entry.payload, ["from", "to"]) || !["not-started", "running"].includes(entry.payload.from as string) || !["running", "completed"].includes(entry.payload.to as string)) return invalid("malformed", `Entry ${index} execution payload is not closed.`);
       if (authorization !== "authorized") return invalid("ordering_invalid", "Execution requires authorization and all frozen gates.");
       const pending = requirements.filter((requirement) => requirement.phase === "execution" && !evidence.some((record) => record.requirementId === requirement.requirementId));
       if (pending.length > 0) return invalid("gate_missing", "Execution cannot start before frozen specialist gates are satisfied.");
+      if (entry.payload.to === "completed" &&
+          !effects.some(({ outcome }) => outcome === "completed")) {
+        return invalid("ordering_invalid", "Execution completion requires an authoritative completed effect.");
+      }
       if (entry.payload.from !== execution || !((execution === "not-started" && entry.payload.to === "running") || (execution === "running" && entry.payload.to === "completed"))) return invalid("ordering_invalid", "Execution transition is invalid.");
       execution = entry.payload.to;
     } else if (entry.type === "execution.effect_recorded") {

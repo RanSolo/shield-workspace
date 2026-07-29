@@ -92,7 +92,7 @@ test("current unauthorized schema-9 mission waits for Coulson without append or 
     readJournal: async () => ({
       entries: current.entries,
       projection: current.projection,
-      journalDigest: `sha256:${"a".repeat(64)}`,
+      journalDigest: digest(current.entries),
     }),
     appendJournal: async () => { appends += 1; throw new Error("must not append"); },
     permissionAudit: {
@@ -155,6 +155,17 @@ test("unreadable and stale journals fail closed without fabricated subject ident
   assert.equal(stale.outcome, "blocked");
   assert.equal(stale.reasonCode, "stale_revision");
   assert.equal(stale.subjectId, current.brief.subjectId);
+
+  const staleDigest = await runMissionCycle(input(current.brief), {
+    ...baseDependencies,
+    readJournal: async () => ({
+      entries: current.entries,
+      projection: current.projection,
+      journalDigest: `sha256:${"a".repeat(64)}`,
+    }),
+  });
+  assert.equal(staleDigest.outcome, "blocked");
+  assert.equal(staleDigest.reasonCode, "journal_unavailable");
 });
 
 test("runtime identities are fixed-length, validation-bound, and delimiter-safe", () => {

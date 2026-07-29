@@ -557,7 +557,8 @@ async function readValidated(
     if (copied === null || typeof copied !== "object") return null;
     const snapshot = copied as ProfileAwareJournalSnapshotV1;
     if (typeof snapshot.journalDigest !== "string" ||
-        !/^sha256:(?:[A-Fa-f0-9]{64}|[A-Za-z0-9_-]{43})$/.test(snapshot.journalDigest)) {
+        !/^sha256:(?:[A-Fa-f0-9]{64}|[A-Za-z0-9_-]{43})$/.test(snapshot.journalDigest) ||
+        !matchesJournalDigest(snapshot.entries, snapshot.journalDigest)) {
       return null;
     }
     const replayed = replayProfileAwareMissionJournal(snapshot.entries);
@@ -606,6 +607,12 @@ function appendResult(value: unknown): MissionJournalAppendResultV1 | null {
       : null;
   }
   return null;
+}
+
+function matchesJournalDigest(entries: ProfileAwareMissionEntryV1[], value: string): boolean {
+  const digest = createHash("sha256").update(canonicalJson(entries)).digest();
+  return value === `sha256:${digest.toString("base64url")}` ||
+    value === `sha256:${digest.toString("hex")}`;
 }
 
 function sameCapabilities(left: string[], right: string[]): boolean {
