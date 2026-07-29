@@ -131,3 +131,74 @@ is not required unless a new authorized mission revision selects a profile
 that requires Fitz.
 
 No May implementation begins until Fury approves this corrected exact plan.
+
+## Exact runtime-v2 contract for the next Fury review
+
+The additive public module is `src/mission-runtime-v1.mts`, exported as
+`@shield/team-system/mission-runtime`. Its entry point is:
+
+```ts
+runMissionCycle(
+  input: MissionCycleInputV1,
+  dependencies: MissionCycleDependenciesV1,
+): Promise<MissionCycleResultV1>
+```
+
+`MissionCycleInputV1` contains exactly the repository root, configured journal
+path, mission ID, expected mission revision, expected journal sequence, cycle
+ID, seat ID, action ID, effect class, effect key, validation ID, activated
+modes, and action allowlist. `MissionCycleDependenciesV1` contains exact
+`read`, `append`, `authorize`, `execute`, `validate`, and trusted `now`
+functions. The runtime derives the runner plan from these inputs; callers may
+not supply a pre-authorized plan or a durable entry.
+
+The canonical implementation extends the existing profile-aware schema-9
+replay/projection and schema-9 entry validation. It does not coerce schema 9
+through the legacy schema-2–8 projection. The existing runner validators and
+`runRunnerCycle(...)` remain additive-compatible while accepting schema 9, and
+the profile-aware journal accepts the resulting `execution.effect_recorded`
+entry. `createExecutionEffectEntry(...)` is extended or a schema-9 equivalent
+is exported from the new module; exactly one path is used by the composition.
+
+The ordered algorithm is:
+
+1. `read` and replay the exact mission journal.
+2. Reject stale mission revision or sequence, completed effect key/cycle ID,
+   missing authorization, missing frozen gates, or an already uncertain effect
+   before calling `authorize`.
+3. Derive one stable plan and call `runRunnerCycle(...)` once.
+4. Convert its candidate to one schema-9 authoritative entry.
+5. Call `append` once; never retry after `recovery_required`.
+6. `read` again and require exact mission ID, revision, prior sequence, next
+   sequence, entry ID, entry content, cycle ID, effect key, and resulting
+   projection.
+7. Return the closed next-route result.
+
+The result variants are exactly `advanced`, `waiting`, `blocked`, `uncertain`,
+and `complete`; each carries mission ID, subject ID, revision ID, durable
+sequence, and accountable next seat. Deterministic failure mapping is:
+
+| Condition | Result |
+| --- | --- |
+| human authorization wait/deny or pending gate | `waiting` |
+| stale, duplicate, malformed, missing, invalid, lock-held, append-failed, readback-invalid, or projection-mismatch input | `blocked` |
+| post-dispatch uncertain result or append `recovery_required` | `uncertain` |
+| successful append and exact readback | `advanced` |
+| replay shows no eligible next action | `complete` |
+
+The runtime derives stable cycle/effect identities from the durable mission
+revision, expected sequence, and requested action, and checks replayed effect
+records before authorization. This preserves at-most-once behavior across
+restart and prevents retry after uncertain external effects.
+
+For this mission, remove the Fitz final route from the prior generic route:
+`standard@1` has only Coulson execution and final-acceptance gates. Fury and
+Mack remain process-level review/validation roles and are not added to the
+frozen mission participants. Fitz is introduced only by a separately
+authorized stronger-profile successor.
+
+Focused tests must cover every result mapping above, schema-9 replay and
+entry compatibility, exact post-append readback, stale revision/sequence,
+duplicate and uncertain restart protection, no-dispatch stops, package export,
+and packed-package compatibility. The Issue #76 proving mission remains out
+of scope.
