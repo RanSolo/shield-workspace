@@ -164,7 +164,7 @@ test("host-observed repository root and origin must match signed authority", () 
   }
 });
 
-test("remote base branch must resolve to the signed base revision", () => {
+test("live remote base branch must resolve to the signed base revision", () => {
   const publication = publicationFixture("create");
   const run = runner([
     ...initialChecks(),
@@ -185,6 +185,11 @@ test("remote base branch must resolve to the signed base revision", () => {
     run.calls.some(({ executable, args }) =>
       executable === "git" && args[0] === "push"),
     false,
+  );
+  assert.equal(
+    run.calls.some(({ executable, args }) =>
+      executable === "git" && args[0] === "ls-remote"),
+    true,
   );
 });
 

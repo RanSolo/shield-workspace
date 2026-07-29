@@ -48,6 +48,9 @@ export function resolveJournaledPublicationRequest(requestId, options = {}) {
     state: "allowed",
     request,
     authority: authorizations[0].authority,
+    usedCandidateIds: projection.communication.requests
+      .map(({ candidateId }) => candidateId)
+      .filter((candidateId) => candidateId !== null),
     evaluatedThroughSequence: projection.lastSequence,
   };
 }

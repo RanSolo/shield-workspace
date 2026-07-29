@@ -5,7 +5,10 @@ import {
   normalizeFuryPlanGateInputV1,
 } from "../contracts/fury-plan-gate-v1.mjs";
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
-import { createGitHubPublicationResultCandidate } from "./adapter-v1.mjs";
+import {
+  createGitHubPublicationResultCandidate,
+  validateGitHubPublicationResultIdentity,
+} from "./adapter-v1.mjs";
 import { createOrUpdatePR, validatePRWorkspaceReceipt } from "./pr-workspace.mjs";
 import { resolveJournaledPublicationRequest } from "./publication-gate.mjs";
 
@@ -147,12 +150,7 @@ function normalizeDeliveryInput(input) {
       outer.publicationCapturedAt,
       ["value", "provenance"],
     );
-    if (capturedAt === null ||
-        typeof capturedAt.value !== "string" ||
-        !Number.isFinite(Date.parse(capturedAt.value)) ||
-        !capturedAt.value.endsWith("Z") ||
-        (capturedAt.provenance !== "humanRecorded" &&
-         capturedAt.provenance !== "hostTrusted")) {
+    if (capturedAt === null) {
       return { state: "invalid", reason: "invalid_publication_candidate" };
     }
     const planGate = normalizeFuryPlanGateInputV1(outer.planGate);
@@ -193,6 +191,16 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     { loadJournal: options.loadJournal },
   );
   if (publication.state !== "allowed") return blocked(publication.reason);
+  const publicationIdentity = {
+    candidateId: snapshot.publicationCandidateId,
+    sourceRef: snapshot.publicationSourceRef,
+    capturedAt: snapshot.publicationCapturedAt,
+  };
+  const identity = validateGitHubPublicationResultIdentity(
+    publication,
+    publicationIdentity,
+  );
+  if (identity.state !== "valid") return blocked(identity.reason);
   if (publication.request.missionId !== snapshot.missionId ||
       publication.request.subjectId !== snapshot.subjectId ||
       publication.request.artifactRevisionId !== snapshot.artifactRevisionId ||
@@ -215,11 +223,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     }
     const candidate = createGitHubPublicationResultCandidate(
       publication.request,
-      {
-        candidateId: snapshot.publicationCandidateId,
-        sourceRef: snapshot.publicationSourceRef,
-        capturedAt: snapshot.publicationCapturedAt,
-      },
+      publicationIdentity,
       "failed",
       "host_rejected",
       null,
@@ -234,11 +238,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
   }
   const candidate = createGitHubPublicationResultCandidate(
     publication.request,
-    {
-      candidateId: snapshot.publicationCandidateId,
-      sourceRef: snapshot.publicationSourceRef,
-      capturedAt: snapshot.publicationCapturedAt,
-    },
+    publicationIdentity,
     "delivered",
     null,
     published.prUrl,

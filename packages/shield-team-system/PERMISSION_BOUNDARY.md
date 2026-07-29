@@ -57,7 +57,7 @@ authorization. Standalone requests or caller-created projections cannot
 authorize publication. The request also binds the exact operation and target:
 review comments exact-match the PR number, while draft-PR publication
 exact-matches repository, mission branch, base branch, and the host-observed
-remote base revision.
+live remote base revision.
 
 `review.publish` and Wheels Up use the same evaluator; Wheels Up does not widen
 the approved paths or effects. The GitHub adapter observes the repository and
@@ -70,6 +70,8 @@ Every scoped effect attempt returns an adapter-v2 communication-result
 candidate, including Delivery Workspace and post-effect transport/readback
 failures. Result replay exact-matches request ID, operation, target, scope, and
 effects before the queued request can become final evidence.
+The exact candidate identity and unused candidate ID are validated against the
+replayed journal before any effect.
 
 Capability, repository-root, and writability attestations prove operational
 facts only. They do not grant authority, readiness, or permission. Issue #34

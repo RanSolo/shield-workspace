@@ -110,6 +110,24 @@ test("GitHub comment publication exact-matches the journaled PR target", () => {
   assert.equal(run.calls.length, 0);
 });
 
+test("GitHub preflights exact result identity before any effect", () => {
+  const fixture = publicationFixture();
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({
+      capturedAt: {
+        value: "2026-07-19T06:01Z",
+        provenance: "hostTrusted",
+      },
+    }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_identity_required");
+  assert.equal(run.calls.length, 0);
+});
+
 test("mission brief publication delegates to the existing draft PR workspace", () => {
   const fixture = publicationFixture("publish_mission_brief", "create");
   const workspacePlan = {

@@ -372,6 +372,22 @@ test("malformed blueprint and non-null gate block before any command", () => {
   assert.deepEqual(result.commands, []);
 });
 
+test("Delivery Workspace preflights exact result identity before any effect", () => {
+  const run = runner([]);
+  const result = prepareDeliveryWorkspaceForDispatch(
+    input({
+      publicationCapturedAt: {
+        value: "2026-07-29T10:04Z",
+        provenance: "hostTrusted",
+      },
+    }),
+    { run, loadJournal: createPublication.loadJournal },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_identity_required");
+  assert.equal(run.calls.length, 0);
+});
+
 test("receipt identity and expected revision mismatches fail closed", () => {
   const receipt = {
     schemaVersion: 1,

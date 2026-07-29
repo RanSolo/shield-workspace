@@ -401,11 +401,12 @@ export function createOrUpdatePR(plan, options = {}) {
     run,
     commands,
     "git",
-    ["rev-parse", `refs/remotes/origin/${plan.baseBranch}^{commit}`],
+    ["ls-remote", "--exit-code", "origin", `refs/heads/${plan.baseBranch}`],
     { cwd },
   );
+  const liveBaseRevisionId = observedBase.stdout.trim().split(/\s+/u)[0] ?? "";
   if (observedBase.exitCode !== 0 ||
-      observedBase.stdout.trim() !== scope.binding.baseRevisionId) {
+      liveBaseRevisionId !== scope.binding.baseRevisionId) {
     return blocked("publication_target_mismatch", commands);
   }
 

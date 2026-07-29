@@ -62,12 +62,14 @@
   before branch push, draft-PR create/update, or review-comment publication.
 - Review comments exact-match the journaled PR target. Draft-PR publication
   exact-matches repository, mission branch, base branch, and the host-observed
-  remote base revision before effect.
+  live remote base revision before effect.
 - Supervised journal v8 carries the signed authorization, publication-bound
   adapter v2 request, and result evidence bound to that exact request and
   scope, operation, and target. Delivery Workspace also returns journal-ready
   result candidates for successful and post-scope failed attempts. Earlier
   journals retain their historical meaning.
+- Result identity, timestamp shape, and candidate-ID availability are
+  preflighted against the replayed journal before any effect.
 
 ## Validation contract
 

@@ -1,5 +1,6 @@
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
 import { validateAdapterCandidate } from "../dist/adapter-v1.mjs";
+import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 import {
   createOrUpdatePR,
   defaultRun,
@@ -133,6 +134,51 @@ export function createGitHubPublicationResultCandidate(
     : { state: "blocked", reason: "invalid_result_candidate" };
 }
 
+export function validateGitHubPublicationResultIdentity(resolved, publication) {
+  if (!resolved || resolved.state !== "allowed") {
+    return { state: "blocked", reason: "publication_request_missing" };
+  }
+  if (!publication || typeof publication !== "object" || Array.isArray(publication)) {
+    return { state: "blocked", reason: "publication_identity_required" };
+  }
+  if (resolved.usedCandidateIds.includes(publication.candidateId)) {
+    return { state: "blocked", reason: "duplicate_candidate" };
+  }
+  const authority = resolved.authority;
+  const request = resolved.request;
+  const scope = evaluateReviewPublicationV1(authority, {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    repositoryId: authority.repositoryId,
+    canonicalRepositoryRoot: authority.canonicalRepositoryRoot,
+    branch: authority.branch,
+    baseRevisionId: authority.baseRevisionId,
+    headRevisionId: authority.headRevisionId,
+    proposedChangedPaths: request.proposedChangedPaths,
+    observedChangedPaths: request.proposedChangedPaths,
+    requestedEffects: request.requestedEffects,
+    observedSymlinkPaths: [],
+    observedGitlinkPaths: [],
+    workspaceClean: true,
+  });
+  if (scope.state !== "allowed") {
+    return { state: "blocked", reason: "publication_binding_mismatch" };
+  }
+  return createGitHubPublicationResultCandidate(
+    request,
+    publication,
+    "unknown",
+    "unknown",
+    null,
+    scope,
+  ).state === "candidate"
+    ? { state: "valid" }
+    : { state: "blocked", reason: "publication_identity_required" };
+}
+
 function checkedCandidate(candidate, commands) {
   const checked = validateAdapterCandidate(candidate);
   return checked.state === "valid"
@@ -152,9 +198,8 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
   if (resolved.state !== "allowed") return blocked(resolved.reason);
   const request = resolved.request;
   if (request.adapterId !== "github") return blocked("github_request_required");
-  if (!publication || typeof publication !== "object" || Array.isArray(publication)) return blocked("publication_required");
-  if (typeof publication.candidateId !== "string" || typeof publication.sourceRef !== "string" ||
-      !publication.capturedAt || typeof publication.capturedAt !== "object") return blocked("publication_identity_required");
+  const identity = validateGitHubPublicationResultIdentity(resolved, publication);
+  if (identity.state !== "valid") return blocked(identity.reason);
 
   const run = options.run ?? defaultRun;
   const cwd = options.cwd;
