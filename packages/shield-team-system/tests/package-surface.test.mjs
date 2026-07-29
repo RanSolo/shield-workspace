@@ -31,6 +31,7 @@ test("exports only the documented public package specifiers", async () => {
     "./pipeline",
     "./mission-profile",
     "./profile-aware-mission",
+    "./mission-runtime",
     "./sonarqube",
     "./mack-validation",
     "./qa-mode",
@@ -62,6 +63,7 @@ test("loads every supported runtime specifier", async () => {
   const pipeline = await import("@shield/team-system/pipeline");
   const missionProfile = await import("@shield/team-system/mission-profile");
   const profileAwareMission = await import("@shield/team-system/profile-aware-mission");
+  const missionRuntime = await import("@shield/team-system/mission-runtime");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
   const qaMode = await import("@shield/team-system/qa-mode");
@@ -82,6 +84,7 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof missionProfile.freezeMissionRequirementsV1, "function");
   assert.equal(profileAwareMission.PROFILE_AWARE_JOURNAL_SCHEMA_VERSION, 9);
   assert.equal(typeof profileAwareMission.replayProfileAwareMissionJournal, "function");
+  assert.equal(typeof missionRuntime.runMissionCycle, "function");
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
   assert.equal(config.CONFIG_SCHEMA_VERSION, 1);
@@ -171,6 +174,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/permission-v1.d.mts",
     "dist/permission-audit-v1.mjs",
     "dist/permission-audit-v1.d.mts",
+    "dist/mission-runtime-v1.mjs",
+    "dist/mission-runtime-v1.d.mts",
     "dist/review-publication-v1.mjs",
     "dist/review-publication-v1.d.mts",
     "dist/pipeline-profile-v1.mjs",
@@ -230,6 +235,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
+    import { deriveMissionCycleIdentityV1, runMissionCycle, type MissionCycleInputV1, type MissionCycleResultV1 } from "@shield/team-system/mission-runtime";
     import { REVIEW_PUBLICATION_CONTRACT_VERSION, evaluateReviewPublicationV1, type ReviewPublicationAuthorityV1, type ReviewPublicationProposalV1 } from "@shield/team-system/review-publication";
     import { PIPELINE_PROFILE_CONTRACT_VERSION, selectPipelineModesV1, type RepositoryPipelineProfileV1 } from "@shield/team-system/pipeline";
     import { SONARQUBE_EVIDENCE_CONTRACT_VERSION, evaluateSonarQubeEvidenceV1, type SonarQubeEvidenceV1 } from "@shield/team-system/sonarqube";
@@ -292,6 +298,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const auditSchema: 1 = PERMISSION_AUDIT_SCHEMA_VERSION;
     const auditRecord = null as unknown as PermissionAuditRecord;
     const replayAudit = replayPermissionAuditLedger;
+    const runtimeCycleInput = null as unknown as MissionCycleInputV1;
+    const runtimeCycleResult = null as unknown as MissionCycleResultV1;
+    const runtimeIdentity = deriveMissionCycleIdentityV1(runtimeCycleInput);
+    const runRuntimeCycle = runMissionCycle;
     const reviewPublicationContract: "review-publication.v1" = REVIEW_PUBLICATION_CONTRACT_VERSION;
     const reviewPublicationAuthority = null as unknown as ReviewPublicationAuthorityV1;
     const reviewPublicationProposal = null as unknown as ReviewPublicationProposalV1;

@@ -4,7 +4,10 @@ import test from "node:test";
 import {
   createAuditedExecutor,
   createPermissionAuthorizer,
+  createRuntimeClaimedExecutorV1,
   evaluatePermission,
+  replayRuntimeInvocationClaimsV1,
+  runtimeInvocationClaimRecordIdV1,
   validateHostPermissionAttestation,
   validatePermissionAuthorizationArtifactPayload,
   validatePermissionInvocationContext,
@@ -120,6 +123,7 @@ test("closed binding, attestation, and context contracts reject authority drift"
   assert.equal(validateHostPermissionAttestation({ ...attestation("writability"), capabilityId: "filesystem_write" }).state, "invalid");
   assert.equal(validatePermissionInvocationContext(context()).state, "valid");
   assert.equal(validatePermissionInvocationContext(context({ journalSchemaVersion: 7 })).state, "valid");
+  assert.equal(validatePermissionInvocationContext(context({ journalSchemaVersion: 9 })).state, "valid");
   assert.equal(validatePermissionInvocationContext({ ...context(), journalSchemaVersion: 5 }).state, "invalid");
   for (const seatId of ["coulson", "fitz", "simmons"]) {
     assert.equal(validateRuntimeBinding(binding({ reasoningRuntimeId: seatId })).state, "invalid");
@@ -258,4 +262,96 @@ test("atomic invocation consumption prevents concurrent or restarted executor re
   assert.equal(calls, 1);
   assert.equal(results.filter(({ outcome }) => outcome === "completed").length, 1);
   assert.equal(results.filter(({ outcome }) => outcome === "failed").length, 1);
+});
+
+test("runtime-v2 claim record atomically excludes a different decision at the same mission sequence", async () => {
+  const ledger = new Map();
+  const appendIfAbsent = async (record) => {
+    if (ledger.has(record.recordId)) return { appended: false };
+    ledger.set(record.recordId, record);
+    return receipt(record, ledger.size - 1);
+  };
+  const secondPlan = plan({
+    cycleId: "cycle:issue-10:2",
+    actionId: "edit-permission-boundary-2",
+    effectKey: "effect:issue-10:permission-2",
+    validationId: "validation:issue-10:2",
+  });
+  const secondBinding = binding({
+    approvedScope: {
+      actionIds: [secondPlan.actionId],
+      effectClasses: [secondPlan.effectClass],
+      effectKeys: [secondPlan.effectKey],
+      capabilities: ["filesystem_write"],
+    },
+  });
+  const firstContext = () => context({ journalSchemaVersion: 9 });
+  const secondContext = () => context({
+    journalSchemaVersion: 9,
+    decisionId: "decision:issue-10:2",
+    activeBindings: [secondBinding],
+  });
+  const firstDecision = await createPermissionAuthorizer({
+    ledgerId: "ledger:runtime-claim:test",
+    appendIfAbsent,
+    getContext: firstContext,
+  })(plan());
+  const secondDecision = await createPermissionAuthorizer({
+    ledgerId: "ledger:runtime-claim:test",
+    appendIfAbsent,
+    getContext: secondContext,
+  })(secondPlan);
+  let calls = 0;
+  const first = createRuntimeClaimedExecutorV1({
+    ledgerId: "ledger:runtime-claim:test",
+    appendIfAbsent,
+    getContext: firstContext,
+    execute: (current) => {
+      calls += 1;
+      return {
+        runnerContractVersion: 1,
+        outcome: "completed",
+        missionId: current.missionId,
+        subjectId: current.subjectId,
+        revisionId: current.revisionId,
+        evaluatedThroughSequence: current.evaluatedThroughSequence,
+        cycleId: current.cycleId,
+        seatId: current.seatId,
+        actionId: current.actionId,
+        effectClass: current.effectClass,
+        effectKey: current.effectKey,
+        summary: "Claim winner executed.",
+        evidenceRefs: ["evidence:runtime-claim"],
+      };
+    },
+    now: () => "2026-07-20T02:06:00Z",
+  });
+  const second = createRuntimeClaimedExecutorV1({
+    ledgerId: "ledger:runtime-claim:test",
+    appendIfAbsent,
+    getContext: secondContext,
+    execute: () => { calls += 1; },
+    now: () => "2026-07-20T02:06:00Z",
+  });
+  const [firstClaim, secondClaim] = await Promise.all([
+    first.claim(plan(), firstDecision),
+    second.claim(secondPlan, secondDecision),
+  ]);
+  assert.equal(firstClaim.outcome, "claimed");
+  assert.deepEqual(secondClaim, {
+    runnerContractVersion: 1,
+    outcome: "blocked",
+    reason: "invocation_claim_conflict",
+  });
+  assert.match(
+    [...ledger.values()].find(({ recordType }) => recordType === "tool.invocation").recordId,
+    /^audit-invocation:sha256:[A-Za-z0-9_-]{43}$/,
+  );
+  assert.equal(
+    runtimeInvocationClaimRecordIdV1(plan().missionId, revisionId, 5),
+    [...ledger.values()].find(({ recordType }) => recordType === "tool.invocation").recordId,
+  );
+  assert.equal((await first.execute(plan(), firstDecision)).outcome, "completed");
+  assert.equal(calls, 1);
+  assert.equal(replayRuntimeInvocationClaimsV1([...ledger.values()]).state, "valid");
 });

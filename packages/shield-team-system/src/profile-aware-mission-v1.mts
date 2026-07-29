@@ -13,6 +13,14 @@ import {
   isProfileAtLeastAsStrictV1,
   type MissionProfileId,
 } from "./mission-profile-v1.mjs";
+import {
+  validateRunnerAuthoritativeEffectRecord,
+  validateRunnerExecutionEffectPayload,
+  validateRunnerSupervisedEffectCandidate,
+  type RunnerAuthoritativeEffectRecord,
+  type RunnerExecutionEffectPayload,
+  type RunnerSupervisedEffectCandidate,
+} from "./runner-v1.mjs";
 
 export const PROFILE_AWARE_BRIEF_SCHEMA_VERSION = 2 as const;
 export const PROFILE_AWARE_JOURNAL_SCHEMA_VERSION = 9 as const;
@@ -74,6 +82,7 @@ export type ProfileAwareMissionEntryV1 =
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "mission.begun"; timestamp: EvidenceTimestamp; payload: { brief: ProfileAwareMissionBriefV1; trustedBindings: TrustedHumanBinding[]; requirements: ProfileRequirementV1[] } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "governance.decided"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "execution.transition"; timestamp: EvidenceTimestamp; payload: { from: "not-started" | "running"; to: "running" | "completed" } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "execution.effect_recorded"; timestamp: EvidenceTimestamp; payload: { effect: RunnerExecutionEffectPayload } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "evidence.recorded"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "final_acceptance.recorded"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } };
 
@@ -86,6 +95,7 @@ export interface ProfileAwareProjectionV1 {
   authorization: "waiting" | "authorized";
   execution: "not-started" | "running" | "completed";
   readiness: { execute: "waiting" | "ready" | "blocked"; accept: "waiting" | "ready" | "blocked" };
+  effects: RunnerAuthoritativeEffectRecord[];
   finalAcceptance: "waiting" | "accepted";
   lastSequence: number;
 }
@@ -176,6 +186,49 @@ export function profileAwareMissionIntakeV1(input: {
   return valid({ brief, entry, requirements: createProfileRequirementsV1(brief) });
 }
 
+export function createProfileAwareExecutionEffectEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  candidate: RunnerSupervisedEffectCandidate;
+  timestamp: EvidenceTimestamp;
+}): ProfileAwareMissionEntryV1 {
+  const { projection, candidate } = input;
+  const checkedCandidate = validateRunnerSupervisedEffectCandidate(candidate);
+  if (checkedCandidate.state === "invalid") throw new Error(checkedCandidate.errors.join(" "));
+  if (!timestamp(input.timestamp)) throw new Error("Profile-aware effect timestamp is invalid.");
+  if (projection.schemaVersion !== 9 ||
+      projection.authorization !== "authorized" ||
+      projection.execution !== "running") {
+    throw new Error("Profile-aware execution effect requires an authorized running mission.");
+  }
+  if (projection.effects.some(({ outcome }) => outcome === "uncertain")) {
+    throw new Error("Profile-aware execution recovery requires a separate authorized contract.");
+  }
+  if (projection.readiness.execute !== "ready") {
+    throw new Error("Profile-aware execution effect requires ready frozen gates.");
+  }
+  if (candidate.journalSchemaVersion !== 9 ||
+      candidate.missionId !== projection.missionId ||
+      candidate.subjectId !== projection.brief.subjectId ||
+      candidate.revisionId !== projection.brief.revisionId ||
+      candidate.expectedPreviousSequence !== projection.lastSequence ||
+      candidate.intendedJournalSequence !== projection.lastSequence + 1) {
+    throw new Error("Profile-aware effect candidate identity or sequence is stale.");
+  }
+  if (projection.effects.some(({ cycleId, effectKey }) =>
+    cycleId === candidate.payload.cycleId || effectKey === candidate.payload.effectKey)) {
+    throw new Error("Profile-aware effect candidate duplicates a cycle or effect.");
+  }
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${projection.missionId}:${candidate.intendedJournalSequence}`,
+    missionId: projection.missionId,
+    sequence: candidate.intendedJournalSequence,
+    type: "execution.effect_recorded",
+    timestamp: input.timestamp,
+    payload: { effect: candidate.payload },
+  };
+}
+
 function verifyEvidence(evidence: SignedProfileEvidenceV1, expected: ProfileRequirementV1, bindings: TrustedHumanBinding[], missionId: string, sequence: number): string[] {
   const payload = evidence?.payload;
   const errors: string[] = [];
@@ -210,6 +263,9 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
   const entryIds = new Set([begun.entryId]);
   const evidenceIds = new Set<string>();
   const evidence: ProfileEvidenceV1[] = [];
+  const effects: RunnerAuthoritativeEffectRecord[] = [];
+  const cycleIds = new Set<string>();
+  const effectKeys = new Set<string>();
   let authorization: "waiting" | "authorized" = "waiting";
   let execution: "not-started" | "running" | "completed" = "not-started";
   let finalAcceptance: "waiting" | "accepted" = "waiting";
@@ -239,10 +295,41 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       if (pending.length > 0) return invalid("gate_missing", "Execution cannot start before frozen specialist gates are satisfied.");
       if (entry.payload.from !== execution || !((execution === "not-started" && entry.payload.to === "running") || (execution === "running" && entry.payload.to === "completed"))) return invalid("ordering_invalid", "Execution transition is invalid.");
       execution = entry.payload.to;
+    } else if (entry.type === "execution.effect_recorded") {
+      if (!exact(entry.payload, ["effect"])) return invalid("malformed", `Entry ${index} effect payload is not closed.`);
+      const checkedEffect = validateRunnerExecutionEffectPayload(entry.payload.effect);
+      if (checkedEffect.state === "invalid") return invalid("malformed", ...checkedEffect.errors);
+      const effect = checkedEffect.value;
+      if (authorization !== "authorized" || execution !== "running") return invalid("ordering_invalid", "Execution effects require an authorized running mission.");
+      const pending = requirements.filter((requirement) => requirement.phase === "execution" && !evidence.some((record) => record.requirementId === requirement.requirementId));
+      if (pending.length > 0) return invalid("gate_missing", "Execution effects require all frozen specialist gates.");
+      if (effects.some(({ outcome }) => outcome === "uncertain")) return invalid("ordering_invalid", "Execution recovery requires a separate authorized contract.");
+      if (effect.subjectId !== brief.subjectId ||
+          effect.revisionId !== brief.revisionId ||
+          effect.evaluatedThroughSequence !== index - 1) {
+        return invalid("mission_mismatch", `Entry ${index} effect identity or sequence is stale.`);
+      }
+      if (cycleIds.has(effect.cycleId) || effectKeys.has(effect.effectKey)) {
+        return invalid("duplicate_event", `Entry ${index} duplicates an execution cycle or effect.`);
+      }
+      const record: RunnerAuthoritativeEffectRecord = {
+        ...effect,
+        entryId: entry.entryId,
+        missionId: entry.missionId,
+        journalSequence: entry.sequence,
+        timestamp: entry.timestamp,
+      };
+      const checkedRecord = validateRunnerAuthoritativeEffectRecord(record);
+      if (checkedRecord.state === "invalid") return invalid("malformed", ...checkedRecord.errors);
+      cycleIds.add(effect.cycleId);
+      effectKeys.add(effect.effectKey);
+      effects.push(checkedRecord.value);
+      if (effect.outcome === "completed") execution = "completed";
     } else return invalid("unsupported_event", `Entry ${index} event type is unsupported.`);
   }
   const pendingExecution = requirements.some((requirement) => requirement.phase === "execution" && !evidence.some((record) => record.requirementId === requirement.requirementId));
-  return valid({ schemaVersion: 9, missionId: brief.missionId, brief, requirements, evidence, authorization, execution, readiness: { execute: authorization === "authorized" && !pendingExecution ? "ready" : "waiting", accept: execution === "completed" && finalAcceptance === "waiting" ? "waiting" : finalAcceptance === "accepted" ? "ready" : "blocked" }, finalAcceptance, lastSequence: entries.length - 1 });
+  const uncertain = effects.some(({ outcome }) => outcome === "uncertain");
+  return valid({ schemaVersion: 9, missionId: brief.missionId, brief, requirements, evidence, authorization, execution, readiness: { execute: uncertain ? "blocked" : authorization === "authorized" && !pendingExecution ? "ready" : "waiting", accept: execution === "completed" && finalAcceptance === "waiting" ? "waiting" : finalAcceptance === "accepted" ? "ready" : "blocked" }, effects, finalAcceptance, lastSequence: entries.length - 1 });
 }
 
 export function profileIsNotWeakenedV1(selected: MissionProfileId, required: MissionProfileId): boolean { return isProfileAtLeastAsStrictV1(selected, required); }

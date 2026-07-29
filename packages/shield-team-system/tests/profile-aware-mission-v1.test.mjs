@@ -8,6 +8,7 @@ import {
   replaySupervisedMissionJournal,
 } from "../dist/mission-v2.mjs";
 import {
+  createProfileAwareExecutionEffectEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   createProfileRequirementsV1,
@@ -120,4 +121,82 @@ test("schema 9 closes trusted bindings and nested event payloads", () => {
   const authorization = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"), 1);
   entries.push({ schemaVersion: 9, entryId: `${current.missionId}:1`, missionId: current.missionId, sequence: 1, type: "governance.decided", timestamp: authorization.payload.timestamp, payload: { evidence: authorization, unexpected: true } });
   assert.equal(replayProfileAwareMissionJournal(entries).state, "invalid");
+});
+
+test("schema 9 records completed and uncertain runner effects with fail-closed replay", () => {
+  const current = brief("standard");
+  const coulson = authority("coulson");
+  const entries = [createProfileAwareMissionBegunEntry(current, [coulson.binding])];
+  let projection = replay(entries);
+  const authorization = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"), 1);
+  entries.push({ schemaVersion: 9, entryId: `entry:${current.missionId}:1`, missionId: current.missionId, sequence: 1, type: "governance.decided", timestamp: authorization.payload.timestamp, payload: { evidence: authorization } });
+  entries.push({ schemaVersion: 9, entryId: `entry:${current.missionId}:2`, missionId: current.missionId, sequence: 2, type: "execution.transition", timestamp: { value: "2026-07-29T15:02:00Z", provenance: "hostTrusted" }, payload: { from: "not-started", to: "running" } });
+  projection = replay(entries);
+  const candidate = {
+    runnerContractVersion: 1,
+    candidateKind: "runner.supervised_effect_record",
+    authority: "non_authoritative",
+    journalSchemaVersion: 9,
+    missionId: current.missionId,
+    subjectId: current.subjectId,
+    revisionId: current.revisionId,
+    expectedPreviousSequence: 2,
+    intendedJournalSequence: 3,
+    payload: {
+      runnerContractVersion: 1,
+      cycleId: "cycle:profile-aware:1",
+      subjectId: current.subjectId,
+      revisionId: current.revisionId,
+      evaluatedThroughSequence: 2,
+      seatId: "may",
+      actionId: "implement-profile-aware-effect",
+      effectClass: "behavioral_implementation",
+      effectKey: "effect:profile-aware:1",
+      authorizationDecisionId: "decision:profile-aware:1",
+      outcome: "completed",
+      reasonCode: "effect_completed",
+      summary: "Profile-aware effect completed.",
+      evidenceRefs: ["evidence:profile-aware:1"],
+    },
+  };
+  const completedEntry = createProfileAwareExecutionEffectEntryV1({
+    projection,
+    candidate,
+    timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" },
+  });
+  const completed = replay([...entries, completedEntry]);
+  assert.equal(completed.execution, "completed");
+  assert.equal(completed.effects.length, 1);
+  assert.equal(completed.effects[0].effectKey, candidate.payload.effectKey);
+
+  const uncertainEntry = createProfileAwareExecutionEffectEntryV1({
+    projection,
+    candidate: {
+      ...candidate,
+      payload: {
+        ...candidate.payload,
+        outcome: "uncertain",
+        reasonCode: "executor_uncertain",
+      },
+    },
+    timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" },
+  });
+  const uncertain = replay([...entries, uncertainEntry]);
+  assert.equal(uncertain.execution, "running");
+  assert.equal(uncertain.readiness.execute, "blocked");
+  assert.throws(() => createProfileAwareExecutionEffectEntryV1({
+    projection: uncertain,
+    candidate: {
+      ...candidate,
+      expectedPreviousSequence: 3,
+      intendedJournalSequence: 4,
+      payload: {
+        ...candidate.payload,
+        cycleId: "cycle:profile-aware:2",
+        effectKey: "effect:profile-aware:2",
+        evaluatedThroughSequence: 3,
+      },
+    },
+    timestamp: { value: "2026-07-29T15:04:00Z", provenance: "hostTrusted" },
+  }), /recovery/);
 });
