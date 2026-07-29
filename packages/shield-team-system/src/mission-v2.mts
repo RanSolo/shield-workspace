@@ -29,6 +29,10 @@ import {
   validateReviewPublicationEvidenceV1,
   type ReviewPublicationAuthorityV1,
 } from "./review-publication-v1.mjs";
+import {
+  getMissionProfileV1,
+  type MissionProfileId,
+} from "./mission-profile-v1.mjs";
 
 export const SUPERVISED_JOURNAL_SCHEMA_VERSION = 2 as const;
 export const DELEGATED_JOURNAL_SCHEMA_VERSION = 3 as const;
@@ -37,7 +41,9 @@ export const RUNNER_JOURNAL_SCHEMA_VERSION = 5 as const;
 export const PERMISSION_JOURNAL_SCHEMA_VERSION = 6 as const;
 export const REVIEW_JOURNAL_SCHEMA_VERSION = 7 as const;
 export const REVIEW_PUBLICATION_JOURNAL_SCHEMA_VERSION = 8 as const;
+export const PROFILE_AWARE_JOURNAL_SCHEMA_VERSION = 9 as const;
 export const SUPERVISED_BRIEF_SCHEMA_VERSION = 1 as const;
+export const PROFILE_AWARE_BRIEF_SCHEMA_VERSION = 2 as const;
 export const HUMAN_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const TRUSTED_BINDING_SCHEMA_VERSION = 1 as const;
 export const HUMAN_SEATS = ["coulson", "fitz", "simmons"] as const;
@@ -45,6 +51,7 @@ export const EVIDENCE_KINDS = [
   "mission_authorization",
   "technical_review",
   "product_domain_review",
+  "final_acceptance",
 ] as const;
 export const EVIDENCE_DECISIONS = [
   "approved",
@@ -113,6 +120,28 @@ export interface SupervisedMissionBriefContent {
 }
 
 export interface SupervisedMissionBrief extends SupervisedMissionBriefContent {
+  revisionId: string;
+}
+
+export interface ProfileAwareMissionBriefContent {
+  schemaVersion: 2;
+  missionId: string;
+  objective: string;
+  subjectId: string;
+  riskFlags: MissionRiskFlags;
+  participants: MissionParticipant[];
+  activatedModes: MissionModeActivation[];
+  requireSimmons: boolean;
+  createdAt: EvidenceTimestamp;
+  profileId: MissionProfileId;
+  profileVersion: 1;
+  requiredExecutionGateRoleIds: HumanSeat[];
+  requiredFinalAcceptanceGateRoleIds: ["coulson"];
+  predecessorMissionId: string;
+  predecessorJournalDigest: string;
+}
+
+export interface ProfileAwareMissionBrief extends ProfileAwareMissionBriefContent {
   revisionId: string;
 }
 
@@ -370,7 +399,20 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8;
+    schemaVersion: 9;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "mission.begun";
+    timestamp: EvidenceTimestamp;
+    payload: {
+      brief: ProfileAwareMissionBrief;
+      trustedBindings: TrustedHumanBinding[];
+      requirements: EvidenceRequirement[];
+    };
+  }
+  | {
+    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -383,7 +425,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8;
+    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -425,7 +467,7 @@ export type SupervisedJournalEntry =
     payload: { reason: DelegatedInvalidationReason };
   }
   | {
-    schemaVersion: 4 | 5 | 6 | 7 | 8;
+    schemaVersion: 4 | 5 | 6 | 7 | 8 | 9;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -434,7 +476,7 @@ export type SupervisedJournalEntry =
     payload: { request: AnyCommunicationRequestPayload };
   }
   | {
-    schemaVersion: 4 | 5 | 6 | 7 | 8;
+    schemaVersion: 4 | 5 | 6 | 7 | 8 | 9;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -443,7 +485,7 @@ export type SupervisedJournalEntry =
     payload: { candidate: CommunicationResultAdapterCandidate | ReviewPublicationCommunicationResultAdapterCandidate };
   }
   | {
-    schemaVersion: 5 | 6 | 7 | 8;
+    schemaVersion: 5 | 6 | 7 | 8 | 9;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -452,7 +494,7 @@ export type SupervisedJournalEntry =
     payload: ExecutionEffectPayload;
   }
   | {
-    schemaVersion: 6 | 7 | 8;
+    schemaVersion: 6 | 7 | 8 | 9;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -461,7 +503,7 @@ export type SupervisedJournalEntry =
     payload: { binding: RuntimeBinding; authorization: SignedRuntimeBindingAuthorization };
   }
   | {
-    schemaVersion: 6 | 7 | 8;
+    schemaVersion: 6 | 7 | 8 | 9;
     entryId: string;
     missionId: string;
     sequence: number;

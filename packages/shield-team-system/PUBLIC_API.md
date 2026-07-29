@@ -9,6 +9,7 @@ package artifact.
 | --- | --- |
 | `@shield/team-system` | Combined V0.3-2 contract and configuration surface |
 | `@shield/team-system/mission` | Mission policy, records, validation, replay, and non-authoritative evidence-based specialist-iteration eligibility |
+| `@shield/team-system/intake` | Pure `mission.intake.v1` construction of an evidence-bound, non-authoritative mission starting packet; it performs no journal write, dispatch, model/tool call, adapter effect, or external publication |
 | `@shield/team-system/journal` | Journal validation, serialization, parsing, and replay |
 | `@shield/team-system/modes` | Mode manifests, registries, and seat-context resolution |
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
@@ -49,6 +50,7 @@ does not migrate or reinterpret the existing package runtime.
 | Product-contract capability | V0.3-2 status |
 | --- | --- |
 | Mission records and governance | Supported through `/mission` |
+| Mission intake candidate | Supported through `/intake`; `missionIntakeV1(...)` validates host observations, configuration provenance, a canonical supervised brief, mode recommendations, artifact bindings, and runtime observations, then returns either a non-authoritative candidate or a fail-closed result |
 | Hill-controlled specialist iteration | Supported through `/mission` as non-authoritative disposition eligibility; it does not dispatch seats, mutate mission state, transfer ownership, or grant tool authority |
 | Mission journals and deterministic replay | Supported through `/journal` |
 | Mode references | Supported through `/modes` |
@@ -69,6 +71,13 @@ does not migrate or reinterpret the existing package runtime.
 
 Unavailable capabilities are not exported as placeholders. Their absence is a
 truthful boundary, not a future commitment.
+
+`missionIntakeV1(...)` is a package API, not an HTTP API, CLI, host adapter, or
+executable mission service. It proves that framework code can participate in
+mission intake. It does not initialize durable state, derive an authoritative
+post-replay route, dispatch Fury or another seat, await a seat result, authorize
+effects, or advance a mission cycle. Those remain responsibilities of a later
+canonical host-neutral orchestration entry point.
 
 Journal v1 remains supported through `/journal`. Journal v2 is additive and is
 used only by the bounded supervised-mission workflow. Journal v3 adds Wheels

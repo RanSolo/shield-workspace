@@ -15,6 +15,7 @@ test("exports only the documented public package specifiers", async () => {
   assert.deepEqual(Object.keys(manifest.exports), [
     ".",
     "./mission",
+    "./intake",
     "./journal",
     "./modes",
     "./workspace",
@@ -28,6 +29,8 @@ test("exports only the documented public package specifiers", async () => {
     "./permission-audit",
     "./review-publication",
     "./pipeline",
+    "./mission-profile",
+    "./profile-aware-mission",
     "./sonarqube",
     "./mack-validation",
     "./qa-mode",
@@ -43,6 +46,7 @@ test("exports only the documented public package specifiers", async () => {
 test("loads every supported runtime specifier", async () => {
   const root = await import("@shield/team-system");
   const mission = await import("@shield/team-system/mission");
+  const intake = await import("@shield/team-system/intake");
   const journal = await import("@shield/team-system/journal");
   const modes = await import("@shield/team-system/modes");
   const workspace = await import("@shield/team-system/workspace");
@@ -56,6 +60,8 @@ test("loads every supported runtime specifier", async () => {
   const permissionAudit = await import("@shield/team-system/permission-audit");
   const reviewPublication = await import("@shield/team-system/review-publication");
   const pipeline = await import("@shield/team-system/pipeline");
+  const missionProfile = await import("@shield/team-system/mission-profile");
+  const profileAwareMission = await import("@shield/team-system/profile-aware-mission");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
   const qaMode = await import("@shield/team-system/qa-mode");
@@ -65,10 +71,17 @@ test("loads every supported runtime specifier", async () => {
 
   assert.equal(root.MISSION_SCHEMA_VERSION, 2);
   assert.equal(mission.classifyMissionRisk, root.classifyMissionRisk);
+  assert.equal(intake.MISSION_INTAKE_CONTRACT_VERSION, "mission.intake.v1");
+  assert.equal(typeof intake.missionIntakeV1, "function");
+  assert.equal(typeof intake.profileAwareMissionIntakeV1, "function");
   assert.equal(typeof mission.evaluateSpecialistIteration, "function");
   assert.equal(journal.JOURNAL_SCHEMA_VERSION, 1);
   assert.equal(modes.MODE_MANIFEST_SCHEMA_VERSION, 1);
   assert.equal(typeof workspace.validateMissionWorkspaceInput, "function");
+  assert.equal(missionProfile.MISSION_PROFILE_CONTRACT_VERSION, "mission.profile.v1");
+  assert.equal(typeof missionProfile.freezeMissionRequirementsV1, "function");
+  assert.equal(profileAwareMission.PROFILE_AWARE_JOURNAL_SCHEMA_VERSION, 9);
+  assert.equal(typeof profileAwareMission.replayProfileAwareMissionJournal, "function");
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
   assert.equal(config.CONFIG_SCHEMA_VERSION, 1);
@@ -144,6 +157,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "public/hill-readiness.d.mts",
     "dist/config.mjs",
     "dist/config.d.mts",
+    "dist/mission-intake-v1.mjs",
+    "dist/mission-intake-v1.d.mts",
     "dist/mission-v2.mjs",
     "dist/mission-v2.d.mts",
     "dist/delegation-v1.mjs",
@@ -203,6 +218,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   await writeFile(join(fixture, "consumer.mts"), `
     import { MISSION_SCHEMA_VERSION, type MissionDecisionEvent, type MissionState } from "@shield/team-system";
     import { classifyMissionRisk, evaluateSpecialistIteration, type RiskFlags, type SpecialistIterationEvidenceV1 } from "@shield/team-system/mission";
+    import { MISSION_INTAKE_CONTRACT_VERSION, missionIntakeV1, type MissionIntakeRequestV1, type MissionIntakeResultV1 } from "@shield/team-system/intake";
     import { JOURNAL_SCHEMA_VERSION, type JournalEntry } from "@shield/team-system/journal";
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
@@ -242,6 +258,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       merge: false, deploy: false, release: false, hillHighRisk: false,
     };
     const risk = classifyMissionRisk(flags);
+    const intakeContract: "mission.intake.v1" = MISSION_INTAKE_CONTRACT_VERSION;
+    const intakeRequest = null as unknown as MissionIntakeRequestV1;
+    const intakeResult: MissionIntakeResultV1 = missionIntakeV1(intakeRequest);
     const iterationEvidence = null as unknown as SpecialistIterationEvidenceV1;
     const iterationEvaluation = evaluateSpecialistIteration(iterationEvidence);
     const journalSchema: 1 = JOURNAL_SCHEMA_VERSION;
@@ -318,7 +337,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-    void [schema, state, risk, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
+    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
