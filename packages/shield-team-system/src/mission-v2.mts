@@ -1943,6 +1943,10 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         if (canonicalJson(binding) !== canonicalJson(expectedAuthorityBinding)) {
           return invalid("binding_invalid", `Entry ${index} publication result scope does not match its request.`);
         }
+        if (candidate.payload.operation !== request.operation ||
+            candidate.payload.targetRef !== request.targetRef) {
+          return invalid("binding_invalid", `Entry ${index} publication result target does not match its request.`);
+        }
         const evidence = validateReviewPublicationEvidenceV1({
           scopeDigest: candidate.payload.scopeDigest,
           binding,
@@ -2404,6 +2408,10 @@ export function createCommunicationResultEntry(
     };
     if (canonicalJson(candidate.payload.publicationBinding) !== canonicalJson(expected)) {
       return invalid("binding_invalid", "Communication result scope does not match its request.");
+    }
+    if (candidate.payload.operation !== request.operation ||
+        candidate.payload.targetRef !== request.targetRef) {
+      return invalid("binding_invalid", "Communication result target does not match its request.");
     }
     const evidence = validateReviewPublicationEvidenceV1({
       scopeDigest: candidate.payload.scopeDigest,

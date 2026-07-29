@@ -161,6 +161,8 @@ test("adapter v2 binds publication decisions to exact paths, effects, and revisi
     adapterContractVersion: 2,
     payload: {
       ...communicationCandidate().payload,
+      operation: "publish_status",
+      targetRef: "github:pr:28",
       scopeDigest: evidence.scopeDigest,
       publicationBinding: evidence.binding,
     },

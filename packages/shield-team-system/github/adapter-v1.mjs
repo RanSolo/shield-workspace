@@ -103,10 +103,34 @@ function resultCandidate(request, publication, outcome, reason, receiptRef, scop
       outcome,
       failureReason: reason,
       receiptRef,
+      operation: request.operation,
+      targetRef: request.targetRef,
       scopeDigest: scope.scopeDigest,
       publicationBinding: scope.binding,
     },
   };
+}
+
+export function createGitHubPublicationResultCandidate(
+  request,
+  publication,
+  outcome,
+  reason,
+  receiptRef,
+  scope,
+) {
+  const candidate = resultCandidate(
+    request,
+    publication,
+    outcome,
+    reason,
+    receiptRef,
+    scope,
+  );
+  const checked = validateAdapterCandidate(candidate);
+  return checked.state === "valid"
+    ? { state: "candidate", candidate: checked.value }
+    : { state: "blocked", reason: "invalid_result_candidate" };
 }
 
 function checkedCandidate(candidate, commands) {
@@ -186,6 +210,9 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
   }
   if (JSON.stringify(request.requestedEffects) !== JSON.stringify(["review.comment.publish"])) {
     return blocked("publication_effect_mismatch", commands);
+  }
+  if (request.targetRef !== `github:pr:${publication.prNumber}`) {
+    return blocked("publication_target_mismatch", commands);
   }
   const scope = evaluatePRPublicationScope(
     resolved.authority,

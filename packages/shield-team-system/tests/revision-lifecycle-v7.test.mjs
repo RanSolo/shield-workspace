@@ -526,6 +526,8 @@ test("v8 preserves the v7 review lifecycle and requires publication-bound adapte
       outcome: "delivered",
       failureReason: null,
       receiptRef: "github:pr:113:comment:2",
+      operation: request.operation,
+      targetRef: request.targetRef,
       scopeDigest: scope.scopeDigest,
       publicationBinding: scope.binding,
     },
@@ -539,13 +541,10 @@ test("v8 preserves the v7 review lifecycle and requires publication-bound adapte
       ...resultCandidate,
       payload: {
         ...resultCandidate.payload,
-        publicationBinding: {
-          ...resultCandidate.payload.publicationBinding,
-          repositoryId: "RanSolo/other",
-        },
+        targetRef: "github:pr:114",
       },
     }).code,
-    "malformed",
+    "binding_invalid",
   );
 
   assert.equal(

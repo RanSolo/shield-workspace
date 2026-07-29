@@ -81,7 +81,9 @@ historical/stale review projections, and deterministic routing to the Fitz
 human gate. Journal v8 preserves v7 and adds Coulson-signed exact publication
 authorizations. Live review publication requires a durable v8 journal, an exact
 queued adapter-v2 request referencing that authorization, full replay before
-effect, and result evidence bound to the same request and scope. Historical
+effect, exact operation/target binding, and result evidence bound to the same
+request and scope. Delivery Workspace returns the same journal-ready result
+candidate for successful and post-scope failed publication attempts. Historical
 journals remain replayable without authorizing new unscoped effects.
 Mixed-version journals,
 automatic migration, waivers, a general policy

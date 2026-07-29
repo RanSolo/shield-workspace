@@ -17,6 +17,10 @@ function publicationFixture(operation = "publish_status", action = "comment") {
   const permittedEffects = action === "comment"
     ? ["review.comment.publish"]
     : ["review.branch.push", "review.pull_request.create_draft"];
+  const targetRef = action === "comment"
+    ? "github:pr:28"
+    : `github:repository:RanSolo/shield-workspace` +
+      `:branch:${branchSlug}:base:main`;
   return publicationJournalFixture({
     missionId: "mission:fixture",
     subjectId: "issue:28",
@@ -26,7 +30,7 @@ function publicationFixture(operation = "publish_status", action = "comment") {
     authorizedPaths: [missionBriefPath],
     permittedEffects,
     operation,
-    targetRef: "github:pr:28",
+    targetRef,
   });
 }
 
@@ -60,6 +64,7 @@ const scopeChecks = () => [
   ok("/workspace/shield-workspace"), ok("git@github.com:RanSolo/shield-workspace.git"),
   ok(branchSlug), ok(head), ok(base), ok(), ok(`${missionBriefPath}\0`), ok(), ok(),
 ];
+const prScopeChecks = () => [...scopeChecks(), ok(base)];
 
 test("GitHub performs no effect without an exact journaled request", () => {
   const run = runner([]);
@@ -92,6 +97,19 @@ test("GitHub publishes human-readable status only at the requested exact head", 
   assert.equal(run.calls.at(-1).options.input, publication().body);
 });
 
+test("GitHub comment publication exact-matches the journaled PR target", () => {
+  const fixture = publicationFixture();
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({ prNumber: 29 }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_target_mismatch");
+  assert.equal(run.calls.length, 0);
+});
+
 test("mission brief publication delegates to the existing draft PR workspace", () => {
   const fixture = publicationFixture("publish_mission_brief", "create");
   const workspacePlan = {
@@ -119,7 +137,7 @@ test("mission brief publication delegates to the existing draft PR workspace", (
     ok(head),
     ok(head),
     ok("[]"),
-    ...scopeChecks(),
+    ...prScopeChecks(),
     ok(),
     ok(pr.url),
     ok(JSON.stringify([pr])),
@@ -152,7 +170,7 @@ test("post-effect PR readback failure produces journal-ready failure evidence", 
     ok(head),
     ok(head),
     ok("[]"),
-    ...scopeChecks(),
+    ...prScopeChecks(),
     ok(),
     ok("https://github.com/RanSolo/shield-workspace/pull/28"),
     { exitCode: 1, stdout: "", stderr: "readback unavailable" },

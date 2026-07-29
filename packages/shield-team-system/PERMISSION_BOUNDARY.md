@@ -54,7 +54,10 @@ authorized-path symlinks or gitlinks before an effect is eligible.
 Before any effect, the host adapter loads and fully replays that journal,
 selects exactly one queued adapter-v2 request, and resolves its referenced
 authorization. Standalone requests or caller-created projections cannot
-authorize publication.
+authorize publication. The request also binds the exact operation and target:
+review comments exact-match the PR number, while draft-PR publication
+exact-matches repository, mission branch, base branch, and the host-observed
+remote base revision.
 
 `review.publish` and Wheels Up use the same evaluator; Wheels Up does not widen
 the approved paths or effects. The GitHub adapter observes the repository and
@@ -62,6 +65,11 @@ evaluates this contract before branch push, draft-PR creation/update, or review
 comment publication. GitHub transports an allowed decision but does not define
 authority meaning. Missing, malformed, stale, dirty, sensitive, ambiguous, or
 out-of-scope evidence fails closed before the external effect.
+
+Every scoped effect attempt returns an adapter-v2 communication-result
+candidate, including Delivery Workspace and post-effect transport/readback
+failures. Result replay exact-matches request ID, operation, target, scope, and
+effects before the queued request can become final evidence.
 
 Capability, repository-root, and writability attestations prove operational
 facts only. They do not grant authority, readiness, or permission. Issue #34

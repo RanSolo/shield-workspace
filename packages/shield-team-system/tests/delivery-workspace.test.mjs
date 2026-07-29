@@ -49,6 +49,8 @@ function publicationFixture(action) {
       `review.pull_request.${action}_draft`,
     ],
     operation: "publish_mission_brief",
+    targetRef: `github:repository:RanSolo/shield-workspace` +
+      `:branch:${plan().branchSlug}:base:main`,
   });
 }
 
@@ -72,6 +74,12 @@ function input(overrides = {}) {
     },
     planGate: null,
     publicationRequestId: createPublication.requestId,
+    publicationCandidateId: "candidate:mission-44:publication",
+    publicationSourceRef: "github:pr:45",
+    publicationCapturedAt: {
+      value: "2026-07-29T10:04:00Z",
+      provenance: "hostTrusted",
+    },
     ...overrides,
   };
 }
@@ -168,7 +176,7 @@ const initialChecks = () => [
 const scopeChecks = () => [
   ok("/workspace/shield-workspace"), ok("git@github.com:RanSolo/shield-workspace.git"),
   ok(plan().branchSlug), ok(head), ok(base), ok(),
-  ok(`${plan().missionBriefPath}\0`), ok(), ok(),
+  ok(`${plan().missionBriefPath}\0`), ok(), ok(), ok(base),
 ];
 
 test("approval and verified draft receipt produce workspace_ready while Fury is pending", () => {
@@ -184,6 +192,9 @@ test("approval and verified draft receipt produce workspace_ready while Fury is 
   assert.equal(result.state, "workspace_ready");
   assert.deepEqual(result.planGateEvaluation.reasonCodes, ["PLAN_REVIEW_REQUIRED"]);
   assert.equal(result.publicationAction, "created_draft_pr");
+  assert.equal(result.publicationCandidate.candidateKind, "communication_result");
+  assert.equal(result.publicationCandidate.payload.outcome, "delivered");
+  assert.equal(result.publicationCandidate.payload.targetRef, createPublication.request.targetRef);
   assert.deepEqual(result.receipt, {
     schemaVersion: 1,
     repositoryOwner: "RanSolo",
@@ -219,6 +230,8 @@ test("creation, update, and verification failures deny specialist dispatch", () 
   });
   assert.equal(creation.state, "blocked");
   assert.equal(creation.reason, "pr_create_failed");
+  assert.equal(creation.publicationCandidate.payload.outcome, "failed");
+  assert.equal(creation.publicationCandidate.payload.requestId, createPublication.requestId);
 
   const update = prepareDeliveryWorkspaceForDispatch(
     input({ publicationRequestId: updatePublication.requestId }),

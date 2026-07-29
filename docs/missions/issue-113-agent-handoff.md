@@ -60,9 +60,14 @@
   does not widen paths or effects.
 - Both GitHub publication entry points load and fully replay the durable journal
   before branch push, draft-PR create/update, or review-comment publication.
+- Review comments exact-match the journaled PR target. Draft-PR publication
+  exact-matches repository, mission branch, base branch, and the host-observed
+  remote base revision before effect.
 - Supervised journal v8 carries the signed authorization, publication-bound
   adapter v2 request, and result evidence bound to that exact request and
-  scope. Earlier journals retain their historical meaning.
+  scope, operation, and target. Delivery Workspace also returns journal-ready
+  result candidates for successful and post-scope failed attempts. Earlier
+  journals retain their historical meaning.
 
 ## Validation contract
 

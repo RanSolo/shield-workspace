@@ -60,6 +60,8 @@ export interface CommunicationResultPayload {
   receiptRef: string | null;
 }
 export interface ReviewPublicationCommunicationResultPayload extends CommunicationResultPayload {
+  operation: CommunicationOperation;
+  targetRef: string;
   scopeDigest: string;
   publicationBinding: ReviewPublicationBindingV1;
 }
@@ -280,7 +282,7 @@ export function validateAdapterCandidate(input: unknown): AdapterResult<AdapterC
   } else if (input.candidateKind === "communication_result") {
     if (input.humanPrincipalId !== null || input.bindingId !== null) errors.push("Communication result candidate cannot carry human authority identity.");
     const payloadFields = input.adapterContractVersion === 2
-      ? ["requestId","outcome","failureReason","receiptRef","scopeDigest","publicationBinding"]
+      ? ["requestId","outcome","failureReason","receiptRef","operation","targetRef","scopeDigest","publicationBinding"]
       : ["requestId","outcome","failureReason","receiptRef"];
     const payloadErrors = exact(input.payload, payloadFields, "Communication result payload"); errors.push(...payloadErrors);
     if (plain(input.payload)) {
@@ -294,6 +296,12 @@ export function validateAdapterCandidate(input: unknown): AdapterResult<AdapterC
         if (input.payload.receiptRef !== null && !identifier(input.payload.receiptRef)) errors.push("Communication receiptRef is invalid.");
       }
       if (input.adapterContractVersion === 2) {
+        if (!COMMUNICATION_OPERATIONS.includes(input.payload.operation as CommunicationOperation)) {
+          errors.push("Communication result operation is unsupported.");
+        }
+        if (!identifier(input.payload.targetRef)) {
+          errors.push("Communication result targetRef is invalid.");
+        }
         const evidence = validateReviewPublicationEvidenceV1({
           scopeDigest: input.payload.scopeDigest,
           binding: input.payload.publicationBinding,

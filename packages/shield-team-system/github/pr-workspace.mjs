@@ -143,6 +143,11 @@ function repositoryIdFromRemote(value) {
   return match?.groups?.repository ?? null;
 }
 
+export function githubPRWorkspaceTargetRef(plan) {
+  return `github:repository:${plan.repositoryOwner}/${plan.repositoryName}` +
+    `:branch:${plan.branchSlug}:base:${plan.baseBranch}`;
+}
+
 /**
  * Observes one committed base-to-head change set and evaluates the shared,
  * host-neutral review-publication contract before any repository mutation.
@@ -372,6 +377,9 @@ export function createOrUpdatePR(plan, options = {}) {
       publication.request.operation !== "publish_mission_brief") {
     return blocked("publication_effect_mismatch", commands);
   }
+  if (publication.request.targetRef !== githubPRWorkspaceTargetRef(plan)) {
+    return blocked("publication_target_mismatch", commands);
+  }
   const scope = evaluatePRPublicationScope(
     publication.authority,
     publication.request.proposedChangedPaths,
@@ -388,6 +396,17 @@ export function createOrUpdatePR(plan, options = {}) {
       scope.binding.branch !== plan.branchSlug ||
       scope.binding.headRevisionId !== artifactRevisionId) {
     return blocked("publication_binding_mismatch", commands);
+  }
+  const observedBase = call(
+    run,
+    commands,
+    "git",
+    ["rev-parse", `refs/remotes/origin/${plan.baseBranch}^{commit}`],
+    { cwd },
+  );
+  if (observedBase.exitCode !== 0 ||
+      observedBase.stdout.trim() !== scope.binding.baseRevisionId) {
+    return blocked("publication_target_mismatch", commands);
   }
 
   const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });

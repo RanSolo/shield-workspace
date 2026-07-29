@@ -236,6 +236,7 @@ export type DeliveryWorkspaceResult =
         scopeDigest: string;
         binding: Readonly<ReviewPublicationBindingV1>;
       };
+      publicationCandidate: AdapterCandidateEnvelope;
       planGateEvaluation: FuryPlanGateEvaluationV1;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
@@ -247,12 +248,14 @@ export type DeliveryWorkspaceResult =
         scopeDigest: string;
         binding: Readonly<ReviewPublicationBindingV1>;
       };
+      publicationCandidate: AdapterCandidateEnvelope;
       planGateEvaluation: FuryPlanGateEvaluationV1;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
   | {
       state: "blocked";
       reason: string;
+      publicationCandidate?: AdapterCandidateEnvelope;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     };
 
@@ -295,6 +298,9 @@ export function prepareDeliveryWorkspaceForDispatch(
     blueprintArtifact: BlueprintArtifactAssertionV1;
     planGate: FuryPlanGateEnvelopeV1 | null;
     publicationRequestId: string;
+    publicationCandidateId: string;
+    publicationSourceRef: string;
+    publicationCapturedAt: AdapterTimestamp;
   },
   options: {
     loadJournal: () => unknown[];

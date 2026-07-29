@@ -31,6 +31,8 @@ function publicationFixture(action) {
       `review.pull_request.${action}_draft`,
     ],
     operation: "publish_mission_brief",
+    targetRef: `github:repository:RanSolo/shield-workspace` +
+      `:branch:${plan().branchSlug}:base:main`,
   });
 }
 
@@ -53,7 +55,7 @@ const initialChecks = () => [
 const scopeChecks = () => [
   ok("/workspace/shield-workspace"), ok("git@github.com:RanSolo/shield-workspace.git"),
   ok(plan().branchSlug), ok(head), ok(base), ok(),
-  ok(`${plan().missionBriefPath}\0`), ok(), ok(),
+  ok(`${plan().missionBriefPath}\0`), ok(), ok(), ok(base),
 ];
 
 test("creates a draft PR and verifies it through GitHub readback", () => {
@@ -160,6 +162,30 @@ test("host-observed repository root and origin must match signed authority", () 
       false,
     );
   }
+});
+
+test("remote base branch must resolve to the signed base revision", () => {
+  const publication = publicationFixture("create");
+  const run = runner([
+    ...initialChecks(),
+    ok("[]"),
+    ...scopeChecks().slice(0, -1),
+    ok("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+  ]);
+  const result = createOrUpdatePR(plan(), {
+    run,
+    body: "Mission body",
+    publicationRequestId: publication.requestId,
+    loadJournal: publication.loadJournal,
+    realpath: (value) => value,
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_target_mismatch");
+  assert.equal(
+    run.calls.some(({ executable, args }) =>
+      executable === "git" && args[0] === "push"),
+    false,
+  );
 });
 
 test("blocks on unsafe repository state and ambiguous or non-draft PRs", () => {

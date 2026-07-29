@@ -5,6 +5,7 @@ import {
   normalizeFuryPlanGateInputV1,
 } from "../contracts/fury-plan-gate-v1.mjs";
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
+import { createGitHubPublicationResultCandidate } from "./adapter-v1.mjs";
 import { createOrUpdatePR, validatePRWorkspaceReceipt } from "./pr-workspace.mjs";
 import { resolveJournaledPublicationRequest } from "./publication-gate.mjs";
 
@@ -61,6 +62,7 @@ const GATE_IDENTIFIER = /^[A-Za-z0-9](?:[A-Za-z0-9._:/#@-]{0,126}[A-Za-z0-9])?$/
 const DELIVERY_INPUT_FIELDS = Object.freeze([
   "missionState", "approvalSource", "artifactRevisionId", "workspacePlan", "body",
   "missionId", "subjectId", "blueprintArtifact", "planGate", "publicationRequestId",
+  "publicationCandidateId", "publicationSourceRef", "publicationCapturedAt",
 ]);
 const WORKSPACE_PLAN_FIELDS = Object.freeze([
   "repositoryOwner", "repositoryName", "baseBranch", "branchSlug", "missionBriefPath", "prTitle",
@@ -136,8 +138,22 @@ function normalizeDeliveryInput(input) {
     }
     if (!gateIdentifier(outer.missionId) || !gateIdentifier(outer.subjectId) ||
         !IMMUTABLE_REVISION.test(outer.artifactRevisionId) ||
-        !gateIdentifier(outer.publicationRequestId)) {
+        !gateIdentifier(outer.publicationRequestId) ||
+        !gateIdentifier(outer.publicationCandidateId) ||
+        !gateIdentifier(outer.publicationSourceRef)) {
       return { state: "invalid", reason: "invalid_fury_plan_gate_binding" };
+    }
+    const capturedAt = dataRecord(
+      outer.publicationCapturedAt,
+      ["value", "provenance"],
+    );
+    if (capturedAt === null ||
+        typeof capturedAt.value !== "string" ||
+        !Number.isFinite(Date.parse(capturedAt.value)) ||
+        !capturedAt.value.endsWith("Z") ||
+        (capturedAt.provenance !== "humanRecorded" &&
+         capturedAt.provenance !== "hostTrusted")) {
+      return { state: "invalid", reason: "invalid_publication_candidate" };
     }
     const planGate = normalizeFuryPlanGateInputV1(outer.planGate);
     if (planGate.state !== "valid") {
@@ -194,7 +210,42 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     realpath: options.realpath,
   });
   if (published.state !== "success" && published.state !== "reused") {
-    return blocked(published.reason, published.commands);
+    if (!published.publicationScope) {
+      return blocked(published.reason, published.commands);
+    }
+    const candidate = createGitHubPublicationResultCandidate(
+      publication.request,
+      {
+        candidateId: snapshot.publicationCandidateId,
+        sourceRef: snapshot.publicationSourceRef,
+        capturedAt: snapshot.publicationCapturedAt,
+      },
+      "failed",
+      "host_rejected",
+      null,
+      published.publicationScope,
+    );
+    return candidate.state === "candidate"
+      ? {
+        ...blocked(published.reason, published.commands),
+        publicationCandidate: candidate.candidate,
+      }
+      : blocked(candidate.reason, published.commands);
+  }
+  const candidate = createGitHubPublicationResultCandidate(
+    publication.request,
+    {
+      candidateId: snapshot.publicationCandidateId,
+      sourceRef: snapshot.publicationSourceRef,
+      capturedAt: snapshot.publicationCapturedAt,
+    },
+    "delivered",
+    null,
+    published.prUrl,
+    published.publicationScope,
+  );
+  if (candidate.state !== "candidate") {
+    return blocked(candidate.reason, published.commands);
   }
   const checked = validatePRWorkspaceReceipt(published.receipt, {
     repositoryOwner: snapshot.workspacePlan.repositoryOwner,
@@ -226,6 +277,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
       state: "workspace_ready",
       publicationAction: published.action,
       receipt: checked.receipt,
+      publicationCandidate: candidate.candidate,
       planGateEvaluation,
       commands: published.commands,
     };
@@ -234,6 +286,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     state: "dispatch_ready",
     publicationAction: published.action,
     receipt: checked.receipt,
+    publicationCandidate: candidate.candidate,
     planGateEvaluation,
     commands: published.commands,
   };
