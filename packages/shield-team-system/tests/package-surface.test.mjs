@@ -29,6 +29,8 @@ test("exports only the documented public package specifiers", async () => {
     "./permission-audit",
     "./review-publication",
     "./pipeline",
+    "./mission-profile",
+    "./profile-aware-mission",
     "./sonarqube",
     "./mack-validation",
     "./qa-mode",
@@ -58,6 +60,8 @@ test("loads every supported runtime specifier", async () => {
   const permissionAudit = await import("@shield/team-system/permission-audit");
   const reviewPublication = await import("@shield/team-system/review-publication");
   const pipeline = await import("@shield/team-system/pipeline");
+  const missionProfile = await import("@shield/team-system/mission-profile");
+  const profileAwareMission = await import("@shield/team-system/profile-aware-mission");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
   const qaMode = await import("@shield/team-system/qa-mode");
@@ -69,10 +73,15 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(mission.classifyMissionRisk, root.classifyMissionRisk);
   assert.equal(intake.MISSION_INTAKE_CONTRACT_VERSION, "mission.intake.v1");
   assert.equal(typeof intake.missionIntakeV1, "function");
+  assert.equal(typeof intake.profileAwareMissionIntakeV1, "function");
   assert.equal(typeof mission.evaluateSpecialistIteration, "function");
   assert.equal(journal.JOURNAL_SCHEMA_VERSION, 1);
   assert.equal(modes.MODE_MANIFEST_SCHEMA_VERSION, 1);
   assert.equal(typeof workspace.validateMissionWorkspaceInput, "function");
+  assert.equal(missionProfile.MISSION_PROFILE_CONTRACT_VERSION, "mission.profile.v1");
+  assert.equal(typeof missionProfile.freezeMissionRequirementsV1, "function");
+  assert.equal(profileAwareMission.PROFILE_AWARE_JOURNAL_SCHEMA_VERSION, 9);
+  assert.equal(typeof profileAwareMission.replayProfileAwareMissionJournal, "function");
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
   assert.equal(config.CONFIG_SCHEMA_VERSION, 1);

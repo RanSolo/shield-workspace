@@ -18,6 +18,7 @@ import {
   classifyMissionRisk,
   type RiskAssessment,
 } from "../public/mission.mjs";
+export { profileAwareMissionIntakeV1 } from "./profile-aware-mission-v1.mjs";
 
 export const MISSION_INTAKE_SCHEMA_VERSION = 1 as const;
 export const MISSION_INTAKE_CONTRACT_VERSION = "mission.intake.v1" as const;
