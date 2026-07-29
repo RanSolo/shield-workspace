@@ -27,12 +27,12 @@ supervised-authorized, execution-ready, and execution-not-started. Execution,
 dispatch, Fitz approval, merge, deployment, release, and publication remain
 outside the granted scope.
 
-The human subsequently clarified that the same principal occupies Coulson and
-Fitz, but Fitz decisions occur only through GitHub review and never through
-this local workstation. The current GitHub path translates already signed
-human evidence; it does not make an ordinary GitHub review into an Ed25519
-Fitz record. Local Fitz signing is therefore prohibited pending a separate
-remote-signing and evidence-ingestion decision.
+The human subsequently clarified that this dogfood mission has only Coulson as
+human authority and requires no separate technical or product review. Fitz is
+intended for a higher-assurance profile, possibly Enterprise Mode, but the
+exact trigger is unresolved. The current contracts always require Fitz, so the
+journal's pending Fitz requirement is a dogfooding-discovered schema mismatch.
+Local Fitz signing and Fitz evidence for Mission #130 are prohibited.
 
 ## Public position
 

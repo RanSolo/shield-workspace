@@ -276,16 +276,17 @@ an initialized local journal v2 with only `mission.begun`. Communication remains
 - `shield doctor --json` passed every check.
 - The human explicitly assigned `human:ransolo` to Coulson and Fitz.
 - Separate Ed25519 public keys were bound to the two seats.
-- The same authorized human principal occupies both seats, but their approved
-  interaction surfaces differ:
-  - Coulson may sign mission governance evidence locally.
-  - Fitz reviews occur through GitHub review and must not be signed through the
-    local workstation path.
+- Human clarification supersedes the initial seat assumption:
+  - this dogfood mission has one human authority, Coulson;
+  - it requires no separate technical or product review;
+  - Fitz is intended only for a higher-assurance profile, possibly Enterprise
+    Mode, with the exact activation rule still unresolved;
+  - Simmons remains conditional for product/domain review.
 - The closed trusted binding registry and its exact configuration references
   validated successfully.
 - Private keys and passphrases remain outside the repository. The locally
   generated Fitz private key is not authorized for use and requires an
-  explicit custody/rotation decision before any cleanup or migration.
+  explicit cleanup decision.
 - A provisioned `missionIntakeV1(...)` rerun returned:
   - `state: candidate`;
   - `authority: non_authoritative`;
@@ -340,21 +341,22 @@ an initialized local journal v2 with only `mission.begun`. Communication remains
 - No execution step, dispatch, Fitz approval, merge, deployment, release, or
   publication occurred.
 
-### Fitz review channel — GitHub only
+### Dogfood review profile — Coulson only
 
-- Human clarification: `human:ransolo` occupies both Coulson and Fitz.
-- Coulson governance evidence may use the local signing path.
-- Fitz technical-review decisions occur through GitHub review and Fitz will not
-  participate through this local computer.
-- Existing GitHub adapter behavior can preserve and translate already signed
-  human evidence, but an ordinary GitHub review does not itself create the
-  required Ed25519 Fitz signature.
-- Therefore the Fitz acceptance path is not yet operational end to end.
-- Do not use the local Fitz private key, fabricate Fitz evidence, or treat a
-  GitHub approval as journal authority.
-- Resolving Fitz key custody, remote signing, and GitHub-review-to-signed-
-  evidence ingestion requires a separate explicit architecture and authority
-  decision.
+- Human clarification: this dogfood mission has no separate technical or
+  product reviewer; Coulson is the sole human authority.
+- Fitz belongs only to a higher-assurance review profile, possibly Enterprise
+  Mode. The exact profile/risk trigger has not been approved.
+- The current brief validator and evidence-requirement constructor always
+  require Fitz. They cannot express the intended Coulson-only dogfood profile.
+- The journal's pending Fitz requirement is therefore a framework/schema
+  mismatch discovered through dogfooding, not an instruction to fabricate or
+  collect Fitz evidence.
+- Do not use the local Fitz private key or append Fitz evidence for Mission
+  #130.
+- A later architecture change should make technical and product review gates
+  derive from an explicit review profile rather than being universally
+  required or left to agent convention.
 
 ## Reported environment observation
 
@@ -369,6 +371,9 @@ The journal now reports execution readiness `ready`, but current human scope
 does not authorize `shield mission step`, implementation, or seat dispatch.
 Stop before sequence 2.
 
-Fitz technical review remains pending for acceptance. Do not fabricate or
-record Fitz evidence, use the local Fitz private key, merge, deploy, release,
-or publish review artifacts.
+The current schema still projects Fitz technical review as pending, but human
+mission scope says no separate Fitz review applies to this dogfood mission.
+Treat this as a blocked schema mismatch, not a gate to satisfy.
+
+Do not fabricate or record Fitz evidence, use the local Fitz private key,
+merge, deploy, release, or publish review artifacts.
