@@ -1353,9 +1353,18 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       : readiness("execute", projected, sequence);
     const currentFuryReviews = currentReviewSubject === undefined
       ? []
-      : furyReviews.filter(({ revisionId }) => revisionId === currentReviewSubject?.revisionId);
+      : furyReviews.filter(({ revisionId, lifecycle }) =>
+        lifecycle === "current" && revisionId === currentReviewSubject?.revisionId);
     const routeToFitz: FitzRouteReadiness | undefined = currentReviewSubject === undefined
       ? undefined
+      : currentFuryReviews.length > 1
+        ? {
+          state: "blocked",
+          revisionId: currentReviewSubject.revisionId,
+          reviewId: null,
+          reasons: ["current_head_fury_review_ambiguous"],
+          evaluatedThroughSequence: sequence,
+        }
       : currentFuryReviews.length === 0
         ? {
           state: "waiting",
@@ -1469,6 +1478,9 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (replacement.revisionId === currentReviewSubject.revisionId ||
           replacement.supersedesRevisionId !== currentReviewSubject.revisionId) {
         return invalid("revision_mismatch", `Entry ${index} must supersede the exact current review revision.`);
+      }
+      if (reviewRevisions.some(({ revisionId }) => revisionId === replacement.revisionId)) {
+        return invalid("revision_mismatch", `Entry ${index} cannot reuse a review revision identity.`);
       }
       let nextRequirements: EvidenceRequirement[];
       try {
@@ -1851,6 +1863,10 @@ export function createReviewSubjectSupersessionEntry(
   if (reviewSubject.revisionId === projection.reviewSubject.revisionId ||
       reviewSubject.supersedesRevisionId !== projection.reviewSubject.revisionId) {
     return invalid("revision_mismatch", "Review-subject supersession must name the exact current revision.");
+  }
+  if (!Array.isArray(projection.reviewRevisions) ||
+      projection.reviewRevisions.some(({ revisionId }) => revisionId === reviewSubject.revisionId)) {
+    return invalid("revision_mismatch", "Review-subject supersession cannot reuse a revision identity.");
   }
   let requirements: EvidenceRequirement[];
   try {

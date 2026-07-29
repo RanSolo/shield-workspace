@@ -14,6 +14,7 @@ belong under the field-guide work tracked by Issue #79.
 - Branch: `codex/issue-112-v0.3-review-supersession`
 - Mission base: `23d08989258ca0441d80f112926f8fb5001289f7`
 - Verified implementation revision: `ad95724a92ef152e784f45d3d4e7da7a96a5bb51`
+- Latest reviewed PR head: `fb0123d8bd01c68315a08a8f76aed674ec52457c`
 - Review surface: draft PR #125
 
 The implementation revision identifies the tested code checkpoint before this
@@ -73,10 +74,19 @@ simulated.
 
 ## Current state and next route
 
-1. Commit and push this handoff-only addition.
-2. Bind Fury to the new exact PR head for architecture review.
-3. If Fury returns `CHANGES_REQUIRED`, route bounded corrections to May and
-   repeat exact-head validation.
-4. If Fury returns `PASS`, stop at the human Fitz gate in draft PR #125.
+Fury returned `CHANGES_REQUIRED` at `fb0123d8bd01c68315a08a8f76aed674ec52457c`.
+Replay currently permits revision identity reuse (`A → B → A`), which can
+reactivate stale Fury and human evidence through reused revision and requirement
+identifiers.
+
+Required bounded correction:
+
+1. Reject a replacement revision already present anywhere in review history in
+   both constructor and replay.
+2. Derive Fitz routing only from exactly one Fury record whose lifecycle is
+   `current`.
+3. Add adversarial tests proving `A → B → A` fails closed and cannot reactivate
+   stale Fury or human evidence.
+4. Run full validation, push a new exact head, and repeat the Fury gate.
 
 The branch must not change while an exact-head Fury review is active.

@@ -274,6 +274,70 @@ test("v7 blocks Fitz before Fury and marks accepted A evidence stale after B sup
   ]);
 });
 
+test("v7 rejects A to B to A revision reuse before stale authority can reactivate", () => {
+  const data = fixture();
+  let projection = replay(data.entries);
+
+  data.entries.push(furyReview(projection, "approved", 1));
+  projection = replay(data.entries);
+  const fitzRequirementA = projection.requirements.find(({ requiredSeatId }) => requiredSeatId === "fitz");
+  const fitzEvidenceA = createEvidenceEntry(
+    projection,
+    signedReviewEvidence(data.fitz, projection, fitzRequirementA, 2),
+  );
+  assert.equal(fitzEvidenceA.state, "valid", fitzEvidenceA.errors?.join(" "));
+  data.entries.push(fitzEvidenceA.value);
+  projection = replay(data.entries);
+
+  const reviewSubjectB = {
+    ...data.reviewSubject,
+    revisionId: "git:dddddddddddddddddddddddddddddddddddddddd",
+    supersedesRevisionId: data.reviewSubject.revisionId,
+    sourceRef: "github:pr:112:head-d",
+  };
+  const toB = createReviewSubjectSupersessionEntry(
+    projection,
+    reviewSubjectB,
+    { value: "2026-07-28T11:03:00Z", provenance: "hostTrusted" },
+  );
+  assert.equal(toB.state, "valid", toB.errors?.join(" "));
+  data.entries.push(toB.value);
+  projection = replay(data.entries);
+  assert.equal(projection.routeToFitz.state, "waiting");
+  assert.deepEqual(projection.evidenceHistory.map(({ lifecycle }) => lifecycle), ["stale"]);
+  assert.deepEqual(projection.furyReviews.map(({ lifecycle }) => lifecycle), ["stale"]);
+
+  const reusedA = {
+    ...data.reviewSubject,
+    supersedesRevisionId: reviewSubjectB.revisionId,
+    sourceRef: "github:pr:112:head-a-reused",
+  };
+  const rejected = createReviewSubjectSupersessionEntry(
+    projection,
+    reusedA,
+    { value: "2026-07-28T11:04:00Z", provenance: "hostTrusted" },
+  );
+  assert.equal(rejected.state, "invalid");
+  assert.equal(rejected.code, "revision_mismatch");
+
+  const rawRequirements = createReviewEvidenceRequirements(
+    data.brief,
+    reusedA,
+    4,
+    projection.requirements,
+  );
+  const rawReuse = {
+    schemaVersion: 7,
+    entryId: `entry:${projection.missionId}:4`,
+    missionId: projection.missionId,
+    sequence: 4,
+    type: "subject.revision_superseded",
+    timestamp: { value: "2026-07-28T11:04:00Z", provenance: "hostTrusted" },
+    payload: { reviewSubject: reusedA, requirements: rawRequirements },
+  };
+  assert.equal(replaySupervisedMissionJournal([...data.entries, rawReuse]).state, "invalid");
+});
+
 test("v7 fails closed on stale, contradictory, or malformed review lifecycle records", () => {
   const data = fixture();
   let projection = replay(data.entries);
