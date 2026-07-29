@@ -119,6 +119,7 @@ test("closed binding, attestation, and context contracts reject authority drift"
   assert.equal(validateHostPermissionAttestation(attestation("capability")).state, "valid");
   assert.equal(validateHostPermissionAttestation({ ...attestation("writability"), capabilityId: "filesystem_write" }).state, "invalid");
   assert.equal(validatePermissionInvocationContext(context()).state, "valid");
+  assert.equal(validatePermissionInvocationContext(context({ journalSchemaVersion: 7 })).state, "valid");
   assert.equal(validatePermissionInvocationContext({ ...context(), journalSchemaVersion: 5 }).state, "invalid");
   for (const seatId of ["coulson", "fitz", "simmons"]) {
     assert.equal(validateRuntimeBinding(binding({ reasoningRuntimeId: seatId })).state, "invalid");

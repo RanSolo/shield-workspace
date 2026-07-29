@@ -14,7 +14,7 @@ package artifact.
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
 | `@shield/team-system/hill-readiness` | Pure advisory `hill.readiness.v1` classification for exact seat-owned artifact revisions using closed, host-asserted evidence |
 | `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
-| `@shield/team-system/supervision` | Supervised journals v2-v6, including authoritative runtime-binding lifecycle, canonical mission briefs, Ed25519 human evidence, readiness, communication, and execution-effect replay |
+| `@shield/team-system/supervision` | Supervised journals v2-v7, including revision-bound Fury review and supersession history, authoritative runtime-binding lifecycle, canonical mission briefs, Ed25519 human evidence, readiness, communication, and execution-effect replay |
 | `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
 | `@shield/team-system/adapter` | Closed host-neutral adapter v1 candidate, communication, and validation contracts |
 | `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
@@ -54,7 +54,7 @@ does not migrate or reinterpret the existing package runtime.
 | Review-workspace validation | Supported through `/workspace` |
 | Hill operational-readiness classification | Supported through `/hill-readiness` as non-authoritative evidence only; it does not verify host assertions, route work, grant authority, mutate journals, or compare Hill with Fury |
 | Repository configuration validation | Supported through `/config` |
-| Bounded local human-evidence requirements and readiness | Supported through `/supervision` for the V0.3-4 mission-plan subject |
+| Bounded local human-evidence requirements and readiness | Supported through `/supervision`; v2-v6 retain mission-plan review requirements, while v7 binds Fitz and optional Simmons review requirements to the current repository-artifact revision after an exact-revision Fury gate |
 | One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |
 | Per-call runtime-bound permission decisions | Supported through `/permission`; real environmental probes remain owned by Issue #34 |
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
@@ -73,7 +73,10 @@ used only by the bounded supervised-mission workflow. Journal v3 adds Wheels
 Off authorization, journal v4 adds communication requests and results, and
 journal v5 adds completed or uncertain execution-effect records. Journal v6
 adds separately Coulson-authorized runtime-binding and atomic supersession
-events. Mixed-version journals, automatic migration, waivers, a general policy
+events. Journal v7 preserves those semantics and adds append-only
+repository-artifact revision supersession, exact-revision Fury review records,
+historical/stale review projections, and deterministic routing to the Fitz
+human gate. Mixed-version journals, automatic migration, waivers, a general policy
 DSL and general multi-cycle orchestration remain unsupported. The bounded Daisy
 broker and single-call May executor are supported only through `/local-tools`.
 The May executor exposes no Git, merge, deployment, release, caller-selected
@@ -84,7 +87,7 @@ Caller-supplied authority remains unsupported. Specialist iteration uses no
 repair count or hard cap: Hill supplies a closed evidence packet and requested
 disposition, while material scope, risk, authority, destructive/external,
 tradeoff, and final human gates fail to Coulson.
-The runner returns a validated, non-authoritative v5 or v6 effect candidate; it does
+The runner returns a validated, non-authoritative v5, v6, or v7 effect candidate; it does
 not append entries or grant the candidate authority. The trusted supervision
 boundary supplies the entry ID and timestamp, rechecks exact mission, subject,
 revision, and sequence identity, and appends the authoritative record. Replay

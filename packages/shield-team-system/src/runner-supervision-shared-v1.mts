@@ -106,7 +106,9 @@ export function validateRunnerSupervisedEffectCandidateCommon(
   if (input.runnerContractVersion !== 1) errors.push(messages.contractVersionUnsupported(label));
   if (input.candidateKind !== "runner.supervised_effect_record") errors.push(messages.kindUnsupported(label));
   if (input.authority !== "non_authoritative") errors.push(messages.authorityUnsupported(label));
-  if (input.journalSchemaVersion !== 5 && input.journalSchemaVersion !== 6) errors.push(messages.journalSchemaUnsupported(label));
+  if (input.journalSchemaVersion !== 5 && input.journalSchemaVersion !== 6 && input.journalSchemaVersion !== 7) {
+    errors.push(messages.journalSchemaUnsupported(label));
+  }
   for (const field of ["missionId", "subjectId", "revisionId"] as const) {
     if (!isIdentifier(input[field])) errors.push(messages.missionIdentityInvalid(label));
   }

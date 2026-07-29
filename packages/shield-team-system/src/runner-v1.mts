@@ -40,7 +40,7 @@ export interface RunnerModeReference {
 
 export interface RunnerProjectionSnapshot {
   runnerContractVersion: 1;
-  journalSchemaVersion: 5 | 6;
+  journalSchemaVersion: 5 | 6 | 7;
   missionId: string;
   subjectId: string;
   revisionId: string;
@@ -151,7 +151,7 @@ export interface RunnerSupervisedEffectCandidate {
   runnerContractVersion: 1;
   candidateKind: "runner.supervised_effect_record";
   authority: "non_authoritative";
-  journalSchemaVersion: 5 | 6;
+  journalSchemaVersion: 5 | 6 | 7;
   missionId: string;
   subjectId: string;
   revisionId: string;
@@ -489,7 +489,9 @@ function validateProjection(input: unknown): RunnerContractResult<RunnerProjecti
   const errors = exactFields(input, PROJECTION_FIELDS, "Runner projection");
   if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_projection", errors);
   if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push("Runner projection contract version is unsupported.");
-  if (input.journalSchemaVersion !== 5 && input.journalSchemaVersion !== 6) errors.push("Runner projection requires supervised journal schema v5 or v6.");
+  if (input.journalSchemaVersion !== 5 && input.journalSchemaVersion !== 6 && input.journalSchemaVersion !== 7) {
+    errors.push("Runner projection requires supervised journal schema v5, v6, or v7.");
+  }
   for (const field of ["missionId", "subjectId"] as const) if (!identifier(input[field])) errors.push(`Runner projection ${field} is invalid.`);
   if (!revision(input.revisionId)) errors.push("Runner projection revisionId is invalid.");
   if (!sequence(input.evaluatedThroughSequence)) errors.push("Runner projection evaluatedThroughSequence is invalid.");
@@ -829,7 +831,7 @@ function effectSummary(
 
 function effectCandidate(
   plan: RunnerCyclePlan,
-  journalSchemaVersion: 5 | 6,
+  journalSchemaVersion: 5 | 6 | 7,
   decision: RunnerPermissionDecision,
   outcome: "completed" | "uncertain",
   reasonCode: string,
@@ -867,7 +869,7 @@ function effectCandidate(
 
 function postDispatchStop(
   plan: RunnerCyclePlan,
-  journalSchemaVersion: 5 | 6,
+  journalSchemaVersion: 5 | 6 | 7,
   decision: RunnerPermissionDecision,
   reason: Extract<RunnerStopReason,
     | "executor_failed" | "executor_uncertain" | "executor_malformed" | "executor_identity_mismatch"

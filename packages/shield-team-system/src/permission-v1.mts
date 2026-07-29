@@ -64,7 +64,7 @@ export interface HostPermissionAttestation {
 
 export interface PermissionInvocationContext {
   permissionContractVersion: 1;
-  journalSchemaVersion: 6;
+  journalSchemaVersion: 6 | 7;
   missionId: string;
   subjectId: string;
   missionRevisionId: string;
@@ -234,7 +234,10 @@ export function validateHostPermissionAttestation(input: unknown): PermissionRes
 export function validatePermissionInvocationContext(input: unknown): PermissionResult<PermissionInvocationContext> {
   const errors = exact(input, CONTEXT_FIELDS, "Permission context");
   if (errors.length > 0 || !plain(input)) return invalid("permission_context_malformed", ...errors);
-  if (input.permissionContractVersion !== 1 || input.journalSchemaVersion !== 6) errors.push("Permission context requires contract v1 and journal v6.");
+  if (input.permissionContractVersion !== 1 ||
+      (input.journalSchemaVersion !== 6 && input.journalSchemaVersion !== 7)) {
+    errors.push("Permission context requires contract v1 and journal v6 or v7.");
+  }
   for (const field of ["missionId", "subjectId", "reasoningRuntimeId", "toolExecutorId", "repositoryId", "branch", "decisionId"] as const) if (!id(input[field])) errors.push(`Permission context ${field} is invalid.`);
   if (!REVISION.test(String(input.missionRevisionId ?? "")) || !REVISION.test(String(input.artifactRevisionId ?? ""))) errors.push("Permission context revisions are invalid.");
   if (!root(input.canonicalWritableRoot) || !time(input.evaluatedAt) || !Number.isSafeInteger(input.evaluatedThroughSequence) || (input.evaluatedThroughSequence as number) < 0) errors.push("Permission context root, time, or sequence is invalid.");
