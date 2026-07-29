@@ -150,6 +150,7 @@ interface MissionCycleInputV1 {
   repositoryRoot: string;
   configuredJournalPath: string;
   missionId: string;
+  expectedSubjectId: string;
   expectedRevisionId: string;
   expectedSequence: number;
   seatId: string;
@@ -228,7 +229,7 @@ and existing `createAuditedExecutor(...)` call ordering remain unchanged.
 The runtime-only claimed executor uses permission audit schema v1 without
 changing existing record JSON or legacy record IDs. `appendIfAbsent` remains
 atomic by `recordId`. Its `tool.invocation` record ID is
-`audit-invocation:<claimDigest>`, where `claimDigest` is the fixed-length
+`runtime-invocation:<claimDigest>`, where `claimDigest` is the fixed-length
 SHA-256 base64url digest of the canonical closed object
 `{ domain: "shield.permission-invocation-claim.v1", missionId, revisionId,
 journalSequence }`. It is deliberately independent of decision and effect
@@ -238,12 +239,15 @@ whose newly appended record receives an exact verified receipt may call
 `executeTool`; the API never returns a successful receipt for a pre-existing
 record. A loser returns `invocation_claim_conflict` pre-dispatch.
 The paired `execute` closure verifies the exact plan, decision, context, and
-stored winning receipt, skips a second invocation append, calls `executeTool`,
-and appends the deterministic `audit-result:<decisionId>` result.
+stored winning receipt by canonical equality, skips a second invocation
+append, calls `executeTool`, and appends the deterministic
+`audit-result:<decisionId>` result.
 `replayRuntimeInvocationClaimsV1(...)` validates the runtime-specific record-ID
 derivation and rejects a second runtime claim tuple as defense in depth.
 Legacy `replayPermissionAuditLedger(...)`, per-decision invocation IDs, public
 local-tool sessions, and multi-effect same-sequence behavior are unchanged.
+Only the distinct `runtime-invocation:` namespace is interpreted as a runtime
+claim; a legacy `audit-invocation:sha256:*` record remains legacy.
 Raw or malformed audit arrays fail closed in either replay path.
 
 The input deliberately has no caller-supplied cycle ID, effect key, or decision
@@ -322,8 +326,10 @@ No second governance source or caller-supplied runner projection exists.
 
 Let `B` be `expectedSequence`.
 
-1. Read and replay the exact journal. Reject a stale revision first. Derive
-   the stable identities from `B`.
+1. Validate the closed input and dependency object before any host effect.
+   Read and replay the exact journal. Reject a stale subject or revision first.
+   Derive the stable identities from `B`. If the journal is unavailable,
+   return the caller-bound `expectedSubjectId`; never fabricate identity.
 2. Before stale-sequence rejection, inspect all replayed schema-9 effects. Any
    uncertain effect returns `uncertain` immediately, before authorization or
    dispatch, even when its key differs from the requested key. Otherwise,
@@ -339,8 +345,9 @@ Let `B` be `expectedSequence`.
    decision ID at `R`. A matching invocation without a result, a
    failed/uncertain result, or a completed result without the exact journal
    effect returns `uncertain`; no redispatch occurs. A conflicting claim at
-   the same mission, revision, and `R` returns `blocked`. Invalid audit state
-   fails closed.
+   the same mission, revision, and `R`, including one with another decision
+   ID, returns `blocked` before gates, append, authorization, or dispatch.
+   Invalid audit state fails closed.
 5. If mission authorization or a frozen execution gate is pending, return
    `waiting` with the first pending requirement's `requiredRoleId`, in
    canonical requirement order; do not append, authorize, or dispatch. Mission
@@ -378,6 +385,10 @@ unavailable store, stale sequence, or readback failure is pre-dispatch and
 `blocked`. After the invocation claim has been durably acquired, every
 non-verified effect append outcome—including lock, unavailable store, stale
 sequence, recovery required, and readback mismatch—is `uncertain`.
+Thrown or malformed input, clock, read, append, permission, execution,
+validation, and readback dependencies are converted to the same closed
+pre-/post-claim outcomes; `runMissionCycle(...)` does not reject its promise
+for host failures.
 
 ### Closed results and routing
 
@@ -385,7 +396,7 @@ sequence, recovery required, and readback mismatch—is `uncertain`.
 type MissionCycleReasonCodeV1 =
   | "mission_authorization_required" | "gate_missing"
   | RunnerStopReason
-  | "stale_revision" | "stale_sequence" | "duplicate_effect"
+  | "input_invalid" | "stale_subject" | "stale_revision" | "stale_sequence" | "duplicate_effect"
   | "effect_identity_mismatch" | "invocation_claim_conflict"
   | "invocation_claim_failed" | "invocation_claim_malformed"
   | "audit_invalid" | "audit_incomplete" | "audit_result_uncertain"
@@ -429,7 +440,8 @@ Exact mapping:
   `authorization_malformed`, and `authorization_stale`.
 - `blocked`, `coulson`: `governance_not_approved`,
   `mission_not_authorized`, `execution_not_active`, `execute_not_ready`,
-  `journal_sequence_mismatch`, `stale_revision`, `stale_sequence`,
+  `journal_sequence_mismatch`, `input_invalid`, `stale_subject`,
+  `stale_revision`, `stale_sequence`,
   `duplicate_effect`, `effect_identity_mismatch`,
   `invocation_claim_conflict`, `invocation_claim_failed`,
   `invocation_claim_malformed`, `audit_invalid`, `journal_lock_held`,
@@ -459,7 +471,9 @@ maximum-length identity inputs; exact and conflicting atomic invocation
 claims, including concurrent calls with different decision IDs and proof that
 exactly one `executeTool` call occurs;
 legacy schema-6 multi-decision same-sequence permission sessions unchanged;
-stale revision/sequence; duplicate cycle/effect; pre-dispatch append blocking;
+legacy `audit-invocation:sha256:*` records remaining legacy; malformed input
+and throwing clocks; stale subject/revision/sequence; duplicate cycle/effect;
+pre-dispatch append blocking;
 every post-dispatch append/readback failure becoming uncertain; exact
 transition/effect readback; a different action/effect key after uncertainty
 remaining blocked without dispatch; stronger-profile missing-gate routing to
