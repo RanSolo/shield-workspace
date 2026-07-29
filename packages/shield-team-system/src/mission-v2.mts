@@ -28,6 +28,7 @@ export const DELEGATED_JOURNAL_SCHEMA_VERSION = 3 as const;
 export const ADAPTER_JOURNAL_SCHEMA_VERSION = 4 as const;
 export const RUNNER_JOURNAL_SCHEMA_VERSION = 5 as const;
 export const PERMISSION_JOURNAL_SCHEMA_VERSION = 6 as const;
+export const REVIEW_JOURNAL_SCHEMA_VERSION = 7 as const;
 export const SUPERVISED_BRIEF_SCHEMA_VERSION = 1 as const;
 export const HUMAN_EVIDENCE_SCHEMA_VERSION = 1 as const;
 export const TRUSTED_BINDING_SCHEMA_VERSION = 1 as const;
@@ -58,6 +59,10 @@ export type AuthorizationState = "waiting" | "authorized" | "ineligible" | "inva
 export type CommunicationState = "not-configured" | "queued" | "delivered" | "failed" | "unknown";
 export type ExecutionEffectOutcome = "completed" | "uncertain";
 export type ExecutionEffectClass = "behavioral_implementation" | "verification" | "coordination";
+export type ReviewSubjectKind = "repository_artifact";
+export type FuryReviewVerdict = "changes_requested" | "approved";
+export type DraftDisposition = "remain_draft" | "return_to_draft";
+export type ReviewLifecycle = "current" | "stale";
 
 export interface EvidenceTimestamp {
   value: string;
@@ -126,14 +131,14 @@ export interface EvidenceRequirement {
   schemaVersion: 1;
   requirementId: string;
   missionId: string;
-  subjectKind: "mission_plan";
+  subjectKind: "mission_plan" | ReviewSubjectKind;
   subjectId: string;
   revisionId: string;
   requiredSeatId: HumanSeat;
   evidenceKind: EvidenceKind;
   allowedDecisions: EvidenceDecision[];
   createdAtSequence: number;
-  supersedesRequirementId: null;
+  supersedesRequirementId: string | null;
 }
 
 export interface HumanEvidencePayload {
@@ -141,7 +146,7 @@ export interface HumanEvidencePayload {
   evidenceId: string;
   requirementId: string;
   missionId: string;
-  subjectKind: "mission_plan";
+  subjectKind: "mission_plan" | ReviewSubjectKind;
   subjectId: string;
   revisionId: string;
   seatId: HumanSeat;
@@ -209,7 +214,7 @@ export interface RunnerSupervisedEffectCandidate {
   runnerContractVersion: 1;
   candidateKind: "runner.supervised_effect_record";
   authority: "non_authoritative";
-  journalSchemaVersion: 5 | 6;
+  journalSchemaVersion: 5 | 6 | 7;
   missionId: string;
   subjectId: string;
   revisionId: string;
@@ -223,6 +228,79 @@ export interface ExecutionEffectRecord extends ExecutionEffectPayload {
   missionId: string;
   journalSequence: number;
   timestamp: EvidenceTimestamp;
+}
+
+export interface ReviewSubjectRevision {
+  schemaVersion: 1;
+  subjectKind: ReviewSubjectKind;
+  subjectId: string;
+  revisionId: string;
+  supersedesRevisionId: string | null;
+  sourceRef: string;
+}
+
+export interface FuryReviewSourceLocation {
+  path: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+}
+
+export interface FuryReviewFinding {
+  findingId: string;
+  findingClass: string;
+  summary: string;
+  evidenceRefs: string[];
+  sourceLocation: FuryReviewSourceLocation;
+}
+
+export interface FuryReviewRecord {
+  schemaVersion: 1;
+  reviewId: string;
+  missionId: string;
+  subjectKind: ReviewSubjectKind;
+  subjectId: string;
+  revisionId: string;
+  reviewerSeatId: "fury";
+  verdict: FuryReviewVerdict;
+  reasons: string[];
+  findings: FuryReviewFinding[];
+  decidedAt: EvidenceTimestamp;
+  provenance: {
+    assuranceKind: "host_asserted_non_authoritative";
+    sourceRef: string;
+    reasoningRuntimeId: string;
+    toolExecutorId: string;
+  };
+  nextActionSeatId: string;
+  draftDisposition: DraftDisposition;
+}
+
+export interface ReviewRevisionProjection extends ReviewSubjectRevision {
+  introducedAtSequence: number;
+  lifecycle: ReviewLifecycle;
+}
+
+export interface RequirementHistoryProjection extends EvidenceRequirement {
+  lifecycle: "current" | "superseded";
+}
+
+export interface EvidenceHistoryProjection extends HumanEvidencePayload {
+  lifecycle: ReviewLifecycle;
+}
+
+export interface FuryReviewProjection extends FuryReviewRecord {
+  journalSequence: number;
+  lifecycle: ReviewLifecycle;
+}
+
+export interface FitzRouteReadiness {
+  state: "waiting" | "blocked" | "ready";
+  revisionId: string;
+  reviewId: string | null;
+  reasons: string[];
+  evaluatedThroughSequence: number;
 }
 
 export type SupervisedJournalEntry =
@@ -240,7 +318,21 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5 | 6;
+    schemaVersion: 7;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "mission.begun";
+    timestamp: EvidenceTimestamp;
+    payload: {
+      brief: SupervisedMissionBrief;
+      trustedBindings: TrustedHumanBinding[];
+      requirements: EvidenceRequirement[];
+      reviewSubject: ReviewSubjectRevision;
+    };
+  }
+  | {
+    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -253,7 +345,7 @@ export type SupervisedJournalEntry =
     };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5 | 6;
+    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -262,7 +354,7 @@ export type SupervisedJournalEntry =
     payload: { from: ExecutionStatus; to: ExecutionStatus; reason: string };
   }
   | {
-    schemaVersion: 2 | 3 | 4 | 5 | 6;
+    schemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -295,7 +387,7 @@ export type SupervisedJournalEntry =
     payload: { reason: DelegatedInvalidationReason };
   }
   | {
-    schemaVersion: 4 | 5 | 6;
+    schemaVersion: 4 | 5 | 6 | 7;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -304,7 +396,7 @@ export type SupervisedJournalEntry =
     payload: { request: CommunicationRequestPayload };
   }
   | {
-    schemaVersion: 4 | 5 | 6;
+    schemaVersion: 4 | 5 | 6 | 7;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -313,7 +405,7 @@ export type SupervisedJournalEntry =
     payload: { candidate: CommunicationResultAdapterCandidate };
   }
   | {
-    schemaVersion: 5 | 6;
+    schemaVersion: 5 | 6 | 7;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -322,7 +414,7 @@ export type SupervisedJournalEntry =
     payload: ExecutionEffectPayload;
   }
   | {
-    schemaVersion: 6;
+    schemaVersion: 6 | 7;
     entryId: string;
     missionId: string;
     sequence: number;
@@ -331,13 +423,43 @@ export type SupervisedJournalEntry =
     payload: { binding: RuntimeBinding; authorization: SignedRuntimeBindingAuthorization };
   }
   | {
-    schemaVersion: 6;
+    schemaVersion: 6 | 7;
     entryId: string;
     missionId: string;
     sequence: number;
     type: "runtime.binding_superseded";
     timestamp: EvidenceTimestamp;
     payload: { priorBindingId: string; priorBindingVersion: number; binding: RuntimeBinding; authorization: SignedRuntimeBindingAuthorization };
+  }
+  | {
+    schemaVersion: 7;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "subject.revision_superseded";
+    timestamp: EvidenceTimestamp;
+    payload: {
+      reviewSubject: ReviewSubjectRevision;
+      requirements: EvidenceRequirement[];
+    };
+  }
+  | {
+    schemaVersion: 7;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "fury.review_changes_requested";
+    timestamp: EvidenceTimestamp;
+    payload: { review: FuryReviewRecord };
+  }
+  | {
+    schemaVersion: 7;
+    entryId: string;
+    missionId: string;
+    sequence: number;
+    type: "fury.review_approved";
+    timestamp: EvidenceTimestamp;
+    payload: { review: FuryReviewRecord };
   };
 
 export interface RequirementProjection extends EvidenceRequirement {
@@ -363,7 +485,7 @@ export interface CommunicationRequestProjection extends CommunicationRequestPayl
 }
 
 export interface SupervisedMissionProjection {
-  journalSchemaVersion: 2 | 3 | 4 | 5 | 6;
+  journalSchemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
   missionId: string;
   brief: SupervisedMissionBrief;
   governance: { state: GovernanceState };
@@ -392,6 +514,12 @@ export interface SupervisedMissionProjection {
   trustedBindings: TrustedHumanBinding[];
   requirements: EvidenceRequirement[];
   evidence: HumanEvidencePayload[];
+  reviewSubject?: ReviewSubjectRevision;
+  reviewRevisions?: ReviewRevisionProjection[];
+  requirementHistory?: RequirementHistoryProjection[];
+  evidenceHistory?: EvidenceHistoryProjection[];
+  furyReviews?: FuryReviewProjection[];
+  routeToFitz?: FitzRouteReadiness;
   lastSequence: number;
   lastTimestamp: EvidenceTimestamp;
 }
@@ -466,6 +594,140 @@ function arrayShapeErrors(value: unknown, label: string): string[] {
   }
   for (let index = 0; index < value.length; index += 1) {
     if (!Object.hasOwn(value, index)) errors.push(`${label} must not contain sparse positions.`);
+  }
+  return errors;
+}
+
+function reviewSubjectErrors(value: unknown, label: string): string[] {
+  const errors = exactFields(value, [
+    "schemaVersion", "subjectKind", "subjectId", "revisionId", "supersedesRevisionId", "sourceRef",
+  ], label);
+  if (errors.length > 0 || !isPlainObject(value)) return errors;
+  if (value.schemaVersion !== 1) errors.push(`${label}.schemaVersion is unsupported.`);
+  if (value.subjectKind !== "repository_artifact") errors.push(`${label}.subjectKind is unsupported.`);
+  for (const field of ["subjectId", "revisionId", "sourceRef"]) {
+    if (!identifier(value[field])) errors.push(`${label}.${field} is invalid.`);
+  }
+  if (value.supersedesRevisionId !== null && !identifier(value.supersedesRevisionId)) {
+    errors.push(`${label}.supersedesRevisionId is invalid.`);
+  }
+  return errors;
+}
+
+function repositoryRelativePath(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512) return false;
+  if (value.startsWith("/") || value.includes("\\") || value.includes("%") || /[\u0000-\u001f\u007f]/.test(value)) return false;
+  const segments = value.split("/");
+  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+function furyReviewErrors(value: unknown, label: string): string[] {
+  const errors = exactFields(value, [
+    "schemaVersion", "reviewId", "missionId", "subjectKind", "subjectId", "revisionId",
+    "reviewerSeatId", "verdict", "reasons", "findings", "decidedAt", "provenance",
+    "nextActionSeatId", "draftDisposition",
+  ], label);
+  if (errors.length > 0 || !isPlainObject(value)) return errors;
+  if (value.schemaVersion !== 1) errors.push(`${label}.schemaVersion is unsupported.`);
+  for (const field of ["reviewId", "missionId", "subjectId", "revisionId", "nextActionSeatId"]) {
+    if (!identifier(value[field])) errors.push(`${label}.${field} is invalid.`);
+  }
+  if (value.subjectKind !== "repository_artifact") errors.push(`${label}.subjectKind is unsupported.`);
+  if (value.reviewerSeatId !== "fury") errors.push(`${label}.reviewerSeatId must be fury.`);
+  if (value.verdict !== "changes_requested" && value.verdict !== "approved") errors.push(`${label}.verdict is unsupported.`);
+  errors.push(...timestampErrors(value.decidedAt, `${label}.decidedAt`));
+
+  errors.push(...arrayShapeErrors(value.reasons, `${label}.reasons`));
+  if (Array.isArray(value.reasons)) {
+    if (value.reasons.length < 1 || value.reasons.length > 16) errors.push(`${label}.reasons must contain between 1 and 16 items.`);
+    const reasons = new Set<string>();
+    value.reasons.forEach((reason, index) => {
+      if (!nonEmpty(reason)) errors.push(`${label}.reasons[${index}] is invalid.`);
+      else if (reasons.has(reason)) errors.push(`${label}.reasons duplicates ${reason}.`);
+      else reasons.add(reason);
+    });
+  }
+
+  errors.push(...arrayShapeErrors(value.findings, `${label}.findings`));
+  if (Array.isArray(value.findings)) {
+    if (value.findings.length > 16) errors.push(`${label}.findings must contain at most 16 items.`);
+    const findingIds = new Set<string>();
+    value.findings.forEach((finding, index) => {
+      const findingLabel = `${label}.findings[${index}]`;
+      const nested = exactFields(finding, [
+        "findingId", "findingClass", "summary", "evidenceRefs", "sourceLocation",
+      ], findingLabel);
+      errors.push(...nested);
+      if (nested.length > 0 || !isPlainObject(finding)) return;
+      for (const field of ["findingId", "findingClass"]) {
+        if (!identifier(finding[field])) errors.push(`${findingLabel}.${field} is invalid.`);
+      }
+      if (identifier(finding.findingId)) {
+        if (findingIds.has(finding.findingId)) errors.push(`${label}.findings duplicates ${finding.findingId}.`);
+        findingIds.add(finding.findingId);
+      }
+      if (!nonEmpty(finding.summary)) errors.push(`${findingLabel}.summary is invalid.`);
+      errors.push(...arrayShapeErrors(finding.evidenceRefs, `${findingLabel}.evidenceRefs`));
+      if (Array.isArray(finding.evidenceRefs)) {
+        if (finding.evidenceRefs.length < 1 || finding.evidenceRefs.length > 16) {
+          errors.push(`${findingLabel}.evidenceRefs must contain between 1 and 16 items.`);
+        }
+        const refs = new Set<string>();
+        finding.evidenceRefs.forEach((ref, refIndex) => {
+          if (!identifier(ref)) errors.push(`${findingLabel}.evidenceRefs[${refIndex}] is invalid.`);
+          else if (refs.has(ref)) errors.push(`${findingLabel}.evidenceRefs duplicates ${ref}.`);
+          else refs.add(ref);
+        });
+      }
+      const locationLabel = `${findingLabel}.sourceLocation`;
+      const locationErrors = exactFields(finding.sourceLocation, [
+        "path", "startLine", "startColumn", "endLine", "endColumn",
+      ], locationLabel);
+      errors.push(...locationErrors);
+      if (locationErrors.length > 0 || !isPlainObject(finding.sourceLocation)) return;
+      if (!repositoryRelativePath(finding.sourceLocation.path)) errors.push(`${locationLabel}.path is invalid.`);
+      for (const field of ["startLine", "startColumn", "endLine", "endColumn"]) {
+        if (!Number.isSafeInteger(finding.sourceLocation[field]) || (finding.sourceLocation[field] as number) < 1) {
+          errors.push(`${locationLabel}.${field} must be a positive safe integer.`);
+        }
+      }
+      const { startLine, startColumn, endLine, endColumn } = finding.sourceLocation;
+      if (Number.isSafeInteger(startLine) && Number.isSafeInteger(startColumn) &&
+          Number.isSafeInteger(endLine) && Number.isSafeInteger(endColumn) &&
+          ((endLine as number) < (startLine as number) ||
+           ((endLine as number) === (startLine as number) && (endColumn as number) < (startColumn as number)))) {
+        errors.push(`${locationLabel} end precedes start.`);
+      }
+    });
+  }
+
+  const provenanceErrors = exactFields(value.provenance, [
+    "assuranceKind", "sourceRef", "reasoningRuntimeId", "toolExecutorId",
+  ], `${label}.provenance`);
+  errors.push(...provenanceErrors);
+  if (provenanceErrors.length === 0 && isPlainObject(value.provenance)) {
+    if (value.provenance.assuranceKind !== "host_asserted_non_authoritative") {
+      errors.push(`${label}.provenance.assuranceKind is unsupported.`);
+    }
+    for (const field of ["sourceRef", "reasoningRuntimeId", "toolExecutorId"]) {
+      if (!identifier(value.provenance[field])) errors.push(`${label}.provenance.${field} is invalid.`);
+    }
+    const seatIds = new Set(["coulson", "fitz", "simmons", "hill", "fury", "daisy", "may", "mack", "oracle"]);
+    if (seatIds.has(String(value.provenance.reasoningRuntimeId)) || seatIds.has(String(value.provenance.toolExecutorId))) {
+      errors.push(`${label}.provenance runtime and executor identities cannot impersonate SHIELD seats.`);
+    }
+  }
+
+  if (value.verdict === "approved") {
+    if (value.nextActionSeatId !== "hill") errors.push(`${label}.approved nextActionSeatId must be hill.`);
+    if (value.draftDisposition !== "remain_draft") errors.push(`${label}.approved draftDisposition must remain_draft.`);
+  } else if (value.verdict === "changes_requested") {
+    if (!["may", "daisy", "fury", "hill", "coulson"].includes(String(value.nextActionSeatId))) {
+      errors.push(`${label}.changes_requested nextActionSeatId is unsupported.`);
+    }
+    if (value.draftDisposition !== "remain_draft" && value.draftDisposition !== "return_to_draft") {
+      errors.push(`${label}.changes_requested draftDisposition is unsupported.`);
+    }
   }
   return errors;
 }
@@ -705,6 +967,52 @@ export function createEvidenceRequirements(brief: SupervisedMissionBrief): Evide
   return requirements;
 }
 
+export function createReviewEvidenceRequirements(
+  brief: SupervisedMissionBrief,
+  reviewSubject: ReviewSubjectRevision,
+  createdAtSequence: number,
+  priorRequirements: EvidenceRequirement[] = [],
+): EvidenceRequirement[] {
+  const missionRequirements = createEvidenceRequirements(brief);
+  const missionAuthorization = missionRequirements.filter(
+    ({ evidenceKind }) => evidenceKind === "mission_authorization",
+  );
+  if (missionAuthorization.length !== 1) {
+    throw new Error("Expected exactly one mission authorization requirement.");
+  }
+
+  const reviewRequirements = missionRequirements
+    .filter(({ evidenceKind }) => evidenceKind === "technical_review" || evidenceKind === "product_domain_review")
+    .map((requirement): EvidenceRequirement => {
+      let supersedesRequirementId: string | null = null;
+      if (reviewSubject.supersedesRevisionId !== null) {
+        const prior = priorRequirements.filter((candidate) =>
+          candidate.requiredSeatId === requirement.requiredSeatId &&
+          candidate.evidenceKind === requirement.evidenceKind &&
+          candidate.subjectKind === reviewSubject.subjectKind &&
+          candidate.subjectId === reviewSubject.subjectId &&
+          candidate.revisionId === reviewSubject.supersedesRevisionId);
+        if (prior.length !== 1) {
+          throw new Error(
+            `Expected exactly one superseded ${requirement.requiredSeatId} ${requirement.evidenceKind} requirement.`,
+          );
+        }
+        supersedesRequirementId = prior[0].requirementId;
+      }
+      return {
+        ...requirement,
+        requirementId: requirementId(brief.missionId, reviewSubject.revisionId, requirement.evidenceKind),
+        subjectKind: reviewSubject.subjectKind,
+        subjectId: reviewSubject.subjectId,
+        revisionId: reviewSubject.revisionId,
+        createdAtSequence,
+        supersedesRequirementId,
+      };
+    });
+
+  return [...missionAuthorization, ...reviewRequirements];
+}
+
 export function validateRepositoryBindings(
   registry: TrustedBindingRegistry,
   configured: readonly { seatId: string; bindingRef: string }[],
@@ -738,7 +1046,9 @@ function validateEvidencePayload(input: unknown): ContractResult<HumanEvidencePa
   for (const field of ["evidenceId", "requirementId", "missionId", "subjectId", "revisionId", "humanPrincipalId", "bindingId", "sourceRef"]) {
     if (!identifier(input[field])) errors.push(`Evidence payload ${field} is invalid.`);
   }
-  if (input.subjectKind !== "mission_plan") errors.push("Evidence payload subjectKind is unsupported.");
+  if (input.subjectKind !== "mission_plan" && input.subjectKind !== "repository_artifact") {
+    errors.push("Evidence payload subjectKind is unsupported.");
+  }
   if (!HUMAN_SEATS.includes(input.seatId as HumanSeat)) errors.push("Evidence payload seatId is unsupported.");
   if (!EVIDENCE_KINDS.includes(input.evidenceKind as EvidenceKind)) errors.push("Evidence payload evidenceKind is unsupported.");
   if (!EVIDENCE_DECISIONS.includes(input.decision as EvidenceDecision)) errors.push("Evidence payload decision is unsupported.");
@@ -762,12 +1072,16 @@ export function verifySignedHumanEvidence(
   if (payloadResult.state === "invalid") return payloadResult;
   const payload = payloadResult.value;
   if (payload.missionId !== projection.missionId) return invalid("mission_mismatch", "Evidence missionId does not match.");
-  if (payload.subjectId !== projection.brief.subjectId) return invalid("subject_mismatch", "Evidence subjectId does not match.");
-  if (payload.revisionId !== projection.brief.revisionId) return invalid("revision_mismatch", "Evidence revisionId is stale or mismatched.");
   if (payload.journalSequence !== expectedSequence) return invalid("sequence_invalid", "Evidence journalSequence does not match the next journal sequence.");
   const requirements = projection.requirements.filter((entry) => entry.requirementId === payload.requirementId);
   if (requirements.length !== 1) return invalid("missing_requirement", "Evidence requirement is missing or ambiguous.");
   const requirement = requirements[0];
+  if (payload.subjectKind !== requirement.subjectKind || payload.subjectId !== requirement.subjectId) {
+    return invalid("subject_mismatch", "Evidence subject does not match its requirement.");
+  }
+  if (payload.revisionId !== requirement.revisionId) {
+    return invalid("revision_mismatch", "Evidence revision is stale or mismatched.");
+  }
   if (requirement.requiredSeatId !== payload.seatId || requirement.evidenceKind !== payload.evidenceKind) return invalid("seat_mismatch", "Evidence seat or kind does not match its requirement.");
   if (!requirement.allowedDecisions.includes(payload.decision)) return invalid("unknown_verdict", "Evidence decision is not allowed by its requirement.");
   const bindings = projection.trustedBindings.filter((entry) => entry.bindingId === payload.bindingId && entry.seatId === payload.seatId);
@@ -912,8 +1226,43 @@ function evidenceTargetForGovernance(decision: string, resumeState: unknown): Go
 export function createMissionBegunEntry(
   brief: SupervisedMissionBrief,
   bindings: TrustedHumanBinding[],
-  journalSchemaVersion: 2 | 3 | 4 | 5 | 6 = 2,
+  journalSchemaVersion?: 2 | 3 | 4 | 5 | 6,
+): SupervisedJournalEntry;
+export function createMissionBegunEntry(
+  brief: SupervisedMissionBrief,
+  bindings: TrustedHumanBinding[],
+  journalSchemaVersion: 7,
+  reviewSubject: ReviewSubjectRevision,
+): SupervisedJournalEntry;
+export function createMissionBegunEntry(
+  brief: SupervisedMissionBrief,
+  bindings: TrustedHumanBinding[],
+  journalSchemaVersion: 2 | 3 | 4 | 5 | 6 | 7 = 2,
+  reviewSubject?: ReviewSubjectRevision,
 ): SupervisedJournalEntry {
+  if (journalSchemaVersion === 7) {
+    if (reviewSubject === undefined) throw new Error("Schema 7 requires a review subject.");
+    const errors = reviewSubjectErrors(reviewSubject, "mission.begun reviewSubject");
+    if (errors.length > 0) throw new Error(errors.join(" "));
+    if (reviewSubject.supersedesRevisionId !== null) {
+      throw new Error("Initial review subject cannot supersede another revision.");
+    }
+    return {
+      schemaVersion: 7,
+      entryId: `entry:${brief.missionId}:0`,
+      missionId: brief.missionId,
+      sequence: 0,
+      type: "mission.begun",
+      timestamp: brief.createdAt,
+      payload: {
+        brief,
+        trustedBindings: bindings,
+        requirements: createReviewEvidenceRequirements(brief, reviewSubject, 0),
+        reviewSubject,
+      },
+    };
+  }
+  if (reviewSubject !== undefined) throw new Error("Review subjects require journal schema 7.");
   return {
     schemaVersion: journalSchemaVersion,
     entryId: `entry:${brief.missionId}:0`,
@@ -931,8 +1280,14 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   const begun = entries[0];
   const journalSchemaVersion = begun.schemaVersion;
   const begunErrors = exactFields(begun, ["schemaVersion", "entryId", "missionId", "sequence", "type", "timestamp", "payload"], "Entry 0");
-  if (begunErrors.length > 0 || (journalSchemaVersion !== 2 && journalSchemaVersion !== 3 && journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6) || begun.sequence !== 0 || !isPlainObject(begun.payload)) return invalid("malformed", ...begunErrors, "Entry 0 is invalid.");
-  const payloadErrors = exactFields(begun.payload, ["brief", "trustedBindings", "requirements"], "mission.begun payload");
+  if (begunErrors.length > 0 || (journalSchemaVersion !== 2 && journalSchemaVersion !== 3 && journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) || begun.sequence !== 0 || !isPlainObject(begun.payload)) return invalid("malformed", ...begunErrors, "Entry 0 is invalid.");
+  const payloadErrors = exactFields(
+    begun.payload,
+    journalSchemaVersion === 7
+      ? ["brief", "trustedBindings", "requirements", "reviewSubject"]
+      : ["brief", "trustedBindings", "requirements"],
+    "mission.begun payload",
+  );
   if (payloadErrors.length > 0) return invalid("malformed", ...payloadErrors);
   const briefResult = validateSupervisedMissionBrief(begun.payload.brief);
   if (briefResult.state === "invalid") return briefResult;
@@ -941,8 +1296,19 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   }
   const registryResult = validateTrustedBindingRegistry({ schemaVersion: 1, bindings: begun.payload.trustedBindings });
   if (registryResult.state === "invalid") return registryResult;
-  const expectedRequirements = createEvidenceRequirements(briefResult.value);
-  if (canonicalJson(begun.payload.requirements) !== canonicalJson(expectedRequirements)) return invalid("malformed", "mission.begun requirements are not canonical.");
+  let reviewSubject: ReviewSubjectRevision | undefined;
+  if (journalSchemaVersion === 7) {
+    const errors = reviewSubjectErrors(begun.payload.reviewSubject, "mission.begun reviewSubject");
+    if (errors.length > 0) return invalid("malformed", ...errors);
+    reviewSubject = begun.payload.reviewSubject as unknown as ReviewSubjectRevision;
+    if (reviewSubject.supersedesRevisionId !== null) {
+      return invalid("malformed", "Initial review subject cannot supersede another revision.");
+    }
+  }
+  const initialRequirements = journalSchemaVersion === 7
+    ? createReviewEvidenceRequirements(briefResult.value, reviewSubject as ReviewSubjectRevision, 0)
+    : createEvidenceRequirements(briefResult.value);
+  if (canonicalJson(begun.payload.requirements) !== canonicalJson(initialRequirements)) return invalid("malformed", "mission.begun requirements are not canonical.");
   if (begun.missionId !== briefResult.value.missionId) return invalid("mission_mismatch", "Entry 0 missionId does not match the brief.");
   const firstTimeErrors = timestampErrors(begun.timestamp, "Entry 0 timestamp");
   if (firstTimeErrors.length > 0 || canonicalJson(begun.timestamp) !== canonicalJson(briefResult.value.createdAt)) return invalid("malformed", ...firstTimeErrors, "Entry 0 timestamp must match the brief.");
@@ -960,23 +1326,70 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
   const communicationRequests: CommunicationRequestProjection[] = [];
   const effectRecords: ExecutionEffectRecord[] = [];
   const runtimeBindings: RuntimeBinding[] = [];
+  let currentReviewSubject = reviewSubject;
+  const reviewRevisions: ReviewRevisionProjection[] = reviewSubject === undefined
+    ? []
+    : [{ ...reviewSubject, introducedAtSequence: 0, lifecycle: "current" }];
+  let activeRequirements = initialRequirements.map((requirement) => ({ ...requirement }));
+  const requirementHistory: RequirementHistoryProjection[] = initialRequirements.map((requirement) => ({
+    ...requirement,
+    lifecycle: "current",
+  }));
+  const furyReviews: FuryReviewProjection[] = [];
   const entryIds = new Set<string>([String(begun.entryId)]);
   let previousTime = Date.parse((begun.timestamp as unknown as EvidenceTimestamp).value);
   const communicationState = (): CommunicationState => {
-    if ((journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6) || communicationRequests.length === 0) return "not-configured";
+    if ((journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) || communicationRequests.length === 0) return "not-configured";
     if (communicationRequests.some((request) => request.state === "queued")) return "queued";
     if (communicationRequests.some((request) => request.state === "failed")) return "failed";
     if (communicationRequests.some((request) => request.state === "unknown")) return "unknown";
     return "delivered";
   };
   const baseProjection = (sequence: number): SupervisedMissionProjection => {
-    const projected = expectedRequirements.map((requirement) => requirementProjection(requirement, evidence));
+    const projected = activeRequirements.map((requirement) => requirementProjection(requirement, evidence));
     const uncertainEffects = effectRecords.filter(({ outcome }) => outcome === "uncertain");
     const executeReadiness = authorization.state === "authorized"
       ? { ...readiness("execute", projected, sequence), state: "ready" as const, reasons: [] }
       : readiness("execute", projected, sequence);
+    const currentFuryReviews = currentReviewSubject === undefined
+      ? []
+      : furyReviews.filter(({ revisionId, lifecycle }) =>
+        lifecycle === "current" && revisionId === currentReviewSubject?.revisionId);
+    const routeToFitz: FitzRouteReadiness | undefined = currentReviewSubject === undefined
+      ? undefined
+      : currentFuryReviews.length > 1
+        ? {
+          state: "blocked",
+          revisionId: currentReviewSubject.revisionId,
+          reviewId: null,
+          reasons: ["current_head_fury_review_ambiguous"],
+          evaluatedThroughSequence: sequence,
+        }
+      : currentFuryReviews.length === 0
+        ? {
+          state: "waiting",
+          revisionId: currentReviewSubject.revisionId,
+          reviewId: null,
+          reasons: ["current_head_fury_review_required"],
+          evaluatedThroughSequence: sequence,
+        }
+        : currentFuryReviews[0].verdict === "changes_requested"
+          ? {
+            state: "blocked",
+            revisionId: currentReviewSubject.revisionId,
+            reviewId: currentFuryReviews[0].reviewId,
+            reasons: [...currentFuryReviews[0].reasons],
+            evaluatedThroughSequence: sequence,
+          }
+          : {
+            state: "ready",
+            revisionId: currentReviewSubject.revisionId,
+            reviewId: currentFuryReviews[0].reviewId,
+            reasons: [],
+            evaluatedThroughSequence: sequence,
+          };
     return {
-      journalSchemaVersion: journalSchemaVersion as 2 | 3 | 4 | 5 | 6,
+      journalSchemaVersion: journalSchemaVersion as 2 | 3 | 4 | 5 | 6 | 7,
       missionId: briefResult.value.missionId,
       brief: briefResult.value,
       governance: { state: governance },
@@ -1001,8 +1414,32 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       runtimeBindings: runtimeBindings.map(copyRuntimeBinding),
       activeRuntimeBindings: runtimeBindings.filter(({ lifecycleState }) => lifecycleState === "active").map(copyRuntimeBinding),
       trustedBindings: registryResult.value.bindings,
-      requirements: expectedRequirements,
+      requirements: activeRequirements.map((requirement) => ({ ...requirement })),
       evidence: [...evidence],
+      ...(journalSchemaVersion === 7 && currentReviewSubject !== undefined && routeToFitz !== undefined
+        ? {
+          reviewSubject: { ...currentReviewSubject },
+          reviewRevisions: reviewRevisions.map((revision) => ({ ...revision })),
+          requirementHistory: requirementHistory.map((requirement) => ({ ...requirement })),
+          evidenceHistory: evidence.map((record): EvidenceHistoryProjection => ({
+            ...record,
+            lifecycle: record.subjectKind === "repository_artifact" &&
+              record.revisionId !== currentReviewSubject?.revisionId ? "stale" : "current",
+          })),
+          furyReviews: furyReviews.map((review) => ({
+            ...review,
+            reasons: [...review.reasons],
+            findings: review.findings.map((finding) => ({
+              ...finding,
+              evidenceRefs: [...finding.evidenceRefs],
+              sourceLocation: { ...finding.sourceLocation },
+            })),
+            decidedAt: { ...review.decidedAt },
+            provenance: { ...review.provenance },
+          })),
+          routeToFitz,
+        }
+        : {}),
       lastSequence: sequence,
       lastTimestamp: entryTimestamp(entries[sequence] as SupervisedJournalEntry),
     };
@@ -1025,7 +1462,106 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
     if (!isPlainObject(input.payload)) return invalid("malformed", `Entry ${index} payload must be a plain object.`);
     const current = baseProjection(index - 1);
 
-    if (input.type === "governance.decided") {
+    if (input.type === "subject.revision_superseded") {
+      if (journalSchemaVersion !== 7 || currentReviewSubject === undefined) {
+        return invalid("unsupported_schema", "Review-subject supersession requires journal v7.");
+      }
+      const nested = exactFields(input.payload, ["reviewSubject", "requirements"], `Entry ${index} review-subject payload`);
+      if (nested.length > 0) return invalid("malformed", ...nested);
+      const subjectErrors = reviewSubjectErrors(input.payload.reviewSubject, `Entry ${index} reviewSubject`);
+      if (subjectErrors.length > 0) return invalid("malformed", ...subjectErrors);
+      const replacement = input.payload.reviewSubject as unknown as ReviewSubjectRevision;
+      if (replacement.subjectKind !== currentReviewSubject.subjectKind ||
+          replacement.subjectId !== currentReviewSubject.subjectId) {
+        return invalid("subject_mismatch", `Entry ${index} review subject identity does not match.`);
+      }
+      if (replacement.revisionId === currentReviewSubject.revisionId ||
+          replacement.supersedesRevisionId !== currentReviewSubject.revisionId) {
+        return invalid("revision_mismatch", `Entry ${index} must supersede the exact current review revision.`);
+      }
+      if (reviewRevisions.some(({ revisionId }) => revisionId === replacement.revisionId)) {
+        return invalid("revision_mismatch", `Entry ${index} cannot reuse a review revision identity.`);
+      }
+      let nextRequirements: EvidenceRequirement[];
+      try {
+        nextRequirements = createReviewEvidenceRequirements(
+          briefResult.value,
+          replacement,
+          index,
+          activeRequirements,
+        );
+      } catch (error) {
+        return invalid("missing_requirement", error instanceof Error ? error.message : "Review requirements are ambiguous.");
+      }
+      if (canonicalJson(input.payload.requirements) !== canonicalJson(nextRequirements)) {
+        return invalid("malformed", `Entry ${index} review requirements are not canonical.`);
+      }
+      const currentRevisions = reviewRevisions.filter(({ lifecycle }) => lifecycle === "current");
+      if (currentRevisions.length !== 1 ||
+          currentRevisions[0].revisionId !== currentReviewSubject.revisionId) {
+        return invalid("revision_mismatch", `Entry ${index} current review revision is ambiguous.`);
+      }
+      currentRevisions[0].lifecycle = "stale";
+      reviewRevisions.push({ ...replacement, introducedAtSequence: index, lifecycle: "current" });
+      requirementHistory
+        .filter(({ lifecycle, subjectKind }) => lifecycle === "current" && subjectKind === "repository_artifact")
+        .forEach((requirement) => { requirement.lifecycle = "superseded"; });
+      requirementHistory.push(...nextRequirements
+        .filter(({ subjectKind }) => subjectKind === "repository_artifact")
+        .map((requirement): RequirementHistoryProjection => ({ ...requirement, lifecycle: "current" })));
+      furyReviews
+        .filter(({ lifecycle }) => lifecycle === "current")
+        .forEach((review) => { review.lifecycle = "stale"; });
+      activeRequirements = nextRequirements;
+      currentReviewSubject = replacement;
+    } else if (input.type === "fury.review_changes_requested" || input.type === "fury.review_approved") {
+      if (journalSchemaVersion !== 7 || currentReviewSubject === undefined) {
+        return invalid("unsupported_schema", "Fury review records require journal v7.");
+      }
+      const nested = exactFields(input.payload, ["review"], `Entry ${index} Fury review payload`);
+      if (nested.length > 0) return invalid("malformed", ...nested);
+      const reviewErrors = furyReviewErrors(input.payload.review, `Entry ${index} Fury review`);
+      if (reviewErrors.length > 0) return invalid("malformed", ...reviewErrors);
+      const review = input.payload.review as unknown as FuryReviewRecord;
+      const expectedType = review.verdict === "approved"
+        ? "fury.review_approved"
+        : "fury.review_changes_requested";
+      if (input.type !== expectedType) {
+        return invalid("decision_mismatch", `Entry ${index} event type does not match its Fury verdict.`);
+      }
+      if (review.missionId !== briefResult.value.missionId) {
+        return invalid("mission_mismatch", `Entry ${index} Fury review mission does not match.`);
+      }
+      if (review.subjectKind !== currentReviewSubject.subjectKind ||
+          review.subjectId !== currentReviewSubject.subjectId) {
+        return invalid("subject_mismatch", `Entry ${index} Fury review subject does not match.`);
+      }
+      if (review.revisionId !== currentReviewSubject.revisionId) {
+        return invalid("revision_mismatch", `Entry ${index} Fury review is stale or mismatched.`);
+      }
+      if (canonicalJson(input.timestamp) !== canonicalJson(review.decidedAt)) {
+        return invalid("malformed", `Entry ${index} timestamp does not match the Fury decision time.`);
+      }
+      if (furyReviews.some(({ reviewId }) => reviewId === review.reviewId)) {
+        return invalid("duplicate_evidence", `Entry ${index} duplicates a Fury reviewId.`);
+      }
+      if (furyReviews.some(({ revisionId }) => revisionId === review.revisionId)) {
+        return invalid("decision_mismatch", `Entry ${index} conflicts with the final Fury record for this revision.`);
+      }
+      furyReviews.push({
+        ...review,
+        reasons: [...review.reasons],
+        findings: review.findings.map((finding) => ({
+          ...finding,
+          evidenceRefs: [...finding.evidenceRefs],
+          sourceLocation: { ...finding.sourceLocation },
+        })),
+        decidedAt: { ...review.decidedAt },
+        provenance: { ...review.provenance },
+        journalSequence: index,
+        lifecycle: "current",
+      });
+    } else if (input.type === "governance.decided") {
       const nested = exactFields(input.payload, ["decision", "resumeState", "evidence"], `Entry ${index} governance payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
       if (!["approve", "pause", "resume", "cancel"].includes(String(input.payload.decision))) return invalid("malformed", `Entry ${index} governance decision is unsupported.`);
@@ -1058,13 +1594,19 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       const checked = verifySignedHumanEvidence(input.payload.evidence, current, index);
       if (checked.state === "invalid") return checked;
       if (checked.value.seatId === "coulson") return invalid("seat_mismatch", "Coulson governance evidence must use a mission command.");
+      if (journalSchemaVersion === 7 &&
+          (checked.value.seatId === "fitz" || checked.value.seatId === "simmons") &&
+          (current.routeToFitz?.state !== "ready" ||
+           current.routeToFitz.revisionId !== checked.value.revisionId)) {
+        return invalid("readiness_blocked", `Entry ${index} human review requires current-head Fury approval.`);
+      }
       if (checked.value.governanceTarget !== null) return invalid("decision_mismatch", `Entry ${index} non-governance evidence cannot authorize a governance target.`);
       if (canonicalJson(input.timestamp) !== canonicalJson(checked.value.timestamp)) return invalid("malformed", `Entry ${index} timestamp does not match its evidence.`);
       if (evidenceIds.has(checked.value.evidenceId)) return invalid("duplicate_evidence", `Entry ${index} duplicates evidenceId.`);
       evidenceIds.add(checked.value.evidenceId);
       evidence.push(checked.value);
     } else if (input.type === "communication.requested") {
-      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6) return invalid("unsupported_schema", "Communication requests require journal v4, v5, or v6.");
+      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Communication requests require journal v4, v5, v6, or v7.");
       if (governance !== "approved" || authorization.state !== "authorized") {
         return invalid("governance_denied", `Entry ${index} communication request requires active mission authorization.`);
       }
@@ -1091,7 +1633,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         sourceRef: null,
       });
     } else if (input.type === "communication.result_recorded") {
-      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6) return invalid("unsupported_schema", "Communication results require journal v4, v5, or v6.");
+      if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Communication results require journal v4, v5, v6, or v7.");
       const nested = exactFields(input.payload, ["candidate"], `Entry ${index} communication result payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
       const checked = validateAdapterCandidate(input.payload.candidate);
@@ -1121,7 +1663,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       request.receiptRef = candidate.payload.receiptRef;
       request.sourceRef = candidate.sourceRef;
     } else if (input.type === "execution.effect_recorded") {
-      if (journalSchemaVersion !== 5 && journalSchemaVersion !== 6) return invalid("unsupported_schema", "Execution effect records require journal v5 or v6.");
+      if (journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Execution effect records require journal v5, v6, or v7.");
       if (governance !== "approved" || authorization.state !== "authorized") {
         return invalid("governance_denied", `Entry ${index} execution effect requires active mission authorization.`);
       }
@@ -1161,7 +1703,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         timestamp: input.timestamp as unknown as EvidenceTimestamp,
       });
     } else if (input.type === "runtime.binding_recorded") {
-      if (journalSchemaVersion !== 6) return invalid("unsupported_schema", "Runtime bindings require journal v6.");
+      if (journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Runtime bindings require journal v6 or v7.");
       const nested = exactFields(input.payload, ["binding", "authorization"], `Entry ${index} runtime binding payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
       const checked = validateRuntimeBinding(input.payload.binding);
@@ -1176,7 +1718,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (canonicalJson(input.timestamp) !== canonicalJson(authorized.value.timestamp)) return invalid("malformed", "Runtime binding timestamp does not match its authorization.");
       runtimeBindings.push(copyRuntimeBinding(binding));
     } else if (input.type === "runtime.binding_superseded") {
-      if (journalSchemaVersion !== 6) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6.");
+      if (journalSchemaVersion !== 6 && journalSchemaVersion !== 7) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6 or v7.");
       const nested = exactFields(input.payload, ["priorBindingId", "priorBindingVersion", "binding", "authorization"], `Entry ${index} runtime supersession payload`);
       if (nested.length > 0) return invalid("malformed", ...nested);
       const supersession = input.payload as Record<string, unknown>;
@@ -1283,6 +1825,12 @@ export function createEvidenceEntry(
     return invalid("duplicate_evidence", "Evidence has already been recorded.");
   }
   if (checked.value.seatId === "coulson") return invalid("seat_mismatch", "Coulson evidence must use a mission governance command.");
+  if (projection.journalSchemaVersion === 7 &&
+      (checked.value.seatId === "fitz" || checked.value.seatId === "simmons") &&
+      (projection.routeToFitz?.state !== "ready" ||
+       projection.routeToFitz.revisionId !== checked.value.revisionId)) {
+    return invalid("readiness_blocked", "Human review requires current-head Fury approval.");
+  }
   if (checked.value.governanceTarget !== null) return invalid("decision_mismatch", "Non-governance evidence cannot authorize a governance target.");
   return valid({
     schemaVersion: projection.journalSchemaVersion,
@@ -1292,6 +1840,90 @@ export function createEvidenceEntry(
     type: "evidence.recorded",
     timestamp: checked.value.timestamp,
     payload: { evidence },
+  });
+}
+
+export function createReviewSubjectSupersessionEntry(
+  projection: SupervisedMissionProjection,
+  reviewSubjectInput: unknown,
+  timestamp: EvidenceTimestamp,
+): ContractResult<SupervisedJournalEntry> {
+  if (projection.journalSchemaVersion !== 7 || projection.reviewSubject === undefined) {
+    return invalid("unsupported_schema", "Review-subject supersession requires journal v7.");
+  }
+  const subjectErrors = reviewSubjectErrors(reviewSubjectInput, "Review subject");
+  if (subjectErrors.length > 0) return invalid("malformed", ...subjectErrors);
+  const timestampValidation = timestampErrors(timestamp, "Review-subject supersession timestamp");
+  if (timestampValidation.length > 0) return invalid("malformed", ...timestampValidation);
+  const reviewSubject = reviewSubjectInput as ReviewSubjectRevision;
+  if (reviewSubject.subjectKind !== projection.reviewSubject.subjectKind ||
+      reviewSubject.subjectId !== projection.reviewSubject.subjectId) {
+    return invalid("subject_mismatch", "Review-subject supersession cannot change subject identity.");
+  }
+  if (reviewSubject.revisionId === projection.reviewSubject.revisionId ||
+      reviewSubject.supersedesRevisionId !== projection.reviewSubject.revisionId) {
+    return invalid("revision_mismatch", "Review-subject supersession must name the exact current revision.");
+  }
+  if (!Array.isArray(projection.reviewRevisions) ||
+      projection.reviewRevisions.some(({ revisionId }) => revisionId === reviewSubject.revisionId)) {
+    return invalid("revision_mismatch", "Review-subject supersession cannot reuse a revision identity.");
+  }
+  let requirements: EvidenceRequirement[];
+  try {
+    requirements = createReviewEvidenceRequirements(
+      projection.brief,
+      reviewSubject,
+      projection.lastSequence + 1,
+      projection.requirements,
+    );
+  } catch (error) {
+    return invalid("missing_requirement", error instanceof Error ? error.message : "Review requirements are ambiguous.");
+  }
+  return valid({
+    schemaVersion: 7,
+    entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
+    missionId: projection.missionId,
+    sequence: projection.lastSequence + 1,
+    type: "subject.revision_superseded",
+    timestamp,
+    payload: { reviewSubject, requirements },
+  });
+}
+
+export function createFuryReviewEntry(
+  projection: SupervisedMissionProjection,
+  reviewInput: unknown,
+): ContractResult<SupervisedJournalEntry> {
+  if (projection.journalSchemaVersion !== 7 || projection.reviewSubject === undefined) {
+    return invalid("unsupported_schema", "Fury review records require journal v7.");
+  }
+  const errors = furyReviewErrors(reviewInput, "Fury review");
+  if (errors.length > 0) return invalid("malformed", ...errors);
+  const review = reviewInput as FuryReviewRecord;
+  if (review.missionId !== projection.missionId) {
+    return invalid("mission_mismatch", "Fury review mission does not match.");
+  }
+  if (review.subjectKind !== projection.reviewSubject.subjectKind ||
+      review.subjectId !== projection.reviewSubject.subjectId) {
+    return invalid("subject_mismatch", "Fury review subject does not match.");
+  }
+  if (review.revisionId !== projection.reviewSubject.revisionId) {
+    return invalid("revision_mismatch", "Fury review is stale or mismatched.");
+  }
+  if (projection.furyReviews?.some(({ reviewId }) => reviewId === review.reviewId)) {
+    return invalid("duplicate_evidence", "Fury reviewId has already been recorded.");
+  }
+  if (projection.furyReviews?.some(({ revisionId }) => revisionId === review.revisionId)) {
+    return invalid("decision_mismatch", "A final Fury record already exists for this revision.");
+  }
+  return valid({
+    schemaVersion: 7,
+    entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
+    missionId: projection.missionId,
+    sequence: projection.lastSequence + 1,
+    type: review.verdict === "approved" ? "fury.review_approved" : "fury.review_changes_requested",
+    timestamp: review.decidedAt,
+    payload: { review },
   });
 }
 
@@ -1305,10 +1937,15 @@ export function createHumanEvidenceEntryFromAdapterCandidate(
   if (candidate.candidateKind !== "human_evidence") {
     return invalid("candidate_kind_mismatch", "Human evidence intake requires a human-evidence candidate.");
   }
-  if (candidate.missionId !== projection.missionId || candidate.subjectId !== projection.brief.subjectId) {
+  const evidenceSubject = projection.journalSchemaVersion === 7
+    ? projection.reviewSubject
+    : { subjectId: projection.brief.subjectId, revisionId: projection.brief.revisionId };
+  if (evidenceSubject === undefined ||
+      candidate.missionId !== projection.missionId ||
+      candidate.subjectId !== evidenceSubject.subjectId) {
     return invalid("mission_mismatch", "Human evidence candidate does not match the canonical mission subject.");
   }
-  if (candidate.revisionId !== projection.brief.revisionId) {
+  if (candidate.revisionId !== evidenceSubject.revisionId) {
     return invalid("stale_candidate", "Human evidence candidate revision is stale.");
   }
   return createEvidenceEntry(projection, candidate.payload.evidence as SignedHumanEvidence);
@@ -1319,7 +1956,7 @@ export function createCommunicationRequestEntry(
   requestInput: unknown,
   timestamp: EvidenceTimestamp,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6) return invalid("unsupported_schema", "Communication requests require journal v4, v5, or v6.");
+  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) return invalid("unsupported_schema", "Communication requests require journal v4, v5, v6, or v7.");
   if (projection.governance.state !== "approved" || projection.authorization.state !== "authorized") {
     return invalid("governance_denied", "Communication request requires active mission authorization.");
   }
@@ -1352,7 +1989,7 @@ export function createCommunicationResultEntry(
   projection: SupervisedMissionProjection,
   candidateInput: unknown,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6) return invalid("unsupported_schema", "Communication results require journal v4, v5, or v6.");
+  if (projection.journalSchemaVersion !== 4 && projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) return invalid("unsupported_schema", "Communication results require journal v4, v5, v6, or v7.");
   const checked = validateAdapterCandidate(candidateInput);
   if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
   const candidate = checked.value;
@@ -1388,8 +2025,8 @@ export function createExecutionEffectEntry(
   candidateInput: unknown,
   timestamp: EvidenceTimestamp,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6) {
-    return invalid("unsupported_schema", "Execution effect records require journal v5 or v6.");
+  if (projection.journalSchemaVersion !== 5 && projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) {
+    return invalid("unsupported_schema", "Execution effect records require journal v5, v6, or v7.");
   }
   if (projection.governance.state !== "approved" || projection.authorization.state !== "authorized") {
     return invalid("governance_denied", "Execution effect recording requires active mission authorization.");
@@ -1440,7 +2077,7 @@ export function createRuntimeBindingEntry(
   bindingInput: unknown,
   authorization: SignedRuntimeBindingAuthorization,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 6) return invalid("unsupported_schema", "Runtime bindings require journal v6.");
+  if (projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) return invalid("unsupported_schema", "Runtime bindings require journal v6 or v7.");
   const checked = validateRuntimeBinding(bindingInput);
   if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
   const binding = checked.value;
@@ -1450,7 +2087,7 @@ export function createRuntimeBindingEntry(
   if (projection.runtimeBindings.some((candidate) => candidate.bindingId === binding.bindingId) || projection.activeRuntimeBindings.some((candidate) => candidate.seatId === binding.seatId)) return invalid("binding_ambiguous", "Runtime binding identity or active seat is duplicated.");
   const authorized = verifySignedRuntimeBindingAuthorization(authorization, binding, projection, null, null);
   if (authorized.state === "invalid") return authorized;
-  return valid({ schemaVersion: 6, entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`, missionId: projection.missionId, sequence: projection.lastSequence + 1, type: "runtime.binding_recorded", timestamp: authorized.value.timestamp, payload: { binding: copyRuntimeBinding(binding), authorization: { payload: { ...authorization.payload, timestamp: { ...authorization.payload.timestamp } }, signatureBase64: authorization.signatureBase64 } } });
+  return valid({ schemaVersion: projection.journalSchemaVersion, entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`, missionId: projection.missionId, sequence: projection.lastSequence + 1, type: "runtime.binding_recorded", timestamp: authorized.value.timestamp, payload: { binding: copyRuntimeBinding(binding), authorization: { payload: { ...authorization.payload, timestamp: { ...authorization.payload.timestamp } }, signatureBase64: authorization.signatureBase64 } } });
 }
 
 export function createRuntimeBindingSupersessionEntry(
@@ -1460,7 +2097,7 @@ export function createRuntimeBindingSupersessionEntry(
   bindingInput: unknown,
   authorization: SignedRuntimeBindingAuthorization,
 ): ContractResult<SupervisedJournalEntry> {
-  if (projection.journalSchemaVersion !== 6) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6.");
+  if (projection.journalSchemaVersion !== 6 && projection.journalSchemaVersion !== 7) return invalid("unsupported_schema", "Runtime binding supersession requires journal v6 or v7.");
   const prior = projection.activeRuntimeBindings.filter((candidate) => candidate.bindingId === priorBindingId && candidate.bindingVersion === priorBindingVersion);
   if (prior.length !== 1) return invalid("binding_ambiguous", "Runtime binding supersession requires exactly one active prior binding.");
   const checked = validateRuntimeBinding(bindingInput);
@@ -1470,7 +2107,7 @@ export function createRuntimeBindingSupersessionEntry(
   if (replacement.bindingId !== priorBindingId || replacement.bindingVersion !== priorBindingVersion + 1 || replacement.seatId !== prior[0].seatId || replacement.lifecycleState !== "active" || replacement.activeThroughSequence !== null) return invalid("binding_invalid", "Runtime binding replacement must atomically increment the same active binding.");
   const authorized = verifySignedRuntimeBindingAuthorization(authorization, replacement, projection, priorBindingId, priorBindingVersion);
   if (authorized.state === "invalid") return authorized;
-  return valid({ schemaVersion: 6, entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`, missionId: projection.missionId, sequence: projection.lastSequence + 1, type: "runtime.binding_superseded", timestamp: authorized.value.timestamp, payload: { priorBindingId, priorBindingVersion, binding: copyRuntimeBinding(replacement), authorization: { payload: { ...authorization.payload, timestamp: { ...authorization.payload.timestamp } }, signatureBase64: authorization.signatureBase64 } } });
+  return valid({ schemaVersion: projection.journalSchemaVersion, entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`, missionId: projection.missionId, sequence: projection.lastSequence + 1, type: "runtime.binding_superseded", timestamp: authorized.value.timestamp, payload: { priorBindingId, priorBindingVersion, binding: copyRuntimeBinding(replacement), authorization: { payload: { ...authorization.payload, timestamp: { ...authorization.payload.timestamp } }, signatureBase64: authorization.signatureBase64 } } });
 }
 
 export function planMissionStep(

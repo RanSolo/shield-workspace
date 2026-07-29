@@ -73,8 +73,11 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(root.validateShieldConfig, config.validateShieldConfig);
   assert.equal(supervision.SUPERVISED_JOURNAL_SCHEMA_VERSION, 2);
   assert.equal(supervision.RUNNER_JOURNAL_SCHEMA_VERSION, 5);
+  assert.equal(supervision.REVIEW_JOURNAL_SCHEMA_VERSION, 7);
   assert.equal(typeof supervision.createSupervisedMissionBrief, "function");
   assert.equal(typeof supervision.createExecutionEffectEntry, "function");
+  assert.equal(typeof supervision.createReviewSubjectSupersessionEntry, "function");
+  assert.equal(typeof supervision.createFuryReviewEntry, "function");
   assert.equal(delegation.WHEELS_OFF_POLICY_ID, "wheels_off.v1");
   assert.equal(adapter.ADAPTER_CONTRACT_VERSION, 1);
   assert.equal(typeof adapter.validateAdapterCandidate, "function");

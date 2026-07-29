@@ -20,6 +20,8 @@ the prior binding atomically; a runtime change is never automatic.
 
 The Mission Journal is the authoritative record of governance and binding
 state. Journal v2-v5 behavior remains supported without reinterpretation.
+Journal v7 carries the complete v6 runtime-binding contract forward unchanged
+while adding review-revision lifecycle state in the supervision boundary.
 
 ## Per-call enforcement
 
@@ -29,6 +31,10 @@ subject, seat, runtime, executor, binding ID/version, repository and canonical
 writable root, branch, mission and artifact revisions, journal sequence,
 action, effect class/key, approved scope, required capabilities, and fresh
 host-observed attestations.
+
+Permission context v1 accepts supervised journal v6 or v7. Admission of v7
+does not widen action, effect, path, capability, identity, or attestation
+authority; all existing exact-match checks remain mandatory.
 
 Capability, repository-root, and writability attestations prove operational
 facts only. They do not grant authority, readiness, or permission. Issue #34

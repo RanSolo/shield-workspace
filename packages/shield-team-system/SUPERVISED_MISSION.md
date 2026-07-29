@@ -140,7 +140,26 @@ envelope must preserve the signed evidence's exact mission, subject, revision,
 principal, binding, evidence identifier, and source reference. A rejected
 candidate produces no journal entry.
 
+Journal v6 carries v5 behavior forward and adds separately
+Coulson-authorized runtime-binding records and atomic binding supersession.
+
+Journal v7 carries v6 behavior forward and adds a distinct
+`repository_artifact` review subject without changing the immutable
+mission-plan revision. `createMissionBegunEntry(...)` requires the initial
+review subject for v7. `createReviewSubjectSupersessionEntry(...)` records an
+explicit A→B transition, preserves A as stale history, and creates B-bound Fitz
+and optional Simmons requirements that name the exact superseded A
+requirements.
+
+`createFuryReviewEntry(...)` records exactly one final
+`changes_requested` or `approved` Fury verdict for the current review revision.
+A stale, duplicate, or contradictory verdict fails closed. Fitz and Simmons
+evidence cannot be recorded until the current revision has an unambiguous Fury
+approval. Superseding the review subject makes prior review evidence and Fury
+records stale without deleting them, returns the Fitz route to `waiting`, and
+requires a fresh current-revision Fury record.
+
 Journal v1 replay remains available through the existing `/journal` contract.
 Adapter workflows create journal v4 explicitly and runner workflows create
-journal v5 explicitly. Neither path mixes versions, migrates, or rewrites prior
-v2/v3 journal evidence.
+journal v5 or later explicitly. No path mixes versions, migrates, or rewrites
+prior journal evidence.

@@ -25,10 +25,10 @@ function context(overrides = {}) {
   return { permissionContractVersion: 1, journalSchemaVersion: 6, missionId: "mission:issue-10", subjectId: "issue:10", missionRevisionId: revisionId, artifactRevisionId, evaluatedThroughSequence: 5, reasoningRuntimeId: "runtime:ornith:may", toolExecutorId: "executor:codex-host", repositoryId: "repo:shield", canonicalWritableRoot: "/workspace/shield", branch: "benchmark", requiredCapabilities: ["filesystem_write"], activeBindings: [binding()], attestations: [attestation("repository_root"), attestation("writability"), attestation("capability")], evaluatedAt: "2026-07-20T02:05:00Z", decisionId: "decision:permission:1", ...overrides };
 }
 
-function input() {
+function input(journalSchemaVersion = 6) {
   return {
     runnerContractVersion: 1,
-    projection: { runnerContractVersion: 1, journalSchemaVersion: 6, missionId: "mission:issue-10", subjectId: "issue:10", revisionId, evaluatedThroughSequence: 5, governanceState: "approved", missionAuthorizationState: "authorized", executionStatus: "running", executeReadiness: "ready", participantSeatIds: ["coulson", "fitz", "hill", "may"], activatedModes: [mode], effectRecords: [] },
+    projection: { runnerContractVersion: 1, journalSchemaVersion, missionId: "mission:issue-10", subjectId: "issue:10", revisionId, evaluatedThroughSequence: 5, governanceState: "approved", missionAuthorizationState: "authorized", executionStatus: "running", executeReadiness: "ready", participantSeatIds: ["coulson", "fitz", "hill", "may"], activatedModes: [mode], effectRecords: [] },
     resolvedModeContext: { runnerContractVersion: 1, seatId: "may", modes: [mode] },
     actionAllowlist: ["edit-permission-boundary"],
     plan: plan(),
@@ -66,6 +66,61 @@ test("runner v6 dispatches exactly once through fresh permission and preserves t
     { seatId: "may", reasoningRuntimeId: "runtime:ornith:may", toolExecutorId: "executor:codex-host" },
     { seatId: "may", reasoningRuntimeId: "runtime:ornith:may", toolExecutorId: "executor:codex-host" },
   ]);
+});
+
+test("runner v7 preserves v6 permission enforcement and effect attribution", async () => {
+  const ledger = [];
+  const appendIfAbsent = (record) => {
+    if (ledger.some(({ recordId }) => recordId === record.recordId)) return { appended: false };
+    ledger.push(record);
+    return {
+      schemaVersion: 1,
+      ledgerId: record.ledgerId,
+      recordId: record.recordId,
+      decisionId: record.decisionId,
+      digest: record.digest,
+      appended: true,
+      ledgerSequence: ledger.length - 1,
+    };
+  };
+  const getContext = () => context({ journalSchemaVersion: 7 });
+  const authorize = createPermissionAuthorizer({
+    ledgerId: "ledger:permission:v7",
+    getContext,
+    appendIfAbsent,
+  });
+  let invocations = 0;
+  const execute = createAuditedExecutor({
+    ledgerId: "ledger:permission:v7",
+    getContext,
+    appendIfAbsent,
+    execute: () => {
+      invocations += 1;
+      return {
+        runnerContractVersion: 1,
+        outcome: "completed",
+        missionId: "mission:issue-10",
+        subjectId: "issue:10",
+        revisionId,
+        evaluatedThroughSequence: 5,
+        cycleId: "cycle:permission:1",
+        seatId: "may",
+        actionId: "edit-permission-boundary",
+        effectClass: "behavioral_implementation",
+        effectKey: "effect:issue-10:permission",
+        summary: "Implementation completed.",
+        evidenceRefs: ["test:permission-integration:v7"],
+      };
+    },
+    nextRecordId: () => "audit:result:permission:v7",
+    now: () => "2026-07-20T02:06:00Z",
+  });
+  const result = await runRunnerCycle(input(7), { authorize, execute, validate: validatorResult });
+  assert.equal(result.state, "valid", result.errors?.join(" "));
+  assert.equal(result.value.outcome, "advanced");
+  assert.equal(result.value.effectRecordCandidate.journalSchemaVersion, 7);
+  assert.equal(invocations, 1);
+  assert.equal(replayPermissionAuditLedger(ledger).state, "valid");
 });
 
 test("runner v6 does not invoke the tool when the fresh executor binding is substituted", async () => {

@@ -226,6 +226,15 @@ test("allowed cycle preserves the opaque authorization artifact unchanged for ex
   assert.equal(validateRunnerCycleResult(result).state, "valid");
 });
 
+test("v7 runner cycle preserves additive journal version through its effect candidate", async () => {
+  const { result, calls } = await run(cycleInput({ projection: { journalSchemaVersion: 7 } }));
+  assert.deepEqual(calls, { authorize: 1, execute: 1, validate: 1 });
+  assert.equal(result.outcome, "advanced");
+  assert.equal(result.effectRecordCandidate.journalSchemaVersion, 7);
+  assert.equal(validateRunnerSupervisedEffectCandidate(result.effectRecordCandidate).state, "valid");
+  assert.equal(validateSupervisionEffectCandidate(result.effectRecordCandidate).state, "valid");
+});
+
 test("malformed and non-JSON authorization artifacts fail closed before executor dispatch", async () => {
   const cyclic = {};
   cyclic.self = cyclic;
