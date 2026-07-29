@@ -2,10 +2,11 @@
 
 ## Status
 
-Revision in progress after Fury returned `REVISE` on
-`32dbb4e90211f98efe9c56e397c03e0b658a19fe`. The revised artifact must return
-to Fury before implementation. This artifact authorizes no implementation by
-itself.
+Advisory Fury architecture review returned `APPROVE` on exact revision
+`f10043ca749ba8f0f1d19a38907462efd5d9c41e` after three revise-and-return
+cycles. The review was host-dispatched rather than a formal journaled
+`fury.plan-gate.v1` record. This artifact and verdict authorize no
+implementation by themselves; the route is now the human sponsor gate.
 
 ## Public position
 
