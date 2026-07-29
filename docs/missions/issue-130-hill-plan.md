@@ -102,3 +102,32 @@ human-directed, temporary workarounds, or framework defects.
 Mission Brief approval → Delivery Mode activation → commit brief and audit
 artifact → draft Mission Workspace → Fury plan gate → bounded May
 implementation → Mack validation → Fury conformance → Fitz human gate.
+
+## Runtime-v2 correction after Fury review
+
+The current runtime-v2 journal is profile-aware schema 9. The next plan must
+preserve that begun entry and must not route it through the legacy schema-2
+through-schema-8 replay path without an explicit compatibility extension.
+
+The implementation slice is therefore split into two exact contracts:
+
+1. Extend the runner/supervision compatibility surface to accept schema 9 and
+   add focused replay, stale-sequence, duplicate-effect, uncertain-effect,
+   and restart coverage.
+2. Add one thin public `runMissionCycle(input, dependencies)` composition
+   surface that performs exactly:
+
+   `read/replay → derive plan → runRunnerCycle → construct authoritative entry → append → read back → exact projection verification`
+
+The composition result is closed and must distinguish `advanced`, `waiting`,
+`blocked`, `uncertain`, and `complete`, including the durable sequence and
+accountable next seat. Append uncertainty and readback mismatch are blocked
+or uncertain stops; they never become successful advancement.
+
+The frozen `standard@1` brief remains authoritative: Coulson is the only
+mission execution and final-acceptance gate. Fury review and Mack validation
+are process-level review activities, not silently added mission gates; Fitz
+is not required unless a new authorized mission revision selects a profile
+that requires Fitz.
+
+No May implementation begins until Fury approves this corrected exact plan.
