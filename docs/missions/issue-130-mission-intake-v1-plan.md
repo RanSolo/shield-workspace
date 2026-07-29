@@ -145,22 +145,45 @@ for both `observed` and `missing` states. A mismatch returns
 V1 freezes these intake-specific limits:
 
 ```ts
-MISSION_INTAKE_MAX_IDENTIFIER_LENGTH = 512
-MISSION_INTAKE_MAX_OBJECTIVE_LENGTH = 16_384
+MISSION_INTAKE_MAX_BRIEF_IDENTIFIER_LENGTH = 256
+MISSION_INTAKE_MAX_OBJECTIVE_LENGTH = 512
+MISSION_INTAKE_MAX_REPOSITORY_ID_LENGTH = 201
+MISSION_INTAKE_MAX_BRANCH_LENGTH = 256
+MISSION_INTAKE_MAX_REPOSITORY_REVISION_LENGTH = 128
+MISSION_INTAKE_MAX_RUNTIME_ID_LENGTH = 256
 MISSION_INTAKE_MAX_SOURCE_REF_LENGTH = 2_048
 MISSION_INTAKE_MAX_ARTIFACT_PATH_LENGTH = 512
 MISSION_INTAKE_MAX_RECOMMENDATION_REASON_LENGTH = 2_048
+MISSION_INTAKE_MAX_PARTICIPANTS = SUPPORTED_SEAT_IDS.length
 MISSION_INTAKE_MAX_MODE_RECOMMENDATIONS = 16
 MISSION_INTAKE_MAX_RUNTIME_OBSERVATIONS = 16
 MISSION_INTAKE_MAX_EVIDENCE_REFS_PER_OBSERVATION = 16
 MISSION_INTAKE_MAX_TOTAL_EVIDENCE_REFS = 64
 ```
 
-Identifiers include mission, issue, revision, repository, branch, runtime, and
-seat identifiers. Source references and evidence references use the source-ref
-limit. Artifact paths must also satisfy the existing relative repository path
-rules. Arrays must be dense, plain arrays with no extra properties. Values
-outside these limits return the reason code for their containing field.
+Mission ID, issue/subject ID, issue revision ID, created brief revision ID, and
+participant seat IDs use the existing brief identifier grammar
+`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`. Participant IDs must additionally be
+members of `SUPPORTED_SEAT_IDS`; the participant array is unique, non-empty,
+and cannot exceed that closed set's length.
+
+Repository ID uses the existing configuration grammar: two slash-separated
+owner/name segments, each between 1 and 100 characters and matching
+`[A-Za-z0-9][A-Za-z0-9._-]*`. Repository observation ID must equal validated
+configuration repository ID when configuration was supplied.
+
+Branch, repository revision, and runtime ID use their separate limits above,
+must be non-empty, and reject control characters. Source and evidence
+references use the source-ref limit.
+
+An artifact path is valid only when it is non-empty and at most 512 characters,
+does not begin with `/`, and contains no backslash, percent sign, ASCII control
+character, empty path segment, `.` segment, or `..` segment. These are the exact
+rules used by the intake contract; v1 does not rely on an unnamed private
+validator.
+
+Arrays must be dense, plain arrays with no extra properties. Values outside
+these limits return the reason code for their containing field.
 
 ## Reused package behavior
 
@@ -370,6 +393,11 @@ Focused tests must prove:
 - no model, tool, filesystem, GitHub, runner, Helicarrier, permission, adapter,
   or journal effect is reachable;
 - every bounded string and collection rejects its exact limit plus one;
+- brief identifiers and objective accept their existing effective package
+  maximums and reject maximum plus one;
+- participant count cannot exceed `SUPPORTED_SEAT_IDS.length`;
+- artifact paths reject absolute, backslash, percent, control, empty, `.`, and
+  `..` forms;
 - package surface and strict external TypeScript consumer expose the function
   and declarations.
 

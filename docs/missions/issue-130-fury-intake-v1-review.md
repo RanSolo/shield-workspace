@@ -107,3 +107,17 @@ Hill selected the smaller existing-interface path: malformed risk data maps to
 `INVALID_BRIEF_INPUT`. No new public risk validator is introduced by intake v1.
 The other two corrections are incorporated into the revised plan before a
 third Fury review.
+
+## Re-review of `050c01ce50549064731dd8e80ef19ef55f6facbf`
+
+Verdict: `REVISE`.
+
+The configuration-to-HEAD binding and risk-error classification were accepted.
+The remaining correction is bounds-only: the proposed generic identifier and
+objective limits were looser than the existing brief validator, participant
+count was not frozen, and artifact path rules were unnamed.
+
+Hill aligned brief identifiers and objective with their effective existing
+limits, separated repository/branch/revision/runtime limits, derived
+participant count from `SUPPORTED_SEAT_IDS`, and spelled out the complete
+artifact-path rules for the intake contract.

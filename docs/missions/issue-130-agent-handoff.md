@@ -185,6 +185,18 @@ communication or review-publication authority.
 - Current route: commit the narrow corrections and return the exact revision
   to Fury again.
 
+### Fury bounds re-review — `REVISE`
+
+- Reviewed exact revision:
+  `050c01ce50549064731dd8e80ef19ef55f6facbf`.
+- Configuration binding and risk classification were accepted.
+- Residual finding: proposed intake bounds contradicted effective brief limits
+  and did not close participant count or artifact path validation.
+- Hill correction: align brief fields to existing limits, separate
+  host-observation limits, derive participant maximum from the supported-seat
+  set, and freeze exact artifact-path rules.
+- Current route: commit and await final Fury confirmation.
+
 ## Reported environment observation
 
 The human operator reported that local May and Daisy were healthy on the prior
