@@ -171,6 +171,20 @@ communication or review-publication authority.
 - Current route: Hill revises the exact contract, commits it, and returns the
   new revision to Fury.
 
+### Fury architecture re-review — `REVISE`
+
+- Reviewed exact revision:
+  `39205352db25fcc342dfbd716fd586ea8137b35b`.
+- Most first-review findings were satisfied.
+- Residual findings: bind repository configuration to HEAD, select an
+  implementable risk-error classification, and freeze exact input bounds.
+- Hill correction: stale repository configuration maps to
+  `REPOSITORY_BINDING_MISMATCH`; malformed risk data maps through the existing
+  brief validator to `INVALID_BRIEF_INPUT`; exact string and collection limits
+  are frozen.
+- Current route: commit the narrow corrections and return the exact revision
+  to Fury again.
+
 ## Reported environment observation
 
 The human operator reported that local May and Daisy were healthy on the prior

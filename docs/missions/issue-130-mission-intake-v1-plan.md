@@ -128,12 +128,39 @@ or persistence function.
 Before any existing constructor or evaluator reads request data, v1 performs
 descriptor-safe normalization. It rejects accessors, hostile proxies, sparse
 arrays, symbols, non-plain prototypes, and extra array properties. A malformed
-risk object maps to `INVALID_RISK_FLAGS`, not to a high-risk candidate.
+risk object maps to `INVALID_BRIEF_INPUT`, not to a high-risk candidate.
 
 `proposedBrief.subjectId` must exactly equal `issueObservation.issueId`.
 Every artifact `repositoryRevision` must exactly equal
 `repositoryObservation.headRevision`. Repository, issue, configuration, and
 artifact assertion provenance is preserved in the result.
+
+When `configObservation.source` is `repository_file`, its
+`repositoryRevision` must exactly equal `repositoryObservation.headRevision`
+for both `observed` and `missing` states. A mismatch returns
+`REPOSITORY_BINDING_MISMATCH`.
+
+## Closed bounds
+
+V1 freezes these intake-specific limits:
+
+```ts
+MISSION_INTAKE_MAX_IDENTIFIER_LENGTH = 512
+MISSION_INTAKE_MAX_OBJECTIVE_LENGTH = 16_384
+MISSION_INTAKE_MAX_SOURCE_REF_LENGTH = 2_048
+MISSION_INTAKE_MAX_ARTIFACT_PATH_LENGTH = 512
+MISSION_INTAKE_MAX_RECOMMENDATION_REASON_LENGTH = 2_048
+MISSION_INTAKE_MAX_MODE_RECOMMENDATIONS = 16
+MISSION_INTAKE_MAX_RUNTIME_OBSERVATIONS = 16
+MISSION_INTAKE_MAX_EVIDENCE_REFS_PER_OBSERVATION = 16
+MISSION_INTAKE_MAX_TOTAL_EVIDENCE_REFS = 64
+```
+
+Identifiers include mission, issue, revision, repository, branch, runtime, and
+seat identifiers. Source references and evidence references use the source-ref
+limit. Artifact paths must also satisfy the existing relative repository path
+rules. Arrays must be dense, plain arrays with no extra properties. Values
+outside these limits return the reason code for their containing field.
 
 ## Reused package behavior
 
@@ -270,7 +297,6 @@ The first closed set:
 - `INVALID_REPOSITORY_OBSERVATION`
 - `INVALID_ISSUE_OBSERVATION`
 - `INVALID_BRIEF_INPUT`
-- `INVALID_RISK_FLAGS`
 - `UNSUPPORTED_PARTICIPANT`
 - `HUMAN_GATE_MISSING`
 - `SIMMONS_PARTICIPATION_MISMATCH`
@@ -327,6 +353,8 @@ Focused tests must prove:
   fails closed;
 - incomplete or unknown risk flags fail closed through existing policy;
 - repository observation/config mismatch fails closed;
+- stale repository configuration revision returns
+  `REPOSITORY_BINDING_MISMATCH`;
 - repository, issue, configuration, and artifact provenance is retained;
 - issue observation requires `observedAt`;
 - brief subject exactly matches the observed issue identifier;
@@ -341,6 +369,7 @@ Focused tests must prove:
 - historical May/Daisy health remains `human_reported_unverified`;
 - no model, tool, filesystem, GitHub, runner, Helicarrier, permission, adapter,
   or journal effect is reachable;
+- every bounded string and collection rejects its exact limit plus one;
 - package surface and strict external TypeScript consumer expose the function
   and declarations.
 

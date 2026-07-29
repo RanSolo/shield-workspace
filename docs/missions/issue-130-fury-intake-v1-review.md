@@ -88,3 +88,22 @@ any later runtime claim that a mission can be routed to Mack.
 Return to Hill for exact contract corrections, then dispatch the committed
 revision back to Fury. Route to the human sponsor only if the Mack seat model
 must change now.
+
+## Re-review of `39205352db25fcc342dfbd716fd586ea8137b35b`
+
+Verdict: `REVISE`.
+
+The first revision satisfied the repository/issue/artifact provenance, Mack,
+normalization order, human-gate preview, public-symbol, and milestone-scope
+findings. Fury returned three residual corrections:
+
+1. bind repository-file configuration observations to the observed HEAD and
+   test stale revisions;
+2. either introduce a shared typed risk validator or map malformed risk input
+   to `INVALID_BRIEF_INPUT` without parsing validator messages;
+3. freeze exact string and collection bounds.
+
+Hill selected the smaller existing-interface path: malformed risk data maps to
+`INVALID_BRIEF_INPUT`. No new public risk validator is introduced by intake v1.
+The other two corrections are incorporated into the revised plan before a
+third Fury review.
