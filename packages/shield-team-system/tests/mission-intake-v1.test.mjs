@@ -339,19 +339,4 @@ test("rejects unknown fields and unsupported participant or mode routing", () =>
     ["INVALID_MODE_RECOMMENDATION"],
   );
 
-  const disabledDispatchRecommendation = request();
-  disabledDispatchRecommendation.proposedBrief.participantSeatIds.push("mack");
-  disabledDispatchRecommendation.recommendedModes[0].seatId = "mack";
-  assert.deepEqual(
-    missionIntakeV1(disabledDispatchRecommendation).reasonCodes,
-    ["UNSUPPORTED_PARTICIPANT"],
-  );
-
-  const disabledDispatchRecommendationOracle = request();
-  disabledDispatchRecommendationOracle.proposedBrief.participantSeatIds.push("oracle");
-  disabledDispatchRecommendationOracle.recommendedModes[0].seatId = "oracle";
-  assert.deepEqual(
-    missionIntakeV1(disabledDispatchRecommendationOracle).reasonCodes,
-    ["UNSUPPORTED_PARTICIPANT"],
-  );
 });

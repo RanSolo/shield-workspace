@@ -651,8 +651,10 @@ test("pure runner source has no environmental, host, model, clock, or GitHub dep
   const testDirectory = dirname(fileURLToPath(import.meta.url));
   const source = await readFile(resolve(testDirectory, "../src/runner-v1.mts"), "utf8");
   const imports = source.match(/^\s*import .+$/gm) ?? [];
-  assert.equal(imports.length, 1);
-  assert.match(imports[0].trim(), /^import \{ validateRoleAssignment \} from "\.\/role-taxonomy-v1\.mjs"\;?$/);
+  assert.equal(imports.length, 3);
+  assert.doesNotMatch(source, /await import\(/);
+  assert.match(source, /import \{ validateRoleAssignment \} from "\.\/role-taxonomy-v1\.mjs"\;?/);
+  assert.match(source, /import \{\n\s*validateExecutionEffectPayloadCommon,[\s\S]*validateRunnerSupervisedEffectCandidateCommon,[\s\S]*\} from "\.\/runner-supervision-shared-v1\.mjs"/);
   assert.doesNotMatch(source, /\b(?:fetch|process|Date|setTimeout|setInterval|GitHub)\b/);
   assert.doesNotMatch(source, /(?:node:|from\s+["'](?:fs|path|child_process|http|https|net|tls|dns|os)["'])/);
 });

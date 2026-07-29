@@ -18,6 +18,16 @@ export const RUNNER_STOP_REASONS = [
   "invocation_claim_malformed",
 ] as const;
 
+import {
+  validateExecutionEffectPayloadCommon,
+  validateRunnerSupervisedEffectCandidateCommon,
+} from "./runner-supervision-shared-v1.mjs";
+import type {
+  ExecutionEffectPayloadValidationMessages,
+  RunnerSupervisedEffectCandidateValidationMessages,
+} from "./runner-supervision-shared-v1.mjs";
+import { validateRoleAssignment } from "./role-taxonomy-v1.mjs";
+
 export type RunnerEffectClass = (typeof RUNNER_EFFECT_CLASSES)[number];
 export type RunnerPermissionOutcome = (typeof RUNNER_PERMISSION_OUTCOMES)[number];
 export type RunnerExecutorOutcome = (typeof RUNNER_EXECUTOR_OUTCOMES)[number];
@@ -38,8 +48,6 @@ export interface RunnerModeReference {
   seatId: string;
   activationSource: string;
 }
-
-import { validateRoleAssignment } from "./role-taxonomy-v1.mjs";
 
 export interface RunnerProjectionSnapshot {
   runnerContractVersion: 1;
@@ -225,14 +233,6 @@ export type RunnerInvocationClaimResult =
       outcome: "blocked";
       reason: "invocation_claim_conflict" | "invocation_claim_failed";
     };
-
-const {
-  validateExecutionEffectPayloadCommon,
-  validateRunnerSupervisedEffectCandidateCommon,
-} = await import("./runner-supervision-shared-v1.mjs") as typeof import("./runner-supervision-shared-v1.mjs");
-
-type ExecutionEffectPayloadValidationMessages = import("./runner-supervision-shared-v1.mjs").ExecutionEffectPayloadValidationMessages;
-type RunnerSupervisedEffectCandidateValidationMessages = import("./runner-supervision-shared-v1.mjs").RunnerSupervisedEffectCandidateValidationMessages;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/;

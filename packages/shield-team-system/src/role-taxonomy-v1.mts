@@ -1,3 +1,5 @@
+import { isProxy } from "node:util/types";
+
 export const ROLE_TAXONOMY_SCHEMA_VERSION = 1 as const;
 export const ROLE_TAXONOMY_CONTRACT_VERSION = "roles.v1" as const;
 
@@ -18,7 +20,7 @@ const ASSIGNMENT_SCOPES = [
   "tool",
 ] as const;
 
-export const CANONICAL_ROLE_IDS = [
+export const CANONICAL_ROLE_IDS = Object.freeze([
   "hill",
   "daisy",
   "fury",
@@ -28,29 +30,38 @@ export const CANONICAL_ROLE_IDS = [
   "coulson",
   "fitz",
   "simmons",
-] as const;
+] as const);
 
 export type CanonicalRoleId = (typeof CANONICAL_ROLE_IDS)[number];
-export const DISPATCHABLE_ROLE_IDS = [
+export const DISPATCHABLE_ROLE_IDS = Object.freeze([
   "hill",
   "daisy",
   "fury",
   "may",
   "mack",
   "oracle",
-] as const;
+] as const);
 export type DispatchableRoleId = (typeof DISPATCHABLE_ROLE_IDS)[number];
-export const HUMAN_GATE_ROLE_IDS = ["coulson", "fitz", "simmons"] as const;
+export const HUMAN_GATE_ROLE_IDS = Object.freeze(["coulson", "fitz", "simmons"] as const);
 export type HumanGateRoleId = (typeof HUMAN_GATE_ROLE_IDS)[number];
-export const V03_ENABLED_ROLE_IDS = ["hill", "daisy", "fury", "may"] as const;
+export const V03_ENABLED_ROLE_IDS = Object.freeze(["hill", "daisy", "fury", "may"] as const);
 export type V03EnabledRoleId = (typeof V03_ENABLED_ROLE_IDS)[number];
 
-export interface CanonicalRoleDefinitionV1 {
-  readonly roleId: CanonicalRoleId;
-  readonly seatId: CanonicalRoleId;
-  readonly kind: RoleKind;
+export interface DispatchableRoleDefinitionV1 {
+  readonly roleId: DispatchableRoleId;
+  readonly seatId: DispatchableRoleId;
+  readonly kind: "dispatchable_seat";
   readonly v03Enabled: boolean;
 }
+
+export interface HumanGateRoleDefinitionV1 {
+  readonly roleId: HumanGateRoleId;
+  readonly seatId: HumanGateRoleId;
+  readonly kind: "human_gate";
+  readonly v03Enabled: false;
+}
+
+export type CanonicalRoleDefinitionV1 = DispatchableRoleDefinitionV1 | HumanGateRoleDefinitionV1;
 
 export interface RoleRoutingProjectionV1 {
   readonly roleId: CanonicalRoleId;
@@ -69,24 +80,35 @@ type RoleAssignmentErrorCode =
   | "ROLE_NOT_DISPATCHABLE"
   | "ROLE_NOT_ENABLED_IN_V03"
   | "HUMAN_GATE_NOT_ALLOWED"
-  | "INVALID_ROLE_ASSIGNMENT_SCOPE";
+  | "INVALID_ROLE_ASSIGNMENT_SCOPE"
+  | "INVALID_ROLE_ASSIGNMENT_OPTIONS";
 type RoleResult<T> = { state: "valid"; value: T } | { state: "invalid"; code: RoleLookupErrorCode | RoleAssignmentErrorCode };
 
-const canonicalRoleSet = new Set<string>(CANONICAL_ROLE_IDS);
-const dispatchableSet = new Set<string>(DISPATCHABLE_ROLE_IDS);
-const humanGateSet = new Set<string>(HUMAN_GATE_ROLE_IDS);
-const v03EnabledSet = new Set<string>(V03_ENABLED_ROLE_IDS);
-const assignmentScopeSet = new Set<string>(ASSIGNMENT_SCOPES);
+const ASSIGNMENT_SCOPES_SET = new Set<string>(ASSIGNMENT_SCOPES);
+const CANONICAL_ROLE_SET = new Set<string>(CANONICAL_ROLE_IDS);
+const DISPATCHABLE_ROLE_SET = new Set<string>(DISPATCHABLE_ROLE_IDS);
+const HUMAN_GATE_ROLE_SET = new Set<string>(HUMAN_GATE_ROLE_IDS);
+const V03_ENABLED_ROLE_SET = new Set<string>(V03_ENABLED_ROLE_IDS);
 
 const ROLE_DEFINITIONS: readonly CanonicalRoleDefinitionV1[] = Object.freeze(
-  CANONICAL_ROLE_IDS.map((roleId): CanonicalRoleDefinitionV1 => ({
-    roleId,
-    seatId: roleId,
-    kind: humanGateSet.has(roleId) ? "human_gate" : "dispatchable_seat",
-    v03Enabled: v03EnabledSet.has(roleId),
-  })).map((definition) => Object.freeze(definition)),
+  CANONICAL_ROLE_IDS.map((roleId) => Object.freeze(
+    HUMAN_GATE_ROLE_SET.has(roleId)
+      ? {
+        roleId: roleId as HumanGateRoleId,
+        seatId: roleId as HumanGateRoleId,
+        kind: "human_gate",
+        v03Enabled: false,
+      }
+      : {
+        roleId: roleId as DispatchableRoleId,
+        seatId: roleId as DispatchableRoleId,
+        kind: "dispatchable_seat",
+        v03Enabled: V03_ENABLED_ROLE_SET.has(roleId),
+      },
+  )),
 );
 export const CANONICAL_ROLE_REGISTRY_V1: readonly CanonicalRoleDefinitionV1[] = ROLE_DEFINITIONS;
+
 const ROLE_BY_ID: Record<CanonicalRoleId, CanonicalRoleDefinitionV1> = Object.fromEntries(
   ROLE_DEFINITIONS.map((role) => [role.roleId, role]),
 ) as Record<CanonicalRoleId, CanonicalRoleDefinitionV1>;
@@ -103,7 +125,7 @@ function validState(value: CanonicalRoleDefinitionV1): { state: "valid"; value: 
 
 export function lookupRole(roleId: unknown): RoleResult<CanonicalRoleDefinitionV1> {
   if (typeof roleId !== "string" || !ROLE_ID.test(roleId)) return invalidState("INVALID_ROLE_ID");
-  if (!canonicalRoleSet.has(roleId)) return invalidState("UNKNOWN_ROLE_ID");
+  if (!CANONICAL_ROLE_SET.has(roleId)) return invalidState("UNKNOWN_ROLE_ID");
   return validState(ROLE_BY_ID[roleId as CanonicalRoleId]);
 }
 
@@ -144,24 +166,58 @@ export function routingProjection(roleId: unknown): RoleResult<RoleRoutingProjec
   };
 }
 
+type RoleAssignmentOptionsValidation = { state: "valid"; requireV03Enabled: boolean } | { state: "invalid"; code: "INVALID_ROLE_ASSIGNMENT_OPTIONS" };
+
+function validAssignmentOptions(options: unknown): RoleAssignmentOptionsValidation {
+  if (options === undefined) {
+    return { state: "valid", requireV03Enabled: false };
+  }
+  if (options === null || isProxy(options)) {
+    return { state: "invalid", code: "INVALID_ROLE_ASSIGNMENT_OPTIONS" };
+  }
+  if (typeof options !== "object" || Array.isArray(options) || Object.getPrototypeOf(options) !== Object.prototype) {
+    return { state: "invalid", code: "INVALID_ROLE_ASSIGNMENT_OPTIONS" };
+  }
+  const ownKeys = Reflect.ownKeys(options);
+  if (ownKeys.length !== 1 || ownKeys[0] !== "requireV03Enabled") {
+    return { state: "invalid", code: "INVALID_ROLE_ASSIGNMENT_OPTIONS" };
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(options, "requireV03Enabled");
+  if (
+    !descriptor
+    || !descriptor.enumerable
+    || !Object.hasOwn(descriptor, "value")
+    || typeof descriptor.value !== "boolean"
+  ) {
+    return { state: "invalid", code: "INVALID_ROLE_ASSIGNMENT_OPTIONS" };
+  }
+  return { state: "valid", requireV03Enabled: descriptor.value };
+}
+
 export function validateRoleAssignment(
   roleId: unknown,
   assignment: unknown,
-  options: { requireV03Enabled?: boolean } = {},
+  options?: unknown,
 ): RoleResult<RoleAssignmentResultV1["roleId"]> {
   const lookup = lookupRole(roleId);
   if (lookup.state === "invalid") return lookup;
-  if (typeof assignment !== "string" || !assignmentScopeSet.has(assignment)) return invalidState("INVALID_ROLE_ASSIGNMENT_SCOPE");
+  if (typeof assignment !== "string" || !ASSIGNMENT_SCOPES_SET.has(assignment)) return invalidState("INVALID_ROLE_ASSIGNMENT_SCOPE");
+
+  const checkedOptions = validAssignmentOptions(options);
+  if (checkedOptions.state === "invalid") return invalidState(checkedOptions.code);
+
   const role = lookup.value;
   if (assignment === "dispatch") {
-    if (role.kind !== "dispatchable_seat") {
-      return invalidState("ROLE_NOT_DISPATCHABLE");
-    }
-    if (options.requireV03Enabled && !role.v03Enabled) {
+    if (role.kind !== "dispatchable_seat") return invalidState("ROLE_NOT_DISPATCHABLE");
+    if (checkedOptions.requireV03Enabled && !role.v03Enabled) {
       return invalidState("ROLE_NOT_ENABLED_IN_V03");
     }
     return { state: "valid", value: role.roleId };
   }
-  if (role.kind === "human_gate") return invalidState("HUMAN_GATE_NOT_ALLOWED");
+
+  if (role.kind === "human_gate") {
+    return invalidState("HUMAN_GATE_NOT_ALLOWED");
+  }
+
   return { state: "valid", value: role.roleId };
 }

@@ -197,57 +197,6 @@ test("repository configuration selects exact content-addressed Ed25519 bindings"
   assert.equal(validateRepositoryBindings(registry, [{ ...configured[0], bindingRef: fitz.binding.signingKeyRef }, configured[1]], brief.missionId, false).state, "invalid");
 });
 
-test("runtime binding recording path rejects non-canonical binding seat IDs", () => {
-  const { brief, coulson, fitz } = fixture();
-  const projection = replay([createMissionBegunEntry(brief, [coulson.binding, fitz.binding], 6)]);
-  for (const seat of ["coulson", "fitz", "simmons", "mack", "oracle", "x", "runtime:bad"]) {
-    assert.equal(
-      createRuntimeBindingEntry(
-        projection,
-        runtimeBinding({ seatId: seat }),
-        { payload: {}, signatureBase64: "" },
-      ).state,
-      "invalid",
-    );
-  }
-});
-
-test("runtime binding replay and supersession paths inherit runtime binding validation", () => {
-  const { brief, coulson, fitz } = fixture();
-  const missionBegin = createMissionBegunEntry(brief, [coulson.binding, fitz.binding], 6);
-  const begunReplay = replay([missionBegin]);
-  const badRecorded = replaySupervisedMissionJournal([
-    missionBegin,
-    {
-      schemaVersion: 6,
-      entryId: `entry:${brief.missionId}:1`,
-      missionId: brief.missionId,
-      sequence: 1,
-      type: "runtime.binding_recorded",
-      timestamp: brief.createdAt,
-      payload: {
-        binding: runtimeBinding({ seatId: "oracle" }),
-        authorization: { payload: {}, signatureBase64: "" },
-      },
-    },
-  ]);
-  assert.equal(badRecorded.state, "invalid");
-
-  const supersessionProjection = {
-    ...begunReplay,
-    activeRuntimeBindings: [runtimeBinding({ bindingVersion: 1, lifecycleState: "active" })],
-    runtimeBindings: [runtimeBinding({ bindingVersion: 1, lifecycleState: "active" })],
-  };
-  const invalidSupersession = createRuntimeBindingSupersessionEntry(
-    supersessionProjection,
-    "runtime-binding:may",
-    1,
-    runtimeBinding({ bindingVersion: 2, seatId: "oracle" }),
-    { payload: {}, signatureBase64: "" },
-  );
-  assert.equal(invalidSupersession.state, "invalid");
-});
-
 test("approval and no-effect steps keep execution separate from human acceptance readiness", () => {
   const fixtureData = fixture();
   const { entries, coulson, fitz } = fixtureData;

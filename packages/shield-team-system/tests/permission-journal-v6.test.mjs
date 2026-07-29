@@ -16,6 +16,10 @@ import {
 const missionRevisionFallback = "0123456789012345678901234567890123456789";
 const artifactRevisionId = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
+function plainBinding(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function fixture() {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
@@ -47,8 +51,8 @@ function fixture() {
     requireSimmons: false,
     createdAt: { value: "2026-07-20T02:00:00Z", provenance: "humanRecorded" },
   });
-  const entries = [createMissionBegunEntry(brief, [coulson, fitz], 6)];
-  return { privateKey, coulson, brief, entries };
+  const entries = [createMissionBegunEntry(brief, [plainBinding(coulson), plainBinding(fitz)], 6)];
+  return { privateKey, coulson, fitz, brief, entries };
 }
 
 function binding(brief, version, sequence, overrides = {}) {
@@ -100,6 +104,31 @@ function authorization(data, runtimeBinding, sequence, priorId, priorVersion) {
   return { payload, signatureBase64: sign(null, Buffer.from(canonicalJson(payload)), data.privateKey).toString("base64") };
 }
 
+function authorizationWithAuthority(authority, missionId, subjectId, runtimeBinding, sequence, priorId, priorVersion) {
+  const payload = {
+    schemaVersion: 1,
+    authorizationId: runtimeBinding.coulsonAuthorizationRef,
+    missionId,
+    subjectId,
+    seatId: runtimeBinding.seatId,
+    bindingId: runtimeBinding.bindingId,
+    bindingVersion: runtimeBinding.bindingVersion,
+    priorBindingId: priorId,
+    priorBindingVersion: priorVersion,
+    bindingDigest: computeRuntimeBindingDigest(runtimeBinding),
+    artifactRevisionId: runtimeBinding.artifactRevisionId,
+    decision: "approved",
+    previousJournalSequence: sequence - 1,
+    journalSequence: sequence,
+    humanPrincipalId: authority.humanPrincipalId,
+    humanBindingId: authority.bindingId,
+    signingKeyRef: authority.signingKeyRef,
+    sourceRef: `runtime-binding:authority:${sequence}`,
+    timestamp: { value: `2026-07-20T02:0${sequence}:00Z`, provenance: "humanRecorded" },
+  };
+  return { payload, signatureBase64: sign(null, Buffer.from(canonicalJson(payload)), authority.privateKey).toString("base64") };
+}
+
 function replay(entries) {
   const result = replaySupervisedMissionJournal(entries);
   assert.equal(result.state, "valid", result.errors?.join(" "));
@@ -135,6 +164,131 @@ test("runtime substitution is an atomic versioned supersession with separate aut
   assert.equal(projection.runtimeBindings[0].activeThroughSequence, 1);
   assert.equal(projection.activeRuntimeBindings.length, 1);
   assert.equal(projection.activeRuntimeBindings[0].bindingVersion, 2);
+});
+
+test("runtime binding recording rejects human, disabled, and unknown owner seat IDs", () => {
+  const data = fixture();
+  const projection = replay(data.entries);
+  for (const seat of ["coulson", "fitz", "simmons", "mack", "oracle", "runtime:bad", "x"]) {
+    const checked = createRuntimeBindingEntry(
+      projection,
+      binding(data.brief, 1, 1, { seatId: seat }),
+      authorization(data, binding(data.brief, 1, 1, { seatId: seat }), 1, null, null),
+    );
+    assert.equal(checked.state, "invalid");
+  }
+});
+
+test("raw replay rejects correctly signed runtime binding records with invalid owner seats", () => {
+  const data = fixture();
+  const projection = replay(data.entries);
+  const base = createRuntimeBindingEntry(projection, binding(data.brief, 1, 1), authorization(data, binding(data.brief, 1, 1), 1, null, null));
+  assert.equal(base.state, "valid", base.errors?.join(" "));
+  const badBinding = { ...binding(data.brief, 1, 1), seatId: "mack" };
+  const coulsonAuthority = { ...data.coulson, privateKey: data.privateKey };
+  const tampered = {
+    ...base.value,
+    payload: {
+      ...base.value.payload,
+      binding: badBinding,
+      authorization: authorizationWithAuthority(
+        coulsonAuthority,
+        data.brief.missionId,
+        data.brief.subjectId,
+        badBinding,
+        1,
+        null,
+        null,
+      ),
+    },
+  };
+  const badReplay = replaySupervisedMissionJournal([data.entries[0], tampered]);
+  assert.equal(badReplay.state, "invalid");
+});
+
+test("correctly signed invalid runtime replacements do not supersede active bindings", () => {
+  const data = fixture();
+  const projection = replay(data.entries);
+  const initial = binding(data.brief, 1, 1);
+  const initialEntry = createRuntimeBindingEntry(projection, initial, authorization(data, initial, 1, null, null));
+  assert.equal(initialEntry.state, "valid", initialEntry.errors?.join(" "));
+  const activeBegun = createMissionBegunEntry(data.brief, [plainBinding(data.coulson), plainBinding(data.fitz)], 6);
+  const active = replay([activeBegun, initialEntry.value]);
+  const replacement = binding(data.brief, 2, 2);
+  const validSupersession = createRuntimeBindingSupersessionEntry(
+    active,
+    initial.bindingId,
+    initial.bindingVersion,
+    replacement,
+    authorization(data, replacement, 2, initial.bindingId, 1),
+  );
+  assert.equal(validSupersession.state, "valid");
+  const invalidSupersession = structuredClone(validSupersession.value);
+  invalidSupersession.payload.binding.seatId = "oracle";
+  invalidSupersession.payload.authorization.payload = {
+    ...invalidSupersession.payload.authorization.payload,
+    seatId: "oracle",
+    bindingDigest: computeRuntimeBindingDigest(invalidSupersession.payload.binding),
+  };
+  invalidSupersession.payload.authorization = authorizationWithAuthority(
+    { ...data.coulson, privateKey: data.privateKey },
+    data.brief.missionId,
+    data.brief.subjectId,
+    invalidSupersession.payload.binding,
+    2,
+    initial.bindingId,
+    1,
+  );
+  assert.equal(replaySupervisedMissionJournal([
+    activeBegun,
+    initialEntry.value,
+    invalidSupersession,
+  ]).state, "invalid");
+  const unchanged = replay([activeBegun, initialEntry.value]);
+  assert.equal(unchanged.runtimeBindings.length, 1);
+  assert.equal(unchanged.activeRuntimeBindings.length, 1);
+});
+
+test("expired trusted Coulson binding rejects runtime-binding authorization", () => {
+  const data = fixture();
+  const expiredCoulson = {
+    ...data.coulson,
+    validThroughSequence: 0,
+    bindingId: "binding:coulson-expired",
+  };
+  const freshCoulson = generateKeyPairSync("ed25519");
+  const freshPublic = freshCoulson.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  const expiredAuthority = {
+    ...expiredCoulson,
+    signingKeyRef: computeEd25519SigningKeyRef(freshPublic),
+    publicKeySpkiBase64: freshPublic,
+  };
+  const expiredSigner = {
+    ...expiredAuthority,
+    privateKey: freshCoulson.privateKey,
+  };
+  const begun = replay([
+    createMissionBegunEntry(data.brief, [plainBinding(expiredAuthority), plainBinding(data.fitz)], 6),
+  ]);
+  const replacement = binding(data.brief, 1, 1);
+  const entry = createRuntimeBindingEntry(
+    begun,
+    replacement,
+    authorizationWithAuthority(
+      expiredSigner,
+      data.brief.missionId,
+      data.brief.subjectId,
+      replacement,
+      1,
+      null,
+      null,
+    ),
+  );
+  assert.equal(entry.state, "invalid");
+  assert.deepEqual(
+    begun.runtimeBindings,
+    [],
+  );
 });
 
 test("binding replay fails closed on tampering, stale sequence, or ambiguous active identity", () => {
