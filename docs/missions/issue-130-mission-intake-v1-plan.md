@@ -2,8 +2,10 @@
 
 ## Status
 
-Proposed exact implementation plan. Awaiting Fury architecture review. This
-artifact authorizes no implementation by itself.
+Revision in progress after Fury returned `REVISE` on
+`32dbb4e90211f98efe9c56e397c03e0b658a19fe`. The revised artifact must return
+to Fury before implementation. This artifact authorizes no implementation by
+itself.
 
 ## Public position
 
@@ -11,6 +13,12 @@ Add one supported package entry point:
 
 ```text
 @shield/team-system/intake
+```
+
+Freeze the public function symbol as:
+
+```ts
+missionIntakeV1(request: MissionIntakeRequestV1): MissionIntakeResultV1
 ```
 
 The runtime source should be a new cohesive module:
@@ -36,7 +44,32 @@ MISSION_INTAKE_CONTRACT_VERSION = "mission.intake.v1"
 interface MissionIntakeRequestV1 {
   schemaVersion: 1;
   contractVersion: "mission.intake.v1";
-  config: unknown;
+  configObservation:
+    | {
+        source: "repository_file";
+        observationState: "observed";
+        assuranceKind: "host_asserted";
+        observedAt: string;
+        sourceRef: string;
+        repositoryRevision: string;
+        config: unknown;
+      }
+    | {
+        source: "bootstrap_input";
+        observationState: "provided_not_repository_observed";
+        assuranceKind: "human_recorded";
+        observedAt: string;
+        sourceRef: string;
+        config: unknown;
+      }
+    | {
+        source: "repository_file";
+        observationState: "missing";
+        assuranceKind: "host_asserted";
+        observedAt: string;
+        sourceRef: string;
+        repositoryRevision: string;
+      };
   repositoryObservation: {
     assuranceKind: "host_asserted";
     repositoryId: string;
@@ -50,6 +83,7 @@ interface MissionIntakeRequestV1 {
     assuranceKind: "host_asserted";
     issueId: string;
     issueRevisionId: string;
+    observedAt: string;
     sourceRef: string;
   };
   proposedBrief: {
@@ -66,9 +100,21 @@ interface MissionIntakeRequestV1 {
   };
   recommendedModes: unknown;
   artifacts: {
-    missionBriefPath: string;
-    missionCommunicationPath: string;
-    sharedRuntimeInstructionsPath: string;
+    missionBrief: {
+      path: string;
+      repositoryRevision: string;
+      verification: "content_unverified";
+    };
+    missionCommunication: {
+      path: string;
+      repositoryRevision: string;
+      verification: "content_unverified";
+    };
+    sharedRuntimeInstructions: {
+      path: string;
+      repositoryRevision: string;
+      verification: "content_unverified";
+    };
   };
   runtimeObservations: unknown;
 }
@@ -79,16 +125,27 @@ duplicate, malformed, or oversized fields fail closed. V1 accepts no callback,
 filesystem path root, executable, model client, tool implementation, adapter,
 or persistence function.
 
+Before any existing constructor or evaluator reads request data, v1 performs
+descriptor-safe normalization. It rejects accessors, hostile proxies, sparse
+arrays, symbols, non-plain prototypes, and extra array properties. A malformed
+risk object maps to `INVALID_RISK_FLAGS`, not to a high-risk candidate.
+
+`proposedBrief.subjectId` must exactly equal `issueObservation.issueId`.
+Every artifact `repositoryRevision` must exactly equal
+`repositoryObservation.headRevision`. Repository, issue, configuration, and
+artifact assertion provenance is preserved in the result.
+
 ## Reused package behavior
 
-The implementation calls:
+After descriptor-safe normalization, the implementation calls:
 
-1. `validateShieldConfig(request.config)`;
-2. `classifyMissionRisk(request.proposedBrief.riskFlags)`;
-3. `createSupervisedMissionBrief(...)` with:
+1. `validateShieldConfig(request.configObservation.config)` when configuration
+   was supplied;
+2. `createSupervisedMissionBrief(...)` with:
    - validated participant identifiers;
    - `activatedModes: []`;
-4. `validateSupervisedMissionBrief(...)` on the created value;
+3. `validateSupervisedMissionBrief(...)` on the created value;
+4. `classifyMissionRisk(...)` on the structurally validated brief risk flags;
 5. `createEvidenceRequirements(...)` on the validated brief.
 
 It must not duplicate those functions' schema, canonicalization, digest,
@@ -164,6 +221,9 @@ human reports remain unverified.
   contractVersion: "mission.intake.v1";
   authority: "non_authoritative";
   persistence: "not_persisted";
+  repositoryObservation: RepositoryObservationV1;
+  issueObservation: IssueObservationV1;
+  configObservation: ConfigObservationV1;
   brief: SupervisedMissionBrief;
   risk: RiskAssessment;
   requirements: EvidenceRequirement[];
@@ -180,7 +240,8 @@ human reports remain unverified.
   };
   runtimeObservations: RuntimeObservationV1[];
   blockers: MissionIntakeBlockerV1[];
-  nextAction: "await_coulson" | "initialize_journal";
+  pendingHumanGates: HumanGatePreviewV1[];
+  nextAction: "provision_repository" | "initialize_journal";
 }
 ```
 
@@ -194,7 +255,7 @@ human reports remain unverified.
   authority: "none";
   persistence: "not_persisted";
   reasonCodes: MissionIntakeReasonCodeV1[];
-  nextAction: "repair_intake";
+  nextAction: "repair_intake" | "provision_repository";
 }
 ```
 
@@ -204,6 +265,7 @@ The first closed set:
 
 - `INVALID_REQUEST`
 - `INVALID_CONFIG`
+- `REPOSITORY_CONFIG_NOT_OBSERVED`
 - `REPOSITORY_BINDING_MISMATCH`
 - `INVALID_REPOSITORY_OBSERVATION`
 - `INVALID_ISSUE_OBSERVATION`
@@ -222,7 +284,16 @@ exception text.
 
 ## Persistence boundary
 
-V1 is pure and returns `candidate` only. It does not initialize the journal.
+V1 is pure and returns either `candidate` or `blocked`. It does not initialize
+the journal.
+
+Repository-observed valid configuration produces no configuration blocker. An
+explicitly labelled bootstrap configuration may produce a candidate, but the
+candidate retains `provided_not_repository_observed`, includes
+`REPOSITORY_CONFIG_NOT_OBSERVED`, and returns
+`nextAction: "provision_repository"`. Missing configuration returns a blocked
+result with the same next action. A bootstrap value never masquerades as
+repository configuration.
 
 A later host orchestration step may:
 
@@ -235,6 +306,10 @@ A later host orchestration step may:
 
 Keeping persistence outside v1 prevents a partially failed intake from
 claiming authority or durable mission state.
+
+`pendingHumanGates` is only a preview before this readback. `await_coulson` may
+become an authoritative runtime action only after a verified journal replay
+establishes that requirement.
 
 ## CLI
 
@@ -252,6 +327,13 @@ Focused tests must prove:
   fails closed;
 - incomplete or unknown risk flags fail closed through existing policy;
 - repository observation/config mismatch fails closed;
+- repository, issue, configuration, and artifact provenance is retained;
+- issue observation requires `observedAt`;
+- brief subject exactly matches the observed issue identifier;
+- every artifact reference is bound to the observed repository HEAD;
+- bootstrap configuration remains visibly non-repository-observed and creates
+  a provisioning blocker;
+- missing repository configuration blocks with `provision_repository`;
 - unsupported or non-participant mode recommendation fails closed;
 - recommended modes never become activated modes;
 - Coulson/Fitz/conditional Simmons are returned as human gates;
@@ -271,7 +353,7 @@ Issue #130 input fixture bound to:
 - the exact implementation HEAD supplied by the host at run time;
 - Issue #130's host-observed revision/source reference;
 - complete risk flags with `hillHighRisk: true`;
-- participants Hill, Daisy, Fury, May, Mack, Coulson, and Fitz;
+- participants Hill, Daisy, Fury, May, Coulson, and Fitz;
 - Delivery Mode recommended for Hill but not activated;
 - the Mission Brief, mission communication file, and shared runtime
   instruction references;
@@ -281,8 +363,28 @@ Expected result:
 
 - `candidate`;
 - explicit approval required;
-- `nextAction: "await_coulson"`;
+- configuration provenance
+  `provided_not_repository_observed`;
+- blocker `REPOSITORY_CONFIG_NOT_OBSERVED`;
+- non-authoritative human-gate preview;
+- `nextAction: "provision_repository"`;
 - no journal, dispatch, execution, or publication claim.
+
+Mack validation remains an independent validation capability outside the v1
+participant fixture. Making Mack a configured, dispatchable mission seat is a
+separate unresolved human decision.
+
+## Relationship to Issue #130 completion
+
+This slice is milestone one, not the canonical mission runtime promised by
+Issue #130. Successful dogfooding proves only that executable package behavior
+participated in intake and produced an evidence-bound starting packet.
+
+A later milestone must still compose durable journal initialization/readback,
+derive the next authoritative action, dispatch the eligible seat, authorize
+effects, append results, and stop at a human gate. Until that exists,
+`dispatchFury()` and its await boundary remain host/bootstrap behavior rather
+than S.H.I.E.L.D. package runtime enforcement.
 
 ## Stop conditions
 

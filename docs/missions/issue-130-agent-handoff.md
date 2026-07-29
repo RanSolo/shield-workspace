@@ -21,6 +21,8 @@ specialists return bounded findings rather than rewriting this file directly.
   `docs/missions/issue-130-mission-intake-api-audit.md`
 - Proposed intake v1 plan:
   `docs/missions/issue-130-mission-intake-v1-plan.md`
+- Fury intake v1 review:
+  `docs/missions/issue-130-fury-intake-v1-review.md`
 - Shared runtime instructions:
   `docs/missions/issue-130-shared-runtime-instructions.md`
 
@@ -50,7 +52,9 @@ externally.
 manual bootstrap intake
 → package API candidate audit
 → missionIntake v1 contract
-→ Fury architecture gate
+→ advisory Fury review: REVISE
+→ Hill contract corrections
+→ Fury re-review
 → bounded implementation
 → self-intake of Issue #130
 → report runtime participation and remaining workarounds
@@ -98,7 +102,7 @@ communication or review-publication authority.
 | `missionIntake(...)` execution | not yet available | none |
 | SHIELD journal initialization | blocked: repository not initialized | none |
 | Daisy or May runtime dispatch | not performed | none |
-| Fury architecture verdict | not performed | none |
+| Fury architecture verdict | advisory Fury review through direct host subagent dispatch/await; not a formal journaled gate | `docs/missions/issue-130-fury-intake-v1-review.md` |
 | Draft PR Mission Workspace publication | not performed | none |
 
 ## Breadcrumb log
@@ -151,6 +155,21 @@ communication or review-publication authority.
 - Current gate: Fury architecture review.
 - Enforcement: plan artifact only.
 - Runtime proof: none until the public function is implemented and dogfooded.
+
+### Fury architecture review — `REVISE`
+
+- Reviewed exact revision:
+  `32dbb4e90211f98efe9c56e397c03e0b658a19fe`.
+- Dispatch and await mechanism: direct host subagent tools.
+- Package runtime proof: none; neither `dispatchFury()` nor a canonical mission
+  orchestration function currently exists.
+- Required corrections: preserve repository/issue/configuration provenance;
+  bind artifacts to HEAD; remove Mack from the v1 participant fixture; validate
+  structure before risk classification; provision repository/journal before
+  claiming an authoritative human wait; classify intake as milestone one; and
+  freeze the public symbol.
+- Current route: Hill revises the exact contract, commits it, and returns the
+  new revision to Fury.
 
 ## Reported environment observation
 
