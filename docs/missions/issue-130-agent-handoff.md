@@ -25,6 +25,8 @@ specialists return bounded findings rather than rewriting this file directly.
   `docs/missions/issue-130-fury-intake-v1-review.md`
 - Shared runtime instructions:
   `docs/missions/issue-130-shared-runtime-instructions.md`
+- Intake v1 dogfood result:
+  `docs/missions/issue-130-mission-intake-v1-result.json`
 
 The trusted host must supply the current exact repository revision at each
 dispatch. This file must not be used to infer that mutable value.
@@ -100,7 +102,7 @@ communication or review-publication authority.
 | Intake API candidate audit | prompt-directed bootstrap workaround using direct repository reads | repository audit file |
 | Shared runtime instruction preservation | human-directed bootstrap input | repository file |
 | PR #129 base integration | framework code merged by human; incorporated through direct Git | merge `68defc3fed912dda663d00438ce68c249fe39d5c` |
-| `missionIntake(...)` execution | not yet available | none |
+| `missionIntakeV1(...)` execution | package runtime executed against Issue #130 at exact implementation revision | `docs/missions/issue-130-mission-intake-v1-result.json` |
 | SHIELD journal initialization | blocked: repository not initialized | none |
 | Daisy or May runtime dispatch | not performed | none |
 | Fury architecture verdict | advisory Fury review through direct host subagent dispatch/await; not a formal journaled gate | `docs/missions/issue-130-fury-intake-v1-review.md` |
@@ -224,6 +226,31 @@ communication or review-publication authority.
 - Current route: implement the pure package function and public subpath, run
   focused and full package validation, commit an exact implementation revision,
   invoke that revision against Issue #130, record the result, and stop.
+
+### `missionIntakeV1(...)` implementation and dogfood
+
+- Exact implementation revision:
+  `da6837a06f17f1335900f12d2c2cf3df01b99cc3`.
+- Public package subpath: `@shield/team-system/intake`.
+- Validation: focused intake and package-surface tests passed 14/14; the full
+  package suite passed 334/334.
+- Invocation: the committed package function was called with host observations
+  for Issue #130.
+- Result: `candidate`, `non_authoritative`, `not_persisted`.
+- Framework-produced behavior:
+  - constructed and validated the canonical supervised brief;
+  - classified `hillHighRisk` as requiring explicit approval;
+  - created Coulson and Fitz evidence requirements;
+  - kept Delivery Mode recommended but inactive;
+  - projected Coulson and Fitz as non-authoritative human-gate previews;
+  - preserved May and Daisy health as `human_reported_unverified`;
+  - retained repository, issue, configuration, and artifact provenance;
+  - exposed missing repository-observed configuration as a blocker.
+- Next action: `provision_repository`.
+- No journal, dispatch, tool, adapter, publication, PR, merge, Fitz review,
+  deployment, or release occurred.
+- Runtime proof: yes, limited to executable intake participation.
+- Canonical mission-loop proof: no.
 
 ## Reported environment observation
 

@@ -1,0 +1,244 @@
+{
+  "state": "candidate",
+  "schemaVersion": 1,
+  "contractVersion": "mission.intake.v1",
+  "authority": "non_authoritative",
+  "persistence": "not_persisted",
+  "repositoryObservation": {
+    "assuranceKind": "host_asserted",
+    "repositoryId": "RanSolo/shield-workspace",
+    "branch": "codex/issue-130-canonical-mission-runtime",
+    "baseRevision": "68defc3fed912dda663d00438ce68c249fe39d5c",
+    "headRevision": "da6837a06f17f1335900f12d2c2cf3df01b99cc3",
+    "observedAt": "2026-07-29T14:21:32Z",
+    "sourceRef": "git:working-tree"
+  },
+  "issueObservation": {
+    "assuranceKind": "host_asserted",
+    "issueId": "github:RanSolo/shield-workspace/issue/130",
+    "issueRevisionId": "issue-comment:5118852576",
+    "observedAt": "2026-07-29T14:21:32Z",
+    "sourceRef": "https://github.com/RanSolo/shield-workspace/issues/130"
+  },
+  "configObservation": {
+    "source": "bootstrap_input",
+    "observationState": "provided_not_repository_observed",
+    "assuranceKind": "human_recorded",
+    "observedAt": "2026-07-29T14:21:32Z",
+    "sourceRef": "session:issue-130-bootstrap",
+    "config": {
+      "schemaVersion": 1,
+      "repositoryId": "RanSolo/shield-workspace",
+      "adapterId": "github",
+      "supportedSeatIds": [
+        "hill",
+        "daisy",
+        "fury",
+        "may",
+        "coulson",
+        "fitz",
+        "simmons"
+      ],
+      "supportedModeIds": [
+        "delivery",
+        "debugger"
+      ],
+      "trustedHumanBindingRefs": [
+        {
+          "seatId": "coulson",
+          "bindingRef": "binding:coulson"
+        },
+        {
+          "seatId": "fitz",
+          "bindingRef": "binding:fitz"
+        }
+      ],
+      "paths": {
+        "journals": ".shield/journals",
+        "artifacts": ".shield/artifacts",
+        "reports": ".shield/reports",
+        "temp": ".shield/tmp"
+      }
+    }
+  },
+  "brief": {
+    "schemaVersion": 1,
+    "missionId": "mission:issue-130",
+    "objective": "Implement and dogfood missionIntakeV1 at the Fury-approved bounded scope.",
+    "subjectId": "github:RanSolo/shield-workspace/issue/130",
+    "riskFlags": {
+      "production": false,
+      "destructive": false,
+      "migration": false,
+      "credentialsOrSecurity": false,
+      "externalCommunication": false,
+      "merge": false,
+      "deploy": false,
+      "release": false,
+      "hillHighRisk": true
+    },
+    "participants": [
+      {
+        "seatId": "hill"
+      },
+      {
+        "seatId": "daisy"
+      },
+      {
+        "seatId": "fury"
+      },
+      {
+        "seatId": "may"
+      },
+      {
+        "seatId": "coulson"
+      },
+      {
+        "seatId": "fitz"
+      }
+    ],
+    "activatedModes": [],
+    "requireSimmons": false,
+    "createdAt": {
+      "value": "2026-07-29T13:46:50Z",
+      "provenance": "humanRecorded"
+    },
+    "revisionId": "sha256:O4Cmf5kUC7cXMgJ5FZZw1Ho8KUJupLmAF3W78drNfiI"
+  },
+  "risk": {
+    "level": "high",
+    "requiresExplicitApproval": true,
+    "reasons": [
+      "Flag \"hillHighRisk\" is enabled."
+    ]
+  },
+  "requirements": [
+    {
+      "schemaVersion": 1,
+      "missionId": "mission:issue-130",
+      "subjectKind": "mission_plan",
+      "subjectId": "github:RanSolo/shield-workspace/issue/130",
+      "revisionId": "sha256:O4Cmf5kUC7cXMgJ5FZZw1Ho8KUJupLmAF3W78drNfiI",
+      "createdAtSequence": 0,
+      "supersedesRequirementId": null,
+      "requirementId": "req:mission:issue-130:sha256:O4Cmf5kUC7cXMgJ5FZZw1Ho8KUJupLmAF3W78drNfiI:mission_authorization",
+      "requiredSeatId": "coulson",
+      "evidenceKind": "mission_authorization",
+      "allowedDecisions": [
+        "approved",
+        "paused",
+        "resumed",
+        "cancelled"
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "missionId": "mission:issue-130",
+      "subjectKind": "mission_plan",
+      "subjectId": "github:RanSolo/shield-workspace/issue/130",
+      "revisionId": "sha256:O4Cmf5kUC7cXMgJ5FZZw1Ho8KUJupLmAF3W78drNfiI",
+      "createdAtSequence": 0,
+      "supersedesRequirementId": null,
+      "requirementId": "req:mission:issue-130:sha256:O4Cmf5kUC7cXMgJ5FZZw1Ho8KUJupLmAF3W78drNfiI:technical_review",
+      "requiredSeatId": "fitz",
+      "evidenceKind": "technical_review",
+      "allowedDecisions": [
+        "approved",
+        "changes_requested",
+        "rejected"
+      ]
+    }
+  ],
+  "recommendedModes": [
+    {
+      "modeId": "delivery",
+      "seatId": "hill",
+      "reason": "Coordinate the bounded implementation and evidence.",
+      "source": "hill_recommended"
+    }
+  ],
+  "modeActivationState": "unsupported_after_approval",
+  "participants": [
+    {
+      "seatId": "hill",
+      "kind": "dispatchable_seat"
+    },
+    {
+      "seatId": "daisy",
+      "kind": "dispatchable_seat"
+    },
+    {
+      "seatId": "fury",
+      "kind": "dispatchable_seat"
+    },
+    {
+      "seatId": "may",
+      "kind": "dispatchable_seat"
+    },
+    {
+      "seatId": "coulson",
+      "kind": "human_gate"
+    },
+    {
+      "seatId": "fitz",
+      "kind": "human_gate"
+    }
+  ],
+  "seatGateEnforcement": "derived_not_schema_enforced",
+  "artifacts": {
+    "missionBrief": {
+      "path": "docs/missions/issue-130-canonical-mission-runtime.md",
+      "repositoryRevision": "da6837a06f17f1335900f12d2c2cf3df01b99cc3",
+      "verification": "content_unverified"
+    },
+    "missionCommunication": {
+      "path": "docs/missions/issue-130-agent-handoff.md",
+      "repositoryRevision": "da6837a06f17f1335900f12d2c2cf3df01b99cc3",
+      "verification": "content_unverified"
+    },
+    "sharedRuntimeInstructions": {
+      "path": "docs/missions/issue-130-shared-runtime-instructions.md",
+      "repositoryRevision": "da6837a06f17f1335900f12d2c2cf3df01b99cc3",
+      "verification": "content_unverified"
+    }
+  },
+  "communication": {
+    "missionFile": "file_backed_unverified",
+    "journal": "journal_not_initialized",
+    "missionWorkspace": "mission_workspace_not_created",
+    "external": "communication_not_configured"
+  },
+  "runtimeObservations": [
+    {
+      "seatId": "may",
+      "status": "human_reported_unverified",
+      "observedAt": "2026-07-28T23:59:00Z",
+      "runtimeId": null,
+      "evidenceRefs": []
+    },
+    {
+      "seatId": "daisy",
+      "status": "human_reported_unverified",
+      "observedAt": "2026-07-28T23:59:00Z",
+      "runtimeId": null,
+      "evidenceRefs": []
+    }
+  ],
+  "blockers": [
+    {
+      "code": "REPOSITORY_CONFIG_NOT_OBSERVED",
+      "path": "configObservation"
+    }
+  ],
+  "pendingHumanGates": [
+    {
+      "seatId": "coulson",
+      "status": "pending_non_authoritative_preview"
+    },
+    {
+      "seatId": "fitz",
+      "status": "pending_non_authoritative_preview"
+    }
+  ],
+  "nextAction": "provision_repository"
+}
