@@ -1,8 +1,8 @@
 import {
   validateReviewPublicationAuthorityV1,
   validateReviewPublicationEvidenceV1,
-  type ReviewPublicationAuthorityV1,
   type ReviewPublicationBindingV1,
+  type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
 
 export const ADAPTER_CONTRACT_VERSION = 1 as const;
@@ -151,7 +151,9 @@ export interface ReviewPublicationCommunicationRequestPayload {
   revisionId: string;
   artifactRevisionId: string;
   targetRef: string;
-  publicationAuthority: ReviewPublicationAuthorityV1;
+  publicationAuthorizationId: string;
+  proposedChangedPaths: string[];
+  requestedEffects: ReviewPublicationEffect[];
 }
 export type AnyCommunicationRequestPayload =
   | CommunicationRequestPayload
@@ -209,7 +211,7 @@ function humanEvidenceIdentity(value: unknown): AdapterResult<AdapterCandidateId
 export function validateCommunicationRequest(input: unknown): AdapterResult<AnyCommunicationRequestPayload> {
   const fields = input !== null && typeof input === "object" &&
       !Array.isArray(input) && (input as Record<string, unknown>).adapterContractVersion === 2
-    ? ["requestId","adapterContractVersion","adapterId","operation","missionId","subjectId","revisionId","artifactRevisionId","targetRef","publicationAuthority"]
+    ? ["requestId","adapterContractVersion","adapterId","operation","missionId","subjectId","revisionId","artifactRevisionId","targetRef","publicationAuthorizationId","proposedChangedPaths","requestedEffects"]
     : ["requestId","adapterContractVersion","adapterId","operation","missionId","subjectId","revisionId","artifactRevisionId","targetRef"];
   const errors = exact(input, fields, "Communication request"); if (!plain(input)) return invalid("malformed", ...errors);
   if (input.adapterContractVersion !== 1 && input.adapterContractVersion !== 2) errors.push("Communication request adapterContractVersion is unsupported.");
@@ -221,14 +223,27 @@ export function validateCommunicationRequest(input: unknown): AdapterResult<AnyC
     if (typeof revision !== "string" || !IMMUTABLE_REVISION.test(revision)) errors.push(`Communication request ${field} must be immutable.`);
   }
   if (input.adapterContractVersion === 2) {
-    const authority = validateReviewPublicationAuthorityV1(input.publicationAuthority);
-    if (authority.state === "blocked") {
-      errors.push(`Communication request publication authority is invalid: ${authority.reasonCode}.`);
-    } else if (authority.value.missionId !== input.missionId ||
-        authority.value.subjectId !== input.subjectId ||
-        authority.value.missionRevisionId !== input.revisionId ||
-        authority.value.headRevisionId !== input.artifactRevisionId) {
-      errors.push("Communication request publication authority does not match request identity.");
+    if (!identifier(input.publicationAuthorizationId)) {
+      errors.push("Communication request publicationAuthorizationId is invalid.");
+    }
+    const scope = validateReviewPublicationAuthorityV1({
+      publicationScopeSchemaVersion: 1,
+      contractVersion: "review-publication.v1",
+      authorityKind: "review.publish",
+      authorityRef: input.publicationAuthorizationId,
+      missionId: input.missionId,
+      subjectId: input.subjectId,
+      missionRevisionId: input.revisionId,
+      repositoryId: "validation/placeholder",
+      canonicalRepositoryRoot: "/validation",
+      branch: "validation",
+      baseRevisionId: "1111111111111111111111111111111111111111",
+      headRevisionId: input.artifactRevisionId,
+      authorizedPaths: input.proposedChangedPaths,
+      permittedEffects: input.requestedEffects,
+    });
+    if (scope.state === "blocked") {
+      errors.push(`Communication request publication scope is invalid: ${scope.reasonCode}.`);
     }
   }
   return errors.length ? invalid("malformed", ...errors) : valid(input as unknown as AnyCommunicationRequestPayload);

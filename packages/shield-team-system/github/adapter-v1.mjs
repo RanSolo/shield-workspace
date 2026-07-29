@@ -1,13 +1,11 @@
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
-import {
-  validateAdapterCandidate,
-  validateCommunicationRequest,
-} from "../dist/adapter-v1.mjs";
+import { validateAdapterCandidate } from "../dist/adapter-v1.mjs";
 import {
   createOrUpdatePR,
   defaultRun,
   evaluatePRPublicationScope,
 } from "./pr-workspace.mjs";
+import { resolveJournaledPublicationRequest } from "./publication-gate.mjs";
 
 const FAILURE_REASONS = new Set([
   "adapter_unavailable",
@@ -118,40 +116,18 @@ function checkedCandidate(candidate, commands) {
     : blocked("invalid_result_candidate", commands);
 }
 
-function validateJournaledRequest(entry) {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
-      (entry.schemaVersion !== 4 && entry.schemaVersion !== 8) || entry.type !== "communication.requested" ||
-      !entry.payload || typeof entry.payload !== "object" || Array.isArray(entry.payload)) {
-    return { state: "invalid", reason: "journaled_request_required" };
-  }
-  const entryFields = ["schemaVersion", "entryId", "missionId", "sequence", "type", "timestamp", "payload"];
-  const payloadFields = ["request"];
-  if (Object.keys(entry).length !== entryFields.length || entryFields.some((field) => !Object.hasOwn(entry, field)) ||
-      Object.keys(entry.payload).length !== payloadFields.length || payloadFields.some((field) => !Object.hasOwn(entry.payload, field)) ||
-      !Number.isInteger(entry.sequence) || entry.sequence < 1 ||
-      entry.entryId !== `entry:${entry.missionId}:${entry.sequence}` ||
-      !entry.timestamp || typeof entry.timestamp !== "object" || Array.isArray(entry.timestamp)) {
-    return { state: "invalid", reason: "journaled_request_required" };
-  }
-  const checked = validateCommunicationRequest(entry.payload.request);
-  if (checked.state === "invalid") return { state: "invalid", reason: "invalid_communication_request" };
-  if (entry.schemaVersion === 8 ? checked.value.adapterContractVersion !== 2 : checked.value.adapterContractVersion !== 1) {
-    return { state: "invalid", reason: "journaled_request_adapter_mismatch" };
-  }
-  if (entry.missionId !== checked.value.missionId) return { state: "invalid", reason: "journaled_request_mission_mismatch" };
-  return { state: "valid", request: checked.value };
-}
-
 /**
- * Performs one bounded GitHub delivery for an already journaled v4 request.
+ * Performs one bounded GitHub delivery for an exact queued request selected
+ * from a fully replayed durable v8 journal.
  * It never decides authority, evidence satisfaction, readiness, or completion.
  */
-export function deliverGitHubCommunication(journaledRequest, publication, options = {}) {
-  const checked = validateJournaledRequest(journaledRequest);
-  if (checked.state === "invalid") return blocked(checked.reason);
-  const request = checked.request;
+export function deliverGitHubCommunication(publicationRequestId, publication, options = {}) {
+  const resolved = resolveJournaledPublicationRequest(publicationRequestId, {
+    loadJournal: options.loadJournal,
+  });
+  if (resolved.state !== "allowed") return blocked(resolved.reason);
+  const request = resolved.request;
   if (request.adapterId !== "github") return blocked("github_request_required");
-  if (request.adapterContractVersion !== 2) return blocked("publication_scope_required");
   if (!publication || typeof publication !== "object" || Array.isArray(publication)) return blocked("publication_required");
   if (typeof publication.candidateId !== "string" || typeof publication.sourceRef !== "string" ||
       !publication.capturedAt || typeof publication.capturedAt !== "object") return blocked("publication_identity_required");
@@ -159,25 +135,15 @@ export function deliverGitHubCommunication(journaledRequest, publication, option
   const run = options.run ?? defaultRun;
   const cwd = options.cwd;
   const commands = [];
-  const head = call(run, commands, "git", ["rev-parse", "HEAD"], { cwd });
-  if (head.exitCode !== 0) {
-    return blocked(failureReason(head), commands);
-  }
-  if (head.stdout.trim() !== request.artifactRevisionId) {
-    return blocked("publication_binding_mismatch", commands);
-  }
-
   if (request.operation === "publish_mission_brief") {
     if (!publication.workspacePlan || typeof publication.body !== "string") return blocked("mission_brief_publication_required", commands);
     const published = createOrUpdatePR(publication.workspacePlan, {
       run,
       cwd,
       body: publication.body,
-      publicationScope: {
-        authority: request.publicationAuthority,
-        proposedChangedPaths: publication.proposedChangedPaths,
-        canonicalRepositoryRoot: publication.canonicalRepositoryRoot,
-      },
+      publicationRequestId,
+      loadJournal: options.loadJournal,
+      realpath: options.realpath,
     });
     commands.push(...published.commands);
     if (published.state === "success" || published.state === "reused") {
@@ -193,8 +159,21 @@ export function deliverGitHubCommunication(journaledRequest, publication, option
         commands,
       );
     }
-    const reason = FAILURE_REASONS.has(published.reason) ? published.reason : "host_rejected";
-    return blocked(reason, commands);
+    if (published.publicationScope) {
+      const reason = FAILURE_REASONS.has(published.reason) ? published.reason : "host_rejected";
+      return checkedCandidate(
+        resultCandidate(
+          request,
+          publication,
+          "failed",
+          reason,
+          null,
+          published.publicationScope,
+        ),
+        commands,
+      );
+    }
+    return blocked(published.reason, commands);
   }
 
   if (!Number.isInteger(publication.prNumber) || publication.prNumber < 1 || typeof publication.body !== "string") {
@@ -205,11 +184,14 @@ export function deliverGitHubCommunication(journaledRequest, publication, option
   if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
     return blocked("repository_required", commands);
   }
+  if (JSON.stringify(request.requestedEffects) !== JSON.stringify(["review.comment.publish"])) {
+    return blocked("publication_effect_mismatch", commands);
+  }
   const scope = evaluatePRPublicationScope(
-    request.publicationAuthority,
-    publication.proposedChangedPaths,
-    ["review.comment.publish"],
-    { run, cwd, canonicalRepositoryRoot: publication.canonicalRepositoryRoot },
+    resolved.authority,
+    request.proposedChangedPaths,
+    request.requestedEffects,
+    { run, cwd, realpath: options.realpath },
   );
   commands.push(...scope.commands);
   if (scope.state !== "allowed") return blocked(scope.reason, commands);

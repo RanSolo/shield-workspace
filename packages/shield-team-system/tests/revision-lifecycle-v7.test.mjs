@@ -4,17 +4,23 @@ import test from "node:test";
 import {
   canonicalJson,
   createCommunicationRequestEntry,
+  createCommunicationResultEntry,
   computeEd25519SigningKeyRef,
   createEvidenceEntry,
   createFuryReviewEntry,
   createEvidenceRequirements,
   createGovernanceEntry,
   createMissionBegunEntry,
+  createReviewPublicationAuthorizationEntry,
   createReviewEvidenceRequirements,
   createReviewSubjectSupersessionEntry,
   createSupervisedMissionBrief,
   replaySupervisedMissionJournal,
 } from "../dist/mission-v2.mjs";
+import {
+  computeReviewPublicationAuthorityDigest,
+  evaluateReviewPublicationV1,
+} from "../dist/review-publication-v1.mjs";
 
 function binding(seatId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -401,6 +407,65 @@ test("v8 preserves the v7 review lifecycle and requires publication-bound adapte
   assert.equal(projection.journalSchemaVersion, 8);
   assert.deepEqual(projection.reviewSubject, data.reviewSubject);
 
+  const publicationAuthority = {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: "authorization:issue-113",
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    repositoryId: "RanSolo/shield-workspace",
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    branch: "codex/issue-113-review-publish-scope",
+    baseRevisionId: "1111111111111111111111111111111111111111",
+    headRevisionId: "2222222222222222222222222222222222222222",
+    authorizedPaths: ["docs/missions/issue-113-review.md"],
+    permittedEffects: ["review.comment.publish"],
+  };
+  const authorizationPayload = {
+    schemaVersion: 1,
+    authorizationId: publicationAuthority.authorityRef,
+    authorityDigest: computeReviewPublicationAuthorityDigest(publicationAuthority),
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    artifactRevisionId: publicationAuthority.headRevisionId,
+    authorityKind: "review.publish",
+    previousJournalSequence: projection.lastSequence,
+    journalSequence: projection.lastSequence + 1,
+    humanPrincipalId: data.coulson.binding.humanPrincipalId,
+    humanBindingId: data.coulson.binding.bindingId,
+    signingKeyRef: data.coulson.binding.signingKeyRef,
+    sourceRef: "github:issue:113:coulson-authorization",
+    timestamp: { value: "2026-07-28T12:01:00Z", provenance: "humanRecorded" },
+  };
+  const publicationAuthorization = createReviewPublicationAuthorizationEntry(
+    projection,
+    publicationAuthority,
+    {
+      payload: authorizationPayload,
+      signatureBase64: sign(
+        null,
+        Buffer.from(canonicalJson(authorizationPayload)),
+        data.coulson.privateKey,
+      ).toString("base64"),
+    },
+  );
+  assert.equal(
+    publicationAuthorization.state,
+    "valid",
+    publicationAuthorization.errors?.join(" "),
+  );
+  const tamperedAuthorization = structuredClone(publicationAuthorization.value);
+  tamperedAuthorization.payload.authorization.signatureBase64 = "tampered";
+  assert.equal(
+    replaySupervisedMissionJournal([...data.entries, tamperedAuthorization]).state,
+    "invalid",
+  );
+  data.entries.push(publicationAuthorization.value);
+  projection = replay(data.entries);
+
   const request = {
     requestId: "request:publication:2",
     adapterContractVersion: 2,
@@ -411,22 +476,9 @@ test("v8 preserves the v7 review lifecycle and requires publication-bound adapte
     revisionId: projection.brief.revisionId,
     artifactRevisionId: "2222222222222222222222222222222222222222",
     targetRef: "github:pr:113",
-    publicationAuthority: {
-      publicationScopeSchemaVersion: 1,
-      contractVersion: "review-publication.v1",
-      authorityKind: "review.publish",
-      authorityRef: "authorization:issue-113",
-      missionId: projection.missionId,
-      subjectId: projection.brief.subjectId,
-      missionRevisionId: projection.brief.revisionId,
-      repositoryId: "RanSolo/shield-workspace",
-      canonicalRepositoryRoot: "/workspace/shield-workspace",
-      branch: "codex/issue-113-review-publish-scope",
-      baseRevisionId: "1111111111111111111111111111111111111111",
-      headRevisionId: "2222222222222222222222222222222222222222",
-      authorizedPaths: ["docs/missions/issue-113-review.md"],
-      permittedEffects: ["review.comment.publish"],
-    },
+    publicationAuthorizationId: publicationAuthority.authorityRef,
+    proposedChangedPaths: publicationAuthority.authorizedPaths,
+    requestedEffects: ["review.comment.publish"],
   };
   const entry = createCommunicationRequestEntry(
     projection,
@@ -435,7 +487,66 @@ test("v8 preserves the v7 review lifecycle and requires publication-bound adapte
   );
   assert.equal(entry.state, "valid", entry.errors?.join(" "));
   data.entries.push(entry.value);
-  assert.equal(replay(data.entries).communication.state, "queued");
+  projection = replay(data.entries);
+  assert.equal(projection.communication.state, "queued");
+
+  const scope = evaluateReviewPublicationV1(publicationAuthority, {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    missionId: publicationAuthority.missionId,
+    subjectId: publicationAuthority.subjectId,
+    missionRevisionId: publicationAuthority.missionRevisionId,
+    repositoryId: publicationAuthority.repositoryId,
+    canonicalRepositoryRoot: publicationAuthority.canonicalRepositoryRoot,
+    branch: publicationAuthority.branch,
+    baseRevisionId: publicationAuthority.baseRevisionId,
+    headRevisionId: publicationAuthority.headRevisionId,
+    proposedChangedPaths: publicationAuthority.authorizedPaths,
+    observedChangedPaths: publicationAuthority.authorizedPaths,
+    requestedEffects: request.requestedEffects,
+    observedSymlinkPaths: [],
+    observedGitlinkPaths: [],
+    workspaceClean: true,
+  });
+  assert.equal(scope.state, "allowed");
+  const resultCandidate = {
+    adapterContractVersion: 2,
+    adapterId: "github",
+    candidateId: "candidate:publication:2",
+    candidateKind: "communication_result",
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    humanPrincipalId: null,
+    bindingId: null,
+    sourceRef: "github:pr:113:comment:2",
+    capturedAt: { value: "2026-07-28T12:03:00Z", provenance: "hostTrusted" },
+    payload: {
+      requestId: request.requestId,
+      outcome: "delivered",
+      failureReason: null,
+      receiptRef: "github:pr:113:comment:2",
+      scopeDigest: scope.scopeDigest,
+      publicationBinding: scope.binding,
+    },
+  };
+  assert.equal(
+    createCommunicationResultEntry(projection, resultCandidate).state,
+    "valid",
+  );
+  assert.equal(
+    createCommunicationResultEntry(projection, {
+      ...resultCandidate,
+      payload: {
+        ...resultCandidate.payload,
+        publicationBinding: {
+          ...resultCandidate.payload.publicationBinding,
+          repositoryId: "RanSolo/other",
+        },
+      },
+    }).code,
+    "malformed",
+  );
 
   assert.equal(
     createCommunicationRequestEntry(

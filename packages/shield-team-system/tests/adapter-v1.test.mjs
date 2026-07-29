@@ -141,11 +141,15 @@ test("adapter v1 validates closed exact-revision requests", () => {
   assert.equal(validateCommunicationRequest(request()).state, "valid");
   assert.equal(validateCommunicationRequest(request({
     adapterContractVersion: 2,
-    publicationAuthority: publicationAuthority(),
+    publicationAuthorizationId: publicationAuthority().authorityRef,
+    proposedChangedPaths: publicationAuthority().authorizedPaths,
+    requestedEffects: ["review.comment.publish"],
   })).state, "valid");
   assert.equal(validateCommunicationRequest(request({
     adapterContractVersion: 2,
-    publicationAuthority: { ...publicationAuthority(), headRevisionId: base },
+    publicationAuthorizationId: publicationAuthority().authorityRef,
+    proposedChangedPaths: publicationAuthority().authorizedPaths,
+    requestedEffects: ["review.comment.publish", "review.deploy"],
   })).state, "invalid");
   assert.equal(validateCommunicationRequest(request({ revisionId: "main" })).state, "invalid");
   assert.equal(validateCommunicationRequest({ ...request(), unexpected: true }).state, "invalid");

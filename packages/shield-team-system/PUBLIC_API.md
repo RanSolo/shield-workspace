@@ -78,9 +78,12 @@ adds separately Coulson-authorized runtime-binding and atomic supersession
 events. Journal v7 preserves those semantics and adds append-only
 repository-artifact revision supersession, exact-revision Fury review records,
 historical/stale review projections, and deterministic routing to the Fitz
-human gate. Journal v8 preserves v7 and requires publication-bound adapter v2
-requests and results for live review publication; historical journals remain
-replayable without authorizing new unscoped effects. Mixed-version journals,
+human gate. Journal v8 preserves v7 and adds Coulson-signed exact publication
+authorizations. Live review publication requires a durable v8 journal, an exact
+queued adapter-v2 request referencing that authorization, full replay before
+effect, and result evidence bound to the same request and scope. Historical
+journals remain replayable without authorizing new unscoped effects.
+Mixed-version journals,
 automatic migration, waivers, a general policy
 DSL and general multi-cycle orchestration remain unsupported. The bounded Daisy
 broker and single-call May executor are supported only through `/local-tools`.

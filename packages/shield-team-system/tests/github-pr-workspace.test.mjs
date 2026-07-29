@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createOrUpdatePR } from "../github/pr-workspace.mjs";
+import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 
 const head = "0123456789012345678901234567890123456789";
 const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -17,31 +18,20 @@ function plan() {
   };
 }
 
-function publicationScope() {
-  return {
-    authority: {
-      publicationScopeSchemaVersion: 1,
-      contractVersion: "review-publication.v1",
-      authorityKind: "review.publish",
-      authorityRef: "authorization:issue-3",
-      missionId: "mission:issue-3",
-      subjectId: "issue:3",
-      missionRevisionId: "sha256:mission-issue-3",
-      repositoryId: "RanSolo/shield-workspace",
-      canonicalRepositoryRoot: "/workspace/shield-workspace",
-      branch: plan().branchSlug,
-      baseRevisionId: base,
-      headRevisionId: head,
-      authorizedPaths: [plan().missionBriefPath],
-      permittedEffects: [
-        "review.branch.push",
-        "review.pull_request.create_draft",
-        "review.pull_request.update_draft",
-      ],
-    },
-    proposedChangedPaths: [plan().missionBriefPath],
-    canonicalRepositoryRoot: "/workspace/shield-workspace",
-  };
+function publicationFixture(action) {
+  return publicationJournalFixture({
+    missionId: "mission:issue-3",
+    subjectId: "issue:3",
+    headRevisionId: head,
+    baseRevisionId: base,
+    branch: plan().branchSlug,
+    authorizedPaths: [plan().missionBriefPath],
+    permittedEffects: [
+      "review.branch.push",
+      `review.pull_request.${action}_draft`,
+    ],
+    operation: "publish_mission_brief",
+  });
 }
 
 function runner(responses) {
@@ -61,11 +51,13 @@ const initialChecks = () => [
   ok(plan().branchSlug), ok(), ok(plan().missionBriefPath), ok(head), ok(head),
 ];
 const scopeChecks = () => [
+  ok("/workspace/shield-workspace"), ok("git@github.com:RanSolo/shield-workspace.git"),
   ok(plan().branchSlug), ok(head), ok(base), ok(),
   ok(`${plan().missionBriefPath}\0`), ok(), ok(),
 ];
 
 test("creates a draft PR and verifies it through GitHub readback", () => {
+  const publication = publicationFixture("create");
   const run = runner([
     ...initialChecks(),
     ok("[]"),
@@ -86,7 +78,9 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
   const result = createOrUpdatePR(plan(), {
     run,
     body: "Mission body",
-    publicationScope: publicationScope(),
+    publicationRequestId: publication.requestId,
+    loadJournal: publication.loadJournal,
+    realpath: (value) => value,
   });
 
   assert.equal(result.state, "success");
@@ -103,6 +97,7 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
 });
 
 test("reuses exactly one open draft PR and updates its body", () => {
+  const publication = publicationFixture("update");
   const existing = [{
     number: 4,
     title: "old title",
@@ -120,13 +115,51 @@ test("reuses exactly one open draft PR and updates its body", () => {
   const result = createOrUpdatePR(plan(), {
     run,
     body: "Updated body",
-    publicationScope: publicationScope(),
+    publicationRequestId: publication.requestId,
+    loadJournal: publication.loadJournal,
+    realpath: (value) => value,
   });
   assert.equal(result.state, "reused");
   assert.equal(result.prNumber, 4);
   assert.deepEqual(run.calls.at(-2).args.slice(0, 4), ["pr", "edit", "4", "--repo"]);
   assert.equal(run.calls.at(-2).options.input, "Updated body");
   assert.equal(result.receipt.prNumber, 4);
+});
+
+test("host-observed repository root and origin must match signed authority", () => {
+  const publication = publicationFixture("create");
+  for (const scopeResponses of [
+    [
+      ok("/other/root"),
+      ok("git@github.com:RanSolo/shield-workspace.git"),
+      ...scopeChecks().slice(2),
+    ],
+    [
+      ok("/workspace/shield-workspace"),
+      ok("git@github.com:RanSolo/other.git"),
+      ...scopeChecks().slice(2),
+    ],
+  ]) {
+    const run = runner([
+      ...initialChecks(),
+      ok("[]"),
+      ...scopeResponses,
+    ]);
+    const result = createOrUpdatePR(plan(), {
+      run,
+      body: "Mission body",
+      publicationRequestId: publication.requestId,
+      loadJournal: publication.loadJournal,
+      realpath: (value) => value,
+    });
+    assert.equal(result.state, "blocked");
+    assert.equal(result.reason, "binding_mismatch");
+    assert.equal(
+      run.calls.some(({ executable, args }) =>
+        executable === "git" && args[0] === "push"),
+      false,
+    );
+  }
 });
 
 test("blocks on unsafe repository state and ambiguous or non-draft PRs", () => {
@@ -147,7 +180,7 @@ test("blocks on unsafe repository state and ambiguous or non-draft PRs", () => {
     assert.equal(createOrUpdatePR(plan(), {
       run,
       body: "body",
-      publicationScope: publicationScope(),
+      realpath: (value) => value,
     }).state, "blocked");
   }
 });
@@ -168,10 +201,13 @@ test("lookup, creation, and readback failures never fabricate a PR URL", () => {
     ],
   ];
   for (const responses of cases) {
+    const publication = publicationFixture("create");
     const result = createOrUpdatePR(plan(), {
       run: runner(responses),
       body: "body",
-      publicationScope: publicationScope(),
+      publicationRequestId: publication.requestId,
+      loadJournal: publication.loadJournal,
+      realpath: (value) => value,
     });
     assert.equal(result.state, "blocked");
     assert.equal(Object.hasOwn(result, "prUrl"), false);

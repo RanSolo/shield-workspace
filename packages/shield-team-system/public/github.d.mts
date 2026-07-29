@@ -3,7 +3,6 @@ import type {
   AdapterTimestamp,
 } from "../dist/adapter-v1.mjs";
 import type {
-  ReviewPublicationAuthorityV1,
   ReviewPublicationBindingV1,
 } from "../dist/review-publication-v1.mjs";
 
@@ -21,16 +20,6 @@ export type CommandRunner = (
   options?: { cwd?: string; input?: string; timeoutMs?: number },
 ) => CommandResult;
 
-export interface JournaledCommunicationRequest {
-  schemaVersion: 4 | 8;
-  entryId: string;
-  missionId: string;
-  sequence: number;
-  type: "communication.requested";
-  timestamp: AdapterTimestamp;
-  payload: { request: unknown };
-}
-
 export interface GitHubPublication {
   candidateId: string;
   sourceRef: string;
@@ -40,7 +29,6 @@ export interface GitHubPublication {
   prNumber?: number;
   workspacePlan?: Record<string, unknown>;
   proposedChangedPaths: string[];
-  canonicalRepositoryRoot: string;
 }
 
 export type GitHubAdapterResult =
@@ -269,9 +257,14 @@ export type DeliveryWorkspaceResult =
     };
 
 export function deliverGitHubCommunication(
-  journaledRequest: JournaledCommunicationRequest,
+  publicationRequestId: string,
   publication: GitHubPublication,
-  options?: { run?: CommandRunner; cwd?: string },
+  options: {
+    loadJournal: () => unknown[];
+    run?: CommandRunner;
+    cwd?: string;
+    realpath?: (path: string) => string;
+  },
 ): GitHubAdapterResult;
 
 export function createGitHubHumanEvidenceCandidate(input: {
@@ -301,13 +294,14 @@ export function prepareDeliveryWorkspaceForDispatch(
     subjectId: string;
     blueprintArtifact: BlueprintArtifactAssertionV1;
     planGate: FuryPlanGateEnvelopeV1 | null;
-    publicationScope: {
-      authority: ReviewPublicationAuthorityV1;
-      proposedChangedPaths: string[];
-      canonicalRepositoryRoot: string;
-    };
+    publicationRequestId: string;
   },
-  options?: { run?: CommandRunner; cwd?: string },
+  options: {
+    loadJournal: () => unknown[];
+    run?: CommandRunner;
+    cwd?: string;
+    realpath?: (path: string) => string;
+  },
 ): DeliveryWorkspaceResult;
 
 export function evaluateFuryPlanGateV1(

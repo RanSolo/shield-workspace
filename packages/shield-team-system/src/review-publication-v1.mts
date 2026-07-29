@@ -253,6 +253,14 @@ function scopeDigestForBinding(binding: ReviewPublicationBindingV1): string {
     .digest("base64url")}`;
 }
 
+export function computeReviewPublicationAuthorityDigest(
+  authority: Readonly<ReviewPublicationAuthorityV1>,
+): string {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(canonical(authority)))
+    .digest("base64url")}`;
+}
+
 function equalSets(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }

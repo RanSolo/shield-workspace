@@ -22,7 +22,8 @@ The Mission Journal is the authoritative record of governance and binding
 state. Journal v2-v5 behavior remains supported without reinterpretation.
 Journal v7 carries the complete v6 runtime-binding contract forward unchanged
 while adding review-revision lifecycle state in the supervision boundary.
-Journal v8 preserves those contracts and adds publication-bound adapter v2
+Journal v8 preserves those contracts and adds Coulson-signed
+`review.publication_authorized` records plus publication-bound adapter v2
 communication records.
 
 ## Per-call enforcement
@@ -42,11 +43,18 @@ authority; all existing exact-match checks remain mandatory.
 ## Review-publication boundary
 
 `@shield/team-system/review-publication` is an additional pure permission input
-for repository review effects. A closed authority names the exact mission,
+for repository review effects. The authority is not caller asserted: a trusted
+Coulson binding signs the exact authority digest into the durable v8 journal.
+A closed authority names the exact mission,
 subject, repository, canonical root, branch, base/head revisions, authorized
 repository-relative paths, and permitted effects. A host observation must
 match those paths exactly and must prove a clean committed workspace without
 authorized-path symlinks or gitlinks before an effect is eligible.
+
+Before any effect, the host adapter loads and fully replays that journal,
+selects exactly one queued adapter-v2 request, and resolves its referenced
+authorization. Standalone requests or caller-created projections cannot
+authorize publication.
 
 `review.publish` and Wheels Up use the same evaluator; Wheels Up does not widen
 the approved paths or effects. The GitHub adapter observes the repository and

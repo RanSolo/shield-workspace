@@ -6,6 +6,7 @@ import {
   evaluateReviewPublicationV1,
   validateReviewPublicationAuthorityV1,
 } from "../dist/review-publication-v1.mjs";
+import { resolveJournaledPublicationRequest } from "./publication-gate.mjs";
 
 const RECEIPT_FIELDS = Object.freeze([
   "schemaVersion",
@@ -84,6 +85,18 @@ function blocked(reason, commands) {
   return { state: "blocked", reason, commands };
 }
 
+function blockedAfterScope(reason, commands, scope) {
+  return {
+    state: "blocked",
+    reason,
+    publicationScope: {
+      scopeDigest: scope.scopeDigest,
+      binding: scope.binding,
+    },
+    commands,
+  };
+}
+
 function call(run, commands, executable, args, options) {
   let result;
   try {
@@ -123,6 +136,13 @@ function treePathKinds(value) {
   return { symlinks, gitlinks };
 }
 
+function repositoryIdFromRemote(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().replace(/\.git$/u, "");
+  const match = /^(?:git@github\.com:|https:\/\/github\.com\/)(?<repository>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/u.exec(trimmed);
+  return match?.groups?.repository ?? null;
+}
+
 /**
  * Observes one committed base-to-head change set and evaluates the shared,
  * host-neutral review-publication contract before any repository mutation.
@@ -141,10 +161,19 @@ export function evaluatePRPublicationScope(
   const authority = checked.value;
   const run = options.run ?? defaultRun;
   const cwd = options.cwd;
+  const rootResult = call(run, commands, "git", ["rev-parse", "--show-toplevel"], { cwd });
+  const remoteResult = call(run, commands, "git", ["remote", "get-url", "origin"], { cwd });
+  if (rootResult.exitCode !== 0 || remoteResult.exitCode !== 0) {
+    return { state: "blocked", reason: "observation_failed", scopeDigest: null, commands };
+  }
   let canonicalRepositoryRoot;
   try {
-    canonicalRepositoryRoot = options.canonicalRepositoryRoot ?? realpathSync(cwd ?? process.cwd());
+    canonicalRepositoryRoot = (options.realpath ?? realpathSync)(rootResult.stdout.trim());
   } catch {
+    return { state: "blocked", reason: "observation_failed", scopeDigest: null, commands };
+  }
+  const repositoryId = repositoryIdFromRemote(remoteResult.stdout);
+  if (repositoryId === null) {
     return { state: "blocked", reason: "observation_failed", scopeDigest: null, commands };
   }
   const branch = call(run, commands, "git", ["branch", "--show-current"], { cwd });
@@ -189,7 +218,7 @@ export function evaluatePRPublicationScope(
     missionId: authority.missionId,
     subjectId: authority.subjectId,
     missionRevisionId: authority.missionRevisionId,
-    repositoryId: authority.repositoryId,
+    repositoryId,
     canonicalRepositoryRoot,
     branch: branch.stdout.trim(),
     baseRevisionId: base.stdout.trim(),
@@ -328,24 +357,29 @@ export function createOrUpdatePR(plan, options = {}) {
   if (lookup.pr !== null && lookup.pr.isDraft !== true) {
     return blocked("matching_pr_is_not_draft", commands);
   }
-  const publicationScope = options.publicationScope;
-  if (!isPlainObject(publicationScope) || !Array.isArray(publicationScope.proposedChangedPaths)) {
-    return blocked("publication_scope_required", commands);
-  }
+  const publication = resolveJournaledPublicationRequest(
+    options.publicationRequestId,
+    { loadJournal: options.loadJournal },
+  );
+  if (publication.state !== "allowed") return blocked(publication.reason, commands);
   const requestedEffects = [
     "review.branch.push",
     lookup.pr === null
       ? "review.pull_request.create_draft"
       : "review.pull_request.update_draft",
   ].sort();
+  if (JSON.stringify(requestedEffects) !== JSON.stringify(publication.request.requestedEffects) ||
+      publication.request.operation !== "publish_mission_brief") {
+    return blocked("publication_effect_mismatch", commands);
+  }
   const scope = evaluatePRPublicationScope(
-    publicationScope.authority,
-    publicationScope.proposedChangedPaths,
+    publication.authority,
+    publication.request.proposedChangedPaths,
     requestedEffects,
     {
       run,
       cwd,
-      canonicalRepositoryRoot: publicationScope.canonicalRepositoryRoot,
+      realpath: options.realpath,
     },
   );
   commands.push(...scope.commands);
@@ -357,7 +391,7 @@ export function createOrUpdatePR(plan, options = {}) {
   }
 
   const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
-  if (push.exitCode !== 0) return blocked("branch_push_failed", commands);
+  if (push.exitCode !== 0) return blockedAfterScope("branch_push_failed", commands, scope);
 
   if (lookup.pr === null) {
     const created = call(
@@ -371,15 +405,17 @@ export function createOrUpdatePR(plan, options = {}) {
       ],
       { cwd, input: body },
     );
-    if (created.exitCode !== 0) return blocked("pr_create_failed", commands);
+    if (created.exitCode !== 0) return blockedAfterScope("pr_create_failed", commands, scope);
 
     const verified = readMatchingPRs(run, commands, plan, cwd);
-    if (verified.state === "error") return blocked(verified.reason, commands);
+    if (verified.state === "error") {
+      return blockedAfterScope(verified.reason, commands, scope);
+    }
     const receipt = verified.state === "ok"
       ? verifiedReceipt(plan, artifactRevisionId, verified.pr)
       : { state: "invalid" };
     if (receipt.state !== "valid") {
-      return blocked("created_pr_failed_readback", commands);
+      return blockedAfterScope("created_pr_failed_readback", commands, scope);
     }
     return {
       state: "success",
@@ -406,12 +442,14 @@ export function createOrUpdatePR(plan, options = {}) {
     ],
     { cwd, input: body },
   );
-  if (edited.exitCode !== 0) return blocked("pr_update_failed", commands);
+  if (edited.exitCode !== 0) return blockedAfterScope("pr_update_failed", commands, scope);
   const verified = readMatchingPRs(run, commands, plan, cwd);
-  if (verified.state === "error") return blocked(verified.reason, commands);
+  if (verified.state === "error") {
+    return blockedAfterScope(verified.reason, commands, scope);
+  }
   const receipt = verifiedReceipt(plan, artifactRevisionId, verified.pr);
   if (receipt.state !== "valid" || receipt.receipt.prNumber !== lookup.pr.number) {
-    return blocked("updated_pr_failed_readback", commands);
+    return blockedAfterScope("updated_pr_failed_readback", commands, scope);
   }
   return {
     state: "reused",

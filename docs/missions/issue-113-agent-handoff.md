@@ -48,6 +48,9 @@
 - A closed authority binds authority kind, mission, subject, mission revision,
   repository, canonical root, branch, base/head revisions, exact paths, and
   permitted effects.
+- A trusted Coulson binding signs the exact authority digest into an append-only
+  v8 `review.publication_authorized` record. Caller-supplied authority is not
+  accepted.
 - A proposal binds proposed and observed base-to-head paths, requested effects,
   symlink/gitlink observations, and workspace cleanliness.
 - Exact path equality is required. Unsafe, sensitive, ambiguous, duplicate,
@@ -55,10 +58,11 @@
   closed.
 - `review.publish` and Wheels Up use the same exact-scope evaluator; Wheels Up
   does not widen paths or effects.
-- GitHub observes and evaluates the contract before branch push, draft-PR
-  create/update, or review-comment publication.
-- Supervised journal v8 carries publication-bound adapter v2 requests and
-  result evidence. Earlier journals retain their historical meaning.
+- Both GitHub publication entry points load and fully replay the durable journal
+  before branch push, draft-PR create/update, or review-comment publication.
+- Supervised journal v8 carries the signed authorization, publication-bound
+  adapter v2 request, and result evidence bound to that exact request and
+  scope. Earlier journals retain their historical meaning.
 
 ## Validation contract
 
