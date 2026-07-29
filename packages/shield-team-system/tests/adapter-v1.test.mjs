@@ -7,8 +7,54 @@ import {
   validateAdapterCandidate,
   validateCommunicationRequest,
 } from "../dist/adapter-v1.mjs";
+import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 
 const revisionId = "sha256:fixture-revision";
+const base = "1111111111111111111111111111111111111111";
+const head = "0123456789012345678901234567890123456789";
+const publicationPath = "docs/missions/issue-113-review.md";
+
+function publicationAuthority() {
+  return {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: "authorization:issue-113",
+    missionId: "mission:fixture",
+    subjectId: "issue:28",
+    missionRevisionId: revisionId,
+    repositoryId: "RanSolo/shield-workspace",
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    branch: "codex/issue-113",
+    baseRevisionId: base,
+    headRevisionId: head,
+    authorizedPaths: [publicationPath],
+    permittedEffects: ["review.comment.publish"],
+  };
+}
+
+function publicationEvidence() {
+  const result = evaluateReviewPublicationV1(publicationAuthority(), {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    missionId: "mission:fixture",
+    subjectId: "issue:28",
+    missionRevisionId: revisionId,
+    repositoryId: "RanSolo/shield-workspace",
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    branch: "codex/issue-113",
+    baseRevisionId: base,
+    headRevisionId: head,
+    proposedChangedPaths: [publicationPath],
+    observedChangedPaths: [publicationPath],
+    requestedEffects: ["review.comment.publish"],
+    observedSymlinkPaths: [],
+    observedGitlinkPaths: [],
+    workspaceClean: true,
+  });
+  assert.equal(result.state, "allowed");
+  return result;
+}
 
 function request(overrides = {}) {
   return {
@@ -93,9 +139,39 @@ function followUpCandidate(overrides = {}) {
 test("adapter v1 validates closed exact-revision requests", () => {
   assert.equal(ADAPTER_CONTRACT_VERSION, 1);
   assert.equal(validateCommunicationRequest(request()).state, "valid");
-  assert.equal(validateCommunicationRequest(request({ adapterContractVersion: 2 })).state, "invalid");
+  assert.equal(validateCommunicationRequest(request({
+    adapterContractVersion: 2,
+    publicationAuthorizationId: publicationAuthority().authorityRef,
+    proposedChangedPaths: publicationAuthority().authorizedPaths,
+    requestedEffects: ["review.comment.publish"],
+  })).state, "valid");
+  assert.equal(validateCommunicationRequest(request({
+    adapterContractVersion: 2,
+    publicationAuthorizationId: publicationAuthority().authorityRef,
+    proposedChangedPaths: publicationAuthority().authorizedPaths,
+    requestedEffects: ["review.comment.publish", "review.deploy"],
+  })).state, "invalid");
   assert.equal(validateCommunicationRequest(request({ revisionId: "main" })).state, "invalid");
   assert.equal(validateCommunicationRequest({ ...request(), unexpected: true }).state, "invalid");
+});
+
+test("adapter v2 binds publication decisions to exact paths, effects, and revisions", () => {
+  const evidence = publicationEvidence();
+  const candidate = communicationCandidate({
+    adapterContractVersion: 2,
+    payload: {
+      ...communicationCandidate().payload,
+      operation: "publish_status",
+      targetRef: "github:pr:28",
+      scopeDigest: evidence.scopeDigest,
+      publicationBinding: evidence.binding,
+    },
+  });
+  assert.equal(validateAdapterCandidate(candidate).state, "valid");
+  assert.equal(validateAdapterCandidate({
+    ...candidate,
+    payload: { ...candidate.payload, scopeDigest: "sha256:tampered" },
+  }).state, "invalid");
 });
 
 test("communication candidates expose only stable host-neutral outcomes", () => {

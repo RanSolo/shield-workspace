@@ -2,6 +2,11 @@ import type {
   AdapterCandidateEnvelope,
   AdapterTimestamp,
 } from "../dist/adapter-v1.mjs";
+import type {
+  ReviewPublicationBindingV1,
+} from "../dist/review-publication-v1.mjs";
+
+export * from "../dist/review-publication-v1.mjs";
 
 export interface CommandResult {
   exitCode: number;
@@ -15,16 +20,6 @@ export type CommandRunner = (
   options?: { cwd?: string; input?: string; timeoutMs?: number },
 ) => CommandResult;
 
-export interface JournaledCommunicationRequest {
-  schemaVersion: 4;
-  entryId: string;
-  missionId: string;
-  sequence: number;
-  type: "communication.requested";
-  timestamp: AdapterTimestamp;
-  payload: { request: unknown };
-}
-
 export interface GitHubPublication {
   candidateId: string;
   sourceRef: string;
@@ -33,6 +28,7 @@ export interface GitHubPublication {
   repository?: string;
   prNumber?: number;
   workspacePlan?: Record<string, unknown>;
+  proposedChangedPaths: string[];
 }
 
 export type GitHubAdapterResult =
@@ -236,6 +232,11 @@ export type DeliveryWorkspaceResult =
       state: "workspace_ready";
       publicationAction: "created_draft_pr" | "updated_existing_draft_pr";
       receipt: PRWorkspaceReceipt;
+      publicationScope?: {
+        scopeDigest: string;
+        binding: Readonly<ReviewPublicationBindingV1>;
+      };
+      publicationCandidate: AdapterCandidateEnvelope;
       planGateEvaluation: FuryPlanGateEvaluationV1;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
@@ -243,19 +244,30 @@ export type DeliveryWorkspaceResult =
       state: "dispatch_ready";
       publicationAction: "created_draft_pr" | "updated_existing_draft_pr";
       receipt: PRWorkspaceReceipt;
+      publicationScope?: {
+        scopeDigest: string;
+        binding: Readonly<ReviewPublicationBindingV1>;
+      };
+      publicationCandidate: AdapterCandidateEnvelope;
       planGateEvaluation: FuryPlanGateEvaluationV1;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
   | {
       state: "blocked";
       reason: string;
+      publicationCandidate?: AdapterCandidateEnvelope;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     };
 
 export function deliverGitHubCommunication(
-  journaledRequest: JournaledCommunicationRequest,
+  publicationRequestId: string,
   publication: GitHubPublication,
-  options?: { run?: CommandRunner; cwd?: string },
+  options: {
+    loadJournal: () => unknown[];
+    run?: CommandRunner;
+    cwd?: string;
+    realpath?: (path: string) => string;
+  },
 ): GitHubAdapterResult;
 
 export function createGitHubHumanEvidenceCandidate(input: {
@@ -285,8 +297,17 @@ export function prepareDeliveryWorkspaceForDispatch(
     subjectId: string;
     blueprintArtifact: BlueprintArtifactAssertionV1;
     planGate: FuryPlanGateEnvelopeV1 | null;
+    publicationRequestId: string;
+    publicationCandidateId: string;
+    publicationSourceRef: string;
+    publicationCapturedAt: AdapterTimestamp;
   },
-  options?: { run?: CommandRunner; cwd?: string },
+  options: {
+    loadJournal: () => unknown[];
+    run?: CommandRunner;
+    cwd?: string;
+    realpath?: (path: string) => string;
+  },
 ): DeliveryWorkspaceResult;
 
 export function evaluateFuryPlanGateV1(

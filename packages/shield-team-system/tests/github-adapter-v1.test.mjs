@@ -6,34 +6,35 @@ import {
   createGitHubHumanEvidenceCandidate,
   deliverGitHubCommunication,
 } from "../public/github.mjs";
+import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 
 const head = "0123456789012345678901234567890123456789";
+const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const branchSlug = "codex/issue-28-github-host-adapter";
+const missionBriefPath = "docs/missions/issue-28-v0.3-5-github-adapter.md";
 
-function journaledRequest(operation = "publish_status") {
-  return {
-    schemaVersion: 4,
-    entryId: "entry:mission:fixture:2",
+function publicationFixture(operation = "publish_status", action = "comment") {
+  const permittedEffects = action === "comment"
+    ? ["review.comment.publish"]
+    : ["review.branch.push", "review.pull_request.create_draft"];
+  const targetRef = action === "comment"
+    ? "github:pr:28"
+    : `github:repository:RanSolo/shield-workspace` +
+      `:branch:${branchSlug}:base:main`;
+  return publicationJournalFixture({
     missionId: "mission:fixture",
-    sequence: 2,
-    type: "communication.requested",
-    timestamp: { value: "2026-07-19T06:00:00Z", provenance: "hostTrusted" },
-    payload: {
-      request: {
-        requestId: `request:${operation}`,
-        adapterContractVersion: 1,
-        adapterId: "github",
-        operation,
-        missionId: "mission:fixture",
-        subjectId: "issue:28",
-        revisionId: "sha256:mission-revision",
-        artifactRevisionId: head,
-        targetRef: "github:pr:28",
-      },
-    },
-  };
+    subjectId: "issue:28",
+    headRevisionId: head,
+    baseRevisionId: base,
+    branch: branchSlug,
+    authorizedPaths: [missionBriefPath],
+    permittedEffects,
+    operation,
+    targetRef,
+  });
 }
 
-function publication() {
+function publication(overrides = {}) {
   return {
     candidateId: "candidate:publication:1",
     sourceRef: "github:pr:28",
@@ -41,6 +42,8 @@ function publication() {
     repository: "RanSolo/shield-workspace",
     prNumber: 28,
     body: "Human-readable mission status for the exact revision.",
+    proposedChangedPaths: [missionBriefPath],
+    ...overrides,
   };
 }
 
@@ -57,35 +60,187 @@ function runner(responses) {
 }
 
 const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
+const scopeChecks = () => [
+  ok("/workspace/shield-workspace"), ok("git@github.com:RanSolo/shield-workspace.git"),
+  ok(branchSlug), ok(head), ok(base), ok(), ok(`${missionBriefPath}\0`), ok(), ok(),
+];
+const prScopeChecks = () => [...scopeChecks(), ok(base)];
 
 test("GitHub performs no effect without an exact journaled request", () => {
   const run = runner([]);
-  const result = deliverGitHubCommunication(journaledRequest().payload.request, publication(), { run });
-  assert.deepEqual(result, { state: "blocked", reason: "journaled_request_required", commands: [] });
+  const result = deliverGitHubCommunication("request:missing", publication(), { run });
+  assert.deepEqual(result, { state: "blocked", reason: "journal_loader_required", commands: [] });
   assert.equal(run.calls.length, 0);
+
+  assert.deepEqual(
+    deliverGitHubCommunication("request:missing", publication(), {
+      run,
+      loadJournal: () => [],
+    }),
+    { state: "blocked", reason: "journal_replay_failed", commands: [] },
+  );
 });
 
 test("GitHub publishes human-readable status only at the requested exact head", () => {
-  const run = runner([ok(head), ok("github:pr:28:comment:44")]);
-  const result = deliverGitHubCommunication(journaledRequest(), publication(), { run });
+  const fixture = publicationFixture();
+  const run = runner([...scopeChecks(), ok("github:pr:28:comment:44")]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication(),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
   assert.equal(result.state, "candidate");
   assert.equal(result.candidate.payload.outcome, "delivered");
   assert.equal(result.candidate.payload.receiptRef, "github:pr:28:comment:44");
-  assert.deepEqual(run.calls.map(({ executable, args }) => [executable, ...args.slice(0, 2)]), [
-    ["git", "rev-parse", "HEAD"],
-    ["gh", "pr", "comment"],
-  ]);
-  assert.equal(run.calls[1].options.input, publication().body);
+  assert.equal(run.calls.at(-1).executable, "gh");
+  assert.deepEqual(run.calls.at(-1).args.slice(0, 2), ["pr", "comment"]);
+  assert.equal(run.calls.at(-1).options.input, publication().body);
 });
 
-test("mission brief publication delegates to the existing draft PR workspace", () => {
-  const branchSlug = "codex/issue-28-github-host-adapter";
+test("GitHub comment publication exact-matches the journaled PR target", () => {
+  const fixture = publicationFixture();
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({ prNumber: 29 }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_target_mismatch");
+  assert.equal(run.calls.length, 0);
+});
+
+test("GitHub preflights exact result identity before any effect", () => {
+  const fixture = publicationFixture();
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({
+      capturedAt: {
+        value: "2026-07-19T06:01Z",
+        provenance: "hostTrusted",
+      },
+    }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_identity_required");
+  assert.equal(run.calls.length, 0);
+});
+
+test("GitHub rejects stateful publication identity before any effect", () => {
+  const fixture = publicationFixture();
+  const stateful = publication();
+  let reads = 0;
+  Object.defineProperty(stateful, "candidateId", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? "candidate:publication:1" : "candidate:publication:changed";
+    },
+  });
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    stateful,
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_identity_required");
+  assert.equal(reads, 0);
+  assert.equal(run.calls.length, 0);
+});
+
+test("GitHub rejects stateful effect inputs before any effect", () => {
+  const fixture = publicationFixture();
+  const stateful = publication();
+  let reads = 0;
+  Object.defineProperty(stateful, "prNumber", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? 28 : 29;
+    },
+  });
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    stateful,
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_input_required");
+  assert.equal(reads, 0);
+  assert.equal(run.calls.length, 0);
+});
+
+test("GitHub rejects a stateful mission workspace plan before any effect", () => {
+  const fixture = publicationFixture("publish_mission_brief", "create");
   const workspacePlan = {
     repositoryOwner: "RanSolo",
     repositoryName: "shield-workspace",
     baseBranch: "main",
     branchSlug,
-    missionBriefPath: "docs/missions/issue-28-v0.3-5-github-adapter.md",
+    missionBriefPath,
+    prTitle: "feat: add GitHub host adapter",
+  };
+  let reads = 0;
+  Object.defineProperty(workspacePlan, "branchSlug", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? branchSlug : "codex/changed";
+    },
+  });
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({ workspacePlan }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_input_required");
+  assert.equal(reads, 0);
+  assert.equal(run.calls.length, 0);
+});
+
+test("GitHub rejects coercible mission workspace values before any effect", () => {
+  const fixture = publicationFixture("publish_mission_brief", "create");
+  let coercions = 0;
+  const repositoryOwner = {
+    [Symbol.toPrimitive]() {
+      coercions += 1;
+      return coercions === 1 ? "RanSolo" : "Other";
+    },
+  };
+  const workspacePlan = {
+    repositoryOwner,
+    repositoryName: "shield-workspace",
+    baseBranch: "main",
+    branchSlug,
+    missionBriefPath,
+    prTitle: "feat: add GitHub host adapter",
+  };
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({ workspacePlan }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_input_required");
+  assert.equal(coercions, 0);
+  assert.equal(run.calls.length, 0);
+});
+
+test("mission brief publication delegates to the existing draft PR workspace", () => {
+  const fixture = publicationFixture("publish_mission_brief", "create");
+  const workspacePlan = {
+    repositoryOwner: "RanSolo",
+    repositoryName: "shield-workspace",
+    baseBranch: "main",
+    branchSlug,
+    missionBriefPath,
     prTitle: "feat: add GitHub host adapter",
   };
   const pr = {
@@ -99,21 +254,21 @@ test("mission brief publication delegates to the existing draft PR workspace", (
     baseRefName: "main",
   };
   const run = runner([
-    ok(head),
     ok(branchSlug),
     ok(),
     ok(workspacePlan.missionBriefPath),
     ok(head),
     ok(head),
-    ok(),
     ok("[]"),
+    ...prScopeChecks(),
+    ok(),
     ok(pr.url),
     ok(JSON.stringify([pr])),
   ]);
   const result = deliverGitHubCommunication(
-    journaledRequest("publish_mission_brief"),
+    fixture.requestId,
     { ...publication(), workspacePlan },
-    { run },
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
   );
   assert.equal(result.state, "candidate");
   assert.equal(result.candidate.payload.outcome, "delivered");
@@ -121,24 +276,72 @@ test("mission brief publication delegates to the existing draft PR workspace", (
   assert.ok(run.calls.some(({ executable, args }) => executable === "gh" && args[0] === "pr" && args[1] === "create"));
 });
 
-test("GitHub reports stale and unavailable delivery without fabricating evidence", () => {
-  const staleRun = runner([ok("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]);
-  const stale = deliverGitHubCommunication(journaledRequest(), publication(), { run: staleRun });
-  assert.equal(stale.state, "candidate");
-  assert.deepEqual(stale.candidate.payload, {
-    requestId: "request:publish_status",
-    outcome: "failed",
-    failureReason: "ambiguous_response",
-    receiptRef: null,
-  });
+test("post-effect PR readback failure produces journal-ready failure evidence", () => {
+  const fixture = publicationFixture("publish_mission_brief", "create");
+  const workspacePlan = {
+    repositoryOwner: "RanSolo",
+    repositoryName: "shield-workspace",
+    baseBranch: "main",
+    branchSlug,
+    missionBriefPath,
+    prTitle: "feat: add GitHub host adapter",
+  };
+  const run = runner([
+    ok(branchSlug),
+    ok(),
+    ok(workspacePlan.missionBriefPath),
+    ok(head),
+    ok(head),
+    ok("[]"),
+    ...prScopeChecks(),
+    ok(),
+    ok("https://github.com/RanSolo/shield-workspace/pull/28"),
+    { exitCode: 1, stdout: "", stderr: "readback unavailable" },
+  ]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    { ...publication(), workspacePlan },
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "candidate");
+  assert.equal(result.candidate.payload.outcome, "failed");
+  assert.equal(result.candidate.payload.failureReason, "host_rejected");
+  assert.equal(result.candidate.payload.scopeDigest.startsWith("sha256:"), true);
+});
 
-  const unavailableRun = runner([{ exitCode: 1, stdout: "", stderr: "not logged into GitHub" }]);
-  const unavailable = deliverGitHubCommunication(journaledRequest(), publication(), { run: unavailableRun });
+test("GitHub reports stale and unavailable delivery without fabricating evidence", () => {
+  const fixture = publicationFixture();
+  const staleRun = runner([
+    ok("/workspace/shield-workspace"),
+    ok("git@github.com:RanSolo/shield-workspace.git"),
+    ok(branchSlug),
+    ok("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+    ok(base),
+    ok(),
+    ok(`${missionBriefPath}\0`),
+    ok(),
+    ok(),
+  ]);
+  const stale = deliverGitHubCommunication(
+    fixture.requestId,
+    publication(),
+    { run: staleRun, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(stale.state, "blocked");
+  assert.equal(stale.reason, "binding_mismatch");
+
+  const unavailableRun = runner([
+    ...scopeChecks(),
+    { exitCode: 1, stdout: "", stderr: "not logged into GitHub" },
+  ]);
+  const unavailable = deliverGitHubCommunication(
+    fixture.requestId,
+    publication(),
+    { run: unavailableRun, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
   assert.equal(unavailable.state, "candidate");
   assert.equal(unavailable.candidate.payload.outcome, "failed");
   assert.equal(unavailable.candidate.payload.failureReason, "authentication_failed");
-  assert.equal(Object.hasOwn(unavailable.candidate, "humanPrincipalId"), true);
-  assert.equal(unavailable.candidate.humanPrincipalId, null);
 });
 
 test("GitHub review input remains a candidate and cannot assign authority", () => {

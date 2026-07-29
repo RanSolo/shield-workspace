@@ -5,7 +5,12 @@ import {
   normalizeFuryPlanGateInputV1,
 } from "../contracts/fury-plan-gate-v1.mjs";
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
+import {
+  createGitHubPublicationResultCandidate,
+  validateGitHubPublicationResultIdentity,
+} from "./adapter-v1.mjs";
 import { createOrUpdatePR, validatePRWorkspaceReceipt } from "./pr-workspace.mjs";
+import { resolveJournaledPublicationRequest } from "./publication-gate.mjs";
 
 const SEAT_NAMES = Object.freeze({
   hill: "Maria Hill",
@@ -59,7 +64,8 @@ const IMMUTABLE_REVISION = /^[0-9a-f]{40,64}$/;
 const GATE_IDENTIFIER = /^[A-Za-z0-9](?:[A-Za-z0-9._:/#@-]{0,126}[A-Za-z0-9])?$/;
 const DELIVERY_INPUT_FIELDS = Object.freeze([
   "missionState", "approvalSource", "artifactRevisionId", "workspacePlan", "body",
-  "missionId", "subjectId", "blueprintArtifact", "planGate",
+  "missionId", "subjectId", "blueprintArtifact", "planGate", "publicationRequestId",
+  "publicationCandidateId", "publicationSourceRef", "publicationCapturedAt",
 ]);
 const WORKSPACE_PLAN_FIELDS = Object.freeze([
   "repositoryOwner", "repositoryName", "baseBranch", "branchSlug", "missionBriefPath", "prTitle",
@@ -134,8 +140,18 @@ function normalizeDeliveryInput(input) {
       return { state: "invalid", reason: "blueprint_path_mismatch" };
     }
     if (!gateIdentifier(outer.missionId) || !gateIdentifier(outer.subjectId) ||
-        !IMMUTABLE_REVISION.test(outer.artifactRevisionId)) {
+        !IMMUTABLE_REVISION.test(outer.artifactRevisionId) ||
+        !gateIdentifier(outer.publicationRequestId) ||
+        !gateIdentifier(outer.publicationCandidateId) ||
+        !gateIdentifier(outer.publicationSourceRef)) {
       return { state: "invalid", reason: "invalid_fury_plan_gate_binding" };
+    }
+    const capturedAt = dataRecord(
+      outer.publicationCapturedAt,
+      ["value", "provenance"],
+    );
+    if (capturedAt === null) {
+      return { state: "invalid", reason: "invalid_publication_candidate" };
     }
     const planGate = normalizeFuryPlanGateInputV1(outer.planGate);
     if (planGate.state !== "valid") {
@@ -147,6 +163,7 @@ function normalizeDeliveryInput(input) {
         ...outer,
         workspacePlan: Object.freeze(workspacePlan),
         blueprintArtifact: Object.freeze(blueprintArtifact),
+        publicationCapturedAt: Object.freeze(capturedAt),
         planGate: planGate.planGate,
       }),
     };
@@ -170,13 +187,67 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
   })) {
     return blocked("specialist_dispatch_not_approved");
   }
+  const publication = resolveJournaledPublicationRequest(
+    snapshot.publicationRequestId,
+    { loadJournal: options.loadJournal },
+  );
+  if (publication.state !== "allowed") return blocked(publication.reason);
+  const publicationIdentity = {
+    candidateId: snapshot.publicationCandidateId,
+    sourceRef: snapshot.publicationSourceRef,
+    capturedAt: snapshot.publicationCapturedAt,
+  };
+  const identity = validateGitHubPublicationResultIdentity(
+    publication,
+    publicationIdentity,
+  );
+  if (identity.state !== "valid") return blocked(identity.reason);
+  const verifiedPublicationIdentity = identity.value;
+  if (publication.request.missionId !== snapshot.missionId ||
+      publication.request.subjectId !== snapshot.subjectId ||
+      publication.request.artifactRevisionId !== snapshot.artifactRevisionId ||
+      publication.authority.repositoryId !==
+        `${snapshot.workspacePlan.repositoryOwner}/${snapshot.workspacePlan.repositoryName}` ||
+      publication.authority.branch !== snapshot.workspacePlan.branchSlug) {
+    return blocked("publication_binding_mismatch");
+  }
   const published = createOrUpdatePR(snapshot.workspacePlan, {
     run: options.run,
     cwd: options.cwd,
     body: snapshot.body,
+    publicationRequestId: snapshot.publicationRequestId,
+    loadJournal: options.loadJournal,
+    realpath: options.realpath,
   });
   if (published.state !== "success" && published.state !== "reused") {
-    return blocked(published.reason, published.commands);
+    if (!published.publicationScope) {
+      return blocked(published.reason, published.commands);
+    }
+    const candidate = createGitHubPublicationResultCandidate(
+      publication.request,
+      verifiedPublicationIdentity,
+      "failed",
+      "host_rejected",
+      null,
+      published.publicationScope,
+    );
+    return candidate.state === "candidate"
+      ? {
+        ...blocked(published.reason, published.commands),
+        publicationCandidate: candidate.candidate,
+      }
+      : blocked(candidate.reason, published.commands);
+  }
+  const candidate = createGitHubPublicationResultCandidate(
+    publication.request,
+    verifiedPublicationIdentity,
+    "delivered",
+    null,
+    published.prUrl,
+    published.publicationScope,
+  );
+  if (candidate.state !== "candidate") {
+    return blocked(candidate.reason, published.commands);
   }
   const checked = validatePRWorkspaceReceipt(published.receipt, {
     repositoryOwner: snapshot.workspacePlan.repositoryOwner,
@@ -208,6 +279,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
       state: "workspace_ready",
       publicationAction: published.action,
       receipt: checked.receipt,
+      publicationCandidate: candidate.candidate,
       planGateEvaluation,
       commands: published.commands,
     };
@@ -216,6 +288,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     state: "dispatch_ready",
     publicationAction: published.action,
     receipt: checked.receipt,
+    publicationCandidate: candidate.candidate,
     planGateEvaluation,
     commands: published.commands,
   };

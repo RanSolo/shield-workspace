@@ -64,7 +64,7 @@ export interface HostPermissionAttestation {
 
 export interface PermissionInvocationContext {
   permissionContractVersion: 1;
-  journalSchemaVersion: 6 | 7;
+  journalSchemaVersion: 6 | 7 | 8;
   missionId: string;
   subjectId: string;
   missionRevisionId: string;
@@ -235,8 +235,9 @@ export function validatePermissionInvocationContext(input: unknown): PermissionR
   const errors = exact(input, CONTEXT_FIELDS, "Permission context");
   if (errors.length > 0 || !plain(input)) return invalid("permission_context_malformed", ...errors);
   if (input.permissionContractVersion !== 1 ||
-      (input.journalSchemaVersion !== 6 && input.journalSchemaVersion !== 7)) {
-    errors.push("Permission context requires contract v1 and journal v6 or v7.");
+      (input.journalSchemaVersion !== 6 && input.journalSchemaVersion !== 7 &&
+       input.journalSchemaVersion !== 8)) {
+    errors.push("Permission context requires contract v1 and journal v6, v7, or v8.");
   }
   for (const field of ["missionId", "subjectId", "reasoningRuntimeId", "toolExecutorId", "repositoryId", "branch", "decisionId"] as const) if (!id(input[field])) errors.push(`Permission context ${field} is invalid.`);
   if (!REVISION.test(String(input.missionRevisionId ?? "")) || !REVISION.test(String(input.artifactRevisionId ?? ""))) errors.push("Permission context revisions are invalid.");

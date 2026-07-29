@@ -9,6 +9,16 @@ export {
 } from "../github/delivery-workspace.mjs";
 export { validatePRWorkspaceReceipt } from "../github/pr-workspace.mjs";
 export {
+  REVIEW_PUBLICATION_AUTHORITY_KINDS,
+  REVIEW_PUBLICATION_CONTRACT_VERSION,
+  REVIEW_PUBLICATION_EFFECTS,
+  REVIEW_PUBLICATION_REASON_CODES,
+  evaluateReviewPublicationV1,
+  isSensitiveReviewPublicationPath,
+  validateReviewPublicationAuthorityV1,
+  validateReviewPublicationEvidenceV1,
+} from "../dist/review-publication-v1.mjs";
+export {
   FURY_PLAN_GATE_CONTRACT_VERSION,
   FURY_PLAN_GATE_FINDING_CLASSES,
   FURY_PLAN_GATE_MAX_FINDINGS,

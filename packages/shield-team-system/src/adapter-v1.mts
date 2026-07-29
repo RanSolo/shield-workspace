@@ -1,4 +1,12 @@
+import {
+  validateReviewPublicationAuthorityV1,
+  validateReviewPublicationEvidenceV1,
+  type ReviewPublicationBindingV1,
+  type ReviewPublicationEffect,
+} from "./review-publication-v1.mjs";
+
 export const ADAPTER_CONTRACT_VERSION = 1 as const;
+export const REVIEW_PUBLICATION_ADAPTER_CONTRACT_VERSION = 2 as const;
 export const ADAPTER_IDS = ["github", "manual"] as const;
 export const ADAPTER_CANDIDATE_KINDS = ["human_evidence", "communication_result", "follow_up_snapshot"] as const;
 export const FOLLOW_UP_LIFECYCLE_STATES = ["awaiting_review", "follow_up_required"] as const;
@@ -51,6 +59,12 @@ export interface CommunicationResultPayload {
   failureReason: CommunicationFailureReason | null;
   receiptRef: string | null;
 }
+export interface ReviewPublicationCommunicationResultPayload extends CommunicationResultPayload {
+  operation: CommunicationOperation;
+  targetRef: string;
+  scopeDigest: string;
+  publicationBinding: ReviewPublicationBindingV1;
+}
 export interface FollowUpFindingPayload {
   findingId: string;
   sourceKind: FollowUpSourceKind;
@@ -78,7 +92,7 @@ export interface FollowUpSnapshotPayload {
   };
 }
 interface AdapterCandidateBase {
-  adapterContractVersion: 1;
+  adapterContractVersion: 1 | 2;
   adapterId: AdapterId;
   candidateId: string;
   missionId: string;
@@ -94,10 +108,18 @@ export interface HumanEvidenceAdapterCandidate extends AdapterCandidateBase {
   payload: HumanEvidenceCandidatePayload;
 }
 export interface CommunicationResultAdapterCandidate extends AdapterCandidateBase {
+  adapterContractVersion: 1;
   candidateKind: "communication_result";
   humanPrincipalId: null;
   bindingId: null;
   payload: CommunicationResultPayload;
+}
+export interface ReviewPublicationCommunicationResultAdapterCandidate extends AdapterCandidateBase {
+  adapterContractVersion: 2;
+  candidateKind: "communication_result";
+  humanPrincipalId: null;
+  bindingId: null;
+  payload: ReviewPublicationCommunicationResultPayload;
 }
 export interface FollowUpSnapshotAdapterCandidate extends AdapterCandidateBase {
   candidateKind: "follow_up_snapshot";
@@ -108,6 +130,7 @@ export interface FollowUpSnapshotAdapterCandidate extends AdapterCandidateBase {
 export type AdapterCandidateEnvelope =
   | HumanEvidenceAdapterCandidate
   | CommunicationResultAdapterCandidate
+  | ReviewPublicationCommunicationResultAdapterCandidate
   | FollowUpSnapshotAdapterCandidate;
 export interface CommunicationRequestPayload {
   requestId: string;
@@ -120,6 +143,23 @@ export interface CommunicationRequestPayload {
   artifactRevisionId: string;
   targetRef: string;
 }
+export interface ReviewPublicationCommunicationRequestPayload {
+  requestId: string;
+  adapterContractVersion: 2;
+  adapterId: AdapterId;
+  operation: CommunicationOperation;
+  missionId: string;
+  subjectId: string;
+  revisionId: string;
+  artifactRevisionId: string;
+  targetRef: string;
+  publicationAuthorizationId: string;
+  proposedChangedPaths: string[];
+  requestedEffects: ReviewPublicationEffect[];
+}
+export type AnyCommunicationRequestPayload =
+  | CommunicationRequestPayload
+  | ReviewPublicationCommunicationRequestPayload;
 export interface AdapterCandidateIdentity {
   evidenceId: string;
   missionId: string;
@@ -170,10 +210,13 @@ function humanEvidenceIdentity(value: unknown): AdapterResult<AdapterCandidateId
   return valid(payload as unknown as AdapterCandidateIdentity);
 }
 
-export function validateCommunicationRequest(input: unknown): AdapterResult<CommunicationRequestPayload> {
-  const fields = ["requestId","adapterContractVersion","adapterId","operation","missionId","subjectId","revisionId","artifactRevisionId","targetRef"];
+export function validateCommunicationRequest(input: unknown): AdapterResult<AnyCommunicationRequestPayload> {
+  const fields = input !== null && typeof input === "object" &&
+      !Array.isArray(input) && (input as Record<string, unknown>).adapterContractVersion === 2
+    ? ["requestId","adapterContractVersion","adapterId","operation","missionId","subjectId","revisionId","artifactRevisionId","targetRef","publicationAuthorizationId","proposedChangedPaths","requestedEffects"]
+    : ["requestId","adapterContractVersion","adapterId","operation","missionId","subjectId","revisionId","artifactRevisionId","targetRef"];
   const errors = exact(input, fields, "Communication request"); if (!plain(input)) return invalid("malformed", ...errors);
-  if (input.adapterContractVersion !== 1) errors.push("Communication request adapterContractVersion is unsupported.");
+  if (input.adapterContractVersion !== 1 && input.adapterContractVersion !== 2) errors.push("Communication request adapterContractVersion is unsupported.");
   if (!ADAPTER_IDS.includes(input.adapterId as AdapterId)) errors.push("Communication request adapterId is unsupported.");
   if (!COMMUNICATION_OPERATIONS.includes(input.operation as CommunicationOperation)) errors.push("Communication request operation is unsupported.");
   for (const field of ["requestId","missionId","subjectId","targetRef"]) if (!identifier(input[field])) errors.push(`Communication request ${field} is invalid.`);
@@ -181,13 +224,37 @@ export function validateCommunicationRequest(input: unknown): AdapterResult<Comm
     const revision = input[field];
     if (typeof revision !== "string" || !IMMUTABLE_REVISION.test(revision)) errors.push(`Communication request ${field} must be immutable.`);
   }
-  return errors.length ? invalid("malformed", ...errors) : valid(input as unknown as CommunicationRequestPayload);
+  if (input.adapterContractVersion === 2) {
+    if (!identifier(input.publicationAuthorizationId)) {
+      errors.push("Communication request publicationAuthorizationId is invalid.");
+    }
+    const scope = validateReviewPublicationAuthorityV1({
+      publicationScopeSchemaVersion: 1,
+      contractVersion: "review-publication.v1",
+      authorityKind: "review.publish",
+      authorityRef: input.publicationAuthorizationId,
+      missionId: input.missionId,
+      subjectId: input.subjectId,
+      missionRevisionId: input.revisionId,
+      repositoryId: "validation/placeholder",
+      canonicalRepositoryRoot: "/validation",
+      branch: "validation",
+      baseRevisionId: "1111111111111111111111111111111111111111",
+      headRevisionId: input.artifactRevisionId,
+      authorizedPaths: input.proposedChangedPaths,
+      permittedEffects: input.requestedEffects,
+    });
+    if (scope.state === "blocked") {
+      errors.push(`Communication request publication scope is invalid: ${scope.reasonCode}.`);
+    }
+  }
+  return errors.length ? invalid("malformed", ...errors) : valid(input as unknown as AnyCommunicationRequestPayload);
 }
 
 export function validateAdapterCandidate(input: unknown): AdapterResult<AdapterCandidateEnvelope> {
   const fields = ["adapterContractVersion","adapterId","candidateId","candidateKind","missionId","subjectId","revisionId","humanPrincipalId","bindingId","sourceRef","capturedAt","payload"];
   const errors = exact(input, fields, "Adapter candidate"); if (!plain(input)) return invalid("malformed", ...errors);
-  if (input.adapterContractVersion !== 1) errors.push("Adapter candidate adapterContractVersion is unsupported.");
+  if (input.adapterContractVersion !== 1 && input.adapterContractVersion !== 2) errors.push("Adapter candidate adapterContractVersion is unsupported.");
   if (!ADAPTER_IDS.includes(input.adapterId as AdapterId)) errors.push("Adapter candidate adapterId is unsupported.");
   if (!ADAPTER_CANDIDATE_KINDS.includes(input.candidateKind as AdapterCandidateKind)) errors.push("Adapter candidate candidateKind is unsupported.");
   for (const field of ["candidateId","missionId","subjectId","sourceRef"]) if (!identifier(input[field])) errors.push(`Adapter candidate ${field} is invalid.`);
@@ -214,7 +281,10 @@ export function validateAdapterCandidate(input: unknown): AdapterResult<AdapterC
     }
   } else if (input.candidateKind === "communication_result") {
     if (input.humanPrincipalId !== null || input.bindingId !== null) errors.push("Communication result candidate cannot carry human authority identity.");
-    const payloadErrors = exact(input.payload, ["requestId","outcome","failureReason","receiptRef"], "Communication result payload"); errors.push(...payloadErrors);
+    const payloadFields = input.adapterContractVersion === 2
+      ? ["requestId","outcome","failureReason","receiptRef","operation","targetRef","scopeDigest","publicationBinding"]
+      : ["requestId","outcome","failureReason","receiptRef"];
+    const payloadErrors = exact(input.payload, payloadFields, "Communication result payload"); errors.push(...payloadErrors);
     if (plain(input.payload)) {
       if (!identifier(input.payload.requestId)) errors.push("Communication result requestId is invalid.");
       if (!COMMUNICATION_OUTCOMES.includes(input.payload.outcome as CommunicationOutcome)) errors.push("Communication result outcome is unsupported.");
@@ -224,6 +294,25 @@ export function validateAdapterCandidate(input: unknown): AdapterResult<AdapterC
       } else {
         if (!COMMUNICATION_FAILURE_REASONS.includes(failure as CommunicationFailureReason)) errors.push("Non-delivered communication requires a stable failure reason.");
         if (input.payload.receiptRef !== null && !identifier(input.payload.receiptRef)) errors.push("Communication receiptRef is invalid.");
+      }
+      if (input.adapterContractVersion === 2) {
+        if (!COMMUNICATION_OPERATIONS.includes(input.payload.operation as CommunicationOperation)) {
+          errors.push("Communication result operation is unsupported.");
+        }
+        if (!identifier(input.payload.targetRef)) {
+          errors.push("Communication result targetRef is invalid.");
+        }
+        const evidence = validateReviewPublicationEvidenceV1({
+          scopeDigest: input.payload.scopeDigest,
+          binding: input.payload.publicationBinding,
+        });
+        if (evidence.state === "blocked") {
+          errors.push(`Communication result publication evidence is invalid: ${evidence.reasonCode}.`);
+        } else if (evidence.binding.missionId !== input.missionId ||
+            evidence.binding.subjectId !== input.subjectId ||
+            evidence.binding.missionRevisionId !== input.revisionId) {
+          errors.push("Communication result publication evidence does not match candidate identity.");
+        }
       }
     }
   } else if (input.candidateKind === "follow_up_snapshot") {
