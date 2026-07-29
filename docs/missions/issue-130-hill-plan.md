@@ -447,6 +447,8 @@ type MissionCycleResultV1 =
 
 Exact mapping:
 
+- identity-unbound `input_invalid`: `blocked` with all identity fields and
+  `accountableNextSeat` set to `null`.
 - `waiting`, actual pending frozen-gate role:
   `mission_authorization_required` and `gate_missing`. Mission authorization
   routes to Coulson; execution gates route to their requirement's
@@ -459,7 +461,7 @@ Exact mapping:
   `authorization_malformed`, and `authorization_stale`.
 - `blocked`, `coulson`: `governance_not_approved`,
   `mission_not_authorized`, `execution_not_active`, `execute_not_ready`,
-  `journal_sequence_mismatch`, `input_invalid`, `stale_subject`,
+  `journal_sequence_mismatch`, identity-bound `input_invalid`, `stale_subject`,
   `stale_revision`, `stale_sequence`,
   `duplicate_effect`, `effect_identity_mismatch`,
   `invocation_claim_conflict`, `invocation_claim_failed`,
