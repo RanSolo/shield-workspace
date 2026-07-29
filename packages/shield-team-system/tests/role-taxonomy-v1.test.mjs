@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, extname, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import * as roles from "../dist/role-taxonomy-v1.mjs";
 
 const modulePath = resolve(dirname(fileURLToPath(import.meta.url)), "../src/role-taxonomy-v1.mts");
@@ -27,11 +28,39 @@ function resolveRelativeImport(sourceDirectory, sourceFile, specifier) {
 }
 
 function parseRelativeImports(source) {
-  const statements = source.match(/(^|\n)\s*(?:import|export)\b[\s\S]*?;/g) ?? [];
-  return statements.flatMap((statement) => {
-    const match = statement.match(/\bfrom\s+["']([^"']+)["']|^\s*import\s+["']([^"']+)["']/m);
-    return match ? [match[1] ?? match[2]] : [];
-  });
+  const sourceFile = ts.createSourceFile(
+    "import-graph.mts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const specifiers = [];
+  function visit(node) {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+      && node.moduleSpecifier
+      && ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      specifiers.push(node.moduleSpecifier.text);
+    } else if (
+      ts.isCallExpression(node)
+      && node.expression.kind === ts.SyntaxKind.ImportKeyword
+      && node.arguments.length === 1
+      && ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      specifiers.push(node.arguments[0].text);
+    } else if (
+      ts.isImportTypeNode(node)
+      && ts.isLiteralTypeNode(node.argument)
+      && ts.isStringLiteralLike(node.argument.literal)
+    ) {
+      specifiers.push(node.argument.literal.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return specifiers;
 }
 
 function detectCycle(edges, node, visiting, visited) {
@@ -45,6 +74,50 @@ function detectCycle(edges, node, visiting, visited) {
   visited.add(node);
   return true;
 }
+
+const importFixtures = [
+  {
+    name: "multiline import-from",
+    source:
+      "import {\n  lookupRole,\n  routingProjection,\n} from \"./nested-helper.mjs\";\n",
+    expected: ["./nested-helper.mjs"],
+  },
+  {
+    name: "multiline export-from",
+    source: "export {\n  validateRoleAssignment,\n} from \"./role-validator.mts\";\n",
+    expected: ["./role-validator.mts"],
+  },
+  {
+    name: "side-effect import",
+    source: "import \"./side-effects.mts\";\n",
+    expected: ["./side-effects.mts"],
+  },
+  {
+    name: "dynamic import",
+    source: "const candidate = import(\"./runtime-binding.mts\");\n",
+    expected: ["./runtime-binding.mts"],
+  },
+  {
+    name: "type import",
+    source:
+      "type Candidate = Awaited<ReturnType<typeof import(\"./types.mjs\")>>;\n",
+    expected: ["./types.mjs"],
+  },
+];
+
+test("import parser fixtures cover multiline, side-effect, dynamic, and type imports", () => {
+  for (const fixture of importFixtures) {
+    assert.deepEqual(parseRelativeImports(fixture.source), fixture.expected, fixture.name);
+  }
+});
+
+test("synthetic two-node import cycle is rejected", () => {
+  const edges = new Map([
+    ["a.mts", ["b.mts"]],
+    ["b.mts", ["a.mts"]],
+  ]);
+  assert.equal(detectCycle(edges, "a.mts", new Set(), new Set()), false);
+});
 
 test("role taxonomy exports are closed, immutable, and dependency-free", async () => {
   assert.deepEqual(roles.CANONICAL_ROLE_IDS, allCanonical);

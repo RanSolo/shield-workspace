@@ -332,6 +332,20 @@ test("rejects unknown fields and unsupported participant or mode routing", () =>
     ["INVALID_MODE_RECOMMENDATION"],
   );
 
+  const mackRecommendation = request();
+  mackRecommendation.recommendedModes[0].seatId = "mack";
+  assert.deepEqual(
+    missionIntakeV1(mackRecommendation).reasonCodes,
+    ["INVALID_MODE_RECOMMENDATION"],
+  );
+
+  const oracleRecommendation = request();
+  oracleRecommendation.recommendedModes[0].seatId = "oracle";
+  assert.deepEqual(
+    missionIntakeV1(oracleRecommendation).reasonCodes,
+    ["INVALID_MODE_RECOMMENDATION"],
+  );
+
   const unknownRoleRecommendation = request();
   unknownRoleRecommendation.recommendedModes[0].seatId = "x";
   assert.deepEqual(

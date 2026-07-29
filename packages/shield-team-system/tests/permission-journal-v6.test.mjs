@@ -6,6 +6,8 @@ import {
   canonicalJson,
   computeEd25519SigningKeyRef,
   computeRuntimeBindingDigest,
+  createEvidenceEntry,
+  createGovernanceEntry,
   createMissionBegunEntry,
   createRuntimeBindingEntry,
   createRuntimeBindingSupersessionEntry,
@@ -135,6 +137,111 @@ function replay(entries) {
   return result.value;
 }
 
+function governanceTarget(decision, resumeState = "approved") {
+  if (decision === "approve") return "approved";
+  if (decision === "pause") return "paused";
+  if (decision === "resume") return resumeState;
+  if (decision === "cancel") return "cancelled";
+  return null;
+}
+
+function evidence(authority, projection, requirement, decision, sequence, suffix = String(sequence)) {
+  const binding = authority.binding ?? authority;
+  const payload = {
+    schemaVersion: 1,
+    evidenceId: `evidence:${binding.seatId}:${suffix}`,
+    requirementId: requirement.requirementId,
+    missionId: projection.missionId,
+    subjectKind: "mission_plan",
+    subjectId: projection.brief.subjectId,
+    revisionId: projection.brief.revisionId,
+    seatId: binding.seatId,
+    evidenceKind: requirement.evidenceKind,
+    decision,
+    governanceTarget: binding.seatId === "coulson" ? governanceTarget("approve") : null,
+    humanPrincipalId: binding.humanPrincipalId,
+    bindingId: binding.bindingId,
+    signingKeyRef: binding.signingKeyRef,
+    sourceRef: `manual-signature:${suffix}`,
+    timestamp: { value: `2026-07-20T02:0${Math.min(sequence, 9)}:00Z`, provenance: "humanRecorded" },
+    journalSequence: sequence,
+  };
+  return {
+    payload,
+    signatureBase64: sign(null, Buffer.from(canonicalJson(payload)), authority.privateKey).toString("base64"),
+  };
+}
+
+function signedBindingReplayCase(data, badSeat) {
+  const projection = replay(data.entries);
+  const base = createRuntimeBindingEntry(
+    projection,
+    binding(data.brief, 1, 1),
+    authorization(data, binding(data.brief, 1, 1), 1, null, null),
+  );
+  assert.equal(base.state, "valid", base.errors?.join(" "));
+  const badRuntimeBinding = { ...base.value.payload.binding, seatId: badSeat };
+  const badAuthorization = authorizationWithAuthority(
+    { ...data.coulson, privateKey: data.privateKey },
+    data.brief.missionId,
+    data.brief.subjectId,
+    badRuntimeBinding,
+    1,
+    null,
+    null,
+  );
+  return {
+    ...base.value,
+    payload: {
+      ...base.value.payload,
+      binding: badRuntimeBinding,
+      authorization: badAuthorization,
+    },
+  };
+}
+
+function signedSupersessionReplayCase(data, badSeat) {
+  const projection = replay(data.entries);
+  const initial = binding(data.brief, 1, 1);
+  const initialEntry = createRuntimeBindingEntry(
+    projection,
+    initial,
+    authorization(data, initial, 1, null, null),
+  );
+  assert.equal(initialEntry.state, "valid", initialEntry.errors?.join(" "));
+  const active = replay([data.entries[0], initialEntry.value]);
+  const replacement = binding(data.brief, 2, 2);
+  const validSupersession = createRuntimeBindingSupersessionEntry(
+    active,
+    initial.bindingId,
+    initial.bindingVersion,
+    replacement,
+    authorization(data, replacement, 2, initial.bindingId, 1),
+  );
+  assert.equal(validSupersession.state, "valid");
+  const badRuntimeBinding = { ...validSupersession.value.payload.binding, seatId: badSeat };
+  const badAuthorization = authorizationWithAuthority(
+    { ...data.coulson, privateKey: data.privateKey },
+    data.brief.missionId,
+    data.brief.subjectId,
+    badRuntimeBinding,
+    2,
+    initial.bindingId,
+    1,
+  );
+  return {
+    baseEntries: [data.entries[0], initialEntry.value],
+    candidate: {
+      ...validSupersession.value,
+      payload: {
+        ...validSupersession.value.payload,
+        binding: badRuntimeBinding,
+        authorization: badAuthorization,
+      },
+    },
+  };
+}
+
 test("journal v6 records one Coulson-authorized active runtime binding", () => {
   const data = fixture();
   const projection = replay(data.entries);
@@ -176,77 +283,97 @@ test("runtime binding recording rejects human, disabled, and unknown owner seat 
       authorization(data, binding(data.brief, 1, 1, { seatId: seat }), 1, null, null),
     );
     assert.equal(checked.state, "invalid");
+    assert.ok(checked.errors?.some((error) => error.includes("Runtime binding seatId is not a canonical dispatchable V0.3 role")));
   }
 });
 
 test("raw replay rejects correctly signed runtime binding records with invalid owner seats", () => {
-  const data = fixture();
-  const projection = replay(data.entries);
-  const base = createRuntimeBindingEntry(projection, binding(data.brief, 1, 1), authorization(data, binding(data.brief, 1, 1), 1, null, null));
-  assert.equal(base.state, "valid", base.errors?.join(" "));
-  const badBinding = { ...binding(data.brief, 1, 1), seatId: "mack" };
-  const coulsonAuthority = { ...data.coulson, privateKey: data.privateKey };
-  const tampered = {
-    ...base.value,
-    payload: {
-      ...base.value.payload,
-      binding: badBinding,
-      authorization: authorizationWithAuthority(
-        coulsonAuthority,
-        data.brief.missionId,
-        data.brief.subjectId,
-        badBinding,
-        1,
-        null,
-        null,
-      ),
-    },
-  };
-  const badReplay = replaySupervisedMissionJournal([data.entries[0], tampered]);
-  assert.equal(badReplay.state, "invalid");
+  for (const seat of ["coulson", "mack", "x"]) {
+    const data = fixture();
+    const candidate = signedBindingReplayCase(data, seat);
+    const replayResult = replaySupervisedMissionJournal([data.entries[0], candidate]);
+    assert.equal(replayResult.state, "invalid");
+    assert.ok(replayResult.errors?.some((error) => error.includes("Runtime binding seatId is not a canonical dispatchable V0.3 role")));
+  }
 });
 
-test("correctly signed invalid runtime replacements do not supersede active bindings", () => {
+test("correctly signed invalid runtime replacements do not supersede active bindings by boundary", () => {
+  for (const seat of ["coulson", "mack", "runtime:bad"]) {
+    const data = fixture();
+    const { baseEntries, candidate } = signedSupersessionReplayCase(data, seat);
+    const replayResult = replaySupervisedMissionJournal([...baseEntries, candidate]);
+    assert.equal(replayResult.state, "invalid");
+    const unchanged = replay(baseEntries);
+    assert.equal(unchanged.runtimeBindings.length, 1);
+    assert.equal(unchanged.activeRuntimeBindings.length, 1);
+    assert.ok(replayResult.errors?.some((error) => error.includes("Runtime binding seatId is not a canonical dispatchable V0.3 role")));
+  }
+});
+
+test("expired signed governance and technical evidence is rejected and leaves readiness unchanged", () => {
   const data = fixture();
-  const projection = replay(data.entries);
-  const initial = binding(data.brief, 1, 1);
-  const initialEntry = createRuntimeBindingEntry(projection, initial, authorization(data, initial, 1, null, null));
-  assert.equal(initialEntry.state, "valid", initialEntry.errors?.join(" "));
-  const activeBegun = createMissionBegunEntry(data.brief, [plainBinding(data.coulson), plainBinding(data.fitz)], 6);
-  const active = replay([activeBegun, initialEntry.value]);
-  const replacement = binding(data.brief, 2, 2);
-  const validSupersession = createRuntimeBindingSupersessionEntry(
-    active,
-    initial.bindingId,
-    initial.bindingVersion,
-    replacement,
-    authorization(data, replacement, 2, initial.bindingId, 1),
-  );
-  assert.equal(validSupersession.state, "valid");
-  const invalidSupersession = structuredClone(validSupersession.value);
-  invalidSupersession.payload.binding.seatId = "oracle";
-  invalidSupersession.payload.authorization.payload = {
-    ...invalidSupersession.payload.authorization.payload,
-    seatId: "oracle",
-    bindingDigest: computeRuntimeBindingDigest(invalidSupersession.payload.binding),
+  const expiredCoulson = {
+    ...data.coulson,
+    validThroughSequence: 0,
+    bindingId: "binding:coulson-expired",
   };
-  invalidSupersession.payload.authorization = authorizationWithAuthority(
-    { ...data.coulson, privateKey: data.privateKey },
-    data.brief.missionId,
-    data.brief.subjectId,
-    invalidSupersession.payload.binding,
-    2,
-    initial.bindingId,
-    1,
-  );
-  assert.equal(replaySupervisedMissionJournal([
-    activeBegun,
-    initialEntry.value,
-    invalidSupersession,
-  ]).state, "invalid");
-  const unchanged = replay([activeBegun, initialEntry.value]);
-  assert.equal(unchanged.runtimeBindings.length, 1);
-  assert.equal(unchanged.activeRuntimeBindings.length, 1);
+  const freshCoulson = generateKeyPairSync("ed25519");
+  const freshCoulsonPublic = freshCoulson.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  const expiredCoulsonBinding = {
+    ...expiredCoulson,
+    signingKeyRef: computeEd25519SigningKeyRef(freshCoulsonPublic),
+    publicKeySpkiBase64: freshCoulsonPublic,
+  };
+  const expiredCoulsonAuthority = {
+    ...expiredCoulsonBinding,
+    privateKey: freshCoulson.privateKey,
+  };
+
+  const expiredFitz = {
+    ...data.fitz,
+    validThroughSequence: 0,
+    bindingId: "binding:fitz-expired",
+  };
+  const freshFitz = generateKeyPairSync("ed25519");
+  const freshFitzPublic = freshFitz.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  const expiredFitzBinding = {
+    ...expiredFitz,
+    signingKeyRef: computeEd25519SigningKeyRef(freshFitzPublic),
+    publicKeySpkiBase64: freshFitzPublic,
+  };
+  const expiredFitzAuthority = {
+    ...expiredFitzBinding,
+    privateKey: freshFitz.privateKey,
+  };
+
+  const projection = replay([
+    createMissionBegunEntry(data.brief, [expiredCoulsonBinding, expiredFitzBinding], 6),
+  ]);
+
+  assert.equal(projection.governance.state, "proposed");
+  assert.equal(projection.readiness.execute.state, "waiting");
+  assert.equal(projection.readiness.accept.state, "waiting");
+
+  const missionAuthorization = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  assert.equal(missionAuthorization !== undefined, true);
+  const governancePayload = evidence(expiredCoulsonAuthority, projection, missionAuthorization, "approved", 1, "expired-coulson");
+  const governanceCommand = createGovernanceEntry(projection, "approve", governancePayload);
+  assert.equal(governanceCommand.state, "invalid", governanceCommand.errors?.join(" "));
+  assert.equal(governanceCommand.code, "binding_invalid");
+
+  const fitzEvidenceRequirement = projection.requirements.find(({ requiredSeatId }) => requiredSeatId === "fitz");
+  assert.equal(fitzEvidenceRequirement !== undefined, true);
+  const fitzEvidence = evidence(expiredFitzAuthority, projection, fitzEvidenceRequirement, "approved", 1, "expired-fitz");
+  const fitzEvidenceEntry = createEvidenceEntry(projection, fitzEvidence);
+  assert.equal(fitzEvidenceEntry.state, "invalid", fitzEvidenceEntry.errors?.join(" "));
+  assert.equal(fitzEvidenceEntry.code, "binding_invalid");
+
+  const after = replay([
+    createMissionBegunEntry(data.brief, [expiredCoulsonBinding, expiredFitzBinding], 6),
+  ]);
+  assert.deepEqual(after.governance, projection.governance);
+  assert.deepEqual(after.evidence, projection.evidence);
+  assert.deepEqual(after.readiness, projection.readiness);
 });
 
 test("expired trusted Coulson binding rejects runtime-binding authorization", () => {
