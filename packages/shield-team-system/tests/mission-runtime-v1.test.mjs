@@ -7,6 +7,7 @@ import {
   computeEd25519SigningKeyRef,
 } from "../dist/mission-v2.mjs";
 import {
+  createProfileAwareExecutionEffectEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   replayProfileAwareMissionJournal,
@@ -16,7 +17,7 @@ import {
   runMissionCycle,
 } from "../dist/mission-runtime-v1.mjs";
 
-function fixture() {
+function fixture({ profileId = "standard" } = {}) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
   const binding = {
@@ -38,13 +39,23 @@ function fixture() {
     objective: "Exercise one runtime cycle.",
     subjectId: "issue:130",
     riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true },
-    participants: [{ seatId: "hill" }, { seatId: "may" }, { seatId: "coulson" }],
+    participants: [
+      { seatId: "hill" },
+      { seatId: "may" },
+      { seatId: "coulson" },
+      ...(profileId === "high_assurance" ? [{ seatId: "fitz" }] : []),
+      ...(profileId === "product_sensitive" ? [{ seatId: "simmons" }] : []),
+    ],
     activatedModes: [],
     requireSimmons: false,
     createdAt: { value: "2026-07-29T17:00:00Z", provenance: "humanRecorded" },
-    profileId: "standard",
+    profileId,
     profileVersion: 1,
-    requiredExecutionGateRoleIds: ["coulson"],
+    requiredExecutionGateRoleIds: profileId === "high_assurance"
+      ? ["coulson", "fitz"]
+      : profileId === "product_sensitive"
+        ? ["coulson", "simmons"]
+        : ["coulson"],
     requiredFinalAcceptanceGateRoleIds: ["coulson"],
     predecessorMissionId: "mission:issue-130",
     predecessorJournalDigest: "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9",
@@ -60,6 +71,7 @@ function input(brief, overrides = {}) {
     repositoryRoot: "/workspace/shield",
     configuredJournalPath: ".shield/runtime-test.jsonl",
     missionId: brief.missionId,
+    expectedSubjectId: brief.subjectId,
     expectedRevisionId: brief.revisionId,
     expectedSequence: 0,
     seatId: "may",
@@ -128,7 +140,7 @@ test("unreadable and stale journals fail closed without fabricated subject ident
   });
   assert.equal(unavailable.outcome, "blocked");
   assert.equal(unavailable.reasonCode, "journal_unavailable");
-  assert.equal(unavailable.subjectId, null);
+  assert.equal(unavailable.subjectId, current.brief.subjectId);
 
   const stale = await runMissionCycle(input(current.brief, {
     expectedRevisionId: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -209,6 +221,237 @@ function authorize(current) {
 function digest(entries) {
   return `sha256:${createHash("sha256").update(canonicalJson(entries)).digest("base64url")}`;
 }
+
+function inertDependencies(current, overrides = {}) {
+  return {
+    readJournal: async () => ({
+      entries: structuredClone(current.entries),
+      projection: structuredClone(current.projection),
+      journalDigest: digest(current.entries),
+    }),
+    appendJournal: async () => { throw new Error("must not append"); },
+    permissionAudit: {
+      ledgerId: "ledger:runtime:inert",
+      read: async () => [],
+      appendIfAbsent: async () => { throw new Error("must not audit"); },
+    },
+    getPermissionContext: async () => { throw new Error("must not authorize"); },
+    executeTool: async () => { throw new Error("must not execute"); },
+    requiredCapabilities: () => [],
+    validate: async () => { throw new Error("must not validate"); },
+    now: () => ({ value: "2026-07-29T17:01:00Z", provenance: "hostTrusted" }),
+    ...overrides,
+  };
+}
+
+test("input validation distinguishes unbound identity from bound malformed input without invoking accessors", async () => {
+  const current = fixture();
+  let accesses = 0;
+  const hostile = {};
+  Object.defineProperty(hostile, "missionId", {
+    enumerable: true,
+    get() {
+      accesses += 1;
+      return current.brief.missionId;
+    },
+  });
+  const unbound = await runMissionCycle(hostile, inertDependencies(current));
+  assert.deepEqual(unbound, {
+    outcome: "blocked",
+    missionId: null,
+    subjectId: null,
+    revisionId: null,
+    sequence: null,
+    accountableNextSeat: null,
+    reasonCode: "input_invalid",
+  });
+  assert.equal(accesses, 0);
+
+  const bound = await runMissionCycle(
+    { ...input(current.brief), unexpected: true },
+    inertDependencies(current),
+  );
+  assert.deepEqual(bound, {
+    outcome: "blocked",
+    missionId: current.brief.missionId,
+    subjectId: current.brief.subjectId,
+    revisionId: current.brief.revisionId,
+    sequence: 0,
+    accountableNextSeat: "coulson",
+    reasonCode: "input_invalid",
+  });
+});
+
+test("subject identity is frozen and stale subject evidence fails before gates", async () => {
+  const current = fixture();
+  const cycleInput = input(current.brief);
+  const pending = runMissionCycle(cycleInput, inertDependencies(current));
+  cycleInput.expectedSubjectId = "issue:mutated";
+  const frozen = await pending;
+  assert.equal(frozen.outcome, "waiting");
+  assert.equal(frozen.subjectId, current.brief.subjectId);
+
+  const stale = await runMissionCycle(
+    input(current.brief, { expectedSubjectId: "issue:other" }),
+    inertDependencies(current),
+  );
+  assert.equal(stale.outcome, "blocked");
+  assert.equal(stale.reasonCode, "stale_subject");
+  assert.equal(stale.accountableNextSeat, "coulson");
+});
+
+test("high-assurance runtime routes the missing frozen execution gate to Fitz", async () => {
+  const current = authorize(fixture({ profileId: "high_assurance" }));
+  const result = await runMissionCycle(
+    input(current.brief, { expectedSequence: 1 }),
+    inertDependencies(current),
+  );
+  assert.equal(result.outcome, "waiting");
+  assert.equal(result.reasonCode, "gate_missing");
+  assert.equal(result.accountableNextSeat, "fitz");
+});
+
+test("any replayed uncertain effect blocks a different action before append or dispatch", async () => {
+  const current = authorize(fixture());
+  current.entries.push({
+    schemaVersion: 9,
+    entryId: `entry:${current.brief.missionId}:2`,
+    missionId: current.brief.missionId,
+    sequence: 2,
+    type: "execution.transition",
+    timestamp: { value: "2026-07-29T17:02:00Z", provenance: "hostTrusted" },
+    payload: { from: "not-started", to: "running" },
+  });
+  let replayed = replayProfileAwareMissionJournal(current.entries);
+  assert.equal(replayed.state, "valid", replayed.errors?.join(" "));
+  current.projection = replayed.value;
+  const uncertain = createProfileAwareExecutionEffectEntryV1({
+    projection: current.projection,
+    candidate: {
+      runnerContractVersion: 1,
+      candidateKind: "runner.supervised_effect_record",
+      authority: "non_authoritative",
+      journalSchemaVersion: 9,
+      missionId: current.brief.missionId,
+      subjectId: current.brief.subjectId,
+      revisionId: current.brief.revisionId,
+      expectedPreviousSequence: 2,
+      intendedJournalSequence: 3,
+      payload: {
+        runnerContractVersion: 1,
+        cycleId: "cycle:prior",
+        subjectId: current.brief.subjectId,
+        revisionId: current.brief.revisionId,
+        evaluatedThroughSequence: 2,
+        seatId: "may",
+        actionId: "prior-action",
+        effectClass: "behavioral_implementation",
+        effectKey: "effect:prior",
+        authorizationDecisionId: "decision:prior",
+        outcome: "uncertain",
+        reasonCode: "executor_uncertain",
+        summary: "Prior dispatch is uncertain.",
+        evidenceRefs: ["evidence:prior"],
+      },
+    },
+    timestamp: { value: "2026-07-29T17:03:00Z", provenance: "hostTrusted" },
+  });
+  current.entries.push(uncertain);
+  replayed = replayProfileAwareMissionJournal(current.entries);
+  assert.equal(replayed.state, "valid", replayed.errors?.join(" "));
+  current.projection = replayed.value;
+  let appends = 0;
+  let executions = 0;
+  const result = await runMissionCycle(
+    input(current.brief, {
+      expectedSequence: 1,
+      actionId: "different-action",
+      validationId: "validation:different",
+    }),
+    inertDependencies(current, {
+      appendJournal: async () => { appends += 1; throw new Error("must not append"); },
+      executeTool: async () => { executions += 1; throw new Error("must not execute"); },
+    }),
+  );
+  assert.equal(result.outcome, "uncertain");
+  assert.equal(result.reasonCode, "effect_outcome_uncertain");
+  assert.equal(result.accountableNextSeat, "coulson");
+  assert.equal(appends, 0);
+  assert.equal(executions, 0);
+});
+
+test("legacy invocation at the same tuple prevents redispatch and a different decision conflicts before gates", async () => {
+  const current = fixture();
+  const cycleInput = input(current.brief);
+  const identity = deriveMissionCycleIdentityV1(cycleInput);
+  const baseRecord = {
+    schemaVersion: 1,
+    recordType: "tool.invocation",
+    authority: "non_authoritative",
+    ledgerId: "ledger:runtime:legacy",
+    recordedAt: "2026-07-29T17:01:00Z",
+    decisionId: identity.decisionId,
+    outcome: "allow",
+    missionId: current.brief.missionId,
+    subjectId: current.brief.subjectId,
+    seatId: "may",
+    reasoningRuntimeId: "runtime:ornith:may",
+    toolExecutorId: "executor:codex-host",
+    bindingId: "binding:runtime",
+    bindingVersion: 1,
+    repositoryId: "repo:shield",
+    canonicalWritableRoot: "/workspace/shield",
+    branch: "codex/issue-130-runtime-v2",
+    revisionId: current.brief.revisionId,
+    journalSequence: 0,
+    actionId: cycleInput.actionId,
+    effectClass: cycleInput.effectClass,
+    effectKey: identity.effectKey,
+    approvedScope: [],
+    summary: null,
+    evidenceRefs: [],
+  };
+  const permissionAudit = await import("../dist/permission-audit-v1.mjs");
+  const legacy = permissionAudit.createPermissionAuditRecord({
+    ...baseRecord,
+    recordId: `audit-invocation:${identity.decisionId}`,
+  });
+  const legacyDecision = permissionAudit.createPermissionAuditRecord({
+    ...baseRecord,
+    recordId: `audit:${identity.decisionId}`,
+    recordType: "permission.decision",
+  });
+  const uncertain = await runMissionCycle(cycleInput, inertDependencies(current, {
+    permissionAudit: {
+      ledgerId: legacy.ledgerId,
+      read: async () => [legacyDecision, legacy],
+      appendIfAbsent: async () => { throw new Error("must not audit"); },
+    },
+  }));
+  assert.equal(uncertain.outcome, "uncertain");
+  assert.equal(uncertain.reasonCode, "audit_incomplete");
+
+  const conflict = permissionAudit.createPermissionAuditRecord({
+    ...baseRecord,
+    recordId: "audit-invocation:decision:other",
+    decisionId: "decision:other",
+  });
+  const conflictDecision = permissionAudit.createPermissionAuditRecord({
+    ...baseRecord,
+    recordId: "audit:decision:other",
+    recordType: "permission.decision",
+    decisionId: "decision:other",
+  });
+  const blocked = await runMissionCycle(cycleInput, inertDependencies(current, {
+    permissionAudit: {
+      ledgerId: conflict.ledgerId,
+      read: async () => [conflictDecision, conflict],
+      appendIfAbsent: async () => { throw new Error("must not audit"); },
+    },
+  }));
+  assert.equal(blocked.outcome, "blocked");
+  assert.equal(blocked.reasonCode, "invocation_claim_conflict");
+});
 
 test("authorized runtime appends transition and effect once, verifies readback, and completes on replay", async () => {
   const current = authorize(fixture());

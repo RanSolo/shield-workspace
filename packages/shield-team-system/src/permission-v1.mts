@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 
 import type { RunnerCyclePlan, RunnerEffectClass, RunnerPermissionDecision, RunnerExecutorResult, RunnerInvocationClaimResult, RunnerOpaqueAuthorizationArtifact, RunnerJsonValue } from "./runner-v1.mjs";
-import { validateRunnerExecutorResult, validateRunnerPermissionDecision } from "./runner-v1.mjs";
+import { validateRunnerCyclePlan, validateRunnerExecutorResult, validateRunnerPermissionDecision } from "./runner-v1.mjs";
 import {
   createPermissionAuditRecord,
   replayPermissionAuditLedger,
   validatePermissionAuditReceipt,
   type PermissionAuditAppender,
   type PermissionAuditRecord,
+  type PermissionAuditReceipt,
 } from "./permission-audit-v1.mjs";
 
 export const PERMISSION_CONTRACT_VERSION = 1 as const;
@@ -144,6 +145,46 @@ const ARTIFACT_FIELDS = ["permissionContractVersion", "decisionId", "reasonCode"
 
 function plain(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function copyJson<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => copyJson(item)) as T;
+  if (plain(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, copyJson(item)]),
+    ) as T;
+  }
+  return value;
+}
+
+function freezeJson<T>(value: T): T {
+  if (Array.isArray(value)) {
+    for (const item of value) freezeJson(item);
+    return Object.freeze(value) as T;
+  }
+  if (plain(value)) {
+    for (const item of Object.values(value)) freezeJson(item);
+    return Object.freeze(value) as T;
+  }
+  return value;
+}
+
+function immutableJsonCopy<T>(value: T): T {
+  return freezeJson(copyJson(value));
+}
+
+function canonicalComparable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => canonicalComparable(item));
+  if (plain(value)) {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalComparable(value[key])]),
+    );
+  }
+  return value;
+}
+
+function sameCanonical(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalComparable(left)) === JSON.stringify(canonicalComparable(right));
 }
 
 function exact(value: unknown, fields: readonly string[], label: string): string[] {
@@ -388,7 +429,7 @@ export function runtimeInvocationClaimRecordIdV1(
   revisionId: string,
   journalSequence: number,
 ): string {
-  return `audit-invocation:${runtimeInvocationClaimDigest(missionId, revisionId, journalSequence)}`;
+  return `runtime-invocation:${runtimeInvocationClaimDigest(missionId, revisionId, journalSequence)}`;
 }
 
 export function replayRuntimeInvocationClaimsV1(input: unknown): PermissionResult<PermissionAuditRecord[]> {
@@ -396,7 +437,7 @@ export function replayRuntimeInvocationClaimsV1(input: unknown): PermissionResul
   if (replayed.state === "invalid") return replayed;
   const claims = new Set<string>();
   for (const record of replayed.value) {
-    if (record.recordType !== "tool.invocation" || !record.recordId.startsWith("audit-invocation:sha256:")) continue;
+    if (record.recordType !== "tool.invocation" || !record.recordId.startsWith("runtime-invocation:sha256:")) continue;
     const expected = runtimeInvocationClaimRecordIdV1(
       record.missionId,
       record.revisionId,
@@ -433,8 +474,12 @@ export function createRuntimeClaimedExecutorV1(
   ): Promise<RunnerExecutorResult>;
 } {
   const claims = new Map<string, {
+    plan: RunnerCyclePlan;
+    decision: RunnerPermissionDecision;
     context: PermissionInvocationContext;
     binding: RuntimeBinding;
+    invocation: PermissionAuditRecord;
+    receipt: PermissionAuditReceipt;
   }>();
   const consumed = new Set<string>();
   const failed = (plan: RunnerCyclePlan, summary: string): RunnerExecutorResult => ({
@@ -455,31 +500,43 @@ export function createRuntimeClaimedExecutorV1(
 
   return {
     async claim(plan, decision) {
-      if (claims.has(decision.decisionId) || consumed.has(decision.decisionId)) {
+      const checkedPlan = validateRunnerCyclePlan(plan);
+      const checkedDecision = validateRunnerPermissionDecision(decision);
+      if (checkedPlan.state === "invalid" || checkedDecision.state === "invalid") {
+        return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_failed" };
+      }
+      const planSnapshot = immutableJsonCopy(checkedPlan.value);
+      const decisionSnapshot = immutableJsonCopy(checkedDecision.value);
+      if (claims.has(decisionSnapshot.decisionId) || consumed.has(decisionSnapshot.decisionId)) {
         return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_conflict" };
       }
       let context: PermissionInvocationContext;
       try {
-        const checked = validatePermissionInvocationContext(await dependencies.getContext(decision));
+        const checked = validatePermissionInvocationContext(await dependencies.getContext(decisionSnapshot));
         if (checked.state === "invalid") {
           return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_failed" };
         }
-        context = checked.value;
+        context = immutableJsonCopy(checked.value);
       } catch {
         return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_failed" };
       }
-      const binding = exactDecision(plan, decision, context);
+      const binding = exactDecision(planSnapshot, decisionSnapshot, context);
       if (binding === null) {
         return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_failed" };
       }
+      const bindingSnapshot = immutableJsonCopy(binding);
       const invocation = auditRecord(
-        plan,
+        planSnapshot,
         context,
-        binding,
+        bindingSnapshot,
         dependencies.ledgerId,
         "tool.invocation",
         "allow",
-        runtimeInvocationClaimRecordIdV1(plan.missionId, plan.revisionId, plan.evaluatedThroughSequence),
+        runtimeInvocationClaimRecordIdV1(
+          planSnapshot.missionId,
+          planSnapshot.revisionId,
+          planSnapshot.evaluatedThroughSequence,
+        ),
         context.evaluatedAt,
         null,
         context.attestations.map(({ attestationId }) => attestationId).sort(),
@@ -493,37 +550,77 @@ export function createRuntimeClaimedExecutorV1(
       if (validatePermissionAuditReceipt(receipt, invocation).state === "invalid") {
         return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_conflict" };
       }
-      claims.set(decision.decisionId, { context, binding });
+      const receiptSnapshot = immutableJsonCopy(receipt as PermissionAuditReceipt);
+      claims.set(decisionSnapshot.decisionId, {
+        plan: planSnapshot,
+        decision: decisionSnapshot,
+        context,
+        binding: bindingSnapshot,
+        invocation: immutableJsonCopy(invocation),
+        receipt: receiptSnapshot,
+      });
       return { runnerContractVersion: 1, outcome: "claimed" };
     },
 
     async execute(plan, decision) {
-      const claimed = claims.get(decision.decisionId);
-      if (claimed === undefined || consumed.has(decision.decisionId)) {
+      const checkedPlan = validateRunnerCyclePlan(plan);
+      const checkedDecision = validateRunnerPermissionDecision(decision);
+      if (checkedPlan.state === "invalid" || checkedDecision.state === "invalid") {
         return failed(plan, "Runtime invocation claim is unavailable or already consumed; tool invocation was not attempted.");
+      }
+      const planSnapshot = immutableJsonCopy(checkedPlan.value);
+      const decisionSnapshot = immutableJsonCopy(checkedDecision.value);
+      const claimed = claims.get(decisionSnapshot.decisionId);
+      if (claimed === undefined || consumed.has(decisionSnapshot.decisionId)) {
+        return failed(planSnapshot, "Runtime invocation claim is unavailable or already consumed; tool invocation was not attempted.");
+      }
+      if (!sameCanonical(planSnapshot, claimed.plan) ||
+          !sameCanonical(decisionSnapshot, claimed.decision) ||
+          validatePermissionAuditReceipt(claimed.receipt, claimed.invocation).state === "invalid") {
+        return failed(planSnapshot, "Runtime invocation claim identity changed; tool invocation was not attempted.");
       }
       let freshContext: PermissionInvocationContext;
       try {
-        const checked = validatePermissionInvocationContext(await dependencies.getContext(decision));
+        const checked = validatePermissionInvocationContext(await dependencies.getContext(decisionSnapshot));
         if (checked.state === "invalid") {
-          return failed(plan, "Fresh permission context is malformed; claimed tool invocation was not attempted.");
+          return failed(planSnapshot, "Fresh permission context is malformed; claimed tool invocation was not attempted.");
         }
-        freshContext = checked.value;
+        freshContext = immutableJsonCopy(checked.value);
       } catch {
-        return failed(plan, "Fresh permission context could not be acquired; claimed tool invocation was not attempted.");
+        return failed(planSnapshot, "Fresh permission context could not be acquired; claimed tool invocation was not attempted.");
       }
-      const binding = exactDecision(plan, decision, freshContext);
+      const binding = exactDecision(planSnapshot, decisionSnapshot, freshContext);
+      const reconstructedInvocation = binding === null
+        ? null
+        : auditRecord(
+            planSnapshot,
+            freshContext,
+            binding,
+            dependencies.ledgerId,
+            "tool.invocation",
+            "allow",
+            runtimeInvocationClaimRecordIdV1(
+              planSnapshot.missionId,
+              planSnapshot.revisionId,
+              planSnapshot.evaluatedThroughSequence,
+            ),
+            freshContext.evaluatedAt,
+            null,
+            freshContext.attestations.map(({ attestationId }) => attestationId).sort(),
+          );
       if (binding === null ||
-          binding.bindingId !== claimed.binding.bindingId ||
-          binding.bindingVersion !== claimed.binding.bindingVersion ||
-          freshContext.decisionId !== claimed.context.decisionId) {
-        return failed(plan, "Permission changed after the runtime invocation claim; tool invocation was not attempted.");
+          !sameCanonical(binding, claimed.binding) ||
+          !sameCanonical(freshContext, claimed.context) ||
+          reconstructedInvocation === null ||
+          !sameCanonical(reconstructedInvocation, claimed.invocation) ||
+          validatePermissionAuditReceipt(claimed.receipt, reconstructedInvocation).state === "invalid") {
+        return failed(planSnapshot, "Permission changed after the runtime invocation claim; tool invocation was not attempted.");
       }
-      consumed.add(decision.decisionId);
-      claims.delete(decision.decisionId);
+      consumed.add(decisionSnapshot.decisionId);
+      claims.delete(decisionSnapshot.decisionId);
       let raw: unknown;
       try {
-        raw = await dependencies.execute(plan, decision);
+        raw = await dependencies.execute(planSnapshot, decisionSnapshot);
       } catch {
         raw = null;
       }
@@ -531,23 +628,24 @@ export function createRuntimeClaimedExecutorV1(
       const result: RunnerExecutorResult = checked.state === "valid"
         ? checked.value
         : {
-            ...failed(plan, "Executor result is unavailable or malformed; effect outcome is uncertain."),
+            ...failed(planSnapshot, "Executor result is unavailable or malformed; effect outcome is uncertain."),
             outcome: "uncertain",
-            evidenceRefs: [plan.cycleId],
+            evidenceRefs: [planSnapshot.cycleId],
           };
-      const record = auditRecord(
-        plan,
-        freshContext,
-        binding,
-        dependencies.ledgerId,
-        "tool.result",
-        result.outcome,
-        `audit-result:${decision.decisionId}`,
-        dependencies.now(),
-        result.summary,
-        result.evidenceRefs,
-      );
+      let record: PermissionAuditRecord;
       try {
+        record = auditRecord(
+          planSnapshot,
+          freshContext,
+          binding,
+          dependencies.ledgerId,
+          "tool.result",
+          result.outcome,
+          `audit-result:${decisionSnapshot.decisionId}`,
+          dependencies.now(),
+          result.summary,
+          result.evidenceRefs,
+        );
         const receipt = await dependencies.appendIfAbsent(record);
         if (validatePermissionAuditReceipt(receipt, record).state === "invalid") throw new Error("receipt");
       } catch {
@@ -555,7 +653,7 @@ export function createRuntimeClaimedExecutorV1(
           ...result,
           outcome: "uncertain",
           summary: "Tool result audit append was not durably verified; effect outcome is uncertain.",
-          evidenceRefs: [...new Set([plan.cycleId, ...result.evidenceRefs])].slice(0, 16),
+          evidenceRefs: [...new Set([planSnapshot.cycleId, ...result.evidenceRefs])].slice(0, 16),
         };
       }
       return result;

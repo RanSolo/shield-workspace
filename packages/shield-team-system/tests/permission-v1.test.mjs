@@ -345,7 +345,7 @@ test("runtime-v2 claim record atomically excludes a different decision at the sa
   });
   assert.match(
     [...ledger.values()].find(({ recordType }) => recordType === "tool.invocation").recordId,
-    /^audit-invocation:sha256:[A-Za-z0-9_-]{43}$/,
+    /^runtime-invocation:sha256:[A-Za-z0-9_-]{43}$/,
   );
   assert.equal(
     runtimeInvocationClaimRecordIdV1(plan().missionId, revisionId, 5),
@@ -354,4 +354,97 @@ test("runtime-v2 claim record atomically excludes a different decision at the sa
   assert.equal((await first.execute(plan(), firstDecision)).outcome, "completed");
   assert.equal(calls, 1);
   assert.equal(replayRuntimeInvocationClaimsV1([...ledger.values()]).state, "valid");
+});
+
+test("runtime claim execution rejects plan or context substitution before the raw executor", async () => {
+  const records = new Map();
+  const appendIfAbsent = async (record) => {
+    if (records.has(record.recordId)) return { appended: false };
+    records.set(record.recordId, record);
+    return receipt(record, records.size - 1);
+  };
+  let currentContext = context({ journalSchemaVersion: 9 });
+  const currentPlan = plan();
+  const decision = await createPermissionAuthorizer({
+    ledgerId: "ledger:runtime-exact:test",
+    appendIfAbsent,
+    getContext: () => currentContext,
+  })(currentPlan);
+  let calls = 0;
+  const claimed = createRuntimeClaimedExecutorV1({
+    ledgerId: "ledger:runtime-exact:test",
+    appendIfAbsent,
+    getContext: () => currentContext,
+    execute: (executedPlan) => {
+      calls += 1;
+      return {
+        runnerContractVersion: 1,
+        outcome: "completed",
+        missionId: executedPlan.missionId,
+        subjectId: executedPlan.subjectId,
+        revisionId: executedPlan.revisionId,
+        evaluatedThroughSequence: executedPlan.evaluatedThroughSequence,
+        cycleId: executedPlan.cycleId,
+        seatId: executedPlan.seatId,
+        actionId: executedPlan.actionId,
+        effectClass: executedPlan.effectClass,
+        effectKey: executedPlan.effectKey,
+        summary: "Exact claim executed.",
+        evidenceRefs: ["evidence:exact-claim"],
+      };
+    },
+    now: () => "2026-07-20T02:06:00Z",
+  });
+  assert.equal((await claimed.claim(currentPlan, decision)).outcome, "claimed");
+  const substitutedPlan = { ...currentPlan, validationId: "validation:substituted" };
+  assert.equal((await claimed.execute(substitutedPlan, decision)).outcome, "failed");
+  assert.equal(calls, 0);
+
+  currentContext = { ...currentContext, evaluatedAt: "2026-07-20T02:05:01Z" };
+  assert.equal((await claimed.execute(currentPlan, decision)).outcome, "failed");
+  assert.equal(calls, 0);
+
+  currentContext = context({ journalSchemaVersion: 9 });
+  assert.equal((await claimed.execute(currentPlan, decision)).outcome, "completed");
+  assert.equal(calls, 1);
+});
+
+test("legacy audit-invocation records remain legacy in runtime-claim replay", () => {
+  const base = {
+    ledgerId: "ledger:legacy-runtime:test",
+    recordedAt: "2026-07-20T02:05:00Z",
+    decisionId: "decision:legacy",
+    missionId: "mission:issue-10",
+    subjectId: "issue:10",
+    seatId: "may",
+    reasoningRuntimeId: "runtime:ornith:may",
+    toolExecutorId: "executor:codex-host",
+    bindingId: "runtime-binding:may",
+    bindingVersion: 1,
+    repositoryId: "repo:RanSolo/shield-workspace",
+    canonicalWritableRoot: "/workspace/shield-workspace",
+    branch: "codex/issue-10-shield-benchmark",
+    revisionId,
+    journalSequence: 5,
+    actionId: "edit-permission-boundary",
+    effectClass: "behavioral_implementation",
+    effectKey: "effect:issue-10:permission",
+    approvedScope: [],
+    summary: null,
+    evidenceRefs: [],
+  };
+  const decision = createPermissionAuditRecord({
+    ...base,
+    recordId: "audit:decision:legacy",
+    recordType: "permission.decision",
+    outcome: "allow",
+  });
+  const legacy = createPermissionAuditRecord({
+    ...base,
+    recordId: "audit-invocation:sha256:not-a-runtime-claim",
+    recordType: "tool.invocation",
+    outcome: "allow",
+  });
+  assert.equal(replayPermissionAuditLedger([decision, legacy]).state, "valid");
+  assert.equal(replayRuntimeInvocationClaimsV1([decision, legacy]).state, "valid");
 });

@@ -31,6 +31,7 @@ export interface MissionCycleInputV1 {
   repositoryRoot: string;
   configuredJournalPath: string;
   missionId: string;
+  expectedSubjectId: string;
   expectedRevisionId: string;
   expectedSequence: number;
   seatId: string;
@@ -90,6 +91,8 @@ export type MissionCycleReasonCodeV1 =
   | "mission_authorization_required"
   | "gate_missing"
   | RunnerStopReason
+  | "input_invalid"
+  | "stale_subject"
   | "stale_revision"
   | "stale_sequence"
   | "duplicate_effect"
@@ -106,6 +109,15 @@ export type MissionCycleReasonCodeV1 =
 
 export type MissionCycleResultV1 =
   | {
+      outcome: "blocked";
+      missionId: null;
+      subjectId: null;
+      revisionId: null;
+      sequence: null;
+      accountableNextSeat: null;
+      reasonCode: "input_invalid";
+    }
+  | {
       outcome: "advanced";
       missionId: string;
       subjectId: string;
@@ -118,7 +130,7 @@ export type MissionCycleResultV1 =
   | {
       outcome: "waiting" | "blocked" | "uncertain" | "complete";
       missionId: string;
-      subjectId: string | null;
+      subjectId: string;
       revisionId: string;
       sequence: number;
       accountableNextSeat: string | null;
@@ -129,6 +141,290 @@ interface DerivedIdentity {
   cycleId: string;
   effectKey: string;
   decisionId: string;
+}
+
+interface MissionIdentityEnvelopeV1 {
+  missionId: string;
+  expectedSubjectId: string;
+  expectedRevisionId: string;
+  expectedSequence: number;
+}
+
+const INPUT_FIELDS = [
+  "repositoryRoot",
+  "configuredJournalPath",
+  "missionId",
+  "expectedSubjectId",
+  "expectedRevisionId",
+  "expectedSequence",
+  "seatId",
+  "actionId",
+  "effectClass",
+  "validationId",
+  "activatedModes",
+  "actionAllowlist",
+] as const;
+const DEPENDENCY_FIELDS = [
+  "readJournal",
+  "appendJournal",
+  "permissionAudit",
+  "getPermissionContext",
+  "executeTool",
+  "requiredCapabilities",
+  "validate",
+  "now",
+] as const;
+const PERMISSION_AUDIT_FIELDS = ["ledgerId", "read", "appendIfAbsent"] as const;
+const MODE_FIELDS = ["modeId", "modeVersion", "seatId", "activationSource"] as const;
+const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/;
+const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/;
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+const EFFECT_CLASSES = new Set<RunnerEffectClass>([
+  "behavioral_implementation",
+  "verification",
+  "coordination",
+]);
+
+function safeDataObject(
+  value: unknown,
+  fields: readonly string[],
+): { state: "valid"; values: Record<string, unknown> } | { state: "invalid" } {
+  try {
+    if (value === null ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype) {
+      return { state: "invalid" };
+    }
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== fields.length ||
+        keys.some((key) => typeof key !== "string" || !fields.includes(key))) {
+      return { state: "invalid" };
+    }
+    const values: Record<string, unknown> = {};
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
+        return { state: "invalid" };
+      }
+      values[field] = descriptor.value;
+    }
+    return { state: "valid", values };
+  } catch {
+    return { state: "invalid" };
+  }
+}
+
+function safeArrayValues(value: unknown): unknown[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return null;
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) =>
+      key !== "length" &&
+      (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(key)))) {
+      return null;
+    }
+    const values: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return null;
+      values.push(descriptor.value);
+    }
+    return values;
+  } catch {
+    return null;
+  }
+}
+
+function safeJsonCopy(value: unknown): unknown | null {
+  if (value === null ||
+      typeof value === "string" ||
+      typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value))) {
+    return value;
+  }
+  const array = safeArrayValues(value);
+  if (array !== null) {
+    const copy: unknown[] = [];
+    for (const item of array) {
+      const itemCopy = safeJsonCopy(item);
+      if (itemCopy === null && item !== null) return null;
+      copy.push(itemCopy);
+    }
+    return Object.freeze(copy);
+  }
+  try {
+    if (value === null ||
+        typeof value !== "object" ||
+        Object.getPrototypeOf(value) !== Object.prototype) {
+      return null;
+    }
+    const copy: Record<string, unknown> = {};
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") return null;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return null;
+      const itemCopy = safeJsonCopy(descriptor.value);
+      if (itemCopy === null && descriptor.value !== null) return null;
+      copy[key] = itemCopy;
+    }
+    return Object.freeze(copy);
+  } catch {
+    return null;
+  }
+}
+
+function validIdentifier(value: unknown): value is string {
+  return typeof value === "string" && IDENTIFIER.test(value);
+}
+
+function inspectIdentityEnvelope(input: unknown): MissionIdentityEnvelopeV1 | null {
+  try {
+    if (input === null ||
+        typeof input !== "object" ||
+        Array.isArray(input) ||
+        Object.getPrototypeOf(input) !== Object.prototype) {
+      return null;
+    }
+    const values: Record<string, unknown> = {};
+    for (const field of ["missionId", "expectedSubjectId", "expectedRevisionId", "expectedSequence"] as const) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, field);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return null;
+      values[field] = descriptor.value;
+    }
+    if (!validIdentifier(values.missionId) ||
+        !validIdentifier(values.expectedSubjectId) ||
+        typeof values.expectedRevisionId !== "string" ||
+        !REVISION.test(values.expectedRevisionId) ||
+        !Number.isSafeInteger(values.expectedSequence) ||
+        (values.expectedSequence as number) < 0) {
+      return null;
+    }
+    return Object.freeze(values) as unknown as MissionIdentityEnvelopeV1;
+  } catch {
+    return null;
+  }
+}
+
+function validateAndFreezeInput(input: unknown): MissionCycleInputV1 | null {
+  const checked = safeDataObject(input, INPUT_FIELDS);
+  if (checked.state === "invalid") return null;
+  const value = checked.values;
+  if (!validIdentifier(value.missionId) ||
+      !validIdentifier(value.expectedSubjectId) ||
+      typeof value.expectedRevisionId !== "string" ||
+      !REVISION.test(value.expectedRevisionId) ||
+      !Number.isSafeInteger(value.expectedSequence) ||
+      (value.expectedSequence as number) < 0 ||
+      typeof value.repositoryRoot !== "string" ||
+      !value.repositoryRoot.startsWith("/") ||
+      value.repositoryRoot.includes("\0") ||
+      typeof value.configuredJournalPath !== "string" ||
+      value.configuredJournalPath.length === 0 ||
+      value.configuredJournalPath.includes("\0") ||
+      !validIdentifier(value.seatId) ||
+      !validIdentifier(value.actionId) ||
+      !EFFECT_CLASSES.has(value.effectClass as RunnerEffectClass) ||
+      !validIdentifier(value.validationId)) {
+    return null;
+  }
+  const modes = safeArrayValues(value.activatedModes);
+  const allowlist = safeArrayValues(value.actionAllowlist);
+  if (modes === null || allowlist === null ||
+      allowlist.some((action) => !validIdentifier(action)) ||
+      new Set(allowlist).size !== allowlist.length) {
+    return null;
+  }
+  const frozenModes: RunnerModeReference[] = [];
+  for (const mode of modes) {
+    const checkedMode = safeDataObject(mode, MODE_FIELDS);
+    if (checkedMode.state === "invalid" ||
+        !MODE_FIELDS.every((field) => validIdentifier(checkedMode.values[field]))) {
+      return null;
+    }
+    frozenModes.push(Object.freeze({ ...checkedMode.values }) as unknown as RunnerModeReference);
+  }
+  return Object.freeze({
+    repositoryRoot: value.repositoryRoot,
+    configuredJournalPath: value.configuredJournalPath,
+    missionId: value.missionId,
+    expectedSubjectId: value.expectedSubjectId,
+    expectedRevisionId: value.expectedRevisionId,
+    expectedSequence: value.expectedSequence,
+    seatId: value.seatId,
+    actionId: value.actionId,
+    effectClass: value.effectClass,
+    validationId: value.validationId,
+    activatedModes: Object.freeze(frozenModes),
+    actionAllowlist: Object.freeze([...allowlist]),
+  }) as MissionCycleInputV1;
+}
+
+function validateAndFreezeDependencies(
+  dependencies: unknown,
+): MissionCycleDependenciesV1 | null {
+  const checked = safeDataObject(dependencies, DEPENDENCY_FIELDS);
+  if (checked.state === "invalid") return null;
+  const audit = safeDataObject(checked.values.permissionAudit, PERMISSION_AUDIT_FIELDS);
+  if (audit.state === "invalid" ||
+      !validIdentifier(audit.values.ledgerId) ||
+      typeof audit.values.read !== "function" ||
+      typeof audit.values.appendIfAbsent !== "function" ||
+      DEPENDENCY_FIELDS.filter((field) => field !== "permissionAudit")
+        .some((field) => typeof checked.values[field] !== "function")) {
+    return null;
+  }
+  return Object.freeze({
+    readJournal: checked.values.readJournal,
+    appendJournal: checked.values.appendJournal,
+    permissionAudit: Object.freeze({
+      ledgerId: audit.values.ledgerId,
+      read: audit.values.read,
+      appendIfAbsent: audit.values.appendIfAbsent,
+    }),
+    getPermissionContext: checked.values.getPermissionContext,
+    executeTool: checked.values.executeTool,
+    requiredCapabilities: checked.values.requiredCapabilities,
+    validate: checked.values.validate,
+    now: checked.values.now,
+  }) as MissionCycleDependenciesV1;
+}
+
+function timestamp(value: unknown): EvidenceTimestamp | null {
+  const checked = safeDataObject(value, ["value", "provenance"]);
+  if (checked.state === "invalid" ||
+      typeof checked.values.value !== "string" ||
+      !ISO_UTC.test(checked.values.value) ||
+      !Number.isFinite(Date.parse(checked.values.value)) ||
+      (checked.values.provenance !== "humanRecorded" &&
+       checked.values.provenance !== "hostTrusted")) {
+    return null;
+  }
+  return Object.freeze({ ...checked.values }) as unknown as EvidenceTimestamp;
+}
+
+function boundInputInvalid(identity: MissionIdentityEnvelopeV1): MissionCycleResultV1 {
+  return {
+    outcome: "blocked",
+    missionId: identity.missionId,
+    subjectId: identity.expectedSubjectId,
+    revisionId: identity.expectedRevisionId,
+    sequence: identity.expectedSequence,
+    accountableNextSeat: "coulson",
+    reasonCode: "input_invalid",
+  };
+}
+
+function unboundInputInvalid(): MissionCycleResultV1 {
+  return {
+    outcome: "blocked",
+    missionId: null,
+    subjectId: null,
+    revisionId: null,
+    sequence: null,
+    accountableNextSeat: null,
+    reasonCode: "input_invalid",
+  };
 }
 
 function digestIdentity(domain: string, value: unknown): string {
@@ -235,11 +531,18 @@ async function readValidated(
   dependencies: MissionCycleDependenciesV1,
 ): Promise<ProfileAwareJournalSnapshotV1 | null> {
   try {
-    const snapshot = await dependencies.readJournal({
+    const rawSnapshot = await dependencies.readJournal({
       repositoryRoot: input.repositoryRoot,
       configuredJournalPath: input.configuredJournalPath,
       missionId: input.missionId,
     });
+    const copied = safeJsonCopy(rawSnapshot);
+    if (copied === null || typeof copied !== "object") return null;
+    const snapshot = copied as ProfileAwareJournalSnapshotV1;
+    if (typeof snapshot.journalDigest !== "string" ||
+        !/^sha256:(?:[A-Fa-f0-9]{64}|[A-Za-z0-9_-]{43})$/.test(snapshot.journalDigest)) {
+      return null;
+    }
     const replayed = replayProfileAwareMissionJournal(snapshot.entries);
     if (replayed.state === "invalid" ||
         canonicalJson(replayed.value) !== canonicalJson(snapshot.projection) ||
@@ -250,6 +553,32 @@ async function readValidated(
   } catch {
     return null;
   }
+}
+
+function appendResult(value: unknown): MissionJournalAppendResultV1 | null {
+  const copied = safeJsonCopy(value);
+  if (copied === null || typeof copied !== "object" || Array.isArray(copied)) return null;
+  const result = copied as MissionJournalAppendResultV1;
+  if (result.state === "appended") {
+    return typeof result.journalPath === "string" ? result : null;
+  }
+  if (result.state === "blocked") {
+    return (result.code === "journal_lock_held" ||
+      result.code === "journal_unavailable" ||
+      result.code === "stale_sequence") &&
+      Array.isArray(result.errors) &&
+      result.errors.every((error) => typeof error === "string")
+      ? result
+      : null;
+  }
+  if (result.state === "uncertain") {
+    return result.code === "recovery_required" &&
+      Array.isArray(result.errors) &&
+      result.errors.every((error) => typeof error === "string")
+      ? result
+      : null;
+  }
+  return null;
 }
 
 function sameCapabilities(left: string[], right: string[]): boolean {
@@ -278,16 +607,17 @@ function preDispatchOutcome(
   return stopped(projection, "blocked", requestedSeatReasons.has(reason) ? requestedSeat : "coulson", reason);
 }
 
-export async function runMissionCycle(
+async function runMissionCycleValidated(
   input: MissionCycleInputV1,
   dependencies: MissionCycleDependenciesV1,
+  phase: { postClaim: boolean },
 ): Promise<MissionCycleResultV1> {
   let snapshot = await readValidated(input, dependencies);
   if (snapshot === null) {
     return {
       outcome: "blocked",
       missionId: input.missionId,
-      subjectId: null,
+      subjectId: input.expectedSubjectId,
       revisionId: input.expectedRevisionId,
       sequence: input.expectedSequence,
       accountableNextSeat: "coulson",
@@ -295,6 +625,9 @@ export async function runMissionCycle(
     };
   }
   let projection = snapshot.projection;
+  if (projection.brief.subjectId !== input.expectedSubjectId) {
+    return stopped(projection, "blocked", "coulson", "stale_subject");
+  }
   if (projection.brief.revisionId !== input.expectedRevisionId) {
     return stopped(projection, "blocked", "coulson", "stale_revision");
   }
@@ -325,6 +658,14 @@ export async function runMissionCycle(
   } catch {
     return stopped(projection, "blocked", "coulson", "audit_invalid");
   }
+  const tupleInvocations = audit.filter((record) =>
+    record.recordType === "tool.invocation" &&
+    record.missionId === input.missionId &&
+    record.revisionId === input.expectedRevisionId &&
+    record.journalSequence === runningSequence);
+  if (tupleInvocations.some(({ decisionId }) => decisionId !== identity.decisionId)) {
+    return stopped(projection, "blocked", "coulson", "invocation_claim_conflict");
+  }
   const decisionRecords = audit.filter(({ decisionId }) => decisionId === identity.decisionId);
   const invocation = decisionRecords.find(({ recordType }) => recordType === "tool.invocation");
   const result = decisionRecords.find(({ recordType }) => recordType === "tool.result");
@@ -348,24 +689,36 @@ export async function runMissionCycle(
   if (projection.execution === "completed") return stopped(projection, "complete", null, "complete");
 
   if (projection.execution === "not-started") {
+    let transitionTimestamp: EvidenceTimestamp | null = null;
+    try {
+      transitionTimestamp = timestamp(dependencies.now());
+    } catch {
+      transitionTimestamp = null;
+    }
+    if (transitionTimestamp === null) {
+      return stopped(projection, "blocked", "coulson", "journal_unavailable");
+    }
     const entry: ProfileAwareMissionEntryV1 = {
       schemaVersion: 9,
       entryId: `entry:${input.missionId}:${input.expectedSequence + 1}`,
       missionId: input.missionId,
       sequence: input.expectedSequence + 1,
       type: "execution.transition",
-      timestamp: dependencies.now(),
+      timestamp: transitionTimestamp,
       payload: { from: "not-started", to: "running" },
     };
-    let append: MissionJournalAppendResultV1;
+    let append: MissionJournalAppendResultV1 | null;
     try {
-      append = await dependencies.appendJournal({
+      append = appendResult(await dependencies.appendJournal({
         repositoryRoot: input.repositoryRoot,
         configuredJournalPath: input.configuredJournalPath,
         missionId: input.missionId,
         entry,
-      });
+      }));
     } catch {
+      return stopped(projection, "blocked", "coulson", "journal_unavailable");
+    }
+    if (append === null) {
       return stopped(projection, "blocked", "coulson", "journal_unavailable");
     }
     if (append.state !== "appended") {
@@ -422,8 +775,13 @@ export async function runMissionCycle(
     appendIfAbsent: dependencies.permissionAudit.appendIfAbsent,
     getContext: permissionContext,
     execute: dependencies.executeTool,
-    now: () => dependencies.now().value,
+    now: () => {
+      const current = timestamp(dependencies.now());
+      if (current === null) throw new Error("clock_malformed");
+      return current.value;
+    },
   });
+  phase.postClaim = true;
   const runner = await runRunnerCycle({
     runnerContractVersion: 1,
     projection: runnerProjection(projection),
@@ -450,24 +808,29 @@ export async function runMissionCycle(
   if (candidate === null) return stopped(projection, "blocked", "coulson", "effect_readback_mismatch");
   let effectEntry: ProfileAwareMissionEntryV1;
   try {
+    const effectTimestamp = timestamp(dependencies.now());
+    if (effectTimestamp === null) throw new Error("clock_malformed");
     effectEntry = createProfileAwareExecutionEffectEntryV1({
       projection,
       candidate,
-      timestamp: dependencies.now(),
+      timestamp: effectTimestamp,
     });
   } catch {
     return stopped(projection, "uncertain", "coulson", "effect_readback_mismatch");
   }
-  let effectAppend: MissionJournalAppendResultV1;
+  let effectAppend: MissionJournalAppendResultV1 | null;
   try {
-    effectAppend = await dependencies.appendJournal({
+    effectAppend = appendResult(await dependencies.appendJournal({
       repositoryRoot: input.repositoryRoot,
       configuredJournalPath: input.configuredJournalPath,
       missionId: input.missionId,
       entry: effectEntry,
-    });
+    }));
   } catch {
     return stopped(projection, "uncertain", "coulson", "journal_unavailable");
+  }
+  if (effectAppend === null) {
+    return stopped(projection, "uncertain", "coulson", "effect_readback_mismatch");
   }
   if (effectAppend.state !== "appended") {
     return stopped(projection, "uncertain", "coulson", effectAppend.code);
@@ -475,11 +838,11 @@ export async function runMissionCycle(
   const readback = await readValidated(input, dependencies);
   const recorded = readback?.projection.effects.filter(({ effectKey }) => effectKey === identity.effectKey) ?? [];
   if (readback === null ||
+      effectEntry.entryId !== `entry:${input.missionId}:${runningSequence + 1}` ||
       canonicalJson(readback.entries[runningSequence + 1]) !== canonicalJson(effectEntry) ||
       readback.projection.lastSequence !== runningSequence + 1 ||
       recorded.length !== 1 ||
-      recorded[0].cycleId !== identity.cycleId ||
-      recorded[0].authorizationDecisionId !== identity.decisionId ||
+      exactEffect(readback.projection, identity, input) !== candidate.payload.outcome ||
       readback.journalDigest === snapshot.journalDigest) {
     return stopped(projection, "uncertain", "coulson", "effect_readback_mismatch");
   }
@@ -496,4 +859,29 @@ export async function runMissionCycle(
     cycleId: identity.cycleId,
     effectKey: identity.effectKey,
   };
+}
+
+export async function runMissionCycle(
+  inputValue: unknown,
+  dependenciesValue: MissionCycleDependenciesV1,
+): Promise<MissionCycleResultV1> {
+  const identity = inspectIdentityEnvelope(inputValue);
+  if (identity === null) return unboundInputInvalid();
+  const input = validateAndFreezeInput(inputValue);
+  const dependencies = validateAndFreezeDependencies(dependenciesValue);
+  if (input === null || dependencies === null) return boundInputInvalid(identity);
+  const phase = { postClaim: false };
+  try {
+    return await runMissionCycleValidated(input, dependencies, phase);
+  } catch {
+    return {
+      outcome: phase.postClaim ? "uncertain" : "blocked",
+      missionId: identity.missionId,
+      subjectId: identity.expectedSubjectId,
+      revisionId: identity.expectedRevisionId,
+      sequence: identity.expectedSequence,
+      accountableNextSeat: "coulson",
+      reasonCode: phase.postClaim ? "effect_readback_mismatch" : "journal_unavailable",
+    };
+  }
 }
