@@ -206,15 +206,28 @@ interface MissionCycleDependenciesV1 {
 
 The public dependency surface does not accept an authorizer or an audited
 executor. `runMissionCycle(...)` constructs both internally with
-`createPermissionAuthorizer(...)` and `createAuditedExecutor(...)`, using the
-same closed `permissionAudit` capability, exact deterministic decision ID,
-permission-context provider, raw `executeTool`, capabilities, and clock.
-Consequently a caller cannot replace either factory while still satisfying the
-runtime contract.
+`createPermissionAuthorizer(...)` and the additive
+`createRuntimeClaimedExecutorV1(...)`, using the same closed `permissionAudit`
+capability, exact deterministic decision ID, permission-context provider, raw
+`executeTool`, capabilities, and clock. The latter returns a paired
+`{ claim, execute }` closure: only its `claim` can authorize its `execute`.
+Consequently a caller cannot replace the authorizer, claim, or executor while
+still satisfying the runtime contract.
 
-Permission audit v1 receives one compatibility strengthening without changing
-existing record JSON. `appendIfAbsent` remains atomic by `recordId`. Every
-`tool.invocation` record ID is instead
+Runner v1 receives one additive optional dependency,
+`claim(plan, decision)`, and closed result
+`{ outcome: "claimed" } | { outcome: "blocked"; reason:
+"invocation_claim_conflict" | "invocation_claim_failed" }`. When present, the
+runner calls it after a valid allow decision and before `execute`. A blocked
+result, thrown claim, or malformed claim returns the additive
+`invocation_claim_conflict`, `invocation_claim_failed`, or
+`invocation_claim_malformed` runner stop respectively, always with no effect
+candidate; the executor is not called. When absent, all schema-5–8 behavior
+and existing `createAuditedExecutor(...)` call ordering remain unchanged.
+
+The runtime-only claimed executor uses permission audit schema v1 without
+changing existing record JSON or legacy record IDs. `appendIfAbsent` remains
+atomic by `recordId`. Its `tool.invocation` record ID is
 `audit-invocation:<claimDigest>`, where `claimDigest` is the fixed-length
 SHA-256 base64url digest of the canonical closed object
 `{ domain: "shield.permission-invocation-claim.v1", missionId, revisionId,
@@ -224,10 +237,14 @@ contend for the same record ID before either can dispatch. Only the caller
 whose newly appended record receives an exact verified receipt may call
 `executeTool`; the API never returns a successful receipt for a pre-existing
 record. A loser returns `invocation_claim_conflict` pre-dispatch.
-`replayPermissionAuditLedger(...)` also rejects a second invocation for the
-same claim tuple as defense in depth. Permission decisions and results retain
-deterministic `audit:<decisionId>` and `audit-result:<decisionId>` record IDs.
-Raw or malformed audit arrays fail closed.
+The paired `execute` closure verifies the exact plan, decision, context, and
+stored winning receipt, skips a second invocation append, calls `executeTool`,
+and appends the deterministic `audit-result:<decisionId>` result.
+`replayRuntimeInvocationClaimsV1(...)` validates the runtime-specific record-ID
+derivation and rejects a second runtime claim tuple as defense in depth.
+Legacy `replayPermissionAuditLedger(...)`, per-decision invocation IDs, public
+local-tool sessions, and multi-effect same-sequence behavior are unchanged.
+Raw or malformed audit arrays fail closed in either replay path.
 
 The input deliberately has no caller-supplied cycle ID, effect key, or decision
 ID. Let `B = expectedSequence`, the stable action-occurrence base. Create the
@@ -336,8 +353,9 @@ Let `B` be `expectedSequence`.
    If execution is already `running`, retain `R = B`.
 7. Build the sole schema-9 runner projection through the closed adapter.
    Acquire fresh permission context whose decision ID must equal the derived
-   decision ID. Construct the audited authorizer/executor internally and call
-   `runRunnerCycle(...)` once.
+   decision ID. Construct the authorizer and paired runtime claim/executor
+   internally and call `runRunnerCycle(...)` once. The runner's claim phase is
+   the atomic pre-dispatch boundary.
 8. A pre-dispatch runner stop returns `waiting` or `blocked` without an effect
    append. A post-dispatch stop must carry an uncertain effect candidate.
 9. Convert an advanced or uncertain candidate through
@@ -369,6 +387,7 @@ type MissionCycleReasonCodeV1 =
   | RunnerStopReason
   | "stale_revision" | "stale_sequence" | "duplicate_effect"
   | "effect_identity_mismatch" | "invocation_claim_conflict"
+  | "invocation_claim_failed" | "invocation_claim_malformed"
   | "audit_invalid" | "audit_incomplete" | "audit_result_uncertain"
   | "journal_lock_held" | "journal_unavailable" | "recovery_required"
   | "transition_readback_mismatch" | "effect_readback_mismatch"
@@ -399,19 +418,21 @@ type MissionCycleResultV1 =
 Exact mapping:
 
 - `waiting`, actual pending frozen-gate role:
-  `mission_authorization_required`, `gate_missing`, `authorization_wait`, and
-  `authorization_denied`. Mission authorization routes to Coulson; execution
-  gates route to their requirement's `requiredRoleId`.
+  `mission_authorization_required` and `gate_missing`. Mission authorization
+  routes to Coulson; execution gates route to their requirement's
+  `requiredRoleId`.
+- `waiting`, `coulson`: `authorization_wait`.
 - `blocked`, requested `seatId`: `identity_mismatch`,
   `seat_not_participating`, `seat_not_executable`,
   `implementation_owner_mismatch`, `mode_context_mismatch`,
-  `action_not_allowlisted`, `authorization_failed`,
+  `action_not_allowlisted`, `authorization_denied`, `authorization_failed`,
   `authorization_malformed`, and `authorization_stale`.
 - `blocked`, `coulson`: `governance_not_approved`,
   `mission_not_authorized`, `execution_not_active`, `execute_not_ready`,
   `journal_sequence_mismatch`, `stale_revision`, `stale_sequence`,
   `duplicate_effect`, `effect_identity_mismatch`,
-  `invocation_claim_conflict`, `audit_invalid`, `journal_lock_held`,
+  `invocation_claim_conflict`, `invocation_claim_failed`,
+  `invocation_claim_malformed`, `audit_invalid`, `journal_lock_held`,
   `journal_unavailable`, `transition_readback_mismatch`, and
   pre-dispatch `effect_readback_mismatch`.
 - `uncertain`, `coulson`: `effect_outcome_uncertain`, `audit_incomplete`,
@@ -437,6 +458,7 @@ across transition/restart; validation-ID changes; delimiter-collision and
 maximum-length identity inputs; exact and conflicting atomic invocation
 claims, including concurrent calls with different decision IDs and proof that
 exactly one `executeTool` call occurs;
+legacy schema-6 multi-decision same-sequence permission sessions unchanged;
 stale revision/sequence; duplicate cycle/effect; pre-dispatch append blocking;
 every post-dispatch append/readback failure becoming uncertain; exact
 transition/effect readback; a different action/effect key after uncertainty
