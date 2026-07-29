@@ -17,9 +17,22 @@ The implementation subsequently passed the full package suite and was
 dogfooded against Issue #130. After a separate explicit human authorization,
 the repository was provisioned locally, the intake rerun returned no blockers
 and `nextAction: "initialize_journal"`, and `shield mission begin` initialized a
-verified one-entry journal. Current journal state is proposed,
+verified one-entry journal. At that point journal state was proposed,
 authorization-waiting, and execution-not-started. No dispatch, Fitz approval,
 merge, deployment, release, or journaled Fury enforcement occurred.
+
+A later separately authorized Coulson evidence step appended a valid signed
+mission approval at sequence 1. Current journal state is approved,
+supervised-authorized, execution-ready, and execution-not-started. Execution,
+dispatch, Fitz approval, merge, deployment, release, and publication remain
+outside the granted scope.
+
+The human subsequently clarified that the same principal occupies Coulson and
+Fitz, but Fitz decisions occur only through GitHub review and never through
+this local workstation. The current GitHub path translates already signed
+human evidence; it does not make an ordinary GitHub review into an Ed25519
+Fitz record. Local Fitz signing is therefore prohibited pending a separate
+remote-signing and evidence-ingestion decision.
 
 ## Public position
 

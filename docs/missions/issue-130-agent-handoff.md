@@ -33,6 +33,8 @@ specialists return bounded findings rather than rewriting this file directly.
   `.shield/journals/bWlzc2lvbjppc3N1ZS0xMzA.jsonl`
 - Local journal verification report:
   `.shield/reports/issue-130-journal-initialization.json`
+- Local Coulson approval verification report:
+  `.shield/reports/issue-130-coulson-approval-verification.json`
 
 The trusted host must supply the current exact repository revision at each
 dispatch. This file must not be used to infer that mutable value.
@@ -73,7 +75,8 @@ manual bootstrap intake
 → rerun intake: no blockers, initialize_journal
 → create exact machine-readable brief
 → initialize and verify journal sequence 0
-→ stop: waiting for signed Coulson mission authorization
+→ create, sign, append, and verify Coulson authorization at sequence 1
+→ stop: execution is ready but no execution step or dispatch is authorized
 ```
 
 ## Communication surfaces
@@ -118,6 +121,7 @@ an initialized local journal v2 with only `mission.begun`. Communication remains
 | Repository provisioning | human-authorized local initialization plus validated public binding registry | local `.shield/config.json` and `.shield/trusted-human-bindings.json`; `shield doctor` healthy |
 | Provisioned `missionIntakeV1(...)` rerun | package runtime observed repository configuration and returned no blockers | host output: `nextAction: initialize_journal` |
 | SHIELD journal initialization | human-authorized `shield mission begin`; one durable `mission.begun` entry | local journal and verification report listed above |
+| Coulson mission authorization | exact human-signed evidence verified and appended at sequence 1 | local signed envelope, journal, and Coulson approval verification report |
 | Daisy or May runtime dispatch | not performed | none |
 | Fury architecture verdict | advisory Fury review through direct host subagent dispatch/await; not a formal journaled gate | `docs/missions/issue-130-fury-intake-v1-review.md` |
 | Draft PR Mission Workspace publication | not performed | none |
@@ -272,9 +276,16 @@ an initialized local journal v2 with only `mission.begun`. Communication remains
 - `shield doctor --json` passed every check.
 - The human explicitly assigned `human:ransolo` to Coulson and Fitz.
 - Separate Ed25519 public keys were bound to the two seats.
+- The same authorized human principal occupies both seats, but their approved
+  interaction surfaces differ:
+  - Coulson may sign mission governance evidence locally.
+  - Fitz reviews occur through GitHub review and must not be signed through the
+    local workstation path.
 - The closed trusted binding registry and its exact configuration references
   validated successfully.
-- Private keys and passphrases remain outside the repository.
+- Private keys and passphrases remain outside the repository. The locally
+  generated Fitz private key is not authorized for use and requires an
+  explicit custody/rotation decision before any cleanup or migration.
 - A provisioned `missionIntakeV1(...)` rerun returned:
   - `state: candidate`;
   - `authority: non_authoritative`;
@@ -305,6 +316,46 @@ an initialized local journal v2 with only `mission.begun`. Communication remains
 - No implementation, dispatch, Fitz approval, merge, deployment, release, or
   review-publication authority was exercised.
 
+### Coulson mission authorization — verified
+
+- Human authority was explicit and limited to creating and signing the exact
+  sequence-1 Coulson evidence, running `shield mission approve`, and verifying
+  journal readback.
+- The unsigned payload exact-matched the current requirement, mission,
+  subject, brief revision, principal, binding, signing key, and sequence.
+- The human entered the private-key passphrase locally; it did not enter chat,
+  agent tooling, or repository state.
+- `verifySignedHumanEvidence(...)` accepted the signature before append.
+- `shield mission approve` appended
+  `evidence:coulson:issue-130:1`.
+- Independent CLI and mission-store readback both verified:
+  - two journal entries;
+  - last sequence 1;
+  - governance `approved`;
+  - authorization `supervised/authorized`;
+  - execution `not-started`;
+  - execute readiness `ready`;
+  - acceptance readiness waiting for Fitz;
+  - zero execution-effect records.
+- No execution step, dispatch, Fitz approval, merge, deployment, release, or
+  publication occurred.
+
+### Fitz review channel — GitHub only
+
+- Human clarification: `human:ransolo` occupies both Coulson and Fitz.
+- Coulson governance evidence may use the local signing path.
+- Fitz technical-review decisions occur through GitHub review and Fitz will not
+  participate through this local computer.
+- Existing GitHub adapter behavior can preserve and translate already signed
+  human evidence, but an ordinary GitHub review does not itself create the
+  required Ed25519 Fitz signature.
+- Therefore the Fitz acceptance path is not yet operational end to end.
+- Do not use the local Fitz private key, fabricate Fitz evidence, or treat a
+  GitHub approval as journal authority.
+- Resolving Fitz key custody, remote signing, and GitHub-review-to-signed-
+  evidence ingestion requires a separate explicit architecture and authority
+  decision.
+
 ## Reported environment observation
 
 The human operator reported that local May and Daisy were healthy on the prior
@@ -314,10 +365,10 @@ required before either runtime can be credited with mission participation.
 
 ## Current stop condition
 
-The journal-derived route is waiting for fresh signed Coulson mission
-authorization at sequence 1.
+The journal now reports execution readiness `ready`, but current human scope
+does not authorize `shield mission step`, implementation, or seat dispatch.
+Stop before sequence 2.
 
-Do not create or record that evidence without explicit human authorization and
-a valid Coulson signature bound to the exact requirement, brief revision,
-principal, binding, and journal sequence. Do not dispatch, record Fitz approval,
-merge, deploy, release, or publish review artifacts.
+Fitz technical review remains pending for acceptance. Do not fabricate or
+record Fitz evidence, use the local Fitz private key, merge, deploy, release,
+or publish review artifacts.
