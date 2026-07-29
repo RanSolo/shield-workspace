@@ -204,6 +204,35 @@ test("GitHub rejects a stateful mission workspace plan before any effect", () =>
   assert.equal(run.calls.length, 0);
 });
 
+test("GitHub rejects coercible mission workspace values before any effect", () => {
+  const fixture = publicationFixture("publish_mission_brief", "create");
+  let coercions = 0;
+  const repositoryOwner = {
+    [Symbol.toPrimitive]() {
+      coercions += 1;
+      return coercions === 1 ? "RanSolo" : "Other";
+    },
+  };
+  const workspacePlan = {
+    repositoryOwner,
+    repositoryName: "shield-workspace",
+    baseBranch: "main",
+    branchSlug,
+    missionBriefPath,
+    prTitle: "feat: add GitHub host adapter",
+  };
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({ workspacePlan }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_input_required");
+  assert.equal(coercions, 0);
+  assert.equal(run.calls.length, 0);
+});
+
 test("mission brief publication delegates to the existing draft PR workspace", () => {
   const fixture = publicationFixture("publish_mission_brief", "create");
   const workspacePlan = {

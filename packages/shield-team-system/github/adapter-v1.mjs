@@ -67,7 +67,10 @@ function snapshotPublicationEffectInput(operation, publication) {
     const input = dataValues(publication, ["workspacePlan", "body"]);
     if (input === null) return null;
     const workspacePlan = dataValues(input.workspacePlan, WORKSPACE_PLAN_FIELDS, true);
-    if (workspacePlan === null) return null;
+    if (workspacePlan === null ||
+        WORKSPACE_PLAN_FIELDS.some((field) => typeof workspacePlan[field] !== "string")) {
+      return null;
+    }
     return Object.freeze({
       workspacePlan: Object.freeze(workspacePlan),
       body: input.body,
