@@ -163,6 +163,7 @@ function normalizeDeliveryInput(input) {
         ...outer,
         workspacePlan: Object.freeze(workspacePlan),
         blueprintArtifact: Object.freeze(blueprintArtifact),
+        publicationCapturedAt: Object.freeze(capturedAt),
         planGate: planGate.planGate,
       }),
     };
@@ -201,6 +202,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     publicationIdentity,
   );
   if (identity.state !== "valid") return blocked(identity.reason);
+  const verifiedPublicationIdentity = identity.value;
   if (publication.request.missionId !== snapshot.missionId ||
       publication.request.subjectId !== snapshot.subjectId ||
       publication.request.artifactRevisionId !== snapshot.artifactRevisionId ||
@@ -223,7 +225,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     }
     const candidate = createGitHubPublicationResultCandidate(
       publication.request,
-      publicationIdentity,
+      verifiedPublicationIdentity,
       "failed",
       "host_rejected",
       null,
@@ -238,7 +240,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
   }
   const candidate = createGitHubPublicationResultCandidate(
     publication.request,
-    publicationIdentity,
+    verifiedPublicationIdentity,
     "delivered",
     null,
     published.prUrl,

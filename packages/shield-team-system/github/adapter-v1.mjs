@@ -138,10 +138,44 @@ export function validateGitHubPublicationResultIdentity(resolved, publication) {
   if (!resolved || resolved.state !== "allowed") {
     return { state: "blocked", reason: "publication_request_missing" };
   }
-  if (!publication || typeof publication !== "object" || Array.isArray(publication)) {
+  let snapshot;
+  try {
+    if (!publication || typeof publication !== "object" || Array.isArray(publication) ||
+        Object.getPrototypeOf(publication) !== Object.prototype) {
+      return { state: "blocked", reason: "publication_identity_required" };
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(publication);
+    const candidateId = descriptors.candidateId;
+    const sourceRef = descriptors.sourceRef;
+    const capturedAt = descriptors.capturedAt;
+    if (!candidateId || !sourceRef || !capturedAt ||
+        !("value" in candidateId) || candidateId.get || candidateId.set ||
+        !("value" in sourceRef) || sourceRef.get || sourceRef.set ||
+        !("value" in capturedAt) || capturedAt.get || capturedAt.set ||
+        !capturedAt.value || typeof capturedAt.value !== "object" ||
+        Array.isArray(capturedAt.value) ||
+        Object.getPrototypeOf(capturedAt.value) !== Object.prototype) {
+      return { state: "blocked", reason: "publication_identity_required" };
+    }
+    const time = Object.getOwnPropertyDescriptors(capturedAt.value);
+    if (Reflect.ownKeys(time).length !== 2 ||
+        !time.value || !("value" in time.value) || time.value.get || time.value.set ||
+        !time.provenance || !("value" in time.provenance) ||
+        time.provenance.get || time.provenance.set) {
+      return { state: "blocked", reason: "publication_identity_required" };
+    }
+    snapshot = Object.freeze({
+      candidateId: candidateId.value,
+      sourceRef: sourceRef.value,
+      capturedAt: Object.freeze({
+        value: time.value.value,
+        provenance: time.provenance.value,
+      }),
+    });
+  } catch {
     return { state: "blocked", reason: "publication_identity_required" };
   }
-  if (resolved.usedCandidateIds.includes(publication.candidateId)) {
+  if (resolved.usedCandidateIds.includes(snapshot.candidateId)) {
     return { state: "blocked", reason: "duplicate_candidate" };
   }
   const authority = resolved.authority;
@@ -169,13 +203,13 @@ export function validateGitHubPublicationResultIdentity(resolved, publication) {
   }
   return createGitHubPublicationResultCandidate(
     request,
-    publication,
+    snapshot,
     "unknown",
     "unknown",
     null,
     scope,
   ).state === "candidate"
-    ? { state: "valid" }
+    ? { state: "valid", value: snapshot }
     : { state: "blocked", reason: "publication_identity_required" };
 }
 
@@ -200,6 +234,7 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
   if (request.adapterId !== "github") return blocked("github_request_required");
   const identity = validateGitHubPublicationResultIdentity(resolved, publication);
   if (identity.state !== "valid") return blocked(identity.reason);
+  const publicationIdentity = identity.value;
 
   const run = options.run ?? defaultRun;
   const cwd = options.cwd;
@@ -219,7 +254,7 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
       return checkedCandidate(
         resultCandidate(
           request,
-          publication,
+          publicationIdentity,
           "delivered",
           null,
           published.prUrl,
@@ -233,7 +268,7 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
       return checkedCandidate(
         resultCandidate(
           request,
-          publication,
+          publicationIdentity,
           "failed",
           reason,
           null,
@@ -276,13 +311,13 @@ export function deliverGitHubCommunication(publicationRequestId, publication, op
     { cwd, input: publication.body },
   );
   if (delivered.exitCode !== 0) {
-    return checkedCandidate(resultCandidate(request, publication, "failed", failureReason(delivered), null, scope), commands);
+    return checkedCandidate(resultCandidate(request, publicationIdentity, "failed", failureReason(delivered), null, scope), commands);
   }
   const receipt = delivered.stdout.trim();
   if (receipt.length === 0) {
-    return checkedCandidate(resultCandidate(request, publication, "unknown", "ambiguous_response", null, scope), commands);
+    return checkedCandidate(resultCandidate(request, publicationIdentity, "unknown", "ambiguous_response", null, scope), commands);
   }
-  return checkedCandidate(resultCandidate(request, publication, "delivered", null, receipt, scope), commands);
+  return checkedCandidate(resultCandidate(request, publicationIdentity, "delivered", null, receipt, scope), commands);
 }
 
 /** Converts a GitHub review/comment record into a host-neutral candidate. */

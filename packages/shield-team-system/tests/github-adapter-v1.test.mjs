@@ -128,6 +128,29 @@ test("GitHub preflights exact result identity before any effect", () => {
   assert.equal(run.calls.length, 0);
 });
 
+test("GitHub rejects stateful publication identity before any effect", () => {
+  const fixture = publicationFixture();
+  const stateful = publication();
+  let reads = 0;
+  Object.defineProperty(stateful, "candidateId", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? "candidate:publication:1" : "candidate:publication:changed";
+    },
+  });
+  const run = runner([]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    stateful,
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "publication_identity_required");
+  assert.equal(reads, 0);
+  assert.equal(run.calls.length, 0);
+});
+
 test("mission brief publication delegates to the existing draft PR workspace", () => {
   const fixture = publicationFixture("publish_mission_brief", "create");
   const workspacePlan = {
