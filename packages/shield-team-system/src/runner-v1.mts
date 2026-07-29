@@ -14,7 +14,8 @@ export const RUNNER_STOP_REASONS = [
   "effect_already_completed", "effect_outcome_uncertain", "authorization_wait", "authorization_denied", "authorization_failed",
   "authorization_malformed", "authorization_stale", "executor_failed", "executor_uncertain",
   "executor_malformed", "executor_identity_mismatch", "validator_failed", "validator_malformed",
-  "validator_identity_mismatch",
+  "validator_identity_mismatch", "invocation_claim_conflict", "invocation_claim_failed",
+  "invocation_claim_malformed",
 ] as const;
 
 export type RunnerEffectClass = (typeof RUNNER_EFFECT_CLASSES)[number];
@@ -40,7 +41,7 @@ export interface RunnerModeReference {
 
 export interface RunnerProjectionSnapshot {
   runnerContractVersion: 1;
-  journalSchemaVersion: 5 | 6 | 7 | 8;
+  journalSchemaVersion: 5 | 6 | 7 | 8 | 9;
   missionId: string;
   subjectId: string;
   revisionId: string;
@@ -151,7 +152,7 @@ export interface RunnerSupervisedEffectCandidate {
   runnerContractVersion: 1;
   candidateKind: "runner.supervised_effect_record";
   authority: "non_authoritative";
-  journalSchemaVersion: 5 | 6 | 7 | 8;
+  journalSchemaVersion: 5 | 6 | 7 | 8 | 9;
   missionId: string;
   subjectId: string;
   revisionId: string;
@@ -207,9 +208,21 @@ export type RunnerContractResult<T> =
 
 export interface RunnerCycleDependencies {
   authorize(input: RunnerCyclePlan): unknown | Promise<unknown>;
+  claim?(
+    input: RunnerCyclePlan,
+    decision: RunnerPermissionDecision,
+  ): unknown | Promise<unknown>;
   execute(input: RunnerCyclePlan, decision: RunnerPermissionDecision): unknown | Promise<unknown>;
   validate(input: RunnerCyclePlan, result: RunnerExecutorResult): unknown | Promise<unknown>;
 }
+
+export type RunnerInvocationClaimResult =
+  | { runnerContractVersion: 1; outcome: "claimed" }
+  | {
+      runnerContractVersion: 1;
+      outcome: "blocked";
+      reason: "invocation_claim_conflict" | "invocation_claim_failed";
+    };
 
 const {
   validateExecutionEffectPayloadCommon,
@@ -466,6 +479,8 @@ const VALIDATOR_FIELDS = [
   "runnerContractVersion", "outcome", "missionId", "subjectId", "revisionId", "evaluatedThroughSequence",
   "cycleId", "validationId", "effectKey", "summary",
 ] as const;
+const CLAIMED_FIELDS = ["runnerContractVersion", "outcome"] as const;
+const BLOCKED_CLAIM_FIELDS = ["runnerContractVersion", "outcome", "reason"] as const;
 const AUTHORIZATION_ARTIFACT_FIELDS = ["artifactSchemaVersion", "artifactId", "contentType", "payload"] as const;
 const EFFECT_PAYLOAD_FIELDS = [
   "runnerContractVersion", "cycleId", "subjectId", "revisionId", "evaluatedThroughSequence", "seatId",
@@ -490,8 +505,9 @@ function validateProjection(input: unknown): RunnerContractResult<RunnerProjecti
   if (errors.length > 0 || !isPlainObject(input)) return invalid("malformed_projection", errors);
   if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) errors.push("Runner projection contract version is unsupported.");
   if (input.journalSchemaVersion !== 5 && input.journalSchemaVersion !== 6 &&
-      input.journalSchemaVersion !== 7 && input.journalSchemaVersion !== 8) {
-    errors.push("Runner projection requires supervised journal schema v5 through v8.");
+      input.journalSchemaVersion !== 7 && input.journalSchemaVersion !== 8 &&
+      input.journalSchemaVersion !== 9) {
+    errors.push("Runner projection requires supervised journal schema v5 through v9.");
   }
   for (const field of ["missionId", "subjectId"] as const) if (!identifier(input[field])) errors.push(`Runner projection ${field} is invalid.`);
   if (!revision(input.revisionId)) errors.push("Runner projection revisionId is invalid.");
@@ -614,6 +630,29 @@ export function validateRunnerValidatorResult(input: unknown): RunnerContractRes
   if (!VALIDATOR_OUTCOMES.has(input.outcome as string)) errors.push("Runner validator result outcome is unsupported.");
   if (!nonEmpty(input.summary)) errors.push("Runner validator result summary must be non-empty.");
   return errors.length > 0 ? invalid("malformed_validator_result", errors) : valid(input as unknown as RunnerValidatorResult);
+}
+
+export function validateRunnerInvocationClaimResult(
+  input: unknown,
+): RunnerContractResult<RunnerInvocationClaimResult> {
+  if (!isPlainObject(input)) {
+    return invalid("malformed_invocation_claim", ["Runner invocation claim must be a plain object."]);
+  }
+  const fields = input.outcome === "blocked" ? BLOCKED_CLAIM_FIELDS : CLAIMED_FIELDS;
+  const errors = exactFields(input, fields, "Runner invocation claim");
+  if (input.runnerContractVersion !== RUNNER_CONTRACT_VERSION) {
+    errors.push("Runner invocation claim contract version is unsupported.");
+  }
+  if (input.outcome === "blocked") {
+    if (input.reason !== "invocation_claim_conflict" && input.reason !== "invocation_claim_failed") {
+      errors.push("Runner invocation claim blocked reason is unsupported.");
+    }
+  } else if (input.outcome !== "claimed") {
+    errors.push("Runner invocation claim outcome is unsupported.");
+  }
+  return errors.length > 0
+    ? invalid("malformed_invocation_claim", errors)
+    : valid(input as unknown as RunnerInvocationClaimResult);
 }
 
 const RUNNER_EXECUTION_EFFECT_PAYLOAD_MESSAGES: ExecutionEffectPayloadValidationMessages = {
@@ -832,7 +871,7 @@ function effectSummary(
 
 function effectCandidate(
   plan: RunnerCyclePlan,
-  journalSchemaVersion: 5 | 6 | 7 | 8,
+  journalSchemaVersion: 5 | 6 | 7 | 8 | 9,
   decision: RunnerPermissionDecision,
   outcome: "completed" | "uncertain",
   reasonCode: string,
@@ -870,7 +909,7 @@ function effectCandidate(
 
 function postDispatchStop(
   plan: RunnerCyclePlan,
-  journalSchemaVersion: 5 | 6 | 7 | 8,
+  journalSchemaVersion: 5 | 6 | 7 | 8 | 9,
   decision: RunnerPermissionDecision,
   reason: Extract<RunnerStopReason,
     | "executor_failed" | "executor_uncertain" | "executor_malformed" | "executor_identity_mismatch"
@@ -917,6 +956,27 @@ export async function runRunnerCycle(
   if (!samePlanIdentity(decision, cycle.plan)) return finalizedResult(stopped(cycle.plan, "authorization_stale"));
   if (decision.outcome === "wait") return finalizedResult(stopped(cycle.plan, "authorization_wait"));
   if (decision.outcome === "deny") return finalizedResult(stopped(cycle.plan, "authorization_denied"));
+
+  if (dependencies.claim !== undefined) {
+    let rawClaim: unknown;
+    try {
+      rawClaim = await dependencies.claim(cycle.plan, decision);
+    } catch {
+      return finalizedResult(stopped(cycle.plan, "invocation_claim_failed"));
+    }
+    let checkedClaim: RunnerContractResult<RunnerInvocationClaimResult>;
+    try {
+      checkedClaim = validateRunnerInvocationClaimResult(rawClaim);
+    } catch {
+      return finalizedResult(stopped(cycle.plan, "invocation_claim_malformed"));
+    }
+    if (checkedClaim.state === "invalid") {
+      return finalizedResult(stopped(cycle.plan, "invocation_claim_malformed"));
+    }
+    if (checkedClaim.value.outcome === "blocked") {
+      return finalizedResult(stopped(cycle.plan, checkedClaim.value.reason));
+    }
+  }
 
   let rawExecutorResult: unknown;
   try {

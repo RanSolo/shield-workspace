@@ -8,6 +8,7 @@ import {
   replaySupervisedMissionJournal,
 } from "../dist/mission-v2.mjs";
 import {
+  createProfileAwareExecutionEffectEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   createProfileRequirementsV1,
@@ -74,7 +75,40 @@ test("Coulson authorization is distinct from final acceptance and ordering is re
   const premature = { schemaVersion: 9, entryId: `${current.missionId}:2`, missionId: current.missionId, sequence: 2, type: "final_acceptance.recorded", timestamp: { value: "2026-07-29T15:02:00Z", provenance: "humanRecorded" }, payload: { evidence: evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "final_acceptance"), 2) } };
   assert.equal(replayProfileAwareMissionJournal([...entries, premature]).state, "invalid");
   entries.push({ schemaVersion: 9, entryId: `${current.missionId}:2`, missionId: current.missionId, sequence: 2, type: "execution.transition", timestamp: { value: "2026-07-29T15:02:00Z", provenance: "hostTrusted" }, payload: { from: "not-started", to: "running" } });
-  entries.push({ schemaVersion: 9, entryId: `${current.missionId}:3`, missionId: current.missionId, sequence: 3, type: "execution.transition", timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" }, payload: { from: "running", to: "completed" } });
+  const transitionOnlyCompletion = { schemaVersion: 9, entryId: `${current.missionId}:3`, missionId: current.missionId, sequence: 3, type: "execution.transition", timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" }, payload: { from: "running", to: "completed" } };
+  assert.equal(replayProfileAwareMissionJournal([...entries, transitionOnlyCompletion]).state, "invalid");
+  projection = replay(entries);
+  entries.push(createProfileAwareExecutionEffectEntryV1({
+    projection,
+    candidate: {
+      runnerContractVersion: 1,
+      candidateKind: "runner.supervised_effect_record",
+      authority: "non_authoritative",
+      journalSchemaVersion: 9,
+      missionId: current.missionId,
+      subjectId: current.subjectId,
+      revisionId: current.revisionId,
+      expectedPreviousSequence: 2,
+      intendedJournalSequence: 3,
+      payload: {
+        runnerContractVersion: 1,
+        cycleId: "cycle:acceptance-ordering",
+        subjectId: current.subjectId,
+        revisionId: current.revisionId,
+        evaluatedThroughSequence: 2,
+        seatId: "may",
+        actionId: "complete-acceptance-ordering",
+        effectClass: "behavioral_implementation",
+        effectKey: "effect:acceptance-ordering",
+        authorizationDecisionId: "decision:acceptance-ordering",
+        outcome: "completed",
+        reasonCode: "effect_completed",
+        summary: "Authoritative execution completed.",
+        evidenceRefs: ["evidence:acceptance-ordering"],
+      },
+    },
+    timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" },
+  }));
   projection = replay(entries);
   const accepted = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "final_acceptance"), 4);
   entries.push({ schemaVersion: 9, entryId: `${current.missionId}:4`, missionId: current.missionId, sequence: 4, type: "final_acceptance.recorded", timestamp: accepted.payload.timestamp, payload: { evidence: accepted } });
@@ -97,7 +131,19 @@ test("wrong-seat, stale, duplicate, and weakened evidence fail closed", () => {
   const validFitz = evidence(fitz, projection, fitzRequirement, 2);
   entries.push({ ...wrongEntry, payload: { evidence: validFitz } });
   assert.equal(replayProfileAwareMissionJournal([...entries, entries[2]]).state, "invalid");
-  assert.equal(replayProfileAwareMissionJournal(entries).state, "valid");
+  projection = replay(entries);
+  const duplicateRequirement = evidence(fitz, projection, fitzRequirement, 3);
+  const duplicateRequirementResult = replayProfileAwareMissionJournal([...entries, {
+    schemaVersion: 9,
+    entryId: `${current.missionId}:3`,
+    missionId: current.missionId,
+    sequence: 3,
+    type: "evidence.recorded",
+    timestamp: duplicateRequirement.payload.timestamp,
+    payload: { evidence: duplicateRequirement },
+  }]);
+  assert.equal(duplicateRequirementResult.state, "invalid");
+  assert.equal(duplicateRequirementResult.code, "duplicate_evidence");
   assert.equal(validateProfileAwareMissionBrief({ ...current, requiredExecutionGateRoleIds: ["coulson"], revisionId: current.revisionId }).state, "invalid");
 });
 
@@ -120,4 +166,82 @@ test("schema 9 closes trusted bindings and nested event payloads", () => {
   const authorization = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"), 1);
   entries.push({ schemaVersion: 9, entryId: `${current.missionId}:1`, missionId: current.missionId, sequence: 1, type: "governance.decided", timestamp: authorization.payload.timestamp, payload: { evidence: authorization, unexpected: true } });
   assert.equal(replayProfileAwareMissionJournal(entries).state, "invalid");
+});
+
+test("schema 9 records completed and uncertain runner effects with fail-closed replay", () => {
+  const current = brief("standard");
+  const coulson = authority("coulson");
+  const entries = [createProfileAwareMissionBegunEntry(current, [coulson.binding])];
+  let projection = replay(entries);
+  const authorization = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"), 1);
+  entries.push({ schemaVersion: 9, entryId: `entry:${current.missionId}:1`, missionId: current.missionId, sequence: 1, type: "governance.decided", timestamp: authorization.payload.timestamp, payload: { evidence: authorization } });
+  entries.push({ schemaVersion: 9, entryId: `entry:${current.missionId}:2`, missionId: current.missionId, sequence: 2, type: "execution.transition", timestamp: { value: "2026-07-29T15:02:00Z", provenance: "hostTrusted" }, payload: { from: "not-started", to: "running" } });
+  projection = replay(entries);
+  const candidate = {
+    runnerContractVersion: 1,
+    candidateKind: "runner.supervised_effect_record",
+    authority: "non_authoritative",
+    journalSchemaVersion: 9,
+    missionId: current.missionId,
+    subjectId: current.subjectId,
+    revisionId: current.revisionId,
+    expectedPreviousSequence: 2,
+    intendedJournalSequence: 3,
+    payload: {
+      runnerContractVersion: 1,
+      cycleId: "cycle:profile-aware:1",
+      subjectId: current.subjectId,
+      revisionId: current.revisionId,
+      evaluatedThroughSequence: 2,
+      seatId: "may",
+      actionId: "implement-profile-aware-effect",
+      effectClass: "behavioral_implementation",
+      effectKey: "effect:profile-aware:1",
+      authorizationDecisionId: "decision:profile-aware:1",
+      outcome: "completed",
+      reasonCode: "effect_completed",
+      summary: "Profile-aware effect completed.",
+      evidenceRefs: ["evidence:profile-aware:1"],
+    },
+  };
+  const completedEntry = createProfileAwareExecutionEffectEntryV1({
+    projection,
+    candidate,
+    timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" },
+  });
+  const completed = replay([...entries, completedEntry]);
+  assert.equal(completed.execution, "completed");
+  assert.equal(completed.effects.length, 1);
+  assert.equal(completed.effects[0].effectKey, candidate.payload.effectKey);
+
+  const uncertainEntry = createProfileAwareExecutionEffectEntryV1({
+    projection,
+    candidate: {
+      ...candidate,
+      payload: {
+        ...candidate.payload,
+        outcome: "uncertain",
+        reasonCode: "executor_uncertain",
+      },
+    },
+    timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" },
+  });
+  const uncertain = replay([...entries, uncertainEntry]);
+  assert.equal(uncertain.execution, "running");
+  assert.equal(uncertain.readiness.execute, "blocked");
+  assert.throws(() => createProfileAwareExecutionEffectEntryV1({
+    projection: uncertain,
+    candidate: {
+      ...candidate,
+      expectedPreviousSequence: 3,
+      intendedJournalSequence: 4,
+      payload: {
+        ...candidate.payload,
+        cycleId: "cycle:profile-aware:2",
+        effectKey: "effect:profile-aware:2",
+        evaluatedThroughSequence: 3,
+      },
+    },
+    timestamp: { value: "2026-07-29T15:04:00Z", provenance: "hostTrusted" },
+  }), /recovery/);
 });

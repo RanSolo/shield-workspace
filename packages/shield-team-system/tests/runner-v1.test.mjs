@@ -226,6 +226,33 @@ test("allowed cycle preserves the opaque authorization artifact unchanged for ex
   assert.equal(validateRunnerCycleResult(result).state, "valid");
 });
 
+test("optional invocation claim stops before executor dispatch and carries no effect candidate", async () => {
+  const input = cycleInput({ projection: { journalSchemaVersion: 9 } });
+  let executions = 0;
+  const result = await runRunnerCycle(input, {
+    authorize: (plan) => permission(plan),
+    claim: () => ({ runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_conflict" }),
+    execute: () => { executions += 1; },
+    validate: () => { throw new Error("must not validate"); },
+  });
+  assert.equal(result.state, "valid", result.errors?.join(" "));
+  assert.equal(result.value.outcome, "stopped");
+  assert.equal(result.value.reason, "invocation_claim_conflict");
+  assert.equal(result.value.effectRecordCandidate, null);
+  assert.equal(executions, 0);
+
+  const malformed = await runRunnerCycle(input, {
+    authorize: (plan) => permission(plan),
+    claim: () => ({ outcome: "claimed" }),
+    execute: () => { executions += 1; },
+    validate: () => { throw new Error("must not validate"); },
+  });
+  assert.equal(malformed.state, "valid");
+  assert.equal(malformed.value.reason, "invocation_claim_malformed");
+  assert.equal(malformed.value.effectRecordCandidate, null);
+  assert.equal(executions, 0);
+});
+
 test("v7 runner cycle preserves additive journal version through its effect candidate", async () => {
   const { result, calls } = await run(cycleInput({ projection: { journalSchemaVersion: 7 } }));
   assert.deepEqual(calls, { authorize: 1, execute: 1, validate: 1 });

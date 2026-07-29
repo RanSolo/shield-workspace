@@ -23,6 +23,8 @@ package artifact.
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
 | `@shield/team-system/review-publication` | Pure host-neutral exact-path and permitted-effect evaluation for `review.publish` and Wheels Up review publication |
 | `@shield/team-system/pipeline` | Closed composable pipeline-mode taxonomy, evidence-bound repository pipeline profiles, stale-profile detection, and non-authoritative required-mode selection |
+| `@shield/team-system/profile-aware-mission` | Profile-aware schema-9 briefs, frozen human-gate requirements, signed evidence, execution effects, final acceptance, and deterministic replay |
+| `@shield/team-system/mission-runtime` | One profile-aware mission cycle with deterministic identities, runtime-only atomic invocation claims, journal append/readback verification, and closed waiting, blocked, uncertain, advanced, or complete outcomes |
 | `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write-and-validation tool-call executor, with injected Issue #10 authorization/audit dependencies |
 | `@shield/team-system/github` | Journal-gated GitHub publication with pre-effect exact-path/effect enforcement, exact draft-PR workspace receipts, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 | `@shield/team-system/sonarqube` | Non-authoritative exact-revision SonarQube evidence evaluation, closed finding classification, owner routing, exception attribution, and fail-closed advancement eligibility |
@@ -59,6 +61,7 @@ does not migrate or reinterpret the existing package runtime.
 | Repository configuration validation | Supported through `/config` |
 | Bounded local human-evidence requirements and readiness | Supported through `/supervision`; v2-v6 retain mission-plan review requirements, while v7 binds Fitz and optional Simmons review requirements to the current repository-artifact revision after an exact-revision Fury gate |
 | One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |
+| Profile-aware mission-cycle composition | Supported through `/mission-runtime`; host journal, permission, execution, validation, and clock capabilities remain injected and human evidence remains external |
 | Per-call runtime-bound permission decisions | Supported through `/permission`; real environmental probes remain owned by Issue #34 |
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
 | Exact-scope review publication | Supported through `/review-publication`; the pure evaluator binds authority and observed proposals, while `/github` performs host observation before push, draft-PR mutation, or review-comment publication |
@@ -106,7 +109,7 @@ Caller-supplied authority remains unsupported. Specialist iteration uses no
 repair count or hard cap: Hill supplies a closed evidence packet and requested
 disposition, while material scope, risk, authority, destructive/external,
 tradeoff, and final human gates fail to Coulson.
-The runner returns a validated, non-authoritative v5, v6, v7, or v8 effect candidate; it does
+The runner returns a validated, non-authoritative v5, v6, v7, v8, or v9 effect candidate; it does
 not append entries or grant the candidate authority. The trusted supervision
 boundary supplies the entry ID and timestamp, rechecks exact mission, subject,
 revision, and sequence identity, and appends the authoritative record. Replay
