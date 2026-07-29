@@ -131,7 +131,19 @@ test("wrong-seat, stale, duplicate, and weakened evidence fail closed", () => {
   const validFitz = evidence(fitz, projection, fitzRequirement, 2);
   entries.push({ ...wrongEntry, payload: { evidence: validFitz } });
   assert.equal(replayProfileAwareMissionJournal([...entries, entries[2]]).state, "invalid");
-  assert.equal(replayProfileAwareMissionJournal(entries).state, "valid");
+  projection = replay(entries);
+  const duplicateRequirement = evidence(fitz, projection, fitzRequirement, 3);
+  const duplicateRequirementResult = replayProfileAwareMissionJournal([...entries, {
+    schemaVersion: 9,
+    entryId: `${current.missionId}:3`,
+    missionId: current.missionId,
+    sequence: 3,
+    type: "evidence.recorded",
+    timestamp: duplicateRequirement.payload.timestamp,
+    payload: { evidence: duplicateRequirement },
+  }]);
+  assert.equal(duplicateRequirementResult.state, "invalid");
+  assert.equal(duplicateRequirementResult.code, "duplicate_evidence");
   assert.equal(validateProfileAwareMissionBrief({ ...current, requiredExecutionGateRoleIds: ["coulson"], revisionId: current.revisionId }).state, "invalid");
 });
 

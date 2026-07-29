@@ -282,7 +282,11 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       if (!exact(signed, ["payload", "signatureBase64"])) return invalid("malformed", `Entry ${index} signed evidence is not closed.`);
       const expectedKind: EvidenceKind = entry.type === "governance.decided" ? "mission_authorization" : entry.type === "final_acceptance.recorded" ? "final_acceptance" : signed?.payload?.evidenceKind;
       const matches = requirements.filter((requirement) => requirement.evidenceKind === signed?.payload?.evidenceKind && requirement.evidenceKind === expectedKind);
-      if (matches.length !== 1 || evidenceIds.has(signed?.payload?.evidenceId)) return invalid("duplicate_evidence", `Entry ${index} evidence is duplicate or ambiguous.`);
+      if (matches.length !== 1 ||
+          evidenceIds.has(signed?.payload?.evidenceId) ||
+          evidence.some(({ requirementId }) => requirementId === signed?.payload?.requirementId)) {
+        return invalid("duplicate_evidence", `Entry ${index} evidence is duplicate or ambiguous.`);
+      }
       const errors = verifyEvidence(signed, matches[0], bindingRegistry.value.bindings, brief.missionId, index); if (errors.length) return invalid("evidence_invalid", ...errors);
       if (entry.type === "governance.decided") { if (authorization !== "waiting" || execution !== "not-started") return invalid("sequence_invalid", "Authorization is duplicated or late."); authorization = "authorized"; }
       if (entry.type === "evidence.recorded") { if (execution !== "not-started") return invalid("ordering_invalid", "Execution gate evidence must be frozen before execution."); if (matches[0].phase !== "execution") return invalid("evidence_invalid", "Only profile execution gates may be recorded here."); }
