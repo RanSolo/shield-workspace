@@ -3,7 +3,7 @@
 ## Audit binding
 
 - Repository: `RanSolo/shield-workspace`
-- Base revision: `1316f317fe9aaf6de4a94a5055f7104282e2779b`
+- Base revision: `68defc3fed912dda663d00438ce68c249fe39d5c`
 - Mission branch: `codex/issue-130-canonical-mission-runtime`
 - Issue: #130
 - Audit authority: Hill-owned bootstrap artifact
@@ -65,6 +65,9 @@ and receipts; it should not determine the package's infrastructure layout.
 | `evaluatePermission(...)`, `createPermissionAuthorizer(...)`, `createAuditedExecutor(...)` | Authorizes and audits concrete runtime effects, not mission proposal. |
 | `createExecutionEffectEntry(...)` | Converts a runner result candidate into authoritative effect history after execution. |
 | `deliverGitHubCommunication(...)` | Performs an external publication effect after a journaled request. |
+| `computeReviewPublicationAuthorityDigest(...)`, `validateReviewPublicationAuthorityV1(...)`, and `evaluateReviewPublicationV1(...)` | Evaluate exact authorized review-publication scope after signed human authority exists. Intake may name the future gate but cannot create its authority. |
+| `createReviewPublicationAuthorizationEntry(...)` and `verifySignedReviewPublicationAuthorization(...)` | Consume exact Coulson-signed publication authority in journal v8; never intake helpers. |
+| `resolveJournaledPublicationRequest(...)`, `evaluatePRPublicationScope(...)`, and GitHub publication-result helpers | Enforce and report an already journaled publication request before and after its effect. |
 | Mack, QA, SonarQube, follow-up, and review-publication evaluators | Consume later validation/review evidence and cannot create intake authority. |
 
 ## Host responsibilities with no current package function

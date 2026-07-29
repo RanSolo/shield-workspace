@@ -13,12 +13,14 @@ specialists return bounded findings rather than rewriting this file directly.
 - Repository: `RanSolo/shield-workspace`
 - Issue: #130
 - Branch: `codex/issue-130-canonical-mission-runtime`
-- Mission base: `1316f317fe9aaf6de4a94a5055f7104282e2779b`
+- Mission base: `68defc3fed912dda663d00438ce68c249fe39d5c`
 - Mission Brief:
   `docs/missions/issue-130-canonical-mission-runtime.md`
 - Hill Plan: `docs/missions/issue-130-hill-plan.md`
 - Intake API audit:
   `docs/missions/issue-130-mission-intake-api-audit.md`
+- Proposed intake v1 plan:
+  `docs/missions/issue-130-mission-intake-v1-plan.md`
 - Shared runtime instructions:
   `docs/missions/issue-130-shared-runtime-instructions.md`
 
@@ -77,9 +79,11 @@ Mission Workspace yet.
 
 ### Journaled communication
 
-External publication requires an authoritative journal communication request,
-adapter delivery, and correlated result evidence. The current mission has no
-initialized S.H.I.E.L.D. journal and must not claim journaled communication.
+External review publication now requires journal v8 exact signed publication
+authority, a publication-bound communication request, full replay before the
+effect, adapter delivery, and correlated result evidence. The current mission
+has no initialized S.H.I.E.L.D. journal and must not claim journaled
+communication or review-publication authority.
 
 ## Runtime participation ledger
 
@@ -90,11 +94,63 @@ initialized S.H.I.E.L.D. journal and must not claim journaled communication.
 | Mission Brief and Hill Plan drafting | prompt-directed bootstrap workaround | repository files, not yet committed |
 | Intake API candidate audit | prompt-directed bootstrap workaround using direct repository reads | repository audit file |
 | Shared runtime instruction preservation | human-directed bootstrap input | repository file |
+| PR #129 base integration | framework code merged by human; incorporated through direct Git | merge `68defc3fed912dda663d00438ce68c249fe39d5c` |
 | `missionIntake(...)` execution | not yet available | none |
 | SHIELD journal initialization | blocked: repository not initialized | none |
 | Daisy or May runtime dispatch | not performed | none |
 | Fury architecture verdict | not performed | none |
 | Draft PR Mission Workspace publication | not performed | none |
+
+## Breadcrumb log
+
+### 2026-07-29T13:46:50Z — Bootstrap mission authorized
+
+- Human direction: begin Mission #130 "meta style."
+- Route: implement `missionIntake(...)` first, then use it to intake #130.
+- Enforcement: human-directed session instruction.
+- Runtime proof: none; no intake function or journal existed.
+
+### 2026-07-29T13:48:52Z — Review-publication runtime merged
+
+- PR #129 merged as `68defc3fed912dda663d00438ce68c249fe39d5c`.
+- Mission #130 branch rebased onto that exact merge.
+- Intake audit expanded to include journal v8 signed publication authority,
+  publication-bound communication requests, and exact result evidence.
+- Enforcement: direct Git/GitHub bootstrap operations.
+- Runtime proof: merged package behavior exists; Mission #130 did not execute
+  it.
+
+### Intake API inventory — completed
+
+- Existing functions were classified as intake composition, conditional
+  helpers, post-intake behavior, or explicit exclusions.
+- Major gaps found: recommendation versus activation, seats versus human
+  gates, pre-authorization persistence, issue identity, and repository
+  bootstrap configuration.
+- Enforcement: repository evidence plus direct session reasoning.
+- Runtime proof: none.
+
+### Runtime context and communications — preserved
+
+- Human-supplied shared runtime instructions were preserved verbatim.
+- This Hill-owned mission communication file was created.
+- Mission Brief, communication file, journal state, Mission Workspace, and
+  adapter communication were separated explicitly.
+- Local May/Daisy health was recorded as
+  `human_reported_unverified`.
+- Enforcement: direct file edits.
+- Runtime proof: none.
+
+### `missionIntake v1` plan — proposed
+
+- Public candidate: `@shield/team-system/intake`.
+- First slice: pure, closed, non-authoritative candidate construction.
+- Reused package APIs: configuration validation, risk classification,
+  canonical brief creation/validation, and evidence requirements.
+- No CLI, journal write, dispatch, model, tool, adapter, or publication effect.
+- Current gate: Fury architecture review.
+- Enforcement: plan artifact only.
+- Runtime proof: none until the public function is implemented and dogfooded.
 
 ## Reported environment observation
 
