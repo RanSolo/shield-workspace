@@ -17,6 +17,10 @@
       "types": "./public/mission.d.mts",
       "import": "./public/mission.mjs"
     },
+    "./intake": {
+      "types": "./dist/mission-intake-v1.d.mts",
+      "import": "./dist/mission-intake-v1.mjs"
+    },
     "./journal": {
       "types": "./public/journal.d.mts",
       "import": "./public/journal.mjs"

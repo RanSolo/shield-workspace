@@ -5,8 +5,13 @@
 Advisory Fury architecture review returned `APPROVE` on exact revision
 `f10043ca749ba8f0f1d19a38907462efd5d9c41e` after three revise-and-return
 cycles. The review was host-dispatched rather than a formal journaled
-`fury.plan-gate.v1` record. This artifact and verdict authorize no
-implementation by themselves; the route is now the human sponsor gate.
+`fury.plan-gate.v1` record.
+
+At 9:10 AM America/Chicago on 2026-07-29, the human sponsor explicitly
+authorized only the bounded implementation and dogfooding of
+`missionIntakeV1(...)` at this agreed scope. That authorization does not include
+merge, dispatch, journaled Fury enforcement, Fitz review, deployment, or
+release.
 
 ## Public position
 

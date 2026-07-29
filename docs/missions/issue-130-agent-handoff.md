@@ -55,7 +55,7 @@ manual bootstrap intake
 → advisory Fury review: REVISE
 → Hill contract corrections
 → advisory Fury final review: APPROVE
-→ human sponsor implementation gate
+→ human sponsor bounded implementation approval
 → bounded implementation
 → self-intake of Issue #130
 → report runtime participation and remaining workarounds
@@ -210,6 +210,20 @@ communication or review-publication authority.
   exist as executable package paths.
 - Current route: stop at the human sponsor gate. Do not implement until the
   human explicitly authorizes the bounded plan.
+
+### Human bounded implementation approval
+
+- Recorded time: 9:10 AM America/Chicago on 2026-07-29, from the human-provided
+  conversation timestamp.
+- Authorized: implement and dogfood `missionIntakeV1(...)` at the exact
+  Fury-approved scope.
+- Not authorized: PR publication, merge, seat dispatch, journaled Fury
+  enforcement, Fitz review, deployment, or release.
+- Enforcement: explicit human session direction; no S.H.I.E.L.D. journal
+  exists yet.
+- Current route: implement the pure package function and public subpath, run
+  focused and full package validation, commit an exact implementation revision,
+  invoke that revision against Issue #130, record the result, and stop.
 
 ## Reported environment observation
 
