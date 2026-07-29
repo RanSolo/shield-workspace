@@ -78,7 +78,8 @@ Mack verifies:
 - journal load and replay;
 - ready, waiting, blocked, uncertain, completed, and human-gate outcomes;
 - stale sequence and revision rejection;
-- at-most-one dispatch and at-most-one durable append;
+- at-most-one dispatch, at-most-one transition append, and at-most-one effect
+  append;
 - no dispatch when authority or runtime binding is missing;
 - exact candidate-to-entry binding;
 - restart/readback behavior;
@@ -178,15 +179,23 @@ interface MissionCycleDependenciesV1 {
     entry: ProfileAwareMissionEntryV1;
   }): Promise<
     | { state: "appended"; journalPath: string }
-    | { state: "blocked"; code: "journal_lock_held" | "journal_unavailable"; errors: string[] }
+    | { state: "blocked"; code: "journal_lock_held" | "journal_unavailable" | "stale_sequence"; errors: string[] }
     | { state: "uncertain"; code: "recovery_required"; errors: string[] }
   >;
-  readPermissionAuditLedger(): Promise<unknown>;
-  authorize(input: RunnerCyclePlan): unknown | Promise<unknown>;
-  execute(
+  permissionAudit: {
+    ledgerId: string;
+    read(): Promise<unknown>;
+    appendIfAbsent(record: PermissionAuditRecord): Promise<unknown>;
+  };
+  getPermissionContext(
+    input: RunnerCyclePlan,
+    expectedDecisionId: string,
+  ): unknown | Promise<unknown>;
+  executeTool(
     input: RunnerCyclePlan,
     decision: RunnerPermissionDecision,
   ): unknown | Promise<unknown>;
+  requiredCapabilities(input: RunnerCyclePlan): string[];
   validate(
     input: RunnerCyclePlan,
     result: RunnerExecutorResult,
@@ -195,25 +204,45 @@ interface MissionCycleDependenciesV1 {
 }
 ```
 
-`authorize` must be produced by `createPermissionAuthorizer(...)`, and
-`execute` must be produced by `createAuditedExecutor(...)`. Their shared
-`appendIfAbsent` dependency durably records the exact permission decision,
-`tool.invocation` before external execution, and one completed, failed, or
-uncertain `tool.result`. An invocation record consumes its decision and is the
-authoritative redispatch barrier. The runtime validates snapshots through
-`replayPermissionAuditLedger(...)`; raw or malformed audit arrays fail closed.
+The public dependency surface does not accept an authorizer or an audited
+executor. `runMissionCycle(...)` constructs both internally with
+`createPermissionAuthorizer(...)` and `createAuditedExecutor(...)`, using the
+same closed `permissionAudit` capability, exact deterministic decision ID,
+permission-context provider, raw `executeTool`, capabilities, and clock.
+Consequently a caller cannot replace either factory while still satisfying the
+runtime contract.
 
-The input deliberately has no caller-supplied cycle ID or effect key. After
-the journal is in `running` state at sequence `R`, the runtime derives exactly:
+Permission audit v1 receives one compatibility strengthening without changing
+existing record JSON: `appendIfAbsent` remains atomic by `recordId`, while the
+ledger implementation and `replayPermissionAuditLedger(...)` additionally
+enforce at most one `tool.invocation` claim for each exact
+`missionId + revisionId + journalSequence`. A second invocation with the same
+claim tuple and a different decision ID or effect key is rejected as
+`invocation_claim_conflict`; an exact duplicate remains
+`duplicate_invocation`. The runtime uses deterministic record IDs:
+`audit:<decisionId>`, `audit-invocation:<decisionId>`, and
+`audit-result:<decisionId>`. The invocation append and verified receipt occur
+before `executeTool`; failure to acquire that claim is pre-dispatch and never
+calls the tool. Raw or malformed audit arrays fail closed.
+
+The input deliberately has no caller-supplied cycle ID, effect key, or decision
+ID. Let `B = expectedSequence`, the stable action-occurrence base. The runtime
+derives these identities before any append:
 
 ```text
-cycle:${missionId}:${expectedRevisionId}:${R}:${actionId}
-effect:${missionId}:${expectedRevisionId}:${R}:${actionId}
+cycle:${missionId}:${expectedRevisionId}:${B}:${seatId}:${actionId}:${effectClass}:${validationId}
+effect:${missionId}:${expectedRevisionId}:${B}:${seatId}:${actionId}:${effectClass}:${validationId}
+decision:${missionId}:${expectedRevisionId}:${B}:${seatId}:${actionId}:${effectClass}:${validationId}
 ```
 
-The runner plan and permission decision both bind
-`evaluatedThroughSequence: R`. Its candidate binds
+After the journal is in `running` state at sequence `R`, the runner plan,
+permission context, decision, and audit claim bind
+`evaluatedThroughSequence: R`. The candidate binds
 `expectedPreviousSequence: R` and `intendedJournalSequence: R + 1`.
+`validationId` is therefore durably bound by every derived identity even
+though legacy runner payload v1 remains byte-compatible. Replay recomputes the
+identities from the request and exact-matches every payload field, including
+seat, action, effect class, authorization decision, cycle, and effect key.
 
 ### Canonical schema-9 extension
 
@@ -224,47 +253,89 @@ one additive event, `execution.effect_recorded`, with the existing closed
 runner execution payload. `createProfileAwareExecutionEffectEntryV1(...)` is
 the only schema-9 effect-entry constructor. It requires authorization, frozen
 profile gates, `execution === "running"`, current sequence/revision identity,
-and no duplicate cycle ID or effect key.
+and no duplicate cycle ID or effect key. Replay preserves `running` for an
+uncertain payload and moves execution to `completed` exactly for a completed
+payload.
 
 Runner inputs and candidates add schema 9 to their existing schema 5–8 union.
+`PermissionInvocationContext.journalSchemaVersion` and
+`validatePermissionInvocationContext(...)` add schema 9 to their existing
+schema 6–8 union. Tests freeze both validators and the permission/runner
+integration at schema 9.
 Legacy schemas and `createExecutionEffectEntry(...)` are unchanged.
+
+The schema-9 runner adapter is closed:
+
+- `governanceState` is `approved` exactly when profile-aware authorization is
+  `authorized`, otherwise `proposed`;
+- `missionAuthorizationState` is the profile-aware `authorization`;
+- `executionStatus` is the profile-aware `execution`;
+- `executeReadiness` is `projection.readiness.execute`;
+- `participantSeatIds` and `activatedModes` are copied from the frozen brief;
+- `effectRecords` are constructed only from replayed
+  `execution.effect_recorded` entries by adding their authoritative entry ID,
+  mission ID, sequence, and timestamp to the validated payload.
+
+No second governance source or caller-supplied runner projection exists.
 
 ### Ordered algorithm and sequences
 
-Let `S` be `expectedSequence`.
+Let `B` be `expectedSequence`.
 
-1. Read and replay the exact journal. Reject a stale revision or sequence.
-2. If mission authorization or a frozen gate is pending, return `waiting`
-   with `coulson`; do not append, authorize, or dispatch. This is the current
-   sequence-0 outcome for `mission:issue-130-runtime-v2`.
-3. If execution is `completed`, return `complete`. If an uncertain effect is
-   replayed, return `uncertain`. Neither path dispatches.
-4. If execution is `not-started`, append `execution.transition` at `S + 1`,
-   re-read, and require canonical equality for that exact entry plus
-   `execution === "running"` and `lastSequence === S + 1`. Set `R = S + 1`.
-   If execution is already `running`, set `R = S` without appending.
-5. Derive the cycle/effect identities from `R`. Replay the permission audit
-   ledger before calling the runner:
-   - no matching invocation permits one runner call;
-   - a matching invocation with no result, or with failed/uncertain result,
-     returns `uncertain` with `coulson`;
-   - a matching completed result without the matching journal effect returns
-     `uncertain` with `coulson`;
-   - a matching completed journal effect returns `complete`.
-6. Call `runRunnerCycle(...)` once with the audited authorizer/executor.
-7. A pre-dispatch runner stop returns `waiting` or `blocked` without journal
+1. Read and replay the exact journal. Reject a stale revision first. Derive
+   the stable identities from `B`.
+2. Before stale-sequence rejection, search replayed schema-9 effects for the
+   derived effect key. An exact completed match returns `complete`; an exact
+   uncertain match returns `uncertain`. Any same-key field mismatch is
+   `effect_identity_mismatch`. This is the only successful stale-request
+   replay path.
+3. Require either `lastSequence === B`, or
+   `lastSequence === B + 1` where entry `B + 1` is exactly the canonical
+   `not-started → running` transition for this mission and revision. Any other
+   state is `stale_sequence`.
+4. Determine `R` as `B + 1` for that exact replayed transition and `B`
+   otherwise. Replay the permission ledger and inspect the deterministic
+   decision ID at `R`. A matching invocation without a result, a
+   failed/uncertain result, or a completed result without the exact journal
+   effect returns `uncertain`; no redispatch occurs. A conflicting claim at
+   the same mission, revision, and `R` returns `blocked`. Invalid audit state
+   fails closed.
+5. If mission authorization or a frozen execution gate is pending, return
+   `waiting` with the first pending requirement's `requiredRoleId`, in
+   canonical requirement order; do not append, authorize, or dispatch. Mission
+   authorization itself routes to Coulson. This is the current sequence-0
+   outcome for `mission:issue-130-runtime-v2`.
+6. If execution is `completed`, return `complete`. If execution is
+   `not-started`, append one `execution.transition` at `B + 1`, re-read, and
+   require canonical equality for that exact entry plus
+   `execution === "running"` and `lastSequence === B + 1`; set `R = B + 1`.
+   If execution is already `running`, retain `R = B`.
+7. Build the sole schema-9 runner projection through the closed adapter.
+   Acquire fresh permission context whose decision ID must equal the derived
+   decision ID. Construct the audited authorizer/executor internally and call
+   `runRunnerCycle(...)` once.
+8. A pre-dispatch runner stop returns `waiting` or `blocked` without an effect
    append. A post-dispatch stop must carry an uncertain effect candidate.
-8. Convert an advanced or uncertain candidate through
+9. Convert an advanced or uncertain candidate through
    `createProfileAwareExecutionEffectEntryV1(...)`, append it at `R + 1`, and
    never retry a `recovery_required` append.
-9. Re-read and require:
+10. Re-read and require:
    - `canonicalJson(entries[R + 1]) === canonicalJson(expectedEntry)`;
    - entry ID `entry:${missionId}:${R + 1}`;
-   - exact mission, revision, cycle ID, effect key, and sequence;
+   - exact mission, revision, cycle ID, effect key, authorization decision ID,
+     seat, action, effect class, outcome, and sequence;
    - `projection.lastSequence === R + 1`;
    - exactly one matching effect with the recorded outcome; and
    - a changed journal digest.
-10. Return `advanced` only after all readback invariants pass.
+11. Return `advanced` only after all readback invariants pass.
+
+One invocation permits at most one pre-dispatch transition append and at most
+one post-dispatch effect append. These are separate cardinality invariants;
+the contract does not claim one total append. A transition append lock,
+unavailable store, stale sequence, or readback failure is pre-dispatch and
+`blocked`. After the invocation claim has been durably acquired, every
+non-verified effect append outcome—including lock, unavailable store, stale
+sequence, recovery required, and readback mismatch—is `uncertain`.
 
 ### Closed results and routing
 
@@ -273,6 +344,7 @@ type MissionCycleReasonCodeV1 =
   | "mission_authorization_required" | "gate_missing"
   | RunnerStopReason
   | "stale_revision" | "stale_sequence" | "duplicate_effect"
+  | "effect_identity_mismatch" | "invocation_claim_conflict"
   | "audit_invalid" | "audit_incomplete" | "audit_result_uncertain"
   | "journal_lock_held" | "journal_unavailable" | "recovery_required"
   | "transition_readback_mismatch" | "effect_readback_mismatch"
@@ -302,8 +374,10 @@ type MissionCycleResultV1 =
 
 Exact mapping:
 
-- `waiting`, `coulson`: `mission_authorization_required`, `gate_missing`,
-  `authorization_wait`, and `authorization_denied`.
+- `waiting`, actual pending frozen-gate role:
+  `mission_authorization_required`, `gate_missing`, `authorization_wait`, and
+  `authorization_denied`. Mission authorization routes to Coulson; execution
+  gates route to their requirement's `requiredRoleId`.
 - `blocked`, requested `seatId`: `identity_mismatch`,
   `seat_not_participating`, `seat_not_executable`,
   `implementation_owner_mismatch`, `mode_context_mismatch`,
@@ -312,14 +386,16 @@ Exact mapping:
 - `blocked`, `coulson`: `governance_not_approved`,
   `mission_not_authorized`, `execution_not_active`, `execute_not_ready`,
   `journal_sequence_mismatch`, `stale_revision`, `stale_sequence`,
-  `duplicate_effect`, `audit_invalid`, `journal_lock_held`,
+  `duplicate_effect`, `effect_identity_mismatch`,
+  `invocation_claim_conflict`, `audit_invalid`, `journal_lock_held`,
   `journal_unavailable`, `transition_readback_mismatch`, and
-  `effect_readback_mismatch`.
+  pre-dispatch `effect_readback_mismatch`.
 - `uncertain`, `coulson`: `effect_outcome_uncertain`, `audit_incomplete`,
   `audit_result_uncertain`, `executor_failed`, `executor_uncertain`,
   `executor_malformed`, `executor_identity_mismatch`, `validator_failed`,
   `validator_malformed`, `validator_identity_mismatch`, and
-  `recovery_required`.
+  every post-dispatch `journal_lock_held`, `journal_unavailable`,
+  `stale_sequence`, `recovery_required`, or `effect_readback_mismatch`.
 - `complete`, `null`: replayed successful matching effect or completed
   execution.
 - `advanced`, `hill`: successful effect append and exact readback.
@@ -330,9 +406,14 @@ Mack are process review/validation roles, not added gates. Fitz is introduced
 only by a separately authorized stronger-profile successor.
 
 Focused tests bind the final event/sequence model: current unauthorized
-sequence-0 waiting/no-dispatch; transition at `S + 1`; effect at `R + 1`;
-schema-9 completed and uncertain replay; audit-ledger redispatch prevention;
-stale revision/sequence; duplicate cycle/effect; append uncertainty; exact
-transition/effect readback; every runner-stop mapping; unchanged schema 5–8
-tests; package export import; TypeScript consumer compile; and packed-tarball
-import. Issue #76 remains out of scope.
+sequence-0 waiting/no-dispatch; transition at `B + 1`; effect at `R + 1`;
+schema-9 permission and runner validation; closed schema-9 projection mapping;
+completed and uncertain replay before stale rejection; stable identities
+across transition/restart; validation-ID changes; exact and conflicting atomic
+invocation claims, including concurrent calls with different decision IDs;
+stale revision/sequence; duplicate cycle/effect; pre-dispatch append blocking;
+every post-dispatch append/readback failure becoming uncertain; exact
+transition/effect readback; stronger-profile missing-gate routing to Fitz or
+Simmons; every runner-stop mapping; unchanged schema 5–8 tests; package export
+import; TypeScript consumer compile; and packed-tarball import. Issue #76
+remains out of scope.
