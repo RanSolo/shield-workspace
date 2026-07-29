@@ -2,6 +2,7 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import {
   canonicalJson,
   computeEd25519SigningKeyRef,
+  validateTrustedBindingRegistry,
   type EvidenceTimestamp,
   type MissionModeActivation,
   type MissionRiskFlags,
@@ -181,7 +182,7 @@ function verifyEvidence(evidence: SignedProfileEvidenceV1, expected: ProfileRequ
   if (!exact(payload, ["schemaVersion", "evidenceId", "requirementId", "missionId", "revisionId", "seatId", "evidenceKind", "decision", "humanPrincipalId", "bindingId", "signingKeyRef", "sourceRef", "timestamp", "journalSequence"])) return ["Evidence fields are not closed."];
   if (payload.schemaVersion !== 1 || !ID.test(payload.evidenceId) || payload.requirementId !== expected.requirementId || payload.missionId !== missionId || payload.revisionId !== expected.revisionId || payload.seatId !== expected.requiredRoleId || payload.evidenceKind !== expected.evidenceKind || payload.decision !== "approved" || !timestamp(payload.timestamp) || payload.journalSequence !== sequence) errors.push("Evidence identity or sequence is invalid.");
   const binding = bindings.find((candidate) => candidate.seatId === payload.seatId && candidate.bindingId === payload.bindingId);
-  if (!binding || binding.humanPrincipalId !== payload.humanPrincipalId || binding.signingKeyRef !== payload.signingKeyRef || (binding.missionScope !== "*" && binding.missionScope !== missionId)) errors.push("Evidence binding is missing, stale, or wrong-seat.");
+  if (!binding || binding.humanPrincipalId !== payload.humanPrincipalId || binding.signingKeyRef !== payload.signingKeyRef || (binding.missionScope !== "*" && binding.missionScope !== missionId) || sequence < binding.validFromSequence || (binding.validThroughSequence !== null && sequence > binding.validThroughSequence)) errors.push("Evidence binding is missing, stale, or wrong-seat.");
   if (binding && computeEd25519SigningKeyRef(binding.publicKeySpkiBase64) !== payload.signingKeyRef) errors.push("Evidence signing identity is mismatched.");
   if (typeof evidence.signatureBase64 !== "string" || !binding) errors.push("Evidence signature is missing.");
   else {
@@ -201,6 +202,9 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
   if (briefResult.state === "invalid") return briefResult;
   const brief = briefResult.value;
   if (begun.missionId !== brief.missionId || begun.entryId !== `entry:${brief.missionId}:0` || !timestamp(begun.timestamp) || canonicalJson(begun.timestamp) !== canonicalJson(brief.createdAt)) return invalid("mission_mismatch", "Profile-aware begin identity is invalid.");
+  if (!exact(begun.payload, ["brief", "trustedBindings", "requirements"])) return invalid("malformed", "Profile-aware begin payload is not closed.");
+  const bindingRegistry = validateTrustedBindingRegistry({ schemaVersion: 1, bindings: begun.payload.trustedBindings });
+  if (bindingRegistry.state === "invalid") return invalid("binding_invalid", ...bindingRegistry.errors);
   const requirements = createProfileRequirementsV1(brief);
   if (canonicalJson(begun.payload.requirements) !== canonicalJson(requirements)) return invalid("tampered_requirements", "Profile requirements are not frozen canonically.");
   const entryIds = new Set([begun.entryId]);
@@ -217,16 +221,19 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
     entryIds.add(entry.entryId);
     const time = Date.parse(entry.timestamp.value); if (time < previousTime) return invalid("sequence_invalid", `Entry ${index} timestamp moves backward.`); previousTime = time;
     if (entry.type === "governance.decided" || entry.type === "evidence.recorded" || entry.type === "final_acceptance.recorded") {
+      if (!exact(entry.payload, ["evidence"])) return invalid("malformed", `Entry ${index} evidence payload is not closed.`);
       const signed = entry.payload.evidence;
+      if (!exact(signed, ["payload", "signatureBase64"])) return invalid("malformed", `Entry ${index} signed evidence is not closed.`);
       const expectedKind: EvidenceKind = entry.type === "governance.decided" ? "mission_authorization" : entry.type === "final_acceptance.recorded" ? "final_acceptance" : signed?.payload?.evidenceKind;
       const matches = requirements.filter((requirement) => requirement.evidenceKind === signed?.payload?.evidenceKind && requirement.evidenceKind === expectedKind);
       if (matches.length !== 1 || evidenceIds.has(signed?.payload?.evidenceId)) return invalid("duplicate_evidence", `Entry ${index} evidence is duplicate or ambiguous.`);
-      const errors = verifyEvidence(signed, matches[0], begun.payload.trustedBindings, brief.missionId, index); if (errors.length) return invalid("evidence_invalid", ...errors);
+      const errors = verifyEvidence(signed, matches[0], bindingRegistry.value.bindings, brief.missionId, index); if (errors.length) return invalid("evidence_invalid", ...errors);
       if (entry.type === "governance.decided") { if (authorization !== "waiting" || execution !== "not-started") return invalid("sequence_invalid", "Authorization is duplicated or late."); authorization = "authorized"; }
       if (entry.type === "evidence.recorded") { if (execution !== "not-started") return invalid("ordering_invalid", "Execution gate evidence must be frozen before execution."); if (matches[0].phase !== "execution") return invalid("evidence_invalid", "Only profile execution gates may be recorded here."); }
       if (entry.type === "final_acceptance.recorded") { if (authorization !== "authorized" || execution !== "completed" || finalAcceptance === "accepted") return invalid("ordering_invalid", "Final acceptance requires authorized successful execution and is single-use."); finalAcceptance = "accepted"; }
       evidenceIds.add(signed.payload.evidenceId); evidence.push(signed.payload);
     } else if (entry.type === "execution.transition") {
+      if (!exact(entry.payload, ["from", "to"]) || !["not-started", "running"].includes(entry.payload.from as string) || !["running", "completed"].includes(entry.payload.to as string)) return invalid("malformed", `Entry ${index} execution payload is not closed.`);
       if (authorization !== "authorized") return invalid("ordering_invalid", "Execution requires authorization and all frozen gates.");
       const pending = requirements.filter((requirement) => requirement.phase === "execution" && !evidence.some((record) => record.requirementId === requirement.requirementId));
       if (pending.length > 0) return invalid("gate_missing", "Execution cannot start before frozen specialist gates are satisfied.");

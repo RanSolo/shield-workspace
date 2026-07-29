@@ -109,3 +109,15 @@ test("Mission #130 predecessor digest and bytes remain unchanged", async () => {
   const legacyReplay = replaySupervisedMissionJournal(bytes.toString("utf8").trimEnd().split("\n").map((line) => JSON.parse(line)));
   assert.equal(legacyReplay.state, "valid", legacyReplay.errors?.join(" "));
 });
+
+test("schema 9 closes trusted bindings and nested event payloads", () => {
+  const current = brief("standard");
+  const coulson = authority("coulson");
+  const begun = createProfileAwareMissionBegunEntry(current, [coulson.binding]);
+  assert.equal(replayProfileAwareMissionJournal([{ ...begun, payload: { ...begun.payload, trustedBindings: [coulson.binding, coulson.binding] } }]).state, "invalid");
+  const entries = [begun];
+  const projection = replay(entries);
+  const authorization = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"), 1);
+  entries.push({ schemaVersion: 9, entryId: `${current.missionId}:1`, missionId: current.missionId, sequence: 1, type: "governance.decided", timestamp: authorization.payload.timestamp, payload: { evidence: authorization, unexpected: true } });
+  assert.equal(replayProfileAwareMissionJournal(entries).state, "invalid");
+});

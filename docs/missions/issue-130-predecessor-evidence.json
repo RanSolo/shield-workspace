@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-130",
+  "journalPath": ".shield/journals/bWlzc2lvbjppc3N1ZS0xMzA.jsonl",
+  "journalSchemaVersion": 2,
+  "journalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9",
+  "observedAt": "2026-07-29T16:00:00Z",
+  "preservationRule": "The predecessor journal is read-only evidence and must not be appended, rewritten, or reserialized."
+}
