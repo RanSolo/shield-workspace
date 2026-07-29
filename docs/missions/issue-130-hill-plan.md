@@ -101,7 +101,7 @@ human-directed, temporary workarounds, or framework defects.
 
 Mission Brief approval → Delivery Mode activation → commit brief and audit
 artifact → draft Mission Workspace → Fury plan gate → bounded May
-implementation → Mack validation → Fury conformance → Fitz human gate.
+implementation → Mack validation → Fury conformance → Coulson final gate.
 
 ## Runtime-v2 correction after Fury review
 
@@ -144,52 +144,94 @@ runMissionCycle(
 ): Promise<MissionCycleResultV1>
 ```
 
-`MissionCycleInputV1` contains exactly the repository root, configured journal
-path, mission ID, expected mission revision, expected journal sequence, cycle
-ID, seat ID, action ID, effect class, effect key, validation ID, activated
-modes, and action allowlist. `MissionCycleDependenciesV1` contains exact
-`read`, `append`, `authorize`, `execute`, `validate`, and trusted `now`
-functions. The runtime derives the runner plan from these inputs; callers may
-not supply a pre-authorized plan or a durable entry.
+`MissionCycleInputV1` is exactly:
+
+```ts
+interface MissionCycleInputV1 {
+  repositoryRoot: string;
+  configuredJournalPath: string;
+  missionId: string;
+  expectedRevisionId: string;
+  expectedSequence: number;
+  seatId: string;
+  actionId: string;
+  effectClass: RunnerEffectClass;
+  validationId: string;
+  activatedModes: RunnerModeReference[];
+  actionAllowlist: string[];
+}
+```
+
+It deliberately has no cycle ID or effect key. The runtime derives exactly
+`cycle:${missionId}:${expectedRevisionId}:${expectedSequence}:${actionId}` and
+`effect:${missionId}:${expectedRevisionId}:${expectedSequence}:${actionId}`.
+`MissionCycleDependenciesV1` is exactly:
+
+```ts
+interface MissionCycleDependenciesV1 {
+  read(input: MissionJournalLocationV1): Promise<ProfileAwareJournalSnapshotV1>;
+  append(input: { entry: ProfileAwareMissionEntryV1 }): Promise<ProfileAwareAppendResultV1>;
+  authorize(input: RunnerCyclePlan): unknown | Promise<unknown>;
+  execute(input: RunnerCyclePlan, decision: RunnerPermissionDecision): unknown | Promise<unknown>;
+  validate(input: RunnerCyclePlan, result: RunnerExecutorResult): unknown | Promise<unknown>;
+  now(): EvidenceTimestamp;
+}
+```
+
+The runtime derives the runner plan from these inputs; callers may not supply
+a pre-authorized plan, cycle identity, effect key, or durable entry.
 
 The canonical implementation extends the existing profile-aware schema-9
 replay/projection and schema-9 entry validation. It does not coerce schema 9
-through the legacy schema-2–8 projection. The existing runner validators and
-`runRunnerCycle(...)` remain additive-compatible while accepting schema 9, and
-the profile-aware journal accepts the resulting `execution.effect_recorded`
-entry. `createExecutionEffectEntry(...)` is extended or a schema-9 equivalent
-is exported from the new module; exactly one path is used by the composition.
+through the legacy schema-2–8 projection. `ProfileAwareProjectionV1` gains an
+authoritative `effects` collection and accepts exactly one new event,
+`execution.effect_recorded`, whose payload is the existing runner execution
+payload plus `authorizationDecisionId`, `outcome`, `reasonCode`, `summary`,
+and `evidenceRefs`. `createProfileAwareExecutionEffectEntryV1(projection,
+candidate, timestamp)` is the sole schema-9 entry constructor. The runner
+validators and `runRunnerCycle(...)` are extended additively to accept journal
+schema 9; legacy schema 5–8 behavior remains unchanged.
 
 The ordered algorithm is:
 
-1. `read` and replay the exact mission journal.
-2. Reject stale mission revision or sequence, completed effect key/cycle ID,
-   missing authorization, missing frozen gates, or an already uncertain effect
-   before calling `authorize`.
-3. Derive one stable plan and call `runRunnerCycle(...)` once.
-4. Convert its candidate to one schema-9 authoritative entry.
+1. `read` and replay the exact mission journal into `ProfileAwareJournalSnapshotV1`.
+2. Require `projection.brief.revisionId === expectedRevisionId` and
+   `projection.lastSequence === expectedSequence`; reject malformed or missing
+   authorization/gates and any replayed matching effect before dispatch.
+3. Derive the stable plan and call `runRunnerCycle(...)` once.
+4. Convert its candidate with `createProfileAwareExecutionEffectEntryV1(...)`.
 5. Call `append` once; never retry after `recovery_required`.
-6. `read` again and require exact mission ID, revision, prior sequence, next
-   sequence, entry ID, entry content, cycle ID, effect key, and resulting
-   projection.
+6. `read` again and require canonical JSON equality for the appended entry,
+   exact mission/revision/sequence/entry ID/cycle/effect identity, and the
+   projection invariant `lastSequence === expectedSequence + 1` with exactly
+   one new matching effect.
 7. Return the closed next-route result.
 
-The result variants are exactly `advanced`, `waiting`, `blocked`, `uncertain`,
-and `complete`; each carries mission ID, subject ID, revision ID, durable
-sequence, and accountable next seat. Deterministic failure mapping is:
+The result variants are exactly:
+
+```ts
+type MissionCycleResultV1 =
+  | { outcome: "advanced"; missionId: string; subjectId: string; revisionId: string; sequence: number; accountableNextSeat: string | null; cycleId: string; effectKey: string }
+  | { outcome: "waiting" | "blocked" | "uncertain" | "complete"; missionId: string; subjectId: string; revisionId: string; sequence: number; accountableNextSeat: string | null; reasonCode: MissionCycleReasonCodeV1 };
+```
+
+`MissionCycleReasonCodeV1` is closed and maps each existing runner stop reason
+and journal error to one outcome. Deterministic failure mapping is:
 
 | Condition | Result |
 | --- | --- |
-| human authorization wait/deny or pending gate | `waiting` |
-| stale, duplicate, malformed, missing, invalid, lock-held, append-failed, readback-invalid, or projection-mismatch input | `blocked` |
-| post-dispatch uncertain result or append `recovery_required` | `uncertain` |
+| authorization wait, authorization deny, or pending Coulson gate | `waiting` with `next:coulson` |
+| stale, duplicate, malformed, missing authority, invalid identity, lock-held, append failure, readback invalid, or projection mismatch | `blocked` with the owning seat or `next:coulson` |
+| post-dispatch executor/validator stop, uncertain result, or append `recovery_required` | `uncertain` with `next:coulson` |
 | successful append and exact readback | `advanced` |
-| replay shows no eligible next action | `complete` |
+| replayed execution status is `completed` | `complete` with `next:null` |
 
 The runtime derives stable cycle/effect identities from the durable mission
 revision, expected sequence, and requested action, and checks replayed effect
 records before authorization. This preserves at-most-once behavior across
-restart and prevents retry after uncertain external effects.
+restart and prevents retry after uncertain external effects. `ProfileAwareAppendResultV1`
+contains exactly `{ state: "appended"; journalPath: string; entry: ProfileAwareMissionEntryV1 }`
+or `{ state: "uncertain"; code: "recovery_required"; error: string }`.
 
 For this mission, remove the Fitz final route from the prior generic route:
 `standard@1` has only Coulson execution and final-acceptance gates. Fury and
@@ -198,7 +240,8 @@ frozen mission participants. Fitz is introduced only by a separately
 authorized stronger-profile successor.
 
 Focused tests must cover every result mapping above, schema-9 replay and
-entry compatibility, exact post-append readback, stale revision/sequence,
-duplicate and uncertain restart protection, no-dispatch stops, package export,
-and packed-package compatibility. The Issue #76 proving mission remains out
-of scope.
+entry compatibility, exact post-append canonical JSON/readback invariants,
+stale revision/sequence, duplicate and uncertain restart protection, no-
+dispatch stops, unchanged schema 5–8 regression behavior, package export,
+TypeScript consumer compilation, and packed-package import. The Issue #76
+proving mission remains out of scope.
