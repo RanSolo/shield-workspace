@@ -213,27 +213,47 @@ Consequently a caller cannot replace either factory while still satisfying the
 runtime contract.
 
 Permission audit v1 receives one compatibility strengthening without changing
-existing record JSON: `appendIfAbsent` remains atomic by `recordId`, while the
-ledger implementation and `replayPermissionAuditLedger(...)` additionally
-enforce at most one `tool.invocation` claim for each exact
-`missionId + revisionId + journalSequence`. A second invocation with the same
-claim tuple and a different decision ID or effect key is rejected as
-`invocation_claim_conflict`; an exact duplicate remains
-`duplicate_invocation`. The runtime uses deterministic record IDs:
-`audit:<decisionId>`, `audit-invocation:<decisionId>`, and
-`audit-result:<decisionId>`. The invocation append and verified receipt occur
-before `executeTool`; failure to acquire that claim is pre-dispatch and never
-calls the tool. Raw or malformed audit arrays fail closed.
+existing record JSON. `appendIfAbsent` remains atomic by `recordId`. Every
+`tool.invocation` record ID is instead
+`audit-invocation:<claimDigest>`, where `claimDigest` is the fixed-length
+SHA-256 base64url digest of the canonical closed object
+`{ domain: "shield.permission-invocation-claim.v1", missionId, revisionId,
+journalSequence }`. It is deliberately independent of decision and effect
+identity, so concurrent requests for the same mission revision and sequence
+contend for the same record ID before either can dispatch. Only the caller
+whose newly appended record receives an exact verified receipt may call
+`executeTool`; the API never returns a successful receipt for a pre-existing
+record. A loser returns `invocation_claim_conflict` pre-dispatch.
+`replayPermissionAuditLedger(...)` also rejects a second invocation for the
+same claim tuple as defense in depth. Permission decisions and results retain
+deterministic `audit:<decisionId>` and `audit-result:<decisionId>` record IDs.
+Raw or malformed audit arrays fail closed.
 
 The input deliberately has no caller-supplied cycle ID, effect key, or decision
-ID. Let `B = expectedSequence`, the stable action-occurrence base. The runtime
-derives these identities before any append:
+ID. Let `B = expectedSequence`, the stable action-occurrence base. Create the
+canonical closed identity object:
 
-```text
-cycle:${missionId}:${expectedRevisionId}:${B}:${seatId}:${actionId}:${effectClass}:${validationId}
-effect:${missionId}:${expectedRevisionId}:${B}:${seatId}:${actionId}:${effectClass}:${validationId}
-decision:${missionId}:${expectedRevisionId}:${B}:${seatId}:${actionId}:${effectClass}:${validationId}
+```ts
+{
+  contractVersion: 1,
+  missionId,
+  revisionId: expectedRevisionId,
+  baseSequence: B,
+  seatId,
+  actionId,
+  effectClass,
+  validationId,
+}
 ```
+
+Using canonical JSON with sorted keys, derive three independent SHA-256
+base64url digests by hashing a domain separator, one NUL byte, and that exact
+JSON. The domains are `shield.runner-cycle.v1`, `shield.runner-effect.v1`, and
+`shield.permission-decision.v1`. The final identifiers are respectively
+`cycle:sha256:<digest>`, `effect:sha256:<digest>`, and
+`decision:sha256:<digest>`. They are fixed length, injective up to SHA-256
+collision resistance, unambiguous for colon-bearing fields, and valid under
+both runner and permission-audit identifier limits.
 
 After the journal is in `running` state at sequence `R`, the runner plan,
 permission context, decision, and audit claim bind
@@ -255,7 +275,10 @@ the only schema-9 effect-entry constructor. It requires authorization, frozen
 profile gates, `execution === "running"`, current sequence/revision identity,
 and no duplicate cycle ID or effect key. Replay preserves `running` for an
 uncertain payload and moves execution to `completed` exactly for a completed
-payload.
+payload. Any replayed uncertain effect makes execute readiness `blocked`,
+regardless of a later request's action or effect key. The constructor rejects
+every further effect while any uncertain effect exists; recovery requires a
+future explicit authorized contract and is outside this mission.
 
 Runner inputs and candidates add schema 9 to their existing schema 5–8 union.
 `PermissionInvocationContext.journalSchemaVersion` and
@@ -284,11 +307,12 @@ Let `B` be `expectedSequence`.
 
 1. Read and replay the exact journal. Reject a stale revision first. Derive
    the stable identities from `B`.
-2. Before stale-sequence rejection, search replayed schema-9 effects for the
-   derived effect key. An exact completed match returns `complete`; an exact
-   uncertain match returns `uncertain`. Any same-key field mismatch is
-   `effect_identity_mismatch`. This is the only successful stale-request
-   replay path.
+2. Before stale-sequence rejection, inspect all replayed schema-9 effects. Any
+   uncertain effect returns `uncertain` immediately, before authorization or
+   dispatch, even when its key differs from the requested key. Otherwise,
+   search for the derived effect key. An exact completed match returns
+   `complete`; any same-key field mismatch is `effect_identity_mismatch`.
+   This is the only successful stale-request replay path.
 3. Require either `lastSequence === B`, or
    `lastSequence === B + 1` where entry `B + 1` is exactly the canonical
    `not-started → running` transition for this mission and revision. Any other
@@ -409,11 +433,14 @@ Focused tests bind the final event/sequence model: current unauthorized
 sequence-0 waiting/no-dispatch; transition at `B + 1`; effect at `R + 1`;
 schema-9 permission and runner validation; closed schema-9 projection mapping;
 completed and uncertain replay before stale rejection; stable identities
-across transition/restart; validation-ID changes; exact and conflicting atomic
-invocation claims, including concurrent calls with different decision IDs;
+across transition/restart; validation-ID changes; delimiter-collision and
+maximum-length identity inputs; exact and conflicting atomic invocation
+claims, including concurrent calls with different decision IDs and proof that
+exactly one `executeTool` call occurs;
 stale revision/sequence; duplicate cycle/effect; pre-dispatch append blocking;
 every post-dispatch append/readback failure becoming uncertain; exact
-transition/effect readback; stronger-profile missing-gate routing to Fitz or
-Simmons; every runner-stop mapping; unchanged schema 5–8 tests; package export
-import; TypeScript consumer compile; and packed-tarball import. Issue #76
-remains out of scope.
+transition/effect readback; a different action/effect key after uncertainty
+remaining blocked without dispatch; stronger-profile missing-gate routing to
+Fitz or Simmons; every runner-stop mapping; unchanged schema 5–8 tests; package
+export import; TypeScript consumer compile; and packed-tarball import. Issue
+#76 remains out of scope.
