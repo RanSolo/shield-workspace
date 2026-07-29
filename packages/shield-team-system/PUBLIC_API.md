@@ -20,6 +20,7 @@ package artifact.
 | `@shield/team-system/adapter` | Closed host-neutral adapter v1 contracts plus publication-bound adapter v2 communication requests and result evidence |
 | `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
+| `@shield/team-system/roles` | Canonical mission role registry, classification, routing, and assignment validation |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
 | `@shield/team-system/review-publication` | Pure host-neutral exact-path and permitted-effect evaluation for `review.publish` and Wheels Up review publication |
 | `@shield/team-system/pipeline` | Closed composable pipeline-mode taxonomy, evidence-bound repository pipeline profiles, stale-profile detection, and non-authoritative required-mode selection |

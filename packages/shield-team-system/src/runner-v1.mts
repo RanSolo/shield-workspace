@@ -18,6 +18,16 @@ export const RUNNER_STOP_REASONS = [
   "invocation_claim_malformed",
 ] as const;
 
+import {
+  validateExecutionEffectPayloadCommon,
+  validateRunnerSupervisedEffectCandidateCommon,
+} from "./runner-supervision-shared-v1.mjs";
+import type {
+  ExecutionEffectPayloadValidationMessages,
+  RunnerSupervisedEffectCandidateValidationMessages,
+} from "./runner-supervision-shared-v1.mjs";
+import { validateRoleAssignment } from "./role-taxonomy-v1.mjs";
+
 export type RunnerEffectClass = (typeof RUNNER_EFFECT_CLASSES)[number];
 export type RunnerPermissionOutcome = (typeof RUNNER_PERMISSION_OUTCOMES)[number];
 export type RunnerExecutorOutcome = (typeof RUNNER_EXECUTOR_OUTCOMES)[number];
@@ -223,14 +233,6 @@ export type RunnerInvocationClaimResult =
       outcome: "blocked";
       reason: "invocation_claim_conflict" | "invocation_claim_failed";
     };
-
-const {
-  validateExecutionEffectPayloadCommon,
-  validateRunnerSupervisedEffectCandidateCommon,
-} = await import("./runner-supervision-shared-v1.mjs") as typeof import("./runner-supervision-shared-v1.mjs");
-
-type ExecutionEffectPayloadValidationMessages = import("./runner-supervision-shared-v1.mjs").ExecutionEffectPayloadValidationMessages;
-type RunnerSupervisedEffectCandidateValidationMessages = import("./runner-supervision-shared-v1.mjs").RunnerSupervisedEffectCandidateValidationMessages;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/;
@@ -837,10 +839,10 @@ function preAuthorizationStop(input: RunnerCycleInput): RunnerStopReason | null 
   if (projection.missionAuthorizationState !== "authorized") return "mission_not_authorized";
   if (projection.executionStatus !== "running") return "execution_not_active";
   if (projection.executeReadiness !== "ready") return "execute_not_ready";
+  if (validateRoleAssignment(plan.seatId, "dispatch", { requireV03Enabled: true }).state === "invalid") return "seat_not_executable";
   if (projection.missionId !== plan.missionId || projection.subjectId !== plan.subjectId || projection.revisionId !== plan.revisionId) return "identity_mismatch";
   if (projection.evaluatedThroughSequence !== plan.evaluatedThroughSequence) return "journal_sequence_mismatch";
   if (!projection.participantSeatIds.includes(plan.seatId)) return "seat_not_participating";
-  if (plan.seatId === "fitz" || plan.seatId === "simmons") return "seat_not_executable";
   if (plan.effectClass === "behavioral_implementation" && plan.seatId !== "may") return "implementation_owner_mismatch";
   const projectedModes = projection.activatedModes.filter((mode) => mode.seatId === plan.seatId);
   if (resolvedModeContext.seatId !== plan.seatId || !sameModeReferences(projectedModes, plan.activatedModes) ||

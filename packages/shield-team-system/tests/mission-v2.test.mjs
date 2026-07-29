@@ -10,6 +10,8 @@ import {
   createCommunicationResultEntry,
   createDelegatedAuthorizationEntry,
   createDelegatedInvalidationEntry,
+  createRuntimeBindingEntry,
+  createRuntimeBindingSupersessionEntry,
   createGovernanceEntry,
   createMissionBegunEntry,
   createHumanEvidenceEntryFromAdapterCandidate,
@@ -22,6 +24,8 @@ import {
   verifySignedHumanEvidence,
 } from "../dist/mission-v2.mjs";
 import { canonicalDelegationJson, createDelegationLogEntry, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
+
+const artifactRevisionId = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
 function keyBinding(seatId, humanPrincipalId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -76,6 +80,35 @@ function fixture(requireSimmons = false) {
   return { brief, entries, coulson, fitz, simmons };
 }
 
+function runtimeBinding(overrides = {}) {
+  return {
+    bindingSchemaVersion: 1,
+    bindingId: "runtime-binding:may",
+    bindingVersion: 1,
+    missionId: "mission:fixture",
+    subjectId: "issue:39",
+    missionRevisionId: "0123456789abcdef0123456789abcdef01234567",
+    seatId: "may",
+    reasoningRuntimeId: "runtime:ornith:may",
+    toolExecutorId: "executor:fixture-host",
+    repositoryId: "repo:RanSolo/shield-workspace",
+    canonicalWritableRoot: "/workspace/shield-workspace",
+    branch: "codex/issue-39-canonical-mission-runtime",
+    artifactRevisionId,
+    recordedAtSequence: 6,
+    activeThroughSequence: null,
+    lifecycleState: "active",
+    approvedScope: {
+      actionIds: ["implement-issue-39"],
+      effectClasses: ["behavioral_implementation"],
+      effectKeys: ["effect:issue-39-runtime"],
+      capabilities: ["filesystem_write"],
+    },
+    coulsonAuthorizationRef: "authorization:runtime-binding:may:1",
+    ...overrides,
+  };
+}
+
 function replay(entries) {
   const result = replaySupervisedMissionJournal(entries);
   assert.equal(result.state, "valid", result.errors?.join(" "));
@@ -120,6 +153,37 @@ test("canonical brief revisions ignore JSON key ordering and detect content drif
   reordered.objective = "Changed objective";
   assert.equal(validateSupervisedMissionBrief(reordered).state, "invalid");
   assert.equal(canonicalJson({ z: 1, a: { y: 2, b: 3 } }), canonicalJson({ a: { b: 3, y: 2 }, z: 1 }));
+});
+
+test("supervised brief activations reject human gates and V0.3-disabled dispatch seats", () => {
+  const { brief } = fixture();
+  for (const seatId of ["coulson", "mack", "oracle"]) {
+    const withInvalidActivation = {
+      ...brief,
+      activatedModes: [{
+        ...brief.activatedModes[0],
+        seatId,
+      }],
+    };
+    assert.equal(validateSupervisedMissionBrief(withInvalidActivation).state, "invalid");
+  }
+  assert.equal(validateSupervisedMissionBrief(brief).state, "valid");
+});
+
+test("supervised brief participants reject unknown and V0.3-disabled dispatch seats", () => {
+  const { brief } = fixture();
+  assert.equal(validateSupervisedMissionBrief({
+    ...brief,
+    participants: [...brief.participants, { seatId: "mack" }],
+  }).state, "invalid");
+  assert.equal(validateSupervisedMissionBrief({
+    ...brief,
+    participants: [...brief.participants, { seatId: "oracle" }],
+  }).state, "invalid");
+  assert.equal(validateSupervisedMissionBrief({
+    ...brief,
+    participants: [...brief.participants, { seatId: "x" }],
+  }).state, "invalid");
 });
 
 test("repository configuration selects exact content-addressed Ed25519 bindings", () => {

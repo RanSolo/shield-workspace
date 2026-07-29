@@ -33,6 +33,11 @@ import {
   getMissionProfileV1,
   type MissionProfileId,
 } from "./mission-profile-v1.mjs";
+import {
+  CANONICAL_ROLE_IDS,
+  routingProjection,
+  validateRoleAssignment,
+} from "./role-taxonomy-v1.mjs";
 
 export const SUPERVISED_JOURNAL_SCHEMA_VERSION = 2 as const;
 export const DELEGATED_JOURNAL_SCHEMA_VERSION = 3 as const;
@@ -630,6 +635,7 @@ const valid = <T,>(value: T): ContractResult<T> => ({ state: "valid", value });
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const KEY_REF = /^ed25519:sha256:[A-Za-z0-9_-]{43}$/;
 const ISO_UTC = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
+const CANONICAL_ROLE_ID_SET = new Set<string>(CANONICAL_ROLE_IDS);
 const RISK_FIELDS = [
   "production", "destructive", "migration", "credentialsOrSecurity",
   "externalCommunication", "merge", "deploy", "release", "hillHighRisk",
@@ -805,8 +811,8 @@ function furyReviewErrors(value: unknown, label: string): string[] {
     for (const field of ["sourceRef", "reasoningRuntimeId", "toolExecutorId"]) {
       if (!identifier(value.provenance[field])) errors.push(`${label}.provenance.${field} is invalid.`);
     }
-    const seatIds = new Set(["coulson", "fitz", "simmons", "hill", "fury", "daisy", "may", "mack", "oracle"]);
-    if (seatIds.has(String(value.provenance.reasoningRuntimeId)) || seatIds.has(String(value.provenance.toolExecutorId))) {
+    if (CANONICAL_ROLE_ID_SET.has(String(value.provenance.reasoningRuntimeId))
+      || CANONICAL_ROLE_ID_SET.has(String(value.provenance.toolExecutorId))) {
       errors.push(`${label}.provenance runtime and executor identities cannot impersonate SHIELD seats.`);
     }
   }
@@ -949,9 +955,16 @@ export function validateSupervisedMissionBrief(input: unknown): ContractResult<S
       const nested = exactFields(participant, ["seatId"], `participants[${index}]`);
       errors.push(...nested);
       if (nested.length === 0 && isPlainObject(participant)) {
-        if (!identifier(participant.seatId)) errors.push(`participants[${index}].seatId is invalid.`);
-        else if (seats.has(participant.seatId)) errors.push(`participants duplicates ${participant.seatId}.`);
-        else seats.add(participant.seatId);
+        const route = routingProjection(participant.seatId);
+        if (!identifier(participant.seatId) || route.state === "invalid") {
+          errors.push(`participants[${index}].seatId is invalid.`);
+        } else if (route.value.route === "dispatch_seat" && route.value.role.v03Enabled !== true) {
+          errors.push(`participants[${index}].seatId is not a valid dispatchable V0.3 role.`);
+        } else if (seats.has(participant.seatId)) {
+          errors.push(`participants duplicates ${participant.seatId}.`);
+        } else {
+          seats.add(participant.seatId);
+        }
       }
     });
     for (const required of ["coulson", "fitz"]) if (!seats.has(required)) errors.push(`Mission brief requires participant: ${required}.`);
@@ -964,6 +977,14 @@ export function validateSupervisedMissionBrief(input: unknown): ContractResult<S
     if (nested.length === 0 && isPlainObject(activation)) {
       for (const field of ["modeId", "modeVersion", "seatId", "activationSource"]) {
         if (!identifier(activation[field])) errors.push(`activatedModes[${index}].${field} is invalid.`);
+      }
+      const assignment = validateRoleAssignment(
+        activation.seatId,
+        "dispatch",
+        { requireV03Enabled: true },
+      );
+      if (assignment.state === "invalid") {
+        errors.push(`activatedModes[${index}].seatId is not a valid dispatchable V0.3 role.`);
       }
     }
   });

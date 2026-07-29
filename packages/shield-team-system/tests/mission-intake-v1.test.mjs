@@ -157,6 +157,10 @@ test("constructs a deterministic non-authoritative Issue #130 intake candidate",
     first.pendingHumanGates.map(({ seatId }) => seatId),
     ["coulson", "fitz"],
   );
+  assert.deepEqual(
+    first.participants.filter(({ kind }) => kind === "human_gate").map(({ seatId }) => seatId),
+    ["coulson", "fitz"],
+  );
   assert.ok(first.participants.every(({ seatId }) => seatId !== "mack"));
   assert.ok(first.runtimeObservations.every(
     ({ status }) => status === "human_reported_unverified",
@@ -293,10 +297,24 @@ test("rejects unknown fields and unsupported participant or mode routing", () =>
     ["INVALID_REQUEST"],
   );
 
-  const mack = request();
-  mack.proposedBrief.participantSeatIds.push("mack");
+  const disabledSeatParticipantMack = request();
+  disabledSeatParticipantMack.proposedBrief.participantSeatIds.push("mack");
   assert.deepEqual(
-    missionIntakeV1(mack).reasonCodes,
+    missionIntakeV1(disabledSeatParticipantMack).reasonCodes,
+    ["UNSUPPORTED_PARTICIPANT"],
+  );
+
+  const disabledSeatParticipantOracle = request();
+  disabledSeatParticipantOracle.proposedBrief.participantSeatIds.push("oracle");
+  assert.deepEqual(
+    missionIntakeV1(disabledSeatParticipantOracle).reasonCodes,
+    ["UNSUPPORTED_PARTICIPANT"],
+  );
+
+  const unsupportedParticipant = request();
+  unsupportedParticipant.proposedBrief.participantSeatIds.push("x");
+  assert.deepEqual(
+    missionIntakeV1(unsupportedParticipant).reasonCodes,
     ["UNSUPPORTED_PARTICIPANT"],
   );
 
@@ -306,4 +324,33 @@ test("rejects unknown fields and unsupported participant or mode routing", () =>
     missionIntakeV1(unsupportedMode).reasonCodes,
     ["INVALID_MODE_RECOMMENDATION"],
   );
+
+  const humanGateRecommendation = request();
+  humanGateRecommendation.recommendedModes[0].seatId = "coulson";
+  assert.deepEqual(
+    missionIntakeV1(humanGateRecommendation).reasonCodes,
+    ["INVALID_MODE_RECOMMENDATION"],
+  );
+
+  const mackRecommendation = request();
+  mackRecommendation.recommendedModes[0].seatId = "mack";
+  assert.deepEqual(
+    missionIntakeV1(mackRecommendation).reasonCodes,
+    ["INVALID_MODE_RECOMMENDATION"],
+  );
+
+  const oracleRecommendation = request();
+  oracleRecommendation.recommendedModes[0].seatId = "oracle";
+  assert.deepEqual(
+    missionIntakeV1(oracleRecommendation).reasonCodes,
+    ["INVALID_MODE_RECOMMENDATION"],
+  );
+
+  const unknownRoleRecommendation = request();
+  unknownRoleRecommendation.recommendedModes[0].seatId = "x";
+  assert.deepEqual(
+    missionIntakeV1(unknownRoleRecommendation).reasonCodes,
+    ["INVALID_MODE_RECOMMENDATION"],
+  );
+
 });

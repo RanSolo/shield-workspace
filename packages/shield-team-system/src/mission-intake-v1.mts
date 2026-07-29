@@ -1,10 +1,14 @@
 import { types as utilTypes } from "node:util";
 import {
   SUPPORTED_MODE_IDS,
-  SUPPORTED_SEAT_IDS,
   validateShieldConfig,
   type ShieldConfig,
 } from "./config.mjs";
+import {
+  CANONICAL_ROLE_IDS,
+  routingProjection,
+  validateRoleAssignment,
+} from "./role-taxonomy-v1.mjs";
 import {
   createEvidenceRequirements,
   createSupervisedMissionBrief,
@@ -32,7 +36,7 @@ export const MISSION_INTAKE_MAX_RUNTIME_ID_LENGTH = 256 as const;
 export const MISSION_INTAKE_MAX_SOURCE_REF_LENGTH = 2_048 as const;
 export const MISSION_INTAKE_MAX_ARTIFACT_PATH_LENGTH = 512 as const;
 export const MISSION_INTAKE_MAX_RECOMMENDATION_REASON_LENGTH = 2_048 as const;
-export const MISSION_INTAKE_MAX_PARTICIPANTS = SUPPORTED_SEAT_IDS.length;
+export const MISSION_INTAKE_MAX_PARTICIPANTS = CANONICAL_ROLE_IDS.length;
 export const MISSION_INTAKE_MAX_MODE_RECOMMENDATIONS = 16 as const;
 export const MISSION_INTAKE_MAX_RUNTIME_OBSERVATIONS = 16 as const;
 export const MISSION_INTAKE_MAX_EVIDENCE_REFS_PER_OBSERVATION = 16 as const;
@@ -121,9 +125,8 @@ const REPOSITORY_ID =
 const ISO_UTC =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
-const HUMAN_SEATS = new Set(["coulson", "fitz", "simmons"]);
-const SUPPORTED_SEATS = new Set<string>(SUPPORTED_SEAT_IDS);
 const SUPPORTED_MODES = new Set<string>(SUPPORTED_MODE_IDS);
+const CANONICAL_ROLE_ID_SET = new Set<string>(CANONICAL_ROLE_IDS);
 
 export type MissionIntakeReasonCodeV1 =
   | "INVALID_REQUEST"
@@ -533,26 +536,33 @@ function validArtifact(
 function normalizeRecommendations(
   value: unknown,
   config: ShieldConfig,
-  participantSeatIds: readonly string[],
+  participants: readonly ParticipantKindV1[],
 ): readonly RecommendedModeV1[] | null {
   if (!denseArray(value, MISSION_INTAKE_MAX_MODE_RECOMMENDATIONS)) return null;
-  const participants = new Set(participantSeatIds);
+  const participantSeatIds = new Set(participants.map(({ seatId }) => seatId));
   const recommendations: RecommendedModeV1[] = [];
   for (const entry of value) {
+    if (!exactFields(entry, RECOMMENDATION_FIELDS)) return null;
+    const candidate = entry as Record<string, unknown>;
+    const assignment = validateRoleAssignment(
+      candidate.seatId,
+      "dispatch",
+      { requireV03Enabled: true },
+    );
     if (
-      !exactFields(entry, RECOMMENDATION_FIELDS)
-      || !SUPPORTED_MODES.has(String(entry.modeId))
-      || !config.supportedModeIds.includes(entry.modeId as never)
-      || !briefIdentifier(entry.seatId)
-      || !participants.has(entry.seatId)
-      || !SUPPORTED_SEATS.has(entry.seatId)
+      !SUPPORTED_MODES.has(String(candidate.modeId))
+      || !config.supportedModeIds.includes(candidate.modeId as never)
+      || !briefIdentifier(candidate.seatId)
+      || !CANONICAL_ROLE_ID_SET.has(String(candidate.seatId))
+      || !participantSeatIds.has(candidate.seatId as string)
+      || assignment.state === "invalid"
       || !boundedString(
-        entry.reason,
+        candidate.reason,
         MISSION_INTAKE_MAX_RECOMMENDATION_REASON_LENGTH,
       )
       || (
-        entry.source !== "human_requested"
-        && entry.source !== "hill_recommended"
+        candidate.source !== "human_requested"
+        && candidate.source !== "hill_recommended"
       )
     ) {
       return null;
@@ -603,27 +613,33 @@ function normalizeRuntimeObservations(
 
 function normalizeParticipantSeatIds(
   value: unknown,
-): readonly string[] | null {
+): readonly ParticipantKindV1[] | null {
   if (
     !denseArray(value, MISSION_INTAKE_MAX_PARTICIPANTS)
     || value.length === 0
   ) {
     return null;
   }
-  const seats: string[] = [];
+  const participants: ParticipantKindV1[] = [];
   const seen = new Set<string>();
-  for (const seat of value) {
+  for (const seat of value as readonly unknown[]) {
+    if (typeof seat !== "string") return null;
+    if (!CANONICAL_ROLE_ID_SET.has(seat)) return null;
+    const projected = routingProjection(seat);
     if (
-      !briefIdentifier(seat)
-      || !SUPPORTED_SEATS.has(seat)
+      projected.state === "invalid"
       || seen.has(seat)
+      || (projected.value.route === "dispatch_seat" && !projected.value.role.v03Enabled)
     ) {
       return null;
     }
     seen.add(seat);
-    seats.push(seat);
+    participants.push({
+      seatId: projected.value.roleId,
+      kind: projected.value.route === "wait_for_human_gate" ? "human_gate" : "dispatchable_seat",
+    });
   }
-  return seats;
+  return participants;
 }
 
 export function missionIntakeV1(input: unknown): MissionIntakeResultV1 {
@@ -711,15 +727,16 @@ export function missionIntakeV1(input: unknown): MissionIntakeResultV1 {
     return blocked("INVALID_BRIEF_INPUT", "proposedBrief");
   }
 
-  const participantSeatIds = normalizeParticipantSeatIds(
+  const participants = normalizeParticipantSeatIds(
     proposedBrief.participantSeatIds,
   );
-  if (participantSeatIds === null) {
+  if (participants === null) {
     return blocked(
       "UNSUPPORTED_PARTICIPANT",
       "proposedBrief.participantSeatIds",
     );
   }
+  const participantSeatIds = participants.map(({ seatId }) => seatId);
   if (
     !participantSeatIds.includes("coulson")
     || !participantSeatIds.includes("fitz")
@@ -764,7 +781,7 @@ export function missionIntakeV1(input: unknown): MissionIntakeResultV1 {
   const recommendations = normalizeRecommendations(
     normalized.recommendedModes,
     config,
-    participantSeatIds,
+    participants,
   );
   if (recommendations === null) {
     return blocked("INVALID_MODE_RECOMMENDATION", "recommendedModes");
@@ -787,10 +804,6 @@ export function missionIntakeV1(input: unknown): MissionIntakeResultV1 {
     return blocked("INVALID_RUNTIME_OBSERVATION", "runtimeObservations");
   }
 
-  const participants = participantSeatIds.map((seatId): ParticipantKindV1 => ({
-    seatId,
-    kind: HUMAN_SEATS.has(seatId) ? "human_gate" : "dispatchable_seat",
-  }));
   const pendingHumanGates = participants
     .filter((participant) => participant.kind === "human_gate")
     .map((participant): HumanGatePreviewV1 => ({

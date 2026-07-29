@@ -13,6 +13,7 @@ import {
   isProfileAtLeastAsStrictV1,
   type MissionProfileId,
 } from "./mission-profile-v1.mjs";
+import { routingProjection, validateRoleAssignment } from "./role-taxonomy-v1.mjs";
 import {
   validateRunnerAuthoritativeEffectRecord,
   validateRunnerExecutionEffectPayload,
@@ -142,8 +143,48 @@ export function validateProfileAwareMissionBrief(input: unknown): ProfileAwareRe
   if (value.profileVersion !== 1 || !profile || value.profileId !== profile.profileId) errors.push("Profile-aware brief profile is invalid.");
   if (!Array.isArray(value.requiredExecutionGateRoleIds) || value.requiredExecutionGateRoleIds.join(",") !== profile?.requiredExecutionGateRoleIds.join(",")) errors.push("Profile-aware brief execution gates are not frozen canonically.");
   if (!Array.isArray(value.requiredFinalAcceptanceGateRoleIds) || value.requiredFinalAcceptanceGateRoleIds.length !== 1 || value.requiredFinalAcceptanceGateRoleIds[0] !== "coulson") errors.push("Final acceptance gate must be Coulson.");
-  if (!Array.isArray(value.participants) || value.participants.length === 0 || !value.participants.every((participant) => exact(participant, ["seatId"]) && typeof participant.seatId === "string" && ID.test(participant.seatId))) errors.push("Profile-aware brief participants are invalid.");
-  if (!Array.isArray(value.activatedModes)) errors.push("Profile-aware brief activated modes are invalid.");
+  if (!Array.isArray(value.participants) || value.participants.length === 0) {
+    errors.push("Profile-aware brief participants are invalid.");
+  } else {
+    for (const [index, participant] of value.participants.entries()) {
+      if (!exact(participant, ["seatId"])) {
+        errors.push(`participants[${index}] is malformed.`);
+      } else if (typeof participant.seatId !== "string" || !ID.test(participant.seatId)) {
+        errors.push(`participants[${index}].seatId is invalid.`);
+      } else {
+        const projected = routingProjection(participant.seatId);
+        if (projected.state === "invalid" || (projected.value.route === "dispatch_seat" && projected.value.role.v03Enabled !== true)) {
+          errors.push(`participants[${index}].seatId is not a valid dispatchable V0.3 role.`);
+        }
+      }
+    }
+  }
+  if (!Array.isArray(value.activatedModes)) {
+    errors.push("Profile-aware brief activated modes are invalid.");
+  } else {
+    value.activatedModes.forEach((activation, index) => {
+      if (!exact(activation, ["modeId", "modeVersion", "seatId", "activationSource"])) {
+        errors.push("Profile-aware brief activated modes are invalid.");
+        return;
+      }
+      const activationKeys = ["modeId", "modeVersion", "seatId", "activationSource"] as const;
+      const normalizedActivation = activation as Record<(typeof activationKeys)[number], unknown>;
+      for (const field of activationKeys) {
+        const value = normalizedActivation[field];
+        if (typeof value !== "string" || !ID.test(value)) {
+          errors.push(`activatedModes[${index}].${field} is invalid.`);
+        }
+      }
+      const assignment = validateRoleAssignment(
+        activation.seatId,
+        "dispatch",
+        { requireV03Enabled: true },
+      );
+      if (assignment.state === "invalid") {
+        errors.push(`activatedModes[${index}].seatId is not a valid dispatchable V0.3 role.`);
+      }
+    });
+  }
   if (errors.length > 0) return invalid("malformed", ...errors);
   const { revisionId: _revisionId, ...content } = value;
   if (value.revisionId !== revision(content as ProfileAwareMissionBriefContentV1)) return invalid("revision_mismatch", "Profile-aware brief revision is stale or tampered.");
