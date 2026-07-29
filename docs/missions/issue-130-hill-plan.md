@@ -140,7 +140,7 @@ The additive public module is `src/mission-runtime-v1.mts`, exported as
 
 ```ts
 runMissionCycle(
-  input: MissionCycleInputV1,
+  input: unknown,
   dependencies: MissionCycleDependenciesV1,
 ): Promise<MissionCycleResultV1>
 ```
@@ -326,7 +326,12 @@ No second governance source or caller-supplied runner projection exists.
 
 Let `B` be `expectedSequence`.
 
-1. Validate the closed input and dependency object before any host effect.
+1. Safely inspect the identity envelope. If mission, subject, revision, or
+   sequence identity is absent, malformed, accessor-backed, proxy-backed, or
+   otherwise unreadable, return the distinct identity-unbound `input_invalid`
+   result below. Otherwise copy, validate, and recursively freeze the complete
+   closed input and dependency references before the first await; later caller
+   mutation cannot alter the cycle.
    Read and replay the exact journal. Reject a stale subject or revision first.
    Derive the stable identities from `B`. If the journal is unavailable,
    return the caller-bound `expectedSubjectId`; never fabricate identity.
@@ -348,6 +353,11 @@ Let `B` be `expectedSequence`.
    the same mission, revision, and `R`, including one with another decision
    ID, returns `blocked` before gates, append, authorization, or dispatch.
    Invalid audit state fails closed.
+   For upgrade safety, the schema-9 composer treats every already replay-valid
+   `tool.invocation` at the same mission, revision, and `R` as prior-dispatch
+   evidence, including records written by implementation `586ca4` under
+   `audit-invocation:sha256:*`. This conservative composer rule does not alter
+   legacy replay APIs or reinterpret those records as new runtime claims.
 5. If mission authorization or a frozen execution gate is pending, return
    `waiting` with the first pending requirement's `requiredRoleId`, in
    canonical requirement order; do not append, authorize, or dispatch. Mission
@@ -405,6 +415,15 @@ type MissionCycleReasonCodeV1 =
   | "complete";
 
 type MissionCycleResultV1 =
+  | {
+      outcome: "blocked";
+      missionId: null;
+      subjectId: null;
+      revisionId: null;
+      sequence: null;
+      accountableNextSeat: null;
+      reasonCode: "input_invalid";
+    }
   | {
       outcome: "advanced";
       missionId: string;
@@ -474,6 +493,8 @@ legacy schema-6 multi-decision same-sequence permission sessions unchanged;
 legacy `audit-invocation:sha256:*` records remaining legacy; malformed input
 and throwing clocks; stale subject/revision/sequence; duplicate cycle/effect;
 pre-dispatch append blocking;
+exact `586ca4` claim-ledger upgrade replay without redispatch; missing identity
+fields, hostile accessors/proxies, and concurrent caller mutation;
 every post-dispatch append/readback failure becoming uncertain; exact
 transition/effect readback; a different action/effect key after uncertainty
 remaining blocked without dispatch; stronger-profile missing-gate routing to
