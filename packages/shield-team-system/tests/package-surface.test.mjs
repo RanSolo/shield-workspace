@@ -16,6 +16,7 @@ test("exports only the documented public package specifiers", async () => {
     ".",
     "./mission",
     "./intake",
+    "./dispatch-receipts",
     "./journal",
     "./modes",
     "./workspace",
@@ -49,6 +50,7 @@ test("loads every supported runtime specifier", async () => {
   const root = await import("@shield/team-system");
   const mission = await import("@shield/team-system/mission");
   const intake = await import("@shield/team-system/intake");
+  const dispatchReceipts = await import("@shield/team-system/dispatch-receipts");
   const journal = await import("@shield/team-system/journal");
   const modes = await import("@shield/team-system/modes");
   const workspace = await import("@shield/team-system/workspace");
@@ -78,6 +80,10 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(intake.MISSION_INTAKE_CONTRACT_VERSION, "mission.intake.v1");
   assert.equal(typeof intake.missionIntakeV1, "function");
   assert.equal(typeof intake.profileAwareMissionIntakeV1, "function");
+  assert.equal(typeof dispatchReceipts.appendSeatDispatchReceiptEntryV1, "function");
+  assert.equal(typeof dispatchReceipts.readSeatDispatchReceiptByReceiptIdV1, "function");
+  assert.equal(typeof dispatchReceipts.readSeatDispatchReceiptsByChildTaskSessionV1, "function");
+  assert.equal(typeof dispatchReceipts.replaySeatDispatchReceiptsV1, "function");
   assert.equal(typeof mission.evaluateSpecialistIteration, "function");
   assert.equal(journal.JOURNAL_SCHEMA_VERSION, 1);
   assert.equal(modes.MODE_MANIFEST_SCHEMA_VERSION, 1);
@@ -146,6 +152,16 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof github.renderMissionHandoff, "function");
 });
 
+test("dispatch-receipts export has one-way source graph", async () => {
+  const facade = await readFile(join(packageRoot, "dist/dispatch-receipts.mjs"), "utf8");
+  const store = await readFile(join(packageRoot, "dist/seat-dispatch-store.mjs"), "utf8");
+  const receipt = await readFile(join(packageRoot, "dist/seat-dispatch-receipt-v1.mjs"), "utf8");
+  assert.ok(facade.includes("./seat-dispatch-store.mjs"));
+  assert.ok(facade.includes("./seat-dispatch-receipt-v1.mjs"));
+  assert.ok(!store.includes("./dispatch-receipts.mjs"));
+  assert.ok(!receipt.includes("dispatch-receipts"));
+});
+
 test("blocks undocumented deep package imports", async () => {
   await assert.rejects(
     import("@shield/team-system/contracts/mission-policy.mjs"),
@@ -193,6 +209,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/permission-audit-v1.d.mts",
     "dist/mission-runtime-v1.mjs",
     "dist/mission-runtime-v1.d.mts",
+    "dist/dispatch-receipts.mjs",
+    "dist/dispatch-receipts.d.mts",
+    "dist/seat-dispatch-store.mjs",
+    "dist/seat-dispatch-store.d.mts",
+    "dist/seat-dispatch-receipt-v1.mjs",
+    "dist/seat-dispatch-receipt-v1.d.mts",
     "dist/review-publication-v1.mjs",
     "dist/review-publication-v1.d.mts",
     "dist/pipeline-profile-v1.mjs",
@@ -274,6 +296,16 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type GitHubFollowUpCandidateInput,
       type PRWorkspaceReceipt,
     } from "@shield/team-system/github";
+    import {
+      type SeatDispatchReceiptStoreAppendInput,
+      type SeatDispatchReceiptStoreAppendResult,
+      type SeatDispatchReceiptStoreByChildInput,
+      type SeatDispatchReceiptStoreByParentInput,
+      type SeatDispatchReceiptStoreByReceiptInput,
+      type SeatDispatchReceiptStoreBySessionResult,
+      type SeatDispatchStoreContractResult,
+      type SeatDispatchReceiptStoreScopeInput,
+    } from "@shield/team-system/dispatch-receipts";
 
     const schema: 2 = MISSION_SCHEMA_VERSION;
     const state: MissionState = "approved";
@@ -351,6 +383,39 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const renderHandoff = renderMissionHandoff;
     const workspaceReceipt = null as unknown as PRWorkspaceReceipt;
     const workspaceResult = null as unknown as DeliveryWorkspaceResult;
+    const dispatchScope: SeatDispatchReceiptStoreScopeInput = {
+      repositoryRoot: "/tmp/dispatch-store",
+      repositoryId: "repo-1",
+      repositoryWorkspaceId: "workspace-1",
+    };
+    const dispatchAppendInput: SeatDispatchReceiptStoreAppendInput = {
+      ...dispatchScope,
+      event: null as unknown as SeatDispatchReceiptStoreAppendInput["event"],
+      lockOwnerId: "owner-1",
+    };
+    const dispatchByReceiptInput: SeatDispatchReceiptStoreByReceiptInput = {
+      ...dispatchScope,
+      receiptId: "receipt-1",
+    };
+    const dispatchByParentInput: SeatDispatchReceiptStoreByParentInput = {
+      ...dispatchScope,
+      parentMissionId: "mission-1",
+      parentSessionId: "session-1",
+    };
+    const dispatchByChildInput: SeatDispatchReceiptStoreByChildInput = {
+      ...dispatchScope,
+      childTaskId: "task-1",
+      childSessionId: "child-session-1",
+    };
+    const dispatchBySessionResult: SeatDispatchReceiptStoreBySessionResult = {
+      logPath: "/tmp/dispatch-store/.shield/dispatch-receipts.jsonl",
+      receipts: [],
+    };
+    const dispatchAppendResult: SeatDispatchStoreContractResult<SeatDispatchReceiptStoreAppendResult> = {
+      state: "invalid",
+      code: "test",
+      errors: ["expected"],
+    };
     const roleTaxonomyContract: "roles.v1" = ROLE_TAXONOMY_CONTRACT_VERSION;
     const dispatchSeatOnly: RoleAssignmentScope = "dispatch";
     const route: RoleRoute = "dispatch_seat";
@@ -382,7 +447,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
@@ -413,7 +478,39 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     { cwd: javascriptFixture, stdio: "pipe" },
   );
   await writeFile(join(javascriptFixture, "consumer.mjs"), `
+    import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
     import { CONFIG_SCHEMA_VERSION, createShieldConfig } from "@shield/team-system/config";
+    const packageBase = new URL("./node_modules/@shield/team-system/", import.meta.url);
+    await import(new URL("dist/dispatch-receipts.mjs", packageBase).href);
+    await import(new URL("dist/seat-dispatch-store.mjs", packageBase).href);
+    await import(new URL("dist/seat-dispatch-receipt-v1.mjs", packageBase).href);
+    if (SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH !== ".shield/dispatch-receipts.jsonl") throw new Error("unexpected dispatch receipt log path");
+    const parentResult = await readSeatDispatchReceiptsByParentMissionSessionV1({
+      repositoryRoot: "/tmp/dispatch-store",
+      repositoryId: "repo-1",
+      repositoryWorkspaceId: "workspace-1",
+      parentMissionId: "mission-1",
+      parentSessionId: "session-1",
+    });
+    const childResult = await readSeatDispatchReceiptsByChildTaskSessionV1({
+      repositoryRoot: "/tmp/dispatch-store",
+      repositoryId: "repo-1",
+      repositoryWorkspaceId: "workspace-1",
+      childTaskId: "task-1",
+      childSessionId: "child-session-1",
+    });
+    const byReceiptResult = await readSeatDispatchReceiptByReceiptIdV1({
+      repositoryRoot: "/tmp/dispatch-store",
+      repositoryId: "repo-1",
+      repositoryWorkspaceId: "workspace-1",
+      receiptId: "receipt-1",
+    });
+    if (parentResult.state !== "invalid" || childResult.state !== "invalid" || byReceiptResult.state !== "invalid") {
+      throw new Error("unexpected dispatch-receipts query states");
+    }
+    if (typeof appendSeatDispatchReceiptEntryV1 !== "function" || typeof readSeatDispatchReceiptByReceiptIdV1 !== "function") {
+      throw new Error("dispatch-receipts exports missing");
+    }
     if (CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected config schema");
     const config = createShieldConfig({
       repositoryId: "fixture/javascript-consumer",

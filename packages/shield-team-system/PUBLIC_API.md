@@ -28,6 +28,7 @@ package artifact.
 | `@shield/team-system/mission-runtime` | One profile-aware mission cycle with deterministic identities, runtime-only atomic invocation claims, journal append/readback verification, and closed waiting, blocked, uncertain, advanced, or complete outcomes |
 | `@shield/team-system/local-tools` | Host-side Daisy read-only broker plus the bounded May write-and-validation tool-call executor, with injected Issue #10 authorization/audit dependencies |
 | `@shield/team-system/github` | Journal-gated GitHub publication with pre-effect exact-path/effect enforcement, exact draft-PR workspace receipts, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
+| `@shield/team-system/dispatch-receipts` | Durable non-authoritative dispatch evidence retention and replay retrieval by receipt, parent mission/session, and child task/session. Receipt artifacts are preserved for evidentiary continuity; attribution failures return the original opaque artifact unchanged/uninspected. This surface does not grant dispatch execution authority, substitute human or model seats, or advance mission state |
 | `@shield/team-system/sonarqube` | Non-authoritative exact-revision SonarQube evidence evaluation, closed finding classification, owner routing, exception attribution, and fail-closed advancement eligibility |
 | `@shield/team-system/mack-validation` | Closed Mack validation reports, exact-head binding, outcome classification, and non-authoritative routing |
 | `@shield/team-system/qa-mode` | QA Mode v0 handoff and Mack result evaluation contract |
@@ -36,6 +37,7 @@ package artifact.
 | `@shield/team-system/github` | Journal-gated GitHub publication, exact draft-PR workspace receipts, non-authoritative Follow-up Mode review snapshots, the non-authoritative `fury.plan-gate.v1` evaluator and Delivery Mode dispatch guard, attributed handoff rendering, and signed-evidence candidate translation |
 
 The pre-1.0 Delivery Workspace guard requires explicit mission/subject,
+`dispatch-receipts` is explicitly provenance-only: it records and retrieves dispatch evidence with strict scope and readback verification, and it cannot authorize hosts, seats, tool calls, or mission transitions.
 May-owned blueprint, and `planGate` inputs. Literal `null` creates or reuses the
 early draft workspace and returns `workspace_ready`; only an exact eligible
 Fury plan gate returns `dispatch_ready`. Callers must discriminate those states
