@@ -112,6 +112,11 @@ governed broker evidence and must not be treated as readiness.
 
 ## Governed May implementation calls
 
+The governed local tool-broker path pins Ornith's recommended sampling profile
+(`temperature: 0.6`, `top_p: 0.95`, `top_k: 20`) on its OpenAI-compatible
+tool-turn requests. The native `/api/v1/chat` fallback remains host-configured;
+its live reasoning setting is not changed by this adapter.
+
 `@shield/team-system/local-tools` also exports `runMayToolCall` as the first
 Issue #42 executor slice. It accepts exactly one `writeFile` or `runValidation`
 call from a trusted host:
