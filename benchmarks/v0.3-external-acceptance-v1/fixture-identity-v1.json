@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "shield.fixture.identity.v1",
+  "fixtureId": "fixture:v0.3:external-acceptance:1",
+  "coveredArtifacts": {
+    "manifest": {
+      "path": "fixture-manifest.mjs",
+      "digest": "f4fe11a15e259261789e29c84e6eb218055bc140ef65592e7db56f995a8b9595"
+    },
+    "template-package": {
+      "path": "template/package.json",
+      "digest": "f28d7420a93de8f000b1d6e94085c7fc99881a86d3fae641ca1febf094f1b4bb"
+    },
+    "template-source": {
+      "path": "template/src/greeting.mjs",
+      "digest": "81e4063aebc85e72038db1a4a65aaa127ec4dff7bdcaa6f2aaf6de66ad68a319"
+    },
+    "template-test": {
+      "path": "template/test/greeting.test.mjs",
+      "digest": "760932a380397008f0ced436427def6e7bd5acd7101ef20ef7110dff33026bab"
+    },
+    "grading-driver": {
+      "path": "src/driver.mjs",
+      "digest": "323e058fedf632f57514bdf52eb9ea1813f298db9d8ce31f7946aade69fec28f"
+    },
+    "evidence-inventory": {
+      "path": "evidence-inventory.mjs",
+      "digest": "fc909d30e034a10d8ad18e756aab5035169726f124c9b65f22f65bf253991d8e"
+    }
+  },
+  "package": {
+    "name": "@shield/team-system",
+    "version": "0.1.0",
+    "digestAlgorithm": "sha256",
+    "digest": "80880c09b64109fbc270155a9876af113a2ab785878145cd86b116474311dc47"
+  }
+}
