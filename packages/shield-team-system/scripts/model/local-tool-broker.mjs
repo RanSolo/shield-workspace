@@ -16,6 +16,14 @@ export const LOCAL_TOOL_LIMITS = Object.freeze({
   terminalEventReserveMs: 1_000,
 });
 
+// Ornith's recommended sampling profile for governed OpenAI-compatible tool turns.
+// Keep this off the native /api/v1/chat fallback, whose settings are host-owned.
+export const LOCAL_TOOL_SAMPLING = Object.freeze({
+  temperature: 0.6,
+  top_p: 0.95,
+  top_k: 20,
+});
+
 export const DAISY_TOOL_MAPPINGS = Object.freeze({
   readFile: Object.freeze({ actionId: "repository.read_file", effectClass: "verification", capability: "filesystem_read" }),
   listFiles: Object.freeze({ actionId: "repository.list_files", effectClass: "verification", capability: "filesystem_list" }),
@@ -371,6 +379,7 @@ export async function probeLocalToolCompatibility({
         ],
         tools: DAISY_TOOL_DEFINITIONS,
         tool_choice: "required",
+        ...LOCAL_TOOL_SAMPLING,
       }),
     }, { timeoutMs, maxBytes: LOCAL_TOOL_LIMITS.responseBytes });
     const toolAssistant = parseAssistantResponse(toolData);
@@ -395,6 +404,7 @@ export async function probeLocalToolCompatibility({
         ],
         tools: DAISY_TOOL_DEFINITIONS,
         tool_choice: "none",
+        ...LOCAL_TOOL_SAMPLING,
       }),
     }, { timeoutMs, maxBytes: LOCAL_TOOL_LIMITS.responseBytes });
     const finalAssistant = parseAssistantResponse(finalData);
@@ -554,7 +564,7 @@ export async function runLocalToolSession(request, dependencies) {
       const data = await withinDeadline(() => fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(dependencies.apiToken ? { Authorization: `Bearer ${dependencies.apiToken}` } : {}) },
-        body: JSON.stringify({ model: capability.loadedInstanceId, messages, tools: DAISY_TOOL_DEFINITIONS, tool_choice: "auto" }),
+        body: JSON.stringify({ model: capability.loadedInstanceId, messages, tools: DAISY_TOOL_DEFINITIONS, tool_choice: "auto", ...LOCAL_TOOL_SAMPLING }),
       }, { timeoutMs: inferenceTimeout, maxBytes: LOCAL_TOOL_LIMITS.responseBytes }), deadline, clock);
       const assistant = parseAssistantResponse(data);
       if (assistant.toolCalls.length === 0) {

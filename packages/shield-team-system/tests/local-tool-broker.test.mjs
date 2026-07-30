@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   DAISY_TOOL_DEFINITIONS,
   LOCAL_TOOL_LIMITS,
+  LOCAL_TOOL_SAMPLING,
   explainLocalToolFailure,
   probeLocalToolCompatibility,
   probeLocalToolModel,
@@ -211,6 +212,10 @@ test("compatibility probe verifies clean tool-only and final-message-only turns"
   assert.equal(requests[1].url, "http://127.0.0.1:1234/v1/chat/completions");
   assert.equal(JSON.parse(requests[1].options.body).tool_choice, "required");
   assert.equal(JSON.parse(requests[2].options.body).tool_choice, "none");
+  for (const request of requests.slice(1)) {
+    const body = JSON.parse(request.options.body);
+    assert.deepEqual(Object.fromEntries(Object.keys(LOCAL_TOOL_SAMPLING).map((key) => [key, body[key]])), LOCAL_TOOL_SAMPLING);
+  }
 });
 
 test("compatibility probe fails clearly when metadata passes but behavior is ambiguous", async () => {
@@ -316,6 +321,10 @@ test("tool session consumes one fresh permission and releases raw output only af
   assert.equal(JSON.stringify(deps.ledger).includes("bounded evidence"), false);
   assert.equal(requests[1].url, "http://127.0.0.1:1234/v1/chat/completions");
   assert.equal(requests[1].options.redirect, "error");
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(LOCAL_TOOL_SAMPLING).map((key) => [key, JSON.parse(requests[1].options.body)[key]])),
+    LOCAL_TOOL_SAMPLING,
+  );
   const followup = JSON.parse(requests[2].options.body);
   assert.match(followup.messages.at(-1).content, /bounded evidence/u);
 });

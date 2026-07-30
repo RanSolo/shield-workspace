@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { createAuditedExecutor, createPermissionAuthorizer } from "../../dist/permission-v1.mjs";
 import { validateRunnerCyclePlan } from "../../dist/runner-v1.mjs";
-import { probeLocalToolModel } from "./local-tool-broker.mjs";
+import { LOCAL_TOOL_SAMPLING, probeLocalToolModel } from "./local-tool-broker.mjs";
 import { isSensitiveRepositoryPath } from "./repository-sensitive-policy.mjs";
 import { validateRepositoryRelativePath } from "./repository-tools.mjs";
 import { strictParseJson } from "./strict-json.mjs";
@@ -710,7 +710,7 @@ export async function runMayControlLoop(requestInput, dependenciesInput) {
       const response = await withinDeadline(() => fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(dependencies.apiToken ? { Authorization: `Bearer ${dependencies.apiToken}` } : {}) },
-        body: JSON.stringify({ model: capability.loadedInstanceId, messages, tools: MAY_TOOL_DEFINITIONS, tool_choice: "auto" }),
+        body: JSON.stringify({ model: capability.loadedInstanceId, messages, tools: MAY_TOOL_DEFINITIONS, tool_choice: "auto", ...LOCAL_TOOL_SAMPLING }),
       }, { timeoutMs: inferenceTimeout, maxBytes: MAY_CONTROL_LOOP_LIMITS.responseBytes }), deadline, clock);
       const assistant = parseAssistantResponse(response);
       if (assistant.toolCalls.length === 0) {
