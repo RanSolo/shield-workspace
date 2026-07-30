@@ -328,6 +328,10 @@ test("tool session consumes one fresh permission and releases raw output only af
     expectedLocalToolSampling,
   );
   const followup = JSON.parse(requests[2].options.body);
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(expectedLocalToolSampling).map((key) => [key, followup[key]])),
+    expectedLocalToolSampling,
+  );
   assert.match(followup.messages.at(-1).content, /bounded evidence/u);
 });
 
