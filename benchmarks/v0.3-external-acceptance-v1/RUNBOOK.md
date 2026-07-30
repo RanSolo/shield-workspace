@@ -44,12 +44,20 @@ whitespace-normalization test. The approved mission change set is exactly
 
 ## Compose without host effects
 
-Call `composeMinimumFixture(...)` from `src/driver.mjs` with the measured
-artifact digest, external repository root, exact base and current head
-revisions, GitHub host configuration, blind classification, and conditional
-Simmons choice. The driver verifies both commits, requires the supplied head to
-be current, and derives the exact changed-path set from Git. Caller-supplied
-changed paths are not accepted.
+Do not import `src/driver.mjs` directly from a candidate-controlled working
+tree. The host must invoke `benchmarks/v0.3-fixture-host-launcher.mjs` from an
+independently pinned installation, supplying a release baseline stored outside
+the fixture root. That baseline pins the launcher digest, verifier digest,
+identity-record digest, and package identity. The launcher verifies those
+digests before importing any fixture module.
+
+The host also supplies a trusted-journal replay-anchor envelope from outside
+the fixture root. The envelope digest must match its canonical projection;
+fixture evidence cannot provide or replace that anchor. The launcher then
+passes the baseline to `composeMinimumFixture(...)` with the measured artifact
+digest, external repository root, exact base and current head revisions,
+GitHub host configuration, blind classification, and conditional Simmons
+choice. Caller-supplied changed paths are not accepted.
 
 The current v1 driver:
 

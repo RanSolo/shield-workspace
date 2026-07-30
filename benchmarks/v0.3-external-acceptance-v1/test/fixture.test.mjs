@@ -13,6 +13,7 @@ import {
 } from "@shield/team-system/dispatch-receipts";
 
 import { verifyFixtureIdentity } from "../verify-fixture-identity.mjs";
+import { launchExternalFixture, loadTrustedReplayAnchor } from "../../v0.3-fixture-host-launcher.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageRoot = resolve(root, "../../packages/shield-team-system");
@@ -25,6 +26,8 @@ const FIXTURE_RELEASE_BASELINE = Object.freeze({
   kind: "fixture-release-baseline",
   schemaVersion: "shield.fixture.release-baseline.v1",
   identityRecordDigest: "f66abfdda721838676a3d86064f09e43bb521b9fd7ca7b526bfc06fc0d60ab33",
+  verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
+  launcherDigest: "4ad8b4c850575360323127be1a6b544e6d1601019a3ba6f93338f6d20c5bfdab",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
@@ -521,6 +524,44 @@ test("fixture identity verifier rejects missing/malformed baselines, modified ve
   });
   assert.equal(verifierOutcome.state, "blocked");
   assert.equal(verifierOutcome.reason, "fixture_identity_verifier_identity_mismatch");
+});
+
+test("host launcher rejects a candidate-modified verifier before import", async (context) => {
+  const copied = await withFixtureCopy(async (directory) => {
+    const verifierPath = join(directory, "verify-fixture-identity.mjs");
+    await writeFile(verifierPath, `${await readFile(verifierPath, "utf8")}\n// candidate mutation\n`);
+  });
+  context.after(() => rm(copied, { recursive: true, force: true }));
+  const outside = await mkdtemp(join(tmpdir(), "shield-v03-host-baseline-"));
+  context.after(() => rm(outside, { recursive: true, force: true }));
+  const baselinePath = join(outside, "release-baseline.json");
+  await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  await assert.rejects(
+    launchExternalFixture({ fixtureRoot: copied, baselinePath, input: {} }),
+    /verifier_digest_mismatch/
+  );
+});
+
+test("host launcher accepts only an externally digested replay-anchor envelope", async (context) => {
+  const outside = await mkdtemp(join(tmpdir(), "shield-v03-host-anchor-"));
+  context.after(() => rm(outside, { recursive: true, force: true }));
+  const anchorPath = join(outside, "replay-anchor.json");
+  const projectionBytes = Buffer.from(JSON.stringify(REPLAY_ANCHOR_PROJECTION));
+  const envelope = {
+    kind: "trusted-journal-replay-anchor-envelope",
+    digest: createHash("sha256").update(projectionBytes).digest("hex"),
+    projection: REPLAY_ANCHOR_PROJECTION
+  };
+  await writeFile(anchorPath, JSON.stringify(envelope));
+  assert.deepEqual(
+    await loadTrustedReplayAnchor({ anchorPath, fixtureRoot: root }),
+    REPLAY_ANCHOR_PROJECTION
+  );
+  await writeFile(anchorPath, JSON.stringify({ ...envelope, projection: { ...REPLAY_ANCHOR_PROJECTION, currentSequence: 2 } }));
+  await assert.rejects(
+    loadTrustedReplayAnchor({ anchorPath, fixtureRoot: root }),
+    /trusted_replay_anchor_digest_mismatch/
+  );
 });
 
 test("fake text artifacts cannot claim public-surface composition", async (context) => {

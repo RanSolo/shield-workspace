@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(fileURLToPath(import.meta.url), "..");
 const CANNON_PREFIX = "shield:fixture:v1";
 const IDENTITY_FILE = "fixture-identity-v1.json";
+const VERIFIER_FILE = "verify-fixture-identity.mjs";
 const RELEASE_BASELINE_KIND = "fixture-release-baseline";
 const RELEASE_BASELINE_SCHEMA_VERSION = "shield.fixture.release-baseline.v1";
 
@@ -53,6 +54,8 @@ const RELEASE_BASELINE_FIELDS = Object.freeze([
   "kind",
   "schemaVersion",
   "identityRecordDigest",
+  "verifierDigest",
+  "launcherDigest",
   "verifierIdentity",
   "launcherIdentity",
   "package"
@@ -105,6 +108,7 @@ function parseReleaseBaseline(value) {
     return invalid("baseline_mismatch");
   }
   if (!HEX64.test(value.identityRecordDigest) ||
+      !HEX64.test(value.verifierDigest) ||
       !isTrustedIdentity(value.verifierIdentity) ||
       !isTrustedIdentity(value.launcherIdentity)) {
     return invalid("baseline_malformed");
@@ -210,6 +214,10 @@ export async function verifyFixtureIdentity(root = ROOT, releaseBaseline) {
 
   if (baseline.verifierIdentity !== EXPECTED_VERIFIER_IDENTITY) return blocked("verifier_identity_mismatch");
   if (baseline.launcherIdentity !== EXPECTED_LAUNCHER_IDENTITY) return blocked("launcher_identity_mismatch");
+  const verifierBytes = await readFile(join(ROOT, VERIFIER_FILE)).catch(() => null);
+  if (verifierBytes === null || identityDigest(verifierBytes) !== baseline.verifierDigest) {
+    return blocked("verifier_digest_mismatch");
+  }
 
   let identity;
   try {
