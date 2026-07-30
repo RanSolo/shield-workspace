@@ -21,6 +21,10 @@
       "types": "./dist/mission-intake-v1.d.mts",
       "import": "./dist/mission-intake-v1.mjs"
     },
+    "./dispatch-receipts": {
+      "types": "./dist/dispatch-receipts.d.mts",
+      "import": "./dist/dispatch-receipts.mjs"
+    },
     "./journal": {
       "types": "./public/journal.d.mts",
       "import": "./public/journal.mjs"
