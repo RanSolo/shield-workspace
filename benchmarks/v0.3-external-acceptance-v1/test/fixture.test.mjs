@@ -16,6 +16,7 @@ import { verifyFixtureIdentity } from "../verify-fixture-identity.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageRoot = resolve(root, "../../packages/shield-team-system");
+const repositoryRoot = resolve(root, "../..");
 const template = join(root, "template");
 const OID40 = "1".repeat(40);
 const OID64 = "0".repeat(64);
@@ -27,7 +28,7 @@ const SHARED_REPLAY_IDENTITY = Object.freeze({
   parentSessionId: "session:v0.3:mission-parent:1",
   childTaskId: "task:v0.3:external-acceptance:1",
   childSessionId: "session:v0.3:child:1",
-  repositoryId: "fixture/external-v03",
+  repositoryId: "repository:fixture:external-v03",
   repositoryWorkspaceId: "workspace:fixture:external-v03",
   repositoryRevision: OID40,
   subjectId: "fixture:v0.3:external-acceptance:1",
@@ -96,6 +97,11 @@ const evidenceIdentitySource = Object.freeze({
   sourceId: "source:fixture",
   sourceDigest: OID64
 });
+const HUMAN_AUTHORITY_SEAT = Object.freeze({
+  "coulson.authorization": "coulson",
+  "fitz.technical-review": "fitz",
+  "simmons.product-review": "simmons"
+});
 const COVERED_ARTIFACTS = Object.freeze([
   ["manifest", "fixture-manifest.mjs"],
   ["template-package", "template/package.json"],
@@ -105,7 +111,7 @@ const COVERED_ARTIFACTS = Object.freeze([
   ["evidence-inventory", "evidence-inventory.mjs"]
 ]);
 
-function dispatchReceiptLog(overrides = {}, startedAt = "2026-07-26T00:00:00Z", completedAt = "2026-07-26T00:00:01Z") {
+function dispatchReceiptLog(overrides = {}, startedAt = "2026-07-26T00:00:00Z", completedAt = "2026-07-26T00:00:01Z", outputEvidenceRefs = []) {
   const identity = Object.freeze({
     ...SHARED_REPLAY_IDENTITY,
     ...overrides,
@@ -123,7 +129,7 @@ function dispatchReceiptLog(overrides = {}, startedAt = "2026-07-26T00:00:00Z", 
   const completed = createSeatDispatchLifecycleEventV1({
     ...identity,
     kind: "dispatch.completed",
-    outputEvidenceRefs: [],
+    outputEvidenceRefs,
     timestamp: completedAt,
     logSequence: 1,
     previousLogDigest: started.entryDigest,
@@ -133,27 +139,19 @@ function dispatchReceiptLog(overrides = {}, startedAt = "2026-07-26T00:00:00Z", 
   return Object.freeze([started, completed]);
 }
 
-function attributionInputForEvidence(evidenceId, evidenceIdentity, overrides = {}) {
+function attributionInputForEvidence(entry, evidenceRef, overrides = {}) {
   const identity = {
     ...SHARED_REPLAY_IDENTITY,
     ...overrides,
     accountableSeatId: overrides.accountableSeatId ?? "daisy"
   };
   return Object.freeze({
-    parentMissionId: identity.parentMissionId,
-    parentMissionRevision: identity.parentMissionRevision,
-    repositoryId: identity.repositoryId,
-    repositoryWorkspaceId: identity.repositoryWorkspaceId,
-    repositoryRevision: identity.repositoryRevision,
-    subjectId: identity.subjectId,
-    subjectRevision: identity.subjectRevision,
-    artifactId: identity.artifactId,
-    artifactRevision: identity.artifactRevision,
-    childSessionId: identity.childSessionId,
-    parentSessionId: identity.parentSessionId,
-    childTaskId: identity.childTaskId,
-    accountableSeatId: identity.accountableSeatId,
-    rawReceiptEntries: dispatchReceiptLog(identity)
+    rawReceiptEntries: dispatchReceiptLog(
+      identity,
+      "2026-07-26T00:00:00Z",
+      "2026-07-26T00:00:01Z",
+      [evidenceRef]
+    )
   });
 }
 
@@ -172,25 +170,92 @@ function recordedEvidence(base, overrides = {}, forHuman = false) {
 }
 
 function recordedHumanEvidence(base, overrides = {}) {
+  const authoritativeSeat = HUMAN_AUTHORITY_SEAT[base.evidenceId] ?? "coulson";
   return recordedEvidence(base, {
-    accountableSeat: "coulson",
+    accountableSeat: authoritativeSeat,
     verifiedHumanEvidenceRef: overrides.verifiedHumanEvidenceRef ?? evidenceIdentitySource,
     ...overrides
   }, true);
 }
 
+function packTeamSystemFromHead(destination) {
+  const archive = join(destination, "package-tree.tar");
+  execFileSync("git", [
+    "-C",
+    repositoryRoot,
+    "archive",
+    "--format=tar",
+    "--prefix=shield-team-system/",
+    "HEAD:packages/shield-team-system",
+    "-o",
+    archive
+  ]);
+  execFileSync("tar", ["-x", "-f", archive, "-C", destination], { encoding: "utf8" });
+  execFileSync("rm", ["-rf", join(destination, "shield-team-system", "dist")]);
+  execFileSync("cp", ["-R", join(packageRoot, "dist"), join(destination, "shield-team-system", "dist")]);
+  return join(destination, "shield-team-system");
+}
+
 function packTeamSystem(destination, source = packageRoot) {
+  const packRoot = source === packageRoot ? packTeamSystemFromHead(destination) : source;
   const output = JSON.parse(execFileSync("npm", [
     "pack",
-    source,
+    packRoot,
     "--json",
     "--pack-destination",
     destination,
     "--cache",
     join(destination, ".npm-cache"),
-    ...(arguments.length > 2 && arguments[2] === true ? ["--ignore-scripts"] : [])
+    "--ignore-scripts"
   ], { encoding: "utf8" }));
   return join(destination, output[0].filename);
+}
+
+async function composeInstalledArtifact(artifactPath, expectedPackage) {
+  const consumerRoot = await mkdtemp(join(tmpdir(), "shield-v03-installed-package-"));
+  try {
+    await writeFile(join(consumerRoot, "package.json"), '{"private":true,"type":"module"}\n');
+    await cp(artifactPath, join(consumerRoot, "shield-team-system.tgz"));
+    try {
+      execFileSync("npm", [
+        "install",
+        "--save-dev",
+        "--save-exact",
+        "shield-team-system.tgz",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--package-lock=false",
+        "--offline",
+        "--cache",
+        join(consumerRoot, ".npm-cache")
+      ], {
+        cwd: consumerRoot,
+        encoding: "utf8",
+        stdio: "ignore"
+      });
+    } catch {
+      return Object.freeze({ state: "blocked", reason: "package_artifact_install_failed" });
+    }
+
+    let installedManifest;
+    try {
+      installedManifest = JSON.parse(await readFile(
+        join(consumerRoot, "node_modules/@shield/team-system/package.json"),
+        "utf8"
+      ));
+    } catch {
+      return Object.freeze({ state: "blocked", reason: "installed_package_identity_missing" });
+    }
+    if (!installedManifest ||
+        installedManifest.name !== expectedPackage.name ||
+        installedManifest.version !== expectedPackage.version) {
+      return Object.freeze({ state: "blocked", reason: "installed_package_identity_mismatch" });
+    }
+    return Object.freeze({ state: "passed" });
+  } finally {
+    await rm(consumerRoot, { recursive: true, force: true });
+  }
 }
 
 function git(cwd, args) {
@@ -219,7 +284,7 @@ async function createExternalRepository(directory, {
   await mkdir(join(directory, ".shield"), { recursive: true });
   await writeFile(join(directory, ".shield/config.json"), `${JSON.stringify({
     schemaVersion: 1,
-    repositoryId: "fixture/external-v03",
+  repositoryId: "repository:fixture:external-v03",
     adapterId: "github",
     supportedSeatIds: ["hill", "daisy", "fury", "may", "coulson", "fitz", "simmons"],
     supportedModeIds: ["delivery", "debugger"],
@@ -439,50 +504,49 @@ test("composition rejects malformed revisions and unsupported object formats", a
     baseRevision: `${revisions.baseRevision}dead`
   })).reason, "external_revision_identity_malformed");
 
-  const originalPath = process.env.PATH ?? "";
-  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
-  const fakeBin = await mkdtemp(join(tmpdir(), "shield-v03-fake-git-"));
-  const fakeGit = join(fakeBin, "git");
-  await writeFile(fakeGit, `#!/bin/sh
-if [ "$1" = "rev-parse" ]; then
-  for arg in "$@"; do
-    if [ "$arg" = "--show-object-format" ]; then
-      echo sha512
-      exit 0
-    fi
-  done
-fi
-"${realGit}" "$@"
-`);
-  await writeFile(fakeGit, await readFile(fakeGit, "utf8"), { mode: 0o755 });
-  process.env.PATH = `${fakeBin}:${originalPath}`;
+  const unsupportedObjectFormatRepository = join(directory, "unsupported-format");
+  const unsupportedRevisions = await createExternalRepository(unsupportedObjectFormatRepository);
+  const badFormatArtifact = packTeamSystem(directory);
+  const fakeGitDirectory = join(directory, "fake-git-bin");
+  await mkdir(fakeGitDirectory);
+  const realGitPath = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const fakeGitPath = join(fakeGitDirectory, "git");
+  await writeFile(fakeGitPath, [
+    "#!/usr/bin/env sh",
+    `REAL_GIT=${JSON.stringify(realGitPath)}`,
+    'if [ "$1" = "rev-parse" ] && [ "$2" = "--show-object-format" ]; then',
+    '  echo "sha512"',
+    "  exit 0",
+    "fi",
+    'exec "$REAL_GIT" "$@"'
+  ].join("\n"), "utf8");
+  execFileSync("chmod", ["+x", fakeGitPath]);
+  const previousPath = process.env.PATH;
   try {
-    const badFormatArtifact = packTeamSystem(directory);
-  const badFormat = await composeMinimumFixture(fixtureInput(
-      badFormatArtifact,
-      await digest(badFormatArtifact),
-      external,
-      revisions
-    ));
-    assert.ok([
-      "external_repository_object_format_unsupported",
-      "dependency_contract_unavailable"
-    ].includes(badFormat.reason));
+    process.env.PATH = `${fakeGitDirectory}:${previousPath}`;
+  const badFormat = await composeMinimumFixture(
+      fixtureInput(
+        badFormatArtifact,
+        await digest(badFormatArtifact),
+        unsupportedObjectFormatRepository,
+        unsupportedRevisions
+      )
+    );
+    assert.equal(badFormat.reason, "external_repository_object_format_unsupported");
   } finally {
-    process.env.PATH = originalPath;
-    await rm(fakeBin, { recursive: true, force: true });
+    process.env.PATH = previousPath;
   }
 
   const sha256External = join(directory, "sha256-external");
   const sha256Revisions = await createExternalRepository(sha256External, { objectFormat: "sha256" });
-  const sha256Artifact = packTeamSystem(sha256External);
+  const sha256Artifact = packTeamSystem(directory);
   const sha256Result = await composeMinimumFixture(fixtureInput(
     sha256Artifact,
     await digest(sha256Artifact),
     sha256External,
     sha256Revisions
   ));
-  assert.notEqual(sha256Result.reason, "external_revision_identity_malformed");
+  assert.equal(sha256Result.reason, "dependency_contract_unavailable");
 
   assert.equal((await composeMinimumFixture({
     ...fixtureInput(
@@ -498,15 +562,39 @@ fi
 test("composition rejects wrong package version and exact-package hash mismatches", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-package-version-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
+  const baseArtifact = packTeamSystem(directory);
+  assert.equal((await composeInstalledArtifact(baseArtifact, {
+    name: "@shield/team-system",
+    version: "0.1.0"
+  })).state, "passed");
+
+  const wrongNamePackage = join(directory, "wrong-name");
+  await cp(packageRoot, wrongNamePackage, { recursive: true });
+  const wrongNamePackageJson = JSON.parse(await readFile(join(wrongNamePackage, "package.json"), "utf8"));
+  wrongNamePackageJson.name = "@shield/team-system-alt";
+  await writeFile(
+    join(wrongNamePackage, "package.json"),
+    `${JSON.stringify(wrongNamePackageJson, null, 2)}\n`
+  );
+  const wrongNameArtifact = packTeamSystem(directory, wrongNamePackage, true);
+  assert.equal((await composeInstalledArtifact(wrongNameArtifact, {
+    name: "@shield/team-system",
+    version: "0.1.0"
+  })).reason, "installed_package_identity_missing");
+
   const wrongVersionPackage = join(directory, "wrong-version");
   await cp(packageRoot, wrongVersionPackage, { recursive: true });
-  const wrongPackageJson = JSON.parse(await readFile(join(wrongVersionPackage, "package.json"), "utf8"));
-  wrongPackageJson.version = "0.1.1";
+  const wrongVersionPackageJson = JSON.parse(await readFile(join(wrongVersionPackage, "package.json"), "utf8"));
+  wrongVersionPackageJson.version = "0.1.1";
   await writeFile(
     join(wrongVersionPackage, "package.json"),
-    `${JSON.stringify(wrongPackageJson, null, 2)}\n`
+    `${JSON.stringify(wrongVersionPackageJson, null, 2)}\n`
   );
   const wrongArtifact = packTeamSystem(directory, wrongVersionPackage, true);
+  assert.equal((await composeInstalledArtifact(wrongArtifact, {
+    name: "@shield/team-system",
+    version: "0.1.0"
+  })).reason, "installed_package_identity_mismatch");
 
   const external = join(directory, "external");
   const revisions = await createExternalRepository(external);
@@ -518,10 +606,10 @@ test("composition rejects wrong package version and exact-package hash mismatche
   );
   assert.equal((await composeMinimumFixture(wrongVersionInput)).reason, "package_artifact_digest_mismatch");
 
-  const artifact = packTeamSystem(directory);
+  const hashMismatchArtifact = packTeamSystem(directory);
   assert.equal((
     await composeMinimumFixture({
-    ...fixtureInput(artifact, await digest(artifact), external, revisions),
+    ...fixtureInput(hashMismatchArtifact, await digest(hashMismatchArtifact), external, revisions),
     packageArtifactSha256: "0".repeat(64)
   })
   ).reason, "package_artifact_digest_mismatch");
@@ -546,7 +634,7 @@ test("baseline defect fails and fixture-only injection restores the exact passin
   assert.equal(Object.hasOwn(result, "networkEffectsPerformed"), false);
   assert.equal(
     JSON.parse(git(directory, ["show", `${revisions.baseRevision}:.shield/config.json`])).repositoryId,
-    "fixture/external-v03"
+    "repository:fixture:external-v03"
   );
 });
 
@@ -709,11 +797,10 @@ test("evidence inventory validates all configured measurement classes for record
   const inventory = createEvidenceInventory({ requireSimmons: false });
   const base = inventory.find(({ evidenceId }) => evidenceId === "host.configuration");
   assert.ok(base !== undefined);
-  for (const measurementClass of ["measured", "derived", "estimated", "not-observable"]) {
+  for (const measurementClass of ["measured", "derived", "estimated"]) {
     const recorded = recordedEvidence(base, { measurementClass, evidenceRef: "observed:host.configuration" });
     const graded = gradeEvidenceInventory(inventory.map((entry) => entry.evidenceId === "host.configuration" ? recorded : entry));
-    assert.equal(graded.state, "blocked");
-    assert.ok(!graded.reasons.includes("evidence_measurement_class_malformed:host.configuration"));
+    assert.ok(graded.reasons.includes("evidence_measurement_class_malformed:host.configuration"));
   }
 
   const invalid = recordedEvidence(base, {
@@ -764,11 +851,13 @@ test("evidence inventory attribution requires exact replay matching", () => {
   });
 
   const attribution = attributionInputForEvidence(
-    evidence.evidenceId,
-    evidence.evidenceIdentity
+    evidence,
+    evidence.evidenceRef
   );
   const outcome = evaluateSeatDispatchAttributionV1({
     ...attribution,
+    ...SHARED_REPLAY_IDENTITY,
+    accountableSeatId: evidence.accountableSeat,
     artifact: Object.freeze({
       evidenceId: evidence.evidenceId,
       evidenceIdentity: evidence.evidenceIdentity
@@ -785,46 +874,185 @@ test("evidence inventory attribution requires exact replay matching", () => {
     }
   );
   assert.ok(!gradedAttributed.reasons.includes("evidence_entry_malformed:package.artifact.digest"));
-  assert.ok(!gradedAttributed.reasons.includes("evidence_entry_malformed:package.artifact.digest"));
+  assert.ok(!gradedAttributed.reasons.includes("evidence_missing:package.artifact.digest"));
 
   const staleAttribution = gradeEvidenceInventory(
     inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
     {
       attributionInputs: {
-        "package.artifact.digest": {
-      ...attribution,
-      parentMissionRevision: "e".repeat(40)
-    }
+        "package.artifact.digest": attributionInputForEvidence(
+          evidence,
+          evidence.evidenceRef,
+          { parentMissionRevision: "e".repeat(40) }
+        )
       }
     }
   );
-  assert.ok(staleAttribution.reasons.includes("evidence_missing:package.artifact.digest"));
+  assert.ok(staleAttribution.reasons.includes("evidence_attribution_failed:package.artifact.digest:stale_mission_revision"));
 
   const malformedReceiptChain = gradeEvidenceInventory(
     inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
     {
       attributionInputs: {
-        "package.artifact.digest": {
+      "package.artifact.digest": {
           ...attribution,
           rawReceiptEntries: [{}]
         }
       }
     }
   );
-  assert.ok(malformedReceiptChain.reasons.includes("evidence_missing:package.artifact.digest"));
+  assert.ok(malformedReceiptChain.reasons.includes("evidence_attribution_failed:package.artifact.digest:malformed_raw_log"));
 
   const forgedSeat = gradeEvidenceInventory(
     inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
     {
       attributionInputs: {
+        "package.artifact.digest": attributionInputForEvidence(
+          evidence,
+          evidence.evidenceRef,
+          { accountableSeatId: "may" }
+        )
+      }
+    }
+  );
+  assert.ok(forgedSeat.reasons.includes("evidence_attribution_failed:package.artifact.digest:forged_seat_label"));
+
+  const wrongWorkspace = gradeEvidenceInventory(
+    inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
+    {
+      attributionInputs: {
         "package.artifact.digest": {
-          ...attribution,
-          accountableSeatId: "may"
+          ...attributionInputForEvidence(
+            evidence,
+            evidence.evidenceRef,
+            { repositoryWorkspaceId: "workspace:fixture:wrong" }
+          )
         }
       }
     }
   );
-  assert.ok(forgedSeat.reasons.includes("evidence_missing:package.artifact.digest"));
+  assert.ok(wrongWorkspace.reasons.includes("evidence_attribution_failed:package.artifact.digest:wrong_workspace"));
+
+  const wrongSession = gradeEvidenceInventory(
+    inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
+    {
+      attributionInputs: {
+        "package.artifact.digest": {
+          ...attributionInputForEvidence(
+            evidence,
+            evidence.evidenceRef,
+            { parentSessionId: "session:wrong" }
+          )
+        }
+      }
+    }
+  );
+  assert.ok(wrongSession.reasons.includes("evidence_attribution_failed:package.artifact.digest:wrong_parent_session"));
+
+  const nonTerminal = createSeatDispatchStartedEventV1({
+    ...SHARED_REPLAY_IDENTITY,
+    accountableSeatId: "daisy",
+    inputEvidenceRefs: [],
+    timestamp: "2026-07-26T00:00:00Z",
+    logSequence: 0,
+    previousLogDigest: null,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null
+  });
+  const nonTerminalGrade = gradeEvidenceInventory(
+    inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
+    {
+      attributionInputs: {
+        "package.artifact.digest": {
+          rawReceiptEntries: [nonTerminal]
+        }
+      }
+    }
+  );
+  assert.ok(nonTerminalGrade.reasons.includes("evidence_attribution_failed:package.artifact.digest:non_terminal_lifecycle"));
+
+  const missingRuntime = attributionInputForEvidence(evidence, evidence.evidenceRef, {
+    runtimeHostObserved: {
+      kind: "runtime.host_observed.unavailable",
+      reason: "unobserved"
+    }
+  });
+  const missingRuntimeGrade = gradeEvidenceInventory(
+    inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
+    {
+      attributionInputs: {
+        "package.artifact.digest": missingRuntime
+      }
+    }
+  );
+  assert.ok(missingRuntimeGrade.reasons.includes("evidence_attribution_failed:package.artifact.digest:missing_runtime_observation"));
+
+    const missingExecutor = attributionInputForEvidence(evidence, evidence.evidenceRef, {
+      toolExecution: {
+        kind: "tool.execution.requested",
+        executorBindingRef: "binding:v0.3:executor"
+      },
+      executorHostObserved: {
+        kind: "executor.host_observed.unavailable",
+        reason: "not_observed"
+      }
+    });
+  const missingExecutorGrade = gradeEvidenceInventory(
+    inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
+    {
+      attributionInputs: {
+        "package.artifact.digest": missingExecutor
+      }
+    }
+  );
+  assert.ok(missingExecutorGrade.reasons.includes("evidence_attribution_failed:package.artifact.digest:missing_executor_observation"));
+
+  const timing = inventory.find(({ evidenceId }) => evidenceId === "clocks.timing");
+  assert.ok(timing !== undefined);
+  const timingAttribution = attributionInputForEvidence(
+    timing,
+    "observed:clocks.timing"
+  );
+  const timingOutcome = evaluateSeatDispatchAttributionV1({
+    ...timingAttribution,
+    ...SHARED_REPLAY_IDENTITY,
+    artifact: Object.freeze({
+      evidenceId: timing.evidenceId,
+      evidenceIdentity: timing.evidenceIdentity ?? "source:fixture:clocks.timing"
+    }),
+    accountableSeatId: "daisy"
+  });
+  const timingReceipt = timingOutcome.state === "attributed" ? timingOutcome.receipt : null;
+  const reusedReceiptId = attribution.rawReceiptEntries[0].receiptId;
+  const reusedReceiptInputs = {
+    ...timingAttribution,
+    rawReceiptEntries: timingAttribution.rawReceiptEntries.map((entry) => {
+      const next = { ...entry };
+      next.receiptId = reusedReceiptId;
+      return next;
+    })
+  };
+  const timingEvidence = recordedEvidence(timing, {
+    evidenceIdentity: "source:fixture:clocks.timing",
+    evidenceRef: "observed:clocks.timing",
+    measurementClass: "measured",
+    dispatchReceipt: timingReceipt,
+    accountableSeat: "daisy"
+  });
+  const reusedReceipt = gradeEvidenceInventory(
+    inventory.map((entry) => entry.evidenceId === "package.artifact.digest"
+      ? attributedEvidence
+      : entry.evidenceId === "clocks.timing"
+        ? timingEvidence
+        : entry),
+    {
+      attributionInputs: {
+        "package.artifact.digest": attribution,
+        "clocks.timing": reusedReceiptInputs
+      }
+    }
+  );
+  assert.ok(reusedReceipt.reasons.includes("evidence_entry_malformed:clocks.timing"));
 });
 
 test("fixture-only grader rejects a target that escapes through a symlink", async (context) => {

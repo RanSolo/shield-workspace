@@ -50,12 +50,6 @@ const AGENT_SEAT_SET = Object.freeze(new Set([
   "mack"
 ]));
 
-const HUMAN_SEAT_SET = Object.freeze(new Set([
-  "coulson",
-  "fitz",
-  "simmons"
-]));
-
 const RECEIPT_PROJECTION_FIELDS = Object.freeze([
   "receiptId",
   "dispatchId",
@@ -93,29 +87,27 @@ const RECEIPT_PROJECTION_FIELDS = Object.freeze([
   "previousLifecycleDigest"
 ]);
 
-const ATTRIBUTION_FIELDS = Object.freeze([
-  "parentMissionId",
-  "parentMissionRevision",
-  "repositoryId",
-  "repositoryWorkspaceId",
-  "subjectId",
-  "artifactId",
-  "childSessionId",
-  "parentSessionId",
-  "childTaskId",
-  "artifactRevision",
-  "repositoryRevision",
-  "subjectRevision"
-]);
+const HUMAN_AUTHORITY_SEAT = Object.freeze({
+  "coulson.authorization": "coulson",
+  "fitz.technical-review": "fitz",
+  "simmons.product-review": "simmons"
+});
+const TRUSTED_REPLAY_ANCHOR = Object.freeze({
+  parentMissionId: "mission:v0.3:external-acceptance:1",
+  parentMissionRevision: "1".repeat(40),
+  repositoryId: "repository:fixture:external-v03",
+  repositoryWorkspaceId: "workspace:fixture:external-v03",
+  repositoryRevision: "1".repeat(40),
+  subjectId: "fixture:v0.3:external-acceptance:1",
+  subjectRevision: "1".repeat(40),
+  artifactId: "fixture:v0.3:external-acceptance:1",
+  artifactRevision: "1".repeat(40),
+  childSessionId: "session:v0.3:child:1",
+  parentSessionId: "session:v0.3:mission-parent:1",
+  childTaskId: "task:v0.3:external-acceptance:1"
+});
 
 const DEFINITION_STATES = Object.freeze(new Set(["missing", "waiting", "recorded"]));
-const MEASUREMENT_CLASSES = Object.freeze([
-  "measured",
-  "derived",
-  "estimated",
-  "not-observable"
-]);
-const MEASUREMENT_CLASS_SET = new Set(MEASUREMENT_CLASSES);
 
 const DEFINITION_FIELDS_CLOSED = Object.freeze(["state", "authority", "requirement", "evidenceId"]);
 const HISTORY_KIND_PREFIXES = Object.freeze(["runtime.", "executor.", "tool."]);
@@ -431,7 +423,7 @@ function closeEvidenceEntry(entry, definition) {
     return null;
   }
 
-  if (!MEASUREMENT_CLASS_SET.has(entry.measurementClass)) return "evidence_measurement_class_malformed";
+  if (entry.measurementClass !== definition.measurementClass) return "evidence_measurement_class_malformed";
   if (!isEvidenceRef(entry.evidenceRef)) {
     return "evidence_entry_malformed";
   }
@@ -439,7 +431,7 @@ function closeEvidenceEntry(entry, definition) {
     return "evidence_identity_malformed";
   }
   if (definition.authority === "human-only") {
-    if (!HUMAN_SEAT_SET.has(entry.accountableSeat) ||
+    if (HUMAN_AUTHORITY_SEAT[definition.evidenceId] !== entry.accountableSeat ||
         !validateSourceRef(entry.verifiedHumanEvidenceRef) ||
         entry.dispatchReceipt !== null) {
       return "evidence_entry_malformed";
@@ -464,28 +456,12 @@ function toJson(value) {
 function validateAttributionInput(input) {
   if (!plain(input)) return false;
   if (!Object.hasOwn(input, "rawReceiptEntries") && !Object.hasOwn(input, "replayResult")) return false;
+  const keys = Object.keys(input);
+  for (const key of keys) {
+    if (key !== "rawReceiptEntries" && key !== "replayResult") return false;
+  }
   if (input.rawReceiptEntries !== undefined && !arrayClosed(input.rawReceiptEntries)) return false;
   if (input.replayResult !== undefined && !plain(input.replayResult)) return false;
-  for (const field of ATTRIBUTION_FIELDS) {
-    if (!Object.hasOwn(input, field) || typeof input[field] !== "string") {
-      return false;
-    }
-    if (field === "parentMissionId" || field === "repositoryId" ||
-      field === "repositoryWorkspaceId" || field === "subjectId" ||
-      field === "artifactId" || field === "parentSessionId" ||
-      field === "childTaskId" || field === "childSessionId") {
-      if (!isCanonicalId(input[field])) return false;
-      continue;
-    }
-    if (!OID.test(input[field])) {
-      return false;
-    }
-  }
-  const keys = Object.keys(input);
-  if (keys.length > ATTRIBUTION_FIELDS.length + 2) return false;
-  for (const key of keys) {
-    if (key !== "rawReceiptEntries" && key !== "replayResult" && !ATTRIBUTION_FIELDS.includes(key)) return false;
-  }
   return true;
 }
 
@@ -512,6 +488,8 @@ export function gradeEvidenceInventory(inventory, options = {}) {
     reasons.push("evidence_inventory_not_closed");
     return Object.freeze({ state: "blocked", reasons: Object.freeze(reasons) });
   }
+
+  const usedReceiptIds = new Set();
 
   for (let index = 0; index < expected.length; index += 1) {
     const definition = DEFINITION_BY_ID[expected[index].evidenceId];
@@ -556,6 +534,7 @@ export function gradeEvidenceInventory(inventory, options = {}) {
     }
 
     const outcome = evaluateSeatDispatchAttributionV1({
+      ...TRUSTED_REPLAY_ANCHOR,
       ...attributionInput,
       accountableSeatId: entry.accountableSeat,
       artifact: {
@@ -566,12 +545,24 @@ export function gradeEvidenceInventory(inventory, options = {}) {
 
     if (outcome.state !== "attributed") {
       reasons.push(`evidence_missing:${definition.evidenceId}`);
+      if (outcome.reasonCodes.length > 0) {
+        reasons.push(`evidence_attribution_failed:${definition.evidenceId}:${outcome.reasonCodes.join(",")}`);
+      }
+      continue;
+    }
+    if (usedReceiptIds.has(entry.dispatchReceipt.receiptId)) {
+      reasons.push(`evidence_entry_malformed:${definition.evidenceId}`);
+      continue;
+    }
+    if (!entry.dispatchReceipt.outputEvidenceRefs.includes(entry.evidenceRef)) {
+      reasons.push(`evidence_entry_malformed:${definition.evidenceId}`);
       continue;
     }
     if (toJson(entry.dispatchReceipt) !== toJson(outcome.receipt)) {
       reasons.push(`evidence_entry_malformed:${definition.evidenceId}`);
       continue;
     }
+    usedReceiptIds.add(entry.dispatchReceipt.receiptId);
   }
 
   return Object.freeze({

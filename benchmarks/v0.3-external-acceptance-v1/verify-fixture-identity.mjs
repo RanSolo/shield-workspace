@@ -8,7 +8,7 @@ const ROOT = resolve(fileURLToPath(import.meta.url), "..");
 const CANNON_PREFIX = "shield:fixture:v1";
 const IDENTITY_FILE = "fixture-identity-v1.json";
 
-const EXPECTED_IDENTITY_SHA256 = "01e326d53c654a74f2ba01bc82f74922f65a29afb5d55415c62dcd245f60a853";
+const EXPECTED_IDENTITY_SHA256 = "26e081053d21be904a5505dd9b9c9c8142bea949efc50ba4181b8b77cd853106";
 
 const COVERED_ARTIFACTS = Object.freeze({
   manifest: {

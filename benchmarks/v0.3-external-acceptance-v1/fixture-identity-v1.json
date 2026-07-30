@@ -24,13 +24,13 @@
     },
     "evidence-inventory": {
       "path": "evidence-inventory.mjs",
-      "digest": "fc909d30e034a10d8ad18e756aab5035169726f124c9b65f22f65bf253991d8e"
+      "digest": "5e313bd8dfce06914ff10a8c6c93da574fe37d133e7874f98a3c5a89c8413fa5"
     }
   },
   "package": {
     "name": "@shield/team-system",
     "version": "0.1.0",
     "digestAlgorithm": "sha256",
-    "digest": "80880c09b64109fbc270155a9876af113a2ab785878145cd86b116474311dc47"
+    "digest": "05a8ee7222471925e49e794c7fb58fd1151dcfe2a8e2c8d20435118c340ec02e"
   }
 }
