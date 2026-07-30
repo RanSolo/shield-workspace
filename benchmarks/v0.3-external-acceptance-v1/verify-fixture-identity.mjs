@@ -1,14 +1,16 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, realpath, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "..");
 const CANNON_PREFIX = "shield:fixture:v1";
 const IDENTITY_FILE = "fixture-identity-v1.json";
+const RELEASE_BASELINE_KIND = "fixture-release-baseline";
+const RELEASE_BASELINE_SCHEMA_VERSION = "shield.fixture.release-baseline.v1";
 
-const EXPECTED_IDENTITY_SHA256 = "26e081053d21be904a5505dd9b9c9c8142bea949efc50ba4181b8b77cd853106";
+const EXPECTED_VERIFIER_IDENTITY = `node:${process.version}`;
+const EXPECTED_LAUNCHER_IDENTITY = `node:${process.execPath}`;
 
 const COVERED_ARTIFACTS = Object.freeze({
   manifest: {
@@ -47,6 +49,21 @@ const REQUIRED_IDENTITY_FIELDS = Object.freeze([
   "coveredArtifacts",
   "package",
 ]);
+const RELEASE_BASELINE_FIELDS = Object.freeze([
+  "kind",
+  "schemaVersion",
+  "identityRecordDigest",
+  "verifierIdentity",
+  "launcherIdentity",
+  "package"
+]);
+
+function isTrustedIdentity(value) {
+  return typeof value === "string" &&
+    value.normalize("NFC") === value &&
+    value.length > 0 &&
+    value.length <= 255;
+}
 
 function plain(value) {
   return value !== null && typeof value === "object" &&
@@ -56,6 +73,10 @@ function plain(value) {
 function exact(value, fields) {
   return plain(value) &&
     Object.keys(value).length === fields.length && fields.every((field) => Object.hasOwn(value, field));
+}
+
+function isInsideFixtureRoot(candidate, fixtureRoot) {
+  return candidate === fixtureRoot || candidate.startsWith(`${fixtureRoot}/`);
 }
 
 function isRegularUtf8Path(value) {
@@ -75,6 +96,25 @@ function framedDigest(artifactType, path, bytes) {
 
 function identityDigest(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function parseReleaseBaseline(value) {
+  if (!plain(value)) return invalid("baseline_malformed");
+  if (!exact(value, RELEASE_BASELINE_FIELDS)) return invalid("baseline_not_closed");
+  if (value.kind !== RELEASE_BASELINE_KIND || value.schemaVersion !== RELEASE_BASELINE_SCHEMA_VERSION) {
+    return invalid("baseline_mismatch");
+  }
+  if (!HEX64.test(value.identityRecordDigest) ||
+      !isTrustedIdentity(value.verifierIdentity) ||
+      !isTrustedIdentity(value.launcherIdentity)) {
+    return invalid("baseline_malformed");
+  }
+  const packageCheck = parsePackage(value.package);
+  if (packageCheck.state === "invalid") return packageCheck;
+  return Object.freeze({
+    ...value,
+    package: packageCheck
+  });
 }
 
 function blocked(reason) {
@@ -142,17 +182,34 @@ function validateIdentity(artifact) {
   });
 }
 
-export async function verifyFixtureIdentity(root = ROOT) {
+export async function verifyFixtureIdentity(root = ROOT, releaseBaseline) {
+  if (releaseBaseline === undefined) return invalid("baseline_missing");
+  const baseline = parseReleaseBaseline(releaseBaseline);
+  if (baseline.state === "invalid") return baseline;
+  const fixtureRoot = await realpath(root).catch(() => null);
+  if (fixtureRoot === null) return blocked("record_path_not_regular");
   let identityBytes;
+  const identityPath = resolve(root, IDENTITY_FILE);
+  const identityInfo = await lstat(identityPath).catch(() => null);
+  if (identityInfo === null || !identityInfo.isFile() || identityInfo.isSymbolicLink()) {
+    return blocked("record_not_file");
+  }
+  const resolvedIdentityPath = await realpath(identityPath).catch(() => null);
+  if (resolvedIdentityPath === null || !isInsideFixtureRoot(resolvedIdentityPath, fixtureRoot)) {
+    return blocked("record_path_not_regular");
+  }
   try {
-    identityBytes = await readFile(resolve(root, IDENTITY_FILE));
+    identityBytes = await readFile(identityPath);
   } catch {
     return blocked("not_found");
   }
 
-  if (identityDigest(identityBytes) !== EXPECTED_IDENTITY_SHA256) {
+  if (identityDigest(identityBytes) !== baseline.identityRecordDigest) {
     return blocked("record_digest_mismatch");
   }
+
+  if (baseline.verifierIdentity !== EXPECTED_VERIFIER_IDENTITY) return blocked("verifier_identity_mismatch");
+  if (baseline.launcherIdentity !== EXPECTED_LAUNCHER_IDENTITY) return blocked("launcher_identity_mismatch");
 
   let identity;
   try {
@@ -163,16 +220,22 @@ export async function verifyFixtureIdentity(root = ROOT) {
 
   const checkedIdentity = validateIdentity(identity);
   if (checkedIdentity.state === "invalid") return checkedIdentity;
+  if (baseline.package.digest !== checkedIdentity.package.digest) {
+    return blocked("package_digest_mismatch");
+  }
 
-  const identityPath = resolve(root, IDENTITY_FILE);
   for (const [artifactType, expected] of Object.entries(COVERED_ARTIFACTS)) {
     const artifactPath = resolve(root, checkedIdentity.coveredArtifacts[artifactType].path);
+    const artifactInfo = await lstat(artifactPath).catch(() => null);
+    if (artifactInfo === null || !artifactInfo.isFile() || artifactInfo.isSymbolicLink()) {
+      return blocked("missing_artifact");
+    }
+    const resolvedArtifactPath = await realpath(artifactPath).catch(() => null);
+    if (resolvedArtifactPath === null || !isInsideFixtureRoot(resolvedArtifactPath, fixtureRoot)) {
+      return blocked("artifact_path_not_regular");
+    }
     if (artifactPath === identityPath) {
       return blocked("recorded_in_covered_set");
-    }
-    const info = await lstat(artifactPath).catch(() => null);
-    if (!info || !info.isFile() || info.isSymbolicLink()) {
-      return blocked("missing_artifact");
     }
     let artifactBytes;
     try {
@@ -194,5 +257,3 @@ export async function verifyFixtureIdentity(root = ROOT) {
     identityPath
   });
 }
-
-export { EXPECTED_IDENTITY_SHA256 };

@@ -20,7 +20,44 @@ const repositoryRoot = resolve(root, "../..");
 const template = join(root, "template");
 const OID40 = "1".repeat(40);
 const OID64 = "0".repeat(64);
-const SHARED_REPLAY_IDENTITY = Object.freeze({
+const FIXTURE_IDENTITY_BYTES = await readFile(join(root, "fixture-identity-v1.json"));
+const FIXTURE_IDENTITY_RECORD = JSON.parse(FIXTURE_IDENTITY_BYTES.toString("utf8"));
+const FIXTURE_RELEASE_BASELINE = Object.freeze({
+  kind: "fixture-release-baseline",
+  schemaVersion: "shield.fixture.release-baseline.v1",
+  identityRecordDigest: createHash("sha256").update(FIXTURE_IDENTITY_BYTES).digest("hex"),
+  verifierIdentity: `node:${process.version}`,
+  launcherIdentity: `node:${process.execPath}`,
+  package: Object.freeze({
+    name: FIXTURE_IDENTITY_RECORD.package.name,
+    version: FIXTURE_IDENTITY_RECORD.package.version,
+    digestAlgorithm: "sha256",
+    digest: FIXTURE_IDENTITY_RECORD.package.digest
+  })
+});
+const REPLAY_ANCHOR_FIXTURE = Object.freeze({
+  kind: "trusted-journal-replay-anchor",
+  producerContractVersion: "shield.v0.3.fixture",
+  producerDigest: "0".repeat(64),
+  anchorDigest: "1".repeat(64),
+  anchorRevision: OID40,
+  parentMissionId: "mission:v0.3:external-acceptance:1",
+  parentMissionRevision: OID40,
+  parentSessionId: "session:v0.3:mission-parent:1",
+  childTaskId: "task:v0.3:external-acceptance:1",
+  childSessionId: "session:v0.3:child:1",
+  repositoryId: "repository:fixture:external-v03",
+  repositoryWorkspaceId: "workspace:fixture:external-v03",
+  repositoryRevision: OID40,
+  subjectId: "fixture:v0.3:external-acceptance:1",
+  subjectRevision: OID40,
+  artifactId: "fixture:v0.3:external-acceptance:1",
+  artifactRevision: OID40,
+  accountableSeatId: "daisy",
+  currentSequence: 1,
+  lifecycle: "mission:lifecycle"
+});
+const REPLAY_SEAT_DISPATCH_FIXTURE = Object.freeze({
   receiptId: "receipt:v0.3:external-acceptance:1",
   dispatchId: "dispatch:v0.3:external-acceptance:1",
   parentMissionId: "mission:v0.3:external-acceptance:1",
@@ -35,6 +72,7 @@ const SHARED_REPLAY_IDENTITY = Object.freeze({
   subjectRevision: OID40,
   artifactId: "fixture:v0.3:external-acceptance:1",
   artifactRevision: OID40,
+  accountableSeatId: "daisy",
   configuredRuntime: {
     kind: "runtime.configured",
     runtimeId: "runtime:v0.3",
@@ -72,8 +110,29 @@ const SHARED_REPLAY_IDENTITY = Object.freeze({
     evidenceRefs: ["observed:executor.host_observed"]
   }
 });
-
-const fixtureIdentity = await verifyFixtureIdentity(root);
+const REPLAY_ANCHOR_PROJECTION = Object.freeze({
+  kind: "trusted-journal-replay-anchor",
+  producerContractVersion: "shield.v0.3.fixture",
+  producerDigest: "0".repeat(64),
+  anchorDigest: "1".repeat(64),
+  anchorRevision: OID40,
+  parentMissionId: "mission:v0.3:external-acceptance:1",
+  parentMissionRevision: OID40,
+  parentSessionId: "session:v0.3:mission-parent:1",
+  childTaskId: "task:v0.3:external-acceptance:1",
+  childSessionId: "session:v0.3:child:1",
+  repositoryId: "repository:fixture:external-v03",
+  repositoryWorkspaceId: "workspace:fixture:external-v03",
+  repositoryRevision: OID40,
+  subjectId: "fixture:v0.3:external-acceptance:1",
+  subjectRevision: OID40,
+  artifactId: "fixture:v0.3:external-acceptance:1",
+  artifactRevision: OID40,
+  accountableSeatId: "daisy",
+  currentSequence: 1,
+  lifecycle: "mission:lifecycle"
+});
+const fixtureIdentity = await verifyFixtureIdentity(root, FIXTURE_RELEASE_BASELINE);
 if (fixtureIdentity.state !== "valid") {
   throw new Error(`fixture identity preflight failed: ${fixtureIdentity.state}:${fixtureIdentity.reason}`);
 }
@@ -82,10 +141,12 @@ const {
   FIXTURE_MANIFEST,
   validateFixtureManifest
 } = await import("../fixture-manifest.mjs");
-const {
-  createEvidenceInventory,
-  gradeEvidenceInventory
-} = await import("../evidence-inventory.mjs");
+const { createEvidenceInventory, gradeEvidenceInventory: gradeEvidenceInventoryReplay } = await import("../evidence-inventory.mjs");
+
+const gradeEvidenceInventory = (inventory, options = {}) => gradeEvidenceInventoryReplay(inventory, {
+  replayAnchor: REPLAY_ANCHOR_PROJECTION,
+  ...options
+});
 const {
   composeMinimumFixture,
   gradeCandidateWithFailureInjection
@@ -113,7 +174,7 @@ const COVERED_ARTIFACTS = Object.freeze([
 
 function dispatchReceiptLog(overrides = {}, startedAt = "2026-07-26T00:00:00Z", completedAt = "2026-07-26T00:00:01Z", outputEvidenceRefs = []) {
   const identity = Object.freeze({
-    ...SHARED_REPLAY_IDENTITY,
+    ...REPLAY_SEAT_DISPATCH_FIXTURE,
     ...overrides,
     accountableSeatId: overrides.accountableSeatId ?? "daisy"
   });
@@ -141,7 +202,7 @@ function dispatchReceiptLog(overrides = {}, startedAt = "2026-07-26T00:00:00Z", 
 
 function attributionInputForEvidence(entry, evidenceRef, overrides = {}) {
   const identity = {
-    ...SHARED_REPLAY_IDENTITY,
+    ...REPLAY_SEAT_DISPATCH_FIXTURE,
     ...overrides,
     accountableSeatId: overrides.accountableSeatId ?? "daisy"
   };
@@ -337,6 +398,7 @@ function fixtureInput(artifact, artifactDigest, directory, revisions, overrides 
     blindStatus: "partially-informed",
     priorSolutionsVisible: false,
     requireSimmons: true,
+    releaseBaseline: FIXTURE_RELEASE_BASELINE,
     ...overrides
   };
 }
@@ -353,13 +415,14 @@ async function withFixtureCopy(mutator) {
   }
 }
 
-async function verifyCopyIdentity(mutator) {
+async function verifyCopyIdentity(mutator, releaseBaseline) {
+  const effectiveBaseline = arguments.length === 1 ? FIXTURE_RELEASE_BASELINE : releaseBaseline;
   const copied = await withFixtureCopy(async (copyRoot) => {
     await mutator(copyRoot);
   });
   return Object.freeze({
     copied,
-    outcome: await verifyFixtureIdentity(copied)
+    outcome: await verifyFixtureIdentity(copied, effectiveBaseline)
   });
 }
 
@@ -416,6 +479,49 @@ test("fixture identity preflight rejects covered drift before composition", asyn
   });
   assert.equal(substitutionOutcome.state, "blocked");
   assert.equal(substitutionOutcome.reason, "fixture_identity_record_digest_mismatch");
+});
+
+test("fixture identity verifier rejects missing/malformed baselines, modified verifier identity, and identity symlinks", async (context) => {
+  const { copied: missingCopy, outcome: missingBaseline } = await verifyCopyIdentity(async () => {}, undefined);
+  context.after(async () => {
+    await rm(missingCopy, { recursive: true, force: true });
+  });
+  assert.equal(missingBaseline.state, "invalid");
+  assert.equal(missingBaseline.reason, "fixture_identity_baseline_missing");
+
+  const { copied: malformedCopy, outcome: malformedBaseline } = await verifyCopyIdentity(async () => {}, "bad-baseline");
+  context.after(async () => {
+    await rm(malformedCopy, { recursive: true, force: true });
+  });
+  assert.equal(malformedBaseline.state, "invalid");
+  assert.equal(malformedBaseline.reason, "fixture_identity_baseline_malformed");
+
+  const outside = await mkdtemp(join(tmpdir(), "shield-v03-outside-baseline-"));
+  const outsideIdentity = join(outside, "identity.json");
+  await writeFile(outsideIdentity, FIXTURE_IDENTITY_BYTES);
+  context.after(async () => {
+    await rm(outside, { recursive: true, force: true });
+  });
+  const { copied: symlinkCopy, outcome: symlinkOutcome } = await verifyCopyIdentity(async (directory) => {
+    const identityPath = join(directory, "fixture-identity-v1.json");
+    await rm(identityPath);
+    await symlink(outsideIdentity, identityPath);
+  });
+  context.after(async () => {
+    await rm(symlinkCopy, { recursive: true, force: true });
+  });
+  assert.equal(symlinkOutcome.state, "blocked");
+  assert.equal(symlinkOutcome.reason, "fixture_identity_record_not_file");
+
+  const { copied: verifierCopy, outcome: verifierOutcome } = await verifyCopyIdentity(async () => {}, {
+    ...FIXTURE_RELEASE_BASELINE,
+    verifierIdentity: "launcher:tampered"
+  });
+  context.after(async () => {
+    await rm(verifierCopy, { recursive: true, force: true });
+  });
+  assert.equal(verifierOutcome.state, "blocked");
+  assert.equal(verifierOutcome.reason, "fixture_identity_verifier_identity_mismatch");
 });
 
 test("fake text artifacts cannot claim public-surface composition", async (context) => {
@@ -742,6 +848,16 @@ test("evidence inventory records exact class defaults for operator-recorded and 
   assert.ok(grade.reasons.includes("evidence_missing:fitz.technical-review"));
 });
 
+test("evidence inventory rejects missing or malformed replay anchors before attribution", () => {
+  const inventory = createEvidenceInventory({ requireSimmons: true });
+  const missing = gradeEvidenceInventoryReplay(inventory);
+  assert.ok(missing.reasons.includes("evidence_replay_anchor_missing"));
+  const malformed = gradeEvidenceInventoryReplay(inventory, {
+    replayAnchor: { ...REPLAY_ANCHOR_PROJECTION, producerDigest: "invalid" }
+  });
+  assert.ok(malformed.reasons.includes("evidence_replay_anchor_missing"));
+});
+
 test("evidence inventory rejects omissions, extras, malformed states, and malformed classes", () => {
   const inventory = createEvidenceInventory({ requireSimmons: false });
   assert.ok(gradeEvidenceInventory(inventory.slice(1)).reasons.includes("evidence_inventory_not_closed"));
@@ -856,7 +972,7 @@ test("evidence inventory attribution requires exact replay matching", () => {
   );
   const outcome = evaluateSeatDispatchAttributionV1({
     ...attribution,
-    ...SHARED_REPLAY_IDENTITY,
+    ...REPLAY_SEAT_DISPATCH_FIXTURE,
     accountableSeatId: evidence.accountableSeat,
     artifact: Object.freeze({
       evidenceId: evidence.evidenceId,
@@ -889,6 +1005,20 @@ test("evidence inventory attribution requires exact replay matching", () => {
     }
   );
   assert.ok(staleAttribution.reasons.includes("evidence_attribution_failed:package.artifact.digest:stale_mission_revision"));
+
+  const staleRepositoryAttribution = gradeEvidenceInventory(
+    inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
+    {
+      attributionInputs: {
+        "package.artifact.digest": attributionInputForEvidence(
+          evidence,
+          evidence.evidenceRef,
+          { repositoryRevision: "f".repeat(40) }
+        )
+      }
+    }
+  );
+  assert.ok(staleRepositoryAttribution.reasons.includes("evidence_attribution_failed:package.artifact.digest:stale_repository_revision"));
 
   const malformedReceiptChain = gradeEvidenceInventory(
     inventory.map((entry) => entry.evidenceId === "package.artifact.digest" ? attributedEvidence : entry),
@@ -950,7 +1080,7 @@ test("evidence inventory attribution requires exact replay matching", () => {
   assert.ok(wrongSession.reasons.includes("evidence_attribution_failed:package.artifact.digest:wrong_parent_session"));
 
   const nonTerminal = createSeatDispatchStartedEventV1({
-    ...SHARED_REPLAY_IDENTITY,
+    ...REPLAY_SEAT_DISPATCH_FIXTURE,
     accountableSeatId: "daisy",
     inputEvidenceRefs: [],
     timestamp: "2026-07-26T00:00:00Z",
@@ -1015,7 +1145,7 @@ test("evidence inventory attribution requires exact replay matching", () => {
   );
   const timingOutcome = evaluateSeatDispatchAttributionV1({
     ...timingAttribution,
-    ...SHARED_REPLAY_IDENTITY,
+    ...REPLAY_SEAT_DISPATCH_FIXTURE,
     artifact: Object.freeze({
       evidenceId: timing.evidenceId,
       evidenceIdentity: timing.evidenceIdentity ?? "source:fixture:clocks.timing"

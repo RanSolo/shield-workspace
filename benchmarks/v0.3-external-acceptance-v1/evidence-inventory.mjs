@@ -50,6 +50,30 @@ const AGENT_SEAT_SET = Object.freeze(new Set([
   "mack"
 ]));
 
+const REPLAY_ANCHOR_KIND = "trusted-journal-replay-anchor";
+const REPLAY_ANCHOR_FIELDS = Object.freeze([
+  "kind",
+  "producerContractVersion",
+  "producerDigest",
+  "anchorDigest",
+  "anchorRevision",
+  "parentMissionId",
+  "parentMissionRevision",
+  "parentSessionId",
+  "childTaskId",
+  "childSessionId",
+  "repositoryId",
+  "repositoryWorkspaceId",
+  "repositoryRevision",
+  "subjectId",
+  "subjectRevision",
+  "artifactId",
+  "artifactRevision",
+  "accountableSeatId",
+  "currentSequence",
+  "lifecycle"
+]);
+
 const RECEIPT_PROJECTION_FIELDS = Object.freeze([
   "receiptId",
   "dispatchId",
@@ -92,20 +116,6 @@ const HUMAN_AUTHORITY_SEAT = Object.freeze({
   "fitz.technical-review": "fitz",
   "simmons.product-review": "simmons"
 });
-const TRUSTED_REPLAY_ANCHOR = Object.freeze({
-  parentMissionId: "mission:v0.3:external-acceptance:1",
-  parentMissionRevision: "1".repeat(40),
-  repositoryId: "repository:fixture:external-v03",
-  repositoryWorkspaceId: "workspace:fixture:external-v03",
-  repositoryRevision: "1".repeat(40),
-  subjectId: "fixture:v0.3:external-acceptance:1",
-  subjectRevision: "1".repeat(40),
-  artifactId: "fixture:v0.3:external-acceptance:1",
-  artifactRevision: "1".repeat(40),
-  childSessionId: "session:v0.3:child:1",
-  parentSessionId: "session:v0.3:mission-parent:1",
-  childTaskId: "task:v0.3:external-acceptance:1"
-});
 
 const DEFINITION_STATES = Object.freeze(new Set(["missing", "waiting", "recorded"]));
 
@@ -130,6 +140,35 @@ function exact(value, fields) {
   return plain(value) &&
     Object.keys(value).length === fields.length &&
     fields.every((field) => Object.hasOwn(value, field));
+}
+
+function parseReplayAnchor(value) {
+  if (!plain(value) || !exact(value, REPLAY_ANCHOR_FIELDS)) return null;
+  if (value.kind !== REPLAY_ANCHOR_KIND) return null;
+  if (typeof value.producerContractVersion !== "string" ||
+      !isCanonicalId(value.producerContractVersion) ||
+      typeof value.producerDigest !== "string" ||
+      typeof value.anchorDigest !== "string" ||
+      !LOWER_HEX_SHA_256.test(value.anchorDigest) ||
+      !LOWER_HEX_SHA_256.test(value.producerDigest) ||
+      typeof value.anchorRevision !== "string" ||
+      !OID.test(value.anchorRevision) ||
+      !Number.isSafeInteger(value.currentSequence) ||
+      value.currentSequence < 0 ||
+      typeof value.lifecycle !== "string" ||
+      !isCanonicalId(value.lifecycle) ||
+      !AGENT_SEAT_SET.has(value.accountableSeatId)) {
+    return null;
+  }
+  for (const field of ["producerContractVersion", "parentMissionId", "parentSessionId",
+    "childTaskId", "childSessionId", "repositoryId", "repositoryWorkspaceId",
+    "subjectId", "artifactId", "lifecycle"]) {
+    if (!isCanonicalId(value[field])) return null;
+  }
+  for (const field of ["parentMissionRevision", "repositoryRevision", "subjectRevision", "artifactRevision"]) {
+    if (typeof value[field] !== "string" || !OID.test(value[field])) return null;
+  }
+  return Object.freeze({ ...value });
 }
 
 function arrayClosed(value) {
@@ -476,13 +515,19 @@ export function createEvidenceInventory({ requireSimmons = false } = {}) {
 }
 
 export function gradeEvidenceInventory(inventory, options = {}) {
-  const { requireSimmons = false, attributionInputs = {} } = options;
+  const { requireSimmons = false, attributionInputs = {}, replayAnchor } = options;
   const expected = Object.freeze(expectedEntries(requireSimmons));
   const reasons = [
     "dependency_contract_unavailable:#24",
     "dependency_contract_unavailable:#112",
     "dependency_contract_unavailable:#113"
   ];
+
+  const verifiedAnchor = parseReplayAnchor(replayAnchor);
+  if (verifiedAnchor === null) {
+    reasons.push("evidence_replay_anchor_missing");
+    return Object.freeze({ state: "blocked", reasons: Object.freeze(reasons) });
+  }
 
   if (!arrayClosed(inventory) || inventory.length !== expected.length) {
     reasons.push("evidence_inventory_not_closed");
@@ -532,9 +577,13 @@ export function gradeEvidenceInventory(inventory, options = {}) {
       reasons.push(`evidence_missing:${definition.evidenceId}`);
       continue;
     }
+    if (entry.accountableSeat !== verifiedAnchor.accountableSeatId) {
+      reasons.push(`evidence_attribution_failed:${definition.evidenceId}:forged_seat_label`);
+      continue;
+    }
 
     const outcome = evaluateSeatDispatchAttributionV1({
-      ...TRUSTED_REPLAY_ANCHOR,
+      ...verifiedAnchor,
       ...attributionInput,
       accountableSeatId: entry.accountableSeat,
       artifact: {

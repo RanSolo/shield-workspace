@@ -41,7 +41,8 @@ const INPUT_FIELDS = [
   "hostConfiguration",
   "blindStatus",
   "priorSolutionsVisible",
-  "requireSimmons"
+  "requireSimmons",
+  "releaseBaseline"
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -458,7 +459,7 @@ export async function composeMinimumFixture(input) {
   if (artifactInfo.size <= 0 || artifactInfo.size > MAX_PACKAGE_BYTES) {
     return Object.freeze({ state: "blocked", reason: "package_artifact_size_invalid" });
   }
-  const identity = await verifyFixtureIdentity(benchmarkRoot);
+  const identity = await verifyFixtureIdentity(benchmarkRoot, input.releaseBaseline);
   if (identity.state !== "valid") return identity;
   const artifactBytes = await readFile(input.packageArtifactPath);
   const packageDigest = sha256(artifactBytes);

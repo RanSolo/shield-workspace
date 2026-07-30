@@ -20,11 +20,11 @@
     },
     "grading-driver": {
       "path": "src/driver.mjs",
-      "digest": "323e058fedf632f57514bdf52eb9ea1813f298db9d8ce31f7946aade69fec28f"
+      "digest": "721023859405f79c4e640428f215f62621d5a8aa2b8edbbeef4689bca474cf11"
     },
     "evidence-inventory": {
       "path": "evidence-inventory.mjs",
-      "digest": "5e313bd8dfce06914ff10a8c6c93da574fe37d133e7874f98a3c5a89c8413fa5"
+      "digest": "5825ae5bc9018ecc5a09b812417c76ce0294f41496486ae9f87ec44f559b0c5c"
     }
   },
   "package": {
