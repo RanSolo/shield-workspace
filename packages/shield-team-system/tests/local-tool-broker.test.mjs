@@ -17,6 +17,7 @@ import {
 
 const revisionId = "0123456789012345678901234567890123456789";
 const artifactRevisionId = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+const expectedLocalToolSampling = { temperature: 0.6, top_p: 0.95, top_k: 20 };
 
 async function findRg() {
   const candidates = (process.env.PATH ?? "").split(":").filter(Boolean).map((directory) => join(directory, "rg"));
@@ -209,12 +210,13 @@ test("compatibility probe verifies clean tool-only and final-message-only turns"
     ["final_message_turn", "passed"],
   ]);
   assert.deepEqual(result.checks.map(({ reasoningChannel }) => reasoningChannel), ["dedicated", "dedicated"]);
+  assert.deepEqual(LOCAL_TOOL_SAMPLING, expectedLocalToolSampling);
   assert.equal(requests[1].url, "http://127.0.0.1:1234/v1/chat/completions");
   assert.equal(JSON.parse(requests[1].options.body).tool_choice, "required");
   assert.equal(JSON.parse(requests[2].options.body).tool_choice, "none");
   for (const request of requests.slice(1)) {
     const body = JSON.parse(request.options.body);
-    assert.deepEqual(Object.fromEntries(Object.keys(LOCAL_TOOL_SAMPLING).map((key) => [key, body[key]])), LOCAL_TOOL_SAMPLING);
+    assert.deepEqual(Object.fromEntries(Object.keys(expectedLocalToolSampling).map((key) => [key, body[key]])), expectedLocalToolSampling);
   }
 });
 
@@ -322,8 +324,8 @@ test("tool session consumes one fresh permission and releases raw output only af
   assert.equal(requests[1].url, "http://127.0.0.1:1234/v1/chat/completions");
   assert.equal(requests[1].options.redirect, "error");
   assert.deepEqual(
-    Object.fromEntries(Object.keys(LOCAL_TOOL_SAMPLING).map((key) => [key, JSON.parse(requests[1].options.body)[key]])),
-    LOCAL_TOOL_SAMPLING,
+    Object.fromEntries(Object.keys(expectedLocalToolSampling).map((key) => [key, JSON.parse(requests[1].options.body)[key]])),
+    expectedLocalToolSampling,
   );
   const followup = JSON.parse(requests[2].options.body);
   assert.match(followup.messages.at(-1).content, /bounded evidence/u);

@@ -438,7 +438,11 @@ test("May control loop performs one bounded repair cycle and final report", asyn
     toolCall("call:validate:ok", "runValidation", { commandId: "focused" }),
     finalMayResponse(),
   ];
-  const fetchImpl = async () => jsonResponse(responses.shift());
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    return jsonResponse(responses.shift());
+  };
   const deps = controlDependencies(root, fetchImpl);
   const result = await runMayControlLoop(controlRequest(root), deps);
   assert.equal(await readFile(join(root, "src/approved.txt"), "utf8"), "fixed\n");
@@ -447,6 +451,14 @@ test("May control loop performs one bounded repair cycle and final report", asyn
   assert.equal(result.writeCalls, 2);
   assert.equal(result.validationCalls, 2);
   assert.match(result.message, /fixture repaired/u);
+  const governedRequests = requests.filter(({ url }) => url.endsWith("/v1/chat/completions"));
+  assert.equal(governedRequests.length, 5);
+  for (const { options } of governedRequests) {
+    const body = JSON.parse(options.body);
+    assert.deepEqual({ temperature: body.temperature, top_p: body.top_p, top_k: body.top_k }, {
+      temperature: 0.6, top_p: 0.95, top_k: 20,
+    });
+  }
   assert.equal(deps.ledger.filter((item) => item.recordType === "permission.decision").length, 4);
   assert.equal(deps.events.at(0).code, "may_control_started");
   assert.equal(deps.events.at(-1).code, "may_control_completed");
