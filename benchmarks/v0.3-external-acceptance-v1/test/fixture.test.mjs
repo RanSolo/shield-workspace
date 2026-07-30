@@ -21,18 +21,17 @@ const template = join(root, "template");
 const OID40 = "1".repeat(40);
 const OID64 = "0".repeat(64);
 const FIXTURE_IDENTITY_BYTES = await readFile(join(root, "fixture-identity-v1.json"));
-const FIXTURE_IDENTITY_RECORD = JSON.parse(FIXTURE_IDENTITY_BYTES.toString("utf8"));
 const FIXTURE_RELEASE_BASELINE = Object.freeze({
   kind: "fixture-release-baseline",
   schemaVersion: "shield.fixture.release-baseline.v1",
-  identityRecordDigest: createHash("sha256").update(FIXTURE_IDENTITY_BYTES).digest("hex"),
+  identityRecordDigest: "f66abfdda721838676a3d86064f09e43bb521b9fd7ca7b526bfc06fc0d60ab33",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
-    name: FIXTURE_IDENTITY_RECORD.package.name,
-    version: FIXTURE_IDENTITY_RECORD.package.version,
+    name: "@shield/team-system",
+    version: "0.1.0",
     digestAlgorithm: "sha256",
-    digest: FIXTURE_IDENTITY_RECORD.package.digest
+    digest: "05a8ee7222471925e49e794c7fb58fd1151dcfe2a8e2c8d20435118c340ec02e"
   })
 });
 const REPLAY_ANCHOR_FIXTURE = Object.freeze({

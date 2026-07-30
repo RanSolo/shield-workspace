@@ -24,7 +24,7 @@
     },
     "evidence-inventory": {
       "path": "evidence-inventory.mjs",
-      "digest": "5825ae5bc9018ecc5a09b812417c76ce0294f41496486ae9f87ec44f559b0c5c"
+      "digest": "b66382037957b0866a8f57b951b044fe166ef1dcbfcc1de0969754f11399d3c5"
     }
   },
   "package": {
