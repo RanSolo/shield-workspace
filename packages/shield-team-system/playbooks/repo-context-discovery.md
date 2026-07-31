@@ -107,14 +107,15 @@ Keep work within one seat when:
 - the owning seat remains the same
 - the required output still fits one primary artifact plus the control envelope
 - the next step does not require a different work category or authority surface
+- packet breadth can be narrowed or split into sequential packets without
+  changing seat ownership
 
 Split or reroute to another seat when:
 
 - the work category changes between reconnaissance, architecture,
   implementation, validation, or human decision
-- the next output contract is materially different from the current owner's
-  artifact
-- the packet would otherwise require more than one unstated primary artifact
+- the next output contract is materially different because the accountable
+  owner, work category, authority surface, or human gate changed
 - a new authority surface or human gate is required
 
 Use artifact-first handoffs. Every packet should name the Mission Brief, current
@@ -245,6 +246,25 @@ retry or reroute according to seat ownership. If the objective remains
 unchanged, return the narrowed packet to the same owner. Hill reroutes only
 when the work category changes.
 
+## Specialist Packet Stop-and-Narrow
+
+Stop and narrow the packet when:
+
+- the packet expands beyond one primary artifact without a stated reason
+- the allowed files exceed the smallest objective-bound slice
+- the packet duplicates Mission Brief, prior artifact, or evidence bodies where
+  references or deltas would suffice
+- the carry-forward base is absent, stale, or mismatched
+- the response leaks scratchpad or chain-of-thought instead of the requested
+  artifact shape
+- the response invents capabilities or authority not present in the packet
+- the response shape does not match the requested output contract
+
+On any stop-and-narrow trigger, discard the malformed delta, retain the last
+accepted artifact, narrow the packet, and retry or reroute according to seat
+ownership. Escalate only when the packet exposes material ambiguity, risk,
+authority changes, or a required human gate.
+
 ## Stop Conditions
 
 Stop the discovery pass and escalate when:
@@ -254,12 +274,6 @@ Stop the discovery pass and escalate when:
 - multiple packages/apps exist and the mission target is still ambiguous
 - the local model begins inventing tools, frameworks, or commands not supported
   by the context
-- the packet expands beyond one primary artifact without a stated reason
-- the carry-forward base is absent, stale, or mismatched
-- the response leaks scratchpad or chain-of-thought instead of the requested
-  artifact shape
-- the response invents capabilities or authority not present in the packet
-- the response shape does not match the requested output contract
 - the team has enough context to proceed and further scanning would be wasteful
 
 For this rubric, "reasoning leakage" means scratchpad, chain-of-thought, or

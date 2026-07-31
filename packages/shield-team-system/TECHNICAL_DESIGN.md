@@ -168,9 +168,9 @@ effects; those responsibilities remain with later runner work.
 
 1. Keep the functional seat identifiers as the stable API while allowing
    project-local model selection and themed presentation to vary by repo.
-2. Add a bounded mission runner that records specialist-packet state, enforces
-   packet lineage and stop triggers, and preserves evidence-bound, non-numeric
-   specialist iteration before human escalation.
+2. Extend the existing runner with a versioned specialist-packet contract,
+   packet lineage, and deterministic stop-trigger handling while preserving
+   evidence-bound, non-numeric specialist iteration before human escalation.
 3. Connect model-tier selection to the runner: use the local model for routing,
    investigation, drafting, and routine review; escalate high-risk or repeatedly
    failing work to the configured stronger model.
