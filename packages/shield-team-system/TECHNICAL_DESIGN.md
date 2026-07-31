@@ -157,7 +157,8 @@ effects; those responsibilities remain with later runner work.
 
 - The local model can advise but cannot independently inspect or modify the
   repository through this adapter.
-- There is no bounded manager/worker/reviewer loop or persisted mission state.
+- Packet sizing, packet lineage, and stop-trigger detection are not yet
+  machine-enforced or persisted as a specialist-packet contract.
 - Model escalation selection is not yet wired automatically into the adapter.
 - Automated coverage does not yet validate prompt links, mode integrity,
   shell-script behavior, or external integrations.
@@ -167,8 +168,9 @@ effects; those responsibilities remain with later runner work.
 
 1. Keep the functional seat identifiers as the stable API while allowing
    project-local model selection and themed presentation to vary by repo.
-2. Add a bounded mission runner that records mission state and permits at most
-   three repair cycles before human escalation.
+2. Extend the existing runner with a versioned specialist-packet contract,
+   packet lineage, and deterministic stop-trigger handling while preserving
+   evidence-bound, non-numeric specialist iteration before human escalation.
 3. Connect model-tier selection to the runner: use the local model for routing,
    investigation, drafting, and routine review; escalate high-risk or repeatedly
    failing work to the configured stronger model.
