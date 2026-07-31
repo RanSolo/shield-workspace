@@ -44,9 +44,43 @@ export async function loadTrustedReplayAnchor({ anchorPath, fixtureRoot }) {
   return Object.freeze(envelope.projection);
 }
 
-export async function launchExternalFixture({ fixtureRoot, baselinePath, input, replayAnchorPath }) {
+function plain(value) {
+  return value !== null && typeof value === "object" &&
+    !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function exact(value, fields) {
+  return plain(value) &&
+    Object.keys(value).length === fields.length &&
+    fields.every((field) => Object.hasOwn(value, field));
+}
+
+const HOST_CONTEXT_FIELDS = Object.freeze([
+  "baselinePath",
+  "authoritativeReceiptJournalPath",
+  "attributionContext",
+  "toolingContext"
+]);
+
+export async function launchExternalFixture({ fixtureRoot, operatorInput, hostContext }) {
   const root = resolve(fixtureRoot);
-  const baseline = await readExternalJson(resolve(baselinePath), root);
+  if (!exact(hostContext, HOST_CONTEXT_FIELDS) ||
+      typeof hostContext.baselinePath !== "string" ||
+      hostContext.baselinePath.length === 0 ||
+      hostContext.authoritativeReceiptJournalPath !== null ||
+      hostContext.attributionContext !== null ||
+      hostContext.toolingContext !== null) {
+    throw new Error("host_context_not_closed");
+  }
+  let baseline;
+  try {
+    baseline = await readExternalJson(resolve(hostContext.baselinePath), root);
+  } catch (error) {
+    if (error instanceof Error && error.message === "external_trust_input_not_regular") {
+      throw new Error("baseline_path_not_regular");
+    }
+    throw error;
+  }
   const launcherBytes = await readFile(fileURLToPath(import.meta.url));
   if (baseline.launcherDigest !== digest(launcherBytes)) throw new Error("launcher_digest_mismatch");
 
@@ -57,12 +91,11 @@ export async function launchExternalFixture({ fixtureRoot, baselinePath, input, 
   const verifier = await import(pathToFileURL(verifierPath).href);
   const identity = await verifier.verifyFixtureIdentity(root, baseline);
   if (identity.state !== "valid") return identity;
-
-  const anchor = replayAnchorPath === undefined
-    ? null
-    : await loadTrustedReplayAnchor({ anchorPath: replayAnchorPath, fixtureRoot: root });
   const driver = await import(pathToFileURL(resolve(root, "src/driver.mjs")).href);
-  const result = await driver.composeMinimumFixture({ ...input, releaseBaseline: baseline });
-  return Object.freeze({ ...result, trustedReplayAnchor: anchor });
+  return driver.composeMinimumFixture(operatorInput, Object.freeze({
+    releaseBaseline: baseline,
+    validatedToolingContext: null,
+    authoritativeReceiptEntries: null,
+    attributionContext: null
+  }));
 }
-

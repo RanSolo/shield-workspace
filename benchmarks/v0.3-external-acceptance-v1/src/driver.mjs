@@ -35,15 +35,19 @@ const PUBLIC_SPECIFIERS = Object.freeze([
 ]);
 const INPUT_FIELDS = [
   "packageArtifactPath",
-  "packageArtifactSha256",
   "externalRepositoryRoot",
   "baseRevision",
   "headRevision",
   "hostConfiguration",
   "blindStatus",
   "priorSolutionsVisible",
-  "requireSimmons",
-  "releaseBaseline"
+  "requireSimmons"
+];
+const TRUSTED_HOST_CONTEXT_FIELDS = [
+  "releaseBaseline",
+  "validatedToolingContext",
+  "authoritativeReceiptEntries",
+  "attributionContext"
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -434,20 +438,25 @@ function syntacticallyValidRevisions(baseRevision, headRevision) {
   return baseRevision.length === headRevision.length;
 }
 
-export async function composeMinimumFixture(input) {
+export async function composeMinimumFixture(input, trustedHostContext) {
   const manifest = validateFixtureManifest(FIXTURE_MANIFEST);
   if (manifest.state !== "valid") return manifest;
   if (!exact(input, INPUT_FIELDS)) {
     return Object.freeze({ state: "invalid", reason: "fixture_input_not_closed" });
   }
+  if (!exact(trustedHostContext, TRUSTED_HOST_CONTEXT_FIELDS)) {
+    return Object.freeze({ state: "invalid", reason: "trusted_host_context_not_closed" });
+  }
   if (typeof input.packageArtifactPath !== "string" ||
-      !SHA256.test(input.packageArtifactSha256) ||
       typeof input.externalRepositoryRoot !== "string" ||
       input.externalRepositoryRoot.length === 0 ||
       typeof input.baseRevision !== "string" ||
       typeof input.headRevision !== "string" ||
       typeof input.priorSolutionsVisible !== "boolean" ||
       typeof input.requireSimmons !== "boolean" ||
+      trustedHostContext.validatedToolingContext !== null ||
+      trustedHostContext.authoritativeReceiptEntries !== null ||
+      trustedHostContext.attributionContext !== null ||
       !FIXTURE_MANIFEST.blindStatus.allowedValues.includes(input.blindStatus)) {
     return Object.freeze({ state: "invalid", reason: "fixture_identity_malformed" });
   }
@@ -464,7 +473,7 @@ export async function composeMinimumFixture(input) {
       input.hostConfiguration.branch.length === 0) {
     return Object.freeze({ state: "invalid", reason: "host_configuration_malformed" });
   }
-  const identity = await verifyFixtureIdentity(benchmarkRoot, input.releaseBaseline);
+  const identity = await verifyFixtureIdentity(benchmarkRoot, trustedHostContext.releaseBaseline);
   if (identity.state !== "valid") return identity;
   return Object.freeze({
     state: "blocked",

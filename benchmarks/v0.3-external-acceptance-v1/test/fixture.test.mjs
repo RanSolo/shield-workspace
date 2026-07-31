@@ -25,9 +25,9 @@ const FIXTURE_IDENTITY_BYTES = await readFile(join(root, "fixture-identity-v1.js
 const FIXTURE_RELEASE_BASELINE = Object.freeze({
   kind: "fixture-release-baseline",
   schemaVersion: "shield.fixture.release-baseline.v1",
-  identityRecordDigest: "c84967c719b5a051ab34468632588985ba15b89612f2283a5469b015648d60cc",
+  identityRecordDigest: "b41666c354d48e40816154828985e0b350e641d2773a2506c68742d736fd7cb0",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
-  launcherDigest: "4ad8b4c850575360323127be1a6b544e6d1601019a3ba6f93338f6d20c5bfdab",
+  launcherDigest: "960756a8da899f7cedf92312202e65d8820bff3a70af0e37499389a2c934034f",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
@@ -405,10 +405,9 @@ async function createExternalRepository(directory, {
   });
 }
 
-function fixtureInput(artifact, artifactDigest, directory, revisions, overrides = {}) {
+function fixtureInput(artifact, directory, revisions, overrides = {}) {
   return {
     packageArtifactPath: artifact,
-    packageArtifactSha256: artifactDigest,
     externalRepositoryRoot: directory,
     baseRevision: revisions.baseRevision,
     headRevision: revisions.headRevision,
@@ -420,7 +419,16 @@ function fixtureInput(artifact, artifactDigest, directory, revisions, overrides 
     blindStatus: "partially-informed",
     priorSolutionsVisible: false,
     requireSimmons: true,
+    ...overrides
+  };
+}
+
+function fixtureTrustedHostContext(overrides = {}) {
+  return {
     releaseBaseline: FIXTURE_RELEASE_BASELINE,
+    validatedToolingContext: null,
+    authoritativeReceiptEntries: null,
+    attributionContext: null,
     ...overrides
   };
 }
@@ -557,8 +565,32 @@ test("host launcher rejects a candidate-modified verifier before import", async 
   const baselinePath = join(outside, "release-baseline.json");
   await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
   await assert.rejects(
-    launchExternalFixture({ fixtureRoot: copied, baselinePath, input: {} }),
+    launchExternalFixture({
+      fixtureRoot: copied,
+      operatorInput: {},
+      hostContext: {
+        baselinePath,
+        authoritativeReceiptJournalPath: null,
+        attributionContext: null,
+        toolingContext: null
+      }
+    }),
     /verifier_digest_mismatch/
+  );
+});
+
+test("host launcher requires a closed host context", async () => {
+  await assert.rejects(
+    launchExternalFixture({
+      fixtureRoot: root,
+      operatorInput: {},
+      hostContext: {
+        baselinePath: "outside.json",
+        authoritativeReceiptJournalPath: null,
+        attributionContext: null
+      }
+    }),
+    /host_context_not_closed/
   );
 });
 
@@ -592,7 +624,8 @@ test("fake text artifacts cannot claim public-surface composition", async (conte
   const external = join(directory, "external");
   const revisions = await createExternalRepository(external);
   const result = await composeMinimumFixture(
-    fixtureInput(artifact, await digest(artifact), external, revisions)
+    fixtureInput(artifact, external, revisions),
+    fixtureTrustedHostContext()
   );
   assert.equal(result.state, "blocked");
   assert.equal(result.reason, "dependency_contract_unavailable");
@@ -606,7 +639,8 @@ test("exact packed artifact preflights fixture identity and then blocks on depen
   const external = join(directory, "external");
   const revisions = await createExternalRepository(external);
   const result = await composeMinimumFixture(
-    fixtureInput(artifact, await digest(artifact), external, revisions)
+    fixtureInput(artifact, external, revisions),
+    fixtureTrustedHostContext()
   );
   assert.equal(result.state, "blocked");
   assert.equal(result.reason, "dependency_contract_unavailable");
@@ -635,11 +669,11 @@ test("dependency blockers preflight before package substitution and changed-path
   await writeFile(artifact, "artifact\n");
   const external = join(directory, "external");
   const revisions = await createExternalRepository(external);
-  const base = fixtureInput(artifact, "0".repeat(64), external, revisions, {
+  const base = fixtureInput(artifact, external, revisions, {
     blindStatus: "blind",
     requireSimmons: false
   });
-  const baseResult = await composeMinimumFixture(base);
+  const baseResult = await composeMinimumFixture(base, fixtureTrustedHostContext());
   assert.equal(baseResult.reason, "dependency_contract_unavailable");
   assert.deepEqual(baseResult.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
   await writeFile(join(external, "README.md"), "scope drift\n");
@@ -647,9 +681,8 @@ test("dependency blockers preflight before package substitution and changed-path
   git(external, ["commit", "--quiet", "-m", "scope drift"]);
   const driftResult = await composeMinimumFixture({
     ...base,
-    packageArtifactSha256: await digest(artifact),
     headRevision: git(external, ["rev-parse", "HEAD"])
-  });
+  }, fixtureTrustedHostContext());
   assert.equal(driftResult.reason, "dependency_contract_unavailable");
   assert.deepEqual(driftResult.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
 });
@@ -661,22 +694,22 @@ test("composition rejects malformed revisions and unsupported object formats", a
   await writeFile(artifact, "artifact\n");
   const external = join(directory, "external");
   const revisions = await createExternalRepository(external);
-  const input = fixtureInput(artifact, await digest(artifact), external, revisions);
+  const input = fixtureInput(artifact, external, revisions);
 
   assert.equal((await composeMinimumFixture({
     ...input,
     baseRevision: revisions.baseRevision.slice(0, 4)
-  })).reason, "external_revision_identity_malformed");
+  }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 
   assert.equal((await composeMinimumFixture({
     ...input,
     baseRevision: `ZZ${revisions.baseRevision.slice(2)}`
-  })).reason, "external_revision_identity_malformed");
+  }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 
   assert.equal((await composeMinimumFixture({
     ...input,
     baseRevision: `${revisions.baseRevision}dead`
-  })).reason, "external_revision_identity_malformed");
+  }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 
   const unsupportedObjectFormatRepository = join(directory, "unsupported-format");
   const unsupportedRevisions = await createExternalRepository(unsupportedObjectFormatRepository);
@@ -701,10 +734,10 @@ test("composition rejects malformed revisions and unsupported object formats", a
     const badFormat = await composeMinimumFixture(
       fixtureInput(
         badFormatArtifact,
-        await digest(badFormatArtifact),
         unsupportedObjectFormatRepository,
         unsupportedRevisions
-      )
+      ),
+      fixtureTrustedHostContext()
     );
     assert.equal(badFormat.reason, "dependency_contract_unavailable");
   } finally {
@@ -716,21 +749,19 @@ test("composition rejects malformed revisions and unsupported object formats", a
   const sha256Artifact = packTeamSystem(directory);
   const sha256Result = await composeMinimumFixture(fixtureInput(
     sha256Artifact,
-    await digest(sha256Artifact),
     sha256External,
     sha256Revisions
-  ));
+  ), fixtureTrustedHostContext());
   assert.equal(sha256Result.reason, "dependency_contract_unavailable");
 
   assert.equal((await composeMinimumFixture({
     ...fixtureInput(
       sha256Artifact,
-      await digest(sha256Artifact),
       sha256External,
       sha256Revisions
     ),
     headRevision: `${sha256Revisions.headRevision.slice(0, 40)}`
-  })).reason, "external_revision_identity_malformed");
+  }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 });
 
 test("dependency blocker preflight wins even when external repository and package paths are unavailable", async () => {
@@ -740,11 +771,10 @@ test("dependency blocker preflight wins even when external repository and packag
   const result = await composeMinimumFixture({
     ...fixtureInput(
       missingArtifact,
-      "0".repeat(64),
       missingExternal,
       { baseRevision: OID40, headRevision: OID40 }
     )
-  });
+  }, fixtureTrustedHostContext());
   assert.equal(result.state, "blocked");
   assert.equal(result.reason, "dependency_contract_unavailable");
   assert.deepEqual(result.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
@@ -757,12 +787,11 @@ test("composition rejects malformed external repository identity before blocker 
   const result = await composeMinimumFixture({
     ...fixtureInput(
       artifact,
-      await digest(artifact),
       directory,
       { baseRevision: OID40, headRevision: OID40 }
     ),
     externalRepositoryRoot: null
-  });
+  }, fixtureTrustedHostContext());
   assert.equal(result.state, "invalid");
   assert.equal(result.reason, "fixture_identity_malformed");
 });
@@ -808,19 +837,18 @@ test("composition rejects wrong package version and exact-package hash mismatche
   const revisions = await createExternalRepository(external);
   const wrongVersionInput = fixtureInput(
     wrongArtifact,
-    await digest(wrongArtifact),
     external,
     revisions
   );
-  assert.equal((await composeMinimumFixture(wrongVersionInput)).reason, "dependency_contract_unavailable");
+  assert.equal((await composeMinimumFixture(wrongVersionInput, fixtureTrustedHostContext())).reason, "dependency_contract_unavailable");
 
   const hashMismatchArtifact = packTeamSystem(directory);
   assert.equal((
     await composeMinimumFixture({
-    ...fixtureInput(hashMismatchArtifact, await digest(hashMismatchArtifact), external, revisions),
-    packageArtifactSha256: "0".repeat(64)
-  })
-  ).reason, "dependency_contract_unavailable");
+      ...fixtureInput(hashMismatchArtifact, external, revisions),
+      packageArtifactSha256: "0".repeat(64)
+    }, fixtureTrustedHostContext())
+  ).reason, "fixture_input_not_closed");
 });
 test("baseline defect fails and fixture-only injection restores the exact passing candidate", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-defect-"));
@@ -906,11 +934,10 @@ test("blind classification rejects visible prior solutions", async (context) => 
   const revisions = await createExternalRepository(external);
   const result = await composeMinimumFixture(fixtureInput(
     artifact,
-    await digest(artifact),
     external,
     revisions,
     { blindStatus: "blind", priorSolutionsVisible: true }
-  ));
+  ), fixtureTrustedHostContext());
   assert.equal(result.state, "invalid");
   assert.equal(result.reason, "blind_status_contradiction");
 });
