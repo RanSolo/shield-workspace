@@ -18,6 +18,8 @@ adopting SHIELD into an existing repository.
 - Reconcile Daisy's observed facts and explicit assumptions.
 - Define audience, product principles, supported surface, supported workflow,
   observable guarantees, non-goals, and adoption acceptance.
+- Keep the contract's supported command surface aligned with the current
+  documented local signed-authorization workflow.
 - Define `review.publish` as bounded publication distinct from Wheels Up.
 - Keep Fitz and Simmons transport-independent while Hill selects the configured
   review surface.
@@ -143,6 +145,8 @@ does not transfer to the Git commit or future PR head.
 - Fury reviews the exact artifact revision.
 - Contract statements remain adopter-visible promises rather than implementation
   prescriptions.
+- The supported command surface matches the documented supervised operator path,
+  including the local passcode signer setup and authorization commands.
 - Review publication and implementation authority remain distinct.
 - No repository or GitHub mutation occurs without a separate Coulson decision.
 
