@@ -25,7 +25,7 @@ const FIXTURE_IDENTITY_BYTES = await readFile(join(root, "fixture-identity-v1.js
 const FIXTURE_RELEASE_BASELINE = Object.freeze({
   kind: "fixture-release-baseline",
   schemaVersion: "shield.fixture.release-baseline.v1",
-  identityRecordDigest: "f66abfdda721838676a3d86064f09e43bb521b9fd7ca7b526bfc06fc0d60ab33",
+  identityRecordDigest: "c84967c719b5a051ab34468632588985ba15b89612f2283a5469b015648d60cc",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
   launcherDigest: "4ad8b4c850575360323127be1a6b544e6d1601019a3ba6f93338f6d20c5bfdab",
   verifierIdentity: `node:${process.version}`,
@@ -37,6 +37,26 @@ const FIXTURE_RELEASE_BASELINE = Object.freeze({
     digest: "05a8ee7222471925e49e794c7fb58fd1151dcfe2a8e2c8d20435118c340ec02e"
   })
 });
+const EXPECTED_DEPENDENCY_BLOCKERS = Object.freeze([
+  Object.freeze({
+    issue: "#24",
+    code: "accepted_product_contract_required",
+    requiredState: "coulson-accepted",
+    currentFixtureState: "reviewed-and-merged-awaiting-coulson-acceptance"
+  }),
+  Object.freeze({
+    issue: "#138",
+    code: "content_address_fixture_identity_required",
+    requiredState: "implemented-and-validated",
+    currentFixtureState: "open"
+  }),
+  Object.freeze({
+    issue: "#140",
+    code: "fixture_isolation_and_rollback_safety_required",
+    requiredState: "implemented-and-validated",
+    currentFixtureState: "open"
+  })
+]);
 const REPLAY_ANCHOR_FIXTURE = Object.freeze({
   kind: "trusted-journal-replay-anchor",
   producerContractVersion: "shield.v0.3.fixture",
@@ -575,10 +595,11 @@ test("fake text artifacts cannot claim public-surface composition", async (conte
     fixtureInput(artifact, await digest(artifact), external, revisions)
   );
   assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "package_artifact_digest_mismatch");
+  assert.equal(result.reason, "dependency_contract_unavailable");
+  assert.deepEqual(result.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
 });
 
-test("exact packed artifact preflights package identity and then blocks on dependency contract", async (context) => {
+test("exact packed artifact preflights fixture identity and then blocks on dependency contract", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-packed-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const artifact = packTeamSystem(directory);
@@ -589,22 +610,25 @@ test("exact packed artifact preflights package identity and then blocks on depen
   );
   assert.equal(result.state, "blocked");
   assert.equal(result.reason, "dependency_contract_unavailable");
-  assert.deepEqual(result.blockers.map(({ issue }) => issue), ["#24", "#112", "#113"]);
-  assert.equal(result.identity.installedPackage.name, "@shield/team-system");
-  assert.equal(result.identity.externalRevision.baseRevision, revisions.baseRevision);
-  assert.equal(result.identity.externalRevision.headRevision, revisions.headRevision);
-  assert.deepEqual(result.identity.externalRevision.changedPaths, ["src/greeting.mjs"]);
-  assert.equal(result.foundation.hostFailureCandidateState, "valid");
-  assert.equal(result.foundation.hostEffectsPerformed, false);
-  assert.equal(result.foundation.expectedFitzState, "waiting");
-  assert.equal(result.foundation.expectedSimmonsState, "waiting");
+  assert.deepEqual(result.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
+  assert.deepEqual(result.preflight, {
+    fixtureId: "fixture:v0.3:external-acceptance:1",
+    fixtureIdentityState: "valid",
+    hostConfiguration: {
+      adapterId: "github",
+      repository: "fixture/external-v03",
+      branch: "fixture/mission-1"
+    },
+    blindStatus: "partially-informed",
+    priorSolutionsVisible: false
+  });
   assert.equal(result.evidenceInventory.find(({ evidenceId }) => evidenceId === "fitz.technical-review").state, "waiting");
 
   const source = await readFile(join(root, "src/driver.mjs"), "utf8");
   assert.doesNotMatch(source, /packages\/shield-team-system\/dist/u);
 });
 
-test("composition rejects package substitution and changed-path scope drift", async (context) => {
+test("dependency blockers preflight before package substitution and changed-path scope drift inspection", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-identity-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const artifact = join(directory, "artifact.tgz");
@@ -615,15 +639,19 @@ test("composition rejects package substitution and changed-path scope drift", as
     blindStatus: "blind",
     requireSimmons: false
   });
-  assert.equal((await composeMinimumFixture(base)).reason, "package_artifact_digest_mismatch");
+  const baseResult = await composeMinimumFixture(base);
+  assert.equal(baseResult.reason, "dependency_contract_unavailable");
+  assert.deepEqual(baseResult.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
   await writeFile(join(external, "README.md"), "scope drift\n");
   git(external, ["add", "README.md"]);
   git(external, ["commit", "--quiet", "-m", "scope drift"]);
-  assert.equal((await composeMinimumFixture({
+  const driftResult = await composeMinimumFixture({
     ...base,
     packageArtifactSha256: await digest(artifact),
     headRevision: git(external, ["rev-parse", "HEAD"])
-  })).reason, "scope_drift");
+  });
+  assert.equal(driftResult.reason, "dependency_contract_unavailable");
+  assert.deepEqual(driftResult.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
 });
 
 test("composition rejects malformed revisions and unsupported object formats", async (context) => {
@@ -670,7 +698,7 @@ test("composition rejects malformed revisions and unsupported object formats", a
   const previousPath = process.env.PATH;
   try {
     process.env.PATH = `${fakeGitDirectory}:${previousPath}`;
-  const badFormat = await composeMinimumFixture(
+    const badFormat = await composeMinimumFixture(
       fixtureInput(
         badFormatArtifact,
         await digest(badFormatArtifact),
@@ -678,7 +706,7 @@ test("composition rejects malformed revisions and unsupported object formats", a
         unsupportedRevisions
       )
     );
-    assert.equal(badFormat.reason, "external_repository_object_format_unsupported");
+    assert.equal(badFormat.reason, "dependency_contract_unavailable");
   } finally {
     process.env.PATH = previousPath;
   }
@@ -703,6 +731,40 @@ test("composition rejects malformed revisions and unsupported object formats", a
     ),
     headRevision: `${sha256Revisions.headRevision.slice(0, 40)}`
   })).reason, "external_revision_identity_malformed");
+});
+
+test("dependency blocker preflight wins even when external repository and package paths are unavailable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-preflight-first-"));
+  const missingArtifact = join(directory, "missing-package.tgz");
+  const missingExternal = join(directory, "missing-external");
+  const result = await composeMinimumFixture({
+    ...fixtureInput(
+      missingArtifact,
+      "0".repeat(64),
+      missingExternal,
+      { baseRevision: OID40, headRevision: OID40 }
+    )
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "dependency_contract_unavailable");
+  assert.deepEqual(result.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
+});
+
+test("composition rejects malformed external repository identity before blocker projection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-malformed-root-"));
+  const artifact = join(directory, "artifact.tgz");
+  await writeFile(artifact, "artifact\n");
+  const result = await composeMinimumFixture({
+    ...fixtureInput(
+      artifact,
+      await digest(artifact),
+      directory,
+      { baseRevision: OID40, headRevision: OID40 }
+    ),
+    externalRepositoryRoot: null
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.reason, "fixture_identity_malformed");
 });
 
 test("composition rejects wrong package version and exact-package hash mismatches", async (context) => {
@@ -750,7 +812,7 @@ test("composition rejects wrong package version and exact-package hash mismatche
     external,
     revisions
   );
-  assert.equal((await composeMinimumFixture(wrongVersionInput)).reason, "package_artifact_digest_mismatch");
+  assert.equal((await composeMinimumFixture(wrongVersionInput)).reason, "dependency_contract_unavailable");
 
   const hashMismatchArtifact = packTeamSystem(directory);
   assert.equal((
@@ -758,7 +820,7 @@ test("composition rejects wrong package version and exact-package hash mismatche
     ...fixtureInput(hashMismatchArtifact, await digest(hashMismatchArtifact), external, revisions),
     packageArtifactSha256: "0".repeat(64)
   })
-  ).reason, "package_artifact_digest_mismatch");
+  ).reason, "dependency_contract_unavailable");
 });
 test("baseline defect fails and fixture-only injection restores the exact passing candidate", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-defect-"));

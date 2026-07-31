@@ -25,6 +25,7 @@ const REVISION_FORMAT = Object.freeze({
   [OBJECT_FORMAT_SHA1]: /^[0-9a-f]{40}$/u,
   [OBJECT_FORMAT_SHA256]: /^[0-9a-f]{64}$/u
 });
+const REVISION_SHAPE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 const PUBLIC_SPECIFIERS = Object.freeze([
@@ -421,8 +422,16 @@ function blockers() {
   return Object.freeze(FIXTURE_MANIFEST.dependencyBlockers.map((entry) => Object.freeze({
     issue: entry.issue,
     code: entry.code,
-    requiredState: entry.requiredState
+    requiredState: entry.requiredState,
+    currentFixtureState: entry.currentFixtureState
   })));
+}
+
+function syntacticallyValidRevisions(baseRevision, headRevision) {
+  if (!REVISION_SHAPE.test(baseRevision) || !REVISION_SHAPE.test(headRevision)) {
+    return false;
+  }
+  return baseRevision.length === headRevision.length;
 }
 
 export async function composeMinimumFixture(input) {
@@ -433,12 +442,17 @@ export async function composeMinimumFixture(input) {
   }
   if (typeof input.packageArtifactPath !== "string" ||
       !SHA256.test(input.packageArtifactSha256) ||
+      typeof input.externalRepositoryRoot !== "string" ||
+      input.externalRepositoryRoot.length === 0 ||
       typeof input.baseRevision !== "string" ||
       typeof input.headRevision !== "string" ||
       typeof input.priorSolutionsVisible !== "boolean" ||
       typeof input.requireSimmons !== "boolean" ||
       !FIXTURE_MANIFEST.blindStatus.allowedValues.includes(input.blindStatus)) {
     return Object.freeze({ state: "invalid", reason: "fixture_identity_malformed" });
+  }
+  if (!syntacticallyValidRevisions(input.baseRevision, input.headRevision)) {
+    return Object.freeze({ state: "invalid", reason: "external_revision_identity_malformed" });
   }
   if (input.blindStatus === "blind" && input.priorSolutionsVisible) {
     return Object.freeze({ state: "invalid", reason: "blind_status_contradiction" });
@@ -450,46 +464,19 @@ export async function composeMinimumFixture(input) {
       input.hostConfiguration.branch.length === 0) {
     return Object.freeze({ state: "invalid", reason: "host_configuration_malformed" });
   }
-  const externalRevision = await inspectExternalRevision(input);
-  if (externalRevision.state !== "measured") return externalRevision;
-  if (!await regularFile(input.packageArtifactPath)) {
-    return Object.freeze({ state: "blocked", reason: "package_artifact_unavailable" });
-  }
-  const artifactInfo = await lstat(input.packageArtifactPath);
-  if (artifactInfo.size <= 0 || artifactInfo.size > MAX_PACKAGE_BYTES) {
-    return Object.freeze({ state: "blocked", reason: "package_artifact_size_invalid" });
-  }
   const identity = await verifyFixtureIdentity(benchmarkRoot, input.releaseBaseline);
   if (identity.state !== "valid") return identity;
-  const artifactBytes = await readFile(input.packageArtifactPath);
-  const packageDigest = sha256(artifactBytes);
-  if (packageDigest !== input.packageArtifactSha256) {
-    return Object.freeze({ state: "blocked", reason: "package_artifact_digest_mismatch" });
-  }
-  if (packageDigest !== identity.package.digest) {
-    return Object.freeze({ state: "blocked", reason: "package_artifact_digest_mismatch" });
-  }
-  const composition = await composeInstalledArtifact(artifactBytes, input, identity.package);
-  if (composition.state !== "composed") return composition;
-
   return Object.freeze({
     state: "blocked",
     reason: "dependency_contract_unavailable",
     blockers: blockers(),
-    identity: Object.freeze({
+    preflight: Object.freeze({
       fixtureId: FIXTURE_MANIFEST.fixtureId,
-      packageArtifactSha256: packageDigest,
-      installedPackage: composition.installedPackage,
-      externalRevision: Object.freeze({
-        baseRevision: externalRevision.baseRevision,
-        headRevision: externalRevision.headRevision,
-        changedPaths: externalRevision.changedPaths
-      }),
+      fixtureIdentityState: identity.state,
       hostConfiguration: Object.freeze({ ...input.hostConfiguration }),
       blindStatus: input.blindStatus,
       priorSolutionsVisible: input.priorSolutionsVisible
     }),
-    foundation: composition.foundation,
     evidenceInventory: createEvidenceInventory({ requireSimmons: input.requireSimmons })
   });
 }

@@ -4,7 +4,7 @@
   "coveredArtifacts": {
     "manifest": {
       "path": "fixture-manifest.mjs",
-      "digest": "f4fe11a15e259261789e29c84e6eb218055bc140ef65592e7db56f995a8b9595"
+      "digest": "f5eaaba6ef95c6d48c6f7f35f8b66e441f9fecdbfc1b419ac9151db8a4b32455"
     },
     "template-package": {
       "path": "template/package.json",
@@ -20,11 +20,11 @@
     },
     "grading-driver": {
       "path": "src/driver.mjs",
-      "digest": "721023859405f79c4e640428f215f62621d5a8aa2b8edbbeef4689bca474cf11"
+      "digest": "da614045daa9c9b8000ec49c4c61994f6c21089bdf0caa154462c3389eb57e7b"
     },
     "evidence-inventory": {
       "path": "evidence-inventory.mjs",
-      "digest": "b66382037957b0866a8f57b951b044fe166ef1dcbfcc1de0969754f11399d3c5"
+      "digest": "3e437157cc5bdad22c9c31df39bce1a25f895cb8ad0fbf5efd1a43ccd3cb39a7"
     }
   },
   "package": {

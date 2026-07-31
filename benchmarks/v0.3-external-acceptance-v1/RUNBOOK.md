@@ -10,12 +10,13 @@ Issue #14.
 The fixture intentionally stops with explicit dependency blockers:
 
 - Issue #24 must have a Coulson-accepted V0.3 product contract.
-- Issue #112 must provide revision-bound Fury conformance and supersession.
-- Issue #113 must enforce exact-scope `review.publish`.
+- Issue #138 must provide content-addressed fixture identity, external
+  installation identity, and evidence/measurement-class hardening.
+- Issue #140 must isolate fixture execution and make rollback interruption-safe.
 
 Do not reinterpret the blocker result as a release failure or manufacture
-substitute evidence. A new fixture revision is required when those contracts
-become available.
+substitute evidence. A new fixture revision is required when the manifest-owned
+dependency states change.
 
 ## Prepare a fresh external repository
 
@@ -61,18 +62,19 @@ choice. Caller-supplied changed paths are not accepted.
 
 The current v1 driver:
 
-- copies the supplied artifact bytes into a fresh temporary Git repository,
-  installs only that exact local artifact with scripts and network access
-  disabled, and consumes the documented `@shield/team-system/config`,
-  `@shield/team-system/supervision`, and `@shield/team-system/adapter`
-  specifiers;
-- rejects a fake, substituted, un-installable, wrong-name, or un-importable
-  artifact before claiming composition;
-- creates a non-authoritative adapter-failure candidate without contacting
-  GitHub;
-- records Fitz and optional Simmons as waiting;
+- validates the closed input shape, blind-status constraints, host
+  configuration, and syntactic external revision identity;
+- verifies the trusted fixture identity and release baseline before any
+  external repository inspection, package artifact inspection, installation,
+  import, or execution;
+- records Fitz and optional Simmons as waiting through the returned evidence
+  inventory;
 - performs no branch, PR, publication, merge, deployment, or release effect;
-- returns the explicit #24, #112, and #113 blockers.
+- returns the explicit manifest-owned dependency blockers for the current
+  fixture revision.
+
+While those blockers remain, package installation, artifact composition,
+adapter-failure candidate generation, and candidate execution are deferred.
 
 ## Candidate grading, failure injection, and rollback
 

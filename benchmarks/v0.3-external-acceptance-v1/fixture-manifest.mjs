@@ -63,19 +63,19 @@ export const FIXTURE_MANIFEST = deepFreeze({
       issue: "#24",
       code: "accepted_product_contract_required",
       requiredState: "coulson-accepted",
-      currentFixtureState: "unavailable"
+      currentFixtureState: "reviewed-and-merged-awaiting-coulson-acceptance"
     },
     {
-      issue: "#112",
-      code: "revision_bound_conformance_required",
+      issue: "#138",
+      code: "content_address_fixture_identity_required",
       requiredState: "implemented-and-validated",
-      currentFixtureState: "unavailable"
+      currentFixtureState: "open"
     },
     {
-      issue: "#113",
-      code: "exact_scope_review_publication_required",
+      issue: "#140",
+      code: "fixture_isolation_and_rollback_safety_required",
       requiredState: "implemented-and-validated",
-      currentFixtureState: "unavailable"
+      currentFixtureState: "open"
     }
   ],
   excludedCampaign: {
