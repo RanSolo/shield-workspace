@@ -243,8 +243,9 @@ own.
 When a local or hosted specialist returns malformed output, discard the
 malformed delta, retain the last accepted artifact, narrow the packet, and
 retry or reroute according to seat ownership. If the objective remains
-unchanged, return the narrowed packet to the same owner. Hill reroutes only
-when the work category changes.
+unchanged, return the narrowed packet to the same owner. Hill reroutes when the
+accountable owner or work category changes. Hill escalates when an authority
+surface or human gate requires a material decision.
 
 ## Specialist Packet Stop-and-Narrow
 
@@ -262,8 +263,9 @@ Stop and narrow the packet when:
 
 On any stop-and-narrow trigger, discard the malformed delta, retain the last
 accepted artifact, narrow the packet, and retry or reroute according to seat
-ownership. Escalate only when the packet exposes material ambiguity, risk,
-authority changes, or a required human gate.
+ownership. A first unsupported capability, tool, or command claim must stop and
+narrow. Escalate only when the narrowed retry repeats the unsupported claim and
+creates material ambiguity, risk, authority changes, or a required human gate.
 
 ## Stop Conditions
 
@@ -272,8 +274,9 @@ Stop the discovery pass and escalate when:
 - build/test commands remain unclear after inspecting the obvious manifests
 - the repo depends on missing credentials or private infrastructure
 - multiple packages/apps exist and the mission target is still ambiguous
-- the local model begins inventing tools, frameworks, or commands not supported
-  by the context
+- the local model repeats an unsupported capability, tool, or command claim
+  after a narrowed retry and the result still creates material repository
+  ambiguity
 - the team has enough context to proceed and further scanning would be wasteful
 
 For this rubric, "reasoning leakage" means scratchpad, chain-of-thought, or
