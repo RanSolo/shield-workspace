@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
-import { access, lstat, readFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { stdin as input, stdout as outputStream } from "node:process";
 import { parseShieldConfig, type ShieldConfig } from "./config.mjs";
 import {
   createDelegatedAuthorizationEntry,
@@ -21,6 +22,7 @@ import {
 import { appendSupervisedMissionEntry, initializeSupervisedMissionJournal, readSupervisedMissionJournal } from "./mission-store.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
+import { createSigner, signWithSigner } from "./mission-signer.mjs";
 
 const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
@@ -220,6 +222,123 @@ async function governance(command: "approve" | "pause" | "resume" | "cancel", ar
   return 0;
 }
 
+async function passcodeFromOptions(options: ParsedOptions): Promise<string> {
+  if (options.flags.has("--passcode-stdin")) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
+    const passcode = Buffer.concat(chunks).toString("utf8").trim();
+    if (!passcode) throw new MissionCliError("Passcode input was empty.");
+    return passcode;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) throw new MissionCliError("Passcode prompt requires a TTY; use --passcode-stdin for automation.");
+  outputStream.write("Passcode: ");
+  input.setRawMode(true);
+  input.resume();
+  return await new Promise<string>((resolvePasscode, reject) => {
+    let passcode = "";
+    const onData = (chunk: Buffer): void => {
+      for (const byte of chunk) {
+        if (byte === 3) {
+          input.setRawMode(false);
+          input.off("data", onData);
+          outputStream.write("\n");
+          reject(new MissionCliError("Passcode prompt cancelled."));
+          return;
+        }
+        if (byte === 10 || byte === 13) {
+          input.setRawMode(false);
+          input.off("data", onData);
+          outputStream.write("\n");
+          if (!passcode) reject(new MissionCliError("Passcode input was empty."));
+          else resolvePasscode(passcode);
+          return;
+        }
+        if (byte === 127 || byte === 8) passcode = passcode.slice(0, -1);
+        else if (byte >= 32) passcode += String.fromCharCode(byte);
+      }
+    };
+    input.on("data", onData);
+  });
+}
+
+async function signerSetup(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--seat"], ["--json", "--passcode-stdin"]);
+  const root = await exactRoot(options.values.get("--root"), true);
+  const config = await repositoryConfig(root);
+  const seat = options.values.get("--seat") ?? "coulson";
+  if (seat !== "coulson") throw new MissionCliError("Only the Coulson signer can be provisioned by this command.");
+  const registryPath = join(root, BINDINGS_PATH);
+  const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(registryPath, "Trusted binding registry"))) as TrustedBindingRegistry;
+  const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, "*", false));
+  const current = bindings.find(({ seatId }) => seatId === seat);
+  if (!current) throw new MissionCliError("Configured Coulson binding is missing.", 1);
+  const passcode = await passcodeFromOptions(options);
+  const signerBinding = {
+    bindingId: current.bindingId,
+    humanPrincipalId: current.humanPrincipalId,
+    signingKeyRef: current.signingKeyRef,
+    publicKeySpkiBase64: current.publicKeySpkiBase64,
+  };
+  const signerPath = await createSigner(signerBinding, passcode);
+  const nextRegistry = { ...registry, bindings: registry.bindings.map((binding) => binding.seatId === seat ? { ...binding, signingKeyRef: signerBinding.signingKeyRef, publicKeySpkiBase64: signerBinding.publicKeySpkiBase64 } : binding) };
+  const nextConfig = { ...config, trustedHumanBindingRefs: config.trustedHumanBindingRefs.map((ref) => ref.seatId === seat ? { ...ref, bindingRef: signerBinding.signingKeyRef } : ref) };
+  await writeFile(registryPath, `${JSON.stringify(nextRegistry, null, 2)}\n`);
+  await chmod(registryPath, 0o600);
+  await writeFile(join(root, CONFIG_PATH), `${JSON.stringify(nextConfig, null, 2)}\n`);
+  output(
+    { signerPath, signingKeyRef: signerBinding.signingKeyRef },
+    options.flags.has("--json"),
+    `Coulson signer created at ${signerPath}.\nThis is a one-time host setup for future missions.\nExisting mission journals retain the binding captured at begin and must continue using their original signer.`,
+  );
+  return 0;
+}
+
+async function authorize(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id"], ["--json", "--passcode-stdin"]);
+  const root = await exactRoot(options.values.get("--root"), true);
+  const config = await repositoryConfig(root);
+  const missionId = required(options, "--mission-id");
+  const current = await currentMission(root, config, missionId);
+  const requirement = current.projection.requirements.find(({ evidenceKind, requiredSeatId, supersedesRequirementId }) => evidenceKind === "mission_authorization" && requiredSeatId === "coulson" && supersedesRequirementId === null);
+  if (!requirement) throw new MissionCliError("Current mission has no pending Coulson authorization requirement.", 1);
+  const binding = current.projection.trustedBindings.find(({ seatId }) => seatId === "coulson");
+  if (!binding) throw new MissionCliError("Mission has no Coulson trusted binding.", 1);
+  const passcode = await passcodeFromOptions(options);
+  const payload = {
+    schemaVersion: 1 as const,
+    evidenceId: `evidence:coulson:${current.projection.lastSequence + 1}`,
+    requirementId: requirement.requirementId,
+    missionId,
+    subjectKind: "mission_plan" as const,
+    subjectId: current.projection.brief.subjectId,
+    revisionId: current.projection.brief.revisionId,
+    seatId: "coulson" as const,
+    evidenceKind: "mission_authorization" as const,
+    decision: "approved" as const,
+    governanceTarget: "approved" as const,
+    humanPrincipalId: binding.humanPrincipalId,
+    bindingId: binding.bindingId,
+    signingKeyRef: binding.signingKeyRef,
+    sourceRef: `passcode-signer:${missionId}`,
+    timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" as const },
+    journalSequence: current.projection.lastSequence + 1,
+  };
+  let signatureBase64: string;
+  try {
+    signatureBase64 = await signWithSigner(binding.signingKeyRef, passcode, payload);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new MissionCliError("No local Coulson signer was found for this mission binding. Run `shield mission signer setup --seat coulson` before beginning new missions, or use detached signed evidence for missions bound to another key.", 1);
+    }
+    if (error instanceof Error) throw new MissionCliError(error.message, 1);
+    throw error;
+  }
+  const entry = unwrap(createGovernanceEntry(current.projection, "approve", { payload, signatureBase64 }, null));
+  const appended = unwrap(await appendSupervisedMissionEntry({ ...missionPaths(root, config, missionId), entry }));
+  output(appended.projection, options.flags.has("--json"), statusText(appended.projection));
+  return 0;
+}
+
 async function step(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id"], ["--json"]);
   const root = await exactRoot(options.values.get("--root"), true);
@@ -271,6 +390,8 @@ export function missionUsage(): string {
   return [
     "  shield mission begin --brief <file> [--root <path>] [--json]",
     "  shield mission begin --authorization delegated --brief <file> --delegation <revision> --eligibility <file> [--root <path>] [--json]",
+    "  shield mission signer setup [--seat coulson] [--root <path>] [--passcode-stdin] [--json]",
+    "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission approve|pause|cancel --mission-id <id> --evidence <file> [--root <path>] [--json]",
     "  shield mission resume --mission-id <id> --evidence <file> --resume-state <proposed|approved> [--root <path>] [--json]",
     "  shield mission status|step|report --mission-id <id> [--root <path>] [--json]",
@@ -284,6 +405,8 @@ export async function runMissionCli(args: string[]): Promise<number> {
   const [group, action, ...rest] = args;
   if (group === "mission") {
     if (action === "begin") return begin(rest);
+    if (action === "authorize") return authorize(rest);
+    if (action === "signer" && rest[0] === "setup") return signerSetup(rest.slice(1));
     if (action === "approve" || action === "pause" || action === "resume" || action === "cancel") return governance(action, rest);
     if (action === "step") return step(rest);
     if (action === "invalidate") return invalidate(rest);

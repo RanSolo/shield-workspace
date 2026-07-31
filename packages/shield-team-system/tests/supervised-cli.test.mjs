@@ -84,8 +84,13 @@ async function fixture(requireSimmons = false) {
   return { root, brief, coulson, fitz, simmons };
 }
 
-function run(root, args) {
-  return spawnSync(process.execPath, [cli, ...args], { cwd: root, encoding: "utf8" });
+function run(root, args, options = {}) {
+  return spawnSync(process.execPath, [cli, ...args], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, ...(options.env ?? {}) },
+    input: options.input,
+  });
 }
 
 function evidenceGovernanceTarget(decision, resumeState = "approved") {
@@ -240,6 +245,62 @@ test("conditional Simmons is waiting only when declared by the immutable brief",
   assert.deepEqual(projection.readiness.accept.requirementStatuses.map(({ requiredSeatId }) => requiredSeatId), ["fitz", "simmons"]);
   assert.equal(projection.requirements.filter(({ requiredSeatId }) => requiredSeatId === "simmons").length, 1);
   assert.equal(projection.missionId, brief.missionId);
+});
+
+test("passcode signer setup is one-time host setup and authorize appends Coulson approval", async () => {
+  const { root, brief } = await fixture();
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+  const setupOutput = JSON.parse(setup.stdout);
+  assert.match(setupOutput.signerPath, /\/\.shield\/signers\//);
+  assert.match(setupOutput.signingKeyRef, /^ed25519:sha256:/);
+
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  let projection = JSON.parse(begun.stdout).projection;
+  assert.equal(projection.governance.state, "proposed");
+
+  const authorized = run(
+    root,
+    ["mission", "authorize", "--mission-id", brief.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(authorized.status, 0, authorized.stderr);
+  projection = JSON.parse(authorized.stdout);
+  assert.equal(projection.governance.state, "approved");
+  assert.equal(projection.authorization.state, "authorized");
+  assert.equal(projection.evidence[0].sourceRef, `passcode-signer:${brief.missionId}`);
+});
+
+test("authorize explains when the local signer has not been provisioned", async () => {
+  const { root, brief } = await fixture();
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+
+  const authorized = run(
+    root,
+    ["mission", "authorize", "--mission-id", brief.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(authorized.status, 1);
+  assert.match(
+    authorized.stderr,
+    /No local Coulson signer was found for this mission binding/,
+  );
+  assert.match(
+    authorized.stderr,
+    /shield mission signer setup --seat coulson/,
+  );
 });
 
 test("Wheels Off grants, delegates begin deterministically, reports source, and invalidates fail closed", async () => {
