@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import { createEvidenceInventory } from "../evidence-inventory.mjs";
 import { FIXTURE_MANIFEST, validateFixtureManifest } from "../fixture-manifest.mjs";
+import { verifyFixtureIdentity } from "../verify-fixture-identity.mjs";
 
 const execFileAsync = promisify(execFile);
 const benchmarkRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,8 +17,14 @@ const templateRoot = resolve(benchmarkRoot, "template");
 const templateDefectPath = resolve(templateRoot, "src/greeting.mjs");
 const templateTestPath = resolve(templateRoot, "test/greeting.test.mjs");
 const FIXTURE_TEST_PATH = "test/greeting.test.mjs";
-const REVISION = /^[0-9a-f]{40,64}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
+const OBJECT_FORMAT_SHA1 = "sha1";
+const OBJECT_FORMAT_SHA256 = "sha256";
+const OBJECT_FORMATS = Object.freeze([OBJECT_FORMAT_SHA1, OBJECT_FORMAT_SHA256]);
+const REVISION_FORMAT = Object.freeze({
+  [OBJECT_FORMAT_SHA1]: /^[0-9a-f]{40}$/u,
+  [OBJECT_FORMAT_SHA256]: /^[0-9a-f]{64}$/u
+});
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 const PUBLIC_SPECIFIERS = Object.freeze([
@@ -34,7 +41,8 @@ const INPUT_FIELDS = [
   "hostConfiguration",
   "blindStatus",
   "priorSolutionsVisible",
-  "requireSimmons"
+  "requireSimmons",
+  "releaseBaseline"
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -133,6 +141,18 @@ async function gitOutcome(cwd, args) {
   }
 }
 
+async function gitObjectFormat(cwd) {
+  const outcome = await gitOutcome(cwd, ["rev-parse", "--show-object-format"]);
+  if (outcome.state !== "passed") {
+    return Object.freeze({ state: "invalid", reason: "external_repository_identity_malformed" });
+  }
+  const format = outcome.stdout.trim();
+  if (!OBJECT_FORMATS.includes(format)) {
+    return Object.freeze({ state: "invalid", reason: "external_repository_object_format_unsupported" });
+  }
+  return Object.freeze({ state: "valid", format });
+}
+
 async function gitBytesOutcome(cwd, args) {
   try {
     const { stdout } = await execFileAsync("git", args, {
@@ -149,7 +169,8 @@ async function gitBytesOutcome(cwd, args) {
 
 async function inspectExternalRevision({ externalRepositoryRoot, baseRevision, headRevision }) {
   if (typeof externalRepositoryRoot !== "string" ||
-      !REVISION.test(baseRevision) || !REVISION.test(headRevision)) {
+      typeof baseRevision !== "string" ||
+      typeof headRevision !== "string") {
     return Object.freeze({ state: "invalid", reason: "external_revision_identity_malformed" });
   }
   const requestedRoot = resolve(externalRepositoryRoot);
@@ -160,6 +181,12 @@ async function inspectExternalRevision({ externalRepositoryRoot, baseRevision, h
     repositoryRoot = await realpath(requestedRoot);
   } catch {
     return Object.freeze({ state: "blocked", reason: "external_repository_unavailable" });
+  }
+  const objectFormat = await gitObjectFormat(repositoryRoot);
+  if (objectFormat.state !== "valid") return objectFormat;
+  const expectedRevisionFormat = REVISION_FORMAT[objectFormat.format];
+  if (!expectedRevisionFormat.test(baseRevision) || !expectedRevisionFormat.test(headRevision)) {
+    return Object.freeze({ state: "invalid", reason: "external_revision_identity_malformed" });
   }
   const topLevel = await gitOutcome(repositoryRoot, ["rev-parse", "--show-toplevel"]);
   if (topLevel.state !== "passed" || resolve(topLevel.stdout.trim()) !== repositoryRoot) {
@@ -271,7 +298,7 @@ async function replaceConfinedRegularFile(root, targetPath, bytes) {
   }
 }
 
-async function composeInstalledArtifact(artifactBytes, input) {
+async function composeInstalledArtifact(artifactBytes, input, expectedPackage) {
   const consumerRoot = await mkdtemp(join(tmpdir(), "shield-v03-public-consumer-"));
   const installedArtifact = join(consumerRoot, "shield-team-system.tgz");
   try {
@@ -312,8 +339,9 @@ async function composeInstalledArtifact(artifactBytes, input) {
     } catch {
       return Object.freeze({ state: "blocked", reason: "installed_package_identity_missing" });
     }
-    if (!plain(installedManifest) || installedManifest.name !== "@shield/team-system" ||
-        typeof installedManifest.version !== "string" || installedManifest.version.length === 0) {
+    if (!plain(installedManifest) ||
+        installedManifest.name !== expectedPackage.name ||
+        installedManifest.version !== expectedPackage.version) {
       return Object.freeze({ state: "blocked", reason: "installed_package_identity_mismatch" });
     }
     const consumerInputPath = join(consumerRoot, "composition-input.json");
@@ -403,8 +431,10 @@ export async function composeMinimumFixture(input) {
   if (!exact(input, INPUT_FIELDS)) {
     return Object.freeze({ state: "invalid", reason: "fixture_input_not_closed" });
   }
-  if (typeof input.packageArtifactPath !== "string" || !SHA256.test(input.packageArtifactSha256) ||
-      !REVISION.test(input.baseRevision) || !REVISION.test(input.headRevision) ||
+  if (typeof input.packageArtifactPath !== "string" ||
+      !SHA256.test(input.packageArtifactSha256) ||
+      typeof input.baseRevision !== "string" ||
+      typeof input.headRevision !== "string" ||
       typeof input.priorSolutionsVisible !== "boolean" ||
       typeof input.requireSimmons !== "boolean" ||
       !FIXTURE_MANIFEST.blindStatus.allowedValues.includes(input.blindStatus)) {
@@ -429,12 +459,17 @@ export async function composeMinimumFixture(input) {
   if (artifactInfo.size <= 0 || artifactInfo.size > MAX_PACKAGE_BYTES) {
     return Object.freeze({ state: "blocked", reason: "package_artifact_size_invalid" });
   }
+  const identity = await verifyFixtureIdentity(benchmarkRoot, input.releaseBaseline);
+  if (identity.state !== "valid") return identity;
   const artifactBytes = await readFile(input.packageArtifactPath);
   const packageDigest = sha256(artifactBytes);
   if (packageDigest !== input.packageArtifactSha256) {
     return Object.freeze({ state: "blocked", reason: "package_artifact_digest_mismatch" });
   }
-  const composition = await composeInstalledArtifact(artifactBytes, input);
+  if (packageDigest !== identity.package.digest) {
+    return Object.freeze({ state: "blocked", reason: "package_artifact_digest_mismatch" });
+  }
+  const composition = await composeInstalledArtifact(artifactBytes, input, identity.package);
   if (composition.state !== "composed") return composition;
 
   return Object.freeze({
