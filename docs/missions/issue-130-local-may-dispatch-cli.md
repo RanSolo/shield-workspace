@@ -77,6 +77,20 @@ but slow, while 20,000+ token implementation packets lose grounding. The target
 range remains provisional until this mission records comparable Daisy and May
 packets.
 
+### Initial packet evidence
+
+| Seat and task | Input | TTFT | Output | Observed utility |
+| --- | ---: | ---: | ---: | --- |
+| May, one runbook paragraph | 2,467 tokens | 2.45 s | 1,639 tokens | Useful field inventory; one incorrect context/argument conflation required a small host correction. |
+| Daisy, one shared-validator seam | 2,594 tokens | 2.80 s | 870 tokens | Directly useful evidence inventory; one minor item-count error and near-zero correction cost. |
+| Daisy, full May executor dependency map | 12,486 tokens | 18.27 s | 3,380 tokens | Broadly useful but slow and included incorrect assumptions about model-origin injection. |
+| May, large evidence/test comparison | 20,264–22,751 tokens | 39–41 s | 534–585 tokens | Slow and insufficiently grounded; proposed redundant or already-present changes. |
+
+The current best operating point for Daisy-style reconnaissance is therefore
+approximately 2,500–5,000 input tokens with an output request below 1,000
+tokens. May implementation quality also depends on edit complexity: a small
+packet does not make a security-sensitive whole-file rewrite safe by itself.
+
 ### PR A — closed dispatch context and preflight
 
 - Add a closed `LocalMayDispatchPacketV1` for requested work, approved artifact
