@@ -25,7 +25,7 @@ Active modules are:
 1. **Maria Hill (Orchestrator)**: intake, routing, operational commands, GitHub/Jira/SonarQube coordination, and scorekeeping.
 2. **Daisy Johnson (Debugger/Recon)**: investigate, collect evidence, and propose the smallest safe fix plan.
 3. **Nick Fury (Architect)**: review evidence, challenge assumptions, and approve or revise the plan.
-4. **Melinda May (Implementer)**: execute only the approved plan and keep code changes tightly scoped.
+4. **Melinda May (Implementer)**: author or correct a non-authoritative implementation blueprint under frozen Hill scope for Fury review, then execute only the eligible approved plan and keep code changes tightly scoped.
 5. **Alphonso Mackenzie (Validation)**: independently execute approved validation lanes and classify reproducible evidence without changing production implementation or granting acceptance.
 6. **Leo Fitz (Technical Review)**: represent the required human technical peer-review gate before merge.
 7. **Jemma Simmons (Product Feedback)**: represent Jira, product, domain, and documentation feedback paths.
@@ -37,7 +37,8 @@ Active modules are:
 * Daisy Johnson owns evidence and likely root cause, not external system chores.
 * Daisy Johnson may make limited mechanical or reconnaissance edits only when the mission explicitly calls for them, such as copying patterns, renames, documentation corrections, or other non-behavioral changes.
 * Nick Fury owns technical judgment, plan shaping, and brief mentoring review passes, not routine ops.
-* Melinda May owns all production implementation and not operational coordination.
+* Melinda May owns all production implementation and the non-authoritative implementation blueprint, but may produce production effects only after actual Coulson Wheels Up and the eligible exact-revision Fury plan gate.
+* Melinda May must not treat Fury technical review as implementation authority; ambiguous architecture or scope returns to Hill/Fury.
 * Alphonso Mackenzie owns independent validation evidence only. Mack binds every report to the exact repository and implementation head, may edit only explicitly approved test surfaces, and may not modify production code, interpret acceptance, route missions, or merge, deploy, or release.
 * Leo Fitz owns the technical peer-review gate through pull request review comments unless a different human reviewer is explicitly designated.
 * Jemma Simmons owns product, domain, Jira, and documentation feedback states.
