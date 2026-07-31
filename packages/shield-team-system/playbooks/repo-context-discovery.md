@@ -76,6 +76,51 @@ Use [javascript-monorepo-example.md](./repo-context/javascript-monorepo-example.
 as the reference shape for a completed context pack in a conventional web-app
 repository.
 
+## Small-Packet Specialist Rubric
+
+This rubric applies to local and hosted specialist runs. It is workflow
+guidance for packet assembly and handoff quality; it is not dispatch
+permission, tool authorization, implementation authority, or a human gate.
+Listing a file in a packet does not itself grant write access.
+
+The common control envelope is mandatory and does not count as payload. The
+control envelope carries the Mission Brief reference, exact revision binding,
+assigned seat, output contract, and stop/escalation conditions.
+
+Default payload size is one primary artifact per seat:
+
+- **Maria Hill:** one assembled context-pack artifact.
+- **Daisy Johnson:** one primary evidence target.
+- **Nick Fury:** one exact plan or implementation-review artifact, with
+  evidence referenced rather than duplicated.
+- **Melinda May:** one approved implementation slice; all coupled files must be
+  enumerated explicitly.
+- **Alphonso Mackenzie:** one validation lane bound to the exact implementation
+  HEAD.
+
+Expansion beyond one primary artifact requires a stated reason. Without that
+reason, stop and narrow the packet before handing it to the next seat.
+
+Keep work within one seat when:
+
+- the approved objective is unchanged
+- the owning seat remains the same
+- the required output still fits one primary artifact plus the control envelope
+- the next step does not require a different work category or authority surface
+
+Split or reroute to another seat when:
+
+- the work category changes between reconnaissance, architecture,
+  implementation, validation, or human decision
+- the next output contract is materially different from the current owner's
+  artifact
+- the packet would otherwise require more than one unstated primary artifact
+- a new authority surface or human gate is required
+
+Use artifact-first handoffs. Every packet should name the Mission Brief, current
+objective, exact allowed files, output contract, and delta-only carry-forward
+base before any freeform explanation.
+
 ## What To Capture
 
 Minimum useful context includes:
@@ -194,6 +239,12 @@ The local model should receive:
 The local model should not be expected to discover the entire repository on its
 own.
 
+When a local or hosted specialist returns malformed output, discard the
+malformed delta, retain the last accepted artifact, narrow the packet, and
+retry or reroute according to seat ownership. If the objective remains
+unchanged, return the narrowed packet to the same owner. Hill reroutes only
+when the work category changes.
+
 ## Stop Conditions
 
 Stop the discovery pass and escalate when:
@@ -203,7 +254,17 @@ Stop the discovery pass and escalate when:
 - multiple packages/apps exist and the mission target is still ambiguous
 - the local model begins inventing tools, frameworks, or commands not supported
   by the context
+- the packet expands beyond one primary artifact without a stated reason
+- the carry-forward base is absent, stale, or mismatched
+- the response leaks scratchpad or chain-of-thought instead of the requested
+  artifact shape
+- the response invents capabilities or authority not present in the packet
+- the response shape does not match the requested output contract
 - the team has enough context to proceed and further scanning would be wasteful
+
+For this rubric, "reasoning leakage" means scratchpad, chain-of-thought, or
+other content outside the requested artifact shape. It does not include concise
+evidence or rationale that the output contract explicitly requires.
 
 ## Deliverable
 
