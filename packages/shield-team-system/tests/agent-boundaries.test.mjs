@@ -46,6 +46,51 @@ test("seat prompts preserve the approved implementation boundaries", async () =>
   assert.match(mack, /exact repository and implementation HEAD/);
 });
 
+test("May profiles preserve blueprint boundaries across local and hosted runtimes", async () => {
+  const hostedMay = await readRepoFile("../../.codex/agents/may.toml");
+  const localMay = await readRepoFile("agents/melinda-may-implementer.agent.md");
+  const charter = await readRepoFile("agents/shield-team-charter.agent.md");
+
+  for (const mayProfile of [hostedMay, localMay]) {
+    assert.match(
+      mayProfile,
+      /author(?:s)? or correct(?: only)? (?:a |the )?(?:May-owned )?non-authoritative\s+(?:implementation\s+)?blueprint/i,
+    );
+    assert.match(mayProfile, /Fury technical review/i);
+    assert.match(mayProfile, /exact-revision plan\s+gate/i);
+  }
+
+  assert.match(localMay, /Blueprint output is advisory and never implementation authority\./);
+  assert.match(localMay, /Own all production implementation\./);
+  assert.match(
+    localMay,
+    /implement\s+only [\s\S]* after actual Coulson Wheels Up and the eligible\s+exact-revision plan gate/i,
+  );
+  assert.match(
+    hostedMay,
+    /hosted or local runtime does\s+not alter these duties/i,
+  );
+  assert.match(
+    hostedMay,
+    /implement the exact[\s\S]* after the existing Coulson Wheels Up and exact-revision plan\s+gate[\s\S]* are satisfied/i,
+  );
+  assert.match(hostedMay, /model = "gpt-5\.3-codex-spark"/);
+  assert.match(localMay, /model: Claude Sonnet 4\.5 \(copilot\)/);
+
+  assert.match(
+    charter,
+    /Melinda May owns all production implementation and the non-authoritative implementation blueprint/,
+  );
+  assert.match(
+    charter,
+    /may produce production effects only after actual Coulson Wheels Up and the eligible exact-revision Fury plan gate/i,
+  );
+  assert.match(
+    charter,
+    /must not treat Fury technical review as implementation authority/,
+  );
+});
+
 test("debugger mode applies evidence-based iteration across specialist seats", async () => {
   const debuggerMode = await readRepoFile("modes/debugger-mode.md");
 
