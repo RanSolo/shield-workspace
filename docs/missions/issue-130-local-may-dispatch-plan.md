@@ -1,18 +1,81 @@
-# Mission #130 PR A — Hill implementation plan
+# Mission #130 — Governed local-May dispatch sequence
 
-Status: proposed for Fury architecture review; no implementation authority
+Status: revised for Fury architecture review; no implementation authority
 
-Plan source baseline: `23dda41`; Fury must review the later exact commit that
-contains this plan.
+Plan source baseline: `4d60c14`. Fury must review the later exact commit that
+contains this revision.
 
-## Outcome
+## Decision
 
-Add a read-only `shield mission dispatch` preflight for one local May cycle. A
-successful result is only a compiled, non-authoritative handoff candidate with
-state `dispatch_ready`; it does not call LM Studio, execute a tool, append a
-journal or audit record, or claim that May was dispatched.
+Do not implement `shield mission dispatch` yet. At current HEAD, a truthful
+schema-9 preflight cannot produce `dispatch_ready`:
 
-## Exact command
+- `mission-cli.mts` reads the legacy supervised projection, which rejects the
+  canonical schema-9 mission journal;
+- `ProfileAwareProjectionV1` does not project runtime bindings, review subjects,
+  or Fury reviews;
+- no verified positive Wheels Up implementation-authority producer exists;
+- May's `approvedFiles` and validation commands remain caller-injected host
+  dependencies rather than Coulson-authorized durable mission state.
+
+Converting packet prose, a Hill-authored scope, an effect-key digest, or a pure
+test fixture into those missing authorities would change the trust model. This
+plan forbids that substitution.
+
+## Required sequence
+
+### Slice A — schema-9 read-only CLI compatibility
+
+Within Issue #130, add a read-only schema discriminator and reader so
+`shield mission status|report` can replay canonical schema-9 journals only via
+`replayProfileAwareMissionJournal`. Legacy schema 2–8 journals continue through
+`replaySupervisedMissionJournal`. Unknown, mixed, malformed, or unsupported
+schema input fails closed; neither reader reinterprets the other's projection.
+
+Files:
+
+- update `src/mission-cli.mts` and, if needed, add one internal read-only journal
+  projection adapter;
+- extend `tests/supervised-cli.test.mjs` with packed schema-9 status/report,
+  malformed, mixed-schema, and byte-for-byte journal-immutability cases;
+- update CLI documentation only for the repaired status/report behavior.
+
+This slice adds no dispatch command, prompt compiler, runtime binding, Fury
+gate, authority projection, model call, tool call, or write path.
+
+### Prerequisite B — verified implementation authority
+
+Issue #141 or a separately reviewed upstream authority contract must provide a
+closed, replay-derived positive Wheels Up projection. It must bind signed
+Coulson evidence to mission, subject, repository, scope, exact mission and
+artifact revisions, journal sequence, lifecycle, May participation, and
+dispatch eligibility. #141's current design intentionally supports only
+`implementationAuthority: withheld`; that is not sufficient for dispatch.
+
+This prerequisite is outside Slice A and requires its own mission, Fury review,
+and Coulson authorization. Governance approval, Wheels Off, `review.publish`,
+packet prose, and host assertions cannot substitute for it.
+
+### Prerequisite C — durable May execution scope
+
+Define and separately review a Coulson-signed durable authority contract for the
+exact May execution scope. It must explicitly authorize:
+
+- canonical writable repository root and approved relative files;
+- action IDs, effect classes, capabilities, and per-call effect-key derivation;
+- validation command IDs resolved to fixed host-owned executable/argv records;
+- reasoning runtime, model, tool executor, branch, base revision, output
+  contract, and one-cycle stop condition.
+
+The contract must compose with existing permission evaluation and
+`runMayControlLoop` without treating its own digest as a per-call effect key.
+It must define creation, signing, replay, supersession, staleness, and
+read-before-dispatch behavior. This is an authority-contract change and is not
+part of Slice A.
+
+### Slice D — local-May dispatch preflight
+
+Only after B and C are merged may Issue #130 add:
 
 ```text
 shield mission dispatch \
@@ -24,139 +87,42 @@ shield mission dispatch \
   [--json]
 ```
 
-`may` and `local` are the only accepted V1 values. The packet must resolve to a
-regular file inside the canonical repository root; symlinks in either the file
-or its ancestor path fail closed.
+The packet remains untrusted bounded work intent. The CLI replays schema-9
+mission state, the positive implementation-authority projection, and the signed
+May execution scope; observes canonical root, branch, HEAD, and dirty paths;
+loads package-owned shared/May prompts; and compiles a non-authoritative context.
+It invokes no model or tool in this slice.
 
-## Closed packet contract
+Failure precedence is frozen:
 
-Add `src/local-may-dispatch-v1.mts` with a strict plain-object validator for:
+1. malformed or unsupported CLI/packet input;
+2. inaccessible or unsafe root, packet, or durable artifact path;
+3. malformed, mixed, unsupported, or unreadable mission journal;
+4. mission/subject/repository identity mismatch;
+5. stale sequence, lifecycle, branch, mission revision, or HEAD;
+6. missing or withheld implementation authority;
+7. missing, malformed, stale, ambiguous, or mismatched May execution scope;
+8. inactive or ineligible May participation/runtime binding;
+9. out-of-scope dirty path or requested file;
+10. unknown or unapproved validation command;
+11. missing or malformed package prompt asset.
 
-```ts
-interface LocalMayDispatchPacketV1 {
-  schemaVersion: 1;
-  packetId: string;
-  missionId: string;
-  planRevisionId: string;
-  scopeRef: string;
-  requestedWork: string;
-  artifactRefs: string[];
-  validationCommandIds: string[];
-  outputContract: string;
-  stopCondition: "after_one_cycle";
-}
-```
+Tests must cover each reason and collisions between adjacent precedence classes.
+`dispatch_ready` is impossible unless every replayed prerequisite exists and
+matches the exact current tuple. Synthetic fixtures may test the pure compiler,
+but packed CLI readiness requires the same durable forms used in production.
 
-Strings and collections receive explicit bounds, identifiers use existing
-repository conventions, duplicates and unknown fields fail closed, and
-artifact refs are safe repository-relative paths. `artifactRefs` and
-`validationCommandIds` are requests only. They cannot authorize a path,
-executable, argument, capability, runtime, or publication effect.
+### Slice E — one governed May cycle
 
-The module also validates a closed `LocalMayDispatchScopeV1` artifact containing
-the mission, subject, mission revision, plan revision, repository, branch, base
-revision, action ID, effect class, effect key, approved files, approved
-validation command IDs, output contract, and fixed stop condition. The scope is
-explicitly non-authoritative. Its effect key must equal the canonical digest of
-the scope body excluding the `effectKey` field, and that exact effect key,
-action, effect class, and required capabilities must all be present in the
-Coulson-authorized active runtime binding. The packet's requested files and
-validation IDs must be subsets of this scope, and its output contract and stop
-condition must exactly match the scope. `scopeRef` therefore selects an
-already-authorized scope; it cannot broaden one.
+Separately compose `MayControlLoopRequest` and every
+`MayControlLoopDependencies` callback, probe the exact loopback model instance,
+append and read back audit/control evidence, execute only authorized file writes
+and validation IDs, and stop after one cycle. This is not authorized by the
+current plan.
 
-## Trusted preflight input and compiled result
+## Current implementation boundary
 
-The same module exposes one pure compiler. Its trusted-host input contains the
-validated packet plus:
-
-- repository ID, canonical root, observed branch, exact Git HEAD, and observed
-  dirty paths;
-- the replayed mission projection and journal sequence;
-- the current exact review subject and one Fury approval for
-  `packet.planRevisionId`;
-- the single active May runtime binding, including runtime and executor IDs and
-  approved action/effect/capability scope;
-- the regular-file dispatch scope selected by `packet.scopeRef`, whose digest is
-  bound to the active runtime binding's authorized effect key;
-- pipeline-profile command bindings resolved by command ID;
-- package-owned shared runtime instructions and exact May seat prompt;
-- fixed `seatId=may`, `runtimeKind=local`, tool definitions, output contract,
-  and `after_one_cycle` stop condition.
-
-The compiler validates all cross-bindings. It returns either:
-
-- `{ state: "dispatch_ready", authority: "non_authoritative", ... }` containing
-  a closed SHIELD context block, the composed system prompt, the composed user
-  prompt, scope-approved files, and resolved validation command definitions; or
-- `{ state: "blocked", authority: "non_authoritative", reasonCode }` with one
-  stable reason and no model/tool side effect.
-
-The SHIELD context explicitly binds mission and subject IDs, mission and plan
-revisions, journal sequence, repository/root/branch/HEAD, authorization state,
-Fury review ID, seat/runtime/model/executor identity, approved capabilities,
-approved files, resolved validation command IDs, available tool names, output
-contract, and stop condition. The packet is serialized as untrusted requested
-work in a separate user-prompt section; it is never merged into authority
-fields.
-
-## Fail-closed rules
-
-Return stable blocked reasons for malformed packet, mission mismatch,
-unauthorized or non-ready mission, stale/missing Fury approval, missing or
-ambiguous May binding, root/repository/branch/HEAD mismatch, dirty paths outside
-the authorized dispatch scope, scope digest/effect-key mismatch, requested
-artifacts outside dispatch scope, packet/scope output mismatch, unknown or
-unapproved validation IDs, stale pipeline profile, and prompt asset read
-failure. Evaluate all of these before constructing `dispatch_ready`.
-
-`baseUrl`, API token, live model probe, session ID, clocks, audit adapters,
-permission callbacks, temporary-name generation, and every
-`MayControlLoopDependencies` callback remain PR B-only. PR A must not construct
-or invoke `MayControlLoopRequest`.
-
-## CLI composition
-
-Update `src/mission-cli.mts` to:
-
-1. parse only the exact command above;
-2. open the root and packet read-only with canonical containment checks;
-3. load and replay existing SHIELD config and mission journal contracts;
-4. obtain branch, exact HEAD, and NUL-delimited dirty paths through fixed Git
-   argv and a scrubbed Git environment;
-5. load the selected dispatch scope, repository pipeline profile, and
-   package-owned prompt assets as regular, non-symlink files;
-6. call the pure preflight compiler and print its result;
-7. return zero only for `dispatch_ready`, one for a valid blocked result, and
-   two for malformed CLI usage.
-
-No executable or argument comes from the packet. The compiler resolves requested
-validation IDs only against the validated pipeline profile. No filesystem write
-API is added to this path.
-
-## Files and tests
-
-- Add `src/local-may-dispatch-v1.mts`.
-- Update `src/mission-cli.mts` and its usage text.
-- Add `agents/shared-runtime.agent.md` from the preserved human-supplied text;
-  load it and the existing `agents/melinda-may-implementer.agent.md` relative to
-  the installed package, not from the caller's working directory.
-- Add `tests/local-may-dispatch-v1.test.mjs` for the pure contract.
-- Extend `tests/supervised-cli.test.mjs` for packed CLI behavior and byte-for-byte
-  journal, audit, and workspace immutability.
-- Update `PUBLIC_API.md` only to document the command as preflight; do not add a
-  new public JavaScript export in PR A.
-
-Focused cases: ready fixture; malformed/extra packet fields; packet/mission
-mismatch; missing authorization; stale HEAD; stale or missing Fury gate;
-ambiguous runtime binding; path traversal and symlinked packet/ancestor;
-scope digest/effect-key mismatch; out-of-scope dirty path; unapproved artifact;
-unknown command ID; injected executable-like command ID; stale pipeline
-profile; and explicit proof that no
-model endpoint, tool executor, or append callback is reachable.
-
-## Stop condition
-
-Stop after the exact PR A implementation revision passes focused tests and Fury
-conformance review. Do not begin PR B, invoke local May, push, open a PR, mark a
-PR ready, merge, deploy, or release under this plan.
+The only presently implementable code slice is Slice A. Stop after its exact
+implementation revision passes focused tests and Fury conformance review. Do
+not implement B–E, invoke May, push, open or ready a PR, merge, deploy, release,
+or claim local-May dispatch readiness under this plan.
