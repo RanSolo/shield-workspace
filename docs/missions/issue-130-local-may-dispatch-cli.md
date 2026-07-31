@@ -83,6 +83,8 @@ packets.
 | --- | ---: | ---: | ---: | --- |
 | May, one runbook paragraph | 2,467 tokens | 2.45 s | 1,639 tokens | Useful field inventory; one incorrect context/argument conflation required a small host correction. |
 | Daisy, one shared-validator seam | 2,594 tokens | 2.80 s | 870 tokens | Directly useful evidence inventory; one minor item-count error and near-zero correction cost. |
+| Daisy, CLI routing seam without the full contract | 1,684 tokens | 1.61 s | 803 tokens | Fast but under-contextualized; found the CLI branch and read-only root helper, then incorrectly reduced dispatch preflight to model availability. High host correction cost. |
+| Daisy, packet/context trust boundary | 1,391 tokens | 1.19 s | 773 tokens | Correctly separated untrusted work intent from host authority, but omitted required fields and exceeded the requested shape. Useful with moderate host correction. |
 | Daisy, full May executor dependency map | 12,486 tokens | 18.27 s | 3,380 tokens | Broadly useful but slow and included incorrect assumptions about model-origin injection. |
 | May, large evidence/test comparison | 20,264–22,751 tokens | 39–41 s | 534–585 tokens | Slow and insufficiently grounded; proposed redundant or already-present changes. |
 
