@@ -61,7 +61,42 @@ Begin appends an explicit `mission.begun` event containing the immutable brief
 revision, trusted public bindings, Coulson authorization requirement, Fitz
 technical-review requirement, and optional Simmons product/domain requirement.
 
+## Which path do I use?
+
+- Use the supervised signer path here when you need fresh Coulson approval for a
+  proposed mission.
+- Use [WHEELS_OFF.md](./WHEELS_OFF.md) when the mission already qualifies for
+  bounded delegated initiation.
+- Use `review.publish` only for bounded review publication; it does not replace
+  mission approval.
+- Use Wheels Up only when the mission explicitly needs implementation plus
+  bounded draft-review publication.
+
+## Common local routine
+
+Treat signer setup as one-time host setup. After that, the common supervised
+path is just:
+
+```sh
+npx shield mission begin --brief mission-brief.json
+npx shield mission status --mission-id mission:example
+printf '%s\n' "$PASSCODE" | npx shield mission authorize --mission-id mission:example --passcode-stdin
+```
+
+If the signer has not been provisioned on this host yet, run the one-time setup
+first:
+
+```sh
+printf '%s\n' "$PASSCODE" | npx shield mission signer setup --seat coulson --passcode-stdin
+```
+
 ## Record human authority
+
+For local operation, prefer the passcode signer routine above. It keeps the
+private key encrypted outside the repository under `~/.shield/signers` and
+records the resulting Coulson-signed evidence directly in the journal flow.
+Manual detached evidence remains available when the host is not using the local
+signer path.
 
 The next journal sequence and exact requirement identifiers are shown by
 `mission status --json`. Construct a closed evidence payload for that exact
@@ -102,12 +137,39 @@ npx shield mission cancel --mission-id mission:example --evidence coulson-cancel
 npx shield evidence record --mission-id mission:example --evidence fitz-review.json
 ```
 
+The local signer updates the configured Coulson public binding for future
+missions. Run setup before beginning new missions; existing mission journals
+retain the binding captured at begin and must continue using their original
+signer. Use `--passcode-stdin` for automation so the passcode is not exposed in
+process arguments:
+
+```sh
+printf '%s\n' "$PASSCODE" | npx shield mission signer setup --seat coulson --passcode-stdin
+printf '%s\n' "$PASSCODE" | npx shield mission authorize --mission-id mission:example --passcode-stdin
+```
+
 Every governance command requires fresh Coulson-signed evidence bound to its
 intended sequence, exact brief revision, and exact resulting governance state.
 For example, signed `resumed` evidence must name `governanceTarget` as either
 `proposed` or `approved`, and `--resume-state` must match it. Non-governance
 Fitz and Simmons evidence uses `governanceTarget: null`. Prior records remain
 append-only history.
+
+## Troubleshooting
+
+- `shield mission authorize` says no local signer was found:
+  run `shield mission signer setup --seat coulson` on this host before starting
+  a new supervised mission, or use detached signed evidence for missions bound
+  to a different key.
+- The signer cannot be unlocked:
+  check the passcode and confirm the host still has the matching signer record
+  under `~/.shield/signers`.
+- The mission still shows `proposed` after an approval-looking artifact exists:
+  only journal-appended signed evidence changes mission governance. Regenerate
+  the approval through `shield mission authorize` or `shield mission approve`.
+- The mission should have been lighter-weight from the start:
+  if it qualifies for delegated bounded initiation, begin it through Wheels Off
+  instead of inventing an unsigned supervised shortcut.
 
 ## Step, status, and report
 
