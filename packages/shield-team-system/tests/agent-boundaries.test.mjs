@@ -62,18 +62,28 @@ test("May profiles preserve blueprint boundaries across local and hosted runtime
 
   assert.match(localMay, /Blueprint output is advisory and never implementation authority\./);
   assert.match(localMay, /Own all production implementation\./);
-  assert.match(localMay, /actual Coulson Wheels Up/i);
+  assert.match(
+    localMay,
+    /implement\s+only [\s\S]* after actual Coulson Wheels Up and the eligible\s+exact-revision plan gate/i,
+  );
   assert.match(
     hostedMay,
     /hosted or local runtime does\s+not alter these duties/i,
   );
-  assert.match(hostedMay, /existing Coulson Wheels Up/i);
+  assert.match(
+    hostedMay,
+    /implement the exact[\s\S]* after the existing Coulson Wheels Up and exact-revision plan\s+gate[\s\S]* are satisfied/i,
+  );
   assert.match(hostedMay, /model = "gpt-5\.3-codex-spark"/);
   assert.match(localMay, /model: Claude Sonnet 4\.5 \(copilot\)/);
 
   assert.match(
     charter,
     /Melinda May owns all production implementation and the non-authoritative implementation blueprint/,
+  );
+  assert.match(
+    charter,
+    /may produce production effects only after actual Coulson Wheels Up and the eligible exact-revision Fury plan gate/i,
   );
   assert.match(
     charter,
