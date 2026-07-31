@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const LAUNCHER_ROOT = resolve(dirname(fileURLToPath(import.meta.url)));
@@ -14,15 +14,17 @@ function digest(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function outside(path, fixtureRoot) {
-  return path !== fixtureRoot && !path.startsWith(`${fixtureRoot}/`);
+function inside(path, fixtureRoot) {
+  const relation = relative(fixtureRoot, path);
+  return relation === "" ||
+    (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation));
 }
 
 async function regularExternalFile(path, fixtureRoot) {
   const info = await lstat(path).catch(() => null);
   if (info === null || !info.isFile() || info.isSymbolicLink()) return null;
   const resolved = await realpath(path).catch(() => null);
-  if (resolved === null || !outside(resolved, fixtureRoot)) return null;
+  if (resolved === null || inside(resolved, fixtureRoot)) return null;
   return resolved;
 }
 
@@ -33,7 +35,9 @@ async function readExternalJson(path, fixtureRoot) {
 }
 
 export async function loadTrustedReplayAnchor({ anchorPath, fixtureRoot }) {
-  const envelope = await readExternalJson(resolve(anchorPath), resolve(fixtureRoot));
+  const root = await realpath(resolve(fixtureRoot)).catch(() => null);
+  if (root === null) throw new Error("external_trust_input_not_regular");
+  const envelope = await readExternalJson(resolve(anchorPath), root);
   if (envelope?.kind !== "trusted-journal-replay-anchor-envelope" ||
       !HEX64.test(envelope.digest) ||
       envelope.projection === null || typeof envelope.projection !== "object") {
@@ -63,7 +67,6 @@ const HOST_CONTEXT_FIELDS = Object.freeze([
 ]);
 
 export async function launchExternalFixture({ fixtureRoot, operatorInput, hostContext }) {
-  const root = resolve(fixtureRoot);
   if (!exact(hostContext, HOST_CONTEXT_FIELDS) ||
       typeof hostContext.baselinePath !== "string" ||
       hostContext.baselinePath.length === 0 ||
@@ -72,6 +75,8 @@ export async function launchExternalFixture({ fixtureRoot, operatorInput, hostCo
       hostContext.toolingContext !== null) {
     throw new Error("host_context_not_closed");
   }
+  const root = await realpath(resolve(fixtureRoot)).catch(() => null);
+  if (root === null) throw new Error("fixture_root_not_regular");
   let baseline;
   try {
     baseline = await readExternalJson(resolve(hostContext.baselinePath), root);

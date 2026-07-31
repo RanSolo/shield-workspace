@@ -12,7 +12,6 @@ import {
   evaluateSeatDispatchAttributionV1
 } from "@shield/team-system/dispatch-receipts";
 
-import { verifyFixtureIdentity } from "../verify-fixture-identity.mjs";
 import { launchExternalFixture, loadTrustedReplayAnchor } from "../../v0.3-fixture-host-launcher.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -27,7 +26,7 @@ const FIXTURE_RELEASE_BASELINE = Object.freeze({
   schemaVersion: "shield.fixture.release-baseline.v1",
   identityRecordDigest: "b41666c354d48e40816154828985e0b350e641d2773a2506c68742d736fd7cb0",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
-  launcherDigest: "960756a8da899f7cedf92312202e65d8820bff3a70af0e37499389a2c934034f",
+  launcherDigest: "bb667dc434434fba12da9ecc272e808909534bd1fde126772c5569a14462c9bb",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
@@ -154,6 +153,28 @@ const REPLAY_ANCHOR_PROJECTION = Object.freeze({
   currentSequence: 1,
   lifecycle: "mission:lifecycle"
 });
+const preflightDirectory = await mkdtemp(join(tmpdir(), "shield-v03-entry-preflight-"));
+try {
+  const baselinePath = join(preflightDirectory, "release-baseline.json");
+  await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  const preflight = await launchExternalFixture({
+    fixtureRoot: root,
+    operatorInput: {},
+    hostContext: {
+      baselinePath,
+      authoritativeReceiptJournalPath: null,
+      attributionContext: null,
+      toolingContext: null
+    }
+  });
+  if (preflight.state !== "invalid" || preflight.reason !== "fixture_input_not_closed") {
+    throw new Error(`fixture launcher preflight failed: ${preflight.state}:${preflight.reason}`);
+  }
+} finally {
+  await rm(preflightDirectory, { recursive: true, force: true });
+}
+
+const { verifyFixtureIdentity } = await import("../verify-fixture-identity.mjs");
 const fixtureIdentity = await verifyFixtureIdentity(root, FIXTURE_RELEASE_BASELINE);
 if (fixtureIdentity.state !== "valid") {
   throw new Error(`fixture identity preflight failed: ${fixtureIdentity.state}:${fixtureIdentity.reason}`);
@@ -592,6 +613,57 @@ test("host launcher requires a closed host context", async () => {
     }),
     /host_context_not_closed/
   );
+});
+
+test("host launcher reaches composition only with an external baseline and keeps host fields out of operator input", async (context) => {
+  const outside = await mkdtemp(join(tmpdir(), "shield-v03-valid-host-baseline-"));
+  context.after(() => rm(outside, { recursive: true, force: true }));
+  const baselinePath = join(outside, "release-baseline.json");
+  await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  const result = await launchExternalFixture({
+    fixtureRoot: root,
+    operatorInput: { releaseBaseline: FIXTURE_RELEASE_BASELINE },
+    hostContext: {
+      baselinePath,
+      authoritativeReceiptJournalPath: null,
+      attributionContext: null,
+      toolingContext: null
+    }
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.reason, "fixture_input_not_closed");
+});
+
+test("host launcher rejects fixture-local baselines through canonical root and parent symlinks", async (context) => {
+  const copied = await withFixtureCopy(async () => {});
+  const outside = await mkdtemp(join(tmpdir(), "shield-v03-symlinked-host-baseline-"));
+  context.after(() => rm(copied, { recursive: true, force: true }));
+  context.after(() => rm(outside, { recursive: true, force: true }));
+  const localBaseline = join(copied, "release-baseline.json");
+  await writeFile(localBaseline, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  const linkedRoot = join(outside, "fixture-root");
+  const linkedParent = join(outside, "fixture-parent");
+  await symlink(copied, linkedRoot);
+  await symlink(copied, linkedParent);
+
+  for (const candidate of [
+    { fixtureRoot: linkedRoot, baselinePath: localBaseline },
+    { fixtureRoot: copied, baselinePath: join(linkedParent, "release-baseline.json") }
+  ]) {
+    await assert.rejects(
+      launchExternalFixture({
+        fixtureRoot: candidate.fixtureRoot,
+        operatorInput: {},
+        hostContext: {
+          baselinePath: candidate.baselinePath,
+          authoritativeReceiptJournalPath: null,
+          attributionContext: null,
+          toolingContext: null
+        }
+      }),
+      /baseline_path_not_regular/
+    );
+  }
 });
 
 test("host launcher accepts only an externally digested replay-anchor envelope", async (context) => {
