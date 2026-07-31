@@ -264,8 +264,10 @@ Stop and narrow the packet when:
 On any stop-and-narrow trigger, discard the malformed delta, retain the last
 accepted artifact, narrow the packet, and retry or reroute according to seat
 ownership. A first unsupported capability, tool, or command claim must stop and
-narrow. Escalate only when the narrowed retry repeats the unsupported claim and
-creates material ambiguity, risk, authority changes, or a required human gate.
+narrow. If the narrowed retry repeats the unsupported claim and leaves material
+repository ambiguity, escalate that claim. Material risk, authority changes,
+and required human gates follow their normal escalation rules without waiting
+for a retry.
 
 ## Stop Conditions
 

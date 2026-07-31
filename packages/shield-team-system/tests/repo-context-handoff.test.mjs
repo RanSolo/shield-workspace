@@ -9,8 +9,26 @@ async function readRepoFile(path) {
   return readFile(resolve(repoRoot, path), "utf8");
 }
 
+function section(text, startHeading, endHeading) {
+  const start = text.indexOf(startHeading);
+  const end = text.indexOf(endHeading, start);
+  assert.notEqual(start, -1, `missing section ${startHeading}`);
+  assert.notEqual(end, -1, `missing section ${endHeading}`);
+  return text.slice(start, end);
+}
+
 test("repo context discovery defines the small-packet rubric for every specialist seat", async () => {
   const playbook = await readRepoFile("playbooks/repo-context-discovery.md");
+  const packetStopSection = section(
+    playbook,
+    "## Specialist Packet Stop-and-Narrow",
+    "## Stop Conditions",
+  );
+  const discoveryStopSection = section(
+    playbook,
+    "## Stop Conditions",
+    "## Deliverable",
+  );
 
   assert.match(playbook, /## Small-Packet Specialist Rubric/);
   assert.match(playbook, /applies to local and hosted specialist runs/i);
@@ -35,16 +53,18 @@ test("repo context discovery defines the small-packet rubric for every specialis
   assert.match(playbook, /Hill reroutes when the\s+accountable owner or work category changes/i);
   assert.match(playbook, /Hill escalates when an authority\s+surface or human gate requires a material decision/i);
   assert.match(playbook, /## Specialist Packet Stop-and-Narrow/);
-  assert.match(playbook, /packet expands beyond one primary artifact without a stated reason/i);
-  assert.match(playbook, /allowed files exceed the smallest objective-bound slice/i);
-  assert.match(playbook, /duplicates Mission Brief, prior artifact, or evidence bodies/i);
-  assert.match(playbook, /carry-forward base is absent, stale, or mismatched/i);
-  assert.match(playbook, /response leaks scratchpad or chain-of-thought/i);
-  assert.match(playbook, /response invents capabilities or authority/i);
-  assert.match(playbook, /response shape does not match the requested output contract/i);
-  assert.match(playbook, /first unsupported capability, tool, or command claim must stop and\s+narrow/i);
-  assert.match(playbook, /narrowed retry repeats the unsupported claim and\s+creates material ambiguity, risk, authority changes, or a required human gate/i);
-  assert.match(playbook, /repeats an unsupported capability, tool, or command claim\s+after a narrowed retry/i);
+  assert.match(packetStopSection, /packet expands beyond one primary artifact without a stated reason/i);
+  assert.match(packetStopSection, /allowed files exceed the smallest objective-bound slice/i);
+  assert.match(packetStopSection, /duplicates Mission Brief, prior artifact, or evidence bodies/i);
+  assert.match(packetStopSection, /carry-forward base is absent, stale, or mismatched/i);
+  assert.match(packetStopSection, /response leaks scratchpad or chain-of-thought/i);
+  assert.match(packetStopSection, /response invents capabilities or authority/i);
+  assert.match(packetStopSection, /response shape does not match the requested output contract/i);
+  assert.match(packetStopSection, /first unsupported capability, tool, or command claim must stop and\s+narrow/i);
+  assert.match(packetStopSection, /narrowed retry repeats the unsupported claim and leaves material\s+repository ambiguity/i);
+  assert.match(packetStopSection, /Material risk, authority changes,\s+and required human gates follow their normal escalation rules/i);
+  assert.match(discoveryStopSection, /repeats an unsupported capability, tool, or command claim\s+after a narrowed retry/i);
+  assert.doesNotMatch(discoveryStopSection, /first unsupported capability, tool, or command claim must stop and\s+narrow/i);
   assert.match(playbook, /"reasoning leakage" means scratchpad, chain-of-thought/i);
 });
 
