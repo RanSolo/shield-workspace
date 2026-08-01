@@ -5,71 +5,78 @@
 - Accountable seat: May
 - Reasoning runtime: hosted May (`gpt-5.3-codex-spark`, high reasoning)
 - Tool executor: Codex hosted-agent runtime
-- Hill action: materialized May's returned blueprint verbatim as a tracked artifact; Hill does not assume May ownership
+- Hill action: materialized May's successor blueprint as a tracked artifact; Hill does not assume May ownership
 
-## Mission identity and non-authority
-- Implement only as an exact-action blueprint (non-authoritative).
+## Fury status and governing defect
+- Latest Fury state: `FURY_REVISE` on exact planning head `6b21b0565173d568e3268c261fbffabcfd354b89`.
+- Binding update: plan must be treated as frozen at commit `6b21b0565173d568e3268c261fbffabcfd354b89` with Hill plan SHA-256 `088edd34eb1e6e6bef2af1888e11f4e0fcd52943d48f8d0cbc9ee2c95b142eb5`.
+- This blueprint is non-authoritative and remains implementation planning; no edits executed in this response.
+
+## Mission identity
 - Mission: `mission:issue-137-ac4-correction`
 - Mission revision: `sha256:PoxkVrolxT0o4zBXXlSjehOjxQHjba1SWQrzlRVXMiE`
-- Hill plan commit: `6e5c3a3c1f8e09087beb90ec09979156c5ba9cff`
-- Hill plan sha256: `30e719b5e8b907b7f1448d0e6fbeea743a173f765ad37b2bfe3def8aef8704c9`
 - Scope-freeze base: `b8bba50510423591fa5e1e6d874c8176ea162353`
-- Exact Fury precondition before edits: `FURY_APPROVE` on the future plan commit/digest, PR #168 readback at the same head, and literal `dispatch_ready` from existing Delivery Workspace guard with current permission/executor/runtime binding.
-- Prohibited now: external run, `#29`, merge, deploy, release, scope expansion, and any human simulation.
+- Branch: `agent/issue-137-ac4-correction`
+- Draft PR: `#168`
 
-## Exact change set (must be exactly these 6 paths)
+## Immutable planning artifacts (must not be mutated during May implementation)
+- `docs/missions/issue-137-ac4-correction-plan.md`
+- `docs/missions/issue-137-ac4-correction-mission-brief.json`
+- `docs/missions/issue-137-ac4-correction-may-blueprint.md`
+
+## Allowed writable implementation paths (exactly three)
 1. `benchmarks/v0.3-external-acceptance-v1/evidence-inventory.mjs`
 2. `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
 3. `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json`
-4. `docs/missions/issue-137-ac4-correction-mission-brief.json`
-5. `docs/missions/issue-137-ac4-correction-plan.md`
-6. `docs/missions/issue-137-ac4-may-blueprint.md`
 
-## Implementation sequence (in order)
-1. Source update: `benchmarks/v0.3-external-acceptance-v1/evidence-inventory.mjs`
-- Replace definition field `measurementClass` with `defaultMeasurementClass` for all definitions, preserving existing values.
-- Add immutable closed class set: `{"measured","derived","estimated","not-observable"}`.
-- Keep pending entries emitted with `measurementClass: null`.
-- In recorded-entry validation:
-  - Accept `measurementClass` only from the closed set.
-  - Reject malformed/unknown/accessor-backed/inherited/null values as malformed with existing `evidence_measurement_class_malformed:<evidenceId>` precedence.
-- Preserve existing authority and provenance semantics; keep `authority` immutable and independent from class.
-- Preserve existing `requiresAttribution: true` behavior for those definitions.
-- Add operator-recorded override rule:
-  - If `definition.authority === "operator-recorded"` and `entry.measurementClass === "measured"`, require existing dispatch-receipt attribution path and matching replay exactly as today's attribution model does.
-  - No fallback to caller-only claimed measurement.
-- Keep non-operator measured/derived/estimated authority-only classes valid as metadata only; do not grant readiness.
-- Use identical effective-attribution predicate in `closeEvidenceEntry(...)` and `gradeEvidenceInventory(...)`.
+## Exact complete delta from scope-freeze base (exactly six paths total)
+- The above three implementation paths, plus the three planning artifacts above.
 
-2. Test update: `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
-- Keep `human-only` and existing human-kernel-stop behavior unchanged.
-- Update tests to prove:
+## Core implementation requirements (preserved)
+1. Measurement-class correction
+- Replace each definition field `measurementClass` with `defaultMeasurementClass` preserving current values.
+- Pending entries continue to emit `measurementClass: null`.
+- Recorded entries validate only:
+  - `measured`
+  - `derived`
+  - `estimated`
+  - `not-observable`
+- Preserve all malformed/null/unknown/accessor-backed/inherited failures as `evidence_measurement_class_malformed:<evidenceId>` with existing precedence.
+
+2. Closed authority / readiness invariants
+- Do not derive readiness or authority from `measurementClass`.
+- Keep `authority` immutable and independent.
+- Keep dependency reasons, waiting/missing state model, and human-kernel stops unchanged.
+- Preserve fixture identity framing, covered artifact order, lifecycle, and non-measurement semantics unless required by this correction.
+
+3. Attribution behavior
+- For definitions with `requiresAttribution: true`, keep existing exact dispatch receipt/replay requirements.
+- Add strict operator-recorded guard:
+  - `operator-recorded` + `measured` requires existing exact attribution path and matching replay input; fail closed without it.
+  - No fallback semantics.
+- Human-only entries keep existing verified-human evidence requirement and cannot be satisfied via dispatch attribution.
+
+4. Test changes
+- Extend `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs` to prove:
   - all pending entries remain `measurementClass: null`;
-  - closed recorded class acceptance includes `estimated` (and continues to include `measured`, `derived`, `not-observable`) and rejects unknown malformed classes;
-  - caller-only `operator-recorded` entry defaults remain not-observable and `measured` is rejected without exact receipt/replay attribution;
-  - independently attributed `operator-recorded` entries can be `measured`;
-  - hostile attribution matrix for `operator-recorded measured`: missing attribution input, malformed receipt, stale mission/repository revision, wrong workspace, wrong parent/child session pair, wrong seat, non-terminal lifecycle, and receipt reuse.
-  - existing human evidence gates still produce `human_evidence_requires_kernel_validation:<evidenceId>` when recorded and unchanged reasons/seat checks remain intact.
-- Add executable identity baseline test with the exact name:
-  - `corrected fixture identity baseline verifies the frozen artifact set`
-  - assert `verifyFixtureIdentity(...)` returns `state: "valid"`.
+  - recorded entries accept the full four-class matrix and reject malformed/unknown classes;
+  - caller-only `operator-recorded` cannot claim `measured` without exact attribution;
+  - independently attributed operator evidence can be `measured`;
+  - hostile attribution matrix for operator-recorded measured path remains closed for missing input, malformed receipt, stale mission/repository revision, wrong workspace, wrong parent/child session, wrong seat, non-terminal lifecycle, and receipt reuse;
+  - human-only behavior remains a kernel-validation stop with existing seat and reference checks.
+- Add executable identity baseline test asserting literal `state === "valid"` for corrected fixture identity preflight.
 
-3. Identity record update: `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json`
-- Update only `coveredArtifacts.evidence-inventory.digest` to the framed digest for the updated `evidence-inventory.mjs`.
-- Keep all other fields/ordering stable unless digest recalculation forces minimal structural changes.
+5. Fixture identity constraint (corrected defect)
+- `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json` may change **only**:
+  - `coveredArtifacts.evidence-inventory.digest`
+- No other structural or semantic field changes are permitted.
+- Update any corresponding identity baseline digest in test fixture code to match the resulting immutable identity file digest.
 
-4. Baseline record digest update in fixture test
-- Update `FIXTURE_RELEASE_BASELINE.identityRecordDigest` in `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs` to match the new `fixture-identity-v1.json` identity-file digest.
-
-5. Validation
-- Run focused executable identity test (after step 4).
-- Run full benchmark suite after all source/test/identity changes.
-
-## Required validation commands (from Hill plan)
+## Validation requirements (unchanged)
 1. `node --test --test-name-pattern='corrected fixture identity baseline verifies the frozen artifact set' benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
 2. `npm --prefix benchmarks/v0.3-external-acceptance-v1 test`
 3. `git diff --check`
 
-## Stop conditions
-- If current permission binding, plan digest, branch/PR head, or guard output is anything other than literal `dispatch_ready`, implementation halts and returns to Hill/Fury with blocker evidence.
-- No scope beyond these six paths.
+## Execution guardrails (unchanged)
+- No external run, no `#29`, no merge, deploy, or release effect, no expanded paths, no human evidence simulation.
+- No implementation until an exact plan gate and local dispatch eligibility are both current and literal `dispatch_ready` with complete binding checks.
