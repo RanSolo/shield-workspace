@@ -22,7 +22,7 @@
 ## Immutable planning artifacts (must not be mutated during May implementation)
 - `docs/missions/issue-137-ac4-correction-plan.md`
 - `docs/missions/issue-137-ac4-correction-mission-brief.json`
-- `docs/missions/issue-137-ac4-correction-may-blueprint.md`
+- `docs/missions/issue-137-ac4-may-blueprint.md`
 
 ## Allowed writable implementation paths (exactly three)
 1. `benchmarks/v0.3-external-acceptance-v1/evidence-inventory.mjs`
