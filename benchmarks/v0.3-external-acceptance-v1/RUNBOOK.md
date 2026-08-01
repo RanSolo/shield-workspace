@@ -78,6 +78,17 @@ The current v1 driver:
 While those blockers remain, package installation, artifact composition,
 adapter-failure candidate generation, and candidate execution are deferred.
 
+After those blockers are dispositioned, execution-capable package composition
+must use the independently pinned launcher entry point
+`composeExternalArtifact(...)`. It copies the exact external tarball into a
+private disposable root, runs offline `npm install --ignore-scripts` as the
+separate `composition.install` phase, and imports only the three frozen public
+surfaces as `composition.import`. Both phases require the external isolation
+envelope, fresh protected-adapter evidence, bounded process-group supervision,
+and closed revision-bound receipts. Direct composition remains blocked; a
+missing or uncertain denial proof is isolation `not-observable`, not evidence
+that no effect occurred.
+
 ## Candidate grading, failure injection, and rollback
 
 After the human-authorized mission produces a candidate that passes

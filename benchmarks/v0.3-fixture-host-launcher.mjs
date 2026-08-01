@@ -13,13 +13,20 @@ const REVISION = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const ID = /^[a-z0-9](?:[a-z0-9._-]{0,63})$/u;
 const SANDBOX_EXECUTABLE = "/usr/bin/sandbox-exec";
 const WORKER_SOURCE = resolve(LAUNCHER_ROOT, "v0.3-fixture-isolation-worker.mjs");
-const EXPECTED_ISOLATION_ENVELOPE_DIGEST = "607527031f4386409cc76f1fb81250634cd2e8b4a53a37632ee9219bf2adf79a";
+const EXPECTED_ISOLATION_ENVELOPE_DIGEST = "41c6ceb06192d587558140ed5c58de3e24672611327205e56504636054f70efc";
 const POLICY_CONTRACT = JSON.stringify({
   schemaVersion: "shield.fixture.denial-policy.v1",
   network: "deny",
   writes: "workspace-only",
   processExec: "pinned-node-only"
 });
+const ISOLATION_REQUEST_FIELDS = Object.freeze([
+  "schemaVersion", "invocationId", "workspaceRoot", "baseRevision", "headRevision",
+  "phase", "targetSha256", "targetMode", "testSha256", "testMode", "executableSha256",
+  "workerSha256", "probeSha256", "argv", "adapterId", "adapterPath", "adapterSha256",
+  "adapterCdHashSha256", "adapterArgv", "policyId", "policyContractSha256",
+  "concretePolicySha256", "hostEvidenceDigest", "executionPermitPath", "timeoutMs", "maxOutputBytes"
+]);
 const execFileAsync = promisify(execFile);
 
 function json(value) {
@@ -99,6 +106,20 @@ function closedDataObject(value, fields) {
   const descriptors = Object.getOwnPropertyDescriptors(value);
   return fields.every((field) => Object.hasOwn(descriptors, field) &&
     Object.hasOwn(descriptors[field], "value") && descriptors[field].enumerable);
+}
+
+export function validateIsolationReceipt(terminal, request) {
+  if (!closedDataObject(request, ISOLATION_REQUEST_FIELDS) ||
+      request.schemaVersion !== "shield.fixture.isolation-request.v1") return false;
+  const receipt = terminal?.receipt;
+  const expectedReceiptFields = Object.freeze([...ISOLATION_REQUEST_FIELDS, "outcome", "outputSha256"]);
+  return closedDataObject(terminal, ["receipt"]) &&
+    closedDataObject(receipt, expectedReceiptFields) &&
+    receipt.schemaVersion === "shield.fixture.isolation-receipt.v1" &&
+    ISOLATION_REQUEST_FIELDS.every((key) => key === "schemaVersion" ||
+      JSON.stringify(receipt[key]) === JSON.stringify(request[key])) &&
+    ["passed", "failed", "timeout", "unavailable", "denied"].includes(receipt.outcome) &&
+    HEX64.test(receipt.outputSha256);
 }
 
 const ENVELOPE_FIELDS = Object.freeze(["schemaVersion", "adapter", "denialPolicy", "worker"]);
@@ -187,7 +208,11 @@ export async function launchExternalFixture({ fixtureRoot, operatorInput, hostCo
 }
 
 const GRADING_HOST_FIELDS = Object.freeze([
-  "baselinePath", "isolationEnvelopePath", "interruptAfterPhase"
+  "baselinePath", "isolationEnvelopePath", "interruptAfterPhase", "failAfterCheckpoint"
+]);
+const HOST_CHECKPOINTS = Object.freeze([
+  "workspace.prepared", "candidate.passed", "defect.injected", "injected.failed",
+  "candidate.restored", "restored.passed", "workspace.removed", "operator.reverified"
 ]);
 const SNAPSHOT_PATHS = Object.freeze(["src/greeting.mjs", "test/greeting.test.mjs"]);
 
@@ -300,8 +325,7 @@ function sandboxProfile(workspaceRoot, nodePath) {
     "(allow default)",
     "(deny file-write*)",
     `(allow file-write* (subpath ${quoted(workspaceRoot)}))`,
-    "(deny process-exec)",
-    `(allow process-exec (literal ${quoted(nodePath)}))`,
+    `(deny process-exec (require-not (literal ${quoted(nodePath)})))`,
     "(deny network*)"
   ].join("\n");
 }
@@ -314,7 +338,7 @@ async function phaseFileIdentity(root, path) {
 
 async function runIsolatedPhase({
   adapterPath, workerPath, workspaceRoot, baseRevision, headRevision, phase,
-  sequence, nonce, envelope, nodeIdentity, interruptAfterPhase, adapterVerifier
+  sequence, nonce, envelope, nodeIdentity, nodeBytes, interruptAfterPhase, adapterVerifier
 }) {
   const target = await phaseFileIdentity(workspaceRoot, "src/greeting.mjs");
   const test = await phaseFileIdentity(workspaceRoot, "test/greeting.test.mjs");
@@ -325,6 +349,12 @@ async function runIsolatedPhase({
   } catch {
     return Object.freeze({ state: "blocked", reason: "isolation_not_observable", phase, reaped: true });
   }
+  const requestPath = resolve(workspaceRoot, "request.json");
+  const permitPath = resolve(workspaceRoot, "execution.permit");
+  const nodePath = resolve(dirname(workerPath), `node-${sequence}`);
+  await copySealed(nodeBytes, nodePath, nodeIdentity, true);
+  const profile = sandboxProfile(workspaceRoot, nodePath);
+  const adapterArgv = Object.freeze(["-p", profile, nodePath, workerPath, requestPath]);
   const request = Object.freeze({
     schemaVersion: "shield.fixture.isolation-request.v1",
     invocationId,
@@ -337,40 +367,67 @@ async function runIsolatedPhase({
     testSha256: test.sha256,
     testMode: test.mode,
     executableSha256: nodeIdentity,
-    argv: Object.freeze(phase === "isolation.probe" ? ["probe"] : ["--test", "test/greeting.test.mjs"]),
+    workerSha256: envelope.worker.sha256,
+    probeSha256: phase === "isolation.probe" ? envelope.worker.sha256 : null,
+    argv: Object.freeze(phase === "isolation.probe"
+      ? ["probe"]
+      : phase === "composition.import"
+        ? ["import", "consumer.mjs"]
+        : ["--test", "test/greeting.test.mjs"]),
     adapterId: envelope.adapter.adapterId,
+    adapterPath,
+    adapterSha256: envelope.adapter.executableSha256,
+    adapterCdHashSha256: envelope.adapter.cdHashSha256,
+    adapterArgv,
     policyId: envelope.denialPolicy.policyId,
+    policyContractSha256: envelope.denialPolicy.policySha256,
+    concretePolicySha256: digest(Buffer.from(profile)),
     hostEvidenceDigest: hostProof.digest,
+    executionPermitPath: permitPath,
     timeoutMs: 30_000,
     maxOutputBytes: 262_144
   });
-  const requestPath = resolve(workspaceRoot, "request.json");
   await writeFile(requestPath, JSON.stringify(request), { mode: 0o600, flag: "wx" });
-  const profile = sandboxProfile(workspaceRoot, process.execPath);
-  const child = spawn(adapterPath, ["-p", profile, process.execPath, workerPath, requestPath], {
+  const child = spawn(adapterPath, adapterArgv, {
     cwd: workspaceRoot,
     env: Object.freeze({ PATH: "", HOME: workspaceRoot, TMPDIR: workspaceRoot }),
+    detached: true,
     stdio: ["ignore", "pipe", "pipe"]
   });
+  const killGroup = () => {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+  };
   let stdout = "";
   let stderr = "";
   let interrupted = false;
+  let permitPromise = null;
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     stdout += chunk;
-    if (stdout.length > 262_144) child.kill("SIGKILL");
-    if (!interrupted && interruptAfterPhase === phase && stdout.includes('"checkpoint":"worker.started"')) {
-      interrupted = true;
-      child.kill("SIGKILL");
+    if (stdout.length > 262_144) killGroup();
+    if (permitPromise === null && stdout.includes('"checkpoint":"worker.started"')) {
+      interrupted = interruptAfterPhase === phase;
+      permitPromise = rm(nodePath, { force: true }).then(async () => {
+        if (interrupted) {
+          killGroup();
+        } else {
+          await writeFile(permitPath, invocationId, { mode: 0o400, flag: "wx" });
+        }
+      });
     }
   });
+  if (permitPromise !== null) await permitPromise.catch(() => killGroup());
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
-    if (stderr.length > 262_144) child.kill("SIGKILL");
+    if (stderr.length > 262_144) killGroup();
   });
   const exit = await new Promise((resolveExit) => {
-    const timer = setTimeout(() => child.kill("SIGKILL"), 35_000);
+    const timer = setTimeout(killGroup, 35_000);
     child.once("error", (error) => {
       clearTimeout(timer);
       resolveExit({ error });
@@ -380,37 +437,41 @@ async function runIsolatedPhase({
       resolveExit({ code, signal });
     });
   });
+  let groupQuiescent = false;
+  try {
+    process.kill(-child.pid, 0);
+  } catch (error) {
+    groupQuiescent = error?.code === "ESRCH";
+  }
   await rm(requestPath, { force: true });
+  await rm(permitPath, { force: true });
   try {
     const afterProof = await adapterVerifier(invocationId);
     if (afterProof.digest !== hostProof.digest) throw new Error("host_evidence_changed");
   } catch {
     return Object.freeze({ state: "blocked", reason: "isolation_not_observable", phase, reaped: true });
   }
+  if (!groupQuiescent) return Object.freeze({ state: "blocked", reason: "worker_descendants_not_quiescent", phase, reaped: true });
   if (interrupted) return Object.freeze({ state: "blocked", reason: "worker_interrupted", phase, reaped: true });
   if (exit.error || exit.code !== 0 || exit.signal !== null) {
     return Object.freeze({ state: "blocked", reason: "worker_execution_uncertain", phase, reaped: true });
   }
   const lines = stdout.trim().split("\n").filter(Boolean);
   if (lines.length !== 2) return Object.freeze({ state: "blocked", reason: "worker_receipt_malformed", phase, reaped: true });
+  let checkpoint;
   let terminal;
   try {
+    checkpoint = JSON.parse(lines[0]);
     terminal = JSON.parse(lines[1]);
   } catch {
     return Object.freeze({ state: "blocked", reason: "worker_receipt_malformed", phase, reaped: true });
   }
+  if (!closedDataObject(checkpoint, ["checkpoint", "invocationId"]) || checkpoint.checkpoint !== "worker.started" ||
+      checkpoint.invocationId !== invocationId) {
+    return Object.freeze({ state: "blocked", reason: "worker_receipt_malformed", phase, reaped: true });
+  }
   const receipt = terminal?.receipt;
-  const expected = {
-    invocationId, workspaceRoot, baseRevision, headRevision, phase,
-    targetSha256: target.sha256, targetMode: target.mode,
-    testSha256: test.sha256, testMode: test.mode,
-    executableSha256: nodeIdentity, argv: request.argv,
-    adapterId: envelope.adapter.adapterId, policyId: envelope.denialPolicy.policyId,
-    hostEvidenceDigest: hostProof.digest
-  };
-  if (!plain(receipt) || Object.entries(expected).some(([key, value]) =>
-    JSON.stringify(receipt[key]) !== JSON.stringify(value)) ||
-    !["passed", "failed", "timeout", "unavailable", "denied"].includes(receipt.outcome) || !HEX64.test(receipt.outputSha256)) {
+  if (!validateIsolationReceipt(terminal, request)) {
     return Object.freeze({ state: "blocked", reason: "worker_receipt_mismatch", phase, reaped: true });
   }
   const targetAfter = await phaseFileIdentity(workspaceRoot, "src/greeting.mjs");
@@ -419,6 +480,181 @@ async function runIsolatedPhase({
     return Object.freeze({ state: "blocked", reason: "worker_workspace_mutated", phase, reaped: true });
   }
   return Object.freeze({ state: "terminal", phase, outcome: receipt.outcome, invocationId, reaped: true });
+}
+
+async function runCompositionInstall({
+  adapterPath, workspaceRoot, npmCliPath, npmCliSha256, artifactSha256,
+  envelope, nodeIdentity, nodeBytes, binRoot, baseRevision, headRevision, nonce, adapterVerifier
+}) {
+  const phase = "composition.install";
+  const invocationId = digest(Buffer.from(`${nonce}:install:${phase}`));
+  const hostProof = await adapterVerifier(invocationId);
+  const npmArgs = Object.freeze([
+    npmCliPath, "install", "--save-dev", "--save-exact", "shield-team-system.tgz",
+    "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--offline",
+    "--cache", resolve(workspaceRoot, ".npm-cache")
+  ]);
+  const nodePath = resolve(binRoot, "node-install");
+  await copySealed(nodeBytes, nodePath, nodeIdentity, true);
+  const profile = sandboxProfile(workspaceRoot, nodePath);
+  const adapterArgv = Object.freeze(["-p", profile, nodePath, ...npmArgs]);
+  const request = Object.freeze({
+    schemaVersion: "shield.fixture.composition-install-request.v1",
+    invocationId, workspaceRoot, baseRevision, headRevision, phase,
+    artifactSha256, executableSha256: nodeIdentity, npmCliPath, npmCliSha256,
+    adapterId: envelope.adapter.adapterId, adapterPath,
+    adapterSha256: envelope.adapter.executableSha256,
+    adapterCdHashSha256: envelope.adapter.cdHashSha256,
+    adapterArgv, policyId: envelope.denialPolicy.policyId,
+    policyContractSha256: envelope.denialPolicy.policySha256,
+    concretePolicySha256: digest(Buffer.from(profile)),
+    hostEvidenceDigest: hostProof.digest, timeoutMs: 60_000, maxOutputBytes: 262_144
+  });
+  const child = spawn(adapterPath, adapterArgv, {
+    cwd: workspaceRoot,
+    env: Object.freeze({ PATH: "", HOME: workspaceRoot, TMPDIR: workspaceRoot }),
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let output = Buffer.alloc(0);
+  const chunks = [];
+  const collect = (chunk) => {
+    chunks.push(chunk);
+    output = Buffer.concat(chunks);
+    if (output.length > request.maxOutputBytes) {
+      try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+    }
+  };
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+  const exit = await new Promise((done) => {
+    const timer = setTimeout(() => {
+      try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+    }, request.timeoutMs);
+    child.once("error", (error) => { clearTimeout(timer); done({ error }); });
+    child.once("close", (code, signal) => { clearTimeout(timer); done({ code, signal }); });
+  });
+  await rm(nodePath, { force: true });
+  let groupQuiescent = false;
+  try { process.kill(-child.pid, 0); } catch (error) { groupQuiescent = error?.code === "ESRCH"; }
+  const afterProof = await adapterVerifier(invocationId);
+  if (afterProof.digest !== hostProof.digest || !groupQuiescent || exit.error || exit.signal !== null) {
+    return Object.freeze({ state: "blocked", reason: "composition_install_uncertain" });
+  }
+  const receipt = Object.freeze({
+    ...request,
+    schemaVersion: "shield.fixture.composition-install-receipt.v1",
+    outcome: exit.code === 0 ? "passed" : "failed",
+    outputSha256: digest(output)
+  });
+  if (!closedDataObject(receipt, [...Reflect.ownKeys(request), "outcome", "outputSha256"])) {
+    return Object.freeze({ state: "blocked", reason: "composition_install_receipt_malformed" });
+  }
+  return Object.freeze({ state: "terminal", outcome: receipt.outcome, receipt });
+}
+
+const COMPOSITION_HOST_FIELDS = Object.freeze(["baselinePath", "isolationEnvelopePath"]);
+const COMPOSITION_CONSUMER = [
+  'await import("@shield/team-system/config");',
+  'await import("@shield/team-system/supervision");',
+  'await import("@shield/team-system/adapter");',
+  ""
+].join("\n");
+
+export async function composeExternalArtifact({
+  fixtureRoot, packageArtifactPath, baseRevision, headRevision, hostContext
+}) {
+  if (typeof fixtureRoot !== "string" || typeof packageArtifactPath !== "string" ||
+      !REVISION.test(baseRevision) || !REVISION.test(headRevision) || baseRevision.length !== headRevision.length ||
+      !closedDataObject(hostContext, COMPOSITION_HOST_FIELDS) || typeof hostContext.baselinePath !== "string" ||
+      typeof hostContext.isolationEnvelopePath !== "string") {
+    return Object.freeze({ state: "invalid", reason: "fixture_composition_input_not_closed" });
+  }
+  const benchmarkRoot = await realpath(resolve(fixtureRoot)).catch(() => null);
+  if (benchmarkRoot === null) return Object.freeze({ state: "blocked", reason: "fixture_root_not_regular" });
+  let supervisorRoot = null;
+  let adapterSource = null;
+  try {
+    const baseline = await readExternalJson(resolve(hostContext.baselinePath), benchmarkRoot);
+    const launcherBytes = await readFile(fileURLToPath(import.meta.url));
+    if (baseline.launcherDigest !== digest(launcherBytes)) return Object.freeze({ state: "blocked", reason: "launcher_digest_mismatch" });
+    const verifierPath = resolve(benchmarkRoot, "verify-fixture-identity.mjs");
+    if (baseline.verifierDigest !== digest(await readFile(verifierPath))) return Object.freeze({ state: "blocked", reason: "verifier_digest_mismatch" });
+    const verifier = await import(pathToFileURL(verifierPath).href);
+    const identity = await verifier.verifyFixtureIdentity(benchmarkRoot, baseline);
+    if (identity.state !== "valid") return identity;
+    const envelope = await loadTrustedIsolationEnvelope({
+      envelopePath: hostContext.isolationEnvelopePath,
+      fixtureRoot: benchmarkRoot
+    });
+    adapterSource = await openTrustedAdapter(envelope);
+    const workerSource = await readNoFollow(WORKER_SOURCE);
+    const nodeSource = await readNoFollow(process.execPath);
+    const npmCliPath = resolve(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js");
+    const npmCli = await readNoFollow(npmCliPath);
+    const artifactResolved = await regularExternalFile(resolve(packageArtifactPath), benchmarkRoot);
+    if (artifactResolved === null) return Object.freeze({ state: "blocked", reason: "package_artifact_not_regular" });
+    const artifact = await readNoFollow(artifactResolved);
+    if (digest(workerSource.bytes) !== envelope.worker.sha256) {
+      return Object.freeze({ state: "blocked", reason: "isolation_capability_identity_mismatch" });
+    }
+    supervisorRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-v03-composition-")));
+    await chmod(supervisorRoot, 0o700);
+    const workspaceRoot = resolve(supervisorRoot, "workspace");
+    const binRoot = resolve(supervisorRoot, "bin");
+    await mkdir(resolve(workspaceRoot, "src"), { recursive: true, mode: 0o700 });
+    await mkdir(resolve(workspaceRoot, "test"), { recursive: true, mode: 0o700 });
+    await mkdir(binRoot, { mode: 0o700 });
+    await writeFile(resolve(workspaceRoot, "src/greeting.mjs"), "export const greeting = () => 'composition';\n");
+    await writeFile(resolve(workspaceRoot, "test/greeting.test.mjs"), "export {};\n");
+    await writeFile(resolve(workspaceRoot, "package.json"), '{"private":true,"type":"module"}\n');
+    await writeFile(resolve(workspaceRoot, "shield-team-system.tgz"), artifact.bytes, { flag: "wx", mode: 0o400 });
+    await writeFile(resolve(workspaceRoot, "consumer.mjs"), COMPOSITION_CONSUMER, { flag: "wx", mode: 0o400 });
+    const workerPath = resolve(binRoot, envelope.worker.entryPoint);
+    await copySealed(workerSource.bytes, workerPath, envelope.worker.sha256, true);
+    const nonce = digest(Buffer.from(`${Date.now()}:${process.pid}:${supervisorRoot}:composition`));
+    const common = {
+      adapterPath: SANDBOX_EXECUTABLE, workerPath, workspaceRoot, baseRevision, headRevision, nonce, envelope,
+      nodeIdentity: digest(nodeSource.bytes), nodeBytes: nodeSource.bytes, interruptAfterPhase: null,
+      adapterVerifier: (invocationId) => verifyProtectedAdapter(adapterSource, envelope, invocationId)
+    };
+    const probe = await runIsolatedPhase({ ...common, phase: "isolation.probe", sequence: 0 });
+    if (probe.state !== "terminal" || probe.outcome !== "passed") return Object.freeze({ state: "blocked", reason: "isolation_not_observable" });
+    const install = await runCompositionInstall({
+      adapterPath: SANDBOX_EXECUTABLE, workspaceRoot, npmCliPath, npmCliSha256: digest(npmCli.bytes),
+      artifactSha256: digest(artifact.bytes), envelope, nodeIdentity: digest(nodeSource.bytes),
+      nodeBytes: nodeSource.bytes, binRoot,
+      baseRevision, headRevision, nonce,
+      adapterVerifier: (invocationId) => verifyProtectedAdapter(adapterSource, envelope, invocationId)
+    });
+    if (install.state !== "terminal" || install.outcome !== "passed") {
+      return Object.freeze({ state: "blocked", reason: "package_artifact_install_failed" });
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(await readFile(resolve(workspaceRoot, "node_modules/@shield/team-system/package.json"), "utf8"));
+    } catch {
+      return Object.freeze({ state: "blocked", reason: "installed_package_identity_missing" });
+    }
+    if (!plain(manifest) || manifest.name !== baseline.package.name || manifest.version !== baseline.package.version) {
+      return Object.freeze({ state: "blocked", reason: "installed_package_identity_mismatch" });
+    }
+    const imported = await runIsolatedPhase({ ...common, phase: "composition.import", sequence: 2 });
+    if (imported.state !== "terminal" || imported.outcome !== "passed") {
+      return Object.freeze({ state: "blocked", reason: "public_surface_composition_failed" });
+    }
+    return Object.freeze({
+      state: "composed",
+      artifactSha256: digest(artifact.bytes),
+      installedPackage: Object.freeze({ name: manifest.name, version: manifest.version }),
+      phases: Object.freeze(["composition.install", "composition.import"])
+    });
+  } catch {
+    return Object.freeze({ state: "blocked", reason: "composition_isolation_uncertain" });
+  } finally {
+    if (adapterSource !== null) await adapterSource.handle.close().catch(() => {});
+    if (supervisorRoot !== null) await rm(supervisorRoot, { recursive: true, force: true });
+  }
 }
 
 export async function gradeExternalFixture({
@@ -431,6 +667,12 @@ export async function gradeExternalFixture({
       !(hostContext.interruptAfterPhase === null || ["grade.candidate", "grade.injected", "grade.restored"].includes(hostContext.interruptAfterPhase))) {
     return Object.freeze({ state: "invalid", reason: "fixture_grading_input_not_closed" });
   }
+  if (!(hostContext.failAfterCheckpoint === null || HOST_CHECKPOINTS.includes(hostContext.failAfterCheckpoint))) {
+    return Object.freeze({ state: "invalid", reason: "fixture_grading_input_not_closed" });
+  }
+  const checkpointFailure = (checkpoint) => hostContext.failAfterCheckpoint === checkpoint
+    ? Object.freeze({ state: "blocked", reason: "host_checkpoint_interrupted", checkpoint })
+    : null;
   const benchmarkRoot = await realpath(resolve(fixtureRoot)).catch(() => null);
   const operatorRoot = await realpath(resolve(operatorRepositoryRoot)).catch(() => null);
   if (benchmarkRoot === null || operatorRoot === null || benchmarkRoot === operatorRoot) {
@@ -511,32 +753,40 @@ export async function gradeExternalFixture({
         materializedTest.sha256 !== before.files[1].sha256 || materializedTest.mode !== before.files[1].mode) {
       return Object.freeze({ state: "blocked", reason: "materialized_head_identity_mismatch" });
     }
+    if (checkpointFailure("workspace.prepared")) return checkpointFailure("workspace.prepared");
     const adapterPath = SANDBOX_EXECUTABLE;
     const workerPath = resolve(binRoot, envelope.worker.entryPoint);
     await copySealed(workerSource.bytes, workerPath, envelope.worker.sha256, true);
     const nonce = digest(Buffer.from(`${Date.now()}:${process.pid}:${supervisorRoot}`));
     const common = { adapterPath, workerPath, workspaceRoot, baseRevision, headRevision, nonce, envelope,
-      nodeIdentity: digest(nodeSource.bytes), interruptAfterPhase: hostContext.interruptAfterPhase,
+      nodeIdentity: digest(nodeSource.bytes), nodeBytes: nodeSource.bytes,
+      interruptAfterPhase: hostContext.interruptAfterPhase,
       adapterVerifier: (invocationId) => verifyProtectedAdapter(adapterSource, envelope, invocationId) };
     const probe = await runIsolatedPhase({ ...common, phase: "isolation.probe", sequence: 0 });
-    if (probe.state !== "terminal" || probe.outcome !== "passed") {
+    if (probe.state !== "terminal") return probe;
+    if (probe.outcome !== "passed") {
       return Object.freeze({ state: "blocked", reason: "isolation_not_observable" });
     }
     const candidate = await runIsolatedPhase({ ...common, phase: "grade.candidate", sequence: 1 });
     if (candidate.state !== "terminal") { result = candidate; return result; }
     if (candidate.outcome !== "passed") return Object.freeze({ state: "blocked", reason: "candidate_test_not_passed" });
+    if (checkpointFailure("candidate.passed")) return checkpointFailure("candidate.passed");
     const candidateBytes = await readFile(resolve(workspaceRoot, "src/greeting.mjs"));
     const defectBytes = await readFile(resolve(benchmarkRoot, "template/src/greeting.mjs"));
     await writeFile(resolve(workspaceRoot, "src/greeting.mjs"), defectBytes);
+    if (checkpointFailure("defect.injected")) return checkpointFailure("defect.injected");
     const injected = await runIsolatedPhase({ ...common, phase: "grade.injected", sequence: 2 });
     if (injected.state !== "terminal") { result = injected; return result; }
     if (injected.outcome !== "failed") return Object.freeze({ state: "blocked", reason: "failure_injection_not_observed" });
+    if (checkpointFailure("injected.failed")) return checkpointFailure("injected.failed");
     await writeFile(resolve(workspaceRoot, "src/greeting.mjs"), candidateBytes);
+    if (checkpointFailure("candidate.restored")) return checkpointFailure("candidate.restored");
     const restored = await runIsolatedPhase({ ...common, phase: "grade.restored", sequence: 3 });
     if (restored.state !== "terminal") { result = restored; return result; }
     if (restored.outcome !== "passed" || digest(await readFile(resolve(workspaceRoot, "src/greeting.mjs"))) !== digest(candidateBytes)) {
       return Object.freeze({ state: "blocked", reason: "rollback_mismatch" });
     }
+    if (checkpointFailure("restored.passed")) return checkpointFailure("restored.passed");
     result = Object.freeze({
       state: "passed",
       authority: "fixture-only-non-authoritative",
@@ -568,6 +818,8 @@ export async function gradeExternalFixture({
       state: "blocked",
       reason: !cleanup ? "disposable_cleanup_failed" : "operator_integrity_mismatch"
     });
+    if (checkpointFailure("workspace.removed")) return checkpointFailure("workspace.removed");
+    if (checkpointFailure("operator.reverified")) return checkpointFailure("operator.reverified");
   }
   return result;
 }
