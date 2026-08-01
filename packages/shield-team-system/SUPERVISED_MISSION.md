@@ -179,6 +179,12 @@ npx shield mission status --mission-id mission:example --json
 npx shield mission report --mission-id mission:example --json
 ```
 
+`status` and `report` are read-only and select replay by journal schema. Legacy
+schema 2–8 journals use supervised replay; canonical schema 9 journals use
+profile-aware replay. A journal that mixes schema 9 with a legacy schema fails
+closed, and neither format is reinterpreted through the other replay contract.
+`step` remains the supervised journal transition command.
+
 The first step records `not-started → running`; the second records
 `running → completed`; further steps are deterministic no-ops. Execution may be
 complete while acceptance readiness remains `waiting` for Fitz or conditional

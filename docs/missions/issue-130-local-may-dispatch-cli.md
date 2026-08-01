@@ -85,6 +85,9 @@ packets.
 | Daisy, one shared-validator seam | 2,594 tokens | 2.80 s | 870 tokens | Directly useful evidence inventory; one minor item-count error and near-zero correction cost. |
 | Daisy, CLI routing seam without the full contract | 1,684 tokens | 1.61 s | 803 tokens | Fast but under-contextualized; found the CLI branch and read-only root helper, then incorrectly reduced dispatch preflight to model availability. High host correction cost. |
 | Daisy, packet/context trust boundary | 1,391 tokens | 1.19 s | 773 tokens | Correctly separated untrusted work intent from host authority, but omitted required fields and exceeded the requested shape. Useful with moderate host correction. |
+| May, schema-9 read-only store seam | 2,116 tokens | 2.16 s | 1,906 tokens | Completed in 30.30 s but was not applyable: missed mixed schemas, broke return types/wrappers, and mishandled trailing JSONL newline. |
+| May, store correction packet | 1,310 tokens | 0.89 s | 400 tokens | Completed in 6.68 s but hallucinated nonexistent modules and types despite an exact defect list. Two-attempt threshold triggered host ownership of the path-safe seam. |
+| May, packed CLI test packet | 1,462 tokens | 1.20 s | 1,395 tokens | Completed in 21.63 s but invented profile APIs, omitted required mission IDs, and compared post-run bytes to themselves. Host correction cost exceeded utility. |
 | Daisy, full May executor dependency map | 12,486 tokens | 18.27 s | 3,380 tokens | Broadly useful but slow and included incorrect assumptions about model-origin injection. |
 | May, large evidence/test comparison | 20,264–22,751 tokens | 39–41 s | 534–585 tokens | Slow and insufficiently grounded; proposed redundant or already-present changes. |
 
