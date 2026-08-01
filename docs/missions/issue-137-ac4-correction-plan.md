@@ -27,6 +27,20 @@ This plan also supplies the missing #137 acceptance-criterion 6 evidence: Fury m
 - Preserve dispatch-receipt and replay-anchor validation; do not create a second attribution taxonomy.
 - Preserve unrelated #137 fixture isolation, lifecycle, package identity, and external-run behavior.
 
+## Specialist-dispatch authority binding
+
+Fury plan approval is necessary but not sufficient for May dispatch. Before implementation, Hill must obtain a literal `dispatch_ready` result from the existing Delivery Workspace guard for the current draft PR and must independently validate specialist-dispatch eligibility. The evidence supplied to those checks must bind:
+
+- the signed mission approval at revision `sha256:PoxkVrolxT0o4zBXXlSjehOjxQHjba1SWQrzlRVXMiE`;
+- repository `RanSolo/shield-workspace`, the canonical writable worktree, base branch `main`, and mission branch `agent/issue-137-ac4-correction`;
+- the new full plan commit and digest after all Fury corrections, not superseded commit `04d73d92da20e5d66cd3e3e08d06fd85ef9c826c`;
+- draft PR #168 and a verified readback whose head equals that plan commit;
+- blueprint artifact `docs/missions/issue-137-ac4-correction-plan.md`, accountable implementation seat `may`, and Fury `PASS` at the exact plan commit;
+- the exact May delta listed below, validation obligations, local/hosted runtime identity, and actual tool executor identity; and
+- prohibited external run, #29, merge, deployment, release, destructive, and expanded-scope effects.
+
+When governed local-May tooling is selected, its permission binding and fresh decision must additionally exact-match the mission revision, plan-head artifact revision, canonical worktree, branch, seat `may`, runtime, executor, and the three approved implementation paths. Missing, stale, malformed, substituted, or mismatched guard, review, permission, scope, runtime, executor, repository, branch, PR, or revision evidence stops implementation. The operator's sequencing approval in chat is not substituted for these executable checks.
+
 ## Observed defect at the scope-freeze base
 
 - `createPendingEntry(...)` correctly emits `measurementClass: null`.
@@ -71,18 +85,25 @@ Update `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs` to prove:
 - recorded human evidence can preserve each class while still requiring exact verified-human evidence and remaining a Kernel-validation stop;
 - caller-only operator evidence defaults to `not-observable` and cannot claim `measured` without exact existing attribution;
 - independently attributed operator evidence may be `measured`;
+- the new operator-`measured` path accepts only an exact attributed receipt and replay input, while missing attribution input, malformed receipt, stale mission or repository revision, wrong workspace, wrong parent or child session, wrong seat, non-terminal lifecycle, and receipt reuse fail closed with existing reason behavior;
 - existing `measured`, `derived`, and `not-observable` fixtures retain their authority, requirement, pending state, and reason behavior;
 - measurement-class changes alone cannot alter readiness, satisfy a human gate, or remove a missing-evidence reason;
-- invalid class errors retain current fail-closed precedence.
+- recorded-class `null`, unknown, inherited, and accessor-backed values fail without invoking accessors and retain current deterministic measurement-class precedence.
 
 ### 5. Content-addressed fixture updates
 
-Implementation may change only:
+The May-owned implementation delta may contain exactly these three paths:
 
 - `benchmarks/v0.3-external-acceptance-v1/evidence-inventory.mjs`;
 - `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`;
-- `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json`, updating only the evidence-inventory framed digest;
-- the independently pinned test release-baseline identity-record digest in `fixture.test.mjs` after the identity record is frozen.
+- `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json`.
+
+Within `fixture-identity-v1.json`, only the evidence-inventory framed digest may change. Within `fixture.test.mjs`, only bounded tests for this correction and the independently pinned release-baseline identity-record digest may change.
+
+The complete scope-freeze-base-to-implementation-head delta must contain exactly those three implementation paths plus the two planning artifacts:
+
+- `docs/missions/issue-137-ac4-correction-mission-brief.json`;
+- `docs/missions/issue-137-ac4-correction-plan.md`.
 
 Do not change the fixture manifest, driver, verifier, host launcher, isolation worker, template, package identity, or runbook unless Fury first returns `REVISE` identifying an unavoidable contract inconsistency.
 
@@ -90,11 +111,14 @@ Do not change the fixture manifest, driver, verifier, host launcher, isolation w
 
 May must run, at minimum:
 
-1. `node benchmarks/v0.3-external-acceptance-v1/verify-fixture-identity.mjs` with the corrected independently pinned baseline path used by the fixture test contract;
-2. `npm --prefix benchmarks/v0.3-external-acceptance-v1 test`;
-3. focused measurement-class tests proving the four-class matrix and no authority/readiness change;
-4. `git diff --check`;
-5. exact changed-path verification against the four allowed implementation paths.
+1. add and run a focused test that calls `verifyFixtureIdentity(...)` with the corrected independently pinned release baseline and asserts literal `state === "valid"`;
+2. run that executable identity test through `node --test --test-name-pattern='corrected fixture identity baseline verifies the frozen artifact set' benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`;
+3. `npm --prefix benchmarks/v0.3-external-acceptance-v1 test`;
+4. focused measurement-class and operator-attribution tests proving the four-class matrix, hostile replay cases, and no authority/readiness change;
+5. `git diff --check`;
+6. exact May-delta and complete-base-delta verification against the path sets above, including field-level checks for the identity record and test baseline.
+
+Executing `verify-fixture-identity.mjs` directly is not validation: that module exports `verifyFixtureIdentity(...)` and has no CLI effect. Do not modify the verifier merely to add a command surface.
 
 Report full outcomes without hiding environmental failures. Bind all conclusions to the exact implementation head.
 
@@ -103,8 +127,9 @@ Report full outcomes without hiding environmental failures. Bind all conclusions
 1. Commit this plan and tracked mission brief without implementation changes.
 2. Fury reviews this exact plan revision.
 3. On `REVISE`, Hill corrects only the plan and returns the new exact plan revision to the same Fury thread.
-4. On `APPROVE`, implementation still waits for the mission's separately valid specialist-dispatch authority.
-5. May implements only this approved plan.
-6. Fury performs exact-head conformance review after implementation.
-7. Stop at the corrected exact revision for Mack validation.
-8. Do not run AC2 externally, close #137, begin #29, merge, deploy, or release in this mission.
+4. On `APPROVE`, Hill records the new exact plan commit and digest, verifies PR #168 readback at that head, and calls the existing Delivery Workspace and specialist-dispatch guards with the complete bindings defined above.
+5. A result other than literal `dispatch_ready`, or any absent current permission binding required by the selected May executor, stops implementation.
+6. May implements only this approved plan.
+7. Fury performs exact-head conformance review after implementation.
+8. Stop at the corrected exact revision for Mack validation.
+9. Do not run AC2 externally, close #137, begin #29, merge, deploy, or release in this mission.
