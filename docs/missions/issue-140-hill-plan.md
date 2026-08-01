@@ -136,6 +136,14 @@ closed exception is proposed for Fury review:
   exact-matches its bytes to the envelope digest, and requires root ownership,
   a non-group/non-world-writable mode, the canonical `/usr/bin` path, and the
   Darwin platform before any worker starts;
+- the external envelope additionally pins the executable's full SHA-256
+  CDHash, while the launcher freshly verifies the exact `restricted` file flag,
+  enabled System Integrity Protection, enabled authenticated root, a valid
+  strict Apple code signature, the explicit Apple requirement
+  `anchor apple and identifier "com.apple.sandbox-exec"`, identifier
+  `com.apple.sandbox-exec`, and the envelope-pinned CDHash; the raw command
+  outputs and their digests are nonce-bound host evidence rather than reusable
+  ambient assertions;
 - the launcher exact-matches the same descriptor identity and current path
   identity immediately before spawn and again after the child is reaped;
 - the worker still runs only from a sealed, read-back-verified private copy;
@@ -148,6 +156,21 @@ closed exception is proposed for Fury review:
 This is a bounded host-capability exception, not a generalized trusted-path
 class. It does not weaken the external envelope, worker-copy, receipt,
 disposable-workspace, cleanup, or operator-integrity requirements.
+
+Before any composition or grading phase can start, the supervisor must execute
+a fresh trusted Node probe through that exact in-place adapter using the exact
+pinned denial-policy bytes. The probe is copied and sealed by the same worker
+copy mechanism, receives a fresh launcher-derived nonce, and must prove both a
+permitted private-root operation and denied network, denied out-of-root write,
+and denied non-allowlisted child execution. Its closed terminal receipt binds
+the nonce, adapter canonical path, raw executable digest, Apple identifier,
+CDHash, signature requirement, SIP/authenticated-root observations and
+evidence digests, denial-policy digest, exact executable/argv, limits, and
+probe digest. The supervisor rechecks protected-system and descriptor/path
+identity after reaping the probe. A missing, stale, malformed, replayed,
+unsupported, denied-when-expected-allowed, allowed-when-expected-denied, or
+uncertain probe blocks as isolation `not-observable` before any evaluated code
+executes.
 
 Runtime adapter metadata and receipts must exact-match the envelope before any
 worker starts. The adapter is a host capability supplied separately from
