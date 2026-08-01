@@ -20,6 +20,10 @@ const POLICY_CONTRACT = JSON.stringify({
   writes: "workspace-only",
   processExec: "pinned-node-only"
 });
+const ISOLATION_FAULTS = Object.freeze([
+  "pre-spawn-evidence-drift", "private-worker-substitution",
+  "reap-evidence-uncertain", "cleanup-failure"
+]);
 const ISOLATION_REQUEST_FIELDS = Object.freeze([
   "schemaVersion", "invocationId", "workspaceRoot", "baseRevision", "headRevision",
   "phase", "targetSha256", "targetMode", "testSha256", "testMode", "executableSha256",
@@ -208,7 +212,7 @@ export async function launchExternalFixture({ fixtureRoot, operatorInput, hostCo
 }
 
 const GRADING_HOST_FIELDS = Object.freeze([
-  "baselinePath", "isolationEnvelopePath", "interruptAfterPhase", "failAfterCheckpoint"
+  "baselinePath", "isolationEnvelopePath", "interruptAfterPhase", "failAfterCheckpoint", "faultInjection"
 ]);
 const HOST_CHECKPOINTS = Object.freeze([
   "workspace.prepared", "candidate.passed", "defect.injected", "injected.failed",
@@ -309,6 +313,19 @@ async function verifyProtectedAdapter(source, envelope, nonce) {
   });
 }
 
+function createAdapterVerifier(source, envelope, faultInjection) {
+  const calls = new Map();
+  return async (invocationId) => {
+    const proof = await verifyProtectedAdapter(source, envelope, invocationId);
+    const count = (calls.get(invocationId) ?? 0) + 1;
+    calls.set(invocationId, count);
+    if (faultInjection === "pre-spawn-evidence-drift" && count === 2) {
+      return Object.freeze({ ...proof, digest: "0".repeat(64) });
+    }
+    return proof;
+  };
+}
+
 async function copySealed(bytes, destination, expectedDigest, executable) {
   if (digest(bytes) !== expectedDigest) throw new Error("trusted_source_digest_mismatch");
   const handle = await open(destination, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o700);
@@ -341,11 +358,31 @@ export function hostEvidenceStable(before, after) {
     before.nonce === after.nonce && typeof before.digest === "string" && before.digest === after.digest;
 }
 
-export async function removeDisposableRoot(root, remover = rm, inspector = stat) {
-  let cleaned = true;
-  await remover(root, { recursive: true, force: true }).catch(() => { cleaned = false; });
-  if (await inspector(root).then(() => true, () => false)) cleaned = false;
-  return cleaned;
+export function cleanupEvidenceState(removalFailed, rootStillExists) {
+  return removalFailed === false && rootStillExists === false ? "verified-removed" : "uncertain";
+}
+
+async function captureDisposableRoot(root, prefix) {
+  const canonicalTmp = await realpath(tmpdir());
+  const canonicalRoot = await realpath(root);
+  const info = await lstat(canonicalRoot, { bigint: true });
+  if (dirname(canonicalRoot) !== canonicalTmp || !canonicalRoot.startsWith(resolve(canonicalTmp, prefix)) ||
+      !info.isDirectory() || info.isSymbolicLink() || Number(info.mode & 0o777n) !== 0o700) {
+    throw new Error("disposable_root_identity_invalid");
+  }
+  return Object.freeze({ path: canonicalRoot, dev: info.dev, ino: info.ino, prefix });
+}
+
+async function removeDisposableRoot(identity) {
+  const current = await lstat(identity.path, { bigint: true }).catch(() => null);
+  const canonicalTmp = await realpath(tmpdir());
+  if (current === null || dirname(identity.path) !== canonicalTmp ||
+      !identity.path.startsWith(resolve(canonicalTmp, identity.prefix)) || !current.isDirectory() ||
+      current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino) return false;
+  let removalFailed = false;
+  await rm(identity.path, { recursive: true, force: true }).catch(() => { removalFailed = true; });
+  const rootStillExists = await stat(identity.path).then(() => true, () => false);
+  return cleanupEvidenceState(removalFailed, rootStillExists) === "verified-removed";
 }
 
 function sandboxProfile(workspaceRoot, nodePath) {
@@ -398,7 +435,7 @@ async function phaseFileIdentity(root, path) {
 
 async function runIsolatedPhase({
   adapterPath, workerBytes, binRoot, workspaceRoot, baseRevision, headRevision, phase,
-  sequence, nonce, envelope, nodeIdentity, nodeBytes, interruptAfterPhase, adapterVerifier
+  sequence, nonce, envelope, nodeIdentity, nodeBytes, interruptAfterPhase, faultInjection, adapterVerifier
 }) {
   const target = await phaseFileIdentity(workspaceRoot, "src/greeting.mjs");
   const test = await phaseFileIdentity(workspaceRoot, "test/greeting.test.mjs");
@@ -415,6 +452,11 @@ async function runIsolatedPhase({
   const nodePath = resolve(dirname(workerPath), `node-${sequence}`);
   await copySealed(workerBytes, workerPath, envelope.worker.sha256, true);
   await copySealed(nodeBytes, nodePath, nodeIdentity, true);
+  if (faultInjection === "private-worker-substitution" && sequence === 0) {
+    await chmod(workerPath, 0o700);
+    await writeFile(workerPath, "substituted-private-worker");
+    await chmod(workerPath, 0o500);
+  }
   const profile = sandboxProfile(workspaceRoot, nodePath);
   const adapterArgv = Object.freeze(["-p", profile, nodePath, workerPath, requestPath]);
   const request = Object.freeze({
@@ -507,7 +549,8 @@ async function runIsolatedPhase({
     });
   });
   const permitResult = permitPromise === null ? "missing" : await permitPromise;
-  const groupQuiescent = await reapProcessGroup(child);
+  const actuallyQuiescent = await reapProcessGroup(child);
+  const groupQuiescent = faultInjection === "reap-evidence-uncertain" ? false : actuallyQuiescent;
   if (!groupQuiescent) {
     return Object.freeze({ state: "blocked", reason: "worker_descendants_not_quiescent", phase, reaped: false });
   }
@@ -647,7 +690,9 @@ async function runCompositionInstall({
   return Object.freeze({ state: "terminal", outcome: receipt.outcome, receipt, reaped: true });
 }
 
-const COMPOSITION_HOST_FIELDS = Object.freeze(["baselinePath", "isolationEnvelopePath", "interruptAfterPhase"]);
+const COMPOSITION_HOST_FIELDS = Object.freeze([
+  "baselinePath", "isolationEnvelopePath", "interruptAfterPhase", "faultInjection"
+]);
 const COMPOSITION_CONSUMER = [
   'await import("@shield/team-system/config");',
   'await import("@shield/team-system/supervision");',
@@ -663,12 +708,14 @@ export async function composeExternalArtifact({
       !closedDataObject(hostContext, COMPOSITION_HOST_FIELDS) || typeof hostContext.baselinePath !== "string" ||
       typeof hostContext.isolationEnvelopePath !== "string" ||
       !(hostContext.interruptAfterPhase === null ||
-        ["isolation.probe", "composition.install", "composition.import"].includes(hostContext.interruptAfterPhase))) {
+        ["isolation.probe", "composition.install", "composition.import"].includes(hostContext.interruptAfterPhase)) ||
+      !(hostContext.faultInjection === null || ISOLATION_FAULTS.includes(hostContext.faultInjection))) {
     return Object.freeze({ state: "invalid", reason: "fixture_composition_input_not_closed" });
   }
   const benchmarkRoot = await realpath(resolve(fixtureRoot)).catch(() => null);
   if (benchmarkRoot === null) return Object.freeze({ state: "blocked", reason: "fixture_root_not_regular" });
   let supervisorRoot = null;
+  let supervisorRootIdentity = null;
   let adapterSource = null;
   let cleanupSafe = true;
   try {
@@ -694,6 +741,7 @@ export async function composeExternalArtifact({
     const artifact = await readNoFollow(artifactResolved);
     supervisorRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-v03-composition-")));
     await chmod(supervisorRoot, 0o700);
+    supervisorRootIdentity = await captureDisposableRoot(supervisorRoot, "shield-v03-composition-");
     const workspaceRoot = resolve(supervisorRoot, "workspace");
     const binRoot = resolve(supervisorRoot, "bin");
     await mkdir(resolve(workspaceRoot, "src"), { recursive: true, mode: 0o700 });
@@ -705,12 +753,13 @@ export async function composeExternalArtifact({
     await writeFile(resolve(workspaceRoot, "shield-team-system.tgz"), artifact.bytes, { flag: "wx", mode: 0o400 });
     await writeFile(resolve(workspaceRoot, "consumer.mjs"), COMPOSITION_CONSUMER, { flag: "wx", mode: 0o400 });
     const nonce = digest(Buffer.from(`${Date.now()}:${process.pid}:${supervisorRoot}:composition`));
+    const adapterVerifier = createAdapterVerifier(adapterSource, envelope, hostContext.faultInjection);
     const common = {
       adapterPath: SANDBOX_EXECUTABLE, workerBytes: workerSource.bytes, binRoot,
       workspaceRoot, baseRevision, headRevision, nonce, envelope,
       nodeIdentity: digest(nodeSource.bytes), nodeBytes: nodeSource.bytes,
-      interruptAfterPhase: hostContext.interruptAfterPhase,
-      adapterVerifier: (invocationId) => verifyProtectedAdapter(adapterSource, envelope, invocationId)
+      interruptAfterPhase: hostContext.interruptAfterPhase, faultInjection: hostContext.faultInjection,
+      adapterVerifier
     };
     const probe = await runIsolatedPhase({ ...common, phase: "isolation.probe", sequence: 0 });
     cleanupSafe = probe.reaped !== false;
@@ -721,7 +770,7 @@ export async function composeExternalArtifact({
       artifactSha256: digest(artifact.bytes), envelope, nodeIdentity: digest(nodeSource.bytes),
       nodeBytes: nodeSource.bytes, binRoot,
       baseRevision, headRevision, nonce, interruptAfterPhase: hostContext.interruptAfterPhase,
-      adapterVerifier: (invocationId) => verifyProtectedAdapter(adapterSource, envelope, invocationId)
+      adapterVerifier
     });
     cleanupSafe = install.reaped !== false;
     if (install.state !== "terminal" && install.reason === "composition_install_interrupted") return install;
@@ -755,7 +804,10 @@ export async function composeExternalArtifact({
     if (adapterSource !== null) await adapterSource.handle.close().catch(() => {});
     if (supervisorRoot !== null) {
       if (!cleanupSafe) return Object.freeze({ state: "blocked", reason: "composition_cleanup_unsafe" });
-      const cleaned = await removeDisposableRoot(supervisorRoot);
+      if (hostContext.faultInjection === "cleanup-failure") {
+        return Object.freeze({ state: "blocked", reason: "composition_cleanup_failed" });
+      }
+      const cleaned = supervisorRootIdentity !== null && await removeDisposableRoot(supervisorRootIdentity);
       if (!cleaned) return Object.freeze({ state: "blocked", reason: "composition_cleanup_failed" });
     }
   }
@@ -773,6 +825,9 @@ export async function gradeExternalFixture({
     return Object.freeze({ state: "invalid", reason: "fixture_grading_input_not_closed" });
   }
   if (!(hostContext.failAfterCheckpoint === null || HOST_CHECKPOINTS.includes(hostContext.failAfterCheckpoint))) {
+    return Object.freeze({ state: "invalid", reason: "fixture_grading_input_not_closed" });
+  }
+  if (!(hostContext.faultInjection === null || ISOLATION_FAULTS.includes(hostContext.faultInjection))) {
     return Object.freeze({ state: "invalid", reason: "fixture_grading_input_not_closed" });
   }
   const checkpointFailure = (checkpoint) => hostContext.failAfterCheckpoint === checkpoint
@@ -793,6 +848,7 @@ export async function gradeExternalFixture({
     return Object.freeze({ state: "blocked", reason: "operator_revision_not_exact" });
   }
   let supervisorRoot = null;
+  let supervisorRootIdentity = null;
   let adapterSource = null;
   let cleanupSafe = true;
   let result = Object.freeze({ state: "blocked", reason: "isolation_not_observable" });
@@ -843,6 +899,7 @@ export async function gradeExternalFixture({
     supervisorRoot = await mkdtemp(join(tmpdir(), "shield-v03-supervisor-"));
     supervisorRoot = await realpath(supervisorRoot);
     await chmod(supervisorRoot, 0o700);
+    supervisorRootIdentity = await captureDisposableRoot(supervisorRoot, "shield-v03-supervisor-");
     const workspaceRoot = resolve(supervisorRoot, "workspace");
     const binRoot = resolve(supervisorRoot, "bin");
     await mkdir(workspaceRoot, { mode: 0o700 });
@@ -861,11 +918,12 @@ export async function gradeExternalFixture({
     if (checkpointFailure("workspace.prepared")) return checkpointFailure("workspace.prepared");
     const adapterPath = SANDBOX_EXECUTABLE;
     const nonce = digest(Buffer.from(`${Date.now()}:${process.pid}:${supervisorRoot}`));
+    const adapterVerifier = createAdapterVerifier(adapterSource, envelope, hostContext.faultInjection);
     const common = { adapterPath, workerBytes: workerSource.bytes, binRoot,
       workspaceRoot, baseRevision, headRevision, nonce, envelope,
       nodeIdentity: digest(nodeSource.bytes), nodeBytes: nodeSource.bytes,
-      interruptAfterPhase: hostContext.interruptAfterPhase,
-      adapterVerifier: (invocationId) => verifyProtectedAdapter(adapterSource, envelope, invocationId) };
+      interruptAfterPhase: hostContext.interruptAfterPhase, faultInjection: hostContext.faultInjection,
+      adapterVerifier };
     const probe = await runIsolatedPhase({ ...common, phase: "isolation.probe", sequence: 0 });
     cleanupSafe = probe.reaped !== false;
     if (probe.state !== "terminal") return probe;
@@ -915,8 +973,10 @@ export async function gradeExternalFixture({
     if (supervisorRoot !== null) {
       if (!cleanupSafe) {
         cleanup = false;
+      } else if (hostContext.faultInjection === "cleanup-failure") {
+        cleanup = false;
       } else {
-        cleanup = await removeDisposableRoot(supervisorRoot);
+        cleanup = supervisorRootIdentity !== null && await removeDisposableRoot(supervisorRootIdentity);
       }
     }
     let integrity = false;

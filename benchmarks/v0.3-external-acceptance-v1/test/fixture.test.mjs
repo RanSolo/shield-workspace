@@ -14,6 +14,7 @@ import {
 
 import {
   adapterMetadataMatches,
+  cleanupEvidenceState,
   composeExternalArtifact,
   gradeExternalFixture,
   hostEvidenceStable,
@@ -21,7 +22,6 @@ import {
   loadTrustedWorkerSource,
   loadTrustedIsolationEnvelope,
   loadTrustedReplayAnchor,
-  removeDisposableRoot,
   verifySealedPrivateCopy,
   validateIsolationReceipt
 } from "../../v0.3-fixture-host-launcher.mjs";
@@ -38,7 +38,7 @@ const FIXTURE_RELEASE_BASELINE = Object.freeze({
   schemaVersion: "shield.fixture.release-baseline.v1",
   identityRecordDigest: "fda6adf3344b499d9adfc5067fe2f4408f2a8b2c0f713b7bb75c68cba4c3d25b",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
-  launcherDigest: "7d43ca6bd268c22b3ea7578196a678c95b03c38a43d19be567b1bb87db5c60a1",
+  launcherDigest: "242bc856d4454ac0dc7846b6d2ac8fefd8d6daeab5bf57ed637196ec169f09a0",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
@@ -483,7 +483,7 @@ function fixtureTrustedHostContext(overrides = {}) {
   };
 }
 
-async function gradingTrust(interruptAfterPhase = null, failAfterCheckpoint = null) {
+async function gradingTrust(interruptAfterPhase = null, failAfterCheckpoint = null, faultInjection = null) {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-grading-trust-"));
   const baselinePath = join(directory, "release-baseline.json");
   const isolationEnvelopePath = join(directory, "isolation-envelope.json");
@@ -491,7 +491,7 @@ async function gradingTrust(interruptAfterPhase = null, failAfterCheckpoint = nu
   await writeFile(isolationEnvelopePath, JSON.stringify(ISOLATION_ENVELOPE));
   return Object.freeze({
     directory,
-    hostContext: Object.freeze({ baselinePath, isolationEnvelopePath, interruptAfterPhase, failAfterCheckpoint })
+    hostContext: Object.freeze({ baselinePath, isolationEnvelopePath, interruptAfterPhase, failAfterCheckpoint, faultInjection })
   });
 }
 
@@ -978,7 +978,8 @@ test("trusted composition isolates offline install and public import as separate
     hostContext: {
       baselinePath: trust.hostContext.baselinePath,
       isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
-      interruptAfterPhase: null
+      interruptAfterPhase: null,
+      faultInjection: null
     }
   });
   assert.equal(result.state, "composed", JSON.stringify(result));
@@ -1031,7 +1032,8 @@ test("malicious package import cannot reach network, host writes, or child execu
     hostContext: {
       baselinePath: trust.hostContext.baselinePath,
       isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
-      interruptAfterPhase: null
+      interruptAfterPhase: null,
+      faultInjection: null
     }
   });
   assert.equal(result.state, "composed", JSON.stringify(result));
@@ -1054,7 +1056,8 @@ test("composition reaps real interruptions at probe, install, and import checkpo
         hostContext: {
           baselinePath: trust.hostContext.baselinePath,
           isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
-          interruptAfterPhase: phase
+          interruptAfterPhase: phase,
+          faultInjection: null
         }
       });
       assert.equal(result.state, "blocked", JSON.stringify(result));
@@ -1359,11 +1362,76 @@ test("adapter, worker, sealed-copy, pre-spawn, and cleanup substitutions fail cl
   assert.equal(hostEvidenceStable(proof, { ...proof }), true);
   assert.equal(hostEvidenceStable(proof, { ...proof, nonce: "replayed" }), false);
   assert.equal(hostEvidenceStable(proof, { ...proof, digest: "4".repeat(64) }), false);
-  assert.equal(await removeDisposableRoot(
-    directory,
-    async () => { throw new Error("injected_cleanup_failure"); },
-    async () => ({})
-  ), false);
+  assert.equal(cleanupEvidenceState(false, false), "verified-removed");
+  assert.equal(cleanupEvidenceState(true, false), "uncertain");
+  assert.equal(cleanupEvidenceState(false, true), "uncertain");
+});
+
+test("real supervisor fault points block before promotion and preserve root disposition", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-supervisor-faults-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const revisions = await createExternalRepository(directory);
+  const operatorBefore = {
+    head: git(directory, ["rev-parse", "HEAD"]),
+    status: execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: directory }),
+    target: await readFile(join(directory, "src/greeting.mjs")),
+    fixtureTest: await readFile(join(directory, "test/greeting.test.mjs"))
+  };
+  const roots = async () => (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-supervisor-")).sort();
+  const assertOperatorUnchanged = async () => {
+    assert.equal(git(directory, ["rev-parse", "HEAD"]), operatorBefore.head);
+    assert.ok(execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: directory }).equals(operatorBefore.status));
+    assert.ok((await readFile(join(directory, "src/greeting.mjs"))).equals(operatorBefore.target));
+    assert.ok((await readFile(join(directory, "test/greeting.test.mjs"))).equals(operatorBefore.fixtureTest));
+  };
+
+  for (const fault of ["pre-spawn-evidence-drift", "private-worker-substitution"]) {
+    const rootsBefore = await roots();
+    const trust = await gradingTrust(null, null, fault);
+    try {
+      const result = await gradeExternalFixture({
+        fixtureRoot: root,
+        operatorRepositoryRoot: directory,
+        ...revisions,
+        hostContext: trust.hostContext
+      });
+      assert.deepEqual(result, {
+        state: "blocked",
+        reason: "isolation_not_observable",
+        phase: "isolation.probe",
+        reaped: true
+      });
+      assert.deepEqual(await roots(), rootsBefore);
+      await assertOperatorUnchanged();
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
+
+  for (const [fault, reason] of [
+    ["reap-evidence-uncertain", "disposable_cleanup_unsafe"],
+    ["cleanup-failure", "disposable_cleanup_failed"]
+  ]) {
+    const rootsBefore = await roots();
+    const trust = await gradingTrust(null, null, fault);
+    try {
+      const result = await gradeExternalFixture({
+        fixtureRoot: root,
+        operatorRepositoryRoot: directory,
+        ...revisions,
+        hostContext: trust.hostContext
+      });
+      assert.deepEqual(result, { state: "blocked", reason });
+      await assertOperatorUnchanged();
+      const rootsAfter = await roots();
+      const retained = rootsAfter.filter((name) => !rootsBefore.includes(name));
+      assert.equal(retained.length, 1);
+      await rm(join(tmpdir(), retained[0]), { recursive: true, force: true });
+      assert.deepEqual(await roots(), rootsBefore);
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
 });
 
 test("frozen adoption base rejects arbitrary source and exact-test substitution", async (context) => {
