@@ -97,11 +97,23 @@ a blocking result even when the lane otherwise passed.
 
 ### 3. Pinned capability-isolation contract
 
-The external release baseline independently pins the isolation adapter ID,
-contract version, implementation digest, and denial-policy digest. Runtime
-adapter metadata must exact-match those pins before any worker starts. The
-adapter is a host capability supplied separately from operator input and cannot
-be selected or configured by candidate/fixture data.
+Preserve the existing closed release-baseline v1 and its verifier unchanged.
+Define a separate closed isolation-envelope v1 stored outside the fixture root.
+The already baseline-pinned launcher embeds the expected canonical envelope
+digest and accepts only a regular, non-symlink external envelope whose bytes
+match that digest. This avoids weakening or silently extending the release
+baseline contract.
+
+The isolation envelope pins the adapter ID, contract version, adapter
+executable digest, denial-policy digest, worker entry-point path, and worker
+entry-point digest. Before spawning anything, the launcher no-follow opens and
+hashes the regular worker entry point and external adapter executable and
+exact-matches both envelope identities. Candidate/operator input cannot supply
+the envelope, its expected digest, either executable identity, or policy.
+
+Runtime adapter metadata and receipts must exact-match the envelope before any
+worker starts. The adapter is a host capability supplied separately from
+operator input and cannot be selected or configured by candidate/fixture data.
 
 Every execution-capable phase receives a fresh closed request and returns one
 closed terminal receipt. Each request/receipt is bound to:
@@ -164,8 +176,14 @@ integrity receipt blocks; the supervisor never promotes a partial run.
   `fixture-identity-v1.json` when driver bytes change.
 - Refresh test-only independently pinned launcher/identity digests after the
   exact implementation is frozen.
-- Pin the isolation adapter and denial-policy identities in the test release
-  baseline and exercise substitution at each identity field.
+- Preserve release-baseline v1 byte-for-byte. Add test-only external isolation
+  envelopes whose canonical digest is independently fixed by the launcher
+  fixture, and exercise malformed/extra fields, envelope substitution, adapter
+  executable substitution, worker symlink/substitution, and policy identity
+  substitution.
+- Refresh the independently pinned launcher digest after its embedded expected
+  isolation-envelope digest and validation path are frozen. The fixture
+  identity verifier and its v1 baseline schema remain unchanged.
 - Update the runbook to require the trusted grading entry point and remove the
   direct operator-checkout grading instruction.
 - Preserve the statement that unsupported isolation is not observable; never
@@ -179,6 +197,10 @@ integrity receipt blocks; the supervisor never promotes a partial run.
 - `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json`
 - `benchmarks/v0.3-external-acceptance-v1/RUNBOOK.md`
+
+`verify-fixture-identity.mjs` is intentionally outside the implementation set:
+the release-baseline v1 contract remains unchanged. Any need to alter that
+verifier requires a bounded plan revision and fresh Fury review.
 
 Any additional production path or contract change requires a bounded plan
 revision and fresh Fury review.
