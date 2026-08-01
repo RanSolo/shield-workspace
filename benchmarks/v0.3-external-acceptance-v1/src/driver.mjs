@@ -1,9 +1,6 @@
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
-import { lstat, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -17,7 +14,6 @@ const templateRoot = resolve(benchmarkRoot, "template");
 const templateDefectPath = resolve(templateRoot, "src/greeting.mjs");
 const templateTestPath = resolve(templateRoot, "test/greeting.test.mjs");
 const FIXTURE_TEST_PATH = "test/greeting.test.mjs";
-const SHA256 = /^[0-9a-f]{64}$/u;
 const OBJECT_FORMAT_SHA1 = "sha1";
 const OBJECT_FORMAT_SHA256 = "sha256";
 const OBJECT_FORMATS = Object.freeze([OBJECT_FORMAT_SHA1, OBJECT_FORMAT_SHA256]);
@@ -27,12 +23,6 @@ const REVISION_FORMAT = Object.freeze({
 });
 const REVISION_SHAPE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
-const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
-const PUBLIC_SPECIFIERS = Object.freeze([
-  "@shield/team-system/config",
-  "@shield/team-system/supervision",
-  "@shield/team-system/adapter"
-]);
 const INPUT_FIELDS = [
   "packageArtifactPath",
   "externalRepositoryRoot",
@@ -50,87 +40,10 @@ const TRUSTED_HOST_CONTEXT_FIELDS = [
   "attributionContext"
 ];
 
-const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const plain = (value) => value !== null && typeof value === "object" &&
   !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 const exact = (value, fields) => plain(value) &&
   Object.keys(value).length === fields.length && fields.every((field) => Object.hasOwn(value, field));
-const CONSUMER_SOURCE = [
-  'import { readFile } from "node:fs/promises";',
-  'import { createShieldConfig, validateShieldConfig } from "@shield/team-system/config";',
-  'import { createSupervisedMissionBrief, validateSupervisedMissionBrief } from "@shield/team-system/supervision";',
-  'import { validateAdapterCandidate } from "@shield/team-system/adapter";',
-  "",
-  'const input = JSON.parse(await readFile(process.argv[2], "utf8"));',
-  "const config = createShieldConfig({",
-  "  repositoryId: input.repository,",
-  '  coulsonBindingRef: "fixture:human:coulson",',
-  '  fitzBindingRef: "fixture:human:fitz",',
-  '  ...(input.requireSimmons ? { simmonsBindingRef: "fixture:human:simmons" } : {})',
-  "});",
-  "const brief = createSupervisedMissionBrief({",
-  "  schemaVersion: 1,",
-  '  missionId: "mission:v0.3:external-acceptance:1",',
-  '  objective: "Repair the one bounded greeting normalization defect.",',
-  '  subjectId: "fixture:v0.3:external-acceptance:1",',
-  "  riskFlags: {",
-  "    production: false, destructive: false, migration: false,",
-  "    credentialsOrSecurity: false, externalCommunication: false,",
-  "    merge: false, deploy: false, release: false, hillHighRisk: false",
-  "  },",
-  "  participants: [",
-  '    { seatId: "coulson" }, { seatId: "hill" }, { seatId: "fury" },',
-  '    { seatId: "may" }, { seatId: "fitz" },',
-  '    ...(input.requireSimmons ? [{ seatId: "simmons" }] : [])',
-  "  ],",
-  "  activatedModes: [{",
-  '    modeId: "delivery", modeVersion: "1.0.0", seatId: "may",',
-  '    activationSource: "fixture-manifest"',
-  "  }],",
-  "  requireSimmons: input.requireSimmons,",
-  '  createdAt: { value: "2026-07-26T00:00:00Z", provenance: "hostTrusted" }',
-  "});",
-  "const hostFailureCandidate = validateAdapterCandidate({",
-  "  adapterContractVersion: 1,",
-  '  adapterId: "github",',
-  '  candidateId: "candidate:v0.3:host-failure:1",',
-  '  candidateKind: "communication_result",',
-  "  missionId: brief.missionId,",
-  "  subjectId: brief.subjectId,",
-  "  revisionId: input.baseRevision,",
-  "  humanPrincipalId: null,",
-  "  bindingId: null,",
-  '  sourceRef: "fixture:host-failure:non-authoritative-candidate",',
-  '  capturedAt: { value: "2026-07-26T00:00:01Z", provenance: "hostTrusted" },',
-  "  payload: {",
-  '    requestId: "request:v0.3:host-failure:1", outcome: "failed",',
-  '    failureReason: "adapter_unavailable", receiptRef: null',
-  "  }",
-  "});",
-  "const configCheck = validateShieldConfig(config);",
-  "const briefCheck = validateSupervisedMissionBrief(brief);",
-  'if (configCheck.state !== "valid" || briefCheck.state !== "valid" || hostFailureCandidate.state !== "valid") {',
-  '  throw new Error("PUBLIC_SURFACE_COMPOSITION_FAILED");',
-  "}",
-  "process.stdout.write(JSON.stringify({",
-  "  configSchemaVersion: config.schemaVersion,",
-  "  missionRevisionId: brief.revisionId,",
-  '  hostFailureCandidateState: "valid",',
-  "  hostEffectsPerformed: false,",
-  '  expectedFitzState: "waiting",',
-  '  expectedSimmonsState: input.requireSimmons ? "waiting" : "not-required"',
-  "}));",
-  ""
-].join("\n");
-
-async function regularFile(path) {
-  try {
-    const info = await lstat(path);
-    return info.isFile() && !info.isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
 
 async function gitOutcome(cwd, args) {
   try {
@@ -172,7 +85,7 @@ async function gitBytesOutcome(cwd, args) {
   }
 }
 
-async function inspectExternalRevision({ externalRepositoryRoot, baseRevision, headRevision }) {
+export async function inspectExternalRevision({ externalRepositoryRoot, baseRevision, headRevision }) {
   if (typeof externalRepositoryRoot !== "string" ||
       typeof baseRevision !== "string" ||
       typeof headRevision !== "string") {
@@ -256,172 +169,6 @@ async function inspectExternalRevision({ externalRepositoryRoot, baseRevision, h
   });
 }
 
-async function openConfinedRegularFile(root, targetPath, flags) {
-  const expectedTarget = resolve(root, "src/greeting.mjs");
-  if (targetPath !== expectedTarget || !Number.isInteger(constants.O_NOFOLLOW)) {
-    throw new Error("unsafe_target");
-  }
-  const before = await lstat(targetPath);
-  if (!before.isFile() || before.isSymbolicLink() ||
-      await realpath(targetPath) !== expectedTarget) {
-    throw new Error("unsafe_target");
-  }
-  const handle = await open(targetPath, flags | constants.O_NOFOLLOW);
-  try {
-    const opened = await handle.stat();
-    const after = await lstat(targetPath);
-    if (!opened.isFile() || !after.isFile() || after.isSymbolicLink() ||
-        opened.dev !== before.dev || opened.ino !== before.ino ||
-        after.dev !== opened.dev || after.ino !== opened.ino ||
-        await realpath(targetPath) !== expectedTarget) {
-      throw new Error("target_changed");
-    }
-    return handle;
-  } catch (error) {
-    await handle.close();
-    throw error;
-  }
-}
-
-async function readConfinedRegularFile(root, targetPath) {
-  const handle = await openConfinedRegularFile(root, targetPath, constants.O_RDONLY);
-  try {
-    return await handle.readFile();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function replaceConfinedRegularFile(root, targetPath, bytes) {
-  const handle = await openConfinedRegularFile(root, targetPath, constants.O_WRONLY);
-  try {
-    await handle.truncate(0);
-    await handle.writeFile(bytes);
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function composeInstalledArtifact(artifactBytes, input, expectedPackage) {
-  const consumerRoot = await mkdtemp(join(tmpdir(), "shield-v03-public-consumer-"));
-  const installedArtifact = join(consumerRoot, "shield-team-system.tgz");
-  try {
-    await writeFile(join(consumerRoot, "package.json"), '{"private":true,"type":"module"}\n');
-    await writeFile(installedArtifact, artifactBytes);
-    await execFileAsync("git", ["init", "--quiet"], {
-      cwd: consumerRoot,
-      timeout: 10_000,
-      maxBuffer: 64 * 1024
-    });
-    try {
-      await execFileAsync("npm", [
-        "install",
-        "--save-dev",
-        "--save-exact",
-        installedArtifact,
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--package-lock=false",
-        "--offline",
-        "--cache",
-        join(consumerRoot, ".npm-cache")
-      ], {
-        cwd: consumerRoot,
-        timeout: 60_000,
-        maxBuffer: 256 * 1024
-      });
-    } catch {
-      return Object.freeze({ state: "blocked", reason: "package_artifact_install_failed" });
-    }
-    let installedManifest;
-    try {
-      installedManifest = JSON.parse(await readFile(
-        join(consumerRoot, "node_modules/@shield/team-system/package.json"),
-        "utf8"
-      ));
-    } catch {
-      return Object.freeze({ state: "blocked", reason: "installed_package_identity_missing" });
-    }
-    if (!plain(installedManifest) ||
-        installedManifest.name !== expectedPackage.name ||
-        installedManifest.version !== expectedPackage.version) {
-      return Object.freeze({ state: "blocked", reason: "installed_package_identity_mismatch" });
-    }
-    const consumerInputPath = join(consumerRoot, "composition-input.json");
-    const consumerPath = join(consumerRoot, "consumer.mjs");
-    await writeFile(consumerInputPath, `${JSON.stringify({
-      repository: input.hostConfiguration.repository,
-      baseRevision: input.headRevision,
-      requireSimmons: input.requireSimmons
-    })}\n`);
-    await writeFile(consumerPath, CONSUMER_SOURCE);
-    let stdout;
-    try {
-      ({ stdout } = await execFileAsync(process.execPath, [consumerPath, consumerInputPath], {
-        cwd: consumerRoot,
-        encoding: "utf8",
-        timeout: 30_000,
-        maxBuffer: 64 * 1024
-      }));
-    } catch {
-      return Object.freeze({ state: "blocked", reason: "public_surface_composition_failed" });
-    }
-    let foundation;
-    try {
-      foundation = JSON.parse(stdout);
-    } catch {
-      return Object.freeze({ state: "blocked", reason: "public_surface_composition_failed" });
-    }
-    if (!exact(foundation, [
-      "configSchemaVersion",
-      "missionRevisionId",
-      "hostFailureCandidateState",
-      "hostEffectsPerformed",
-      "expectedFitzState",
-      "expectedSimmonsState"
-    ]) ||
-        foundation.configSchemaVersion !== 1 ||
-        typeof foundation.missionRevisionId !== "string" ||
-        foundation.hostFailureCandidateState !== "valid" ||
-        foundation.hostEffectsPerformed !== false ||
-        foundation.expectedFitzState !== "waiting" ||
-        foundation.expectedSimmonsState !== (input.requireSimmons ? "waiting" : "not-required")) {
-      return Object.freeze({ state: "blocked", reason: "public_surface_composition_failed" });
-    }
-    return Object.freeze({
-      state: "composed",
-      installedPackage: Object.freeze({
-        name: installedManifest.name,
-        version: installedManifest.version,
-        publicSpecifiers: PUBLIC_SPECIFIERS
-      }),
-      foundation: Object.freeze(foundation)
-    });
-  } finally {
-    await rm(consumerRoot, { recursive: true, force: true });
-  }
-}
-
-async function commandOutcome(cwd) {
-  const environment = { ...process.env };
-  delete environment.NODE_TEST_CONTEXT;
-  try {
-    await execFileAsync(process.execPath, ["--test", FIXTURE_TEST_PATH], {
-      cwd,
-      encoding: "utf8",
-      env: environment,
-      timeout: 30_000,
-      maxBuffer: 256 * 1024
-    });
-    return "passed";
-  } catch (error) {
-    if (error?.killed || error?.signal) return "unavailable";
-    return Number.isInteger(error?.code) ? "failed" : "unavailable";
-  }
-}
-
 function blockers() {
   return Object.freeze(FIXTURE_MANIFEST.dependencyBlockers.map((entry) => Object.freeze({
     issue: entry.issue,
@@ -491,97 +238,6 @@ export async function composeMinimumFixture(input, trustedHostContext) {
 }
 
 export async function gradeCandidateWithFailureInjection(input) {
-  if (!exact(input, ["fixtureRoot", "baseRevision", "headRevision"]) ||
-      typeof input.fixtureRoot !== "string") {
-    return Object.freeze({ state: "invalid", reason: "fixture_grading_input_not_closed" });
-  }
-  const externalRevision = await inspectExternalRevision({
-    externalRepositoryRoot: input.fixtureRoot,
-    baseRevision: input.baseRevision,
-    headRevision: input.headRevision
-  });
-  if (externalRevision.state !== "measured") return externalRevision;
-  const requestedRoot = resolve(input.fixtureRoot);
-  let root;
-  let target;
-  try {
-    const rootInfo = await lstat(requestedRoot);
-    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("unsafe_root");
-    root = await realpath(requestedRoot);
-    target = await realpath(resolve(root, "src/greeting.mjs"));
-  } catch {
-    return Object.freeze({ state: "blocked", reason: "fixture_target_unavailable" });
-  }
-  if (target !== resolve(root, "src/greeting.mjs") || !await regularFile(target)) {
-    return Object.freeze({ state: "blocked", reason: "fixture_target_unavailable" });
-  }
-  const defectBytes = await readFile(templateDefectPath);
-  let candidateBytes;
-  try {
-    candidateBytes = await readConfinedRegularFile(root, target);
-  } catch {
-    return Object.freeze({ state: "blocked", reason: "fixture_target_unavailable" });
-  }
-  const candidateSha256 = sha256(candidateBytes);
-  if (candidateBytes.equals(defectBytes)) {
-    return Object.freeze({ state: "blocked", reason: "candidate_still_contains_frozen_defect" });
-  }
-  if (await commandOutcome(root) !== "passed") {
-    return Object.freeze({ state: "blocked", reason: "candidate_test_not_passed" });
-  }
-
-  let injectedOutcome = "unavailable";
-  let rollbackOutcome = "unavailable";
-  let injectionError = false;
-  let rollbackError = false;
-  try {
-    await replaceConfinedRegularFile(root, target, defectBytes);
-    injectedOutcome = await commandOutcome(root);
-  } catch {
-    injectionError = true;
-  } finally {
-    try {
-      await replaceConfinedRegularFile(root, target, candidateBytes);
-      rollbackOutcome = await commandOutcome(root);
-    } catch {
-      rollbackError = true;
-    }
-  }
-  if (rollbackError) {
-    return Object.freeze({ state: "blocked", reason: "fixture_target_changed_before_rollback" });
-  }
-  if (injectionError) {
-    return Object.freeze({ state: "blocked", reason: "fixture_target_changed_before_injection" });
-  }
-  let restoredBytes;
-  try {
-    restoredBytes = await readConfinedRegularFile(root, target);
-  } catch {
-    return Object.freeze({ state: "blocked", reason: "fixture_target_unavailable" });
-  }
-  const restoredSha256 = sha256(restoredBytes);
-  if (injectedOutcome !== "failed") {
-    return Object.freeze({ state: "blocked", reason: "failure_injection_not_observed" });
-  }
-  if (rollbackOutcome !== "passed" || restoredSha256 !== candidateSha256) {
-    return Object.freeze({ state: "blocked", reason: "rollback_mismatch" });
-  }
-  return Object.freeze({
-    state: "passed",
-    authority: "fixture-only-non-authoritative",
-    externalRevision: Object.freeze({
-      baseRevision: externalRevision.baseRevision,
-      headRevision: externalRevision.headRevision,
-      changedPaths: externalRevision.changedPaths
-    }),
-    candidateSha256,
-    injectedDefectSha256: sha256(defectBytes),
-    injectedOutcome,
-    rollbackOutcome,
-    restoredSha256,
-    networkObservability: Object.freeze({
-      state: "not-observable",
-      reason: "no_network_sandbox"
-    })
-  });
+  void input;
+  return Object.freeze({ state: "blocked", reason: "trusted_isolation_supervisor_required" });
 }
