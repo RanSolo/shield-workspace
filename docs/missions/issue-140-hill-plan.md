@@ -8,7 +8,7 @@
 - Parent gate: #137
 - Downstream release gate: #29
 - Mode: Delivery (proposed; not active before mission authorization)
-- Status: proposed for exact-revision Fury review
+- Status: proposed revision for exact-revision Fury review
 
 ## Objective
 
@@ -119,6 +119,35 @@ bytes plus regular-file identity. It executes only these supervisor-owned
 verified copies, never an externally mutable source pathname. Each copy is
 single-run and removed after its child is reaped. Failure to create, sync, read
 back, seal, or retain the expected copy identity blocks before spawn.
+
+#### Darwin system-adapter exception proposed after implementation evidence
+
+Implementation evidence on the authorized host showed that the SIP-protected
+`/usr/bin/sandbox-exec` runs Node correctly from its system path, while a
+byte-identical private copy exits without launching the Node child. Therefore
+the private-copy rule above remains mandatory for the worker and for any
+adapter that can execute correctly from a private copy, but the following
+closed exception is proposed for Fury review:
+
+- only adapter ID `macos-sandbox-exec` may use the exception;
+- its executable path is the launcher-owned constant
+  `/usr/bin/sandbox-exec`, never input or envelope data;
+- the launcher no-follow opens the regular executable, retains the descriptor,
+  exact-matches its bytes to the envelope digest, and requires root ownership,
+  a non-group/non-world-writable mode, the canonical `/usr/bin` path, and the
+  Darwin platform before any worker starts;
+- the launcher exact-matches the same descriptor identity and current path
+  identity immediately before spawn and again after the child is reaped;
+- the worker still runs only from a sealed, read-back-verified private copy;
+- any missing protection, metadata drift, path substitution, digest mismatch,
+  non-Darwin host, or post-run identity mismatch blocks as isolation
+  `not-observable`; there is no unsandboxed fallback; and
+- tests must prove that a mutable lookalike adapter cannot use this exception
+  and that substitution before or during spawn blocks promotion.
+
+This is a bounded host-capability exception, not a generalized trusted-path
+class. It does not weaken the external envelope, worker-copy, receipt,
+disposable-workspace, cleanup, or operator-integrity requirements.
 
 Runtime adapter metadata and receipts must exact-match the envelope before any
 worker starts. The adapter is a host capability supplied separately from
