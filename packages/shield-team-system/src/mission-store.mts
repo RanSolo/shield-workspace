@@ -148,14 +148,14 @@ export async function readMissionJournalForDisplay(input: MissionJournalReadInpu
   if (hasProfileAware && hasOther) return invalid("schema_mixed", "Schema 9 entries cannot be mixed with legacy journal entries.");
   if (hasProfileAware) {
     const replay = replayProfileAwareMissionJournal(parsed.value);
-    return replay.state === "invalid"
-      ? invalidMany(replay.code, replay.errors)
-      : valid({ kind: "profile-aware", entries: parsed.value as ProfileAwareMissionEntryV1[], projection: replay.value });
+    if (replay.state === "invalid") return invalidMany(replay.code, replay.errors);
+    if (replay.value.missionId !== input.missionId) return invalid("mission_mismatch", "Journal missionId does not match the requested mission.");
+    return valid({ kind: "profile-aware", entries: parsed.value as ProfileAwareMissionEntryV1[], projection: replay.value });
   }
   const replay = parseSupervisedJournalJsonl(text.value);
-  return replay.state === "invalid"
-    ? replay
-    : valid({ kind: "supervised", entries: replay.value.entries, projection: replay.value.projection });
+  if (replay.state === "invalid") return replay;
+  if (replay.value.projection.missionId !== input.missionId) return invalid("mission_mismatch", "Journal missionId does not match the requested mission.");
+  return valid({ kind: "supervised", entries: replay.value.entries, projection: replay.value.projection });
 }
 
 export async function appendSupervisedMissionEntry(input: {

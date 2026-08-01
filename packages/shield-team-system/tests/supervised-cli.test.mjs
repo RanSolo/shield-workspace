@@ -22,6 +22,10 @@ import {
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
 
+function journalPath(root, missionId) {
+  return join(root, ".shield", "journals", `${Buffer.from(missionId).toString("base64url")}.jsonl`);
+}
+
 function authority(seatId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
@@ -121,10 +125,10 @@ async function profileAwareFixture() {
   });
   const entry = createProfileAwareMissionBegunEntry(brief, [current.coulson.binding, current.fitz.binding]);
   const journalRoot = join(current.root, ".shield", "journals");
-  const journalPath = join(journalRoot, `${Buffer.from(missionId).toString("base64url")}.jsonl`);
+  const path = journalPath(current.root, missionId);
   await mkdir(journalRoot, { recursive: true });
-  await writeFile(journalPath, `${JSON.stringify(entry)}\n`);
-  return { ...current, brief, entry, journalPath };
+  await writeFile(path, `${JSON.stringify(entry)}\n`);
+  return { ...current, brief, entry, journalPath: path };
 }
 
 function run(root, args, options = {}) {
@@ -264,6 +268,32 @@ test("packed CLI rejects an unknown journal schema without changing journal byte
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /unsupported_schema/u);
   assert.equal(await readFile(journalPath, "utf8"), unknown);
+});
+
+test("packed CLI status rejects a profile-aware journal stored for another mission", async () => {
+  const { root, journalPath: sourcePath } = await profileAwareFixture();
+  const requestedMissionId = "mission:cli-profile-aware-alias";
+  const bytes = await readFile(sourcePath, "utf8");
+  const mismatchedPath = journalPath(root, requestedMissionId);
+  await writeFile(mismatchedPath, bytes);
+  const result = run(root, ["mission", "status", "--mission-id", requestedMissionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /mission_mismatch/u);
+  assert.equal(await readFile(mismatchedPath, "utf8"), bytes);
+});
+
+test("packed CLI report rejects a legacy journal stored for another mission", async () => {
+  const { root, brief } = await fixture();
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const bytes = await readFile(journalPath(root, brief.missionId), "utf8");
+  const requestedMissionId = "mission:cli-alias";
+  const mismatchedPath = journalPath(root, requestedMissionId);
+  await writeFile(mismatchedPath, bytes);
+  const result = run(root, ["mission", "report", "--mission-id", requestedMissionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /mission_mismatch/u);
+  assert.equal(await readFile(mismatchedPath, "utf8"), bytes);
 });
 
 test("packed CLI rejects malformed profile-aware JSON without changing journal bytes", async () => {
