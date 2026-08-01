@@ -35,7 +35,7 @@ Fury plan approval is necessary but not sufficient for May dispatch. Before impl
 - repository `RanSolo/shield-workspace`, the canonical writable worktree, base branch `main`, and mission branch `agent/issue-137-ac4-correction`;
 - the new full plan commit and digest after all Fury corrections, not superseded commit `04d73d92da20e5d66cd3e3e08d06fd85ef9c826c`;
 - draft PR #168 and a verified readback whose head equals that plan commit;
-- blueprint artifact `docs/missions/issue-137-ac4-correction-plan.md`, accountable implementation seat `may`, and Fury `PASS` at the exact plan commit;
+- Hill scope-freeze artifact `docs/missions/issue-137-ac4-correction-plan.md`, May-owned blueprint artifact `docs/missions/issue-137-ac4-may-blueprint.md`, and Fury `PASS` over both artifacts at the exact plan commit;
 - the exact May delta listed below, validation obligations, local/hosted runtime identity, and actual tool executor identity; and
 - prohibited external run, #29, merge, deployment, release, destructive, and expanded-scope effects.
 
@@ -100,10 +100,11 @@ The May-owned implementation delta may contain exactly these three paths:
 
 Within `fixture-identity-v1.json`, only the evidence-inventory framed digest may change. Within `fixture.test.mjs`, only bounded tests for this correction and the independently pinned release-baseline identity-record digest may change.
 
-The complete scope-freeze-base-to-implementation-head delta must contain exactly those three implementation paths plus the two planning artifacts:
+The complete scope-freeze-base-to-implementation-head delta must contain exactly those three implementation paths plus the three planning artifacts:
 
 - `docs/missions/issue-137-ac4-correction-mission-brief.json`;
-- `docs/missions/issue-137-ac4-correction-plan.md`.
+- `docs/missions/issue-137-ac4-correction-plan.md`;
+- `docs/missions/issue-137-ac4-may-blueprint.md`.
 
 Do not change the fixture manifest, driver, verifier, host launcher, isolation worker, template, package identity, or runbook unless Fury first returns `REVISE` identifying an unavoidable contract inconsistency.
 
