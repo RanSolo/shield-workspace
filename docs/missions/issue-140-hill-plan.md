@@ -12,11 +12,11 @@
 
 ## Objective
 
-Move fixture grading and failure injection out of the operator checkout into a
-disposable exact-head workspace, require a trusted host isolation capability
-before candidate code executes, make every interruption path clean up and
-verify operator integrity, and report unsupported capability isolation as
-not-observable without claiming that no effect occurred.
+Move all execution-capable composition and grading work out of the operator
+checkout into disposable workspaces, require an independently pinned host
+isolation capability before evaluated code executes, supervise interruptible
+workers from a non-candidate process, and report unsupported capability
+isolation as not-observable without claiming that no effect occurred.
 
 ## Frozen boundary
 
@@ -41,25 +41,45 @@ not-observable without claiming that no effect occurred.
   still executing candidate code without a capability sandbox.
 - Existing no-follow checks defend the target path but do not make the
   operator checkout disposable or deny candidate network/host capabilities.
+- `composeInstalledArtifact(...)` directly invokes `npm install` and then Node
+  to import and execute the evaluated package. Dependency preflight currently
+  masks this latent unsandboxed path, but #137 disposition would expose it.
 - Baseline fixture tests pass 27/27 at the scope-freeze revision after the
   package is built with its pinned TypeScript dependencies.
 
 ## Approved implementation shape proposed to Fury
 
-### 1. Trusted grading entry point
+### 1. Trusted execution supervisor
 
-Extend `benchmarks/v0.3-fixture-host-launcher.mjs` with a grading entry point
-that owns the operator-checkout boundary. The launcher must:
+Extend `benchmarks/v0.3-fixture-host-launcher.mjs` as the trusted supervisor for
+both composition and grading. Evaluated package/candidate code runs only in a
+separate worker subprocess; the supervisor never imports it. The supervisor
+must:
 
-1. validate a closed grading request and exact base/head revisions;
+1. validate a closed request and exact base/head revisions;
 2. capture a before snapshot of operator HEAD, porcelain status bytes, tracked
    target/test modes, and target/test content digests;
 3. materialize the exact requested head into a fresh directory below a
    host-created temporary root without modifying the source repository;
-4. invoke the fixture grader only with that disposable root and a trusted
-   capability-isolation adapter supplied separately from operator input;
-5. clean up the disposable root in a `finally` path; and
-6. capture and exact-match the operator snapshot after every outcome.
+4. create a fresh launcher nonce and spawn one bounded worker with only a
+   closed, revision-bound request;
+5. terminate and reap the worker on timeout, malformed IPC, uncertainty, or an
+   explicit interruption;
+6. remove the disposable root after the worker is reaped; and
+7. capture and exact-match the operator snapshot after every outcome.
+
+The supervisor—not the interruptible worker—owns cleanup and operator
+reverification. Tests must kill the real worker subprocess at every emitted
+checkpoint and prove that the supervisor reaps it, removes its workspace, and
+returns an integrity-bound blocking receipt. Injected exceptions alone are not
+sufficient interruption evidence.
+
+The guarantee is explicitly bounded to worker interruption and every outcome
+the supervisor can observe. Hard termination of the supervisor itself may
+leave a disposable temporary directory, but can never leave injected bytes in
+the operator checkout because that checkout is never a write target. The
+runbook must identify bounded orphan-directory recovery and must not claim
+cleanup evidence after an unobservable supervisor `SIGKILL`.
 
 The returned projection may describe operator integrity and isolation
 observability, but it cannot claim human authority or release readiness.
@@ -75,22 +95,52 @@ The disposable root contains only the exact head tree needed by the frozen
 lane. Failure injection and rollback occur only there. Cleanup failure returns
 a blocking result even when the lane otherwise passed.
 
-### 3. Capability-isolated lane execution
+### 3. Pinned capability-isolation contract
 
-Replace direct `node --test` execution with one trusted adapter call bound to:
+The external release baseline independently pins the isolation adapter ID,
+contract version, implementation digest, and denial-policy digest. Runtime
+adapter metadata must exact-match those pins before any worker starts. The
+adapter is a host capability supplied separately from operator input and cannot
+be selected or configured by candidate/fixture data.
 
+Every execution-capable phase receives a fresh closed request and returns one
+closed terminal receipt. Each request/receipt is bound to:
+
+- a fresh invocation ID derived from the launcher nonce and phase sequence;
 - the disposable canonical root;
-- the exact `node --test test/greeting.test.mjs` command identity;
-- denied network and host-effect capabilities when the host can prove them;
+- exact base/head revisions;
+- the phase (`composition.install`, `composition.import`, `grade.candidate`,
+  `grade.injected`, or `grade.restored`);
+- current target/test digests and file modes when applicable;
+- an allowlisted executable identity and exact argv;
+- the pinned adapter and denial-policy identities;
 - bounded timeout and output; and
 - a closed result distinguishing pass, expected failure, timeout, unavailable,
   denied, and uncertain execution.
+
+Invocation IDs are single-use. The supervisor rejects mismatched, reused,
+stale, substituted, cross-phase, cross-root, cross-revision, non-terminal, or
+malformed receipts before promoting any phase.
 
 There is no unsandboxed success fallback. If the host cannot prove capability
 denial, stop before candidate execution with isolation state
 `not-observable`. Do not reinterpret that state as proof of no effects.
 
-### 4. Interruption-safe grading state machine
+### 4. Isolate composition as well as grading
+
+Route both `npm install --offline --ignore-scripts` and the Node consumer import
+inside `composeInstalledArtifact(...)` through the same verified isolation
+contract. Preserve their separate phase identities and receipts. Candidate or
+package-controlled data cannot select the executable, argv, environment,
+working directory, limits, or denial policy.
+
+Add malicious artifact/import probes that attempt network access, writes
+outside the disposable root, child-process execution beyond the allowlist, and
+operator-checkout mutation. Verified denial must be observable in the adapter
+receipt; an unsupported host blocks before import/execution as
+`not-observable`.
+
+### 5. Interruption-safe grading state machine
 
 Make grading checkpoints explicit and testable:
 
@@ -103,16 +153,19 @@ Make grading checkpoints explicit and testable:
 7. disposable workspace removed; and
 8. operator integrity reverified.
 
-An interruption or injected host failure at every checkpoint must leave the
-operator snapshot unchanged. A missing cleanup or integrity receipt blocks;
-the grader never promotes a partial run.
+The worker reports each checkpoint to the supervisor over bounded IPC. A real
+worker termination or injected host failure at every checkpoint must leave the
+operator snapshot unchanged. A missing cleanup, worker-reap, phase receipt, or
+integrity receipt blocks; the supervisor never promotes a partial run.
 
-### 5. Content addressing and documentation
+### 6. Content addressing and documentation
 
 - Refresh the grading-driver digest in
   `fixture-identity-v1.json` when driver bytes change.
 - Refresh test-only independently pinned launcher/identity digests after the
   exact implementation is frozen.
+- Pin the isolation adapter and denial-policy identities in the test release
+  baseline and exercise substitution at each identity field.
 - Update the runbook to require the trusted grading entry point and remove the
   direct operator-checkout grading instruction.
 - Preserve the statement that unsupported isolation is not observable; never
@@ -121,6 +174,7 @@ the grader never promotes a partial run.
 ## Expected implementation paths
 
 - `benchmarks/v0.3-fixture-host-launcher.mjs`
+- `benchmarks/v0.3-fixture-isolation-worker.mjs` (new bounded worker entry point)
 - `benchmarks/v0.3-external-acceptance-v1/src/driver.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json`
@@ -135,12 +189,18 @@ revision and fresh Fury review.
   modes remain unchanged after every success, failure, timeout, and injected
   interruption point.
 - Failure injection and rollback occur only in a disposable exact-head root.
-- Candidate code is never executed when capability isolation is unavailable,
-  malformed, stale, or uncertain.
+- Evaluated package and candidate code are never executed when capability
+  isolation is unavailable, malformed, stale, substituted, reused, or
+  uncertain.
 - Verified isolation denies network and host effects, or the run stops with
   those effects explicitly `not-observable`.
 - Direct and substituted symlinks, archive/path substitution, wrong revisions,
-  cleanup failure, and forged adapter results fail closed.
+  cleanup/reap failure, forged adapter results, and cross-phase/root/revision
+  receipt replay fail closed.
+- Real subprocess interruption at every worker checkpoint leaves the operator
+  snapshot unchanged and removes the observed disposable workspace.
+- Malicious package-import and candidate probes cannot access network, write
+  outside the disposable root, or mutate the operator checkout.
 - The baseline, injected-failure, rollback, and restored lanes preserve their
   expected deterministic outcomes.
 - Focused fixture tests, package build, package tests, and `git diff --check`
