@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -12,7 +12,12 @@ import {
   evaluateSeatDispatchAttributionV1
 } from "@shield/team-system/dispatch-receipts";
 
-import { launchExternalFixture, loadTrustedReplayAnchor } from "../../v0.3-fixture-host-launcher.mjs";
+import {
+  gradeExternalFixture,
+  launchExternalFixture,
+  loadTrustedIsolationEnvelope,
+  loadTrustedReplayAnchor
+} from "../../v0.3-fixture-host-launcher.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageRoot = resolve(root, "../../packages/shield-team-system");
@@ -24,9 +29,9 @@ const FIXTURE_IDENTITY_BYTES = await readFile(join(root, "fixture-identity-v1.js
 const FIXTURE_RELEASE_BASELINE = Object.freeze({
   kind: "fixture-release-baseline",
   schemaVersion: "shield.fixture.release-baseline.v1",
-  identityRecordDigest: "b41666c354d48e40816154828985e0b350e641d2773a2506c68742d736fd7cb0",
+  identityRecordDigest: "fda6adf3344b499d9adfc5067fe2f4408f2a8b2c0f713b7bb75c68cba4c3d25b",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
-  launcherDigest: "bb667dc434434fba12da9ecc272e808909534bd1fde126772c5569a14462c9bb",
+  launcherDigest: "0f514e3d53b4cf2abb23dde037859e569cfe419d03387a931396a129409c85e1",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
@@ -34,6 +39,23 @@ const FIXTURE_RELEASE_BASELINE = Object.freeze({
     version: "0.1.0",
     digestAlgorithm: "sha256",
     digest: "05a8ee7222471925e49e794c7fb58fd1151dcfe2a8e2c8d20435118c340ec02e"
+  })
+});
+const ISOLATION_ENVELOPE = Object.freeze({
+  schemaVersion: "shield.fixture.isolation-envelope.v1",
+  adapter: Object.freeze({
+    adapterId: "macos-sandbox-exec",
+    contractVersion: "v1",
+    executableSha256: "8290e4be7387a0df83cd1559e86afd880464f269450573d012795761fe298f16",
+    cdHashSha256: "2f619ca893522eb88a87dc31ddc1e8cad98f237d4672f6f9d0c9f05395572463"
+  }),
+  denialPolicy: Object.freeze({
+    policyId: "deny-network-host-write-v1",
+    policySha256: "407e468cf29c448c0eee70a1637c0aa792c7cbd2f4e5e8d5020d5b2652b528af"
+  }),
+  worker: Object.freeze({
+    entryPoint: "v0.3-fixture-isolation-worker.mjs",
+    sha256: "9abe9e99abb67b850b5ad0e03aa5aba35d38eabfa535074bab739213731352b3"
   })
 });
 const EXPECTED_DEPENDENCY_BLOCKERS = Object.freeze([
@@ -452,6 +474,18 @@ function fixtureTrustedHostContext(overrides = {}) {
     attributionContext: null,
     ...overrides
   };
+}
+
+async function gradingTrust(interruptAfterPhase = null) {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-grading-trust-"));
+  const baselinePath = join(directory, "release-baseline.json");
+  const isolationEnvelopePath = join(directory, "isolation-envelope.json");
+  await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  await writeFile(isolationEnvelopePath, JSON.stringify(ISOLATION_ENVELOPE));
+  return Object.freeze({
+    directory,
+    hostContext: Object.freeze({ baselinePath, isolationEnvelopePath, interruptAfterPhase })
+  });
 }
 
 async function withFixtureCopy(mutator) {
@@ -924,20 +958,27 @@ test("composition rejects wrong package version and exact-package hash mismatche
 });
 test("baseline defect fails and fixture-only injection restores the exact passing candidate", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-defect-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const revisions = await createExternalRepository(directory);
-  const result = await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
   });
   assert.equal(result.state, "passed", JSON.stringify(result));
   assert.equal(result.injectedOutcome, "failed");
   assert.equal(result.rollbackOutcome, "passed");
   assert.equal(result.candidateSha256, result.restoredSha256);
   assert.deepEqual(result.externalRevision.changedPaths, ["src/greeting.mjs"]);
-  assert.deepEqual(result.networkObservability, {
-    state: "not-observable",
-    reason: "no_network_sandbox"
+  assert.deepEqual(result.capabilityIsolation, {
+    state: "verified-denied",
+    adapterId: "macos-sandbox-exec",
+    policyId: "deny-network-host-write-v1",
+    network: "denied",
+    hostWrites: "workspace-only"
   });
   assert.equal(Object.hasOwn(result, "networkEffectsPerformed"), false);
   assert.equal(
@@ -946,16 +987,138 @@ test("baseline defect fails and fixture-only injection restores the exact passin
   );
 });
 
+test("malicious candidate network, operator-write, and child-process probes are denied", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-malicious-candidate-"));
+  const trust = await gradingTrust();
+  const marker = join(directory, "operator-marker");
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
+  const revisions = await createExternalRepository(directory);
+  await writeFile(join(directory, "src/greeting.mjs"), [
+    'import { spawnSync } from "node:child_process";',
+    'import { writeFileSync } from "node:fs";',
+    'import { createConnection } from "node:net";',
+    "",
+    "let writeDenied = false;",
+    `try { writeFileSync(${JSON.stringify(marker)}, "forbidden"); } catch (error) { writeDenied = error?.code === "EPERM" || error?.code === "EACCES"; }`,
+    'const child = spawnSync("/usr/bin/true");',
+    'const childDenied = child.error?.code === "EPERM" || child.error?.code === "EACCES";',
+    "const networkDenied = await new Promise((done) => {",
+    '  const socket = createConnection({ host: "127.0.0.1", port: 9 });',
+    "  const timer = setTimeout(() => { socket.destroy(); done(false); }, 1000);",
+    "  socket.once(\"connect\", () => { clearTimeout(timer); socket.destroy(); done(false); });",
+    '  socket.once("error", (error) => { clearTimeout(timer); done(error?.code === "EPERM" || error?.code === "EACCES"); });',
+    "});",
+    'if (!writeDenied || !childDenied || !networkDenied) throw new Error("CAPABILITY_DENIAL_MISSING");',
+    "",
+    "export function greeting(name) {",
+    "  return `Hello, ${name.trim()}!`;",
+    "}",
+    ""
+  ].join("\n"));
+  git(directory, ["add", "src/greeting.mjs"]);
+  git(directory, ["commit", "--quiet", "-m", "add malicious capability probes"]);
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    baseRevision: revisions.baseRevision,
+    headRevision: git(directory, ["rev-parse", "HEAD"]),
+    hostContext: trust.hostContext
+  });
+  assert.equal(result.state, "passed", JSON.stringify(result));
+  assert.equal(await lstat(marker).then(() => true, () => false), false);
+  assert.equal(result.capabilityIsolation.network, "denied");
+  assert.equal(result.capabilityIsolation.hostWrites, "workspace-only");
+});
+
+test("real worker interruption at every grading phase preserves the exact operator checkout", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-interruption-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const revisions = await createExternalRepository(directory);
+  const snapshot = async () => {
+    const target = join(directory, "src/greeting.mjs");
+    const fixtureTest = join(directory, "test/greeting.test.mjs");
+    const targetInfo = await lstat(target);
+    const testInfo = await lstat(fixtureTest);
+    return {
+      head: git(directory, ["rev-parse", "HEAD"]),
+      status: execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: directory }),
+      target: await readFile(target),
+      targetMode: targetInfo.mode & 0o777,
+      fixtureTest: await readFile(fixtureTest),
+      testMode: testInfo.mode & 0o777
+    };
+  };
+  const before = await snapshot();
+  const temporaryRootsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-supervisor-")).sort();
+  for (const phase of ["grade.candidate", "grade.injected", "grade.restored"]) {
+    const trust = await gradingTrust(phase);
+    try {
+      const result = await gradeExternalFixture({
+        fixtureRoot: root,
+        operatorRepositoryRoot: directory,
+        ...revisions,
+        hostContext: trust.hostContext
+      });
+      assert.equal(result.state, "blocked");
+      assert.equal(result.reason, "worker_interrupted");
+      assert.equal(result.phase, phase);
+      assert.equal(result.reaped, true);
+      const after = await snapshot();
+      assert.equal(after.head, before.head);
+      assert.ok(after.status.equals(before.status));
+      assert.ok(after.target.equals(before.target));
+      assert.equal(after.targetMode, before.targetMode);
+      assert.ok(after.fixtureTest.equals(before.fixtureTest));
+      assert.equal(after.testMode, before.testMode);
+      assert.deepEqual(
+        (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-supervisor-")).sort(),
+        temporaryRootsBefore
+      );
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("direct grading refuses execution without the trusted supervisor", async () => {
+  assert.deepEqual(await gradeCandidateWithFailureInjection({}), {
+    state: "blocked",
+    reason: "trusted_isolation_supervisor_required"
+  });
+});
+
+test("isolation envelope is external, content-addressed, and substitution fails closed", async (context) => {
+  const trust = await gradingTrust();
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
+  assert.deepEqual(await loadTrustedIsolationEnvelope({
+    envelopePath: trust.hostContext.isolationEnvelopePath,
+    fixtureRoot: root
+  }), ISOLATION_ENVELOPE);
+  await writeFile(trust.hostContext.isolationEnvelopePath, JSON.stringify({
+    ...ISOLATION_ENVELOPE,
+    worker: { ...ISOLATION_ENVELOPE.worker, sha256: "0".repeat(64) }
+  }));
+  await assert.rejects(loadTrustedIsolationEnvelope({
+    envelopePath: trust.hostContext.isolationEnvelopePath,
+    fixtureRoot: root
+  }), /isolation_envelope_digest_mismatch/);
+});
+
 test("frozen adoption base rejects arbitrary source and exact-test substitution", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-frozen-base-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const substitutedSource = join(directory, "source");
   const sourceRevisions = await createExternalRepository(substitutedSource, {
     baseGreetingSource: "export const greeting = () => 'substituted';\n"
   });
-  assert.equal((await gradeCandidateWithFailureInjection({
-    fixtureRoot: substitutedSource,
-    ...sourceRevisions
+  assert.equal((await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: substitutedSource,
+    ...sourceRevisions,
+    hostContext: trust.hostContext
   })).reason, "frozen_base_content_mismatch:src/greeting.mjs");
 
   const substitutedTest = join(directory, "test");
@@ -966,33 +1129,43 @@ test("frozen adoption base rejects arbitrary source and exact-test substitution"
       ""
     ].join("\n")
   });
-  assert.equal((await gradeCandidateWithFailureInjection({
-    fixtureRoot: substitutedTest,
-    ...testRevisions
+  assert.equal((await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: substitutedTest,
+    ...testRevisions,
+    hostContext: trust.hostContext
   })).reason, "frozen_base_content_mismatch:test/greeting.test.mjs");
 });
 
 test("unexpected untracked files block while ignored files do not expand exact test selection", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-untracked-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const revisions = await createExternalRepository(directory);
   await writeFile(join(directory, "test/untracked.test.mjs"), "throw new Error('untracked');\n");
-  assert.equal((await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
-  })).reason, "external_revision_not_clean");
+  assert.equal((await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
+  })).reason, "operator_revision_not_exact");
   await rm(join(directory, "test/untracked.test.mjs"));
   await writeFile(join(directory, "notes.txt"), "unexpected untracked file\n");
-  assert.equal((await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
-  })).reason, "external_revision_not_clean");
+  assert.equal((await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
+  })).reason, "operator_revision_not_exact");
   await rm(join(directory, "notes.txt"));
 
   await writeFile(join(directory, "test/extra.test.mjs"), "throw new Error('must not execute');\n");
-  const result = await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
   });
   assert.equal(result.state, "passed", JSON.stringify(result));
 });
@@ -1389,8 +1562,10 @@ test("evidence inventory attribution requires exact replay matching", () => {
 test("fixture-only grader rejects a target that escapes through a symlink", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-symlink-"));
   const outside = await mkdtemp(join(tmpdir(), "shield-v03-outside-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
   context.after(() => rm(outside, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const revisions = await createExternalRepository(directory);
   const outsideTarget = join(outside, "greeting.mjs");
   await writeFile(outsideTarget, "outside bytes\n");
@@ -1402,20 +1577,24 @@ test("fixture-only grader rejects a target that escapes through a symlink", asyn
     ...revisions,
     headRevision: git(directory, ["rev-parse", "HEAD"])
   };
-  const result = await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...symlinkRevisions
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...symlinkRevisions,
+    hostContext: trust.hostContext
   });
   assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "fixture_target_unavailable");
+  assert.equal(result.reason, "operator_snapshot_unavailable");
   assert.equal(await readFile(outsideTarget, "utf8"), "outside bytes\n");
 });
 
-test("fixture-only grader never follows a symlink substituted during failure injection", async (context) => {
+test("disposable failure injection never exposes defect bytes in the operator checkout", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-race-"));
   const outside = await mkdtemp(join(tmpdir(), "shield-v03-race-outside-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
   context.after(() => rm(outside, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const outsideTarget = join(outside, "greeting.mjs");
   await writeFile(outsideTarget, "outside bytes\n");
   const revisions = await createExternalRepository(directory);
@@ -1436,13 +1615,20 @@ test("fixture-only grader never follows a symlink substituted during failure inj
       await new Promise((done) => setImmediate(done));
     }
   })();
-  const result = await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
   });
   watching = false;
   await watcher;
-  assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "fixture_target_changed_before_rollback");
+  assert.equal(result.state, "passed", JSON.stringify(result));
+  assert.equal(await readFile(join(directory, "src/greeting.mjs"), "utf8"), [
+    "export function greeting(name) {",
+    "  return `Hello, ${name.trim()}!`;",
+    "}",
+    ""
+  ].join("\n"));
   assert.equal(await readFile(outsideTarget, "utf8"), "outside bytes\n");
 });
