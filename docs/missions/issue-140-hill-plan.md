@@ -106,10 +106,19 @@ baseline contract.
 
 The isolation envelope pins the adapter ID, contract version, adapter
 executable digest, denial-policy digest, worker entry-point path, and worker
-entry-point digest. Before spawning anything, the launcher no-follow opens and
-hashes the regular worker entry point and external adapter executable and
-exact-matches both envelope identities. Candidate/operator input cannot supply
-the envelope, its expected digest, either executable identity, or policy.
+entry-point digest. Before spawning anything, the launcher no-follow opens the
+regular worker entry point and external adapter executable, retains each handle
+through its source read, and exact-matches the bytes to the envelope identities.
+Candidate/operator input cannot supply the envelope, its expected digest,
+either executable identity, or policy.
+
+The supervisor then writes those verified bytes to exclusively created files
+inside its private mode-0700 temporary root, syncs them, removes write
+permission, reopens them with no-follow semantics, and exact-matches readback
+bytes plus regular-file identity. It executes only these supervisor-owned
+verified copies, never an externally mutable source pathname. Each copy is
+single-run and removed after its child is reaped. Failure to create, sync, read
+back, seal, or retain the expected copy identity blocks before spawn.
 
 Runtime adapter metadata and receipts must exact-match the envelope before any
 worker starts. The adapter is a host capability supplied separately from
@@ -179,8 +188,10 @@ integrity receipt blocks; the supervisor never promotes a partial run.
 - Preserve release-baseline v1 byte-for-byte. Add test-only external isolation
   envelopes whose canonical digest is independently fixed by the launcher
   fixture, and exercise malformed/extra fields, envelope substitution, adapter
-  executable substitution, worker symlink/substitution, and policy identity
-  substitution.
+  executable substitution, worker symlink/substitution, private-copy
+  substitution, and policy identity substitution. Synchronize source
+  substitutions between verification and spawn to prove that only the retained
+  verified bytes copied into the supervisor root can execute.
 - Refresh the independently pinned launcher digest after its embedded expected
   isolation-envelope digest and validation path are frozen. The fixture
   identity verifier and its v1 baseline schema remain unchanged.
@@ -219,6 +230,8 @@ revision and fresh Fury review.
 - Direct and substituted symlinks, archive/path substitution, wrong revisions,
   cleanup/reap failure, forged adapter results, and cross-phase/root/revision
   receipt replay fail closed.
+- Adapter and worker pathname substitution after verification cannot change
+  executed bytes; substitution of a supervisor-owned copy blocks before spawn.
 - Real subprocess interruption at every worker checkpoint leaves the operator
   snapshot unchanged and removes the observed disposable workspace.
 - Malicious package-import and candidate probes cannot access network, write
