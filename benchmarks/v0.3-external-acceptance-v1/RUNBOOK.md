@@ -52,13 +52,15 @@ the fixture root. That baseline pins the launcher digest, verifier digest,
 identity-record digest, and package identity. The launcher verifies those
 digests before importing any fixture module.
 
-The host also supplies a trusted-journal replay-anchor envelope from outside
-the fixture root. The envelope digest must match its canonical projection;
-fixture evidence cannot provide or replace that anchor. The launcher then
-passes the baseline to `composeMinimumFixture(...)` with the measured artifact
-digest, external repository root, exact base and current head revisions,
-GitHub host configuration, blind classification, and conditional Simmons
-choice. Caller-supplied changed paths are not accepted.
+The trusted-journal replay-anchor envelope is loaded separately from
+`launchExternalFixture(...)`; its digest must match its canonical projection,
+and fixture evidence cannot provide or replace that anchor. The launcher passes
+`operatorInput` to `composeMinimumFixture(...)` with the package artifact path,
+external repository root, exact base and current head revisions, GitHub host
+configuration, blind classification, prior-solution visibility, and conditional
+Simmons choice. It supplies the release baseline through the separate trusted
+host context, so package identity and digest never come from operator input.
+Caller-supplied changed paths are not accepted.
 
 The current v1 driver:
 

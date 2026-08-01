@@ -20,7 +20,7 @@
     },
     "grading-driver": {
       "path": "src/driver.mjs",
-      "digest": "da614045daa9c9b8000ec49c4c61994f6c21089bdf0caa154462c3389eb57e7b"
+      "digest": "8d11d385908c5b485a8e22a0a0f3b19388b6087d49598e662138e5bcb1a90e18"
     },
     "evidence-inventory": {
       "path": "evidence-inventory.mjs",
