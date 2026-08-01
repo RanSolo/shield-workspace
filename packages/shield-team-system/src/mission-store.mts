@@ -8,9 +8,25 @@ import {
   type SupervisedJournalEntry,
   type SupervisedMissionProjection,
 } from "./mission-v2.mjs";
+import {
+  replayProfileAwareMissionJournal,
+  type ProfileAwareMissionEntryV1,
+  type ProfileAwareProjectionV1,
+} from "./profile-aware-mission-v1.mjs";
 
 const valid = <T,>(value: T): ContractResult<T> => ({ state: "valid", value });
 const invalid = <T = never,>(code: string, message: string): ContractResult<T> => ({ state: "invalid", code, errors: [message] });
+const invalidMany = <T = never,>(code: string, errors: string[]): ContractResult<T> => ({ state: "invalid", code, errors: [...errors] });
+
+type MissionJournalReadInput = {
+  repositoryRoot: string;
+  configuredJournalPath: string;
+  missionId: string;
+};
+
+export type MissionJournalDisplay =
+  | { kind: "supervised"; entries: SupervisedJournalEntry[]; projection: SupervisedMissionProjection }
+  | { kind: "profile-aware"; entries: ProfileAwareMissionEntryV1[]; projection: ProfileAwareProjectionV1 };
 
 export interface MissionJournalPaths {
   root: string;
@@ -59,13 +75,13 @@ async function verifyConfinement(repositoryRoot: string, journalRoot: string): P
   }
 }
 
-async function readExisting(path: string): Promise<ContractResult<{ entries: SupervisedJournalEntry[]; projection: SupervisedMissionProjection }> | null> {
+async function readExistingText(path: string): Promise<ContractResult<string> | null> {
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stats = await handle.stat();
     if (!stats.isFile()) return invalid("unsafe_path", "Mission journal must be a regular file.");
-    return parseSupervisedJournalJsonl(await handle.readFile("utf8"));
+    return valid(await handle.readFile("utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     if ((error as NodeJS.ErrnoException).code === "ELOOP") return invalid("unsafe_path", "Mission journal must not be a symlink.");
@@ -75,11 +91,12 @@ async function readExisting(path: string): Promise<ContractResult<{ entries: Sup
   }
 }
 
-export async function readSupervisedMissionJournal(input: {
-  repositoryRoot: string;
-  configuredJournalPath: string;
-  missionId: string;
-}): Promise<ContractResult<{ entries: SupervisedJournalEntry[]; projection: SupervisedMissionProjection }>> {
+async function readExisting(path: string): Promise<ContractResult<{ entries: SupervisedJournalEntry[]; projection: SupervisedMissionProjection }> | null> {
+  const text = await readExistingText(path);
+  return text === null || text.state === "invalid" ? text : parseSupervisedJournalJsonl(text.value);
+}
+
+async function readVerifiedJournalText(input: MissionJournalReadInput): Promise<ContractResult<string>> {
   const paths = resolveSupervisedMissionPaths(input.repositoryRoot, input.configuredJournalPath, input.missionId);
   if (paths.state === "invalid") return paths;
   try { await realpath(paths.value.root); }
@@ -89,7 +106,56 @@ export async function readSupervisedMissionJournal(input: {
   }
   const confinement = await verifyConfinement(input.repositoryRoot, paths.value.root);
   if (confinement.state === "invalid") return confinement;
-  return (await readExisting(paths.value.journalPath)) ?? invalid("mission_missing", `Mission journal does not exist: ${input.missionId}.`);
+  return (await readExistingText(paths.value.journalPath)) ?? invalid("mission_missing", `Mission journal does not exist: ${input.missionId}.`);
+}
+
+function parseJournalLines(text: string): ContractResult<unknown[]> {
+  if (text.length === 0) return invalid("malformed", "Journal text must be non-empty.");
+  if (!text.endsWith("\n")) return invalid("recovery_required", "Journal has an incomplete final line.");
+  const lines = text.slice(0, -1).split("\n");
+  const entries: unknown[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].length === 0) return invalid("malformed", `Journal line ${index + 1} is empty.`);
+    try { entries.push(JSON.parse(lines[index])); }
+    catch { return invalid("recovery_required", `Journal line ${index + 1} is malformed JSON.`); }
+  }
+  return valid(entries);
+}
+
+export async function readSupervisedMissionJournal(input: MissionJournalReadInput): Promise<ContractResult<{ entries: SupervisedJournalEntry[]; projection: SupervisedMissionProjection }>> {
+  const text = await readVerifiedJournalText(input);
+  return text.state === "invalid" ? text : parseSupervisedJournalJsonl(text.value);
+}
+
+export async function readMissionJournalForDisplay(input: MissionJournalReadInput): Promise<ContractResult<MissionJournalDisplay>> {
+  const text = await readVerifiedJournalText(input);
+  if (text.state === "invalid") return text;
+  const parsed = parseJournalLines(text.value);
+  if (parsed.state === "invalid") return parsed;
+  let hasProfileAware = false;
+  let hasOther = false;
+  for (const [index, entry] of parsed.value.entries()) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry) || typeof (entry as { schemaVersion?: unknown }).schemaVersion !== "number") {
+      return invalid("malformed", `Journal line ${index + 1} schemaVersion is invalid.`);
+    }
+    const schemaVersion = (entry as { schemaVersion: number }).schemaVersion;
+    if (!Number.isInteger(schemaVersion) || schemaVersion < 2 || schemaVersion > 9) {
+      return invalid("unsupported_schema", `Journal line ${index + 1} schemaVersion is unsupported.`);
+    }
+    if (schemaVersion === 9) hasProfileAware = true;
+    else hasOther = true;
+  }
+  if (hasProfileAware && hasOther) return invalid("schema_mixed", "Schema 9 entries cannot be mixed with legacy journal entries.");
+  if (hasProfileAware) {
+    const replay = replayProfileAwareMissionJournal(parsed.value);
+    if (replay.state === "invalid") return invalidMany(replay.code, replay.errors);
+    if (replay.value.missionId !== input.missionId) return invalid("mission_mismatch", "Journal missionId does not match the requested mission.");
+    return valid({ kind: "profile-aware", entries: parsed.value as ProfileAwareMissionEntryV1[], projection: replay.value });
+  }
+  const replay = parseSupervisedJournalJsonl(text.value);
+  if (replay.state === "invalid") return replay;
+  if (replay.value.projection.missionId !== input.missionId) return invalid("mission_mismatch", "Journal missionId does not match the requested mission.");
+  return valid({ kind: "supervised", entries: replay.value.entries, projection: replay.value.projection });
 }
 
 export async function appendSupervisedMissionEntry(input: {

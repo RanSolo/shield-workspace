@@ -19,7 +19,8 @@ import {
   type SupervisedMissionProjection,
   type TrustedBindingRegistry,
 } from "./mission-v2.mjs";
-import { appendSupervisedMissionEntry, initializeSupervisedMissionJournal, readSupervisedMissionJournal } from "./mission-store.mjs";
+import { appendSupervisedMissionEntry, initializeSupervisedMissionJournal, readMissionJournalForDisplay, readSupervisedMissionJournal } from "./mission-store.mjs";
+import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import { createSigner, signWithSigner } from "./mission-signer.mjs";
@@ -134,6 +135,25 @@ function statusText(projection: SupervisedMissionProjection): string {
     `Readiness (execute): ${projection.readiness.execute.state}`,
     `Readiness (accept): ${projection.readiness.accept.state}`,
     `Communication: ${projection.communication.state}`,
+    `Pending human evidence: ${pending.length > 0 ? pending.join(", ") : "none"}`,
+    `Next journal sequence: ${projection.lastSequence + 1}`,
+  ].join("\n");
+}
+
+function profileAwareStatusText(projection: ProfileAwareProjectionV1): string {
+  const satisfied = new Set(projection.evidence.map(({ requirementId }) => requirementId));
+  const pending = projection.requirements
+    .filter(({ requirementId }) => !satisfied.has(requirementId))
+    .map(({ requirementId, requiredRoleId }) => `${requiredRoleId}:pending:${requirementId}`);
+  return [
+    `Mission: ${projection.missionId}`,
+    `Revision: ${projection.brief.revisionId}`,
+    `Profile: ${projection.brief.profileId}@${projection.brief.profileVersion}`,
+    `Authorization: ${projection.authorization}`,
+    `Execution: ${projection.execution}`,
+    `Readiness (execute): ${projection.readiness.execute}`,
+    `Readiness (accept): ${projection.readiness.accept}`,
+    `Final acceptance: ${projection.finalAcceptance}`,
     `Pending human evidence: ${pending.length > 0 ? pending.join(", ") : "none"}`,
     `Next journal sequence: ${projection.lastSequence + 1}`,
   ].join("\n");
@@ -376,12 +396,15 @@ async function show(command: "status" | "report", args: string[]): Promise<numbe
   const root = await exactRoot(options.values.get("--root"), false);
   const config = await repositoryConfig(root);
   const missionId = required(options, "--mission-id");
-  const current = await currentMission(root, config, missionId);
+  const current = unwrap(await readMissionJournalForDisplay(missionPaths(root, config, missionId)));
+  const human = current.kind === "profile-aware"
+    ? profileAwareStatusText(current.projection)
+    : statusText(current.projection);
   if (command === "status") {
-    output(current.projection, options.flags.has("--json"), statusText(current.projection));
+    output(current.projection, options.flags.has("--json"), human);
   } else {
     const report = { projection: current.projection, entries: current.entries };
-    output(report, options.flags.has("--json"), `${statusText(current.projection)}\nJournal entries: ${current.entries.length}`);
+    output(report, options.flags.has("--json"), `${human}\nJournal entries: ${current.entries.length}`);
   }
   return 0;
 }

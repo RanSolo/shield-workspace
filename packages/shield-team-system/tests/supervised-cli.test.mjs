@@ -13,9 +13,18 @@ import {
   createSupervisedMissionBrief,
 } from "../dist/mission-v2.mjs";
 import { canonicalDelegationJson, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
+import {
+  createProfileAwareMissionBegunEntry,
+  createProfileAwareMissionBrief,
+  MISSION_130_JOURNAL_DIGEST,
+} from "../dist/profile-aware-mission-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
+
+function journalPath(root, missionId) {
+  return join(root, ".shield", "journals", `${Buffer.from(missionId).toString("base64url")}.jsonl`);
+}
 
 function authority(seatId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -82,6 +91,44 @@ async function fixture(requireSimmons = false) {
   });
   await writeFile(join(root, "mission-brief.json"), `${JSON.stringify(brief, null, 2)}\n`);
   return { root, brief, coulson, fitz, simmons };
+}
+
+async function profileAwareFixture() {
+  const current = await fixture();
+  const missionId = "mission:cli-profile-aware";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Read one profile-aware mission without changing it.",
+    subjectId: "issue:130",
+    riskFlags: {
+      production: false,
+      destructive: false,
+      migration: false,
+      credentialsOrSecurity: false,
+      externalCommunication: false,
+      merge: false,
+      deploy: false,
+      release: false,
+      hillHighRisk: true,
+    },
+    participants: ["hill", "may", "coulson", "fitz"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-07-29T15:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const entry = createProfileAwareMissionBegunEntry(brief, [current.coulson.binding, current.fitz.binding]);
+  const journalRoot = join(current.root, ".shield", "journals");
+  const path = journalPath(current.root, missionId);
+  await mkdir(journalRoot, { recursive: true });
+  await writeFile(path, `${JSON.stringify(entry)}\n`);
+  return { ...current, brief, entry, journalPath: path };
 }
 
 function run(root, args, options = {}) {
@@ -178,6 +225,85 @@ test("packed CLI path completes execution while Fitz readiness remains waiting",
   assert.equal(report.status, 0, report.stderr);
   assert.equal(JSON.parse(report.stdout).entries.length, 5);
   assert.equal(await readFile(journalPath, "utf8"), beforeReadOnlyCommands);
+});
+
+test("packed CLI status and report replay schema 9 without changing journal bytes", async () => {
+  const { root, brief, entry, journalPath } = await profileAwareFixture();
+  const before = await readFile(journalPath, "utf8");
+  const status = run(root, ["mission", "status", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(status.status, 0, status.stderr);
+  const projection = JSON.parse(status.stdout);
+  assert.equal(projection.schemaVersion, 9);
+  assert.equal(projection.authorization, "waiting");
+  assert.equal(projection.readiness.execute, "waiting");
+
+  const human = run(root, ["mission", "status", "--mission-id", brief.missionId]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /Profile: standard@1/u);
+  assert.match(human.stdout, /Next journal sequence: 1/u);
+
+  const report = run(root, ["mission", "report", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(report.status, 0, report.stderr);
+  const parsedReport = JSON.parse(report.stdout);
+  assert.deepEqual(parsedReport.entries, [entry]);
+  assert.equal(parsedReport.projection.schemaVersion, 9);
+  assert.equal(await readFile(journalPath, "utf8"), before);
+});
+
+test("packed CLI rejects mixed schema 9 and legacy entries without changing journal bytes", async () => {
+  const { root, brief, entry, journalPath } = await profileAwareFixture();
+  const mixed = `${JSON.stringify(entry)}\n${JSON.stringify({ ...entry, schemaVersion: 8 })}\n`;
+  await writeFile(journalPath, mixed);
+  const result = run(root, ["mission", "status", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /schema_mixed/u);
+  assert.equal(await readFile(journalPath, "utf8"), mixed);
+});
+
+test("packed CLI rejects an unknown journal schema without changing journal bytes", async () => {
+  const { root, brief, entry, journalPath } = await profileAwareFixture();
+  const unknown = `${JSON.stringify({ ...entry, schemaVersion: 10 })}\n`;
+  await writeFile(journalPath, unknown);
+  const result = run(root, ["mission", "status", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /unsupported_schema/u);
+  assert.equal(await readFile(journalPath, "utf8"), unknown);
+});
+
+test("packed CLI status rejects a profile-aware journal stored for another mission", async () => {
+  const { root, journalPath: sourcePath } = await profileAwareFixture();
+  const requestedMissionId = "mission:cli-profile-aware-alias";
+  const bytes = await readFile(sourcePath, "utf8");
+  const mismatchedPath = journalPath(root, requestedMissionId);
+  await writeFile(mismatchedPath, bytes);
+  const result = run(root, ["mission", "status", "--mission-id", requestedMissionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /mission_mismatch/u);
+  assert.equal(await readFile(mismatchedPath, "utf8"), bytes);
+});
+
+test("packed CLI report rejects a legacy journal stored for another mission", async () => {
+  const { root, brief } = await fixture();
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const bytes = await readFile(journalPath(root, brief.missionId), "utf8");
+  const requestedMissionId = "mission:cli-alias";
+  const mismatchedPath = journalPath(root, requestedMissionId);
+  await writeFile(mismatchedPath, bytes);
+  const result = run(root, ["mission", "report", "--mission-id", requestedMissionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /mission_mismatch/u);
+  assert.equal(await readFile(mismatchedPath, "utf8"), bytes);
+});
+
+test("packed CLI rejects malformed profile-aware JSON without changing journal bytes", async () => {
+  const { root, brief, entry, journalPath } = await profileAwareFixture();
+  const malformed = `${JSON.stringify(entry)}\n{not-json}\n`;
+  await writeFile(journalPath, malformed);
+  const result = run(root, ["mission", "report", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /recovery_required/u);
+  assert.equal(await readFile(journalPath, "utf8"), malformed);
 });
 
 test("unsigned, tampered, stale-revision, and wrong-sequence evidence writes nothing", async () => {
