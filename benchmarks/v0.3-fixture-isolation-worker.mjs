@@ -129,8 +129,8 @@ async function main() {
     }
     try {
       await execFileAsync("/usr/bin/true", [], { timeout: 1_000, maxBuffer: 1_024 });
-    } catch {
-      childDenied = true;
+    } catch (error) {
+      childDenied = error?.code === "EPERM" || error?.code === "EACCES";
     }
     networkDenied = await new Promise((done) => {
       const socket = createConnection({ host: "127.0.0.1", port: 9 });

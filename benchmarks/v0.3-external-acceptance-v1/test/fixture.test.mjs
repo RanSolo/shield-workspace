@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -13,11 +13,16 @@ import {
 } from "@shield/team-system/dispatch-receipts";
 
 import {
+  adapterMetadataMatches,
   composeExternalArtifact,
   gradeExternalFixture,
+  hostEvidenceStable,
   launchExternalFixture,
+  loadTrustedWorkerSource,
   loadTrustedIsolationEnvelope,
   loadTrustedReplayAnchor,
+  removeDisposableRoot,
+  verifySealedPrivateCopy,
   validateIsolationReceipt
 } from "../../v0.3-fixture-host-launcher.mjs";
 
@@ -33,7 +38,7 @@ const FIXTURE_RELEASE_BASELINE = Object.freeze({
   schemaVersion: "shield.fixture.release-baseline.v1",
   identityRecordDigest: "fda6adf3344b499d9adfc5067fe2f4408f2a8b2c0f713b7bb75c68cba4c3d25b",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
-  launcherDigest: "9232ae5b9681b58547f6cb2a7cd8db8700d78f7dee8086e6ecb28b9a89eed633",
+  launcherDigest: "7d43ca6bd268c22b3ea7578196a678c95b03c38a43d19be567b1bb87db5c60a1",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
@@ -57,7 +62,7 @@ const ISOLATION_ENVELOPE = Object.freeze({
   }),
   worker: Object.freeze({
     entryPoint: "v0.3-fixture-isolation-worker.mjs",
-    sha256: "f161b6dfcd45c4cdd80f4a11ba202ebe02b9e2545f6dc93c93298e530a942a18"
+    sha256: "29409e7bdb0f890a16b3e49a03fb1877aed89c884d4bf639e7ebc8c2dabeddd8"
   })
 });
 const EXPECTED_DEPENDENCY_BLOCKERS = Object.freeze([
@@ -972,7 +977,8 @@ test("trusted composition isolates offline install and public import as separate
     headRevision: OID40,
     hostContext: {
       baselinePath: trust.hostContext.baselinePath,
-      isolationEnvelopePath: trust.hostContext.isolationEnvelopePath
+      isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
+      interruptAfterPhase: null
     }
   });
   assert.equal(result.state, "composed", JSON.stringify(result));
@@ -1024,11 +1030,48 @@ test("malicious package import cannot reach network, host writes, or child execu
     headRevision: OID40,
     hostContext: {
       baselinePath: trust.hostContext.baselinePath,
-      isolationEnvelopePath: trust.hostContext.isolationEnvelopePath
+      isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
+      interruptAfterPhase: null
     }
   });
   assert.equal(result.state, "composed", JSON.stringify(result));
   assert.equal(await lstat(marker).then(() => true, () => false), false);
+});
+
+test("composition reaps real interruptions at probe, install, and import checkpoints", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-composition-interruption-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const artifact = packTeamSystem(directory);
+  const rootsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-composition-")).sort();
+  for (const phase of ["isolation.probe", "composition.install", "composition.import"]) {
+    const trust = await gradingTrust();
+    try {
+      const result = await composeExternalArtifact({
+        fixtureRoot: root,
+        packageArtifactPath: artifact,
+        baseRevision: OID40,
+        headRevision: OID40,
+        hostContext: {
+          baselinePath: trust.hostContext.baselinePath,
+          isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
+          interruptAfterPhase: phase
+        }
+      });
+      assert.equal(result.state, "blocked", JSON.stringify(result));
+      assert.equal(result.phase, phase);
+      assert.equal(result.reaped, true);
+      assert.equal(
+        result.reason,
+        phase === "composition.install" ? "composition_install_interrupted" : "worker_interrupted"
+      );
+      assert.deepEqual(
+        (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-composition-")).sort(),
+        rootsBefore
+      );
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
 });
 test("baseline defect fails and fixture-only injection restores the exact passing candidate", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-defect-"));
@@ -1184,7 +1227,7 @@ test("real worker interruption at every grading phase preserves the exact operat
   };
   const before = await snapshot();
   const temporaryRootsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-supervisor-")).sort();
-  for (const phase of ["grade.candidate", "grade.injected", "grade.restored"]) {
+  for (const phase of ["isolation.probe", "grade.candidate", "grade.injected", "grade.restored"]) {
     const trust = await gradingTrust(phase);
     try {
       const result = await gradeExternalFixture({
@@ -1264,6 +1307,63 @@ test("isolation envelope is external, content-addressed, and substitution fails 
     envelopePath: trust.hostContext.isolationEnvelopePath,
     fixtureRoot: root
   }), /isolation_envelope_digest_mismatch/);
+
+  for (const substituted of [
+    { ...ISOLATION_ENVELOPE, denialPolicy: { ...ISOLATION_ENVELOPE.denialPolicy, policySha256: "1".repeat(64) } },
+    { ...ISOLATION_ENVELOPE, adapter: { ...ISOLATION_ENVELOPE.adapter, executableSha256: "2".repeat(64) } },
+    { ...ISOLATION_ENVELOPE, unknown: true }
+  ]) {
+    await writeFile(trust.hostContext.isolationEnvelopePath, JSON.stringify(substituted));
+    await assert.rejects(loadTrustedIsolationEnvelope({
+      envelopePath: trust.hostContext.isolationEnvelopePath,
+      fixtureRoot: root
+    }), /isolation_envelope_digest_mismatch/);
+  }
+});
+
+test("adapter, worker, sealed-copy, pre-spawn, and cleanup substitutions fail closed", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-isolation-seams-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const identity = { dev: 1n, ino: 2n, mode: 0o100555n, uid: 0n, gid: 0n };
+  const protectedMetadata = {
+    ...identity,
+    isFile: () => true,
+    isSymbolicLink: () => false
+  };
+  assert.equal(adapterMetadataMatches(identity, protectedMetadata, protectedMetadata), true);
+  assert.equal(adapterMetadataMatches(identity, { ...protectedMetadata, ino: 3n }, protectedMetadata), false);
+  assert.equal(adapterMetadataMatches(identity, { ...protectedMetadata, mode: 0o100577n }, protectedMetadata), false);
+  assert.equal(adapterMetadataMatches(identity, { ...protectedMetadata, uid: 501n }, protectedMetadata), false);
+
+  const workerBytes = await readFile(resolve(root, "../v0.3-fixture-isolation-worker.mjs"));
+  const workerDigest = createHash("sha256").update(workerBytes).digest("hex");
+  const workerPath = join(directory, "worker.mjs");
+  await writeFile(workerPath, workerBytes);
+  assert.equal((await loadTrustedWorkerSource(workerPath, workerDigest)).bytes.equals(workerBytes), true);
+  await writeFile(workerPath, "substituted");
+  await assert.rejects(loadTrustedWorkerSource(workerPath, workerDigest), /isolation_capability_identity_mismatch/);
+  const linkedWorker = join(directory, "worker-link.mjs");
+  await symlink(workerPath, linkedWorker);
+  await assert.rejects(loadTrustedWorkerSource(linkedWorker, workerDigest));
+
+  const privateCopy = join(directory, "private-worker.mjs");
+  await writeFile(privateCopy, workerBytes, { mode: 0o500 });
+  await chmod(privateCopy, 0o500);
+  assert.equal(await verifySealedPrivateCopy(privateCopy, workerDigest, true), true);
+  await chmod(privateCopy, 0o700);
+  await writeFile(privateCopy, "substituted");
+  await chmod(privateCopy, 0o500);
+  await assert.rejects(verifySealedPrivateCopy(privateCopy, workerDigest, true), /private_copy_identity_mismatch/);
+
+  const proof = { nonce: "nonce", digest: "3".repeat(64) };
+  assert.equal(hostEvidenceStable(proof, { ...proof }), true);
+  assert.equal(hostEvidenceStable(proof, { ...proof, nonce: "replayed" }), false);
+  assert.equal(hostEvidenceStable(proof, { ...proof, digest: "4".repeat(64) }), false);
+  assert.equal(await removeDisposableRoot(
+    directory,
+    async () => { throw new Error("injected_cleanup_failure"); },
+    async () => ({})
+  ), false);
 });
 
 test("frozen adoption base rejects arbitrary source and exact-test substitution", async (context) => {

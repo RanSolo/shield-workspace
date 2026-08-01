@@ -85,7 +85,8 @@ private disposable root, runs offline `npm install --ignore-scripts` as the
 separate `composition.install` phase, and imports only the three frozen public
 surfaces as `composition.import`. Both phases require the external isolation
 envelope, fresh protected-adapter evidence, bounded process-group supervision,
-and closed revision-bound receipts. Direct composition remains blocked; a
+one sealed worker copy per invocation, and closed revision-bound receipts.
+Direct composition remains blocked; a
 missing or uncertain denial proof is isolation `not-observable`, not evidence
 that no effect occurred.
 
@@ -107,7 +108,8 @@ The trusted supervisor:
 4. validates the external isolation envelope and the protected, Apple-signed
    `sandbox-exec` identity, then runs a fresh nonce-bound denial probe;
 5. executes candidate, injected, and restored lanes in separately receipted
-   sandboxed worker processes, selecting only `test/greeting.test.mjs`;
+   sandboxed worker processes with a fresh sealed worker copy for each
+   invocation, selecting only `test/greeting.test.mjs`;
 6. injects and restores bytes only inside the disposable archive;
 7. terminates and reaps an interrupted or uncertain worker;
 8. removes the disposable root after the worker is reaped; and
