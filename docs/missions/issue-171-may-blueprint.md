@@ -30,7 +30,7 @@ The adapter follows confinement, exclusive lock ownership, no-follow append, syn
 `permission-audit-store.mts` adds:
 
 - `PermissionAuditStoreContractResult<T>`: closed `{ state: "valid", value }` or `{ state: "invalid", code, errors }` result.
-- `PermissionAuditFilesystemStoreScopeInput` with exactly `repositoryRoot`, `ledgerId`, and `lockOwnerId` strings.
+- `PermissionAuditFilesystemStoreScopeInput` with exactly `repositoryRoot`, `ledgerId`, and `lockOwnerId` strings. `lockOwnerId` must satisfy the referenced store rule: a non-empty identifier no longer than 128 characters; violations are `malformed_input` before filesystem access.
 - closed read and append input/result interfaces using the exact scope plus a `PermissionAuditRecord` only for append.
 - `readPermissionAuditLedgerV1(input)` returning a closed result containing the exact ledger path, validated records, raw bytes, and missing state.
 - `appendPermissionAuditRecordIfAbsentV1(input)` returning a closed result containing the exact path, byte length, records, raw bytes, and reconstructed `PermissionAuditReceipt`.
@@ -43,7 +43,7 @@ The adapter follows confinement, exclusive lock ownership, no-follow append, syn
 - Store each ledger below `.shield/permission-audit/` using `sha256(ledgerId)` encoded as base64url plus `.jsonl`; its lock file is adjacent with `.lock` appended.
 - Keep the original `ledgerId` in every record and exact-match it on every read and append, so a filename collision or mixed ledger fails closed.
 - Reject path escape, symlinked/non-directory store roots, and symlinked/non-regular log or lock files. Use `O_NOFOLLOW` where supported by existing store patterns.
-- Sync the permission-audit directory when first created and again when a ledger file is first created.
+- Durable creation syncs each containing directory in order: after creating `.shield`, sync the repository root; after creating `.shield/permission-audit`, sync `.shield`; after first creating a ledger file, sync `.shield/permission-audit`. Any failure after directory or file creation is `recovery_required`.
 
 ## Canonical ledger read
 
