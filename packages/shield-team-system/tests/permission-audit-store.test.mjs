@@ -229,6 +229,13 @@ async function runPermissionAuditMockedAppendScenario(scenario) {
             throw error;
           }
 
+          if (scenario === "shield-directory-sync-failure" && isDirectoryOpen && path === shieldDirectoryForChecks) {
+            await handle.close().catch(() => undefined);
+            const error = new Error("shield directory sync failure");
+            error.code = "EIO";
+            throw error;
+          }
+
           if (scenario === "directory-sync-failure" && isDirectoryOpen && path === auditDirectoryForChecks) {
             await handle.close().catch(() => undefined);
             const error = new Error("permission audit directory sync failure");
@@ -561,6 +568,12 @@ test("append returns permission_audit_unavailable when pre-write ledger read is 
 
 test("append returns recovery_required when repository root directory sync fails", async () => {
   const result = await runPermissionAuditMockedAppendScenario("repository-root-sync-failure");
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "recovery_required");
+});
+
+test("append returns recovery_required when .shield directory sync fails", async () => {
+  const result = await runPermissionAuditMockedAppendScenario("shield-directory-sync-failure");
   assert.equal(result.state, "invalid", result.errors?.join(" "));
   assert.equal(result.code, "recovery_required");
 });
