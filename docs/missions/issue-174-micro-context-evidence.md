@@ -10,6 +10,8 @@
 
 ## Packet observations
 
+The table is host-observed experiment evidence. Each message prompt and raw assistant response is preserved under `docs/missions/issue-174-local-evidence/`; the manifest binds their SHA-256 digests, runtime identity, and native API usage fields.
+
 | Run | Seat | Input tokens | TTFT | Approx. completion | Result |
 |---|---:|---:|---:|---:|---|
 | Daisy packet 1 | Daisy | 1,684 | 1.566s | 10.11s | Correct root cause and cleanup invariant; invalid pipe-based TTY test seam |
@@ -20,11 +22,10 @@
 
 ## Evidence-bound conclusion
 
-The smallest useful packet in this run was Daisy's 939-token correction, but it was not independently implementation-safe. May required a stricter 1,166-token retry after a failed 1,065-token packet. The provisional operating range is 1.1–1.5k input tokens for one tightly bounded decision surface, with all evidence supplied, tools explicitly forbidden when absent, and an exact output contract.
+The smallest useful packet in this run was Daisy's 939-token correction, but it was not independently implementation-safe. May required a stricter 1,166-token retry after a failed 1,065-token packet. These are candidate packet sizes for another measurement, not a demonstrated minimum or operating range.
 
 Packet size alone did not preserve quality. Hill verification caught three material errors: a non-TTY pipe test, a passcode-leakage assertion, and a fabricated tool/path request. The experiment therefore supports micro-context runs as fast option generators, not autonomous authority or unreviewed implementation sources.
 
 ## Next measurement
 
-If implementation is authorized, give local May one exact function-and-test packet in this range. Compare first-pass patch applicability, focused-test success, Hill corrections, Mack findings, and Fury escapes against these planning runs.
-
+If implementation is authorized, give local May one exact function-and-test packet at one of the observed candidate sizes. Compare first-pass patch applicability, focused-test success, Hill corrections, Mack findings, and Fury escapes against these planning runs. More missions are required before claiming a repeatable sweet spot.
