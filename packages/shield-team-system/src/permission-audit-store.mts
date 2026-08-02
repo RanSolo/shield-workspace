@@ -79,39 +79,92 @@ const invalid = <T = never,>(code: string, ...errors: string[]): PermissionAudit
   ({ state: "invalid", code, errors: errors.length > 0 ? errors : ["invalid input."] });
 
 function safePlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object") return false;
-  if (Array.isArray(value)) return false;
-  return Object.getPrototypeOf(value) === Object.prototype;
+  try {
+    if (value === null || typeof value !== "object") return false;
+    if (Array.isArray(value)) return false;
+    return Object.getPrototypeOf(value) === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+function snapshotDescriptorSafeObject<T>(value: T, ancestors = new WeakSet<object>()): PermissionAuditStoreContractResult<T> {
+  try {
+    if (value === null || typeof value !== "object") return valid(value);
+    const inputObject = value as object;
+    const array = Array.isArray(value);
+    if (Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype)) {
+      return invalid("malformed_input", "Permission audit input has an unsafe object shape.");
+    }
+    if (ancestors.has(inputObject)) return invalid("malformed_input", "Permission audit input cannot be cyclic.");
+    ancestors.add(inputObject);
+
+    const descriptors = Object.getOwnPropertyDescriptors(value as Record<PropertyKey, unknown>) as Record<PropertyKey, PropertyDescriptor>;
+    const clone: object = array ? [] : {};
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key as keyof typeof descriptors];
+      if (typeof descriptor.get !== "undefined" || typeof descriptor.set !== "undefined") {
+        return invalid("malformed_input", "Permission audit input cannot contain accessor properties.");
+      }
+      if (!Object.hasOwn(descriptor, "value")) {
+        return invalid("malformed_input", "Permission audit input has invalid property descriptors.");
+      }
+
+      const child = snapshotDescriptorSafeObject(descriptor.value, ancestors);
+      if (child.state === "invalid") return child;
+      Object.defineProperty(clone, key, { ...descriptor, value: child.value });
+    }
+
+    ancestors.delete(inputObject);
+    Object.freeze(clone);
+    return valid(clone as T);
+  } catch {
+    return invalid("malformed_input", "Permission audit input has reflective validation failures.");
+  }
+}
+
+function snapshotPermissionAuditRecord(record: PermissionAuditRecord): PermissionAuditStoreContractResult<PermissionAuditRecord> {
+  return snapshotDescriptorSafeObject(record);
+}
+
+function snapshotPermissionAuditScopeInput(
+  scope: PermissionAuditFilesystemStoreScopeInput,
+): PermissionAuditStoreContractResult<PermissionAuditFilesystemStoreScopeInput> {
+  return snapshotDescriptorSafeObject(scope);
 }
 
 function exactFields(value: unknown, fields: readonly string[], label: string): string[] {
-  if (!safePlainObject(value)) return [`${label} must be a strict plain object.`];
+  try {
+    if (!safePlainObject(value)) return [`${label} must be a strict plain object.`];
 
-  const expected = new Set(fields);
-  const errors: string[] = [];
+    const expected = new Set(fields);
+    const errors: string[] = [];
 
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string") {
-      errors.push(`invalid field: ${String(key)}.`);
-      continue;
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") {
+        errors.push(`invalid field: ${String(key)}.`);
+        continue;
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!expected.has(key)) {
+        errors.push(`invalid field: ${key}.`);
+        continue;
+      }
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable) {
+        errors.push(`invalid field: ${key}.`);
+      }
     }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!expected.has(key)) {
-      errors.push(`invalid field: ${key}.`);
-      continue;
+
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable) {
+        errors.push(`missing field: ${field}.`);
+      }
     }
-    if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable) {
-      errors.push(`invalid field: ${key}.`);
-    }
+    return errors;
+  } catch {
+    return [`${label} has reflective validation failures.`];
   }
-
-  for (const field of fields) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, field);
-    if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable) {
-      errors.push(`missing field: ${field}.`);
-    }
-  }
-  return errors;
 }
 
 function validateScopeInput(input: unknown, context: string): PermissionAuditStoreContractResult<PermissionAuditFilesystemStoreScopeInput> {
@@ -133,25 +186,35 @@ function validateScopeInput(input: unknown, context: string): PermissionAuditSto
 }
 
 function validateReadInput(input: unknown): PermissionAuditStoreContractResult<PermissionAuditStoreReadInput> {
-  return validateScopeInput(input, "read input");
+  const snapshot = snapshotDescriptorSafeObject(input);
+  if (snapshot.state === "invalid") return snapshot;
+  return validateScopeInput(snapshot.value, "read input");
 }
 
 function validateAppendInput(input: unknown): PermissionAuditStoreContractResult<PermissionAuditStoreAppendInput> {
-  const fieldErrors = exactFields(input, ["repositoryRoot", "ledgerId", "lockOwnerId", "record"], "append input");
+  const snapshot = snapshotDescriptorSafeObject(input);
+  if (snapshot.state === "invalid") return snapshot;
+  const source = snapshot.value;
+  const fieldErrors = exactFields(source, ["repositoryRoot", "ledgerId", "lockOwnerId", "record"], "append input");
   if (fieldErrors.length > 0) return invalid("malformed_input", "append input has invalid fields.");
 
-  const inputRecord = input as Record<string, unknown>;
+  const inputRecord = source as Record<string, unknown>;
   const scopeInput = validateScopeInput(
     { repositoryRoot: inputRecord.repositoryRoot, ledgerId: inputRecord.ledgerId, lockOwnerId: inputRecord.lockOwnerId },
     "append input",
   );
   if (scopeInput.state === "invalid") return scopeInput;
 
-  if (!safePlainObject((input as Record<string, unknown>).record)) {
+  if (!safePlainObject(inputRecord.record)) {
     return invalid("malformed_input", "append input record must be a strict plain object.");
   }
 
-  const checked = validatePermissionAuditRecord((input as Record<string, unknown>).record);
+  let checked;
+  try {
+    checked = validatePermissionAuditRecord(inputRecord.record);
+  } catch {
+    return invalid("malformed_input", "append input record has reflective validation failures.");
+  }
   if (checked.state === "invalid") return invalid("malformed_input", ...checked.errors);
   if (checked.value.ledgerId !== scopeInput.value.ledgerId) return invalid("malformed_input", "append input record ledgerId must match configured ledgerId.");
 
@@ -392,8 +455,10 @@ export async function readPermissionAuditLedgerV1(
 ): Promise<PermissionAuditStoreContractResult<PermissionAuditFilesystemLedgerReadResult>> {
   const checked = validateReadInput(input);
   if (checked.state === "invalid") return checked;
+  const snapshot = snapshotPermissionAuditScopeInput(checked.value);
+  if (snapshot.state === "invalid") return snapshot;
 
-  const paths = await resolveStorePaths(checked.value, false);
+  const paths = await resolveStorePaths(snapshot.value, false);
   if (paths.state === "invalid") return paths;
 
   if (!paths.value.shieldDirectoryExists || !paths.value.auditDirectoryExists) {
@@ -430,7 +495,7 @@ export async function readPermissionAuditLedgerV1(
     await handle?.close().catch(() => undefined);
   }
 
-  const parsed = parsePermissionAuditLines(bytes, checked.value.ledgerId);
+  const parsed = parsePermissionAuditLines(bytes, snapshot.value.ledgerId);
   if (parsed.state === "invalid") return parsed;
 
   return valid({
@@ -442,16 +507,19 @@ export async function readPermissionAuditLedgerV1(
 }
 
 function reconstructReceipt(record: PermissionAuditRecord, sequence: number): PermissionAuditStoreContractResult<PermissionAuditReceipt> {
+  const checkedRecord = snapshotPermissionAuditRecord(record);
+  if (checkedRecord.state === "invalid") return invalid("malformed_input", ...checkedRecord.errors);
+
   const candidate: PermissionAuditReceipt = {
     schemaVersion: 1 as const,
-    ledgerId: record.ledgerId,
-    recordId: record.recordId,
-    decisionId: record.decisionId,
-    digest: record.digest,
+    ledgerId: checkedRecord.value.ledgerId,
+    recordId: checkedRecord.value.recordId,
+    decisionId: checkedRecord.value.decisionId,
+    digest: checkedRecord.value.digest,
     appended: true,
     ledgerSequence: sequence,
   };
-  const checked = validatePermissionAuditReceipt(candidate, record);
+  const checked = validatePermissionAuditReceipt(candidate, checkedRecord.value);
   if (checked.state === "invalid") return invalid("permission_audit_replay_invalid", "Permission audit receipt reconstruction failed.");
   return valid(candidate);
 }
@@ -461,43 +529,51 @@ export async function appendPermissionAuditRecordIfAbsentV1(
 ): Promise<PermissionAuditStoreContractResult<PermissionAuditFilesystemLedgerAppendResult>> {
   const checked = validateAppendInput(input);
   if (checked.state === "invalid") return checked;
-
-  const paths = await resolveStorePaths(checked.value, true);
+  const scopeSnapshot = snapshotPermissionAuditScopeInput({
+    repositoryRoot: checked.value.repositoryRoot,
+    ledgerId: checked.value.ledgerId,
+    lockOwnerId: checked.value.lockOwnerId,
+  });
+  if (scopeSnapshot.state === "invalid") return scopeSnapshot;
+  const recordSnapshot = snapshotPermissionAuditRecord(checked.value.record);
+  if (recordSnapshot.state === "invalid") return recordSnapshot;
+  const paths = await resolveStorePaths(scopeSnapshot.value, true);
   if (paths.state === "invalid") return paths;
 
-  const token = await acquireLock(paths.value, checked.value.lockOwnerId);
+  const token = await acquireLock(paths.value, scopeSnapshot.value.lockOwnerId);
   if (token.state === "invalid") return token;
 
   const runAppendOperation = async (): Promise<PermissionAuditStoreContractResult<PermissionAuditFilesystemLedgerAppendResult>> => {
-    const current = await readPermissionAuditLedgerV1({
-      repositoryRoot: checked.value.repositoryRoot,
-      ledgerId: checked.value.ledgerId,
-      lockOwnerId: checked.value.lockOwnerId,
-    });
+    const snapshotCurrent = await readPermissionAuditLedgerV1(scopeSnapshot.value);
+    const current = snapshotCurrent;
     if (current.state === "invalid") {
-      return invalid("permission_audit_replay_invalid", ...current.errors);
+      return invalid(current.code, ...current.errors);
     }
+    const currentEntriesSnapshot = snapshotDescriptorSafeObject(current.value.entries);
+    if (currentEntriesSnapshot.state === "invalid") return invalid("malformed_input", ...currentEntriesSnapshot.errors);
+    const currentBytesSnapshot = current.value.bytes;
+    const currentEntries = currentEntriesSnapshot.value as unknown as PermissionAuditRecord[];
 
-    const existingIndex = current.value.entries.findIndex((entry) => entry.recordId === checked.value.record.recordId);
-    if (existingIndex >= 0) {
-      const existing = current.value.entries[existingIndex];
-      if (canonicalJson(existing) === canonicalJson(checked.value.record)) {
-        const idempotentReceipt = reconstructReceipt(existing, existingIndex);
-        if (idempotentReceipt.state === "invalid") {
-          return invalid("recovery_required", ...idempotentReceipt.errors);
-        }
+      const existingIndex = currentEntries.findIndex((entry) => entry.recordId === recordSnapshot.value.recordId);
+      if (existingIndex >= 0) {
+        const existing = currentEntries[existingIndex];
+        if (canonicalJson(existing) === canonicalJson(recordSnapshot.value)) {
+          const idempotentReceipt = reconstructReceipt(existing, existingIndex);
+          if (idempotentReceipt.state === "invalid") {
+            return invalid("recovery_required", ...idempotentReceipt.errors);
+          }
         return valid({
           ledgerPath: paths.value.ledgerPath,
-          byteLength: Buffer.byteLength(current.value.bytes, "utf8"),
-          bytes: current.value.bytes,
-          records: current.value.entries,
+          byteLength: Buffer.byteLength(currentBytesSnapshot, "utf8"),
+          bytes: currentBytesSnapshot,
+          records: currentEntries,
           receipt: idempotentReceipt.value,
         });
       }
-      return invalid("permission_audit_id_conflict", `Permission audit record ${checked.value.record.recordId} is already present with different payload.`);
+      return invalid("permission_audit_id_conflict", `Permission audit record ${recordSnapshot.value.recordId} is already present with different payload.`);
     }
 
-    const candidate = [...current.value.entries, checked.value.record];
+    const candidate = [...currentEntries, recordSnapshot.value];
     const replayed = replayPermissionAuditLedger(candidate);
     if (replayed.state === "invalid") {
       return invalid("permission_audit_replay_invalid", ...replayed.errors);
@@ -532,21 +608,18 @@ export async function appendPermissionAuditRecordIfAbsentV1(
       if (!directorySynced) return invalid("recovery_required", "Permission audit ledger parent directory sync failed.");
     }
 
-    const after = await readPermissionAuditLedgerV1({
-      repositoryRoot: checked.value.repositoryRoot,
-      ledgerId: checked.value.ledgerId,
-      lockOwnerId: checked.value.lockOwnerId,
-    });
+    const afterResult = await readPermissionAuditLedgerV1(scopeSnapshot.value);
+    const after = afterResult;
     if (after.state === "invalid") {
       return invalid("recovery_required", ...after.errors);
     }
-    const expected = `${current.value.bytes}${line}`;
+    const expected = `${currentBytesSnapshot}${line}`;
     const afterBytes = after.value.bytes;
     if (afterBytes !== expected) {
       return invalid("recovery_required", "Permission audit readback bytes do not match append expectation.");
     }
 
-    const receipt = reconstructReceipt(checked.value.record, replayed.value.length - 1);
+    const receipt = reconstructReceipt(recordSnapshot.value, replayed.value.length - 1);
     if (receipt.state === "invalid") return invalid("recovery_required", ...receipt.errors);
 
     return valid({
@@ -783,8 +856,10 @@ async function acquireLock(
 
   const marker = markerFromOwner(lockOwnerId);
   let handle;
+  let lockCreated = false;
   try {
     handle = await open(paths.lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    lockCreated = true;
     const stats = await handle.stat();
     if (stats.isSymbolicLink() || !stats.isFile()) {
       return invalid("unsafe_path", "Permission audit lock must be a regular file.");
@@ -802,6 +877,9 @@ async function acquireLock(
     });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (lockCreated) {
+      return invalid("recovery_required", `Permission audit lock acquisition was uncertain: ${code ?? "unknown_error"}.`);
+    }
     if (code === "EEXIST") return invalid("permission_audit_lock_held", "Permission audit lock is held.");
     if (code === "ELOOP") return invalid("unsafe_path", "Permission audit lock must not be a symbolic link.");
     return invalid("permission_audit_unavailable", `Permission audit lock acquisition failed: ${code ?? "unknown_error"}.`);
@@ -861,15 +939,22 @@ function throwClosedStoreError(result: PermissionAuditStoreInvalidContractResult
 }
 
 export function createPermissionAuditFilesystemStore(input: PermissionAuditFilesystemStoreScopeInput): PermissionAuditFilesystemStore {
+  const inputSnapshot = snapshotDescriptorSafeObject(input);
+  const checkedInput = inputSnapshot.state === "invalid" ? inputSnapshot : validateScopeInput(inputSnapshot.value, "scope input");
+  const resolvedInput = checkedInput.state === "invalid" ? checkedInput : snapshotPermissionAuditScopeInput(checkedInput.value);
+  const snapshotLedgerId = resolvedInput.state === "valid" ? resolvedInput.value.ledgerId : "";
+
   return {
-    ledgerId: input.ledgerId,
+    ledgerId: snapshotLedgerId,
     async read() {
-      const result = await readPermissionAuditLedgerV1(input);
+      if (resolvedInput.state === "invalid") throwClosedStoreError(resolvedInput);
+      const result = await readPermissionAuditLedgerV1(resolvedInput.value);
       if (result.state === "invalid") throwClosedStoreError(result);
       return result.value.entries;
     },
     async appendIfAbsent(record) {
-      const result = await appendPermissionAuditRecordIfAbsentV1({ ...input, record });
+      if (resolvedInput.state === "invalid") throwClosedStoreError(resolvedInput);
+      const result = await appendPermissionAuditRecordIfAbsentV1({ ...resolvedInput.value, record });
       if (result.state === "invalid") throwClosedStoreError(result);
       return result.value.receipt;
     },

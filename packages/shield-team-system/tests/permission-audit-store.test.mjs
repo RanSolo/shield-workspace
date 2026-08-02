@@ -77,7 +77,7 @@ const MISSION_V2_PATH = resolve(PACKAGE_DIST_DIR, "mission-v2.mjs");
 async function runPermissionAuditMockedAppendScenario(scenario) {
   const script = `
     import { mkdtemp } from "node:fs/promises";
-    import { join, sep } from "node:path";
+    import { dirname, join, sep } from "node:path";
     import { tmpdir } from "node:os";
     import { pathToFileURL } from "node:url";
     import { mock } from "node:test";
@@ -103,6 +103,9 @@ async function runPermissionAuditMockedAppendScenario(scenario) {
     const repositoryRootForChecks = await realFs.realpath(repositoryRoot);
     const shieldDirectoryForChecks = join(repositoryRootForChecks, ".shield");
     const auditDirectoryForChecks = join(repositoryRootForChecks, ".shield", "permission-audit");
+    const hashedLedgerIdForChecks = createHash("sha256").update(ledgerId, "utf8").digest("base64url");
+    const ledgerPathForChecks = join(auditDirectoryForChecks, hashedLedgerIdForChecks + ".jsonl");
+    const lockPathForChecks = ledgerPathForChecks + ".lock";
     const permissionAuditV1 = await import(permissionAuditV1RealUrl);
     const record = permissionAuditV1.createPermissionAuditRecord({
       schemaVersion: 1,
@@ -133,6 +136,11 @@ async function runPermissionAuditMockedAppendScenario(scenario) {
       evidenceRefs: ["attestation:1"],
     });
 
+    if (scenario === "prewrite-unsafe-read" || scenario === "prewrite-unavailable-read") {
+      await realFs.mkdir(dirname(ledgerPathForChecks), { recursive: true });
+      await realFs.writeFile(ledgerPathForChecks, canonicalJson(record) + "\\n", "utf8");
+    }
+
     const permissionAuditDirectorySuffix = sep + ".shield" + sep + "permission-audit";
     const mismatchLine = canonicalJson(permissionAuditV1.createPermissionAuditRecord({
       ...record,
@@ -158,8 +166,11 @@ async function runPermissionAuditMockedAppendScenario(scenario) {
       });
     }
 
-    mock.module("node:fs/promises", {
-      exports: {
+    let prewriteUnsafeReadConsumed = false;
+    let prewriteUnavailableReadConsumed = false;
+
+      mock.module("node:fs/promises", {
+        exports: {
         ...realFs,
         mkdir: async (path, options) => {
           const result = await realFs.mkdir(path, options);
@@ -183,15 +194,60 @@ async function runPermissionAuditMockedAppendScenario(scenario) {
           const handle = await realFs.open(path, flags, mode);
 
           const isLedgerPath = typeof path === "string" && path.endsWith(".jsonl");
+          const isLockPath = typeof path === "string" && path.endsWith(".jsonl.lock");
           const isDirectoryOpen = typeof flags === "number" && (flags & constants.O_DIRECTORY) === constants.O_DIRECTORY;
-          const isRead = typeof flags === "number" && (flags & constants.O_RDONLY) === constants.O_RDONLY;
+          const isRead = typeof flags === "number" && (flags & constants.O_WRONLY) !== constants.O_WRONLY;
           const isWrite = typeof flags === "number" && (flags & constants.O_WRONLY) === constants.O_WRONLY;
 
-          if (scenario === "directory-sync-failure" && isDirectoryOpen && typeof path === "string" && path.endsWith(permissionAuditDirectorySuffix)) {
+          if (
+            scenario === "prewrite-unsafe-read" &&
+            isRead &&
+            path === ledgerPathForChecks &&
+            !prewriteUnsafeReadConsumed
+          ) {
+            prewriteUnsafeReadConsumed = true;
+            const error = new Error("permission audit ledger read unsafe");
+            error.code = "ELOOP";
+            throw error;
+          }
+          if (
+            scenario === "prewrite-unavailable-read" &&
+            isRead &&
+            path === ledgerPathForChecks &&
+            !prewriteUnavailableReadConsumed
+          ) {
+            prewriteUnavailableReadConsumed = true;
+            const error = new Error("permission audit ledger read unavailable");
+            error.code = "EACCES";
+            throw error;
+          }
+
+          if (scenario === "repository-root-sync-failure" && isDirectoryOpen && path === repositoryRootForChecks) {
             await handle.close().catch(() => undefined);
             const error = new Error("permission audit directory sync failure");
             error.code = "EIO";
             throw error;
+          }
+
+          if (scenario === "directory-sync-failure" && isDirectoryOpen && path === auditDirectoryForChecks) {
+            await handle.close().catch(() => undefined);
+            const error = new Error("permission audit directory sync failure");
+            error.code = "EIO";
+            throw error;
+          }
+
+          if (scenario === "marker-write-failure" && isWrite && isLockPath && path === lockPathForChecks) {
+            const originalWrite = handle.write.bind(handle);
+            handle.write = async (...writeArgs) => {
+              const result = await originalWrite(...writeArgs);
+              return { ...result, bytesWritten: Math.max(0, result.bytesWritten - 1) };
+            };
+          }
+
+          if (scenario === "marker-sync-failure" && isWrite && isLockPath && path === lockPathForChecks) {
+            handle.sync = async () => {
+              throw new Error("simulated lock marker sync failure");
+            };
           }
 
           if (isLedgerPath && typeof handle.write === "function" && scenario === "short-write" && isWrite) {
@@ -461,6 +517,18 @@ test("append returns recovery_required on short write", async () => {
   assert.equal(result.code, "recovery_required");
 });
 
+test("append returns recovery_required when lock marker write is short", async () => {
+  const result = await runPermissionAuditMockedAppendScenario("marker-write-failure");
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "recovery_required");
+});
+
+test("append returns recovery_required when lock marker sync fails", async () => {
+  const result = await runPermissionAuditMockedAppendScenario("marker-sync-failure");
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "recovery_required");
+});
+
 test("append returns invalid when .shield becomes a symlink after creation", async () => {
   const result = await runPermissionAuditMockedAppendScenario("shield-post-create-symlink");
   assert.equal(result.state, "invalid", result.errors?.join(" "));
@@ -479,10 +547,133 @@ test("append returns recovery_required when append sync fails", async () => {
   assert.equal(result.code, "recovery_required");
 });
 
-test("append returns recovery_required when permission-audit parent directory sync fails", async () => {
+test("append returns unsafe_path when pre-write ledger read is ELOOP", async () => {
+  const result = await runPermissionAuditMockedAppendScenario("prewrite-unsafe-read");
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "unsafe_path");
+});
+
+test("append returns permission_audit_unavailable when pre-write ledger read is EACCES", async () => {
+  const result = await runPermissionAuditMockedAppendScenario("prewrite-unavailable-read");
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "permission_audit_unavailable");
+});
+
+test("append returns recovery_required when repository root directory sync fails", async () => {
+  const result = await runPermissionAuditMockedAppendScenario("repository-root-sync-failure");
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "recovery_required");
+});
+
+test("append returns recovery_required when permission-audit directory sync fails", async () => {
   const result = await runPermissionAuditMockedAppendScenario("directory-sync-failure");
   assert.equal(result.state, "invalid", result.errors?.join(" "));
   assert.equal(result.code, "recovery_required");
+});
+
+test("mutable scope is snapshotted before first async boundary", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-permission-audit-"));
+  const appendScope = scope(repositoryRoot, "ledger:issue-171:mutable-scope");
+  const record = baseRecord({ ledgerId: appendScope.ledgerId, recordId: "mutable-scope-record" });
+
+  const appendPromise = appendPermissionAuditRecordIfAbsentV1({
+    ...appendScope,
+    record,
+  });
+  appendScope.ledgerId = "ledger:issue-171:mutated-scope";
+  const appendResult = await appendPromise;
+  assert.equal(appendResult.state, "valid", appendResult.errors?.join(" "));
+
+  const originalScopeRead = await readPermissionAuditLedgerV1(scope(repositoryRoot, "ledger:issue-171:mutable-scope"));
+  assert.equal(originalScopeRead.state, "valid", originalScopeRead.errors?.join(" "));
+  assert.equal(originalScopeRead.value.entries[0].recordId, record.recordId);
+
+  const mutatedScopeRead = await readPermissionAuditLedgerV1({
+    repositoryRoot,
+    ledgerId: appendScope.ledgerId,
+    lockOwnerId: appendScope.lockOwnerId,
+  });
+  assert.equal(mutatedScopeRead.state, "valid", mutatedScopeRead.errors?.join(" "));
+  assert.equal(mutatedScopeRead.value.missing, true);
+});
+
+test("mutable record is snapshotted before first async boundary", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-permission-audit-"));
+  const appendScope = scope(repositoryRoot, "ledger:issue-171:mutable-record");
+  const mutableRecord = baseRecord({ ledgerId: appendScope.ledgerId, recordId: "mutable-record" });
+
+  const appendPromise = appendPermissionAuditRecordIfAbsentV1({
+    ...appendScope,
+    record: mutableRecord,
+  });
+  mutableRecord.recordId = "mutated-record";
+  mutableRecord.evidenceRefs.push("late-evidence");
+  const appendResult = await appendPromise;
+  assert.equal(appendResult.state, "valid", appendResult.errors?.join(" "));
+
+  const readResult = await readPermissionAuditLedgerV1(appendScope);
+  assert.equal(readResult.state, "valid", readResult.errors?.join(" "));
+  assert.equal(readResult.value.entries[0].recordId, "mutable-record");
+  assert.equal(readResult.value.entries[0].evidenceRefs.includes("late-evidence"), false);
+});
+
+test("proxy get substitution cannot replace descriptor-snapshotted scope or record identity", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-permission-audit-"));
+  const scopeTarget = scope(repositoryRoot, "ledger:issue-171:proxy-snapshot");
+  const scopeProxy = new Proxy(scopeTarget, {
+    get(target, property, receiver) {
+      if (property === "ledgerId") return "ledger:issue-171:substituted";
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const store = createPermissionAuditFilesystemStore(scopeProxy);
+  assert.equal(store.ledgerId, scopeTarget.ledgerId);
+
+  const recordTarget = baseRecord({ ledgerId: scopeTarget.ledgerId, recordId: "record:before" });
+  const recordProxy = new Proxy(recordTarget, {
+    get(target, property, receiver) {
+      if (property === "recordId") return "record:after";
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const receipt = await store.appendIfAbsent(recordProxy);
+  assert.equal(receipt.recordId, "record:before");
+
+  const readResult = await readPermissionAuditLedgerV1(scopeTarget);
+  assert.equal(readResult.state, "valid", readResult.errors?.join(" "));
+  assert.equal(readResult.value.entries[0].ledgerId, scopeTarget.ledgerId);
+  assert.equal(readResult.value.entries[0].recordId, "record:before");
+});
+
+test("symlinked ledger file path is rejected", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-permission-audit-"));
+  const symlinkScope = scope(repositoryRoot, "ledger:issue-171:symlink-ledger");
+  const ledger = ledgerPath(repositoryRoot, symlinkScope.ledgerId);
+
+  await mkdir(dirname(ledger), { recursive: true });
+  await symlink(join(dirname(ledger), "symlink-target"), ledger);
+
+  const result = await appendPermissionAuditRecordIfAbsentV1({
+    ...symlinkScope,
+    record: baseRecord({ ledgerId: symlinkScope.ledgerId, recordId: "symlink-ledger-record" }),
+  });
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "unsafe_path");
+});
+
+test("symlinked lock file path is rejected", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-permission-audit-"));
+  const symlinkScope = scope(repositoryRoot, "ledger:issue-171:symlink-lock");
+  const record = baseRecord({ ledgerId: symlinkScope.ledgerId, recordId: "symlink-lock-record" });
+
+  const lock = `${ledgerPath(repositoryRoot, symlinkScope.ledgerId)}.lock`;
+  const lockTarget = join(dirname(lock), "lock-target");
+  await mkdir(dirname(lock), { recursive: true });
+  await symlink(lockTarget, lock);
+
+  const symlinkResult = await appendPermissionAuditRecordIfAbsentV1({ ...symlinkScope, record });
+  assert.equal(symlinkResult.state, "invalid", symlinkResult.errors?.join(" "));
+  assert.equal(symlinkResult.code, "unsafe_path");
 });
 
 test("append returns recovery_required when reread bytes do not match append expectation", async () => {
@@ -524,6 +715,36 @@ test("malformed lockOwnerId fails before filesystem access for primitive and sto
   const overlongRead = await readPermissionAuditLedgerV1(overlongInput);
   assert.equal(overlongRead.state, "invalid", overlongRead.errors?.join(" "));
   assert.equal(overlongRead.code, "malformed_input");
+});
+
+test("throwing proxies fail closed as malformed input across primitive and store APIs", async () => {
+  const hostileScope = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("hostile scope prototype");
+    },
+  });
+  const readResult = await readPermissionAuditLedgerV1(hostileScope);
+  assert.equal(readResult.state, "invalid", readResult.errors?.join(" "));
+  assert.equal(readResult.code, "malformed_input");
+
+  const store = createPermissionAuditFilesystemStore(hostileScope);
+  assert.equal(store.ledgerId, "");
+  await assert.rejects(() => store.read(), (error) => error.code === "malformed_input");
+  await assert.rejects(
+    () => store.appendIfAbsent(baseRecord()),
+    (error) => error.code === "malformed_input",
+  );
+
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-permission-audit-"));
+  const appendScope = scope(repositoryRoot, "ledger:issue-171:hostile-record");
+  const hostileRecord = new Proxy(baseRecord({ ledgerId: appendScope.ledgerId }), {
+    ownKeys() {
+      throw new Error("hostile record keys");
+    },
+  });
+  const appendResult = await appendPermissionAuditRecordIfAbsentV1({ ...appendScope, record: hostileRecord });
+  assert.equal(appendResult.state, "invalid", appendResult.errors?.join(" "));
+  assert.equal(appendResult.code, "malformed_input");
 });
 
 test("path confinement rejects symlinked repository root", async () => {
