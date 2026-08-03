@@ -465,14 +465,6 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
   if (binding.binding.coulsonAuthorizationRef !== input.authorization.payload.authorizationId) {
     throw new Error("Runtime binding authorization id must match the binding's Coulson authorization reference.");
   }
-  if (input.projection.runtimeBindings.some(({ binding: historical }) =>
-    historical.coulsonAuthorizationRef === input.authorization.payload.authorizationId)) {
-    throw new Error("Runtime binding authorization id must be unique across all binding versions.");
-  }
-  if (input.projection.runtimeBindings.some(({ binding: historical }) =>
-    historical.coulsonAuthorizationRef === input.authorization.payload.authorizationId)) {
-    throw new Error("Runtime binding authorization id must be unique across all binding versions.");
-  }
   if (!input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.seatId)) {
     throw new Error("Profile-aware runtime binding seat is not a mission participant.");
   }
@@ -495,6 +487,10 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
     input.priorBindingVersion,
   );
   if (checkedAuthority.state === "invalid") throw new Error(checkedAuthority.errors.join(" "));
+  if (input.projection.runtimeBindings.some(({ binding: historical }) =>
+    historical.coulsonAuthorizationRef === checkedAuthority.value.authorizationId)) {
+    throw new Error("Runtime binding authorization id must be unique across all binding versions.");
+  }
   if (input.projection.schemaVersion !== 9 ||
       !["not-started", "running"].includes(input.projection.execution) ||
       input.projection.finalAcceptance !== "waiting") {

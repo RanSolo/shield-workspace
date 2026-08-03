@@ -280,6 +280,7 @@ test("schema9 runtime-binding wrapper validation, auth validation, and signature
         missionRevisionId: authorityPayload.missionRevisionId,
         trustedBindings: [coulsonBinding],
         implementationAuthority: authorityPayload,
+        implementationAuthorityActive: true,
         lastSequence: 2,
       },
       null,
@@ -334,6 +335,7 @@ test("binding signature failure precedes active-authority scope failure", () => 
       missionRevisionId: authorityPayload.missionRevisionId,
       trustedBindings: [trusted.binding],
       implementationAuthority: authorityPayload,
+      implementationAuthorityActive: true,
       lastSequence: 2,
     },
     null,
@@ -391,5 +393,27 @@ test("stale repository identity precedes a bad binding signature", () => {
     assert.equal(result.state, "invalid", field);
     assert.match(result.errors.join(" "), new RegExp(field), field);
     assert.doesNotMatch(result.errors.join(" "), /signature/i, field);
+  }
+});
+
+test("binding verification requires an explicitly active implementation authority", () => {
+  const trusted = authoritySigner();
+  const authorityPayload = authority({ signingKeyRef: trusted.binding.signingKeyRef });
+  const binding = runtimeBinding();
+  const wrapper = schema9Wrapper(authorityPayload, { binding });
+  const payload = schema9AuthorizationInput(authorityPayload, wrapper, binding, trusted.binding.publicKeySpkiBase64);
+  const signed = signPayload(payload, trusted.privateKey);
+  const baseContext = {
+    missionId: authorityPayload.missionId,
+    subjectId: authorityPayload.subjectId,
+    missionRevisionId: authorityPayload.missionRevisionId,
+    trustedBindings: [trusted.binding],
+    implementationAuthority: authorityPayload,
+    lastSequence: 2,
+  };
+  for (const context of [baseContext, { ...baseContext, implementationAuthorityActive: false }]) {
+    const result = verifySignedSchema9RuntimeBindingAuthorizationV1(signed, wrapper, context, null, null);
+    assert.equal(result.state, "invalid");
+    assert.equal(result.code, "authority_invalid");
   }
 });

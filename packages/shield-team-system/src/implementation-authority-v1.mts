@@ -128,7 +128,7 @@ export interface Schema9RuntimeBindingVerificationContext {
   missionRevisionId: string;
   trustedBindings: readonly TrustedHumanBinding[];
   implementationAuthority: ImplementationAuthorityV1;
-  implementationAuthorityActive?: boolean;
+  implementationAuthorityActive: boolean;
   lastSequence: number;
 }
 
@@ -725,7 +725,7 @@ export function verifySignedSchema9RuntimeBindingAuthorizationV1(
     "Schema-9 runtime-binding authorization",
   );
   if (signatureCheck.state === "invalid") return signatureCheck;
-  if (context.implementationAuthorityActive === false) return invalid("authority_invalid", "Schema-9 runtime-binding requires an active implementation authority.");
+  if (context.implementationAuthorityActive !== true) return invalid("authority_invalid", "Schema-9 runtime-binding requires an active implementation authority.");
   const scope = assertAuthoritySubsetOfScope(wrapper, context.implementationAuthority);
   if (scope.state === "invalid") return scope;
   if (payload.priorBindingId !== priorBindingId || payload.priorBindingVersion !== priorBindingVersion) {

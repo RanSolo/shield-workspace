@@ -778,6 +778,51 @@ test("runtime binding authorization ids cannot be reused across historical versi
   assert.match(replayed.errors.join(" "), /duplicated/i);
 });
 
+test("forged supersession signature precedes reused authorization id in constructor and replay", () => {
+  const fixture = boundRuntimeFixture();
+  const replacement = schema9RuntimeBindingBase(fixture.current, 4, fixture.implementationAuthority.payload, {
+    bindingVersion: 2,
+    reasoningRuntimeId: "runtime:may:replacement",
+    toolExecutorId: "tool:executor:replacement",
+    coulsonAuthorizationRef: fixture.binding.coulsonAuthorizationRef,
+  });
+  const wrapper = schema9BindingEnvelope(fixture.current, fixture.implementationAuthority.payload, replacement, {
+    modelId: fixture.implementationAuthority.payload.modelId,
+  });
+  const authorization = schema9BindingAuthorization(
+    fixture.current,
+    replacement,
+    wrapper,
+    { ...fixture.coulson, ...fixture.coulson.binding },
+    4,
+    3,
+    fixture.binding.coulsonAuthorizationRef,
+    fixture.binding.bindingId,
+    1,
+  );
+  const forged = { ...authorization, signatureBase64: "invalid-signature" };
+  assert.throws(() => createProfileAwareRuntimeBindingSupersessionEntryV1({
+    projection: fixture.projection,
+    trustedBindings: [fixture.coulson.binding],
+    priorBindingId: fixture.binding.bindingId,
+    priorBindingVersion: 1,
+    binding: wrapper,
+    authorization: forged,
+  }), /signature/i);
+  const replayed = replayProfileAwareMissionJournal([...fixture.entries, {
+    schemaVersion: 9,
+    entryId: `entry:${fixture.current.missionId}:4`,
+    missionId: fixture.current.missionId,
+    sequence: 4,
+    type: "runtime.binding_superseded",
+    timestamp: authorization.payload.timestamp,
+    payload: { priorBindingId: fixture.binding.bindingId, priorBindingVersion: 1, binding: wrapper, authorization: forged },
+  }]);
+  assert.equal(replayed.state, "invalid");
+  assert.match(replayed.errors.join(" "), /signature/i);
+  assert.doesNotMatch(replayed.errors.join(" "), /duplicated|unique/i);
+});
+
 test("initial runtime binding replay is rejected once execution is running", () => {
   const current = brief("standard");
   const coulson = authority("coulson");
