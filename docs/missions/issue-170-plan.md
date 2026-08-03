@@ -7,7 +7,21 @@
 - Base revision: `f05b92f4f4ad7535d60289a5d2cde2493fbfd820`
 - Branch: `agent/issue-170`
 - Scope: issue #170 only
-- Status: awaiting exact-revision Fury review; implementation has not started
+- Status: Fury's first review returned `REVISE`; all five blocking findings are
+  incorporated below and await exact corrected-revision rereview.
+
+## Fury reconciliation
+
+1. Add the missing atomic schema-9 append/readback API to `mission-store.mts`;
+   the coordinator does not implement its own journal locking.
+2. Derive packet/session identity from durable evidence and the pinned original
+   sequence; callers cannot vary it, and replay resolves receipts first.
+3. Represent uncertainty as a nonterminal started/interrupted receipt plus
+   `recovery_required`, never as a fabricated terminal.
+4. Repeat the exact evidence/live-state checks inside `executeTool` immediately
+   before `runMayControlLoop`.
+5. Make `readiness` mandatory in every discriminated result and reserve literal
+   `dispatch_ready` for results that prove the gate was crossed.
 
 ## Frozen objective
 
@@ -28,14 +42,15 @@ The public input is closed and contains only:
 
 - repository root and configured schema-9 journal path;
 - mission ID;
-- one bounded work-intent packet reference;
-- host ID and lock-owner/session identity needed for durable stores.
+- host ID.
 
-The work-intent packet may request an objective, a subset of relative paths,
-validation command IDs, an output contract, and the fixed `after_one_cycle`
-stop condition. It cannot contain authority, runtime/model/executor identity,
-absolute paths, executable/argv values, PR authority, capabilities, or human
-decisions.
+The caller does not supply a packet ID, session ID, blueprint path, requested
+paths, validation commands, output contract, runtime/model/executor identity,
+absolute path, executable/argv value, PR identity, capability, or human
+decision. The unique current durable Fury record selects the blueprint. The
+tracked blueprint plus replayed implementation authority define the bounded
+work intent and fixed `after_one_cycle` stop condition. Missing or ambiguous
+current blueprint evidence blocks.
 
 Trusted host dependencies are supplied separately and snapshotted before the
 first await. They provide read-only workspace observation, schema-9 host probes,
@@ -56,45 +71,66 @@ field is derived from replayed or host-observed evidence:
 - May seat, active runtime/model, tool executor, implementation authority ref,
   binding ID/version, approved paths, actions, effect classes/keys,
   capabilities, and validation command IDs;
-- requested subsets, output contract, and one-cycle stop condition.
+- blueprint-defined requested subsets and output contract, plus the fixed
+  one-cycle stop condition.
 
 Canonical bytes of that derived envelope—not caller object identity—are passed
 to `claimSeatDispatchPacketV1`. Reuse its existing packet digest and deterministic
-receipt identities; do not add a second claim-key algorithm.
+receipt identities; do not add a second claim-key algorithm. Derive
+`parentSessionId`, `childTaskId`, `childSessionId`, and `packetId` from the
+durable mission revision, Fury-bound blueprint identity/digest, and the original
+expected cycle sequence. Preserve that original sequence in exact dispatch
+input evidence so a later journal sequence cannot create a fresh packet.
 
 ## Exact sequence
 
-1. Snapshot and validate the closed input, work-intent bytes, and trusted
-   dependency functions. Reject proxies, accessors, symbol keys, sparse arrays,
-   unsafe paths, mutable byte aliases, and unknown fields before any write.
-2. Read/replay the schema-9 journal. Require exact mission/subject/current
-   sequence, running or startable execution, active Wheels Up authority, and
-   exactly one active May runtime binding.
-3. Read/replay the durable Fury evidence ledger and Fury dispatch receipt log.
-   Evaluate the exact candidate through `evaluateFuryPlanReviewEvidenceV1`.
-   Require attributed `eligible` evidence for the current blueprint and current
-   repository revision.
-4. Read the current delivery-workspace state through a trusted read-only host
+1. Snapshot and validate the closed input and trusted dependency functions.
+   Reject proxies, accessors, symbol keys, sparse arrays, unsafe paths, and
+   unknown fields before any write.
+2. Read/replay the schema-9 journal and bind the durable mission, subject, and
+   mission revision without assuming the current sequence is the original
+   dispatch sequence.
+3. Read/replay the durable Fury evidence ledger and dispatch receipt log before
+   current-head evaluation. Resolve a unique receipt for this mission revision
+   and Fury-bound blueprint identity. Recover its pinned original cycle sequence
+   and derived identities from validated input evidence:
+   - an exact terminal returns `replayed` without Helicarrier, model, validation,
+     or tool execution;
+   - a start/interruption without exact terminal returns `recovery_required`;
+   - multiple, malformed, or conflicting matches return `recovery_required`;
+   - only no matching receipt proceeds toward a fresh dispatch.
+4. For a fresh dispatch, require the current journal sequence, running or
+   startable execution, active Wheels Up authority, and exactly one active May
+   runtime binding. Pin that current pre-transition sequence as the original
+   expected cycle sequence.
+5. Evaluate the unique current Fury candidate through
+   `evaluateFuryPlanReviewEvidenceV1`. Require attributed `eligible` evidence
+   for the current blueprint and current repository revision.
+6. Read the current delivery-workspace state through a trusted read-only host
    dependency. Require one open matching PR, exact repository/base/branch/PR
    identity, and exact head equal to Fury evidence, implementation authority,
    runtime binding, and live Git HEAD. Do not call the effectful workspace
    publication helper.
-5. Resolve the work-intent path and requested files/validation IDs only as
-   subsets of the active implementation authority. Resolve command IDs through
-   the snapshotted host-owned registry; packet text never supplies executable
-   paths or argv.
-6. Invoke `runHelicarrierV0` with the derived envelope and snapshotted certified
+7. Read the Fury-selected blueprint from the exact tracked Git revision, not
+   mutable caller bytes. Parse its closed bounded work fields and require its
+   requested files and validation IDs to be subsets of the active
+   implementation authority. Resolve command IDs through the snapshotted
+   host-owned registry; blueprint text never supplies executable paths or argv.
+8. Derive all packet/session identities from the mission revision, Fury-bound
+   blueprint identity/digest, and pinned original cycle sequence. Invoke
+   `runHelicarrierV0` with the derived envelope and snapshotted certified
    host compiler/validator dependencies. Require exact nested certification
    identity and retain its prompt/provenance/manifest digests in the dispatch
    evidence. A compilation failure is pre-effect and blocked.
-7. Load a fresh permission context through
+9. Load a fresh permission context through
    `loadSchema9PermissionContextV1`. Require all packet and May-control
    capabilities and exact root/branch/HEAD. Check that dirty paths are empty or
    entirely within the replay-authorized relative path set.
-8. Only after steps 1-7 succeed set the internal readiness value to literal
-   `dispatch_ready`. Blocked calls never include that literal. A terminal result
-   may report `readiness: "dispatch_ready"` to prove the gate was crossed.
-9. Call `claimSeatDispatchPacketV1` with the canonical derived envelope bytes.
+10. Only after steps 1-9 succeed produce the exact internal readiness value
+   `dispatch_ready`. Every public result after this gate has mandatory
+   `readiness: "dispatch_ready"`; blocked results have mandatory
+   `readiness: "blocked"` and cannot contain the literal `dispatch_ready`.
+11. Call `claimSeatDispatchPacketV1` with the canonical derived envelope bytes.
    Its durable append, sync, lock release, and exact readback are the outer
    packet linearization point.
    - `claimed/execute_once`: continue.
@@ -104,14 +140,15 @@ receipt identities; do not add a second claim-key algorithm.
      `recovery_required`; never invoke again.
    - conflict, malformed log, lock uncertainty, or release uncertainty: return
      `recovery_required` or the exact closed pre-effect blocker.
-10. After claim and immediately before model invocation, reread workspace state,
+12. After claim, reread workspace state,
     Fury evidence/receipt attribution, schema-9 journal, live root/branch/HEAD,
     dirty paths, and permission context. Any drift appends a deterministic
-    failed dispatch terminal when safely possible; uncertain terminal append
-    yields `recovery_required`. No model/tool effect occurs.
-11. Call existing `runMissionCycle` once. Its dependencies are composed as
+    failed dispatch terminal when safely possible; inability to prove that
+    terminal yields `recovery_required`. No model/tool effect occurs.
+13. Call existing `runMissionCycle` once. Its dependencies are composed as
     follows:
-    - durable profile-aware journal read/append adapters;
+    - `readMissionJournalForDisplay` plus the new production
+      `appendProfileAwareMissionEntryV1` adapter described below;
     - `createPermissionAuditFilesystemStore`;
     - `loadSchema9PermissionContextV1` for authorization, runtime claim, and
       execution-time fresh contexts;
@@ -121,32 +158,50 @@ receipt identities; do not add a second claim-key algorithm.
     - `createMayControlEventFilesystemStore` for exact control-event append and
       readback;
     - the closed required-capability set and result validator.
-12. `runMissionCycle` remains the owner of permission decision evidence,
+14. The `executeTool` wrapper repeats the exact durable Fury evidence and
+    attribution read, read-only PR observation, schema-9 journal replay, live
+    root/branch/HEAD, dirty-path, authority/binding, and permission-context
+    checks immediately before invoking `runMayControlLoop`. Drift returns a
+    failed runner executor result with no model/tool call. This is the final
+    model-effect boundary; the earlier post-claim check does not substitute for
+    it.
+15. `runMissionCycle` remains the owner of permission decision evidence,
     runtime invocation claim, per-call fresh permission, validated runner
     outcome, and authoritative mission effect append/readback. The coordinator
     must not duplicate or weaken those contracts.
-13. Append the matching dispatch terminal receipt only after the mission-cycle
+16. Append the matching dispatch terminal receipt only after the mission-cycle
     outcome and required control/audit/journal readbacks are exact:
     - completed for a validated advanced cycle;
     - failed only when the host can prove no uncertain effect remains;
-    - interrupted/cancelled only for existing legal lifecycle conditions;
-    - uncertain/recovery-required when any post-claim effect or durable write
-      cannot be classified exactly.
-14. Reread dispatch, permission-audit, May-control, and mission journals and
+    - interrupted/cancelled only for existing legal lifecycle conditions.
+
+    The receipt contract has no uncertain terminal. If an effect or durable
+    write cannot be classified exactly, leave the receipt durably started (or
+    append `dispatch.interrupted` only when that legal transition is itself
+    exact) and return `recovery_required`. Do not fabricate a terminal state.
+17. Reread dispatch, permission-audit, May-control, and mission journals and
     require exact identity, single terminal, runtime/model/executor attribution,
     and matching evidence references before returning.
 
 ## Closed result taxonomy and precedence
 
-The function returns one of:
+The exact discriminated public result is:
 
-- `blocked`: no packet claim and no model/tool effect;
-- `completed`: readiness was `dispatch_ready`, one exact packet was claimed,
+- `{ state: "blocked", readiness: "blocked", code, errors }`: no packet claim
+  and no model/tool effect;
+- `{ state: "completed", readiness: "dispatch_ready", ...evidence }`: one exact packet was claimed,
   one cycle advanced, and all terminal readbacks match;
-- `failed`: a claimed packet reached a provably effect-safe terminal failure;
-- `replayed`: an exact prior terminal was returned without execution;
-- `recovery_required`: a start/claim/effect/write may exist but a unique safe
-  terminal cannot be proven.
+- `{ state: "failed", readiness: "dispatch_ready", ...evidence }`: a claimed
+  packet reached a provably effect-safe terminal failure;
+- `{ state: "replayed", readiness: "dispatch_ready", ...evidence }`: an exact
+  prior completed/failed/cancelled terminal was returned without execution;
+- `{ state: "recovery_required", readiness: "dispatch_ready", code, errors,
+  ...knownEvidence }`: the exact gate was crossed, but a start/claim/effect/write
+  may exist and a unique safe terminal cannot be proven;
+- `{ state: "recovery_required", readiness: "indeterminate", code, errors,
+  ...knownEvidence }`: malformed, conflicting, or uncertain durable evidence
+  prevents proving whether the gate was crossed. This result cannot authorize
+  execution.
 
 Pre-claim blockers use this order:
 
@@ -163,7 +218,8 @@ Pre-claim blockers use this order:
 10. dispatch receipt conflict or recovery-required state.
 
 After a durable claim, uncertainty overrides ordinary failure. No later error
-may be reported as a clean pre-effect block.
+may be reported as a clean pre-effect block, and no uncertain state is described
+as a terminal dispatch receipt.
 
 ## Replay and concurrency rules
 
@@ -182,15 +238,27 @@ may be reported as a clean pre-effect block.
 
 - Add `packages/shield-team-system/src/governed-may-dispatch-v1.mts`.
 - Add `packages/shield-team-system/tests/governed-may-dispatch-v1.test.mjs`.
+- Update `packages/shield-team-system/src/mission-store.mts` with one atomic
+  `appendProfileAwareMissionEntryV1` API. It must lock, replay the current
+  schema-9 journal, require the exact next sequence, validate the candidate via
+  `replayProfileAwareMissionJournal`, append and fsync one canonical line,
+  durably sync a newly created parent/log, reread exact bytes and projection,
+  and report lock-release or durability uncertainty as `recovery_required`.
+  It must reject legacy/mixed journals and must not modify the existing legacy
+  append contract.
+- Update `packages/shield-team-system/tests/mission-store.test.mjs` with focused
+  schema-9 append, concurrency, stale sequence, unsafe path, short write/sync,
+  exact readback, and uncertain lock-release coverage.
 - Update `packages/shield-team-system/package.json` for one explicit export.
 - Update `packages/shield-team-system/tests/package-surface.test.mjs`.
 - Update `packages/shield-team-system/PUBLIC_API.md`.
 - Add only this mission brief, recon, and plan under `docs/missions/`.
 
 Existing authority, Fury evidence, permission, runner, dispatch-store,
-May-control, Helicarrier, local-tool, GitHub, and journal modules are reuse-only.
-Edits to them require a concrete Fury finding showing that composition is
-otherwise impossible.
+May-control, Helicarrier, local-tool, and GitHub modules are reuse-only. The
+schema-9 mission-store append is the sole prerequisite primitive included in
+this PR because Fury found it absent. Other edits require a concrete Fury
+finding showing that composition is otherwise impossible.
 
 ## Focused acceptance tests
 
@@ -203,6 +271,10 @@ otherwise impossible.
 - concurrent identical claims allow one executor; changed bytes conflict;
 - restart after completed/failed terminal replays without effects;
 - restart after start without terminal returns `recovery_required`;
+- caller variation cannot change packet/session identity; replay after the
+  mission sequence advances resolves the original receipt before Helicarrier;
+- schema-9 append is atomic, exact-readback verified, sequence-checked, and
+  fail-closed for mixed/legacy journals and lock/durability uncertainty;
 - permission denial, model failure, tool failure, audit failure, control-event
   failure, dispatch-terminal failure, and mission-journal failure preserve the
   blocked/failed/uncertain distinction;
@@ -228,6 +300,7 @@ gate. That proof may demonstrate runtime participation; it does not mutate PR
 ```bash
 npm run build --workspace packages/shield-team-system
 node --test packages/shield-team-system/tests/governed-may-dispatch-v1.test.mjs
+node --test packages/shield-team-system/tests/mission-store.test.mjs
 node --test packages/shield-team-system/tests/schema9-permission-context-v1.test.mjs
 node --test packages/shield-team-system/tests/fury-plan-review-evidence-store.test.mjs
 node --test packages/shield-team-system/tests/seat-dispatch-store.test.mjs
@@ -245,4 +318,3 @@ node --test --test-concurrency=1 packages/shield-team-system/tests/*.test.mjs
 Stop when one PR is ready for human review after Mack exact-revision validation
 and Fury conformance review. Do not merge, deploy, release, perform an external
 #137 run, enter #29, or implement #167/#169.
-
