@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, open, realpath, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, open, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -46,9 +46,35 @@ const TEST_FILE_PATH = fileURLToPath(import.meta.url);
 const TEST_FILE_DIR = dirname(TEST_FILE_PATH);
 const PACKAGE_DIST_DIR = resolve(TEST_FILE_DIR, "..", "dist");
 const MAY_CONTROL_EVENT_STORE_PATH = resolve(PACKAGE_DIST_DIR, "may-control-event-store.mjs");
-const MISSION_V2_PATH = resolve(PACKAGE_DIST_DIR, "mission-v2.mjs");
+const TEMPORARY_MISSION_V2_SOURCE = `export function canonicalValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(canonicalValue);
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, childValue]) => [key, canonicalValue(childValue)]),
+  );
+}
+
+export function canonicalJson(value) {
+  return JSON.stringify(canonicalValue(value));
+}
+`;
 
 async function runMayControlMockedAppendScenario(scenario) {
+  const scriptRoot = await mkdtemp(join(tmpdir(), "shield-may-control-child-script-"));
+  const temporaryStorePath = join(scriptRoot, "may-control-event-store.mjs");
+  const temporaryMissionPath = join(scriptRoot, "mission-v2.mjs");
+  await copyFile(MAY_CONTROL_EVENT_STORE_PATH, temporaryStorePath);
+  await writeFile(temporaryMissionPath, TEMPORARY_MISSION_V2_SOURCE, "utf8");
+
   const script = `
     import { mkdtemp } from "node:fs/promises";
     import { dirname, join } from "node:path";
@@ -58,10 +84,10 @@ async function runMayControlMockedAppendScenario(scenario) {
     import { constants } from "node:fs";
     import { createHash } from "node:crypto";
     import * as realFs from "node:fs/promises";
-    import { canonicalJson } from ${JSON.stringify(MISSION_V2_PATH)};
+    import { canonicalJson } from ${JSON.stringify(temporaryMissionPath)};
 
     const scenario = ${JSON.stringify(scenario)};
-    const storePath = ${JSON.stringify(MAY_CONTROL_EVENT_STORE_PATH)};
+    const storePath = ${JSON.stringify(temporaryStorePath)};
     const storeUrl = pathToFileURL(storePath);
     const storeRealUrl = storeUrl.href + "?scenario=" + encodeURIComponent(scenario) + "&pathCheck=postCreate";
     const repositoryRoot = await mkdtemp(join(${JSON.stringify(tmpdir())}, "shield-may-control-child-"));
@@ -268,7 +294,6 @@ async function runMayControlMockedAppendScenario(scenario) {
     console.log(JSON.stringify({ state: result.state, code: result.code ?? null }));
   `;
 
-  const scriptRoot = await mkdtemp(join(tmpdir(), "shield-may-control-child-script-"));
   const scriptPath = join(scriptRoot, "may-control-child.mjs");
   await writeFile(scriptPath, script, "utf8");
 
