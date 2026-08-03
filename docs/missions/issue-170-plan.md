@@ -48,9 +48,11 @@ The caller does not supply a packet ID, session ID, blueprint path, requested
 paths, validation commands, output contract, runtime/model/executor identity,
 absolute path, executable/argv value, PR identity, capability, or human
 decision. The unique current durable Fury record selects the blueprint. The
-tracked blueprint plus replayed implementation authority define the bounded
-work intent and fixed `after_one_cycle` stop condition. Missing or ambiguous
-current blueprint evidence blocks.
+tracked blueprint is immutable untrusted work intent; replayed implementation
+authority defines its maximum scope. Helicarrier's certified
+validator/compiler produces the closed manifest whose paths, validation IDs,
+output contract, and fixed `after_one_cycle` stop condition are checked against
+that authority. Missing or ambiguous current blueprint evidence blocks.
 
 Trusted host dependencies are supplied separately and snapshotted before the
 first await. They provide read-only workspace observation, schema-9 host probes,
@@ -71,7 +73,7 @@ field is derived from replayed or host-observed evidence:
 - May seat, active runtime/model, tool executor, implementation authority ref,
   binding ID/version, approved paths, actions, effect classes/keys,
   capabilities, and validation command IDs;
-- blueprint-defined requested subsets and output contract, plus the fixed
+- Helicarrier-manifest requested subsets and output contract, plus the fixed
   one-cycle stop condition.
 
 Canonical bytes of that derived envelope—not caller object identity—are passed
@@ -115,18 +117,22 @@ packet.
    identity, and exact head equal to Fury evidence, implementation authority,
    runtime binding, and live Git HEAD. Do not call the effectful workspace
    publication helper.
-7. Read the Fury-selected blueprint from the exact tracked Git revision, not
-   mutable caller bytes. Parse its closed bounded work fields and require its
-   requested files and validation IDs to be subsets of the active
-   implementation authority. Resolve command IDs through the snapshotted
-   host-owned registry; blueprint text never supplies executable paths or argv.
+7. Read the Fury-selected blueprint bytes from the exact tracked Git revision,
+   not the mutable worktree or caller bytes. Treat Markdown/prose as immutable
+   untrusted work intent; do not parse prose into authority or executable data.
 8. Derive only `parentSessionId` and `packetId` from the mission revision,
    Fury-bound blueprint identity/digest, and pinned original cycle sequence.
-   Invoke
-   `runHelicarrierV0` with the derived envelope and snapshotted certified
+   Invoke `runHelicarrierV0` with the blueprint bytes, replay-derived trust
+   envelope, and snapshotted certified
    host compiler/validator dependencies. Require exact nested certification
    identity and retain its prompt/provenance/manifest digests in the dispatch
-   evidence. A compilation failure is pre-effect and blocked.
+   evidence. Parse returned manifest bytes with one closed coordinator-owned
+   manifest schema. Require requested paths, actions, effects, capabilities,
+   and validation IDs to be subsets of active implementation authority; require
+   the exact output contract and `after_one_cycle`; resolve command IDs only
+   through the snapshotted host-owned registry. Manifest executable/argv fields
+   and unknown fields are forbidden. A validation, compilation, manifest, or
+   subset failure is pre-effect and blocked.
 9. Load a fresh permission context through
    `loadSchema9PermissionContextV1`. Require all packet and May-control
    capabilities and exact root/branch/HEAD. Check that dirty paths are empty or
