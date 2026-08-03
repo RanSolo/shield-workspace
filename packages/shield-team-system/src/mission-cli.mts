@@ -251,33 +251,123 @@ async function passcodeFromOptions(options: ParsedOptions): Promise<string> {
     return passcode;
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new MissionCliError("Passcode prompt requires a TTY; use --passcode-stdin for automation.");
+  return await readInteractivePasscode(input, outputStream);
+}
+
+export async function readInteractivePasscode(
+  inputStream: {
+    setRawMode: (mode: boolean) => void;
+    on: (event: string, listener: (chunk: Buffer) => void) => void;
+    off: (event: string, listener: (chunk: Buffer) => void) => void;
+    resume: () => void;
+    pause: () => void;
+  },
+  outputStream: { write: (output: string) => void },
+): Promise<string> {
+  const setupFailureMessage = "Passcode prompt failed.";
   outputStream.write("Passcode: ");
-  input.setRawMode(true);
-  input.resume();
-  return await new Promise<string>((resolvePasscode, reject) => {
+  return await new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let finished = false;
+    let setupFailure = false;
+    let outcome: "success" | "cancelled" | "empty" = "empty";
     let passcode = "";
+    let isResuming = false;
+    let cleanupDone = false;
+    let cleanupFailure: MissionCliError | null = null;
+
+    const registerCleanupFailure = () => {
+      if (!cleanupFailure) cleanupFailure = new MissionCliError(setupFailureMessage);
+    };
+
+    const attemptCleanupAction = (action: () => void): void => {
+      try {
+        action();
+      } catch (error) {
+        registerCleanupFailure();
+      }
+    };
+
+    const runCleanup = (): void => {
+      if (cleanupDone) return;
+      cleanupDone = true;
+      attemptCleanupAction(() => {
+        inputStream.off("data", onData);
+      });
+      attemptCleanupAction(() => {
+        inputStream.setRawMode(false);
+      });
+      attemptCleanupAction(() => {
+        inputStream.pause();
+      });
+      attemptCleanupAction(() => {
+        outputStream.write("\n");
+      });
+    };
+
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
+      runCleanup();
+      if (cleanupFailure) {
+        reject(cleanupFailure);
+        return;
+      }
+      if (setupFailure) {
+        reject(new MissionCliError(setupFailureMessage));
+        return;
+      }
+      if (outcome === "empty") {
+        reject(new MissionCliError("Passcode input was empty."));
+        return;
+      }
+      if (outcome === "cancelled") {
+        reject(new MissionCliError("Passcode prompt cancelled."));
+        return;
+      }
+      resolve(passcode);
+    };
+
+    const settle = (nextOutcome: "success" | "cancelled" | "empty", nextPasscode = passcode): void => {
+      if (settled) return;
+      settled = true;
+      outcome = nextOutcome;
+      passcode = nextPasscode;
+      if (!isResuming) finish();
+    };
+
     const onData = (chunk: Buffer): void => {
       for (const byte of chunk) {
+        if (settled) return;
         if (byte === 3) {
-          input.setRawMode(false);
-          input.off("data", onData);
-          outputStream.write("\n");
-          reject(new MissionCliError("Passcode prompt cancelled."));
+          settle("cancelled");
           return;
         }
         if (byte === 10 || byte === 13) {
-          input.setRawMode(false);
-          input.off("data", onData);
-          outputStream.write("\n");
-          if (!passcode) reject(new MissionCliError("Passcode input was empty."));
-          else resolvePasscode(passcode);
+          settle(passcode ? "success" : "empty", passcode);
           return;
         }
-        if (byte === 127 || byte === 8) passcode = passcode.slice(0, -1);
-        else if (byte >= 32) passcode += String.fromCharCode(byte);
+        if (byte === 127 || byte === 8) {
+          passcode = passcode.slice(0, -1);
+        } else if (byte >= 32) {
+          passcode += String.fromCharCode(byte);
+        }
       }
     };
-    input.on("data", onData);
+
+    try {
+      inputStream.setRawMode(true);
+      inputStream.on("data", onData);
+      isResuming = true;
+      inputStream.resume();
+      isResuming = false;
+      if (settled) finish();
+    } catch (error) {
+      setupFailure = true;
+      settled = true;
+      isResuming = false;
+      finish();
+    }
   });
 }
 
