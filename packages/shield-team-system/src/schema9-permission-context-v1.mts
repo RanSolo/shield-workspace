@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access as fsAccess, realpath as fsRealpath } from "node:fs/promises";
 import { execFile as execFileNode } from "node:child_process";
+import { resolve } from "node:path";
 
 import { canonicalJson } from "./mission-v2.mjs";
 import { readMissionJournalForDisplay } from "./mission-store.mjs";
@@ -67,7 +68,12 @@ const defaultHostOps = {
   realpath: (path: string): Promise<string> => fsRealpath(path),
   access: (path: string): Promise<void> => fsAccess(path, constants.R_OK | constants.W_OK),
   execFile: (command: string, args: readonly string[], options: { cwd: string }): Promise<string> => new Promise((resolve, reject) => {
-    execFileNode(command, [...args], { ...options, encoding: "utf8", windowsHide: true }, (error, stdout) => {
+    execFileNode(command, [...args], {
+      ...options,
+      encoding: "utf8",
+      windowsHide: true,
+      env: { LANG: "C", LC_ALL: "C", PATH: process.env.PATH ?? "" },
+    }, (error, stdout) => {
       if (error) return reject(error);
       resolve(stdout.toString());
     });
@@ -96,7 +102,9 @@ interface LoaderSnapshot {
 }
 
 interface RepoObservation {
+  lexicalRequestedRoot: string;
   requestedRoot: string;
+  lexicalTopLevelRoot: string;
   topLevelRoot: string;
   branch: string;
   head: string;
@@ -175,7 +183,7 @@ function snapshotInput(input: unknown): ResultOk<LoaderSnapshot> | ResultBlocked
   const planValue = validateRunnerCyclePlan(field("plan"));
   if (planValue.state === "invalid") return blocked("input_invalid", [`Schema9 permission plan is invalid: ${planValue.code}.`, ...planValue.errors]);
   const plan = jsonCopy(planValue.value);
-  if (plan.missionId !== missionId) return blocked("mission_mismatch", ["Schema9 permission plan missionId must match the missionId input."]);
+  if (plan.missionId !== missionId) return blocked("input_invalid", ["Schema9 permission plan missionId must match the missionId input."]);
   if (plan.seatId !== "may") return blocked("input_invalid", ["Schema9 permission loader requires the May seat."]);
   const opsInput = field("trustedHostOps");
   const resolvedOps: Schema9PermissionContextTrustedHostOps = {
@@ -224,15 +232,17 @@ async function runGitValue(
 }
 
 async function observeRepository(ops: Schema9PermissionContextTrustedHostOps, repositoryRoot: string): Promise<RepoObservation> {
-  const requestedRoot = await ops.realpath(repositoryRoot);
+  const lexicalRequestedRoot = resolve(repositoryRoot);
+  const requestedRoot = await ops.realpath(lexicalRequestedRoot);
   const top = await runGitValue(ops, "rev-parse --show-toplevel", requestedRoot);
   if (top.length === 0) throw new Error("missing_top_level");
   const branch = await runGitValue(ops, "rev-parse --abbrev-ref HEAD", requestedRoot);
   const head = await runGitValue(ops, "rev-parse HEAD", requestedRoot);
   if (head.length === 0) throw new Error("missing_head");
   if (branch.length === 0 || branch === "HEAD") throw new Error("detached_head");
-  const topLevel = await ops.realpath(top);
-  return { requestedRoot, topLevelRoot: topLevel, branch, head };
+  const lexicalTopLevelRoot = resolve(top);
+  const topLevel = await ops.realpath(lexicalTopLevelRoot);
+  return { lexicalRequestedRoot, requestedRoot, lexicalTopLevelRoot, topLevelRoot: topLevel, branch, head };
 }
 
 function deriveSnapshotState(
@@ -466,6 +476,7 @@ export async function loadSchema9PermissionContextV1(input: Schema9PermissionCon
   } catch (error) {
     return blocked("observation_failed", [`Git observation failed before capability probes: ${String((error as Error).message ?? "unknown error")}.`]);
   }
+  if (firstObservation.lexicalRequestedRoot !== firstObservation.requestedRoot || firstObservation.lexicalTopLevelRoot !== firstObservation.topLevelRoot) return blocked("root_mismatch", ["Repository root aliases are not permitted."]);
   if (firstObservation.topLevelRoot !== firstObservation.requestedRoot) return blocked("root_mismatch", ["Requested root is not the git top-level repository root."]);
   if (firstObservation.topLevelRoot !== firstBinding.canonicalWritableRoot) return blocked("root_mismatch", ["Writable root is not the active git root."]);
   if (firstObservation.branch !== firstBinding.branch) return blocked("branch_mismatch", ["Observed branch does not match binding branch."]);
@@ -521,7 +532,7 @@ export async function loadSchema9PermissionContextV1(input: Schema9PermissionCon
   if (!same(firstState.context.projectedAt, secondState.context.projectedAt)) return blocked("observation_failed", ["Projected journal state drifted between observations."]);
   if (!same(firstState.context.authority, secondState.context.authority)) return blocked("observation_failed", ["Authority drifted between observations."]);
   if (!same(firstState.context.bindingWrapper, secondState.context.bindingWrapper)) return blocked("observation_failed", ["Active binding drifted between observations."]);
-  if (firstObservation.requestedRoot !== secondObservation.requestedRoot || firstObservation.topLevelRoot !== secondObservation.topLevelRoot) return blocked("root_mismatch", ["Repository root changed between observations."]);
+  if (firstObservation.lexicalRequestedRoot !== secondObservation.lexicalRequestedRoot || firstObservation.requestedRoot !== secondObservation.requestedRoot || firstObservation.lexicalTopLevelRoot !== secondObservation.lexicalTopLevelRoot || firstObservation.topLevelRoot !== secondObservation.topLevelRoot) return blocked("root_mismatch", ["Repository root changed between observations."]);
   if (firstObservation.branch !== secondObservation.branch) return blocked("branch_mismatch", ["Observed branch changed between observations."]);
   if (firstObservation.head !== secondObservation.head) return blocked("head_mismatch", ["Observed head changed between observations."]);
   if (computeImplementationAuthorityDigest(firstAuthority) !== firstState.context.authorityDigest) return blocked("observation_failed", ["Authority digest changed between reads."]);

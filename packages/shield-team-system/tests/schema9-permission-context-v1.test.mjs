@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
-import { access as fsAccess, mkdtemp, mkdir, realpath, writeFile } from "node:fs/promises";
+import { access as fsAccess, mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -500,6 +500,29 @@ test("production filesystem and git observers load the exact live repository", a
   assert.equal(result.context.artifactRevisionId, head);
   assert.equal(result.context.canonicalWritableRoot, repositoryRoot);
   assert.equal(result.context.branch, "main");
+
+  const previousGitDir = process.env.GIT_DIR;
+  const previousGitWorkTree = process.env.GIT_WORK_TREE;
+  process.env.GIT_DIR = join(repositoryRoot, "poisoned-git-dir");
+  process.env.GIT_WORK_TREE = join(repositoryRoot, "poisoned-work-tree");
+  try {
+    const poisonedEnvironment = await loadSchema9PermissionContextV1(makePermissionInput({
+      repositoryRoot,
+      missionId: fixture.profile.missionId,
+      expectedDecisionId: "decision:schema9:poisoned-environment",
+      plan: permissionPlanFromProjection(fixture.projection),
+      hostOps: {
+        probeCapability: async () => true,
+        now: () => "2026-07-29T20:00:01Z",
+      },
+    }));
+    assert.equal(poisonedEnvironment.state, "ready");
+  } finally {
+    if (previousGitDir === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = previousGitDir;
+    if (previousGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+    else process.env.GIT_WORK_TREE = previousGitWorkTree;
+  }
 });
 
 test("schema9 permission context still ready when runtime binding advertises no capabilities", async () => {
@@ -753,6 +776,22 @@ test("wrong root, wrong branch, detached head, and wrong head are blocked", asyn
   await writeJournal(repositoryRoot, fixture.profile.missionId, fixture.entries);
   const plan = permissionPlanFromProjection(fixture.projection);
 
+  const aliasParent = await mkdtemp(join(tmpdir(), "shield-schema9-root-alias-"));
+  const aliasRoot = join(aliasParent, "repository-alias");
+  await symlink(repositoryRoot, aliasRoot, "dir");
+  const aliasMismatch = await loadSchema9PermissionContextV1(makePermissionInput({
+    repositoryRoot: aliasRoot,
+    missionId: fixture.profile.missionId,
+    expectedDecisionId: "decision:schema9:root-alias",
+    plan,
+    hostOps: {
+      probeCapability: async () => true,
+      now: () => "2026-07-29T20:00:00Z",
+    },
+  }));
+  assert.equal(aliasMismatch.state, "blocked");
+  assert.equal(aliasMismatch.code, "root_mismatch");
+
   const nested = join(repositoryRoot, "nested");
   await mkdir(nested, { recursive: true });
   await writeJournal(nested, fixture.profile.missionId, fixture.entries);
@@ -973,4 +1012,21 @@ test("accessor-backed and throwing loader inputs fail closed before host operati
   }));
   assert.equal(throwing.state, "blocked");
   assert.equal(throwing.code, "input_invalid");
+
+  const missionMismatch = await loadSchema9PermissionContextV1({
+    repositoryRoot: "/workspace/repository",
+    configuredJournalPath: ".shield/journals",
+    missionId,
+    expectedDecisionId: "decision:schema9:mission-mismatch",
+    plan: permissionPlan({
+      missionId: "mission:schema9:different",
+      subjectId: "issue:schema9-hostile-input",
+      revisionId: "sha256:1111111111111111111111111111111111111111111",
+      evaluatedThroughSequence: 0,
+    }),
+    hostId: "host:schema9",
+    trustedHostOps: { probeCapability: async () => true },
+  });
+  assert.equal(missionMismatch.state, "blocked");
+  assert.equal(missionMismatch.code, "input_invalid");
 });
