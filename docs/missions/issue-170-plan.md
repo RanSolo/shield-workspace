@@ -76,11 +76,13 @@ field is derived from replayed or host-observed evidence:
 
 Canonical bytes of that derived envelope—not caller object identity—are passed
 to `claimSeatDispatchPacketV1`. Reuse its existing packet digest and deterministic
-receipt identities; do not add a second claim-key algorithm. Derive
-`parentSessionId`, `childTaskId`, `childSessionId`, and `packetId` from the
-durable mission revision, Fury-bound blueprint identity/digest, and the original
-expected cycle sequence. Preserve that original sequence in exact dispatch
-input evidence so a later journal sequence cannot create a fresh packet.
+receipt identities; do not add a second claim-key algorithm. Derive only
+`parentSessionId` and `packetId` from the durable mission revision, Fury-bound
+blueprint identity/digest, and the original expected cycle sequence. Consume
+`receiptId`, `dispatchId`, `childTaskId`, and `childSessionId` only from the
+validated `claimSeatDispatchPacketV1` result. Preserve the original sequence in
+exact dispatch input evidence so a later journal sequence cannot create a fresh
+packet.
 
 ## Exact sequence
 
@@ -93,7 +95,9 @@ input evidence so a later journal sequence cannot create a fresh packet.
 3. Read/replay the durable Fury evidence ledger and dispatch receipt log before
    current-head evaluation. Resolve a unique receipt for this mission revision
    and Fury-bound blueprint identity. Recover its pinned original cycle sequence
-   and derived identities from validated input evidence:
+   plus the caller-independent parent/packet identities from validated input
+   evidence; consume child/receipt/dispatch identities from the replayed store
+   projection:
    - an exact terminal returns `replayed` without Helicarrier, model, validation,
      or tool execution;
    - a start/interruption without exact terminal returns `recovery_required`;
@@ -116,8 +120,9 @@ input evidence so a later journal sequence cannot create a fresh packet.
    requested files and validation IDs to be subsets of the active
    implementation authority. Resolve command IDs through the snapshotted
    host-owned registry; blueprint text never supplies executable paths or argv.
-8. Derive all packet/session identities from the mission revision, Fury-bound
-   blueprint identity/digest, and pinned original cycle sequence. Invoke
+8. Derive only `parentSessionId` and `packetId` from the mission revision,
+   Fury-bound blueprint identity/digest, and pinned original cycle sequence.
+   Invoke
    `runHelicarrierV0` with the derived envelope and snapshotted certified
    host compiler/validator dependencies. Require exact nested certification
    identity and retain its prompt/provenance/manifest digests in the dispatch
@@ -179,9 +184,13 @@ input evidence so a later journal sequence cannot create a fresh packet.
     write cannot be classified exactly, leave the receipt durably started (or
     append `dispatch.interrupted` only when that legal transition is itself
     exact) and return `recovery_required`. Do not fabricate a terminal state.
-17. Reread dispatch, permission-audit, May-control, and mission journals and
-    require exact identity, single terminal, runtime/model/executor attribution,
-    and matching evidence references before returning.
+17. Reread dispatch, permission-audit, May-control, and mission journals before
+    returning. Completed, failed, and replayed results require exact identity,
+    one legal terminal, runtime/model/executor attribution, and matching
+    evidence references. `recovery_required` instead requires the strongest
+    available exact readback of the started or interrupted nonterminal state;
+    absence, conflict, or malformed readback remains recovery-required and is
+    never represented as terminal.
 
 ## Closed result taxonomy and precedence
 
