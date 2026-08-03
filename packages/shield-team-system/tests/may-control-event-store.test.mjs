@@ -705,6 +705,18 @@ test("replay rejects zero-byte, malformed JSON, duplicate key, noncanonical JSON
   assert.equal(persistedDuplicate.code, "may_control_event_replay_invalid");
 });
 
+test("read rejects invalid UTF-8 log content as may_control_event_replay_invalid", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-may-control-invalid-utf8-"));
+  const sessionId = "session:issue-171:invalid-utf8";
+  const canonicalRoot = await realpath(repositoryRoot);
+  const logPath = deterministicLogPath(canonicalRoot, sessionId);
+  await mkdir(dirname(logPath), { recursive: true });
+  await writeFile(logPath, Buffer.from([0xff, 0x80, 0xc0, 0x28]));
+  const result = await readMayControlEventLogV1({ repositoryRoot, sessionId });
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "may_control_event_replay_invalid");
+});
+
 test("factory read returns full value; appendControlEvent returns exact receipt; invalid factory primitive preserves code", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-may-control-factory-"));
   const sessionId = "session:issue-171:factory";
@@ -741,6 +753,61 @@ test("factory read returns full value; appendControlEvent returns exact receipt;
     () => store.appendControlEvent("not-event"),
     (error) => error instanceof MayControlEventStoreError && error.code === "malformed_input",
   );
+});
+
+test("factory append/read wrappers propagate runtime failures as MayControlEventStoreError", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-may-control-store-wrap-"));
+  const sessionId = "session:issue-171:factory-wrap";
+  const canonicalRoot = await realpath(repositoryRoot);
+  const logPath = deterministicLogPath(canonicalRoot, sessionId);
+  await mkdir(dirname(logPath), { recursive: true });
+  await writeFile(logPath, "");
+
+  const readStore = createMayControlEventFilesystemStore({
+    repositoryRoot,
+    sessionId,
+    lockOwnerId: "owner:issue-171",
+  });
+  await assert.rejects(
+    () => readStore.read(),
+    (error) => error instanceof MayControlEventStoreError && error.code === "may_control_event_replay_invalid",
+  );
+
+  const lockOwner = "owner:issue-171";
+  const lockSession = "session:issue-171:factory-wrap-lock";
+  const lockLog = deterministicLogPath(canonicalRoot, lockSession);
+  const lockPath = `${lockLog}.lock`;
+  await mkdir(dirname(lockLog), { recursive: true });
+  await writeFile(lockPath, "may-control-event:owner:conflict");
+  const lockStore = createMayControlEventFilesystemStore({
+    repositoryRoot,
+    sessionId: lockSession,
+    lockOwnerId: lockOwner,
+  });
+  await assert.rejects(
+    () =>
+      lockStore.appendControlEvent({
+        ...mkEvent(lockSession, 1, "may_control_started"),
+      }),
+    (error) => error instanceof MayControlEventStoreError && error.code === "may_control_event_lock_held",
+  );
+});
+
+test("detached appendControlEvent callback preserves exact receipt and writes the event", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-may-control-detach-"));
+  const sessionId = "session:issue-171:detach";
+  const { appendControlEvent } = createMayControlEventFilesystemStore({
+    repositoryRoot,
+    sessionId,
+    lockOwnerId: "owner:issue-171",
+  });
+  const event = mkEvent(sessionId, 1, "may_control_started");
+  const receipt = await appendControlEvent(event);
+  assert.deepEqual(receipt, { eventId: event.eventId, appended: true });
+
+  const read = await readMayControlEventLogV1({ repositoryRoot, sessionId });
+  assert.equal(read.state, "valid", read.errors?.join(" "));
+  assert.deepEqual(read.value.orderedEvents, [event]);
 });
 
 test("malformed read/append input shapes reject missing, extra, and undefined fields plus bad identifiers", async () => {
@@ -816,6 +883,101 @@ test("malformed read/append input shapes reject missing, extra, and undefined fi
   });
   assert.equal(badOwnerAppend.state, "invalid", badOwnerAppend.errors?.join(" "));
   assert.equal(badOwnerAppend.code, "malformed_input");
+});
+
+test("malformed append events reject all event fields across a table including missing/extra/undefined variants", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-may-control-append-matrix-"));
+  const sessionId = "session:issue-171:append-matrix";
+  const lockOwnerId = "owner:issue-171";
+
+  const seed = await appendMayControlEventIfAbsentV1({
+    repositoryRoot,
+    sessionId,
+    lockOwnerId,
+    event: mkEvent(sessionId, 1, "may_control_started"),
+  });
+  assert.equal(seed.state, "valid", seed.errors?.join(" "));
+
+  const baseEvent = mkEvent(sessionId, 2, "may_control_writeFile_completed", "call:write");
+  const invalidCases = [
+    {
+      field: "mayControlEventSchemaVersion",
+      event: { ...baseEvent, mayControlEventSchemaVersion: "1" },
+    },
+    {
+      field: "authority",
+      event: { ...baseEvent, authority: 0 },
+    },
+    {
+      field: "eventId",
+      event: { ...baseEvent, eventId: "not-an-event-id" },
+    },
+    {
+      field: "sessionId",
+      event: { ...baseEvent, sessionId: "session:issue-171:append-matrix:bad session" },
+    },
+    {
+      field: "code",
+      event: { ...baseEvent, code: "MAY_control_started" },
+    },
+    {
+      field: "counter",
+      event: { ...baseEvent, counter: "2" },
+    },
+    {
+      field: "toolCallId",
+      event: { ...baseEvent, toolCallId: 123 },
+    },
+    {
+      field: "evidenceRefs",
+      event: { ...baseEvent, evidenceRefs: ["may-control:event", 123] },
+    },
+    {
+      field: "mayControlEventSchemaVersion missing",
+      event: (() => {
+        const { mayControlEventSchemaVersion, ...rest } = baseEvent;
+        return rest;
+      })(),
+    },
+    {
+      field: "authority extra",
+      event: { ...baseEvent, extra: true },
+    },
+    {
+      field: "sessionId undefined",
+      event: { ...baseEvent, sessionId: undefined },
+    },
+  ];
+
+  for (const { field, event } of invalidCases) {
+    const result = await appendMayControlEventIfAbsentV1({
+      repositoryRoot,
+      sessionId,
+      lockOwnerId,
+      event,
+    });
+    assert.equal(result.state, "invalid", `${field} -> ${result.errors?.join(" ")}`);
+    assert.equal(result.code, "malformed_input", `${field} -> ${result.errors?.join(" ")}`);
+  }
+});
+
+test("empty and oversized lockOwnerId are malformed_input before mutation", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-may-control-lockowner-validation-"));
+  const sessionId = "session:issue-171:lockowner";
+  const event = mkEvent(sessionId, 1, "may_control_started");
+  const invalidOwners = ["", "x".repeat(129)];
+
+  for (const lockOwnerId of invalidOwners) {
+    const result = await appendMayControlEventIfAbsentV1({
+      repositoryRoot,
+      sessionId,
+      lockOwnerId,
+      event,
+    });
+    assert.equal(result.state, "invalid", result.errors?.join(" "));
+    assert.equal(result.code, "malformed_input");
+  }
+  await assert.rejects(() => lstat(join(repositoryRoot, ".shield")), { code: "ENOENT" });
 });
 
 test("repositoryRoot path validation rejects relative, non-directory, symlink, and unwritable roots", async () => {
