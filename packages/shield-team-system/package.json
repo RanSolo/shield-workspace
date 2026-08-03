@@ -89,6 +89,10 @@
       "types": "./dist/profile-aware-mission-v1.d.mts",
       "import": "./dist/profile-aware-mission-v1.mjs"
     },
+    "./implementation-authority": {
+      "types": "./dist/implementation-authority-v1.d.mts",
+      "import": "./dist/implementation-authority-v1.mjs"
+    },
     "./mission-runtime": {
       "types": "./dist/mission-runtime-v1.d.mts",
       "import": "./dist/mission-runtime-v1.mjs"

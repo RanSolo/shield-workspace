@@ -33,6 +33,7 @@ test("exports only the documented public package specifiers", async () => {
     "./pipeline",
     "./mission-profile",
     "./profile-aware-mission",
+    "./implementation-authority",
     "./mission-runtime",
     "./sonarqube",
     "./mack-validation",
@@ -68,6 +69,7 @@ test("loads every supported runtime specifier", async () => {
   const missionProfile = await import("@shield/team-system/mission-profile");
   const profileAwareMission = await import("@shield/team-system/profile-aware-mission");
   const missionRuntime = await import("@shield/team-system/mission-runtime");
+  const implementationAuthority = await import("@shield/team-system/implementation-authority");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
   const qaMode = await import("@shield/team-system/qa-mode");
@@ -93,6 +95,10 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof missionProfile.freezeMissionRequirementsV1, "function");
   assert.equal(profileAwareMission.PROFILE_AWARE_JOURNAL_SCHEMA_VERSION, 9);
   assert.equal(typeof profileAwareMission.replayProfileAwareMissionJournal, "function");
+  assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_SCHEMA_VERSION, 1);
+  assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION, "implementation-authority.v1");
+  assert.equal(typeof implementationAuthority.validateImplementationAuthorityV1, "function");
+  assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_KIND, "wheels_up");
   assert.equal(typeof missionRuntime.runMissionCycle, "function");
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
@@ -204,6 +210,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/delegation-v1.d.mts",
     "dist/adapter-v1.mjs",
     "dist/adapter-v1.d.mts",
+    "dist/implementation-authority-v1.mjs",
+    "dist/implementation-authority-v1.d.mts",
     "dist/runner-v1.mjs",
     "dist/runner-v1.d.mts",
     "dist/permission-v1.mjs",
@@ -307,6 +315,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type PRWorkspaceReceipt,
     } from "@shield/team-system/github";
     import {
+      IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION,
+      IMPLEMENTATION_AUTHORITY_SCHEMA_VERSION,
+      IMPLEMENTATION_AUTHORITY_KIND,
+      type ImplementationAuthorityV1,
+    } from "@shield/team-system/implementation-authority";
+    import {
       claimSeatDispatchPacketV1,
       type SeatDispatchPacketClaimContractResultV1,
       type SeatDispatchPacketClaimFailureCodeV1,
@@ -399,6 +413,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const furyEvidenceEvaluation: FuryPlanReviewEvidenceEvaluationV1 = evaluateFuryPlanReviewEvidenceV1(
       furyEvidenceCandidate, [], [], null,
     );
+    const implementationAuthoritySchema: 1 = IMPLEMENTATION_AUTHORITY_SCHEMA_VERSION;
+    const implementationAuthorityContract: "implementation-authority.v1" = IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION;
+    const implementationAuthorityKind: "wheels_up" = IMPLEMENTATION_AUTHORITY_KIND;
+    const authority: ImplementationAuthorityV1 = null as unknown as ImplementationAuthorityV1;
     const replayFuryEvidence = replayFuryPlanReviewEvidenceLedgerV1;
     const validateReceipt = validatePRWorkspaceReceipt;
     const renderHandoff = renderMissionHandoff;
@@ -495,7 +513,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
@@ -532,6 +550,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     await import(new URL("dist/dispatch-receipts.mjs", packageBase).href);
     await import(new URL("dist/seat-dispatch-store.mjs", packageBase).href);
     await import(new URL("dist/seat-dispatch-receipt-v1.mjs", packageBase).href);
+    await import(new URL("dist/implementation-authority-v1.mjs", packageBase).href);
     if (SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH !== ".shield/dispatch-receipts.jsonl") throw new Error("unexpected dispatch receipt log path");
     const parentResult = await readSeatDispatchReceiptsByParentMissionSessionV1({
       repositoryRoot: "/tmp/dispatch-store",

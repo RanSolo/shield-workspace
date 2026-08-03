@@ -22,6 +22,20 @@ import {
   type RunnerExecutionEffectPayload,
   type RunnerSupervisedEffectCandidate,
 } from "./runner-v1.mjs";
+import {
+  computeImplementationAuthorityDigest,
+  copyAuthority,
+  copySchema9RuntimeBinding,
+  type ImplementationAuthorityV1,
+  type Schema9RuntimeBindingV1,
+  type SignedImplementationAuthorityRevocationV1,
+  type SignedImplementationAuthorityV1,
+  type SignedSchema9RuntimeBindingAuthorization,
+  validateSchema9RuntimeBindingV1,
+  verifySignedImplementationAuthorityRevocationV1,
+  verifySignedImplementationAuthorityV1,
+  verifySignedSchema9RuntimeBindingAuthorizationV1,
+} from "./implementation-authority-v1.mjs";
 
 export const PROFILE_AWARE_BRIEF_SCHEMA_VERSION = 2 as const;
 export const PROFILE_AWARE_JOURNAL_SCHEMA_VERSION = 9 as const;
@@ -82,9 +96,13 @@ export interface SignedProfileEvidenceV1 { payload: ProfileEvidenceV1; signature
 export type ProfileAwareMissionEntryV1 =
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "mission.begun"; timestamp: EvidenceTimestamp; payload: { brief: ProfileAwareMissionBriefV1; trustedBindings: TrustedHumanBinding[]; requirements: ProfileRequirementV1[] } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "governance.decided"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "implementation.authorized"; timestamp: EvidenceTimestamp; payload: { authority: SignedImplementationAuthorityV1 } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "implementation.authority_revoked"; timestamp: EvidenceTimestamp; payload: { revocation: SignedImplementationAuthorityRevocationV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "execution.transition"; timestamp: EvidenceTimestamp; payload: { from: "not-started" | "running"; to: "running" | "completed" } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "execution.effect_recorded"; timestamp: EvidenceTimestamp; payload: { effect: RunnerExecutionEffectPayload } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "evidence.recorded"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "runtime.binding_recorded"; timestamp: EvidenceTimestamp; payload: { binding: Schema9RuntimeBindingV1; authorization: SignedSchema9RuntimeBindingAuthorization } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "runtime.binding_superseded"; timestamp: EvidenceTimestamp; payload: { priorBindingId: string; priorBindingVersion: number; binding: Schema9RuntimeBindingV1; authorization: SignedSchema9RuntimeBindingAuthorization } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "final_acceptance.recorded"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } };
 
 export interface ProfileAwareProjectionV1 {
@@ -95,6 +113,11 @@ export interface ProfileAwareProjectionV1 {
   evidence: ProfileEvidenceV1[];
   authorization: "waiting" | "authorized";
   execution: "not-started" | "running" | "completed";
+  implementationAuthority: ImplementationAuthorityV1 | null;
+  implementationAuthorityDigest: string | null;
+  implementationAuthorityState: "waiting" | "authorized" | "revoked";
+  runtimeBindings: Schema9RuntimeBindingV1[];
+  activeRuntimeBindings: Schema9RuntimeBindingV1[];
   readiness: { execute: "waiting" | "ready" | "blocked"; accept: "waiting" | "ready" | "blocked" };
   effects: RunnerAuthoritativeEffectRecord[];
   finalAcceptance: "waiting" | "accepted";
@@ -270,6 +293,238 @@ export function createProfileAwareExecutionEffectEntryV1(input: {
   };
 }
 
+export function createProfileAwareImplementationAuthorityEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  authority: SignedImplementationAuthorityV1;
+}): ProfileAwareMissionEntryV1 {
+  if (input.projection.schemaVersion !== 9 ||
+      input.projection.implementationAuthorityState !== "waiting" ||
+      input.projection.authorization !== "authorized" ||
+      input.projection.execution !== "not-started" ||
+      input.projection.finalAcceptance !== "waiting") {
+    throw new Error("Profile-aware implementation authority requires an authorized not-started mission.");
+  }
+  const checked = verifySignedImplementationAuthorityV1(
+    input.authority,
+    input.trustedBindings,
+    input.projection.missionId,
+    input.projection.brief.subjectId,
+    input.projection.brief.revisionId,
+    input.projection.lastSequence + 1,
+  );
+  if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
+  if (!timestamp(checked.value.timestamp) || canonicalJson(checked.value.timestamp) !== canonicalJson(input.authority.payload.timestamp)) {
+    throw new Error("Profile-aware implementation authority timestamp is malformed.");
+  }
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${input.projection.lastSequence + 1}`,
+    missionId: input.projection.missionId,
+    sequence: input.projection.lastSequence + 1,
+    type: "implementation.authorized",
+    timestamp: { ...checked.value.timestamp },
+    payload: {
+      authority: {
+        payload: copyAuthority(checked.value),
+        signatureBase64: input.authority.signatureBase64,
+      },
+    },
+  };
+}
+
+export function createProfileAwareImplementationAuthorityRevocationEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  revocation: SignedImplementationAuthorityRevocationV1;
+}): ProfileAwareMissionEntryV1 {
+  if (input.projection.schemaVersion !== 9 || input.projection.implementationAuthorityState !== "authorized" || input.projection.finalAcceptance === "accepted" || input.projection.execution === "completed") {
+    throw new Error("Profile-aware implementation authority revocation requires an active mission authority.");
+  }
+  if (input.projection.implementationAuthority === null) throw new Error("Profile-aware implementation authority is not active.");
+  const payload = {
+    missionId: input.projection.missionId,
+    subjectId: input.projection.brief.subjectId,
+    missionRevisionId: input.projection.brief.revisionId,
+    authorityRef: input.projection.implementationAuthority.authorityRef,
+    authorityDigest: input.projection.implementationAuthorityDigest ?? computeImplementationAuthorityDigest(input.projection.implementationAuthority),
+    authoritySequence: input.projection.implementationAuthority.journalSequence,
+  };
+  const checked = verifySignedImplementationAuthorityRevocationV1(input.revocation, input.trustedBindings, payload, input.projection.lastSequence + 1);
+  if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
+  if (canonicalJson(checked.value.timestamp) !== canonicalJson(input.revocation.payload.timestamp) ||
+      canonicalJson(input.revocation.payload.timestamp) !== canonicalJson(checked.value.timestamp)) {
+    throw new Error("Profile-aware implementation authority revocation timestamp is malformed.");
+  }
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${input.projection.lastSequence + 1}`,
+    missionId: input.projection.missionId,
+    sequence: input.projection.lastSequence + 1,
+    type: "implementation.authority_revoked",
+    timestamp: { ...checked.value.timestamp },
+    payload: {
+      revocation: {
+        ...input.revocation,
+        payload: {
+          ...checked.value,
+        },
+      },
+    },
+  };
+}
+
+export function createProfileAwareRuntimeBindingRecordedEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  binding: Schema9RuntimeBindingV1;
+  authorization: SignedSchema9RuntimeBindingAuthorization;
+}): ProfileAwareMissionEntryV1 {
+  if (input.projection.schemaVersion !== 9 ||
+      input.projection.implementationAuthorityState !== "authorized" ||
+      input.projection.execution !== "not-started" ||
+      input.projection.finalAcceptance !== "waiting") {
+    throw new Error("Profile-aware runtime binding requires an active Wheels Up authority and pre-execution mission.");
+  }
+  const checkedBinding = validateSchema9RuntimeBindingV1(input.binding);
+  if (checkedBinding.state === "invalid") throw new Error(checkedBinding.errors.join(" "));
+  const binding = checkedBinding.value;
+  if (!input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.seatId)) {
+    throw new Error("Profile-aware runtime binding seat is not a mission participant.");
+  }
+  if (input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.reasoningRuntimeId || seatId === binding.binding.toolExecutorId)) {
+    throw new Error("Runtime binding identities cannot be mission participants.");
+  }
+  if (binding.binding.bindingVersion !== 1 || binding.binding.lifecycleState !== "active" || binding.binding.activeThroughSequence !== null) {
+    throw new Error("Runtime binding must be the initial active binding version 1.");
+  }
+  if (binding.binding.seatId !== "may") {
+    throw new Error("Runtime binding seat must be may.");
+  }
+  if (binding.binding.coulsonAuthorizationRef !== input.authorization.payload.authorizationId) {
+    throw new Error("Runtime binding authorization id must match the binding's Coulson authorization reference.");
+  }
+  if (!input.projection.implementationAuthority) {
+    throw new Error("Profile-aware runtime binding requires an active implementation authority.");
+  }
+  const checkedAuthority = verifySignedSchema9RuntimeBindingAuthorizationV1(
+    input.authorization,
+    binding,
+    {
+      missionId: input.projection.missionId,
+      subjectId: input.projection.brief.subjectId,
+      missionRevisionId: input.projection.brief.revisionId,
+      trustedBindings: input.trustedBindings,
+      implementationAuthority: input.projection.implementationAuthority as ImplementationAuthorityV1,
+      lastSequence: input.projection.lastSequence,
+      },
+    null,
+    null,
+  );
+  if (checkedAuthority.state === "invalid") throw new Error(checkedAuthority.errors.join(" "));
+  if (canonicalJson(checkedAuthority.value.timestamp) !== canonicalJson(input.authorization.payload.timestamp)) {
+    throw new Error("Profile-aware runtime binding timestamp is malformed.");
+  }
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${input.projection.lastSequence + 1}`,
+    missionId: input.projection.missionId,
+    sequence: input.projection.lastSequence + 1,
+    type: "runtime.binding_recorded",
+    timestamp: { ...checkedAuthority.value.timestamp },
+    payload: {
+      binding: copySchema9RuntimeBinding(binding),
+      authorization: {
+        payload: { ...checkedAuthority.value, priorBindingId: null, priorBindingVersion: null },
+        signatureBase64: input.authorization.signatureBase64,
+      },
+    },
+  };
+}
+
+export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  priorBindingId: string;
+  priorBindingVersion: number;
+  binding: Schema9RuntimeBindingV1;
+  authorization: SignedSchema9RuntimeBindingAuthorization;
+}): ProfileAwareMissionEntryV1 {
+  if (input.projection.schemaVersion !== 9 ||
+      input.projection.implementationAuthorityState !== "authorized" ||
+      input.projection.execution !== "not-started" ||
+      input.projection.finalAcceptance !== "waiting") {
+    throw new Error("Profile-aware runtime binding supersession requires an active Wheels Up authority and pre-completion mission.");
+  }
+  const checkedBinding = validateSchema9RuntimeBindingV1(input.binding);
+  if (checkedBinding.state === "invalid") throw new Error(checkedBinding.errors.join(" "));
+  const binding = checkedBinding.value;
+  if (!input.projection.implementationAuthority) throw new Error("Profile-aware runtime binding supersession requires an active implementation authority.");
+  const prior = input.projection.activeRuntimeBindings.filter((candidate) =>
+    candidate.binding.bindingId === input.priorBindingId &&
+    candidate.binding.bindingVersion === input.priorBindingVersion,
+  );
+  if (prior.length !== 1) throw new Error("Profile-aware runtime binding supersession requires exactly one active prior binding.");
+  const active = prior[0];
+  if (binding.binding.bindingId !== active.binding.bindingId ||
+      binding.binding.bindingVersion !== active.binding.bindingVersion + 1 ||
+      binding.binding.bindingVersion === 1 ||
+      binding.binding.seatId !== active.binding.seatId ||
+      binding.binding.reasoningRuntimeId !== active.binding.reasoningRuntimeId ||
+      binding.binding.toolExecutorId !== active.binding.toolExecutorId ||
+      binding.binding.lifecycleState !== "active" ||
+      binding.binding.activeThroughSequence !== null) {
+    throw new Error("Runtime binding replacement must atomically increment the same active binding.");
+  }
+  if (binding.binding.seatId !== "may") {
+    throw new Error("Runtime binding seat must be may.");
+  }
+  if (binding.binding.coulsonAuthorizationRef !== input.authorization.payload.authorizationId) {
+    throw new Error("Runtime binding authorization id must match the binding's Coulson authorization reference.");
+  }
+  if (!input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.seatId)) {
+    throw new Error("Profile-aware runtime binding seat is not a mission participant.");
+  }
+  if (input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.reasoningRuntimeId || seatId === binding.binding.toolExecutorId)) {
+    throw new Error("Runtime binding identities cannot be mission participants.");
+  }
+  const checkedAuthority = verifySignedSchema9RuntimeBindingAuthorizationV1(
+    input.authorization,
+    binding,
+    {
+      missionId: input.projection.missionId,
+      subjectId: input.projection.brief.subjectId,
+      missionRevisionId: input.projection.brief.revisionId,
+      trustedBindings: input.trustedBindings,
+      implementationAuthority: input.projection.implementationAuthority as ImplementationAuthorityV1,
+      lastSequence: input.projection.lastSequence,
+    },
+    input.priorBindingId,
+    input.priorBindingVersion,
+  );
+  if (checkedAuthority.state === "invalid") throw new Error(checkedAuthority.errors.join(" "));
+  if (canonicalJson(checkedAuthority.value.timestamp) !== canonicalJson(input.authorization.payload.timestamp)) {
+    throw new Error("Profile-aware runtime binding timestamp is malformed.");
+  }
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${input.projection.lastSequence + 1}`,
+    missionId: input.projection.missionId,
+    sequence: input.projection.lastSequence + 1,
+    type: "runtime.binding_superseded",
+    timestamp: { ...checkedAuthority.value.timestamp },
+    payload: {
+      priorBindingId: input.priorBindingId,
+      priorBindingVersion: input.priorBindingVersion,
+      binding: copySchema9RuntimeBinding(binding),
+      authorization: {
+        payload: { ...checkedAuthority.value },
+        signatureBase64: input.authorization.signatureBase64,
+      },
+    },
+  };
+}
+
 function verifyEvidence(evidence: SignedProfileEvidenceV1, expected: ProfileRequirementV1, bindings: TrustedHumanBinding[], missionId: string, sequence: number): string[] {
   const payload = evidence?.payload;
   const errors: string[] = [];
@@ -307,6 +562,11 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
   const effects: RunnerAuthoritativeEffectRecord[] = [];
   const cycleIds = new Set<string>();
   const effectKeys = new Set<string>();
+  let implementationAuthority: ImplementationAuthorityV1 | null = null;
+  let implementationAuthorityDigest: string | null = null;
+  let implementationAuthorityState: "waiting" | "authorized" | "revoked" = "waiting";
+  let runtimeBindings: Schema9RuntimeBindingV1[] = [];
+  let activeRuntimeBindings: Schema9RuntimeBindingV1[] = [];
   let authorization: "waiting" | "authorized" = "waiting";
   let execution: "not-started" | "running" | "completed" = "not-started";
   let finalAcceptance: "waiting" | "accepted" = "waiting";
@@ -332,7 +592,7 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       if (entry.type === "governance.decided") { if (authorization !== "waiting" || execution !== "not-started") return invalid("sequence_invalid", "Authorization is duplicated or late."); authorization = "authorized"; }
       if (entry.type === "evidence.recorded") { if (execution !== "not-started") return invalid("ordering_invalid", "Execution gate evidence must be frozen before execution."); if (matches[0].phase !== "execution") return invalid("evidence_invalid", "Only profile execution gates may be recorded here."); }
       if (entry.type === "final_acceptance.recorded") {
-        if (authorization !== "authorized" ||
+        if (authorization !== "authorized" || implementationAuthorityState !== "authorized" ||
             execution !== "completed" ||
             !effects.some(({ outcome }) => outcome === "completed") ||
             finalAcceptance === "accepted") {
@@ -341,6 +601,113 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
         finalAcceptance = "accepted";
       }
       evidenceIds.add(signed.payload.evidenceId); evidence.push(signed.payload);
+    } else if (entry.type === "implementation.authorized") {
+      if (!exact(entry.payload, ["authority"])) return invalid("malformed", `Entry ${index} implementation authority payload is not closed.`);
+      const payload = entry.payload.authority;
+      const checked = verifySignedImplementationAuthorityV1(
+        payload,
+        bindingRegistry.value.bindings,
+        brief.missionId,
+        brief.subjectId,
+        brief.revisionId,
+        index,
+      );
+      if (checked.state === "invalid") return checked;
+      if (canonicalJson(checked.value.timestamp) !== canonicalJson(payload.payload.timestamp) || canonicalJson(entry.timestamp) !== canonicalJson(checked.value.timestamp)) {
+        return invalid("malformed", "Profile-aware implementation authority timestamp is malformed.");
+      }
+      if (authorization !== "authorized" || execution !== "not-started" || implementationAuthorityState !== "waiting" || finalAcceptance === "accepted") {
+        return invalid("ordering_invalid", "Implementation authority is duplicated or late.");
+      }
+      implementationAuthority = checked.value;
+      implementationAuthorityDigest = computeImplementationAuthorityDigest(checked.value);
+      implementationAuthorityState = "authorized";
+    } else if (entry.type === "implementation.authority_revoked") {
+      if (!exact(entry.payload, ["revocation"])) return invalid("malformed", `Entry ${index} implementation authority revocation payload is not closed.`);
+      const payload = entry.payload.revocation;
+      if (implementationAuthority === null || implementationAuthorityState !== "authorized") return invalid("ordering_invalid", "Implementation authority revocation requires an active authority.");
+      if (implementationAuthorityState !== "authorized" || finalAcceptance === "accepted") return invalid("ordering_invalid", "Implementation authority revocation is too late.");
+      const payloadIdentity = {
+        missionId: brief.missionId,
+        subjectId: brief.subjectId,
+        missionRevisionId: brief.revisionId,
+        authorityRef: implementationAuthority.authorityRef,
+        authorityDigest: implementationAuthorityDigest ?? computeImplementationAuthorityDigest(implementationAuthority),
+        authoritySequence: implementationAuthority.journalSequence,
+      };
+      const checked = verifySignedImplementationAuthorityRevocationV1(payload, bindingRegistry.value.bindings, payloadIdentity, index);
+      if (checked.state === "invalid") return checked;
+      if (canonicalJson(checked.value.timestamp) !== canonicalJson(payload.payload.timestamp) || canonicalJson(entry.timestamp) !== canonicalJson(checked.value.timestamp)) {
+        return invalid("malformed", "Profile-aware implementation authority revocation timestamp is malformed.");
+      }
+      if (execution === "completed") return invalid("ordering_invalid", "Implementation authority revocation is too late.");
+      implementationAuthorityState = "revoked";
+      activeRuntimeBindings = [];
+    } else if (entry.type === "runtime.binding_recorded" || entry.type === "runtime.binding_superseded") {
+      if (implementationAuthorityState !== "authorized") return invalid("authority_invalid", "Runtime binding requires an active implementation authority.");
+      if (execution === "completed" || finalAcceptance === "accepted") return invalid("ordering_invalid", "Runtime binding is not allowed after execution completion or final acceptance.");
+      const closed = exact(entry.payload, entry.type === "runtime.binding_recorded" ? ["binding", "authorization"] : ["priorBindingId", "priorBindingVersion", "binding", "authorization"]);
+      if (!closed) return invalid("malformed", `Entry ${index} runtime binding payload is not closed.`);
+      const checkedBinding = validateSchema9RuntimeBindingV1(entry.payload.binding);
+      if (checkedBinding.state === "invalid") return invalid(checkedBinding.code, ...checkedBinding.errors);
+      const wrapper = checkedBinding.value;
+      const priorBindingId = entry.type === "runtime.binding_recorded" ? null : entry.payload.priorBindingId;
+      const priorBindingVersion = entry.type === "runtime.binding_recorded" ? null : entry.payload.priorBindingVersion;
+      if (priorBindingId === null && priorBindingVersion !== null || priorBindingId !== null && priorBindingVersion === null) return invalid("malformed", "Runtime binding payload is missing a prior binding identity.");
+      const checkedAuthorization = verifySignedSchema9RuntimeBindingAuthorizationV1(
+        entry.payload.authorization,
+        wrapper,
+        {
+          missionId: brief.missionId,
+          subjectId: brief.subjectId,
+          missionRevisionId: brief.revisionId,
+          trustedBindings: bindingRegistry.value.bindings,
+          implementationAuthority: implementationAuthority!,
+          lastSequence: index - 1,
+        },
+        priorBindingId,
+        priorBindingVersion,
+      );
+      if (checkedAuthorization.state === "invalid") return checkedAuthorization;
+      if (canonicalJson(checkedAuthorization.value.timestamp) !== canonicalJson(entry.payload.authorization.payload.timestamp) ||
+          canonicalJson(entry.timestamp) !== canonicalJson(checkedAuthorization.value.timestamp)) {
+        return invalid("malformed", "Profile-aware runtime binding timestamp is malformed.");
+      }
+      const sameBindingId = runtimeBindings.some((candidate) => candidate.binding.bindingId === wrapper.binding.bindingId);
+      const activeSeatMatch = activeRuntimeBindings.some((candidate) => candidate.binding.seatId === wrapper.binding.seatId);
+      const activeMatches = activeRuntimeBindings.filter((candidate) => candidate.binding.bindingId === priorBindingId && candidate.binding.bindingVersion === priorBindingVersion);
+      if (wrapper.binding.seatId !== "may") return invalid("binding_invalid", "Runtime binding seat must be may.");
+      if (brief.participants.some(({ seatId }) => seatId === wrapper.binding.reasoningRuntimeId || seatId === wrapper.binding.toolExecutorId)) return invalid("seat_mismatch", "Runtime binding identities cannot be mission participants.");
+      if (!brief.participants.some(({ seatId }) => seatId === wrapper.binding.seatId)) return invalid("seat_mismatch", "Runtime binding seat is not a mission participant.");
+      if (wrapper.binding.coulsonAuthorizationRef !== checkedAuthorization.value.authorizationId) return invalid("binding_invalid", "Runtime binding authorization id must match the binding's Coulson authorization reference.");
+      if (entry.type === "runtime.binding_recorded") {
+        if (implementationAuthorityState !== "authorized") return invalid("authority_invalid", "Runtime binding can only be recorded while authority is active.");
+        if (wrapper.binding.bindingVersion !== 1 || wrapper.binding.lifecycleState !== "active" || wrapper.binding.activeThroughSequence !== null) {
+          return invalid("binding_invalid", "Runtime binding must be the initial active binding version 1.");
+        }
+        if (sameBindingId) return invalid("binding_ambiguous", "Runtime binding identity is duplicated.");
+        if (activeSeatMatch) return invalid("binding_ambiguous", "Runtime binding seat already has an active binding.");
+        runtimeBindings.push(copySchema9RuntimeBinding(wrapper));
+        activeRuntimeBindings.push(copySchema9RuntimeBinding(wrapper));
+      } else {
+        if (priorBindingId === null || priorBindingVersion === null) return invalid("malformed", "Runtime binding supersession is missing prior binding identity.");
+        if (activeMatches.length !== 1) return invalid("binding_invalid", "Runtime binding replacement must supersede exactly one active binding.");
+        const prior = activeRuntimeBindings.filter((candidate) => candidate.binding.bindingId === priorBindingId && candidate.binding.bindingVersion === priorBindingVersion);
+        if (prior.length !== 1) return invalid("binding_ambiguous", "Runtime binding supersession requires exactly one active prior binding.");
+        if (wrapper.binding.bindingId !== prior[0].binding.bindingId ||
+            wrapper.binding.bindingVersion !== prior[0].binding.bindingVersion + 1 ||
+            wrapper.binding.seatId !== prior[0].binding.seatId ||
+            wrapper.binding.reasoningRuntimeId !== prior[0].binding.reasoningRuntimeId ||
+            wrapper.binding.toolExecutorId !== prior[0].binding.toolExecutorId) {
+          return invalid("binding_invalid", "Runtime binding replacement must atomically increment the same active binding.");
+        }
+        if (wrapper.binding.lifecycleState !== "active" || wrapper.binding.activeThroughSequence !== null) {
+          return invalid("binding_invalid", "Runtime binding replacement must be active and unresolved.");
+        }
+        activeRuntimeBindings = activeRuntimeBindings.filter((candidate) => !(candidate.binding.bindingId === prior[0].binding.bindingId && candidate.binding.bindingVersion === prior[0].binding.bindingVersion));
+        runtimeBindings.push(copySchema9RuntimeBinding(wrapper));
+        activeRuntimeBindings.push(copySchema9RuntimeBinding(wrapper));
+      }
     } else if (entry.type === "execution.transition") {
       if (!exact(entry.payload, ["from", "to"]) || !["not-started", "running"].includes(entry.payload.from as string) || !["running", "completed"].includes(entry.payload.to as string)) return invalid("malformed", `Entry ${index} execution payload is not closed.`);
       if (authorization !== "authorized") return invalid("ordering_invalid", "Execution requires authorization and all frozen gates.");
@@ -386,7 +753,24 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
   }
   const pendingExecution = requirements.some((requirement) => requirement.phase === "execution" && !evidence.some((record) => record.requirementId === requirement.requirementId));
   const uncertain = effects.some(({ outcome }) => outcome === "uncertain");
-  return valid({ schemaVersion: 9, missionId: brief.missionId, brief, requirements, evidence, authorization, execution, readiness: { execute: uncertain ? "blocked" : authorization === "authorized" && !pendingExecution ? "ready" : "waiting", accept: execution === "completed" && finalAcceptance === "waiting" ? "waiting" : finalAcceptance === "accepted" ? "ready" : "blocked" }, effects, finalAcceptance, lastSequence: entries.length - 1 });
+  return valid({
+    schemaVersion: 9,
+    missionId: brief.missionId,
+    brief: { ...brief },
+    requirements: [...requirements],
+    evidence: evidence.map((entry) => ({ ...entry, timestamp: { ...entry.timestamp } })),
+    implementationAuthority: implementationAuthority === null ? null : copyAuthority(implementationAuthority),
+    implementationAuthorityDigest,
+    implementationAuthorityState,
+    runtimeBindings: runtimeBindings.map((binding) => copySchema9RuntimeBinding(binding)),
+    activeRuntimeBindings: activeRuntimeBindings.map((binding) => copySchema9RuntimeBinding(binding)),
+    authorization,
+    execution,
+    readiness: { execute: uncertain ? "blocked" : authorization === "authorized" && !pendingExecution ? "ready" : "waiting", accept: execution === "completed" && finalAcceptance === "waiting" ? "waiting" : finalAcceptance === "accepted" ? "ready" : "blocked" },
+    effects: effects.map((effect) => ({ ...effect, timestamp: { ...effect.timestamp } })),
+    finalAcceptance,
+    lastSequence: entries.length - 1,
+  });
 }
 
 export function profileIsNotWeakenedV1(selected: MissionProfileId, required: MissionProfileId): boolean { return isProfileAtLeastAsStrictV1(selected, required); }
