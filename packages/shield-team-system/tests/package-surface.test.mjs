@@ -431,6 +431,24 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       errors: ["expected"],
     };
     const claimPacket = claimSeatDispatchPacketV1;
+    function assertPacketClaimNarrowing(outcome: SeatDispatchPacketClaimContractResultV1): void {
+      if (outcome.state === "valid") {
+        if (outcome.value.claimStatus === "claimed") {
+          const disposition: "execute_once" = outcome.value.executionDisposition;
+          void disposition;
+        } else {
+          // @ts-expect-error already_claimed does not expose an executable disposition.
+          const forbiddenDisposition: "execute_once" = outcome.value.executionDisposition;
+          void forbiddenDisposition;
+        }
+      } else {
+        // @ts-expect-error invalid outcomes do not expose a claim value.
+        const invalidValue: SeatDispatchPacketClaimResultV1 = outcome.value;
+        // @ts-expect-error invalid outcomes do not expose executionDisposition.
+        const invalidDisposition = outcome.value.executionDisposition;
+        void [invalidValue, invalidDisposition];
+      }
+    }
     const roleTaxonomyContract: "roles.v1" = ROLE_TAXONOMY_CONTRACT_VERSION;
     const dispatchSeatOnly: RoleAssignmentScope = "dispatch";
     const route: RoleRoute = "dispatch_seat";
@@ -462,7 +480,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");

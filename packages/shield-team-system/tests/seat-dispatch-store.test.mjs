@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { lstat, mkdir, mkdtemp, open, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -187,6 +187,228 @@ function packetClaimInput(repositoryRoot, overrides = {}) {
   };
 }
 
+async function assertMalformedPacketBeforeFs(packet, label) {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-malformed-matrix-"));
+  const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packet }));
+  assert.equal(result.state, "invalid", label);
+  assert.equal(result.code, "malformed_packet", label);
+  assert.equal(Object.hasOwn(result, "executionDisposition"), false, label);
+  await assert.rejects(lstat(join(repositoryRoot, ".shield")), (error) => error?.code === "ENOENT", label);
+}
+
+async function assertAcceptedPacket(packet, label) {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-accepted-matrix-"));
+  const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packet }));
+  assert.equal(result.state, "valid", `${label}: ${result.errors?.join(" ") ?? ""}`);
+  assert.equal(result.value.claimStatus, "claimed", label);
+  return { repositoryRoot, result };
+}
+
+async function runPacketClaimFaultScenario(scenario) {
+  const scriptRoot = await mkdtemp(join(tmpdir(), "shield-packet-fault-script-"));
+  const scriptPath = join(scriptRoot, "packet-claim-fault.mjs");
+  const { packetBytes: _packetBytes, ...serializedInput } = packetClaimInput("/placeholder");
+  const script = `
+    import { constants } from "node:fs";
+    import * as realFs from "node:fs/promises";
+    import { join } from "node:path";
+    import { tmpdir } from "node:os";
+    import { mock } from "node:test";
+
+    const scenario = ${JSON.stringify(scenario)};
+    const repositoryRoot = await realFs.mkdtemp(join(tmpdir(), "shield-packet-fault-child-"));
+    const repositoryRootForChecks = await realFs.realpath(repositoryRoot);
+    const shieldDirectory = join(repositoryRootForChecks, ".shield");
+    const lockPath = join(shieldDirectory, "dispatch-receipts.jsonl.lock");
+    const logPath = join(shieldDirectory, "dispatch-receipts.jsonl");
+    const baseInput = ${JSON.stringify(serializedInput)};
+    baseInput.repositoryRoot = repositoryRoot;
+    const claimInput = (overrides = {}) => ({
+      ...baseInput,
+      packetBytes: new TextEncoder().encode('{"alpha":1,"half":0.5}'),
+      ...overrides,
+    });
+    let phase = "setup";
+    let faultTriggered = false;
+    let lockReadOpens = 0;
+    let logReads = 0;
+    let afterLockUnlink = false;
+
+    mock.module("node:fs/promises", {
+      exports: {
+        ...realFs,
+        open: async (path, flags, mode) => {
+          const handle = await realFs.open(path, flags, mode);
+          const isNumericFlags = typeof flags === "number";
+          const isWrite = isNumericFlags && (flags & constants.O_WRONLY) === constants.O_WRONLY;
+          const isDirectory = isNumericFlags && (flags & constants.O_DIRECTORY) === constants.O_DIRECTORY;
+          const isLock = typeof path === "string" && path === lockPath;
+          const isLog = typeof path === "string" && path === logPath;
+          const fault = phase === "fault" ? scenario.fault : "none";
+
+          if (isLock && isWrite && fault === "lock-short-write") {
+            const originalWrite = handle.write.bind(handle);
+            handle.write = async (...args) => {
+              const result = await originalWrite(...args);
+              faultTriggered = true;
+              return { ...result, bytesWritten: Math.max(0, result.bytesWritten - 1) };
+            };
+          }
+          if (isLock && isWrite && fault === "lock-sync-failure") {
+            handle.sync = async () => {
+              faultTriggered = true;
+              const error = new Error("simulated lock sync failure");
+              error.code = "EIO";
+              throw error;
+            };
+          }
+          if (isDirectory && path === shieldDirectory && ["lock-parent-sync-failure", "post-sync-lock-disappearance", "post-sync-lock-replacement"].includes(fault)) {
+            const originalSync = handle.sync.bind(handle);
+            handle.sync = async () => {
+              await originalSync();
+              faultTriggered = true;
+              if (fault === "lock-parent-sync-failure") {
+                const error = new Error("simulated lock parent sync failure");
+                error.code = "EIO";
+                throw error;
+              }
+              if (fault === "post-sync-lock-disappearance") {
+                await realFs.unlink(lockPath);
+              } else {
+                const marker = await realFs.readFile(lockPath);
+                await realFs.unlink(lockPath);
+                await realFs.writeFile(lockPath, marker);
+              }
+            };
+          }
+          if (isDirectory && path === shieldDirectory && fault === "release-parent-sync-failure" && afterLockUnlink) {
+            handle.sync = async () => {
+              faultTriggered = true;
+              const error = new Error("simulated release parent sync failure");
+              error.code = "EIO";
+              throw error;
+            };
+          }
+          if (isLock && !isWrite) {
+            lockReadOpens += 1;
+            if (phase === "fault" && scenario.fault === "release-marker-inode-drift" && lockReadOpens >= 2) {
+              const originalReadFile = handle.readFile.bind(handle);
+              handle.readFile = async (...args) => {
+                const marker = await originalReadFile(...args);
+                faultTriggered = true;
+                return typeof marker === "string" ? marker + "drift" : Buffer.concat([marker, Buffer.from("drift")]);
+              };
+              const originalStat = handle.stat.bind(handle);
+              handle.stat = async () => {
+                const stats = await originalStat();
+                faultTriggered = true;
+                return { ...stats, ino: Number(stats.ino) + 1, dev: Number(stats.dev) + 1 };
+              };
+            }
+          }
+          if (isLog && isWrite && scenario.fault === "append-short-write" && phase === "fault") {
+            const originalWrite = handle.write.bind(handle);
+            handle.write = async (...args) => {
+              const result = await originalWrite(...args);
+              faultTriggered = true;
+              return { ...result, bytesWritten: Math.max(0, result.bytesWritten - 1) };
+            };
+          }
+          if (isLog && isWrite && scenario.fault === "append-sync-failure" && phase === "fault") {
+            handle.sync = async () => {
+              faultTriggered = true;
+              const error = new Error("simulated append sync failure");
+              error.code = "EIO";
+              throw error;
+            };
+          }
+          if (isLog && !isWrite && scenario.fault === "append-readback-failure" && phase === "fault") {
+            const originalReadFile = handle.readFile.bind(handle);
+            handle.readFile = async (...args) => {
+              const bytes = await originalReadFile(...args);
+              logReads += 1;
+              if (logReads >= 1) {
+                faultTriggered = true;
+                const text = typeof bytes === "string" ? bytes : bytes.toString("utf8");
+                return text.replace('"subjectId":"subject-1"', '"subjectId":"subject-drift"');
+              }
+              return bytes;
+            };
+          }
+          return handle;
+        },
+        unlink: async (path) => {
+          if (phase === "fault" && scenario.fault === "release-unlink-failure" && path === lockPath) {
+            faultTriggered = true;
+            const error = new Error("simulated release unlink failure");
+            error.code = "EIO";
+            throw error;
+          }
+          const result = await realFs.unlink(path);
+          if (phase === "fault" && path === lockPath) afterLockUnlink = true;
+          return result;
+        },
+        lstat: async (path) => {
+          if (phase === "fault" && scenario.fault === "release-absence-drift" && afterLockUnlink && path === lockPath) {
+            faultTriggered = true;
+            return { isSymbolicLink: () => false, isFile: () => true, ino: 1, dev: 1 };
+          }
+          return realFs.lstat(path);
+        },
+      },
+    });
+
+    const store = await import(${JSON.stringify(seatDispatchStoreModule)} + "?fault=" + encodeURIComponent(scenario.name));
+    if (scenario.pending === "already_claimed" || scenario.pending === "conflict") {
+      const setup = await store.claimSeatDispatchPacketV1(claimInput());
+      if (setup.state !== "valid" || setup.value.claimStatus !== "claimed") throw new Error("fault setup claim failed");
+    } else if (scenario.pending === "replay_invalid") {
+      await realFs.mkdir(shieldDirectory, { recursive: true });
+      await realFs.writeFile(logPath, '{"incomplete":true', "utf8");
+    }
+
+    phase = "fault";
+    lockReadOpens = 0;
+    logReads = 0;
+    const overrides = scenario.pending === "conflict"
+      ? { subjectRevision: "abcdef1234567890abcdef1234567890abcdef13" }
+      : {};
+    const result = await store.claimSeatDispatchPacketV1(claimInput(overrides));
+    const summary = {
+      state: result.state,
+      code: result.state === "invalid" ? result.code : null,
+      claimStatus: result.state === "valid" ? result.value.claimStatus : null,
+      hasDisposition: result.state === "valid" && Object.hasOwn(result.value, "executionDisposition"),
+      faultTriggered,
+      restart: null,
+    };
+
+    if (["append-short-write", "append-sync-failure", "append-readback-failure"].includes(scenario.fault)) {
+      phase = "restart";
+      const restart = await store.claimSeatDispatchPacketV1(claimInput({ startedAt: "2026-07-29T12:00:01.000Z" }));
+      summary.restart = {
+        state: restart.state,
+        code: restart.state === "invalid" ? restart.code : null,
+        claimStatus: restart.state === "valid" ? restart.value.claimStatus : null,
+        hasDisposition: restart.state === "valid" && Object.hasOwn(restart.value, "executionDisposition"),
+      };
+    }
+    process.stdout.write(JSON.stringify(summary));
+  `;
+  await writeFile(scriptPath, script, "utf8");
+  const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", scriptPath], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: process.env,
+  });
+  if (child.status !== 0) assert.fail(`fault child failed (${scenario.name}): ${child.stdout}${child.stderr}`);
+  try {
+    return JSON.parse(child.stdout.trim());
+  } catch {
+    assert.fail(`fault child emitted invalid JSON (${scenario.name}): ${child.stdout}${child.stderr}`);
+  }
+}
+
 test("atomic packet claim returns execute_once once and exact retry is non-executable", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-claim-"));
   const first = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot));
@@ -304,6 +526,75 @@ test("packet claim fails closed and preserves an incomplete existing ledger", as
   assert.equal(await readLogBytes(logPath), malformedBytes);
 });
 
+test("claim lock acquisition fails closed across durable marker fault points", async () => {
+  const scenarios = [
+    ["lock marker short write", "lock-short-write"],
+    ["lock marker sync", "lock-sync-failure"],
+    ["lock parent sync", "lock-parent-sync-failure"],
+    ["post-sync disappearance", "post-sync-lock-disappearance"],
+    ["post-sync replacement", "post-sync-lock-replacement"],
+  ];
+  for (const [name, fault] of scenarios) {
+    const result = await runPacketClaimFaultScenario({ name, fault, pending: "claimed" });
+    assert.equal(result.faultTriggered, true, name);
+    assert.equal(result.state, "invalid", name);
+    assert.equal(result.code, "recovery_required", name);
+    assert.equal(result.hasDisposition, false, name);
+  }
+});
+
+test("claim release identity, unlink, absence, and directory-sync uncertainty overrides claimed", async () => {
+  const scenarios = [
+    ["release marker and inode drift", "release-marker-inode-drift"],
+    ["release unlink failure", "release-unlink-failure"],
+    ["release absence verification", "release-absence-drift"],
+    ["release parent sync", "release-parent-sync-failure"],
+  ];
+  for (const [name, fault] of scenarios) {
+    const result = await runPacketClaimFaultScenario({ name, fault, pending: "claimed" });
+    assert.equal(result.faultTriggered, true, name);
+    assert.equal(result.state, "invalid", name);
+    assert.equal(result.code, "recovery_required", name);
+    assert.equal(result.hasDisposition, false, name);
+  }
+});
+
+test("release uncertainty is the final override for every representative pending result", async () => {
+  for (const pending of ["claimed", "already_claimed", "conflict", "replay_invalid"]) {
+    const result = await runPacketClaimFaultScenario({
+      name: `release override ${pending}`,
+      fault: "release-unlink-failure",
+      pending,
+    });
+    assert.equal(result.faultTriggered, true, pending);
+    assert.equal(result.state, "invalid", pending);
+    assert.equal(result.code, "recovery_required", pending);
+    assert.equal(result.hasDisposition, false, pending);
+  }
+});
+
+test("uncertain append restart is already claimed or fail-closed, never freshly executable", async () => {
+  for (const [name, fault] of [
+    ["append short write", "append-short-write"],
+    ["append sync", "append-sync-failure"],
+    ["append readback", "append-readback-failure"],
+  ]) {
+    const result = await runPacketClaimFaultScenario({ name, fault, pending: "claimed" });
+    assert.equal(result.faultTriggered, true, name);
+    assert.equal(result.state, "invalid", name);
+    assert.equal(result.code, "recovery_required", name);
+    assert.equal(result.hasDisposition, false, name);
+    assert.notEqual(result.restart, null, name);
+    assert.equal(result.restart.hasDisposition, false, name);
+    if (result.restart.state === "valid") {
+      assert.equal(result.restart.claimStatus, "already_claimed", name);
+    } else {
+      assert.notEqual(result.restart.code, null, name);
+    }
+    assert.notEqual(result.restart.claimStatus, "claimed", name);
+  }
+});
+
 test("claim snapshot rejects proxies, accessors, and SharedArrayBuffer without property execution", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-input-"));
   let traps = 0;
@@ -333,6 +624,216 @@ test("claim snapshot rejects proxies, accessors, and SharedArrayBuffer without p
     }));
     assert.equal(shared.state, "invalid");
     assert.equal(shared.code, "malformed_input");
+  }
+});
+
+test("packetBytes requires intrinsic Uint8Array brand before filesystem access", async () => {
+  const invalidPacketViews = [
+    new Int8Array([123, 125]),
+    new Uint16Array([123, 125]),
+    new DataView(new ArrayBuffer(8)),
+    new Proxy(packetBytes("{}"), {}),
+  ];
+  if (typeof SharedArrayBuffer === "function") {
+    invalidPacketViews.push(new Uint8Array(new SharedArrayBuffer(8)));
+  }
+  for (const packetView of invalidPacketViews) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-brand-"));
+    const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packetView }));
+    assert.equal(result.state, "invalid");
+    assert.equal(result.code, "malformed_input");
+    assert.equal(Object.hasOwn(result, "executionDisposition"), false);
+    await assert.rejects(lstat(join(repositoryRoot, ".shield")), (error) => error?.code === "ENOENT");
+  }
+});
+
+test("startedAt enforces Gregorian UTC components and normalizes valid leap day", async () => {
+  for (const startedAt of [
+    "2026-00-01T00:00:00Z",
+    "2026-13-01T00:00:00Z",
+    "2026-01-00T00:00:00Z",
+    "2026-04-31T00:00:00Z",
+    "2025-02-29T00:00:00Z",
+    "2026-01-01T24:00:00Z",
+    "2026-01-01T00:60:00Z",
+    "2026-01-01T00:00:60Z",
+  ]) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-timestamp-invalid-"));
+    const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { startedAt }));
+    assert.equal(result.state, "invalid", startedAt);
+    assert.equal(result.code, "malformed_input", startedAt);
+    assert.equal(Object.hasOwn(result, "executionDisposition"), false);
+    await assert.rejects(lstat(join(repositoryRoot, ".shield")), (error) => error?.code === "ENOENT");
+  }
+
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-timestamp-leap-"));
+  const leapDay = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    startedAt: "2024-02-29T23:59:59.123456789Z",
+  }));
+  assert.equal(leapDay.state, "valid", leapDay.errors?.join(" "));
+  assert.equal(leapDay.value.claimStatus, "claimed");
+  assert.equal(leapDay.value.receipt.startedAt, "2024-02-29T23:59:59.123Z");
+});
+
+test("packet parser rejects malformed byte, string, and object forms before filesystem access", async () => {
+  const malformedPackets = [
+    ["invalid UTF-8", new Uint8Array([0xff])],
+    ["truncated UTF-8", new Uint8Array([0xe2, 0x82])],
+    ["overlong UTF-8", new Uint8Array([0xc0, 0xaf])],
+    ["UTF-8 BOM", new Uint8Array([0xef, 0xbb, 0xbf, 0x7b, 0x7d])],
+    ["lone surrogate key", packetBytes('{"\\ud800":1}')],
+    ["lone surrogate value", packetBytes('{"value":"\\udfff"}')],
+    ["duplicate decoded key", packetBytes('{"value":1,"value":2}')],
+  ];
+  for (const [label, packet] of malformedPackets) await assertMalformedPacketBeforeFs(packet, label);
+});
+
+test("packet byte, depth, and container limits enforce exact boundaries", async () => {
+  const exactBytes = packetBytes(`{"value":"${"a".repeat(1_048_576 - 12)}"}`);
+  assert.equal(exactBytes.byteLength, 1_048_576);
+  await assertAcceptedPacket(exactBytes, "1048576 bytes");
+  await assertMalformedPacketBeforeFs(new Uint8Array([...exactBytes, 0x20]), "1048577 bytes");
+
+  await assertAcceptedPacket(packetBytes(`${"[".repeat(64)}null${"]".repeat(64)}`), "depth 64");
+  await assertMalformedPacketBeforeFs(packetBytes(`${"[".repeat(65)}null${"]".repeat(65)}`), "depth 65");
+
+  const array10k = `[${Array.from({ length: 10_000 }, () => "0").join(",")}]`;
+  await assertAcceptedPacket(packetBytes(array10k), "array size 10000");
+  await assertMalformedPacketBeforeFs(packetBytes(`[${array10k.slice(1, -1)},0]`), "array size 10001");
+
+  const objectEntries = Array.from({ length: 10_000 }, (_, index) => `"k${index}":0`);
+  await assertAcceptedPacket(packetBytes(`{${objectEntries.join(",")}}`), "object size 10000");
+  await assertMalformedPacketBeforeFs(packetBytes(`{${objectEntries.join(",")},"overflow":0}`), "object size 10001");
+});
+
+test("packet canonicalization preserves semantic equivalence and array-order conflict", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-canonical-equivalence-"));
+  const first = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    packetBytes: packetBytes('{"alpha":"é","items":[1,2]}'),
+  }));
+  assert.equal(first.state, "valid", first.errors?.join(" "));
+  const before = await readLogBytes(first.value.logPath);
+
+  const equivalent = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    packetBytes: packetBytes('{ "items" : [1,2], "alpha" : "\\u00e9" }'),
+  }));
+  assert.equal(equivalent.state, "valid", equivalent.errors?.join(" "));
+  assert.equal(equivalent.value.claimStatus, "already_claimed");
+  assert.equal(Object.hasOwn(equivalent.value, "executionDisposition"), false);
+
+  const reorderedArray = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    packetBytes: packetBytes('{"alpha":"é","items":[2,1]}'),
+  }));
+  assert.equal(reorderedArray.state, "invalid");
+  assert.equal(reorderedArray.code, "packet_claim_conflict");
+  assert.equal(Object.hasOwn(reorderedArray, "executionDisposition"), false);
+  assert.equal(await readLogBytes(first.value.logPath), before);
+});
+
+test("accepted numeric classes are canonicalization-idempotent", async () => {
+  const numericClasses = [
+    ["zero", "0", "0"],
+    ["negative zero", "-0", "0"],
+    ["safe integer", "9007199254740991", "9007199254740991"],
+    ["binary fraction", "0.5", "0.5"],
+    ["binary fraction eighth", "0.125", "0.125"],
+    ["exponent", "1e3", "1000"],
+    ["exact high magnitude", "9007199254740992", "9007199254740992"],
+  ];
+  for (const [label, source, canonical] of numericClasses) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-number-idempotent-"));
+    const first = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packetBytes(`{"value":${source}}`) }));
+    assert.equal(first.state, "valid", label);
+    const retry = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+      startedAt: "2026-07-29T12:00:01.000Z",
+      packetBytes: packetBytes(`{"value":${canonical}}`),
+    }));
+    assert.equal(retry.state, "valid", label);
+    assert.equal(retry.value.claimStatus, "already_claimed", label);
+    assert.equal(Object.hasOwn(retry.value, "executionDisposition"), false, label);
+  }
+});
+
+test("outer claim input rejects unsafe shapes and snapshots mutable packet bytes", async () => {
+  class ClaimInput {}
+  const shapeCases = [
+    ["class", (base) => Object.assign(new ClaimInput(), base)],
+    ["array", (base) => Object.assign([], base)],
+    ["null prototype", (base) => Object.assign(Object.create(null), base)],
+    ["inherited", (base) => Object.create(base)],
+    ["symbol", (base) => Object.assign({ ...base }, { [Symbol("extra")]: true })],
+    ["extra", (base) => ({ ...base, extra: true })],
+    ["non-enumerable", (base) => {
+      const input = { ...base };
+      Object.defineProperty(input, "packetId", { value: base.packetId, enumerable: false });
+      return input;
+    }],
+    ["accessor", (base) => {
+      const input = { ...base };
+      Object.defineProperty(input, "repositoryId", { enumerable: true, get() { throw new Error("must not run"); } });
+      return input;
+    }],
+  ];
+  for (const [label, createInput] of shapeCases) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-shape-"));
+    const result = await claimSeatDispatchPacketV1(createInput(packetClaimInput(repositoryRoot)));
+    assert.equal(result.state, "invalid", label);
+    assert.equal(result.code, "malformed_input", label);
+    assert.equal(Object.hasOwn(result, "executionDisposition"), false, label);
+    await assert.rejects(lstat(join(repositoryRoot, ".shield")), (error) => error?.code === "ENOENT", label);
+  }
+
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-snapshot-mutation-"));
+  const mutable = packetBytes('{"value":1}');
+  const pending = claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: mutable }));
+  mutable.set(packetBytes('{"value":2}'));
+  const claimed = await pending;
+  assert.equal(claimed.state, "valid", claimed.errors?.join(" "));
+  const originalRetry = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    startedAt: "2026-07-29T12:00:01.000Z",
+    packetBytes: packetBytes('{"value":1}'),
+  }));
+  assert.equal(originalRetry.state, "valid");
+  assert.equal(originalRetry.value.claimStatus, "already_claimed");
+  const mutatedRetry = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packetBytes('{"value":2}') }));
+  assert.equal(mutatedRetry.state, "invalid");
+  assert.equal(mutatedRetry.code, "packet_claim_conflict");
+  assert.equal(Object.hasOwn(mutatedRetry, "executionDisposition"), false);
+});
+
+test("normalized start drift fails closed without changing the claimed row", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-start-drift-"));
+  const first = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot));
+  assert.equal(first.state, "valid", first.errors?.join(" "));
+  const before = await readLogBytes(first.value.logPath);
+  const driftCases = [
+    ["mission revision", { parentMissionRevision: "abcdef1234567890abcdef1234567890abcdef13" }],
+    ["repository id", { repositoryId: "repo-2" }],
+    ["workspace", { repositoryWorkspaceId: "workspace-2" }],
+    ["repository revision", { repositoryRevision: "0ff3aa1c8d3e1f4a9c7b5e2d1f3a4c6b7d9e0f13" }],
+    ["accountable seat", { accountableSeatId: "fury" }],
+    ["subject id", { subjectId: "subject-2" }],
+    ["subject revision", { subjectRevision: "abcdef1234567890abcdef1234567890abcdef13" }],
+    ["artifact id", { artifactId: "artifact-2" }],
+    ["artifact revision", { artifactRevision: "abcdef1234567890abcdef1234567890abcdef13" }],
+    ["configured runtime", { configuredRuntime: { kind: "runtime.configured", runtimeId: "runtime-2", model: "model:demo" } }],
+    ["requested runtime", { requestedRuntime: { kind: "runtime.requested", runtimeId: "runtime-2", model: "model:demo" } }],
+    ["tool", { toolExecution: { kind: "tool.execution.requested", executorBindingRef: "executor-1" } }],
+    ["runtime self", { runtimeSelfReport: { kind: "runtime.self_report.observed", runtimeId: "runtime-1", model: "model:demo", evidenceRefs: ["runtime-self"] } }],
+    ["runtime host", { runtimeHostObserved: { kind: "runtime.host_observed", runtimeId: "runtime-1", model: "model:demo", evidenceRefs: ["runtime-host"] } }],
+    ["executor self", { executorSelfReport: { kind: "executor.self_report.observed", executorId: "executor-1", evidenceRefs: ["executor-self"] } }],
+    ["executor host", { executorHostObserved: { kind: "executor.host_observed", executorId: "executor-1", evidenceRefs: ["executor-host"] } }],
+    ["input evidence", { inputEvidenceRefs: ["caller-evidence"] }],
+  ];
+  for (const [label, overrides] of driftCases) {
+    const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+      startedAt: "2026-07-29T12:00:01.000Z",
+      ...overrides,
+    }));
+    assert.equal(result.state, "invalid", label);
+    assert.ok(result.code === "packet_claim_conflict" || result.code === "mixed_scope", `${label}: ${result.code}`);
+    assert.equal(Object.hasOwn(result, "executionDisposition"), false, label);
+    assert.equal(await readLogBytes(first.value.logPath), before, label);
   }
 });
 

@@ -35,6 +35,7 @@ const PACKET_MAX_DEPTH = 64;
 const PACKET_MAX_CONTAINER_SIZE = 10_000;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype) as object;
 const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")?.get;
+const typedArrayTagGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, Symbol.toStringTag)?.get;
 
 export const SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH = join(".shield", "dispatch-receipts.jsonl");
 
@@ -686,6 +687,24 @@ function normalizeClaimEvidence(value: unknown): { state: "valid"; value: string
   return { state: "valid", value: refs };
 }
 
+function normalizeStartedAt(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/u.exec(value);
+  if (match === null) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (year < 1 || month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return null;
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  if (day < 1 || day > daysInMonth) return null;
+  const milliseconds = (match[7] ?? "").slice(0, 3).padEnd(3, "0");
+  return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}.${milliseconds}Z`;
+}
+
 function preparePacketClaim(input: unknown): SeatDispatchPacketClaimContractResultV1 | PreparedPacketClaim {
   if (safeIsProxy(input) || typeof input !== "object" || input === null || Object.getPrototypeOf(input) !== Object.prototype) {
     return claimInvalid("malformed_input", "claim input must be a strict plain object.");
@@ -712,9 +731,14 @@ function preparePacketClaim(input: unknown): SeatDispatchPacketClaimContractResu
   }
 
   const packetValue = descriptors.packetBytes.value;
-  if (safeIsProxy(packetValue) || typedArrayBufferGetter === undefined) return claimInvalid("malformed_input", "packetBytes must be a genuine Uint8Array.");
+  if (safeIsProxy(packetValue) || typedArrayBufferGetter === undefined || typedArrayTagGetter === undefined) {
+    return claimInvalid("malformed_input", "packetBytes must be a genuine Uint8Array.");
+  }
   let packetSnapshot: Uint8Array;
   try {
+    if (typedArrayTagGetter.call(packetValue) !== "Uint8Array") {
+      return claimInvalid("malformed_input", "packetBytes must be a genuine Uint8Array.");
+    }
     const backing = typedArrayBufferGetter.call(packetValue) as ArrayBufferLike;
     if (isSharedArrayBuffer(backing)) return claimInvalid("malformed_input", "packetBytes must not use SharedArrayBuffer.");
     packetSnapshot = new Uint8Array(packetValue as Uint8Array);
@@ -734,10 +758,10 @@ function preparePacketClaim(input: unknown): SeatDispatchPacketClaimContractResu
   if (revisions.some((revisionValue) => typeof revisionValue !== "string" || !/^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/u.test(revisionValue))) {
     return claimInvalid("malformed_input", "claim input contains malformed revision fields.");
   }
-  if (typeof value.startedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(value.startedAt) || !Number.isFinite(Date.parse(value.startedAt))) {
+  const startedAt = normalizeStartedAt(value.startedAt);
+  if (startedAt === null) {
     return claimInvalid("malformed_input", "claim input has malformed startedAt.");
   }
-  const startedAt = new Date(Date.parse(value.startedAt)).toISOString();
   const evidence = normalizeClaimEvidence(value.inputEvidenceRefs);
   if (evidence.state === "invalid") return claimInvalid("malformed_input", evidence.error);
 
