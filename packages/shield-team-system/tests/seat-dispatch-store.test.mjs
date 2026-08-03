@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, open, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,6 +18,7 @@ import {
 import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
+  replaySeatDispatchReceiptsV1,
 } from "../dist/seat-dispatch-receipt-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -187,6 +189,13 @@ function packetClaimInput(repositoryRoot, overrides = {}) {
   };
 }
 
+function packetClaimKey(input) {
+  return createHash("sha256")
+    .update(`seat-dispatch-claim-v1\0${input.parentMissionId}\0${input.parentSessionId}\0${input.packetId}`, "utf8")
+    .digest("base64url")
+    .slice(0, 32);
+}
+
 async function assertMalformedPacketBeforeFs(packet, label) {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-malformed-matrix-"));
   const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packet }));
@@ -210,6 +219,7 @@ async function runPacketClaimFaultScenario(scenario) {
   const { packetBytes: _packetBytes, ...serializedInput } = packetClaimInput("/placeholder");
   const script = `
     import { constants } from "node:fs";
+    import * as realCrypto from "node:crypto";
     import * as realFs from "node:fs/promises";
     import { join } from "node:path";
     import { tmpdir } from "node:os";
@@ -223,6 +233,7 @@ async function runPacketClaimFaultScenario(scenario) {
     const logPath = join(shieldDirectory, "dispatch-receipts.jsonl");
     const baseInput = ${JSON.stringify(serializedInput)};
     baseInput.repositoryRoot = repositoryRoot;
+    if (scenario.lockOwnerId) baseInput.lockOwnerId = scenario.lockOwnerId;
     const claimInput = (overrides = {}) => ({
       ...baseInput,
       packetBytes: new TextEncoder().encode('{"alpha":1,"half":0.5}'),
@@ -233,6 +244,22 @@ async function runPacketClaimFaultScenario(scenario) {
     let lockReadOpens = 0;
     let logReads = 0;
     let afterLockUnlink = false;
+    let capturedMarker = null;
+
+    mock.module("node:crypto", {
+      exports: {
+        createHash: realCrypto.createHash,
+        randomBytes: (...args) => {
+          if (phase === "fault" && scenario.fault === "entropy-failure") {
+            faultTriggered = true;
+            const error = new Error("simulated entropy failure");
+            error.code = "EIO";
+            throw error;
+          }
+          return realCrypto.randomBytes(...args);
+        },
+      },
+    });
 
     mock.module("node:fs/promises", {
       exports: {
@@ -245,6 +272,14 @@ async function runPacketClaimFaultScenario(scenario) {
           const isLock = typeof path === "string" && path === lockPath;
           const isLog = typeof path === "string" && path === logPath;
           const fault = phase === "fault" ? scenario.fault : "none";
+
+          if (isLock && isWrite && fault === "inspect-marker") {
+            const originalWrite = handle.write.bind(handle);
+            handle.write = async (...args) => {
+              capturedMarker = String(args[0]);
+              return originalWrite(...args);
+            };
+          }
 
           if (isLock && isWrite && fault === "lock-short-write") {
             const originalWrite = handle.write.bind(handle);
@@ -262,7 +297,15 @@ async function runPacketClaimFaultScenario(scenario) {
               throw error;
             };
           }
-          if (isDirectory && path === shieldDirectory && ["lock-parent-sync-failure", "post-sync-lock-disappearance", "post-sync-lock-replacement"].includes(fault)) {
+          if (isDirectory && path === repositoryRootForChecks && fault === "repository-root-sync-failure") {
+            handle.sync = async () => {
+              faultTriggered = true;
+              const error = new Error("simulated repository root sync failure");
+              error.code = "EIO";
+              throw error;
+            };
+          }
+          if (isDirectory && path === shieldDirectory && ["lock-parent-sync-failure", "post-sync-lock-disappearance", "post-sync-lock-replacement", "post-sync-marker-tamper"].includes(fault)) {
             const originalSync = handle.sync.bind(handle);
             handle.sync = async () => {
               await originalSync();
@@ -274,10 +317,13 @@ async function runPacketClaimFaultScenario(scenario) {
               }
               if (fault === "post-sync-lock-disappearance") {
                 await realFs.unlink(lockPath);
-              } else {
+              } else if (fault === "post-sync-lock-replacement") {
                 const marker = await realFs.readFile(lockPath);
                 await realFs.unlink(lockPath);
                 await realFs.writeFile(lockPath, marker);
+              } else {
+                const marker = await realFs.readFile(lockPath, "utf8");
+                await realFs.writeFile(lockPath, marker + "tamper", "utf8");
               }
             };
           }
@@ -291,18 +337,26 @@ async function runPacketClaimFaultScenario(scenario) {
           }
           if (isLock && !isWrite) {
             lockReadOpens += 1;
-            if (phase === "fault" && scenario.fault === "release-marker-inode-drift" && lockReadOpens >= 2) {
+            if (phase === "fault" && ["release-marker-inode-drift", "release-marker-drift", "release-dev-drift", "release-ino-drift"].includes(scenario.fault) && lockReadOpens >= 2) {
               const originalReadFile = handle.readFile.bind(handle);
-              handle.readFile = async (...args) => {
-                const marker = await originalReadFile(...args);
-                faultTriggered = true;
-                return typeof marker === "string" ? marker + "drift" : Buffer.concat([marker, Buffer.from("drift")]);
-              };
+              if (scenario.fault === "release-marker-inode-drift" || scenario.fault === "release-marker-drift") {
+                handle.readFile = async (...args) => {
+                  const marker = await originalReadFile(...args);
+                  faultTriggered = true;
+                  return typeof marker === "string" ? marker + "drift" : Buffer.concat([marker, Buffer.from("drift")]);
+                };
+              }
               const originalStat = handle.stat.bind(handle);
               handle.stat = async () => {
                 const stats = await originalStat();
                 faultTriggered = true;
-                return { ...stats, ino: Number(stats.ino) + 1, dev: Number(stats.dev) + 1 };
+                return {
+                  ...stats,
+                  ino: scenario.fault === "release-marker-inode-drift" || scenario.fault === "release-ino-drift"
+                    ? Number(stats.ino) + 1 : Number(stats.ino),
+                  dev: scenario.fault === "release-marker-inode-drift" || scenario.fault === "release-dev-drift"
+                    ? Number(stats.dev) + 1 : Number(stats.dev),
+                };
               };
             }
           }
@@ -380,6 +434,7 @@ async function runPacketClaimFaultScenario(scenario) {
       claimStatus: result.state === "valid" ? result.value.claimStatus : null,
       hasDisposition: result.state === "valid" && Object.hasOwn(result.value, "executionDisposition"),
       faultTriggered,
+      capturedMarker,
       restart: null,
     };
 
@@ -533,6 +588,7 @@ test("claim lock acquisition fails closed across durable marker fault points", a
     ["lock parent sync", "lock-parent-sync-failure"],
     ["post-sync disappearance", "post-sync-lock-disappearance"],
     ["post-sync replacement", "post-sync-lock-replacement"],
+    ["post-sync marker tamper", "post-sync-marker-tamper"],
   ];
   for (const [name, fault] of scenarios) {
     const result = await runPacketClaimFaultScenario({ name, fault, pending: "claimed" });
@@ -543,6 +599,54 @@ test("claim lock acquisition fails closed across durable marker fault points", a
   }
 });
 
+test("claim fails closed for held lock, repository sync, and entropy failures", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-lock-held-"));
+  const shieldDirectory = join(repositoryRoot, ".shield");
+  const lockPath = join(shieldDirectory, "dispatch-receipts.jsonl.lock");
+  const tamperedMarker = '{"lockOwnerId":"other","nonce":"tampered","version":1}\n';
+  await mkdir(shieldDirectory);
+  await writeFile(lockPath, tamperedMarker);
+  const held = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot));
+  assert.equal(held.state, "invalid");
+  assert.equal(held.code, "dispatch_receipt_lock_held");
+  assert.equal(Object.hasOwn(held, "executionDisposition"), false);
+  assert.equal(await readLogBytes(lockPath), tamperedMarker);
+  await assert.rejects(lstat(join(shieldDirectory, "dispatch-receipts.jsonl")), (error) => error?.code === "ENOENT");
+
+  for (const [name, fault] of [
+    ["repository root sync", "repository-root-sync-failure"],
+    ["entropy", "entropy-failure"],
+  ]) {
+    const result = await runPacketClaimFaultScenario({ name, fault, pending: "claimed" });
+    assert.equal(result.faultTriggered, true, name);
+    assert.equal(result.state, "invalid", name);
+    assert.equal(result.code, "recovery_required", name);
+    assert.equal(result.hasDisposition, false, name);
+  }
+});
+
+test("claim lock marker is exact canonical JSON with delimiter-safe owner and 32-byte nonce", async () => {
+  const lockOwnerId = "owner:issue-173:delimiter-safe";
+  const result = await runPacketClaimFaultScenario({
+    name: "inspect canonical marker",
+    fault: "inspect-marker",
+    pending: "claimed",
+    lockOwnerId,
+  });
+  assert.equal(result.state, "valid");
+  assert.equal(result.claimStatus, "claimed");
+  assert.equal(result.hasDisposition, true);
+  assert.equal(typeof result.capturedMarker, "string");
+  assert.equal(result.capturedMarker.endsWith("\n"), true);
+  const marker = JSON.parse(result.capturedMarker.slice(0, -1));
+  assert.deepEqual(Object.keys(marker), ["lockOwnerId", "nonce", "version"]);
+  assert.equal(marker.lockOwnerId, lockOwnerId);
+  assert.equal(marker.version, 1);
+  assert.match(marker.nonce, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(Buffer.from(marker.nonce, "base64url").byteLength, 32);
+  assert.equal(result.capturedMarker, `${JSON.stringify({ lockOwnerId, nonce: marker.nonce, version: 1 })}\n`);
+});
+
 test("claim release identity, unlink, absence, and directory-sync uncertainty overrides claimed", async () => {
   const scenarios = [
     ["release marker and inode drift", "release-marker-inode-drift"],
@@ -551,6 +655,20 @@ test("claim release identity, unlink, absence, and directory-sync uncertainty ov
     ["release parent sync", "release-parent-sync-failure"],
   ];
   for (const [name, fault] of scenarios) {
+    const result = await runPacketClaimFaultScenario({ name, fault, pending: "claimed" });
+    assert.equal(result.faultTriggered, true, name);
+    assert.equal(result.state, "invalid", name);
+    assert.equal(result.code, "recovery_required", name);
+    assert.equal(result.hasDisposition, false, name);
+  }
+});
+
+test("claim release rejects marker, device, and inode drift independently", async () => {
+  for (const [name, fault] of [
+    ["marker drift", "release-marker-drift"],
+    ["device drift", "release-dev-drift"],
+    ["inode drift", "release-ino-drift"],
+  ]) {
     const result = await runPacketClaimFaultScenario({ name, fault, pending: "claimed" });
     assert.equal(result.faultTriggered, true, name);
     assert.equal(result.state, "invalid", name);
@@ -677,6 +795,8 @@ test("startedAt enforces Gregorian UTC components and normalizes valid leap day"
 
 test("packet parser rejects malformed byte, string, and object forms before filesystem access", async () => {
   const malformedPackets = [
+    ["non-JSON", packetBytes("not-json")],
+    ["trailing packet data", packetBytes("{} true")],
     ["invalid UTF-8", new Uint8Array([0xff])],
     ["truncated UTF-8", new Uint8Array([0xe2, 0x82])],
     ["overlong UTF-8", new Uint8Array([0xc0, 0xaf])],
@@ -728,6 +848,19 @@ test("packet canonicalization preserves semantic equivalence and array-order con
   assert.equal(reorderedArray.code, "packet_claim_conflict");
   assert.equal(Object.hasOwn(reorderedArray, "executionDisposition"), false);
   assert.equal(await readLogBytes(first.value.logPath), before);
+});
+
+test("packet digest hashes canonical UTF-8 bytes without a trailing newline", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-digest-bytes-"));
+  const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    packetBytes: packetBytes('{ "b" : 2, "a" : 1 }'),
+  }));
+  assert.equal(result.state, "valid", result.errors?.join(" "));
+  const canonical = Buffer.from('{"a":1,"b":2}', "utf8");
+  const expected = `sha256:${createHash("sha256").update(canonical).digest("base64url")}`;
+  const newlineDigest = `sha256:${createHash("sha256").update(Buffer.concat([canonical, Buffer.from("\n")])).digest("base64url")}`;
+  assert.equal(result.value.packetDigest, expected);
+  assert.notEqual(result.value.packetDigest, newlineDigest);
 });
 
 test("accepted numeric classes are canonicalization-idempotent", async () => {
@@ -801,6 +934,71 @@ test("outer claim input rejects unsafe shapes and snapshots mutable packet bytes
   assert.equal(Object.hasOwn(mutatedRetry, "executionDisposition"), false);
 });
 
+test("claim API rejects derived identity and event-kind overrides before mutation", async () => {
+  for (const field of ["receiptId", "dispatchId", "childTaskId", "childSessionId", "kind"]) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-derived-override-"));
+    const value = field === "kind" ? "dispatch.completed" : `${field}-override`;
+    const result = await claimSeatDispatchPacketV1({ ...packetClaimInput(repositoryRoot), [field]: value });
+    assert.equal(result.state, "invalid", field);
+    assert.equal(result.code, "malformed_input", field);
+    assert.equal(Object.hasOwn(result, "executionDisposition"), false, field);
+    await assert.rejects(lstat(join(repositoryRoot, ".shield")), (error) => error?.code === "ENOENT", field);
+  }
+});
+
+test("direct-filesystem forged packet binding is not treated as claim authority", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-forged-binding-"));
+  const input = packetClaimInput(repositoryRoot);
+  const claimKey = packetClaimKey(input);
+  const forged = started({
+    receiptId: `receipt:${claimKey}`,
+    dispatchId: `dispatch:${claimKey}`,
+    childTaskId: `task:${claimKey}`,
+    childSessionId: `session:${claimKey}`,
+    inputEvidenceRefs: [`evidence:packet-binding:seat-dispatch-v1:${claimKey}:sha256:${"A".repeat(43)}`],
+  });
+  const replay = replaySeatDispatchReceiptsV1([forged]);
+  assert.equal(replay.state, "valid", replay.reasonCodes?.join(" "));
+  const shieldDirectory = join(repositoryRoot, ".shield");
+  const logPath = join(shieldDirectory, "dispatch-receipts.jsonl");
+  const forgedBytes = `${JSON.stringify(replay.entries[0])}\n`;
+  await mkdir(shieldDirectory);
+  await writeFile(logPath, forgedBytes);
+  const result = await claimSeatDispatchPacketV1(input);
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "packet_claim_conflict");
+  assert.equal(Object.hasOwn(result, "executionDisposition"), false);
+  assert.equal(await readLogBytes(logPath), forgedBytes);
+});
+
+test("derived child task and session collisions fail closed without mutation", async () => {
+  for (const collision of ["childTaskId", "childSessionId"]) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-child-collision-"));
+    const input = packetClaimInput(repositoryRoot);
+    const claimKey = packetClaimKey(input);
+    const existing = started({
+      receiptId: `unrelated-receipt-${collision}`,
+      dispatchId: `unrelated-dispatch-${collision}`,
+      parentMissionId: `unrelated-mission-${collision}`,
+      parentSessionId: `unrelated-session-${collision}`,
+      childTaskId: collision === "childTaskId" ? `task:${claimKey}` : `unrelated-task-${collision}`,
+      childSessionId: collision === "childSessionId" ? `session:${claimKey}` : `unrelated-child-session-${collision}`,
+    });
+    const replay = replaySeatDispatchReceiptsV1([existing]);
+    assert.equal(replay.state, "valid", replay.reasonCodes?.join(" "));
+    const shieldDirectory = join(repositoryRoot, ".shield");
+    const logPath = join(shieldDirectory, "dispatch-receipts.jsonl");
+    const before = `${JSON.stringify(replay.entries[0])}\n`;
+    await mkdir(shieldDirectory);
+    await writeFile(logPath, before);
+    const result = await claimSeatDispatchPacketV1(input);
+    assert.equal(result.state, "invalid", collision);
+    assert.equal(result.code, "packet_claim_conflict", collision);
+    assert.equal(Object.hasOwn(result, "executionDisposition"), false, collision);
+    assert.equal(await readLogBytes(logPath), before, collision);
+  }
+});
+
 test("normalized start drift fails closed without changing the claimed row", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-start-drift-"));
   const first = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot));
@@ -831,10 +1029,55 @@ test("normalized start drift fails closed without changing the claimed row", asy
       ...overrides,
     }));
     assert.equal(result.state, "invalid", label);
-    assert.ok(result.code === "packet_claim_conflict" || result.code === "mixed_scope", `${label}: ${result.code}`);
+    assert.equal(result.code, "packet_claim_conflict", label);
     assert.equal(Object.hasOwn(result, "executionDisposition"), false, label);
     assert.equal(await readLogBytes(first.value.logPath), before, label);
   }
+});
+
+test("claim distinguishes stable scope drift from unrelated foreign and internally mixed ledgers", async () => {
+  const foreignRoot = await mkdtemp(join(tmpdir(), "shield-packet-foreign-scope-"));
+  const foreign = await claimSeatDispatchPacketV1(packetClaimInput(foreignRoot, {
+    repositoryId: "foreign-repo",
+    repositoryWorkspaceId: "foreign-workspace",
+    packetId: "foreign-packet",
+  }));
+  assert.equal(foreign.state, "valid", foreign.errors?.join(" "));
+  const foreignBytes = await readLogBytes(foreign.value.logPath);
+  const unrelated = await claimSeatDispatchPacketV1(packetClaimInput(foreignRoot));
+  assert.equal(unrelated.state, "invalid");
+  assert.equal(unrelated.code, "mixed_scope");
+  assert.equal(Object.hasOwn(unrelated, "executionDisposition"), false);
+  assert.equal(await readLogBytes(foreign.value.logPath), foreignBytes);
+
+  const mixedRoot = await mkdtemp(join(tmpdir(), "shield-packet-internal-mixed-scope-"));
+  const first = started();
+  const second = started({
+    receiptId: "receipt-2",
+    dispatchId: "dispatch-2",
+    parentMissionId: "mission-2",
+    parentSessionId: "session-2",
+    childTaskId: "task-2",
+    childSessionId: "child-session-2",
+    repositoryId: "foreign-repo",
+    repositoryWorkspaceId: "foreign-workspace",
+    subjectId: "subject-2",
+    artifactId: "artifact-2",
+    logSequence: 1,
+    previousLogDigest: first.entryDigest,
+  });
+  const shieldDirectory = join(mixedRoot, ".shield");
+  const mixedLogPath = join(shieldDirectory, "dispatch-receipts.jsonl");
+  const mixedReplay = replaySeatDispatchReceiptsV1([first, second]);
+  assert.equal(mixedReplay.state, "valid", mixedReplay.reasonCodes?.join(" "));
+  const mixedBytes = mixedReplay.entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
+  await mkdir(shieldDirectory);
+  await writeFile(mixedLogPath, mixedBytes);
+  const mixed = await claimSeatDispatchPacketV1(packetClaimInput(mixedRoot));
+  assert.equal(mixed.state, "invalid");
+  assert.equal(mixed.code, "mixed_scope", mixed.errors?.join(" "));
+  assert.equal(Object.hasOwn(mixed, "executionDisposition"), false);
+  assert.equal(await readLogBytes(mixedLogPath), mixedBytes);
 });
 
 test("malformed scalar input precedes malformed packet without filesystem mutation", async () => {
@@ -879,12 +1122,30 @@ test("claim reserves one receipt evidence slot and public append rejects binding
   assert.equal(accepted.state, "valid", accepted.errors?.join(" "));
   assert.equal(accepted.value.receipt.inputEvidenceRefs.length, 16);
 
+  const dedupeRoot = await mkdtemp(join(tmpdir(), "shield-packet-evidence-dedupe-"));
+  const deduped = await claimSeatDispatchPacketV1(packetClaimInput(dedupeRoot, {
+    inputEvidenceRefs: ["caller-a", "caller-a", "caller-b", "caller-a"],
+  }));
+  assert.equal(deduped.state, "valid", deduped.errors?.join(" "));
+  assert.equal(deduped.value.receipt.inputEvidenceRefs.length, 3);
+  assert.deepEqual(deduped.value.receipt.inputEvidenceRefs.slice(0, 2), ["caller-a", "caller-b"]);
+  assert.match(deduped.value.receipt.inputEvidenceRefs[2], /^evidence:packet-binding:seat-dispatch-v1:/);
+
   const overflowRoot = await mkdtemp(join(tmpdir(), "shield-packet-evidence-overflow-"));
   const overflow = await claimSeatDispatchPacketV1(packetClaimInput(overflowRoot, {
     inputEvidenceRefs: [...fifteen, "evidence-15"],
   }));
   assert.equal(overflow.state, "invalid");
   assert.equal(overflow.code, "malformed_input");
+
+  const reservedRoot = await mkdtemp(join(tmpdir(), "shield-packet-evidence-reserved-"));
+  const reserved = await claimSeatDispatchPacketV1(packetClaimInput(reservedRoot, {
+    inputEvidenceRefs: ["evidence:packet-binding:seat-dispatch-v1:caller-spoof"],
+  }));
+  assert.equal(reserved.state, "invalid");
+  assert.equal(reserved.code, "malformed_input");
+  assert.equal(Object.hasOwn(reserved, "executionDisposition"), false);
+  await assert.rejects(lstat(join(reservedRoot, ".shield")), (error) => error?.code === "ENOENT");
 
   const spoofRoot = await mkdtemp(join(tmpdir(), "shield-packet-evidence-spoof-"));
   const spoof = started({ inputEvidenceRefs: ["evidence:packet-binding:seat-dispatch-v1:spoof:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"] });

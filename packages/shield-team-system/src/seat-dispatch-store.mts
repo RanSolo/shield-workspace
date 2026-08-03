@@ -913,6 +913,7 @@ function parseReceiptLog(
   text: string,
   repositoryId: string,
   workspaceId: string,
+  allowScopeMismatch = false,
 ): SeatDispatchStoreContractResult<SeatDispatchStoreLogResult> {
   if (text === "") {
     return valid({
@@ -970,7 +971,7 @@ function parseReceiptLog(
   const mismatched = replay.projections.some((projection) =>
     projection.repositoryId !== repositoryId || projection.repositoryWorkspaceId !== workspaceId,
   );
-  if (mismatched) {
+  if (mismatched && !allowScopeMismatch) {
     return invalid("mixed_scope", "Dispatch receipt log contains mixed repository/workspace scope.");
   }
 
@@ -984,7 +985,7 @@ function parseReceiptLog(
 
 async function readStoreLog(
   scope: SeatDispatchReceiptStoreScopeInput,
-  options: { readonly allowMissing: boolean },
+  options: { readonly allowMissing: boolean; readonly allowScopeMismatch?: boolean },
 ): Promise<SeatDispatchStoreContractResult<SeatDispatchStoreLogResult & { logPath: string }>> {
   const paths = await resolveStorePaths(scope, false);
   if (paths.state === "invalid") return paths;
@@ -1030,7 +1031,7 @@ async function readStoreLog(
     await handle?.close().catch(() => undefined);
   }
 
-  const parsed = parseReceiptLog(bytes, scope.repositoryId, scope.repositoryWorkspaceId);
+  const parsed = parseReceiptLog(bytes, scope.repositoryId, scope.repositoryWorkspaceId, options.allowScopeMismatch === true);
   if (parsed.state === "invalid") return parsed;
 
   return valid({
@@ -1404,9 +1405,15 @@ async function performPacketClaim(
   prepared: PreparedPacketClaim,
   paths: SeatDispatchStorePaths,
 ): Promise<PendingPacketClaimResult> {
-  const current = await readStoreLog(prepared.scope, { allowMissing: true });
+  const current = await readStoreLog(prepared.scope, { allowMissing: true, allowScopeMismatch: true });
   if (current.state === "invalid") {
     return pendingInvalid(asClaimFailureCode(current.code), ...current.errors);
+  }
+  const ledgerScopes = new Set(current.value.projections.map((projection) =>
+    `${projection.repositoryId}\0${projection.repositoryWorkspaceId}`
+  ));
+  if (ledgerScopes.size > 1) {
+    return pendingInvalid("mixed_scope", "Dispatch receipt log contains internally mixed repository/workspace scope.");
   }
   const previousLogDigest = current.value.entries.length === 0
     ? null
@@ -1446,6 +1453,13 @@ async function performPacketClaim(
         receipt: Object.freeze({ ...receipt }),
       },
     };
+  }
+
+  if (current.value.projections.some((projection) =>
+    projection.repositoryId !== prepared.scope.repositoryId ||
+    projection.repositoryWorkspaceId !== prepared.scope.repositoryWorkspaceId
+  )) {
+    return pendingInvalid("mixed_scope", "Dispatch receipt log belongs to an unrelated repository/workspace scope.");
   }
 
   const candidateEntries: SeatDispatchReceiptEventV1[] = [...current.value.entries, candidate];
