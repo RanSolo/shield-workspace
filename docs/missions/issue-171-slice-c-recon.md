@@ -51,8 +51,18 @@ The loader may accept injected host operations for deterministic testing, but it
 must accept no caller-created authority, binding, repository observation, or
 permission context. Runtime and executor identities come from replayed binding
 state. Live root, branch, and HEAD come from host observation performed during
-the load. Required capabilities come from the exact runner plan/request and are
-checked against both the replayed binding scope and a host capability probe.
+the load. Until #170 owns a closed operation mapping, required capabilities are
+conservatively derived as the complete replayed binding capability scope and
+checked through a trusted host probe.
+
+Fresh contexts legitimately contain different attestation IDs and timestamps.
+The current permission claim path compares whole contexts and reconstructs the
+claim record from execute-time attestations, so Slice C must also separate
+stable authority/decision identity from volatile host observations while
+preserving verification of the immutable original claim receipt. A single load
+must double-read both journal and Git state around host probes; this proves
+freshness at return, while #170 remains responsible for a later pre-effect
+linearization rule.
 
 ## Explicit exclusions
 
@@ -62,4 +72,3 @@ checked against both the replayed binding scope and a host capability probe.
 - No second authority or binding store, no schema migration, and no conversion
   of legacy schema, caller prose, audit receipts, or control events into
   authority.
-
