@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { EventEmitter } from "node:events";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import {
   canonicalJson,
@@ -18,6 +19,7 @@ import {
   createProfileAwareMissionBrief,
   MISSION_130_JOURNAL_DIGEST,
 } from "../dist/profile-aware-mission-v1.mjs";
+import { readInteractivePasscode } from "../dist/mission-cli.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
@@ -175,6 +177,78 @@ async function writeEvidence(root, name, envelope) {
   const path = join(root, name);
   await writeFile(path, `${JSON.stringify(envelope, null, 2)}\n`);
   return name;
+}
+
+const PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE = "Passcode prompt setup failed.";
+const PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE = "Passcode prompt cleanup failed.";
+
+function createInteractivePromptFixture({
+  syncData,
+  failSetRawMode = false,
+  failOnDataRegistration = false,
+  failResume = false,
+  failPromptWrite = false,
+  failOff = false,
+  failSetRawModeRestore = false,
+  failPause = false,
+  failNewline = false,
+} = {}) {
+  const stream = new EventEmitter();
+  const calls = {
+    setRawMode: 0,
+    on: 0,
+    off: 0,
+    resume: 0,
+    pause: 0,
+    write: 0,
+  };
+  const output = [];
+  const outputStream = {
+    write(value) {
+      calls.write += 1;
+      output.push(value);
+      if (failPromptWrite && value === "Passcode: ") throw new Error("Prompt write failure.");
+      if (failNewline && value === "\n") throw new Error("Prompt write failure.");
+      return true;
+    },
+  };
+  const inputStream = {
+    setRawMode(mode) {
+      calls.setRawMode += 1;
+      if (mode ? failSetRawMode : failSetRawModeRestore) throw new Error("setRawMode failure.");
+    },
+    on(eventName, listener) {
+      calls.on += 1;
+      if (failOnDataRegistration) throw new Error("on() registration failure.");
+      stream.on(eventName, listener);
+    },
+    off(eventName, listener) {
+      calls.off += 1;
+      if (failOff) throw new Error("off() failure.");
+      stream.off(eventName, listener);
+    },
+    resume() {
+      calls.resume += 1;
+      if (syncData) stream.emit("data", syncData);
+      if (failResume) throw new Error("resume() failure.");
+    },
+    pause() {
+      calls.pause += 1;
+      if (failPause) throw new Error("pause() failure.");
+    },
+    emitData(chunk) {
+      stream.emit("data", chunk);
+    },
+  };
+  return { inputStream, outputStream, calls, output };
+}
+
+async function readJournalEntries(root, missionId) {
+  const contents = await readFile(journalPath(root, missionId), "utf8");
+  return contents
+    .split("\n")
+    .filter((entry) => entry.length > 0)
+    .map((entry) => JSON.parse(entry));
 }
 
 test("packed CLI path completes execution while Fitz readiness remains waiting", async () => {
@@ -373,6 +447,191 @@ test("conditional Simmons is waiting only when declared by the immutable brief",
   assert.equal(projection.missionId, brief.missionId);
 });
 
+test("readInteractivePasscode resolves interactive input and preserves setup lifecycle", async () => {
+  const fixture = createInteractivePromptFixture();
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("dummy-passcode\n"));
+  assert.equal(await attempt, "dummy-passcode");
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.on, 1);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+  assert.equal(fixture.output.some((chunk) => chunk === "dummy-passcode"), false);
+});
+
+test("readInteractivePasscode handles cancellation and empty input", async () => {
+  const cancelled = createInteractivePromptFixture();
+  const cancellation = readInteractivePasscode(cancelled.inputStream, cancelled.outputStream);
+  cancelled.inputStream.emitData(Buffer.from([3]));
+  await assert.rejects(cancellation, /Passcode prompt cancelled\./u);
+  assert.equal(cancelled.calls.on, 1);
+  assert.equal(cancelled.calls.off, 1);
+  assert.equal(cancelled.calls.setRawMode, 2);
+  assert.equal(cancelled.calls.resume, 1);
+  assert.equal(cancelled.calls.pause, 1);
+  assert.equal(cancelled.output.join(""), "Passcode: \n");
+
+  const empty = createInteractivePromptFixture();
+  const emptyAttempt = readInteractivePasscode(empty.inputStream, empty.outputStream);
+  empty.inputStream.emitData(Buffer.from("\n"));
+  await assert.rejects(emptyAttempt, /Passcode input was empty\./u);
+  assert.equal(empty.calls.on, 1);
+  assert.equal(empty.calls.off, 1);
+  assert.equal(empty.calls.setRawMode, 2);
+  assert.equal(empty.calls.resume, 1);
+  assert.equal(empty.calls.pause, 1);
+  assert.equal(empty.output.join(""), "Passcode: \n");
+});
+
+test("readInteractivePasscode resolves once and ignores post-settlement data for CRLF", async () => {
+  const fixture = createInteractivePromptFixture();
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("ready\r\nignored"));
+  assert.equal(await attempt, "ready");
+  fixture.inputStream.emitData(Buffer.from("and-more"));
+  assert.equal(fixture.calls.on, 1);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+});
+
+test("readInteractivePasscode prefers setup failures over interactive outcomes", async () => {
+  const fixture = createInteractivePromptFixture({
+    syncData: Buffer.from("interactive-passcode\n"),
+    failResume: true,
+  });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+  assert.equal(fixture.output.some((chunk) => chunk.includes("interactive-passcode")), false);
+});
+
+test("readInteractivePasscode prefers cleanup failures over setup outcomes when sync settle races resume failure", async () => {
+  const fixture = createInteractivePromptFixture({
+    syncData: Buffer.from("interactive-passcode\n"),
+    failResume: true,
+    failPause: true,
+  });
+  const error = await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"),
+  );
+  const message = error instanceof Error ? error.message : `${error}`;
+  assert.equal(message.includes("interactive-passcode"), false);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.calls.write, 2);
+});
+
+test("readInteractivePasscode fails if prompt write fails during setup", async () => {
+  const fixture = createInteractivePromptFixture({ failPromptWrite: true });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.setRawMode, 0);
+  assert.equal(fixture.calls.on, 0);
+  assert.equal(fixture.calls.off, 0);
+  assert.equal(fixture.calls.resume, 0);
+  assert.equal(fixture.calls.pause, 0);
+  assert.equal(fixture.calls.write, 2);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+});
+
+test("readInteractivePasscode fails if raw-mode enablement fails", async () => {
+  const fixture = createInteractivePromptFixture({ failSetRawMode: true });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.on, 0);
+  assert.equal(fixture.calls.off, 0);
+  assert.equal(fixture.calls.resume, 0);
+  assert.equal(fixture.calls.pause, 0);
+  assert.equal(fixture.calls.write, 2);
+});
+
+test("readInteractivePasscode fails if listener registration fails", async () => {
+  const fixture = createInteractivePromptFixture({ failOnDataRegistration: true });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.on, 1);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.resume, 0);
+  assert.equal(fixture.calls.pause, 0);
+});
+
+test("readInteractivePasscode fails if resume fails", async () => {
+  const fixture = createInteractivePromptFixture({ failResume: true });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.on, 1);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+});
+
+test("readInteractivePasscode fails if listener removal fails and still tears down", async () => {
+  const fixture = createInteractivePromptFixture({ failOff: true });
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("authorized\n"));
+  await assert.rejects(attempt, new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"));
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+});
+
+test("readInteractivePasscode fails if raw-mode restoration fails", async () => {
+  const fixture = createInteractivePromptFixture({ failSetRawModeRestore: true });
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("authorized\n"));
+  await assert.rejects(attempt, new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"));
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.pause, 1);
+});
+
+test("readInteractivePasscode fails if pause fails", async () => {
+  const fixture = createInteractivePromptFixture({ failPause: true });
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("authorized\n"));
+  await assert.rejects(attempt, new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"));
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.calls.write, 2);
+});
+
+test("readInteractivePasscode fails if newline fails", async () => {
+  const fixture = createInteractivePromptFixture({ failNewline: true });
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("authorized\n"));
+  await assert.rejects(attempt, new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"));
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.pause, 1);
+});
+
 test("passcode signer setup is one-time host setup and authorize appends Coulson approval", async () => {
   const { root, brief } = await fixture();
   const homeRoot = join(root, "home");
@@ -403,6 +662,50 @@ test("passcode signer setup is one-time host setup and authorize appends Coulson
   assert.equal(projection.governance.state, "approved");
   assert.equal(projection.authorization.state, "authorized");
   assert.equal(projection.evidence[0].sourceRef, `passcode-signer:${brief.missionId}`);
+});
+
+test("passcode authorization persists durable approval entry and rejects retries", async () => {
+  const { root, brief } = await fixture();
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const authorized = run(
+    root,
+    ["mission", "authorize", "--mission-id", brief.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(authorized.status, 0, authorized.stderr);
+
+  const journalEntries = await readJournalEntries(root, brief.missionId);
+  const governanceApprovals = journalEntries.filter(({ type, payload }) => type === "governance.decided" && payload.decision === "approve");
+  assert.equal(governanceApprovals.length, 1);
+  const governanceEvidence = governanceApprovals[0].payload.evidence.payload;
+  assert.equal(governanceEvidence.evidenceKind, "mission_authorization");
+  assert.equal(governanceEvidence.seatId, "coulson");
+  assert.equal(governanceEvidence.revisionId, brief.revisionId);
+  assert.equal(governanceApprovals[0].payload.evidence.payload.sourceRef, `passcode-signer:${brief.missionId}`);
+
+  const journalBytes = await readFile(journalPath(root, brief.missionId), "utf8");
+  const retry = run(
+    root,
+    ["mission", "authorize", "--mission-id", brief.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(retry.status, 1);
+  assert.match(retry.stderr, /governance_denied: Cannot approve from approved/u);
+  const retryBytes = await readFile(journalPath(root, brief.missionId), "utf8");
+  assert.equal(retryBytes, journalBytes);
+  const retryEntries = await readJournalEntries(root, brief.missionId);
+  const retryApprovals = retryEntries.filter(({ type, payload }) => type === "governance.decided" && payload.decision === "approve");
+  assert.equal(retryApprovals.length, 1);
 });
 
 test("authorize explains when the local signer has not been provisioned", async () => {

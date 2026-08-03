@@ -1,0 +1,2 @@
+Mission issue-174, exact base d5bde71. Correction to your immediately prior recon: a child with stdin stdio pipe has process.stdin.isTTY false, so passcodeFromOptions rejects before raw mode and cannot prove interactive cleanup. Return only TEST_SEAM and STOP. Find the smallest portable test seam that exercises resume, setRawMode, data handling, cleanup, and pause without a platform-specific PTY. You may recommend extracting an internal dependency-injected helper if needed. No implementation, authority claim, or unrelated analysis.
+
