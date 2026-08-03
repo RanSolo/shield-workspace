@@ -22,16 +22,17 @@ Production:
 
 1. `packages/shield-team-system/src/fury-plan-review-evidence-v1.mts` — closed record/candidate/expected-binding contract, canonical digests, replay, and evaluation.
 2. `packages/shield-team-system/src/fury-plan-review-evidence-store.mts` — repository-local durable append/readback boundary.
-3. `packages/shield-team-system/github/delivery-workspace.mjs` — replace caller-supplied `planGate` with an evidence candidate plus independent evidence loading.
-4. `packages/shield-team-system/public/github.mjs` — runtime exports for the new evidence contract.
-5. `packages/shield-team-system/public/github.d.mts` — matching public declarations and updated Delivery Workspace input/result types.
+3. `packages/shield-team-system/contracts/fury-plan-gate-v1.d.mts` — declarations matching the existing JavaScript gate so the strict TypeScript evidence contract can import it.
+4. `packages/shield-team-system/github/delivery-workspace.mjs` — replace caller-supplied `planGate` with an evidence candidate plus independent evidence and Fury receipt loading.
+5. `packages/shield-team-system/public/github.mjs` — runtime exports for evidence evaluation, not record creation.
+6. `packages/shield-team-system/public/github.d.mts` — matching public declarations and updated Delivery Workspace input/result types.
 
 Tests:
 
-6. `packages/shield-team-system/tests/fury-plan-review-evidence-v1.test.mjs` — contract, replay, attribution, digest, stale, and exact-match tests.
-7. `packages/shield-team-system/tests/fury-plan-review-evidence-store.test.mjs` — durable append/readback, path, conflict, and recovery tests.
-8. `packages/shield-team-system/tests/delivery-workspace.test.mjs` — caller-PASS rejection and independent exact-evidence integration.
-9. `packages/shield-team-system/tests/package-surface.test.mjs` — runtime/type surface checks.
+7. `packages/shield-team-system/tests/fury-plan-review-evidence-v1.test.mjs` — contract, receipt attribution, replay, digest, stale, reconciliation, and exact-match tests.
+8. `packages/shield-team-system/tests/fury-plan-review-evidence-store.test.mjs` — durable append/readback, path, conflict, and recovery tests.
+9. `packages/shield-team-system/tests/delivery-workspace.test.mjs` — caller-PASS rejection and independent exact-evidence/receipt integration.
+10. `packages/shield-team-system/tests/package-surface.test.mjs` — runtime/type surface and gate-declaration checks.
 
 No package export is added. The contract is exposed through the existing `@shield/team-system/github` facade; the filesystem store remains an internal `dist` seam, matching the existing seat-dispatch and control-event stores.
 
@@ -56,13 +57,17 @@ No package export is added. The contract is exposed through the existing `@shiel
 - `blueprintArtifactPath: safe relative path`
 - `artifactRevisionId: immutable revision`
 - `repositoryRevisionId: 40–64 lowercase hex revision`
+- `furyDispatchIdentity: exact SeatDispatchReceiptIdentityV1`
 - `reviewerSeatId: "fury"`
 - `reasoningRuntimeId: non-seat identifier`
+- `reasoningModel: non-seat identifier`
 - `toolExecutorId: distinct non-seat identifier`
 - `planGate: normalized FuryPlanGateEnvelopeV1`
 - `evidenceDigest: sha256 digest`
 
-The embedded normalized plan gate carries the existing closed verdict and bounded finding/reconciliation shapes. Its mission, subject, repository, branch, PR, artifact identity/path, owning seat, and reviewed/corrected revisions must agree with the outer evidence binding. Runtime and executor values in the stored review and reconciliation, when present, must equal the host-observed outer attribution. The outer reviewer seat is stamped as `fury`; it is never accepted from a Delivery Workspace caller.
+The embedded normalized plan gate carries the existing closed verdict and bounded finding/reconciliation shapes. Its mission, subject, repository, branch, PR, artifact identity/path, and owning seat must agree with the outer evidence binding; revision compatibility follows the review/reconciliation rule below. The stored review's runtime and executor must equal the final host observations from the exact attributed Fury dispatch receipt. The model is preserved separately as `reasoningModel`. The complete dispatch identity—receipt, dispatch, parent/child sessions, mission/subject/artifact identities and revisions, repository/workspace/revision, and accountable seat—is derived from that replayed projection, never accepted from a Delivery Workspace caller.
+
+Only `planGate.review` is attributed to the outer Fury dispatch. A reconciliation remains separate Hill verifier evidence under the existing gate contract; it is never relabeled with Fury's runtime, model, or executor. For `PASS_WITH_REQUIRED_CHANGES`, the Fury-reviewed revision may be historical, while `reconciliation.correctedRevisionId` and the outer artifact/repository revisions must equal the current exact head.
 
 For the current Git-backed blueprint flow, `artifactRevisionId` and `repositoryRevisionId` are both required and equal to the exact PR head. They remain separate fields because an artifact revision and repository checkout revision are distinct contract concepts and future stores may represent them differently.
 
@@ -84,22 +89,24 @@ It contains no verdict, findings, reviewer seat, runtime, executor, or plan-gate
 
 ### Expected binding
 
-`FuryPlanReviewEvidenceExpectedBindingV1` contains the candidate fields except schema/contract/evidence identity, plus exact subject, repository, branch, PR, blueprint artifact ID/path/kind/owner, and current repository revision. Delivery Workspace derives this binding from its normalized mission input and verified PR readback, not from the evidence candidate.
+`FuryPlanReviewEvidenceExpectedBindingV1` contains exact mission ID/revision, subject, repository, branch, PR, blueprint artifact ID/path/kind/owner, artifact revision, and repository revision. It does not contain `planDigest`. Delivery Workspace derives `missionRevisionId` from replayed publication authority/request evidence and all checkout/artifact fields from normalized input plus verified PR readback, never from the candidate or selected review record.
 
 ### Digests
 
 1. `planDigest` is `sha256:` plus base64url SHA-256 over `canonicalJson(normalizedPlanGate)`. It identifies the complete closed plan-gate envelope, including verdict, findings, reconciliation, and attribution.
-2. `evidenceDigest` uses the same algorithm over every durable evidence field except `evidenceDigest`. It binds the plan digest and body to the exact mission revision, artifact, repository, Fury seat, runtime, and executor.
+2. `evidenceDigest` uses the same algorithm over every durable evidence field except `evidenceDigest`. It binds the plan digest and body to the exact mission revision, artifact, repository, complete Fury dispatch identity, runtime, model, and executor.
 3. `artifactRevisionId` identifies the reviewed blueprint artifact revision.
 4. `repositoryRevisionId` identifies the exact repository checkout/head observed by the host.
 
-No timestamp participates in identity. Repeating the same exact review is idempotent; time cannot manufacture a second approval.
+No timestamp participates in identity. `evidenceId` is derived as `fury-plan-review:` plus the base64url SHA-256 of canonical semantic evidence content excluding both `evidenceId` and `evidenceDigest`; `evidenceDigest` is then computed over the complete record excluding only `evidenceDigest`. Repeating the same exact review produces the same ID and digest, so time or a caller-generated identifier cannot manufacture a second approval.
 
 ## Creation, replay, and evaluation
 
 ### Creation
 
-`createFuryPlanReviewEvidenceV1` accepts a normalized/normalizable Fury plan gate, exact host binding, and host-observed attribution. It validates all components, stamps `reviewerSeatId: "fury"`, computes `planDigest`, and then computes `evidenceDigest`. It cannot accept a caller-selected reviewer seat.
+The internal creation function accepts a normalized/normalizable Fury plan gate, exact host binding, and raw independently loaded seat-dispatch receipt entries. It calls `evaluateSeatDispatchAttributionV1` for the exact mission/subject/artifact/repository and full session/workspace identity with `accountableSeatId: "fury"`. Creation succeeds only for one completed exact-bound projection with nonempty host runtime and executor histories. It derives `furyDispatchIdentity`, `reviewerSeatId`, `reasoningRuntimeId`, `reasoningModel`, and `toolExecutorId` from that projection and its final host observations, requires the stored review attribution to be non-null and equal to the derived runtime/executor, then derives both digests. Missing, conflicting, nonterminal, stale, wrong-seat, or observation-incomplete receipt evidence returns `INVALID_REVIEW_ATTRIBUTION`.
+
+No evidence creator is exported through `public/github.mjs`; public callers cannot stamp attribution. The durable store accepts only a fully validated record and does not create one from caller fields.
 
 ### Replay
 
@@ -115,16 +122,17 @@ The append API may return an existing byte-identical record idempotently without
 
 ### Evaluation
 
-`evaluateFuryPlanReviewEvidenceV1(candidate, records, expectedPlanBinding)` performs, in order:
+`evaluateFuryPlanReviewEvidenceV1(candidate, records, furyReceiptEntries, expectedPlanBinding)` performs, in order:
 
 1. expected-binding validation;
 2. candidate validation;
 3. complete ledger replay/validation, including duplicate and conflict checks;
 4. exactly-one lookup by `evidenceId`;
-5. candidate-to-record `evidenceDigest` and `planDigest` equality;
+5. recomputation of `planDigest` from the normalized stored plan gate, followed by candidate-to-record plan/evidence digest equality;
 6. exact mission revision, artifact revision, repository revision, and contextual binding checks;
-7. Fury seat and host-observed runtime/executor attribution checks;
-8. `evaluateFuryPlanGateV1(storedRecord.planGate, existingExpectedBinding)`.
+7. independent `evaluateSeatDispatchAttributionV1` replay for the stored receipt identity and exact binding, followed by equality to the stored Fury seat, final runtime ID, model, and executor ID;
+8. Fury-only comparison to `planGate.review`; reconciliation remains separately Hill-attributed and, when present, must correct to the current artifact/repository revision;
+9. `evaluateFuryPlanGateV1(storedRecord.planGate, existingExpectedBinding)`.
 
 The final result derives its verdict, findings, reviewer, runtime, executor, and plan-gate evaluation only from the durable record. Eligibility is `eligible` only when every earlier check succeeds and the existing plan-gate evaluator returns `eligible`.
 
@@ -137,11 +145,12 @@ Closed reason precedence:
 5. `CONFLICTING_REVIEW_EVIDENCE`
 6. `REVIEW_EVIDENCE_REQUIRED`
 7. `REVIEW_EVIDENCE_DIGEST_MISMATCH`
-8. `REVIEW_EVIDENCE_BINDING_MISMATCH`
-9. `REVIEW_EVIDENCE_STALE`
-10. `WRONG_REVIEWER_SEAT`
-11. `INVALID_REVIEW_ATTRIBUTION`
-12. existing Fury plan-gate reason codes through the nested evaluation
+8. `REVIEW_EVIDENCE_PLAN_DIGEST_MISMATCH`
+9. `REVIEW_EVIDENCE_BINDING_MISMATCH`
+10. `REVIEW_EVIDENCE_STALE`
+11. `WRONG_REVIEWER_SEAT`
+12. `INVALID_REVIEW_ATTRIBUTION`
+13. existing Fury plan-gate reason codes through the nested evaluation
 
 All failures are non-authoritative and ineligible.
 
@@ -170,14 +179,14 @@ The store does not invoke Fury, dispatch a model, publish a review, repair evide
 
 ## Delivery Workspace integration
 
-Keep `prepareDeliveryWorkspaceForDispatch` synchronous. Replace input field `planGate` with `planGateCandidate`. Add required option `loadFuryPlanReviewEvidence`, a host-provided synchronous loader for independently persisted evidence. This follows the existing synchronous `loadJournal` boundary and avoids synchronous filesystem I/O in the contract layer.
+Keep `prepareDeliveryWorkspaceForDispatch` synchronous. Replace input field `planGate` with `planGateCandidate`. Add required options `loadFuryPlanReviewEvidence` and `loadFuryDispatchReceiptEntries`, host-provided synchronous loaders for independently persisted evidence. This follows the existing synchronous `loadJournal` boundary and avoids synchronous filesystem I/O in the contract layer.
 
 After draft-PR publication and exact workspace receipt validation:
 
-1. derive the expected evidence and existing plan-gate bindings from mission input and receipt;
+1. derive `missionRevisionId` from the replayed publication request/authority and derive the remaining expected evidence and existing plan-gate bindings from normalized mission input and receipt;
 2. require `repositoryRevisionId === checked.receipt.artifactRevisionId` for the current Git-backed flow;
-3. call the independent loader;
-4. evaluate the opaque candidate against the loaded durable records;
+3. call both independent loaders;
+4. evaluate the opaque candidate against the loaded durable records and independently replayed exact Fury dispatch receipt;
 5. return `workspace_ready` unless the evidence evaluation and nested Fury plan gate are both eligible;
 6. return `dispatch_ready` only on that exact match.
 
@@ -187,7 +196,8 @@ The result adds `planReviewEvidenceEvaluation`; `planGateEvaluation` is the nest
 
 Contract tests:
 
-- exact creation preserves mission revision, plan digest, artifact/repository revisions, Fury seat, actual runtime/model, executor, verdict, and bounded findings;
+- exact creation from one completed attributed Fury receipt preserves mission revision, plan digest, artifact/repository revisions, Fury seat, dispatch receipt, actual runtime ID/model/executor, verdict, and bounded findings;
+- caller-provided attribution cannot create evidence; missing, conflicting, nonterminal, stale, wrong-seat, or observation-incomplete receipt evidence returns `INVALID_REVIEW_ATTRIBUTION`;
 - caller-shaped PASS or candidate containing verdict/reviewer/attribution is malformed and ineligible;
 - absent record fails `REVIEW_EVIDENCE_REQUIRED`;
 - changed candidate or record digest fails `REVIEW_EVIDENCE_DIGEST_MISMATCH`;
@@ -195,6 +205,8 @@ Contract tests:
 - wrong reviewer seat and seat/runtime/executor overlap fail closed;
 - physical duplicate, reused ID conflict, and same-review-key conflict fail closed;
 - one exact candidate/record/binding match delegates to the existing gate and is eligible;
+- repeated creation from the same semantic review and receipt yields the same evidence ID/digest and one durable line;
+- `PASS_WITH_REQUIRED_CHANGES` keeps Fury review and Hill reconciliation attribution distinct, permits a historical reviewed revision, and requires the corrected revision to equal current artifact/repository head;
 - a stored `FAIL` remains ineligible; candidate content cannot upgrade it;
 - accessors, proxies, sparse arrays, unknown fields, unsafe paths, and oversized findings fail closed without leaking thrown values.
 
@@ -210,12 +222,12 @@ Store tests:
 Delivery tests:
 
 - old caller-provided `planGate: PASS` is rejected as an unknown input field;
-- opaque candidate plus absent/malformed/duplicate/conflicting independent evidence stays `workspace_ready`;
+- opaque candidate plus absent/malformed/duplicate/conflicting independent evidence or receipt entries stays `workspace_ready`;
 - digest mismatch, stale PR head, stale artifact, and wrong attribution stay `workspace_ready`;
 - exact independent evidence match alone reaches `dispatch_ready`;
 - Fury evidence remains distinct from publication and human authority gates.
 
-Package-surface tests verify runtime exports, declarations, and clean package imports.
+Package-surface tests verify runtime exports, the new `fury-plan-gate-v1.d.mts` declarations, strict TypeScript compilation, and clean package imports.
 
 ## Explicit exclusions
 
