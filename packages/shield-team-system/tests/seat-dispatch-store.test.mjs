@@ -24,6 +24,7 @@ import {
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dispatchReceiptsFacade = pathToFileURL(join(packageRoot, "dist/dispatch-receipts.mjs")).href;
 const seatDispatchStoreModule = pathToFileURL(join(packageRoot, "dist/seat-dispatch-store.mjs")).href;
+const seatDispatchReceiptModule = pathToFileURL(join(packageRoot, "dist/seat-dispatch-receipt-v1.mjs")).href;
 
 function readLogBytes(logPath) {
   return open(logPath, constants.O_RDONLY | constants.O_NOFOLLOW).then(async (handle) => {
@@ -217,6 +218,7 @@ async function runPacketClaimFaultScenario(scenario) {
   const scriptRoot = await mkdtemp(join(tmpdir(), "shield-packet-fault-script-"));
   const scriptPath = join(scriptRoot, "packet-claim-fault.mjs");
   const { packetBytes: _packetBytes, ...serializedInput } = packetClaimInput("/placeholder");
+  const serializedAppendIdentity = baseIdentity();
   const script = `
     import { constants } from "node:fs";
     import * as realCrypto from "node:crypto";
@@ -232,6 +234,7 @@ async function runPacketClaimFaultScenario(scenario) {
     const lockPath = join(shieldDirectory, "dispatch-receipts.jsonl.lock");
     const logPath = join(shieldDirectory, "dispatch-receipts.jsonl");
     const baseInput = ${JSON.stringify(serializedInput)};
+    const appendIdentity = ${JSON.stringify(serializedAppendIdentity)};
     baseInput.repositoryRoot = repositoryRoot;
     if (scenario.lockOwnerId) baseInput.lockOwnerId = scenario.lockOwnerId;
     const claimInput = (overrides = {}) => ({
@@ -413,21 +416,41 @@ async function runPacketClaimFaultScenario(scenario) {
     });
 
     const store = await import(${JSON.stringify(seatDispatchStoreModule)} + "?fault=" + encodeURIComponent(scenario.name));
-    if (scenario.pending === "already_claimed" || scenario.pending === "conflict") {
-      const setup = await store.claimSeatDispatchPacketV1(claimInput());
-      if (setup.state !== "valid" || setup.value.claimStatus !== "claimed") throw new Error("fault setup claim failed");
-    } else if (scenario.pending === "replay_invalid") {
-      await realFs.mkdir(shieldDirectory, { recursive: true });
-      await realFs.writeFile(logPath, '{"incomplete":true', "utf8");
+    let result;
+    if (scenario.operation === "append") {
+      const receipt = await import(${JSON.stringify(seatDispatchReceiptModule)} + "?fault=" + encodeURIComponent(scenario.name));
+      const event = receipt.createSeatDispatchStartedEventV1(appendIdentity);
+      const appendInput = {
+        repositoryRoot,
+        repositoryId: event.repositoryId,
+        repositoryWorkspaceId: event.repositoryWorkspaceId,
+        event,
+        lockOwnerId: baseInput.lockOwnerId,
+      };
+      if (scenario.pending === "replay_invalid") {
+        const setup = await store.appendSeatDispatchReceiptEntryV1(appendInput);
+        if (setup.state !== "valid") throw new Error("ordinary append fault setup failed");
+      }
+      phase = "fault";
+      lockReadOpens = 0;
+      logReads = 0;
+      result = await store.appendSeatDispatchReceiptEntryV1(appendInput);
+    } else {
+      if (scenario.pending === "already_claimed" || scenario.pending === "conflict") {
+        const setup = await store.claimSeatDispatchPacketV1(claimInput());
+        if (setup.state !== "valid" || setup.value.claimStatus !== "claimed") throw new Error("fault setup claim failed");
+      } else if (scenario.pending === "replay_invalid") {
+        await realFs.mkdir(shieldDirectory, { recursive: true });
+        await realFs.writeFile(logPath, '{"incomplete":true', "utf8");
+      }
+      phase = "fault";
+      lockReadOpens = 0;
+      logReads = 0;
+      const overrides = scenario.pending === "conflict"
+        ? { subjectRevision: "abcdef1234567890abcdef1234567890abcdef13" }
+        : {};
+      result = await store.claimSeatDispatchPacketV1(claimInput(overrides));
     }
-
-    phase = "fault";
-    lockReadOpens = 0;
-    logReads = 0;
-    const overrides = scenario.pending === "conflict"
-      ? { subjectRevision: "abcdef1234567890abcdef1234567890abcdef13" }
-      : {};
-    const result = await store.claimSeatDispatchPacketV1(claimInput(overrides));
     const summary = {
       state: result.state,
       code: result.state === "invalid" ? result.code : null,
@@ -438,7 +461,7 @@ async function runPacketClaimFaultScenario(scenario) {
       restart: null,
     };
 
-    if (["append-short-write", "append-sync-failure", "append-readback-failure"].includes(scenario.fault)) {
+    if (scenario.operation !== "append" && ["append-short-write", "append-sync-failure", "append-readback-failure"].includes(scenario.fault)) {
       phase = "restart";
       const restart = await store.claimSeatDispatchPacketV1(claimInput({ startedAt: "2026-07-29T12:00:01.000Z" }));
       summary.restart = {
@@ -674,6 +697,51 @@ test("claim release rejects marker, device, and inode drift independently", asyn
     assert.equal(result.state, "invalid", name);
     assert.equal(result.code, "recovery_required", name);
     assert.equal(result.hasDisposition, false, name);
+  }
+});
+
+test("ordinary append release uncertainty overrides successful append", async () => {
+  for (const [name, fault] of [
+    ["ordinary append marker drift", "release-marker-drift"],
+    ["ordinary append unlink", "release-unlink-failure"],
+    ["ordinary append absence verification", "release-absence-drift"],
+    ["ordinary append parent sync", "release-parent-sync-failure"],
+  ]) {
+    const result = await runPacketClaimFaultScenario({
+      name,
+      fault,
+      pending: "claimed",
+      operation: "append",
+    });
+    assert.equal(result.faultTriggered, true, name);
+    assert.equal(result.state, "invalid", name);
+    assert.equal(result.code, "recovery_required", name);
+    assert.equal(result.hasDisposition, false, name);
+  }
+});
+
+test("ordinary append release uncertainty overrides deterministic pre-write replay failure", async () => {
+  const baseline = await runPacketClaimFaultScenario({
+    name: "ordinary append duplicate baseline",
+    fault: "none",
+    pending: "replay_invalid",
+    operation: "append",
+  });
+  assert.equal(baseline.state, "invalid");
+  assert.equal(baseline.code, "duplicate_event");
+  assert.equal(baseline.hasDisposition, false);
+
+  for (const pending of ["claimed", "replay_invalid"]) {
+    const overridden = await runPacketClaimFaultScenario({
+      name: `ordinary append release override ${pending}`,
+      fault: "release-unlink-failure",
+      pending,
+      operation: "append",
+    });
+    assert.equal(overridden.faultTriggered, true, pending);
+    assert.equal(overridden.state, "invalid", pending);
+    assert.equal(overridden.code, "recovery_required", pending);
+    assert.equal(overridden.hasDisposition, false, pending);
   }
 });
 

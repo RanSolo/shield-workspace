@@ -1553,82 +1553,88 @@ export async function appendSeatDispatchReceiptEntryV1(
   const token = await acquireLock(paths.value, checked.value.lockOwnerId);
   if (token.state === "invalid") return token;
 
+  let pending: SeatDispatchStoreContractResult<SeatDispatchReceiptStoreAppendResult>;
   try {
-    const current = await readStoreLog(checked.value, { allowMissing: true });
-    if (current.state === "invalid") return current;
-    if (checked.value.event.repositoryId !== checked.value.repositoryId || checked.value.event.repositoryWorkspaceId !== checked.value.repositoryWorkspaceId) {
-      return invalid("mixed_scope", "Dispatch receipt candidate scope does not match repository binding.");
-    }
-
-    const candidateEntries: SeatDispatchReceiptEventV1[] = [...current.value.entries, checked.value.event];
-    const candidateReplay = replaySeatDispatchReceiptsV1(candidateEntries);
-    if (candidateReplay.state === "invalid") {
-      return invalid(candidateReplay.code, ...candidateReplay.reasonCodes);
-    }
-
-    for (const projection of candidateReplay.projections) {
-      if (projection.repositoryId !== checked.value.repositoryId || projection.repositoryWorkspaceId !== checked.value.repositoryWorkspaceId) {
-        return invalid("mixed_scope", "Dispatch receipt candidate scope is mixed.");
+    pending = await (async (): Promise<SeatDispatchStoreContractResult<SeatDispatchReceiptStoreAppendResult>> => {
+      const current = await readStoreLog(checked.value, { allowMissing: true });
+      if (current.state === "invalid") return current;
+      if (checked.value.event.repositoryId !== checked.value.repositoryId || checked.value.event.repositoryWorkspaceId !== checked.value.repositoryWorkspaceId) {
+        return invalid("mixed_scope", "Dispatch receipt candidate scope does not match repository binding.");
       }
-    }
 
-    const candidateEntry = candidateReplay.entries[candidateReplay.entries.length - 1];
-    const line = `${JSON.stringify(candidateEntry)}\n`;
-    const lineBytes = lineByteLength(line);
-
-    let logHandle;
-    try {
-      logHandle = await open(paths.value.logPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o644);
-      const logStats = await logHandle.stat();
-      if (!logStats.isFile()) {
-        return invalid("unsafe_path", "Dispatch receipt log must be a regular file.");
+      const candidateEntries: SeatDispatchReceiptEventV1[] = [...current.value.entries, checked.value.event];
+      const candidateReplay = replaySeatDispatchReceiptsV1(candidateEntries);
+      if (candidateReplay.state === "invalid") {
+        return invalid(candidateReplay.code, ...candidateReplay.reasonCodes);
       }
-      const written = await logHandle.write(line, null, "utf8");
-      if (written.bytesWritten !== lineBytes) {
-        return invalid("recovery_required", "Dispatch receipt append write was incomplete.");
+
+      for (const projection of candidateReplay.projections) {
+        if (projection.repositoryId !== checked.value.repositoryId || projection.repositoryWorkspaceId !== checked.value.repositoryWorkspaceId) {
+          return invalid("mixed_scope", "Dispatch receipt candidate scope is mixed.");
+        }
       }
-      await logHandle.sync();
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ELOOP") return invalid("unsafe_path", "Dispatch receipt log must not be symbolic.");
-      return invalid(code === "ENOTDIR" ? "unsafe_path" : "recovery_required", `Dispatch receipt append failed: ${code ?? "unknown_error"}.`);
-    } finally {
-      await logHandle?.close().catch(() => undefined);
-    }
 
-    if (current.value.missing) {
-      const directorySynced = await syncDirectory(dirname(paths.value.logPath));
-      if (!directorySynced) {
-        return invalid("recovery_required", "Dispatch receipt parent directory sync failed.");
+      const candidateEntry = candidateReplay.entries[candidateReplay.entries.length - 1];
+      const line = `${JSON.stringify(candidateEntry)}\n`;
+      const lineBytes = lineByteLength(line);
+
+      let logHandle;
+      try {
+        logHandle = await open(paths.value.logPath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o644);
+        const logStats = await logHandle.stat();
+        if (!logStats.isFile()) {
+          return invalid("unsafe_path", "Dispatch receipt log must be a regular file.");
+        }
+        const written = await logHandle.write(line, null, "utf8");
+        if (written.bytesWritten !== lineBytes) {
+          return invalid("recovery_required", "Dispatch receipt append write was incomplete.");
+        }
+        await logHandle.sync();
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ELOOP") return invalid("unsafe_path", "Dispatch receipt log must not be symbolic.");
+        return invalid(code === "ENOTDIR" ? "unsafe_path" : "recovery_required", `Dispatch receipt append failed: ${code ?? "unknown_error"}.`);
+      } finally {
+        await logHandle?.close().catch(() => undefined);
       }
-    }
 
-    const after = await readStoreLog(checked.value, { allowMissing: false });
-    if (after.state === "invalid") {
-      return invalid("recovery_required", ...(after.errors.length > 0 ? after.errors : ["dispatch receipt replay failed."]));
-    }
-    const expected = `${current.value.bytes}${line}`;
-    if (after.value.bytes !== expected) {
-      return invalid("recovery_required", "Dispatch receipt append readback is not exact.");
-    }
+      if (current.value.missing) {
+        const directorySynced = await syncDirectory(dirname(paths.value.logPath));
+        if (!directorySynced) {
+          return invalid("recovery_required", "Dispatch receipt parent directory sync failed.");
+        }
+      }
 
-    const appendedReceipt = after.value.projections.find((projection) =>
-      projection.receiptId === checked.value.event.receiptId && projection.dispatchId === checked.value.event.dispatchId,
-    );
-    if (appendedReceipt === undefined) {
-      return invalid("recovery_required", "Dispatch receipt append replay did not include appended projection.");
-    }
+      const after = await readStoreLog(checked.value, { allowMissing: false });
+      if (after.state === "invalid") {
+        return invalid("recovery_required", ...(after.errors.length > 0 ? after.errors : ["dispatch receipt replay failed."]));
+      }
+      const expected = `${current.value.bytes}${line}`;
+      if (after.value.bytes !== expected) {
+        return invalid("recovery_required", "Dispatch receipt append readback is not exact.");
+      }
 
-    return valid({
-      logPath: paths.value.logPath,
-      byteLength: Buffer.byteLength(after.value.bytes, "utf8"),
-      receipt: Object.freeze({ ...appendedReceipt }),
-      entries: after.value.entries,
-      projections: after.value.projections,
-    });
-  } finally {
-    await releaseLock(token.value);
+      const appendedReceipt = after.value.projections.find((projection) =>
+        projection.receiptId === checked.value.event.receiptId && projection.dispatchId === checked.value.event.dispatchId,
+      );
+      if (appendedReceipt === undefined) {
+        return invalid("recovery_required", "Dispatch receipt append replay did not include appended projection.");
+      }
+
+      return valid({
+        logPath: paths.value.logPath,
+        byteLength: Buffer.byteLength(after.value.bytes, "utf8"),
+        receipt: Object.freeze({ ...appendedReceipt }),
+        entries: after.value.entries,
+        projections: after.value.projections,
+      });
+    })();
+  } catch (error) {
+    pending = invalid("recovery_required", `Dispatch receipt append failed unexpectedly: ${error instanceof Error ? error.message : String(error)}.`);
   }
+  const released = await releaseLock(token.value);
+  if (released.state === "uncertain") return invalid("recovery_required", ...released.errors);
+  return pending;
 }
 
 export async function readSeatDispatchReceiptByReceiptIdV1(
