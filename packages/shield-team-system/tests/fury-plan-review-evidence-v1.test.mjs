@@ -276,6 +276,42 @@ test("duplicate durable review input and malformed reflective input fail closed"
   });
 });
 
+test("ledger defect precedence is independent of record order", () => {
+  const first = create();
+  const alternateIdentity = dispatchIdentity({
+    receiptId: "receipt:fury:issue-172:alternate",
+    dispatchId: "dispatch:fury:issue-172:alternate",
+    childTaskId: "task:fury:plan-review:alternate",
+    childSessionId: "session:fury:issue-172:alternate",
+  });
+  const alternate = create({
+    dispatchIdentity: alternateIdentity,
+    rawReceiptEntries: receiptEntries(alternateIdentity),
+  });
+  assert.equal(first.state, "created");
+  assert.equal(alternate.state, "created");
+  for (const records of [
+    [first.evidence, alternate.evidence, first.evidence],
+    [first.evidence, first.evidence, alternate.evidence],
+  ]) {
+    assert.deepEqual(replayFuryPlanReviewEvidenceLedgerV1(records), {
+      state: "invalid",
+      code: "duplicate",
+      reasonCode: "DUPLICATE_REVIEW_EVIDENCE",
+    });
+  }
+  for (const records of [
+    [first.evidence, alternate.evidence, first.evidence, {}],
+    [{}, first.evidence, first.evidence, alternate.evidence],
+  ]) {
+    assert.deepEqual(replayFuryPlanReviewEvidenceLedgerV1(records), {
+      state: "invalid",
+      code: "invalid",
+      reasonCode: "INVALID_REVIEW_EVIDENCE",
+    });
+  }
+});
+
 test("PASS_WITH_REQUIRED_CHANGES preserves separate Hill reconciliation and current corrected head", () => {
   const finding = {
     findingId: "finding:172:1",
@@ -287,9 +323,9 @@ test("PASS_WITH_REQUIRED_CHANGES preserves separate Hill reconciliation and curr
     repositoryRevisionId: correctedRevision,
   });
   const identity = dispatchIdentity({
-    repositoryRevision: correctedRevision,
-    artifactRevision: correctedRevision,
-    subjectRevision: correctedRevision,
+    repositoryRevision: reviewedRevision,
+    artifactRevision: reviewedRevision,
+    subjectRevision: reviewedRevision,
   });
   const reconciliation = {
     reconciliationSchemaVersion: 1,
@@ -333,4 +369,19 @@ test("PASS_WITH_REQUIRED_CHANGES preserves separate Hill reconciliation and curr
   );
   assert.equal(result.dispatchEligibility, "eligible");
   assert.equal(result.planGateEvaluation.verifierSeatId, "hill");
+  const correctedIdentity = dispatchIdentity({
+    repositoryRevision: correctedRevision,
+    artifactRevision: correctedRevision,
+    subjectRevision: correctedRevision,
+  });
+  assert.deepEqual(create({
+    binding: currentBinding,
+    dispatchIdentity: correctedIdentity,
+    rawReceiptEntries: receiptEntries(correctedIdentity),
+    planGate: gate({ verdict: "PASS_WITH_REQUIRED_CHANGES", findings: [finding] }, reconciliation),
+  }), {
+    state: "invalid",
+    authority: "non_authoritative",
+    reasonCodes: ["INVALID_REVIEW_ATTRIBUTION"],
+  });
 });

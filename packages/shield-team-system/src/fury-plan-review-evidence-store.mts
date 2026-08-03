@@ -80,6 +80,8 @@ interface LockToken {
   readonly lockPath: string;
   readonly directoryPath: string;
   readonly markerBytes: string;
+  readonly ino: number;
+  readonly dev: number;
 }
 
 const valid = <T,>(value: T): FuryPlanReviewEvidenceStoreResult<T> => ({ state: "valid", value });
@@ -194,18 +196,28 @@ async function directoryState(path: string): Promise<"missing" | "directory" | "
   }
 }
 
-async function ensureDirectory(path: string): Promise<boolean> {
+async function ensureDirectory(path: string): Promise<FuryPlanReviewEvidenceStoreResult<void>> {
   try {
     await mkdir(path, { mode: 0o700 });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      return invalid("recovery_required", "Fury plan-review evidence directory creation failed.");
+    }
   }
-  if (await directoryState(path) !== "directory") return false;
+  if (await directoryState(path) !== "directory") {
+    return invalid("unsafe_path", "Fury plan-review evidence directory is unsafe after creation.");
+  }
   try {
-    return await realpath(path) === path;
+    if (await realpath(path) !== path) {
+      return invalid("unsafe_path", "Fury plan-review evidence directory is aliased after creation.");
+    }
   } catch {
-    return false;
+    return invalid("recovery_required", "Fury plan-review evidence directory could not be resolved after creation.");
   }
+  if (!await syncDirectory(dirname(path))) {
+    return invalid("recovery_required", "Fury plan-review evidence parent directory sync failed.");
+  }
+  return valid(undefined);
 }
 
 async function resolvePaths(
@@ -239,7 +251,8 @@ async function resolvePaths(
     if (state === "missing") {
       reviewDirectoryExists = false;
       if (!create) break;
-      if (!await ensureDirectory(path)) return invalid("unsafe_path", "Fury plan-review evidence directory could not be created safely.");
+      const created = await ensureDirectory(path);
+      if (created.state === "invalid") return created;
       reviewDirectoryExists = path === reviewDirectory ? true : reviewDirectoryExists;
     } else {
       try {
@@ -331,7 +344,7 @@ export async function readFuryPlanReviewEvidenceLedgerV1(
 async function syncDirectory(path: string): Promise<boolean> {
   let handle;
   try {
-    handle = await open(path, constants.O_RDONLY);
+    handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);
     await handle.sync();
     return true;
   } catch {
@@ -355,11 +368,27 @@ async function acquireLock(
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o600,
     );
+    const stats = await handle.stat();
+    if (!stats.isFile()) return invalid("unsafe_path", "Evidence ledger lock target is unsafe.");
     const written = (await handle.write(markerBytes, null, "utf8")).bytesWritten;
     if (written !== Buffer.byteLength(markerBytes, "utf8")) {
       return invalid("recovery_required", "Evidence lock marker write was incomplete.");
     }
     await handle.sync();
+    const token = Object.freeze({
+      lockPath: paths.lockPath,
+      directoryPath: paths.reviewDirectory,
+      markerBytes,
+      ino: Number(stats.ino),
+      dev: Number(stats.dev),
+    });
+    if (!await syncDirectory(paths.reviewDirectory)) {
+      return invalid("recovery_required", "Evidence lock directory sync failed.");
+    }
+    if (!await verifyLockEntry(token) || !await sameLockTarget(token)) {
+      return invalid("recovery_required", "Evidence lock changed after durable creation.");
+    }
+    return valid(token);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EEXIST") {
@@ -377,28 +406,49 @@ async function acquireLock(
   } finally {
     await handle?.close().catch(() => undefined);
   }
-  if (!await syncDirectory(paths.reviewDirectory)) {
-    return invalid("recovery_required", "Evidence lock directory sync failed.");
-  }
-  return valid(Object.freeze({ lockPath: paths.lockPath, directoryPath: paths.reviewDirectory, markerBytes }));
 }
 
-async function releaseLock(token: LockToken): Promise<FuryPlanReviewEvidenceStoreResult<void>> {
+async function verifyLockEntry(token: LockToken): Promise<boolean> {
   let handle;
   try {
     handle = await open(token.lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-    if (!(await handle.stat()).isFile()) return invalid("recovery_required", "Evidence lock target is unsafe.");
+    const stats = await handle.stat();
+    if (!stats.isFile() || Number(stats.ino) !== token.ino || Number(stats.dev) !== token.dev) return false;
     const current = await handle.readFile("utf8");
-    if (current !== token.markerBytes) return invalid("recovery_required", "Evidence lock marker drifted.");
-  } catch (error) {
-    return invalid("recovery_required", `Evidence lock verification failed: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+    return current === token.markerBytes;
+  } catch {
+    return false;
   } finally {
     await handle?.close().catch(() => undefined);
+  }
+}
+
+async function sameLockTarget(token: LockToken): Promise<boolean> {
+  try {
+    const stats = await lstat(token.lockPath);
+    return !stats.isSymbolicLink() && stats.isFile() &&
+      Number(stats.ino) === token.ino && Number(stats.dev) === token.dev;
+  } catch {
+    return false;
+  }
+}
+
+async function releaseLock(token: LockToken): Promise<FuryPlanReviewEvidenceStoreResult<void>> {
+  if (!await verifyLockEntry(token) || !await sameLockTarget(token)) {
+    return invalid("recovery_required", "Evidence lock identity or marker changed before release.");
   }
   try {
     await unlink(token.lockPath);
   } catch (error) {
     return invalid("recovery_required", `Evidence lock unlink failed: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+  }
+  try {
+    await lstat(token.lockPath);
+    return invalid("recovery_required", "Evidence lock path was replaced during release.");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return invalid("recovery_required", "Evidence lock unlink could not be verified.");
+    }
   }
   if (!await syncDirectory(token.directoryPath)) {
     return invalid("recovery_required", "Evidence lock release directory sync failed.");

@@ -170,6 +170,7 @@ function reconciledGate() {
 }
 
 function furyEvidenceBundle(planGate, publication = updatePublication) {
+  const reviewedRevision = planGate.review.reviewedRevisionId;
   const dispatchIdentity = {
     receiptId: "receipt:fury:issue-44",
     dispatchId: "dispatch:fury:issue-44",
@@ -181,11 +182,11 @@ function furyEvidenceBundle(planGate, publication = updatePublication) {
     accountableSeatId: "fury",
     repositoryId: "RanSolo/shield-workspace",
     repositoryWorkspaceId: "workspace:issue-44",
-    repositoryRevision: head,
+    repositoryRevision: reviewedRevision,
     subjectId: "issue-44",
-    subjectRevision: head,
+    subjectRevision: reviewedRevision,
     artifactId: "issue-44-blueprint",
-    artifactRevision: head,
+    artifactRevision: reviewedRevision,
   };
   const runtime = {
     kind: "runtime.host_observed",

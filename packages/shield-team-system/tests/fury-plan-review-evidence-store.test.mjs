@@ -233,6 +233,19 @@ test("symlinked audit path fails closed before append", async () => {
   assert.equal(result.code, "unsafe_path");
 });
 
+test("symlinked review directory fails closed before append", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-fury-evidence-review-symlink-"));
+  const outside = await mkdtemp(join(tmpdir(), "shield-fury-evidence-review-outside-"));
+  const auditDirectory = join(repositoryRoot, ".shield", "audit");
+  await mkdir(auditDirectory, { recursive: true });
+  await symlink(outside, join(auditDirectory, "fury-plan-reviews"));
+  const result = await appendFuryPlanReviewEvidenceIfAbsentV1({
+    ...scope(repositoryRoot), evidence: evidence(),
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "unsafe_path");
+});
+
 test("symlinked lock path fails closed as unsafe without touching its target", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-fury-evidence-lock-symlink-"));
   const target = join(await mkdtemp(join(tmpdir(), "shield-fury-evidence-lock-target-")), "target");
@@ -323,4 +336,115 @@ test("lock marker drift overrides a durable append with recovery_required", asyn
   const result = JSON.parse(child.stdout);
   assert.equal(result.state, "invalid");
   assert.equal(result.code, "recovery_required");
+});
+
+test("durability and replacement fault points never report success", async () => {
+  const testFile = fileURLToPath(import.meta.url);
+  const storePath = resolve(dirname(testFile), "..", "dist", "fury-plan-review-evidence-store.mjs");
+  const record = evidence();
+  for (const scenario of [
+    "lock-short-write",
+    "lock-file-sync",
+    "append-short-write",
+    "append-file-sync",
+    "readback-drift",
+    "shield-parent-sync",
+    "audit-parent-sync",
+    "review-parent-sync",
+    "lock-replacement",
+  ]) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), `shield-fury-evidence-${scenario}-`));
+    const script = `
+      import { constants } from "node:fs";
+      import { mock } from "node:test";
+      import * as realFs from "node:fs/promises";
+      import { join } from "node:path";
+      import { pathToFileURL } from "node:url";
+      const scenario = ${JSON.stringify(scenario)};
+      const repositoryRoot = ${JSON.stringify(repositoryRoot)};
+      const canonicalRoot = await realFs.realpath(repositoryRoot);
+      let lockReadCount = 0;
+      mock.module("node:fs/promises", { namedExports: {
+        ...realFs,
+        open: async (path, flags, mode) => {
+          const handle = await realFs.open(path, flags, mode);
+          const text = String(path);
+          const writable = Boolean(flags & constants.O_WRONLY) || Boolean(flags & constants.O_RDWR);
+          const parentSyncTarget = scenario === "shield-parent-sync" ? canonicalRoot
+            : scenario === "audit-parent-sync" ? join(canonicalRoot, ".shield")
+            : scenario === "review-parent-sync" ? join(canonicalRoot, ".shield", "audit")
+            : null;
+          if (parentSyncTarget === text && Boolean(flags & constants.O_DIRECTORY)) {
+            return { sync: async () => { const error = new Error("fault"); error.code = "EIO"; throw error; }, close: (...args) => handle.close(...args) };
+          }
+          if (text.endsWith(".lock") && writable && scenario === "lock-short-write") {
+            return {
+              stat: (...args) => handle.stat(...args),
+              write: async (...args) => { const value = await handle.write(...args); return { ...value, bytesWritten: Math.max(0, value.bytesWritten - 1) }; },
+              sync: (...args) => handle.sync(...args),
+              close: (...args) => handle.close(...args),
+            };
+          }
+          if (text.endsWith(".lock") && writable && scenario === "lock-file-sync") {
+            return {
+              stat: (...args) => handle.stat(...args),
+              write: (...args) => handle.write(...args),
+              sync: async () => { const error = new Error("fault"); error.code = "EIO"; throw error; },
+              close: (...args) => handle.close(...args),
+            };
+          }
+          if (text.endsWith(".jsonl") && writable && scenario === "append-short-write") {
+            return {
+              stat: (...args) => handle.stat(...args),
+              write: async (...args) => { const value = await handle.write(...args); return { ...value, bytesWritten: Math.max(0, value.bytesWritten - 1) }; },
+              sync: (...args) => handle.sync(...args),
+              close: (...args) => handle.close(...args),
+            };
+          }
+          if (text.endsWith(".jsonl") && writable && scenario === "append-file-sync") {
+            return {
+              stat: (...args) => handle.stat(...args),
+              write: (...args) => handle.write(...args),
+              sync: async () => { const error = new Error("fault"); error.code = "EIO"; throw error; },
+              close: (...args) => handle.close(...args),
+            };
+          }
+          if (text.endsWith(".jsonl") && !writable && scenario === "readback-drift") {
+            return {
+              stat: (...args) => handle.stat(...args),
+              readFile: async (...args) => String(await handle.readFile(...args)) + "drift",
+              close: (...args) => handle.close(...args),
+            };
+          }
+          if (text.endsWith(".lock") && !writable && scenario === "lock-replacement") {
+            lockReadCount += 1;
+            return {
+              stat: async (...args) => {
+                const stats = await handle.stat(...args);
+                return lockReadCount >= 2 ? { ...stats, ino: Number(stats.ino) + 1 } : stats;
+              },
+              readFile: (...args) => handle.readFile(...args),
+              close: (...args) => handle.close(...args),
+            };
+          }
+          return handle;
+        },
+      }});
+      const store = await import(pathToFileURL(${JSON.stringify(storePath)}).href + "?" + scenario);
+      const result = await store.appendFuryPlanReviewEvidenceIfAbsentV1({
+        repositoryRoot,
+        missionId: ${JSON.stringify(missionId)},
+        lockOwnerId: "owner:fault",
+        evidence: ${JSON.stringify(record)},
+      });
+      process.stdout.write(JSON.stringify(result));
+    `;
+    const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "-e", script], {
+      encoding: "utf8",
+    });
+    assert.equal(child.status, 0, `${scenario}: ${child.stderr}`);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.state, "invalid", scenario);
+    assert.equal(result.code, "recovery_required", scenario);
+  }
 });

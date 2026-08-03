@@ -321,8 +321,8 @@ export function prepareDeliveryWorkspaceForDispatch(
   },
   options: {
     loadJournal: () => unknown[];
-    loadFuryPlanReviewEvidence?: () => unknown;
-    loadFuryDispatchReceiptEntries?: () => unknown;
+    loadFuryPlanReviewEvidence: () => unknown;
+    loadFuryDispatchReceiptEntries: () => unknown;
     run?: CommandRunner;
     cwd?: string;
     realpath?: (path: string) => string;

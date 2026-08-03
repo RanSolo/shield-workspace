@@ -294,16 +294,18 @@ function gateMatchesBinding(
   return current === binding.artifactRevisionId && current === binding.repositoryRevisionId;
 }
 
-function dispatchMatchesBinding(
+function dispatchMatchesReview(
   identity: SeatDispatchReceiptIdentityV1,
   binding: FuryPlanReviewEvidenceExpectedBindingV1,
+  gate: FuryPlanGateEnvelopeV1,
 ): boolean {
+  const reviewedRevision = gate.review.reviewedRevisionId;
   return identity.parentMissionId === binding.missionId &&
     identity.parentMissionRevision === binding.missionRevisionId &&
     identity.accountableSeatId === "fury" && identity.repositoryId === binding.repositoryId &&
-    identity.repositoryRevision === binding.repositoryRevisionId &&
+    identity.repositoryRevision === reviewedRevision &&
     identity.subjectId === binding.subjectId && identity.artifactId === binding.blueprintArtifactId &&
-    identity.artifactRevision === binding.artifactRevisionId;
+    identity.subjectRevision === reviewedRevision && identity.artifactRevision === reviewedRevision;
 }
 
 function identityFromProjection(projection: SeatDispatchReceiptProjectionV1): Readonly<SeatDispatchReceiptIdentityV1> {
@@ -383,7 +385,7 @@ function normalizeEvidence(input: unknown): FuryPlanReviewEvidenceV1 | null {
       repositoryRevisionId: value.repositoryRevisionId,
     });
     if (binding === null || !gateMatchesBinding(normalizedGate.planGate, binding) ||
-        !dispatchMatchesBinding(identity, binding) ||
+        !dispatchMatchesReview(identity, binding, normalizedGate.planGate) ||
         normalizedGate.planGate.review.reasoningRuntimeId !== value.reasoningRuntimeId ||
         normalizedGate.planGate.review.toolExecutorId !== value.toolExecutorId) return null;
     const planDigest = digest(normalizedGate.planGate);
@@ -433,7 +435,7 @@ export function deriveFuryPlanReviewEvidenceV1(input: unknown): FuryPlanReviewEv
         normalizedGate.planGate === null || !gateMatchesBinding(normalizedGate.planGate, binding)) {
       return creationInvalid("INVALID_REVIEW_EVIDENCE");
     }
-    if (!dispatchMatchesBinding(dispatchIdentity, binding)) {
+    if (!dispatchMatchesReview(dispatchIdentity, binding, normalizedGate.planGate)) {
       return creationInvalid("INVALID_REVIEW_ATTRIBUTION");
     }
     const attribution = evaluateSeatDispatchAttributionV1({
@@ -501,6 +503,8 @@ export function replayFuryPlanReviewEvidenceLedgerV1(input: unknown): FuryPlanRe
     const records: FuryPlanReviewEvidenceV1[] = [];
     const byId = new Map<string, FuryPlanReviewEvidenceV1>();
     const byKey = new Map<string, FuryPlanReviewEvidenceV1>();
+    let duplicate = false;
+    let conflict = false;
     for (let index = 0; index < length; index += 1) {
       const descriptor = descriptors[String(index)];
       if (!descriptor || !Object.hasOwn(descriptor, "value") || descriptor.get || descriptor.set ||
@@ -514,19 +518,25 @@ export function replayFuryPlanReviewEvidenceLedgerV1(input: unknown): FuryPlanRe
       const existingId = byId.get(normalized.evidenceId);
       if (existingId !== undefined) {
         const same = canonicalJson(existingId) === canonicalJson(normalized);
-        return {
-          state: "invalid",
-          code: same ? "duplicate" : "conflict",
-          reasonCode: same ? "DUPLICATE_REVIEW_EVIDENCE" : "CONFLICTING_REVIEW_EVIDENCE",
-        };
+        duplicate ||= same;
+        conflict ||= !same;
+      } else {
+        byId.set(normalized.evidenceId, normalized);
       }
       const key = reviewKey(normalized);
-      if (byKey.has(key)) {
-        return { state: "invalid", code: "conflict", reasonCode: "CONFLICTING_REVIEW_EVIDENCE" };
+      const existingKey = byKey.get(key);
+      if (existingKey !== undefined) {
+        if (existingKey.evidenceId !== normalized.evidenceId) conflict = true;
+      } else {
+        byKey.set(key, normalized);
       }
-      byId.set(normalized.evidenceId, normalized);
-      byKey.set(key, normalized);
       records.push(normalized);
+    }
+    if (duplicate) {
+      return { state: "invalid", code: "duplicate", reasonCode: "DUPLICATE_REVIEW_EVIDENCE" };
+    }
+    if (conflict) {
+      return { state: "invalid", code: "conflict", reasonCode: "CONFLICTING_REVIEW_EVIDENCE" };
     }
     return Object.freeze({ state: "valid" as const, records: Object.freeze(records) });
   } catch {
