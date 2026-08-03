@@ -76,8 +76,8 @@ field is derived from replayed or host-observed evidence:
 - May seat, active runtime/model, tool executor, implementation authority ref,
   binding ID/version, approved paths, actions, effect classes/keys,
   capabilities, and validation command IDs;
-- Helicarrier-manifest requested subsets and output contract, plus the fixed
-  one-cycle stop condition.
+- coordinator-validated derived envelope/IR requested subsets and output
+  contract, plus the fixed one-cycle stop condition.
 
 Canonical bytes of that derived envelope—not caller object identity—are passed
 to `claimSeatDispatchPacketV1`. Reuse its existing packet digest and deterministic
