@@ -81,6 +81,7 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof intake.missionIntakeV1, "function");
   assert.equal(typeof intake.profileAwareMissionIntakeV1, "function");
   assert.equal(typeof dispatchReceipts.appendSeatDispatchReceiptEntryV1, "function");
+  assert.equal(typeof dispatchReceipts.claimSeatDispatchPacketV1, "function");
   assert.equal(typeof dispatchReceipts.readSeatDispatchReceiptByReceiptIdV1, "function");
   assert.equal(typeof dispatchReceipts.readSeatDispatchReceiptsByChildTaskSessionV1, "function");
   assert.equal(typeof dispatchReceipts.replaySeatDispatchReceiptsV1, "function");
@@ -297,6 +298,11 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type PRWorkspaceReceipt,
     } from "@shield/team-system/github";
     import {
+      claimSeatDispatchPacketV1,
+      type SeatDispatchPacketClaimContractResultV1,
+      type SeatDispatchPacketClaimFailureCodeV1,
+      type SeatDispatchPacketClaimInputV1,
+      type SeatDispatchPacketClaimResultV1,
       type SeatDispatchReceiptStoreAppendInput,
       type SeatDispatchReceiptStoreAppendResult,
       type SeatDispatchReceiptStoreByChildInput,
@@ -416,6 +422,33 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       code: "test",
       errors: ["expected"],
     };
+    const packetClaimInput = null as unknown as SeatDispatchPacketClaimInputV1;
+    const packetClaimResult = null as unknown as SeatDispatchPacketClaimResultV1;
+    const packetClaimFailure: SeatDispatchPacketClaimFailureCodeV1 = "output_evidence_misplacement";
+    const packetClaimContract: SeatDispatchPacketClaimContractResultV1 = {
+      state: "invalid",
+      code: packetClaimFailure,
+      errors: ["expected"],
+    };
+    const claimPacket = claimSeatDispatchPacketV1;
+    function assertPacketClaimNarrowing(outcome: SeatDispatchPacketClaimContractResultV1): void {
+      if (outcome.state === "valid") {
+        if (outcome.value.claimStatus === "claimed") {
+          const disposition: "execute_once" = outcome.value.executionDisposition;
+          void disposition;
+        } else {
+          // @ts-expect-error already_claimed does not expose an executable disposition.
+          const forbiddenDisposition: "execute_once" = outcome.value.executionDisposition;
+          void forbiddenDisposition;
+        }
+      } else {
+        // @ts-expect-error invalid outcomes do not expose a claim value.
+        const invalidValue: SeatDispatchPacketClaimResultV1 = outcome.value;
+        // @ts-expect-error invalid outcomes do not expose executionDisposition.
+        const invalidDisposition = outcome.value.executionDisposition;
+        void [invalidValue, invalidDisposition];
+      }
+    }
     const roleTaxonomyContract: "roles.v1" = ROLE_TAXONOMY_CONTRACT_VERSION;
     const dispatchSeatOnly: RoleAssignmentScope = "dispatch";
     const route: RoleRoute = "dispatch_seat";
@@ -447,7 +480,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
@@ -478,7 +511,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     { cwd: javascriptFixture, stdio: "pipe" },
   );
   await writeFile(join(javascriptFixture, "consumer.mjs"), `
-    import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
+    import { appendSeatDispatchReceiptEntryV1, claimSeatDispatchPacketV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
     import { CONFIG_SCHEMA_VERSION, createShieldConfig } from "@shield/team-system/config";
     const packageBase = new URL("./node_modules/@shield/team-system/", import.meta.url);
     await import(new URL("dist/dispatch-receipts.mjs", packageBase).href);
@@ -508,7 +541,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     if (parentResult.state !== "invalid" || childResult.state !== "invalid" || byReceiptResult.state !== "invalid") {
       throw new Error("unexpected dispatch-receipts query states");
     }
-    if (typeof appendSeatDispatchReceiptEntryV1 !== "function" || typeof readSeatDispatchReceiptByReceiptIdV1 !== "function") {
+    if (typeof appendSeatDispatchReceiptEntryV1 !== "function" || typeof claimSeatDispatchPacketV1 !== "function" || typeof readSeatDispatchReceiptByReceiptIdV1 !== "function") {
       throw new Error("dispatch-receipts exports missing");
     }
     if (CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected config schema");

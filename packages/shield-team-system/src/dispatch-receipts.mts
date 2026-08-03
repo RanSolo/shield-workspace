@@ -1,6 +1,11 @@
 export {
   SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH,
   appendSeatDispatchReceiptEntryV1,
+  claimSeatDispatchPacketV1,
+  type SeatDispatchPacketClaimInputV1,
+  type SeatDispatchPacketClaimResultV1,
+  type SeatDispatchPacketClaimFailureCodeV1,
+  type SeatDispatchPacketClaimContractResultV1,
   type SeatDispatchReceiptStoreAppendInput,
   type SeatDispatchReceiptStoreByChildInput,
   type SeatDispatchReceiptStoreByReceiptInput,

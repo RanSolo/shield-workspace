@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-173",
+  "objective": "Implement issue #173 as one bounded pull request: add an atomic packet claim to the existing durable seat-dispatch store so concurrent or restarted callers cannot execute the same governed packet twice, without adding model invocation, retry, scheduling, permission widening, or issue #170 composition.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/173",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": false,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-03T03:49:28Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:0R-U1zLWj0QWhEa4NXeQ424Biahr5eiyJTHRqy04rrU"
+}
