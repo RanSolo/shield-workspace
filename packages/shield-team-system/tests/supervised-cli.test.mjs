@@ -541,11 +541,11 @@ test("readInteractivePasscode fails if prompt write fails during setup", async (
     readInteractivePasscode(fixture.inputStream, fixture.outputStream),
     new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
   );
-  assert.equal(fixture.calls.setRawMode, 1);
+  assert.equal(fixture.calls.setRawMode, 0);
   assert.equal(fixture.calls.on, 0);
-  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.off, 0);
   assert.equal(fixture.calls.resume, 0);
-  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.calls.pause, 0);
   assert.equal(fixture.calls.write, 2);
   assert.equal(fixture.output.join(""), "Passcode: \n");
 });
@@ -558,9 +558,9 @@ test("readInteractivePasscode fails if raw-mode enablement fails", async () => {
   );
   assert.equal(fixture.calls.setRawMode, 2);
   assert.equal(fixture.calls.on, 0);
-  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.off, 0);
   assert.equal(fixture.calls.resume, 0);
-  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.calls.pause, 0);
   assert.equal(fixture.calls.write, 2);
 });
 
@@ -574,7 +574,7 @@ test("readInteractivePasscode fails if listener registration fails", async () =>
   assert.equal(fixture.calls.on, 1);
   assert.equal(fixture.calls.off, 1);
   assert.equal(fixture.calls.resume, 0);
-  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.calls.pause, 0);
 });
 
 test("readInteractivePasscode fails if resume fails", async () => {

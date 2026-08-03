@@ -275,6 +275,9 @@ export async function readInteractivePasscode(
     let isResuming = false;
     let cleanupDone = false;
     let cleanupFailure: MissionCliError | null = null;
+    let rawModeAttempted = false;
+    let listenerRegistrationAttempted = false;
+    let resumeAttempted = false;
 
     const registerCleanupFailure = () => {
       if (!cleanupFailure) cleanupFailure = new MissionCliError(cleanupFailureMessage);
@@ -291,15 +294,21 @@ export async function readInteractivePasscode(
     const runCleanup = (): void => {
       if (cleanupDone) return;
       cleanupDone = true;
-      attemptCleanupAction(() => {
-        inputStream.off("data", onData);
-      });
-      attemptCleanupAction(() => {
-        inputStream.setRawMode(false);
-      });
-      attemptCleanupAction(() => {
-        inputStream.pause();
-      });
+      if (listenerRegistrationAttempted) {
+        attemptCleanupAction(() => {
+          inputStream.off("data", onData);
+        });
+      }
+      if (rawModeAttempted) {
+        attemptCleanupAction(() => {
+          inputStream.setRawMode(false);
+        });
+      }
+      if (resumeAttempted) {
+        attemptCleanupAction(() => {
+          inputStream.pause();
+        });
+      }
       attemptCleanupAction(() => {
         outputStream.write("\n");
       });
@@ -357,9 +366,12 @@ export async function readInteractivePasscode(
 
     try {
       outputStream.write("Passcode: ");
+      rawModeAttempted = true;
       inputStream.setRawMode(true);
+      listenerRegistrationAttempted = true;
       inputStream.on("data", onData);
       isResuming = true;
+      resumeAttempted = true;
       inputStream.resume();
       isResuming = false;
       if (settled) finish();
