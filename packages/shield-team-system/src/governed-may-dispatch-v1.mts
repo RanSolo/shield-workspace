@@ -1,6 +1,19 @@
 import { isProxy } from "node:util/types";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
+import type { HelicarrierDependenciesV0 } from "./helicarrier-v0.mjs";
+import type { Schema9PermissionContextTrustedHostOps } from "./schema9-permission-context-v1.mjs";
+import type { createPermissionAuditFilesystemStore } from "./permission-audit-store.mjs";
+import type { createMayControlEventFilesystemStore } from "./may-control-event-store.mjs";
+import type { runMissionCycle } from "./mission-runtime-v1.mjs";
+import type {
+  appendSeatDispatchReceiptEntryV1,
+  claimSeatDispatchPacketV1,
+  readSeatDispatchReceiptsByParentMissionSessionV1,
+} from "./seat-dispatch-store.mjs";
+import type { readFuryPlanReviewEvidenceLedgerV1 } from "./fury-plan-review-evidence-store.mjs";
+import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "./mission-store.mjs";
+
 const INPUT_FIELDS = [
   "repositoryRoot",
   "configuredJournalPath",
@@ -15,6 +28,80 @@ export interface RunGovernedMayDispatchStepInputV1 {
   readonly configuredJournalPath: string;
   readonly missionId: string;
   readonly hostId: string;
+}
+
+export interface GovernedMayDeliveryWorkspaceObservationV1 {
+  readonly repositoryId: string;
+  readonly repositoryWorkspaceId: string;
+  readonly repositoryOwner: string;
+  readonly repositoryName: string;
+  readonly baseBranch: string;
+  readonly branch: string;
+  readonly prNumber: number;
+  readonly prUrl: string;
+  readonly state: "OPEN";
+  readonly isDraft: boolean;
+  readonly baseRevision: string;
+  readonly headRevision: string;
+}
+
+export interface GovernedMayTrackedFileReadV1 {
+  readonly repositoryRoot: string;
+  readonly revision: string;
+  readonly relativePath: string;
+}
+
+export interface GovernedMayValidationCommandV1 {
+  readonly commandId: string;
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly timeoutMs: number;
+}
+
+export interface GovernedMayControlLoopRequestV1 {
+  readonly baseUrl: string;
+  readonly model: string;
+  readonly systemPrompt: string;
+  readonly userPrompt: string;
+  readonly sessionId: string;
+  readonly repositoryRoot: string;
+  readonly baseRevision: string;
+}
+
+export interface GovernedMayControlLoopResultV1 {
+  readonly message: string;
+  readonly attribution: "untrusted_model_output";
+  readonly completedToolCalls: number;
+  readonly writeCalls: number;
+  readonly validationCalls: number;
+  readonly releasedBytes: number;
+}
+
+export interface RunGovernedMayDispatchStepTrustedDependenciesV1 {
+  readonly observeDeliveryWorkspace: (
+    repositoryRoot: string,
+  ) => GovernedMayDeliveryWorkspaceObservationV1 | Promise<GovernedMayDeliveryWorkspaceObservationV1>;
+  readonly readTrackedFile: (input: GovernedMayTrackedFileReadV1) => Uint8Array | Promise<Uint8Array>;
+  readonly readWorkspaceStatus: (repositoryRoot: string) => readonly string[] | Promise<readonly string[]>;
+  readonly schema9HostOps: Schema9PermissionContextTrustedHostOps;
+  readonly helicarrier: HelicarrierDependenciesV0;
+  readonly validationCommands: readonly GovernedMayValidationCommandV1[];
+  readonly mayControlBaseUrl: string;
+  readonly mayApiToken?: string;
+  readonly fetchImpl?: typeof fetch;
+  readonly runMayControlLoop: (
+    request: GovernedMayControlLoopRequestV1,
+    dependencies: Readonly<Record<string, unknown>>,
+  ) => Promise<GovernedMayControlLoopResultV1>;
+  readonly createPermissionAuditStore: typeof createPermissionAuditFilesystemStore;
+  readonly createMayControlEventStore: typeof createMayControlEventFilesystemStore;
+  readonly readMissionJournal: typeof readMissionJournalForDisplay;
+  readonly appendMissionEntry: typeof appendProfileAwareMissionEntryV1;
+  readonly readFuryEvidence: typeof readFuryPlanReviewEvidenceLedgerV1;
+  readonly readDispatchReceipts: typeof readSeatDispatchReceiptsByParentMissionSessionV1;
+  readonly claimDispatchPacket: typeof claimSeatDispatchPacketV1;
+  readonly appendDispatchReceipt: typeof appendSeatDispatchReceiptEntryV1;
+  readonly runMissionCycle: typeof runMissionCycle;
 }
 
 type RunGovernedMayDispatchStepResultEvidenceV1 = Readonly<Record<string, unknown>>;
