@@ -10,7 +10,7 @@ import type { runMissionCycle } from "./mission-runtime-v1.mjs";
 import type {
   appendSeatDispatchReceiptEntryV1,
   claimSeatDispatchPacketV1,
-  readSeatDispatchReceiptsByParentMissionSessionV1,
+  readSeatDispatchReceiptLedgerV1,
 } from "./seat-dispatch-store.mjs";
 import type { readFuryPlanReviewEvidenceLedgerV1 } from "./fury-plan-review-evidence-store.mjs";
 import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "./mission-store.mjs";
@@ -152,7 +152,7 @@ export interface RunGovernedMayDispatchStepTrustedDependenciesV1 {
   readonly readMissionJournal: typeof readMissionJournalForDisplay;
   readonly appendMissionEntry: typeof appendProfileAwareMissionEntryV1;
   readonly readFuryEvidence: typeof readFuryPlanReviewEvidenceLedgerV1;
-  readonly readDispatchReceipts: typeof readSeatDispatchReceiptsByParentMissionSessionV1;
+  readonly readDispatchReceipts: typeof readSeatDispatchReceiptLedgerV1;
   readonly claimDispatchPacket: typeof claimSeatDispatchPacketV1;
   readonly appendDispatchReceipt: typeof appendSeatDispatchReceiptEntryV1;
   readonly runMissionCycle: typeof runMissionCycle;
