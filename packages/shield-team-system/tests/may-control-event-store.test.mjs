@@ -707,13 +707,14 @@ test("factory read returns full value; appendControlEvent returns exact receipt;
   assert.deepEqual(factoryRead, directRead.value);
   assert.equal(factoryRead.orderedEvents.length, 1);
 
-  const invalidStore = createMayControlEventFilesystemStore({
-    repositoryRoot,
-    sessionId: "not valid session",
-    lockOwnerId: "owner:issue-171",
-  });
-  await assert.rejects(
-    () => invalidStore.read(),
+  assert.throws(
+    () => {
+      createMayControlEventFilesystemStore({
+        repositoryRoot,
+        sessionId: "not valid session",
+        lockOwnerId: "owner:issue-171",
+      });
+    },
     (error) => error instanceof MayControlEventStoreError && error.code === "malformed_input",
   );
   await assert.rejects(

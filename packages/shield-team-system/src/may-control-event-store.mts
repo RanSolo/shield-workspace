@@ -1263,12 +1263,11 @@ export function createMayControlEventFilesystemStore(input: MayControlEventFiles
   const inputSnapshot = snapshotDescriptorSafeObject(input);
   const checkedInput = inputSnapshot.state === "invalid" ? inputSnapshot : validateScopeInput(inputSnapshot.value, "scope input");
   const resolvedInput = checkedInput.state === "invalid" ? checkedInput : snapshotMayControlEventScopeInput(checkedInput.value);
-  const snapshotSessionId = resolvedInput.state === "valid" ? resolvedInput.value.sessionId : "";
+  if (resolvedInput.state === "invalid") throwClosedStoreError(resolvedInput);
 
   return {
-    sessionId: snapshotSessionId,
+    sessionId: resolvedInput.value.sessionId,
     async read() {
-      if (resolvedInput.state === "invalid") throwClosedStoreError(resolvedInput);
       const result = await readMayControlEventLogV1({
         repositoryRoot: resolvedInput.value.repositoryRoot,
         sessionId: resolvedInput.value.sessionId,
@@ -1277,7 +1276,6 @@ export function createMayControlEventFilesystemStore(input: MayControlEventFiles
       return result.value;
     },
     async appendControlEvent(event) {
-      if (resolvedInput.state === "invalid") throwClosedStoreError(resolvedInput);
       const result = await appendMayControlEventIfAbsentV1({ ...resolvedInput.value, event });
       if (result.state === "invalid") throwClosedStoreError(result);
       return result.value.receipt;
