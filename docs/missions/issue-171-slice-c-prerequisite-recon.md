@@ -44,7 +44,9 @@ The new implementation-authority record must be the positive Wheels Up source;
 mission governance authorization, Wheels Off eligibility, review publication,
 packet prose, host callbacks, audit receipts, control events, and Fury evidence
 remain non-substitutable. Runtime bindings must reference the exact active Wheels
-Up authorization and may narrow but never widen its scope.
+Up authorization independently from their own signed binding authorization and
+may narrow but never widen its scope. The immutable grant requires an explicit
+signed revocation path that removes linked bindings from the active projection.
 
 ## Deferred composition
 
@@ -53,4 +55,3 @@ later load the replayed authority and active binding into the production
 permission context. Issue #170 must later compose the dispatch. No CLI command,
 model invocation, tool effect, migration, merge, deployment, release, or external
 run belongs to this prerequisite.
-

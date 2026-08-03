@@ -24,30 +24,48 @@ caller assertion.
    Coulson-authorized Wheels Up grant to mission, subject, repository, canonical
    writable root, branch, mission revision, artifact/base/head revisions, May
    seat participation, approved relative paths, action IDs, effect classes,
-   capabilities, validation-command IDs, lifecycle, and journal sequence.
+   effect keys, capabilities, validation-command IDs, lifecycle, and journal
+   sequence. One mission may have exactly one immutable grant; changed scope or
+   revision requires a new mission.
 2. Add a Coulson-signed authorization envelope and verifier for that exact
    authority. Its only positive kind is `wheels_up`; withheld authority remains
    absence. It is not mission authorization, Wheels Off, review publication, or
    final acceptance.
-3. Extend `ProfileAwareMissionEntryV1` with three schema-9 entries:
-   `implementation.authorized`, `runtime.binding_recorded`, and
-   `runtime.binding_superseded`.
+3. Extend `ProfileAwareMissionEntryV1` with four schema-9 entries:
+   `implementation.authorized`, `implementation.authority_revoked`,
+   `runtime.binding_recorded`, and `runtime.binding_superseded`. Revocation is a
+   separately signed Coulson event for the exact authority ID/digest/sequence;
+   it atomically removes all linked bindings from the active projection.
 4. Extend `ProfileAwareProjectionV1` with the replayed implementation authority,
    all runtime-binding versions, and exactly the active bindings. Replay is the
    sole canonical producer of these projections.
-5. Reuse `RuntimeBinding`, `computeRuntimeBindingDigest`, and the signed
-   initial/supersession invariants already proven for schemas 6–8. Extract shared
-   pure validation only where required; do not route schema 9 through
-   `replaySupervisedMissionJournal`, mutate legacy behavior, or create a parallel
-   binding store.
-6. A schema-9 May binding is valid only when its `coulsonAuthorizationRef`
-   identifies the active exact Wheels Up record and its repository, root, branch,
-   revisions, seat, and approved scope are equal to or narrower than that record.
-7. Supersession requires exactly one active prior binding with the same binding
+5. Keep `RuntimeBinding` unchanged and embed it in a closed
+   `Schema9RuntimeBindingV1` wrapper. The wrapper additionally carries
+   `implementationAuthorityRef`, `implementationAuthorityDigest`,
+   `implementationAuthoritySequence`, approved relative paths,
+   validation-command IDs, model ID, base revision, and head revision. Its
+   complete canonical digest is covered by a schema-9 signed binding envelope.
+6. Preserve authorization identities independently. The embedded
+   `RuntimeBinding.coulsonAuthorizationRef` equals the schema-9 binding
+   authorization's own unique `authorizationId`, as in schemas 6–8. The three
+   `implementationAuthority*` wrapper fields separately exact-match the active
+   Wheels Up record. Neither ID may substitute for the other.
+7. Reuse the exported `computeRuntimeBindingDigest` and `validateRuntimeBinding`
+   plus the initial/supersession invariants proven for schemas 6–8. Exact-match
+   mission, subject, seat=`may`, repository, root, branch,
+   mission/artifact/base/head revisions; require paths, action IDs, effect
+   classes, effect keys, capabilities, and validation-command IDs to be
+   subset-or-equal to the Wheels Up grant; and require May seat, reasoning
+   runtime, model, and tool-executor identities to be exact and mutually
+   distinct.
+8. Supersession requires exactly one active prior binding with the same binding
    ID and May seat, version incremented by one, explicit prior ID/version in the
    signed payload, and atomic projection of the prior version as superseded.
    Runtime/model or executor changes therefore require a signed supersession.
-8. `review-publication.v1` stays unchanged. Its `wheels_up` discriminator remains
+9. Reject reauthorization, duplicate revocation, post-revocation binding
+   operations, and authority or binding use after execution completion or final
+   acceptance. Same-mission authority supersession is unsupported.
+10. `review-publication.v1` stays unchanged. Its `wheels_up` discriminator remains
    bounded review-publication authority and is not accepted as implementation
    authority.
 
@@ -57,11 +75,13 @@ caller assertion.
   closed authority shape, canonical digest, strict validator, and signed Coulson
   verifier.
 - Update `packages/shield-team-system/src/profile-aware-mission-v1.mts` for the
-  three entry constructors, schema-9 replay, projection state, ordering, scope
+  four entry constructors, schema-9 replay, projection state, ordering, scope
   narrowing, lifecycle, and supersession.
-- Update `packages/shield-team-system/src/mission-v2.mts` only if needed to
-  export shared runtime-binding authorization validation/digest helpers without
-  changing schemas 2–8 behavior.
+- Keep `packages/shield-team-system/src/mission-v2.mts` unchanged. Import its
+  existing exported `computeRuntimeBindingDigest`; import
+  `validateRuntimeBinding` from `permission-v1.mts`. Implement schema-9 signing
+  and replay in the new/profile-aware modules without routing entries through
+  supervised replay.
 - Update `packages/shield-team-system/package.json` and
   `packages/shield-team-system/tests/package-surface.test.mjs` with one explicit
   `./implementation-authority` export for the new contract.
@@ -97,18 +117,31 @@ Constructors and replay fail closed in this order:
 - Governance approval, Wheels Off, review publication (including its
   `wheels_up` kind), Fury evidence, host assertions, and caller prose cannot
   produce implementation authority.
-- A valid initial May binding replays active only when exact-bound to the current
-  Wheels Up authority; overbroad path, action, effect, capability, validation,
-  repository, root, branch, revision, runtime, executor, or seat values fail.
+- Wheels Up is accepted only after `governance.decided` and before execution
+  starts. Initial binding is accepted only after active Wheels Up and before
+  execution starts. Every signed payload binds the exact next journal sequence,
+  uses a unique authorization ID, and has a timestamp exactly equal to its
+  journal entry.
+- A valid initial May binding replays active only when its independent binding
+  authorization and Wheels Up reference both verify; overbroad path, action,
+  effect, capability, validation, or mismatched repository, root, branch,
+  revision, runtime, model, executor, or seat values fail.
 - Valid supersession closes the prior binding and activates exactly version N+1;
   skipped versions, wrong prior identity, duplicate active bindings, runtime or
   executor substitution without supersession, stale authorization, and replay
-  reordering fail closed.
+  reordering fail closed. Supersession is allowed only while Wheels Up is active
+  and execution has not completed or reached final acceptance.
+- Valid revocation makes the immutable Wheels Up grant inactive and atomically
+  removes every linked binding from `activeRuntimeBindings`. Reauthorization,
+  duplicate revocation, and binding operations after revocation fail closed.
 - Schema-6-through-8 constructor/replay behavior remains byte-for-byte and
   semantically unchanged; schema-9 records cannot enter the supervised replay
   path and legacy records cannot enter profile-aware replay.
 - Replay is deterministic across restart and returns copies that cannot mutate
   authoritative state.
+- Replay proves only signed journal-internal identity and ordering. Live root,
+  branch, filesystem, and HEAD freshness observation is explicitly deferred to
+  #171 Slice C.
 
 ## Validation commands
 
