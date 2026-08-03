@@ -264,8 +264,8 @@ export async function readInteractivePasscode(
   },
   outputStream: { write: (output: string) => void },
 ): Promise<string> {
-  const setupFailureMessage = "Passcode prompt failed.";
-  outputStream.write("Passcode: ");
+  const setupFailureMessage = "Passcode prompt setup failed.";
+  const cleanupFailureMessage = "Passcode prompt cleanup failed.";
   return await new Promise<string>((resolve, reject) => {
     let settled = false;
     let finished = false;
@@ -277,7 +277,7 @@ export async function readInteractivePasscode(
     let cleanupFailure: MissionCliError | null = null;
 
     const registerCleanupFailure = () => {
-      if (!cleanupFailure) cleanupFailure = new MissionCliError(setupFailureMessage);
+      if (!cleanupFailure) cleanupFailure = new MissionCliError(cleanupFailureMessage);
     };
 
     const attemptCleanupAction = (action: () => void): void => {
@@ -356,6 +356,7 @@ export async function readInteractivePasscode(
     };
 
     try {
+      outputStream.write("Passcode: ");
       inputStream.setRawMode(true);
       inputStream.on("data", onData);
       isResuming = true;
