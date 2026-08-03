@@ -7,8 +7,9 @@
 - Base revision: `f05b92f4f4ad7535d60289a5d2cde2493fbfd820`
 - Branch: `agent/issue-170`
 - Scope: issue #170 only
-- Status: Fury's first review returned `REVISE`; all five blocking findings are
-  incorporated below and await exact corrected-revision rereview.
+- Status: Fury passed the corrected plan, then implementation exposed one
+  restart-attribution gap at exact head `4370004ecc7d5406367a9558acdb363dee8828c9`.
+  This amendment incorporates Fury's narrow read-only ledger correction.
 
 ## Fury reconciliation
 
@@ -94,7 +95,8 @@ packet.
 2. Read/replay the schema-9 journal and bind the durable mission, subject, and
    mission revision without assuming the current sequence is the original
    dispatch sequence.
-3. Read/replay the durable Fury evidence ledger and dispatch receipt log before
+3. Read/replay the durable Fury evidence ledger and the validated canonical raw
+   dispatch receipt ledger through `readSeatDispatchReceiptLedgerV1` before
    current-head evaluation. Resolve a unique receipt for this mission revision
    and Fury-bound blueprint identity. Recover its pinned original cycle sequence
    plus the caller-independent parent/packet identities from validated input
@@ -261,6 +263,16 @@ as a terminal dispatch receipt.
   and report lock-release or durability uncertainty as `recovery_required`.
   It must reject legacy/mixed journals and must not modify the existing legacy
   append contract.
+- Update `packages/shield-team-system/src/seat-dispatch-store.mts` with one
+  read-only `readSeatDispatchReceiptLedgerV1(scope)` API that exposes the
+  already validated canonical `entries` and `projections` returned by the
+  private store replay. Export it through
+  `packages/shield-team-system/src/dispatch-receipts.mts`. This is the sole
+  exception to the receipt-store reuse-only boundary and grants no write,
+  claim, attribution, or execution authority.
+- Update `packages/shield-team-system/tests/seat-dispatch-store.test.mjs` with
+  focused restart, malformed-log, mixed-scope, unsafe-path, and raw-ledger Fury
+  attribution coverage.
 - Update `packages/shield-team-system/tests/mission-store.test.mjs` with focused
   schema-9 append, concurrency, stale sequence, unsafe path, short write/sync,
   exact readback, and uncertain lock-release coverage.
@@ -269,11 +281,12 @@ as a terminal dispatch receipt.
 - Update `packages/shield-team-system/PUBLIC_API.md`.
 - Add only this mission brief, recon, and plan under `docs/missions/`.
 
-Existing authority, Fury evidence, permission, runner, dispatch-store,
-May-control, Helicarrier, local-tool, and GitHub modules are reuse-only. The
-schema-9 mission-store append is the sole prerequisite primitive included in
-this PR because Fury found it absent. Other edits require a concrete Fury
-finding showing that composition is otherwise impossible.
+Existing authority, Fury evidence, permission, runner, May-control,
+Helicarrier, local-tool, and GitHub modules are reuse-only. The schema-9
+mission-store append and read-only raw dispatch-ledger reader are the only
+prerequisite primitives included because Fury found both absent. No other
+existing contract may be changed without a concrete Fury finding showing that
+composition is otherwise impossible.
 
 ## Focused acceptance tests
 

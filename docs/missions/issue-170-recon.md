@@ -10,6 +10,12 @@
 
 ## Observed facts
 
+- Implementation discovery at `4370004ecc7d5406367a9558acdb363dee8828c9`:
+  `evaluateFuryPlanReviewEvidenceV1` requires raw receipt events for independent
+  attribution, while every exported restart-safe receipt reader exposed only
+  projections. Fury confirmed there was no valid existing composition and
+  required one read-only validated raw-ledger API as the smallest correction.
+
 1. The original mission remains active in the primary durable journal. It is
    supervised/authorized and running. This run resumes that mission; it does
    not create a second `mission:issue-170` identity.
@@ -67,4 +73,3 @@ must therefore come from strict ordering, exact readback, immutable identities,
 fresh pre-effect revalidation, explicit terminal receipts, and a closed
 `recovery_required` result after any uncertain write. The implementation must
 not promise transactionality that the existing contracts do not provide.
-
