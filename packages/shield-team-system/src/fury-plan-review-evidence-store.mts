@@ -362,6 +362,16 @@ async function acquireLock(
     await handle.sync();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      try {
+        const stats = await lstat(paths.lockPath);
+        if (stats.isSymbolicLink() || !stats.isFile()) {
+          return invalid("unsafe_path", "Evidence ledger lock path is unsafe.");
+        }
+      } catch {
+        return invalid("recovery_required", "Evidence ledger lock target could not be classified safely.");
+      }
+    }
     return invalid(code === "EEXIST" ? "evidence_lock_held" : "recovery_required",
       code === "EEXIST" ? "Evidence ledger lock is already held." : `Evidence lock acquisition failed: ${code ?? "unknown_error"}.`);
   } finally {

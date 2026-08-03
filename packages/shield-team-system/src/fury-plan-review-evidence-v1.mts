@@ -337,7 +337,6 @@ function reviewKey(recordValue: FuryPlanReviewEvidenceV1): string {
     repositoryId: recordValue.repositoryId,
     branch: recordValue.branch,
     prNumber: recordValue.prNumber,
-    planDigest: recordValue.planDigest,
     blueprintArtifactId: recordValue.blueprintArtifactId,
     artifactRevisionId: recordValue.artifactRevisionId,
     repositoryRevisionId: recordValue.repositoryRevisionId,
@@ -431,8 +430,12 @@ export function deriveFuryPlanReviewEvidenceV1(input: unknown): FuryPlanReviewEv
     const dispatchIdentity = normalizeDispatchIdentity(value.dispatchIdentity);
     const normalizedGate = normalizeFuryPlanGateInputV1(value.planGate);
     if (binding === null || dispatchIdentity === null || normalizedGate.state !== "valid" ||
-        normalizedGate.planGate === null || !gateMatchesBinding(normalizedGate.planGate, binding) ||
-        !dispatchMatchesBinding(dispatchIdentity, binding)) return creationInvalid("INVALID_REVIEW_EVIDENCE");
+        normalizedGate.planGate === null || !gateMatchesBinding(normalizedGate.planGate, binding)) {
+      return creationInvalid("INVALID_REVIEW_EVIDENCE");
+    }
+    if (!dispatchMatchesBinding(dispatchIdentity, binding)) {
+      return creationInvalid("INVALID_REVIEW_ATTRIBUTION");
+    }
     const attribution = evaluateSeatDispatchAttributionV1({
       ...dispatchIdentity,
       artifact: normalizedGate.planGate,

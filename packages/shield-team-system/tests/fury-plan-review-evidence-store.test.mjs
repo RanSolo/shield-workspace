@@ -233,6 +233,20 @@ test("symlinked audit path fails closed before append", async () => {
   assert.equal(result.code, "unsafe_path");
 });
 
+test("symlinked lock path fails closed as unsafe without touching its target", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-fury-evidence-lock-symlink-"));
+  const target = join(await mkdtemp(join(tmpdir(), "shield-fury-evidence-lock-target-")), "target");
+  await mkdir(dirname(ledgerPath(repositoryRoot)), { recursive: true });
+  await writeFile(target, "outside\n", "utf8");
+  await symlink(target, `${ledgerPath(repositoryRoot)}.lock`);
+  const result = await appendFuryPlanReviewEvidenceIfAbsentV1({
+    ...scope(repositoryRoot), evidence: evidence(),
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "unsafe_path");
+  assert.equal(await readFile(target, "utf8"), "outside\n");
+});
+
 test("lock release failure overrides a durable append with recovery_required", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-fury-evidence-release-"));
   const record = evidence();

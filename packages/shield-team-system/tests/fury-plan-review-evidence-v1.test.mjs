@@ -210,6 +210,16 @@ test("caller PASS cannot substitute for the opaque candidate or absent durable e
   );
 });
 
+test("wrong accountable reviewer seat is an attribution failure", () => {
+  const identity = dispatchIdentity({ accountableSeatId: "may" });
+  const result = create({ dispatchIdentity: identity, rawReceiptEntries: receiptEntries(identity) });
+  assert.deepEqual(result, {
+    state: "invalid",
+    authority: "non_authoritative",
+    reasonCodes: ["INVALID_REVIEW_ATTRIBUTION"],
+  });
+});
+
 test("digest mismatch, stale revision, and absent receipt fail closed", () => {
   const created = create();
   assert.equal(created.state, "created");
