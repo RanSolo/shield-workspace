@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdtemp, mkdir, open, realpath, symlink, unlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdtemp,
+  mkdir,
+  open,
+  realpath,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -176,6 +187,15 @@ async function runMayControlMockedAppendScenario(scenario) {
               const error = new Error("simulated lock marker sync failure");
               error.code = "EIO";
               throw error;
+            };
+          }
+
+          if (scenario === "lock-path-replaced-with-matching-marker" && isWrite && isLockPath) {
+            const originalSync = handle.sync.bind(handle);
+            handle.sync = async () => {
+              await originalSync();
+              await realFs.unlink(lockPathForChecks);
+              await realFs.writeFile(lockPathForChecks, markerForOwner, "utf8");
             };
           }
 
@@ -860,6 +880,26 @@ test("repositoryRoot path validation rejects relative, non-directory, symlink, a
   assert.equal(unwritableAppend.code, "may_control_event_unavailable");
 });
 
+test("absolute repository root without read/write access is rejected before lockable mutation", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-may-control-readwrite-access-"));
+  const sessionId = "session:issue-171:readwrite-access";
+  await chmod(repositoryRoot, 0o500);
+
+  const read = await readMayControlEventLogV1({ repositoryRoot, sessionId });
+  assert.equal(read.state, "invalid", read.errors?.join(" "));
+  assert.equal(read.code, "may_control_event_unavailable");
+
+  const append = await appendMayControlEventIfAbsentV1({
+    repositoryRoot,
+    sessionId,
+    lockOwnerId: "owner:issue-171",
+    event: mkEvent(sessionId, 1, "may_control_started"),
+  });
+  assert.equal(append.state, "invalid", append.errors?.join(" "));
+  assert.equal(append.code, "may_control_event_unavailable");
+  await assert.rejects(() => lstat(join(repositoryRoot, ".shield")), { code: "ENOENT" });
+});
+
 test("descriptor safety rejects accessor/symbol/non-enumerable/sparse/unsafe-prototype/proxy/cycle shapes", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-may-control-descriptor-"));
   const sessionId = "session:issue-171:descriptor-safety";
@@ -1035,6 +1075,12 @@ test("append returns recovery_required when lock marker is short written", async
 
 test("append returns recovery_required when lock marker sync fails", async () => {
   const result = await runMayControlMockedAppendScenario("lock-marker-sync-failure");
+  assert.equal(result.state, "invalid", result.errors?.join(" "));
+  assert.equal(result.code, "recovery_required");
+});
+
+test("append returns recovery_required when lock path is replaced after marker write with matching marker", async () => {
+  const result = await runMayControlMockedAppendScenario("lock-path-replaced-with-matching-marker");
   assert.equal(result.state, "invalid", result.errors?.join(" "));
   assert.equal(result.code, "recovery_required");
 });

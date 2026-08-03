@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
+import { access, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { canonicalJson } from "./mission-v2.mjs";
@@ -427,6 +427,15 @@ async function resolveStorePaths(
     repositoryRoot = await realpath(resolvedInputRoot);
   } catch (error) {
     return invalid("may_control_event_unavailable", `May control event repository root is unavailable: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+  }
+
+  try {
+    await access(repositoryRoot, constants.R_OK | constants.W_OK);
+  } catch (error) {
+    return invalid(
+      "may_control_event_unavailable",
+      `May control event repository root is unavailable: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`,
+    );
   }
 
   const shieldDirectory = resolve(repositoryRoot, ".shield");
@@ -1163,9 +1172,19 @@ async function acquireLock(
     const written = await handle.write(marker, null, "utf8");
     if (written.bytesWritten !== markerBytes) return invalid("recovery_required", "May control event lock marker write was incomplete.");
     await handle.sync();
+    const handleStats = await handle.stat();
+    if (!handleStats.isFile()) {
+      return invalid("recovery_required", "May control event lock must be a regular file.");
+    }
     const stats = await lstat(paths.lockPath);
     if (stats.isSymbolicLink() || !stats.isFile()) {
       return invalid("recovery_required", "May control event lock must be a regular file.");
+    }
+    if (
+      Number(handleStats.ino) !== Number(stats.ino) ||
+      Number(handleStats.dev) !== Number(stats.dev)
+    ) {
+      return invalid("recovery_required", "May control event lock path identity changed during acquisition.");
     }
     let markerHandle;
     let markerRead = "";
