@@ -65,6 +65,10 @@
       "types": "./dist/permission-v1.d.mts",
       "import": "./dist/permission-v1.mjs"
     },
+    "./schema9-permission-context": {
+      "types": "./dist/schema9-permission-context-v1.d.mts",
+      "import": "./dist/schema9-permission-context-v1.mjs"
+    },
     "./roles": {
       "types": "./dist/role-taxonomy-v1.d.mts",
       "import": "./dist/role-taxonomy-v1.mjs"

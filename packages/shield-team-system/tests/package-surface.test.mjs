@@ -27,6 +27,7 @@ test("exports only the documented public package specifiers", async () => {
     "./adapter",
     "./runner",
     "./permission",
+    "./schema9-permission-context",
     "./roles",
     "./permission-audit",
     "./review-publication",
@@ -62,6 +63,7 @@ test("loads every supported runtime specifier", async () => {
   const adapter = await import("@shield/team-system/adapter");
   const runner = await import("@shield/team-system/runner");
   const permission = await import("@shield/team-system/permission");
+  const schema9PermissionContext = await import("@shield/team-system/schema9-permission-context");
   const roles = await import("@shield/team-system/roles");
   const permissionAudit = await import("@shield/team-system/permission-audit");
   const reviewPublication = await import("@shield/team-system/review-publication");
@@ -118,6 +120,7 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof runner.runRunnerCycle, "function");
   assert.equal(permission.PERMISSION_CONTRACT_VERSION, 1);
   assert.equal(typeof permission.evaluatePermission, "function");
+  assert.equal(typeof schema9PermissionContext.loadSchema9PermissionContextV1, "function");
   assert.equal(roles.ROLE_TAXONOMY_SCHEMA_VERSION, 1);
   assert.equal(roles.ROLE_TAXONOMY_CONTRACT_VERSION, "roles.v1");
   assert.deepEqual(roles.CANONICAL_ROLE_IDS, [
@@ -216,6 +219,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/runner-v1.d.mts",
     "dist/permission-v1.mjs",
     "dist/permission-v1.d.mts",
+    "dist/schema9-permission-context-v1.mjs",
+    "dist/schema9-permission-context-v1.d.mts",
     "dist/role-taxonomy-v1.mjs",
     "dist/role-taxonomy-v1.d.mts",
     "dist/permission-audit-v1.mjs",
@@ -286,6 +291,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
+    import { loadSchema9PermissionContextV1, type Schema9PermissionContextInput, type Schema9PermissionContextResult } from "@shield/team-system/schema9-permission-context";
     import { CANONICAL_ROLE_IDS, CANONICAL_ROLE_REGISTRY_V1, ROLE_TAXONOMY_CONTRACT_VERSION, isCanonicalRoleId, validateRoleAssignment, type CanonicalRoleId, type RoleAssignmentScope, type RoleRoute } from "@shield/team-system/roles";
     import { MISSION_PROFILE_CONTRACT_VERSION, type MissionProfileV1, type MissionRoleDefinitionV1, type MissionRoleId, MISSION_ROLE_IDS, CANONICAL_MISSION_ROLE_REGISTRY_V1 } from "@shield/team-system/mission-profile";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
@@ -375,6 +381,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const permissionContract: 1 = PERMISSION_CONTRACT_VERSION;
     const runtimeBinding = null as unknown as RuntimeBinding;
     const evaluate = evaluatePermission;
+    const schema9PermissionContextInput = null as unknown as Schema9PermissionContextInput;
+    const schema9PermissionContextResult = null as unknown as Schema9PermissionContextResult;
+    const loadSchema9Context = loadSchema9PermissionContextV1;
     const auditSchema: 1 = PERMISSION_AUDIT_SCHEMA_VERSION;
     const auditRecord = null as unknown as PermissionAuditRecord;
     const replayAudit = replayPermissionAuditLedger;
@@ -513,7 +522,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
