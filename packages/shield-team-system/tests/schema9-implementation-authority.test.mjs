@@ -342,4 +342,54 @@ test("binding signature failure precedes active-authority scope failure", () => 
   assert.equal(result.state, "invalid");
   assert.match(result.errors.join(" "), /signature/i);
   assert.doesNotMatch(result.errors.join(" "), /scope/i);
+  const signedResult = verifySignedSchema9RuntimeBindingAuthorizationV1(
+    signPayload(payload, trusted.privateKey),
+    wrapper,
+    {
+      missionId: authorityPayload.missionId,
+      subjectId: authorityPayload.subjectId,
+      missionRevisionId: authorityPayload.missionRevisionId,
+      trustedBindings: [trusted.binding],
+      implementationAuthority: authorityPayload,
+      implementationAuthorityActive: true,
+      lastSequence: 2,
+    },
+    null,
+    null,
+  );
+  assert.equal(signedResult.state, "invalid");
+  assert.match(signedResult.errors.join(" "), /scope/i);
+});
+
+test("stale repository identity precedes a bad binding signature", () => {
+  const trusted = authoritySigner();
+  const authorityPayload = authority({ signingKeyRef: trusted.binding.signingKeyRef });
+  for (const [field, value] of [
+    ["repositoryId", "repo:stale"],
+    ["canonicalWritableRoot", "/workspace/stale"],
+    ["branch", "stale-branch"],
+    ["artifactRevisionId", "sha256:stale_artifact"],
+  ]) {
+    const binding = runtimeBinding({ [field]: value });
+    const wrapper = schema9Wrapper(authorityPayload, { binding });
+    const payload = schema9AuthorizationInput(authorityPayload, wrapper, binding, trusted.binding.publicKeySpkiBase64);
+    const result = verifySignedSchema9RuntimeBindingAuthorizationV1(
+      { payload, signatureBase64: "invalid-signature" },
+      wrapper,
+      {
+        missionId: authorityPayload.missionId,
+        subjectId: authorityPayload.subjectId,
+        missionRevisionId: authorityPayload.missionRevisionId,
+        trustedBindings: [trusted.binding],
+        implementationAuthority: authorityPayload,
+        implementationAuthorityActive: true,
+        lastSequence: 2,
+      },
+      null,
+      null,
+    );
+    assert.equal(result.state, "invalid", field);
+    assert.match(result.errors.join(" "), new RegExp(field), field);
+    assert.doesNotMatch(result.errors.join(" "), /signature/i, field);
+  }
 });

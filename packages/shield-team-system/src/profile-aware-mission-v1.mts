@@ -31,6 +31,7 @@ import {
   type SignedImplementationAuthorityRevocationV1,
   type SignedImplementationAuthorityV1,
   type SignedSchema9RuntimeBindingAuthorization,
+  validateSignedSchema9RuntimeBindingAuthorizationEnvelopeV1,
   validateSchema9RuntimeBindingV1,
   verifySignedImplementationAuthorityRevocationV1,
   verifySignedImplementationAuthorityV1,
@@ -380,23 +381,16 @@ export function createProfileAwareRuntimeBindingRecordedEntryV1(input: {
   binding: Schema9RuntimeBindingV1;
   authorization: SignedSchema9RuntimeBindingAuthorization;
 }): ProfileAwareMissionEntryV1 {
-  if (input.projection.schemaVersion !== 9 ||
-      input.projection.implementationAuthorityState !== "authorized" ||
-      input.projection.execution !== "not-started" ||
-      input.projection.finalAcceptance !== "waiting") {
-    throw new Error("Profile-aware runtime binding requires an active Wheels Up authority and pre-execution mission.");
-  }
   const checkedBinding = validateSchema9RuntimeBindingV1(input.binding);
   if (checkedBinding.state === "invalid") throw new Error(checkedBinding.errors.join(" "));
+  const checkedEnvelope = validateSignedSchema9RuntimeBindingAuthorizationEnvelopeV1(input.authorization);
+  if (checkedEnvelope.state === "invalid") throw new Error(checkedEnvelope.errors.join(" "));
   const binding = checkedBinding.value;
   if (!input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.seatId)) {
     throw new Error("Profile-aware runtime binding seat is not a mission participant.");
   }
   if (input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.reasoningRuntimeId || seatId === binding.modelId || seatId === binding.binding.toolExecutorId)) {
     throw new Error("Runtime binding identities cannot be mission participants.");
-  }
-  if (binding.binding.bindingVersion !== 1 || binding.binding.lifecycleState !== "active" || binding.binding.activeThroughSequence !== null) {
-    throw new Error("Runtime binding must be the initial active binding version 1.");
   }
   if (binding.binding.seatId !== "may") {
     throw new Error("Runtime binding seat must be may.");
@@ -416,12 +410,21 @@ export function createProfileAwareRuntimeBindingRecordedEntryV1(input: {
       missionRevisionId: input.projection.brief.revisionId,
       trustedBindings: input.trustedBindings,
       implementationAuthority: input.projection.implementationAuthority as ImplementationAuthorityV1,
+      implementationAuthorityActive: input.projection.implementationAuthorityState === "authorized",
       lastSequence: input.projection.lastSequence,
       },
     null,
     null,
   );
   if (checkedAuthority.state === "invalid") throw new Error(checkedAuthority.errors.join(" "));
+  if (input.projection.schemaVersion !== 9 ||
+      input.projection.execution !== "not-started" ||
+      input.projection.finalAcceptance !== "waiting") {
+    throw new Error("Profile-aware runtime binding requires an active Wheels Up authority and pre-execution mission.");
+  }
+  if (binding.binding.bindingVersion !== 1 || binding.binding.lifecycleState !== "active" || binding.binding.activeThroughSequence !== null) {
+    throw new Error("Runtime binding must be the initial active binding version 1.");
+  }
   if (canonicalJson(checkedAuthority.value.timestamp) !== canonicalJson(input.authorization.payload.timestamp)) {
     throw new Error("Profile-aware runtime binding timestamp is malformed.");
   }
@@ -450,30 +453,12 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
   binding: Schema9RuntimeBindingV1;
   authorization: SignedSchema9RuntimeBindingAuthorization;
 }): ProfileAwareMissionEntryV1 {
-  if (input.projection.schemaVersion !== 9 ||
-      input.projection.implementationAuthorityState !== "authorized" ||
-      !["not-started", "running"].includes(input.projection.execution) ||
-      input.projection.finalAcceptance !== "waiting") {
-    throw new Error("Profile-aware runtime binding supersession requires an active Wheels Up authority and pre-completion mission.");
-  }
   const checkedBinding = validateSchema9RuntimeBindingV1(input.binding);
   if (checkedBinding.state === "invalid") throw new Error(checkedBinding.errors.join(" "));
+  const checkedEnvelope = validateSignedSchema9RuntimeBindingAuthorizationEnvelopeV1(input.authorization);
+  if (checkedEnvelope.state === "invalid") throw new Error(checkedEnvelope.errors.join(" "));
   const binding = checkedBinding.value;
   if (!input.projection.implementationAuthority) throw new Error("Profile-aware runtime binding supersession requires an active implementation authority.");
-  const prior = input.projection.activeRuntimeBindings.filter((candidate) =>
-    candidate.binding.bindingId === input.priorBindingId &&
-    candidate.binding.bindingVersion === input.priorBindingVersion,
-  );
-  if (prior.length !== 1) throw new Error("Profile-aware runtime binding supersession requires exactly one active prior binding.");
-  const active = prior[0];
-  if (binding.binding.bindingId !== active.binding.bindingId ||
-      binding.binding.bindingVersion !== active.binding.bindingVersion + 1 ||
-      binding.binding.bindingVersion === 1 ||
-      binding.binding.seatId !== active.binding.seatId ||
-      binding.binding.lifecycleState !== "active" ||
-      binding.binding.activeThroughSequence !== null) {
-    throw new Error("Runtime binding replacement must atomically increment the same active binding.");
-  }
   if (binding.binding.seatId !== "may") {
     throw new Error("Runtime binding seat must be may.");
   }
@@ -503,12 +488,32 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
       missionRevisionId: input.projection.brief.revisionId,
       trustedBindings: input.trustedBindings,
       implementationAuthority: input.projection.implementationAuthority as ImplementationAuthorityV1,
+      implementationAuthorityActive: input.projection.implementationAuthorityState === "authorized",
       lastSequence: input.projection.lastSequence,
     },
     input.priorBindingId,
     input.priorBindingVersion,
   );
   if (checkedAuthority.state === "invalid") throw new Error(checkedAuthority.errors.join(" "));
+  if (input.projection.schemaVersion !== 9 ||
+      !["not-started", "running"].includes(input.projection.execution) ||
+      input.projection.finalAcceptance !== "waiting") {
+    throw new Error("Profile-aware runtime binding supersession requires an active Wheels Up authority and pre-completion mission.");
+  }
+  const prior = input.projection.activeRuntimeBindings.filter((candidate) =>
+    candidate.binding.bindingId === input.priorBindingId &&
+    candidate.binding.bindingVersion === input.priorBindingVersion,
+  );
+  if (prior.length !== 1) throw new Error("Profile-aware runtime binding supersession requires exactly one active prior binding.");
+  const active = prior[0];
+  if (binding.binding.bindingId !== active.binding.bindingId ||
+      binding.binding.bindingVersion !== active.binding.bindingVersion + 1 ||
+      binding.binding.bindingVersion === 1 ||
+      binding.binding.seatId !== active.binding.seatId ||
+      binding.binding.lifecycleState !== "active" ||
+      binding.binding.activeThroughSequence !== null) {
+    throw new Error("Runtime binding replacement must atomically increment the same active binding.");
+  }
   if (canonicalJson(checkedAuthority.value.timestamp) !== canonicalJson(input.authorization.payload.timestamp)) {
     throw new Error("Profile-aware runtime binding timestamp is malformed.");
   }
@@ -658,6 +663,8 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       const priorBindingId = entry.type === "runtime.binding_recorded" ? null : entry.payload.priorBindingId;
       const priorBindingVersion = entry.type === "runtime.binding_recorded" ? null : entry.payload.priorBindingVersion;
       if (priorBindingId === null && priorBindingVersion !== null || priorBindingId !== null && priorBindingVersion === null) return invalid("malformed", "Runtime binding payload is missing a prior binding identity.");
+      const checkedEnvelope = validateSignedSchema9RuntimeBindingAuthorizationEnvelopeV1(entry.payload.authorization);
+      if (checkedEnvelope.state === "invalid") return checkedEnvelope;
       if (wrapper.binding.seatId !== "may") return invalid("binding_invalid", "Runtime binding seat must be may.");
       if (brief.participants.some(({ seatId }) => seatId === wrapper.binding.reasoningRuntimeId || seatId === wrapper.modelId || seatId === wrapper.binding.toolExecutorId)) return invalid("seat_mismatch", "Runtime binding identities cannot be mission participants.");
       if (!brief.participants.some(({ seatId }) => seatId === wrapper.binding.seatId)) return invalid("seat_mismatch", "Runtime binding seat is not a mission participant.");
@@ -671,6 +678,7 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
           missionRevisionId: brief.revisionId,
           trustedBindings: bindingRegistry.value.bindings,
           implementationAuthority: implementationAuthority!,
+          implementationAuthorityActive: implementationAuthorityState === "authorized",
           lastSequence: index - 1,
         },
         priorBindingId,
@@ -681,7 +689,6 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
           canonicalJson(entry.timestamp) !== canonicalJson(checkedAuthorization.value.timestamp)) {
         return invalid("malformed", "Profile-aware runtime binding timestamp is malformed.");
       }
-      if (implementationAuthorityState !== "authorized") return invalid("authority_invalid", "Runtime binding requires an active implementation authority.");
       if (execution === "completed" || finalAcceptance === "accepted") return invalid("ordering_invalid", "Runtime binding is not allowed after execution completion or final acceptance.");
       const sameBindingId = runtimeBindings.some((candidate) => candidate.binding.bindingId === wrapper.binding.bindingId);
       const activeSeatMatch = activeRuntimeBindings.some((candidate) => candidate.binding.seatId === wrapper.binding.seatId);

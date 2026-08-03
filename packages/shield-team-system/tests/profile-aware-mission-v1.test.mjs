@@ -704,7 +704,7 @@ test("running supersession changes runtime identities and closes the exact histo
     coulsonAuthorizationRef: "authorization:runtime-binding:replacement",
   });
   const wrapper = schema9BindingEnvelope(fixture.current, fixture.implementationAuthority.payload, replacement, {
-    modelId: "model:replacement",
+    modelId: fixture.implementationAuthority.payload.modelId,
   });
   const authorization = schema9BindingAuthorization(
     fixture.current,
@@ -733,7 +733,7 @@ test("running supersession changes runtime identities and closes the exact histo
   assert.equal(projection.runtimeBindings[1].binding.lifecycleState, "active");
   assert.deepEqual(projection.activeRuntimeBindings, [projection.runtimeBindings[1]]);
   assert.equal(projection.activeRuntimeBindings[0].binding.reasoningRuntimeId, "runtime:may:replacement");
-  assert.equal(projection.activeRuntimeBindings[0].modelId, "model:replacement");
+  assert.equal(projection.activeRuntimeBindings[0].modelId, fixture.implementationAuthority.payload.modelId);
   assert.equal(projection.activeRuntimeBindings[0].binding.toolExecutorId, "tool:executor:replacement");
 });
 
@@ -745,7 +745,7 @@ test("runtime binding authorization ids cannot be reused across historical versi
     toolExecutorId: "tool:executor:replacement",
     coulsonAuthorizationRef: fixture.binding.coulsonAuthorizationRef,
   });
-  const wrapper = schema9BindingEnvelope(fixture.current, fixture.implementationAuthority.payload, replacement, { modelId: "model:replacement" });
+  const wrapper = schema9BindingEnvelope(fixture.current, fixture.implementationAuthority.payload, replacement, { modelId: fixture.implementationAuthority.payload.modelId });
   const authorization = schema9BindingAuthorization(
     fixture.current,
     replacement,
@@ -821,6 +821,61 @@ test("runtime event malformed shape precedes revoked-authority state", () => {
     type: "runtime.binding_recorded",
     timestamp: { value: "2026-07-29T15:05:00Z", provenance: "humanRecorded" },
     payload: { binding: {} },
+  }]);
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "malformed");
+});
+
+test("fully signed supersession cannot replace the authority-bound model", () => {
+  const fixture = boundRuntimeFixture();
+  const replacement = schema9RuntimeBindingBase(fixture.current, 4, fixture.implementationAuthority.payload, {
+    bindingVersion: 2,
+    reasoningRuntimeId: "runtime:may:replacement",
+    toolExecutorId: "tool:executor:replacement",
+    coulsonAuthorizationRef: "authorization:runtime-binding:model-mismatch",
+  });
+  const wrapper = schema9BindingEnvelope(fixture.current, fixture.implementationAuthority.payload, replacement, {
+    modelId: "model:replacement",
+  });
+  const authorization = schema9BindingAuthorization(
+    fixture.current,
+    replacement,
+    wrapper,
+    { ...fixture.coulson, ...fixture.coulson.binding },
+    4,
+    3,
+    replacement.coulsonAuthorizationRef,
+    fixture.binding.bindingId,
+    1,
+  );
+  const result = replayProfileAwareMissionJournal([...fixture.entries, {
+    schemaVersion: 9,
+    entryId: `entry:${fixture.current.missionId}:4`,
+    missionId: fixture.current.missionId,
+    sequence: 4,
+    type: "runtime.binding_superseded",
+    timestamp: authorization.payload.timestamp,
+    payload: { priorBindingId: fixture.binding.bindingId, priorBindingVersion: 1, binding: wrapper, authorization },
+  }]);
+  assert.equal(result.state, "invalid");
+  assert.match(result.errors.join(" "), /modelId/);
+});
+
+test("malformed binding authorization precedes absent implementation authority", () => {
+  const current = brief("standard");
+  const coulson = authority("coulson");
+  const begun = createProfileAwareMissionBegunEntry(current, [coulson.binding]);
+  const absentAuthority = trustedAuthorityBinding(current, { ...coulson, ...coulson.binding }, 1).payload;
+  const binding = schema9RuntimeBindingBase(current, 1, absentAuthority);
+  const wrapper = schema9BindingEnvelope(current, absentAuthority, binding);
+  const result = replayProfileAwareMissionJournal([begun, {
+    schemaVersion: 9,
+    entryId: `entry:${current.missionId}:1`,
+    missionId: current.missionId,
+    sequence: 1,
+    type: "runtime.binding_recorded",
+    timestamp: { value: "2026-07-29T15:01:00Z", provenance: "humanRecorded" },
+    payload: { binding: wrapper, authorization: { payload: {}, signatureBase64: "invalid-signature" } },
   }]);
   assert.equal(result.state, "invalid");
   assert.equal(result.code, "malformed");
