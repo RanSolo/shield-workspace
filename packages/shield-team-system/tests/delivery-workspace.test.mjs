@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -6,6 +9,15 @@ import {
   renderMissionHandoff,
   validatePRWorkspaceReceipt,
 } from "../public/github.mjs";
+import { deriveFuryPlanReviewEvidenceV1 } from "../dist/fury-plan-review-evidence-v1.mjs";
+import {
+  appendFuryPlanReviewEvidenceIfAbsentV1,
+  readFuryPlanReviewEvidenceLedgerV1,
+} from "../dist/fury-plan-review-evidence-store.mjs";
+import {
+  createSeatDispatchLifecycleEventV1,
+  createSeatDispatchStartedEventV1,
+} from "../dist/seat-dispatch-receipt-v1.mjs";
 import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 
 const head = "0123456789012345678901234567890123456789";
@@ -72,7 +84,7 @@ function input(overrides = {}) {
       artifactKind: "implementation_blueprint",
       owningSeatId: "may",
     },
-    planGate: null,
+    planGateCandidate: null,
     publicationRequestId: createPublication.requestId,
     publicationCandidateId: "candidate:mission-44:publication",
     publicationSourceRef: "github:pr:45",
@@ -157,6 +169,106 @@ function reconciledGate() {
   return value;
 }
 
+function furyEvidenceBundle(planGate, publication = updatePublication) {
+  const reviewedRevision = planGate.review.reviewedRevisionId;
+  const dispatchIdentity = {
+    receiptId: "receipt:fury:issue-44",
+    dispatchId: "dispatch:fury:issue-44",
+    parentMissionId: "mission-44",
+    parentMissionRevision: publication.request.revisionId,
+    parentSessionId: "session:hill:issue-44",
+    childTaskId: "task:fury:issue-44-plan",
+    childSessionId: "session:fury:issue-44",
+    accountableSeatId: "fury",
+    repositoryId: "RanSolo/shield-workspace",
+    repositoryWorkspaceId: "workspace:issue-44",
+    repositoryRevision: reviewedRevision,
+    subjectId: "issue-44",
+    subjectRevision: reviewedRevision,
+    artifactId: "issue-44-blueprint",
+    artifactRevision: reviewedRevision,
+  };
+  const runtime = {
+    kind: "runtime.host_observed",
+    runtimeId: "runtime:ornith",
+    model: "ornith-1.0-35b",
+    evidenceRefs: ["host:fury:runtime"],
+  };
+  const executor = {
+    kind: "executor.host_observed",
+    executorId: "executor:codex-host",
+    evidenceRefs: ["host:fury:executor"],
+  };
+  const shared = {
+    ...dispatchIdentity,
+    configuredRuntime: { kind: "runtime.configured", runtimeId: runtime.runtimeId, model: runtime.model },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: runtime.runtimeId, model: runtime.model },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: "binding:fury:issue-44" },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
+    runtimeHostObserved: runtime,
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: executor,
+  };
+  const started = createSeatDispatchStartedEventV1({
+    ...shared,
+    inputEvidenceRefs: ["blueprint:issue-44"],
+    timestamp: "2026-07-29T10:03:10Z",
+    logSequence: 0,
+    previousLogDigest: null,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null,
+  });
+  const completed = createSeatDispatchLifecycleEventV1({
+    ...shared,
+    kind: "dispatch.completed",
+    outputEvidenceRefs: ["review:issue-44"],
+    timestamp: "2026-07-29T10:03:11Z",
+    logSequence: 1,
+    previousLogDigest: started.entryDigest,
+    lifecycleSequence: 1,
+    previousLifecycleDigest: started.entryDigest,
+  });
+  const entries = [started, completed];
+  const created = deriveFuryPlanReviewEvidenceV1({
+    planGate,
+    binding: {
+      schemaVersion: 1,
+      missionId: "mission-44",
+      missionRevisionId: publication.request.revisionId,
+      subjectId: "issue-44",
+      repositoryId: "RanSolo/shield-workspace",
+      baseBranch: "main",
+      branch: plan().branchSlug,
+      prNumber: 45,
+      blueprintArtifactId: "issue-44-blueprint",
+      blueprintArtifactPath: plan().missionBriefPath,
+      blueprintArtifactKind: "implementation_blueprint",
+      blueprintOwningSeatId: "may",
+      artifactRevisionId: head,
+      repositoryRevisionId: head,
+    },
+    dispatchIdentity,
+    rawReceiptEntries: entries,
+  });
+  assert.equal(created.state, "created");
+  const evidence = created.evidence;
+  return {
+    evidence,
+    entries,
+    candidate: {
+      candidateSchemaVersion: 1,
+      contractVersion: "fury.plan-review-evidence.v1",
+      evidenceId: evidence.evidenceId,
+      evidenceDigest: evidence.evidenceDigest,
+      missionId: evidence.missionId,
+      missionRevisionId: evidence.missionRevisionId,
+      planDigest: evidence.planDigest,
+      artifactRevisionId: evidence.artifactRevisionId,
+      repositoryRevisionId: evidence.repositoryRevisionId,
+    },
+  };
+}
+
 function runner(responses) {
   const calls = [];
   const run = (executable, args, options = {}) => {
@@ -190,7 +302,8 @@ test("approval and verified draft receipt produce workspace_ready while Fury is 
   });
 
   assert.equal(result.state, "workspace_ready");
-  assert.deepEqual(result.planGateEvaluation.reasonCodes, ["PLAN_REVIEW_REQUIRED"]);
+  assert.equal(result.planGateEvaluation, null);
+  assert.deepEqual(result.planReviewEvidenceEvaluation.reasonCodes, ["INVALID_EVIDENCE_CANDIDATE"]);
   assert.equal(result.publicationAction, "created_draft_pr");
   assert.equal(result.publicationCandidate.candidateKind, "communication_result");
   assert.equal(result.publicationCandidate.payload.outcome, "delivered");
@@ -294,17 +407,20 @@ test("repeated publication reuses and verifies the existing draft PR", () => {
 });
 
 test("an exact Fury PASS opens dispatch after verified readback", () => {
+  const bundle = furyEvidenceBundle(passingGate());
   const run = runner([
     ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(), ok(JSON.stringify([pr()])),
   ]);
   const result = prepareDeliveryWorkspaceForDispatch(
     input({
-      planGate: passingGate(),
+      planGateCandidate: bundle.candidate,
       publicationRequestId: updatePublication.requestId,
     }),
     {
       run,
       loadJournal: updatePublication.loadJournal,
+      loadFuryPlanReviewEvidence: () => [bundle.evidence],
+      loadFuryDispatchReceiptEntries: () => bundle.entries,
       realpath: (value) => value,
     },
   );
@@ -313,10 +429,46 @@ test("an exact Fury PASS opens dispatch after verified readback", () => {
   assert.equal(result.planGateEvaluation.reviewerSeatId, "fury");
 });
 
+test("durable store readback feeds the synchronous independent loader boundary end to end", async () => {
+  const bundle = furyEvidenceBundle(passingGate());
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-delivery-fury-evidence-"));
+  const storeScope = {
+    repositoryRoot,
+    missionId: "mission-44",
+    lockOwnerId: "owner:delivery-workspace-test",
+  };
+  const appended = await appendFuryPlanReviewEvidenceIfAbsentV1({
+    ...storeScope,
+    evidence: bundle.evidence,
+  });
+  assert.equal(appended.state, "valid");
+  const readback = await readFuryPlanReviewEvidenceLedgerV1(storeScope);
+  assert.equal(readback.state, "valid");
+  const result = prepareDeliveryWorkspaceForDispatch(
+    input({
+      planGateCandidate: bundle.candidate,
+      publicationRequestId: updatePublication.requestId,
+    }),
+    {
+      run: runner([
+        ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(),
+        ok(JSON.stringify([pr()])),
+      ]),
+      loadJournal: updatePublication.loadJournal,
+      loadFuryPlanReviewEvidence: () => readback.value.records,
+      loadFuryDispatchReceiptEntries: () => bundle.entries,
+      realpath: (value) => value,
+    },
+  );
+  assert.equal(result.state, "dispatch_ready");
+  assert.equal(result.planReviewEvidenceEvaluation.evidence.evidenceId, bundle.evidence.evidenceId);
+});
+
 test("bounded reconciliation opens dispatch while Fury FAIL remains workspace_ready", () => {
+  const reconciledBundle = furyEvidenceBundle(reconciledGate());
   const reconciled = prepareDeliveryWorkspaceForDispatch(
     input({
-      planGate: reconciledGate(),
+      planGateCandidate: reconciledBundle.candidate,
       publicationRequestId: updatePublication.requestId,
     }),
     { run: runner([
@@ -324,39 +476,46 @@ test("bounded reconciliation opens dispatch while Fury FAIL remains workspace_re
       ok(JSON.stringify([pr()])),
     ]),
       loadJournal: updatePublication.loadJournal,
+      loadFuryPlanReviewEvidence: () => [reconciledBundle.evidence],
+      loadFuryDispatchReceiptEntries: () => reconciledBundle.entries,
       realpath: (value) => value },
   );
   assert.equal(reconciled.state, "dispatch_ready");
   assert.equal(reconciled.planGateEvaluation.verifierSeatId, "hill");
 
+  const failedGate = passingGate({
+    verdict: "FAIL",
+    findings: [{
+      findingId: "finding-1",
+      findingClass: "architecture",
+      evidenceRefs: ["pr:45#fury-fail"],
+    }],
+  });
+  const failedBundle = furyEvidenceBundle(failedGate);
   const failed = prepareDeliveryWorkspaceForDispatch(
     input({
       publicationRequestId: updatePublication.requestId,
-      planGate: passingGate({
-        verdict: "FAIL",
-        findings: [{
-          findingId: "finding-1",
-          findingClass: "architecture",
-          evidenceRefs: ["pr:45#fury-fail"],
-        }],
-      }),
+      planGateCandidate: failedBundle.candidate,
     }),
     { run: runner([
       ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(),
       ok(JSON.stringify([pr()])),
     ]),
       loadJournal: updatePublication.loadJournal,
+      loadFuryPlanReviewEvidence: () => [failedBundle.evidence],
+      loadFuryDispatchReceiptEntries: () => failedBundle.entries,
       realpath: (value) => value },
   );
   assert.equal(failed.state, "workspace_ready");
   assert.deepEqual(failed.planGateEvaluation.reasonCodes, ["REVIEW_FAILED"]);
 });
 
-test("malformed blueprint and non-null gate block before any command", () => {
+test("malformed blueprint and caller-supplied or malformed gate input block before any command", () => {
   for (const [value, reason] of [
     [input({ blueprintArtifact: { ...input().blueprintArtifact, artifactPath: "docs/other.md" } }), "blueprint_path_mismatch"],
-    [input({ planGate: { planGateSchemaVersion: 1 } }), "invalid_fury_plan_gate_input"],
-    [input({ planGate: undefined }), "invalid_fury_plan_gate_input"],
+    [input({ planGate: passingGate() }), "delivery_workspace_input_required"],
+    [input({ planGateCandidate: { candidateSchemaVersion: 1 } }), "invalid_fury_plan_review_evidence_candidate"],
+    [input({ planGateCandidate: undefined }), "invalid_fury_plan_review_evidence_candidate"],
   ]) {
     const run = runner([]);
     const result = prepareDeliveryWorkspaceForDispatch(value, { run });

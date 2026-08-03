@@ -149,6 +149,10 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof github.prepareDeliveryWorkspaceForDispatch, "function");
   assert.equal(github.FURY_PLAN_GATE_CONTRACT_VERSION, "fury.plan-gate.v1");
   assert.equal(typeof github.evaluateFuryPlanGateV1, "function");
+  assert.equal(github.FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION, "fury.plan-review-evidence.v1");
+  assert.equal(typeof github.evaluateFuryPlanReviewEvidenceV1, "function");
+  assert.equal(typeof github.replayFuryPlanReviewEvidenceLedgerV1, "function");
+  assert.equal(github.deriveFuryPlanReviewEvidenceV1, undefined);
   assert.equal(typeof github.validatePRWorkspaceReceipt, "function");
   assert.equal(typeof github.renderMissionHandoff, "function");
 });
@@ -286,14 +290,19 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { runLocalToolSession, runMayControlLoop, runMayToolCall, type LocalToolSessionRequest, type MayControlLoopDependencies, type MayControlLoopRequest, type MayToolCallRequest, type MayToolExecutorDependencies } from "@shield/team-system/local-tools";
     import {
       FURY_PLAN_GATE_CONTRACT_VERSION,
+      FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION,
       createGitHubFollowUpCandidate,
       deliverGitHubCommunication,
       evaluateFuryPlanGateV1,
+      evaluateFuryPlanReviewEvidenceV1,
       prepareDeliveryWorkspaceForDispatch,
+      replayFuryPlanReviewEvidenceLedgerV1,
       renderMissionHandoff,
       validatePRWorkspaceReceipt,
       type DeliveryWorkspaceResult,
       type FuryPlanGateEnvelopeV1,
+      type FuryPlanReviewEvidenceCandidateV1,
+      type FuryPlanReviewEvidenceEvaluationV1,
       type GitHubFollowUpCandidateInput,
       type PRWorkspaceReceipt,
     } from "@shield/team-system/github";
@@ -385,6 +394,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const furyContract: "fury.plan-gate.v1" = FURY_PLAN_GATE_CONTRACT_VERSION;
     const furyGate = null as unknown as FuryPlanGateEnvelopeV1;
     const evaluateFury = evaluateFuryPlanGateV1;
+    const furyEvidenceContract: "fury.plan-review-evidence.v1" = FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION;
+    const furyEvidenceCandidate = null as unknown as FuryPlanReviewEvidenceCandidateV1;
+    const furyEvidenceEvaluation: FuryPlanReviewEvidenceEvaluationV1 = evaluateFuryPlanReviewEvidenceV1(
+      furyEvidenceCandidate, [], [], null,
+    );
+    const replayFuryEvidence = replayFuryPlanReviewEvidenceLedgerV1;
     const validateReceipt = validatePRWorkspaceReceipt;
     const renderHandoff = renderMissionHandoff;
     const workspaceReceipt = null as unknown as PRWorkspaceReceipt;
