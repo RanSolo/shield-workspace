@@ -230,6 +230,20 @@ function normalizeCandidate(input: unknown): FuryPlanReviewEvidenceCandidateV1 |
   return Object.freeze(value as unknown as FuryPlanReviewEvidenceCandidateV1);
 }
 
+export function normalizeFuryPlanReviewEvidenceCandidateV1(input: unknown):
+  | { readonly state: "valid"; readonly candidate: Readonly<FuryPlanReviewEvidenceCandidateV1> | null }
+  | { readonly state: "invalid" } {
+  try {
+    if (input === null) return Object.freeze({ state: "valid" as const, candidate: null });
+    const candidate = normalizeCandidate(input);
+    return candidate === null
+      ? Object.freeze({ state: "invalid" as const })
+      : Object.freeze({ state: "valid" as const, candidate });
+  } catch {
+    return Object.freeze({ state: "invalid" as const });
+  }
+}
+
 function normalizeDispatchIdentity(input: unknown): SeatDispatchReceiptIdentityV1 | null {
   const value = record(input, DISPATCH_IDENTITY_FIELDS);
   if (value === null || DISPATCH_IDENTITY_FIELDS.some((field) => !identifier(value[field]))) return null;

@@ -5,8 +5,23 @@ import type {
 import type {
   ReviewPublicationBindingV1,
 } from "../dist/review-publication-v1.mjs";
+import type {
+  FuryPlanReviewEvidenceCandidateV1,
+  FuryPlanReviewEvidenceEvaluationV1,
+} from "../dist/fury-plan-review-evidence-v1.mjs";
 
 export * from "../dist/review-publication-v1.mjs";
+export {
+  FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION,
+  FURY_PLAN_REVIEW_EVIDENCE_REASON_CODES,
+  FURY_PLAN_REVIEW_EVIDENCE_SCHEMA_VERSION,
+  evaluateFuryPlanReviewEvidenceV1,
+  replayFuryPlanReviewEvidenceLedgerV1,
+} from "../dist/fury-plan-review-evidence-v1.mjs";
+export type {
+  FuryPlanReviewEvidenceCandidateV1,
+  FuryPlanReviewEvidenceEvaluationV1,
+} from "../dist/fury-plan-review-evidence-v1.mjs";
 
 export interface CommandResult {
   exitCode: number;
@@ -237,7 +252,8 @@ export type DeliveryWorkspaceResult =
         binding: Readonly<ReviewPublicationBindingV1>;
       };
       publicationCandidate: AdapterCandidateEnvelope;
-      planGateEvaluation: FuryPlanGateEvaluationV1;
+      planReviewEvidenceEvaluation: FuryPlanReviewEvidenceEvaluationV1;
+      planGateEvaluation: FuryPlanGateEvaluationV1 | null;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
   | {
@@ -249,7 +265,8 @@ export type DeliveryWorkspaceResult =
         binding: Readonly<ReviewPublicationBindingV1>;
       };
       publicationCandidate: AdapterCandidateEnvelope;
-      planGateEvaluation: FuryPlanGateEvaluationV1;
+      planReviewEvidenceEvaluation: FuryPlanReviewEvidenceEvaluationV1;
+      planGateEvaluation: FuryPlanGateEvaluationV1 | null;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
   | {
@@ -296,7 +313,7 @@ export function prepareDeliveryWorkspaceForDispatch(
     missionId: string;
     subjectId: string;
     blueprintArtifact: BlueprintArtifactAssertionV1;
-    planGate: FuryPlanGateEnvelopeV1 | null;
+    planGateCandidate: FuryPlanReviewEvidenceCandidateV1 | null;
     publicationRequestId: string;
     publicationCandidateId: string;
     publicationSourceRef: string;
@@ -304,6 +321,8 @@ export function prepareDeliveryWorkspaceForDispatch(
   },
   options: {
     loadJournal: () => unknown[];
+    loadFuryPlanReviewEvidence?: () => unknown;
+    loadFuryDispatchReceiptEntries?: () => unknown;
     run?: CommandRunner;
     cwd?: string;
     realpath?: (path: string) => string;

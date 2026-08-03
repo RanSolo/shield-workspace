@@ -1,9 +1,11 @@
 import { canDispatchSpecialists } from "../contracts/mission-policy.mjs";
 import {
-  evaluateFuryPlanGateV1,
   isFuryPlanGateArtifactPath,
-  normalizeFuryPlanGateInputV1,
 } from "../contracts/fury-plan-gate-v1.mjs";
+import {
+  evaluateFuryPlanReviewEvidenceV1,
+  normalizeFuryPlanReviewEvidenceCandidateV1,
+} from "../dist/fury-plan-review-evidence-v1.mjs";
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
 import {
   createGitHubPublicationResultCandidate,
@@ -64,7 +66,7 @@ const IMMUTABLE_REVISION = /^[0-9a-f]{40,64}$/;
 const GATE_IDENTIFIER = /^[A-Za-z0-9](?:[A-Za-z0-9._:/#@-]{0,126}[A-Za-z0-9])?$/;
 const DELIVERY_INPUT_FIELDS = Object.freeze([
   "missionState", "approvalSource", "artifactRevisionId", "workspacePlan", "body",
-  "missionId", "subjectId", "blueprintArtifact", "planGate", "publicationRequestId",
+  "missionId", "subjectId", "blueprintArtifact", "planGateCandidate", "publicationRequestId",
   "publicationCandidateId", "publicationSourceRef", "publicationCapturedAt",
 ]);
 const WORKSPACE_PLAN_FIELDS = Object.freeze([
@@ -153,9 +155,9 @@ function normalizeDeliveryInput(input) {
     if (capturedAt === null) {
       return { state: "invalid", reason: "invalid_publication_candidate" };
     }
-    const planGate = normalizeFuryPlanGateInputV1(outer.planGate);
-    if (planGate.state !== "valid") {
-      return { state: "invalid", reason: "invalid_fury_plan_gate_input" };
+    const planGateCandidate = normalizeFuryPlanReviewEvidenceCandidateV1(outer.planGateCandidate);
+    if (planGateCandidate.state !== "valid") {
+      return { state: "invalid", reason: "invalid_fury_plan_review_evidence_candidate" };
     }
     return {
       state: "valid",
@@ -164,7 +166,7 @@ function normalizeDeliveryInput(input) {
         workspacePlan: Object.freeze(workspacePlan),
         blueprintArtifact: Object.freeze(blueprintArtifact),
         publicationCapturedAt: Object.freeze(capturedAt),
-        planGate: planGate.planGate,
+        planGateCandidate: planGateCandidate.candidate,
       }),
     };
   } catch {
@@ -258,28 +260,50 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     prNumber: published.prNumber,
   });
   if (checked.state !== "valid") return blocked(checked.reason, published.commands);
-  const planGateEvaluation = evaluateFuryPlanGateV1(snapshot.planGate, {
-    schemaVersion: 1,
-    assuranceKind: "host_asserted_non_authoritative",
-    missionId: snapshot.missionId,
-    subjectId: snapshot.subjectId,
-    repositoryOwner: checked.receipt.repositoryOwner,
-    repositoryName: checked.receipt.repositoryName,
-    baseBranch: checked.receipt.baseBranch,
-    missionBranch: checked.receipt.branchSlug,
-    prNumber: checked.receipt.prNumber,
-    blueprintArtifactId: snapshot.blueprintArtifact.artifactId,
-    blueprintArtifactPath: snapshot.blueprintArtifact.artifactPath,
-    blueprintArtifactKind: snapshot.blueprintArtifact.artifactKind,
-    blueprintOwningSeatId: snapshot.blueprintArtifact.owningSeatId,
-    currentBlueprintRevisionId: checked.receipt.artifactRevisionId,
-  });
-  if (planGateEvaluation.dispatchEligibility !== "eligible") {
+  let reviewEvidence;
+  let furyReceiptEntries;
+  try {
+    reviewEvidence = typeof options.loadFuryPlanReviewEvidence === "function"
+      ? options.loadFuryPlanReviewEvidence()
+      : undefined;
+    furyReceiptEntries = typeof options.loadFuryDispatchReceiptEntries === "function"
+      ? options.loadFuryDispatchReceiptEntries()
+      : undefined;
+  } catch {
+    reviewEvidence = undefined;
+    furyReceiptEntries = undefined;
+  }
+  const planReviewEvidenceEvaluation = evaluateFuryPlanReviewEvidenceV1(
+    snapshot.planGateCandidate,
+    reviewEvidence,
+    furyReceiptEntries,
+    {
+      schemaVersion: 1,
+      missionId: snapshot.missionId,
+      missionRevisionId: publication.request.revisionId,
+      subjectId: snapshot.subjectId,
+      repositoryId: `${checked.receipt.repositoryOwner}/${checked.receipt.repositoryName}`,
+      baseBranch: checked.receipt.baseBranch,
+      branch: checked.receipt.branchSlug,
+      prNumber: checked.receipt.prNumber,
+      blueprintArtifactId: snapshot.blueprintArtifact.artifactId,
+      blueprintArtifactPath: snapshot.blueprintArtifact.artifactPath,
+      blueprintArtifactKind: snapshot.blueprintArtifact.artifactKind,
+      blueprintOwningSeatId: snapshot.blueprintArtifact.owningSeatId,
+      artifactRevisionId: checked.receipt.artifactRevisionId,
+      repositoryRevisionId: checked.receipt.artifactRevisionId,
+    },
+  );
+  const planGateEvaluation = planReviewEvidenceEvaluation.state === "evaluated"
+    ? planReviewEvidenceEvaluation.planGateEvaluation
+    : null;
+  if (planReviewEvidenceEvaluation.dispatchEligibility !== "eligible") {
     return {
       state: "workspace_ready",
       publicationAction: published.action,
       receipt: checked.receipt,
       publicationCandidate: candidate.candidate,
+      planReviewEvidenceEvaluation,
       planGateEvaluation,
       commands: published.commands,
     };
@@ -289,6 +313,7 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     publicationAction: published.action,
     receipt: checked.receipt,
     publicationCandidate: candidate.candidate,
+    planReviewEvidenceEvaluation,
     planGateEvaluation,
     commands: published.commands,
   };
