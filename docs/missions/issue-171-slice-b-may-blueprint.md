@@ -37,8 +37,13 @@ Primitive append contract remains `appendMayControlEventIfAbsentV1`. The store f
 - No existing index, sequence counter, or alternate receipt fields.
 
 Scope identity for all public surfaces is fixed to:
-- `repositoryRoot` and `sessionId` for `readMayControlEventLogV1`, `appendMayControlEventIfAbsentV1`.
-- `repositoryRoot`, `sessionId`, and `lockOwnerId` for `createMayControlEventFilesystemStore`.
+- `repositoryRoot` and `sessionId` for `readMayControlEventLogV1`.
+- `repositoryRoot`, `sessionId`, and `lockOwnerId` for `appendMayControlEventIfAbsentV1` and `createMayControlEventFilesystemStore`.
+
+Exact inputs:
+- `readMayControlEventLogV1({ repositoryRoot, sessionId })`
+- `appendMayControlEventIfAbsentV1({ repositoryRoot, sessionId, lockOwnerId, event })`
+- `createMayControlEventFilesystemStore({ repositoryRoot, sessionId, lockOwnerId })`
 
 ## Identifier and event grammar (exact)
 
@@ -71,11 +76,12 @@ Read result fields are exact and closed:
 - `bytes: string`
 - `missing: boolean`
 
-Append-append result fields are exact and closed:
+Append result fields are exact and closed:
 - `logPath: string`
 - `byteLength: number`
 - `bytes: string`
 - `orderedEvents: readonly MayControlEvent[]`
+- `terminalState: { state: "none" } | { state: "terminal"; code: string; counter: number; eventId: string; index: number }`
 - `receipt: { eventId: string; appended: true }`
 
 ## Lifecycle projection and terminal rules (must match current emitter behavior)
@@ -84,15 +90,18 @@ Emitter-allowed `code` values that are non-terminal:
 1. `may_control_started`
 2. `may_control_writeFile_completed`
 3. `may_control_runValidation_completed`
-4. `may_control_completed`
 
-All terminal codes are emitted via `boundedError`; they must satisfy:
+Success terminal:
+- `may_control_completed`
+
+Error terminals are boundedError grammar codes and must satisfy:
 - `/^[a-z][a-z0-9_]{0,127}$/u` after normalization
 
 Lifecycle rules:
 - Exactly one `may_control_started` event unless setup fails before loop startup.
 - `may_control_completed` requires a prior `may_control_started` and at least one prior `may_control_runValidation_completed` in the same session.
-- Terminal event is permitted only as the first event on setup failure and as a single terminal event after an active run; once terminal, no later events are valid.
+- Error terminal events are permitted only as the first event when setup fails before startup, or as a single terminal event after active loop behavior has started.
+- Exactly one terminal is allowed per session; once terminal, no later events are valid.
 - `toolCallId` is non-null only for `may_control_writeFile_completed` and `may_control_runValidation_completed`, and these `toolCallId` values must be unique across the session.
 - `toolCallId` must be null for all other event codes.
 - Readback must expose terminal state exactly from canonical read ordering; it never grants authority.
@@ -126,7 +135,8 @@ Lifecycle rules:
 - Exact duplicate append request for same `eventId` and same payload after deterministic replay must fail as `may_control_event_sequence_violation`, with unchanged bytes returned in readback checks.
 - Same `eventId` with different payload is `may_control_event_id_conflict`.
 - Counter/gap/regression prewrite violations are `may_control_event_sequence_violation`.
-- Fresh append returns only `{ eventId:string, appended:true }` from primitive and adapter layers.
+- Fresh primitive append returns the full append result fields above.
+- `appendControlEvent(event)` returns only `{ eventId:string, appended:true }`.
 
 ## Concurrency, durability, and precedence (exact)
 
@@ -134,7 +144,7 @@ Mutation sequence and precedence:
 1. Snapshot and validate scope + candidate, then resolve paths.
 2. Create and sync directories with uncertainty:
    - create `.shield` then sync repository root
-   - create `.shield/may-control-events` then sync `.shield`
+   - create `.shield/may-control-events` then sync `.shield`; pre-existing safe directories are read-only at this point and do not imply mutation uncertainty.
 3. Acquire lock with `O_EXCL` + `O_NOFOLLOW` and strict owner-marker write.
 4. Open marker, write full marker, `sync` marker, and capture lock path `inode` and `dev` for release.
 5. Replay current file (unless missing).
@@ -143,7 +153,7 @@ Mutation sequence and precedence:
 8. Sync first-log parent directory after first log creation.
 9. Reread log, exact byte compare against expected bytes.
 10. Verify marker/inode/dev stability and unlink marker only after verification.
-11. Sync lock parent directory when required by existing precedent semantics.
+11. Sync lock parent directory after lock creation and after lock unlink.
 
 Uncertainty closure:
 - Any uncertainty after mutation (`marker` write/sync, append/write, reread, marker drift, release unlink drift, release directory sync) returns `recovery_required` and overrides narrower outcomes.
