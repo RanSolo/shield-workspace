@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-171-slice-c-prerequisite",
+  "objective": "Resolve issue #171 Slice C remaining prerequisite by identifying the canonical schema-9 Wheels Up authority producer and active May runtime-binding supersession path, then freeze the smallest child implementation issue and exact Fury-reviewable plan without implementing Slice C, issue #170 composition, or invoking May.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/171",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-03T18:55:44.979Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:14pmqgHwaF6y_VdD5laf6zpQpYQHQTqwjfjlSAhRNW0"
+}

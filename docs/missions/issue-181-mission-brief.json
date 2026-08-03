@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-181",
+  "objective": "Implement issue #181 as one bounded pull request from Fury-approved plan revision ef67eb45ccaa9d68f04439a63609df229bf21d57: add the canonical schema-9 signed Wheels Up authority producer, revocation, and May runtime-binding initial/supersession replay lifecycle without entering issue #171 Slice C, issue #170 composition, issue #141, mission-runtime or CLI dispatch wiring, invoking a model, or performing external effects.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/181",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-03T20:01:42Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:rxKjEt6JL_ulP3PbA7aUa7Fv0P7vKRg529SKTQ4LxHM"
+}
