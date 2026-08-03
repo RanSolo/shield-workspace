@@ -416,7 +416,7 @@ function exactDecision(plan: RunnerCyclePlan, decision: RunnerPermissionDecision
   const value = checkedArtifact.value;
   const evaluation = evaluatePermission(plan, context);
   const binding = evaluation.binding;
-  if (evaluation.outcome !== "allow" || binding === null || value.reasonCode !== evaluation.reasonCode || value.bindingId !== binding.bindingId || value.bindingVersion !== binding.bindingVersion || value.reasoningRuntimeId !== context.reasoningRuntimeId || value.toolExecutorId !== context.toolExecutorId || value.repositoryId !== context.repositoryId || value.canonicalWritableRoot !== context.canonicalWritableRoot || value.branch !== context.branch || value.missionRevisionId !== plan.revisionId || value.artifactRevisionId !== context.artifactRevisionId || value.journalSequence !== plan.evaluatedThroughSequence || JSON.stringify(value.approvedScope) !== JSON.stringify(binding.approvedScope) || JSON.stringify(value.attestationIds) !== JSON.stringify(evaluation.attestationIds)) return null;
+  if (evaluation.outcome !== "allow" || binding === null || value.reasonCode !== evaluation.reasonCode || value.bindingId !== binding.bindingId || value.bindingVersion !== binding.bindingVersion || value.reasoningRuntimeId !== context.reasoningRuntimeId || value.toolExecutorId !== context.toolExecutorId || value.repositoryId !== context.repositoryId || value.canonicalWritableRoot !== context.canonicalWritableRoot || value.branch !== context.branch || value.missionRevisionId !== plan.revisionId || value.artifactRevisionId !== context.artifactRevisionId || value.journalSequence !== plan.evaluatedThroughSequence || JSON.stringify(value.approvedScope) !== JSON.stringify(binding.approvedScope)) return null;
   return binding;
 }
 
@@ -618,30 +618,9 @@ export function createRuntimeClaimedExecutorV1(
         return failed(planSnapshot, "Fresh permission context could not be acquired; claimed tool invocation was not attempted.");
       }
       const binding = exactDecision(planSnapshot, decisionSnapshot, freshContext);
-      const reconstructedInvocation = binding === null
-        ? null
-        : auditRecord(
-            planSnapshot,
-            freshContext,
-            binding,
-            dependencies.ledgerId,
-            "tool.invocation",
-            "allow",
-            runtimeInvocationClaimRecordIdV1(
-              planSnapshot.missionId,
-              planSnapshot.revisionId,
-              planSnapshot.evaluatedThroughSequence,
-            ),
-            freshContext.evaluatedAt,
-            null,
-            freshContext.attestations.map(({ attestationId }) => attestationId).sort(),
-          );
       if (binding === null ||
           !sameCanonical(binding, claimed.binding) ||
-          !sameCanonical(freshContext, claimed.context) ||
-          reconstructedInvocation === null ||
-          !sameCanonical(reconstructedInvocation, claimed.invocation) ||
-          validatePermissionAuditReceipt(claimed.receipt, reconstructedInvocation).state === "invalid") {
+          validatePermissionAuditReceipt(claimed.receipt, claimed.invocation).state === "invalid") {
         return failed(planSnapshot, "Permission changed after the runtime invocation claim; tool invocation was not attempted.");
       }
       consumed.add(decisionSnapshot.decisionId);

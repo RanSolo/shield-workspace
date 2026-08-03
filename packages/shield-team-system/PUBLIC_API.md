@@ -20,6 +20,7 @@ package artifact.
 | `@shield/team-system/adapter` | Closed host-neutral adapter v1 contracts plus publication-bound adapter v2 communication requests and result evidence |
 | `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
+| `@shield/team-system/schema9-permission-context` | Replay-bound, read-only schema-9 permission context loader that revalidates live repository root/branch/HEAD and capability state and returns context or blocked result; it never composes dispatch, invokes a model, or executes effects |
 | `@shield/team-system/roles` | Canonical mission role registry, classification, routing, and assignment validation |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
 | `@shield/team-system/review-publication` | Pure host-neutral exact-path and permitted-effect evaluation for `review.publish` and Wheels Up review publication |
@@ -122,6 +123,11 @@ Delegated missions use journal schema v3 while schema-v2 supervised journals
 remain supported without reinterpretation. Wheels Off exposes standing
 pre-authorization only; it does not grant runner execution, define a policy DSL,
 perform host inspection, or confer merge/deploy/release authority.
+
+`@shield/team-system/schema9-permission-context` is a replay-first loader for
+schema-9 authority and binding history. It performs live repository root/branch/HEAD
+and capability checks, and returns only read-only context or blocked outcomes. It
+does not compose dispatch, invoke model execution, or trigger an external effect.
 
 ## Compatibility and breaking changes
 
