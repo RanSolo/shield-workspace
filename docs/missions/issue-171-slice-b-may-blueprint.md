@@ -13,109 +13,193 @@
 ## Scope freeze
 
 - Non-authoritative telemetry only. No authority, runtime-binding, dispatch, Slice C, #170, export map, model invocation, publication, merge, deployment, or external effects.
-- Only Slice B is planned: durable per-session May control-event replay/readback/append-if-absent.
-- Maximum implementation surface: source + tests only.
+- Only Slice B is planned: durable per-session May control-event replay/readback/append-if-absent behavior.
+- Maximum implementation surface remains source + tests only.
 
 ## PATH_SET (max two implementation paths)
 
 1. `packages/shield-team-system/src/may-control-event-store.mts`
 2. `packages/shield-team-system/tests/may-control-event-store.test.mjs`
 
-No package export entry, no open/close API, and no batch sink in this slice.
+No package export entry, no public declaration changes, no open/close API, and no batch sink in this slice.
 
-## Closed API contract
+## Exact API and type surface (closed)
 
 1. `readMayControlEventLogV1(input)`
 2. `appendMayControlEventIfAbsentV1(input)`
-3. `createMayControlEventFilesystemStore(input)` returning `{ sessionId, read(): Promise<unknown>, appendControlEvent(event): Promise<unknown> }`
+3. `createMayControlEventFilesystemStore(input) -> { sessionId, read(), appendControlEvent(event) }`
 
-`appendControlEvent` compatibility requirement: append sink returns exactly `{ eventId: string, appended: true }` and event IDs are string.
+Primitive append contract remains `appendMayControlEventIfAbsentV1`. The store factory must expose `appendControlEvent(event)` only; it must not expose `appendIfAbsent`.
 
-## Exact contract points for durable replay
+`appendControlEvent(event)` is exactly `MayControlLoopDependencies.appendControlEvent(event)` compatible:
+- Input contract is one `MayControlEvent` object.
+- Adapter return is exactly `{ eventId: string, appended: true }`.
+- No existing index, sequence counter, or alternate receipt fields.
 
-- `MayControlEvent` field set is exact and fixed: `mayControlEventSchemaVersion`, `authority`, `eventId`, `sessionId`, `code`, `counter`, `toolCallId`, `evidenceRefs`.
-- `mayControlEventSchemaVersion` remains `1` and `authority` remains `non_authoritative`.
-- `eventId` must be strict string form `may-control-event:${sessionId}:${counter}`.
-- `counter` must be integer, session-scoped, and must start at `1`.
-- `toolCallId` must be identifier-or-null and stored as-is.
-- `evidenceRefs` must be a dense descriptor-safe array with exactly one entry equal to `may-control:${sessionId}`.
-- Per-session storage is hash-confined: `.shield/may-control-events/<sha256(sessionId, base64url)>.jsonl` and sibling `.jsonl.lock` (no raw IDs in path names).
+Scope identity for all public surfaces is fixed to:
+- `repositoryRoot` and `sessionId` for `readMayControlEventLogV1`, `appendMayControlEventIfAbsentV1`.
+- `repositoryRoot`, `sessionId`, and `lockOwnerId` for `createMayControlEventFilesystemStore`.
 
-## Snapshot + canonical read rules
+## Identifier and event grammar (exact)
 
-Before every async boundary:
+`IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/u`
 
-1. Snapshot descriptor-safe input and event objects with strict plain-object/array shape validation.
-2. Reject accessor properties, proxies, non-enumerable descriptors, sparse arrays, or mutable replacements.
-3. Require exact input keys only.
+`MayControlEvent` is exact:
+- `mayControlEventSchemaVersion`: number literal `1`
+- `authority`: literal `non_authoritative`
+- `eventId`: `string`
+- `sessionId`: `IDENTIFIER`
+- `code`: `string`
+- `counter`: safe positive integer
+- `toolCallId`: `IDENTIFIER | null`
+- `evidenceRefs`: dense, descriptor-safe array
 
-Log replay is closed and never skips bad data:
+`evidenceRefs` is exactly one entry: `may-control:${sessionId}`.
 
-4. `readMayControlEventLogV1` with missing file as valid empty read; an existing zero-byte file is invalid and treated as replay corruption.
-5. Existing logs must be canonical JSONL with final newline; reject duplicate-key lines, noncanonical key order, malformed JSON, malformed `MayControlEvent`, empty lines, truncated final lines, and empty-file rows.
-6. Replay all events in exact file order and reject mixed session, counter gaps/duplicates/regressions, `eventId`/session/counter mismatches, duplicate exact-event conflict shape, or non-local per-session scope.
-7. No partial salvage and no tail truncation: any malformed tail returns invalid.
+`eventId` is strict string form `may-control-event:${sessionId}:${counter}`.
 
-## Idempotency and conflicts
+Per-session log path is exact:
+- `.shield/may-control-events/${sha256(sessionId).toString("base64url")}.jsonl`
+- sibling lock: `.jsonl.lock`
 
-8. Exact idempotency: same `eventId` and exact event payload returns reconstructed receipt with existing index; no file mutation.
-9. `same-eventId` + different payload => `may_control_event_id_conflict`.
-10. `eventId` equality is used for session replay safety; event IDs are not numeric and never replaced.
+Using raw session text in paths is disallowed.
 
-## Concurrency, durability, and uncertainty
+Read result fields are exact and closed:
+- `logPath: string`
+- `orderedEvents: readonly MayControlEvent[]`
+- `terminalState: { state: "none" } | { state: "terminal"; code: string; counter: number; eventId: string; index: number }`
+- `bytes: string`
+- `missing: boolean`
 
-11. Locking must be exclusive and identity-checked via `wx`-style lock creation with owner marker, inode/device marker validation on release, and release only when the marker remains unchanged.
-12. Append path writes exactly one canonical JSON line (`canonicalJson(event) + "\n"`) with full write and file sync.
-13. If store is first created, sync directories in order before release: repository root after creating `.shield`, `.shield` after creating `.shield/may-control-events`, and the store directory after first log creation.
-14. Always reread and compare expected bytes exactly after append.
-15. After any uncertainty after lock acquisition, candidate replay, write, readback, or release verification, return `recovery_required` and never silently retry.
-16. Close-store APIs throw by closed contract code and never return partial truthy values.
+Append-append result fields are exact and closed:
+- `logPath: string`
+- `byteLength: number`
+- `bytes: string`
+- `orderedEvents: readonly MayControlEvent[]`
+- `receipt: { eventId: string; appended: true }`
+
+## Lifecycle projection and terminal rules (must match current emitter behavior)
+
+Emitter-allowed `code` values that are non-terminal:
+1. `may_control_started`
+2. `may_control_writeFile_completed`
+3. `may_control_runValidation_completed`
+4. `may_control_completed`
+
+All terminal codes are emitted via `boundedError`; they must satisfy:
+- `/^[a-z][a-z0-9_]{0,127}$/u` after normalization
+
+Lifecycle rules:
+- Exactly one `may_control_started` event unless setup fails before loop startup.
+- `may_control_completed` requires a prior `may_control_started` and at least one prior `may_control_runValidation_completed` in the same session.
+- Terminal event is permitted only as the first event on setup failure and as a single terminal event after an active run; once terminal, no later events are valid.
+- `toolCallId` is non-null only for `may_control_writeFile_completed` and `may_control_runValidation_completed`, and these `toolCallId` values must be unique across the session.
+- `toolCallId` must be null for all other event codes.
+- Readback must expose terminal state exactly from canonical read ordering; it never grants authority.
+
+## Snapshot, parse, and structural validation
+
+- Snapshot scope and event objects before first async boundary.
+- Reject reflective shape failures, accessors, non-enumerable descriptors, symbol keys, getters/setters, non-plain objects, and unsafe prototypes.
+- Reject sparse arrays and non-dense descriptors.
+- Reject malformed UTF-8 when reading bytes.
+- Reject extra/missing/`undefined` fields and descriptor substitutions.
+- Reject cycles via snapshot recursion.
+- Validate counters as safe positive integers.
+- Reject code strings not in closed grammar above or non-structurally-bounded terminal form.
+
+## Replay and read rules
+
+- Missing file is valid empty read: `{ missing: true, orderedEvents: [], bytes: "", terminalState: { state: "none" } }`.
+- Existing zero-byte file is invalid replay evidence: `may_control_event_replay_invalid`.
+- Existing logs must be canonical JSONL with final newline and no empty lines.
+- Reject duplicate JSON keys, malformed UTF-8, malformed strict JSON, duplicate-key maps, noncanonical line shape, and noncanonical bytes via byte-for-byte `canonicalJson(event)`.
+- Reject inexact/incomplete final line (`\n` required).
+- Replay is full and non-salvage; any bad tail invalidates the whole read.
+- Reject cross-session events (session mismatch).
+- Reject counter gaps, counter regressions, duplicated counters, and duplicated eventIds/counter pairs as replay failures.
+- For persisted log content violations (including duplicated eventId/counter pairs): `may_control_event_replay_invalid`.
+
+## Append semantics (no append idempotency)
+
+- No file mutation is allowed for exact duplicate requests.
+- Exact duplicate append request for same `eventId` and same payload after deterministic replay must fail as `may_control_event_sequence_violation`, with unchanged bytes returned in readback checks.
+- Same `eventId` with different payload is `may_control_event_id_conflict`.
+- Counter/gap/regression prewrite violations are `may_control_event_sequence_violation`.
+- Fresh append returns only `{ eventId:string, appended:true }` from primitive and adapter layers.
+
+## Concurrency, durability, and precedence (exact)
+
+Mutation sequence and precedence:
+1. Snapshot and validate scope + candidate, then resolve paths.
+2. Create and sync directories with uncertainty:
+   - create `.shield` then sync repository root
+   - create `.shield/may-control-events` then sync `.shield`
+3. Acquire lock with `O_EXCL` + `O_NOFOLLOW` and strict owner-marker write.
+4. Open marker, write full marker, `sync` marker, and capture lock path `inode` and `dev` for release.
+5. Replay current file (unless missing).
+6. Reject deterministic replay/sequence/id-conflict failures only if mutation path is otherwise clean.
+7. Append full canonical line (`canonicalJson(event) + "\\n"`), full write, and log `sync`.
+8. Sync first-log parent directory after first log creation.
+9. Reread log, exact byte compare against expected bytes.
+10. Verify marker/inode/dev stability and unlink marker only after verification.
+11. Sync lock parent directory when required by existing precedent semantics.
+
+Uncertainty closure:
+- Any uncertainty after mutation (`marker` write/sync, append/write, reread, marker drift, release unlink drift, release directory sync) returns `recovery_required` and overrides narrower outcomes.
+- Deterministic prewrite sequence/conflict results are only returned when release verification succeeds.
 
 ## Closed failure taxonomy and precedence
 
-1. `malformed_input` — invalid field shape, non-safe descriptors, bad scope, bad identifiers.
-2. `unsafe_path` — symlinked/non-regular repository, directory, log, or lock boundaries.
+1. `malformed_input` — malformed scope/event shape, unsafe descriptors, bad identifiers.
+2. `unsafe_path` — symlink/non-regular repository, `.shield`, store directory, log, or lock.
 3. `may_control_event_lock_held` — lock unavailable at acquisition.
-4. `may_control_event_unavailable` — pre-mutation FS failure without mutation evidence.
-5. `may_control_event_replay_invalid` — malformed/replay-invalid/empty-file pre-existing data before mutation.
-6. `may_control_event_id_conflict` — same eventId, different payload.
-7. `may_control_event_sequence_violation` — duplicate/ gapped counter or regression before mutation.
-8. `recovery_required` — short write/sync failures, post-write byte mismatch, lock owner drift, candidate replay ambiguity during mutation, or lock-release uncertainty.
+4. `may_control_event_unavailable` — pre-mutation FS read/write uncertainty without prior log mutation.
+5. `may_control_event_replay_invalid` — malformed/replay-invalid/zero-byte preexisting data before mutation.
+6. `may_control_event_id_conflict` — same `eventId`, different payload.
+7. `may_control_event_sequence_violation` — duplicate exact event request, counter gaps, regressions, duplicates before mutation.
+8. `recovery_required` — write/sync/reread uncertainty, lock ownership uncertainty, identity drift, release uncertainty, or any mutation path uncertainty.
 
-Failure precedence is pre-validation first, then exclusivity/path, then deterministic replay validation, then append, then release verification.
+Validation precedence is: malformed/input shape, unsafe-path, lock, replay/relation conflicts, then uncertainty override, then release verification.
 
-## Test matrix and validation commands
-
-Focus on `packages/shield-team-system/tests/may-control-event-store.test.mjs` then full package tests:
+## Validation commands
 
 1. `npm --prefix packages/shield-team-system run build`
 2. `node --test packages/shield-team-system/tests/may-control-event-store.test.mjs`
 3. `npm --prefix packages/shield-team-system test`
 4. `git diff --check`
 
-Required test groups:
+## Expanded Fury test matrix
 
-- missing file is empty read; `.jsonl` parent path is deterministic and hash-only,
-- exact canonical replay with counter/eventId continuity,
-- empty-line/noncanonical/malformed/truncated tail rejection without mutation,
-- identical eventId idempotent reread with no byte growth,
-- same-ID conflict rejection,
-- foreign session replay rejection,
-- lock contention, lock-owner mutation, and release-identity mismatch,
-- short append, sync failure, reread mismatch => `recovery_required`,
-- descriptor snapshot guardrails (proxies/accessor properties/mutable scope),
-- toolCallId is preserved as descriptor-safe identifier-or-null through replay and duplicate handling.
+- missing vs zero-byte log behavior, including hash-only deterministic path (`base64url sha256(sessionId)`) and `.jsonl` sibling lock path.
+- descriptor-safe `MayControlEvent` and scope snapshots: all fields required, missing fields, extra fields, unsafe descriptors, proxies, symbols, and mutability races.
+- strict UTF-8 enforcement, noncanonical JSON, duplicate JSON keys, malformed JSON, malformed line shape, empty lines, truncated tail.
+- lifecycle and terminal projection:
+  - one-time start rules,
+  - no completion before successful setup,
+  - completion requires at least one validation completion,
+  - terminal-before-start setup case,
+  - terminal-after-terminal rejected by replay.
+- toolCallId behavior: required identifier for completion codes, uniqueness and nullability on all other codes.
+- duplicate classifications:
+  - persisted duplicate eventId/counter => `may_control_event_replay_invalid`,
+  - exact duplicate append request => `may_control_event_sequence_violation` with unchanged bytes,
+  - same eventId different payload => `may_control_event_id_conflict`.
+- foreign-session collisions and cross-session replay rejection.
+- symlink and non-regular path attacks for repository root, `.shield`, `may-control-events`, log file, and lock file.
+- directory sync points for repository root, `.shield`, `may-control-events`, and first parent-after-create sync.
+- lock holder contention (`EEXIST`), lock marker short write/sync, lock release drift, and marker/inode/dev mismatch.
+- append uncertainty paths: short write, append sync failure, reread mismatch.
+- uncertainty override matrix: recovery precedence after mutation uncertainty.
+- exact adapter receipt `{ eventId, appended }` and persisted readback compatibility.
+- closed-wrapper behavior when factory has malformed input.
+- direct `appendControlEvent(event)` compatibility with `MayControlLoopDependencies`.
 
-## Rationale (local-packet error closures)
+## Error closure rationale
 
-- No raw IDs in paths: session identity is hashed before log filename.
-- No skipped malformed tail: invalid records fail-closed and preserve bytes.
-- No invented `src/may-control-events/*.ts` files: path set is exact.
-- No numeric receipt: receipt is exact `{ eventId: string, appended: true }`.
-- No batch sink: only `appendControlEvent`-compatible single-event append-if-absent is exposed.
-- No conflict-as-new-event: same-ID conflict is fail-closed, not appended.
-
-## Key unresolved decisions for Fury
-
-1. None (resolved): terminal and completion semantics are out of scope; ordering is only session, counter, eventId, and line order.
-2. None (resolved): evidenceRefs validation is now fixed to exactly `["may-control:${sessionId}"]`.
+- No raw session IDs in paths.
+- No skipped tail salvage.
+- No invented `src/may-control-events/*.ts` paths.
+- No numeric or index-bearing receipts.
+- No batch sink.
+- No conflict-as-new-event.
