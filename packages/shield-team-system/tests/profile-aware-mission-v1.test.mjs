@@ -187,6 +187,33 @@ function replay(entries) {
   return result.value;
 }
 
+function boundRuntimeFixture() {
+  const current = brief("standard");
+  const coulson = authority("coulson");
+  const entries = [createProfileAwareMissionBegunEntry(current, [coulson.binding])];
+  let projection = replay(entries);
+  const governance = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"), 1);
+  entries.push({ schemaVersion: 9, entryId: `entry:${current.missionId}:1`, missionId: current.missionId, sequence: 1, type: "governance.decided", timestamp: governance.payload.timestamp, payload: { evidence: governance } });
+  projection = replay(entries);
+  const implementationAuthority = trustedAuthorityBinding(current, { ...coulson, ...coulson.binding }, 2);
+  entries.push(createProfileAwareImplementationAuthorityEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    authority: implementationAuthority,
+  }));
+  projection = replay(entries);
+  const binding = schema9RuntimeBindingBase(current, 3, implementationAuthority.payload);
+  const wrapper = schema9BindingEnvelope(current, implementationAuthority.payload, binding);
+  const authorization = schema9BindingAuthorization(current, binding, wrapper, { ...coulson, ...coulson.binding }, 3, 2, binding.coulsonAuthorizationRef);
+  entries.push(createProfileAwareRuntimeBindingRecordedEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    binding: wrapper,
+    authorization,
+  }));
+  return { current, coulson, entries, implementationAuthority, binding, projection: replay(entries) };
+}
+
 test("profile selection/version and predecessor digest are frozen into the brief", () => {
   const selected = brief("high_assurance");
   assert.equal(validateProfileAwareMissionBrief(selected).state, "valid");
@@ -656,4 +683,145 @@ test("schema-9 binding scope and sequence failures are replay-closed", () => {
   const legacyEntry = { schemaVersion: 8, entryId: `entry:${current.missionId}:3`, missionId: current.missionId, sequence: 3, type: "execution.transition", timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" }, payload: { from: "not-started", to: "running" } };
   const legacyReplay = replayProfileAwareMissionJournal([entries[0], { ...entries[1], sequence: 1 }, legacyEntry].map((entry) => ({ ...entry })));
   assert.equal(legacyReplay.state, "invalid");
+});
+
+test("running supersession changes runtime identities and closes the exact historical binding", () => {
+  const fixture = boundRuntimeFixture();
+  fixture.entries.push({
+    schemaVersion: 9,
+    entryId: `entry:${fixture.current.missionId}:4`,
+    missionId: fixture.current.missionId,
+    sequence: 4,
+    type: "execution.transition",
+    timestamp: { value: "2026-07-29T15:04:00Z", provenance: "hostTrusted" },
+    payload: { from: "not-started", to: "running" },
+  });
+  let projection = replay(fixture.entries);
+  const replacement = schema9RuntimeBindingBase(fixture.current, 5, fixture.implementationAuthority.payload, {
+    bindingVersion: 2,
+    reasoningRuntimeId: "runtime:may:replacement",
+    toolExecutorId: "tool:executor:replacement",
+    coulsonAuthorizationRef: "authorization:runtime-binding:replacement",
+  });
+  const wrapper = schema9BindingEnvelope(fixture.current, fixture.implementationAuthority.payload, replacement, {
+    modelId: "model:replacement",
+  });
+  const authorization = schema9BindingAuthorization(
+    fixture.current,
+    replacement,
+    wrapper,
+    { ...fixture.coulson, ...fixture.coulson.binding },
+    5,
+    4,
+    replacement.coulsonAuthorizationRef,
+    fixture.binding.bindingId,
+    1,
+  );
+  fixture.entries.push(createProfileAwareRuntimeBindingSupersessionEntryV1({
+    projection,
+    trustedBindings: [fixture.coulson.binding],
+    priorBindingId: fixture.binding.bindingId,
+    priorBindingVersion: 1,
+    binding: wrapper,
+    authorization,
+  }));
+  projection = replay(fixture.entries);
+  assert.equal(projection.execution, "running");
+  assert.equal(projection.runtimeBindings.length, 2);
+  assert.equal(projection.runtimeBindings[0].binding.lifecycleState, "superseded");
+  assert.equal(projection.runtimeBindings[0].binding.activeThroughSequence, 4);
+  assert.equal(projection.runtimeBindings[1].binding.lifecycleState, "active");
+  assert.deepEqual(projection.activeRuntimeBindings, [projection.runtimeBindings[1]]);
+  assert.equal(projection.activeRuntimeBindings[0].binding.reasoningRuntimeId, "runtime:may:replacement");
+  assert.equal(projection.activeRuntimeBindings[0].modelId, "model:replacement");
+  assert.equal(projection.activeRuntimeBindings[0].binding.toolExecutorId, "tool:executor:replacement");
+});
+
+test("runtime binding authorization ids cannot be reused across historical versions", () => {
+  const fixture = boundRuntimeFixture();
+  const replacement = schema9RuntimeBindingBase(fixture.current, 4, fixture.implementationAuthority.payload, {
+    bindingVersion: 2,
+    reasoningRuntimeId: "runtime:may:replacement",
+    toolExecutorId: "tool:executor:replacement",
+    coulsonAuthorizationRef: fixture.binding.coulsonAuthorizationRef,
+  });
+  const wrapper = schema9BindingEnvelope(fixture.current, fixture.implementationAuthority.payload, replacement, { modelId: "model:replacement" });
+  const authorization = schema9BindingAuthorization(
+    fixture.current,
+    replacement,
+    wrapper,
+    { ...fixture.coulson, ...fixture.coulson.binding },
+    4,
+    3,
+    fixture.binding.coulsonAuthorizationRef,
+    fixture.binding.bindingId,
+    1,
+  );
+  assert.throws(() => createProfileAwareRuntimeBindingSupersessionEntryV1({
+    projection: fixture.projection,
+    trustedBindings: [fixture.coulson.binding],
+    priorBindingId: fixture.binding.bindingId,
+    priorBindingVersion: 1,
+    binding: wrapper,
+    authorization,
+  }), /unique/i);
+  const replayed = replayProfileAwareMissionJournal([...fixture.entries, {
+    schemaVersion: 9,
+    entryId: `entry:${fixture.current.missionId}:4`,
+    missionId: fixture.current.missionId,
+    sequence: 4,
+    type: "runtime.binding_superseded",
+    timestamp: authorization.payload.timestamp,
+    payload: { priorBindingId: fixture.binding.bindingId, priorBindingVersion: 1, binding: wrapper, authorization },
+  }]);
+  assert.equal(replayed.state, "invalid");
+  assert.match(replayed.errors.join(" "), /duplicated/i);
+});
+
+test("initial runtime binding replay is rejected once execution is running", () => {
+  const current = brief("standard");
+  const coulson = authority("coulson");
+  const entries = [createProfileAwareMissionBegunEntry(current, [coulson.binding])];
+  let projection = replay(entries);
+  const governance = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"), 1);
+  entries.push({ schemaVersion: 9, entryId: `entry:${current.missionId}:1`, missionId: current.missionId, sequence: 1, type: "governance.decided", timestamp: governance.payload.timestamp, payload: { evidence: governance } });
+  projection = replay(entries);
+  const implementationAuthority = trustedAuthorityBinding(current, { ...coulson, ...coulson.binding }, 2);
+  entries.push(createProfileAwareImplementationAuthorityEntryV1({ projection, trustedBindings: [coulson.binding], authority: implementationAuthority }));
+  entries.push({ schemaVersion: 9, entryId: `entry:${current.missionId}:3`, missionId: current.missionId, sequence: 3, type: "execution.transition", timestamp: { value: "2026-07-29T15:03:00Z", provenance: "hostTrusted" }, payload: { from: "not-started", to: "running" } });
+  const binding = schema9RuntimeBindingBase(current, 4, implementationAuthority.payload, { coulsonAuthorizationRef: "authorization:runtime-binding:late" });
+  const wrapper = schema9BindingEnvelope(current, implementationAuthority.payload, binding);
+  const authorization = schema9BindingAuthorization(current, binding, wrapper, { ...coulson, ...coulson.binding }, 4, 3, binding.coulsonAuthorizationRef);
+  const result = replayProfileAwareMissionJournal([...entries, {
+    schemaVersion: 9,
+    entryId: `entry:${current.missionId}:4`,
+    missionId: current.missionId,
+    sequence: 4,
+    type: "runtime.binding_recorded",
+    timestamp: authorization.payload.timestamp,
+    payload: { binding: wrapper, authorization },
+  }]);
+  assert.equal(result.state, "invalid");
+  assert.match(result.errors.join(" "), /before execution starts/i);
+});
+
+test("runtime event malformed shape precedes revoked-authority state", () => {
+  const fixture = boundRuntimeFixture();
+  const revocation = trustedAuthorityRevocation(fixture.implementationAuthority, { ...fixture.coulson, ...fixture.coulson.binding }, 4, 3);
+  fixture.entries.push(createProfileAwareImplementationAuthorityRevocationEntryV1({
+    projection: fixture.projection,
+    trustedBindings: [fixture.coulson.binding],
+    revocation,
+  }));
+  const result = replayProfileAwareMissionJournal([...fixture.entries, {
+    schemaVersion: 9,
+    entryId: `entry:${fixture.current.missionId}:5`,
+    missionId: fixture.current.missionId,
+    sequence: 5,
+    type: "runtime.binding_recorded",
+    timestamp: { value: "2026-07-29T15:05:00Z", provenance: "humanRecorded" },
+    payload: { binding: {} },
+  }]);
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "malformed");
 });

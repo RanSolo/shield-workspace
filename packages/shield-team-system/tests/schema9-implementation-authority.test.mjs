@@ -293,3 +293,53 @@ test("schema9 runtime-binding wrapper validation, auth validation, and signature
   });
   assert.equal(assertAuthoritySubsetOfScope(wide, authorityPayload).state, "invalid");
 });
+
+test("schema9 runtime-binding identities are mutually distinct", () => {
+  const trusted = authoritySigner();
+  const authorityPayload = authority({ signingKeyRef: trusted.binding.signingKeyRef });
+  const binding = runtimeBinding();
+  assert.equal(validateSchema9RuntimeBindingV1(schema9Wrapper(authorityPayload, {
+    binding,
+    modelId: binding.seatId,
+  })).state, "invalid");
+  assert.equal(validateSchema9RuntimeBindingV1(schema9Wrapper(authorityPayload, {
+    binding,
+    modelId: binding.reasoningRuntimeId,
+  })).state, "invalid");
+  assert.equal(validateSchema9RuntimeBindingV1(schema9Wrapper(authorityPayload, {
+    binding: runtimeBinding({ toolExecutorId: binding.reasoningRuntimeId }),
+  })).state, "invalid");
+});
+
+test("binding signature failure precedes active-authority scope failure", () => {
+  const trusted = authoritySigner();
+  const authorityPayload = authority({ signingKeyRef: trusted.binding.signingKeyRef });
+  const binding = runtimeBinding();
+  const wrapper = schema9Wrapper(authorityPayload, {
+    binding,
+    approvedRelativePaths: ["docs/issue-181", "forbidden", "src"],
+  });
+  const payload = schema9AuthorizationInput(
+    authorityPayload,
+    wrapper,
+    binding,
+    trusted.binding.publicKeySpkiBase64,
+  );
+  const result = verifySignedSchema9RuntimeBindingAuthorizationV1(
+    { payload, signatureBase64: "invalid-signature" },
+    wrapper,
+    {
+      missionId: authorityPayload.missionId,
+      subjectId: authorityPayload.subjectId,
+      missionRevisionId: authorityPayload.missionRevisionId,
+      trustedBindings: [trusted.binding],
+      implementationAuthority: authorityPayload,
+      lastSequence: 2,
+    },
+    null,
+    null,
+  );
+  assert.equal(result.state, "invalid");
+  assert.match(result.errors.join(" "), /signature/i);
+  assert.doesNotMatch(result.errors.join(" "), /scope/i);
+});

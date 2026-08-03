@@ -555,6 +555,10 @@ export function validateSchema9RuntimeBindingV1(input: unknown): ContractResult<
     return invalid("malformed", "Schema-9 runtime-binding scope is malformed.");
   }
   if (!approvedRelativePaths.every(assertRelativePath)) return invalid("malformed", "Schema-9 runtime-binding approved relative paths are invalid.");
+  const executionIdentities = [binding.seatId, binding.reasoningRuntimeId, candidate.modelId as string, binding.toolExecutorId];
+  if (new Set(executionIdentities).size !== executionIdentities.length) {
+    return invalid("malformed", "Schema-9 runtime-binding seat, reasoning runtime, model, and tool executor identities must be mutually distinct.");
+  }
   return valid(copySchema9RuntimeBinding({
     schemaVersion: candidate.schemaVersion as 1,
     binding,
@@ -624,7 +628,6 @@ function authorityHasSameScope(authority: ImplementationAuthorityV1, wrapper: Sc
   if (!assertSubset(wrapper.validationCommandIds, authority.validationCommandIds)) mismatches.push("validationCommandIds");
   if (wrapper.baseRevision !== authority.baseRevision) mismatches.push("baseRevision");
   if (wrapper.headRevision !== authority.headRevision) mismatches.push("headRevision");
-  if (wrapper.modelId !== authority.modelId) mismatches.push("modelId");
   if (wrapper.implementationAuthorityRef !== authority.authorityRef) mismatches.push("implementationAuthorityRef");
   if (wrapper.implementationAuthoritySequence !== authority.journalSequence) mismatches.push("implementationAuthoritySequence");
   if (wrapper.implementationAuthorityDigest !== computeImplementationAuthorityDigest(authority)) mismatches.push("implementationAuthorityDigest");
@@ -666,33 +669,16 @@ export function verifySignedSchema9RuntimeBindingAuthorizationV1(
       payload.bindingId !== wrapper.binding.bindingId || payload.bindingVersion !== wrapper.binding.bindingVersion) {
     return invalid("subject_mismatch", "Schema-9 runtime-binding authorization does not match its wrapper.");
   }
-  if (payload.artifactRevisionId !== wrapper.binding.artifactRevisionId || payload.artifactRevisionId !== context.implementationAuthority.artifactRevisionId) {
-    return invalid("revision_mismatch", "Schema-9 runtime-binding authorization artifact revision is mismatched.");
+  if (payload.missionId !== context.missionId || payload.subjectId !== context.subjectId) {
+    return invalid("subject_mismatch", "Schema-9 runtime-binding authorization mission or subject is mismatched.");
   }
-  if (payload.priorBindingId !== priorBindingId || payload.priorBindingVersion !== priorBindingVersion) {
-    return invalid("binding_invalid", "Schema-9 runtime-binding prior binding identity is mismatched.");
+  if (payload.artifactRevisionId !== wrapper.binding.artifactRevisionId) {
+    return invalid("revision_mismatch", "Schema-9 runtime-binding authorization artifact revision is mismatched.");
   }
   if (payload.previousJournalSequence !== context.lastSequence ||
       payload.journalSequence !== context.lastSequence + 1 ||
       wrapper.binding.recordedAtSequence !== payload.journalSequence) {
     return invalid("sequence_invalid", "Schema-9 runtime-binding authorization is not bound to the next sequence.");
-  }
-  if (payload.schema9BindingDigest !== computeSchema9RuntimeBindingDigest(wrapper)) {
-    return invalid("binding_invalid", "Schema-9 runtime-binding authorization does not cover the wrapped binding.");
-  }
-  if (payload.bindingDigest !== computeRuntimeBindingDigest(wrapper.binding)) {
-    return invalid("binding_invalid", "Schema-9 runtime-binding authorization does not cover the embedded runtime binding.");
-  }
-  if (wrapper.binding.coulsonAuthorizationRef !== payload.authorizationId) {
-    return invalid("binding_invalid", "Schema-9 runtime-binding wrapper identity must reference its own binding authorization.");
-  }
-  const scope = assertAuthoritySubsetOfScope(wrapper, context.implementationAuthority);
-  if (scope.state === "invalid") return scope;
-  if (payload.missionId !== context.missionId || payload.subjectId !== context.subjectId || payload.artifactRevisionId !== context.implementationAuthority.artifactRevisionId ||
-      wrapper.implementationAuthorityRef !== context.implementationAuthority.authorityRef ||
-      wrapper.implementationAuthoritySequence !== context.implementationAuthority.journalSequence ||
-      wrapper.implementationAuthorityDigest !== computeImplementationAuthorityDigest(context.implementationAuthority)) {
-    return invalid("binding_invalid", "Schema-9 runtime-binding wrapper does not match the active implementation authority.");
   }
   const trustedBindingResult = trustedBindingForAuthority({
     humanBindingId: payload.humanBindingId,
@@ -708,6 +694,27 @@ export function verifySignedSchema9RuntimeBindingAuthorizationV1(
     "Schema-9 runtime-binding authorization",
   );
   if (signatureCheck.state === "invalid") return signatureCheck;
+  if (payload.artifactRevisionId !== context.implementationAuthority.artifactRevisionId ||
+      wrapper.implementationAuthorityRef !== context.implementationAuthority.authorityRef ||
+      wrapper.implementationAuthoritySequence !== context.implementationAuthority.journalSequence ||
+      wrapper.implementationAuthorityDigest !== computeImplementationAuthorityDigest(context.implementationAuthority)) {
+    return invalid("binding_invalid", "Schema-9 runtime-binding wrapper does not match the active implementation authority.");
+  }
+  const scope = assertAuthoritySubsetOfScope(wrapper, context.implementationAuthority);
+  if (scope.state === "invalid") return scope;
+  if (payload.schema9BindingDigest !== computeSchema9RuntimeBindingDigest(wrapper)) {
+    return invalid("binding_invalid", "Schema-9 runtime-binding authorization does not cover the wrapped binding.");
+  }
+  if (payload.bindingDigest !== computeRuntimeBindingDigest(wrapper.binding)) {
+    return invalid("binding_invalid", "Schema-9 runtime-binding authorization does not cover the embedded runtime binding.");
+  }
+  if (wrapper.binding.coulsonAuthorizationRef !== payload.authorizationId ||
+      payload.authorizationId === wrapper.implementationAuthorityRef) {
+    return invalid("binding_invalid", "Schema-9 runtime-binding authorization identity is not independent from its implementation authority.");
+  }
+  if (payload.priorBindingId !== priorBindingId || payload.priorBindingVersion !== priorBindingVersion) {
+    return invalid("binding_invalid", "Schema-9 runtime-binding prior binding identity is mismatched.");
+  }
   return valid({ ...payload });
 }
 

@@ -392,7 +392,7 @@ export function createProfileAwareRuntimeBindingRecordedEntryV1(input: {
   if (!input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.seatId)) {
     throw new Error("Profile-aware runtime binding seat is not a mission participant.");
   }
-  if (input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.reasoningRuntimeId || seatId === binding.binding.toolExecutorId)) {
+  if (input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.reasoningRuntimeId || seatId === binding.modelId || seatId === binding.binding.toolExecutorId)) {
     throw new Error("Runtime binding identities cannot be mission participants.");
   }
   if (binding.binding.bindingVersion !== 1 || binding.binding.lifecycleState !== "active" || binding.binding.activeThroughSequence !== null) {
@@ -452,7 +452,7 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
 }): ProfileAwareMissionEntryV1 {
   if (input.projection.schemaVersion !== 9 ||
       input.projection.implementationAuthorityState !== "authorized" ||
-      input.projection.execution !== "not-started" ||
+      !["not-started", "running"].includes(input.projection.execution) ||
       input.projection.finalAcceptance !== "waiting") {
     throw new Error("Profile-aware runtime binding supersession requires an active Wheels Up authority and pre-completion mission.");
   }
@@ -470,8 +470,6 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
       binding.binding.bindingVersion !== active.binding.bindingVersion + 1 ||
       binding.binding.bindingVersion === 1 ||
       binding.binding.seatId !== active.binding.seatId ||
-      binding.binding.reasoningRuntimeId !== active.binding.reasoningRuntimeId ||
-      binding.binding.toolExecutorId !== active.binding.toolExecutorId ||
       binding.binding.lifecycleState !== "active" ||
       binding.binding.activeThroughSequence !== null) {
     throw new Error("Runtime binding replacement must atomically increment the same active binding.");
@@ -482,10 +480,18 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
   if (binding.binding.coulsonAuthorizationRef !== input.authorization.payload.authorizationId) {
     throw new Error("Runtime binding authorization id must match the binding's Coulson authorization reference.");
   }
+  if (input.projection.runtimeBindings.some(({ binding: historical }) =>
+    historical.coulsonAuthorizationRef === input.authorization.payload.authorizationId)) {
+    throw new Error("Runtime binding authorization id must be unique across all binding versions.");
+  }
+  if (input.projection.runtimeBindings.some(({ binding: historical }) =>
+    historical.coulsonAuthorizationRef === input.authorization.payload.authorizationId)) {
+    throw new Error("Runtime binding authorization id must be unique across all binding versions.");
+  }
   if (!input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.seatId)) {
     throw new Error("Profile-aware runtime binding seat is not a mission participant.");
   }
-  if (input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.reasoningRuntimeId || seatId === binding.binding.toolExecutorId)) {
+  if (input.projection.brief.participants.some(({ seatId }) => seatId === binding.binding.reasoningRuntimeId || seatId === binding.modelId || seatId === binding.binding.toolExecutorId)) {
     throw new Error("Runtime binding identities cannot be mission participants.");
   }
   const checkedAuthority = verifySignedSchema9RuntimeBindingAuthorizationV1(
@@ -644,8 +650,6 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       implementationAuthorityState = "revoked";
       activeRuntimeBindings = [];
     } else if (entry.type === "runtime.binding_recorded" || entry.type === "runtime.binding_superseded") {
-      if (implementationAuthorityState !== "authorized") return invalid("authority_invalid", "Runtime binding requires an active implementation authority.");
-      if (execution === "completed" || finalAcceptance === "accepted") return invalid("ordering_invalid", "Runtime binding is not allowed after execution completion or final acceptance.");
       const closed = exact(entry.payload, entry.type === "runtime.binding_recorded" ? ["binding", "authorization"] : ["priorBindingId", "priorBindingVersion", "binding", "authorization"]);
       if (!closed) return invalid("malformed", `Entry ${index} runtime binding payload is not closed.`);
       const checkedBinding = validateSchema9RuntimeBindingV1(entry.payload.binding);
@@ -654,6 +658,10 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       const priorBindingId = entry.type === "runtime.binding_recorded" ? null : entry.payload.priorBindingId;
       const priorBindingVersion = entry.type === "runtime.binding_recorded" ? null : entry.payload.priorBindingVersion;
       if (priorBindingId === null && priorBindingVersion !== null || priorBindingId !== null && priorBindingVersion === null) return invalid("malformed", "Runtime binding payload is missing a prior binding identity.");
+      if (wrapper.binding.seatId !== "may") return invalid("binding_invalid", "Runtime binding seat must be may.");
+      if (brief.participants.some(({ seatId }) => seatId === wrapper.binding.reasoningRuntimeId || seatId === wrapper.modelId || seatId === wrapper.binding.toolExecutorId)) return invalid("seat_mismatch", "Runtime binding identities cannot be mission participants.");
+      if (!brief.participants.some(({ seatId }) => seatId === wrapper.binding.seatId)) return invalid("seat_mismatch", "Runtime binding seat is not a mission participant.");
+      if (implementationAuthority === null) return invalid("authority_invalid", "Runtime binding requires an implementation authority.");
       const checkedAuthorization = verifySignedSchema9RuntimeBindingAuthorizationV1(
         entry.payload.authorization,
         wrapper,
@@ -673,15 +681,17 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
           canonicalJson(entry.timestamp) !== canonicalJson(checkedAuthorization.value.timestamp)) {
         return invalid("malformed", "Profile-aware runtime binding timestamp is malformed.");
       }
+      if (implementationAuthorityState !== "authorized") return invalid("authority_invalid", "Runtime binding requires an active implementation authority.");
+      if (execution === "completed" || finalAcceptance === "accepted") return invalid("ordering_invalid", "Runtime binding is not allowed after execution completion or final acceptance.");
       const sameBindingId = runtimeBindings.some((candidate) => candidate.binding.bindingId === wrapper.binding.bindingId);
       const activeSeatMatch = activeRuntimeBindings.some((candidate) => candidate.binding.seatId === wrapper.binding.seatId);
       const activeMatches = activeRuntimeBindings.filter((candidate) => candidate.binding.bindingId === priorBindingId && candidate.binding.bindingVersion === priorBindingVersion);
-      if (wrapper.binding.seatId !== "may") return invalid("binding_invalid", "Runtime binding seat must be may.");
-      if (brief.participants.some(({ seatId }) => seatId === wrapper.binding.reasoningRuntimeId || seatId === wrapper.binding.toolExecutorId)) return invalid("seat_mismatch", "Runtime binding identities cannot be mission participants.");
-      if (!brief.participants.some(({ seatId }) => seatId === wrapper.binding.seatId)) return invalid("seat_mismatch", "Runtime binding seat is not a mission participant.");
       if (wrapper.binding.coulsonAuthorizationRef !== checkedAuthorization.value.authorizationId) return invalid("binding_invalid", "Runtime binding authorization id must match the binding's Coulson authorization reference.");
+      if (runtimeBindings.some(({ binding: historical }) => historical.coulsonAuthorizationRef === checkedAuthorization.value.authorizationId)) {
+        return invalid("binding_ambiguous", "Runtime binding authorization id is duplicated.");
+      }
       if (entry.type === "runtime.binding_recorded") {
-        if (implementationAuthorityState !== "authorized") return invalid("authority_invalid", "Runtime binding can only be recorded while authority is active.");
+        if (execution !== "not-started") return invalid("ordering_invalid", "Initial runtime binding must be recorded before execution starts.");
         if (wrapper.binding.bindingVersion !== 1 || wrapper.binding.lifecycleState !== "active" || wrapper.binding.activeThroughSequence !== null) {
           return invalid("binding_invalid", "Runtime binding must be the initial active binding version 1.");
         }
@@ -696,14 +706,17 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
         if (prior.length !== 1) return invalid("binding_ambiguous", "Runtime binding supersession requires exactly one active prior binding.");
         if (wrapper.binding.bindingId !== prior[0].binding.bindingId ||
             wrapper.binding.bindingVersion !== prior[0].binding.bindingVersion + 1 ||
-            wrapper.binding.seatId !== prior[0].binding.seatId ||
-            wrapper.binding.reasoningRuntimeId !== prior[0].binding.reasoningRuntimeId ||
-            wrapper.binding.toolExecutorId !== prior[0].binding.toolExecutorId) {
+            wrapper.binding.seatId !== prior[0].binding.seatId) {
           return invalid("binding_invalid", "Runtime binding replacement must atomically increment the same active binding.");
         }
         if (wrapper.binding.lifecycleState !== "active" || wrapper.binding.activeThroughSequence !== null) {
           return invalid("binding_invalid", "Runtime binding replacement must be active and unresolved.");
         }
+        const historicalPrior = runtimeBindings.filter((candidate) =>
+          candidate.binding.bindingId === priorBindingId && candidate.binding.bindingVersion === priorBindingVersion);
+        if (historicalPrior.length !== 1) return invalid("binding_ambiguous", "Runtime binding supersession requires exactly one historical prior binding.");
+        historicalPrior[0].binding.lifecycleState = "superseded";
+        historicalPrior[0].binding.activeThroughSequence = index - 1;
         activeRuntimeBindings = activeRuntimeBindings.filter((candidate) => !(candidate.binding.bindingId === prior[0].binding.bindingId && candidate.binding.bindingVersion === prior[0].binding.bindingVersion));
         runtimeBindings.push(copySchema9RuntimeBinding(wrapper));
         activeRuntimeBindings.push(copySchema9RuntimeBinding(wrapper));
