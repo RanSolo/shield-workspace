@@ -36,6 +36,17 @@ Primitive append contract remains `appendMayControlEventIfAbsentV1`. The store f
 - Adapter return is exactly `{ eventId: string, appended: true }`.
 - No existing index, sequence counter, or alternate receipt fields.
 
+Closed primitive envelope shape:
+- Valid: `{ state: "valid", value: T }`
+- Invalid: `{ state: "invalid", code: <closed-taxonomy-string>, errors: readonly string[] }`
+- No mixed fields, no partial values, and no index-like receipt fields.
+
+Factory handle behavior:
+- `read()` resolves to the primitive `value` (read result), not the envelope.
+- `appendControlEvent(event)` resolves exactly to `{ eventId: string; appended: true }`.
+- On any primitive `invalid` result from `read` or append, both handle methods throw `MayControlEventStoreError` with the same closed `code` and do not return partial/receipt-like data.
+- Factory input-validation failures throw `MayControlEventStoreError` with the same closed taxonomy `code`.
+
 Scope identity for all public surfaces is fixed to:
 - `repositoryRoot` and `sessionId` for `readMayControlEventLogV1`.
 - `repositoryRoot`, `sessionId`, and `lockOwnerId` for `appendMayControlEventIfAbsentV1` and `createMayControlEventFilesystemStore`.
@@ -62,6 +73,12 @@ Exact inputs:
 `evidenceRefs` is exactly one entry: `may-control:${sessionId}`.
 
 `eventId` is strict string form `may-control-event:${sessionId}:${counter}`.
+
+Reserved lifecycle codes:
+- `may_control_started`
+- `may_control_writeFile_completed`
+- `may_control_runValidation_completed`
+- `may_control_completed`
 
 Per-session log path is exact:
 - `.shield/may-control-events/${sha256(sessionId).toString("base64url")}.jsonl`
@@ -94,11 +111,14 @@ Emitter-allowed `code` values that are non-terminal:
 Success terminal:
 - `may_control_completed`
 
-Error terminals are boundedError grammar codes and must satisfy:
-- `/^[a-z][a-z0-9_]{0,127}$/u` after normalization
+Error terminals are any other boundedError grammar codes (excluding reserved lifecycle codes) and must satisfy:
+- `/^[a-z][a-z0-9_]{0,127}$/u`
+- Validation is strict, with no normalization of received code strings.
+- Reserved lifecycle codes are disjoint and excluded from error-terminal classification.
 
 Lifecycle rules:
 - Exactly one `may_control_started` event unless setup fails before loop startup.
+- `may_control_writeFile_completed` and `may_control_runValidation_completed` require a prior `may_control_started`.
 - `may_control_completed` requires a prior `may_control_started` and at least one prior `may_control_runValidation_completed` in the same session.
 - Error terminal events are permitted only as the first event when setup fails before startup, or as a single terminal event after active loop behavior has started.
 - Exactly one terminal is allowed per session; once terminal, no later events are valid.
@@ -115,7 +135,7 @@ Lifecycle rules:
 - Reject extra/missing/`undefined` fields and descriptor substitutions.
 - Reject cycles via snapshot recursion.
 - Validate counters as safe positive integers.
-- Reject code strings not in closed grammar above or non-structurally-bounded terminal form.
+- Reject code strings not in disjoint lifecycle classes or non-structurally-bounded terminal form.
 
 ## Replay and read rules
 
@@ -147,17 +167,25 @@ Mutation sequence and precedence:
    - create `.shield/may-control-events` then sync `.shield`; pre-existing safe directories are read-only at this point and do not imply mutation uncertainty.
 3. Acquire lock with `O_EXCL` + `O_NOFOLLOW` and strict owner-marker write.
 4. Open marker, write full marker, `sync` marker, and capture lock path `inode` and `dev` for release.
-5. Replay current file (unless missing).
-6. Reject deterministic replay/sequence/id-conflict failures only if mutation path is otherwise clean.
-7. Append full canonical line (`canonicalJson(event) + "\\n"`), full write, and log `sync`.
-8. Sync first-log parent directory after first log creation.
-9. Reread log, exact byte compare against expected bytes.
-10. Verify marker/inode/dev stability and unlink marker only after verification.
-11. Sync lock parent directory after lock creation and after lock unlink.
+5. Sync lock parent directory.
+6. Replay current file (unless missing).
+7. Reject deterministic replay/sequence/id-conflict failures only if mutation path is otherwise clean.
+8. Append full canonical line (`canonicalJson(event) + "\\n"`), full write, and log `sync`.
+9. Sync first-log parent directory after first log creation.
+10. Reread log, exact byte compare against expected bytes.
+11. Verify marker/inode/dev stability and unlink marker only after verification.
+12. Sync lock parent directory after verified unlink.
 
 Uncertainty closure:
 - Any uncertainty after mutation (`marker` write/sync, append/write, reread, marker drift, release unlink drift, release directory sync) returns `recovery_required` and overrides narrower outcomes.
+- First lock-parent sync failure, verified unlink failure, and second lock-parent sync failure are `recovery_required`.
+- They override deterministic outcomes because lock-namespace mutation occurred.
 - Deterministic prewrite sequence/conflict results are only returned when release verification succeeds.
+
+`lockOwnerId` and `repositoryRoot` constraints:
+- `lockOwnerId` is non-empty, uses `IDENTIFIER` grammar, and max length is 128.
+- `repositoryRoot` resolves to an absolute real path, is a non-symbolic writable directory, and is readable.
+- Path checks use no-follow and canonical-confined semantics.
 
 ## Closed failure taxonomy and precedence
 
@@ -185,6 +213,8 @@ Validation precedence is: malformed/input shape, unsafe-path, lock, replay/relat
 - descriptor-safe `MayControlEvent` and scope snapshots: all fields required, missing fields, extra fields, unsafe descriptors, proxies, symbols, and mutability races.
 - strict UTF-8 enforcement, noncanonical JSON, duplicate JSON keys, malformed JSON, malformed line shape, empty lines, truncated tail.
 - lifecycle and terminal projection:
+  - disjoint lifecycle-code class coverage: reserved lifecycle, boundedError terminal, and terminal-exclusion checks
+  - tool completion before `may_control_started` rejection
   - one-time start rules,
   - no completion before successful setup,
   - completion requires at least one validation completion,
@@ -195,10 +225,18 @@ Validation precedence is: malformed/input shape, unsafe-path, lock, replay/relat
   - persisted duplicate eventId/counter => `may_control_event_replay_invalid`,
   - exact duplicate append request => `may_control_event_sequence_violation` with unchanged bytes,
   - same eventId different payload => `may_control_event_id_conflict`.
+- wrapper invalid-result behavior: every invalid primitive `read`/append result throws `MayControlEventStoreError` with code-only payload (no partial object data).
 - foreign-session collisions and cross-session replay rejection.
+- `repositoryRoot` validation: relative path rejection, symlink root, non-directory root, unwritable root.
+- lockOwnerId validation: empty value, >128-length, non-identifier.
 - symlink and non-regular path attacks for repository root, `.shield`, `may-control-events`, log file, and lock file.
 - directory sync points for repository root, `.shield`, `may-control-events`, and first parent-after-create sync.
 - lock holder contention (`EEXIST`), lock marker short write/sync, lock release drift, and marker/inode/dev mismatch.
+- lock mutex directory sync failures:
+  - first lock-parent sync failure,
+  - verified lock unlink failure,
+  - second lock-parent sync failure,
+  - each yields `recovery_required` override.
 - append uncertainty paths: short write, append sync failure, reread mismatch.
 - uncertainty override matrix: recovery precedence after mutation uncertainty.
 - exact adapter receipt `{ eventId, appended }` and persisted readback compatibility.
