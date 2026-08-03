@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-171-slice-b",
+  "objective": "Implement issue #171 Slice B as one bounded pull request: provide a durable filesystem-backed May control-event sink and exact readback boundary, without entering blocked Slice C, composing #170, creating execution authority, invoking a model, or performing external effects.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/171",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": false,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-03T01:28:38Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:15OVRHWorBFCbQk8-2PjUwDjvpaFIYV4qSrRORjstn8"
+}
