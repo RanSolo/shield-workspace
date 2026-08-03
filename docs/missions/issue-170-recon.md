@@ -15,6 +15,11 @@
   attribution, while every exported restart-safe receipt reader exposed only
   projections. Fury confirmed there was no valid existing composition and
   required one read-only validated raw-ledger API as the smallest correction.
+- Implementation discovery at `013f9dfabe5c188b7443c15d6968e1ddd4054aa3`:
+  the frozen certified Helicarrier `compilation-manifest.v0` carries compilation
+  digests and byte lengths, not authority subsets. Fury confirmed a plan-only
+  correction: validate the closed derived envelope/IR before Helicarrier, then
+  verify only the manifest fields the frozen compiler actually emits.
 
 1. The original mission remains active in the primary durable journal. It is
    supervised/authorized and running. This run resumes that mission; it does

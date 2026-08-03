@@ -50,10 +50,12 @@ paths, validation commands, output contract, runtime/model/executor identity,
 absolute path, executable/argv value, PR identity, capability, or human
 decision. The unique current durable Fury record selects the blueprint. The
 tracked blueprint is immutable untrusted work intent; replayed implementation
-authority defines its maximum scope. Helicarrier's certified
-validator/compiler produces the closed manifest whose paths, validation IDs,
-output contract, and fixed `after_one_cycle` stop condition are checked against
-that authority. Missing or ambiguous current blueprint evidence blocks.
+authority defines its maximum scope. The coordinator validates a closed derived
+dispatch envelope/IR whose paths, validation IDs, output contract, and fixed
+`after_one_cycle` stop condition are checked against that authority before
+Helicarrier. The certified manifest then binds only the compilation digests and
+byte lengths it actually contains. Missing or ambiguous current blueprint
+evidence blocks.
 
 Trusted host dependencies are supplied separately and snapshotted before the
 first await. They provide read-only workspace observation, schema-9 host probes,
@@ -125,16 +127,19 @@ packet.
 8. Derive only `parentSessionId` and `packetId` from the mission revision,
    Fury-bound blueprint identity/digest, and pinned original cycle sequence.
    Invoke `runHelicarrierV0` with the blueprint bytes, replay-derived trust
-   envelope, and snapshotted certified
-   host compiler/validator dependencies. Require exact nested certification
-   identity and retain its prompt/provenance/manifest digests in the dispatch
-   evidence. Parse returned manifest bytes with one closed coordinator-owned
-   manifest schema. Require requested paths, actions, effects, capabilities,
-   and validation IDs to be subsets of active implementation authority; require
-   the exact output contract and `after_one_cycle`; resolve command IDs only
-   through the snapshotted host-owned registry. Manifest executable/argv fields
-   and unknown fields are forbidden. A validation, compilation, manifest, or
-   subset failure is pre-effect and blocked.
+   envelope, and snapshotted certified host compiler/validator dependencies.
+   Before that call, validate and snapshot the closed derived dispatch
+   envelope/IR: requested paths, actions, effects, capabilities, and validation
+   IDs must be subsets of active implementation authority; require the exact
+   output contract and `after_one_cycle`; resolve command IDs only through the
+   snapshotted host-owned registry; executable/argv fields and unknown fields
+   are forbidden. Pass that exact snapshot through Helicarrier. Require exact
+   nested certification identity and retain its prompt/provenance/manifest
+   digests in dispatch evidence. Parse returned `compilation-manifest.v0` only
+   according to its real frozen schema and verify its IR, governance, registry,
+   prompt, provenance, renderer, target, and byte-length bindings. Do not treat
+   the manifest as carrying authority subsets. A validation, compilation,
+   manifest, or subset failure is pre-effect and blocked.
 9. Load a fresh permission context through
    `loadSchema9PermissionContextV1`. Require all packet and May-control
    capabilities and exact root/branch/HEAD. Check that dirty paths are empty or
