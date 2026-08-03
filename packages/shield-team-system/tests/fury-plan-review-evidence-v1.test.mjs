@@ -220,6 +220,19 @@ test("wrong accountable reviewer seat is an attribution failure", () => {
   });
 });
 
+test("gate runtime and executor must match the observed Fury receipt", () => {
+  for (const reviewOverride of [
+    { reasoningRuntimeId: "runtime:fury-other" },
+    { toolExecutorId: "executor:other-host" },
+  ]) {
+    assert.deepEqual(create({ planGate: gate(reviewOverride) }), {
+      state: "invalid",
+      authority: "non_authoritative",
+      reasonCodes: ["INVALID_REVIEW_ATTRIBUTION"],
+    });
+  }
+});
+
 test("digest mismatch, stale revision, and absent receipt fail closed", () => {
   const created = create();
   assert.equal(created.state, "created");
