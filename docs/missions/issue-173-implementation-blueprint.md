@@ -10,7 +10,7 @@
 
 ## Exact path set (smallest)
 
-The later implementation freeze has exactly these four mandatory paths:
+Implementation has exactly these four mandatory paths:
 
 1. `packages/shield-team-system/src/seat-dispatch-store.mts` — define the closed claim contract and atomic claim operation in the existing lock/read/replay/write seam; reserve packet-binding evidence at the generic public append boundary.
 2. `packages/shield-team-system/src/dispatch-receipts.mts` — publicly export the claim function and its input/result/failure declarations through the existing facade.
@@ -21,9 +21,23 @@ The later implementation freeze has exactly these four mandatory paths:
 
 ## Closed public API and strict result states
 
-Add a new claim function in the store layer, using the existing outer result envelope exactly once:
+Add a new claim function in the store layer with a specialized, closed claim envelope; do not widen or parameterize the existing `SeatDispatchStoreContractResult<T>` used by other store APIs:
 
-- `claimSeatDispatchPacketV1(input: SeatDispatchPacketClaimInputV1): Promise<SeatDispatchStoreContractResult<SeatDispatchPacketClaimResultV1>>`
+```ts
+export type SeatDispatchPacketClaimContractResultV1 =
+  | { state: "valid"; value: SeatDispatchPacketClaimResultV1 }
+  | {
+      state: "invalid";
+      code: SeatDispatchPacketClaimFailureCodeV1;
+      errors: string[];
+    };
+
+export function claimSeatDispatchPacketV1(
+  input: SeatDispatchPacketClaimInputV1,
+): Promise<SeatDispatchPacketClaimContractResultV1>;
+```
+
+The resulting existing-file signature impact is exact: `seat-dispatch-store.mts` defines and exports `SeatDispatchPacketClaimInputV1`, `SeatDispatchPacketClaimResultV1`, `SeatDispatchPacketClaimFailureCodeV1`, `SeatDispatchPacketClaimContractResultV1`, and `claimSeatDispatchPacketV1`; `dispatch-receipts.mts` re-exports those five declarations. Existing `SeatDispatchStoreContractResult<T>` and every existing function signature remain unchanged.
 
 Required exact input fields:
 
@@ -37,9 +51,16 @@ Required exact input fields:
 - optional `inputEvidenceRefs` (caller refs are normalized; every caller-supplied ref in the reserved packet-binding namespace is rejected; after exact dedupe, at most 15 caller refs are accepted so the one internal packet-binding ref keeps the persisted receipt at its existing maximum of 16)
 - No caller-supplied `childTaskId`, `childSessionId`, `receiptId`, or `dispatchId`; these are derived from the claim namespace.
 
-Strict input validation remains identifier-safe and plain-object bounded before any FS access.
+Before reading `packetBytes`, before the first `await`, and before any filesystem access, perform this exact synchronous outer-input snapshot:
 
-`SeatDispatchStoreContractResult<T>` remains the only `state: "valid" | "invalid"` envelope. Its success `value` is the closed `SeatDispatchPacketClaimResultV1` union:
+1. Reject `input` if `node:util`'s `types.isProxy(input)` is true, if it is null/non-object, or if its prototype is not exactly `Object.prototype`. This intentionally rejects null-prototype objects, class instances, arrays, and proxies as `malformed_input`.
+2. Call `Object.getOwnPropertyDescriptors(input)` only after the proxy/plain-object checks. Reject symbol keys, missing required keys, unexpected string keys, and any expected property whose own descriptor is an accessor or has `enumerable !== true`. Every accepted field must be an enumerable own data property; descriptor `writable` and `configurable` do not affect its value semantics.
+3. Read every input value only from its validated descriptor's `.value`; never evaluate `input.packetBytes` or another property through ordinary property access. Copy scalar/object field references into a local snapshot for their existing strict validators.
+4. Obtain `packetBytes` from its descriptor `.value`; reject it if `types.isProxy(packetBytes)` is true or it is not a genuine `Uint8Array` with typed-array internal slots. Then synchronously copy it into a new `Uint8Array` before the first `await`. All later packet validation, canonicalization, and hashing use only that copy.
+
+Strict input validation remains identifier-safe and bounded before filesystem access. Nested structured runtime/executor/tool values continue through their existing strict validators, which map failures to the dedicated closed codes below.
+
+`SeatDispatchPacketClaimContractResultV1` is the only `state: "valid" | "invalid"` envelope for this API. Its success `value` is the closed `SeatDispatchPacketClaimResultV1` union:
 
 - `{ claimStatus: "claimed", logPath, byteLength, packetDigest, receipt, executionDisposition: "execute_once" }`
 - `{ claimStatus: "already_claimed", logPath, byteLength, packetDigest, receipt }`
@@ -52,6 +73,9 @@ Export a closed `SeatDispatchPacketClaimFailureCodeV1` union, and use it as the 
 type SeatDispatchPacketClaimFailureCodeV1 =
   | "malformed_input"
   | "malformed_packet"
+  | "malformed_runtime"
+  | "malformed_executor"
+  | "malformed_tool_execution"
   | "unsafe_path"
   | "repository_unavailable"
   | "receipt_unavailable"
@@ -82,17 +106,27 @@ This is the exact exhaustive union for the validation, canonicalization, safe-pa
 
 ## Bounded packet representation and canonical packet-byte digest
 
-The claim API accepts only `Uint8Array`. At function entry, before the first `await` or other externally observable operation, copy it with `new Uint8Array(input.packetBytes)` so caller mutation cannot change validation or digest input. Reject non-`Uint8Array` values as `malformed_input`; reject a snapshot longer than 1,048,576 bytes as `malformed_packet`.
+The claim API accepts only `Uint8Array`. At function entry, before the first `await` or other externally observable operation, copy only from the already validated `packetBytesDescriptor.value` held in the local descriptor snapshot, never through ordinary `input.packetBytes` property access, so caller mutation cannot change validation or digest input. Reject non-`Uint8Array` values as `malformed_input`; reject a snapshot longer than 1,048,576 bytes as `malformed_packet`.
 
 Parse the snapshot as follows, reusing the repository's existing strict JSON parsing/canonicalization machinery wherever it already supplies these guarantees; adapt that implementation locally rather than naming or depending on a helper that does not exist:
 
 1. Decode with fatal UTF-8 semantics: malformed, overlong, truncated, or otherwise invalid UTF-8 is `malformed_packet`; no replacement characters.
 2. Accept exactly one JSON value with only JSON whitespace around it. Reject duplicate object keys at parse time and reject any decoded string or object key containing an unpaired UTF-16 surrogate.
 3. Bound nesting to 64 containers: the root value is depth 0 and entering each array/object increments depth by one. Bound each array to 10,000 elements and each object to 10,000 members. A limit violation is `malformed_packet`.
-4. Canonicalize without a trailing newline: emit `null`, `true`, and `false` literally; preserve array order; sort object keys lexicographically by UTF-16 code-unit order; encode strings with JSON escaping using lowercase hex for required `\\u00xx` control escapes and otherwise the shortest valid JSON representation; emit finite IEEE-754 binary64 numbers using ECMAScript's shortest round-trippable decimal form, with `-0` emitted as `0`. Reject numbers that cannot be represented exactly as the parsed finite binary64 value under this profile.
+4. Canonicalize without a trailing newline: emit `null`, `true`, and `false` literally; preserve array order; sort object keys lexicographically by UTF-16 code-unit order; encode strings with JSON escaping using lowercase hex for required `\\u00xx` control escapes and otherwise the shortest valid JSON representation. For each JSON number token, parse its grammar as an exact decimal mathematical value and also parse it to IEEE-754 binary64. Reject it as `malformed_packet` unless the binary64 result is finite and its exact mathematical value equals the token's exact decimal value. Accepted values are emitted using ECMAScript's shortest round-trippable binary64 decimal form, with any accepted negative zero emitted as `0`.
 5. UTF-8 encode the canonical JSON with no BOM and no trailing bytes. Compute raw `SHA-256(canonicalPacketUtf8Bytes)`, encode all 32 digest bytes as unpadded base64url, and expose `packetDigest = "sha256:" + encodedDigest`.
 
-This defines semantic canonical equality independent of source whitespace and object member order; the digest is of the exact canonical UTF-8 bytes, not the original packet bytes and not a newline-terminated variant.
+The exact-number rule deliberately rejects decimal literals that silently round, including ordinary `0.1`; packets needing non-binary-exact decimal quantities must encode them as JSON strings (for example, `"0.1"`). This remains usable for normal JSON packet structure, strings, booleans, null, integers through the safe exact range, powers of two, and binary-exact fractions such as `0.5`, while preventing digest identity from depending on silent numeric precision loss.
+
+Required numeric vectors:
+
+- accept `0`, `-0` (emit `0`), `1`, `9007199254740991`, `0.5`, `0.125`, and `1e3` (emit the shortest ECMAScript form);
+- reject `0.1` because its exact decimal value is not its binary64 value;
+- reject unsafe integer `9007199254740993` because binary64 rounds it to `9007199254740992`;
+- reject overflow `1e309` because binary64 is non-finite;
+- reject underflow `1e-400` because binary64 becomes zero while the exact decimal is nonzero;
+- reject high precision `1.0000000000000001` because binary64 becomes exactly `1`;
+- accept exactly representable high-magnitude `9007199254740992`, while still rejecting adjacent non-representable integers under the equality rule.
 
 ## Deterministic identity derivation (mission+packet bound)
 
@@ -134,7 +168,10 @@ No helper path may read then append outside this lock-scoped sequence.
 
 ## Result-bearing lock creation and release
 
-- Lock creation uses exclusive creation, writes the complete owner/nonce marker, syncs the lock file, obtains and retains the created lock's `dev` and `ino`, then syncs the lock parent directory before protected receipt work begins. Failure or uncertainty at any creation/sync step produces a closed failure with no receipt mutation or authorization.
+- If `.shield` does not exist, create that single directory and immediately sync the already-open validated repository root directory before creating/opening the receipt log or lock. A root-directory sync failure returns `recovery_required`, performs no further mutation, and grants no execution disposition; the possibly created `.shield` directory is not removed as compensation.
+- Generate the acquisition nonce with `node:crypto.randomBytes(32)` before lock creation and encode all 32 bytes as 43-character unpadded base64url. Entropy-source failure maps to `recovery_required` with no lock or receipt mutation.
+- Lock creation uses exclusive no-follow creation with mode `0600`. Its exact marker is one UTF-8 canonical JSON line, with no extra fields or whitespace: `{"lockOwnerId":<JSON string>,"nonce":<43-character base64url JSON string>,"version":1}\n`. This avoids delimiter ambiguity; both fields are validated before serialization and strict parsing requires exactly those three keys and values.
+- Write the complete marker, sync the lock file, obtain and retain the created lock's `dev` and `ino`, then sync the lock parent directory before protected receipt work begins. Failure or uncertainty at any creation/sync step produces `recovery_required` with no receipt authorization and no compensating unlink unless the normal validated result-bearing release operation can safely run.
 - Release is a result-bearing operation: `{ state: "released" } | { state: "uncertain", code: "recovery_required", errors }`. Before unlink, open/stat and parse the current marker and require the expected owner ID, unguessable acquisition nonce, `dev`, and `ino` to equal the acquired-lock record. A mismatch, unreadable marker, or failed validation does not unlink and returns uncertain.
 - After validated unlink, verify that the same directory entry is absent without following a replacement symlink, then sync the lock parent directory. An unlink, absence-verification, or directory-sync failure is uncertain even if unlink may have happened.
 - Every result computed while holding the lock is pending until release completes. Release uncertainty is the final override over pending `claimed`, `already_claimed`, conflict, replay/store failure, or any other pending result: return outer invalid `recovery_required`, omit `value` and `executionDisposition`, and perform no compensating receipt write. Only `{ state: "released" }` permits the pending result to be returned.
@@ -155,7 +192,7 @@ No helper path may read then append outside this lock-scoped sequence.
 - Reserve the prefix `evidence:packet-binding:seat-dispatch-v1:` at the generic public receipt-append boundary, not only in `claimSeatDispatchPacketV1`. Public append/candidate validation rejects any caller-supplied `inputEvidenceRefs` entry with that prefix as `malformed_input` before mutation.
 - The atomic claim path uses an internal-only construction route to inject exactly one reserved ref after all caller refs have passed the public rules. Stored-row replay accepts and validates the one canonical reserved ref; it does not reinterpret it as caller authority.
 - This is an application API trust boundary, not protection against an actor with direct write access to `.shield/dispatch-receipts.jsonl`. Repository filesystem ownership/ACLs must keep direct writers trusted; direct filesystem tampering remains subject to existing strict replay/hash-chain checks and otherwise fails closed. No new receipt schema or cryptographic authentication claim is introduced.
-- Later implementation freeze must therefore include the generic append validation change in `seat-dispatch-store.mts` and its focused spoof test; it does not add another production path beyond the path set above.
+- Implementation must therefore include the generic append validation change in `seat-dispatch-store.mts` and its focused spoof test; it does not add another production path beyond the path set above.
 
 ## Crash/uncertain start behavior
 
@@ -169,13 +206,33 @@ No helper path may read then append outside this lock-scoped sequence.
 
 1. `malformed_input` — shape/descriptor/scope invalid.
 2. `malformed_packet` — strict JSON parse/canonicalization failure.
-3. `unsafe_path` — repo/root/log/lock path violations.
-4. `repository_unavailable` — repository root cannot be safely opened/read for the operation after path validation.
-5. `receipt_unavailable` — receipt log or its required parent cannot be safely opened/read before mutation.
-6. `dispatch_receipt_lock_held` — a valid existing lock prevents acquisition.
-7. `mixed_scope`, `receipt_dispatch_collision`, or `child_task_reuse` from retained receipt replay.
-8. `packet_claim_conflict` — same stable claim identity with a different packet digest or any mismatch in the full normalized start projection.
-9. `recovery_required` — any partial/uncertain mutation or lock lifecycle path (write/readback sync, short write, marker identity mismatch, unlink/absence verification, or lock-parent directory sync).
+3. `malformed_runtime` — configured/requested/runtime-observation validation failure.
+4. `malformed_executor` — executor self/host observation validation failure.
+5. `malformed_tool_execution` — tool-execution validation failure.
+6. `unsafe_path` — repo/root/log/lock path violations.
+7. `repository_unavailable` — repository root cannot be safely opened/read for the operation after path validation.
+8. `receipt_unavailable` — receipt log or its required parent cannot be safely opened/read before mutation.
+9. `dispatch_receipt_lock_held` — a valid existing lock prevents acquisition.
+10. `mixed_scope` — replayed rows span a forbidden scope.
+11. `malformed_log` — receipt log framing is malformed.
+12. `malformed_event` — a replayed or candidate event fails event validation.
+13. `digest_mismatch` — a stored event digest does not match its canonical content.
+14. `duplicate_event` — an event identity repeats.
+15. `duplicate_start` — a lifecycle has more than one start.
+16. `global_sequence_gap` — global sequence is not contiguous.
+17. `global_previous_digest` — global digest linkage is invalid.
+18. `lifecycle_sequence_gap` — lifecycle sequence is not contiguous.
+19. `lifecycle_previous_digest` — lifecycle digest linkage is invalid.
+20. `illegal_transition` — lifecycle transition is not allowed.
+21. `post_terminal` — an event follows a terminal lifecycle event.
+22. `timestamp_regression` — replayed lifecycle time moves backward.
+23. `identity_mismatch` — immutable lifecycle identity fields disagree.
+24. `receipt_dispatch_collision` — receipt/dispatch identity collides.
+25. `child_task_reuse` — child task identity is reused illegally.
+26. `child_session_reuse` — child session identity is reused illegally.
+27. `output_evidence_misplacement` — output evidence appears on a forbidden event.
+28. `packet_claim_conflict` — same stable claim identity has a different digest or normalized start projection.
+29. `recovery_required` — entropy failure, first-creation repository-root sync failure, or any partial/uncertain mutation or lock lifecycle path.
 
 This ordering selects the pending result. After lock acquisition, release uncertainty is a separate final override and always replaces that pending result with `recovery_required`. Lock/append/release uncertainty must not be retried as executable.
 
@@ -189,16 +246,19 @@ Target: `packages/shield-team-system/tests/seat-dispatch-store.test.mjs`
 - Same stable claim identity + different packet bytes returns `packet_claim_conflict`, no mutation.
 - Same stable claim identity + equivalent-whitespace canonical packet bytes dedupes to `already_claimed`.
 - Canonicalization edge cases cover invalid/overlong/truncated UTF-8, BOM/trailing data, duplicate keys, lone high/low surrogates in values and keys, 1,048,576/1,048,577-byte boundary, depth 64/65, array and object 10,000/10,001-member boundaries, key-order differences, array-order significance, escaped-vs-literal Unicode equality, `-0` normalization, exponent/shortest-number normalization, unsafe/unrepresentable numeric inputs, and absence of a digest newline.
+- Input snapshot tests reject an outer proxy without invoking its traps; reject class, array, null-prototype, inherited, symbol-keyed, extra-keyed, non-enumerable, and accessor-backed inputs; prove a `packetBytes` getter is never invoked; reject a proxied typed array; and prove mutation after call entry cannot alter the synchronous byte snapshot.
+- Numeric tests assert every required accept/reject vector above, including explicit rejection of `0.1`, unsafe integer rounding, overflow, underflow-to-zero, and high-precision rounding.
 - Non-JSON / malformed JSON packet and every parser/canonicalization limit failure return `malformed_packet` pre-mutation; a mutable source buffer changed after call entry cannot alter the snapshotted digest or event.
 - Duplicate non-reserved `inputEvidenceRefs` collapse under existing normalization. Exactly 15 deduped caller refs succeed and produce 16 persisted refs after internal binding injection; 16 deduped caller refs fail as `malformed_input` before lock/mutation. Any caller-supplied `evidence:packet-binding:seat-dispatch-v1:` ref, including the correct-looking ref, is rejected pre-mutation by both claim input and generic public append; an internal claim emits exactly one canonical reserved ref.
 - A generic-public-append spoof test proves a caller cannot inject the reserved binding. A direct-filesystem tamper test is limited to documenting/confirming the existing replay trust boundary; #173 does not claim protection from a trusted direct writer.
-- For the same stable identity and packet digest, stale/different `parentMissionRevision`, `repositoryId`/`repositoryWorkspaceId`/`repositoryRevision`, `subjectId`/`subjectRevision`, `artifactId`/`artifactRevision`, or any runtime/executor/tool field returns `packet_claim_conflict`, preserves bytes, and has no authorization token.
+- For the same stable identity and packet digest, stale/different `parentMissionRevision`, `repositoryId`/`repositoryWorkspaceId`/`repositoryRevision`, `subjectId`/`subjectRevision`, `artifactId`/`artifactRevision`, or any runtime/executor/tool field returns `packet_claim_conflict`, preserves bytes, and has no `executionDisposition`.
 - For the same stable identity and packet digest, changed normalized non-reserved evidence refs or accountable-seat/start metadata also returns `packet_claim_conflict` with no mutation.
 - `dispatch.started` only: lifecycle cannot be claimed with non-start kind via claim API.
 - `dispatch.started` duplicate with mismatched derived IDs fails at malformed-input boundary.
 - Mixed scope / foreign scope / replay invalid / non-canonical ledger errors fail closed and preserve bytes.
 - Lock contention and lock-holder marker tamper path do not mutate bytes and preserve replay integrity.
 - Lock creation tests cover lock-file sync and parent-directory sync; release tests cover owner/nonce and inode/device validation before unlink, replacement-marker refusal, verified absence, parent-directory sync, and the result-bearing release shape.
+- First `.shield` creation tests require immediate repository-root directory sync and map its failure to non-executable `recovery_required`. Marker tests assert exact canonical JSON-line bytes, strict key set, 32-byte/43-character nonce shape, delimiter-safe owner values, and entropy failure before lock mutation.
 - A release failure overrides each representative pending outcome (`claimed`, `already_claimed`, conflict, and replay/store invalid) with outer invalid `recovery_required`; every override omits `executionDisposition`.
 - Uncertain write/sync/readback returns `recovery_required`, no execution authorization, and performs no compensating write; tests permit bytes to contain zero or one complete prior claim according to the injected failure point rather than asserting byte preservation.
 - Restart after uncertain append either replays exactly one durable row as non-executable `already_claimed` or remains fail-closed on missing/partial/invalid state; it never returns a new executable claim for the uncertain attempt.
