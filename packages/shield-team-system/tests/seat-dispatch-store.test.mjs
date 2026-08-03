@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, open, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -9,6 +9,7 @@ import test from "node:test";
 
 import {
   appendSeatDispatchReceiptEntryV1,
+  claimSeatDispatchPacketV1,
   readSeatDispatchReceiptByReceiptIdV1,
   readSeatDispatchReceiptsByParentMissionSessionV1,
   readSeatDispatchReceiptsByChildTaskSessionV1,
@@ -20,6 +21,7 @@ import {
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dispatchReceiptsFacade = pathToFileURL(join(packageRoot, "dist/dispatch-receipts.mjs")).href;
+const seatDispatchStoreModule = pathToFileURL(join(packageRoot, "dist/seat-dispatch-store.mjs")).href;
 
 function readLogBytes(logPath) {
   return open(logPath, constants.O_RDONLY | constants.O_NOFOLLOW).then(async (handle) => {
@@ -149,6 +151,246 @@ async function assertBytesPreserved(logPath, action) {
   assert.equal(await readStoreLogAndAssert(logPath), before);
   return { result, before };
 }
+
+function packetBytes(value) {
+  return new TextEncoder().encode(value);
+}
+
+function packetClaimInput(repositoryRoot, overrides = {}) {
+  const identity = baseIdentity();
+  return {
+    repositoryRoot,
+    repositoryId: identity.repositoryId,
+    repositoryWorkspaceId: identity.repositoryWorkspaceId,
+    lockOwnerId: "claim-owner",
+    parentMissionId: identity.parentMissionId,
+    parentMissionRevision: identity.parentMissionRevision,
+    parentSessionId: identity.parentSessionId,
+    accountableSeatId: identity.accountableSeatId,
+    subjectId: identity.subjectId,
+    subjectRevision: identity.subjectRevision,
+    artifactId: identity.artifactId,
+    artifactRevision: identity.artifactRevision,
+    repositoryRevision: identity.repositoryRevision,
+    startedAt: identity.timestamp,
+    configuredRuntime: identity.configuredRuntime,
+    requestedRuntime: identity.requestedRuntime,
+    toolExecution: identity.toolExecution,
+    runtimeSelfReport: identity.runtimeSelfReport,
+    runtimeHostObserved: identity.runtimeHostObserved,
+    executorSelfReport: identity.executorSelfReport,
+    executorHostObserved: identity.executorHostObserved,
+    packetId: "packet-1",
+    packetBytes: packetBytes('{"alpha":1,"half":0.5}'),
+    inputEvidenceRefs: [],
+    ...overrides,
+  };
+}
+
+test("atomic packet claim returns execute_once once and exact retry is non-executable", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-claim-"));
+  const first = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot));
+  assert.equal(first.state, "valid", first.errors?.join(" "));
+  assert.equal(first.value.claimStatus, "claimed");
+  assert.equal(first.value.executionDisposition, "execute_once");
+  assert.match(first.value.packetDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
+  assert.equal(first.value.receipt.inputEvidenceRefs.length, 1);
+  assert.match(first.value.receipt.inputEvidenceRefs[0], /^evidence:packet-binding:seat-dispatch-v1:/);
+  const before = await readLogBytes(first.value.logPath);
+
+  const duplicate = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    startedAt: "2026-07-29T12:00:01.000Z",
+    packetBytes: packetBytes('{ "half" : 0.5, "alpha" : 1 }'),
+  }));
+  assert.equal(duplicate.state, "valid", duplicate.errors?.join(" "));
+  assert.equal(duplicate.value.claimStatus, "already_claimed");
+  assert.equal(Object.hasOwn(duplicate.value, "executionDisposition"), false);
+  assert.equal(duplicate.value.receipt.startedAt, "2026-07-29T12:00:00.000Z");
+  assert.equal(await readLogBytes(first.value.logPath), before);
+});
+
+test("packet claim conflicts on changed packet or normalized start fields", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-conflict-"));
+  const first = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packetBytes('{"v":1}') }));
+  assert.equal(first.state, "valid", first.errors?.join(" "));
+  const before = await readLogBytes(first.value.logPath);
+
+  const changedPacket = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packetBytes('{"v":2}') }));
+  assert.equal(changedPacket.state, "invalid");
+  assert.equal(changedPacket.code, "packet_claim_conflict");
+  assert.equal(Object.hasOwn(changedPacket, "executionDisposition"), false);
+
+  const staleSubject = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    packetBytes: packetBytes('{"v":1}'),
+    subjectRevision: "abcdef1234567890abcdef1234567890abcdef13",
+  }));
+  assert.equal(staleSubject.state, "invalid");
+  assert.equal(staleSubject.code, "packet_claim_conflict");
+  assert.equal(await readLogBytes(first.value.logPath), before);
+});
+
+test("concurrent identical packet claims expose at most one execute_once and persist one start", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-concurrent-"));
+  const results = await Promise.all(Array.from({ length: 4 }, () =>
+    claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot))
+  ));
+  const executable = results.filter((result) =>
+    result.state === "valid" && result.value.claimStatus === "claimed" && result.value.executionDisposition === "execute_once"
+  );
+  assert.ok(executable.length <= 1);
+  for (const result of results) {
+    if (result === executable[0]) continue;
+    assert.equal(result.state === "valid" && Object.hasOwn(result.value, "executionDisposition"), false);
+    if (result.state === "valid") assert.equal(result.value.claimStatus, "already_claimed");
+    else assert.equal(result.code, "dispatch_receipt_lock_held");
+  }
+
+  const retry = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    startedAt: "2026-07-29T12:00:01.000Z",
+  }));
+  assert.equal(retry.state, "valid", retry.errors?.join(" "));
+  assert.equal(retry.value.claimStatus, "already_claimed");
+  assert.equal(Object.hasOwn(retry.value, "executionDisposition"), false);
+  const rows = (await readLogBytes(retry.value.logPath)).trimEnd().split("\n").map((line) => JSON.parse(line));
+  assert.equal(rows.filter((row) => row.kind === "dispatch.started").length, 1);
+});
+
+test("fresh-process start survives restart as non-executable already_claimed", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-restart-"));
+  const { packetBytes: _packetBytes, ...childInput } = packetClaimInput(repositoryRoot);
+  const childScript = `
+    import { claimSeatDispatchPacketV1 } from ${JSON.stringify(seatDispatchStoreModule)};
+    const input = JSON.parse(process.env.SHIELD_PACKET_CLAIM_INPUT);
+    input.packetBytes = new TextEncoder().encode('{"alpha":1,"half":0.5}');
+    const result = await claimSeatDispatchPacketV1(input);
+    process.stdout.write(JSON.stringify({
+      state: result.state,
+      claimStatus: result.state === "valid" ? result.value.claimStatus : null,
+      executionDisposition: result.state === "valid" ? result.value.executionDisposition : null,
+      errors: result.state === "invalid" ? result.errors : [],
+    }));
+  `;
+  const child = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "--eval", childScript], {
+    encoding: "utf8",
+    env: { ...process.env, SHIELD_PACKET_CLAIM_INPUT: JSON.stringify(childInput) },
+  }));
+  assert.equal(child.state, "valid", child.errors?.join(" "));
+  assert.equal(child.claimStatus, "claimed");
+  assert.equal(child.executionDisposition, "execute_once");
+
+  const logPath = join(repositoryRoot, ".shield", "dispatch-receipts.jsonl");
+  const before = await readLogBytes(logPath);
+  const restarted = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    startedAt: "2026-07-29T12:00:02.000Z",
+  }));
+  assert.equal(restarted.state, "valid", restarted.errors?.join(" "));
+  assert.equal(restarted.value.claimStatus, "already_claimed");
+  assert.equal(Object.hasOwn(restarted.value, "executionDisposition"), false);
+  assert.equal(await readLogBytes(logPath), before);
+});
+
+test("packet claim fails closed and preserves an incomplete existing ledger", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-malformed-ledger-"));
+  const shieldDirectory = join(repositoryRoot, ".shield");
+  const logPath = join(shieldDirectory, "dispatch-receipts.jsonl");
+  const malformedBytes = '{"schemaVersion":1';
+  await mkdir(shieldDirectory);
+  await writeFile(logPath, malformedBytes);
+
+  const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "recovery_required");
+  assert.equal(Object.hasOwn(result, "executionDisposition"), false);
+  assert.equal(await readLogBytes(logPath), malformedBytes);
+});
+
+test("claim snapshot rejects proxies, accessors, and SharedArrayBuffer without property execution", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-input-"));
+  let traps = 0;
+  const proxy = new Proxy(packetClaimInput(repositoryRoot), {
+    get() { traps += 1; throw new Error("must not run"); },
+    ownKeys() { traps += 1; throw new Error("must not run"); },
+  });
+  const proxyResult = await claimSeatDispatchPacketV1(proxy);
+  assert.equal(proxyResult.state, "invalid");
+  assert.equal(proxyResult.code, "malformed_input");
+  assert.equal(traps, 0);
+
+  let getters = 0;
+  const accessor = packetClaimInput(repositoryRoot);
+  Object.defineProperty(accessor, "packetBytes", {
+    enumerable: true,
+    get() { getters += 1; return packetBytes("{}"); },
+  });
+  const accessorResult = await claimSeatDispatchPacketV1(accessor);
+  assert.equal(accessorResult.state, "invalid");
+  assert.equal(accessorResult.code, "malformed_input");
+  assert.equal(getters, 0);
+
+  if (typeof SharedArrayBuffer === "function") {
+    const shared = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+      packetBytes: new Uint8Array(new SharedArrayBuffer(8)),
+    }));
+    assert.equal(shared.state, "invalid");
+    assert.equal(shared.code, "malformed_input");
+  }
+});
+
+test("malformed scalar input precedes malformed packet without filesystem mutation", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-precedence-"));
+  const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    repositoryId: "invalid repository identity",
+    packetBytes: packetBytes("{malformed"),
+  }));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "malformed_input");
+  assert.equal(Object.hasOwn(result, "executionDisposition"), false);
+  await assert.rejects(lstat(join(repositoryRoot, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("claim numeric profile rejects rounded decimals and accepts exact binary fractions", async () => {
+  for (const token of [
+    "0.1",
+    "0.1000000000000000055511151231257827021181583404541015625",
+    "9007199254740993",
+    "1e309",
+    "1e-400",
+    "1.0000000000000001",
+  ]) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-number-invalid-"));
+    const result = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { packetBytes: packetBytes(`{\"value\":${token}}`) }));
+    assert.equal(result.state, "invalid", token);
+    assert.equal(result.code, "malformed_packet", token);
+    assert.equal(Object.hasOwn(result, "executionDisposition"), false);
+  }
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-number-valid-"));
+  const exact = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, {
+    packetBytes: packetBytes('{"zero":-0,"half":0.5,"large":9007199254740992}'),
+  }));
+  assert.equal(exact.state, "valid", exact.errors?.join(" "));
+  assert.equal(exact.value.claimStatus, "claimed");
+});
+
+test("claim reserves one receipt evidence slot and public append rejects binding spoof", async () => {
+  const fifteen = Array.from({ length: 15 }, (_, index) => `evidence-${index}`);
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-packet-evidence-"));
+  const accepted = await claimSeatDispatchPacketV1(packetClaimInput(repositoryRoot, { inputEvidenceRefs: fifteen }));
+  assert.equal(accepted.state, "valid", accepted.errors?.join(" "));
+  assert.equal(accepted.value.receipt.inputEvidenceRefs.length, 16);
+
+  const overflowRoot = await mkdtemp(join(tmpdir(), "shield-packet-evidence-overflow-"));
+  const overflow = await claimSeatDispatchPacketV1(packetClaimInput(overflowRoot, {
+    inputEvidenceRefs: [...fifteen, "evidence-15"],
+  }));
+  assert.equal(overflow.state, "invalid");
+  assert.equal(overflow.code, "malformed_input");
+
+  const spoofRoot = await mkdtemp(join(tmpdir(), "shield-packet-evidence-spoof-"));
+  const spoof = started({ inputEvidenceRefs: ["evidence:packet-binding:seat-dispatch-v1:spoof:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"] });
+  const spoofResult = await appendReceipt(spoofRoot, spoof);
+  assert.equal(spoofResult.state, "invalid");
+  assert.equal(spoofResult.code, "malformed_input");
+});
 
 test("append and reads preserve exact log bytes", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-seat-receipt-store-"));
