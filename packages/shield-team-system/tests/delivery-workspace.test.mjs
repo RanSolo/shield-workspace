@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -7,6 +10,10 @@ import {
   validatePRWorkspaceReceipt,
 } from "../public/github.mjs";
 import { deriveFuryPlanReviewEvidenceV1 } from "../dist/fury-plan-review-evidence-v1.mjs";
+import {
+  appendFuryPlanReviewEvidenceIfAbsentV1,
+  readFuryPlanReviewEvidenceLedgerV1,
+} from "../dist/fury-plan-review-evidence-store.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
@@ -419,6 +426,41 @@ test("an exact Fury PASS opens dispatch after verified readback", () => {
   assert.equal(result.state, "dispatch_ready");
   assert.equal(result.planGateEvaluation.dispatchEligibility, "eligible");
   assert.equal(result.planGateEvaluation.reviewerSeatId, "fury");
+});
+
+test("durable store readback feeds the synchronous independent loader boundary end to end", async () => {
+  const bundle = furyEvidenceBundle(passingGate());
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-delivery-fury-evidence-"));
+  const storeScope = {
+    repositoryRoot,
+    missionId: "mission-44",
+    lockOwnerId: "owner:delivery-workspace-test",
+  };
+  const appended = await appendFuryPlanReviewEvidenceIfAbsentV1({
+    ...storeScope,
+    evidence: bundle.evidence,
+  });
+  assert.equal(appended.state, "valid");
+  const readback = await readFuryPlanReviewEvidenceLedgerV1(storeScope);
+  assert.equal(readback.state, "valid");
+  const result = prepareDeliveryWorkspaceForDispatch(
+    input({
+      planGateCandidate: bundle.candidate,
+      publicationRequestId: updatePublication.requestId,
+    }),
+    {
+      run: runner([
+        ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(),
+        ok(JSON.stringify([pr()])),
+      ]),
+      loadJournal: updatePublication.loadJournal,
+      loadFuryPlanReviewEvidence: () => readback.value.records,
+      loadFuryDispatchReceiptEntries: () => bundle.entries,
+      realpath: (value) => value,
+    },
+  );
+  assert.equal(result.state, "dispatch_ready");
+  assert.equal(result.planReviewEvidenceEvaluation.evidence.evidenceId, bundle.evidence.evidenceId);
 });
 
 test("bounded reconciliation opens dispatch while Fury FAIL remains workspace_ready", () => {

@@ -218,6 +218,17 @@ test("digest mismatch, stale revision, and absent receipt fail closed", () => {
     [created.evidence], receiptEntries(), binding(),
   ).reasonCodes, ["REVIEW_EVIDENCE_DIGEST_MISMATCH"]);
   assert.deepEqual(evaluateFuryPlanReviewEvidenceV1(
+    candidate(created.evidence, { planDigest: `sha256:${"C".repeat(43)}` }),
+    [created.evidence], receiptEntries(), binding(),
+  ).reasonCodes, ["REVIEW_EVIDENCE_PLAN_DIGEST_MISMATCH"]);
+  assert.deepEqual(evaluateFuryPlanReviewEvidenceV1(
+    candidate(created.evidence, {
+      evidenceDigest: `sha256:${"B".repeat(43)}`,
+      planDigest: `sha256:${"C".repeat(43)}`,
+    }),
+    [created.evidence], receiptEntries(), binding(),
+  ).reasonCodes, ["REVIEW_EVIDENCE_DIGEST_MISMATCH"]);
+  assert.deepEqual(evaluateFuryPlanReviewEvidenceV1(
     candidate(created.evidence), [created.evidence], receiptEntries(),
     binding({ artifactRevisionId: correctedRevision, repositoryRevisionId: correctedRevision }),
   ).reasonCodes, ["REVIEW_EVIDENCE_STALE"]);

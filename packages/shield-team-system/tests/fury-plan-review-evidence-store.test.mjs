@@ -185,6 +185,20 @@ test("concurrent append never writes duplicate evidence", async () => {
   assert.equal(readback.value.records.length, 1);
 });
 
+test("concurrent conflicting reviews persist at most one complete record", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-fury-evidence-concurrent-conflict-"));
+  const records = [evidence("1", "gpt-5.6-sol"), evidence("2", "gpt-5.6-sol-v2")];
+  const results = await Promise.all(records.map((record, index) =>
+    appendFuryPlanReviewEvidenceIfAbsentV1({
+      ...scope(repositoryRoot, { lockOwnerId: `owner:conflict:${index}` }), evidence: record,
+    })));
+  assert.equal(results.filter((result) => result.state === "valid").length, 1);
+  const readback = await readFuryPlanReviewEvidenceLedgerV1(scope(repositoryRoot));
+  assert.equal(readback.state, "valid");
+  assert.equal(readback.value.records.length, 1);
+  assert.ok(records.some((record) => record.evidenceId === readback.value.records[0].evidenceId));
+});
+
 test("same review key with different independently observed model conflicts without mutation", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-fury-evidence-conflict-"));
   const firstRecord = evidence("1", "gpt-5.6-sol");
@@ -242,6 +256,48 @@ test("lock release failure overrides a durable append with recovery_required", a
       repositoryRoot: ${JSON.stringify(repositoryRoot)},
       missionId: ${JSON.stringify(missionId)},
       lockOwnerId: "owner:release-fault",
+      evidence: ${JSON.stringify(record)},
+    });
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "-e", script], {
+    encoding: "utf8",
+  });
+  assert.equal(child.status, 0, child.stderr);
+  const result = JSON.parse(child.stdout);
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "recovery_required");
+});
+
+test("lock marker drift overrides a durable append with recovery_required", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-fury-evidence-marker-drift-"));
+  const record = evidence();
+  const testFile = fileURLToPath(import.meta.url);
+  const storePath = resolve(dirname(testFile), "..", "dist", "fury-plan-review-evidence-store.mjs");
+  const script = `
+    import { constants } from "node:fs";
+    import { mock } from "node:test";
+    import * as realFs from "node:fs/promises";
+    import { pathToFileURL } from "node:url";
+    mock.module("node:fs/promises", { namedExports: {
+      ...realFs,
+      open: async (path, flags, mode) => {
+        const handle = await realFs.open(path, flags, mode);
+        if (String(path).endsWith(".lock") && !(flags & constants.O_WRONLY) && !(flags & constants.O_RDWR)) {
+          return {
+            stat: (...args) => handle.stat(...args),
+            readFile: async (...args) => String(await handle.readFile(...args)) + "drift",
+            close: (...args) => handle.close(...args),
+          };
+        }
+        return handle;
+      },
+    }});
+    const store = await import(pathToFileURL(${JSON.stringify(storePath)}).href + "?marker-drift");
+    const result = await store.appendFuryPlanReviewEvidenceIfAbsentV1({
+      repositoryRoot: ${JSON.stringify(repositoryRoot)},
+      missionId: ${JSON.stringify(missionId)},
+      lockOwnerId: "owner:marker-drift",
       evidence: ${JSON.stringify(record)},
     });
     process.stdout.write(JSON.stringify(result));
