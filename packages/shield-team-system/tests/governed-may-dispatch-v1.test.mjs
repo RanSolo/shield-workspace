@@ -30,7 +30,7 @@ function validInput() {
   };
 }
 
-function validDependencies(callCounts) {
+function validDependencies(callCounts, overrides = {}) {
   const sentinel = (name) => (..._args) => {
     callCounts[name] = (callCounts[name] ?? 0) + 1;
     throw new Error(`unexpected dependency call: ${name}`);
@@ -63,6 +63,7 @@ function validDependencies(callCounts) {
     claimDispatchPacket: sentinel("claimDispatchPacket"),
     appendDispatchReceipt: sentinel("appendDispatchReceipt"),
     runMissionCycle: sentinel("runMissionCycle"),
+    ...overrides,
   };
 }
 
@@ -88,10 +89,50 @@ test("rejects invalid dependencies after valid input", async () => {
   assert.equal(result.code, "dependencies_invalid");
 });
 
-test("returns an effect-free indeterminate stop after valid snapshots", async () => {
+test("returns journal_invalid when the mission journal read throws", async () => {
+  const callCounts = {};
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
+    readMissionJournal: async () => {
+      callCounts.readMissionJournal = (callCounts.readMissionJournal ?? 0) + 1;
+      throw new Error("unavailable");
+    },
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.readiness, "indeterminate");
+  assert.equal(result.code, "journal_invalid");
+  assert.equal(callCounts.readMissionJournal, 1);
+});
+
+test("preserves a validated invalid journal result", async () => {
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "invalid", code: "schema_mixed", errors: ["mixed journal"] }),
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.readiness, "indeterminate");
+  assert.equal(result.code, "schema_mixed");
+  assert.deepEqual(result.errors, ["mixed journal"]);
+});
+
+test("rejects a non-profile-aware journal before other dependencies", async () => {
+  const callCounts = {};
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "supervised", entries: [], projection: {} } }),
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.readiness, "indeterminate");
+  assert.equal(result.code, "schema_unsupported");
+  assert.deepEqual(callCounts, {});
+});
+
+test("stops without effects after a valid profile-aware journal", async () => {
   const callCounts = {};
 
-  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts));
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: {} } }),
+  }));
 
   assert.deepEqual(result, {
     state: "recovery_required",

@@ -966,6 +966,41 @@ export async function runGovernedMayDispatchStepV1(
     return { ...dependenciesSnapshot, readiness: "blocked" };
   }
 
+  let journal;
+  try {
+    journal = await dependenciesSnapshot.value.readMissionJournal({
+      repositoryRoot: inputSnapshot.value.repositoryRoot,
+      configuredJournalPath: inputSnapshot.value.configuredJournalPath,
+      missionId: inputSnapshot.value.missionId,
+    });
+  } catch {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: "journal_invalid",
+      errors: Object.freeze(["Mission journal read failed."]),
+      evidence: Object.freeze({}),
+    };
+  }
+  if (journal.state === "invalid") {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: journal.code,
+      errors: Object.freeze([...journal.errors]),
+      evidence: Object.freeze({}),
+    };
+  }
+  if (journal.value.kind !== "profile-aware") {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: "schema_unsupported",
+      errors: Object.freeze(["Governed May dispatch requires a schema-9 profile-aware mission journal."]),
+      evidence: Object.freeze({}),
+    };
+  }
+
   return {
     state: "recovery_required",
     readiness: "indeterminate",
