@@ -19,7 +19,11 @@ import {
   type FuryPlanReviewEvidenceExpectedBindingV1,
   type FuryPlanReviewEvidenceV1,
 } from "./fury-plan-review-evidence-v1.mjs";
-import type { SeatDispatchReceiptEventV1 } from "./seat-dispatch-receipt-v1.mjs";
+import type {
+  SeatDispatchReceiptEventV1,
+  SeatDispatchReceiptEventStartedV1,
+  SeatDispatchReceiptProjectionV1,
+} from "./seat-dispatch-receipt-v1.mjs";
 import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "./mission-store.mjs";
 import { canonicalJson } from "./mission-v2.mjs";
 import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
@@ -42,6 +46,7 @@ const INPUT_FIELDS = [
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const SAFE_BYTES = /^[ -~]*$/u;
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
+const ORIGINAL_SEQUENCE_EVIDENCE_PREFIX = "evidence:governed-may-original-sequence:";
 
 const TRUSTED_DEPENDENCY_FIELDS = [
   "observeDeliveryWorkspace",
@@ -280,6 +285,25 @@ interface GovernedMayDispatchIdentityV1 {
   readonly packetId: string;
   readonly claimBindingPrefix: string;
 }
+
+type GovernedMayReceiptReplayV1 =
+  | {
+      readonly state: "fresh";
+      readonly originalSequence: number;
+      readonly identity: GovernedMayDispatchIdentityV1;
+    }
+  | {
+      readonly state: "terminal";
+      readonly originalSequence: number;
+      readonly identity: GovernedMayDispatchIdentityV1;
+      readonly receipt: SeatDispatchReceiptProjectionV1;
+    }
+  | {
+      readonly state: "recovery_required";
+      readonly code: "dispatch_receipt_recovery_required";
+      readonly errors: readonly string[];
+      readonly evidence: Readonly<Record<string, unknown>>;
+    };
 
 const blocked = (code: "input_invalid", errors: readonly unknown[]): InputSnapshotBlocked => ({
   state: "blocked",
@@ -602,6 +626,118 @@ function deriveGovernedMayDispatchIdentityV1(
     packetId,
     claimBindingPrefix: `evidence:packet-binding:seat-dispatch-v1:${claimKey}:`,
   });
+}
+
+function originalSequenceEvidenceRef(sequence: number): string {
+  return `${ORIGINAL_SEQUENCE_EVIDENCE_PREFIX}${sequence}`;
+}
+
+function recoverOriginalSequence(start: SeatDispatchReceiptEventStartedV1): number | null {
+  const refs = start.inputEvidenceRefs.filter((ref) => ref.startsWith(ORIGINAL_SEQUENCE_EVIDENCE_PREFIX));
+  if (refs.length !== 1) return null;
+  const raw = refs[0].slice(ORIGINAL_SEQUENCE_EVIDENCE_PREFIX.length);
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(raw)) return null;
+  const sequence = Number(raw);
+  return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : null;
+}
+
+function classifyGovernedMayReceiptReplayV1(
+  entries: readonly SeatDispatchReceiptEventV1[],
+  projections: readonly SeatDispatchReceiptProjectionV1[],
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+  furyEvaluation: Extract<CurrentFuryEvidenceEvaluation, { state: "ready" }>,
+): GovernedMayReceiptReplayV1 {
+  try {
+    const authority = authoritySnapshot.authority;
+    const fury = furyEvaluation.evidence;
+    const workspaceId = fury.furyDispatchIdentity.repositoryWorkspaceId;
+    const relatedStarts = entries.filter((entry): entry is SeatDispatchReceiptEventStartedV1 =>
+      entry.kind === "dispatch.started" &&
+      entry.accountableSeatId === "may" &&
+      entry.parentMissionId === authority.missionId &&
+      entry.parentMissionRevision === authority.missionRevisionId &&
+      entry.repositoryId === authority.repositoryId &&
+      entry.repositoryWorkspaceId === workspaceId &&
+      entry.repositoryRevision === authority.headRevision &&
+      entry.subjectId === authority.subjectId &&
+      entry.subjectRevision === authority.artifactRevisionId &&
+      entry.artifactId === fury.blueprintArtifactId &&
+      entry.artifactRevision === fury.artifactRevisionId
+    );
+    if (relatedStarts.length === 0) {
+      const originalSequence = authoritySnapshot.currentSequence;
+      return Object.freeze({
+        state: "fresh",
+        originalSequence,
+        identity: deriveGovernedMayDispatchIdentityV1(authoritySnapshot, furyEvaluation, originalSequence),
+      });
+    }
+    if (relatedStarts.length !== 1) {
+      return {
+        state: "recovery_required",
+        code: "dispatch_receipt_recovery_required",
+        errors: stableErrors([`Expected at most one governed May dispatch start; found ${relatedStarts.length}.`]),
+        evidence: Object.freeze({ receiptIds: Object.freeze(relatedStarts.map(({ receiptId }) => receiptId).sort()) }),
+      };
+    }
+
+    const start = relatedStarts[0];
+    const originalSequence = recoverOriginalSequence(start);
+    if (originalSequence === null || originalSequence > authoritySnapshot.currentSequence) {
+      return {
+        state: "recovery_required",
+        code: "dispatch_receipt_recovery_required",
+        errors: stableErrors(["Governed May dispatch start has missing or invalid original-sequence evidence."]),
+        evidence: Object.freeze({ receiptId: start.receiptId }),
+      };
+    }
+    const identity = deriveGovernedMayDispatchIdentityV1(authoritySnapshot, furyEvaluation, originalSequence);
+    const packetBindings = start.inputEvidenceRefs.filter((ref) => ref.startsWith(identity.claimBindingPrefix));
+    if (
+      start.parentSessionId !== identity.parentSessionId ||
+      packetBindings.length !== 1 ||
+      !/^evidence:packet-binding:seat-dispatch-v1:[A-Za-z0-9_-]{32}:sha256:[A-Za-z0-9_-]{43}$/u.test(packetBindings[0])
+    ) {
+      return {
+        state: "recovery_required",
+        code: "dispatch_receipt_recovery_required",
+        errors: stableErrors(["Governed May dispatch start does not match the recovered packet identity."]),
+        evidence: Object.freeze({ receiptId: start.receiptId, originalSequence }),
+      };
+    }
+    const receipts = projections.filter(({ receiptId }) => receiptId === start.receiptId);
+    if (receipts.length !== 1) {
+      return {
+        state: "recovery_required",
+        code: "dispatch_receipt_recovery_required",
+        errors: stableErrors(["Governed May dispatch receipt projection is missing or ambiguous."]),
+        evidence: Object.freeze({ receiptId: start.receiptId, originalSequence }),
+      };
+    }
+    const receipt = receipts[0];
+    if (receipt.state === "completed" || receipt.state === "failed" || receipt.state === "cancelled") {
+      return Object.freeze({ state: "terminal", originalSequence, identity, receipt });
+    }
+    return {
+      state: "recovery_required",
+      code: "dispatch_receipt_recovery_required",
+      errors: stableErrors(["Governed May dispatch has durable nonterminal receipt evidence."]),
+      evidence: Object.freeze({
+        receiptId: receipt.receiptId,
+        dispatchId: receipt.dispatchId,
+        parentSessionId: receipt.parentSessionId,
+        state: receipt.state,
+        originalSequence,
+      }),
+    };
+  } catch {
+    return {
+      state: "recovery_required",
+      code: "dispatch_receipt_recovery_required",
+      errors: stableErrors(["Governed May dispatch receipt classification failed."]),
+      evidence: Object.freeze({}),
+    };
+  }
 }
 
 function snapshotInput(input: unknown): InputSnapshot {
@@ -1401,8 +1537,37 @@ export async function runGovernedMayDispatchStepV1(
       evidence: Object.freeze({ furyEvidenceId: furySelection.record.evidenceId }),
     };
   }
-  const originalSequence = authoritySnapshot.currentSequence;
-  const dispatchIdentity = deriveGovernedMayDispatchIdentityV1(authoritySnapshot, furyEvaluation, originalSequence);
+  const mayReplay = classifyGovernedMayReceiptReplayV1(
+    dispatchLedger.value.entries,
+    dispatchLedger.value.projections,
+    authoritySnapshot,
+    furyEvaluation,
+  );
+  if (mayReplay.state === "recovery_required") {
+    return {
+      ...mayReplay,
+      readiness: "dispatch_ready",
+    };
+  }
+  if (mayReplay.state === "terminal") {
+    return {
+      state: "replayed",
+      readiness: "dispatch_ready",
+      evidence: Object.freeze({
+        receiptId: mayReplay.receipt.receiptId,
+        dispatchId: mayReplay.receipt.dispatchId,
+        childTaskId: mayReplay.receipt.childTaskId,
+        childSessionId: mayReplay.receipt.childSessionId,
+        parentSessionId: mayReplay.identity.parentSessionId,
+        packetId: mayReplay.identity.packetId,
+        originalSequence: mayReplay.originalSequence,
+        terminalState: mayReplay.receipt.state,
+        furyEvidenceId: furyEvaluation.evidence.evidenceId,
+      }),
+    };
+  }
+  const originalSequence = mayReplay.originalSequence;
+  const dispatchIdentity = mayReplay.identity;
 
   return {
     state: "recovery_required",

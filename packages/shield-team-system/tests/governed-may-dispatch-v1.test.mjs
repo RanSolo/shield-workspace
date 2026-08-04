@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { runGovernedMayDispatchStepV1 } from "../dist/governed-may-dispatch-v1.mjs";
@@ -7,6 +8,7 @@ import { deriveFuryPlanReviewEvidenceV1 } from "../dist/fury-plan-review-evidenc
 import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
+  replaySeatDispatchReceiptsV1,
 } from "../dist/seat-dispatch-receipt-v1.mjs";
 
 const certification = Object.freeze({
@@ -240,14 +242,81 @@ function validFuryLedger(records) {
 }
 
 function validDispatchLedger(record, entries = validFuryReceiptEntries(record.furyDispatchIdentity)) {
+  const replay = replaySeatDispatchReceiptsV1(entries);
+  assert.equal(replay.state, "valid");
   return {
     state: "valid",
     value: {
       logPath: "/tmp/shield-governed-may/.shield/dispatch-receipts.jsonl",
       entries,
-      projections: [],
+      projections: replay.projections,
     },
   };
+}
+
+function governedMayReceiptEntries({ projection, furyRecord, packetId, parentSessionId, originalSequence, terminalState = null }) {
+  const authority = projection.implementationAuthority;
+  const baseEntries = validFuryReceiptEntries(furyRecord.furyDispatchIdentity);
+  const claimKey = createHash("sha256").update(new TextEncoder().encode(
+    `seat-dispatch-claim-v1\0${authority.missionId}\0${parentSessionId}\0${packetId}`,
+  )).digest("base64url").slice(0, 32);
+  const shared = {
+    receiptId: `receipt:${claimKey}`,
+    dispatchId: `dispatch:${claimKey}`,
+    parentMissionId: authority.missionId,
+    parentMissionRevision: authority.missionRevisionId,
+    parentSessionId,
+    childTaskId: `task:${claimKey}`,
+    childSessionId: `session:${claimKey}`,
+    accountableSeatId: "may",
+    repositoryId: authority.repositoryId,
+    repositoryWorkspaceId: furyRecord.furyDispatchIdentity.repositoryWorkspaceId,
+    repositoryRevision: authority.headRevision,
+    subjectId: authority.subjectId,
+    subjectRevision: authority.artifactRevisionId,
+    artifactId: furyRecord.blueprintArtifactId,
+    artifactRevision: furyRecord.artifactRevisionId,
+    configuredRuntime: { kind: "runtime.configured", runtimeId: "runtime:local-may", model: authority.modelId },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: "runtime:local-may", model: authority.modelId },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: "binding:may:tools" },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
+    runtimeHostObserved: {
+      kind: "runtime.host_observed",
+      runtimeId: "runtime:local-may",
+      model: authority.modelId,
+      evidenceRefs: ["host:may:runtime"],
+    },
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: {
+      kind: "executor.host_observed",
+      executorId: "executor:shield",
+      evidenceRefs: ["host:may:executor"],
+    },
+  };
+  const started = createSeatDispatchStartedEventV1({
+    ...shared,
+    inputEvidenceRefs: [
+      `evidence:governed-may-original-sequence:${originalSequence}`,
+      `evidence:packet-binding:seat-dispatch-v1:${claimKey}:sha256:${"B".repeat(43)}`,
+    ],
+    timestamp: "2026-08-03T18:00:02Z",
+    logSequence: 2,
+    previousLogDigest: baseEntries[1].entryDigest,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null,
+  });
+  if (terminalState === null) return [...baseEntries, started];
+  const terminal = createSeatDispatchLifecycleEventV1({
+    ...shared,
+    kind: `dispatch.${terminalState}`,
+    outputEvidenceRefs: ["evidence:may:terminal"],
+    timestamp: "2026-08-03T18:00:03Z",
+    logSequence: 3,
+    previousLogDigest: started.entryDigest,
+    lifecycleSequence: 1,
+    previousLifecycleDigest: started.entryDigest,
+  });
+  return [...baseEntries, started, terminal];
 }
 
 function validInput() {
@@ -407,6 +476,64 @@ test("derives stable dispatch identities that change with the pinned original se
   assert.equal(first.evidence.parentSessionId, replay.evidence.parentSessionId);
   assert.notEqual(first.evidence.packetId, next.evidence.packetId);
   assert.notEqual(first.evidence.parentSessionId, next.evidence.parentSessionId);
+});
+
+test("requires recovery for a durable governed May start without a terminal", async () => {
+  const projection = validProjection({ lastSequence: 4 });
+  const furyRecord = validFuryRecord(projection);
+  const fresh = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+  }));
+  const entries = governedMayReceiptEntries({
+    projection,
+    furyRecord,
+    packetId: fresh.evidence.packetId,
+    parentSessionId: fresh.evidence.parentSessionId,
+    originalSequence: 4,
+  });
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord, entries),
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.readiness, "dispatch_ready");
+  assert.equal(result.code, "dispatch_receipt_recovery_required");
+  assert.equal(result.evidence.state, "started");
+});
+
+test("replays a terminal governed May receipt using its durable original sequence", async () => {
+  const originalProjection = validProjection({ lastSequence: 4 });
+  const furyRecord = validFuryRecord(originalProjection);
+  const fresh = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: originalProjection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+  }));
+  const entries = governedMayReceiptEntries({
+    projection: originalProjection,
+    furyRecord,
+    packetId: fresh.evidence.packetId,
+    parentSessionId: fresh.evidence.parentSessionId,
+    originalSequence: 4,
+    terminalState: "completed",
+  });
+  const advancedProjection = validProjection({ lastSequence: 5 });
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: advancedProjection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord, entries),
+  }));
+
+  assert.equal(result.state, "replayed");
+  assert.equal(result.readiness, "dispatch_ready");
+  assert.equal(result.evidence.originalSequence, 4);
+  assert.equal(result.evidence.packetId, fresh.evidence.packetId);
+  assert.equal(result.evidence.parentSessionId, fresh.evidence.parentSessionId);
+  assert.equal(result.evidence.terminalState, "completed");
 });
 
 test("fails closed when the dispatch receipt ledger read throws", async () => {
