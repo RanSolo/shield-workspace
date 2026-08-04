@@ -123,6 +123,7 @@ function validProjection(overrides = {}) {
     brief: { subjectId: authority.subjectId, revisionId: authority.missionRevisionId, activatedModes: [] },
     authorization: "authorized",
     execution: "not-started",
+    effects: [],
     implementationAuthority: authority,
     implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
     implementationAuthorityState: "authorized",
@@ -504,7 +505,7 @@ function governedMayReceiptEntries({ projection, furyRecord, packetId, parentSes
   const terminal = createSeatDispatchLifecycleEventV1({
     ...shared,
     kind: `dispatch.${terminalState}`,
-    outputEvidenceRefs: ["evidence:may:terminal"],
+    outputEvidenceRefs: [`may-control:${shared.childSessionId}`, FIXTURE_CYCLE_IDENTITY.cycleId, FIXTURE_CYCLE_IDENTITY.effectKey],
     timestamp: "2026-08-03T18:00:03Z",
     logSequence: 3,
     previousLogDigest: started.entryDigest,
@@ -889,7 +890,7 @@ test("records a safe failed terminal when workspace freshness drifts after claim
     runMissionCycle: async () => { cycleCalls += 1; throw new Error("must not run"); },
   }));
 
-  assert.equal(result.state, "failed");
+  assert.equal(result.state, "failed", JSON.stringify(result));
   assert.equal(result.evidence.terminalState, "failed");
   assert.equal(cycleCalls, 0);
   assert.equal(mayCalls, 0);
@@ -1245,6 +1246,39 @@ test("replays a terminal governed May receipt using its durable original sequenc
   assert.equal(result.evidence.repositoryRevision, originalProjection.implementationAuthority.headRevision);
   assert.equal(result.evidence.configuredRuntime.runtimeId, "runtime:local-may");
   assert.equal(result.evidence.toolExecution.executorBindingRef, "binding:issue-170:may");
+});
+
+test("rejects replay when terminal runtime attribution is mismatched", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const fresh = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+  }));
+  const entries = governedMayReceiptEntries({
+    projection,
+    furyRecord,
+    packetId: fresh.evidence.packetId,
+    parentSessionId: fresh.evidence.parentSessionId,
+    originalSequence: 4,
+    terminalState: "completed",
+  });
+  const ledger = validDispatchLedger(furyRecord, entries);
+  const projections = ledger.value.projections.map((receipt) => receipt.accountableSeatId === "may"
+    ? { ...receipt, configuredRuntime: { ...receipt.configuredRuntime, model: "model:substituted" } }
+    : receipt);
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => ({ ...ledger, value: { ...ledger.value, projections } }),
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "dispatch_receipt_recovery_required");
 });
 
 test("fails closed when the dispatch receipt ledger read throws", async () => {

@@ -786,6 +786,34 @@ function classifyGovernedMayReceiptReplayV1(
     }
     const receipt = receipts[0];
     if (receipt.state === "completed" || receipt.state === "failed" || receipt.state === "cancelled") {
+      const binding = authoritySnapshot.bindingWrapper.binding;
+      const claimKey = identity.claimBindingPrefix.slice("evidence:packet-binding:seat-dispatch-v1:".length, -1);
+      const expectedConfiguredRuntime = { kind: "runtime.configured", runtimeId: binding.reasoningRuntimeId, model: authoritySnapshot.bindingWrapper.modelId };
+      const expectedRequestedRuntime = { kind: "runtime.requested", runtimeId: binding.reasoningRuntimeId, model: authoritySnapshot.bindingWrapper.modelId };
+      if (
+        receipt.receiptId !== `receipt:${claimKey}` ||
+        receipt.dispatchId !== `dispatch:${claimKey}` ||
+        receipt.childTaskId !== `task:${claimKey}` ||
+        receipt.childSessionId !== `session:${claimKey}` ||
+        canonicalJson(receipt.configuredRuntime) !== canonicalJson(expectedConfiguredRuntime) ||
+        canonicalJson(receipt.requestedRuntime) !== canonicalJson(expectedRequestedRuntime) ||
+        receipt.toolExecution.kind !== "tool.execution.requested" ||
+        receipt.toolExecution.executorBindingRef !== binding.bindingId ||
+        receipt.runtimeHostHistory.length === 0 ||
+        receipt.runtimeHostHistory.at(-1)?.runtimeId !== binding.reasoningRuntimeId ||
+        receipt.runtimeHostHistory.at(-1)?.model !== authoritySnapshot.bindingWrapper.modelId ||
+        receipt.executorHostHistory.length === 0 ||
+        receipt.executorHostHistory.at(-1)?.executorId !== binding.toolExecutorId ||
+        receipt.outputEvidenceRefs === null ||
+        !receipt.outputEvidenceRefs.includes(`may-control:${receipt.childSessionId}`)
+      ) {
+        return {
+          state: "recovery_required",
+          code: "dispatch_receipt_recovery_required",
+          errors: stableErrors(["Terminal governed May receipt identity or attribution is mismatched."]),
+          evidence: Object.freeze({ receiptId: receipt.receiptId, originalSequence }),
+        };
+      }
       return Object.freeze({ state: "terminal", originalSequence, identity, receipt });
     }
     return {
@@ -2529,11 +2557,37 @@ export async function runGovernedMayDispatchStepV1(
     ) throw new Error("mission_effect_mismatch");
   };
 
+  const proveNoEffectReadbacks = async (): Promise<void> => {
+    const [auditRead, controlRead, journalRead] = await Promise.all([
+      permissionAudit.read(),
+      controlStore.read(),
+      dependenciesSnapshot.value.readMissionJournal({
+        repositoryRoot: inputSnapshot.value.repositoryRoot,
+        configuredJournalPath: inputSnapshot.value.configuredJournalPath,
+        missionId: inputSnapshot.value.missionId,
+      }),
+    ]);
+    if (
+      !plainObject(auditRead) || !Array.isArray(auditRead.entries) || auditRead.entries.length !== 0 ||
+      !plainObject(controlRead) || !Array.isArray(controlRead.orderedEvents) || controlRead.orderedEvents.length !== 0 ||
+      !plainObject(controlRead.terminalState) || controlRead.terminalState.state !== "none" ||
+      journalRead.state === "invalid" || journalRead.value.kind !== "profile-aware" ||
+      journalRead.value.projection.lastSequence !== originalSequence ||
+      journalRead.value.projection.effects.some(({ cycleId, effectKey }) => cycleId === runnerPlan.value.cycleId || effectKey === runnerPlan.value.effectKey)
+    ) throw new Error("no_effect_readback_mismatch");
+  };
+
   if (missionCycleResult.outcome === "advanced") {
     try {
       await proveCompletedReadbacks();
     } catch {
       return { state: "recovery_required", readiness: "dispatch_ready", code: "preterminal_readback_invalid", errors: Object.freeze(["Required audit, control, or mission readback is missing or mismatched."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId }) };
+    }
+  } else {
+    try {
+      await proveNoEffectReadbacks();
+    } catch {
+      return { state: "recovery_required", readiness: "dispatch_ready", code: "preterminal_readback_invalid", errors: Object.freeze(["No-effect readbacks could not be proven before failed terminal append."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId }) };
     }
   }
   const terminalKind = missionCycleResult.outcome === "advanced" ? "dispatch.completed" : "dispatch.failed";
@@ -2593,6 +2647,7 @@ export async function runGovernedMayDispatchStepV1(
 
   try {
     if (missionCycleResult.outcome === "advanced") await proveCompletedReadbacks();
+    else await proveNoEffectReadbacks();
     const finalDispatch = await dependenciesSnapshot.value.readDispatchReceipts({
         repositoryRoot: inputSnapshot.value.repositoryRoot,
         repositoryId: authoritySnapshot.authority.repositoryId,
