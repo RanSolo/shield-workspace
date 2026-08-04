@@ -1248,7 +1248,7 @@ test("replays a terminal governed May receipt using its durable original sequenc
   assert.equal(result.evidence.toolExecution.executorBindingRef, "binding:issue-170:may");
 });
 
-test("rejects replay when terminal runtime attribution is mismatched", async () => {
+test("rejects replay when a non-final runtime attribution observation is mismatched", async () => {
   const projection = validProjection();
   const furyRecord = validFuryRecord(projection);
   const fresh = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
@@ -1269,7 +1269,12 @@ test("rejects replay when terminal runtime attribution is mismatched", async () 
   });
   const ledger = validDispatchLedger(furyRecord, entries);
   const projections = ledger.value.projections.map((receipt) => receipt.accountableSeatId === "may"
-    ? { ...receipt, configuredRuntime: { ...receipt.configuredRuntime, model: "model:substituted" } }
+    ? {
+        ...receipt,
+        runtimeHostHistory: receipt.runtimeHostHistory.map((observation, index) => index === 0
+          ? { ...observation, model: "model:substituted" }
+          : observation),
+      }
     : receipt);
   const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),

@@ -800,10 +800,9 @@ function classifyGovernedMayReceiptReplayV1(
         receipt.toolExecution.kind !== "tool.execution.requested" ||
         receipt.toolExecution.executorBindingRef !== binding.bindingId ||
         receipt.runtimeHostHistory.length === 0 ||
-        receipt.runtimeHostHistory.at(-1)?.runtimeId !== binding.reasoningRuntimeId ||
-        receipt.runtimeHostHistory.at(-1)?.model !== authoritySnapshot.bindingWrapper.modelId ||
+        receipt.runtimeHostHistory.some(({ runtimeId, model }) => runtimeId !== binding.reasoningRuntimeId || model !== authoritySnapshot.bindingWrapper.modelId) ||
         receipt.executorHostHistory.length === 0 ||
-        receipt.executorHostHistory.at(-1)?.executorId !== binding.toolExecutorId ||
+        receipt.executorHostHistory.some(({ executorId }) => executorId !== binding.toolExecutorId) ||
         receipt.outputEvidenceRefs === null ||
         !receipt.outputEvidenceRefs.includes(`may-control:${receipt.childSessionId}`)
       ) {
