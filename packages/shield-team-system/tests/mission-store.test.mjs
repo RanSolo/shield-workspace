@@ -477,6 +477,20 @@ test("initializeProfileAwareMissionJournalV1 rejects invalid first entries befor
   await assert.rejects(lstat(join(repositoryRoot, ".shield")), { code: "ENOENT" });
 });
 
+test("initializeProfileAwareMissionJournalV1 rejects a wrong schema before filesystem mutation", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-profile-preflight-schema-"));
+  const fixture = profileAwareFixture();
+  const result = await initializeProfileAwareMissionJournalV1({
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entry: { ...fixture.begun, schemaVersion: 8 },
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "unsupported_schema");
+  await assert.rejects(lstat(join(repositoryRoot, ".shield")), { code: "ENOENT" });
+});
+
 test("initializeProfileAwareMissionJournalV1 rejects pre-existing symlink path components", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-profile-init-symlink-"));
   const outside = await mkdtemp(join(tmpdir(), "shield-store-profile-init-outside-"));

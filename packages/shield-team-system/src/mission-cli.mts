@@ -314,7 +314,6 @@ async function begin(args: string[]): Promise<number> {
   const root = await exactRoot(options.values.get("--root"), true);
   const config = await repositoryConfig(root);
   const briefInput = await jsonFile(resolve(root, required(options, "--brief")), "Mission brief");
-  const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
   if (options.flags.has("--profile-aware")) {
     if (options.values.has("--authorization") || options.values.has("--delegation") || options.values.has("--eligibility")) {
       throw new MissionCliError("Profile-aware begin cannot include supervised or delegated authorization inputs.");
@@ -322,6 +321,7 @@ async function begin(args: string[]): Promise<number> {
     if (!plainObject(briefInput) || typeof briefInput.missionId !== "string" || typeof briefInput.requireSimmons !== "boolean") {
       throw new MissionCliError("Profile-aware mission brief identity is malformed.", 1);
     }
+    const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
     const bindings = unwrap(validateRepositoryBindings(
       registry,
       config.trustedHumanBindingRefs,
@@ -344,6 +344,7 @@ async function begin(args: string[]): Promise<number> {
     return 0;
   }
   const brief = unwrap(validateSupervisedMissionBrief(briefInput));
+  const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
   const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, brief.missionId, brief.requireSimmons));
   const authorization = options.values.get("--authorization") ?? "supervised";
   if (authorization !== "supervised" && authorization !== "delegated") throw new MissionCliError("--authorization must be supervised or delegated.");
@@ -732,10 +733,14 @@ async function wheelsUp(args: string[]): Promise<number> {
   }));
   const passcode = await passcodeFromOptions(options);
   const signatureBase64 = await signMissionPayload(binding, passcode, authority, missionId);
-  const [fresh, freshObservation] = await Promise.all([
-    currentProfileAwareMission(root, config, missionId),
+  const [freshConfig, freshObservation] = await Promise.all([
+    repositoryConfig(root),
     observeRepository(root),
   ]);
+  if (freshConfig.repositoryId !== config.repositoryId || freshConfig.paths.journals !== config.paths.journals) {
+    throw new MissionCliError("Repository configuration changed while Wheels Up was being signed.", 1);
+  }
+  const fresh = await currentProfileAwareMission(root, freshConfig, missionId);
   if (fresh.projection.lastSequence !== current.projection.lastSequence || !sameObservation(observation, freshObservation)) {
     throw new MissionCliError("Mission journal or repository identity changed while Wheels Up was being signed.", 1);
   }
@@ -758,6 +763,9 @@ async function bindMay(args: string[]): Promise<number> {
   const authority = current.projection.implementationAuthority;
   if (current.projection.implementationAuthorityState !== "authorized" || authority === null) {
     throw new MissionCliError("May binding requires an active Wheels Up implementation authority.", 1);
+  }
+  if (config.repositoryId !== authority.repositoryId) {
+    throw new MissionCliError("Repository ID no longer matches Wheels Up authority.", 1);
   }
   const intent = bindIntent(await jsonFile(resolve(root, required(options, "--input")), "May binding input"));
   const identities = ["may", intent.reasoningRuntimeId, authority.modelId, intent.toolExecutorId];
@@ -834,10 +842,14 @@ async function bindMay(args: string[]): Promise<number> {
   }));
   const passcode = await passcodeFromOptions(options);
   const signatureBase64 = await signMissionPayload(signer, passcode, payload, missionId);
-  const [fresh, freshObservation] = await Promise.all([
-    currentProfileAwareMission(root, config, missionId),
+  const [freshConfig, freshObservation] = await Promise.all([
+    repositoryConfig(root),
     observeRepository(root),
   ]);
+  if (freshConfig.repositoryId !== config.repositoryId || freshConfig.paths.journals !== config.paths.journals || freshConfig.repositoryId !== authority.repositoryId) {
+    throw new MissionCliError("Repository configuration changed while May binding was being signed.", 1);
+  }
+  const fresh = await currentProfileAwareMission(root, freshConfig, missionId);
   if (fresh.projection.lastSequence !== current.projection.lastSequence || !sameObservation(observation, freshObservation)) {
     throw new MissionCliError("Mission journal or repository identity changed while May binding was being signed.", 1);
   }

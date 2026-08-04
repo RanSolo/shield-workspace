@@ -366,6 +366,32 @@ test("profile-aware governance producer verifies the unique pending Coulson auth
     trustedBindings: [coulson.binding],
     evidence: { ...authorization, signatureBase64: "forged" },
   }), /signature/);
+  const otherCoulson = authority("coulson");
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: {
+      ...authorization,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(authorization.payload)), otherCoulson.privateKey).toString("base64"),
+    },
+  }), /signature/);
+  const backwardPayload = {
+    ...authorization.payload,
+    timestamp: { value: "2026-07-29T14:59:59Z", provenance: "humanRecorded" },
+  };
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: {
+      payload: backwardPayload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(backwardPayload)), coulson.privateKey).toString("base64"),
+    },
+  }), /timestamp moves backward/);
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: { ...authorization, payload: { ...authorization.payload, timestamp: { value: "not-a-time", provenance: "humanRecorded" } } },
+  }), /identity or sequence/);
   assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
     projection,
     trustedBindings: [coulson.binding],

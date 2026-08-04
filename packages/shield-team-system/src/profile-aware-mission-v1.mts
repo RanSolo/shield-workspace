@@ -255,6 +255,9 @@ export function createProfileAwareGovernanceDecisionEntryV1(input: {
   const sequence = input.projection.lastSequence + 1;
   const errors = verifyEvidence(input.evidence, unsatisfied[0], input.trustedBindings, input.projection.missionId, sequence);
   if (errors.length > 0) throw new Error(errors.join(" "));
+  if (Date.parse(input.evidence.payload.timestamp.value) < Date.parse(input.projection.brief.createdAt.value)) {
+    throw new Error("Profile-aware mission authorization timestamp moves backward.");
+  }
   const evidence: SignedProfileEvidenceV1 = {
     payload: {
       ...input.evidence.payload,

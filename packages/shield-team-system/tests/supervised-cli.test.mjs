@@ -453,6 +453,32 @@ test("supported profile-aware CLI workflow records three independent signed tran
   assert.equal(JSON.parse(wheels.stdout).implementationAuthorityState, "authorized");
   durableBytes = await readFile(journalPath(root, created.missionId), "utf8");
 
+  const configPath = join(root, ".shield", "config.json");
+  const configBytes = await readFile(configPath, "utf8");
+  const changedConfig = { ...JSON.parse(configBytes), repositoryId: "RanSolo/changed-repository" };
+  await writeFile(configPath, `${JSON.stringify(changedConfig, null, 2)}\n`);
+  const rejectedRepositoryId = run(
+    root,
+    ["mission", "bind", "--mission-id", created.missionId, "--input", "may-binding.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedRepositoryId.status, 1);
+  assert.match(rejectedRepositoryId.stderr, /Repository ID no longer matches Wheels Up authority/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+  await writeFile(configPath, configBytes);
+
+  const originalBranch = runGit(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  runGit(root, ["switch", "-q", "-c", "fixture/stale-binding-host"]);
+  const rejectedBranch = run(
+    root,
+    ["mission", "bind", "--mission-id", created.missionId, "--input", "may-binding.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedBranch.status, 1);
+  assert.match(rejectedBranch.stderr, /root, branch, or HEAD no longer matches/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+  runGit(root, ["switch", "-q", originalBranch]);
+
   await writeFile(join(root, "colliding-may-binding.json"), `${JSON.stringify({
     reasoningRuntimeId: "model:gemma-4-31b",
     toolExecutorId: "executor:shield-host",
@@ -896,6 +922,16 @@ test("authorize explains when the local signer has not been provisioned", async 
     authorized.stderr,
     /shield mission signer setup --seat coulson/,
   );
+});
+
+test("supervised begin preserves malformed-brief precedence over a malformed binding registry", async () => {
+  const { root } = await fixture();
+  await writeFile(join(root, "mission-brief.json"), "{}\n");
+  await writeFile(join(root, ".shield", "trusted-human-bindings.json"), "{}\n");
+  const result = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Mission brief/u);
+  assert.doesNotMatch(result.stderr, /Trusted binding registry/u);
 });
 
 test("Wheels Off grants, delegates begin deterministically, reports source, and invalidates fail closed", async () => {
