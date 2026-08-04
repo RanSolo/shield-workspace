@@ -378,9 +378,35 @@ test("stops without effects after a valid profile-aware journal", async () => {
       furyEvidenceId: furyRecord.evidenceId,
       furyPlanDigest: furyRecord.planDigest,
       originalSequence: 4,
+      packetId: result.evidence.packetId,
+      parentSessionId: result.evidence.parentSessionId,
     },
   });
+  assert.match(result.evidence.packetId, /^packet:governed-may:[A-Za-z0-9_-]{43}$/);
+  assert.match(result.evidence.parentSessionId, /^session:governed-may:[A-Za-z0-9_-]{32}$/);
   assert.deepEqual(callCounts, {});
+});
+
+test("derives stable dispatch identities that change with the pinned original sequence", async () => {
+  async function runAtSequence(lastSequence) {
+    const projection = validProjection({ lastSequence });
+    const furyRecord = validFuryRecord(projection);
+    return runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+      readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+      readFuryEvidence: async () => validFuryLedger([furyRecord]),
+      readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    }));
+  }
+
+  const first = await runAtSequence(4);
+  const replay = await runAtSequence(4);
+  const next = await runAtSequence(5);
+  assert.equal(first.state, "recovery_required");
+  assert.equal(first.code, "implementation_incomplete");
+  assert.equal(first.evidence.packetId, replay.evidence.packetId);
+  assert.equal(first.evidence.parentSessionId, replay.evidence.parentSessionId);
+  assert.notEqual(first.evidence.packetId, next.evidence.packetId);
+  assert.notEqual(first.evidence.parentSessionId, next.evidence.parentSessionId);
 });
 
 test("fails closed when the dispatch receipt ledger read throws", async () => {

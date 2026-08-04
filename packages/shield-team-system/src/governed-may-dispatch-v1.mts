@@ -1,5 +1,6 @@
 import { isProxy } from "node:util/types";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
 
 import type { HelicarrierDependenciesV0 } from "./helicarrier-v0.mjs";
 import { HELICARRIER_CERTIFIED_NESTED_IDENTITIES } from "./helicarrier-v0.mjs";
@@ -20,6 +21,7 @@ import {
 } from "./fury-plan-review-evidence-v1.mjs";
 import type { SeatDispatchReceiptEventV1 } from "./seat-dispatch-receipt-v1.mjs";
 import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "./mission-store.mjs";
+import { canonicalJson } from "./mission-v2.mjs";
 import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
 import {
   assertAuthoritySubsetOfScope,
@@ -242,7 +244,7 @@ type ActiveMayAuthoritySnapshot =
       readonly state: "ready";
       readonly authority: ImplementationAuthorityV1;
       readonly bindingWrapper: Schema9RuntimeBindingV1;
-      readonly originalSequence: number;
+      readonly currentSequence: number;
     }
   | {
       readonly state: "recovery_required";
@@ -272,6 +274,12 @@ type CurrentFuryEvidenceEvaluation =
       readonly code: "fury_evidence_invalid";
       readonly errors: readonly string[];
     };
+
+interface GovernedMayDispatchIdentityV1 {
+  readonly parentSessionId: string;
+  readonly packetId: string;
+  readonly claimBindingPrefix: string;
+}
 
 const blocked = (code: "input_invalid", errors: readonly unknown[]): InputSnapshotBlocked => ({
   state: "blocked",
@@ -454,7 +462,7 @@ function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): Activ
       state: "ready",
       authority: freezeAuthority(authority),
       bindingWrapper: freezeBindingWrapper(wrapper),
-      originalSequence: projection.lastSequence,
+      currentSequence: projection.lastSequence,
     });
   } catch {
     return authorityBindingRecovery("authority_binding_invalid", ["Authority and runtime-binding inspection failed."]);
@@ -564,6 +572,36 @@ function evaluateCurrentFuryEvidenceV1(
       errors: stableErrors(["Current Fury evidence evaluation failed."]),
     };
   }
+}
+
+function deriveGovernedMayDispatchIdentityV1(
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+  furyEvaluation: Extract<CurrentFuryEvidenceEvaluation, { state: "ready" }>,
+  originalSequence: number,
+): GovernedMayDispatchIdentityV1 {
+  const authority = authoritySnapshot.authority;
+  const evidence = furyEvaluation.evidence;
+  const identityDigest = createHash("sha256").update(canonicalJson({
+    identityContractVersion: "governed-may-dispatch.identity.v1",
+    missionRevisionId: authority.missionRevisionId,
+    furyEvidenceId: evidence.evidenceId,
+    furyEvidenceDigest: evidence.evidenceDigest,
+    furyPlanDigest: evidence.planDigest,
+    blueprintArtifactId: evidence.blueprintArtifactId,
+    blueprintArtifactPath: evidence.blueprintArtifactPath,
+    blueprintArtifactRevisionId: evidence.artifactRevisionId,
+    originalSequence,
+  }), "utf8").digest("base64url");
+  const parentSessionId = `session:governed-may:${identityDigest.slice(0, 32)}`;
+  const packetId = `packet:governed-may:${identityDigest}`;
+  const claimKey = createHash("sha256").update(new TextEncoder().encode(
+    `seat-dispatch-claim-v1\0${authority.missionId}\0${parentSessionId}\0${packetId}`,
+  )).digest("base64url").slice(0, 32);
+  return Object.freeze({
+    parentSessionId,
+    packetId,
+    claimBindingPrefix: `evidence:packet-binding:seat-dispatch-v1:${claimKey}:`,
+  });
 }
 
 function snapshotInput(input: unknown): InputSnapshot {
@@ -1363,6 +1401,8 @@ export async function runGovernedMayDispatchStepV1(
       evidence: Object.freeze({ furyEvidenceId: furySelection.record.evidenceId }),
     };
   }
+  const originalSequence = authoritySnapshot.currentSequence;
+  const dispatchIdentity = deriveGovernedMayDispatchIdentityV1(authoritySnapshot, furyEvaluation, originalSequence);
 
   return {
     state: "recovery_required",
@@ -1374,7 +1414,9 @@ export async function runGovernedMayDispatchStepV1(
       bindingId: authoritySnapshot.bindingWrapper.binding.bindingId,
       furyEvidenceId: furyEvaluation.evidence.evidenceId,
       furyPlanDigest: furyEvaluation.evidence.planDigest,
-      originalSequence: authoritySnapshot.originalSequence,
+      originalSequence,
+      packetId: dispatchIdentity.packetId,
+      parentSessionId: dispatchIdentity.parentSessionId,
     }),
   };
 }
