@@ -370,7 +370,12 @@ function validDependencies(callCounts, overrides = {}) {
       validate: sentinel("helicarrier.validate"),
       compile: sentinel("helicarrier.compile"),
     },
-    validationCommands: [],
+    validationCommands: [{
+      commandId: "validation:test",
+      executable: process.execPath,
+      args: ["--test"],
+      timeoutMs: 30_000,
+    }],
     mayControlBaseUrl: "http://127.0.0.1:1234",
     runMayControlLoop: sentinel("runMayControlLoop"),
     createPermissionAuditStore: sentinel("createPermissionAuditStore"),
@@ -487,6 +492,8 @@ test("stops without effects after a valid profile-aware journal", async () => {
       blueprintByteLength: 22,
       blueprintDigest: result.evidence.blueprintDigest,
       blueprintRevision: projection.implementationAuthority.headRevision,
+      dispatchEnvelopeByteLength: result.evidence.dispatchEnvelopeByteLength,
+      dispatchEnvelopeDigest: result.evidence.dispatchEnvelopeDigest,
       prNumber: 200,
       repositoryWorkspaceId: "workspace:issue-170",
     },
@@ -494,6 +501,8 @@ test("stops without effects after a valid profile-aware journal", async () => {
   assert.match(result.evidence.packetId, /^packet:governed-may:[A-Za-z0-9_-]{43}$/);
   assert.match(result.evidence.parentSessionId, /^session:governed-may:[A-Za-z0-9_-]{32}$/);
   assert.match(result.evidence.blueprintDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
+  assert.match(result.evidence.dispatchEnvelopeDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
+  assert.ok(result.evidence.dispatchEnvelopeByteLength > 0);
   assert.deepEqual(callCounts, {});
 });
 
@@ -543,6 +552,24 @@ test("blocks malformed tracked blueprint bytes before Helicarrier", async () => 
     assert.equal(result.code, "blueprint_invalid");
     assert.equal(callCounts["helicarrier.validate"], undefined);
   }
+});
+
+test("blocks when an authorized validation command is absent from the trusted registry", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const callCounts = {};
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
+    validationCommands: [],
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+  }));
+
+  assert.equal(result.state, "blocked");
+  assert.equal(result.code, "dispatch_envelope_invalid");
+  assert.equal(callCounts["helicarrier.validate"], undefined);
 });
 
 test("blocks when delivery workspace observation fails", async () => {

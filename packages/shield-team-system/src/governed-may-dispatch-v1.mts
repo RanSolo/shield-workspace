@@ -303,6 +303,10 @@ type BlueprintBytesSnapshot =
   | { readonly state: "ready"; readonly value: Uint8Array; readonly digest: string }
   | { readonly state: "blocked"; readonly code: "blueprint_invalid"; readonly errors: readonly string[] };
 
+type DerivedDispatchEnvelopeSnapshot =
+  | { readonly state: "ready"; readonly value: Readonly<Record<string, unknown>>; readonly canonicalBytes: Uint8Array; readonly digest: string }
+  | { readonly state: "blocked"; readonly code: "dispatch_envelope_invalid"; readonly errors: readonly string[] };
+
 type GovernedMayReceiptReplayV1 =
   | {
       readonly state: "fresh";
@@ -849,6 +853,74 @@ function snapshotBlueprintBytesV1(input: unknown): BlueprintBytesSnapshot {
   } catch {
     return { state: "blocked", code: "blueprint_invalid", errors: stableErrors(["Tracked blueprint must be a genuine Uint8Array."]) };
   }
+}
+
+function deriveDispatchEnvelopeV1(
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+  furyEvaluation: Extract<CurrentFuryEvidenceEvaluation, { state: "ready" }>,
+  workspace: GovernedMayDeliveryWorkspaceObservationV1,
+  blueprint: Extract<BlueprintBytesSnapshot, { state: "ready" }>,
+  identity: GovernedMayDispatchIdentityV1,
+  originalSequence: number,
+  validationCommands: readonly GovernedMayValidationCommandV1[],
+): DerivedDispatchEnvelopeSnapshot {
+  const authority = authoritySnapshot.authority;
+  const wrapper = authoritySnapshot.bindingWrapper;
+  const binding = wrapper.binding;
+  const commandIds = validationCommands.map((command) => command.commandId);
+  if (new Set(commandIds).size !== commandIds.length) {
+    return { state: "blocked", code: "dispatch_envelope_invalid", errors: stableErrors(["Validation command registry contains duplicate command IDs."]) };
+  }
+  const unresolved = wrapper.validationCommandIds.filter((commandId) => !commandIds.includes(commandId));
+  if (unresolved.length > 0) {
+    return { state: "blocked", code: "dispatch_envelope_invalid", errors: stableErrors([`Validation command IDs are not present in the trusted registry: ${unresolved.join(", ")}.`]) };
+  }
+  const value = Object.freeze({
+    contractVersion: "governed-may-dispatch-envelope.v1",
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    originalSequence,
+    repositoryId: authority.repositoryId,
+    repositoryRoot: authority.canonicalWritableRoot,
+    repositoryWorkspaceId: workspace.repositoryWorkspaceId,
+    baseBranch: workspace.baseBranch,
+    branch: authority.branch,
+    prNumber: workspace.prNumber,
+    baseRevision: authority.baseRevision,
+    headRevision: authority.headRevision,
+    furyEvidenceId: furyEvaluation.evidence.evidenceId,
+    furyEvidenceDigest: furyEvaluation.evidence.evidenceDigest,
+    furyPlanDigest: furyEvaluation.evidence.planDigest,
+    blueprintArtifactId: furyEvaluation.evidence.blueprintArtifactId,
+    blueprintArtifactPath: furyEvaluation.evidence.blueprintArtifactPath,
+    blueprintRevision: furyEvaluation.evidence.repositoryRevisionId,
+    blueprintDigest: blueprint.digest,
+    blueprintByteLength: blueprint.value.byteLength,
+    seatId: "may",
+    reasoningRuntimeId: binding.reasoningRuntimeId,
+    modelId: wrapper.modelId,
+    toolExecutorId: binding.toolExecutorId,
+    implementationAuthorityRef: authority.authorityRef,
+    runtimeBindingId: binding.bindingId,
+    runtimeBindingVersion: binding.bindingVersion,
+    requestedRelativePaths: Object.freeze([...wrapper.approvedRelativePaths]),
+    requestedActionIds: Object.freeze([...binding.approvedScope.actionIds]),
+    requestedEffectClasses: Object.freeze([...binding.approvedScope.effectClasses]),
+    requestedEffectKeys: Object.freeze([...binding.approvedScope.effectKeys]),
+    requestedCapabilities: Object.freeze([...binding.approvedScope.capabilities]),
+    validationCommandIds: Object.freeze([...wrapper.validationCommandIds]),
+    outputContract: Object.freeze(["changed_files", "tests_run", "unresolved_risks"]),
+    stopCondition: "after_one_cycle",
+    parentSessionId: identity.parentSessionId,
+    packetId: identity.packetId,
+  });
+  const canonicalBytes = new TextEncoder().encode(canonicalJson(value));
+  if (canonicalBytes.byteLength > MAX_BLUEPRINT_BYTES) {
+    return { state: "blocked", code: "dispatch_envelope_invalid", errors: stableErrors(["Canonical dispatch envelope exceeds the 1048576-byte packet limit."]) };
+  }
+  const digest = `sha256:${createHash("sha256").update(canonicalBytes).digest("base64url")}`;
+  return { state: "ready", value, canonicalBytes, digest };
 }
 
 function snapshotInput(input: unknown): InputSnapshot {
@@ -1719,6 +1791,18 @@ export async function runGovernedMayDispatchStepV1(
   if (blueprintSnapshot.state === "blocked") {
     return { ...blueprintSnapshot, readiness: "blocked" };
   }
+  const envelopeSnapshot = deriveDispatchEnvelopeV1(
+    authoritySnapshot,
+    furyEvaluation,
+    workspaceBinding.value,
+    blueprintSnapshot,
+    dispatchIdentity,
+    originalSequence,
+    dependenciesSnapshot.value.validationCommands,
+  );
+  if (envelopeSnapshot.state === "blocked") {
+    return { ...envelopeSnapshot, readiness: "blocked" };
+  }
 
   return {
     state: "recovery_required",
@@ -1738,6 +1822,8 @@ export async function runGovernedMayDispatchStepV1(
       blueprintByteLength: blueprintSnapshot.value.byteLength,
       blueprintDigest: blueprintSnapshot.digest,
       blueprintRevision: furyEvaluation.evidence.repositoryRevisionId,
+      dispatchEnvelopeByteLength: envelopeSnapshot.canonicalBytes.byteLength,
+      dispatchEnvelopeDigest: envelopeSnapshot.digest,
       prNumber: workspaceBinding.value.prNumber,
       repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
     }),
