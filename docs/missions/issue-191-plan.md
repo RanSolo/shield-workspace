@@ -40,9 +40,10 @@ Add `packages/shield-team-system/src/may-tool-effect-v1.mts` as the pure shared 
   - write: exact path, exact UTF-8 content, and exact current SHA-256 or `absent`;
   - validation: exact command ID, canonical executable path, argument vector, timeout, and host-observed executable identity;
 - deterministic derivation of the existing `effect:may:sha256:*` key without changing its bytes or semantics;
+- the existing executable-identity projection from trusted stat fields, shared by preflight and independently repeated executor checks;
 - strict validation and immutable copies of an exact two-operation sequence: one write followed by one validation.
 
-The module is pure: filesystem observation remains with the trusted host and executor. Re-export the helper and types through `@shield/team-system/local-tools`. Update `may-tool-executor.mjs` to consume the shared mappings and effect-key derivation, retaining compatible exports for existing callers.
+The module is internal and pure: filesystem observation remains with the trusted host and executor. Update `may-tool-executor.mjs` to consume the shared mappings and effect-key derivation while retaining every existing public export and its semantics. No new package export or public API documentation is required.
 
 ### 2. Pre-invocation planned-operation binding
 
@@ -51,14 +52,13 @@ Extend `RunGovernedMayDispatchStepTrustedDependenciesV1` with one required own d
 Before Helicarrier compilation, packet claim, model invocation, or repository effects, `runGovernedMayDispatchStepV1` must:
 
 1. validate the closed two-operation sequence;
-2. derive both exact May effect keys;
+2. use a trusted preflight observer to canonicalize and stat the validation executable with the same identity algorithm used independently by the executor, exact-match that observation to the planned descriptor, and derive both exact May effect keys;
 3. derive the existing canonical mission-cycle effect key;
-4. require the signed active authority effect-key set to equal exactly those three keys;
-5. require signed action IDs, effect classes, capabilities, writable path, and validation command ID to equal the descriptor projections;
-6. require the trusted validation-command registry to exact-match the planned command ID, executable, args, and timeout;
-7. include the immutable planned operations and their keys in the canonical dispatch envelope compiled by Helicarrier.
+4. require exact equality at both authority layers—the `ImplementationAuthorityV1` grant and active `Schema9RuntimeBindingV1` scope/wrapper—for the three-key set, action IDs, effect classes, capabilities, writable path, and validation command ID;
+5. require the trusted validation-command registry to exact-match the planned command ID, executable, args, and timeout;
+6. include the immutable planned operations and their keys in the canonical dispatch envelope compiled by Helicarrier.
 
-The validation executable identity is independently re-observed by the existing May executor. Any path, bytes, precondition, command, argument, timeout, executable identity, set, order, or authority mismatch fails before model invocation. Runtime identity drift remains governed by the existing binding and model probe.
+These checks occur before terminal-replay disposition as well as before Helicarrier compilation, packet claim, model invocation, or repository effects. Terminal receipt evidence binds and rechecks all three effect keys plus the planned-operation digest and compiled-envelope digest. The validation executable identity is independently re-observed by the May executor immediately before process launch. Any path, bytes, precondition, command, argument, timeout, executable identity, set, order, wrapper, or authority mismatch fails before model invocation. Runtime identity drift remains governed by the existing binding and model probe.
 
 ### 3. Per-call capability narrowing after full-context validation
 
@@ -68,6 +68,7 @@ Keep `loadSchema9PermissionContextV1` unchanged. In `governed-may-dispatch-v1.mt
 - `repository.run_validation` requires exactly `process_execute`;
 - unknown or mismatched action/effect mappings fail closed;
 - the active binding embedded in the context remains byte-for-byte unchanged and retains the full signed scope;
+- the narrowed attestation set contains exactly root, writability, and the selected capability attestation required by `evaluatePermission`;
 - narrowing cannot add or substitute actions, effects, keys, paths, commands, or capabilities.
 
 Return only the narrowed copy to the per-tool authorizer and executor. The outer mission-cycle permission context remains full-scope.
@@ -78,8 +79,9 @@ In `may-tool-executor.mjs`, preserve the current bounded process launch, timeout
 
 - exit code `0` with no signal returns `validation_completed`;
 - a nonzero exit with no signal throws a bounded failed result and releases no command output as successful evidence;
-- a terminating signal produces an uncertain executor outcome;
-- timeout, output truncation, launch ambiguity, or workspace drift retains current uncertain behavior.
+- a terminating signal produces a bounded failed tool result;
+- launch failure preserves its current failed semantics;
+- timeout, output truncation, post-launch workspace ambiguity, or otherwise uncertain process state retains current uncertain behavior.
 
 No failed or uncertain validation can increment the successful validation count or produce a completed tool audit result.
 
@@ -91,7 +93,7 @@ Do not change the generic `runMayControlLoop` completion contract. In the govern
 - read the durable May control-event store;
 - require exactly one `may_control_writeFile_completed` event followed by exactly one `may_control_runValidation_completed` event, bracketed by one start and one completed terminal event for the exact child session;
 - require the successful per-call audit records to bind the two planned effect keys, actions, effects, singleton capabilities, decision identities, and order;
-- otherwise return a failed or uncertain executor result according to existing post-effect uncertainty rules, and do not append the authoritative mission effect.
+- otherwise never append a completed effect or advance the mission; after the outer invocation claim, preserve existing recovery semantics by appending and exact-readback-verifying an uncertain effect candidate for any failed or uncertain sequence/evidence result.
 
 The existing final journal, audit, control-store, and dispatch-receipt readbacks remain required and gain assertions for the exact planned-operation evidence.
 
@@ -100,12 +102,9 @@ The existing final journal, audit, control-store, and dispatch-receipt readbacks
 - `packages/shield-team-system/src/may-tool-effect-v1.mts` (new)
 - `packages/shield-team-system/src/governed-may-dispatch-v1.mts`
 - `packages/shield-team-system/scripts/model/may-tool-executor.mjs`
-- `packages/shield-team-system/public/local-tools.mjs`
-- `packages/shield-team-system/public/local-tools.d.mts`
 - `packages/shield-team-system/tests/may-tool-effect-v1.test.mjs` (new)
 - `packages/shield-team-system/tests/may-tool-executor.test.mjs`
 - `packages/shield-team-system/tests/governed-may-dispatch-v1.test.mjs`
-- `packages/shield-team-system/tests/package-surface.test.mjs` only if the new public helper requires additive export coverage
 
 No other production, fixture, CLI, authority, journal, or documentation path is in implementation scope. This plan file remains immutable during May implementation.
 
@@ -113,10 +112,11 @@ No other production, fixture, CLI, authority, journal, or documentation path is 
 
 - Pure effect contract: exact legacy-compatible write and validation keys; malformed, inherited, accessor-backed, duplicate, missing, extra, and reordered descriptors fail closed.
 - Capability narrowing: full binding remains unchanged; write receives only `filesystem_write`; validation receives only `process_execute`; substitution and unknown actions fail.
-- Validation: zero succeeds; nonzero fails; signal is uncertain; timeout, truncation, launch failure, and workspace drift preserve existing semantics.
+- Validation: zero succeeds; nonzero and signal exits fail; launch failure preserves its current failed result; timeout, truncation, workspace drift, and otherwise uncertain process state preserve existing uncertain semantics.
 - Governed sequence: write then validation succeeds; validation-only, write-only, validation-before-write, duplicate write, duplicate validation, incorrect counts, incorrect control-event order, and mismatched audit identities do not advance.
-- Preflight: changed output byte, path, precondition, executable, executable identity, argv, timeout, command ID, key set, key order, action, effect, capability, or registry entry fails before model invocation and packet claim.
-- Durable restart/replay and existing schema-9, permission, May executor, dispatch, package-surface, and full package tests remain green.
+- Preflight: changed output byte, path, precondition, executable, preflight identity, argv, timeout, command ID, key set, key order, action, effect, capability, authority layer, scope wrapper, or registry entry fails before terminal replay, model invocation, and packet claim.
+- Terminal replay/receipt: all three effect keys, the planned-operation digest, and the compiled-envelope digest exact-match before replay can return a terminal disposition.
+- Durable restart/replay and existing schema-9, permission, May executor, dispatch, package-surface, and full package tests remain green without adding a public export.
 
 ## Validation commands
 
