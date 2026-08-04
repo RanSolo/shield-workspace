@@ -2,8 +2,10 @@
 
 ## Review identity
 
-- Mission: `mission:issue-194`
-- Mission revision: `sha256:JXhV5GMcRkuFQ-sL4qChIMw-iZUpK9WBidgY1GTk5FU`
+- Mission: `mission:issue-194-local-fallback`
+- Mission revision: `sha256:Fjx0vYrRjMZUsmCXfuABa_hZ3IWGjTQkclNCPZYF6yw`
+- Superseded no-effect mission: `mission:issue-194` (hosted May authority
+  recorded; no implementation edit or execution effect)
 - Subject: `github:RanSolo/shield-workspace/issue/194`
 - Base revision: `75cbe9974bab03c851601cde8e9249a63c384c0c`
 - Branch: `agent/issue-194-temp-name`
