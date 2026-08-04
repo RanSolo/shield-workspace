@@ -27,6 +27,7 @@ import type {
 import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "./mission-store.mjs";
 import { canonicalJson } from "./mission-v2.mjs";
 import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
+import { validateRunnerCyclePlan, type RunnerCyclePlan } from "./runner-v1.mjs";
 import {
   assertAuthoritySubsetOfScope,
   computeImplementationAuthorityDigest,
@@ -316,6 +317,10 @@ type DerivedDispatchEnvelopeSnapshot =
 type HelicarrierManifestSnapshot =
   | { readonly state: "ready"; readonly value: Readonly<Record<string, unknown>> }
   | { readonly state: "blocked"; readonly code: "helicarrier_invalid"; readonly errors: readonly string[] };
+
+type RunnerPlanSnapshot =
+  | { readonly state: "ready"; readonly value: RunnerCyclePlan; readonly decisionId: string }
+  | { readonly state: "blocked"; readonly code: "runner_plan_invalid"; readonly errors: readonly string[] };
 
 type GovernedMayReceiptReplayV1 =
   | {
@@ -976,6 +981,50 @@ function snapshotHelicarrierManifestV0(
   } catch {
     return { state: "blocked", code: "helicarrier_invalid", errors: stableErrors(["Helicarrier compilation manifest is malformed or mismatched."]) };
   }
+}
+
+function deriveRunnerPlanV1(
+  projection: ProfileAwareProjectionV1,
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+  identity: GovernedMayDispatchIdentityV1,
+  originalSequence: number,
+): RunnerPlanSnapshot {
+  const authority = authoritySnapshot.authority;
+  const wrapper = authoritySnapshot.bindingWrapper;
+  const scope = wrapper.binding.approvedScope;
+  const identityDigest = createHash("sha256").update(canonicalJson({
+    contractVersion: "governed-may-runner-plan.v1",
+    missionRevisionId: authority.missionRevisionId,
+    packetId: identity.packetId,
+    originalSequence,
+  }), "utf8").digest("base64url");
+  const candidate = {
+    runnerContractVersion: 1 as const,
+    cycleId: `cycle:governed-may:${identityDigest}`,
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    revisionId: authority.missionRevisionId,
+    evaluatedThroughSequence: authoritySnapshot.currentSequence,
+    seatId: "may",
+    activatedModes: projection.brief.activatedModes,
+    actionId: scope.actionIds[0],
+    effectClass: scope.effectClasses[0],
+    effectKey: scope.effectKeys[0],
+    validationId: wrapper.validationCommandIds[0],
+    stopCondition: "after_one_cycle" as const,
+  };
+  const checked = validateRunnerCyclePlan(candidate);
+  if (checked.state === "invalid") {
+    return { state: "blocked", code: "runner_plan_invalid", errors: stableErrors(checked.errors) };
+  }
+  return {
+    state: "ready",
+    value: Object.freeze({
+      ...checked.value,
+      activatedModes: Object.freeze(checked.value.activatedModes.map((mode) => Object.freeze({ ...mode }))),
+    }) as unknown as RunnerCyclePlan,
+    decisionId: `decision:governed-may:${identityDigest}`,
+  };
 }
 
 function snapshotInput(input: unknown): InputSnapshot {
@@ -1889,6 +1938,10 @@ export async function runGovernedMayDispatchStepV1(
   if (manifestSnapshot.state === "blocked") {
     return { ...manifestSnapshot, readiness: "blocked" };
   }
+  const runnerPlan = deriveRunnerPlanV1(journal.value.projection, authoritySnapshot, dispatchIdentity, originalSequence);
+  if (runnerPlan.state === "blocked") {
+    return { ...runnerPlan, readiness: "blocked" };
+  }
 
   return {
     state: "recovery_required",
@@ -1916,6 +1969,8 @@ export async function runGovernedMayDispatchStepV1(
       helicarrierIrDigest: manifestSnapshot.value.irDigest,
       helicarrierGovernanceDigest: manifestSnapshot.value.governanceDigest,
       helicarrierRegistryDigest: manifestSnapshot.value.registryDigest,
+      cycleId: runnerPlan.value.cycleId,
+      permissionDecisionId: runnerPlan.decisionId,
       prNumber: workspaceBinding.value.prNumber,
       repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
     }),

@@ -103,7 +103,7 @@ function validProjection(overrides = {}) {
   return {
     schemaVersion: 9,
     missionId: authority.missionId,
-    brief: { subjectId: authority.subjectId, revisionId: authority.missionRevisionId },
+    brief: { subjectId: authority.subjectId, revisionId: authority.missionRevisionId, activatedModes: [] },
     authorization: "authorized",
     execution: "not-started",
     implementationAuthority: authority,
@@ -570,6 +570,8 @@ test("stops without effects after a valid profile-aware journal", async () => {
       helicarrierIrDigest: "4".repeat(64),
       helicarrierGovernanceDigest: "3".repeat(64),
       helicarrierRegistryDigest: "5".repeat(64),
+      cycleId: result.evidence.cycleId,
+      permissionDecisionId: result.evidence.permissionDecisionId,
       prNumber: 200,
       repositoryWorkspaceId: "workspace:issue-170",
     },
