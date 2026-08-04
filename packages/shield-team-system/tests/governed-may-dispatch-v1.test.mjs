@@ -311,6 +311,56 @@ function passingHelicarrier(capture = {}) {
   };
 }
 
+function claimedPacket(input) {
+  const claimKey = createHash("sha256").update(new TextEncoder().encode(
+    `seat-dispatch-claim-v1\0${input.parentMissionId}\0${input.parentSessionId}\0${input.packetId}`,
+  )).digest("base64url").slice(0, 32);
+  const packetDigest = `sha256:${createHash("sha256").update(input.packetBytes).digest("base64url")}`;
+  const started = createSeatDispatchStartedEventV1({
+    receiptId: `receipt:${claimKey}`,
+    dispatchId: `dispatch:${claimKey}`,
+    parentMissionId: input.parentMissionId,
+    parentMissionRevision: input.parentMissionRevision,
+    parentSessionId: input.parentSessionId,
+    childTaskId: `task:${claimKey}`,
+    childSessionId: `session:${claimKey}`,
+    accountableSeatId: input.accountableSeatId,
+    repositoryId: input.repositoryId,
+    repositoryWorkspaceId: input.repositoryWorkspaceId,
+    repositoryRevision: input.repositoryRevision,
+    subjectId: input.subjectId,
+    subjectRevision: input.subjectRevision,
+    artifactId: input.artifactId,
+    artifactRevision: input.artifactRevision,
+    configuredRuntime: input.configuredRuntime,
+    requestedRuntime: input.requestedRuntime,
+    toolExecution: input.toolExecution,
+    runtimeSelfReport: input.runtimeSelfReport,
+    runtimeHostObserved: input.runtimeHostObserved,
+    executorSelfReport: input.executorSelfReport,
+    executorHostObserved: input.executorHostObserved,
+    inputEvidenceRefs: [...input.inputEvidenceRefs, `evidence:packet-binding:seat-dispatch-v1:${claimKey}:${packetDigest}`],
+    timestamp: input.startedAt,
+    logSequence: 0,
+    previousLogDigest: null,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null,
+  });
+  const replay = replaySeatDispatchReceiptsV1([started]);
+  assert.equal(replay.state, "valid");
+  return {
+    state: "valid",
+    value: {
+      logPath: "/tmp/dispatch-receipts.jsonl",
+      byteLength: 1,
+      packetDigest,
+      receipt: replay.projections[0],
+      claimStatus: "claimed",
+      executionDisposition: "execute_once",
+    },
+  };
+}
+
 function validFuryReceiptEntries(identity) {
   const shared = {
     ...identity,
@@ -470,7 +520,7 @@ function validDependencies(callCounts, overrides = {}) {
       access: sentinel("access"),
       execFile: sentinel("execFile"),
       probeCapability: sentinel("probeCapability"),
-      now: sentinel("now"),
+      now: () => "2026-08-03T20:06:00Z",
     },
     helicarrier: {
       certification,
@@ -491,7 +541,7 @@ function validDependencies(callCounts, overrides = {}) {
     appendMissionEntry: sentinel("appendMissionEntry"),
     readFuryEvidence: sentinel("readFuryEvidence"),
     readDispatchReceipts: sentinel("readDispatchReceipts"),
-    claimDispatchPacket: sentinel("claimDispatchPacket"),
+    claimDispatchPacket: async (input) => claimedPacket(input),
     appendDispatchReceipt: sentinel("appendDispatchReceipt"),
     runMissionCycle: sentinel("runMissionCycle"),
     ...overrides,
@@ -592,7 +642,7 @@ test("stops without effects after a valid profile-aware journal", async () => {
 
   assert.deepEqual(result, {
     state: "recovery_required",
-    readiness: "indeterminate",
+    readiness: "dispatch_ready",
     code: "implementation_incomplete",
     errors: ["Governed May dispatch execution is not implemented."],
     evidence: {
@@ -620,6 +670,10 @@ test("stops without effects after a valid profile-aware journal", async () => {
       permissionDecisionId: result.evidence.permissionDecisionId,
       permissionEvaluatedAt: "2026-08-03T20:05:00Z",
       dirtyPaths: [],
+      receiptId: result.evidence.receiptId,
+      dispatchId: result.evidence.dispatchId,
+      childTaskId: result.evidence.childTaskId,
+      childSessionId: result.evidence.childSessionId,
       prNumber: 200,
       repositoryWorkspaceId: "workspace:issue-170",
     },
@@ -766,6 +820,31 @@ test("blocks stale permission context and out-of-scope dirty paths before claim"
     assert.equal(result.state, "blocked");
     assert.ok(result.code === "permission_invalid" || result.code === "workspace_dirty");
     assert.equal(callCounts.claimDispatchPacket, undefined);
+  }
+});
+
+test("returns recovery-required for uncertain or concurrently completed packet claims", async () => {
+  for (const claimDispatchPacket of [
+    async () => ({ state: "invalid", code: "recovery_required", errors: ["lock release uncertain"] }),
+    async (input) => {
+      const result = claimedPacket(input);
+      return { state: "valid", value: { ...result.value, claimStatus: "already_claimed", executionDisposition: undefined } };
+    },
+  ]) {
+    const projection = validProjection();
+    const furyRecord = validFuryRecord(projection);
+    const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+      readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+      readFuryEvidence: async () => validFuryLedger([furyRecord]),
+      readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+      observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+      readTrackedFile: async () => validBlueprintBytes(),
+      helicarrier: passingHelicarrier(),
+      claimDispatchPacket,
+    }));
+
+    assert.equal(result.state, "recovery_required");
+    assert.equal(result.readiness, "dispatch_ready");
   }
 });
 

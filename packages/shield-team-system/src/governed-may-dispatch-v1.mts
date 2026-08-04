@@ -1096,6 +1096,34 @@ function bindDirtyPathsV1(
   return { state: "ready", value: Object.freeze([...paths].sort()) };
 }
 
+function claimReceiptMatchesV1(
+  receipt: SeatDispatchReceiptProjectionV1,
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+  furyEvaluation: Extract<CurrentFuryEvidenceEvaluation, { state: "ready" }>,
+  identity: GovernedMayDispatchIdentityV1,
+): boolean {
+  const authority = authoritySnapshot.authority;
+  const binding = authoritySnapshot.bindingWrapper.binding;
+  return receipt.parentMissionId === authority.missionId &&
+    receipt.parentMissionRevision === authority.missionRevisionId &&
+    receipt.parentSessionId === identity.parentSessionId &&
+    receipt.accountableSeatId === "may" &&
+    receipt.repositoryId === authority.repositoryId &&
+    receipt.repositoryWorkspaceId === furyEvaluation.evidence.furyDispatchIdentity.repositoryWorkspaceId &&
+    receipt.repositoryRevision === authority.headRevision &&
+    receipt.subjectId === authority.subjectId &&
+    receipt.subjectRevision === authority.artifactRevisionId &&
+    receipt.artifactId === furyEvaluation.evidence.blueprintArtifactId &&
+    receipt.artifactRevision === furyEvaluation.evidence.artifactRevisionId &&
+    receipt.configuredRuntime.kind === "runtime.configured" &&
+    receipt.configuredRuntime.runtimeId === binding.reasoningRuntimeId &&
+    receipt.configuredRuntime.model === authoritySnapshot.bindingWrapper.modelId &&
+    receipt.requestedRuntime.kind === "runtime.requested" &&
+    receipt.requestedRuntime.runtimeId === binding.reasoningRuntimeId &&
+    receipt.requestedRuntime.model === authoritySnapshot.bindingWrapper.modelId &&
+    receipt.executorHostHistory.some((entry) => entry.executorId === binding.toolExecutorId);
+}
+
 function snapshotInput(input: unknown): InputSnapshot {
   if (!plainObject(input)) return blocked("input_invalid", ["Governed dispatch input must be a plain object."]);
   const keys = Reflect.ownKeys(input);
@@ -2043,9 +2071,61 @@ export async function runGovernedMayDispatchStepV1(
   const dirtySnapshot = bindDirtyPathsV1(dirtyPaths, authoritySnapshot.bindingWrapper.approvedRelativePaths);
   if (dirtySnapshot.state === "blocked") return { ...dirtySnapshot, readiness: "blocked" };
 
+  const binding = authoritySnapshot.bindingWrapper.binding;
+  let startedAt;
+  try {
+    startedAt = dependenciesSnapshot.value.schema9HostOps.now();
+  } catch {
+    return { state: "blocked", readiness: "blocked", code: "claim_invalid", errors: Object.freeze(["Trusted claim clock failed."]) };
+  }
+  let claimResult;
+  try {
+    claimResult = await dependenciesSnapshot.value.claimDispatchPacket(Object.freeze({
+      repositoryRoot: inputSnapshot.value.repositoryRoot,
+      repositoryId: authoritySnapshot.authority.repositoryId,
+      repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
+      lockOwnerId: `lock:governed-may:${inputSnapshot.value.hostId}`,
+      parentMissionId: authoritySnapshot.authority.missionId,
+      parentMissionRevision: authoritySnapshot.authority.missionRevisionId,
+      parentSessionId: dispatchIdentity.parentSessionId,
+      accountableSeatId: "may",
+      subjectId: authoritySnapshot.authority.subjectId,
+      subjectRevision: authoritySnapshot.authority.artifactRevisionId,
+      artifactId: furyEvaluation.evidence.blueprintArtifactId,
+      artifactRevision: furyEvaluation.evidence.artifactRevisionId,
+      repositoryRevision: authoritySnapshot.authority.headRevision,
+      startedAt,
+      configuredRuntime: Object.freeze({ kind: "runtime.configured", runtimeId: binding.reasoningRuntimeId, model: authoritySnapshot.bindingWrapper.modelId }),
+      requestedRuntime: Object.freeze({ kind: "runtime.requested", runtimeId: binding.reasoningRuntimeId, model: authoritySnapshot.bindingWrapper.modelId }),
+      toolExecution: Object.freeze({ kind: "tool.execution.requested", executorBindingRef: binding.bindingId }),
+      runtimeSelfReport: Object.freeze({ kind: "runtime.self_report.unavailable", reason: "not_reported" }),
+      runtimeHostObserved: Object.freeze({ kind: "runtime.host_observed", runtimeId: binding.reasoningRuntimeId, model: authoritySnapshot.bindingWrapper.modelId, evidenceRefs: Object.freeze([`host:${inputSnapshot.value.hostId}:runtime`]) }),
+      executorSelfReport: Object.freeze({ kind: "executor.self_report.unavailable", reason: "not_reported" }),
+      executorHostObserved: Object.freeze({ kind: "executor.host_observed", executorId: binding.toolExecutorId, evidenceRefs: Object.freeze([`host:${inputSnapshot.value.hostId}:executor`]) }),
+      packetId: dispatchIdentity.packetId,
+      packetBytes: envelopeSnapshot.canonicalBytes,
+      inputEvidenceRefs: Object.freeze([
+        originalSequenceEvidenceRef(originalSequence),
+        authoritySnapshot.authority.authorityRef,
+        furyEvaluation.evidence.evidenceId,
+      ]),
+    }));
+  } catch {
+    return { state: "recovery_required", readiness: "dispatch_ready", code: "claim_invalid", errors: Object.freeze(["Packet claim threw after the durable boundary was entered."]), evidence: Object.freeze({ packetId: dispatchIdentity.packetId }) };
+  }
+  if (claimResult.state === "invalid") {
+    return { state: "recovery_required", readiness: "dispatch_ready", code: "claim_invalid", errors: stableErrors([claimResult.code, ...claimResult.errors]), evidence: Object.freeze({ packetId: dispatchIdentity.packetId }) };
+  }
+  if (!claimReceiptMatchesV1(claimResult.value.receipt, authoritySnapshot, furyEvaluation, dispatchIdentity)) {
+    return { state: "recovery_required", readiness: "dispatch_ready", code: "claim_invalid", errors: Object.freeze(["Packet claim receipt is not exactly bound to the dispatch." ]), evidence: Object.freeze({ packetId: dispatchIdentity.packetId }) };
+  }
+  if (claimResult.value.claimStatus !== "claimed" || claimResult.value.executionDisposition !== "execute_once") {
+    return { state: "recovery_required", readiness: "dispatch_ready", code: "claim_already_started", errors: Object.freeze(["Packet was already claimed without a terminal receipt."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId, packetId: dispatchIdentity.packetId }) };
+  }
+
   return {
     state: "recovery_required",
-    readiness: "indeterminate",
+    readiness: "dispatch_ready",
     code: "implementation_incomplete",
     errors: Object.freeze(["Governed May dispatch execution is not implemented."]),
     evidence: Object.freeze({
@@ -2073,6 +2153,10 @@ export async function runGovernedMayDispatchStepV1(
       permissionDecisionId: runnerPlan.decisionId,
       permissionEvaluatedAt: permissionSnapshot.value.evaluatedAt,
       dirtyPaths: dirtySnapshot.value,
+      receiptId: claimResult.value.receipt.receiptId,
+      dispatchId: claimResult.value.receipt.dispatchId,
+      childTaskId: claimResult.value.receipt.childTaskId,
+      childSessionId: claimResult.value.receipt.childSessionId,
       prNumber: workspaceBinding.value.prNumber,
       repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
     }),
