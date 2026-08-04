@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, open, readFile, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, symlink, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -22,8 +22,11 @@ import {
 import {
   appendProfileAwareMissionEntryV1,
   appendSupervisedMissionEntry,
+  initializeProfileAwareMissionJournalV1,
+  readMissionJournalForDisplay,
   readSupervisedMissionJournal,
   resolveSupervisedMissionPaths,
+  supervisedMissionFilename,
 } from "../dist/mission-store.mjs";
 
 const TEST_FILE_PATH = fileURLToPath(import.meta.url);
@@ -260,6 +263,7 @@ async function runProfileAwareMockedAppendScenario(scenario) {
     let lockPath = null;
     let readCount = 0;
     let faultTriggered = false;
+    let journalCreated = false;
 
     mock.module("node:fs/promises", {
       exports: {
@@ -274,8 +278,10 @@ async function runProfileAwareMockedAppendScenario(scenario) {
           const isRead = isNumericFlags && !isWrite;
           const isJournal = typeof path === "string" && path === journalPath;
           const isLock = typeof path === "string" && path === lockPath;
+          const isJournalRoot = typeof path === "string" && journalPath !== null && path === join(repositoryRoot, ".shield", "journals");
+          if (scenario.startsWith("initialize-") && isWrite && isJournal) journalCreated = true;
 
-          if (scenario === "append-short-write" && isWrite && typeof path === "string" && path.endsWith(".jsonl")) {
+          if ((scenario === "append-short-write" || scenario === "initialize-short-write") && isWrite && typeof path === "string" && path.endsWith(".jsonl")) {
             const originalWrite = handle.write.bind(handle);
             handle.write = async (...args) => {
               const result = await originalWrite(...args);
@@ -284,7 +290,7 @@ async function runProfileAwareMockedAppendScenario(scenario) {
             };
           }
 
-          if (scenario === "append-sync-failure" && isWrite && isJournal) {
+          if ((scenario === "append-sync-failure" || scenario === "initialize-sync-failure") && isWrite && isJournal) {
             const originalSync = handle.sync.bind(handle);
             handle.sync = async () => {
               await originalSync();
@@ -293,12 +299,12 @@ async function runProfileAwareMockedAppendScenario(scenario) {
             };
           }
 
-          if (scenario === "append-readback-mismatch" && isRead && isJournal) {
+          if ((scenario === "append-readback-mismatch" || scenario === "initialize-readback-mismatch") && isRead && isJournal) {
             const originalReadFile = handle.readFile.bind(handle);
             handle.readFile = async (...args) => {
               const value = await originalReadFile(...args);
               readCount += 1;
-              if (readCount > 1 && typeof value === "string") {
+              if ((scenario === "initialize-readback-mismatch" || readCount > 1) && typeof value === "string") {
                 faultTriggered = true;
                 return value + canonicalJson(candidate) + "\\n";
               }
@@ -306,7 +312,16 @@ async function runProfileAwareMockedAppendScenario(scenario) {
             };
           }
 
-          if (scenario === "lock-release-failure" && isLock) {
+          if (scenario === "initialize-directory-sync-failure" && isJournalRoot && journalCreated) {
+            const originalSync = handle.sync.bind(handle);
+            handle.sync = async () => {
+              await originalSync();
+              faultTriggered = true;
+              throw new Error("simulated directory sync failure");
+            };
+          }
+
+          if ((scenario === "lock-release-failure" || scenario === "initialize-lock-release-failure") && isLock) {
             const originalSync = handle.sync?.bind(handle);
             if (typeof originalSync === "function") {
               handle.sync = async () => originalSync();
@@ -316,7 +331,7 @@ async function runProfileAwareMockedAppendScenario(scenario) {
           return handle;
         },
         unlink: async (pathToUnlink) => {
-          if (scenario === "lock-release-failure" && pathToUnlink === lockPath) {
+          if ((scenario === "lock-release-failure" || scenario === "initialize-lock-release-failure") && pathToUnlink === lockPath) {
             faultTriggered = true;
             const error = new Error("simulated lock unlink failure");
             error.code = "EIO";
@@ -335,15 +350,24 @@ async function runProfileAwareMockedAppendScenario(scenario) {
     journalPath = paths.value.journalPath;
     lockPath = paths.value.journalPath + ".lock";
 
-    await realFs.mkdir(paths.value.root, { recursive: true });
-    await realFs.writeFile(journalPath, baselineLine, "utf8");
-
-    const result = await missionStore.appendProfileAwareMissionEntryV1({
-      repositoryRoot,
-      configuredJournalPath: ".shield/journals",
-      missionId: brief.missionId,
-      entry: candidate,
-    });
+    let result;
+    if (scenario.startsWith("initialize-")) {
+      result = await missionStore.initializeProfileAwareMissionJournalV1({
+        repositoryRoot,
+        configuredJournalPath: ".shield/journals",
+        missionId: brief.missionId,
+        entry: begun,
+      });
+    } else {
+      await realFs.mkdir(paths.value.root, { recursive: true });
+      await realFs.writeFile(journalPath, baselineLine, "utf8");
+      result = await missionStore.appendProfileAwareMissionEntryV1({
+        repositoryRoot,
+        configuredJournalPath: ".shield/journals",
+        missionId: brief.missionId,
+        entry: candidate,
+      });
+    }
 
     const bytes = await realFs.readFile(journalPath, "utf8");
     console.log(JSON.stringify({
@@ -408,6 +432,101 @@ function fixtureEntry() {
   };
   return { brief, entry: createMissionBegunEntry(brief, [binding]) };
 }
+
+test("initializeProfileAwareMissionJournalV1 creates one exact journal and restart fails without changing bytes", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-profile-initialize-"));
+  const fixture = profileAwareFixture();
+  const input = {
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entry: fixture.begun,
+  };
+
+  const initialized = await initializeProfileAwareMissionJournalV1(input);
+  assert.equal(initialized.state, "valid", initialized.errors?.join(" "));
+  const expectedBytes = profileAwareJournalBytes([fixture.begun]);
+  assert.equal(await readFile(initialized.value.journalPath, "utf8"), expectedBytes);
+
+  const restarted = await initializeProfileAwareMissionJournalV1(input);
+  assert.equal(restarted.state, "invalid");
+  assert.equal(restarted.code, "mission_exists");
+  assert.equal(await readFile(initialized.value.journalPath, "utf8"), expectedBytes);
+
+  const readback = await readMissionJournalForDisplay({
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+  });
+  assert.equal(readback.state, "valid", readback.errors?.join(" "));
+  assert.equal(readback.value.kind, "profile-aware");
+  assert.deepEqual(readback.value.projection, initialized.value.projection);
+});
+
+test("initializeProfileAwareMissionJournalV1 rejects invalid first entries before filesystem mutation", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-profile-preflight-"));
+  const fixture = profileAwareFixture();
+  const result = await initializeProfileAwareMissionJournalV1({
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entry: fixture.governance,
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "sequence_invalid");
+  await assert.rejects(lstat(join(repositoryRoot, ".shield")), { code: "ENOENT" });
+});
+
+test("initializeProfileAwareMissionJournalV1 rejects pre-existing symlink path components", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-profile-init-symlink-"));
+  const outside = await mkdtemp(join(tmpdir(), "shield-store-profile-init-outside-"));
+  const fixture = profileAwareFixture();
+  await symlink(outside, join(repositoryRoot, ".shield"));
+
+  const result = await initializeProfileAwareMissionJournalV1({
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entry: fixture.begun,
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "unsafe_path");
+  await assert.rejects(readFile(join(outside, supervisedMissionFilename(fixture.brief.missionId).value), "utf8"), { code: "ENOENT" });
+});
+
+test("initializeProfileAwareMissionJournalV1 rejects a target-file symlink without following it", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-profile-init-target-symlink-"));
+  const outside = join(await mkdtemp(join(tmpdir(), "shield-store-profile-init-target-outside-")), "outside.jsonl");
+  const fixture = profileAwareFixture();
+  const paths = resolveSupervisedMissionPaths(repositoryRoot, ".shield/journals", fixture.brief.missionId).value;
+  await mkdir(paths.root, { recursive: true });
+  await symlink(outside, paths.journalPath);
+
+  const result = await initializeProfileAwareMissionJournalV1({
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entry: fixture.begun,
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "unsafe_path");
+  await assert.rejects(readFile(outside, "utf8"), { code: "ENOENT" });
+});
+
+test("initializeProfileAwareMissionJournalV1 reports durable uncertainty for write, sync, readback, and release faults", async () => {
+  for (const scenario of [
+    "initialize-short-write",
+    "initialize-sync-failure",
+    "initialize-directory-sync-failure",
+    "initialize-readback-mismatch",
+    "initialize-lock-release-failure",
+  ]) {
+    const { result, faultTriggered } = await runProfileAwareMockedAppendScenario(scenario);
+    assert.equal(faultTriggered, true, `${scenario} fault was not reached`);
+    assert.equal(result.state, "invalid", `${scenario} unexpectedly succeeded`);
+    assert.equal(result.code, "recovery_required", `${scenario} returned the wrong failure class`);
+  }
+});
 
 test("appendProfileAwareMissionEntryV1 appends one canonical line and rereads exact durable projection", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-profile-success-"));

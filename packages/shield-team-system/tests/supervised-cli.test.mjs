@@ -142,6 +142,12 @@ function run(root, args, options = {}) {
   });
 }
 
+function runGit(root, args) {
+  const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8", env: { ...process.env, LANG: "C", LC_ALL: "C" } });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
 function evidenceGovernanceTarget(decision, resumeState = "approved") {
   if (decision === "approved") return "approved";
   if (decision === "paused") return "paused";
@@ -322,6 +328,166 @@ test("packed CLI status and report replay schema 9 without changing journal byte
   assert.deepEqual(parsedReport.entries, [entry]);
   assert.equal(parsedReport.projection.schemaVersion, 9);
   assert.equal(await readFile(journalPath, "utf8"), before);
+});
+
+test("supported profile-aware CLI workflow records three independent signed transitions and survives restart replay", async () => {
+  const { root } = await fixture();
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["add", "package.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  runGit(root, ["commit", "-qm", "fixture base"]);
+  const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
+  await writeFile(join(root, "operator.txt"), "operator workflow\n");
+  runGit(root, ["add", "operator.txt"]);
+  runGit(root, ["commit", "-qm", "fixture head"]);
+  const headRevision = runGit(root, ["rev-parse", "HEAD"]);
+
+  const created = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId: "mission:cli-profile-workflow",
+    objective: "Prove one supported schema-9 signing workflow without model invocation.",
+    subjectId: "issue:187",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+    },
+    participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-04T00:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...briefContent } = created;
+  await writeFile(join(root, "profile-brief.json"), `${JSON.stringify(briefContent, null, 2)}\n`);
+  await writeFile(join(root, "wheels-up.json"), `${JSON.stringify({
+    baseRevision,
+    modelId: "model:gemma-4-31b",
+    approvedRelativePaths: ["packages/shield-team-system"],
+    approvedActionIds: ["action:implement"],
+    approvedEffectClasses: ["behavioral_implementation", "verification"],
+    approvedEffectKeys: ["effect:implementation", "effect:validation"],
+    approvedCapabilities: ["filesystem_write"],
+    validationCommandIds: ["validation:test"],
+  }, null, 2)}\n`);
+  await writeFile(join(root, "may-binding.json"), `${JSON.stringify({
+    reasoningRuntimeId: "runtime:lm-studio",
+    toolExecutorId: "executor:shield-host",
+  }, null, 2)}\n`);
+
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", "profile-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  assert.equal(JSON.parse(begun.stdout).projection.schemaVersion, 9);
+  let durableBytes = await readFile(journalPath(root, created.missionId), "utf8");
+
+  const badPasscode = run(
+    root,
+    ["mission", "authorize", "--mission-id", created.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "wrong-passcode\n" },
+  );
+  assert.equal(badPasscode.status, 1);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  const prematureWheels = run(
+    root,
+    ["mission", "wheels-up", "--mission-id", created.missionId, "--input", "wheels-up.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(prematureWheels.status, 1, prematureWheels.stderr);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  const authorize = run(
+    root,
+    ["mission", "authorize", "--mission-id", created.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(authorize.status, 0, authorize.stderr);
+  assert.equal(JSON.parse(authorize.stdout).authorization, "authorized");
+  durableBytes = await readFile(journalPath(root, created.missionId), "utf8");
+
+  const overbroadWheels = JSON.parse(await readFile(join(root, "wheels-up.json"), "utf8"));
+  overbroadWheels.repositoryId = "caller:forbidden";
+  await writeFile(join(root, "overbroad-wheels-up.json"), `${JSON.stringify(overbroadWheels)}\n`);
+  const rejectedOverbroad = run(
+    root,
+    ["mission", "wheels-up", "--mission-id", created.missionId, "--input", "overbroad-wheels-up.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedOverbroad.status, 1);
+  assert.match(rejectedOverbroad.stderr, /must contain exactly/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  await writeFile(join(root, "non-ancestor-wheels-up.json"), `${JSON.stringify({
+    ...JSON.parse(await readFile(join(root, "wheels-up.json"), "utf8")),
+    baseRevision: "cccccccccccccccccccccccccccccccccccccccc",
+  })}\n`);
+  const rejectedBase = run(
+    root,
+    ["mission", "wheels-up", "--mission-id", created.missionId, "--input", "non-ancestor-wheels-up.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedBase.status, 1);
+  assert.match(rejectedBase.stderr, /must exist and be an ancestor/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  const wheels = run(
+    root,
+    ["mission", "wheels-up", "--mission-id", created.missionId, "--input", "wheels-up.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(wheels.status, 0, wheels.stderr);
+  assert.equal(JSON.parse(wheels.stdout).implementationAuthorityState, "authorized");
+  durableBytes = await readFile(journalPath(root, created.missionId), "utf8");
+
+  await writeFile(join(root, "colliding-may-binding.json"), `${JSON.stringify({
+    reasoningRuntimeId: "model:gemma-4-31b",
+    toolExecutorId: "executor:shield-host",
+  })}\n`);
+  const rejectedBinding = run(
+    root,
+    ["mission", "bind", "--mission-id", created.missionId, "--input", "colliding-may-binding.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedBinding.status, 1);
+  assert.match(rejectedBinding.stderr, /must be mutually distinct/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  const bound = run(
+    root,
+    ["mission", "bind", "--mission-id", created.missionId, "--input", "may-binding.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(bound.status, 0, bound.stderr);
+  const projection = JSON.parse(bound.stdout);
+  assert.equal(projection.lastSequence, 3);
+  assert.equal(projection.activeRuntimeBindings.length, 1);
+  assert.equal(projection.activeRuntimeBindings[0].binding.reasoningRuntimeId, "runtime:lm-studio");
+  assert.equal(projection.activeRuntimeBindings[0].binding.toolExecutorId, "executor:shield-host");
+  assert.equal(projection.activeRuntimeBindings[0].modelId, "model:gemma-4-31b");
+  assert.equal(projection.activeRuntimeBindings[0].headRevision, headRevision);
+
+  const entries = await readJournalEntries(root, created.missionId);
+  assert.deepEqual(entries.map(({ type }) => type), [
+    "mission.begun", "governance.decided", "implementation.authorized", "runtime.binding_recorded",
+  ]);
+  assert.equal(new Set(entries.slice(1).map(({ payload }) => payload.evidence?.signatureBase64 ?? payload.authority?.signatureBase64 ?? payload.authorization?.signatureBase64)).size, 3);
+  const restarted = run(root, ["mission", "status", "--mission-id", created.missionId, "--json"]);
+  assert.equal(restarted.status, 0, restarted.stderr);
+  assert.deepEqual(JSON.parse(restarted.stdout), projection);
 });
 
 test("packed CLI rejects mixed schema 9 and legacy entries without changing journal bytes", async () => {

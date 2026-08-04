@@ -234,6 +234,45 @@ export function createProfileAwareMissionBegunEntry(brief: ProfileAwareMissionBr
   return { schemaVersion: 9, entryId: `entry:${brief.missionId}:0`, missionId: brief.missionId, sequence: 0, type: "mission.begun", timestamp: timestampValue, payload: { brief, trustedBindings: bindings, requirements: createProfileRequirementsV1(brief) } };
 }
 
+export function createProfileAwareGovernanceDecisionEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  evidence: SignedProfileEvidenceV1;
+}): ProfileAwareMissionEntryV1 {
+  if (input.projection.schemaVersion !== 9 ||
+      input.projection.authorization !== "waiting" ||
+      input.projection.execution !== "not-started" ||
+      input.projection.finalAcceptance !== "waiting") {
+    throw new Error("Profile-aware mission authorization requires a waiting not-started mission.");
+  }
+  const matching = input.projection.requirements.filter(({ requiredRoleId, evidenceKind }) =>
+    requiredRoleId === "coulson" && evidenceKind === "mission_authorization");
+  const unsatisfied = matching.filter(({ requirementId }) =>
+    !input.projection.evidence.some((candidate) => candidate.requirementId === requirementId));
+  if (matching.length !== 1 || unsatisfied.length !== 1) {
+    throw new Error("Profile-aware mission authorization requires exactly one unsatisfied Coulson requirement.");
+  }
+  const sequence = input.projection.lastSequence + 1;
+  const errors = verifyEvidence(input.evidence, unsatisfied[0], input.trustedBindings, input.projection.missionId, sequence);
+  if (errors.length > 0) throw new Error(errors.join(" "));
+  const evidence: SignedProfileEvidenceV1 = {
+    payload: {
+      ...input.evidence.payload,
+      timestamp: { ...input.evidence.payload.timestamp },
+    },
+    signatureBase64: input.evidence.signatureBase64,
+  };
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${sequence}`,
+    missionId: input.projection.missionId,
+    sequence,
+    type: "governance.decided",
+    timestamp: { ...evidence.payload.timestamp },
+    payload: { evidence },
+  };
+}
+
 export function profileAwareMissionIntakeV1(input: {
   brief: ProfileAwareMissionBriefContentV1;
   trustedBindings: TrustedHumanBinding[];

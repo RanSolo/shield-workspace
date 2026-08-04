@@ -1,9 +1,34 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { mkdtemp, readFile, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { runGovernedMayDispatchStepV1 } from "../dist/governed-may-dispatch-v1.mjs";
-import { computeImplementationAuthorityDigest } from "../dist/implementation-authority-v1.mjs";
+import {
+  computeImplementationAuthorityDigest,
+  computeSchema9RuntimeBindingDigest,
+} from "../dist/implementation-authority-v1.mjs";
+import {
+  canonicalJson,
+  computeEd25519SigningKeyRef,
+  computeRuntimeBindingDigest,
+} from "../dist/mission-v2.mjs";
+import {
+  appendProfileAwareMissionEntryV1,
+  initializeProfileAwareMissionJournalV1,
+  readMissionJournalForDisplay,
+} from "../dist/mission-store.mjs";
+import {
+  createProfileAwareGovernanceDecisionEntryV1,
+  createProfileAwareImplementationAuthorityEntryV1,
+  createProfileAwareMissionBegunEntry,
+  createProfileAwareMissionBrief,
+  createProfileAwareRuntimeBindingRecordedEntryV1,
+  MISSION_130_JOURNAL_DIGEST,
+  replayProfileAwareMissionJournal,
+} from "../dist/profile-aware-mission-v1.mjs";
 import { deriveMissionCycleIdentityV1 } from "../dist/mission-runtime-v1.mjs";
 import { deriveFuryPlanReviewEvidenceV1 } from "../dist/fury-plan-review-evidence-v1.mjs";
 import {
@@ -132,6 +157,205 @@ function validProjection(overrides = {}) {
     lastSequence: 4,
     ...overrides,
   };
+}
+
+async function durableProfileAwareDispatchFixture() {
+  const repositoryRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-governed-may-durable-")));
+  const configuredJournalPath = ".shield/missions";
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  const trusted = {
+    schemaVersion: 1,
+    bindingId: "binding:coulson",
+    humanPrincipalId: "human:coulson",
+    seatId: "coulson",
+    missionScope: "*",
+    signingKeyRef: computeEd25519SigningKeyRef(publicKeySpkiBase64),
+    publicKeySpkiBase64,
+    validFromSequence: 0,
+    validThroughSequence: null,
+    attestedBy: "repository-policy:maintainer",
+    provenanceRef: "repository-config:coulson",
+  };
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId: "mission:issue-170",
+    objective: "Prove a durable schema-9 dispatch handoff without invoking May.",
+    subjectId: "github:issue-170",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+    },
+    participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-04T00:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const entries = [createProfileAwareMissionBegunEntry(brief, [trusted])];
+  let projection = replayProfileAwareMissionJournal(entries).value;
+  const requirement = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  const evidencePayload = {
+    schemaVersion: 1,
+    evidenceId: "evidence:coulson:1",
+    requirementId: requirement.requirementId,
+    missionId: brief.missionId,
+    revisionId: brief.revisionId,
+    seatId: "coulson",
+    evidenceKind: "mission_authorization",
+    decision: "approved",
+    humanPrincipalId: trusted.humanPrincipalId,
+    bindingId: trusted.bindingId,
+    signingKeyRef: trusted.signingKeyRef,
+    sourceRef: "fixture:authorization:1",
+    timestamp: { value: "2026-08-04T00:01:00Z", provenance: "humanRecorded" },
+    journalSequence: 1,
+  };
+  entries.push(createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [trusted],
+    evidence: {
+      payload: evidencePayload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(evidencePayload)), privateKey).toString("base64"),
+    },
+  }));
+  projection = replayProfileAwareMissionJournal(entries).value;
+  const cycle = deriveMissionCycleIdentityV1({
+    repositoryRoot,
+    configuredJournalPath,
+    missionId: brief.missionId,
+    expectedSubjectId: brief.subjectId,
+    expectedRevisionId: brief.revisionId,
+    expectedSequence: 3,
+    seatId: "may",
+    actionId: "edit:implementation",
+    effectClass: "behavioral_implementation",
+    validationId: "validation:test",
+    activatedModes: [],
+    actionAllowlist: ["edit:implementation", "read:issue"],
+  });
+  const authority = {
+    schemaVersion: 1,
+    contractVersion: "implementation-authority.v1",
+    authorityKind: "wheels_up",
+    authorityRef: "authority:issue-170:durable",
+    missionId: brief.missionId,
+    subjectId: brief.subjectId,
+    seatId: "may",
+    missionRevisionId: brief.revisionId,
+    artifactRevisionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    repositoryId: "RanSolo/shield-workspace",
+    canonicalWritableRoot: repositoryRoot,
+    branch: "agent/issue-170",
+    baseRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    headRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    modelId: "model:gemma",
+    approvedRelativePaths: ["packages/shield-team-system"],
+    approvedActionIds: ["edit:implementation", "read:issue"],
+    approvedEffectClasses: ["behavioral_implementation", "verification"],
+    approvedEffectKeys: [cycle.effectKey, "effect:validation"].sort(),
+    approvedCapabilities: ["filesystem_write", "github_issues"],
+    validationCommandIds: ["validation:test"],
+    journalSequence: 2,
+    humanPrincipalId: trusted.humanPrincipalId,
+    humanBindingId: trusted.bindingId,
+    signingKeyRef: trusted.signingKeyRef,
+    sourceRef: "fixture:wheels-up:2",
+    evidenceRef: "evidence:wheels-up:2",
+    timestamp: { value: "2026-08-04T00:02:00Z", provenance: "humanRecorded" },
+  };
+  entries.push(createProfileAwareImplementationAuthorityEntryV1({
+    projection,
+    trustedBindings: [trusted],
+    authority: {
+      payload: authority,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(authority)), privateKey).toString("base64"),
+    },
+  }));
+  projection = replayProfileAwareMissionJournal(entries).value;
+  const authorizationId = "authorization:runtime-binding:3";
+  const runtimeBinding = {
+    bindingSchemaVersion: 1,
+    bindingId: "binding:issue-170:may",
+    bindingVersion: 1,
+    missionId: brief.missionId,
+    subjectId: brief.subjectId,
+    missionRevisionId: brief.revisionId,
+    seatId: "may",
+    reasoningRuntimeId: "runtime:local-may",
+    toolExecutorId: "executor:shield",
+    repositoryId: authority.repositoryId,
+    canonicalWritableRoot: authority.canonicalWritableRoot,
+    branch: authority.branch,
+    artifactRevisionId: authority.artifactRevisionId,
+    recordedAtSequence: 3,
+    activeThroughSequence: null,
+    lifecycleState: "active",
+    approvedScope: {
+      actionIds: [...authority.approvedActionIds],
+      effectClasses: [...authority.approvedEffectClasses],
+      effectKeys: [...authority.approvedEffectKeys],
+      capabilities: [...authority.approvedCapabilities],
+    },
+    coulsonAuthorizationRef: authorizationId,
+  };
+  const wrapper = {
+    schemaVersion: 1,
+    binding: runtimeBinding,
+    implementationAuthorityRef: authority.authorityRef,
+    implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
+    implementationAuthoritySequence: 2,
+    approvedRelativePaths: [...authority.approvedRelativePaths],
+    validationCommandIds: [...authority.validationCommandIds],
+    modelId: authority.modelId,
+    baseRevision: authority.baseRevision,
+    headRevision: authority.headRevision,
+  };
+  const bindingAuthorization = {
+    schemaVersion: 1,
+    authorizationId,
+    missionId: brief.missionId,
+    subjectId: brief.subjectId,
+    seatId: "may",
+    bindingId: runtimeBinding.bindingId,
+    bindingVersion: 1,
+    priorBindingId: null,
+    priorBindingVersion: null,
+    bindingDigest: computeRuntimeBindingDigest(runtimeBinding),
+    schema9BindingDigest: computeSchema9RuntimeBindingDigest(wrapper),
+    artifactRevisionId: authority.artifactRevisionId,
+    decision: "approved",
+    previousJournalSequence: 2,
+    journalSequence: 3,
+    humanPrincipalId: trusted.humanPrincipalId,
+    humanBindingId: trusted.bindingId,
+    signingKeyRef: trusted.signingKeyRef,
+    sourceRef: "fixture:runtime-binding:3",
+    timestamp: { value: "2026-08-04T00:03:00Z", provenance: "humanRecorded" },
+  };
+  entries.push(createProfileAwareRuntimeBindingRecordedEntryV1({
+    projection,
+    trustedBindings: [trusted],
+    binding: wrapper,
+    authorization: {
+      payload: bindingAuthorization,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(bindingAuthorization)), privateKey).toString("base64"),
+    },
+  }));
+  const initialized = await initializeProfileAwareMissionJournalV1({ repositoryRoot, configuredJournalPath, missionId: brief.missionId, entry: entries[0] });
+  assert.equal(initialized.state, "valid", initialized.errors?.join(" "));
+  for (const entry of entries.slice(1)) {
+    const appended = await appendProfileAwareMissionEntryV1({ repositoryRoot, configuredJournalPath, missionId: brief.missionId, entry });
+    assert.equal(appended.state, "valid", appended.errors?.join(" "));
+  }
+  const durable = await readMissionJournalForDisplay({ repositoryRoot, configuredJournalPath, missionId: brief.missionId });
+  assert.equal(durable.state, "valid", durable.errors?.join(" "));
+  return { repositoryRoot, configuredJournalPath, journalPath: initialized.value.journalPath, projection: durable.value.projection };
 }
 
 function validFuryRecord(projection = validProjection(), overrides = {}) {
@@ -1115,6 +1339,41 @@ test("returns recovery-required for uncertain or concurrently completed packet c
     assert.equal(result.state, "recovery_required");
     assert.equal(result.readiness, "dispatch_ready");
   }
+});
+
+test("durable schema-9 signing output reaches dispatch-ready before a no-effect uncertain claim", async () => {
+  const fixture = await durableProfileAwareDispatchFixture();
+  const before = await readFile(fixture.journalPath, "utf8");
+  const furyRecord = validFuryRecord(fixture.projection);
+  let claimCalls = 0;
+  const callCounts = {};
+  const result = await runGovernedMayDispatchStepV1(
+    { ...validInput(), repositoryRoot: fixture.repositoryRoot, configuredJournalPath: fixture.configuredJournalPath },
+    validDependencies(callCounts, {
+      readMissionJournal: readMissionJournalForDisplay,
+      readFuryEvidence: async () => validFuryLedger([furyRecord]),
+      readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+      observeDeliveryWorkspace: async () => validWorkspaceObservation(fixture.projection, furyRecord),
+      readTrackedFile: async () => validBlueprintBytes(),
+      helicarrier: passingHelicarrier(),
+      loadPermissionContext: async (input) => ({
+        state: "ready",
+        context: validPermissionContext(fixture.projection, input.expectedDecisionId),
+      }),
+      claimDispatchPacket: async () => {
+        claimCalls += 1;
+        return { state: "invalid", code: "recovery_required", errors: ["no-effect proving claim"] };
+      },
+    }),
+  );
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.readiness, "dispatch_ready");
+  assert.equal(claimCalls, 1);
+  assert.equal(await readFile(fixture.journalPath, "utf8"), before);
+  assert.equal(callCounts.runMayControlLoop, undefined);
+  assert.equal(callCounts.appendMissionEntry, undefined);
+  assert.equal(callCounts.appendDispatchReceipt, undefined);
 });
 
 test("blocks when delivery workspace observation fails", async () => {

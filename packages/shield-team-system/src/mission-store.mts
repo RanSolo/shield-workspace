@@ -211,6 +211,63 @@ async function syncDirectory(path: string): Promise<boolean> {
   }
 }
 
+async function ensureProfileAwareJournalRoot(
+  repositoryRoot: string,
+  journalRoot: string,
+): Promise<ContractResult<never>> {
+  const lexicalRepositoryRoot = resolve(repositoryRoot);
+  let repositoryStats;
+  try {
+    repositoryStats = await lstat(lexicalRepositoryRoot);
+  } catch (error) {
+    return invalid("journal_unavailable", `Repository root verification failed: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+  }
+  if (repositoryStats.isSymbolicLink() || !repositoryStats.isDirectory()) {
+    return invalid("unsafe_path", "Repository root must be a real directory.");
+  }
+
+  const fromRepository = relative(lexicalRepositoryRoot, journalRoot);
+  if (fromRepository === "" || fromRepository === ".." || fromRepository.startsWith(`..${sep}`)) {
+    return invalid("unsafe_path", "Journal root escapes or equals the repository root.");
+  }
+
+  let current = lexicalRepositoryRoot;
+  for (const component of fromRepository.split(sep)) {
+    current = resolve(current, component);
+    let created = false;
+    try {
+      const stats = await lstat(current);
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        return invalid("unsafe_path", "Profile-aware journal path components must be real directories.");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return invalid("journal_unavailable", `Journal directory verification failed: ${(error as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+      }
+      try {
+        await mkdir(current);
+        created = true;
+      } catch (mkdirError) {
+        if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") {
+          return invalid("journal_unavailable", `Journal directory creation failed: ${(mkdirError as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+        }
+      }
+      try {
+        const stats = await lstat(current);
+        if (stats.isSymbolicLink() || !stats.isDirectory()) {
+          return invalid("unsafe_path", "Profile-aware journal path components must be real directories.");
+        }
+      } catch (verifyError) {
+        return invalid("journal_unavailable", `Created journal directory verification failed: ${(verifyError as NodeJS.ErrnoException).code ?? "unknown_error"}.`);
+      }
+    }
+    if (created && (!await syncDirectory(current) || !await syncDirectory(dirname(current)))) {
+      return invalid("recovery_required", "Profile-aware journal directory creation could not be made durable.");
+    }
+  }
+  return valid(undefined as never);
+}
+
 async function parseProfileAwareJournalText(text: string): Promise<ContractResult<ProfileAwareReadResult>> {
   const parsed = parseJournalLines(text);
   if (parsed.state === "invalid") return parsed;
@@ -378,6 +435,90 @@ export async function readMissionJournalForDisplay(input: MissionJournalReadInpu
   if (replay.state === "invalid") return replay;
   if (replay.value.projection.missionId !== input.missionId) return invalid("mission_mismatch", "Journal missionId does not match the requested mission.");
   return valid({ kind: "supervised", entries: replay.value.entries, projection: replay.value.projection });
+}
+
+export async function initializeProfileAwareMissionJournalV1(input: unknown): Promise<ContractResult<{ journalPath: string; projection: ProfileAwareProjectionV1 }>> {
+  const checked = snapshotProfileAwareInput(input);
+  if (checked.state === "invalid") return checked;
+  const { repositoryRoot, configuredJournalPath, missionId, entry } = checked.value;
+  if (entry.missionId !== missionId) return invalid("mission_mismatch", "Initial entry missionId does not match the requested mission.");
+  if (entry.sequence !== 0 || entry.type !== "mission.begun") {
+    return invalid("sequence_invalid", "Profile-aware initialization requires exactly one sequence-0 mission.begun entry.");
+  }
+
+  const candidateReplay = replayProfileAwareMissionJournal([entry]);
+  if (candidateReplay.state === "invalid") return invalidMany(candidateReplay.code, candidateReplay.errors);
+  if (candidateReplay.value.missionId !== missionId) return invalid("mission_mismatch", "Initial profile-aware projection does not match the requested mission.");
+  const candidateBytes = lineJson(entry);
+
+  const paths = resolveSupervisedMissionPaths(repositoryRoot, configuredJournalPath, missionId);
+  if (paths.state === "invalid") return paths;
+  const root = await ensureProfileAwareJournalRoot(repositoryRoot, paths.value.root);
+  if (root.state === "invalid") return root;
+  const confinement = await verifyConfinement(repositoryRoot, paths.value.root);
+  if (confinement.state === "invalid") return confinement;
+
+  const token = await acquireProfileAwareLock(paths.value);
+  if (token.state === "invalid") return token;
+
+  let result: ContractResult<{ journalPath: string; projection: ProfileAwareProjectionV1 }>;
+  try {
+    const existing = await readExistingText(paths.value.journalPath);
+    if (existing !== null) {
+      result = existing.state === "invalid"
+        ? existing
+        : invalid("mission_exists", `Mission journal already exists: ${missionId}.`);
+    } else {
+      let handle;
+      try {
+        handle = await open(
+          paths.value.journalPath,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+          0o644,
+        );
+        const stats = await handle.stat();
+        if (!stats.isFile()) {
+          result = invalid("unsafe_path", "Mission journal must be a regular file.");
+        } else {
+          const write = await handle.write(candidateBytes, null, "utf8");
+          if (write.bytesWritten !== lineLength(candidateBytes)) {
+            result = invalid("recovery_required", "Profile-aware mission initialization write was incomplete.");
+          } else {
+            await handle.sync();
+            result = valid({ journalPath: paths.value.journalPath, projection: candidateReplay.value });
+          }
+        }
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EEXIST") result = invalid("mission_exists", `Mission journal already exists: ${missionId}.`);
+        else if (code === "ELOOP") result = invalid("unsafe_path", "Mission journal must not be a symlink.");
+        else result = invalid("recovery_required", `Profile-aware mission initialization or sync failed: ${code ?? "unknown_error"}.`);
+      } finally {
+        await handle?.close().catch(() => undefined);
+      }
+
+      if (result.state === "valid") {
+        if (!await syncDirectory(paths.value.root)) {
+          result = invalid("recovery_required", "Profile-aware mission journal parent directory sync failed after creation.");
+        } else {
+          const after = await readProfileAwareMissionJournal(paths.value);
+          if (after.state === "invalid") {
+            result = invalidMany("recovery_required", after.errors.length > 0 ? after.errors : ["Profile-aware journal reread failed after initialization."]);
+          } else if (after.value.bytes !== candidateBytes) {
+            result = invalid("recovery_required", "Profile-aware mission initialization readback is not exact.");
+          } else {
+            result = valid({ journalPath: paths.value.journalPath, projection: after.value.projection });
+          }
+        }
+      }
+    }
+  } catch (error) {
+    result = invalid("recovery_required", `Profile-aware mission initialization failed unexpectedly: ${error instanceof Error ? error.message : String(error)}.`);
+  }
+
+  const released = await releaseProfileAwareLock(token.value);
+  if (released.state === "invalid") return invalidMany("recovery_required", released.errors);
+  return result;
 }
 
 export async function appendProfileAwareMissionEntryV1(input: unknown): Promise<ContractResult<{ journalPath: string; projection: ProfileAwareProjectionV1 }>> {
