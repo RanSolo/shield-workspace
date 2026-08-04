@@ -2,6 +2,10 @@
 
 Implement only the Fury-approved issue #194 plan.
 
+This packet is executed by hosted May because the local governed May write
+path is the defect being corrected. Preserve the May seat and exact signed
+scope; do not treat the bootstrap executor choice as broader authority.
+
 ## Production change
 
 In `packages/shield-team-system/src/governed-may-dispatch-v1.mts`, remove the

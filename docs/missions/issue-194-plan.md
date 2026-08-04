@@ -36,6 +36,18 @@ existing `governed-may-dispatch-v1.test.mjs` conventions.
 
 ## Frozen implementation
 
+### Bootstrap executor choice
+
+Local Bionic/Gemma May supplied the bounded implementation design, but it
+cannot truthfully perform this mission's repository write through
+`runGovernedMayDispatchStepV1`: the temporary-name composition corrected by
+this issue makes that exact path fail before the first write. After Fury
+approval and signed Wheels Up, hosted May therefore performs the two-path
+implementation under the same May seat contract. This is a fail-closed
+bootstrap choice, not a new authority class or scope widening. Governed local
+May execution resumes only after this correction is merged and #137 is
+re-frozen from fresh main.
+
 ### Production correction
 
 In `packages/shield-team-system/src/governed-may-dispatch-v1.mts`:
