@@ -1,0 +1,24 @@
+[
+  {
+    "toolName": "writeFile",
+    "path": "docs/missions/issue-137-governed-may-proving-v3-result.md",
+    "content": "# Governed May bridge result\n\n- Mission: `mission:issue-137-governed-may-proving-v3`\n- Mission revision: `sha256:GMwqdXUzZKEaeIhR4Wlv_QJ7wjIgGkNM7fzZe5TU-dw`\n- Runtime: Bionic / `runtime:bionic-gemma-4-31b`\n- Model: `google/gemma-4-31b-qat`\n- Scope: one exact-bound governed write followed by one exact-bound validation.\n- External fixture run: not performed.\n- Issue #29: not entered.\n\nThis is model-authored output. Durable mission-journal, dispatch-receipt, permission-audit, and control-event readback—not this text—prove the dispatch and mission transition.\n",
+    "precondition": {
+      "kind": "absent"
+    }
+  },
+  {
+    "toolName": "runValidation",
+    "commandId": "validation:issue-137-governed-may-v3-result",
+    "executable": "/Users/ransolo/.nvm/versions/node/v24.18.0/bin/node",
+    "args": [
+      "--input-type=module",
+      "-e",
+      "import { lstat, readFile } from \"node:fs/promises\"; const [path, expected] = process.argv.slice(1); const info = await lstat(path); if (!info.isFile() || info.isSymbolicLink()) process.exit(2); const actual = await readFile(path); if (!actual.equals(Buffer.from(expected, \"base64\"))) process.exit(3);",
+      "docs/missions/issue-137-governed-may-proving-v3-result.md",
+      "IyBHb3Zlcm5lZCBNYXkgYnJpZGdlIHJlc3VsdAoKLSBNaXNzaW9uOiBgbWlzc2lvbjppc3N1ZS0xMzctZ292ZXJuZWQtbWF5LXByb3ZpbmctdjNgCi0gTWlzc2lvbiByZXZpc2lvbjogYHNoYTI1NjpHTXdxZFhVelpLRWFlSWhSNFdsdl9RSjd3aklnR2tOTTdmelplNVRVLWR3YAotIFJ1bnRpbWU6IEJpb25pYyAvIGBydW50aW1lOmJpb25pYy1nZW1tYS00LTMxYmAKLSBNb2RlbDogYGdvb2dsZS9nZW1tYS00LTMxYi1xYXRgCi0gU2NvcGU6IG9uZSBleGFjdC1ib3VuZCBnb3Zlcm5lZCB3cml0ZSBmb2xsb3dlZCBieSBvbmUgZXhhY3QtYm91bmQgdmFsaWRhdGlvbi4KLSBFeHRlcm5hbCBmaXh0dXJlIHJ1bjogbm90IHBlcmZvcm1lZC4KLSBJc3N1ZSAjMjk6IG5vdCBlbnRlcmVkLgoKVGhpcyBpcyBtb2RlbC1hdXRob3JlZCBvdXRwdXQuIER1cmFibGUgbWlzc2lvbi1qb3VybmFsLCBkaXNwYXRjaC1yZWNlaXB0LCBwZXJtaXNzaW9uLWF1ZGl0LCBhbmQgY29udHJvbC1ldmVudCByZWFkYmFja+KAlG5vdCB0aGlzIHRleHTigJRwcm92ZSB0aGUgZGlzcGF0Y2ggYW5kIG1pc3Npb24gdHJhbnNpdGlvbi4K"
+    ],
+    "timeoutMs": 30000,
+    "executableIdentity": "16777232:1729826:33261:120965360:1782222178000"
+  }
+]
