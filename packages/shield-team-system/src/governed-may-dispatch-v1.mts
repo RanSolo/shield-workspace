@@ -1,4 +1,4 @@
-import { isProxy } from "node:util/types";
+import { isProxy, isSharedArrayBuffer } from "node:util/types";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -83,6 +83,10 @@ const MAX_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_COMMAND_ARGS_LENGTH = 256;
 const MAX_VALIDATION_COMMANDS = 128;
 const MAX_COMMAND_ARGS = 256;
+const MAX_BLUEPRINT_BYTES = 1_048_576;
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")?.get;
+const typedArrayTagGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, Symbol.toStringTag)?.get;
 const TRUSTED_DEPENDENCY_FIELD_SET = new Set<string>([...TRUSTED_DEPENDENCY_FIELDS, ...TRUSTED_DEPENDENCY_OPTIONAL_FIELDS]);
 const TRUSTED_HOST_OPS_FIELD_SET = new Set<string>(TRUSTED_HOST_OPS_FIELDS);
 const TRUSTED_VALIDATION_COMMAND_FIELD_SET = new Set<string>(TRUSTED_VALIDATION_COMMAND_FIELDS);
@@ -294,6 +298,10 @@ interface GovernedMayDispatchIdentityV1 {
 type DeliveryWorkspaceSnapshot =
   | { readonly state: "ready"; readonly value: GovernedMayDeliveryWorkspaceObservationV1 }
   | { readonly state: "blocked"; readonly code: "workspace_invalid"; readonly errors: readonly string[] };
+
+type BlueprintBytesSnapshot =
+  | { readonly state: "ready"; readonly value: Uint8Array; readonly digest: string }
+  | { readonly state: "blocked"; readonly code: "blueprint_invalid"; readonly errors: readonly string[] };
 
 type GovernedMayReceiptReplayV1 =
   | {
@@ -818,6 +826,29 @@ function bindDeliveryWorkspaceV1(
     };
   }
   return { state: "ready", value: observation };
+}
+
+function snapshotBlueprintBytesV1(input: unknown): BlueprintBytesSnapshot {
+  if (isProxy(input) || typedArrayBufferGetter === undefined || typedArrayTagGetter === undefined) {
+    return { state: "blocked", code: "blueprint_invalid", errors: stableErrors(["Tracked blueprint must be a genuine Uint8Array."]) };
+  }
+  try {
+    if (typedArrayTagGetter.call(input) !== "Uint8Array") {
+      return { state: "blocked", code: "blueprint_invalid", errors: stableErrors(["Tracked blueprint must be a genuine Uint8Array."]) };
+    }
+    const backing = typedArrayBufferGetter.call(input) as ArrayBufferLike;
+    if (isSharedArrayBuffer(backing)) {
+      return { state: "blocked", code: "blueprint_invalid", errors: stableErrors(["Tracked blueprint must not use SharedArrayBuffer."]) };
+    }
+    const value = new Uint8Array(input as Uint8Array);
+    if (value.byteLength === 0 || value.byteLength > MAX_BLUEPRINT_BYTES) {
+      return { state: "blocked", code: "blueprint_invalid", errors: stableErrors(["Tracked blueprint must contain between 1 and 1048576 bytes."]) };
+    }
+    const digest = `sha256:${createHash("sha256").update(value).digest("base64url")}`;
+    return { state: "ready", value, digest };
+  } catch {
+    return { state: "blocked", code: "blueprint_invalid", errors: stableErrors(["Tracked blueprint must be a genuine Uint8Array."]) };
+  }
 }
 
 function snapshotInput(input: unknown): InputSnapshot {
@@ -1669,6 +1700,26 @@ export async function runGovernedMayDispatchStepV1(
     return { ...workspaceBinding, readiness: "blocked" };
   }
 
+  let blueprintBytes;
+  try {
+    blueprintBytes = await dependenciesSnapshot.value.readTrackedFile(Object.freeze({
+      repositoryRoot: inputSnapshot.value.repositoryRoot,
+      revision: furyEvaluation.evidence.repositoryRevisionId,
+      relativePath: furyEvaluation.evidence.blueprintArtifactPath,
+    }));
+  } catch {
+    return {
+      state: "blocked",
+      readiness: "blocked",
+      code: "blueprint_invalid",
+      errors: Object.freeze(["Tracked blueprint read failed."]),
+    };
+  }
+  const blueprintSnapshot = snapshotBlueprintBytesV1(blueprintBytes);
+  if (blueprintSnapshot.state === "blocked") {
+    return { ...blueprintSnapshot, readiness: "blocked" };
+  }
+
   return {
     state: "recovery_required",
     readiness: "indeterminate",
@@ -1682,6 +1733,11 @@ export async function runGovernedMayDispatchStepV1(
       originalSequence,
       packetId: dispatchIdentity.packetId,
       parentSessionId: dispatchIdentity.parentSessionId,
+      blueprintArtifactId: furyEvaluation.evidence.blueprintArtifactId,
+      blueprintArtifactPath: furyEvaluation.evidence.blueprintArtifactPath,
+      blueprintByteLength: blueprintSnapshot.value.byteLength,
+      blueprintDigest: blueprintSnapshot.digest,
+      blueprintRevision: furyEvaluation.evidence.repositoryRevisionId,
       prNumber: workspaceBinding.value.prNumber,
       repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
     }),
