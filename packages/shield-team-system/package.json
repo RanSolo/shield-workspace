@@ -69,6 +69,10 @@
       "types": "./dist/schema9-permission-context-v1.d.mts",
       "import": "./dist/schema9-permission-context-v1.mjs"
     },
+    "./governed-may-dispatch": {
+      "types": "./dist/governed-may-dispatch-v1.d.mts",
+      "import": "./dist/governed-may-dispatch-v1.mjs"
+    },
     "./roles": {
       "types": "./dist/role-taxonomy-v1.d.mts",
       "import": "./dist/role-taxonomy-v1.mjs"

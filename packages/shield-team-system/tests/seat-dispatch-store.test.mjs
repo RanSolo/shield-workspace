@@ -11,6 +11,7 @@ import test from "node:test";
 import {
   appendSeatDispatchReceiptEntryV1,
   claimSeatDispatchPacketV1,
+  readSeatDispatchReceiptLedgerV1,
   readSeatDispatchReceiptByReceiptIdV1,
   readSeatDispatchReceiptsByParentMissionSessionV1,
   readSeatDispatchReceiptsByChildTaskSessionV1,
@@ -18,6 +19,7 @@ import {
 import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
+  evaluateSeatDispatchAttributionV1,
   replaySeatDispatchReceiptsV1,
 } from "../dist/seat-dispatch-receipt-v1.mjs";
 
@@ -1304,6 +1306,58 @@ test("append and reads preserve exact log bytes", async () => {
   assert.equal(restart.result.value.receipts.length, 1);
 });
 
+test("raw ledger read is restart-safe, facade-exported, and usable for attribution", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-seat-receipt-ledger-"));
+  const start = started({
+    runtimeHostObserved: {
+      kind: "runtime.host_observed",
+      runtimeId: "runtime-1",
+      model: "model:demo",
+      evidenceRefs: ["runtime-host"],
+    },
+    executorHostObserved: {
+      kind: "executor.host_observed",
+      executorId: "executor-1",
+      evidenceRefs: ["executor-host"],
+    },
+  });
+  const complete = completed(start, {
+    timestamp: "2026-07-29T12:00:01.000Z",
+    outputEvidenceRefs: ["artifact-output"],
+  });
+  const first = await appendReceipt(repositoryRoot, start);
+  assert.equal(first.state, "valid", first.errors?.join(" "));
+  const second = await appendReceipt(repositoryRoot, complete, "owner-b");
+  assert.equal(second.state, "valid", second.errors?.join(" "));
+
+  const scope = {
+    repositoryRoot,
+    repositoryId: start.repositoryId,
+    repositoryWorkspaceId: start.repositoryWorkspaceId,
+  };
+  const before = await readLogBytes(second.value.logPath);
+  const ledger = await readSeatDispatchReceiptLedgerV1(scope);
+  assert.equal(ledger.state, "valid", ledger.errors?.join(" "));
+  assert.deepEqual(ledger.value.entries, [start, complete]);
+  assert.equal(ledger.value.projections.length, 1);
+  assert.equal(ledger.value.projections[0].state, "completed");
+  assert.equal(await readLogBytes(second.value.logPath), before);
+
+  const facade = await import(dispatchReceiptsFacade);
+  assert.equal(typeof facade.readSeatDispatchReceiptLedgerV1, "function");
+  const restarted = await facade.readSeatDispatchReceiptLedgerV1(scope);
+  assert.deepEqual(restarted, ledger);
+  assert.equal(await readLogBytes(second.value.logPath), before);
+
+  const attributed = evaluateSeatDispatchAttributionV1({
+    ...baseIdentity(),
+    artifact: { evidenceId: "fury-evidence" },
+    rawReceiptEntries: restarted.value.entries,
+  });
+  assert.equal(attributed.state, "attributed");
+  assert.deepEqual(attributed.artifact, { evidenceId: "fury-evidence" });
+});
+
 test("fresh process retrieval is byte-identical and creates no new bytes", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-seat-receipt-store-child-"));
   const start = started();
@@ -1467,6 +1521,15 @@ test("scope mismatch in replay is rejected and cannot be repaired", async () => 
   assert.equal(result.state, "invalid");
   assert.equal(result.code, "mixed_scope");
   assert.equal(await readLogBytes(first.value.logPath), before);
+
+  const ledgerMismatch = await readSeatDispatchReceiptLedgerV1({
+    repositoryRoot,
+    repositoryId: start.repositoryId,
+    repositoryWorkspaceId: "workspace-2",
+  });
+  assert.equal(ledgerMismatch.state, "invalid");
+  assert.equal(ledgerMismatch.code, "mixed_scope");
+  assert.equal(await readLogBytes(first.value.logPath), before);
 });
 
 test("stale append from shared head is rejected and bytes remain", async () => {
@@ -1541,6 +1604,15 @@ test("malformed tail and noncanonical line are rejected and preserved", async ()
   assert.equal(malformedTail.code, "recovery_required");
   assert.equal(await readLogBytes(logPath), nonCanonical);
 
+  const ledgerTail = await readSeatDispatchReceiptLedgerV1({
+    repositoryRoot,
+    repositoryId: start.repositoryId,
+    repositoryWorkspaceId: start.repositoryWorkspaceId,
+  });
+  assert.equal(ledgerTail.state, "invalid");
+  assert.equal(ledgerTail.code, "recovery_required");
+  assert.equal(await readLogBytes(logPath), nonCanonical);
+
   const canonicalLine = JSON.stringify(start).replace(/,/g, ", ");
   await writeFile(logPath, `${canonicalLine}\n`);
   const canonicalResult = await readSeatDispatchReceiptsByChildTaskSessionV1({
@@ -1608,6 +1680,15 @@ test("symlinked shield, log, and lock are rejected", async () => {
   });
   assert.equal(logRead.state, "invalid");
   assert.equal(logRead.code, "unsafe_path");
+  assert.equal(await readLogBytes(outsideTarget), lines);
+
+  const ledgerRead = await readSeatDispatchReceiptLedgerV1({
+    repositoryRoot: repositoryRoot2,
+    repositoryId: start.repositoryId,
+    repositoryWorkspaceId: start.repositoryWorkspaceId,
+  });
+  assert.equal(ledgerRead.state, "invalid");
+  assert.equal(ledgerRead.code, "unsafe_path");
   assert.equal(await readLogBytes(outsideTarget), lines);
 
   const appendWithLinkedLog = await appendSeatDispatchReceiptEntryV1({

@@ -113,6 +113,12 @@ export interface SeatDispatchReceiptStoreBySessionResult {
   readonly receipts: readonly SeatDispatchReceiptProjectionV1[];
 }
 
+export interface SeatDispatchReceiptStoreLedgerResult {
+  readonly logPath: string;
+  readonly entries: readonly SeatDispatchReceiptEventV1[];
+  readonly projections: readonly SeatDispatchReceiptProjectionV1[];
+}
+
 interface SeatDispatchReceiptStoreValidationToken {
   readonly lockOwnerId: string;
   readonly nonce: string;
@@ -1657,6 +1663,22 @@ export async function readSeatDispatchReceiptByReceiptIdV1(
   return valid({
     logPath: data.value.logPath,
     receipt: Object.freeze({ ...receipts[0] }),
+  });
+}
+
+export async function readSeatDispatchReceiptLedgerV1(
+  input: unknown,
+): Promise<SeatDispatchStoreContractResult<SeatDispatchReceiptStoreLedgerResult>> {
+  const checked = validateScopeInput(input, "ledger read");
+  if (checked.state === "invalid") return checked;
+
+  const data = await readStoreLog(checked.value, { allowMissing: false });
+  if (data.state === "invalid") return data;
+
+  return valid({
+    logPath: data.value.logPath,
+    entries: data.value.entries,
+    projections: data.value.projections,
   });
 }
 

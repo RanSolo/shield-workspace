@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-170",
+  "objective": "Compose the smallest executable V0.3 bridge that replays durable mission authority and exact plan evidence, produces a truthful single-step dispatch decision, dispatches at most one bounded May packet through existing governed boundaries, and proves the path by unblocking issue #137 / PR #168 without starting issue #29 or the post-V0.3 operating-model experiment.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/170",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-02T05:10:11.133Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:qlJv8-RdF7lYLTZx09nQQ485jrtLzjF0a4LVWw9mujY"
+}
