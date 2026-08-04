@@ -37,13 +37,13 @@ Add `packages/shield-team-system/src/may-tool-effect-v1.mts` as the pure shared 
   - `writeFile` → `repository.write_file` / `behavioral_implementation` / `filesystem_write`;
   - `runValidation` → `repository.run_validation` / `verification` / `process_execute`;
 - closed planned-operation descriptors:
-  - write: exact path, exact UTF-8 content, and exact current SHA-256 or `absent`;
+  - write: exact path, exact UTF-8 content, and a closed target precondition containing either the exact current regular-file identity plus SHA-256 or verified absence;
   - validation: exact command ID, canonical executable path, argument vector, timeout, and host-observed executable identity;
 - deterministic derivation of the existing `effect:may:sha256:*` key without changing its bytes or semantics;
 - the existing executable-identity projection from trusted stat fields, shared by preflight and independently repeated executor checks;
 - strict validation and immutable copies of an exact two-operation sequence: one write followed by one validation.
 
-The module is internal and pure: filesystem observation remains with the trusted host and executor. Update `may-tool-executor.mjs` to consume the shared mappings and effect-key derivation while retaining every existing public export and its semantics. No new package export or public API documentation is required.
+The module is internal and pure: filesystem observation remains with the trusted host and executor. Update `may-tool-executor.mjs` to consume the shared mappings and effect-key derivation while retaining existing public export names and return shapes; nonzero/signal validation handling is the deliberate issue-191 behavioral correction. No new package export or public API documentation is required.
 
 ### 2. Pre-invocation planned-operation binding
 
@@ -52,13 +52,16 @@ Extend `RunGovernedMayDispatchStepTrustedDependenciesV1` with one required own d
 Before Helicarrier compilation, packet claim, model invocation, or repository effects, `runGovernedMayDispatchStepV1` must:
 
 1. validate the closed two-operation sequence;
-2. use a trusted preflight observer to canonicalize and stat the validation executable with the same identity algorithm used independently by the executor, exact-match that observation to the planned descriptor, and derive both exact May effect keys;
+2. use trusted preflight observers to:
+   - confine and inspect the write target without following a target-file symlink, then exact-match its regular-file identity and current digest or verified absence to the planned precondition;
+   - canonicalize and stat the validation executable with the same identity algorithm used independently by the executor, then exact-match that observation to the planned descriptor;
+   - derive both exact May effect keys only after those observations match;
 3. derive the existing canonical mission-cycle effect key;
 4. require exact equality at both authority layers—the `ImplementationAuthorityV1` grant and active `Schema9RuntimeBindingV1` scope/wrapper—for the three-key set, action IDs, effect classes, capabilities, writable path, and validation command ID;
 5. require the trusted validation-command registry to exact-match the planned command ID, executable, args, and timeout;
 6. include the immutable planned operations and their keys in the canonical dispatch envelope compiled by Helicarrier.
 
-These checks occur before terminal-replay disposition as well as before Helicarrier compilation, packet claim, model invocation, or repository effects. Terminal receipt evidence binds and rechecks all three effect keys plus the planned-operation digest and compiled-envelope digest. The validation executable identity is independently re-observed by the May executor immediately before process launch. Any path, bytes, precondition, command, argument, timeout, executable identity, set, order, wrapper, or authority mismatch fails before model invocation. Runtime identity drift remains governed by the existing binding and model probe.
+Before terminal-replay disposition, verify only deterministic descriptor validity, both signed authority layers, and receipt-bound equality of all three effect keys, the planned-operation digest, and the compiled-envelope digest. A completed durable replay remains valid if live files or the host command registry later change. For a fresh dispatch, perform the live write-target, executable, and command-registry observations after deterministic checks and before Helicarrier compilation, packet claim, model invocation, or repository effects. The May executor independently repeats target confinement, file precondition/identity, and executable identity immediately before each effect. Any path, bytes, precondition, command, argument, timeout, executable identity, set, order, wrapper, or authority mismatch on a fresh dispatch fails before model invocation. Runtime identity drift remains governed by the existing binding and model probe.
 
 ### 3. Per-call capability narrowing after full-context validation
 
@@ -114,8 +117,8 @@ No other production, fixture, CLI, authority, journal, or documentation path is 
 - Capability narrowing: full binding remains unchanged; write receives only `filesystem_write`; validation receives only `process_execute`; substitution and unknown actions fail.
 - Validation: zero succeeds; nonzero and signal exits fail; launch failure preserves its current failed result; timeout, truncation, workspace drift, and otherwise uncertain process state preserve existing uncertain semantics.
 - Governed sequence: write then validation succeeds; validation-only, write-only, validation-before-write, duplicate write, duplicate validation, incorrect counts, incorrect control-event order, and mismatched audit identities do not advance.
-- Preflight: changed output byte, path, precondition, executable, preflight identity, argv, timeout, command ID, key set, key order, action, effect, capability, authority layer, scope wrapper, or registry entry fails before terminal replay, model invocation, and packet claim.
-- Terminal replay/receipt: all three effect keys, the planned-operation digest, and the compiled-envelope digest exact-match before replay can return a terminal disposition.
+- Fresh-dispatch preflight: changed output byte, path, target confinement, file identity, current digest/absence, executable, executable identity, argv, timeout, command ID, key set, key order, action, effect, capability, authority layer, scope wrapper, or registry entry fails before model invocation and packet claim.
+- Terminal replay/receipt: deterministic descriptors, both signed authority layers, all three receipt-bound effect keys, the planned-operation digest, and the compiled-envelope digest exact-match before replay can return a terminal disposition; changed live target, executable, or registry state does not invalidate a previously completed durable replay.
 - Durable restart/replay and existing schema-9, permission, May executor, dispatch, package-surface, and full package tests remain green without adding a public export.
 
 ## Validation commands
