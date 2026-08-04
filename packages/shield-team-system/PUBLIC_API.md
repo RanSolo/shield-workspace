@@ -21,6 +21,7 @@ package artifact.
 | `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
 | `@shield/team-system/schema9-permission-context` | Replay-bound, read-only schema-9 permission context loader that revalidates live repository root/branch/HEAD and capability state and returns context or blocked result; it never composes dispatch, invokes a model, or executes effects |
+| `@shield/team-system/governed-may-dispatch` | Canonical single-step May coordinator that derives one exact packet from durable schema-9 authority and attributed Fury evidence, fails closed before invocation, and records exact-bound durable outcomes |
 | `@shield/team-system/roles` | Canonical mission role registry, classification, routing, and assignment validation |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
 | `@shield/team-system/review-publication` | Pure host-neutral exact-path and permitted-effect evaluation for `review.publish` and Wheels Up review publication |
@@ -66,6 +67,7 @@ does not migrate or reinterpret the existing package runtime.
 | Bounded local human-evidence requirements and readiness | Supported through `/supervision`; v2-v6 retain mission-plan review requirements, while v7 binds Fitz and optional Simmons review requirements to the current repository-artifact revision after an exact-revision Fury gate |
 | One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |
 | Profile-aware mission-cycle composition | Supported through `/mission-runtime`; host journal, permission, execution, validation, and clock capabilities remain injected and human evidence remains external |
+| Single-step governed May dispatch | Supported through `/governed-may-dispatch`; callers supply only mission location and host identity while durable authority, attributed review evidence, live repository state, packet scope, runtime identity, and replay determine whether at most one bounded May cycle may run |
 | Per-call runtime-bound permission decisions | Supported through `/permission`; real environmental probes remain owned by Issue #34 |
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
 | Exact-scope review publication | Supported through `/review-publication`; the pure evaluator binds authority and observed proposals, while `/github` performs host observation before push, draft-PR mutation, or review-comment publication |

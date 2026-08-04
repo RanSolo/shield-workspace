@@ -951,3 +951,26 @@ function snapshotValidationCommandArgs(
   }
   return { state: "ready", value: Object.freeze(snapshot) };
 }
+
+export async function runGovernedMayDispatchStepV1(
+  input: unknown,
+  dependencies: unknown,
+): Promise<RunGovernedMayDispatchStepResultV1> {
+  const inputSnapshot = snapshotInput(input);
+  if (inputSnapshot.state === "blocked") {
+    return { ...inputSnapshot, readiness: "blocked" };
+  }
+
+  const dependenciesSnapshot = snapshotTrustedDependencies(dependencies);
+  if (dependenciesSnapshot.state === "blocked") {
+    return { ...dependenciesSnapshot, readiness: "blocked" };
+  }
+
+  return {
+    state: "recovery_required",
+    readiness: "indeterminate",
+    code: "implementation_incomplete",
+    errors: Object.freeze(["Governed May dispatch execution is not implemented."]),
+    evidence: Object.freeze({}),
+  };
+}

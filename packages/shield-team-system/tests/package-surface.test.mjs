@@ -28,6 +28,7 @@ test("exports only the documented public package specifiers", async () => {
     "./runner",
     "./permission",
     "./schema9-permission-context",
+    "./governed-may-dispatch",
     "./roles",
     "./permission-audit",
     "./review-publication",
@@ -64,6 +65,7 @@ test("loads every supported runtime specifier", async () => {
   const runner = await import("@shield/team-system/runner");
   const permission = await import("@shield/team-system/permission");
   const schema9PermissionContext = await import("@shield/team-system/schema9-permission-context");
+  const governedMayDispatch = await import("@shield/team-system/governed-may-dispatch");
   const roles = await import("@shield/team-system/roles");
   const permissionAudit = await import("@shield/team-system/permission-audit");
   const reviewPublication = await import("@shield/team-system/review-publication");
@@ -121,6 +123,7 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(permission.PERMISSION_CONTRACT_VERSION, 1);
   assert.equal(typeof permission.evaluatePermission, "function");
   assert.equal(typeof schema9PermissionContext.loadSchema9PermissionContextV1, "function");
+  assert.equal(typeof governedMayDispatch.runGovernedMayDispatchStepV1, "function");
   assert.equal(roles.ROLE_TAXONOMY_SCHEMA_VERSION, 1);
   assert.equal(roles.ROLE_TAXONOMY_CONTRACT_VERSION, "roles.v1");
   assert.deepEqual(roles.CANONICAL_ROLE_IDS, [
@@ -221,6 +224,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/permission-v1.d.mts",
     "dist/schema9-permission-context-v1.mjs",
     "dist/schema9-permission-context-v1.d.mts",
+    "dist/governed-may-dispatch-v1.mjs",
+    "dist/governed-may-dispatch-v1.d.mts",
     "dist/role-taxonomy-v1.mjs",
     "dist/role-taxonomy-v1.d.mts",
     "dist/permission-audit-v1.mjs",
@@ -292,6 +297,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
     import { loadSchema9PermissionContextV1, type Schema9PermissionContextInput, type Schema9PermissionContextResult } from "@shield/team-system/schema9-permission-context";
+    import { runGovernedMayDispatchStepV1 } from "@shield/team-system/governed-may-dispatch";
     import { CANONICAL_ROLE_IDS, CANONICAL_ROLE_REGISTRY_V1, ROLE_TAXONOMY_CONTRACT_VERSION, isCanonicalRoleId, validateRoleAssignment, type CanonicalRoleId, type RoleAssignmentScope, type RoleRoute } from "@shield/team-system/roles";
     import { MISSION_PROFILE_CONTRACT_VERSION, type MissionProfileV1, type MissionRoleDefinitionV1, type MissionRoleId, MISSION_ROLE_IDS, CANONICAL_MISSION_ROLE_REGISTRY_V1 } from "@shield/team-system/mission-profile";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
@@ -384,6 +390,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const schema9PermissionContextInput = null as unknown as Schema9PermissionContextInput;
     const schema9PermissionContextResult = null as unknown as Schema9PermissionContextResult;
     const loadSchema9Context = loadSchema9PermissionContextV1;
+    const runGovernedMayDispatch = runGovernedMayDispatchStepV1;
     const auditSchema: 1 = PERMISSION_AUDIT_SCHEMA_VERSION;
     const auditRecord = null as unknown as PermissionAuditRecord;
     const replayAudit = replayPermissionAuditLedger;
