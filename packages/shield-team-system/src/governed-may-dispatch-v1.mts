@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 
 import type { HelicarrierDependenciesV0 } from "./helicarrier-v0.mjs";
-import { HELICARRIER_CERTIFIED_NESTED_IDENTITIES } from "./helicarrier-v0.mjs";
+import { HELICARRIER_CERTIFIED_NESTED_IDENTITIES, runHelicarrierV0 } from "./helicarrier-v0.mjs";
 import type { Schema9PermissionContextTrustedHostOps } from "./schema9-permission-context-v1.mjs";
 import type { createPermissionAuditFilesystemStore } from "./permission-audit-store.mjs";
 import type { createMayControlEventFilesystemStore } from "./may-control-event-store.mjs";
@@ -1803,6 +1803,29 @@ export async function runGovernedMayDispatchStepV1(
   if (envelopeSnapshot.state === "blocked") {
     return { ...envelopeSnapshot, readiness: "blocked" };
   }
+  const helicarrierTrust = Object.freeze({
+    contractVersion: "governed-may-helicarrier-trust.v1",
+    missionRevisionId: authoritySnapshot.authority.missionRevisionId,
+    furyEvidenceId: furyEvaluation.evidence.evidenceId,
+    furyEvidenceDigest: furyEvaluation.evidence.evidenceDigest,
+    blueprintDigest: blueprintSnapshot.digest,
+    blueprintByteLength: blueprintSnapshot.value.byteLength,
+    blueprintBytesBase64: Buffer.from(blueprintSnapshot.value).toString("base64"),
+    dispatchEnvelopeDigest: envelopeSnapshot.digest,
+  });
+  const helicarrierResult = runHelicarrierV0(Object.freeze({
+    dispatchId: dispatchIdentity.packetId,
+    envelope: envelopeSnapshot.value,
+    trust: helicarrierTrust,
+  }), dependenciesSnapshot.value.helicarrier);
+  if (helicarrierResult.state === "invalid") {
+    return {
+      state: "blocked",
+      readiness: "blocked",
+      code: "helicarrier_invalid",
+      errors: Object.freeze([`Helicarrier rejected the derived dispatch: ${helicarrierResult.reason}.`]),
+    };
+  }
 
   return {
     state: "recovery_required",
@@ -1824,6 +1847,9 @@ export async function runGovernedMayDispatchStepV1(
       blueprintRevision: furyEvaluation.evidence.repositoryRevisionId,
       dispatchEnvelopeByteLength: envelopeSnapshot.canonicalBytes.byteLength,
       dispatchEnvelopeDigest: envelopeSnapshot.digest,
+      helicarrierManifestDigest: helicarrierResult.value.receipt.manifestDigest,
+      helicarrierPromptDigest: helicarrierResult.value.receipt.promptDigest,
+      helicarrierProvenanceDigest: helicarrierResult.value.receipt.provenanceDigest,
       prNumber: workspaceBinding.value.prNumber,
       repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
     }),

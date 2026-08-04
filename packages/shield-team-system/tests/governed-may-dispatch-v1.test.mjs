@@ -208,6 +208,41 @@ function validWorkspaceObservation(projection, furyRecord, overrides = {}) {
 
 const validBlueprintBytes = () => new TextEncoder().encode("# Issue 170 blueprint\n");
 
+function passingHelicarrier(capture = {}) {
+  return {
+    certification,
+    validate: (envelope, trust) => {
+      capture.envelope = envelope;
+      capture.trust = trust;
+      return {
+        state: "ok",
+        value: {
+          value: envelope,
+          identity: {
+            compilerId: certification.compilerId,
+            validatorId: certification.validatorId,
+            rendererId: certification.rendererId,
+            targetProfileId: certification.targetProfileId,
+            registryId: certification.registryId,
+            frozenDigests: certification.frozenDigests,
+          },
+        },
+      };
+    },
+    compile: (_validated, trust) => {
+      capture.compileTrust = trust;
+      return {
+        state: "ok",
+        value: {
+          promptBytes: new TextEncoder().encode("system prompt"),
+          provenanceBytes: new TextEncoder().encode("{}\n"),
+          manifestBytes: new TextEncoder().encode("{}\n"),
+        },
+      };
+    },
+  };
+}
+
 function validFuryReceiptEntries(identity) {
   const shared = {
     ...identity,
@@ -456,6 +491,7 @@ test("stops without effects after a valid profile-aware journal", async () => {
   const projection = validProjection();
   const furyRecord = validFuryRecord(projection);
   let trackedRead;
+  const helicarrierCapture = {};
 
   const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
@@ -466,6 +502,7 @@ test("stops without effects after a valid profile-aware journal", async () => {
       trackedRead = input;
       return validBlueprintBytes();
     },
+    helicarrier: passingHelicarrier(helicarrierCapture),
   }));
 
   assert.deepEqual(trackedRead, {
@@ -473,6 +510,13 @@ test("stops without effects after a valid profile-aware journal", async () => {
     revision: projection.implementationAuthority.headRevision,
     relativePath: "docs/missions/issue-170-plan.md",
   });
+  assert.equal(helicarrierCapture.envelope.repositoryRoot, projection.implementationAuthority.canonicalWritableRoot);
+  assert.equal(helicarrierCapture.envelope.stopCondition, "after_one_cycle");
+  assert.deepEqual(helicarrierCapture.envelope.outputContract, ["changed_files", "tests_run", "unresolved_risks"]);
+  assert.equal(Object.hasOwn(helicarrierCapture.envelope, "executable"), false);
+  assert.doesNotMatch(JSON.stringify(helicarrierCapture.envelope), /"(?:executable|args)"/);
+  assert.equal(helicarrierCapture.trust.blueprintBytesBase64, Buffer.from(validBlueprintBytes()).toString("base64"));
+  assert.equal(helicarrierCapture.compileTrust, helicarrierCapture.trust);
 
   assert.deepEqual(result, {
     state: "recovery_required",
@@ -494,6 +538,9 @@ test("stops without effects after a valid profile-aware journal", async () => {
       blueprintRevision: projection.implementationAuthority.headRevision,
       dispatchEnvelopeByteLength: result.evidence.dispatchEnvelopeByteLength,
       dispatchEnvelopeDigest: result.evidence.dispatchEnvelopeDigest,
+      helicarrierManifestDigest: result.evidence.helicarrierManifestDigest,
+      helicarrierPromptDigest: result.evidence.helicarrierPromptDigest,
+      helicarrierProvenanceDigest: result.evidence.helicarrierProvenanceDigest,
       prNumber: 200,
       repositoryWorkspaceId: "workspace:issue-170",
     },
@@ -516,6 +563,7 @@ test("derives stable dispatch identities that change with the pinned original se
       readDispatchReceipts: async () => validDispatchLedger(furyRecord),
       observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
       readTrackedFile: async () => validBlueprintBytes(),
+      helicarrier: passingHelicarrier(),
     }));
   }
 
@@ -565,11 +613,34 @@ test("blocks when an authorized validation command is absent from the trusted re
     readDispatchReceipts: async () => validDispatchLedger(furyRecord),
     observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
     readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
   }));
 
   assert.equal(result.state, "blocked");
   assert.equal(result.code, "dispatch_envelope_invalid");
   assert.equal(callCounts["helicarrier.validate"], undefined);
+});
+
+test("blocks before claim when Helicarrier rejects the derived envelope", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const callCounts = {};
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: {
+      certification,
+      validate: () => ({ state: "invalid", reason: "INVALID_CANDIDATE" }),
+      compile: () => { throw new Error("compile must not run"); },
+    },
+  }));
+
+  assert.equal(result.state, "blocked");
+  assert.equal(result.code, "helicarrier_invalid");
+  assert.equal(callCounts.claimDispatchPacket, undefined);
 });
 
 test("blocks when delivery workspace observation fails", async () => {
@@ -644,6 +715,7 @@ test("requires recovery for a durable governed May start without a terminal", as
     readDispatchReceipts: async () => validDispatchLedger(furyRecord),
     observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
     readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
   }));
   const entries = governedMayReceiptEntries({
     projection,
@@ -673,6 +745,7 @@ test("replays a terminal governed May receipt using its durable original sequenc
     readDispatchReceipts: async () => validDispatchLedger(furyRecord),
     observeDeliveryWorkspace: async () => validWorkspaceObservation(originalProjection, furyRecord),
     readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
   }));
   const entries = governedMayReceiptEntries({
     projection: originalProjection,
