@@ -208,6 +208,12 @@ function validWorkspaceObservation(projection, furyRecord, overrides = {}) {
 
 const validBlueprintBytes = () => new TextEncoder().encode("# Issue 170 blueprint\n");
 
+function protocolDigest(domain, bytes) {
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64BE(BigInt(bytes.byteLength));
+  return createHash("sha256").update(domain).update(length).update(bytes).digest("hex");
+}
+
 function passingHelicarrier(capture = {}) {
   return {
     certification,
@@ -231,12 +237,32 @@ function passingHelicarrier(capture = {}) {
     },
     compile: (_validated, trust) => {
       capture.compileTrust = trust;
+      const promptBytes = new TextEncoder().encode("system prompt");
+      const provenanceBytes = new TextEncoder().encode("{}\n");
+      const manifest = {
+        compilerId: certification.compilerId,
+        contextDigest: "1".repeat(64),
+        fixtureDigest: "2".repeat(64),
+        format: "compilation-manifest.v0",
+        governanceDigest: "3".repeat(64),
+        irDigest: "4".repeat(64),
+        promptByteLength: promptBytes.byteLength,
+        promptDigest: protocolDigest("shield:dispatch:prompt:v0", promptBytes),
+        provenanceByteLength: provenanceBytes.byteLength,
+        provenanceDigest: protocolDigest("shield:dispatch:provenance:v0", provenanceBytes),
+        registryDigest: "5".repeat(64),
+        rendererDigest: "6".repeat(64),
+        rendererId: certification.rendererId,
+        targetProfileDigest: "7".repeat(64),
+        targetProfileId: certification.targetProfileId,
+      };
+      if (typeof capture.mutateManifest === "function") capture.mutateManifest(manifest);
       return {
         state: "ok",
         value: {
-          promptBytes: new TextEncoder().encode("system prompt"),
-          provenanceBytes: new TextEncoder().encode("{}\n"),
-          manifestBytes: new TextEncoder().encode("{}\n"),
+          promptBytes,
+          provenanceBytes,
+          manifestBytes: new TextEncoder().encode(`${JSON.stringify(manifest)}\n`),
         },
       };
     },
@@ -541,6 +567,9 @@ test("stops without effects after a valid profile-aware journal", async () => {
       helicarrierManifestDigest: result.evidence.helicarrierManifestDigest,
       helicarrierPromptDigest: result.evidence.helicarrierPromptDigest,
       helicarrierProvenanceDigest: result.evidence.helicarrierProvenanceDigest,
+      helicarrierIrDigest: "4".repeat(64),
+      helicarrierGovernanceDigest: "3".repeat(64),
+      helicarrierRegistryDigest: "5".repeat(64),
       prNumber: 200,
       repositoryWorkspaceId: "workspace:issue-170",
     },
@@ -636,6 +665,24 @@ test("blocks before claim when Helicarrier rejects the derived envelope", async 
       validate: () => ({ state: "invalid", reason: "INVALID_CANDIDATE" }),
       compile: () => { throw new Error("compile must not run"); },
     },
+  }));
+
+  assert.equal(result.state, "blocked");
+  assert.equal(result.code, "helicarrier_invalid");
+  assert.equal(callCounts.claimDispatchPacket, undefined);
+});
+
+test("blocks a Helicarrier manifest whose prompt binding is stale", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const callCounts = {};
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier({ mutateManifest: (manifest) => { manifest.promptDigest = "0".repeat(64); } }),
   }));
 
   assert.equal(result.state, "blocked");

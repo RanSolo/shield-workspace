@@ -77,6 +77,12 @@ const DELIVERY_WORKSPACE_FIELDS = [
   "baseBranch", "branch", "prNumber", "prUrl", "state", "isDraft",
   "baseRevision", "headRevision",
 ] as const;
+const HELICARRIER_MANIFEST_FIELDS = [
+  "format", "compilerId", "rendererId", "targetProfileId", "irDigest",
+  "governanceDigest", "registryDigest", "fixtureDigest", "contextDigest",
+  "rendererDigest", "targetProfileDigest", "promptDigest", "provenanceDigest",
+  "promptByteLength", "provenanceByteLength",
+] as const;
 
 const MAX_TEXT_LENGTH = 2048;
 const MAX_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
@@ -306,6 +312,10 @@ type BlueprintBytesSnapshot =
 type DerivedDispatchEnvelopeSnapshot =
   | { readonly state: "ready"; readonly value: Readonly<Record<string, unknown>>; readonly canonicalBytes: Uint8Array; readonly digest: string }
   | { readonly state: "blocked"; readonly code: "dispatch_envelope_invalid"; readonly errors: readonly string[] };
+
+type HelicarrierManifestSnapshot =
+  | { readonly state: "ready"; readonly value: Readonly<Record<string, unknown>> }
+  | { readonly state: "blocked"; readonly code: "helicarrier_invalid"; readonly errors: readonly string[] };
 
 type GovernedMayReceiptReplayV1 =
   | {
@@ -921,6 +931,51 @@ function deriveDispatchEnvelopeV1(
   }
   const digest = `sha256:${createHash("sha256").update(canonicalBytes).digest("base64url")}`;
   return { state: "ready", value, canonicalBytes, digest };
+}
+
+function protocolDigest(domain: string, bytes: Uint8Array): string {
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64BE(BigInt(bytes.byteLength));
+  return createHash("sha256").update(domain, "utf8").update(length).update(bytes).digest("hex");
+}
+
+function snapshotHelicarrierManifestV0(
+  manifestBytes: Uint8Array,
+  promptBytes: Uint8Array,
+  provenanceBytes: Uint8Array,
+): HelicarrierManifestSnapshot {
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes);
+    const parsed = JSON.parse(text) as unknown;
+    if (!plainObject(parsed)) throw new Error("manifest must be an object");
+    const keys = Reflect.ownKeys(parsed);
+    if (
+      keys.length !== HELICARRIER_MANIFEST_FIELDS.length ||
+      keys.some((key) => typeof key !== "string") ||
+      HELICARRIER_MANIFEST_FIELDS.some((field) => !Object.hasOwn(parsed, field)) ||
+      keys.some((key) => typeof key === "string" && !HELICARRIER_MANIFEST_FIELDS.includes(key as (typeof HELICARRIER_MANIFEST_FIELDS)[number]))
+    ) throw new Error("manifest field set is invalid");
+    if (`${canonicalJson(parsed)}\n` !== text) throw new Error("manifest bytes are not canonical");
+    const value = parsed as Record<string, unknown>;
+    const digestFields = [
+      "irDigest", "governanceDigest", "registryDigest", "fixtureDigest", "contextDigest",
+      "rendererDigest", "targetProfileDigest", "promptDigest", "provenanceDigest",
+    ] as const;
+    if (
+      value.format !== "compilation-manifest.v0" ||
+      value.compilerId !== HELICARRIER_CERTIFIED_NESTED_IDENTITIES.compilerId ||
+      value.rendererId !== HELICARRIER_CERTIFIED_NESTED_IDENTITIES.rendererId ||
+      value.targetProfileId !== HELICARRIER_CERTIFIED_NESTED_IDENTITIES.targetProfileId ||
+      digestFields.some((field) => typeof value[field] !== "string" || !SHA256_HEX.test(value[field] as string)) ||
+      value.promptByteLength !== promptBytes.byteLength ||
+      value.provenanceByteLength !== provenanceBytes.byteLength ||
+      value.promptDigest !== protocolDigest("shield:dispatch:prompt:v0", promptBytes) ||
+      value.provenanceDigest !== protocolDigest("shield:dispatch:provenance:v0", provenanceBytes)
+    ) throw new Error("manifest bindings are invalid");
+    return { state: "ready", value: Object.freeze({ ...value }) };
+  } catch {
+    return { state: "blocked", code: "helicarrier_invalid", errors: stableErrors(["Helicarrier compilation manifest is malformed or mismatched."]) };
+  }
 }
 
 function snapshotInput(input: unknown): InputSnapshot {
@@ -1826,6 +1881,14 @@ export async function runGovernedMayDispatchStepV1(
       errors: Object.freeze([`Helicarrier rejected the derived dispatch: ${helicarrierResult.reason}.`]),
     };
   }
+  const manifestSnapshot = snapshotHelicarrierManifestV0(
+    helicarrierResult.value.output.manifestBytes,
+    helicarrierResult.value.output.promptBytes,
+    helicarrierResult.value.output.provenanceBytes,
+  );
+  if (manifestSnapshot.state === "blocked") {
+    return { ...manifestSnapshot, readiness: "blocked" };
+  }
 
   return {
     state: "recovery_required",
@@ -1850,6 +1913,9 @@ export async function runGovernedMayDispatchStepV1(
       helicarrierManifestDigest: helicarrierResult.value.receipt.manifestDigest,
       helicarrierPromptDigest: helicarrierResult.value.receipt.promptDigest,
       helicarrierProvenanceDigest: helicarrierResult.value.receipt.provenanceDigest,
+      helicarrierIrDigest: manifestSnapshot.value.irDigest,
+      helicarrierGovernanceDigest: manifestSnapshot.value.governanceDigest,
+      helicarrierRegistryDigest: manifestSnapshot.value.registryDigest,
       prNumber: workspaceBinding.value.prNumber,
       repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
     }),
