@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { runGovernedMayDispatchStepV1 } from "../dist/governed-may-dispatch-v1.mjs";
 import { computeImplementationAuthorityDigest } from "../dist/implementation-authority-v1.mjs";
+import { deriveMissionCycleIdentityV1 } from "../dist/mission-runtime-v1.mjs";
 import { deriveFuryPlanReviewEvidenceV1 } from "../dist/fury-plan-review-evidence-v1.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
@@ -29,6 +30,22 @@ const certification = Object.freeze({
   }),
 });
 
+const FIXTURE_MISSION_REVISION = `sha256:${"A".repeat(43)}`;
+const FIXTURE_CYCLE_IDENTITY = deriveMissionCycleIdentityV1({
+  repositoryRoot: "/tmp/shield-governed-may",
+  configuredJournalPath: ".shield/missions",
+  missionId: "mission:issue-170",
+  expectedSubjectId: "github:issue-170",
+  expectedRevisionId: FIXTURE_MISSION_REVISION,
+  expectedSequence: 4,
+  seatId: "may",
+  actionId: "edit:implementation",
+  effectClass: "behavioral_implementation",
+  validationId: "validation:test",
+  activatedModes: [],
+  actionAllowlist: ["edit:implementation", "read:issue"],
+});
+
 function validAuthority() {
   return {
     schemaVersion: 1,
@@ -38,7 +55,7 @@ function validAuthority() {
     missionId: "mission:issue-170",
     subjectId: "github:issue-170",
     seatId: "may",
-    missionRevisionId: `sha256:${"A".repeat(43)}`,
+    missionRevisionId: FIXTURE_MISSION_REVISION,
     artifactRevisionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     repositoryId: "RanSolo/shield-workspace",
     canonicalWritableRoot: "/tmp/shield-governed-may",
@@ -49,7 +66,7 @@ function validAuthority() {
     approvedRelativePaths: ["packages/shield-team-system"],
     approvedActionIds: ["edit:implementation", "read:issue"],
     approvedEffectClasses: ["behavioral_implementation", "verification"],
-    approvedEffectKeys: ["effect:implementation", "effect:validation"],
+    approvedEffectKeys: [FIXTURE_CYCLE_IDENTITY.effectKey, "effect:validation"].sort(),
     approvedCapabilities: ["filesystem_write", "github_issues"],
     validationCommandIds: ["validation:test"],
     journalSequence: 2,
@@ -349,6 +366,7 @@ function claimedPacket(input) {
   const replay = replaySeatDispatchReceiptsV1([started]);
   assert.equal(replay.state, "valid");
   return {
+    started,
     state: "valid",
     value: {
       logPath: "/tmp/dispatch-receipts.jsonl",
@@ -452,7 +470,7 @@ function governedMayReceiptEntries({ projection, furyRecord, packetId, parentSes
     artifactRevision: furyRecord.artifactRevisionId,
     configuredRuntime: { kind: "runtime.configured", runtimeId: "runtime:local-may", model: authority.modelId },
     requestedRuntime: { kind: "runtime.requested", runtimeId: "runtime:local-may", model: authority.modelId },
-    toolExecution: { kind: "tool.execution.requested", executorBindingRef: "binding:may:tools" },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: "binding:issue-170:may" },
     runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
     runtimeHostObserved: {
       kind: "runtime.host_observed",
@@ -471,6 +489,8 @@ function governedMayReceiptEntries({ projection, furyRecord, packetId, parentSes
     ...shared,
     inputEvidenceRefs: [
       `evidence:governed-may-original-sequence:${originalSequence}`,
+      authority.authorityRef,
+      furyRecord.evidenceId,
       `evidence:packet-binding:seat-dispatch-v1:${claimKey}:sha256:${"B".repeat(43)}`,
     ],
     timestamp: "2026-08-03T18:00:02Z",
@@ -503,6 +523,7 @@ function validInput() {
 }
 
 function validDependencies(callCounts, overrides = {}) {
+  let claimed;
   const sentinel = (name) => (..._args) => {
     callCounts[name] = (callCounts[name] ?? 0) + 1;
     throw new Error(`unexpected dependency call: ${name}`);
@@ -535,15 +556,56 @@ function validDependencies(callCounts, overrides = {}) {
     }],
     mayControlBaseUrl: "http://127.0.0.1:1234",
     runMayControlLoop: sentinel("runMayControlLoop"),
-    createPermissionAuditStore: sentinel("createPermissionAuditStore"),
-    createMayControlEventStore: sentinel("createMayControlEventStore"),
+    createPermissionAuditStore: () => ({
+      ledgerId: "permission-audit:test",
+      read: async () => ({ records: [], receipt: null }),
+      appendIfAbsent: async () => ({ state: "appended" }),
+    }),
+    createMayControlEventStore: () => ({
+      sessionId: "session:may-control:test",
+      read: async () => ({ orderedEvents: [], terminalState: null }),
+      appendControlEvent: async () => ({ state: "appended" }),
+    }),
     readMissionJournal: sentinel("readMissionJournal"),
     appendMissionEntry: sentinel("appendMissionEntry"),
     readFuryEvidence: sentinel("readFuryEvidence"),
     readDispatchReceipts: sentinel("readDispatchReceipts"),
-    claimDispatchPacket: async (input) => claimedPacket(input),
-    appendDispatchReceipt: sentinel("appendDispatchReceipt"),
-    runMissionCycle: sentinel("runMissionCycle"),
+    claimDispatchPacket: async (input) => {
+      const result = claimedPacket(input);
+      claimed = result.started;
+      return result;
+    },
+    appendDispatchReceipt: async ({ event }) => {
+      assert.ok(claimed);
+      const replay = replaySeatDispatchReceiptsV1([
+        claimed,
+        event,
+      ]);
+      assert.equal(replay.state, "valid");
+      return {
+        state: "valid",
+        value: {
+          logPath: "/tmp/dispatch-receipts.jsonl",
+          byteLength: 2,
+          entries: replay.entries,
+          projections: replay.projections,
+          receipt: replay.projections[0],
+        },
+      };
+    },
+    runMissionCycle: async (input) => {
+      const identity = deriveMissionCycleIdentityV1(input);
+      return {
+        outcome: "advanced",
+        missionId: input.missionId,
+        subjectId: input.expectedSubjectId,
+        revisionId: input.expectedRevisionId,
+        sequence: input.expectedSequence + 1,
+        accountableNextSeat: "hill",
+        cycleId: identity.cycleId,
+        effectKey: identity.effectKey,
+      };
+    },
     ...overrides,
   };
 }
@@ -608,7 +670,7 @@ test("rejects a non-profile-aware journal before other dependencies", async () =
   assert.deepEqual(callCounts, {});
 });
 
-test("stops without effects after a valid profile-aware journal", async () => {
+test("completes one exact governed dispatch after a valid profile-aware journal", async () => {
   const callCounts = {};
   const projection = validProjection();
   const furyRecord = validFuryRecord(projection);
@@ -640,53 +702,23 @@ test("stops without effects after a valid profile-aware journal", async () => {
   assert.equal(helicarrierCapture.trust.blueprintBytesBase64, Buffer.from(validBlueprintBytes()).toString("base64"));
   assert.equal(helicarrierCapture.compileTrust, helicarrierCapture.trust);
 
-  assert.deepEqual(result, {
-    state: "recovery_required",
-    readiness: "dispatch_ready",
-    code: "implementation_incomplete",
-    errors: ["Governed May dispatch execution is not implemented."],
-    evidence: {
-      authorityRef: "authority:issue-170:may",
-      bindingId: "binding:issue-170:may",
-      furyEvidenceId: furyRecord.evidenceId,
-      furyPlanDigest: furyRecord.planDigest,
-      originalSequence: 4,
-      packetId: result.evidence.packetId,
-      parentSessionId: result.evidence.parentSessionId,
-      blueprintArtifactId: "issue-170-blueprint",
-      blueprintArtifactPath: "docs/missions/issue-170-plan.md",
-      blueprintByteLength: 22,
-      blueprintDigest: result.evidence.blueprintDigest,
-      blueprintRevision: projection.implementationAuthority.headRevision,
-      dispatchEnvelopeByteLength: result.evidence.dispatchEnvelopeByteLength,
-      dispatchEnvelopeDigest: result.evidence.dispatchEnvelopeDigest,
-      helicarrierManifestDigest: result.evidence.helicarrierManifestDigest,
-      helicarrierPromptDigest: result.evidence.helicarrierPromptDigest,
-      helicarrierProvenanceDigest: result.evidence.helicarrierProvenanceDigest,
-      helicarrierIrDigest: "4".repeat(64),
-      helicarrierGovernanceDigest: "3".repeat(64),
-      helicarrierRegistryDigest: "5".repeat(64),
-      cycleId: result.evidence.cycleId,
-      permissionDecisionId: result.evidence.permissionDecisionId,
-      permissionEvaluatedAt: "2026-08-03T20:05:00Z",
-      dirtyPaths: [],
-      receiptId: result.evidence.receiptId,
-      dispatchId: result.evidence.dispatchId,
-      childTaskId: result.evidence.childTaskId,
-      childSessionId: result.evidence.childSessionId,
-      prNumber: 200,
-      repositoryWorkspaceId: "workspace:issue-170",
-    },
-  });
+  assert.equal(result.state, "completed");
+  assert.equal(result.readiness, "dispatch_ready");
+  assert.equal(result.evidence.authorityRef, "authority:issue-170:may");
+  assert.equal(result.evidence.bindingId, "binding:issue-170:may");
+  assert.equal(result.evidence.furyEvidenceId, furyRecord.evidenceId);
+  assert.equal(result.evidence.furyPlanDigest, furyRecord.planDigest);
+  assert.equal(result.evidence.originalSequence, 4);
+  assert.equal(result.evidence.terminalState, "completed");
+  assert.equal(result.evidence.missionSequence, 5);
   assert.match(result.evidence.packetId, /^packet:governed-may:[A-Za-z0-9_-]{43}$/);
   assert.match(result.evidence.parentSessionId, /^session:governed-may:[A-Za-z0-9_-]{32}$/);
   assert.match(result.evidence.blueprintDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
   assert.match(result.evidence.dispatchEnvelopeDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
-  assert.ok(result.evidence.dispatchEnvelopeByteLength > 0);
   assert.deepEqual(callCounts, {});
 });
 
-test("derives stable dispatch identities that change with the pinned original sequence", async () => {
+test("derives stable dispatch identities and rejects an unscoped advanced cycle", async () => {
   async function runAtSequence(lastSequence) {
     const projection = validProjection({ lastSequence });
     const furyRecord = validFuryRecord(projection);
@@ -703,12 +735,118 @@ test("derives stable dispatch identities that change with the pinned original se
   const first = await runAtSequence(4);
   const replay = await runAtSequence(4);
   const next = await runAtSequence(5);
-  assert.equal(first.state, "recovery_required");
-  assert.equal(first.code, "implementation_incomplete");
+  assert.equal(first.state, "completed");
   assert.equal(first.evidence.packetId, replay.evidence.packetId);
   assert.equal(first.evidence.parentSessionId, replay.evidence.parentSessionId);
-  assert.notEqual(first.evidence.packetId, next.evidence.packetId);
-  assert.notEqual(first.evidence.parentSessionId, next.evidence.parentSessionId);
+  assert.equal(next.state, "blocked");
+  assert.equal(next.code, "runner_plan_invalid");
+});
+
+test("invokes exactly one Helicarrier-bound May packet through the mission cycle", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  let mayCalls = 0;
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+    runMayControlLoop: async (request) => {
+      mayCalls += 1;
+      assert.equal(request.systemPrompt, "system prompt");
+      assert.equal(request.userPrompt, "");
+      assert.equal(request.model, projection.implementationAuthority.modelId);
+      return {
+        message: "bounded May packet complete",
+        attribution: "untrusted_model_output",
+        completedToolCalls: 0,
+        writeCalls: 0,
+        validationCalls: 0,
+        releasedBytes: 0,
+      };
+    },
+    runMissionCycle: async (input, dependencies) => {
+      const identity = deriveMissionCycleIdentityV1(input);
+      const plan = {
+        runnerContractVersion: 1,
+        cycleId: identity.cycleId,
+        missionId: input.missionId,
+        subjectId: input.expectedSubjectId,
+        revisionId: input.expectedRevisionId,
+        evaluatedThroughSequence: input.expectedSequence,
+        seatId: input.seatId,
+        activatedModes: input.activatedModes,
+        actionId: input.actionId,
+        effectClass: input.effectClass,
+        effectKey: identity.effectKey,
+        validationId: input.validationId,
+        stopCondition: "after_one_cycle",
+      };
+      const execution = await dependencies.executeTool(plan);
+      assert.equal(execution.outcome, "completed");
+      return {
+        outcome: "advanced",
+        missionId: input.missionId,
+        subjectId: input.expectedSubjectId,
+        revisionId: input.expectedRevisionId,
+        sequence: input.expectedSequence + 1,
+        accountableNextSeat: "hill",
+        cycleId: identity.cycleId,
+        effectKey: identity.effectKey,
+      };
+    },
+  }));
+
+  assert.equal(result.state, "completed");
+  assert.equal(mayCalls, 1);
+});
+
+test("records a safe failed terminal when workspace freshness drifts after claim", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  let observations = 0;
+  let cycleCalls = 0;
+  let mayCalls = 0;
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => {
+      observations += 1;
+      return validWorkspaceObservation(projection, furyRecord, observations === 1 ? {} : { headRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" });
+    },
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+    runMayControlLoop: async () => { mayCalls += 1; throw new Error("must not run"); },
+    runMissionCycle: async () => { cycleCalls += 1; throw new Error("must not run"); },
+  }));
+
+  assert.equal(result.state, "failed");
+  assert.equal(result.evidence.terminalState, "failed");
+  assert.equal(cycleCalls, 0);
+  assert.equal(mayCalls, 0);
+});
+
+test("preserves a nonterminal recovery state when the mission cycle throws", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  let terminalAppends = 0;
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+    runMissionCycle: async () => { throw new Error("uncertain effect"); },
+    appendDispatchReceipt: async () => { terminalAppends += 1; throw new Error("must not append"); },
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "mission_cycle_invalid");
+  assert.equal(terminalAppends, 0);
 });
 
 test("blocks malformed tracked blueprint bytes before Helicarrier", async () => {
