@@ -206,6 +206,48 @@ function validWorkspaceObservation(projection, furyRecord, overrides = {}) {
   };
 }
 
+function validPermissionContext(projection, decisionId) {
+  const authority = projection.implementationAuthority;
+  const binding = projection.activeRuntimeBindings[0].binding;
+  const observedAt = "2026-08-03T20:05:00Z";
+  const attestation = (kind, capabilityId, observedValue) => ({
+    attestationSchemaVersion: 1,
+    attestationId: `attestation:${kind}:${capabilityId ?? "root"}`,
+    kind,
+    hostId: "host:test",
+    toolExecutorId: binding.toolExecutorId,
+    repositoryId: authority.repositoryId,
+    canonicalWritableRoot: authority.canonicalWritableRoot,
+    capabilityId,
+    observedValue,
+    observedAt,
+    expiresAt: observedAt,
+  });
+  return {
+    permissionContractVersion: 1,
+    journalSchemaVersion: 9,
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    artifactRevisionId: authority.artifactRevisionId,
+    evaluatedThroughSequence: projection.lastSequence,
+    reasoningRuntimeId: binding.reasoningRuntimeId,
+    toolExecutorId: binding.toolExecutorId,
+    repositoryId: authority.repositoryId,
+    canonicalWritableRoot: authority.canonicalWritableRoot,
+    branch: authority.branch,
+    requiredCapabilities: [...binding.approvedScope.capabilities].sort(),
+    activeBindings: [binding],
+    attestations: [
+      attestation("repository_root", null, authority.canonicalWritableRoot),
+      attestation("writability", null, true),
+      ...[...binding.approvedScope.capabilities].sort().map((capability) => attestation("capability", capability, true)),
+    ],
+    evaluatedAt: observedAt,
+    decisionId,
+  };
+}
+
 const validBlueprintBytes = () => new TextEncoder().encode("# Issue 170 blueprint\n");
 
 function protocolDigest(domain, bytes) {
@@ -418,7 +460,11 @@ function validDependencies(callCounts, overrides = {}) {
   return {
     observeDeliveryWorkspace: sentinel("observeDeliveryWorkspace"),
     readTrackedFile: sentinel("readTrackedFile"),
-    readWorkspaceStatus: sentinel("readWorkspaceStatus"),
+    readWorkspaceStatus: async () => [],
+    loadPermissionContext: async (input) => ({
+      state: "ready",
+      context: validPermissionContext(validProjection({ lastSequence: input.plan.evaluatedThroughSequence }), input.expectedDecisionId),
+    }),
     schema9HostOps: {
       realpath: sentinel("realpath"),
       access: sentinel("access"),
@@ -572,6 +618,8 @@ test("stops without effects after a valid profile-aware journal", async () => {
       helicarrierRegistryDigest: "5".repeat(64),
       cycleId: result.evidence.cycleId,
       permissionDecisionId: result.evidence.permissionDecisionId,
+      permissionEvaluatedAt: "2026-08-03T20:05:00Z",
+      dirtyPaths: [],
       prNumber: 200,
       repositoryWorkspaceId: "workspace:issue-170",
     },
@@ -690,6 +738,35 @@ test("blocks a Helicarrier manifest whose prompt binding is stale", async () => 
   assert.equal(result.state, "blocked");
   assert.equal(result.code, "helicarrier_invalid");
   assert.equal(callCounts.claimDispatchPacket, undefined);
+});
+
+test("blocks stale permission context and out-of-scope dirty paths before claim", async () => {
+  for (const override of [
+    {
+      loadPermissionContext: async (input) => {
+        const projection = validProjection({ lastSequence: input.plan.evaluatedThroughSequence });
+        return { state: "ready", context: { ...validPermissionContext(projection, input.expectedDecisionId), branch: "agent/stale" } };
+      },
+    },
+    { readWorkspaceStatus: async () => ["README.md"] },
+  ]) {
+    const projection = validProjection();
+    const furyRecord = validFuryRecord(projection);
+    const callCounts = {};
+    const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
+      readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+      readFuryEvidence: async () => validFuryLedger([furyRecord]),
+      readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+      observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+      readTrackedFile: async () => validBlueprintBytes(),
+      helicarrier: passingHelicarrier(),
+      ...override,
+    }));
+
+    assert.equal(result.state, "blocked");
+    assert.ok(result.code === "permission_invalid" || result.code === "workspace_dirty");
+    assert.equal(callCounts.claimDispatchPacket, undefined);
+  }
 });
 
 test("blocks when delivery workspace observation fails", async () => {

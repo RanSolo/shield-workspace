@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 
 import type { HelicarrierDependenciesV0 } from "./helicarrier-v0.mjs";
 import { HELICARRIER_CERTIFIED_NESTED_IDENTITIES, runHelicarrierV0 } from "./helicarrier-v0.mjs";
-import type { Schema9PermissionContextTrustedHostOps } from "./schema9-permission-context-v1.mjs";
+import type { Schema9PermissionContextTrustedHostOps, loadSchema9PermissionContextV1 } from "./schema9-permission-context-v1.mjs";
 import type { createPermissionAuditFilesystemStore } from "./permission-audit-store.mjs";
 import type { createMayControlEventFilesystemStore } from "./may-control-event-store.mjs";
 import type { runMissionCycle } from "./mission-runtime-v1.mjs";
@@ -28,6 +28,7 @@ import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } f
 import { canonicalJson } from "./mission-v2.mjs";
 import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
 import { validateRunnerCyclePlan, type RunnerCyclePlan } from "./runner-v1.mjs";
+import { validatePermissionInvocationContext, type PermissionInvocationContext } from "./permission-v1.mjs";
 import {
   assertAuthoritySubsetOfScope,
   computeImplementationAuthorityDigest,
@@ -53,6 +54,7 @@ const TRUSTED_DEPENDENCY_FIELDS = [
   "observeDeliveryWorkspace",
   "readTrackedFile",
   "readWorkspaceStatus",
+  "loadPermissionContext",
   "schema9HostOps",
   "helicarrier",
   "validationCommands",
@@ -175,6 +177,7 @@ export interface RunGovernedMayDispatchStepTrustedDependenciesV1 {
   ) => GovernedMayDeliveryWorkspaceObservationV1 | Promise<GovernedMayDeliveryWorkspaceObservationV1>;
   readonly readTrackedFile: (input: GovernedMayTrackedFileReadV1) => Uint8Array | Promise<Uint8Array>;
   readonly readWorkspaceStatus: (repositoryRoot: string) => readonly string[] | Promise<readonly string[]>;
+  readonly loadPermissionContext: typeof loadSchema9PermissionContextV1;
   readonly schema9HostOps: Schema9PermissionContextTrustedHostOps;
   readonly helicarrier: HelicarrierDependenciesV0;
   readonly validationCommands: readonly GovernedMayValidationCommandV1[];
@@ -321,6 +324,10 @@ type HelicarrierManifestSnapshot =
 type RunnerPlanSnapshot =
   | { readonly state: "ready"; readonly value: RunnerCyclePlan; readonly decisionId: string }
   | { readonly state: "blocked"; readonly code: "runner_plan_invalid"; readonly errors: readonly string[] };
+
+type PermissionContextSnapshot =
+  | { readonly state: "ready"; readonly value: PermissionInvocationContext; readonly dirtyPaths: readonly string[] }
+  | { readonly state: "blocked"; readonly code: "permission_invalid" | "workspace_dirty"; readonly errors: readonly string[] };
 
 type GovernedMayReceiptReplayV1 =
   | {
@@ -1027,6 +1034,68 @@ function deriveRunnerPlanV1(
   };
 }
 
+function bindPermissionContextV1(
+  input: unknown,
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+  runnerPlan: Extract<RunnerPlanSnapshot, { state: "ready" }>,
+): { state: "ready"; value: PermissionInvocationContext } | { state: "blocked"; code: "permission_invalid"; errors: readonly string[] } {
+  const checked = validatePermissionInvocationContext(input);
+  if (checked.state === "invalid") {
+    return { state: "blocked", code: "permission_invalid", errors: stableErrors(checked.errors) };
+  }
+  const context = checked.value;
+  const authority = authoritySnapshot.authority;
+  const binding = authoritySnapshot.bindingWrapper.binding;
+  if (
+    context.journalSchemaVersion !== 9 ||
+    context.missionId !== authority.missionId ||
+    context.subjectId !== authority.subjectId ||
+    context.missionRevisionId !== authority.missionRevisionId ||
+    context.artifactRevisionId !== authority.artifactRevisionId ||
+    context.evaluatedThroughSequence !== runnerPlan.value.evaluatedThroughSequence ||
+    context.reasoningRuntimeId !== binding.reasoningRuntimeId ||
+    context.toolExecutorId !== binding.toolExecutorId ||
+    context.repositoryId !== authority.repositoryId ||
+    context.canonicalWritableRoot !== authority.canonicalWritableRoot ||
+    context.branch !== authority.branch ||
+    context.decisionId !== runnerPlan.decisionId ||
+    context.activeBindings.length !== 1 ||
+    canonicalJson(context.activeBindings[0]) !== canonicalJson(binding) ||
+    canonicalJson(context.requiredCapabilities) !== canonicalJson([...binding.approvedScope.capabilities].sort())
+  ) {
+    return { state: "blocked", code: "permission_invalid", errors: stableErrors(["Permission context is not exactly bound to the active authority, runtime, repository, and runner plan."]) };
+  }
+  return { state: "ready", value: context };
+}
+
+function bindDirtyPathsV1(
+  input: unknown,
+  approvedRelativePaths: readonly string[],
+): { state: "ready"; value: readonly string[] } | { state: "blocked"; code: "workspace_dirty"; errors: readonly string[] } {
+  if (!Array.isArray(input) || isProxy(input) || Reflect.ownKeys(input).some((key) => typeof key !== "string" || (key !== "length" && !/^\d+$/u.test(key)))) {
+    return { state: "blocked", code: "workspace_dirty", errors: stableErrors(["Workspace status must be a dense array of relative paths."]) };
+  }
+  const paths: string[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
+    const value = descriptor?.value;
+    if (
+      descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value") ||
+      typeof value !== "string" || value.length === 0 || value.length > MAX_TEXT_LENGTH ||
+      isAbsolute(value) || value.includes("\\") || value.includes("\0") ||
+      value.split("/").some((part) => part.length === 0 || part === "." || part === "..")
+    ) {
+      return { state: "blocked", code: "workspace_dirty", errors: stableErrors(["Workspace status contains an unsafe path."]) };
+    }
+    paths.push(value);
+  }
+  const outside = paths.filter((path) => !approvedRelativePaths.some((approved) => path === approved || path.startsWith(`${approved}/`)));
+  if (outside.length > 0) {
+    return { state: "blocked", code: "workspace_dirty", errors: stableErrors([`Workspace has dirty paths outside implementation authority: ${outside.sort().join(", ")}.`]) };
+  }
+  return { state: "ready", value: Object.freeze([...paths].sort()) };
+}
+
 function snapshotInput(input: unknown): InputSnapshot {
   if (!plainObject(input)) return blocked("input_invalid", ["Governed dispatch input must be a plain object."]);
   const keys = Reflect.ownKeys(input);
@@ -1149,6 +1218,7 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
   const observeDeliveryWorkspace = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["observeDeliveryWorkspace"]>("observeDeliveryWorkspace");
   const readTrackedFile = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["readTrackedFile"]>("readTrackedFile");
   const readWorkspaceStatus = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["readWorkspaceStatus"]>("readWorkspaceStatus");
+  const loadPermissionContext = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["loadPermissionContext"]>("loadPermissionContext");
   const mayControlBaseUrlField = ownData<unknown>("mayControlBaseUrl");
   const runMayControlLoop = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["runMayControlLoop"]>("runMayControlLoop");
   const createPermissionAuditStore = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["createPermissionAuditStore"]>("createPermissionAuditStore");
@@ -1164,6 +1234,7 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
     observeDeliveryWorkspace === undefined ||
     readTrackedFile === undefined ||
     readWorkspaceStatus === undefined ||
+    loadPermissionContext === undefined ||
     mayControlBaseUrlField === undefined ||
     runMayControlLoop === undefined ||
     createPermissionAuditStore === undefined ||
@@ -1189,6 +1260,7 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
     typeof observeDeliveryWorkspace !== "function" ||
     typeof readTrackedFile !== "function" ||
     typeof readWorkspaceStatus !== "function" ||
+    typeof loadPermissionContext !== "function" ||
     typeof runMayControlLoop !== "function" ||
     typeof createPermissionAuditStore !== "function" ||
     typeof createMayControlEventStore !== "function" ||
@@ -1255,6 +1327,7 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
       observeDeliveryWorkspace,
       readTrackedFile,
       readWorkspaceStatus,
+      loadPermissionContext,
       schema9HostOps: schema9HostOpsSnapshot.value,
       helicarrier: helicarrierSnapshot.value,
       validationCommands: validationCommandsSnapshot.value,
@@ -1942,6 +2015,33 @@ export async function runGovernedMayDispatchStepV1(
   if (runnerPlan.state === "blocked") {
     return { ...runnerPlan, readiness: "blocked" };
   }
+  let permissionResult;
+  try {
+    permissionResult = await dependenciesSnapshot.value.loadPermissionContext({
+      repositoryRoot: inputSnapshot.value.repositoryRoot,
+      configuredJournalPath: inputSnapshot.value.configuredJournalPath,
+      missionId: inputSnapshot.value.missionId,
+      expectedDecisionId: runnerPlan.decisionId,
+      plan: runnerPlan.value,
+      hostId: inputSnapshot.value.hostId,
+      trustedHostOps: dependenciesSnapshot.value.schema9HostOps,
+    });
+  } catch {
+    return { state: "blocked", readiness: "blocked", code: "permission_invalid", errors: Object.freeze(["Permission context load failed."]) };
+  }
+  if (permissionResult.state === "blocked") {
+    return { state: "blocked", readiness: "blocked", code: "permission_invalid", errors: stableErrors([permissionResult.code, ...permissionResult.errors]) };
+  }
+  const permissionSnapshot = bindPermissionContextV1(permissionResult.context, authoritySnapshot, runnerPlan);
+  if (permissionSnapshot.state === "blocked") return { ...permissionSnapshot, readiness: "blocked" };
+  let dirtyPaths;
+  try {
+    dirtyPaths = await dependenciesSnapshot.value.readWorkspaceStatus(inputSnapshot.value.repositoryRoot);
+  } catch {
+    return { state: "blocked", readiness: "blocked", code: "workspace_dirty", errors: Object.freeze(["Workspace status read failed."]) };
+  }
+  const dirtySnapshot = bindDirtyPathsV1(dirtyPaths, authoritySnapshot.bindingWrapper.approvedRelativePaths);
+  if (dirtySnapshot.state === "blocked") return { ...dirtySnapshot, readiness: "blocked" };
 
   return {
     state: "recovery_required",
@@ -1971,6 +2071,8 @@ export async function runGovernedMayDispatchStepV1(
       helicarrierRegistryDigest: manifestSnapshot.value.registryDigest,
       cycleId: runnerPlan.value.cycleId,
       permissionDecisionId: runnerPlan.decisionId,
+      permissionEvaluatedAt: permissionSnapshot.value.evaluatedAt,
+      dirtyPaths: dirtySnapshot.value,
       prNumber: workspaceBinding.value.prNumber,
       repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
     }),
