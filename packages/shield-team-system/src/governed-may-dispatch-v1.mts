@@ -13,7 +13,12 @@ import type {
   readSeatDispatchReceiptLedgerV1,
 } from "./seat-dispatch-store.mjs";
 import type { readFuryPlanReviewEvidenceLedgerV1 } from "./fury-plan-review-evidence-store.mjs";
-import type { FuryPlanReviewEvidenceV1 } from "./fury-plan-review-evidence-v1.mjs";
+import {
+  evaluateFuryPlanReviewEvidenceV1,
+  type FuryPlanReviewEvidenceExpectedBindingV1,
+  type FuryPlanReviewEvidenceV1,
+} from "./fury-plan-review-evidence-v1.mjs";
+import type { SeatDispatchReceiptEventV1 } from "./seat-dispatch-receipt-v1.mjs";
 import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "./mission-store.mjs";
 import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
 import {
@@ -256,6 +261,18 @@ type CurrentFuryEvidenceSelection =
       readonly errors: readonly string[];
     };
 
+type CurrentFuryEvidenceEvaluation =
+  | {
+      readonly state: "ready";
+      readonly evidence: Readonly<FuryPlanReviewEvidenceV1>;
+      readonly expectedBinding: Readonly<FuryPlanReviewEvidenceExpectedBindingV1>;
+    }
+  | {
+      readonly state: "recovery_required";
+      readonly code: "fury_evidence_invalid";
+      readonly errors: readonly string[];
+    };
+
 const blocked = (code: "input_invalid", errors: readonly unknown[]): InputSnapshotBlocked => ({
   state: "blocked",
   code,
@@ -472,6 +489,79 @@ function selectCurrentFuryEvidenceV1(
       state: "recovery_required",
       code: "fury_evidence_invalid",
       errors: stableErrors(["Fury evidence selection failed."]),
+    };
+  }
+}
+
+function evaluateCurrentFuryEvidenceV1(
+  records: readonly FuryPlanReviewEvidenceV1[],
+  rawReceiptEntries: readonly SeatDispatchReceiptEventV1[],
+  selection: Extract<CurrentFuryEvidenceSelection, { state: "ready" }>,
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+): CurrentFuryEvidenceEvaluation {
+  try {
+    const authority = authoritySnapshot.authority;
+    const record = selection.record;
+    const expectedBinding: FuryPlanReviewEvidenceExpectedBindingV1 = Object.freeze({
+      schemaVersion: 1,
+      missionId: authority.missionId,
+      missionRevisionId: authority.missionRevisionId,
+      subjectId: authority.subjectId,
+      repositoryId: authority.repositoryId,
+      baseBranch: record.baseBranch,
+      branch: authority.branch,
+      prNumber: record.prNumber,
+      blueprintArtifactId: record.blueprintArtifactId,
+      blueprintArtifactPath: record.blueprintArtifactPath,
+      blueprintArtifactKind: "implementation_blueprint",
+      blueprintOwningSeatId: "may",
+      artifactRevisionId: authority.artifactRevisionId,
+      repositoryRevisionId: authority.headRevision,
+    });
+    const candidate = Object.freeze({
+      candidateSchemaVersion: 1 as const,
+      contractVersion: "fury.plan-review-evidence.v1" as const,
+      evidenceId: record.evidenceId,
+      evidenceDigest: record.evidenceDigest,
+      missionId: authority.missionId,
+      missionRevisionId: authority.missionRevisionId,
+      planDigest: record.planDigest,
+      artifactRevisionId: authority.artifactRevisionId,
+      repositoryRevisionId: authority.headRevision,
+    });
+    const evaluation = evaluateFuryPlanReviewEvidenceV1(
+      candidate,
+      records,
+      rawReceiptEntries,
+      expectedBinding,
+    );
+    if (
+      evaluation.state !== "evaluated" ||
+      evaluation.dispatchEligibility !== "eligible" ||
+      evaluation.reasonCodes.length !== 0 ||
+      evaluation.evidence === null ||
+      evaluation.evidence.evidenceId !== record.evidenceId ||
+      evaluation.evidence.evidenceDigest !== record.evidenceDigest
+    ) {
+      return {
+        state: "recovery_required",
+        code: "fury_evidence_invalid",
+        errors: stableErrors([
+          "Current Fury evidence is not independently attributed and eligible.",
+          ...evaluation.reasonCodes,
+        ]),
+      };
+    }
+    return Object.freeze({
+      state: "ready",
+      evidence: evaluation.evidence,
+      expectedBinding: evaluation.binding,
+    });
+  } catch {
+    return {
+      state: "recovery_required",
+      code: "fury_evidence_invalid",
+      errors: stableErrors(["Current Fury evidence evaluation failed."]),
     };
   }
 }
@@ -1235,6 +1325,45 @@ export async function runGovernedMayDispatchStepV1(
     };
   }
 
+  let dispatchLedger;
+  try {
+    dispatchLedger = await dependenciesSnapshot.value.readDispatchReceipts({
+      repositoryRoot: inputSnapshot.value.repositoryRoot,
+      repositoryId: authoritySnapshot.authority.repositoryId,
+      repositoryWorkspaceId: furySelection.record.furyDispatchIdentity.repositoryWorkspaceId,
+    });
+  } catch {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: "dispatch_receipt_invalid",
+      errors: Object.freeze(["Dispatch receipt ledger read failed."]),
+      evidence: Object.freeze({ furyEvidenceId: furySelection.record.evidenceId }),
+    };
+  }
+  if (dispatchLedger.state === "invalid") {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: "dispatch_receipt_invalid",
+      errors: stableErrors([dispatchLedger.code, ...dispatchLedger.errors]),
+      evidence: Object.freeze({ furyEvidenceId: furySelection.record.evidenceId }),
+    };
+  }
+  const furyEvaluation = evaluateCurrentFuryEvidenceV1(
+    furyLedger.value.records,
+    dispatchLedger.value.entries,
+    furySelection,
+    authoritySnapshot,
+  );
+  if (furyEvaluation.state === "recovery_required") {
+    return {
+      ...furyEvaluation,
+      readiness: "indeterminate",
+      evidence: Object.freeze({ furyEvidenceId: furySelection.record.evidenceId }),
+    };
+  }
+
   return {
     state: "recovery_required",
     readiness: "indeterminate",
@@ -1243,7 +1372,8 @@ export async function runGovernedMayDispatchStepV1(
     evidence: Object.freeze({
       authorityRef: authoritySnapshot.authority.authorityRef,
       bindingId: authoritySnapshot.bindingWrapper.binding.bindingId,
-      furyEvidenceId: furySelection.record.evidenceId,
+      furyEvidenceId: furyEvaluation.evidence.evidenceId,
+      furyPlanDigest: furyEvaluation.evidence.planDigest,
       originalSequence: authoritySnapshot.originalSequence,
     }),
   };

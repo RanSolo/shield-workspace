@@ -3,6 +3,11 @@ import test from "node:test";
 
 import { runGovernedMayDispatchStepV1 } from "../dist/governed-may-dispatch-v1.mjs";
 import { computeImplementationAuthorityDigest } from "../dist/implementation-authority-v1.mjs";
+import { deriveFuryPlanReviewEvidenceV1 } from "../dist/fury-plan-review-evidence-v1.mjs";
+import {
+  createSeatDispatchLifecycleEventV1,
+  createSeatDispatchStartedEventV1,
+} from "../dist/seat-dispatch-receipt-v1.mjs";
 
 const certification = Object.freeze({
   certificationId: "deterministic-mission-compilation-stage-a-certification.v1",
@@ -31,7 +36,7 @@ function validAuthority() {
     missionId: "mission:issue-170",
     subjectId: "github:issue-170",
     seatId: "may",
-    missionRevisionId: "sha256:mission_issue_170",
+    missionRevisionId: `sha256:${"A".repeat(43)}`,
     artifactRevisionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     repositoryId: "RanSolo/shield-workspace",
     canonicalWritableRoot: "/tmp/shield-governed-may",
@@ -110,17 +115,116 @@ function validProjection(overrides = {}) {
 
 function validFuryRecord(projection = validProjection(), overrides = {}) {
   const authority = projection.implementationAuthority;
-  return {
-    evidenceId: "evidence:fury:issue-170",
+  const binding = {
+    schemaVersion: 1,
     missionId: authority.missionId,
     missionRevisionId: authority.missionRevisionId,
     subjectId: authority.subjectId,
     repositoryId: authority.repositoryId,
+    baseBranch: "main",
     branch: authority.branch,
+    prNumber: 200,
+    blueprintArtifactId: "issue-170-blueprint",
+    blueprintArtifactPath: "docs/missions/issue-170-plan.md",
+    blueprintArtifactKind: "implementation_blueprint",
+    blueprintOwningSeatId: "may",
     artifactRevisionId: authority.artifactRevisionId,
     repositoryRevisionId: authority.headRevision,
-    ...overrides,
   };
+  const identity = {
+    receiptId: "receipt:fury:issue-170",
+    dispatchId: "dispatch:fury:issue-170",
+    parentMissionId: authority.missionId,
+    parentMissionRevision: authority.missionRevisionId,
+    parentSessionId: "session:hill:issue-170",
+    childTaskId: "task:fury:issue-170-plan-review",
+    childSessionId: "session:fury:issue-170",
+    accountableSeatId: "fury",
+    repositoryId: authority.repositoryId,
+    repositoryWorkspaceId: "workspace:issue-170",
+    repositoryRevision: authority.headRevision,
+    subjectId: authority.subjectId,
+    subjectRevision: authority.artifactRevisionId,
+    artifactId: binding.blueprintArtifactId,
+    artifactRevision: authority.artifactRevisionId,
+  };
+  const entries = validFuryReceiptEntries(identity);
+  const created = deriveFuryPlanReviewEvidenceV1({
+    planGate: {
+      planGateSchemaVersion: 1,
+      contractVersion: "fury.plan-gate.v1",
+      review: {
+        reviewSchemaVersion: 1,
+        contractVersion: "fury.plan-gate.v1",
+        assuranceKind: "host_asserted_non_authoritative",
+        reviewId: "review:issue-170:1",
+        missionId: authority.missionId,
+        subjectId: authority.subjectId,
+        repositoryOwner: "RanSolo",
+        repositoryName: "shield-workspace",
+        baseBranch: binding.baseBranch,
+        missionBranch: authority.branch,
+        prNumber: binding.prNumber,
+        blueprintArtifactId: binding.blueprintArtifactId,
+        blueprintArtifactPath: binding.blueprintArtifactPath,
+        blueprintArtifactKind: "implementation_blueprint",
+        blueprintOwningSeatId: "may",
+        reviewedRevisionId: authority.artifactRevisionId,
+        verdict: "PASS",
+        findings: [],
+        reasoningRuntimeId: "runtime:fury-hosted",
+        toolExecutorId: "executor:codex-host",
+      },
+      reconciliation: null,
+    },
+    binding,
+    dispatchIdentity: identity,
+    rawReceiptEntries: entries,
+  });
+  assert.equal(created.state, "created");
+  return { ...created.evidence, ...overrides };
+}
+
+function validFuryReceiptEntries(identity) {
+  const shared = {
+    ...identity,
+    configuredRuntime: { kind: "runtime.configured", runtimeId: "runtime:fury-hosted", model: "gpt-5.6-sol" },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: "runtime:fury-hosted", model: "gpt-5.6-sol" },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: "binding:fury:tools" },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
+    runtimeHostObserved: {
+      kind: "runtime.host_observed",
+      runtimeId: "runtime:fury-hosted",
+      model: "gpt-5.6-sol",
+      evidenceRefs: ["host:fury:runtime"],
+    },
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: {
+      kind: "executor.host_observed",
+      executorId: "executor:codex-host",
+      evidenceRefs: ["host:fury:executor"],
+    },
+  };
+  const started = createSeatDispatchStartedEventV1({
+    ...shared,
+    inputEvidenceRefs: ["artifact:issue-170-blueprint"],
+    timestamp: "2026-08-03T18:00:00Z",
+    logSequence: 0,
+    previousLogDigest: null,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null,
+  });
+  const completed = createSeatDispatchLifecycleEventV1({
+    ...shared,
+    kind: "dispatch.completed",
+    outputEvidenceRefs: ["review:issue-170:pass"],
+    timestamp: "2026-08-03T18:00:01Z",
+    logSequence: 1,
+    previousLogDigest: started.entryDigest,
+    lifecycleSequence: 1,
+    previousLifecycleDigest: started.entryDigest,
+  });
+  return [started, completed];
 }
 
 function validFuryLedger(records) {
@@ -131,6 +235,17 @@ function validFuryLedger(records) {
       records,
       bytes: "",
       missing: records.length === 0,
+    },
+  };
+}
+
+function validDispatchLedger(record, entries = validFuryReceiptEntries(record.furyDispatchIdentity)) {
+  return {
+    state: "valid",
+    value: {
+      logPath: "/tmp/shield-governed-may/.shield/dispatch-receipts.jsonl",
+      entries,
+      projections: [],
     },
   };
 }
@@ -244,10 +359,12 @@ test("rejects a non-profile-aware journal before other dependencies", async () =
 test("stops without effects after a valid profile-aware journal", async () => {
   const callCounts = {};
   const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
 
   const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
-    readFuryEvidence: async () => validFuryLedger([validFuryRecord(projection)]),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
   }));
 
   assert.deepEqual(result, {
@@ -258,11 +375,39 @@ test("stops without effects after a valid profile-aware journal", async () => {
     evidence: {
       authorityRef: "authority:issue-170:may",
       bindingId: "binding:issue-170:may",
-      furyEvidenceId: "evidence:fury:issue-170",
+      furyEvidenceId: furyRecord.evidenceId,
+      furyPlanDigest: furyRecord.planDigest,
       originalSequence: 4,
     },
   });
   assert.deepEqual(callCounts, {});
+});
+
+test("fails closed when the dispatch receipt ledger read throws", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => { throw new Error("unavailable"); },
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "dispatch_receipt_invalid");
+});
+
+test("fails closed when Fury receipt attribution is unavailable", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord, []),
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "fury_evidence_invalid");
+  assert.ok(result.errors.includes("INVALID_REVIEW_ATTRIBUTION"));
 });
 
 test("fails closed when the Fury evidence ledger read throws", async () => {
