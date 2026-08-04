@@ -61,7 +61,8 @@ diff. The host executor:
 2. verifies the worktree is clean and `HEAD` exactly equals the signed plan
    head before dispatch and again before application;
 3. acquires an exclusive ignored `.shield/tmp/issue-194-apply.lock` before the
-   final state check and holds it through application and postimage proof;
+   final state check and holds it through application, validation, exact commit
+   creation, and final revision readback;
 4. under that lock, records canonical status/diff digests, runs
    `git apply --check`, and uses an isolated temporary Git index seeded from
    the exact HEAD plus `git apply --cached` to derive the expected postimage
@@ -69,10 +70,19 @@ diff. The host executor:
 5. immediately rechecks HEAD, status, and diff digests, applies the unchanged
    patch once, builds a second isolated index from HEAD plus the four observed
    worktree files, and requires its tree ID to exactly equal the expected tree;
-6. requires the changed-path set to be a subset of the four approved paths,
-   runs `git diff --check`, and records packet, response, patch, prestate,
-   expected-tree, observed-tree, runtime, and executor digests; and
-7. never repairs, completes, reorders, or widens May's patch on its behalf.
+6. requires the changed-path set to equal all four mandated paths, runs
+   `git diff --check`, and records packet, response, patch, prestate,
+   expected-tree, observed-tree, runtime, and executor digests;
+7. while retaining the lock, runs the approved validation commands, then
+   requires the signed HEAD, complete porcelain-v2 status (including untracked
+   files), diff, approved-path set, and observed tree to remain exactly at the
+   proven postimage with no validation-generated repository-visible artifact;
+8. creates one commit directly from the proven expected tree with the signed
+   HEAD as its sole parent, atomically advances only the current branch from
+   that expected parent, and verifies the final commit parent, tree, branch,
+   clean complete status, and four-path parent diff before releasing the lock;
+   and
+9. never repairs, completes, reorders, or widens May's patch on its behalf.
 
 Any stale HEAD, dirty prestate, lock collision, replay, malformed response,
 path mismatch, apply failure, postimage mismatch, or external modification
@@ -195,11 +205,12 @@ git diff --check
 4. On `FURY_PASS`, obtain superseding signed Wheels Up for exactly the four
    implementation paths and a signed active May binding for the exact local
    runtime and patch executor before May emits an implementation diff.
-5. Local Bionic/Gemma May emits the one approved patch. After the executor
-   proves the exact postimage and validation passes, Hill may create exactly
-   one commit containing that unchanged four-path result, record the commit
-   SHA with all packet/runtime/executor/patch/tree digests, and make no content
-   edit. That commit is the implementation revision.
+5. Local Bionic/Gemma May emits the one approved patch. The locked executor
+   proves the exact postimage, validates without state drift, creates the commit
+   directly from that proven tree with the signed HEAD as sole parent, and
+   verifies the final clean revision before recording the commit SHA with all
+   packet/runtime/executor/patch/tree digests. Hill makes no content edit. That
+   commit is the implementation revision.
 6. Mack validates that exact revision; Fury performs exact-revision conformance
    review.
 7. Open one bounded draft PR for human review. Do not merge, run #137's external
