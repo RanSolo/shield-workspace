@@ -41,12 +41,35 @@ existing `governed-may-dispatch-v1.test.mjs` conventions.
 Local Bionic/Gemma May supplied the bounded implementation design, but it
 cannot truthfully perform this mission's repository write through
 `runGovernedMayDispatchStepV1`: the temporary-name composition corrected by
-this issue makes that exact path fail before the first write. After Fury
-approval and signed Wheels Up, hosted May therefore performs the four-path
-implementation under the same May seat contract. This is a fail-closed
-bootstrap choice, not a new authority class or scope widening. Governed local
-May execution resumes only after this correction is merged and #137 is
-re-frozen from fresh main.
+this issue makes that exact path fail before the first write. The initially
+approved hosted-May executor then became unavailable before producing any edit
+because its runtime reached a usage limit; the worktree remained unchanged.
+
+The successor bootstrap path preserves the May seat and uses:
+
+- model: `google/gemma-4-31b-qat`;
+- independently observed runtime: `runtime:bionic-gemma-4-31b`;
+- tool executor: `executor:hill-exact-patch-applier`.
+
+After renewed Fury approval, superseding signed Wheels Up, and a signed active
+May binding, Hill supplies small exact-revision context packets to local Gemma
+May. May returns one coherent applyable diff per packet. The host executor:
+
+1. rejects prose mixed with the diff, malformed hunks, or any path outside the
+   four approved files;
+2. runs `git apply --check` against the exact bound HEAD;
+3. applies the unchanged diff only after that check passes;
+4. records the packet/runtime/executor identity and resulting diff; and
+5. stops for a new packet instead of repairing, completing, or widening May's
+   patch on its behalf.
+
+Use two small packets: production naming/cleanup first, then the two test files
+against the resulting exact production diff. Hill may perform orchestration,
+path checks, exact patch application, and validation, but may not redesign or
+silently author missing implementation. This is a fail-closed bootstrap
+executor, not a new authority class or verbal authorization path. Governed
+local May tool execution resumes only after this correction is merged and
+#137 is re-frozen from fresh main.
 
 ### Production correction
 
@@ -157,9 +180,11 @@ git diff --check
 2. Fury reviews the exact planning revision.
 3. On `FURY_REVISE`, correct only planning artifacts and return the new exact
    revision to the same Fury seat.
-4. On `FURY_PASS`, obtain signed Wheels Up for exactly the four implementation
-   paths before May edits them.
-5. May implements the approved plan and stops at an exact revision.
+4. On `FURY_PASS`, obtain superseding signed Wheels Up for exactly the four
+   implementation paths and a signed active May binding for the exact local
+   runtime and patch executor before May emits an implementation diff.
+5. Local Bionic/Gemma May implements the approved plan through the exact-patch
+   executor and stops at an exact revision.
 6. Mack validates that exact revision; Fury performs exact-revision conformance
    review.
 7. Open one bounded draft PR for human review. Do not merge, run #137's external

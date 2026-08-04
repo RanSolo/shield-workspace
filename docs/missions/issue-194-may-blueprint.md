@@ -2,9 +2,13 @@
 
 Implement only the Fury-approved issue #194 plan.
 
-This packet is executed by hosted May because the local governed May write
-path is the defect being corrected. Preserve the May seat and exact signed
-scope; do not treat the bootstrap executor choice as broader authority.
+You are local Bionic/Gemma May. The governed local write path is the defect
+being corrected, and hosted May became unavailable before producing an edit.
+Return one coherent applyable diff for only the paths named in each small
+packet. Hill is the bound `executor:hill-exact-patch-applier`: it may check and
+apply your exact diff, but it may not redesign or complete it. Emit no prose
+with a requested patch. Preserve the May seat and exact superseding signed
+scope; do not treat this bootstrap executor choice as broader authority.
 
 ## Production change
 
