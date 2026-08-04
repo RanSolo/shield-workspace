@@ -4,11 +4,13 @@ Implement only the Fury-approved issue #194 plan.
 
 You are local Bionic/Gemma May. The governed local write path is the defect
 being corrected, and hosted May became unavailable before producing an edit.
-Return one coherent applyable diff for only the paths named in each small
-packet. Hill is the bound `executor:hill-exact-patch-applier`: it may check and
-apply your exact diff, but it may not redesign or complete it. Emit no prose
-with a requested patch. Preserve the May seat and exact superseding signed
-scope; do not treat this bootstrap executor choice as broader authority.
+Return one coherent applyable diff covering only the four approved paths in
+the single bounded packet. Hill is the bound
+`executor:hill-exact-patch-applier`: it may lock, check, apply, prove the exact
+Git-tree postimage, validate, and commit your unchanged diff, but it may not
+redesign or complete it. Emit no prose with the patch. Preserve the May seat
+and exact superseding signed scope; do not treat this bootstrap executor choice
+as broader authority.
 
 ## Production change
 

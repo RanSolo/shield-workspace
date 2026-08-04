@@ -52,24 +52,36 @@ The successor bootstrap path preserves the May seat and uses:
 - tool executor: `executor:hill-exact-patch-applier`.
 
 After renewed Fury approval, superseding signed Wheels Up, and a signed active
-May binding, Hill supplies small exact-revision context packets to local Gemma
-May. May returns one coherent applyable diff per packet. The host executor:
+May binding, Hill supplies one bounded exact-revision context packet to local
+Gemma May covering the four approved files. May returns one coherent applyable
+diff. The host executor:
 
 1. rejects prose mixed with the diff, malformed hunks, or any path outside the
    four approved files;
-2. runs `git apply --check` against the exact bound HEAD;
-3. applies the unchanged diff only after that check passes;
-4. records the packet/runtime/executor identity and resulting diff; and
-5. stops for a new packet instead of repairing, completing, or widening May's
-   patch on its behalf.
+2. verifies the worktree is clean and `HEAD` exactly equals the signed plan
+   head before dispatch and again before application;
+3. acquires an exclusive ignored `.shield/tmp/issue-194-apply.lock` before the
+   final state check and holds it through application and postimage proof;
+4. under that lock, records canonical status/diff digests, runs
+   `git apply --check`, and uses an isolated temporary Git index seeded from
+   the exact HEAD plus `git apply --cached` to derive the expected postimage
+   tree for the unchanged accepted patch bytes;
+5. immediately rechecks HEAD, status, and diff digests, applies the unchanged
+   patch once, builds a second isolated index from HEAD plus the four observed
+   worktree files, and requires its tree ID to exactly equal the expected tree;
+6. requires the changed-path set to be a subset of the four approved paths,
+   runs `git diff --check`, and records packet, response, patch, prestate,
+   expected-tree, observed-tree, runtime, and executor digests; and
+7. never repairs, completes, reorders, or widens May's patch on its behalf.
 
-Use two small packets: production naming/cleanup first, then the two test files
-against the resulting exact production diff. Hill may perform orchestration,
-path checks, exact patch application, and validation, but may not redesign or
-silently author missing implementation. This is a fail-closed bootstrap
-executor, not a new authority class or verbal authorization path. Governed
-local May tool execution resumes only after this correction is merged and
-#137 is re-frozen from fresh main.
+Any stale HEAD, dirty prestate, lock collision, replay, malformed response,
+path mismatch, apply failure, postimage mismatch, or external modification
+stops without a second model packet or a hand-authored correction. Hill may
+perform orchestration, exact checks/application, and validation, but may not
+redesign or silently author missing implementation. This is a fail-closed
+bootstrap executor, not a new authority class or verbal authorization path.
+Governed local May tool execution resumes only after this correction is merged
+and #137 is re-frozen from fresh main.
 
 ### Production correction
 
@@ -183,8 +195,11 @@ git diff --check
 4. On `FURY_PASS`, obtain superseding signed Wheels Up for exactly the four
    implementation paths and a signed active May binding for the exact local
    runtime and patch executor before May emits an implementation diff.
-5. Local Bionic/Gemma May implements the approved plan through the exact-patch
-   executor and stops at an exact revision.
+5. Local Bionic/Gemma May emits the one approved patch. After the executor
+   proves the exact postimage and validation passes, Hill may create exactly
+   one commit containing that unchanged four-path result, record the commit
+   SHA with all packet/runtime/executor/patch/tree digests, and make no content
+   edit. That commit is the implementation revision.
 6. Mack validates that exact revision; Fury performs exact-revision conformance
    review.
 7. Open one bounded draft PR for human review. Do not merge, run #137's external
