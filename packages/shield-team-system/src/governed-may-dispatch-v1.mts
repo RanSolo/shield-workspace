@@ -72,6 +72,11 @@ const TRUSTED_HOST_OPS_FIELDS = ["realpath", "access", "execFile", "probeCapabil
 const TRUSTED_VALIDATION_COMMAND_FIELDS = ["commandId", "executable", "args", "timeoutMs"] as const;
 const TRUSTED_HELICARRIER_CERTIFICATION_FIELDS = ["certificationId", "certificationCommit", "experimentId", "compilerId", "validatorId", "rendererId", "targetProfileId", "registryId", "frozenDigests"] as const;
 const TRUSTED_HELICARRIER_DIGEST_FIELDS = ["compilerSourceTreeSha256", "validatorSourceTreeSha256", "rendererSpecSha256", "registrySha256", "targetProfileSha256"] as const;
+const DELIVERY_WORKSPACE_FIELDS = [
+  "repositoryId", "repositoryWorkspaceId", "repositoryOwner", "repositoryName",
+  "baseBranch", "branch", "prNumber", "prUrl", "state", "isDraft",
+  "baseRevision", "headRevision",
+] as const;
 
 const MAX_TEXT_LENGTH = 2048;
 const MAX_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
@@ -285,6 +290,10 @@ interface GovernedMayDispatchIdentityV1 {
   readonly packetId: string;
   readonly claimBindingPrefix: string;
 }
+
+type DeliveryWorkspaceSnapshot =
+  | { readonly state: "ready"; readonly value: GovernedMayDeliveryWorkspaceObservationV1 }
+  | { readonly state: "blocked"; readonly code: "workspace_invalid"; readonly errors: readonly string[] };
 
 type GovernedMayReceiptReplayV1 =
   | {
@@ -738,6 +747,77 @@ function classifyGovernedMayReceiptReplayV1(
       evidence: Object.freeze({}),
     };
   }
+}
+
+function snapshotDeliveryWorkspaceObservationV1(input: unknown): DeliveryWorkspaceSnapshot {
+  if (!plainObject(input)) {
+    return { state: "blocked", code: "workspace_invalid", errors: stableErrors(["Delivery workspace observation must be a plain object."]) };
+  }
+  const keys = Reflect.ownKeys(input);
+  if (
+    keys.length !== DELIVERY_WORKSPACE_FIELDS.length ||
+    keys.some((key) => typeof key !== "string") ||
+    DELIVERY_WORKSPACE_FIELDS.some((field) => !Object.hasOwn(input, field)) ||
+    keys.some((key) => typeof key === "string" && !DELIVERY_WORKSPACE_FIELDS.includes(key as (typeof DELIVERY_WORKSPACE_FIELDS)[number]))
+  ) {
+    return { state: "blocked", code: "workspace_invalid", errors: stableErrors(["Delivery workspace observation has an invalid field set."]) };
+  }
+  for (const field of DELIVERY_WORKSPACE_FIELDS) {
+    if (dataField(input, field).state === "invalid") {
+      return { state: "blocked", code: "workspace_invalid", errors: stableErrors(["Delivery workspace observation must use enumerable data fields only."]) };
+    }
+  }
+  const value = input as unknown as GovernedMayDeliveryWorkspaceObservationV1;
+  const stringFields = [
+    "repositoryId", "repositoryWorkspaceId", "repositoryOwner", "repositoryName",
+    "baseBranch", "branch", "prUrl", "baseRevision", "headRevision",
+  ] as const;
+  if (
+    stringFields.some((field) => typeof value[field] !== "string" || value[field].length === 0 || value[field].length > MAX_TEXT_LENGTH) ||
+    !identifier(value.repositoryWorkspaceId) ||
+    !identifier(value.baseBranch) ||
+    !identifier(value.branch) ||
+    value.repositoryId !== `${value.repositoryOwner}/${value.repositoryName}` ||
+    !/^[A-Za-z0-9_.-]+$/u.test(value.repositoryOwner) ||
+    !/^[A-Za-z0-9_.-]+$/u.test(value.repositoryName) ||
+    !Number.isSafeInteger(value.prNumber) ||
+    value.prNumber < 1 ||
+    value.state !== "OPEN" ||
+    typeof value.isDraft !== "boolean" ||
+    !/^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{40,64})$/u.test(value.baseRevision) ||
+    !/^[0-9a-f]{40,64}$/u.test(value.headRevision) ||
+    value.prUrl !== `https://github.com/${value.repositoryOwner}/${value.repositoryName}/pull/${value.prNumber}`
+  ) {
+    return { state: "blocked", code: "workspace_invalid", errors: stableErrors(["Delivery workspace observation has invalid values."]) };
+  }
+  return { state: "ready", value: Object.freeze({ ...value }) };
+}
+
+function bindDeliveryWorkspaceV1(
+  observation: GovernedMayDeliveryWorkspaceObservationV1,
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+  furyEvaluation: Extract<CurrentFuryEvidenceEvaluation, { state: "ready" }>,
+): DeliveryWorkspaceSnapshot {
+  const authority = authoritySnapshot.authority;
+  const fury = furyEvaluation.evidence;
+  if (
+    observation.repositoryId !== authority.repositoryId ||
+    observation.repositoryWorkspaceId !== fury.furyDispatchIdentity.repositoryWorkspaceId ||
+    observation.baseBranch !== fury.baseBranch ||
+    observation.branch !== authority.branch ||
+    observation.prNumber !== fury.prNumber ||
+    observation.baseRevision !== authority.baseRevision ||
+    observation.headRevision !== authority.headRevision ||
+    observation.headRevision !== fury.repositoryRevisionId ||
+    observation.headRevision !== fury.artifactRevisionId
+  ) {
+    return {
+      state: "blocked",
+      code: "workspace_invalid",
+      errors: stableErrors(["Live delivery workspace does not exactly match authority and Fury evidence."]),
+    };
+  }
+  return { state: "ready", value: observation };
 }
 
 function snapshotInput(input: unknown): InputSnapshot {
@@ -1569,6 +1649,26 @@ export async function runGovernedMayDispatchStepV1(
   const originalSequence = mayReplay.originalSequence;
   const dispatchIdentity = mayReplay.identity;
 
+  let workspaceObservation;
+  try {
+    workspaceObservation = await dependenciesSnapshot.value.observeDeliveryWorkspace(inputSnapshot.value.repositoryRoot);
+  } catch {
+    return {
+      state: "blocked",
+      readiness: "blocked",
+      code: "workspace_invalid",
+      errors: Object.freeze(["Delivery workspace observation failed."]),
+    };
+  }
+  const workspaceSnapshot = snapshotDeliveryWorkspaceObservationV1(workspaceObservation);
+  if (workspaceSnapshot.state === "blocked") {
+    return { ...workspaceSnapshot, readiness: "blocked" };
+  }
+  const workspaceBinding = bindDeliveryWorkspaceV1(workspaceSnapshot.value, authoritySnapshot, furyEvaluation);
+  if (workspaceBinding.state === "blocked") {
+    return { ...workspaceBinding, readiness: "blocked" };
+  }
+
   return {
     state: "recovery_required",
     readiness: "indeterminate",
@@ -1582,6 +1682,8 @@ export async function runGovernedMayDispatchStepV1(
       originalSequence,
       packetId: dispatchIdentity.packetId,
       parentSessionId: dispatchIdentity.parentSessionId,
+      prNumber: workspaceBinding.value.prNumber,
+      repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
     }),
   };
 }

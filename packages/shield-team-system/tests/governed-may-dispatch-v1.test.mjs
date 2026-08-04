@@ -187,6 +187,25 @@ function validFuryRecord(projection = validProjection(), overrides = {}) {
   return { ...created.evidence, ...overrides };
 }
 
+function validWorkspaceObservation(projection, furyRecord, overrides = {}) {
+  const authority = projection.implementationAuthority;
+  return {
+    repositoryId: authority.repositoryId,
+    repositoryWorkspaceId: furyRecord.furyDispatchIdentity.repositoryWorkspaceId,
+    repositoryOwner: "RanSolo",
+    repositoryName: "shield-workspace",
+    baseBranch: furyRecord.baseBranch,
+    branch: authority.branch,
+    prNumber: furyRecord.prNumber,
+    prUrl: `https://github.com/RanSolo/shield-workspace/pull/${furyRecord.prNumber}`,
+    state: "OPEN",
+    isDraft: true,
+    baseRevision: authority.baseRevision,
+    headRevision: authority.headRevision,
+    ...overrides,
+  };
+}
+
 function validFuryReceiptEntries(identity) {
   const shared = {
     ...identity,
@@ -434,6 +453,7 @@ test("stops without effects after a valid profile-aware journal", async () => {
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
     readFuryEvidence: async () => validFuryLedger([furyRecord]),
     readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
   }));
 
   assert.deepEqual(result, {
@@ -449,6 +469,8 @@ test("stops without effects after a valid profile-aware journal", async () => {
       originalSequence: 4,
       packetId: result.evidence.packetId,
       parentSessionId: result.evidence.parentSessionId,
+      prNumber: 200,
+      repositoryWorkspaceId: "workspace:issue-170",
     },
   });
   assert.match(result.evidence.packetId, /^packet:governed-may:[A-Za-z0-9_-]{43}$/);
@@ -464,6 +486,7 @@ test("derives stable dispatch identities that change with the pinned original se
       readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
       readFuryEvidence: async () => validFuryLedger([furyRecord]),
       readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+      observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
     }));
   }
 
@@ -478,6 +501,69 @@ test("derives stable dispatch identities that change with the pinned original se
   assert.notEqual(first.evidence.parentSessionId, next.evidence.parentSessionId);
 });
 
+test("blocks when delivery workspace observation fails", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => { throw new Error("unavailable"); },
+  }));
+
+  assert.equal(result.state, "blocked");
+  assert.equal(result.code, "workspace_invalid");
+});
+
+test("blocks a live workspace whose branch or HEAD is stale", async () => {
+  for (const override of [
+    { branch: "agent/other" },
+    { headRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  ]) {
+    const projection = validProjection();
+    const furyRecord = validFuryRecord(projection);
+    const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+      readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+      readFuryEvidence: async () => validFuryLedger([furyRecord]),
+      readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+      observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord, override),
+    }));
+
+    assert.equal(result.state, "blocked");
+    assert.equal(result.code, "workspace_invalid");
+  }
+});
+
+test("rejects malformed delivery workspace shapes before later reads", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const accessor = validWorkspaceObservation(projection, furyRecord);
+  Object.defineProperty(accessor, "headRevision", {
+    enumerable: true,
+    get() { throw new Error("workspace accessor must not execute"); },
+  });
+  const symbol = validWorkspaceObservation(projection, furyRecord);
+  symbol[Symbol("hidden")] = true;
+  const unknown = { ...validWorkspaceObservation(projection, furyRecord), executable: "git" };
+  const proxy = new Proxy(validWorkspaceObservation(projection, furyRecord), {
+    getPrototypeOf() { throw new Error("workspace proxy must fail closed"); },
+  });
+
+  for (const observation of [accessor, symbol, unknown, proxy]) {
+    const callCounts = {};
+    const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
+      readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+      readFuryEvidence: async () => validFuryLedger([furyRecord]),
+      readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+      observeDeliveryWorkspace: async () => observation,
+    }));
+
+    assert.equal(result.state, "blocked");
+    assert.equal(result.code, "workspace_invalid");
+    assert.equal(callCounts.readTrackedFile, undefined);
+  }
+});
+
 test("requires recovery for a durable governed May start without a terminal", async () => {
   const projection = validProjection({ lastSequence: 4 });
   const furyRecord = validFuryRecord(projection);
@@ -485,6 +571,7 @@ test("requires recovery for a durable governed May start without a terminal", as
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
     readFuryEvidence: async () => validFuryLedger([furyRecord]),
     readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
   }));
   const entries = governedMayReceiptEntries({
     projection,
@@ -512,6 +599,7 @@ test("replays a terminal governed May receipt using its durable original sequenc
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: originalProjection } }),
     readFuryEvidence: async () => validFuryLedger([furyRecord]),
     readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(originalProjection, furyRecord),
   }));
   const entries = governedMayReceiptEntries({
     projection: originalProjection,
