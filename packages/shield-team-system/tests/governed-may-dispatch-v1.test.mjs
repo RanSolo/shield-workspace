@@ -33,7 +33,7 @@ function validAuthority() {
     seatId: "may",
     missionRevisionId: "sha256:mission_issue_170",
     artifactRevisionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    repositoryId: "repository:shield-workspace",
+    repositoryId: "RanSolo/shield-workspace",
     canonicalWritableRoot: "/tmp/shield-governed-may",
     branch: "agent/issue-170",
     baseRevision: "sha256:base_issue_170",
@@ -105,6 +105,33 @@ function validProjection(overrides = {}) {
     activeRuntimeBindings: [bindingWrapper],
     lastSequence: 4,
     ...overrides,
+  };
+}
+
+function validFuryRecord(projection = validProjection(), overrides = {}) {
+  const authority = projection.implementationAuthority;
+  return {
+    evidenceId: "evidence:fury:issue-170",
+    missionId: authority.missionId,
+    missionRevisionId: authority.missionRevisionId,
+    subjectId: authority.subjectId,
+    repositoryId: authority.repositoryId,
+    branch: authority.branch,
+    artifactRevisionId: authority.artifactRevisionId,
+    repositoryRevisionId: authority.headRevision,
+    ...overrides,
+  };
+}
+
+function validFuryLedger(records) {
+  return {
+    state: "valid",
+    value: {
+      ledgerPath: "/tmp/shield-governed-may/.shield/audit/fury-plan-reviews/issue-170.jsonl",
+      records,
+      bytes: "",
+      missing: records.length === 0,
+    },
   };
 }
 
@@ -216,9 +243,11 @@ test("rejects a non-profile-aware journal before other dependencies", async () =
 
 test("stops without effects after a valid profile-aware journal", async () => {
   const callCounts = {};
+  const projection = validProjection();
 
   const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
-    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: validProjection() } }),
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([validFuryRecord(projection)]),
   }));
 
   assert.deepEqual(result, {
@@ -229,10 +258,47 @@ test("stops without effects after a valid profile-aware journal", async () => {
     evidence: {
       authorityRef: "authority:issue-170:may",
       bindingId: "binding:issue-170:may",
+      furyEvidenceId: "evidence:fury:issue-170",
       originalSequence: 4,
     },
   });
   assert.deepEqual(callCounts, {});
+});
+
+test("fails closed when the Fury evidence ledger read throws", async () => {
+  const projection = validProjection();
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => { throw new Error("unavailable"); },
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "fury_evidence_invalid");
+});
+
+test("fails closed when current Fury evidence is missing or ambiguous", async () => {
+  for (const count of [0, 2]) {
+    const projection = validProjection();
+    const records = Array.from({ length: count }, (_, index) => validFuryRecord(projection, { evidenceId: `evidence:fury:${index}` }));
+    const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+      readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+      readFuryEvidence: async () => validFuryLedger(records),
+    }));
+
+    assert.equal(result.state, "recovery_required");
+    assert.equal(result.code, "fury_evidence_invalid");
+  }
+});
+
+test("fails closed when Fury evidence is stale for the authority head", async () => {
+  const projection = validProjection();
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([validFuryRecord(projection, { repositoryRevisionId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })]),
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "fury_evidence_invalid");
 });
 
 test("fails closed when Wheels Up authority is inactive", async () => {

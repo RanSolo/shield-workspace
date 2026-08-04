@@ -13,6 +13,7 @@ import type {
   readSeatDispatchReceiptLedgerV1,
 } from "./seat-dispatch-store.mjs";
 import type { readFuryPlanReviewEvidenceLedgerV1 } from "./fury-plan-review-evidence-store.mjs";
+import type { FuryPlanReviewEvidenceV1 } from "./fury-plan-review-evidence-v1.mjs";
 import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "./mission-store.mjs";
 import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
 import {
@@ -244,6 +245,17 @@ type ActiveMayAuthoritySnapshot =
       readonly errors: readonly string[];
     };
 
+type CurrentFuryEvidenceSelection =
+  | {
+      readonly state: "ready";
+      readonly record: FuryPlanReviewEvidenceV1;
+    }
+  | {
+      readonly state: "recovery_required";
+      readonly code: "fury_evidence_invalid";
+      readonly errors: readonly string[];
+    };
+
 const blocked = (code: "input_invalid", errors: readonly unknown[]): InputSnapshotBlocked => ({
   state: "blocked",
   code,
@@ -429,6 +441,38 @@ function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): Activ
     });
   } catch {
     return authorityBindingRecovery("authority_binding_invalid", ["Authority and runtime-binding inspection failed."]);
+  }
+}
+
+function selectCurrentFuryEvidenceV1(
+  records: readonly FuryPlanReviewEvidenceV1[],
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+): CurrentFuryEvidenceSelection {
+  try {
+    const authority = authoritySnapshot.authority;
+    const matches = records.filter((record) =>
+      record.missionId === authority.missionId &&
+      record.missionRevisionId === authority.missionRevisionId &&
+      record.subjectId === authority.subjectId &&
+      record.repositoryId === authority.repositoryId &&
+      record.branch === authority.branch &&
+      record.artifactRevisionId === authority.artifactRevisionId &&
+      record.repositoryRevisionId === authority.headRevision
+    );
+    if (matches.length !== 1) {
+      return {
+        state: "recovery_required",
+        code: "fury_evidence_invalid",
+        errors: stableErrors([`Exactly one current Fury evidence record is required; found ${matches.length}.`]),
+      };
+    }
+    return Object.freeze({ state: "ready", record: matches[0] });
+  } catch {
+    return {
+      state: "recovery_required",
+      code: "fury_evidence_invalid",
+      errors: stableErrors(["Fury evidence selection failed."]),
+    };
   }
 }
 
@@ -1157,6 +1201,40 @@ export async function runGovernedMayDispatchStepV1(
     };
   }
 
+  let furyLedger;
+  try {
+    furyLedger = await dependenciesSnapshot.value.readFuryEvidence({
+      repositoryRoot: inputSnapshot.value.repositoryRoot,
+      missionId: inputSnapshot.value.missionId,
+      lockOwnerId: inputSnapshot.value.hostId,
+    });
+  } catch {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: "fury_evidence_invalid",
+      errors: Object.freeze(["Fury evidence ledger read failed."]),
+      evidence: Object.freeze({}),
+    };
+  }
+  if (furyLedger.state === "invalid") {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: "fury_evidence_invalid",
+      errors: stableErrors([furyLedger.code, ...furyLedger.errors]),
+      evidence: Object.freeze({}),
+    };
+  }
+  const furySelection = selectCurrentFuryEvidenceV1(furyLedger.value.records, authoritySnapshot);
+  if (furySelection.state === "recovery_required") {
+    return {
+      ...furySelection,
+      readiness: "indeterminate",
+      evidence: Object.freeze({}),
+    };
+  }
+
   return {
     state: "recovery_required",
     readiness: "indeterminate",
@@ -1165,6 +1243,7 @@ export async function runGovernedMayDispatchStepV1(
     evidence: Object.freeze({
       authorityRef: authoritySnapshot.authority.authorityRef,
       bindingId: authoritySnapshot.bindingWrapper.binding.bindingId,
+      furyEvidenceId: furySelection.record.evidenceId,
       originalSequence: authoritySnapshot.originalSequence,
     }),
   };
