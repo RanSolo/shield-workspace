@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,41 @@ const baseRevision = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function executableIdentity(info) {
+  return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}`;
+}
+
+function regularFileIdentity(info) {
+  return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+}
+
+async function plannedOperations(root, overrides = {}) {
+  const target = join(root, "src/approved.txt");
+  const targetInfo = await stat(target).catch(() => null);
+  const executable = await realpath(process.execPath);
+  const executableInfo = await stat(executable);
+  return [
+    {
+      toolName: "writeFile",
+      path: "src/approved.txt",
+      content: "after\n",
+      precondition: targetInfo === null
+        ? { kind: "absent" }
+        : { kind: "present", regularFileIdentity: regularFileIdentity(targetInfo), sha256: digest(await readFile(target)) },
+      ...overrides.write,
+    },
+    {
+      toolName: "runValidation",
+      commandId: "focused",
+      executable,
+      args: ["-e", "console.log('validation ok')"],
+      timeoutMs: 2_000,
+      executableIdentity: executableIdentity(executableInfo),
+      ...overrides.validation,
+    },
+  ];
 }
 
 function request(root, toolName, args) {
@@ -149,14 +184,23 @@ test("runs only an exact allowlisted command without a shell and releases bounde
   assert.deepEqual(deps.ledger.map((item) => item.recordType), ["permission.decision", "tool.invocation", "tool.result"]);
 });
 
-test("returns a nonzero validation result so May can perform a bounded correction", async (context) => {
+test("records nonzero validation as failed and releases no command output", async (context) => {
   const root = await workspace(context);
   const deps = dependencies(root, "runValidation", {
     validationCommands: [{ commandId: "focused", executable: process.execPath, args: ["-e", "console.error('failed');process.exit(3)"], timeoutMs: 2_000 }],
   });
-  const result = await runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps);
-  assert.equal(result.exitCode, 3);
-  assert.equal(result.stderr, "failed\n");
+  await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps), /may_validation_nonzero_exit/u);
+  assert.equal(deps.ledger.at(-1).outcome, "failed");
+  assert.equal(JSON.stringify(deps.ledger).includes("failed\\n"), false);
+});
+
+test("records terminating-signal validation as failed", async (context) => {
+  const root = await workspace(context);
+  const deps = dependencies(root, "runValidation", {
+    validationCommands: [{ commandId: "focused", executable: process.execPath, args: ["-e", "process.kill(process.pid,'SIGTERM')"], timeoutMs: 2_000 }],
+  });
+  await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps), /may_validation_signal/u);
+  assert.equal(deps.ledger.at(-1).outcome, "failed");
 });
 
 test("fails before permission or effects for stale revision, stale digest, unapproved path, and command ID", async (context) => {
@@ -243,6 +287,34 @@ test("permission slots must bind the exact requested file content or validation 
   }
   assert.notEqual(observed[0], observed[1]);
   assert.match(observed[0], /^effect:may:sha256:[0-9a-f]{64}$/u);
+});
+
+test("governed write independently rechecks the planned file identity and exact bytes", async (context) => {
+  const root = await workspace(context);
+  await writeFile(join(root, "src/approved.txt"), "before\n", "utf8");
+  const planned = await plannedOperations(root);
+  const deps = dependencies(root, "writeFile", { plannedToolOperations: planned });
+  const result = await runMayToolCall(request(root, "writeFile", {
+    path: "src/approved.txt", content: "after\n", expectedSha256: digest("before\n"),
+  }), deps);
+  assert.equal(result.code, "file_written");
+
+  await writeFile(join(root, "src/replacement.txt"), "after\n", "utf8");
+  const stalePlanned = await plannedOperations(root);
+  await writeFile(join(root, "src/replacement.txt"), "after\n", "utf8");
+  await rename(join(root, "src/replacement.txt"), join(root, "src/approved.txt"));
+  const stale = dependencies(root, "writeFile", { plannedToolOperations: stalePlanned });
+  await assert.rejects(() => runMayToolCall(request(root, "writeFile", {
+    path: "src/approved.txt", content: "after\n", expectedSha256: digest("after\n"),
+  }), stale), /may_planned_write_mismatch/u);
+});
+
+test("governed validation independently rechecks the exact planned executable identity", async (context) => {
+  const root = await workspace(context);
+  const planned = await plannedOperations(root, { validation: { executableIdentity: "1:2:3:4:5" } });
+  const deps = dependencies(root, "runValidation", { plannedToolOperations: planned });
+  await assert.rejects(() => runMayToolCall(request(root, "runValidation", { commandId: "focused" }), deps), /may_planned_validation_mismatch/u);
+  assert.equal(deps.ledger.at(-1).outcome, "failed");
 });
 
 test("withholds validation output when the result audit receipt is not verified", async (context) => {
@@ -428,13 +500,11 @@ function controlDependencies(root, fetchImpl, overrides = {}) {
   };
 }
 
-test("May control loop performs one bounded repair cycle and final report", async (context) => {
+test("May control loop performs one successful write-validation cycle and final report", async (context) => {
   const root = await workspace(context);
   const responses = [
     modelResponse(),
-    toolCall("call:write:bad", "writeFile", { path: "src/approved.txt", content: "bad\n", expectedSha256: "absent" }),
-    toolCall("call:validate:bad", "runValidation", { commandId: "focused" }),
-    toolCall("call:write:fix", "writeFile", { path: "src/approved.txt", content: "fixed\n", expectedSha256: digest("bad\n") }),
+    toolCall("call:write:fix", "writeFile", { path: "src/approved.txt", content: "fixed\n", expectedSha256: "absent" }),
     toolCall("call:validate:ok", "runValidation", { commandId: "focused" }),
     finalMayResponse(),
   ];
@@ -447,21 +517,41 @@ test("May control loop performs one bounded repair cycle and final report", asyn
   const result = await runMayControlLoop(controlRequest(root), deps);
   assert.equal(await readFile(join(root, "src/approved.txt"), "utf8"), "fixed\n");
   assert.equal(result.attribution, "untrusted_model_output");
-  assert.equal(result.completedToolCalls, 4);
-  assert.equal(result.writeCalls, 2);
-  assert.equal(result.validationCalls, 2);
+  assert.equal(result.completedToolCalls, 2);
+  assert.equal(result.writeCalls, 1);
+  assert.equal(result.validationCalls, 1);
   assert.match(result.message, /fixture repaired/u);
   const governedRequests = requests.filter(({ url }) => url.endsWith("/v1/chat/completions"));
-  assert.equal(governedRequests.length, 5);
+  assert.equal(governedRequests.length, 3);
   for (const { options } of governedRequests) {
     const body = JSON.parse(options.body);
     assert.deepEqual({ temperature: body.temperature, top_p: body.top_p, top_k: body.top_k }, {
       temperature: 0.6, top_p: 0.95, top_k: 20,
     });
   }
-  assert.equal(deps.ledger.filter((item) => item.recordType === "permission.decision").length, 4);
+  assert.equal(deps.ledger.filter((item) => item.recordType === "permission.decision").length, 2);
   assert.equal(deps.events.at(0).code, "may_control_started");
   assert.equal(deps.events.at(-1).code, "may_control_completed");
+});
+
+test("May control loop stops after nonzero validation and cannot advance to correction or final report", async (context) => {
+  const root = await workspace(context);
+  const responses = [
+    modelResponse(),
+    toolCall("call:write:bad", "writeFile", { path: "src/approved.txt", content: "bad\n", expectedSha256: "absent" }),
+    toolCall("call:validate:bad", "runValidation", { commandId: "focused" }),
+    toolCall("call:write:fix", "writeFile", { path: "src/approved.txt", content: "fixed\n", expectedSha256: digest("bad\n") }),
+  ];
+  let requests = 0;
+  const deps = controlDependencies(root, async () => {
+    requests += 1;
+    return jsonResponse(responses.shift());
+  });
+  await assert.rejects(() => runMayControlLoop(controlRequest(root), deps), /may_validation_nonzero_exit/u);
+  assert.equal(await readFile(join(root, "src/approved.txt"), "utf8"), "bad\n");
+  assert.equal(requests, 3);
+  assert.equal(deps.ledger.at(-1).outcome, "failed");
+  assert.equal(deps.events.at(-1).code, "may_validation_nonzero_exit");
 });
 
 test("May control loop requires runtime identity, validation before final report, and event receipts", async (context) => {

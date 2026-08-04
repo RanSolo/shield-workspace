@@ -6,6 +6,14 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { createAuditedExecutor, createPermissionAuthorizer } from "../../dist/permission-v1.mjs";
 import { validateRunnerCyclePlan } from "../../dist/runner-v1.mjs";
+import {
+  computeMayExecutableIdentityV1,
+  computeMayRegularFileIdentityV1,
+  computeMayValidationEffectKeyV1,
+  computeMayWriteEffectKeyV1,
+  MAY_TOOL_MAPPINGS_V1,
+  normalizeMayPlannedToolOperationsV1,
+} from "../../dist/may-tool-effect-v1.mjs";
 import { LOCAL_TOOL_SAMPLING, probeLocalToolModel } from "./local-tool-broker.mjs";
 import { isSensitiveRepositoryPath } from "./repository-sensitive-policy.mjs";
 import { validateRepositoryRelativePath } from "./repository-tools.mjs";
@@ -31,18 +39,7 @@ export const MAY_CONTROL_LOOP_LIMITS = Object.freeze({
   terminalEventReserveMs: 1_000,
 });
 
-export const MAY_TOOL_MAPPINGS = Object.freeze({
-  writeFile: Object.freeze({
-    actionId: "repository.write_file",
-    effectClass: "behavioral_implementation",
-    capability: "filesystem_write",
-  }),
-  runValidation: Object.freeze({
-    actionId: "repository.run_validation",
-    effectClass: "verification",
-    capability: "process_execute",
-  }),
-});
+export const MAY_TOOL_MAPPINGS = MAY_TOOL_MAPPINGS_V1;
 
 export const MAY_TOOL_DEFINITIONS = Object.freeze([
   Object.freeze({
@@ -121,11 +118,11 @@ function rootIdentity(info) {
 }
 
 function regularFileIdentity(info) {
-  return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  return computeMayRegularFileIdentityV1(info);
 }
 
 function executableIdentity(info) {
-  return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}`;
+  return computeMayExecutableIdentityV1(info);
 }
 
 function validUtf8String(value) {
@@ -285,27 +282,12 @@ function releasedToolContent(raw) {
 }
 
 function mayEffectKey(request, args, commands) {
-  let descriptor;
   if (request.toolName === "writeFile") {
-    descriptor = {
-      contentSha256: createHash("sha256").update(Buffer.from(args.content, "utf8")).digest("hex"),
-      expectedSha256: args.expectedSha256,
-      path: args.path,
-      toolName: request.toolName,
-    };
-  } else {
-    const command = commands.get(args.commandId);
-    if (!command) throw new Error("may_validation_command_not_approved");
-    descriptor = {
-      args: command.args,
-      commandId: command.commandId,
-      executable: command.executable,
-      executableIdentity: command.executableIdentity,
-      timeoutMs: command.timeoutMs,
-      toolName: request.toolName,
-    };
+    return computeMayWriteEffectKeyV1({ path: args.path, content: args.content, expectedSha256: args.expectedSha256 });
   }
-  return `effect:may:sha256:${createHash("sha256").update(JSON.stringify(descriptor)).digest("hex")}`;
+  const command = commands.get(args.commandId);
+  if (!command) throw new Error("may_validation_command_not_approved");
+  return computeMayValidationEffectKeyV1(command);
 }
 
 function parseArguments(toolName, raw) {
@@ -386,6 +368,8 @@ function normalizeDependencies(value) {
   }
   output.approvedFiles = normalizeApprovedFiles(data(value, "approvedFiles"));
   output.validationCommands = data(value, "validationCommands");
+  const plannedToolOperations = data(value, "plannedToolOperations");
+  output.plannedToolOperations = plannedToolOperations === undefined ? undefined : normalizeMayPlannedToolOperationsV1(plannedToolOperations);
   const monotonicNow = data(value, "monotonicNow");
   if (monotonicNow !== undefined && typeof monotonicNow !== "function") throw new Error("may_executor_configuration_malformed");
   output.monotonicNow = monotonicNow ?? (() => Date.now());
@@ -488,12 +472,20 @@ async function snapshotWorkspace(root, changedPaths) {
   return JSON.stringify(snapshot);
 }
 
-async function writeApprovedFile(root, request, args, dependencies) {
+async function writeApprovedFile(root, request, args, dependencies, plannedOperation) {
   if (!dependencies.approvedFiles.includes(args.path)) throw new Error("may_path_not_approved");
   await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const target = await confinedTarget(root, args.path);
   const digest = await currentDigest(target);
   if ((args.expectedSha256 === "absent" && digest !== null) || (args.expectedSha256 !== "absent" && digest !== args.expectedSha256)) throw new Error("may_file_digest_mismatch");
+  if (plannedOperation !== undefined && (
+    plannedOperation.toolName !== "writeFile" ||
+    plannedOperation.path !== args.path ||
+    plannedOperation.content !== args.content ||
+    (plannedOperation.precondition.kind === "absent"
+      ? target.info !== null || args.expectedSha256 !== "absent"
+      : target.info === null || args.expectedSha256 !== plannedOperation.precondition.sha256 || regularFileIdentity(target.info) !== plannedOperation.precondition.regularFileIdentity)
+  )) throw new Error("may_planned_write_mismatch");
   await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const temporaryName = dependencies.nextTemporaryName(Object.freeze({ sessionId: request.sessionId, toolCallId: request.toolCallId }));
   if (typeof temporaryName !== "string" || !/^\.shield-may-[A-Za-z0-9_-]{8,64}\.tmp$/u.test(temporaryName)) throw new Error("may_temporary_name_invalid");
@@ -526,8 +518,16 @@ async function writeApprovedFile(root, request, args, dependencies) {
   }
 }
 
-async function runApprovedValidation(root, request, args, dependencies, commands) {
+async function runApprovedValidation(root, request, args, dependencies, commands, plannedOperation) {
   const command = commands.get(args.commandId);
+  if (plannedOperation !== undefined && (
+    plannedOperation.toolName !== "runValidation" ||
+    plannedOperation.commandId !== args.commandId ||
+    plannedOperation.executable !== command.executable ||
+    plannedOperation.executableIdentity !== command.executableIdentity ||
+    plannedOperation.timeoutMs !== command.timeoutMs ||
+    JSON.stringify(plannedOperation.args) !== JSON.stringify(command.args)
+  )) throw new Error("may_planned_validation_mismatch");
   const workspaceBefore = await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const snapshotBefore = await snapshotWorkspace(root, workspaceBefore);
   const currentExecutable = await stat(command.executable).catch(() => null);
@@ -582,6 +582,9 @@ async function runApprovedValidation(root, request, args, dependencies, commands
   } catch (error) {
     throw executorError(error instanceof Error ? error.message : "may_workspace_revision_mismatch", "uncertain");
   }
+  if (execution.signal !== null) throw new Error("may_validation_signal");
+  if (execution.code === null) throw executorError("may_validation_process_state_uncertain", "uncertain");
+  if (execution.code !== 0) throw new Error("may_validation_nonzero_exit");
   return Object.freeze({
     state: "completed", code: "validation_completed", commandId: command.commandId,
     exitCode: execution.code, signal: execution.signal, stdout: execution.stdout, stderr: execution.stderr,
@@ -621,6 +624,7 @@ export async function runMayToolCall(requestInput, dependenciesInput) {
   const mapping = MAY_TOOL_MAPPINGS[request.toolName];
   const dependencies = normalizeDependencies(dependenciesInput);
   const [root, commands] = await Promise.all([createRoot(request.repositoryRoot), normalizeCommands(dependencies.validationCommands)]);
+  const plannedOperation = dependencies.plannedToolOperations?.[request.toolName === "writeFile" ? 0 : 1];
   const effectKey = mayEffectKey(request, args, commands);
   const expected = Object.freeze({
     canonicalRoot: root.canonical, repositoryId: dependencies.repositoryId,
@@ -650,8 +654,8 @@ export async function runMayToolCall(requestInput, dependenciesInput) {
     execute: async () => {
       try {
         const result = request.toolName === "writeFile"
-          ? await writeApprovedFile(root, request, args, dependencies)
-          : await runApprovedValidation(root, request, args, dependencies, commands);
+          ? await writeApprovedFile(root, request, args, dependencies, plannedOperation)
+          : await runApprovedValidation(root, request, args, dependencies, commands, plannedOperation);
         escrow = result;
         return runnerResult(plan, "completed", request.toolName === "writeFile" ? "Approved revision-bound file write completed." : `Approved validation command completed: ${args.commandId}.`, [`may-executor:${request.sessionId}`]);
       } catch (error) {
