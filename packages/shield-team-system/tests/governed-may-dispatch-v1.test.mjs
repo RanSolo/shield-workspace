@@ -1227,6 +1227,26 @@ test("validation-only control completion cannot advance the governed mission", a
   assert.equal(result.code, "mission_cycle_unproven");
 });
 
+test("duplicate write completion cannot advance the governed mission", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  let executionOutcome;
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+    runMayControlLoop: async () => ({ message: "duplicate write", attribution: "untrusted_model_output", completedToolCalls: 3, writeCalls: 2, validationCalls: 1, releasedBytes: 0 }),
+    runMissionCycle: (input, dependencies) => runExecutingMissionCycle(input, dependencies, (execution) => { executionOutcome = execution.outcome; }),
+  }));
+
+  assert.equal(executionOutcome, "failed");
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "mission_cycle_unproven");
+});
+
 test("planned-byte and live-preflight drift fail before claim or model invocation", async () => {
   for (const kind of ["authority", "live"]) {
     const projection = validProjection();
@@ -1342,6 +1362,29 @@ test("blocks when an authorized validation command is absent from the trusted re
   assert.equal(result.state, "blocked");
   assert.equal(result.code, "planned_preflight_invalid");
   assert.equal(callCounts["helicarrier.validate"], undefined);
+});
+
+test("blocks an extra trusted validation command before model invocation", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  let modelCalls = 0;
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    validationCommands: [
+      { commandId: "validation:test", executable: process.execPath, args: ["--test"], timeoutMs: 30_000 },
+      { commandId: "validation:extra", executable: process.execPath, args: ["--version"], timeoutMs: 30_000 },
+    ],
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+    runMayControlLoop: async () => { modelCalls += 1; throw new Error("must not invoke"); },
+  }));
+
+  assert.equal(result.state, "blocked");
+  assert.equal(result.code, "planned_preflight_invalid");
+  assert.equal(modelCalls, 0);
 });
 
 test("blocks before claim when Helicarrier rejects the derived envelope", async () => {
