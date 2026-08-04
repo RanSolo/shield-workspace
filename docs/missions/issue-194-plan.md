@@ -42,7 +42,7 @@ Local Bionic/Gemma May supplied the bounded implementation design, but it
 cannot truthfully perform this mission's repository write through
 `runGovernedMayDispatchStepV1`: the temporary-name composition corrected by
 this issue makes that exact path fail before the first write. After Fury
-approval and signed Wheels Up, hosted May therefore performs the two-path
+approval and signed Wheels Up, hosted May therefore performs the four-path
 implementation under the same May seat contract. This is a fail-closed
 bootstrap choice, not a new authority class or scope widening. Governed local
 May execution resumes only after this correction is merged and #137 is
@@ -64,9 +64,33 @@ The full SHA-256 base64url digest is 43 safe characters, so the final name
 matches the executor's existing closed regex without changing that contract.
 The same child session and tool call produce the same name; different session
 or call IDs produce different names. Existing `O_EXCL`, `O_NOFOLLOW`, target
-confinement, precondition recheck, cleanup, and uncertain-effect behavior are
-unchanged. A stale same-call temporary file remains a collision and fails
-closed rather than silently selecting a new name.
+confinement, precondition recheck, and uncertain-effect behavior remain.
+
+### Executor-owned cleanup correction
+
+Deterministic naming exposes an existing cleanup defect in
+`packages/shield-team-system/scripts/model/may-tool-executor.mjs`: its `finally`
+block unconditionally attempts to unlink the derived path, including when
+`O_EXCL` failed and this invocation never created the entry.
+
+Correct that boundary without weakening creation:
+
+- initialize no ownership before `open`;
+- only after `open(O_CREAT | O_EXCL | O_NOFOLLOW)` succeeds, obtain and retain
+  the created handle's regular-file device/inode identity and mark it owned by
+  this invocation;
+- close any open handle in `finally`;
+- attempt cleanup only when ownership was established, the current path is a
+  non-symlink regular file, and its device/inode still exactly matches the
+  owned handle identity;
+- never unlink a pre-existing regular file, symlink, external symlink target,
+  or substituted path entry;
+- after successful rename, the temporary path is absent and cleanup is a
+  no-op.
+
+A stale same-identity collision therefore remains in place and repeated calls
+continue failing closed until a separate owner/recovery action removes it.
+Existing target-write and uncertain-effect semantics remain unchanged.
 
 ### Real-composition regression test
 
@@ -78,32 +102,51 @@ focused integration test that:
 2. freezes an absent write operation and a shell-free Node validation operation
    with the real executable identity and exact effect keys;
 3. calls the production `runGovernedMayDispatchStepV1`;
-4. supplies the production `runMayControlLoop`, with only `fetchImpl` replaced
-   by deterministic loopback response objects for model discovery, one write
+4. supplies the production `runMayControlLoop`, with `fetchImpl` replaced by
+   deterministic in-memory response objects for model discovery, one write
    call, one validation call, and the final May message;
 5. allows the production `runMayToolCall`/filesystem executor to perform the
    exact write and validation in the disposable repository;
 6. asserts literal dispatcher completion, exact target bytes, one ordered write
    and validation, and no remaining `.shield-may-*.tmp` file.
 
-The test must fail on the base revision with `may_temporary_name_invalid` and
-pass with the correction. It must not call LM Studio, GitHub, or any external
-network, and it must not weaken or duplicate lower-level executor tests.
+The dispatcher, control loop, and tool executor are production implementations.
+The existing deterministic governed-dispatch fixture doubles remain for the
+schema-9 journal projection, Fury/dispatch ledgers, Delivery Workspace,
+Helicarrier, permission contexts/audit stores, control-event store,
+`runMissionCycle` wrapper, and terminal receipt readback. Those layers are not
+under test here and their existing contract suites remain authoritative. The
+test must fail on the base revision with `may_temporary_name_invalid` and pass
+with the correction. It must not call LM Studio, GitHub, or any external
+network.
+
+In `packages/shield-team-system/tests/may-tool-executor.test.mjs`, add focused
+cleanup tests proving:
+
+- a pre-existing regular-file collision is not changed or removed;
+- a pre-existing symlink collision is not removed and its external target is
+  unchanged;
+- repeating the same session/tool identity continues to fail while either
+  collision remains;
+- a path substituted after owned creation is not unlinked by cleanup.
 
 ## Exact writable paths
 
 - `packages/shield-team-system/src/governed-may-dispatch-v1.mts`
+- `packages/shield-team-system/scripts/model/may-tool-executor.mjs`
 - `packages/shield-team-system/tests/governed-may-dispatch-v1.test.mjs`
+- `packages/shield-team-system/tests/may-tool-executor.test.mjs`
 
-No executor, authority, journal, receipt, permission, CLI, fixture, public API,
-or external-run path is in implementation scope. This plan and the May
-blueprint remain immutable during implementation.
+No authority, journal, receipt, permission, CLI, fixture, public API, or
+external-run path is in implementation scope. This plan and the May blueprint
+remain immutable during implementation.
 
 ## Validation
 
 ```text
 npm run build --workspace packages/shield-team-system
 node --test packages/shield-team-system/tests/governed-may-dispatch-v1.test.mjs
+node --test packages/shield-team-system/tests/may-tool-executor.test.mjs
 npm test --workspace packages/shield-team-system
 git diff --check
 ```
@@ -114,7 +157,7 @@ git diff --check
 2. Fury reviews the exact planning revision.
 3. On `FURY_REVISE`, correct only planning artifacts and return the new exact
    revision to the same Fury seat.
-4. On `FURY_PASS`, obtain signed Wheels Up for exactly the two implementation
+4. On `FURY_PASS`, obtain signed Wheels Up for exactly the four implementation
    paths before May edits them.
 5. May implements the approved plan and stops at an exact revision.
 6. Mack validates that exact revision; Fury performs exact-revision conformance
