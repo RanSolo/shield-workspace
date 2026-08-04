@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runGovernedMayDispatchStepV1 } from "../dist/governed-may-dispatch-v1.mjs";
+import { computeImplementationAuthorityDigest } from "../dist/implementation-authority-v1.mjs";
 
 const certification = Object.freeze({
   certificationId: "deterministic-mission-compilation-stage-a-certification.v1",
@@ -20,6 +21,92 @@ const certification = Object.freeze({
     targetProfileSha256: "7f032f5f2db1f7b73d249252510622dd3e8acd2daf5e72c7a788f3cb2c4e8d8a",
   }),
 });
+
+function validAuthority() {
+  return {
+    schemaVersion: 1,
+    contractVersion: "implementation-authority.v1",
+    authorityKind: "wheels_up",
+    authorityRef: "authority:issue-170:may",
+    missionId: "mission:issue-170",
+    subjectId: "github:issue-170",
+    seatId: "may",
+    missionRevisionId: "sha256:mission_issue_170",
+    artifactRevisionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    repositoryId: "repository:shield-workspace",
+    canonicalWritableRoot: "/tmp/shield-governed-may",
+    branch: "agent/issue-170",
+    baseRevision: "sha256:base_issue_170",
+    headRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    modelId: "model:ornith",
+    approvedRelativePaths: ["packages/shield-team-system"],
+    approvedActionIds: ["edit:implementation", "read:issue"],
+    approvedEffectClasses: ["behavioral_implementation", "verification"],
+    approvedEffectKeys: ["effect:implementation", "effect:validation"],
+    approvedCapabilities: ["filesystem_write", "github_issues"],
+    validationCommandIds: ["validation:test"],
+    journalSequence: 2,
+    humanPrincipalId: "human:coulson",
+    humanBindingId: "binding:coulson",
+    signingKeyRef: `ed25519:sha256:${"a".repeat(43)}`,
+    sourceRef: "source:wheels-up",
+    evidenceRef: "evidence:wheels-up",
+    timestamp: { value: "2026-08-03T20:00:00Z", provenance: "humanRecorded" },
+  };
+}
+
+function validProjection(overrides = {}) {
+  const authority = validAuthority();
+  const bindingWrapper = {
+    schemaVersion: 1,
+    binding: {
+      bindingSchemaVersion: 1,
+      bindingId: "binding:issue-170:may",
+      bindingVersion: 1,
+      missionId: authority.missionId,
+      subjectId: authority.subjectId,
+      missionRevisionId: authority.missionRevisionId,
+      seatId: "may",
+      reasoningRuntimeId: "runtime:local-may",
+      toolExecutorId: "executor:shield",
+      repositoryId: authority.repositoryId,
+      canonicalWritableRoot: authority.canonicalWritableRoot,
+      branch: authority.branch,
+      artifactRevisionId: authority.artifactRevisionId,
+      recordedAtSequence: 3,
+      activeThroughSequence: null,
+      lifecycleState: "active",
+      approvedScope: {
+        actionIds: [...authority.approvedActionIds],
+        effectClasses: [...authority.approvedEffectClasses],
+        effectKeys: [...authority.approvedEffectKeys],
+        capabilities: [...authority.approvedCapabilities],
+      },
+      coulsonAuthorizationRef: "authorization:runtime-binding:1",
+    },
+    implementationAuthorityRef: authority.authorityRef,
+    implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
+    implementationAuthoritySequence: authority.journalSequence,
+    approvedRelativePaths: [...authority.approvedRelativePaths],
+    validationCommandIds: [...authority.validationCommandIds],
+    modelId: authority.modelId,
+    baseRevision: authority.baseRevision,
+    headRevision: authority.headRevision,
+  };
+  return {
+    schemaVersion: 9,
+    missionId: authority.missionId,
+    brief: { subjectId: authority.subjectId, revisionId: authority.missionRevisionId },
+    authorization: "authorized",
+    execution: "not-started",
+    implementationAuthority: authority,
+    implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
+    implementationAuthorityState: "authorized",
+    activeRuntimeBindings: [bindingWrapper],
+    lastSequence: 4,
+    ...overrides,
+  };
+}
 
 function validInput() {
   return {
@@ -131,7 +218,7 @@ test("stops without effects after a valid profile-aware journal", async () => {
   const callCounts = {};
 
   const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies(callCounts, {
-    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: {} } }),
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: validProjection() } }),
   }));
 
   assert.deepEqual(result, {
@@ -139,7 +226,47 @@ test("stops without effects after a valid profile-aware journal", async () => {
     readiness: "indeterminate",
     code: "implementation_incomplete",
     errors: ["Governed May dispatch execution is not implemented."],
-    evidence: {},
+    evidence: {
+      authorityRef: "authority:issue-170:may",
+      bindingId: "binding:issue-170:may",
+      originalSequence: 4,
+    },
   });
   assert.deepEqual(callCounts, {});
+});
+
+test("fails closed when Wheels Up authority is inactive", async () => {
+  const projection = validProjection({ implementationAuthorityState: "revoked" });
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "authority_binding_invalid");
+});
+
+test("fails closed when active May binding is missing or ambiguous", async () => {
+  for (const count of [0, 2]) {
+    const base = validProjection();
+    const projection = { ...base, activeRuntimeBindings: Array.from({ length: count }, () => base.activeRuntimeBindings[0]) };
+    const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+      readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    }));
+    assert.equal(result.state, "recovery_required");
+    assert.equal(result.code, "authority_binding_invalid");
+  }
+});
+
+test("fails closed when the binding authority reference is stale", async () => {
+  const base = validProjection();
+  const projection = {
+    ...base,
+    activeRuntimeBindings: [{ ...base.activeRuntimeBindings[0], implementationAuthorityRef: "authority:stale" }],
+  };
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "authority_binding_invalid");
 });

@@ -14,6 +14,15 @@ import type {
 } from "./seat-dispatch-store.mjs";
 import type { readFuryPlanReviewEvidenceLedgerV1 } from "./fury-plan-review-evidence-store.mjs";
 import type { appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "./mission-store.mjs";
+import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
+import {
+  assertAuthoritySubsetOfScope,
+  computeImplementationAuthorityDigest,
+  validateImplementationAuthorityV1,
+  validateSchema9RuntimeBindingV1,
+  type ImplementationAuthorityV1,
+  type Schema9RuntimeBindingV1,
+} from "./implementation-authority-v1.mjs";
 
 const INPUT_FIELDS = [
   "repositoryRoot",
@@ -222,6 +231,19 @@ interface InputSnapshotBlocked {
 
 type InputSnapshot = InputSnapshotReady | InputSnapshotBlocked;
 
+type ActiveMayAuthoritySnapshot =
+  | {
+      readonly state: "ready";
+      readonly authority: ImplementationAuthorityV1;
+      readonly bindingWrapper: Schema9RuntimeBindingV1;
+      readonly originalSequence: number;
+    }
+  | {
+      readonly state: "recovery_required";
+      readonly code: "mission_state_invalid" | "authority_binding_invalid";
+      readonly errors: readonly string[];
+    };
+
 const blocked = (code: "input_invalid", errors: readonly unknown[]): InputSnapshotBlocked => ({
   state: "blocked",
   code,
@@ -285,6 +307,129 @@ function stableErrors(errors: readonly unknown[]): readonly string[] {
       return [];
     });
   return Object.freeze([...new Set(normalized.sort())]);
+}
+
+function authorityBindingRecovery(
+  code: "mission_state_invalid" | "authority_binding_invalid",
+  errors: readonly unknown[],
+): Extract<ActiveMayAuthoritySnapshot, { state: "recovery_required" }> {
+  return { state: "recovery_required", code, errors: stableErrors(errors) };
+}
+
+function freezeAuthority(authority: ImplementationAuthorityV1): ImplementationAuthorityV1 {
+  return Object.freeze({
+    ...authority,
+    approvedRelativePaths: Object.freeze([...authority.approvedRelativePaths]),
+    approvedActionIds: Object.freeze([...authority.approvedActionIds]),
+    approvedEffectClasses: Object.freeze([...authority.approvedEffectClasses]),
+    approvedEffectKeys: Object.freeze([...authority.approvedEffectKeys]),
+    approvedCapabilities: Object.freeze([...authority.approvedCapabilities]),
+    validationCommandIds: Object.freeze([...authority.validationCommandIds]),
+    timestamp: Object.freeze({ ...authority.timestamp }),
+  });
+}
+
+function freezeBindingWrapper(wrapper: Schema9RuntimeBindingV1): Schema9RuntimeBindingV1 {
+  const snapshot: Schema9RuntimeBindingV1 = {
+    ...wrapper,
+    binding: {
+      ...wrapper.binding,
+      approvedScope: {
+        actionIds: [...wrapper.binding.approvedScope.actionIds],
+        effectClasses: [...wrapper.binding.approvedScope.effectClasses],
+        effectKeys: [...wrapper.binding.approvedScope.effectKeys],
+        capabilities: [...wrapper.binding.approvedScope.capabilities],
+      },
+    },
+    approvedRelativePaths: [...wrapper.approvedRelativePaths],
+    validationCommandIds: [...wrapper.validationCommandIds],
+  };
+  Object.freeze(snapshot.binding.approvedScope.actionIds);
+  Object.freeze(snapshot.binding.approvedScope.effectClasses);
+  Object.freeze(snapshot.binding.approvedScope.effectKeys);
+  Object.freeze(snapshot.binding.approvedScope.capabilities);
+  Object.freeze(snapshot.binding.approvedScope);
+  Object.freeze(snapshot.binding);
+  Object.freeze(snapshot.approvedRelativePaths);
+  Object.freeze(snapshot.validationCommandIds);
+  return Object.freeze(snapshot);
+}
+
+function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): ActiveMayAuthoritySnapshot {
+  try {
+    if (
+      projection.authorization !== "authorized" ||
+      (projection.execution !== "not-started" && projection.execution !== "running") ||
+      !Number.isSafeInteger(projection.lastSequence) ||
+      projection.lastSequence < 0
+    ) {
+      return authorityBindingRecovery("mission_state_invalid", ["Mission authorization, execution, or sequence is not dispatchable."]);
+    }
+    if (projection.implementationAuthority === null || projection.implementationAuthorityState !== "authorized") {
+      return authorityBindingRecovery("authority_binding_invalid", ["Active Wheels Up implementation authority is missing."]);
+    }
+
+    const checkedAuthority = validateImplementationAuthorityV1(projection.implementationAuthority);
+    if (checkedAuthority.state === "invalid") {
+      return authorityBindingRecovery("authority_binding_invalid", ["Implementation authority is malformed.", ...checkedAuthority.errors]);
+    }
+    const authority = checkedAuthority.value;
+    const authorityDigest = computeImplementationAuthorityDigest(authority);
+    if (
+      authority.seatId !== "may" ||
+      authority.missionId !== projection.missionId ||
+      authority.subjectId !== projection.brief.subjectId ||
+      authority.missionRevisionId !== projection.brief.revisionId ||
+      projection.implementationAuthorityDigest !== authorityDigest
+    ) {
+      return authorityBindingRecovery("authority_binding_invalid", ["Implementation authority identity or digest is stale or mismatched."]);
+    }
+
+    const mayBindings = projection.activeRuntimeBindings.filter((candidate) => candidate.binding.seatId === "may");
+    if (mayBindings.length !== 1) {
+      return authorityBindingRecovery("authority_binding_invalid", ["Exactly one active May runtime binding is required."]);
+    }
+    const checkedBinding = validateSchema9RuntimeBindingV1(mayBindings[0]);
+    if (checkedBinding.state === "invalid") {
+      return authorityBindingRecovery("authority_binding_invalid", ["May runtime binding is malformed.", ...checkedBinding.errors]);
+    }
+    const wrapper = checkedBinding.value;
+    const binding = wrapper.binding;
+    const subset = assertAuthoritySubsetOfScope(wrapper, authority);
+    if (subset.state === "invalid") {
+      return authorityBindingRecovery("authority_binding_invalid", subset.errors);
+    }
+    if (
+      binding.lifecycleState !== "active" ||
+      wrapper.implementationAuthorityRef !== authority.authorityRef ||
+      wrapper.implementationAuthorityDigest !== authorityDigest ||
+      wrapper.implementationAuthoritySequence !== authority.journalSequence ||
+      binding.missionId !== authority.missionId ||
+      binding.subjectId !== authority.subjectId ||
+      binding.missionRevisionId !== authority.missionRevisionId ||
+      binding.repositoryId !== authority.repositoryId ||
+      binding.canonicalWritableRoot !== authority.canonicalWritableRoot ||
+      binding.branch !== authority.branch ||
+      binding.artifactRevisionId !== authority.artifactRevisionId ||
+      wrapper.baseRevision !== authority.baseRevision ||
+      wrapper.headRevision !== authority.headRevision ||
+      wrapper.modelId !== authority.modelId ||
+      authority.artifactRevisionId !== authority.headRevision ||
+      binding.recordedAtSequence > projection.lastSequence ||
+      authority.journalSequence > projection.lastSequence
+    ) {
+      return authorityBindingRecovery("authority_binding_invalid", ["May runtime binding is not exactly bound to the active authority and mission projection."]);
+    }
+
+    return Object.freeze({
+      state: "ready",
+      authority: freezeAuthority(authority),
+      bindingWrapper: freezeBindingWrapper(wrapper),
+      originalSequence: projection.lastSequence,
+    });
+  } catch {
+    return authorityBindingRecovery("authority_binding_invalid", ["Authority and runtime-binding inspection failed."]);
+  }
 }
 
 function snapshotInput(input: unknown): InputSnapshot {
@@ -1001,11 +1146,26 @@ export async function runGovernedMayDispatchStepV1(
     };
   }
 
+  const authoritySnapshot = deriveActiveMayAuthorityV1(journal.value.projection);
+  if (authoritySnapshot.state === "recovery_required") {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: authoritySnapshot.code,
+      errors: authoritySnapshot.errors,
+      evidence: Object.freeze({}),
+    };
+  }
+
   return {
     state: "recovery_required",
     readiness: "indeterminate",
     code: "implementation_incomplete",
     errors: Object.freeze(["Governed May dispatch execution is not implemented."]),
-    evidence: Object.freeze({}),
+    evidence: Object.freeze({
+      authorityRef: authoritySnapshot.authority.authorityRef,
+      bindingId: authoritySnapshot.bindingWrapper.binding.bindingId,
+      originalSequence: authoritySnapshot.originalSequence,
+    }),
   };
 }
