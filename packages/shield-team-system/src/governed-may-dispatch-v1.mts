@@ -458,18 +458,13 @@ function freezeBindingWrapper(wrapper: Schema9RuntimeBindingV1): Schema9RuntimeB
   return Object.freeze(snapshot);
 }
 
-function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): ActiveMayAuthoritySnapshot {
+function deriveRecordedMayAuthorityV1(projection: ProfileAwareProjectionV1): ActiveMayAuthoritySnapshot {
   try {
-    if (
-      projection.authorization !== "authorized" ||
-      (projection.execution !== "not-started" && projection.execution !== "running") ||
-      !Number.isSafeInteger(projection.lastSequence) ||
-      projection.lastSequence < 0
-    ) {
-      return authorityBindingRecovery("mission_state_invalid", ["Mission authorization, execution, or sequence is not dispatchable."]);
+    if (!Number.isSafeInteger(projection.lastSequence) || projection.lastSequence < 0) {
+      return authorityBindingRecovery("mission_state_invalid", ["Mission sequence is invalid."]);
     }
-    if (projection.implementationAuthority === null || projection.implementationAuthorityState !== "authorized") {
-      return authorityBindingRecovery("authority_binding_invalid", ["Active Wheels Up implementation authority is missing."]);
+    if (projection.implementationAuthority === null) {
+      return authorityBindingRecovery("authority_binding_invalid", ["Recorded Wheels Up implementation authority is missing."]);
     }
 
     const checkedAuthority = validateImplementationAuthorityV1(projection.implementationAuthority);
@@ -488,11 +483,20 @@ function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): Activ
       return authorityBindingRecovery("authority_binding_invalid", ["Implementation authority identity or digest is stale or mismatched."]);
     }
 
-    const mayBindings = projection.activeRuntimeBindings.filter((candidate) => candidate.binding.seatId === "may");
-    if (mayBindings.length !== 1) {
-      return authorityBindingRecovery("authority_binding_invalid", ["Exactly one active May runtime binding is required."]);
+    const mayBindings = projection.runtimeBindings.filter((candidate) =>
+      candidate.binding.seatId === "may" &&
+      candidate.implementationAuthorityRef === authority.authorityRef &&
+      candidate.implementationAuthorityDigest === authorityDigest
+    );
+    if (mayBindings.length === 0) {
+      return authorityBindingRecovery("authority_binding_invalid", ["A recorded May runtime binding is required for this authority."]);
     }
-    const checkedBinding = validateSchema9RuntimeBindingV1(mayBindings[0]);
+    const orderedMayBindings = [...mayBindings].sort((left, right) =>
+      right.binding.recordedAtSequence - left.binding.recordedAtSequence ||
+      right.binding.bindingVersion - left.binding.bindingVersion ||
+      right.binding.bindingId.localeCompare(left.binding.bindingId)
+    );
+    const checkedBinding = validateSchema9RuntimeBindingV1(orderedMayBindings[0]);
     if (checkedBinding.state === "invalid") {
       return authorityBindingRecovery("authority_binding_invalid", ["May runtime binding is malformed.", ...checkedBinding.errors]);
     }
@@ -503,7 +507,6 @@ function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): Activ
       return authorityBindingRecovery("authority_binding_invalid", subset.errors);
     }
     if (
-      binding.lifecycleState !== "active" ||
       wrapper.implementationAuthorityRef !== authority.authorityRef ||
       wrapper.implementationAuthorityDigest !== authorityDigest ||
       wrapper.implementationAuthoritySequence !== authority.journalSequence ||
@@ -521,7 +524,7 @@ function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): Activ
       binding.recordedAtSequence > projection.lastSequence ||
       authority.journalSequence > projection.lastSequence
     ) {
-      return authorityBindingRecovery("authority_binding_invalid", ["May runtime binding is not exactly bound to the active authority and mission projection."]);
+      return authorityBindingRecovery("authority_binding_invalid", ["May runtime binding is not exactly bound to the recorded authority and mission projection."]);
     }
 
     return Object.freeze({
@@ -533,6 +536,31 @@ function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): Activ
   } catch {
     return authorityBindingRecovery("authority_binding_invalid", ["Authority and runtime-binding inspection failed."]);
   }
+}
+
+function deriveActiveMayAuthorityV1(projection: ProfileAwareProjectionV1): ActiveMayAuthoritySnapshot {
+  const recorded = deriveRecordedMayAuthorityV1(projection);
+  if (recorded.state === "recovery_required") return recorded;
+  if (
+    projection.authorization !== "authorized" ||
+    (projection.execution !== "not-started" && projection.execution !== "running")
+  ) {
+    return authorityBindingRecovery("mission_state_invalid", ["Mission authorization or execution is not dispatchable."]);
+  }
+  if (projection.implementationAuthorityState !== "authorized") {
+    return authorityBindingRecovery("authority_binding_invalid", ["Active Wheels Up implementation authority is missing."]);
+  }
+  const activeMayBindings = projection.activeRuntimeBindings.filter(({ binding }) => binding.seatId === "may");
+  if (
+    activeMayBindings.length !== 1 ||
+    activeMayBindings[0].binding.bindingId !== recorded.bindingWrapper.binding.bindingId ||
+    activeMayBindings[0].binding.bindingVersion !== recorded.bindingWrapper.binding.bindingVersion ||
+    canonicalJson(activeMayBindings[0]) !== canonicalJson(recorded.bindingWrapper) ||
+    recorded.bindingWrapper.binding.lifecycleState !== "active"
+  ) {
+    return authorityBindingRecovery("authority_binding_invalid", ["Exactly one matching active May runtime binding is required."]);
+  }
+  return recorded;
 }
 
 function selectCurrentFuryEvidenceV1(
@@ -954,6 +982,8 @@ function snapshotHelicarrierManifestV0(
   manifestBytes: Uint8Array,
   promptBytes: Uint8Array,
   provenanceBytes: Uint8Array,
+  expected: Readonly<Record<"irDigest" | "governanceDigest" | "registryDigest" | "fixtureDigest" | "contextDigest" | "rendererDigest" | "targetProfileDigest", string>>,
+  receipt: Readonly<{ promptDigest: string; provenanceDigest: string; manifestDigest: string }>,
 ): HelicarrierManifestSnapshot {
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes);
@@ -981,7 +1011,11 @@ function snapshotHelicarrierManifestV0(
       value.promptByteLength !== promptBytes.byteLength ||
       value.provenanceByteLength !== provenanceBytes.byteLength ||
       value.promptDigest !== protocolDigest("shield:dispatch:prompt:v0", promptBytes) ||
-      value.provenanceDigest !== protocolDigest("shield:dispatch:provenance:v0", provenanceBytes)
+      value.provenanceDigest !== protocolDigest("shield:dispatch:provenance:v0", provenanceBytes) ||
+      Object.entries(expected).some(([field, digest]) => value[field] !== digest) ||
+      receipt.promptDigest !== createHash("sha256").update(promptBytes).digest("hex") ||
+      receipt.provenanceDigest !== createHash("sha256").update(provenanceBytes).digest("hex") ||
+      receipt.manifestDigest !== createHash("sha256").update(manifestBytes).digest("hex")
     ) throw new Error("manifest bindings are invalid");
     return { state: "ready", value: Object.freeze({ ...value }) };
   } catch {
@@ -1853,13 +1887,13 @@ export async function runGovernedMayDispatchStepV1(
     };
   }
 
-  const authoritySnapshot = deriveActiveMayAuthorityV1(journal.value.projection);
-  if (authoritySnapshot.state === "recovery_required") {
+  const recordedAuthoritySnapshot = deriveRecordedMayAuthorityV1(journal.value.projection);
+  if (recordedAuthoritySnapshot.state === "recovery_required") {
     return {
       state: "recovery_required",
       readiness: "indeterminate",
-      code: authoritySnapshot.code,
-      errors: authoritySnapshot.errors,
+      code: recordedAuthoritySnapshot.code,
+      errors: recordedAuthoritySnapshot.errors,
       evidence: Object.freeze({}),
     };
   }
@@ -1889,7 +1923,7 @@ export async function runGovernedMayDispatchStepV1(
       evidence: Object.freeze({}),
     };
   }
-  const furySelection = selectCurrentFuryEvidenceV1(furyLedger.value.records, authoritySnapshot);
+  const furySelection = selectCurrentFuryEvidenceV1(furyLedger.value.records, recordedAuthoritySnapshot);
   if (furySelection.state === "recovery_required") {
     return {
       ...furySelection,
@@ -1902,7 +1936,7 @@ export async function runGovernedMayDispatchStepV1(
   try {
     dispatchLedger = await dependenciesSnapshot.value.readDispatchReceipts({
       repositoryRoot: inputSnapshot.value.repositoryRoot,
-      repositoryId: authoritySnapshot.authority.repositoryId,
+      repositoryId: recordedAuthoritySnapshot.authority.repositoryId,
       repositoryWorkspaceId: furySelection.record.furyDispatchIdentity.repositoryWorkspaceId,
     });
   } catch {
@@ -1927,7 +1961,7 @@ export async function runGovernedMayDispatchStepV1(
     furyLedger.value.records,
     dispatchLedger.value.entries,
     furySelection,
-    authoritySnapshot,
+    recordedAuthoritySnapshot,
   );
   if (furyEvaluation.state === "recovery_required") {
     return {
@@ -1939,7 +1973,7 @@ export async function runGovernedMayDispatchStepV1(
   const mayReplay = classifyGovernedMayReceiptReplayV1(
     dispatchLedger.value.entries,
     dispatchLedger.value.projections,
-    authoritySnapshot,
+    recordedAuthoritySnapshot,
     furyEvaluation,
   );
   if (mayReplay.state === "recovery_required") {
@@ -1962,7 +1996,37 @@ export async function runGovernedMayDispatchStepV1(
         originalSequence: mayReplay.originalSequence,
         terminalState: mayReplay.receipt.state,
         furyEvidenceId: furyEvaluation.evidence.evidenceId,
+        furyEvidenceDigest: furyEvaluation.evidence.evidenceDigest,
+        furyPlanDigest: furyEvaluation.evidence.planDigest,
+        blueprintArtifactId: furyEvaluation.evidence.blueprintArtifactId,
+        blueprintArtifactPath: furyEvaluation.evidence.blueprintArtifactPath,
+        blueprintRevision: furyEvaluation.evidence.repositoryRevisionId,
+        missionId: mayReplay.receipt.parentMissionId,
+        missionRevisionId: mayReplay.receipt.parentMissionRevision,
+        subjectId: mayReplay.receipt.subjectId,
+        subjectRevision: mayReplay.receipt.subjectRevision,
+        repositoryId: mayReplay.receipt.repositoryId,
+        repositoryWorkspaceId: mayReplay.receipt.repositoryWorkspaceId,
+        repositoryRevision: mayReplay.receipt.repositoryRevision,
+        artifactId: mayReplay.receipt.artifactId,
+        artifactRevision: mayReplay.receipt.artifactRevision,
+        configuredRuntime: mayReplay.receipt.configuredRuntime,
+        requestedRuntime: mayReplay.receipt.requestedRuntime,
+        toolExecution: mayReplay.receipt.toolExecution,
+        runtimeHostHistory: mayReplay.receipt.runtimeHostHistory,
+        executorHostHistory: mayReplay.receipt.executorHostHistory,
+        outputEvidenceRefs: mayReplay.receipt.outputEvidenceRefs,
       }),
+    };
+  }
+  const authoritySnapshot = deriveActiveMayAuthorityV1(journal.value.projection);
+  if (authoritySnapshot.state === "recovery_required") {
+    return {
+      state: "recovery_required",
+      readiness: "indeterminate",
+      code: authoritySnapshot.code,
+      errors: authoritySnapshot.errors,
+      evidence: Object.freeze({}),
     };
   }
   const originalSequence = mayReplay.originalSequence;
@@ -2019,6 +2083,15 @@ export async function runGovernedMayDispatchStepV1(
   if (envelopeSnapshot.state === "blocked") {
     return { ...envelopeSnapshot, readiness: "blocked" };
   }
+  const expectedManifestDigests = Object.freeze({
+    irDigest: protocolDigest("shield:dispatch:ir:v0", envelopeSnapshot.canonicalBytes),
+    governanceDigest: protocolDigest("shield:dispatch:governance:v0", new TextEncoder().encode(canonicalJson(authoritySnapshot.authority))),
+    registryDigest: protocolDigest("shield:dispatch:registry:v0", new TextEncoder().encode(canonicalJson(dependenciesSnapshot.value.validationCommands))),
+    fixtureDigest: protocolDigest("shield:dispatch:fixture:v0", blueprintSnapshot.value),
+    contextDigest: protocolDigest("shield:dispatch:context:v0", new TextEncoder().encode(canonicalJson(furyEvaluation.expectedBinding))),
+    rendererDigest: dependenciesSnapshot.value.helicarrier.certification.frozenDigests.rendererSpecSha256,
+    targetProfileDigest: dependenciesSnapshot.value.helicarrier.certification.frozenDigests.targetProfileSha256,
+  });
   const helicarrierTrust = Object.freeze({
     contractVersion: "governed-may-helicarrier-trust.v1",
     missionRevisionId: authoritySnapshot.authority.missionRevisionId,
@@ -2028,6 +2101,7 @@ export async function runGovernedMayDispatchStepV1(
     blueprintByteLength: blueprintSnapshot.value.byteLength,
     blueprintBytesBase64: Buffer.from(blueprintSnapshot.value).toString("base64"),
     dispatchEnvelopeDigest: envelopeSnapshot.digest,
+    expectedManifestDigests,
   });
   const helicarrierResult = runHelicarrierV0(Object.freeze({
     dispatchId: dispatchIdentity.packetId,
@@ -2046,6 +2120,8 @@ export async function runGovernedMayDispatchStepV1(
     helicarrierResult.value.output.manifestBytes,
     helicarrierResult.value.output.promptBytes,
     helicarrierResult.value.output.provenanceBytes,
+    expectedManifestDigests,
+    helicarrierResult.value.receipt,
   );
   if (manifestSnapshot.state === "blocked") {
     return { ...manifestSnapshot, readiness: "blocked" };
@@ -2308,15 +2384,17 @@ export async function runGovernedMayDispatchStepV1(
         effectClass: plan.effectClass,
         effectKey: plan.effectKey,
         summary: `Governed May control failed closed: ${error instanceof Error ? error.message : "unknown"}.`,
-        evidenceRefs: [`not-attempted:${plan.cycleId}`],
+        evidenceRefs: [`may-control:${claimResult.value.receipt.childSessionId}:failed`],
       };
     }
   };
 
   let missionCycleResult: MissionCycleResultV1 | undefined;
+  let postClaimDrift = false;
   try {
     await loadFreshBoundary(runnerPlan.value, runnerPlan.decisionId);
   } catch {
+    postClaimDrift = true;
     missionCycleResult = {
       outcome: "blocked",
       missionId: authoritySnapshot.authority.missionId,
@@ -2385,6 +2463,79 @@ export async function runGovernedMayDispatchStepV1(
   if (missionCycleResult.outcome === "uncertain") {
     return { state: "recovery_required", readiness: "dispatch_ready", code: "mission_cycle_uncertain", errors: Object.freeze([missionCycleResult.reasonCode]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId, cycleId: runnerPlan.value.cycleId }) };
   }
+  if (missionCycleResult.outcome !== "advanced" && !postClaimDrift) {
+    return { state: "recovery_required", readiness: "dispatch_ready", code: "mission_cycle_unproven", errors: Object.freeze(["Mission-cycle outcome does not prove an effect-safe dispatch terminal."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId, cycleId: runnerPlan.value.cycleId }) };
+  }
+  if (
+    missionCycleResult.outcome === "advanced" &&
+    (
+      missionCycleResult.missionId !== authoritySnapshot.authority.missionId ||
+      missionCycleResult.subjectId !== authoritySnapshot.authority.subjectId ||
+      missionCycleResult.revisionId !== authoritySnapshot.authority.missionRevisionId ||
+      missionCycleResult.sequence !== originalSequence + 1 ||
+      missionCycleResult.accountableNextSeat !== "hill" ||
+      missionCycleResult.cycleId !== runnerPlan.value.cycleId ||
+      missionCycleResult.effectKey !== runnerPlan.value.effectKey
+    )
+  ) {
+    return { state: "recovery_required", readiness: "dispatch_ready", code: "mission_cycle_unproven", errors: Object.freeze(["Advanced mission-cycle result is not exactly bound to the governed dispatch."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId }) };
+  }
+
+  const proveCompletedReadbacks = async (): Promise<void> => {
+    const [auditRead, controlRead, journalRead] = await Promise.all([
+      permissionAudit.read(),
+      controlStore.read(),
+      dependenciesSnapshot.value.readMissionJournal({
+        repositoryRoot: inputSnapshot.value.repositoryRoot,
+        configuredJournalPath: inputSnapshot.value.configuredJournalPath,
+        missionId: inputSnapshot.value.missionId,
+      }),
+    ]);
+    if (!plainObject(auditRead) || !Array.isArray(auditRead.entries)) throw new Error("audit_readback_invalid");
+    if (!plainObject(controlRead) || !Array.isArray(controlRead.orderedEvents) || !plainObject(controlRead.terminalState)) throw new Error("control_readback_invalid");
+    if (journalRead.state === "invalid" || journalRead.value.kind !== "profile-aware") throw new Error("journal_readback_invalid");
+    const outerAudit = auditRead.entries.filter((entry) =>
+      plainObject(entry) &&
+      entry.missionId === authoritySnapshot.authority.missionId &&
+      entry.subjectId === authoritySnapshot.authority.subjectId &&
+      entry.seatId === "may" &&
+      entry.reasoningRuntimeId === binding.reasoningRuntimeId &&
+      entry.toolExecutorId === binding.toolExecutorId &&
+      entry.bindingId === binding.bindingId &&
+      entry.effectKey === runnerPlan.value.effectKey
+    ) as Array<Record<string, unknown>>;
+    const decisions = outerAudit.filter(({ recordType, outcome }) => recordType === "permission.decision" && outcome === "allow");
+    const invocations = outerAudit.filter(({ recordType, outcome }) => recordType === "tool.invocation" && outcome === "allow");
+    const results = outerAudit.filter(({ recordType, outcome }) => recordType === "tool.result" && outcome === "completed");
+    if (
+      decisions.length !== 1 || invocations.length !== 1 || results.length !== 1 ||
+      decisions[0].decisionId !== invocations[0].decisionId || decisions[0].decisionId !== results[0].decisionId
+    ) throw new Error("audit_identity_mismatch");
+    const terminalState = controlRead.terminalState as Record<string, unknown>;
+    const controlEvents = controlRead.orderedEvents as Array<Record<string, unknown>>;
+    if (
+      terminalState.state !== "terminal" || terminalState.code !== "may_control_completed" ||
+      controlEvents.length < 2 ||
+      controlEvents.some((event) => !plainObject(event) || event.sessionId !== claimResult.value.receipt.childSessionId) ||
+      controlEvents.filter(({ code }) => code === "may_control_started").length !== 1 ||
+      controlEvents.filter(({ code }) => code === "may_control_completed").length !== 1
+    ) throw new Error("control_terminal_mismatch");
+    const projection = journalRead.value.projection;
+    const effects = projection.effects.filter(({ cycleId, effectKey }) => cycleId === runnerPlan.value.cycleId && effectKey === runnerPlan.value.effectKey);
+    if (
+      missionCycleResult?.outcome !== "advanced" ||
+      projection.lastSequence !== missionCycleResult.sequence ||
+      effects.length !== 1
+    ) throw new Error("mission_effect_mismatch");
+  };
+
+  if (missionCycleResult.outcome === "advanced") {
+    try {
+      await proveCompletedReadbacks();
+    } catch {
+      return { state: "recovery_required", readiness: "dispatch_ready", code: "preterminal_readback_invalid", errors: Object.freeze(["Required audit, control, or mission readback is missing or mismatched."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId }) };
+    }
+  }
   const terminalKind = missionCycleResult.outcome === "advanced" ? "dispatch.completed" : "dispatch.failed";
   let terminalEvent;
   try {
@@ -2441,29 +2592,29 @@ export async function runGovernedMayDispatchStepV1(
   }
 
   try {
-    const [finalDispatch, finalPermissionAudit, finalControl, finalJournal] = await Promise.all([
-      dependenciesSnapshot.value.readDispatchReceipts({
+    if (missionCycleResult.outcome === "advanced") await proveCompletedReadbacks();
+    const finalDispatch = await dependenciesSnapshot.value.readDispatchReceipts({
         repositoryRoot: inputSnapshot.value.repositoryRoot,
         repositoryId: authoritySnapshot.authority.repositoryId,
         repositoryWorkspaceId: workspaceBinding.value.repositoryWorkspaceId,
-      }),
-      permissionAudit.read(),
-      controlStore.read(),
-      dependenciesSnapshot.value.readMissionJournal({
-        repositoryRoot: inputSnapshot.value.repositoryRoot,
-        configuredJournalPath: inputSnapshot.value.configuredJournalPath,
-        missionId: inputSnapshot.value.missionId,
-      }),
-    ]);
+      });
+    const matchingTerminal = finalDispatch.state === "valid"
+      ? finalDispatch.value.projections.filter(({ receiptId }) => receiptId === terminalAppend.value.receipt.receiptId)
+      : [];
     if (
       finalDispatch.state === "invalid" ||
-      !plainObject(finalPermissionAudit) ||
-      !plainObject(finalControl) ||
-      finalJournal.state === "invalid" ||
-      finalJournal.value.kind !== "profile-aware" ||
-      finalJournal.value.projection.missionId !== authoritySnapshot.authority.missionId ||
-      finalJournal.value.projection.brief.revisionId !== authoritySnapshot.authority.missionRevisionId ||
-      finalJournal.value.projection.lastSequence < originalSequence
+      matchingTerminal.length !== 1 ||
+      matchingTerminal[0].state !== terminalAppend.value.receipt.state ||
+      matchingTerminal[0].dispatchId !== terminalAppend.value.receipt.dispatchId ||
+      matchingTerminal[0].childSessionId !== terminalAppend.value.receipt.childSessionId ||
+      matchingTerminal[0].repositoryRevision !== authoritySnapshot.authority.headRevision ||
+      matchingTerminal[0].configuredRuntime.runtimeId !== binding.reasoningRuntimeId ||
+      matchingTerminal[0].toolExecution.kind !== "tool.execution.requested" ||
+      matchingTerminal[0].toolExecution.executorBindingRef !== binding.bindingId ||
+      matchingTerminal[0].runtimeHostHistory.at(-1)?.runtimeId !== binding.reasoningRuntimeId ||
+      matchingTerminal[0].executorHostHistory.at(-1)?.executorId !== binding.toolExecutorId ||
+      !matchingTerminal[0].outputEvidenceRefs?.includes(runnerPlan.value.cycleId) ||
+      !matchingTerminal[0].outputEvidenceRefs?.includes(runnerPlan.value.effectKey)
     ) throw new Error("final_readback_mismatch");
   } catch {
     return { state: "recovery_required", readiness: "dispatch_ready", code: "final_readback_invalid", errors: Object.freeze(["One or more final durable readbacks could not be proven exact."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId, terminalState: terminalAppend.value.receipt.state }) };

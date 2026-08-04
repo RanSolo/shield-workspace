@@ -126,6 +126,7 @@ function validProjection(overrides = {}) {
     implementationAuthority: authority,
     implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
     implementationAuthorityState: "authorized",
+    runtimeBindings: [bindingWrapper],
     activeRuntimeBindings: [bindingWrapper],
     lastSequence: 4,
     ...overrides,
@@ -300,19 +301,19 @@ function passingHelicarrier(capture = {}) {
       const provenanceBytes = new TextEncoder().encode("{}\n");
       const manifest = {
         compilerId: certification.compilerId,
-        contextDigest: "1".repeat(64),
-        fixtureDigest: "2".repeat(64),
+        contextDigest: trust.expectedManifestDigests.contextDigest,
+        fixtureDigest: trust.expectedManifestDigests.fixtureDigest,
         format: "compilation-manifest.v0",
-        governanceDigest: "3".repeat(64),
-        irDigest: "4".repeat(64),
+        governanceDigest: trust.expectedManifestDigests.governanceDigest,
+        irDigest: trust.expectedManifestDigests.irDigest,
         promptByteLength: promptBytes.byteLength,
         promptDigest: protocolDigest("shield:dispatch:prompt:v0", promptBytes),
         provenanceByteLength: provenanceBytes.byteLength,
         provenanceDigest: protocolDigest("shield:dispatch:provenance:v0", provenanceBytes),
-        registryDigest: "5".repeat(64),
-        rendererDigest: "6".repeat(64),
+        registryDigest: trust.expectedManifestDigests.registryDigest,
+        rendererDigest: trust.expectedManifestDigests.rendererDigest,
         rendererId: certification.rendererId,
-        targetProfileDigest: "7".repeat(64),
+        targetProfileDigest: trust.expectedManifestDigests.targetProfileDigest,
         targetProfileId: certification.targetProfileId,
       };
       if (typeof capture.mutateManifest === "function") capture.mutateManifest(manifest);
@@ -524,6 +525,19 @@ function validInput() {
 
 function validDependencies(callCounts, overrides = {}) {
   let claimed;
+  let terminalProjection;
+  let missionCompletion;
+  let auditEntries = [];
+  let controlReadback = { orderedEvents: [], terminalState: { state: "none" } };
+  const readMissionJournalOverride = overrides.readMissionJournal;
+  const readDispatchReceiptsOverride = overrides.readDispatchReceipts;
+  const runMissionCycleOverride = overrides.runMissionCycle;
+  const appendDispatchReceiptOverride = overrides.appendDispatchReceipt;
+  const remainingOverrides = { ...overrides };
+  delete remainingOverrides.readMissionJournal;
+  delete remainingOverrides.readDispatchReceipts;
+  delete remainingOverrides.runMissionCycle;
+  delete remainingOverrides.appendDispatchReceipt;
   const sentinel = (name) => (..._args) => {
     callCounts[name] = (callCounts[name] ?? 0) + 1;
     throw new Error(`unexpected dependency call: ${name}`);
@@ -558,31 +572,49 @@ function validDependencies(callCounts, overrides = {}) {
     runMayControlLoop: sentinel("runMayControlLoop"),
     createPermissionAuditStore: () => ({
       ledgerId: "permission-audit:test",
-      read: async () => ({ records: [], receipt: null }),
+      read: async () => ({ entries: structuredClone(auditEntries), bytes: "", missing: false }),
       appendIfAbsent: async () => ({ state: "appended" }),
     }),
     createMayControlEventStore: () => ({
       sessionId: "session:may-control:test",
-      read: async () => ({ orderedEvents: [], terminalState: null }),
+      read: async () => structuredClone(controlReadback),
       appendControlEvent: async () => ({ state: "appended" }),
     }),
-    readMissionJournal: sentinel("readMissionJournal"),
+    readMissionJournal: async (input) => {
+      const read = await (readMissionJournalOverride ?? sentinel("readMissionJournal"))(input);
+      if (!missionCompletion || read.state !== "valid" || read.value.kind !== "profile-aware") return read;
+      return {
+        ...read,
+        value: {
+          ...read.value,
+          projection: {
+            ...read.value.projection,
+            lastSequence: missionCompletion.sequence,
+            effects: [{ cycleId: missionCompletion.cycleId, effectKey: missionCompletion.effectKey }],
+          },
+        },
+      };
+    },
     appendMissionEntry: sentinel("appendMissionEntry"),
     readFuryEvidence: sentinel("readFuryEvidence"),
-    readDispatchReceipts: sentinel("readDispatchReceipts"),
+    readDispatchReceipts: async (input) => {
+      const read = await (readDispatchReceiptsOverride ?? sentinel("readDispatchReceipts"))(input);
+      if (read.state !== "valid" || terminalProjection === undefined) return read;
+      return { ...read, value: { ...read.value, projections: [...read.value.projections, terminalProjection] } };
+    },
     claimDispatchPacket: async (input) => {
       const result = claimedPacket(input);
       claimed = result.started;
       return result;
     },
-    appendDispatchReceipt: async ({ event }) => {
+    appendDispatchReceipt: appendDispatchReceiptOverride ?? (async ({ event }) => {
       assert.ok(claimed);
       const replay = replaySeatDispatchReceiptsV1([
         claimed,
         event,
       ]);
       assert.equal(replay.state, "valid");
-      return {
+      const result = {
         state: "valid",
         value: {
           logPath: "/tmp/dispatch-receipts.jsonl",
@@ -592,8 +624,12 @@ function validDependencies(callCounts, overrides = {}) {
           receipt: replay.projections[0],
         },
       };
-    },
-    runMissionCycle: async (input) => {
+      terminalProjection = result.value.receipt;
+      return result;
+    }),
+    runMissionCycle: async (input, dependencies) => {
+      const result = runMissionCycleOverride === undefined
+        ? (() => {
       const identity = deriveMissionCycleIdentityV1(input);
       return {
         outcome: "advanced",
@@ -605,8 +641,38 @@ function validDependencies(callCounts, overrides = {}) {
         cycleId: identity.cycleId,
         effectKey: identity.effectKey,
       };
+          })()
+        : await runMissionCycleOverride(input, dependencies);
+      if (result.outcome === "advanced") {
+        missionCompletion = result;
+        const binding = validProjection().activeRuntimeBindings[0].binding;
+        const shared = {
+          missionId: input.missionId,
+          subjectId: input.expectedSubjectId,
+          seatId: "may",
+          reasoningRuntimeId: binding.reasoningRuntimeId,
+          toolExecutorId: binding.toolExecutorId,
+          bindingId: binding.bindingId,
+          effectKey: result.effectKey,
+          decisionId: `decision:test:${result.cycleId}`,
+        };
+        auditEntries = [
+          { ...shared, recordType: "permission.decision", outcome: "allow" },
+          { ...shared, recordType: "tool.invocation", outcome: "allow" },
+          { ...shared, recordType: "tool.result", outcome: "completed" },
+        ];
+        const sessionId = claimed.childSessionId;
+        controlReadback = {
+          orderedEvents: [
+            { sessionId, code: "may_control_started" },
+            { sessionId, code: "may_control_completed" },
+          ],
+          terminalState: { state: "terminal", code: "may_control_completed" },
+        };
+      }
+      return result;
     },
-    ...overrides,
+    ...remainingOverrides,
   };
 }
 
@@ -932,6 +998,70 @@ test("blocks a Helicarrier manifest whose prompt binding is stale", async () => 
   assert.equal(callCounts.claimDispatchPacket, undefined);
 });
 
+test("blocks a Helicarrier manifest whose semantic digest bindings are stale", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier({ mutateManifest: (manifest) => { manifest.irDigest = "0".repeat(64); } }),
+  }));
+
+  assert.equal(result.state, "blocked");
+  assert.equal(result.code, "helicarrier_invalid");
+});
+
+test("keeps a completed claim nonterminal when exact runtime readbacks are absent", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  let terminalAppends = 0;
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+    createPermissionAuditStore: () => ({ ledgerId: "permission-audit:test", read: async () => ({ entries: [] }), appendIfAbsent: async () => ({ state: "appended" }) }),
+    appendDispatchReceipt: async () => { terminalAppends += 1; throw new Error("must not append"); },
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "preterminal_readback_invalid");
+  assert.equal(terminalAppends, 0);
+});
+
+test("does not convert a preexisting mission effect into a failed terminal", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  let terminalAppends = 0;
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+    runMissionCycle: async (input) => ({
+      outcome: "complete",
+      missionId: input.missionId,
+      subjectId: input.expectedSubjectId,
+      revisionId: input.expectedRevisionId,
+      sequence: input.expectedSequence,
+      accountableNextSeat: "hill",
+      reasonCode: "complete",
+    }),
+    appendDispatchReceipt: async () => { terminalAppends += 1; throw new Error("must not append"); },
+  }));
+
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.code, "mission_cycle_unproven");
+  assert.equal(terminalAppends, 0);
+});
+
 test("blocks stale permission context and out-of-scope dirty paths before claim", async () => {
   for (const override of [
     {
@@ -1098,7 +1228,7 @@ test("replays a terminal governed May receipt using its durable original sequenc
     originalSequence: 4,
     terminalState: "completed",
   });
-  const advancedProjection = validProjection({ lastSequence: 5 });
+  const advancedProjection = validProjection({ lastSequence: 5, implementationAuthorityState: "revoked", activeRuntimeBindings: [] });
   const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: advancedProjection } }),
     readFuryEvidence: async () => validFuryLedger([furyRecord]),
@@ -1111,6 +1241,10 @@ test("replays a terminal governed May receipt using its durable original sequenc
   assert.equal(result.evidence.packetId, fresh.evidence.packetId);
   assert.equal(result.evidence.parentSessionId, fresh.evidence.parentSessionId);
   assert.equal(result.evidence.terminalState, "completed");
+  assert.equal(result.evidence.repositoryId, "RanSolo/shield-workspace");
+  assert.equal(result.evidence.repositoryRevision, originalProjection.implementationAuthority.headRevision);
+  assert.equal(result.evidence.configuredRuntime.runtimeId, "runtime:local-may");
+  assert.equal(result.evidence.toolExecution.executorBindingRef, "binding:issue-170:may");
 });
 
 test("fails closed when the dispatch receipt ledger read throws", async () => {
@@ -1178,8 +1312,11 @@ test("fails closed when Fury evidence is stale for the authority head", async ()
 
 test("fails closed when Wheels Up authority is inactive", async () => {
   const projection = validProjection({ implementationAuthorityState: "revoked" });
+  const furyRecord = validFuryRecord(projection);
   const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
   }));
 
   assert.equal(result.state, "recovery_required");
@@ -1190,8 +1327,11 @@ test("fails closed when active May binding is missing or ambiguous", async () =>
   for (const count of [0, 2]) {
     const base = validProjection();
     const projection = { ...base, activeRuntimeBindings: Array.from({ length: count }, () => base.activeRuntimeBindings[0]) };
+    const furyRecord = validFuryRecord(projection);
     const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
       readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+      readFuryEvidence: async () => validFuryLedger([furyRecord]),
+      readDispatchReceipts: async () => validDispatchLedger(furyRecord),
     }));
     assert.equal(result.state, "recovery_required");
     assert.equal(result.code, "authority_binding_invalid");
@@ -1204,8 +1344,11 @@ test("fails closed when the binding authority reference is stale", async () => {
     ...base,
     activeRuntimeBindings: [{ ...base.activeRuntimeBindings[0], implementationAuthorityRef: "authority:stale" }],
   };
+  const furyRecord = validFuryRecord(projection);
   const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
     readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
   }));
 
   assert.equal(result.state, "recovery_required");
