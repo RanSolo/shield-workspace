@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { renameSync } from "node:fs";
 import { mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -307,6 +308,20 @@ test("governed write independently rechecks the planned file identity and exact 
   await assert.rejects(() => runMayToolCall(request(root, "writeFile", {
     path: "src/approved.txt", content: "after\n", expectedSha256: digest("after\n"),
   }), stale), /may_planned_write_mismatch/u);
+
+  await writeFile(join(root, "src/approved.txt"), "before\n", "utf8");
+  const racedPlan = await plannedOperations(root);
+  await writeFile(join(root, "src/replacement.txt"), "before\n", "utf8");
+  const raced = dependencies(root, "writeFile", {
+    plannedToolOperations: racedPlan,
+    nextTemporaryName: () => {
+      renameSync(join(root, "src/replacement.txt"), join(root, "src/approved.txt"));
+      return ".shield-may-12345678.tmp";
+    },
+  });
+  await assert.rejects(() => runMayToolCall(request(root, "writeFile", {
+    path: "src/approved.txt", content: "after\n", expectedSha256: digest("before\n"),
+  }), raced), /may_file_identity_changed/u);
 });
 
 test("governed validation independently rechecks the exact planned executable identity", async (context) => {

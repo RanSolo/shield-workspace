@@ -948,8 +948,14 @@ async function simulateExactMayControl(request, dependencies, onContext = () => 
     const plan = await dependencies.nextCallSlot(specification);
     const context = await dependencies.getAuthorizationContext(plan);
     onContext(context, index);
-    const evidenceRefs = context.attestations.map(({ attestationId }) => attestationId).sort();
-    for (const [recordType, outcome] of [["permission.decision", "allow"], ["tool.invocation", "allow"], ["tool.result", "completed"]]) {
+    const executionContext = await dependencies.getExecutionContext({ decisionId: context.decisionId });
+    const authorizationEvidenceRefs = context.attestations.map(({ attestationId }) => attestationId).sort();
+    const executionEvidenceRefs = executionContext.attestations.map(({ attestationId }) => attestationId).sort();
+    for (const [recordType, outcome, evidenceRefs] of [
+      ["permission.decision", "allow", authorizationEvidenceRefs],
+      ["tool.invocation", "allow", executionEvidenceRefs],
+      ["tool.result", "completed", executionEvidenceRefs],
+    ]) {
       await dependencies.appendIfAbsent({
         recordId: `record:${index}:${recordType}`,
         decisionId: context.decisionId,
@@ -1205,6 +1211,39 @@ test("narrows each May tool call to one capability and its exact three attestati
     ["filesystem_write", "process_execute"],
     ["filesystem_write", "process_execute"],
   ]);
+});
+
+test("accepts fresh execution attestations that differ from authorization attestations", async () => {
+  const projection = validProjection();
+  const furyRecord = validFuryRecord(projection);
+  let contextReads = 0;
+  const result = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(),
+    loadPermissionContext: async (input) => {
+      contextReads += 1;
+      const context = validPermissionContext(validProjection({ lastSequence: input.plan.evaluatedThroughSequence }), input.expectedDecisionId);
+      return {
+        state: "ready",
+        context: {
+          ...context,
+          attestations: context.attestations.map((attestation) => ({
+            ...attestation,
+            attestationId: `${attestation.attestationId}:observation-${contextReads}`,
+          })),
+        },
+      };
+    },
+    runMayControlLoop: simulateExactMayControl,
+    runMissionCycle: runExecutingMissionCycle,
+  }));
+
+  assert.equal(result.state, "completed");
+  assert.ok(contextReads >= 6);
 });
 
 test("validation-only control completion cannot advance the governed mission", async () => {

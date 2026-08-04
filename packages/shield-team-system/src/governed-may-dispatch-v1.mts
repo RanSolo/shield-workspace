@@ -2523,6 +2523,7 @@ export async function runGovernedMayDispatchStepV1(
   let temporaryCounter = 0;
   const plansByDecisionId = new Map<string, RunnerCyclePlan>();
   const contextsByDecisionId = new Map<string, PermissionInvocationContext>();
+  const executionContextsByDecisionId = new Map<string, PermissionInvocationContext>();
   const perToolDecisionOrder: string[] = [];
   const executeTool = async (plan: RunnerCyclePlan): Promise<import("./runner-v1.mjs").RunnerExecutorResult> => {
     try {
@@ -2561,7 +2562,9 @@ export async function runGovernedMayDispatchStepV1(
         getExecutionContext: async (decision: import("./runner-v1.mjs").RunnerPermissionDecision) => {
           const activePlan = plansByDecisionId.get(decision.decisionId);
           if (activePlan === undefined) throw new Error("permission_decision_unbound");
-          return loadContextForPlan(activePlan, decision.decisionId, true);
+          const narrowed = await loadContextForPlan(activePlan, decision.decisionId, true);
+          executionContextsByDecisionId.set(decision.decisionId, narrowed);
+          return narrowed;
         },
         appendIfAbsent: permissionAudit.appendIfAbsent,
         nextResultRecordId: () => `audit:may-control-result:${++resultCounter}`,
@@ -2591,10 +2594,11 @@ export async function runGovernedMayDispatchStepV1(
         const decisionId = perToolDecisionOrder[index];
         const activePlan = plansByDecisionId.get(decisionId);
         const narrowed = contextsByDecisionId.get(decisionId);
+        const executionContext = executionContextsByDecisionId.get(decisionId);
         const expectedToolCallId = events[index + 1].toolCallId;
         const expectedCycleId = `cycle:may-control:${createHash("sha256").update(canonicalJson({ sessionId: claimResult.value.receipt.childSessionId, toolCallId: expectedToolCallId })).digest("base64url")}`;
         const expectedMapping = expectedMappings[index];
-        if (activePlan === undefined || narrowed === undefined || activePlan.cycleId !== expectedCycleId
+        if (activePlan === undefined || narrowed === undefined || executionContext === undefined || activePlan.cycleId !== expectedCycleId
           || activePlan.effectKey !== plannedAuthority.operationEffectKeys[index]
           || activePlan.actionId !== expectedMapping.actionId || activePlan.effectClass !== expectedMapping.effectClass
           || canonicalJson(narrowed.requiredCapabilities) !== canonicalJson([expectedMapping.capability])
@@ -2604,11 +2608,12 @@ export async function runGovernedMayDispatchStepV1(
         const invocation = records.filter(({ recordType, outcome }) => recordType === "tool.invocation" && outcome === "allow");
         const result = records.filter(({ recordType, outcome }) => recordType === "tool.result" && outcome === "completed");
         const attestationIds = narrowed.attestations.map(({ attestationId }) => attestationId).sort();
+        const executionAttestationIds = executionContext.attestations.map(({ attestationId }) => attestationId).sort();
         if (decision.length !== 1 || invocation.length !== 1 || result.length !== 1 || records.length !== 3
           || records.some((record) => record.effectKey !== plannedAuthority.operationEffectKeys[index]
             || record.actionId !== expectedMapping.actionId || record.effectClass !== expectedMapping.effectClass)
           || canonicalJson([...(decision[0].evidenceRefs as string[])].sort()) !== canonicalJson(attestationIds)
-          || canonicalJson([...(invocation[0].evidenceRefs as string[])].sort()) !== canonicalJson(attestationIds)) {
+          || canonicalJson([...(invocation[0].evidenceRefs as string[])].sort()) !== canonicalJson(executionAttestationIds)) {
           throw new Error("may_control_audit_mismatch");
         }
       }

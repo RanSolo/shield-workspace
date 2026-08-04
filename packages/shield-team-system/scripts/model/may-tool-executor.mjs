@@ -502,7 +502,10 @@ async function writeApprovedFile(root, request, args, dependencies, plannedOpera
     await verifyWorkspaceState(dependencies, root, request.baseRevision);
     const rechecked = await confinedTarget(root, args.path);
     const recheckedDigest = await currentDigest(rechecked);
-    if (recheckedDigest !== digest) throw new Error("may_file_identity_changed");
+    const recheckedIdentityMatches = target.info === null
+      ? rechecked.info === null
+      : rechecked.info !== null && regularFileIdentity(rechecked.info) === regularFileIdentity(target.info);
+    if (recheckedDigest !== digest || !recheckedIdentityMatches) throw new Error("may_file_identity_changed");
     await rename(temporaryPath, target.path);
     try {
       await verifyWorkspaceState(dependencies, root, request.baseRevision);
