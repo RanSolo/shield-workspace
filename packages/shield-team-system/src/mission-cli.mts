@@ -1,10 +1,12 @@
 import { constants } from "node:fs";
-import { access, chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile as execFileNode } from "node:child_process";
+import { access, chmod, lstat, mkdir, readFile, realpath as fsRealpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { stdin as input, stdout as outputStream } from "node:process";
 import { parseShieldConfig, type ShieldConfig } from "./config.mjs";
 import {
   createDelegatedAuthorizationEntry,
+  computeRuntimeBindingDigest,
   createDelegatedInvalidationEntry,
   createEvidenceEntry,
   createGovernanceEntry,
@@ -17,13 +19,41 @@ import {
   type ContractResult,
   type SignedHumanEvidence,
   type SupervisedMissionProjection,
+  type TrustedHumanBinding,
   type TrustedBindingRegistry,
 } from "./mission-v2.mjs";
-import { appendSupervisedMissionEntry, initializeSupervisedMissionJournal, readMissionJournalForDisplay, readSupervisedMissionJournal } from "./mission-store.mjs";
-import type { ProfileAwareProjectionV1 } from "./profile-aware-mission-v1.mjs";
+import {
+  appendProfileAwareMissionEntryV1,
+  appendSupervisedMissionEntry,
+  initializeProfileAwareMissionJournalV1,
+  initializeSupervisedMissionJournal,
+  readMissionJournalForDisplay,
+  readSupervisedMissionJournal,
+  type MissionJournalDisplay,
+} from "./mission-store.mjs";
+import {
+  createProfileAwareGovernanceDecisionEntryV1,
+  createProfileAwareImplementationAuthorityEntryV1,
+  createProfileAwareRuntimeBindingRecordedEntryV1,
+  profileAwareMissionIntakeV1,
+  type ProfileAwareMissionBriefContentV1,
+  type ProfileAwareProjectionV1,
+  type SignedProfileEvidenceV1,
+} from "./profile-aware-mission-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import { createSigner, signWithSigner } from "./mission-signer.mjs";
+import {
+  computeImplementationAuthorityDigest,
+  computeSchema9RuntimeBindingDigest,
+  validateImplementationAuthorityV1,
+  validateSchema9RuntimeBindingAuthorizationPayload,
+  validateSchema9RuntimeBindingV1,
+  type ImplementationAuthorityV1,
+  type Schema9RuntimeBindingAuthorizationPayload,
+  type Schema9RuntimeBindingV1,
+} from "./implementation-authority-v1.mjs";
+import type { RuntimeBinding } from "./permission-v1.mjs";
 
 const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
@@ -109,12 +139,132 @@ function unwrap<T>(result: ContractResult<T>): T {
   return result.value;
 }
 
+function produce<T>(action: () => T): T {
+  try { return action(); }
+  catch (error) {
+    throw new MissionCliError(error instanceof Error ? error.message : "Mission contract producer failed.", 1);
+  }
+}
+
 function output(value: unknown, json: boolean, human: string): void {
   process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : `${human}\n`);
 }
 
 function missionPaths(root: string, config: ShieldConfig, missionId: string) {
   return { repositoryRoot: root, configuredJournalPath: config.paths.journals, missionId };
+}
+
+type ProfileAwareJournal = Extract<MissionJournalDisplay, { kind: "profile-aware" }>;
+type ApprovedEffectClass = "behavioral_implementation" | "verification" | "coordination";
+type WheelsUpIntent = {
+  baseRevision: string;
+  modelId: string;
+  approvedRelativePaths: string[];
+  approvedActionIds: string[];
+  approvedEffectClasses: ApprovedEffectClass[];
+  approvedEffectKeys: string[];
+  approvedCapabilities: string[];
+  validationCommandIds: string[];
+};
+type BindIntent = { reasoningRuntimeId: string; toolExecutorId: string };
+type RepositoryObservation = { canonicalRoot: string; branch: string; head: string };
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function closedObject(value: unknown, fields: readonly string[], label: string): Record<string, unknown> {
+  if (!plainObject(value) || Object.keys(value).length !== fields.length || fields.some((field) => !Object.hasOwn(value, field))) {
+    throw new MissionCliError(`${label} must contain exactly: ${fields.join(", ")}.`, 1);
+  }
+  return value;
+}
+
+function wheelsUpIntent(value: unknown): WheelsUpIntent {
+  const fields = [
+    "baseRevision", "modelId", "approvedRelativePaths", "approvedActionIds",
+    "approvedEffectClasses", "approvedEffectKeys", "approvedCapabilities", "validationCommandIds",
+  ] as const;
+  return closedObject(value, fields, "Wheels Up input") as unknown as WheelsUpIntent;
+}
+
+function bindIntent(value: unknown): BindIntent {
+  return closedObject(value, ["reasoningRuntimeId", "toolExecutorId"], "May binding input") as unknown as BindIntent;
+}
+
+function profileAwareBindings(current: ProfileAwareJournal): TrustedHumanBinding[] {
+  const begun = current.entries[0];
+  if (!begun || begun.type !== "mission.begun") throw new MissionCliError("Profile-aware journal has no trusted begin entry.", 1);
+  return begun.payload.trustedBindings.map((binding) => ({ ...binding }));
+}
+
+function coulsonBinding(current: ProfileAwareJournal): TrustedHumanBinding {
+  const matches = profileAwareBindings(current).filter(({ seatId }) => seatId === "coulson");
+  if (matches.length !== 1) throw new MissionCliError("Profile-aware journal requires exactly one frozen Coulson binding.", 1);
+  return matches[0];
+}
+
+async function currentProfileAwareMission(root: string, config: ShieldConfig, missionId: string): Promise<ProfileAwareJournal> {
+  const current = unwrap(await readMissionJournalForDisplay(missionPaths(root, config, missionId)));
+  if (current.kind !== "profile-aware") throw new MissionCliError("Command requires a schema-9 profile-aware mission journal.", 1);
+  return current;
+}
+
+function gitValue(root: string, args: readonly string[]): Promise<string> {
+  return new Promise((resolveValue, reject) => {
+    execFileNode("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      windowsHide: true,
+      env: { LANG: "C", LC_ALL: "C", PATH: process.env.PATH ?? "" },
+    }, (error, stdout) => {
+      if (error) return reject(error);
+      resolveValue(stdout.trim().split("\n")[0] ?? "");
+    });
+  });
+}
+
+async function observeRepository(root: string): Promise<RepositoryObservation> {
+  try {
+    const canonicalRoot = await fsRealpath(root);
+    const top = await gitValue(canonicalRoot, ["rev-parse", "--show-toplevel"]);
+    const canonicalTop = await fsRealpath(top);
+    const branch = await gitValue(canonicalRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    const head = await gitValue(canonicalRoot, ["rev-parse", "HEAD"]);
+    if (canonicalTop !== canonicalRoot || branch.length === 0 || branch === "HEAD" || head.length === 0) {
+      throw new Error("repository identity is not a real attached checkout");
+    }
+    return { canonicalRoot, branch, head };
+  } catch (error) {
+    throw new MissionCliError(`Repository observation failed: ${error instanceof Error ? error.message : String(error)}.`, 1);
+  }
+}
+
+async function validateBaseRevision(observation: RepositoryObservation, baseRevision: string): Promise<void> {
+  if (typeof baseRevision !== "string" || baseRevision.trim() !== baseRevision || baseRevision.length === 0) {
+    throw new MissionCliError("Wheels Up baseRevision is malformed.", 1);
+  }
+  try {
+    await gitValue(observation.canonicalRoot, ["cat-file", "-e", `${baseRevision}^{commit}`]);
+    await gitValue(observation.canonicalRoot, ["merge-base", "--is-ancestor", baseRevision, observation.head]);
+  } catch {
+    throw new MissionCliError("Wheels Up baseRevision must exist and be an ancestor of HEAD.", 1);
+  }
+}
+
+function sameObservation(left: RepositoryObservation, right: RepositoryObservation): boolean {
+  return left.canonicalRoot === right.canonicalRoot && left.branch === right.branch && left.head === right.head;
+}
+
+async function signMissionPayload(binding: TrustedHumanBinding, passcode: string, payload: unknown, missionId: string): Promise<string> {
+  try {
+    return await signWithSigner(binding.signingKeyRef, passcode, payload);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new MissionCliError("No local Coulson signer was found for this mission binding. Run `shield mission signer setup --seat coulson` before beginning new missions, or use detached signed evidence for missions bound to another key.", 1);
+    }
+    if (error instanceof Error) throw new MissionCliError(error.message, 1);
+    throw error;
+  }
 }
 
 async function currentMission(root: string, config: ShieldConfig, missionId: string) {
@@ -160,10 +310,40 @@ function profileAwareStatusText(projection: ProfileAwareProjectionV1): string {
 }
 
 async function begin(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root", "--brief", "--authorization", "--delegation", "--eligibility"], ["--json"]);
+  const options = parseOptions(args, ["--root", "--brief", "--authorization", "--delegation", "--eligibility"], ["--json", "--profile-aware"]);
   const root = await exactRoot(options.values.get("--root"), true);
   const config = await repositoryConfig(root);
-  const brief = unwrap(validateSupervisedMissionBrief(await jsonFile(resolve(root, required(options, "--brief")), "Mission brief")));
+  const briefInput = await jsonFile(resolve(root, required(options, "--brief")), "Mission brief");
+  if (options.flags.has("--profile-aware")) {
+    if (options.values.has("--authorization") || options.values.has("--delegation") || options.values.has("--eligibility")) {
+      throw new MissionCliError("Profile-aware begin cannot include supervised or delegated authorization inputs.");
+    }
+    if (!plainObject(briefInput) || typeof briefInput.missionId !== "string" || typeof briefInput.requireSimmons !== "boolean") {
+      throw new MissionCliError("Profile-aware mission brief identity is malformed.", 1);
+    }
+    const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
+    const bindings = unwrap(validateRepositoryBindings(
+      registry,
+      config.trustedHumanBindingRefs,
+      briefInput.missionId,
+      briefInput.requireSimmons,
+    ));
+    const intake = unwrap(profileAwareMissionIntakeV1({
+      brief: briefInput as unknown as ProfileAwareMissionBriefContentV1,
+      trustedBindings: bindings,
+    }));
+    const initialized = unwrap(await initializeProfileAwareMissionJournalV1({
+      ...missionPaths(root, config, intake.brief.missionId),
+      entry: intake.entry,
+    }));
+    output(
+      { journalPath: initialized.journalPath, projection: initialized.projection },
+      options.flags.has("--json"),
+      `Mission ${intake.brief.missionId} proposed at ${intake.brief.revisionId}.\n${profileAwareStatusText(initialized.projection)}`,
+    );
+    return 0;
+  }
+  const brief = unwrap(validateSupervisedMissionBrief(briefInput));
   const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
   const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, brief.missionId, brief.requireSimmons));
   const authorization = options.values.get("--authorization") ?? "supervised";
@@ -421,7 +601,51 @@ async function authorize(args: string[]): Promise<number> {
   const root = await exactRoot(options.values.get("--root"), true);
   const config = await repositoryConfig(root);
   const missionId = required(options, "--mission-id");
-  const current = await currentMission(root, config, missionId);
+  const displayed = unwrap(await readMissionJournalForDisplay(missionPaths(root, config, missionId)));
+  if (displayed.kind === "profile-aware") {
+    const current = displayed;
+    const satisfied = new Set(current.projection.evidence.map(({ requirementId }) => requirementId));
+    const matching = current.projection.requirements.filter(({ evidenceKind, requiredRoleId, phase, requirementId }) =>
+      evidenceKind === "mission_authorization" && requiredRoleId === "coulson" && phase === "authorization" && !satisfied.has(requirementId));
+    if (matching.length !== 1) throw new MissionCliError("Current profile-aware mission requires exactly one pending Coulson authorization requirement.", 1);
+    const binding = coulsonBinding(current);
+    const sequence = current.projection.lastSequence + 1;
+    const timestamp = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
+    const payload = {
+      schemaVersion: 1 as const,
+      evidenceId: `evidence:coulson:${sequence}`,
+      requirementId: matching[0].requirementId,
+      missionId,
+      revisionId: current.projection.brief.revisionId,
+      seatId: "coulson" as const,
+      evidenceKind: "mission_authorization" as const,
+      decision: "approved" as const,
+      humanPrincipalId: binding.humanPrincipalId,
+      bindingId: binding.bindingId,
+      signingKeyRef: binding.signingKeyRef,
+      sourceRef: `passcode-signer:${missionId}`,
+      timestamp,
+      journalSequence: sequence,
+    };
+    const passcode = await passcodeFromOptions(options);
+    const evidence: SignedProfileEvidenceV1 = {
+      payload,
+      signatureBase64: await signMissionPayload(binding, passcode, payload, missionId),
+    };
+    const fresh = await currentProfileAwareMission(root, config, missionId);
+    if (fresh.projection.lastSequence !== current.projection.lastSequence) {
+      throw new MissionCliError("Mission journal changed while authorization was being signed.", 1);
+    }
+    const entry = produce(() => createProfileAwareGovernanceDecisionEntryV1({
+      projection: fresh.projection,
+      trustedBindings: profileAwareBindings(fresh),
+      evidence,
+    }));
+    const appended = unwrap(await appendProfileAwareMissionEntryV1({ ...missionPaths(root, config, missionId), entry }));
+    output(appended.projection, options.flags.has("--json"), profileAwareStatusText(appended.projection));
+    return 0;
+  }
+  const current = displayed;
   const requirement = current.projection.requirements.find(({ evidenceKind, requiredSeatId, supersedesRequirementId }) => evidenceKind === "mission_authorization" && requiredSeatId === "coulson" && supersedesRequirementId === null);
   if (!requirement) throw new MissionCliError("Current mission has no pending Coulson authorization requirement.", 1);
   const binding = current.projection.trustedBindings.find(({ seatId }) => seatId === "coulson");
@@ -459,6 +683,184 @@ async function authorize(args: string[]): Promise<number> {
   const entry = unwrap(createGovernanceEntry(current.projection, "approve", { payload, signatureBase64 }, null));
   const appended = unwrap(await appendSupervisedMissionEntry({ ...missionPaths(root, config, missionId), entry }));
   output(appended.projection, options.flags.has("--json"), statusText(appended.projection));
+  return 0;
+}
+
+async function wheelsUp(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--passcode-stdin"]);
+  const root = await exactRoot(options.values.get("--root"), true);
+  const config = await repositoryConfig(root);
+  const missionId = required(options, "--mission-id");
+  const current = await currentProfileAwareMission(root, config, missionId);
+  const intent = wheelsUpIntent(await jsonFile(resolve(root, required(options, "--input")), "Wheels Up input"));
+  if (intent.modelId === "may" || current.projection.brief.participants.some(({ seatId }) => seatId === intent.modelId)) {
+    throw new MissionCliError("Wheels Up model identity must be distinct from May and every mission participant.", 1);
+  }
+  const observation = await observeRepository(root);
+  await validateBaseRevision(observation, intent.baseRevision);
+  const binding = coulsonBinding(current);
+  const sequence = current.projection.lastSequence + 1;
+  const timestamp = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
+  const authority = unwrap(validateImplementationAuthorityV1({
+    schemaVersion: 1,
+    contractVersion: "implementation-authority.v1",
+    authorityKind: "wheels_up",
+    authorityRef: `authority:${missionId}:${sequence}`,
+    missionId,
+    subjectId: current.projection.brief.subjectId,
+    seatId: "may",
+    missionRevisionId: current.projection.brief.revisionId,
+    artifactRevisionId: observation.head,
+    repositoryId: config.repositoryId,
+    canonicalWritableRoot: observation.canonicalRoot,
+    branch: observation.branch,
+    baseRevision: intent.baseRevision,
+    headRevision: observation.head,
+    modelId: intent.modelId,
+    approvedRelativePaths: intent.approvedRelativePaths,
+    approvedActionIds: intent.approvedActionIds,
+    approvedEffectClasses: intent.approvedEffectClasses,
+    approvedEffectKeys: intent.approvedEffectKeys,
+    approvedCapabilities: intent.approvedCapabilities,
+    validationCommandIds: intent.validationCommandIds,
+    journalSequence: sequence,
+    humanPrincipalId: binding.humanPrincipalId,
+    humanBindingId: binding.bindingId,
+    signingKeyRef: binding.signingKeyRef,
+    sourceRef: `cli:wheels-up:${sequence}`,
+    evidenceRef: `evidence:wheels-up:${sequence}`,
+    timestamp,
+  }));
+  const passcode = await passcodeFromOptions(options);
+  const signatureBase64 = await signMissionPayload(binding, passcode, authority, missionId);
+  const [freshConfig, freshObservation] = await Promise.all([
+    repositoryConfig(root),
+    observeRepository(root),
+  ]);
+  if (freshConfig.repositoryId !== config.repositoryId || freshConfig.paths.journals !== config.paths.journals) {
+    throw new MissionCliError("Repository configuration changed while Wheels Up was being signed.", 1);
+  }
+  const fresh = await currentProfileAwareMission(root, freshConfig, missionId);
+  if (fresh.projection.lastSequence !== current.projection.lastSequence || !sameObservation(observation, freshObservation)) {
+    throw new MissionCliError("Mission journal or repository identity changed while Wheels Up was being signed.", 1);
+  }
+  const entry = produce(() => createProfileAwareImplementationAuthorityEntryV1({
+    projection: fresh.projection,
+    trustedBindings: profileAwareBindings(fresh),
+    authority: { payload: authority, signatureBase64 },
+  }));
+  const appended = unwrap(await appendProfileAwareMissionEntryV1({ ...missionPaths(root, config, missionId), entry }));
+  output(appended.projection, options.flags.has("--json"), profileAwareStatusText(appended.projection));
+  return 0;
+}
+
+async function bindMay(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--passcode-stdin"]);
+  const root = await exactRoot(options.values.get("--root"), true);
+  const config = await repositoryConfig(root);
+  const missionId = required(options, "--mission-id");
+  const current = await currentProfileAwareMission(root, config, missionId);
+  const authority = current.projection.implementationAuthority;
+  if (current.projection.implementationAuthorityState !== "authorized" || authority === null) {
+    throw new MissionCliError("May binding requires an active Wheels Up implementation authority.", 1);
+  }
+  if (config.repositoryId !== authority.repositoryId) {
+    throw new MissionCliError("Repository ID no longer matches Wheels Up authority.", 1);
+  }
+  const intent = bindIntent(await jsonFile(resolve(root, required(options, "--input")), "May binding input"));
+  const identities = ["may", intent.reasoningRuntimeId, authority.modelId, intent.toolExecutorId];
+  if (new Set(identities).size !== identities.length ||
+      current.projection.brief.participants.some(({ seatId }) => identities.slice(1).includes(seatId))) {
+    throw new MissionCliError("May seat, reasoning runtime, model, and tool executor must be mutually distinct and cannot be mission participants.", 1);
+  }
+  const observation = await observeRepository(root);
+  if (observation.canonicalRoot !== authority.canonicalWritableRoot || observation.branch !== authority.branch || observation.head !== authority.headRevision) {
+    throw new MissionCliError("Repository root, branch, or HEAD no longer matches Wheels Up authority.", 1);
+  }
+  const sequence = current.projection.lastSequence + 1;
+  const authorizationId = `authorization:runtime-binding:${sequence}`;
+  const runtimeBinding: RuntimeBinding = {
+    bindingSchemaVersion: 1,
+    bindingId: `binding:${missionId}:may:1`,
+    bindingVersion: 1,
+    missionId,
+    subjectId: current.projection.brief.subjectId,
+    missionRevisionId: current.projection.brief.revisionId,
+    seatId: "may",
+    reasoningRuntimeId: intent.reasoningRuntimeId,
+    toolExecutorId: intent.toolExecutorId,
+    repositoryId: authority.repositoryId,
+    canonicalWritableRoot: authority.canonicalWritableRoot,
+    branch: authority.branch,
+    artifactRevisionId: authority.artifactRevisionId,
+    recordedAtSequence: sequence,
+    activeThroughSequence: null,
+    lifecycleState: "active",
+    approvedScope: {
+      actionIds: [...authority.approvedActionIds],
+      effectClasses: [...authority.approvedEffectClasses],
+      effectKeys: [...authority.approvedEffectKeys],
+      capabilities: [...authority.approvedCapabilities],
+    },
+    coulsonAuthorizationRef: authorizationId,
+  };
+  const wrapper = unwrap(validateSchema9RuntimeBindingV1({
+    schemaVersion: 1,
+    binding: runtimeBinding,
+    implementationAuthorityRef: authority.authorityRef,
+    implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
+    implementationAuthoritySequence: authority.journalSequence,
+    approvedRelativePaths: [...authority.approvedRelativePaths],
+    validationCommandIds: [...authority.validationCommandIds],
+    modelId: authority.modelId,
+    baseRevision: authority.baseRevision,
+    headRevision: authority.headRevision,
+  }));
+  const signer = coulsonBinding(current);
+  const timestamp = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
+  const payload: Schema9RuntimeBindingAuthorizationPayload = unwrap(validateSchema9RuntimeBindingAuthorizationPayload({
+    schemaVersion: 1,
+    authorizationId,
+    missionId,
+    subjectId: current.projection.brief.subjectId,
+    seatId: "may",
+    bindingId: runtimeBinding.bindingId,
+    bindingVersion: 1,
+    priorBindingId: null,
+    priorBindingVersion: null,
+    bindingDigest: computeRuntimeBindingDigest(runtimeBinding),
+    schema9BindingDigest: computeSchema9RuntimeBindingDigest(wrapper),
+    artifactRevisionId: authority.artifactRevisionId,
+    decision: "approved",
+    previousJournalSequence: current.projection.lastSequence,
+    journalSequence: sequence,
+    humanPrincipalId: signer.humanPrincipalId,
+    humanBindingId: signer.bindingId,
+    signingKeyRef: signer.signingKeyRef,
+    sourceRef: `cli:runtime-binding:${sequence}`,
+    timestamp,
+  }));
+  const passcode = await passcodeFromOptions(options);
+  const signatureBase64 = await signMissionPayload(signer, passcode, payload, missionId);
+  const [freshConfig, freshObservation] = await Promise.all([
+    repositoryConfig(root),
+    observeRepository(root),
+  ]);
+  if (freshConfig.repositoryId !== config.repositoryId || freshConfig.paths.journals !== config.paths.journals || freshConfig.repositoryId !== authority.repositoryId) {
+    throw new MissionCliError("Repository configuration changed while May binding was being signed.", 1);
+  }
+  const fresh = await currentProfileAwareMission(root, freshConfig, missionId);
+  if (fresh.projection.lastSequence !== current.projection.lastSequence || !sameObservation(observation, freshObservation)) {
+    throw new MissionCliError("Mission journal or repository identity changed while May binding was being signed.", 1);
+  }
+  const entry = produce(() => createProfileAwareRuntimeBindingRecordedEntryV1({
+    projection: fresh.projection,
+    trustedBindings: profileAwareBindings(fresh),
+    binding: wrapper,
+    authorization: { payload, signatureBase64 },
+  }));
+  const appended = unwrap(await appendProfileAwareMissionEntryV1({ ...missionPaths(root, config, missionId), entry }));
+  output(appended.projection, options.flags.has("--json"), profileAwareStatusText(appended.projection));
   return 0;
 }
 
@@ -515,9 +917,12 @@ async function show(command: "status" | "report", args: string[]): Promise<numbe
 export function missionUsage(): string {
   return [
     "  shield mission begin --brief <file> [--root <path>] [--json]",
+    "  shield mission begin --profile-aware --brief <file> [--root <path>] [--json]",
     "  shield mission begin --authorization delegated --brief <file> --delegation <revision> --eligibility <file> [--root <path>] [--json]",
     "  shield mission signer setup [--seat coulson] [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
+    "  shield mission wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
+    "  shield mission bind --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission approve|pause|cancel --mission-id <id> --evidence <file> [--root <path>] [--json]",
     "  shield mission resume --mission-id <id> --evidence <file> --resume-state <proposed|approved> [--root <path>] [--json]",
     "  shield mission status|step|report --mission-id <id> [--root <path>] [--json]",
@@ -532,6 +937,8 @@ export async function runMissionCli(args: string[]): Promise<number> {
   if (group === "mission") {
     if (action === "begin") return begin(rest);
     if (action === "authorize") return authorize(rest);
+    if (action === "wheels-up") return wheelsUp(rest);
+    if (action === "bind") return bindMay(rest);
     if (action === "signer" && rest[0] === "setup") return signerSetup(rest.slice(1));
     if (action === "approve" || action === "pause" || action === "resume" || action === "cancel") return governance(action, rest);
     if (action === "step") return step(rest);

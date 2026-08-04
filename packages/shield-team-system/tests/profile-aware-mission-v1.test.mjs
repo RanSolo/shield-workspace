@@ -12,6 +12,7 @@ import {
   createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareImplementationAuthorityRevocationEntryV1,
   createProfileAwareExecutionEffectEntryV1,
+  createProfileAwareGovernanceDecisionEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   createProfileRequirementsV1,
@@ -286,7 +287,7 @@ test("Coulson authorization is distinct from final acceptance and ordering is re
   const entries = [createProfileAwareMissionBegunEntry(current, [coulson.binding])];
   let projection = replay(entries);
   const authorization = evidence(coulson, projection, projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"), 1);
-  entries.push({ schemaVersion: 9, entryId: `${current.missionId}:1`, missionId: current.missionId, sequence: 1, type: "governance.decided", timestamp: authorization.payload.timestamp, payload: { evidence: authorization } });
+  entries.push(createProfileAwareGovernanceDecisionEntryV1({ projection, trustedBindings: [coulson.binding], evidence: authorization }));
   projection = replay(entries);
   const implementationAuthority = trustedAuthorityBinding(current, { ...coulson, ...coulson.binding }, 2);
   entries.push(createProfileAwareImplementationAuthorityEntryV1({
@@ -341,6 +342,71 @@ test("Coulson authorization is distinct from final acceptance and ordering is re
   const acceptedReplay = replayProfileAwareMissionJournal([...entries, completionEntry, acceptedEntry]);
   assert.equal(acceptedReplay.state, "valid", acceptedReplay.errors?.join(" "));
   assert.equal(acceptedReplay.value.finalAcceptance, "accepted");
+});
+
+test("profile-aware governance producer verifies the unique pending Coulson authorization", () => {
+  const current = brief("standard");
+  const coulson = authority("coulson");
+  const begun = createProfileAwareMissionBegunEntry(current, [coulson.binding]);
+  const projection = replay([begun]);
+  const requirement = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+  const authorization = evidence(coulson, projection, requirement, 1);
+  const entry = createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: authorization,
+  });
+  assert.equal(entry.type, "governance.decided");
+  assert.equal(entry.sequence, 1);
+  assert.deepEqual(entry.timestamp, authorization.payload.timestamp);
+  assert.equal(replay([begun, entry]).authorization, "authorized");
+
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: { ...authorization, signatureBase64: "forged" },
+  }), /signature/);
+  const otherCoulson = authority("coulson");
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: {
+      ...authorization,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(authorization.payload)), otherCoulson.privateKey).toString("base64"),
+    },
+  }), /signature/);
+  const backwardPayload = {
+    ...authorization.payload,
+    timestamp: { value: "2026-07-29T14:59:59Z", provenance: "humanRecorded" },
+  };
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: {
+      payload: backwardPayload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(backwardPayload)), coulson.privateKey).toString("base64"),
+    },
+  }), /timestamp moves backward/);
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: { ...authorization, payload: { ...authorization.payload, timestamp: { value: "not-a-time", provenance: "humanRecorded" } } },
+  }), /identity or sequence/);
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection,
+    trustedBindings: [coulson.binding],
+    evidence: { ...authorization, payload: { ...authorization.payload, journalSequence: 9 } },
+  }), /identity or sequence/);
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection: { ...projection, requirements: [...projection.requirements, { ...requirement, requirementId: `${requirement.requirementId}:duplicate` }] },
+    trustedBindings: [coulson.binding],
+    evidence: authorization,
+  }), /exactly one unsatisfied Coulson requirement/);
+  assert.throws(() => createProfileAwareGovernanceDecisionEntryV1({
+    projection: { ...projection, execution: "running" },
+    trustedBindings: [coulson.binding],
+    evidence: authorization,
+  }), /waiting not-started mission/);
 });
 
 test("wrong-seat, stale, duplicate, and weakened evidence fail closed", () => {

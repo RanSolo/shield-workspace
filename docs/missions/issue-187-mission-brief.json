@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-187",
+  "objective": "Implement issue #187 from Fury-approved plan sha256:8aa89394bc98899232c97af3bf90d944bc7ac3e170ebfd583dc836b333af28aa: add the supported schema-9 initialization and separately signed authorization, Wheels Up, and May binding workflow; do not invoke a model, run #137 externally, enter #29, merge, deploy, or release.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/187",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-04T13:52:02Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:iewTWUOOuQEhT2NSZteAEeQNaklM-LlgoTAwIq4jJVk"
+}
