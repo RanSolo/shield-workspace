@@ -40,6 +40,13 @@ import {
   type ImplementationAuthorityV1,
   type Schema9RuntimeBindingV1,
 } from "./implementation-authority-v1.mjs";
+import {
+  computeMayPlannedOperationsDigestV1,
+  computeMayPlannedToolEffectKeyV1,
+  MAY_TOOL_MAPPINGS_V1,
+  normalizeMayPlannedToolOperationsV1,
+  type MayPlannedToolOperationsV1,
+} from "./may-tool-effect-v1.mjs";
 
 const INPUT_FIELDS = [
   "repositoryRoot",
@@ -55,11 +62,13 @@ const ORIGINAL_SEQUENCE_EVIDENCE_PREFIX = "evidence:governed-may-original-sequen
 
 const TRUSTED_DEPENDENCY_FIELDS = [
   "observeDeliveryWorkspace",
+  "observeMayToolPreflight",
   "readTrackedFile",
   "readWorkspaceStatus",
   "loadPermissionContext",
   "schema9HostOps",
   "helicarrier",
+  "plannedToolOperations",
   "validationCommands",
   "mayControlBaseUrl",
   "runMayControlLoop",
@@ -155,6 +164,12 @@ export interface GovernedMayValidationCommandV1 {
   readonly timeoutMs: number;
 }
 
+export interface GovernedMayToolPreflightInputV1 {
+  readonly repositoryRoot: string;
+  readonly plannedToolOperations: MayPlannedToolOperationsV1;
+  readonly validationCommands: readonly GovernedMayValidationCommandV1[];
+}
+
 export interface GovernedMayControlLoopRequestV1 {
   readonly baseUrl: string;
   readonly model: string;
@@ -178,11 +193,15 @@ export interface RunGovernedMayDispatchStepTrustedDependenciesV1 {
   readonly observeDeliveryWorkspace: (
     repositoryRoot: string,
   ) => GovernedMayDeliveryWorkspaceObservationV1 | Promise<GovernedMayDeliveryWorkspaceObservationV1>;
+  readonly observeMayToolPreflight: (
+    input: GovernedMayToolPreflightInputV1,
+  ) => unknown | Promise<unknown>;
   readonly readTrackedFile: (input: GovernedMayTrackedFileReadV1) => Uint8Array | Promise<Uint8Array>;
   readonly readWorkspaceStatus: (repositoryRoot: string) => readonly string[] | Promise<readonly string[]>;
   readonly loadPermissionContext: typeof loadSchema9PermissionContextV1;
   readonly schema9HostOps: Schema9PermissionContextTrustedHostOps;
   readonly helicarrier: HelicarrierDependenciesV0;
+  readonly plannedToolOperations: MayPlannedToolOperationsV1;
   readonly validationCommands: readonly GovernedMayValidationCommandV1[];
   readonly mayControlBaseUrl: string;
   readonly mayApiToken?: string;
@@ -327,6 +346,16 @@ type HelicarrierManifestSnapshot =
 type RunnerPlanSnapshot =
   | { readonly state: "ready"; readonly value: RunnerCyclePlan; readonly decisionId: string }
   | { readonly state: "blocked"; readonly code: "runner_plan_invalid"; readonly errors: readonly string[] };
+
+type PlannedAuthorityBindingSnapshot =
+  | {
+      readonly state: "ready";
+      readonly operations: MayPlannedToolOperationsV1;
+      readonly operationEffectKeys: readonly [string, string];
+      readonly cycleEffectKey: string;
+      readonly operationsDigest: string;
+    }
+  | { readonly state: "blocked"; readonly code: "planned_authority_invalid"; readonly errors: readonly string[] };
 
 type GovernedMayReceiptReplayV1 =
   | {
@@ -938,19 +967,11 @@ function deriveDispatchEnvelopeV1(
   blueprint: Extract<BlueprintBytesSnapshot, { state: "ready" }>,
   identity: GovernedMayDispatchIdentityV1,
   originalSequence: number,
-  validationCommands: readonly GovernedMayValidationCommandV1[],
+  planned: Extract<PlannedAuthorityBindingSnapshot, { state: "ready" }>,
 ): DerivedDispatchEnvelopeSnapshot {
   const authority = authoritySnapshot.authority;
   const wrapper = authoritySnapshot.bindingWrapper;
   const binding = wrapper.binding;
-  const commandIds = validationCommands.map((command) => command.commandId);
-  if (new Set(commandIds).size !== commandIds.length) {
-    return { state: "blocked", code: "dispatch_envelope_invalid", errors: stableErrors(["Validation command registry contains duplicate command IDs."]) };
-  }
-  const unresolved = wrapper.validationCommandIds.filter((commandId) => !commandIds.includes(commandId));
-  if (unresolved.length > 0) {
-    return { state: "blocked", code: "dispatch_envelope_invalid", errors: stableErrors([`Validation command IDs are not present in the trusted registry: ${unresolved.join(", ")}.`]) };
-  }
   const value = Object.freeze({
     contractVersion: "governed-may-dispatch-envelope.v1",
     missionId: authority.missionId,
@@ -986,6 +1007,10 @@ function deriveDispatchEnvelopeV1(
     requestedEffectKeys: Object.freeze([...binding.approvedScope.effectKeys]),
     requestedCapabilities: Object.freeze([...binding.approvedScope.capabilities]),
     validationCommandIds: Object.freeze([...wrapper.validationCommandIds]),
+    plannedToolOperations: planned.operations,
+    plannedToolOperationEffectKeys: planned.operationEffectKeys,
+    plannedToolOperationsDigest: planned.operationsDigest,
+    missionCycleEffectKey: planned.cycleEffectKey,
     outputContract: Object.freeze(["changed_files", "tests_run", "unresolved_risks"]),
     stopCondition: "after_one_cycle",
     parentSessionId: identity.parentSessionId,
@@ -1067,8 +1092,8 @@ function deriveRunnerPlanV1(
     expectedRevisionId: authority.missionRevisionId,
     expectedSequence: originalSequence,
     seatId: "may",
-    actionId: scope.actionIds[0],
-    effectClass: scope.effectClasses[0],
+    actionId: MAY_TOOL_MAPPINGS_V1.writeFile.actionId,
+    effectClass: MAY_TOOL_MAPPINGS_V1.writeFile.effectClass,
     validationId: wrapper.validationCommandIds[0],
     activatedModes: projection.brief.activatedModes.map((mode) => ({ ...mode })),
     actionAllowlist: [...scope.actionIds],
@@ -1086,8 +1111,8 @@ function deriveRunnerPlanV1(
     evaluatedThroughSequence: authoritySnapshot.currentSequence,
     seatId: "may",
     activatedModes: projection.brief.activatedModes,
-    actionId: scope.actionIds[0],
-    effectClass: scope.effectClasses[0],
+    actionId: MAY_TOOL_MAPPINGS_V1.writeFile.actionId,
+    effectClass: MAY_TOOL_MAPPINGS_V1.writeFile.effectClass,
     effectKey: identity.effectKey,
     validationId: wrapper.validationCommandIds[0],
     stopCondition: "after_one_cycle" as const,
@@ -1103,6 +1128,52 @@ function deriveRunnerPlanV1(
       activatedModes: Object.freeze(checked.value.activatedModes.map((mode) => Object.freeze({ ...mode }))),
     }) as unknown as RunnerCyclePlan,
     decisionId: identity.decisionId,
+  };
+}
+
+function bindPlannedAuthorityV1(
+  authoritySnapshot: Extract<ActiveMayAuthoritySnapshot, { state: "ready" }>,
+  runnerPlan: Extract<RunnerPlanSnapshot, { state: "ready" }>,
+  operations: MayPlannedToolOperationsV1,
+): PlannedAuthorityBindingSnapshot {
+  const normalized = normalizeMayPlannedToolOperationsV1(operations);
+  const operationEffectKeys = Object.freeze([
+    computeMayPlannedToolEffectKeyV1(normalized[0]),
+    computeMayPlannedToolEffectKeyV1(normalized[1]),
+  ]) as readonly [string, string];
+  const expected = {
+    paths: [normalized[0].path].sort(),
+    actions: [MAY_TOOL_MAPPINGS_V1.writeFile.actionId, MAY_TOOL_MAPPINGS_V1.runValidation.actionId].sort(),
+    effects: [MAY_TOOL_MAPPINGS_V1.writeFile.effectClass, MAY_TOOL_MAPPINGS_V1.runValidation.effectClass].sort(),
+    keys: [runnerPlan.value.effectKey, ...operationEffectKeys].sort(),
+    capabilities: [MAY_TOOL_MAPPINGS_V1.writeFile.capability, MAY_TOOL_MAPPINGS_V1.runValidation.capability].sort(),
+    commands: [normalized[1].commandId],
+  };
+  const authority = authoritySnapshot.authority;
+  const wrapper = authoritySnapshot.bindingWrapper;
+  const scope = wrapper.binding.approvedScope;
+  if (
+    canonicalJson([...authority.approvedRelativePaths].sort()) !== canonicalJson(expected.paths) ||
+    canonicalJson([...authority.approvedActionIds].sort()) !== canonicalJson(expected.actions) ||
+    canonicalJson([...authority.approvedEffectClasses].sort()) !== canonicalJson(expected.effects) ||
+    canonicalJson([...authority.approvedEffectKeys].sort()) !== canonicalJson(expected.keys) ||
+    canonicalJson([...authority.approvedCapabilities].sort()) !== canonicalJson(expected.capabilities) ||
+    canonicalJson([...authority.validationCommandIds].sort()) !== canonicalJson(expected.commands) ||
+    canonicalJson([...wrapper.approvedRelativePaths].sort()) !== canonicalJson(expected.paths) ||
+    canonicalJson([...scope.actionIds].sort()) !== canonicalJson(expected.actions) ||
+    canonicalJson([...scope.effectClasses].sort()) !== canonicalJson(expected.effects) ||
+    canonicalJson([...scope.effectKeys].sort()) !== canonicalJson(expected.keys) ||
+    canonicalJson([...scope.capabilities].sort()) !== canonicalJson(expected.capabilities) ||
+    canonicalJson([...wrapper.validationCommandIds].sort()) !== canonicalJson(expected.commands)
+  ) {
+    return { state: "blocked", code: "planned_authority_invalid", errors: stableErrors(["Planned May operations do not exactly equal both signed authority layers."]) };
+  }
+  return {
+    state: "ready",
+    operations: normalized,
+    operationEffectKeys,
+    cycleEffectKey: runnerPlan.value.effectKey,
+    operationsDigest: computeMayPlannedOperationsDigestV1(normalized),
   };
 }
 
@@ -1138,6 +1209,51 @@ function bindPermissionContextV1(
     return { state: "blocked", code: "permission_invalid", errors: stableErrors(["Permission context is not exactly bound to the active authority, runtime, repository, and runner plan."]) };
   }
   return { state: "ready", value: context };
+}
+
+function narrowPermissionContextForMayToolV1(
+  context: PermissionInvocationContext,
+  plan: RunnerCyclePlan,
+): PermissionInvocationContext {
+  const mapping = plan.actionId === MAY_TOOL_MAPPINGS_V1.writeFile.actionId && plan.effectClass === MAY_TOOL_MAPPINGS_V1.writeFile.effectClass
+    ? MAY_TOOL_MAPPINGS_V1.writeFile
+    : plan.actionId === MAY_TOOL_MAPPINGS_V1.runValidation.actionId && plan.effectClass === MAY_TOOL_MAPPINGS_V1.runValidation.effectClass
+      ? MAY_TOOL_MAPPINGS_V1.runValidation
+      : null;
+  if (mapping === null || !context.requiredCapabilities.includes(mapping.capability)) throw new Error("permission_capability_narrowing_invalid");
+  const attestations = context.attestations.filter((item) =>
+    item.kind === "repository_root" || item.kind === "writability" || (item.kind === "capability" && item.capabilityId === mapping.capability)
+  );
+  if (attestations.length !== 3) throw new Error("permission_attestation_narrowing_invalid");
+  const narrowed = {
+    ...context,
+    requiredCapabilities: [mapping.capability],
+    activeBindings: context.activeBindings.map((binding) => ({
+      ...binding,
+      approvedScope: {
+        actionIds: [...binding.approvedScope.actionIds],
+        effectClasses: [...binding.approvedScope.effectClasses],
+        effectKeys: [...binding.approvedScope.effectKeys],
+        capabilities: [...binding.approvedScope.capabilities],
+      },
+    })),
+    attestations: attestations.map((attestation) => ({ ...attestation })),
+  };
+  const checked = validatePermissionInvocationContext(narrowed);
+  if (checked.state === "invalid") throw new Error("permission_context_narrowing_invalid");
+  Object.freeze(checked.value.requiredCapabilities);
+  for (const binding of checked.value.activeBindings) {
+    Object.freeze(binding.approvedScope.actionIds);
+    Object.freeze(binding.approvedScope.effectClasses);
+    Object.freeze(binding.approvedScope.effectKeys);
+    Object.freeze(binding.approvedScope.capabilities);
+    Object.freeze(binding.approvedScope);
+    Object.freeze(binding);
+  }
+  Object.freeze(checked.value.activeBindings);
+  for (const attestation of checked.value.attestations) Object.freeze(attestation);
+  Object.freeze(checked.value.attestations);
+  return Object.freeze(checked.value);
 }
 
 function bindDirtyPathsV1(
@@ -1316,6 +1432,7 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
     return descriptor.state === "ok" ? descriptor.value as T : (undefined as T);
   };
   const observeDeliveryWorkspace = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["observeDeliveryWorkspace"]>("observeDeliveryWorkspace");
+  const observeMayToolPreflight = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["observeMayToolPreflight"]>("observeMayToolPreflight");
   const readTrackedFile = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["readTrackedFile"]>("readTrackedFile");
   const readWorkspaceStatus = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["readWorkspaceStatus"]>("readWorkspaceStatus");
   const loadPermissionContext = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["loadPermissionContext"]>("loadPermissionContext");
@@ -1332,6 +1449,7 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
   const runMissionCycle = ownData<RunGovernedMayDispatchStepTrustedDependenciesV1["runMissionCycle"]>("runMissionCycle");
   if (
     observeDeliveryWorkspace === undefined ||
+    observeMayToolPreflight === undefined ||
     readTrackedFile === undefined ||
     readWorkspaceStatus === undefined ||
     loadPermissionContext === undefined ||
@@ -1358,6 +1476,7 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
 
   if (
     typeof observeDeliveryWorkspace !== "function" ||
+    typeof observeMayToolPreflight !== "function" ||
     typeof readTrackedFile !== "function" ||
     typeof readWorkspaceStatus !== "function" ||
     typeof loadPermissionContext !== "function" ||
@@ -1387,6 +1506,13 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
 
   const validationCommandsSnapshot = snapshotValidationCommands(source.validationCommands);
   if (validationCommandsSnapshot.state === "blocked") return validationCommandsSnapshot;
+
+  let plannedToolOperations: MayPlannedToolOperationsV1;
+  try {
+    plannedToolOperations = normalizeMayPlannedToolOperationsV1(source.plannedToolOperations);
+  } catch {
+    return { state: "blocked", code: "dependencies_invalid", errors: stableErrors(["plannedToolOperations must be one exact write followed by one exact validation."]) };
+  }
 
   const mayControlBaseUrl = snapshotBoundedString(mayControlBaseUrlField, MAX_TEXT_LENGTH, "mayControlBaseUrl");
   if (mayControlBaseUrl.state === "blocked") return mayControlBaseUrl;
@@ -1425,11 +1551,13 @@ function snapshotTrustedDependencies(dependencies: unknown): TrustedDependencies
     state: "ready",
     value: Object.freeze({
       observeDeliveryWorkspace,
+      observeMayToolPreflight,
       readTrackedFile,
       readWorkspaceStatus,
       loadPermissionContext,
       schema9HostOps: schema9HostOpsSnapshot.value,
       helicarrier: helicarrierSnapshot.value,
+      plannedToolOperations,
       validationCommands: validationCommandsSnapshot.value,
       mayControlBaseUrl: mayControlBaseUrl.value,
       runMayControlLoop,
@@ -2009,44 +2137,7 @@ export async function runGovernedMayDispatchStepV1(
       readiness: "dispatch_ready",
     };
   }
-  if (mayReplay.state === "terminal") {
-    return {
-      state: "replayed",
-      readiness: "dispatch_ready",
-      evidence: Object.freeze({
-        receiptId: mayReplay.receipt.receiptId,
-        dispatchId: mayReplay.receipt.dispatchId,
-        childTaskId: mayReplay.receipt.childTaskId,
-        childSessionId: mayReplay.receipt.childSessionId,
-        parentSessionId: mayReplay.identity.parentSessionId,
-        packetId: mayReplay.identity.packetId,
-        originalSequence: mayReplay.originalSequence,
-        terminalState: mayReplay.receipt.state,
-        furyEvidenceId: furyEvaluation.evidence.evidenceId,
-        furyEvidenceDigest: furyEvaluation.evidence.evidenceDigest,
-        furyPlanDigest: furyEvaluation.evidence.planDigest,
-        blueprintArtifactId: furyEvaluation.evidence.blueprintArtifactId,
-        blueprintArtifactPath: furyEvaluation.evidence.blueprintArtifactPath,
-        blueprintRevision: furyEvaluation.evidence.repositoryRevisionId,
-        missionId: mayReplay.receipt.parentMissionId,
-        missionRevisionId: mayReplay.receipt.parentMissionRevision,
-        subjectId: mayReplay.receipt.subjectId,
-        subjectRevision: mayReplay.receipt.subjectRevision,
-        repositoryId: mayReplay.receipt.repositoryId,
-        repositoryWorkspaceId: mayReplay.receipt.repositoryWorkspaceId,
-        repositoryRevision: mayReplay.receipt.repositoryRevision,
-        artifactId: mayReplay.receipt.artifactId,
-        artifactRevision: mayReplay.receipt.artifactRevision,
-        configuredRuntime: mayReplay.receipt.configuredRuntime,
-        requestedRuntime: mayReplay.receipt.requestedRuntime,
-        toolExecution: mayReplay.receipt.toolExecution,
-        runtimeHostHistory: mayReplay.receipt.runtimeHostHistory,
-        executorHostHistory: mayReplay.receipt.executorHostHistory,
-        outputEvidenceRefs: mayReplay.receipt.outputEvidenceRefs,
-      }),
-    };
-  }
-  const authoritySnapshot = deriveActiveMayAuthorityV1(journal.value.projection);
+  const authoritySnapshot = mayReplay.state === "terminal" ? recordedAuthoritySnapshot : deriveActiveMayAuthorityV1(journal.value.projection);
   if (authoritySnapshot.state === "recovery_required") {
     return {
       state: "recovery_required",
@@ -2059,16 +2150,42 @@ export async function runGovernedMayDispatchStepV1(
   const originalSequence = mayReplay.originalSequence;
   const dispatchIdentity = mayReplay.identity;
 
+  const runnerPlan = deriveRunnerPlanV1(inputSnapshot.value, journal.value.projection, authoritySnapshot, originalSequence);
+  if (runnerPlan.state === "blocked") return { ...runnerPlan, readiness: "blocked" };
+  const plannedAuthority = bindPlannedAuthorityV1(authoritySnapshot, runnerPlan, dependenciesSnapshot.value.plannedToolOperations);
+  if (plannedAuthority.state === "blocked") return { ...plannedAuthority, readiness: "blocked" };
+
   let workspaceObservation;
-  try {
-    workspaceObservation = await dependenciesSnapshot.value.observeDeliveryWorkspace(inputSnapshot.value.repositoryRoot);
-  } catch {
-    return {
-      state: "blocked",
-      readiness: "blocked",
-      code: "workspace_invalid",
-      errors: Object.freeze(["Delivery workspace observation failed."]),
+  if (mayReplay.state === "terminal") {
+    const [repositoryOwner, repositoryName, ...extra] = mayReplay.receipt.repositoryId.split("/");
+    if (repositoryOwner === undefined || repositoryName === undefined || extra.length > 0) {
+      return { state: "recovery_required", readiness: "dispatch_ready", code: "dispatch_receipt_recovery_required", errors: Object.freeze(["Terminal receipt repository identity is malformed."]), evidence: Object.freeze({ receiptId: mayReplay.receipt.receiptId }) };
+    }
+    workspaceObservation = {
+      repositoryId: mayReplay.receipt.repositoryId,
+      repositoryWorkspaceId: mayReplay.receipt.repositoryWorkspaceId,
+      repositoryOwner,
+      repositoryName,
+      baseBranch: furyEvaluation.evidence.baseBranch,
+      branch: authoritySnapshot.authority.branch,
+      prNumber: furyEvaluation.evidence.prNumber,
+      prUrl: `https://github.com/${repositoryOwner}/${repositoryName}/pull/${furyEvaluation.evidence.prNumber}`,
+      state: "OPEN",
+      isDraft: true,
+      baseRevision: authoritySnapshot.authority.baseRevision,
+      headRevision: authoritySnapshot.authority.headRevision,
     };
+  } else {
+    try {
+      workspaceObservation = await dependenciesSnapshot.value.observeDeliveryWorkspace(inputSnapshot.value.repositoryRoot);
+    } catch {
+      return {
+        state: "blocked",
+        readiness: "blocked",
+        code: "workspace_invalid",
+        errors: Object.freeze(["Delivery workspace observation failed."]),
+      };
+    }
   }
   const workspaceSnapshot = snapshotDeliveryWorkspaceObservationV1(workspaceObservation);
   if (workspaceSnapshot.state === "blocked") {
@@ -2105,10 +2222,82 @@ export async function runGovernedMayDispatchStepV1(
     blueprintSnapshot,
     dispatchIdentity,
     originalSequence,
-    dependenciesSnapshot.value.validationCommands,
+    plannedAuthority,
   );
   if (envelopeSnapshot.state === "blocked") {
     return { ...envelopeSnapshot, readiness: "blocked" };
+  }
+  const plannedEvidenceRefs = Object.freeze([
+    plannedAuthority.cycleEffectKey,
+    ...plannedAuthority.operationEffectKeys,
+    `evidence:may-planned-operations:${plannedAuthority.operationsDigest}`,
+    `evidence:may-dispatch-envelope:${envelopeSnapshot.digest}`,
+  ]);
+  if (mayReplay.state === "terminal") {
+    if (mayReplay.receipt.outputEvidenceRefs === null || plannedEvidenceRefs.some((ref) => !mayReplay.receipt.outputEvidenceRefs?.includes(ref))) {
+      return { state: "recovery_required", readiness: "dispatch_ready", code: "dispatch_receipt_recovery_required", errors: Object.freeze(["Terminal receipt does not bind the exact planned operations, effect keys, and dispatch envelope."]), evidence: Object.freeze({ receiptId: mayReplay.receipt.receiptId }) };
+    }
+    return {
+      state: "replayed",
+      readiness: "dispatch_ready",
+      evidence: Object.freeze({
+        receiptId: mayReplay.receipt.receiptId,
+        dispatchId: mayReplay.receipt.dispatchId,
+        childTaskId: mayReplay.receipt.childTaskId,
+        childSessionId: mayReplay.receipt.childSessionId,
+        parentSessionId: mayReplay.identity.parentSessionId,
+        packetId: mayReplay.identity.packetId,
+        originalSequence: mayReplay.originalSequence,
+        terminalState: mayReplay.receipt.state,
+        furyEvidenceId: furyEvaluation.evidence.evidenceId,
+        furyEvidenceDigest: furyEvaluation.evidence.evidenceDigest,
+        furyPlanDigest: furyEvaluation.evidence.planDigest,
+        blueprintArtifactId: furyEvaluation.evidence.blueprintArtifactId,
+        blueprintArtifactPath: furyEvaluation.evidence.blueprintArtifactPath,
+        blueprintRevision: furyEvaluation.evidence.repositoryRevisionId,
+        missionId: mayReplay.receipt.parentMissionId,
+        missionRevisionId: mayReplay.receipt.parentMissionRevision,
+        subjectId: mayReplay.receipt.subjectId,
+        subjectRevision: mayReplay.receipt.subjectRevision,
+        repositoryId: mayReplay.receipt.repositoryId,
+        repositoryWorkspaceId: mayReplay.receipt.repositoryWorkspaceId,
+        repositoryRevision: mayReplay.receipt.repositoryRevision,
+        artifactId: mayReplay.receipt.artifactId,
+        artifactRevision: mayReplay.receipt.artifactRevision,
+        configuredRuntime: mayReplay.receipt.configuredRuntime,
+        requestedRuntime: mayReplay.receipt.requestedRuntime,
+        toolExecution: mayReplay.receipt.toolExecution,
+        runtimeHostHistory: mayReplay.receipt.runtimeHostHistory,
+        executorHostHistory: mayReplay.receipt.executorHostHistory,
+        outputEvidenceRefs: mayReplay.receipt.outputEvidenceRefs,
+        plannedToolOperationsDigest: plannedAuthority.operationsDigest,
+        dispatchEnvelopeDigest: envelopeSnapshot.digest,
+      }),
+    };
+  }
+
+  let observedPreflight;
+  try {
+    observedPreflight = normalizeMayPlannedToolOperationsV1(await dependenciesSnapshot.value.observeMayToolPreflight(Object.freeze({
+      repositoryRoot: inputSnapshot.value.repositoryRoot,
+      plannedToolOperations: plannedAuthority.operations,
+      validationCommands: dependenciesSnapshot.value.validationCommands,
+    })));
+  } catch {
+    return { state: "blocked", readiness: "blocked", code: "planned_preflight_invalid", errors: Object.freeze(["Live planned-operation preflight failed."]) };
+  }
+  if (canonicalJson(observedPreflight) !== canonicalJson(plannedAuthority.operations)) {
+    return { state: "blocked", readiness: "blocked", code: "planned_preflight_invalid", errors: Object.freeze(["Live target or executable preflight does not exactly match the planned operations."]) };
+  }
+  const plannedValidation = plannedAuthority.operations[1];
+  const matchingCommands = dependenciesSnapshot.value.validationCommands.filter(({ commandId }) => commandId === plannedValidation.commandId);
+  if (dependenciesSnapshot.value.validationCommands.length !== 1 || matchingCommands.length !== 1 || canonicalJson(matchingCommands[0]) !== canonicalJson({
+    commandId: plannedValidation.commandId,
+    executable: plannedValidation.executable,
+    args: plannedValidation.args,
+    timeoutMs: plannedValidation.timeoutMs,
+  })) {
+    return { state: "blocked", readiness: "blocked", code: "planned_preflight_invalid", errors: Object.freeze(["Trusted validation registry does not exactly match the planned validation operation."]) };
   }
   const expectedManifestDigests = Object.freeze({
     irDigest: protocolDigest("shield:dispatch:ir:v0", envelopeSnapshot.canonicalBytes),
@@ -2152,10 +2341,6 @@ export async function runGovernedMayDispatchStepV1(
   );
   if (manifestSnapshot.state === "blocked") {
     return { ...manifestSnapshot, readiness: "blocked" };
-  }
-  const runnerPlan = deriveRunnerPlanV1(inputSnapshot.value, journal.value.projection, authoritySnapshot, originalSequence);
-  if (runnerPlan.state === "blocked") {
-    return { ...runnerPlan, readiness: "blocked" };
   }
   let permissionResult;
   try {
@@ -2222,6 +2407,7 @@ export async function runGovernedMayDispatchStepV1(
         originalSequenceEvidenceRef(originalSequence),
         authoritySnapshot.authority.authorityRef,
         furyEvaluation.evidence.evidenceId,
+        ...plannedEvidenceRefs,
       ]),
     }));
   } catch {
@@ -2260,7 +2446,7 @@ export async function runGovernedMayDispatchStepV1(
     return { state: "recovery_required", readiness: "dispatch_ready", code: "runtime_store_invalid", errors: Object.freeze(["Runtime evidence store creation failed after claim."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId }) };
   }
 
-  const loadContextForPlan = async (plan: RunnerCyclePlan, decisionId: string): Promise<PermissionInvocationContext> => {
+  const loadContextForPlan = async (plan: RunnerCyclePlan, decisionId: string, narrowForTool = false): Promise<PermissionInvocationContext> => {
     const loaded = await dependenciesSnapshot.value.loadPermissionContext({
       repositoryRoot: inputSnapshot.value.repositoryRoot,
       configuredJournalPath: inputSnapshot.value.configuredJournalPath,
@@ -2273,7 +2459,7 @@ export async function runGovernedMayDispatchStepV1(
     if (loaded.state === "blocked") throw new Error("permission_context_blocked");
     const bound = bindPermissionContextV1(loaded.context, authoritySnapshot, { state: "ready", value: plan, decisionId });
     if (bound.state === "blocked") throw new Error("permission_context_mismatch");
-    return bound.value;
+    return narrowForTool ? narrowPermissionContextForMayToolV1(bound.value, plan) : bound.value;
   };
 
   const loadFreshBoundary = async (plan: RunnerCyclePlan, decisionId: string): Promise<PermissionInvocationContext> => {
@@ -2336,6 +2522,9 @@ export async function runGovernedMayDispatchStepV1(
   let resultCounter = 0;
   let temporaryCounter = 0;
   const plansByDecisionId = new Map<string, RunnerCyclePlan>();
+  const contextsByDecisionId = new Map<string, PermissionInvocationContext>();
+  const executionContextsByDecisionId = new Map<string, PermissionInvocationContext>();
+  const perToolDecisionOrder: string[] = [];
   const executeTool = async (plan: RunnerCyclePlan): Promise<import("./runner-v1.mjs").RunnerExecutorResult> => {
     try {
       const context = await loadFreshBoundary(plan, runnerPlan.decisionId);
@@ -2354,6 +2543,7 @@ export async function runGovernedMayDispatchStepV1(
         toolExecutorId: binding.toolExecutorId,
         approvedFiles: Object.freeze([...authoritySnapshot.bindingWrapper.approvedRelativePaths]),
         validationCommands: dependenciesSnapshot.value.validationCommands,
+        plannedToolOperations: plannedAuthority.operations,
         nextCallSlot: async (slot: Readonly<Record<string, string>>) => Object.freeze({
           ...plan,
           cycleId: `cycle:may-control:${createHash("sha256").update(canonicalJson({ sessionId: claimResult.value.receipt.childSessionId, toolCallId: slot.toolCallId })).digest("base64url")}`,
@@ -2364,12 +2554,17 @@ export async function runGovernedMayDispatchStepV1(
         getAuthorizationContext: async (activePlan: RunnerCyclePlan) => {
           const decisionId = `decision:may-control:${createHash("sha256").update(canonicalJson(activePlan)).digest("base64url")}`;
           plansByDecisionId.set(decisionId, activePlan);
-          return loadContextForPlan(activePlan, decisionId);
+          const narrowed = await loadContextForPlan(activePlan, decisionId, true);
+          contextsByDecisionId.set(decisionId, narrowed);
+          perToolDecisionOrder.push(decisionId);
+          return narrowed;
         },
         getExecutionContext: async (decision: import("./runner-v1.mjs").RunnerPermissionDecision) => {
           const activePlan = plansByDecisionId.get(decision.decisionId);
           if (activePlan === undefined) throw new Error("permission_decision_unbound");
-          return loadContextForPlan(activePlan, decision.decisionId);
+          const narrowed = await loadContextForPlan(activePlan, decision.decisionId, true);
+          executionContextsByDecisionId.set(decision.decisionId, narrowed);
+          return narrowed;
         },
         appendIfAbsent: permissionAudit.appendIfAbsent,
         nextResultRecordId: () => `audit:may-control-result:${++resultCounter}`,
@@ -2382,6 +2577,46 @@ export async function runGovernedMayDispatchStepV1(
         ...(dependenciesSnapshot.value.fetchImpl === undefined ? {} : { fetchImpl: dependenciesSnapshot.value.fetchImpl }),
         ...(dependenciesSnapshot.value.mayApiToken === undefined ? {} : { apiToken: dependenciesSnapshot.value.mayApiToken }),
       }));
+      if (control.completedToolCalls !== 2 || control.writeCalls !== 1 || control.validationCalls !== 1 || perToolDecisionOrder.length !== 2) {
+        throw new Error("may_control_sequence_mismatch");
+      }
+      const [controlRead, auditRead] = await Promise.all([controlStore.read(), permissionAudit.read()]);
+      if (!plainObject(controlRead) || !Array.isArray(controlRead.orderedEvents) || !plainObject(controlRead.terminalState)
+        || !plainObject(auditRead) || !Array.isArray(auditRead.entries)) throw new Error("may_control_sequence_mismatch");
+      const events = controlRead.orderedEvents as Array<Record<string, unknown>>;
+      const expectedCodes = ["may_control_started", "may_control_writeFile_completed", "may_control_runValidation_completed", "may_control_completed"];
+      if (events.length !== expectedCodes.length || events.some((event, index) => !plainObject(event)
+        || event.sessionId !== claimResult.value.receipt.childSessionId || event.code !== expectedCodes[index])) {
+        throw new Error("may_control_sequence_mismatch");
+      }
+      const expectedMappings = [MAY_TOOL_MAPPINGS_V1.writeFile, MAY_TOOL_MAPPINGS_V1.runValidation];
+      for (let index = 0; index < perToolDecisionOrder.length; index += 1) {
+        const decisionId = perToolDecisionOrder[index];
+        const activePlan = plansByDecisionId.get(decisionId);
+        const narrowed = contextsByDecisionId.get(decisionId);
+        const executionContext = executionContextsByDecisionId.get(decisionId);
+        const expectedToolCallId = events[index + 1].toolCallId;
+        const expectedCycleId = `cycle:may-control:${createHash("sha256").update(canonicalJson({ sessionId: claimResult.value.receipt.childSessionId, toolCallId: expectedToolCallId })).digest("base64url")}`;
+        const expectedMapping = expectedMappings[index];
+        if (activePlan === undefined || narrowed === undefined || executionContext === undefined || activePlan.cycleId !== expectedCycleId
+          || activePlan.effectKey !== plannedAuthority.operationEffectKeys[index]
+          || activePlan.actionId !== expectedMapping.actionId || activePlan.effectClass !== expectedMapping.effectClass
+          || canonicalJson(narrowed.requiredCapabilities) !== canonicalJson([expectedMapping.capability])
+          || narrowed.attestations.length !== 3) throw new Error("may_control_audit_mismatch");
+        const records = (auditRead.entries as Array<Record<string, unknown>>).filter((entry) => plainObject(entry) && entry.decisionId === decisionId);
+        const decision = records.filter(({ recordType, outcome }) => recordType === "permission.decision" && outcome === "allow");
+        const invocation = records.filter(({ recordType, outcome }) => recordType === "tool.invocation" && outcome === "allow");
+        const result = records.filter(({ recordType, outcome }) => recordType === "tool.result" && outcome === "completed");
+        const attestationIds = narrowed.attestations.map(({ attestationId }) => attestationId).sort();
+        const executionAttestationIds = executionContext.attestations.map(({ attestationId }) => attestationId).sort();
+        if (decision.length !== 1 || invocation.length !== 1 || result.length !== 1 || records.length !== 3
+          || records.some((record) => record.effectKey !== plannedAuthority.operationEffectKeys[index]
+            || record.actionId !== expectedMapping.actionId || record.effectClass !== expectedMapping.effectClass)
+          || canonicalJson([...(decision[0].evidenceRefs as string[])].sort()) !== canonicalJson(attestationIds)
+          || canonicalJson([...(invocation[0].evidenceRefs as string[])].sort()) !== canonicalJson(executionAttestationIds)) {
+          throw new Error("may_control_audit_mismatch");
+        }
+      }
       return {
         runnerContractVersion: 1,
         outcome: "completed",
@@ -2617,7 +2852,7 @@ export async function runGovernedMayDispatchStepV1(
       executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
       executorHostObserved: { kind: "executor.host_observed", executorId: binding.toolExecutorId, evidenceRefs: [`host:${inputSnapshot.value.hostId}:executor`] },
       kind: terminalKind,
-      outputEvidenceRefs: [runnerPlan.value.cycleId, runnerPlan.value.effectKey, `may-control:${receipt.childSessionId}`],
+      outputEvidenceRefs: [runnerPlan.value.cycleId, `may-control:${receipt.childSessionId}`, ...plannedEvidenceRefs],
       timestamp: dependenciesSnapshot.value.schema9HostOps.now(),
       logSequence: receipt.logSequence + 1,
       previousLogDigest: receipt.lastEntryDigest,
@@ -2668,7 +2903,7 @@ export async function runGovernedMayDispatchStepV1(
       matchingTerminal[0].runtimeHostHistory.at(-1)?.runtimeId !== binding.reasoningRuntimeId ||
       matchingTerminal[0].executorHostHistory.at(-1)?.executorId !== binding.toolExecutorId ||
       !matchingTerminal[0].outputEvidenceRefs?.includes(runnerPlan.value.cycleId) ||
-      !matchingTerminal[0].outputEvidenceRefs?.includes(runnerPlan.value.effectKey)
+      plannedEvidenceRefs.some((ref) => !matchingTerminal[0].outputEvidenceRefs?.includes(ref))
     ) throw new Error("final_readback_mismatch");
   } catch {
     return { state: "recovery_required", readiness: "dispatch_ready", code: "final_readback_invalid", errors: Object.freeze(["One or more final durable readbacks could not be proven exact."]), evidence: Object.freeze({ receiptId: claimResult.value.receipt.receiptId, terminalState: terminalAppend.value.receipt.state }) };
@@ -2693,6 +2928,8 @@ export async function runGovernedMayDispatchStepV1(
       blueprintArtifactPath: furyEvaluation.evidence.blueprintArtifactPath,
       blueprintDigest: blueprintSnapshot.digest,
       dispatchEnvelopeDigest: envelopeSnapshot.digest,
+      plannedToolOperationsDigest: plannedAuthority.operationsDigest,
+      plannedToolOperationEffectKeys: plannedAuthority.operationEffectKeys,
       helicarrierPromptDigest: manifestSnapshot.value.promptDigest,
       cycleId: runnerPlan.value.cycleId,
       effectKey: runnerPlan.value.effectKey,
