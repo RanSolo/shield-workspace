@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-137-governed-may-proving",
+  "objective": "Prove the canonical governed May dispatch against issue #137 using local Gemma 4 31B by dispatching one exact-bound packet, demonstrating that bypassing the bridge changes the mission outcome, and advancing issue #137 to its post-implementation review gate without performing the external fixture run or entering issue #29.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/137",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-04T05:42:23.000Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:2Rvv2DmF2XRhWFCoUqHQg-m40zn_7iBgwb9MGfxBaPk"
+}
