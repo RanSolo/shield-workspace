@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "missionId": "mission:issue-149-schema9-publication",
+  "objective": "Implement the smallest schema-9 review-publication bridge required by issue #137: reuse exact-scope review.publish authority and adapter-v2 contracts, add signed profile-aware journal and CLI transitions, and stop after Mack/Fury review without dispatching #137 May, running its fixture, or entering issue #29.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/149",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": false,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-05T15:13:03Z",
+    "provenance": "hostTrusted"
+  },
+  "profileId": "standard",
+  "profileVersion": 1,
+  "requiredExecutionGateRoleIds": ["coulson"],
+  "requiredFinalAcceptanceGateRoleIds": ["coulson"],
+  "predecessorMissionId": "mission:issue-130",
+  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9"
+}
