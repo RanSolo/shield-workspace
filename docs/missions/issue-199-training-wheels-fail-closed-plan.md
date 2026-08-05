@@ -7,14 +7,20 @@
 - Base revision: `d71b00c55a5365d1d6aedd00e77327fb852bf705`
 - Branch: `agent/issue-199-training-wheels-fail-closed`
 - Implementation seat: May
-- Validation seat: Mack
+- Independent validation seat: Mack
 
 This mission corrects only the specialist-dispatch authorization regression
-described by issue #199. It does not create a new authority class, derive human
-approval from caller assertions, change publication authority, mark a pull
+described by issue #199. It does not create an authority/evidence class, accept
+caller assertions as authority, change publication authority, mark a pull
 request ready, merge, deploy, release, or exercise an external effect.
 
-## Verified defect and integration constraint
+Mack is not listed in the profile-aware brief because the V0.3 dispatchable-role
+schema rejects `mack` as a brief participant. Mack remains the independent
+post-implementation validator under the repository workflow. Fitz remains a
+declared human participant, but this mission's `standard@1` profile does not
+invent or require a Fitz decision beyond its configured evidence gates.
+
+## Verified defect and adjacent integration hazard
 
 `canDispatchSpecialists()` currently returns `true` when Mission Brief approval
 is valid but both supported post-plan dispatch paths are absent. The exact
@@ -24,16 +30,21 @@ defect is:
 if (input.trainingWheelsOff !== true) return true;
 ```
 
-The smallest policy correction is `return false`.
+The policy correction is `return false`.
 
-Delivery Workspace currently calls that policy with only `missionState` and
-`approvalSource`, before it publishes/verifies the draft workspace and before
-it evaluates durable Fury evidence. Therefore a direct one-line correction
-would safely deny every Delivery Workspace invocation, including legitimate
-explicit-Coulson and Training Wheels Off dispatches, and would also prevent the
-early draft Mission Workspace promised by issue #70. The integration change
-must preserve publication-before-plan-review while ensuring that only the final
-`dispatch_ready` transition consumes dispatch authority.
+Delivery Workspace currently calls that policy with only caller-provided
+`missionState` and `approvalSource`, before it publishes/verifies the draft
+workspace and before it evaluates durable Fury evidence. Those two strings do
+not prove explicit Coulson dispatch authority or complete Training Wheels Off
+eligibility. Leaving the call in place would also make the one-line fix suppress
+the early draft Mission Workspace promised by issue #70.
+
+No existing Delivery Workspace input proves current signed mission authority,
+exact mission/subject/revision, non-revoked implementation authority, current
+runtime binding, all Training Wheels Off gates, and evaluated journal sequence.
+Issue #141 owns the durable typed authority projection needed to reopen that
+positive integration safely. This P0 correction therefore fails closed rather
+than introducing caller-asserted replacement evidence.
 
 ## Frozen implementation
 
@@ -47,67 +58,68 @@ Off branch to return `false`. Preserve the existing ordering:
 3. exact `trainingWheelsOff: true`;
 4. every existing positive and negative bounded gate.
 
-Do not loosen coercion, accept aliases, or add defaults.
+Do not loosen coercion, accept aliases, add defaults, or alter any gate.
 
-### 2. Separate draft-workspace publication from final dispatch eligibility
+### 2. Preserve early workspace publication; hold final dispatch
 
-In `github/delivery-workspace.mjs`, remove the pre-publication dispatch-policy
-check. Draft creation/update, exact publication readback, and Fury evidence
-evaluation remain in their current order. If Fury evidence is not eligible,
-return the existing `workspace_ready` result without consulting specialist
-dispatch authority.
+In `github/delivery-workspace.mjs`, remove the pre-publication policy check.
+Keep publication authorization replay, exact draft creation/update/readback,
+and durable Fury evidence evaluation in their current order.
 
-Immediately before the sole `dispatch_ready` return, evaluate
-`canDispatchSpecialists()` against a new required closed
-`specialistDispatchPolicy` input object. Its fields are exactly the existing
-policy inputs: mission state/source, optional explicit dispatch source,
-Training Wheels Off selector, and all existing Fury/scope/repository/revision/
-validation/runtime/material-risk gates. The top-level mission state/source must
-canonical-match the nested values. Any missing, malformed, conflicting, or
-ineligible object returns `blocked` with
-`specialist_dispatch_not_approved`, after the verified draft workspace has been
-produced but before `dispatch_ready` is exposed.
+If Fury evidence is not eligible, return the existing `workspace_ready` result.
+This preserves the legacy first-call publication behavior without claiming
+specialist dispatch readiness.
 
-This object is an eligibility snapshot, not new authority or durable evidence.
-The function continues to require independently persisted Fury evidence. No
-new effect is performed after the policy evaluation.
+If Fury evidence becomes eligible, evaluate `canDispatchSpecialists()`
+immediately before the sole `dispatch_ready` return using only the current
+Delivery Workspace fields. Because those fields contain neither explicit
+Coulson dispatch evidence nor complete Training Wheels Off evidence, the result
+must be `blocked` with `specialist_dispatch_not_approved`. No additional effect
+may occur after that decision.
 
-Update the public declaration with the same closed shape. Do not make the
-snapshot optional and do not infer Training Wheels Off from Fury PASS.
+Do not add optional policy flags, loader callbacks, signatures, projections,
+or raw evidence objects in this mission. A later #141 child must bind a fresh
+replayed authority projection to mission, subject, mission revision,
+repository, branch, artifact revision, runtime binding, and evaluated journal
+sequence before Delivery Workspace can regain a positive `dispatch_ready`
+path. Until then, fail closed.
 
 ### 3. Tests
 
-In policy tests, add explicit cases for absent, `false`, `null`, strings,
-numbers, objects, and arrays. Keep the explicit Coulson happy path, exact
-eligible Training Wheels Off happy path, and every individual existing gate
-failure.
+In policy tests:
+
+- add explicit denial cases for absent `trainingWheelsOff`, `false`, `null`,
+  strings, numbers, objects, and arrays;
+- preserve the explicit Coulson happy path;
+- preserve the exact eligible Training Wheels Off happy path;
+- preserve denial for every individual existing gate failure;
+- preserve hostile object/accessor/proxy fail-closed behavior.
 
 In Delivery Workspace tests:
 
 - preserve early verified draft publication as `workspace_ready` while Fury is
-  pending, even when dispatch policy is absent or false;
-- prove an exact Fury PASS plus absent, false, malformed, or conflicting
-  dispatch policy cannot return `dispatch_ready` and performs no additional
-  effect after workspace publication;
-- preserve `dispatch_ready` for exact explicit Coulson approval;
-- preserve `dispatch_ready` for exact eligible Training Wheels Off evidence;
-- prove each individual Training Wheels Off gate failure remains blocked;
-- preserve schema-8 and schema-9 publication behavior and all existing failure
-  semantics.
+  pending with the legacy input shape;
+- prove an exact Fury PASS with no durable dispatch evidence returns `blocked`
+  as `specialist_dispatch_not_approved` rather than `dispatch_ready`;
+- prove no command/effect occurs after the final dispatch-policy decision;
+- prove an unknown caller-supplied `trainingWheelsOff: false` field remains
+  rejected by the closed input shape before effects;
+- preserve schema-8 and schema-9 draft publication, publication failures,
+  receipt checks, and Fury evidence semantics.
 
 ## Exact writable paths
 
 - `packages/shield-team-system/contracts/mission-policy.mjs`
 - `packages/shield-team-system/github/delivery-workspace.mjs`
-- `packages/shield-team-system/public/github.d.mts`
 - `packages/shield-team-system/tests/mission-policy.test.mjs`
 - `packages/shield-team-system/tests/delivery-workspace.test.mjs`
 
-No mission-journal, signature, CLI, publication-authority, adapter, PR effector,
-Fury evidence, May dispatch, fixture, or unrelated documentation changes are
-authorized. If the closed policy snapshot cannot preserve both early workspace
-publication and fail-closed dispatch within these paths, May must stop for Fury
-reconciliation.
+No public declaration, mission-journal, signature, CLI, publication-gate,
+publication-authority, adapter, PR effector, Fury evidence, runtime-binding,
+May dispatch, fixture, or unrelated documentation changes are authorized. If a
+positive Delivery Workspace dispatch path is required for this PR, May must
+stop: that requires the separately reviewed durable authority projection owned
+by #141.
 
 ## Validation
 
