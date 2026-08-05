@@ -2,22 +2,15 @@
 
 Implement only the Fury-approved issue #194 plan.
 
-You are local LM Studio/Gemma 4 31B May. The governed local write path is
-the defect being corrected, hosted May became unavailable before producing an
-edit, and the superseded Gemma and Devstral fallbacks returned mechanically
-corrupt diffs that were rejected before application.
-Return one coherent applyable diff changing exactly all four approved paths in
-the single bounded packet. Hill is the bound
-`executor:hill-exact-patch-applier`: it may lock, check, apply, prove the exact
-Git-tree postimage, validate while retaining the lock, and create a commit
-directly from your proven unchanged tree with the signed HEAD as sole parent,
-but it may not redesign or complete it. Validation must leave no
-repository-visible state change before commit. Emit no prose with the patch.
-Preserve the May seat and exact superseding signed scope; do not treat this
-bootstrap executor choice as broader authority. Use the supplied exact
-production interfaces and focused test regions. Do not assume omitted files or
-helpers, and do not emit guessed context. The complete response must fit the
-bound 65,536-token runtime and remain one coherent four-file diff.
+You are hosted GPT-5.6 Sol May. The governed local write path is the defect
+being corrected, and all superseded local raw-diff packets were rejected before
+application. Use normal bounded workspace tools to inspect and edit exactly all
+four approved paths. Preserve the signed scope and approved design. Run the
+focused tests, full package suite, build, and `git diff --check`; correct
+in-scope failures without widening the plan. Create one implementation commit
+with the signed planning HEAD as sole parent. Do not merge, publish external
+effects, run #137's fixture, enter #29, or treat hosted execution as broader
+authority.
 
 ## Production change
 

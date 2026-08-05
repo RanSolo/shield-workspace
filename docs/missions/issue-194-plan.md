@@ -2,8 +2,8 @@
 
 ## Review identity
 
-- Mission: `mission:issue-194-gemma-recovery-v2`
-- Mission revision: `sha256:e2V-RbXrhqy7IT7sKGLzEUl_a_gupQdKDuji0eRum7U`
+- Mission: `mission:issue-194-hosted-sol`
+- Mission revision: `sha256:-FCsf2I2oUYYxxma4ETLyh_YAVClJdvu9CQgaKsIqFI`
 - Superseded no-effect mission: `mission:issue-194` (hosted May authority
   recorded; no implementation edit or execution effect)
 - Superseded failed-packet mission: `mission:issue-194-local-fallback` (local
@@ -17,6 +17,11 @@
   fabricated index header, and malformed first hunk; `git apply --check`
   rejected it at line 28 and no repository effect occurred; exact evidence is
   bound in `docs/missions/issue-194-devstral-failure-evidence.json`)
+- Superseded failed-packet mission: `mission:issue-194-gemma-recovery-v2`
+  (focused local Gemma May reasoning identified the intended four-path change,
+  but its patch hunk counts were malformed; `git apply --check` rejected it at
+  line 48 and no repository effect occurred; exact evidence is bound in
+  `docs/missions/issue-194-gemma-v2-failure-evidence.json`)
 - Subject: `github:RanSolo/shield-workspace/issue/194`
 - Base revision: `75cbe9974bab03c851601cde8e9249a63c384c0c`
 - Branch: `agent/issue-194-temp-name`
@@ -50,76 +55,33 @@ existing `governed-may-dispatch-v1.test.mjs` conventions.
 
 ## Frozen implementation
 
-### Bootstrap executor choice
+### Hosted implementation executor
 
-Local Bionic/Gemma May supplied the bounded implementation design, but it
-cannot truthfully perform this mission's repository write through
-`runGovernedMayDispatchStepV1`: the temporary-name composition corrected by
-this issue makes that exact path fail before the first write. The initially
-approved hosted-May executor then became unavailable before producing any edit
-because its runtime reached a usage limit; the worktree remained unchanged.
+The three local fallback missions proved that local models understood material
+parts of the design but could not reliably serialize a mechanically valid
+four-file raw diff. Every packet was rejected before application, and their
+digest-bound evidence proves the implementation files remain unchanged.
 
-The first local fallback was correctly bound and dispatched, but its 85,896
-input-token packet produced a mechanically corrupt diff after 3,533 reasoning
-tokens. Hill rejected the unchanged response before application. The clean
-signed planning HEAD and all four implementation files remained unchanged.
+The final successor preserves the May seat and uses:
 
-The Devstral successor used the approved focused 54,297-input-token packet but
-returned no separate reasoning output and failed the same mechanical gate.
-Hill rejected it unchanged before application. The clean signed planning HEAD
-and all four implementation files again remained unchanged.
+- model: `gpt-5.6-sol`;
+- reasoning runtime: `runtime:codex-hosted-may-sol`;
+- tool executor: `executor:codex-hosted-workspace-tools`.
 
-The new successor bootstrap path preserves the May seat and uses:
+After Fury approval, renewed signed Wheels Up, and a signed active May binding,
+hosted May receives the exact plan and clean signed HEAD. May uses normal
+bounded repository tools to inspect and edit exactly the four approved paths,
+runs the approved focused and full validation, and creates one implementation
+commit with the signed planning HEAD as its sole parent. It may iterate within
+that single authorized workspace execution when tests or mechanical checks
+fail, but it must not widen paths, redesign the plan, run external effects, or
+enter #137/#29. Hill verifies the final parent, exact four-path diff, clean
+worktree, and reported validation before Mack and Fury review the exact commit.
 
-- model: `google/gemma-4-31b-qat`;
-- independently observed runtime:
-  `runtime:lmstudio-gemma-4-31b`;
-- tool executor: `executor:hill-exact-patch-applier`.
-
-After renewed Fury approval, superseding signed Wheels Up, and a signed active
-May binding, Hill supplies one bounded exact-revision context packet to local
-Gemma May covering the approved design, exact production interfaces, and
-only the test regions and helpers needed for the four changes. May returns one
-coherent applyable diff changing all four approved files. The packet must fit
-the observed 65,536-token runtime context without omitting any acceptance
-criterion or referenced interface. The host executor:
-
-1. rejects prose mixed with the diff, malformed hunks, or any path outside the
-   four approved files;
-2. verifies the worktree is clean and `HEAD` exactly equals the signed plan
-   head before dispatch and again before application;
-3. acquires an exclusive ignored `.shield/tmp/issue-194-apply.lock` before the
-   final state check and holds it through application, validation, exact commit
-   creation, and final revision readback;
-4. under that lock, records canonical status/diff digests, runs
-   `git apply --check`, and uses an isolated temporary Git index seeded from
-   the exact HEAD plus `git apply --cached` to derive the expected postimage
-   tree for the unchanged accepted patch bytes;
-5. immediately rechecks HEAD, status, and diff digests, applies the unchanged
-   patch once, builds a second isolated index from HEAD plus the four observed
-   worktree files, and requires its tree ID to exactly equal the expected tree;
-6. requires the changed-path set to equal all four mandated paths, runs
-   `git diff --check`, and records packet, response, patch, prestate,
-   expected-tree, observed-tree, runtime, and executor digests;
-7. while retaining the lock, runs the approved validation commands, then
-   requires the signed HEAD, complete porcelain-v2 status (including untracked
-   files), diff, approved-path set, and observed tree to remain exactly at the
-   proven postimage with no validation-generated repository-visible artifact;
-8. creates one commit directly from the proven expected tree with the signed
-   HEAD as its sole parent, atomically advances only the current branch from
-   that expected parent, and verifies the final commit parent, tree, branch,
-   clean complete status, and four-path parent diff before releasing the lock;
-   and
-9. never repairs, completes, reorders, or widens May's patch on its behalf.
-
-Any stale HEAD, dirty prestate, lock collision, replay, malformed response,
-path mismatch, apply failure, postimage mismatch, or external modification
-stops without a second model packet or a hand-authored correction. Hill may
-perform orchestration, exact checks/application, and validation, but may not
-redesign or silently author missing implementation. This is a fail-closed
-bootstrap executor, not a new authority class or verbal authorization path.
-Governed local May tool execution resumes only after this correction is merged
-and #137 is re-frozen from fresh main.
+Any stale HEAD, dirty prestate, path widening, unapproved effect, unresolved
+validation failure, or external modification fails closed. This changes only
+the authorized executor from raw local patch serialization to the repository's
+normal hosted May tool surface; it creates no new seat or authority class.
 
 ### Production correction
 
@@ -231,14 +193,13 @@ git diff --check
 3. On `FURY_REVISE`, correct only planning artifacts and return the new exact
    revision to the same Fury seat.
 4. On `FURY_PASS`, obtain superseding signed Wheels Up for exactly the four
-   implementation paths and a signed active May binding for the exact local
-   runtime and patch executor before May emits an implementation diff.
-5. Local LM Studio/Gemma May emits the one approved patch. The locked executor
-   proves the exact postimage, validates without state drift, creates the commit
-   directly from that proven tree with the signed HEAD as sole parent, and
-   verifies the final clean revision before recording the commit SHA with all
-   packet/runtime/executor/patch/tree digests. Hill makes no content edit. That
-   commit is the implementation revision.
+   implementation paths and a signed active May binding for
+   `runtime:codex-hosted-may-sol` with
+   `executor:codex-hosted-workspace-tools` before May edits the workspace.
+5. Hosted GPT-5.6 Sol May edits only the approved paths, validates, and creates
+   one implementation commit with the signed HEAD as sole parent. Hill verifies
+   the final clean four-path revision. That commit is the implementation
+   revision.
 6. Mack validates that exact revision; Fury performs exact-revision conformance
    review.
 7. Open one bounded draft PR for human review. Do not merge, run #137's external
