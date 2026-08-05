@@ -2520,7 +2520,6 @@ export async function runGovernedMayDispatchStepV1(
   };
 
   let resultCounter = 0;
-  let temporaryCounter = 0;
   const plansByDecisionId = new Map<string, RunnerCyclePlan>();
   const contextsByDecisionId = new Map<string, PermissionInvocationContext>();
   const executionContextsByDecisionId = new Map<string, PermissionInvocationContext>();
@@ -2571,7 +2570,9 @@ export async function runGovernedMayDispatchStepV1(
         now: () => dependenciesSnapshot.value.schema9HostOps.now(),
         readWorkspaceRevision: async (root: string) => (await dependenciesSnapshot.value.schema9HostOps.execFile("git", ["rev-parse", "HEAD"], { cwd: root })).trim(),
         readWorkspaceStatus: dependenciesSnapshot.value.readWorkspaceStatus,
-        nextTemporaryName: () => `may-control-${++temporaryCounter}.tmp`,
+        nextTemporaryName: ({ sessionId, toolCallId }: Readonly<Record<string, string>>) => `.shield-may-${createHash("sha256")
+          .update(`shield:may-temporary:v1\0${sessionId}\0${toolCallId}`)
+          .digest("base64url")}.tmp`,
         monotonicNow: () => performance.now(),
         appendControlEvent: controlStore.appendControlEvent,
         ...(dependenciesSnapshot.value.fetchImpl === undefined ? {} : { fetchImpl: dependenciesSnapshot.value.fetchImpl }),

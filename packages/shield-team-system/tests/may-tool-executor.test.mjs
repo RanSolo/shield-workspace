@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { renameSync } from "node:fs";
-import { mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -172,6 +172,90 @@ test("writes one approved file at the bound revision and records decision, invoc
   });
   assert.deepEqual(deps.ledger.map((item) => item.recordType), ["permission.decision", "tool.invocation", "tool.result"]);
   assert.equal(JSON.stringify(deps.ledger).includes("after"), false);
+});
+
+test("temporary-name collisions preserve the pre-existing file", async (context) => {
+  const root = await workspace(context);
+  const temporaryPath = join(root, "src/.shield-may-12345678.tmp");
+  const repeatedRequest = request(root, "writeFile", {
+    path: "src/approved.txt", content: "after\n", expectedSha256: "absent",
+  });
+  await writeFile(temporaryPath, "pre-existing\n", "utf8");
+  const initialIdentity = regularFileIdentity(await lstat(temporaryPath));
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await assert.rejects(() => runMayToolCall(repeatedRequest, dependencies(root, "writeFile")), /may_tool_execution_failed/u);
+    assert.equal(await readFile(temporaryPath, "utf8"), "pre-existing\n");
+    assert.equal(regularFileIdentity(await lstat(temporaryPath)), initialIdentity);
+  }
+});
+
+test("temporary symlink collisions preserve the symlink and its external target", async (context) => {
+  const root = await workspace(context);
+  const externalRoot = await mkdtemp(join(tmpdir(), "shield-may-external-target-"));
+  context.after(() => rm(externalRoot, { recursive: true, force: true }));
+  const externalPath = join(externalRoot, "preserved.txt");
+  const temporaryPath = join(root, "src/.shield-may-12345678.tmp");
+  const repeatedRequest = request(root, "writeFile", {
+    path: "src/approved.txt", content: "after\n", expectedSha256: "absent",
+  });
+  await writeFile(externalPath, "outside\n", "utf8");
+  await symlink(externalPath, temporaryPath);
+  const initialSymlink = await lstat(temporaryPath);
+  const initialExternalIdentity = regularFileIdentity(await lstat(externalPath));
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await assert.rejects(() => runMayToolCall(repeatedRequest, dependencies(root, "writeFile")), /may_tool_execution_failed/u);
+    const currentSymlink = await lstat(temporaryPath);
+    assert.equal(currentSymlink.isSymbolicLink(), true);
+    assert.equal(`${currentSymlink.dev}:${currentSymlink.ino}`, `${initialSymlink.dev}:${initialSymlink.ino}`);
+    assert.equal(await readlink(temporaryPath), externalPath);
+    assert.equal(await readFile(externalPath, "utf8"), "outside\n");
+    assert.equal(regularFileIdentity(await lstat(externalPath)), initialExternalIdentity);
+  }
+});
+
+test("the same temporary identity can retry after a collision is removed", async (context) => {
+  const root = await workspace(context);
+  const temporaryPath = join(root, "src/.shield-may-12345678.tmp");
+  const repeatedRequest = request(root, "writeFile", {
+    path: "src/approved.txt", content: "after\n", expectedSha256: "absent",
+  });
+  await writeFile(temporaryPath, "collision\n", "utf8");
+
+  await assert.rejects(() => runMayToolCall(repeatedRequest, dependencies(root, "writeFile")), /may_tool_execution_failed/u);
+  assert.equal(await readFile(temporaryPath, "utf8"), "collision\n");
+  await unlink(temporaryPath);
+
+  const result = await runMayToolCall(repeatedRequest, dependencies(root, "writeFile"));
+  assert.equal(result.code, "file_written");
+  assert.equal(await readFile(join(root, "src/approved.txt"), "utf8"), "after\n");
+  assert.equal(await lstat(temporaryPath).catch(() => null), null);
+});
+
+test("cleanup preserves a substituted temporary path after creation", async (context) => {
+  const root = await workspace(context);
+  const temporaryPath = join(root, "src/.shield-may-12345678.tmp");
+  const ownedPath = join(root, "src/owned-temporary.txt");
+  let statusReads = 0;
+  const deps = dependencies(root, "writeFile", {
+    readWorkspaceStatus: async () => {
+      statusReads += 1;
+      if (statusReads === 4) {
+        await rename(temporaryPath, ownedPath);
+        await writeFile(temporaryPath, "substitute\n", "utf8");
+        return ["src/unapproved.txt"];
+      }
+      return [];
+    },
+  });
+
+  await assert.rejects(() => runMayToolCall(request(root, "writeFile", {
+    path: "src/approved.txt", content: "after\n", expectedSha256: "absent",
+  }), deps), /may_workspace_scope_mismatch/u);
+
+  assert.equal(await readFile(ownedPath, "utf8"), "after\n");
+  assert.equal(await readFile(temporaryPath, "utf8"), "substitute\n");
 });
 
 test("runs only an exact allowlisted command without a shell and releases bounded output after audit", async (context) => {
