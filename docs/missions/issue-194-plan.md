@@ -2,8 +2,8 @@
 
 ## Review identity
 
-- Mission: `mission:issue-194-devstral-fallback`
-- Mission revision: `sha256:ntNfWiNfn2c04HJzFC_pd1-honaDOLV414hLZ02eI-k`
+- Mission: `mission:issue-194-gemma-recovery-v2`
+- Mission revision: `sha256:e2V-RbXrhqy7IT7sKGLzEUl_a_gupQdKDuji0eRum7U`
 - Superseded no-effect mission: `mission:issue-194` (hosted May authority
   recorded; no implementation edit or execution effect)
 - Superseded failed-packet mission: `mission:issue-194-local-fallback` (local
@@ -12,6 +12,11 @@
   effect occurred; packet, response, patch, validation result, and unchanged
   HEAD are digest-bound in
   `docs/missions/issue-194-gemma-failure-evidence.json`)
+- Superseded failed-packet mission: `mission:issue-194-devstral-fallback`
+  (local Devstral May returned all four paths, but included a Markdown fence,
+  fabricated index header, and malformed first hunk; `git apply --check`
+  rejected it at line 28 and no repository effect occurred; exact evidence is
+  bound in `docs/missions/issue-194-devstral-failure-evidence.json`)
 - Subject: `github:RanSolo/shield-workspace/issue/194`
 - Base revision: `75cbe9974bab03c851601cde8e9249a63c384c0c`
 - Branch: `agent/issue-194-temp-name`
@@ -59,16 +64,21 @@ input-token packet produced a mechanically corrupt diff after 3,533 reasoning
 tokens. Hill rejected the unchanged response before application. The clean
 signed planning HEAD and all four implementation files remained unchanged.
 
+The Devstral successor used the approved focused 54,297-input-token packet but
+returned no separate reasoning output and failed the same mechanical gate.
+Hill rejected it unchanged before application. The clean signed planning HEAD
+and all four implementation files again remained unchanged.
+
 The new successor bootstrap path preserves the May seat and uses:
 
-- model: `mistralai/devstral-small-2-2512`;
+- model: `google/gemma-4-31b-qat`;
 - independently observed runtime:
-  `runtime:lmstudio-devstral-small-2-2512`;
+  `runtime:lmstudio-gemma-4-31b`;
 - tool executor: `executor:hill-exact-patch-applier`.
 
 After renewed Fury approval, superseding signed Wheels Up, and a signed active
 May binding, Hill supplies one bounded exact-revision context packet to local
-Devstral May covering the approved design, exact production interfaces, and
+Gemma May covering the approved design, exact production interfaces, and
 only the test regions and helpers needed for the four changes. May returns one
 coherent applyable diff changing all four approved files. The packet must fit
 the observed 65,536-token runtime context without omitting any acceptance
@@ -223,7 +233,7 @@ git diff --check
 4. On `FURY_PASS`, obtain superseding signed Wheels Up for exactly the four
    implementation paths and a signed active May binding for the exact local
    runtime and patch executor before May emits an implementation diff.
-5. Local LM Studio/Devstral May emits the one approved patch. The locked executor
+5. Local LM Studio/Gemma May emits the one approved patch. The locked executor
    proves the exact postimage, validates without state drift, creates the commit
    directly from that proven tree with the signed HEAD as sole parent, and
    verifies the final clean revision before recording the commit SHA with all

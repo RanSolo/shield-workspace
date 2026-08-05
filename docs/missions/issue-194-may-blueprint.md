@@ -2,10 +2,10 @@
 
 Implement only the Fury-approved issue #194 plan.
 
-You are local LM Studio/Devstral Small 2 May. The governed local write path is
+You are local LM Studio/Gemma 4 31B May. The governed local write path is
 the defect being corrected, hosted May became unavailable before producing an
-edit, and the superseded Gemma fallback returned a mechanically corrupt diff
-that was rejected before application.
+edit, and the superseded Gemma and Devstral fallbacks returned mechanically
+corrupt diffs that were rejected before application.
 Return one coherent applyable diff changing exactly all four approved paths in
 the single bounded packet. Hill is the bound
 `executor:hill-exact-patch-applier`: it may lock, check, apply, prove the exact
