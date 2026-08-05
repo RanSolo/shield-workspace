@@ -28,5 +28,12 @@ Review especially:
 5. preservation of early draft publication and the no-effects-after-final-
    decision boundary.
 
+Hill reconciliation after the first Fury pass must also prove:
+
+- profile execution readiness and all required Fitz/Simmons execution gates;
+- direct canonical loader invocation rather than a caller-supplied projection;
+- an additive async Delivery Workspace API with fresh publication/PR/Fury
+  readback after the loader await and before the final policy decision.
+
 Return `APPROVE` or `REVISE`, with blocking findings first. This review grants
 no implementation, model-dispatch, merge, release, #137, or #29 authority.

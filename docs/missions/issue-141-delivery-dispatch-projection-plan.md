@@ -21,9 +21,11 @@ Introduce one shared loader, provisionally
 `loadSchema9SeatDispatchProjectionV1`, below both Delivery Workspace and the
 runner-specific permission-context loader. It reads and replays the canonical
 profile-aware journal, validates the active implementation authority and May
-runtime binding, observes the live repository, and returns a closed immutable
-projection. `loadSchema9PermissionContextV1` may consume the shared result but
-retains its runner-plan, capability, writability, and effect-key checks.
+runtime binding, proves that every profile-required execution gate is satisfied,
+requires a nonterminal not-started lifecycle, observes the live repository, and
+returns a closed immutable projection. `loadSchema9PermissionContextV1` may
+consume the shared result but retains its runner-plan, capability, writability,
+and effect-key checks.
 
 Delivery Workspace combines that projection with its already verified draft-PR
 receipt and independently attributed Fury plan-review evaluation. Only the
@@ -40,6 +42,8 @@ The ready variant contains exactly:
 - exact mission ID, subject ID, mission revision, artifact revision, and
   evaluated-through sequence;
 - replayed signed mission authorization identity and state;
+- the selected profile/requirements digest, execution readiness, satisfied
+  execution-gate evidence references, and nonterminal lifecycle state;
 - active implementation-authority identity, digest, sequence, approved scope,
   repository ID, canonical root, branch, base revision, and HEAD revision;
 - active May runtime-binding identity, digest, sequence, reasoning runtime,
@@ -83,6 +87,11 @@ requires unchanged canonical content. All dynamic evidence must agree on:
 - active implementation-authority and runtime-binding identities/digests;
 - evaluated journal sequence.
 
+The journal projection must report `readiness.execute: "ready"`, execution
+`not-started`, final acceptance not accepted, and no pending profile execution
+requirement. A signed implementation authority cannot bypass a required Fitz or
+Simmons gate.
+
 Delivery Workspace additionally requires its verified publication request,
 draft-PR receipt, Fury review evidence, Fury dispatch attribution, blueprint
 identity/path, PR number, and repository revision to match the projection.
@@ -91,13 +100,23 @@ proxy-backed, or unknown input fails closed.
 
 ## Delivery Workspace integration
 
-- Extend the host options with one loader callback returning the closed
-  projection result; do not add raw authority booleans to public input.
+- Keep the existing synchronous API unchanged and unable to produce the new
+  positive authority path. Add an asynchronous Delivery Workspace entry point
+  for governed dispatch composition; this avoids a breaking return-type change.
+- The asynchronous entry point invokes the canonical shared schema-9 loader
+  directly. It may accept only the loader's ordinary identifiers, paths, and
+  trusted host-operation capabilities; it must not accept a callback or object
+  capable of asserting a ready projection, nor add raw authority booleans to
+  public input.
 - Preserve early draft-workspace publication and readback before Fury evidence
   is eligible.
-- After verified publication and Fury evaluation, load and exact-match the
-  projection, construct a fresh plain policy snapshot internally, and call
-  `canDispatchSpecialists` once.
+- After initial verified publication and Fury evaluation, load and exact-match
+  the projection. Because that load crosses an async boundary, then re-read and
+  re-evaluate the publication authorization, current draft-PR state/receipt,
+  Fury evidence ledger, Fury dispatch attribution, and plan gate without
+  performing a write or update. Any drift blocks.
+- Construct a fresh plain policy snapshot internally from only that final
+  evidence set and call `canDispatchSpecialists` once.
 - Return `dispatch_ready` only for an eligible Fury review plus a ready,
   exact-current `explicit_wheels_up` projection and an allowed final policy
   decision.
@@ -128,11 +147,16 @@ database, UI, merge, deploy, release, or #137 fixture code is in scope.
       authorization, implementation authority, runtime binding, sequence,
       root, branch, HEAD, publication receipt, or Fury evidence blocks before
       `dispatch_ready`.
+- [ ] `dispatch_ready` requires profile execution readiness and every required
+      Fitz/Simmons execution gate; active Wheels Up cannot bypass them.
 - [ ] The loader rejects non-plain, inherited, accessor, symbolic,
       non-enumerable, and proxy-backed host inputs without triggering traps.
 - [ ] The explicit Wheels Up and delegated Training Wheels Off paths remain
       distinct; unavailable material-gate evidence cannot be caller asserted.
 - [ ] Early draft publication remains possible while Fury is pending.
+- [ ] The existing synchronous API remains compatible; the new positive path is
+      additive and async, invokes the canonical loader directly, and revalidates
+      publication/PR/Fury evidence after its final await.
 - [ ] No external effect occurs after the final specialist-dispatch policy
       decision, and this ordering is tested with call tracing.
 - [ ] Existing runner permission, capability narrowing, exact effect-key, and
@@ -147,4 +171,3 @@ database, UI, merge, deploy, release, or #137 fixture code is in scope.
 Stop on any requirement for a new authority class, caller-supplied material
 gate, journal schema change, model invocation, external #137 run, #29 work, or
 scope beyond this child. Return the exact plan to Fury before implementation.
-
