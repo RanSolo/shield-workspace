@@ -399,18 +399,26 @@ async function verifyRevision(dependencies, root, baseRevision) {
   if (revision !== baseRevision) throw new Error("may_workspace_revision_mismatch");
 }
 
-async function verifyWorkspaceState(dependencies, root, baseRevision) {
+async function verifyWorkspaceState(dependencies, root, baseRevision, ignoredPath = null) {
   await verifyRevision(dependencies, root, baseRevision);
   const changed = denseArray(await dependencies.readWorkspaceStatus(root.canonical));
   if (changed === null) throw new Error("may_workspace_status_malformed");
   const seen = new Set();
+  const visible = [];
   for (const path of changed) {
     if (!validateRepositoryRelativePath(path) || isSensitiveRepositoryPath(path) || seen.has(path)) throw new Error("may_workspace_status_malformed");
-    if (!dependencies.approvedFiles.includes(path)) throw new Error("may_workspace_scope_mismatch");
     seen.add(path);
+    if (path === ignoredPath) continue;
+    if (!dependencies.approvedFiles.includes(path)) throw new Error("may_workspace_scope_mismatch");
+    visible.push(path);
   }
   if ([...seen].some((path, index, values) => index > 0 && values[index - 1].localeCompare(path) >= 0)) throw new Error("may_workspace_status_malformed");
-  return Object.freeze([...seen]);
+  return Object.freeze(visible);
+}
+
+async function matchesTemporaryIdentity(path, identity) {
+  const current = await lstat(path).catch(() => null);
+  return current?.isFile() && !current.isSymbolicLink() && rootIdentity(current) === identity;
 }
 
 async function confinedTarget(root, relativePath) {
@@ -491,21 +499,29 @@ async function writeApprovedFile(root, request, args, dependencies, plannedOpera
   if (typeof temporaryName !== "string" || !/^\.shield-may-[A-Za-z0-9_-]{8,64}\.tmp$/u.test(temporaryName)) throw new Error("may_temporary_name_invalid");
   const temporaryPath = join(target.parent, temporaryName);
   let handle;
+  let temporaryIdentity = null;
   try {
     handle = await open(temporaryPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0), target.info?.mode ?? 0o600);
+    const temporaryInfo = await handle.stat();
+    if (!temporaryInfo.isFile()) throw new Error("may_temporary_file_invalid");
+    temporaryIdentity = rootIdentity(temporaryInfo);
     const bytes = Buffer.from(args.content, "utf8");
     await handle.writeFile(bytes);
     await handle.chmod(target.info === null ? 0o600 : target.info.mode & 0o777);
     await handle.sync();
     await handle.close();
     handle = null;
-    await verifyWorkspaceState(dependencies, root, request.baseRevision);
+    const temporaryRelativePath = relative(root.canonical, temporaryPath).split(sep).join("/");
+    if (!(await matchesTemporaryIdentity(temporaryPath, temporaryIdentity))) throw new Error("may_temporary_file_changed");
+    await verifyWorkspaceState(dependencies, root, request.baseRevision, temporaryRelativePath);
+    if (!(await matchesTemporaryIdentity(temporaryPath, temporaryIdentity))) throw new Error("may_temporary_file_changed");
     const rechecked = await confinedTarget(root, args.path);
     const recheckedDigest = await currentDigest(rechecked);
     const recheckedIdentityMatches = target.info === null
       ? rechecked.info === null
       : rechecked.info !== null && regularFileIdentity(rechecked.info) === regularFileIdentity(target.info);
     if (recheckedDigest !== digest || !recheckedIdentityMatches) throw new Error("may_file_identity_changed");
+    if (!(await matchesTemporaryIdentity(temporaryPath, temporaryIdentity))) throw new Error("may_temporary_file_changed");
     await rename(temporaryPath, target.path);
     try {
       await verifyWorkspaceState(dependencies, root, request.baseRevision);
@@ -517,7 +533,11 @@ async function writeApprovedFile(root, request, args, dependencies, plannedOpera
     return Object.freeze({ state: "completed", code: "file_written", path: args.path, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
   } finally {
     await handle?.close().catch(() => {});
-    await unlink(temporaryPath).catch(() => {});
+    if (temporaryIdentity !== null) {
+      if (await matchesTemporaryIdentity(temporaryPath, temporaryIdentity)) {
+        await unlink(temporaryPath).catch(() => {});
+      }
+    }
   }
 }
 

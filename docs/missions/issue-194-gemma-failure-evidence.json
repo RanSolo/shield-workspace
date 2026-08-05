@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-194-local-fallback",
+  "missionRevisionId": "sha256:Fjx0vYrRjMZUsmCXfuABa_hZ3IWGjTQkclNCPZYF6yw",
+  "repositoryHeadBefore": "63bc0c7515d3d33bfe1df5f10ed11db5fa11b7ca",
+  "repositoryHeadAfter": "63bc0c7515d3d33bfe1df5f10ed11db5fa11b7ca",
+  "repositoryStatusBefore": "clean",
+  "repositoryStatusAfter": "clean",
+  "modelId": "google/gemma-4-31b-qat",
+  "runtimeId": "runtime:bionic-gemma-4-31b",
+  "executorId": "executor:hill-exact-patch-applier",
+  "packetDigest": "sha256:a96c92a02ef0a0f4860db174dcf62bd818828714e09c6fb5bcc55e16d70cc31d",
+  "packetBytes": 332949,
+  "responseCanonicalDigest": "sha256:714824a360113ea74f0657b34463f327b49b4dec1cb9b108038d073669661b58",
+  "reasoningDigest": "sha256:4a62276db201725a348e8d840db5ed3e62f1e0699a7c70bc9a5bf16d8694894d",
+  "patchDigest": "sha256:be22635ac469079877fff49bc85378151cb16658109adfe4253316730707ab37",
+  "patchBytes": 9686,
+  "responseStats": {
+    "inputTokens": 85896,
+    "totalOutputTokens": 6480,
+    "reasoningOutputTokens": 3533,
+    "tokensPerSecond": 6.591923209465805,
+    "timeToFirstTokenSeconds": 1789.87295
+  },
+  "reportedPaths": [
+    "packages/shield-team-system/scripts/model/may-tool-executor.mjs",
+    "packages/shield-team-system/src/governed-may-dispatch-v1.mts",
+    "packages/shield-team-system/tests/governed-may-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/may-tool-executor.test.mjs"
+  ],
+  "patchValidation": {
+    "command": "git apply --check -",
+    "exitCode": 128,
+    "stderr": "error: corrupt patch at line 20\n",
+    "stderrDigest": "sha256:4795bfb0f570e07e19f5eb78ffca2e6e5af33b60f87ba4ba779a88ee8e14c103",
+    "applied": false
+  },
+  "digestMethod": "SHA-256 over exact UTF-8 packet, reasoning, patch, and stderr bytes; responseCanonicalDigest is SHA-256 over JSON.stringify of the parsed Bionic response object in received property order.",
+  "disposition": "rejected_before_application"
+}

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-194-devstral-fallback",
+  "missionRevisionId": "sha256:ntNfWiNfn2c04HJzFC_pd1-honaDOLV414hLZ02eI-k",
+  "repositoryHeadBefore": "b2d65c6a493c4d5f0fa8df83d081883762169287",
+  "repositoryHeadAfter": "b2d65c6a493c4d5f0fa8df83d081883762169287",
+  "repositoryStatusBefore": "clean",
+  "repositoryStatusAfter": "clean",
+  "modelId": "mistralai/devstral-small-2-2512",
+  "runtimeId": "runtime:lmstudio-devstral-small-2-2512",
+  "executorId": "executor:hill-exact-patch-applier",
+  "packetDigest": "sha256:7757adcd0dadf42a3c84fb44ae369e70a7cedac834ebf9dac1403062c74b6b9e",
+  "packetBytes": 227737,
+  "responseDigest": "sha256:2819b0a38d968744165b5ecafd7bc1b63b8706691d1d3920048dd7867eee5f2a",
+  "patchDigest": "sha256:f9be68ceca5f8e2e48c6ebdadd2d5a4c2e5bd750da28dbc7170248d24e2f89d8",
+  "patchBytes": 14580,
+  "responseStats": {
+    "inputTokens": 54297,
+    "totalOutputTokens": 3909,
+    "reasoningOutputTokens": 0,
+    "tokensPerSecond": 9.038637372303436,
+    "timeToFirstTokenSeconds": 787.883937
+  },
+  "reportedPaths": [
+    "packages/shield-team-system/scripts/model/may-tool-executor.mjs",
+    "packages/shield-team-system/src/governed-may-dispatch-v1.mts",
+    "packages/shield-team-system/tests/governed-may-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/may-tool-executor.test.mjs"
+  ],
+  "patchValidation": {
+    "command": "git apply --check -",
+    "exitCode": 128,
+    "stderr": "error: corrupt patch at line 28\n",
+    "stderrDigest": "sha256:4267917bc0f2a517b6d2a4c9344276ccfa259bae58001adb7745c030982999e5",
+    "applied": false
+  },
+  "responseViolations": [
+    "markdown_fence_present",
+    "fabricated_index_header",
+    "malformed_hunk_counts"
+  ],
+  "digestMethod": "SHA-256 over exact captured request, response, patch, and stderr bytes.",
+  "disposition": "rejected_before_application"
+}

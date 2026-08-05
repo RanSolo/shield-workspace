@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, readFile, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { runGovernedMayDispatchStepV1 } from "../dist/governed-may-dispatch-v1.mjs";
+import { runMayControlLoop } from "../scripts/model/may-tool-executor.mjs";
 import { computeMayPlannedOperationsDigestV1, computeMayPlannedToolEffectKeyV1 } from "../dist/may-tool-effect-v1.mjs";
 import {
   computeImplementationAuthorityDigest,
@@ -37,6 +40,8 @@ import {
   createSeatDispatchStartedEventV1,
   replaySeatDispatchReceiptsV1,
 } from "../dist/seat-dispatch-receipt-v1.mjs";
+
+const execFile = promisify(execFileCallback);
 
 const certification = Object.freeze({
   certificationId: "deterministic-mission-compilation-stage-a-certification.v1",
@@ -1146,6 +1151,10 @@ test("invokes exactly one Helicarrier-bound May packet through the mission cycle
       assert.equal(request.systemPrompt, "system prompt");
       assert.equal(request.userPrompt, "");
       assert.equal(request.model, projection.implementationAuthority.modelId);
+      assert.equal(
+        dependencies.nextTemporaryName({ sessionId: request.sessionId, toolCallId: "call:write:1" }),
+        `.shield-may-${createHash("sha256").update(`shield:may-temporary:v1\0${request.sessionId}\0call:write:1`).digest("base64url")}.tmp`,
+      );
       return simulateExactMayControl(request, dependencies);
     },
     runMissionCycle: async (input, dependencies) => {
@@ -1182,6 +1191,158 @@ test("invokes exactly one Helicarrier-bound May packet through the mission cycle
 
   assert.equal(result.state, "completed");
   assert.equal(mayCalls, 1);
+});
+
+test("runs the dispatcher through the production control loop and real executor", async (context) => {
+  const repositoryRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-governed-may-production-")));
+  context.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const relativePath = FIXTURE_PLANNED_OPERATIONS[0].path;
+  const targetPath = join(repositoryRoot, relativePath);
+  const targetDirectory = join(repositoryRoot, "packages/shield-team-system");
+  await mkdir(targetDirectory, { recursive: true });
+  const git = async (args) => (await execFile("git", args, { cwd: repositoryRoot, encoding: "utf8" })).stdout.trim();
+  await git(["init", "-b", "main"]);
+  await writeFile(join(repositoryRoot, "base.txt"), "base\n", "utf8");
+  await git(["add", "base.txt"]);
+  await git(["-c", "user.name=shield", "-c", "user.email=shield@example.invalid", "commit", "-m", "fixture base"]);
+  const baseRevision = await git(["rev-parse", "HEAD"]);
+  await writeFile(join(repositoryRoot, "head.txt"), "head\n", "utf8");
+  await git(["add", "head.txt"]);
+  await git(["-c", "user.name=shield", "-c", "user.email=shield@example.invalid", "commit", "-m", "fixture head"]);
+  const headRevision = await git(["rev-parse", "HEAD"]);
+  const executable = await realpath(process.execPath);
+  const executableInfo = await stat(executable);
+  const content = "fixture output\n";
+  const validationScript = `const f=require('node:fs');if(f.readFileSync(${JSON.stringify(relativePath)},'utf8')!==${JSON.stringify(content)})process.exit(2)`;
+  const plannedOperations = [
+    { toolName: "writeFile", path: relativePath, content, precondition: { kind: "absent" } },
+    {
+      toolName: "runValidation",
+      commandId: "validation:test",
+      executable,
+      args: ["-e", validationScript],
+      timeoutMs: 30_000,
+      executableIdentity: `${executableInfo.dev}:${executableInfo.ino}:${executableInfo.mode}:${executableInfo.size}:${executableInfo.mtimeMs}`,
+    },
+  ];
+  const baseProjection = validProjection();
+  const baseAuthority = baseProjection.implementationAuthority;
+  const cycleIdentity = deriveMissionCycleIdentityV1({
+    repositoryRoot,
+    configuredJournalPath: ".shield/missions",
+    missionId: baseAuthority.missionId,
+    expectedSubjectId: baseAuthority.subjectId,
+    expectedRevisionId: baseAuthority.missionRevisionId,
+    expectedSequence: baseProjection.lastSequence,
+    seatId: "may",
+    actionId: "repository.write_file",
+    effectClass: "behavioral_implementation",
+    validationId: "validation:test",
+    activatedModes: [],
+    actionAllowlist: ["repository.run_validation", "repository.write_file"],
+  });
+  const operationEffectKeys = plannedOperations.map(computeMayPlannedToolEffectKeyV1);
+  const authority = {
+    ...baseAuthority,
+    artifactRevisionId: headRevision,
+    canonicalWritableRoot: repositoryRoot,
+    branch: "main",
+    baseRevision,
+    headRevision,
+    approvedEffectKeys: [cycleIdentity.effectKey, ...operationEffectKeys].sort(),
+  };
+  const baseWrapper = baseProjection.activeRuntimeBindings[0];
+  const binding = {
+    ...baseWrapper.binding,
+    artifactRevisionId: headRevision,
+    canonicalWritableRoot: repositoryRoot,
+    branch: "main",
+    approvedScope: {
+      ...baseWrapper.binding.approvedScope,
+      effectKeys: [...authority.approvedEffectKeys],
+    },
+  };
+  const wrapper = {
+    ...baseWrapper,
+    binding,
+    implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
+    baseRevision,
+    headRevision,
+  };
+  const projection = {
+    ...baseProjection,
+    implementationAuthority: authority,
+    implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
+    runtimeBindings: [wrapper],
+    activeRuntimeBindings: [wrapper],
+  };
+  const furyRecord = validFuryRecord(projection);
+  const responses = [
+    {
+      models: [{
+        key: authority.modelId,
+        loaded_instances: [{ id: binding.reasoningRuntimeId }],
+        capabilities: { trained_for_tool_use: true },
+      }],
+    },
+    {
+      choices: [{ message: { role: "assistant", content: null, tool_calls: [{
+        id: "call:write:production",
+        type: "function",
+        function: { name: "writeFile", arguments: JSON.stringify({ path: relativePath, content, expectedSha256: "absent" }) },
+      }] } }],
+    },
+    {
+      choices: [{ message: { role: "assistant", content: null, tool_calls: [{
+        id: "call:validation:production",
+        type: "function",
+        function: { name: "runValidation", arguments: JSON.stringify({ commandId: "validation:test" }) },
+      }] } }],
+    },
+    { choices: [{ message: { role: "assistant", content: "Production control fixture completed." } }] },
+  ];
+  let fetchCalls = 0;
+  const result = await runGovernedMayDispatchStepV1({
+    ...validInput(),
+    repositoryRoot,
+  }, validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    readWorkspaceStatus: async () => {
+      const status = await git(["status", "--porcelain=v1", "--untracked-files=all"]);
+      return status === "" ? [] : status.split("\n").map((line) => line.slice(3)).sort();
+    },
+    loadPermissionContext: async (input) => ({
+      state: "ready",
+      context: validPermissionContext({ ...projection, lastSequence: input.plan.evaluatedThroughSequence }, input.expectedDecisionId),
+    }),
+    schema9HostOps: {
+      realpath: async (value) => value,
+      access: async () => undefined,
+      execFile: async (command, args, options) => (await execFile(command, args, { ...options, encoding: "utf8" })).stdout,
+      probeCapability: async () => true,
+      now: () => "2026-08-03T20:06:00Z",
+    },
+    helicarrier: passingHelicarrier(),
+    plannedToolOperations: plannedOperations,
+    validationCommands: [{ commandId: "validation:test", executable, args: ["-e", validationScript], timeoutMs: 30_000 }],
+    runMayControlLoop,
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify(responses.shift()), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    runMissionCycle: runExecutingMissionCycle,
+  }));
+
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(await readFile(targetPath, "utf8"), content);
+  assert.equal(await git(["rev-parse", "HEAD"]), headRevision);
+  assert.deepEqual(await git(["status", "--porcelain=v1", "--untracked-files=all"]), `?? ${relativePath}`);
+  assert.deepEqual((await readdir(targetDirectory)).filter((name) => /^\.shield-may-[A-Za-z0-9_-]{8,64}\.tmp$/u.test(name)), []);
+  assert.equal(fetchCalls, 4);
 });
 
 test("narrows each May tool call to one capability and its exact three attestations", async () => {
