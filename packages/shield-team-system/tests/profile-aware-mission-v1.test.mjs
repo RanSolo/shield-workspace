@@ -11,6 +11,7 @@ import {
 import {
   createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareImplementationAuthorityRevocationEntryV1,
+  createProfileAwareCommunicationResultEntryV1,
   createProfileAwareExecutionEffectEntryV1,
   createProfileAwareGovernanceDecisionEntryV1,
   createProfileAwareMissionBegunEntry,
@@ -23,10 +24,15 @@ import {
   createProfileAwareRuntimeBindingSupersessionEntryV1,
 } from "../dist/profile-aware-mission-v1.mjs";
 import {
+  computeReviewPublicationAuthorityDigest,
+  evaluateReviewPublicationV1,
+} from "../dist/review-publication-v1.mjs";
+import {
   computeImplementationAuthorityDigest,
   computeRuntimeBindingDigest,
   computeSchema9RuntimeBindingDigest,
 } from "../dist/implementation-authority-v1.mjs";
+import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 
 const predecessorDigest = "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9";
 const riskFlags = { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true };
@@ -990,4 +996,170 @@ test("malformed binding authorization precedes absent implementation authority",
   }]);
   assert.equal(result.state, "invalid");
   assert.equal(result.code, "malformed");
+});
+
+function publicationResultCandidate(fixture, overrides = {}) {
+  const scope = evaluateReviewPublicationV1(fixture.authority, {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    missionId: fixture.authority.missionId,
+    subjectId: fixture.authority.subjectId,
+    missionRevisionId: fixture.authority.missionRevisionId,
+    repositoryId: fixture.authority.repositoryId,
+    canonicalRepositoryRoot: fixture.authority.canonicalRepositoryRoot,
+    branch: fixture.authority.branch,
+    baseRevisionId: fixture.authority.baseRevisionId,
+    headRevisionId: fixture.authority.headRevisionId,
+    proposedChangedPaths: fixture.authority.authorizedPaths,
+    observedChangedPaths: fixture.authority.authorizedPaths,
+    requestedEffects: fixture.request.requestedEffects,
+    observedSymlinkPaths: [],
+    observedGitlinkPaths: [],
+    workspaceClean: true,
+  });
+  assert.equal(scope.state, "allowed");
+  return {
+    adapterContractVersion: 2,
+    adapterId: "github",
+    candidateKind: "communication_result",
+    candidateId: "candidate:schema9:publication:4",
+    missionId: fixture.request.missionId,
+    subjectId: fixture.request.subjectId,
+    revisionId: fixture.request.revisionId,
+    humanPrincipalId: null,
+    bindingId: null,
+    sourceRef: "github:publication:readback",
+    capturedAt: { value: "2026-07-29T10:04:00Z", provenance: "hostTrusted" },
+    payload: {
+      requestId: fixture.requestId,
+      outcome: "delivered",
+      failureReason: null,
+      receiptRef: "github:publication:receipt:4",
+      operation: fixture.request.operation,
+      targetRef: fixture.request.targetRef,
+      scopeDigest: scope.scopeDigest,
+      publicationBinding: scope.binding,
+    },
+    ...overrides,
+  };
+}
+
+test("schema-9 publication authorization, request, and trusted result replay identically after restart", () => {
+  const fixture = publicationJournalFixture({ schemaVersion: 9 });
+  const queued = replay(fixture.entries);
+  assert.equal(queued.communication.state, "queued");
+  assert.equal(queued.publicationAuthorizations.length, 1);
+  assert.equal(queued.communication.requests[0].requestId, fixture.requestId);
+  assert.equal(queued.implementationAuthority, null);
+  assert.equal(queued.execution, "not-started");
+  assert.equal(queued.readiness.execute, "ready");
+  assert.equal(queued.finalAcceptance, "waiting");
+
+  const resultEntry = createProfileAwareCommunicationResultEntryV1({
+    projection: queued,
+    candidate: publicationResultCandidate(fixture),
+  });
+  const terminalEntries = [...fixture.entries, resultEntry];
+  const terminal = replay(terminalEntries);
+  assert.equal(terminal.communication.state, "delivered");
+  assert.equal(terminal.communication.requests[0].candidateId, "candidate:schema9:publication:4");
+  assert.deepEqual(replayProfileAwareMissionJournal(structuredClone(terminalEntries)), replayProfileAwareMissionJournal(terminalEntries));
+  assert.equal(terminal.implementationAuthority, null);
+  assert.equal(terminal.execution, "not-started");
+  assert.equal(terminal.readiness.execute, "ready");
+  assert.equal(terminal.finalAcceptance, "waiting");
+
+  terminal.publicationAuthorizations[0].authority.authorizedPaths[0] = "changed.md";
+  terminal.communication.requests[0].requestedEffects[0] = "review.branch.push";
+  const restarted = replay(terminalEntries);
+  assert.deepEqual(restarted.publicationAuthorizations[0].authority.authorizedPaths, fixture.authority.authorizedPaths);
+  assert.deepEqual(restarted.communication.requests[0].requestedEffects, fixture.request.requestedEffects);
+});
+
+test("schema-9 publication replay rejects signed-envelope, scope, sequence, duplicate, and lifecycle drift", () => {
+  const fixture = publicationJournalFixture({ schemaVersion: 9 });
+  const authorizationIndex = 2;
+  const requestIndex = 3;
+  const invalidJournals = [];
+
+  const forged = structuredClone(fixture.entries);
+  forged[authorizationIndex].payload.authorization.signatureBase64 = "forged";
+  invalidJournals.push(forged);
+
+  for (const mutation of [
+    { authorityDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+    { missionId: "mission:wrong" },
+    { subjectId: "issue:wrong" },
+    { missionRevisionId: "sha256:wrong_revision" },
+    { artifactRevisionId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    { previousJournalSequence: 0, journalSequence: 1 },
+  ]) {
+    const changed = structuredClone(fixture.entries);
+    const payload = { ...changed[authorizationIndex].payload.authorization.payload, ...mutation };
+    changed[authorizationIndex].payload.authorization = fixture.signAuthorizationPayload(payload);
+    invalidJournals.push(changed);
+  }
+
+  for (const mutation of [
+    { artifactRevisionId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    { proposedChangedPaths: ["docs/other.md"] },
+    { requestedEffects: ["review.branch.push"] },
+    { revisionId: "sha256:stale_revision" },
+  ]) {
+    const changed = structuredClone(fixture.entries);
+    Object.assign(changed[requestIndex].payload.request, mutation);
+    invalidJournals.push(changed);
+  }
+
+  const unknownField = structuredClone(fixture.entries);
+  unknownField[requestIndex].payload.unexpected = true;
+  invalidJournals.push(unknownField);
+  invalidJournals.push([...structuredClone(fixture.entries), structuredClone(fixture.entries[requestIndex])]);
+
+  for (const entries of invalidJournals) {
+    assert.equal(replayProfileAwareMissionJournal(entries).state, "invalid");
+  }
+
+  const queued = replay(fixture.entries);
+  const candidate = publicationResultCandidate(fixture);
+  for (const mutate of [
+    (value) => { value.payload.publicationBinding.canonicalRepositoryRoot = "/workspace/other"; },
+    (value) => { value.payload.publicationBinding.branch = "other/branch"; },
+    (value) => { value.payload.publicationBinding.headRevisionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; },
+    (value) => { value.payload.operation = "publish_status"; },
+    (value) => { value.payload.targetRef = "github:issue:wrong"; },
+    (value) => { value.payload.requestId = "request:missing"; },
+    (value) => { value.payload.scopeDigest = "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; },
+    (value) => { value.candidateId = "candidate:schema9:changed"; value.payload.publicationBinding.requestedEffects = ["review.branch.push"]; },
+  ]) {
+    const changed = structuredClone(candidate);
+    mutate(changed);
+    assert.throws(() => createProfileAwareCommunicationResultEntryV1({ projection: queued, candidate: changed }));
+  }
+
+  const resultEntry = createProfileAwareCommunicationResultEntryV1({ projection: queued, candidate });
+  const terminal = replay([...fixture.entries, resultEntry]);
+  assert.throws(() => createProfileAwareCommunicationResultEntryV1({ projection: terminal, candidate }));
+  assert.equal(replayProfileAwareMissionJournal([...fixture.entries, resultEntry, { ...resultEntry, sequence: 5, entryId: `entry:${fixture.request.missionId}:5` }]).state, "invalid");
+
+  const late = structuredClone(fixture.entries.slice(0, 2));
+  late.push({
+    schemaVersion: 9,
+    entryId: `entry:${fixture.request.missionId}:2`,
+    missionId: fixture.request.missionId,
+    sequence: 2,
+    type: "execution.transition",
+    timestamp: { value: "2026-07-29T10:02:00Z", provenance: "hostTrusted" },
+    payload: { from: "not-started", to: "running" },
+  });
+  const lateAuthorization = structuredClone(fixture.entries[authorizationIndex]);
+  lateAuthorization.sequence = 3;
+  lateAuthorization.entryId = `entry:${fixture.request.missionId}:3`;
+  lateAuthorization.payload.authorization.payload.previousJournalSequence = 2;
+  lateAuthorization.payload.authorization.payload.journalSequence = 3;
+  lateAuthorization.payload.authorization = fixture.signAuthorizationPayload(lateAuthorization.payload.authorization.payload);
+  lateAuthorization.timestamp = lateAuthorization.payload.authorization.payload.timestamp;
+  assert.equal(replayProfileAwareMissionJournal([...late, lateAuthorization]).state, "invalid");
+
+  assert.equal(computeReviewPublicationAuthorityDigest(fixture.authority), fixture.authorization.payload.authorityDigest);
 });

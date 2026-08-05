@@ -7,13 +7,18 @@ import {
   deliverGitHubCommunication,
 } from "../public/github.mjs";
 import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
+import { resolveJournaledPublicationRequest } from "../github/publication-gate.mjs";
+import {
+  createProfileAwareCommunicationResultEntryV1,
+  replayProfileAwareMissionJournal,
+} from "../dist/profile-aware-mission-v1.mjs";
 
 const head = "0123456789012345678901234567890123456789";
 const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const branchSlug = "codex/issue-28-github-host-adapter";
 const missionBriefPath = "docs/missions/issue-28-v0.3-5-github-adapter.md";
 
-function publicationFixture(operation = "publish_status", action = "comment") {
+function publicationFixture(operation = "publish_status", action = "comment", schemaVersion = 8) {
   const permittedEffects = action === "comment"
     ? ["review.comment.publish"]
     : ["review.branch.push", "review.pull_request.create_draft"];
@@ -22,6 +27,7 @@ function publicationFixture(operation = "publish_status", action = "comment") {
     : `github:repository:RanSolo/shield-workspace` +
       `:branch:${branchSlug}:base:main`;
   return publicationJournalFixture({
+    schemaVersion,
     missionId: "mission:fixture",
     subjectId: "issue:28",
     headRevisionId: head,
@@ -79,6 +85,52 @@ test("GitHub performs no effect without an exact journaled request", () => {
     }),
     { state: "blocked", reason: "journal_replay_failed", commands: [] },
   );
+});
+
+test("publication gate replays schema 8 and schema 9 while mixed journals fail closed in both directions", () => {
+  const legacy = publicationFixture();
+  const profileAware = publicationFixture("publish_status", "comment", 9);
+  for (const fixture of [legacy, profileAware]) {
+    const resolved = resolveJournaledPublicationRequest(fixture.requestId, { loadJournal: fixture.loadJournal });
+    assert.equal(resolved.state, "allowed");
+    assert.equal(resolved.request.requestId, fixture.request.requestId);
+    assert.equal(resolved.request.state, "queued");
+    assert.equal(resolved.request.publicationAuthorizationId, fixture.request.publicationAuthorizationId);
+    assert.deepEqual(resolved.authority, fixture.authority);
+    assert.deepEqual(resolved.usedCandidateIds, []);
+    assert.equal(resolved.evaluatedThroughSequence, 3);
+  }
+  const mixedEightToNine = structuredClone(legacy.entries);
+  mixedEightToNine.push({ ...profileAware.entries.at(-1), sequence: mixedEightToNine.length });
+  const mixedNineToEight = structuredClone(profileAware.entries);
+  mixedNineToEight.push({ ...legacy.entries.at(-1), sequence: mixedNineToEight.length });
+  assert.equal(resolveJournaledPublicationRequest(legacy.requestId, { loadJournal: () => mixedEightToNine }).state, "blocked");
+  assert.equal(resolveJournaledPublicationRequest(profileAware.requestId, { loadJournal: () => mixedNineToEight }).state, "blocked");
+});
+
+test("GitHub adapter consumes a real schema-9 queued publication request", () => {
+  const fixture = publicationFixture("publish_status", "comment", 9);
+  const run = runner([...scopeChecks(), ok("github:pr:28:comment:schema9")]);
+  const result = deliverGitHubCommunication(
+    fixture.requestId,
+    publication({
+      candidateId: "candidate:publication:schema9",
+      capturedAt: { value: "2026-07-29T10:04:00Z", provenance: "hostTrusted" },
+    }),
+    { run, loadJournal: fixture.loadJournal, realpath: (value) => value },
+  );
+  assert.equal(result.state, "candidate");
+  assert.equal(result.candidate.payload.outcome, "delivered");
+  assert.equal(result.candidate.payload.requestId, fixture.requestId);
+  const queued = replayProfileAwareMissionJournal(fixture.entries);
+  assert.equal(queued.state, "valid");
+  const entry = createProfileAwareCommunicationResultEntryV1({
+    projection: queued.value,
+    candidate: result.candidate,
+  });
+  const terminal = replayProfileAwareMissionJournal([...fixture.entries, entry]);
+  assert.equal(terminal.state, "valid");
+  assert.equal(terminal.value.communication.state, "delivered");
 });
 
 test("GitHub publishes human-readable status only at the requested exact head", () => {

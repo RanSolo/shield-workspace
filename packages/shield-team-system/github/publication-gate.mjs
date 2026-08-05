@@ -1,4 +1,5 @@
 import { replaySupervisedMissionJournal } from "../dist/mission-v2.mjs";
+import { replayProfileAwareMissionJournal } from "../dist/profile-aware-mission-v1.mjs";
 
 function blocked(reason) {
   return { state: "blocked", reason };
@@ -6,7 +7,7 @@ function blocked(reason) {
 
 /**
  * Loads and fully replays the durable journal before selecting one exact queued
- * v8 publication request. A standalone request or caller-created projection is
+ * v8 or v9 publication request. A standalone request or caller-created projection is
  * never sufficient.
  */
 export function resolveJournaledPublicationRequest(requestId, options = {}) {
@@ -23,10 +24,13 @@ export function resolveJournaledPublicationRequest(requestId, options = {}) {
     return blocked("journal_load_failed");
   }
   if (!Array.isArray(entries)) return blocked("journal_load_failed");
-  const replay = replaySupervisedMissionJournal(entries);
+  const firstSchema = entries[0]?.schemaVersion;
+  const replay = firstSchema === 9
+    ? replayProfileAwareMissionJournal(entries)
+    : replaySupervisedMissionJournal(entries);
   if (replay.state !== "valid") return blocked("journal_replay_failed");
   const projection = replay.value;
-  if (projection.journalSchemaVersion !== 8) {
+  if (firstSchema !== 9 && projection.journalSchemaVersion !== 8) {
     return blocked("publication_journal_v8_required");
   }
   const requests = projection.communication.requests.filter(
