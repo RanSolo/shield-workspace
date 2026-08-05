@@ -193,8 +193,8 @@ type PublicationRequestIntent = {
   targetRef: string;
   requestedEffects: ReviewPublicationEffect[];
 };
-type PublicationTreeEntry = { mode: string; type: string; path: string };
-type PublicationRepositoryObservation = {
+export type PublicationTreeEntry = { mode: string; type: string; path: string };
+export type PublicationRepositoryObservation = {
   configuredRepositoryId: string;
   originUrl: string;
   remoteRepositoryId: string;
@@ -302,6 +302,23 @@ function treeEntries(value: string, label: string): PublicationTreeEntry[] {
   });
 }
 
+function exactTreeEntries(value: string, label: string, authorizedPaths: readonly string[]): PublicationTreeEntry[] {
+  const entries = treeEntries(value, label);
+  const authorized = new Set(authorizedPaths);
+  const observed = new Set<string>();
+  for (const entry of entries) {
+    if (!authorized.has(entry.path) || observed.has(entry.path)) {
+      throw new MissionCliError(`${label} contains an unexpected or duplicate path.`, 1);
+    }
+    observed.add(entry.path);
+  }
+  return entries;
+}
+
+function literalPathspec(path: string): string {
+  return `:(top,literal)${path}`;
+}
+
 function repositoryIdFromOrigin(value: string): string {
   const exact = value.trim().replace(/\.git$/u, "");
   const match = /^(?:git@github\.com:|https:\/\/github\.com\/)(?<repository>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/u.exec(exact);
@@ -347,8 +364,8 @@ async function observePublicationRepository(
     const [status, changed, baseTree, headTree] = await Promise.all([
       gitOutput(canonicalRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
       gitOutput(canonicalRoot, ["diff", "--name-only", "--no-renames", "-z", baseRevision, headRevision, "--"]),
-      gitOutput(canonicalRoot, ["ls-tree", "-rz", baseRevision, "--", ...authorizedPaths]),
-      gitOutput(canonicalRoot, ["ls-tree", "-rz", headRevision, "--", ...authorizedPaths]),
+      gitOutput(canonicalRoot, ["ls-tree", "-rz", baseRevision, "--", ...authorizedPaths.map(literalPathspec)]),
+      gitOutput(canonicalRoot, ["ls-tree", "-rz", headRevision, "--", ...authorizedPaths.map(literalPathspec)]),
     ]);
     if (canonicalRoot !== gitTopLevel || branch.length === 0 || branch === "HEAD" ||
         baseRevision.length === 0 || headRevision.length === 0) {
@@ -366,12 +383,27 @@ async function observePublicationRepository(
       baseAncestor: true,
       statusEntries: nulRecords(status, "Repository status"),
       changedPaths: nulRecords(changed, "Repository change set").sort(),
-      baseTreeEntries: treeEntries(baseTree, "Base tree"),
-      headTreeEntries: treeEntries(headTree, "HEAD tree"),
+      baseTreeEntries: exactTreeEntries(baseTree, "Base tree", authorizedPaths),
+      headTreeEntries: exactTreeEntries(headTree, "HEAD tree", authorizedPaths),
     };
   } catch (error) {
     if (error instanceof MissionCliError) throw error;
     throw new MissionCliError(`Publication repository observation failed: ${error instanceof Error ? error.message : String(error)}.`, 1);
+  }
+}
+
+export function assertPublicationAuthorizationFreshness(input: {
+  initialConfigurationIdentity: string;
+  freshConfigurationIdentity: string;
+  initialObservation: PublicationRepositoryObservation;
+  freshObservation: PublicationRepositoryObservation;
+  initialJournalSequence: number;
+  freshJournalSequence: number;
+}): void {
+  if (input.freshConfigurationIdentity !== input.initialConfigurationIdentity ||
+      canonicalJson(input.freshObservation) !== canonicalJson(input.initialObservation) ||
+      input.freshJournalSequence !== input.initialJournalSequence) {
+    throw new MissionCliError("Mission journal, repository configuration, or publication observation changed while authorization was being signed.", 1);
   }
 }
 
@@ -902,11 +934,14 @@ async function publicationAuthorize(args: string[]): Promise<number> {
   const freshConfig = await repositoryConfig(root);
   const freshObservation = await observePublicationRepository(root, freshConfig.repositoryId, intent.baseRevision, intent.authorizedPaths);
   const fresh = await currentProfileAwareMission(root, freshConfig, missionId);
-  if (canonicalJson(freshConfig) !== configurationIdentity ||
-      canonicalJson(freshObservation) !== canonicalJson(observation) ||
-      fresh.projection.lastSequence !== current.projection.lastSequence) {
-    throw new MissionCliError("Mission journal, repository configuration, or publication observation changed while authorization was being signed.", 1);
-  }
+  assertPublicationAuthorizationFreshness({
+    initialConfigurationIdentity: configurationIdentity,
+    freshConfigurationIdentity: canonicalJson(freshConfig),
+    initialObservation: observation,
+    freshObservation,
+    initialJournalSequence: current.projection.lastSequence,
+    freshJournalSequence: fresh.projection.lastSequence,
+  });
   const entry = produce(() => createProfileAwareReviewPublicationAuthorizationEntryV1({
     projection: fresh.projection,
     trustedBindings: profileAwareBindings(fresh),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -19,7 +19,7 @@ import {
   createProfileAwareMissionBrief,
   MISSION_130_JOURNAL_DIGEST,
 } from "../dist/profile-aware-mission-v1.mjs";
-import { readInteractivePasscode } from "../dist/mission-cli.mjs";
+import { assertPublicationAuthorizationFreshness, readInteractivePasscode } from "../dist/mission-cli.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -532,11 +532,13 @@ test("schema-9 publication CLI signs authorization, queues without passcode, and
   runGit(root, ["config", "user.email", "shield@example.invalid"]);
   runGit(root, ["config", "user.name", "SHIELD Fixture"]);
   runGit(root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
-  runGit(root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  await writeFile(join(root, "AGENTS.md"), "ordinary tracked file\n");
+  runGit(root, ["add", "package.json", "mission-brief.json", "AGENTS.md", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
   runGit(root, ["commit", "-qm", "publication base"]);
   const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
   await writeFile(join(root, "review-artifact.md"), "schema 9 publication\n");
-  runGit(root, ["add", "review-artifact.md"]);
+  await symlink("AGENTS.md", join(root, ":AGENTS.md"));
+  runGit(root, ["add", "review-artifact.md", "./:AGENTS.md"]);
   runGit(root, ["commit", "-qm", "publication head"]);
 
   const missionId = "mission:cli-schema9-publication";
@@ -578,6 +580,24 @@ test("schema-9 publication CLI signs authorization, queues without passcode, and
     { env: { HOME: homeRoot }, input: "publication-passcode\n" },
   );
   assert.equal(authorizedMission.status, 0, authorizedMission.stderr);
+
+  await writeFile(join(temporaryRoot, "publication-colon-path.json"), `${JSON.stringify({
+    baseRevision,
+    authorizedPaths: [":AGENTS.md", "review-artifact.md"],
+    permittedEffects: ["review.comment.publish"],
+  }, null, 2)}\n`);
+  const beforeColonPath = await readFile(journalPath(root, missionId), "utf8");
+  const colonPath = run(
+    root,
+    ["mission", "publication-authorize", "--mission-id", missionId, "--input", ".shield/tmp/publication-colon-path.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "publication-passcode\n" },
+  );
+  assert.equal(colonPath.status, 1);
+  assert.match(colonPath.stderr, /symlink_path_denied/u);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), beforeColonPath);
+  await unlink(join(root, ":AGENTS.md"));
+  runGit(root, ["add", "--all"]);
+  runGit(root, ["commit", "-qm", "remove colon path"]);
 
   const publicationAuthorized = run(
     root,
@@ -708,6 +728,59 @@ test("schema-9 publication CLI signs authorization, queues without passcode, and
   const restarted = run(root, ["mission", "status", "--mission-id", missionId, "--json"]);
   assert.equal(restarted.status, 0, restarted.stderr);
   assert.deepEqual(JSON.parse(restarted.stdout), projection);
+});
+
+test("schema-9 publication freshness rejects every post-passcode repository and journal drift class", () => {
+  const observation = {
+    configuredRepositoryId: "RanSolo/fixture",
+    originUrl: "https://github.com/RanSolo/fixture.git",
+    remoteRepositoryId: "RanSolo/fixture",
+    canonicalRoot: "/tmp/fixture",
+    gitTopLevel: "/tmp/fixture",
+    branch: "agent/issue-149",
+    baseRevision: "a".repeat(40),
+    headRevision: "b".repeat(40),
+    baseAncestor: true,
+    statusEntries: [],
+    changedPaths: ["review-artifact.md"],
+    baseTreeEntries: [],
+    headTreeEntries: [{ mode: "100644", type: "blob", path: "review-artifact.md" }],
+  };
+  const cases = [
+    ["repository configuration", { configurationIdentity: "config:changed" }],
+    ["configured repository ID", { configuredRepositoryId: "RanSolo/other" }],
+    ["origin URL", { originUrl: "https://github.com/RanSolo/other.git" }],
+    ["remote repository ID", { remoteRepositoryId: "RanSolo/other" }],
+    ["canonical root", { canonicalRoot: "/tmp/other" }],
+    ["Git top level", { gitTopLevel: "/tmp/other" }],
+    ["branch", { branch: "agent/other" }],
+    ["base revision", { baseRevision: "c".repeat(40) }],
+    ["HEAD revision", { headRevision: "d".repeat(40) }],
+    ["ancestry", { baseAncestor: false }],
+    ["status", { statusEntries: ["?? untracked"] }],
+    ["changed paths", { changedPaths: ["other.md"] }],
+    ["tree path", { headTreeEntries: [{ mode: "100644", type: "blob", path: "other.md" }] }],
+    ["symlink mode", { headTreeEntries: [{ mode: "120000", type: "blob", path: "review-artifact.md" }] }],
+    ["gitlink mode", { headTreeEntries: [{ mode: "160000", type: "commit", path: "review-artifact.md" }] }],
+    ["journal sequence", { journalSequence: 3 }],
+  ];
+  for (const [label, drift] of cases) {
+    const freshObservation = structuredClone(observation);
+    const { configurationIdentity, journalSequence, ...observationDrift } = drift;
+    Object.assign(freshObservation, observationDrift);
+    assert.throws(
+      () => assertPublicationAuthorizationFreshness({
+        initialConfigurationIdentity: "config:initial",
+        freshConfigurationIdentity: configurationIdentity ?? "config:initial",
+        initialObservation: observation,
+        freshObservation,
+        initialJournalSequence: 2,
+        freshJournalSequence: journalSequence ?? 2,
+      }),
+      /changed while authorization was being signed/u,
+      label,
+    );
+  }
 });
 
 test("packed CLI rejects mixed schema 9 and legacy entries without changing journal bytes", async () => {
