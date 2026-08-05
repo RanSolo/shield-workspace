@@ -110,6 +110,76 @@ When compatibility fails, use `ask-local` with explicit context files as the
 fallback for context-supplied reconnaissance. That fallback does not produce
 governed broker evidence and must not be treated as readiness.
 
+## Governed local Mack validation
+
+`mack-validation-runner.mjs` is the only governed local-runtime path for Mack.
+This read-only, exact-revision path treats the local model as an executor, never
+as a source of authority. It accepts one closed JSON packet on stdin plus a
+trusted, exact command registry in `SHIELD_MACK_COMMAND_REGISTRY_JSON`.
+`SHIELD_MACK_REPLAY_REGISTRY_ROOT` names a host-owned durable registry outside
+the repository, and `LOCAL_MODEL_API_TOKEN` is optional. The packet freezes the
+validation request ID and digest, mission and repository binding, base and
+artifact Git revisions, ordered scenarios, ordered lane definitions and
+scenario mappings, complete digest-verified repository context, mission
+artifacts, and one LM Studio model selector.
+
+The runner requires a loopback HTTP LM Studio origin and exactly one loaded
+instance. It probes `/api/v1/models` before inference and again immediately
+after inference, preserving separate provider, model-key, runtime-instance, and
+`executor:local-mack-validation-v1` identities. The additive generic metadata
+probe does not require tool capability; Daisy and May keep their existing
+tool-capability behavior.
+
+All repository and process facts are host-derived. The runner proves the
+canonical repository root, Git directory, remote identity, attached branch,
+exact HEAD, clean status, and ordered changed paths; derives diff and source
+bytes from the bound base/artifact Git objects; byte-compares them with the
+packet; exact-matches the trusted command registry; and executes lanes in order
+without a shell. Command receipts contain host timestamps, executable and argv
+identity, exit/signal/timeout/launch state, and bounded stdout/stderr digests.
+Empty, duplicate, unknown, or optional-only required-scenario mappings are
+rejected.
+
+Gemma receives only the frozen review context and host-derived lane summaries
+through native `/api/v1/chat` with `store: false`, deterministic decoding, no
+tools, and bounded input/output. Its strict JSON response may contain only
+ordered scenario assessments, classified findings, limitations, and a
+recommended route. The host constructs the unchanged `mack.validation.v0`
+report and derives coverage, lane outcomes, status, and route. Model prose or a
+model-supplied PASS, identity, command result, or report cannot override host
+evidence. Coverage requires every mapped required host lane to pass and the
+ordered model assessment to be `satisfied`; `failed` or `uncertain` vetoes
+coverage, while model satisfaction alone can never establish it.
+
+Run it from the package directory with a closed packet:
+
+```bash
+SHIELD_MACK_COMMAND_REGISTRY_JSON='[...]' \
+SHIELD_MACK_REPLAY_REGISTRY_ROOT='/absolute/external/mack-replay' \
+  node scripts/model/mack-validation-runner.mjs < /path/to/frozen-request.json
+```
+
+Any malformed packet, command drift, nonzero/signal/timeout/launch/truncation
+result, context mismatch, dirty or stale Git state, runtime ambiguity, model
+schema violation, or pre/post identity change fails closed. Dependency-injected
+test evidence and direct low-level construction are always labeled synthetic
+and ineligible. Only the non-injected production runner can promote eligibility
+through its private host boundary.
+
+The external replay registry uses request-scoped atomic locks and canonical,
+durably synced records binding validation request ID, request digest, and
+evidence digest. Its root must be canonical, private, and outside the repository;
+symlinks, nonregular targets, malformed or partial bytes, orphaned temporary
+state, and lock ambiguity fail closed. Identical completed evidence may replay
+across fresh processes; a conflicting same-ID request is rejected before Git,
+process, or model effects. The output remains non-authoritative evidence only:
+it cannot supply Fury or human approval, merge, deployment, release, or final
+acceptance.
+
+This path does not enable generic Mack V0.3 dispatch or repository/process
+tools. `ask-local mack` remains an ungoverned text helper and cannot produce
+readiness evidence.
+
 ## Governed May implementation calls
 
 The governed local tool-broker path pins Ornith's recommended sampling profile
