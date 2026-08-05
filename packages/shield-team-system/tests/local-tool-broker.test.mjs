@@ -11,6 +11,7 @@ import {
   LOCAL_TOOL_SAMPLING,
   explainLocalToolFailure,
   probeLocalToolCompatibility,
+  probeLocalModelMetadata,
   probeLocalToolModel,
   runLocalToolSession,
 } from "../scripts/model/local-tool-broker.mjs";
@@ -178,6 +179,42 @@ test("capability probe exact-matches one loaded tool-trained instance and reject
   await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://example.com", model: "ornith", fetchImpl }), /lm_probe_input_invalid/u);
   await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl: async () => jsonResponse(modelResponse({ trained: false })) }), /lm_tool_model_not_tool_capable/u);
   await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl: async () => jsonResponse(modelResponse({ instances: ["a", "b"] })) }), /lm_tool_model_unavailable/u);
+});
+
+test("generic metadata probe attributes one loaded LM Studio instance without requiring tool capability", async () => {
+  const untrained = modelResponse({ trained: false, instances: ["gemma-instance"] });
+  assert.deepEqual(await probeLocalModelMetadata({
+    baseUrl: "http://127.0.0.1:1234",
+    model: "ornith",
+    fetchImpl: async () => jsonResponse(untrained),
+  }), {
+    provider: "lmstudio",
+    origin: "http://127.0.0.1:1234",
+    observedModelKey: "ornith",
+    loadedInstanceId: "gemma-instance",
+  });
+  assert.deepEqual(await probeLocalModelMetadata({
+    baseUrl: "http://[::1]:1234",
+    model: "gemma-instance",
+    fetchImpl: async () => jsonResponse(untrained),
+  }), {
+    provider: "lmstudio",
+    origin: "http://[::1]:1234",
+    observedModelKey: "ornith",
+    loadedInstanceId: "gemma-instance",
+  });
+  await assert.rejects(() => probeLocalModelMetadata({ baseUrl: "https://127.0.0.1:1234", model: "ornith", fetchImpl: async () => jsonResponse(untrained) }), /lm_probe_input_invalid/u);
+  await assert.rejects(() => probeLocalModelMetadata({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl: async () => jsonResponse(modelResponse({ trained: false, instances: ["a", "b"] })) }), /lm_model_ambiguous/u);
+});
+
+test("generic metadata addition leaves the existing tool capability decision unchanged", async () => {
+  const response = modelResponse({ trained: false, instances: ["gemma-instance"] });
+  const fetchImpl = async () => jsonResponse(response);
+  const generic = await probeLocalModelMetadata({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl });
+  assert.equal(generic.loadedInstanceId, "gemma-instance");
+  await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl }), /lm_tool_model_not_tool_capable/u);
+  const missingCapabilities = { models: [{ key: "ornith", loaded_instances: [{ id: "gemma-instance" }] }] };
+  await assert.rejects(() => probeLocalToolModel({ baseUrl: "http://127.0.0.1:1234", model: "ornith", fetchImpl: async () => jsonResponse(missingCapabilities) }), /lm_tool_model_unavailable/u);
 });
 
 test("diagnostics classify local broker failures for Hill without granting authority", () => {

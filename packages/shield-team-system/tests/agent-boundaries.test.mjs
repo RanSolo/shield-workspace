@@ -44,6 +44,29 @@ test("seat prompts preserve the approved implementation boundaries", async () =>
   assert.match(mack, /Independent validation specialist/);
   assert.match(mack, /You do not implement production behavior/);
   assert.match(mack, /exact repository and implementation HEAD/);
+  assert.match(mack, /emit only the closed\s+analysis candidate/i);
+  assert.match(mack, /Do not emit a\s+`mack\.validation\.v0` report/i);
+  assert.match(mack, /host derives all bindings/i);
+  assert.match(mack, /receive no repository or\s+process tools/i);
+});
+
+test("governed local Mack documentation preserves the narrow exact-revision boundary", async () => {
+  const rootAgents = await readRepoFile("../../AGENTS.md");
+  const readme = await readRepoFile("scripts/model/README.md");
+  const mack = await readRepoFile("agents/alphonso-mack-validation.agent.md");
+
+  for (const document of [rootAgents, readme, mack]) {
+    assert.match(document, /governed[\s\S]{0,80}(?:local[\s-])?(?:validation )?runner/i);
+    assert.match(document, /exact-revision/i);
+    assert.match(document, /local model[\s\S]{0,100}(?:never|not)[\s\S]{0,60}(?:authority|source of authority)/i);
+  }
+  assert.match(readme, /host constructs the unchanged `mack\.validation\.v0`/i);
+  assert.match(readme, /Dependency-injected\s+test evidence[\s\S]{0,80}always labeled synthetic\s+and ineligible/i);
+  assert.match(readme, /model satisfaction alone can never establish it/i);
+  assert.match(readme, /external replay registry uses request-scoped atomic locks/i);
+  assert.match(readme, /Only the non-injected production runner can promote eligibility/i);
+  assert.match(readme, /does not enable generic Mack V0\.3 dispatch/i);
+  assert.match(readme, /`ask-local mack` remains an ungoverned text helper/i);
 });
 
 test("May profiles preserve blueprint boundaries across local and hosted runtimes", async () => {

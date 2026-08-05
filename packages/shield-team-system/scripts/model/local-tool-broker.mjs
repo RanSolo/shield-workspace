@@ -262,7 +262,7 @@ async function fetchJson(fetchImpl, url, options, { timeoutMs, maxBytes }) {
   }
 }
 
-export async function probeLocalToolModel({ baseUrl, model, fetchImpl = fetch, apiToken, timeoutMs = LOCAL_TOOL_LIMITS.inferenceTimeoutMs }) {
+async function readLoadedModelRecords({ baseUrl, model, fetchImpl, apiToken, timeoutMs }) {
   const origin = validateLoopbackBaseUrl(baseUrl);
   if (origin === null || typeof model !== "string" || !IDENTIFIER.test(model)) throw new Error("lm_probe_input_invalid");
   const data = await fetchJson(fetchImpl, `${origin}/api/v1/models`, {
@@ -272,28 +272,61 @@ export async function probeLocalToolModel({ baseUrl, model, fetchImpl = fetch, a
   if (!exactPlain(data, ["models"])) throw new Error("lm_models_response_malformed");
   const models = denseArray(data.models);
   if (models === null) throw new Error("lm_models_response_malformed");
-  const matches = [];
-  let loadedButNotToolCapable = false;
+  const records = [];
   for (const item of models) {
     if (!plain(item)) continue;
     const key = Object.getOwnPropertyDescriptor(item, "key")?.value;
     const capabilities = Object.getOwnPropertyDescriptor(item, "capabilities")?.value;
     const loaded = denseArray(Object.getOwnPropertyDescriptor(item, "loaded_instances")?.value);
-    if (typeof key !== "string" || !plain(capabilities) || loaded === null) continue;
-    const trained = Object.getOwnPropertyDescriptor(capabilities, "trained_for_tool_use")?.value === true;
+    if (typeof key !== "string" || !IDENTIFIER.test(key) || loaded === null) continue;
     const instanceIds = loaded.map((entry) => plain(entry) ? Object.getOwnPropertyDescriptor(entry, "id")?.value : null).filter((id) => typeof id === "string" && IDENTIFIER.test(id));
-    if ((model === key && instanceIds.length > 0 && !trained) || (!trained && instanceIds.includes(model))) {
+    records.push(Object.freeze({
+      key,
+      instanceIds: Object.freeze(instanceIds),
+      capabilitiesValid: plain(capabilities),
+      trainedForToolUse: plain(capabilities) && Object.getOwnPropertyDescriptor(capabilities, "trained_for_tool_use")?.value === true,
+    }));
+  }
+  return Object.freeze({ origin, records: Object.freeze(records) });
+}
+
+export async function probeLocalModelMetadata({ baseUrl, model, fetchImpl = fetch, apiToken, timeoutMs = LOCAL_TOOL_LIMITS.inferenceTimeoutMs }) {
+  const metadata = await readLoadedModelRecords({ baseUrl, model, fetchImpl, apiToken, timeoutMs });
+  const matches = [];
+  for (const record of metadata.records) {
+    if (record.key === model) {
+      for (const loadedInstanceId of record.instanceIds) matches.push({ observedModelKey: record.key, loadedInstanceId });
+    } else if (record.instanceIds.includes(model)) {
+      matches.push({ observedModelKey: record.key, loadedInstanceId: model });
+    }
+  }
+  if (matches.length !== 1) throw new Error(matches.length === 0 ? "lm_model_unavailable" : "lm_model_ambiguous");
+  return Object.freeze({
+    provider: "lmstudio",
+    origin: metadata.origin,
+    observedModelKey: matches[0].observedModelKey,
+    loadedInstanceId: matches[0].loadedInstanceId,
+  });
+}
+
+export async function probeLocalToolModel({ baseUrl, model, fetchImpl = fetch, apiToken, timeoutMs = LOCAL_TOOL_LIMITS.inferenceTimeoutMs }) {
+  const metadata = await readLoadedModelRecords({ baseUrl, model, fetchImpl, apiToken, timeoutMs });
+  const matches = [];
+  let loadedButNotToolCapable = false;
+  for (const record of metadata.records) {
+    if (!record.capabilitiesValid) continue;
+    if ((model === record.key && record.instanceIds.length > 0 && !record.trainedForToolUse) || (!record.trainedForToolUse && record.instanceIds.includes(model))) {
       loadedButNotToolCapable = true;
     }
-    if (model === key) {
-      if (trained && instanceIds.length === 1) matches.push(instanceIds[0]);
-    } else if (trained && instanceIds.includes(model)) {
+    if (model === record.key) {
+      if (record.trainedForToolUse && record.instanceIds.length === 1) matches.push(record.instanceIds[0]);
+    } else if (record.trainedForToolUse && record.instanceIds.includes(model)) {
       matches.push(model);
     }
   }
   if (matches.length === 0 && loadedButNotToolCapable) throw new Error("lm_tool_model_not_tool_capable");
   if (matches.length !== 1) throw new Error(matches.length === 0 ? "lm_tool_model_unavailable" : "lm_tool_model_ambiguous");
-  return Object.freeze({ origin, loadedInstanceId: matches[0] });
+  return Object.freeze({ origin: metadata.origin, loadedInstanceId: matches[0] });
 }
 
 function readDedicatedReasoning(message) {

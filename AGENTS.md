@@ -16,8 +16,12 @@ model or runtime is only the current executor for that role.
 
 Use named Codex custom agents for hosted work. Daisy and May may instead run
 through the repository's local-model adapters when the host explicitly selects
-a local runtime. Local and hosted execution must use the same seat contract and
-must preserve the actual runtime/model identity in evidence.
+a local runtime. Mack may use a local runtime only through the governed,
+read-only, exact-revision validation runner; this does not enable Mack in the
+generic V0.3 dispatch path. Local and hosted execution must use the same seat
+contract and must preserve the actual runtime/model and distinct host-tool
+executor identities in evidence. A local model is the seat executor, never the
+seat itself or a source of authority.
 
 Do not substitute an unnamed generic subagent for a SHIELD seat. Generated
 thread nicknames are display labels, not seat identities.
@@ -47,4 +51,3 @@ gate. A Fury verdict is technical review, not human authorization.
   fail-closed condition.
 - Report only actions and validation actually performed.
 - Preserve unrelated user changes in a dirty worktree.
-
