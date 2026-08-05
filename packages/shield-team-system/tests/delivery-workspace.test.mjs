@@ -322,16 +322,6 @@ test("approval and verified draft receipt produce workspace_ready while Fury is 
     state: "OPEN",
     isDraft: true,
   });
-
-  const neverCalled = runner([]);
-  const denied = prepareDeliveryWorkspaceForDispatch(input({ missionState: "proposed" }), {
-    run: neverCalled,
-    loadJournal: createPublication.loadJournal,
-    realpath: (value) => value,
-  });
-  assert.equal(denied.state, "blocked");
-  assert.equal(denied.reason, "specialist_dispatch_not_approved");
-  assert.equal(neverCalled.calls.length, 0);
 });
 
 test("Delivery Workspace consumes a real schema-9 queued publication request", () => {
@@ -425,7 +415,7 @@ test("repeated publication reuses and verifies the existing draft PR", () => {
   assert.equal(run.calls.filter(({ args }) => args[0] === "pr" && args[1] === "edit").length, 1);
 });
 
-test("an exact Fury PASS opens dispatch after verified readback", () => {
+test("an exact Fury PASS without durable dispatch evidence blocks after verified readback", () => {
   const bundle = furyEvidenceBundle(passingGate());
   const run = runner([
     ...initialChecks(), ok(JSON.stringify([pr()])), ...scopeChecks(), ok(), ok(), ok(JSON.stringify([pr()])),
@@ -443,9 +433,10 @@ test("an exact Fury PASS opens dispatch after verified readback", () => {
       realpath: (value) => value,
     },
   );
-  assert.equal(result.state, "dispatch_ready");
-  assert.equal(result.planGateEvaluation.dispatchEligibility, "eligible");
-  assert.equal(result.planGateEvaluation.reviewerSeatId, "fury");
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "specialist_dispatch_not_approved");
+  assert.equal(run.calls.length, 19);
+  assert.equal(result.commands.length, run.calls.length);
 });
 
 test("durable store readback feeds the synchronous independent loader boundary end to end", async () => {
@@ -479,11 +470,11 @@ test("durable store readback feeds the synchronous independent loader boundary e
       realpath: (value) => value,
     },
   );
-  assert.equal(result.state, "dispatch_ready");
-  assert.equal(result.planReviewEvidenceEvaluation.evidence.evidenceId, bundle.evidence.evidenceId);
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "specialist_dispatch_not_approved");
 });
 
-test("bounded reconciliation opens dispatch while Fury FAIL remains workspace_ready", () => {
+test("bounded reconciliation remains blocked while Fury FAIL remains workspace_ready", () => {
   const reconciledBundle = furyEvidenceBundle(reconciledGate());
   const reconciled = prepareDeliveryWorkspaceForDispatch(
     input({
@@ -499,8 +490,8 @@ test("bounded reconciliation opens dispatch while Fury FAIL remains workspace_re
       loadFuryDispatchReceiptEntries: () => reconciledBundle.entries,
       realpath: (value) => value },
   );
-  assert.equal(reconciled.state, "dispatch_ready");
-  assert.equal(reconciled.planGateEvaluation.verifierSeatId, "hill");
+  assert.equal(reconciled.state, "blocked");
+  assert.equal(reconciled.reason, "specialist_dispatch_not_approved");
 
   const failedGate = passingGate({
     verdict: "FAIL",
@@ -533,6 +524,7 @@ test("malformed blueprint and caller-supplied or malformed gate input block befo
   for (const [value, reason] of [
     [input({ blueprintArtifact: { ...input().blueprintArtifact, artifactPath: "docs/other.md" } }), "blueprint_path_mismatch"],
     [input({ planGate: passingGate() }), "delivery_workspace_input_required"],
+    [input({ trainingWheelsOff: false }), "delivery_workspace_input_required"],
     [input({ planGateCandidate: { candidateSchemaVersion: 1 } }), "invalid_fury_plan_review_evidence_candidate"],
     [input({ planGateCandidate: undefined }), "invalid_fury_plan_review_evidence_candidate"],
   ]) {
