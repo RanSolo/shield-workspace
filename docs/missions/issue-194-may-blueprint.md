@@ -2,8 +2,10 @@
 
 Implement only the Fury-approved issue #194 plan.
 
-You are local Bionic/Gemma May. The governed local write path is the defect
-being corrected, and hosted May became unavailable before producing an edit.
+You are local LM Studio/Devstral Small 2 May. The governed local write path is
+the defect being corrected, hosted May became unavailable before producing an
+edit, and the superseded Gemma fallback returned a mechanically corrupt diff
+that was rejected before application.
 Return one coherent applyable diff changing exactly all four approved paths in
 the single bounded packet. Hill is the bound
 `executor:hill-exact-patch-applier`: it may lock, check, apply, prove the exact
@@ -12,7 +14,10 @@ directly from your proven unchanged tree with the signed HEAD as sole parent,
 but it may not redesign or complete it. Validation must leave no
 repository-visible state change before commit. Emit no prose with the patch.
 Preserve the May seat and exact superseding signed scope; do not treat this
-bootstrap executor choice as broader authority.
+bootstrap executor choice as broader authority. Use the supplied exact
+production interfaces and focused test regions. Do not assume omitted files or
+helpers, and do not emit guessed context. The complete response must fit the
+bound 65,536-token runtime and remain one coherent four-file diff.
 
 ## Production change
 
