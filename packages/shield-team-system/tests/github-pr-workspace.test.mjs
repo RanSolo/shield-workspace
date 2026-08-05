@@ -18,8 +18,9 @@ function plan() {
   };
 }
 
-function publicationFixture(action) {
+function publicationFixture(action, schemaVersion = 8) {
   return publicationJournalFixture({
+    schemaVersion,
     missionId: "mission:issue-3",
     subjectId: "issue:3",
     headRevisionId: head,
@@ -96,6 +97,36 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
     executable === "git" && args[0] === "diff") <
     run.calls.findIndex(({ executable, args }) =>
       executable === "git" && args[0] === "push"));
+});
+
+test("draft PR workspace consumes a real schema-9 queued publication request", () => {
+  const publication = publicationFixture("create", 9);
+  const run = runner([
+    ...initialChecks(),
+    ok("[]"),
+    ...scopeChecks(),
+    ok(),
+    ok("https://github.com/RanSolo/shield-workspace/pull/4"),
+    ok(JSON.stringify([{
+      number: 4,
+      title: plan().prTitle,
+      url: "https://github.com/RanSolo/shield-workspace/pull/4",
+      isDraft: true,
+      state: "OPEN",
+      headRefName: plan().branchSlug,
+      headRefOid: head,
+      baseRefName: "main",
+    }])),
+  ]);
+  const result = createOrUpdatePR(plan(), {
+    run,
+    body: "Schema-9 mission body",
+    publicationRequestId: publication.requestId,
+    loadJournal: publication.loadJournal,
+    realpath: (value) => value,
+  });
+  assert.equal(result.state, "success");
+  assert.equal(result.receipt.artifactRevisionId, head);
 });
 
 test("reuses exactly one open draft PR and updates its body", () => {

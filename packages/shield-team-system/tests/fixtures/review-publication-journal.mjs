@@ -11,6 +11,15 @@ import {
   replaySupervisedMissionJournal,
 } from "../../dist/mission-v2.mjs";
 import {
+  createProfileAwareCommunicationRequestEntryV1,
+  createProfileAwareGovernanceDecisionEntryV1,
+  createProfileAwareMissionBegunEntry,
+  createProfileAwareMissionBrief,
+  createProfileAwareReviewPublicationAuthorizationEntryV1,
+  MISSION_130_JOURNAL_DIGEST,
+  replayProfileAwareMissionJournal,
+} from "../../dist/profile-aware-mission-v1.mjs";
+import {
   computeReviewPublicationAuthorityDigest,
 } from "../../dist/review-publication-v1.mjs";
 
@@ -34,6 +43,7 @@ function signed(privateKey, payload) {
 }
 
 export function publicationJournalFixture(options = {}) {
+  const schemaVersion = options.schemaVersion ?? 8;
   const missionId = options.missionId ?? "mission:publication-fixture";
   const subjectId = options.subjectId ?? "issue:113";
   const headRevisionId = options.headRevisionId ??
@@ -51,9 +61,13 @@ export function publicationJournalFixture(options = {}) {
   const requestedEffects = [...(options.requestedEffects ??
     permittedEffects)].sort();
   const operation = options.operation ?? "publish_review_artifact";
-  const requestId = options.requestId ?? `request:${missionId}:publication`;
+  const requestId = options.requestId ?? (schemaVersion === 9
+    ? `request:${missionId}:review-publish:3`
+    : `request:${missionId}:publication`);
   const authorizationId = options.authorizationId ??
-    `authorization:${missionId}:publication`;
+    (schemaVersion === 9
+      ? `authorization:${missionId}:review-publish:2`
+      : `authorization:${missionId}:publication`);
 
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeySpkiBase64 = publicKey.export({
@@ -91,6 +105,136 @@ export function publicationJournalFixture(options = {}) {
     attestedBy: "repository-policy:maintainer",
     provenanceRef: "repository-config:fitz",
   };
+  if (schemaVersion === 9) {
+    const brief = createProfileAwareMissionBrief({
+      schemaVersion: 2,
+      missionId,
+      objective: "Publish exact review artifacts under signed schema-9 authority.",
+      subjectId,
+      riskFlags: {
+        production: false,
+        destructive: false,
+        migration: false,
+        credentialsOrSecurity: false,
+        externalCommunication: false,
+        merge: false,
+        deploy: false,
+        release: false,
+        hillHighRisk: false,
+      },
+      participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+      activatedModes: [],
+      requireSimmons: false,
+      createdAt: { value: "2026-07-29T10:00:00Z", provenance: "humanRecorded" },
+      profileId: "standard",
+      profileVersion: 1,
+      requiredExecutionGateRoleIds: ["coulson"],
+      requiredFinalAcceptanceGateRoleIds: ["coulson"],
+      predecessorMissionId: "mission:issue-130",
+      predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+    });
+    const entries = [createProfileAwareMissionBegunEntry(brief, [coulson])];
+    let replayed = replayProfileAwareMissionJournal(entries);
+    if (replayed.state !== "valid") throw new Error(replayed.errors.join(" "));
+    let projection = replayed.value;
+    const requirement = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization");
+    if (!requirement) throw new Error("Mission authorization requirement missing.");
+    const evidencePayload = {
+      schemaVersion: 1,
+      evidenceId: `evidence:${missionId}:coulson`,
+      requirementId: requirement.requirementId,
+      missionId,
+      revisionId: brief.revisionId,
+      seatId: "coulson",
+      evidenceKind: "mission_authorization",
+      decision: "approved",
+      humanPrincipalId: coulson.humanPrincipalId,
+      bindingId: coulson.bindingId,
+      signingKeyRef: coulson.signingKeyRef,
+      sourceRef: `authorization:${missionId}`,
+      timestamp: { value: "2026-07-29T10:01:00Z", provenance: "humanRecorded" },
+      journalSequence: 1,
+    };
+    entries.push(createProfileAwareGovernanceDecisionEntryV1({
+      projection,
+      trustedBindings: [coulson],
+      evidence: signed(privateKey, evidencePayload),
+    }));
+    replayed = replayProfileAwareMissionJournal(entries);
+    if (replayed.state !== "valid") throw new Error(replayed.errors.join(" "));
+    projection = replayed.value;
+    const authority = {
+      publicationScopeSchemaVersion: 1,
+      contractVersion: "review-publication.v1",
+      authorityKind: options.authorityKind ?? "review.publish",
+      authorityRef: authorizationId,
+      missionId,
+      subjectId,
+      missionRevisionId: brief.revisionId,
+      repositoryId,
+      canonicalRepositoryRoot,
+      branch,
+      baseRevisionId,
+      headRevisionId,
+      authorizedPaths,
+      permittedEffects,
+    };
+    const authorizationPayload = {
+      schemaVersion: 1,
+      authorizationId,
+      authorityDigest: computeReviewPublicationAuthorityDigest(authority),
+      missionId,
+      subjectId,
+      missionRevisionId: brief.revisionId,
+      artifactRevisionId: headRevisionId,
+      authorityKind: authority.authorityKind,
+      previousJournalSequence: 1,
+      journalSequence: 2,
+      humanPrincipalId: coulson.humanPrincipalId,
+      humanBindingId: coulson.bindingId,
+      signingKeyRef: coulson.signingKeyRef,
+      sourceRef: `authorization:${missionId}:publication`,
+      timestamp: { value: "2026-07-29T10:02:00Z", provenance: "humanRecorded" },
+    };
+    const authorization = signed(privateKey, authorizationPayload);
+    entries.push(createProfileAwareReviewPublicationAuthorizationEntryV1({
+      projection,
+      trustedBindings: [coulson],
+      authority,
+      authorization,
+    }));
+    replayed = replayProfileAwareMissionJournal(entries);
+    if (replayed.state !== "valid") throw new Error(replayed.errors.join(" "));
+    projection = replayed.value;
+    const request = {
+      requestId,
+      adapterContractVersion: 2,
+      adapterId: "github",
+      operation,
+      missionId,
+      subjectId,
+      revisionId: brief.revisionId,
+      artifactRevisionId: headRevisionId,
+      targetRef: options.targetRef ?? `github:${subjectId}`,
+      publicationAuthorizationId: authorizationId,
+      proposedChangedPaths: authorizedPaths,
+      requestedEffects,
+    };
+    entries.push(createProfileAwareCommunicationRequestEntryV1({
+      projection,
+      request,
+      timestamp: { value: "2026-07-29T10:03:00Z", provenance: "hostTrusted" },
+    }));
+    return {
+      authority,
+      authorization,
+      entries,
+      request,
+      requestId,
+      signAuthorizationPayload: (payload) => signed(privateKey, payload),
+      loadJournal: () => structuredClone(entries),
+    };
+  }
   const brief = createSupervisedMissionBrief({
     schemaVersion: 1,
     missionId,
@@ -240,6 +384,7 @@ export function publicationJournalFixture(options = {}) {
     entries,
     request,
     requestId,
+    signAuthorizationPayload: (payload) => signed(privateKey, payload),
     loadJournal: () => structuredClone(entries),
   };
 }

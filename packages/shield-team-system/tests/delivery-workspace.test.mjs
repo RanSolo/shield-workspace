@@ -48,8 +48,9 @@ function pr(overrides = {}) {
   };
 }
 
-function publicationFixture(action) {
+function publicationFixture(action, schemaVersion = 8) {
   return publicationJournalFixture({
+    schemaVersion,
     missionId: "mission-44",
     subjectId: "issue-44",
     headRevisionId: head,
@@ -68,6 +69,7 @@ function publicationFixture(action) {
 
 const createPublication = publicationFixture("create");
 const updatePublication = publicationFixture("update");
+const schema9CreatePublication = publicationFixture("create", 9);
 
 function input(overrides = {}) {
   return {
@@ -330,6 +332,23 @@ test("approval and verified draft receipt produce workspace_ready while Fury is 
   assert.equal(denied.state, "blocked");
   assert.equal(denied.reason, "specialist_dispatch_not_approved");
   assert.equal(neverCalled.calls.length, 0);
+});
+
+test("Delivery Workspace consumes a real schema-9 queued publication request", () => {
+  const run = runner([
+    ...initialChecks(), ok("[]"), ...scopeChecks(), ok(), ok(pr().url), ok(JSON.stringify([pr()])),
+  ]);
+  const result = prepareDeliveryWorkspaceForDispatch(input({
+    publicationRequestId: schema9CreatePublication.requestId,
+    publicationCandidateId: "candidate:mission-44:schema9-publication",
+  }), {
+    run,
+    loadJournal: schema9CreatePublication.loadJournal,
+    realpath: (value) => value,
+  });
+  assert.equal(result.state, "workspace_ready");
+  assert.equal(result.publicationCandidate.payload.outcome, "delivered");
+  assert.equal(result.publicationCandidate.payload.requestId, schema9CreatePublication.requestId);
 });
 
 test("creation, update, and verification failures deny specialist dispatch", () => {

@@ -2,12 +2,28 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import {
   canonicalJson,
   computeEd25519SigningKeyRef,
+  verifySignedReviewPublicationAuthorization,
+  type CommunicationRequestProjection,
   validateTrustedBindingRegistry,
   type EvidenceTimestamp,
   type MissionModeActivation,
   type MissionRiskFlags,
+  type ReviewPublicationAuthorizationRecord,
+  type SignedReviewPublicationAuthorization,
+  type SupervisedMissionProjection,
   type TrustedHumanBinding,
 } from "./mission-v2.mjs";
+import {
+  validateAdapterCandidate,
+  validateCommunicationRequest,
+  type ReviewPublicationCommunicationRequestPayload,
+  type ReviewPublicationCommunicationResultAdapterCandidate,
+} from "./adapter-v1.mjs";
+import {
+  validateReviewPublicationAuthorityV1,
+  validateReviewPublicationEvidenceV1,
+  type ReviewPublicationAuthorityV1,
+} from "./review-publication-v1.mjs";
 import {
   getMissionProfileV1,
   isProfileAtLeastAsStrictV1,
@@ -104,6 +120,9 @@ export type ProfileAwareMissionEntryV1 =
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "evidence.recorded"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "runtime.binding_recorded"; timestamp: EvidenceTimestamp; payload: { binding: Schema9RuntimeBindingV1; authorization: SignedSchema9RuntimeBindingAuthorization } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "runtime.binding_superseded"; timestamp: EvidenceTimestamp; payload: { priorBindingId: string; priorBindingVersion: number; binding: Schema9RuntimeBindingV1; authorization: SignedSchema9RuntimeBindingAuthorization } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "review.publication_authorized"; timestamp: EvidenceTimestamp; payload: { authority: ReviewPublicationAuthorityV1; authorization: SignedReviewPublicationAuthorization } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "communication.requested"; timestamp: EvidenceTimestamp; payload: { request: ReviewPublicationCommunicationRequestPayload } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "communication.result_recorded"; timestamp: EvidenceTimestamp; payload: { candidate: ReviewPublicationCommunicationResultAdapterCandidate } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "final_acceptance.recorded"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } };
 
 export interface ProfileAwareProjectionV1 {
@@ -119,6 +138,11 @@ export interface ProfileAwareProjectionV1 {
   implementationAuthorityState: "waiting" | "authorized" | "revoked";
   runtimeBindings: Schema9RuntimeBindingV1[];
   activeRuntimeBindings: Schema9RuntimeBindingV1[];
+  publicationAuthorizations: ReviewPublicationAuthorizationRecord[];
+  communication: {
+    state: "not-configured" | "queued" | "delivered" | "failed" | "unknown";
+    requests: CommunicationRequestProjection[];
+  };
   readiness: { execute: "waiting" | "ready" | "blocked"; accept: "waiting" | "ready" | "blocked" };
   effects: RunnerAuthoritativeEffectRecord[];
   finalAcceptance: "waiting" | "accepted";
@@ -574,6 +598,226 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
   };
 }
 
+function copyPublicationAuthorization(record: ReviewPublicationAuthorizationRecord): ReviewPublicationAuthorizationRecord {
+  return {
+    authority: {
+      ...record.authority,
+      authorizedPaths: [...record.authority.authorizedPaths],
+      permittedEffects: [...record.authority.permittedEffects],
+    },
+    authorization: {
+      ...record.authorization,
+      timestamp: { ...record.authorization.timestamp },
+    },
+    entryId: record.entryId,
+    journalSequence: record.journalSequence,
+  };
+}
+
+function copyCommunicationRequest(request: CommunicationRequestProjection): CommunicationRequestProjection {
+  return {
+    ...request,
+    ...(request.adapterContractVersion === 2
+      ? {
+        proposedChangedPaths: [...request.proposedChangedPaths],
+        requestedEffects: [...request.requestedEffects],
+      }
+      : {}),
+  };
+}
+
+function expectedPublicationBinding(
+  authority: Readonly<ReviewPublicationAuthorityV1>,
+  request: ReviewPublicationCommunicationRequestPayload,
+) {
+  return {
+    authorityKind: authority.authorityKind,
+    authorityRef: authority.authorityRef,
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    repositoryId: authority.repositoryId,
+    canonicalRepositoryRoot: authority.canonicalRepositoryRoot,
+    branch: authority.branch,
+    baseRevisionId: authority.baseRevisionId,
+    headRevisionId: authority.headRevisionId,
+    authorizedPaths: authority.authorizedPaths,
+    permittedEffects: authority.permittedEffects,
+    requestedEffects: request.requestedEffects,
+  };
+}
+
+export function createProfileAwareReviewPublicationAuthorizationEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  authority: ReviewPublicationAuthorityV1;
+  authorization: SignedReviewPublicationAuthorization;
+}): ProfileAwareMissionEntryV1 {
+  if (input.projection.schemaVersion !== 9 ||
+      input.projection.authorization !== "authorized" ||
+      input.projection.execution !== "not-started") {
+    throw new Error("Profile-aware review publication authorization requires an authorized not-started mission.");
+  }
+  const authority = validateReviewPublicationAuthorityV1(input.authority);
+  if (authority.state === "blocked") throw new Error(`Review publication authority is invalid: ${authority.reasonCode}.`);
+  const verificationProjection = {
+    missionId: input.projection.missionId,
+    brief: input.projection.brief,
+    trustedBindings: input.trustedBindings,
+    lastSequence: input.projection.lastSequence,
+  } as unknown as Pick<SupervisedMissionProjection, "missionId" | "brief" | "trustedBindings" | "lastSequence">;
+  const authorized = verifySignedReviewPublicationAuthorization(
+    input.authorization,
+    authority.value,
+    verificationProjection,
+  );
+  if (authorized.state === "invalid") throw new Error(authorized.errors.join(" "));
+  if (input.projection.publicationAuthorizations.some(
+    ({ authorization }) => authorization.authorizationId === authorized.value.authorizationId,
+  )) {
+    throw new Error("Review publication authorizationId has already been recorded.");
+  }
+  const sequence = input.projection.lastSequence + 1;
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${sequence}`,
+    missionId: input.projection.missionId,
+    sequence,
+    type: "review.publication_authorized",
+    timestamp: { ...authorized.value.timestamp },
+    payload: {
+      authority: {
+        ...authority.value,
+        authorizedPaths: [...authority.value.authorizedPaths],
+        permittedEffects: [...authority.value.permittedEffects],
+      },
+      authorization: {
+        payload: { ...authorized.value, timestamp: { ...authorized.value.timestamp } },
+        signatureBase64: input.authorization.signatureBase64,
+      },
+    },
+  };
+}
+
+export function createProfileAwareCommunicationRequestEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  request: ReviewPublicationCommunicationRequestPayload;
+  timestamp: EvidenceTimestamp;
+}): ProfileAwareMissionEntryV1 {
+  if (input.projection.schemaVersion !== 9 ||
+      input.projection.authorization !== "authorized" ||
+      input.projection.execution !== "not-started") {
+    throw new Error("Profile-aware communication request requires an authorized not-started mission.");
+  }
+  if (!timestamp(input.timestamp)) throw new Error("Profile-aware communication request timestamp is malformed.");
+  const checked = validateCommunicationRequest(input.request);
+  if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
+  if (checked.value.adapterContractVersion !== 2) throw new Error("Profile-aware communication request requires adapter contract v2.");
+  const request = checked.value;
+  if (request.missionId !== input.projection.missionId ||
+      request.subjectId !== input.projection.brief.subjectId ||
+      request.revisionId !== input.projection.brief.revisionId) {
+    throw new Error("Profile-aware communication request does not match the canonical mission subject and revision.");
+  }
+  const matches = input.projection.publicationAuthorizations.filter(
+    ({ authorization }) => authorization.authorizationId === request.publicationAuthorizationId,
+  );
+  if (matches.length !== 1) throw new Error("Communication request publication authorization is absent or ambiguous.");
+  const authority = matches[0].authority;
+  if (authority.headRevisionId !== request.artifactRevisionId ||
+      canonicalJson(authority.authorizedPaths) !== canonicalJson(request.proposedChangedPaths) ||
+      request.requestedEffects.some((effect) => !authority.permittedEffects.includes(effect))) {
+    throw new Error("Communication request widens or mismatches its publication authorization.");
+  }
+  if (input.projection.communication.requests.some(({ requestId }) => requestId === request.requestId)) {
+    throw new Error("Communication requestId has already been recorded.");
+  }
+  const sequence = input.projection.lastSequence + 1;
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${sequence}`,
+    missionId: input.projection.missionId,
+    sequence,
+    type: "communication.requested",
+    timestamp: { ...input.timestamp },
+    payload: {
+      request: {
+        ...request,
+        proposedChangedPaths: [...request.proposedChangedPaths],
+        requestedEffects: [...request.requestedEffects],
+      },
+    },
+  };
+}
+
+export function createProfileAwareCommunicationResultEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  candidate: ReviewPublicationCommunicationResultAdapterCandidate;
+}): ProfileAwareMissionEntryV1 {
+  if (input.projection.schemaVersion !== 9) throw new Error("Profile-aware communication result requires journal schema 9.");
+  const checked = validateAdapterCandidate(input.candidate);
+  if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
+  if (checked.value.candidateKind !== "communication_result" || checked.value.adapterContractVersion !== 2) {
+    throw new Error("Profile-aware communication result requires an adapter-v2 communication result.");
+  }
+  const candidate = checked.value as ReviewPublicationCommunicationResultAdapterCandidate;
+  if (candidate.missionId !== input.projection.missionId ||
+      candidate.subjectId !== input.projection.brief.subjectId ||
+      candidate.revisionId !== input.projection.brief.revisionId) {
+    throw new Error("Profile-aware communication result does not match the canonical mission subject and revision.");
+  }
+  if (input.projection.communication.requests.some(({ candidateId }) => candidateId === candidate.candidateId)) {
+    throw new Error("Communication candidateId has already been recorded.");
+  }
+  const requests = input.projection.communication.requests.filter(
+    ({ requestId }) => requestId === candidate.payload.requestId,
+  );
+  if (requests.length !== 1) throw new Error("Communication result has no unique matching request.");
+  const request = requests[0];
+  if (request.adapterContractVersion !== 2) throw new Error("Communication result request is not publication-bound.");
+  if (request.state !== "queued") throw new Error("Communication request already has a result.");
+  if (request.adapterId !== candidate.adapterId) throw new Error("Communication result adapter does not match its request.");
+  const authorizations = input.projection.publicationAuthorizations.filter(
+    ({ authorization }) => authorization.authorizationId === request.publicationAuthorizationId,
+  );
+  if (authorizations.length !== 1) throw new Error("Communication result publication authorization is absent or ambiguous.");
+  const expected = expectedPublicationBinding(authorizations[0].authority, request);
+  if (canonicalJson(candidate.payload.publicationBinding) !== canonicalJson(expected) ||
+      candidate.payload.operation !== request.operation ||
+      candidate.payload.targetRef !== request.targetRef) {
+    throw new Error("Communication result scope or target does not match its request.");
+  }
+  const evidence = validateReviewPublicationEvidenceV1({
+    scopeDigest: candidate.payload.scopeDigest,
+    binding: candidate.payload.publicationBinding,
+  });
+  if (evidence.state === "blocked") throw new Error("Communication result scope evidence is invalid.");
+  const sequence = input.projection.lastSequence + 1;
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${sequence}`,
+    missionId: input.projection.missionId,
+    sequence,
+    type: "communication.result_recorded",
+    timestamp: { ...candidate.capturedAt },
+    payload: {
+      candidate: {
+        ...candidate,
+        capturedAt: { ...candidate.capturedAt },
+        payload: {
+          ...candidate.payload,
+          publicationBinding: {
+            ...candidate.payload.publicationBinding,
+            authorizedPaths: [...candidate.payload.publicationBinding.authorizedPaths],
+            permittedEffects: [...candidate.payload.publicationBinding.permittedEffects],
+            requestedEffects: [...candidate.payload.publicationBinding.requestedEffects],
+          },
+        },
+      },
+    },
+  };
+}
+
 function verifyEvidence(evidence: SignedProfileEvidenceV1, expected: ProfileRequirementV1, bindings: TrustedHumanBinding[], missionId: string, sequence: number): string[] {
   const payload = evidence?.payload;
   const errors: string[] = [];
@@ -611,6 +855,9 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
   const effects: RunnerAuthoritativeEffectRecord[] = [];
   const cycleIds = new Set<string>();
   const effectKeys = new Set<string>();
+  const candidateIds = new Set<string>();
+  const publicationAuthorizations: ReviewPublicationAuthorizationRecord[] = [];
+  const communicationRequests: CommunicationRequestProjection[] = [];
   let implementationAuthority: ImplementationAuthorityV1 | null = null;
   let implementationAuthorityDigest: string | null = null;
   let implementationAuthorityState: "waiting" | "authorized" | "revoked" = "waiting";
@@ -766,6 +1013,97 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
         runtimeBindings.push(copySchema9RuntimeBinding(wrapper));
         activeRuntimeBindings.push(copySchema9RuntimeBinding(wrapper));
       }
+    } else if (entry.type === "review.publication_authorized") {
+      if (!exact(entry.payload, ["authority", "authorization"])) return invalid("malformed", `Entry ${index} review publication authorization payload is not closed.`);
+      if (authorization !== "authorized" || execution !== "not-started") return invalid("ordering_invalid", `Entry ${index} publication authorization requires an authorized not-started mission.`);
+      const authority = validateReviewPublicationAuthorityV1(entry.payload.authority);
+      if (authority.state === "blocked") return invalid("malformed", `Entry ${index} publication authority is invalid: ${authority.reasonCode}.`);
+      const authorized = verifySignedReviewPublicationAuthorization(
+        entry.payload.authorization,
+        authority.value,
+        {
+          missionId: brief.missionId,
+          brief,
+          trustedBindings: bindingRegistry.value.bindings,
+          lastSequence: index - 1,
+        } as unknown as Pick<SupervisedMissionProjection, "missionId" | "brief" | "trustedBindings" | "lastSequence">,
+      );
+      if (authorized.state === "invalid") return invalid(authorized.code, ...authorized.errors);
+      if (entry.entryId !== `entry:${brief.missionId}:${index}` || canonicalJson(entry.timestamp) !== canonicalJson(authorized.value.timestamp)) {
+        return invalid("malformed", `Entry ${index} publication authorization identity or timestamp is invalid.`);
+      }
+      if (publicationAuthorizations.some(({ authorization: record }) => record.authorizationId === authorized.value.authorizationId)) {
+        return invalid("duplicate_evidence", `Entry ${index} duplicates publication authorizationId.`);
+      }
+      publicationAuthorizations.push({
+        authority: authority.value,
+        authorization: authorized.value,
+        entryId: entry.entryId,
+        journalSequence: index,
+      });
+    } else if (entry.type === "communication.requested") {
+      if (!exact(entry.payload, ["request"])) return invalid("malformed", `Entry ${index} communication request payload is not closed.`);
+      if (authorization !== "authorized" || execution !== "not-started") return invalid("ordering_invalid", `Entry ${index} communication request requires an authorized not-started mission.`);
+      const checked = validateCommunicationRequest(entry.payload.request);
+      if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
+      if (checked.value.adapterContractVersion !== 2) return invalid("unsupported_schema", `Entry ${index} communication request requires adapter contract v2.`);
+      const request = checked.value;
+      if (entry.entryId !== `entry:${brief.missionId}:${index}` || request.missionId !== brief.missionId || request.subjectId !== brief.subjectId) {
+        return invalid("mission_mismatch", `Entry ${index} communication request does not match the canonical mission subject.`);
+      }
+      if (request.revisionId !== brief.revisionId) return invalid("stale_candidate", `Entry ${index} communication request revision is stale.`);
+      const matches = publicationAuthorizations.filter(({ authorization: record }) => record.authorizationId === request.publicationAuthorizationId);
+      if (matches.length !== 1) return invalid("binding_missing", `Entry ${index} publication authorization is absent or ambiguous.`);
+      const authority = matches[0].authority;
+      if (authority.headRevisionId !== request.artifactRevisionId ||
+          canonicalJson(authority.authorizedPaths) !== canonicalJson(request.proposedChangedPaths) ||
+          request.requestedEffects.some((effect) => !authority.permittedEffects.includes(effect))) {
+        return invalid("binding_invalid", `Entry ${index} publication request widens or mismatches its authorization.`);
+      }
+      if (communicationRequests.some(({ requestId }) => requestId === request.requestId)) return invalid("duplicate_request", `Entry ${index} duplicates communication requestId.`);
+      communicationRequests.push({
+        ...request,
+        proposedChangedPaths: [...request.proposedChangedPaths],
+        requestedEffects: [...request.requestedEffects],
+        state: "queued",
+        candidateId: null,
+        failureReason: null,
+        receiptRef: null,
+        sourceRef: null,
+      });
+    } else if (entry.type === "communication.result_recorded") {
+      if (!exact(entry.payload, ["candidate"])) return invalid("malformed", `Entry ${index} communication result payload is not closed.`);
+      const checked = validateAdapterCandidate(entry.payload.candidate);
+      if (checked.state === "invalid") return invalid(checked.code, ...checked.errors);
+      if (checked.value.candidateKind !== "communication_result" || checked.value.adapterContractVersion !== 2) return invalid("unsupported_schema", `Entry ${index} communication result requires adapter contract v2.`);
+      const candidate = checked.value as ReviewPublicationCommunicationResultAdapterCandidate;
+      if (entry.entryId !== `entry:${brief.missionId}:${index}` || candidate.missionId !== brief.missionId || candidate.subjectId !== brief.subjectId) {
+        return invalid("mission_mismatch", `Entry ${index} communication result does not match the canonical mission subject.`);
+      }
+      if (candidate.revisionId !== brief.revisionId) return invalid("stale_candidate", `Entry ${index} communication result revision is stale.`);
+      if (canonicalJson(entry.timestamp) !== canonicalJson(candidate.capturedAt)) return invalid("malformed", `Entry ${index} timestamp does not match candidate capture time.`);
+      if (candidateIds.has(candidate.candidateId)) return invalid("duplicate_candidate", `Entry ${index} duplicates candidateId.`);
+      const requests = communicationRequests.filter(({ requestId }) => requestId === candidate.payload.requestId);
+      if (requests.length !== 1) return invalid("request_missing", `Entry ${index} communication result has no unique matching request.`);
+      const request = requests[0];
+      if (request.adapterContractVersion !== 2) return invalid("binding_invalid", `Entry ${index} communication result request is not publication-bound.`);
+      if (request.state !== "queued") return invalid("duplicate_result", `Entry ${index} communication request already has a result.`);
+      if (request.adapterId !== candidate.adapterId) return invalid("adapter_mismatch", `Entry ${index} communication result adapter does not match its request.`);
+      const matches = publicationAuthorizations.filter(({ authorization: record }) => record.authorizationId === request.publicationAuthorizationId);
+      if (matches.length !== 1) return invalid("binding_missing", `Entry ${index} publication result authorization is absent or ambiguous.`);
+      const expected = expectedPublicationBinding(matches[0].authority, request);
+      if (canonicalJson(candidate.payload.publicationBinding) !== canonicalJson(expected) ||
+          candidate.payload.operation !== request.operation || candidate.payload.targetRef !== request.targetRef) {
+        return invalid("binding_invalid", `Entry ${index} publication result scope or target does not match its request.`);
+      }
+      const evidence = validateReviewPublicationEvidenceV1({ scopeDigest: candidate.payload.scopeDigest, binding: candidate.payload.publicationBinding });
+      if (evidence.state === "blocked") return invalid("binding_invalid", `Entry ${index} publication result scope evidence is invalid.`);
+      candidateIds.add(candidate.candidateId);
+      request.state = candidate.payload.outcome;
+      request.candidateId = candidate.candidateId;
+      request.failureReason = candidate.payload.failureReason;
+      request.receiptRef = candidate.payload.receiptRef;
+      request.sourceRef = candidate.sourceRef;
     } else if (entry.type === "execution.transition") {
       if (!exact(entry.payload, ["from", "to"]) || !["not-started", "running"].includes(entry.payload.from as string) || !["running", "completed"].includes(entry.payload.to as string)) return invalid("malformed", `Entry ${index} execution payload is not closed.`);
       if (authorization !== "authorized") return invalid("ordering_invalid", "Execution requires authorization and all frozen gates.");
@@ -811,6 +1149,15 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
   }
   const pendingExecution = requirements.some((requirement) => requirement.phase === "execution" && !evidence.some((record) => record.requirementId === requirement.requirementId));
   const uncertain = effects.some(({ outcome }) => outcome === "uncertain");
+  const communicationState = communicationRequests.length === 0
+    ? "not-configured" as const
+    : communicationRequests.some(({ state }) => state === "queued")
+      ? "queued" as const
+      : communicationRequests.some(({ state }) => state === "failed")
+        ? "failed" as const
+        : communicationRequests.some(({ state }) => state === "unknown")
+          ? "unknown" as const
+          : "delivered" as const;
   return valid({
     schemaVersion: 9,
     missionId: brief.missionId,
@@ -822,6 +1169,11 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
     implementationAuthorityState,
     runtimeBindings: runtimeBindings.map((binding) => copySchema9RuntimeBinding(binding)),
     activeRuntimeBindings: activeRuntimeBindings.map((binding) => copySchema9RuntimeBinding(binding)),
+    publicationAuthorizations: publicationAuthorizations.map(copyPublicationAuthorization),
+    communication: {
+      state: communicationState,
+      requests: communicationRequests.map(copyCommunicationRequest),
+    },
     authorization,
     execution,
     readiness: { execute: uncertain ? "blocked" : authorization === "authorized" && !pendingExecution ? "ready" : "waiting", accept: execution === "completed" && finalAcceptance === "waiting" ? "waiting" : finalAcceptance === "accepted" ? "ready" : "blocked" },
