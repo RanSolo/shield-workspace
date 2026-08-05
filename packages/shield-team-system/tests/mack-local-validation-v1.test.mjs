@@ -30,6 +30,7 @@ function request(overrides = {}) {
     subjectId: "github:RanSolo/shield-workspace/issue/196",
     repository: "RanSolo/shield-workspace",
     repositoryRoot: root,
+    canonicalGitDirectory: `${root}/.git`,
     branch: "agent/issue-196",
     baseRevisionId: "1".repeat(40),
     artifactRevisionId: "2".repeat(40),

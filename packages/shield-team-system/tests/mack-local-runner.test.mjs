@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test, { after } from "node:test";
 
@@ -11,10 +13,13 @@ import { canonicalJson } from "../dist/mission-v2.mjs";
 import { runMackLocalValidation } from "../scripts/model/mack-validation-runner.mjs";
 
 const execFile = promisify(execFileCallback);
+const runnerPath = fileURLToPath(new URL("../scripts/model/mack-validation-runner.mjs", import.meta.url));
 const emptyDigest = "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU";
 let requestCounter = 0;
 const replayParent = await realpath(await mkdtemp(join(tmpdir(), "shield-mack-replay-tests-")));
 const replayRegistryRoot = join(replayParent, "registry");
+const fixtureRepositoryRoot = join(replayParent, "repository");
+await mkdir(join(fixtureRepositoryRoot, ".git"), { recursive: true, mode: 0o700 });
 after(() => rm(replayParent, { recursive: true, force: true }));
 
 function digest(bytes) {
@@ -28,7 +33,7 @@ function frozenBytes(value) {
 
 function requestFixture(overrides = {}) {
   requestCounter += 1;
-  const root = "/tmp/mack-runner-fixture";
+  const root = fixtureRepositoryRoot;
   return {
     schemaVersion: 1,
     contractVersion: "mack.local-validation.v1",
@@ -38,6 +43,7 @@ function requestFixture(overrides = {}) {
     subjectId: "github:RanSolo/shield-workspace/issue/196",
     repository: "RanSolo/shield-workspace",
     repositoryRoot: root,
+    canonicalGitDirectory: `${root}/.git`,
     branch: "agent/issue-196",
     baseRevisionId: "1".repeat(40),
     artifactRevisionId: "2".repeat(40),
@@ -79,6 +85,32 @@ function runnerOptions(request, overrides = {}) {
 function replayPath(root, request, suffix) {
   const key = createHash("sha256").update(request.validationRequestId, "utf8").digest("hex");
   return join(root, `${key}.${suffix}`);
+}
+
+async function runRunnerCli(request, options) {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(process.execPath, [runnerPath], {
+      cwd: request.repositoryRoot,
+      env: {
+        ...process.env,
+        SHIELD_MACK_COMMAND_REGISTRY_JSON: JSON.stringify(options.commandRegistry),
+        SHIELD_MACK_REPLAY_REGISTRY_ROOT: options.replayRegistryRoot,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.once("error", rejectRun);
+    child.once("close", (code, signal) => {
+      const output = Buffer.concat(stdout).toString("utf8");
+      const errors = Buffer.concat(stderr).toString("utf8");
+      if (code !== 0) rejectRun(new Error(`mack_cli_failed:${code}:${signal ?? "none"}:${errors.trim()}`));
+      else resolveRun(JSON.parse(output));
+    });
+    child.stdin.end(JSON.stringify(request));
+  });
 }
 
 function runtime(instance = "gemma-instance") {
@@ -246,7 +278,7 @@ test("pre/post runtime and Git identity must remain exactly equal", async () => 
   const requestGit = requestFixture();
   let gitProbe = 0;
   const gitDeps = dependencies(requestGit, { observeRepository: async () => observation(requestGit, ++gitProbe === 1 ? {} : { canonicalGitDirectory: `${requestGit.repositoryRoot}/other.git` }) });
-  await assert.rejects(() => runMackLocalValidation(requestGit, runnerOptions(requestGit), injectedWithoutCounters(gitDeps).allowed), /mack_git_identity_changed/u);
+  await assert.rejects(() => runMackLocalValidation(requestGit, runnerOptions(requestGit), injectedWithoutCounters(gitDeps).allowed), /mack_git_identity_mismatch/u);
 });
 
 test("malformed JSON, duplicate keys, unknown fields, and model-supplied PASS are rejected", async () => {
@@ -307,6 +339,27 @@ test("atomic external lock excludes a fresh module before duplicated host effect
   assert.equal(evidence.evidenceSource, "synthetic");
 });
 
+test("importers cannot enter the production CLI path by replacing process argv", async () => {
+  const originalArgv1 = process.argv[1];
+  const originalRegistry = process.env.SHIELD_MACK_COMMAND_REGISTRY_JSON;
+  const originalReplayRoot = process.env.SHIELD_MACK_REPLAY_REGISTRY_ROOT;
+  process.argv[1] = runnerPath;
+  delete process.env.SHIELD_MACK_COMMAND_REGISTRY_JSON;
+  delete process.env.SHIELD_MACK_REPLAY_REGISTRY_ROOT;
+  try {
+    const imported = await import(`../scripts/model/mack-validation-runner.mjs?argv-forgery=${Date.now()}`);
+    assert.equal(typeof imported.runMackLocalValidation, "function");
+    await new Promise((resolveTurn) => setImmediate(resolveTurn));
+    assert.equal(process.exitCode, undefined);
+  } finally {
+    process.argv[1] = originalArgv1;
+    if (originalRegistry === undefined) delete process.env.SHIELD_MACK_COMMAND_REGISTRY_JSON;
+    else process.env.SHIELD_MACK_COMMAND_REGISTRY_JSON = originalRegistry;
+    if (originalReplayRoot === undefined) delete process.env.SHIELD_MACK_REPLAY_REGISTRY_ROOT;
+    else process.env.SHIELD_MACK_REPLAY_REGISTRY_ROOT = originalReplayRoot;
+  }
+});
+
 test("external replay registry rejects confined, symlinked, nonregular, locked, and malformed state before host effects", async (t) => {
   const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-mack-replay-safety-")));
   t.after(() => rm(parent, { recursive: true, force: true }));
@@ -314,7 +367,7 @@ test("external replay registry rejects confined, symlinked, nonregular, locked, 
   const noHostEffects = { canonicalPath: async () => { hostCalls += 1; throw new Error("host_effect_must_not_run"); } };
 
   const target = join(parent, "target");
-  await mkdir(target, { mode: 0o700 });
+  await mkdir(join(target, ".git"), { recursive: true, mode: 0o700 });
   const linkedRoot = join(parent, "linked-registry");
   await symlink(target, linkedRoot);
   const linkedRequest = requestFixture();
@@ -325,7 +378,7 @@ test("external replay registry rejects confined, symlinked, nonregular, locked, 
   const fileRequest = requestFixture();
   await assert.rejects(() => runMackLocalValidation(fileRequest, runnerOptions(fileRequest, { replayRegistryRoot: fileRoot }), noHostEffects), /mack_replay_registry_root_unsafe/u);
 
-  const confinedRequest = requestFixture({ repositoryRoot: target, lanes: requestFixture().lanes.map((lane) => ({ ...lane, workingDirectory: target })) });
+  const confinedRequest = requestFixture({ repositoryRoot: target, canonicalGitDirectory: join(target, ".git"), lanes: requestFixture().lanes.map((lane) => ({ ...lane, workingDirectory: target })) });
   await assert.rejects(() => runMackLocalValidation(confinedRequest, runnerOptions(confinedRequest, { replayRegistryRoot: join(target, "registry") }), noHostEffects), /mack_replay_registry_root_invalid/u);
 
   const unsafeRoot = join(parent, "unsafe-records");
@@ -359,6 +412,53 @@ test("external replay registry rejects confined, symlinked, nonregular, locked, 
   assert.equal(hostCalls, 0);
 });
 
+test("linked-worktree Git directories and foreign ownership reject replay before artifacts or host effects", async (t) => {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-mack-linked-worktree-")));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const linkedWorktreeRoot = join(parent, "worktree");
+  const linkedGitDirectory = join(parent, "main.git", "worktrees", "fixture");
+  await mkdir(linkedWorktreeRoot, { recursive: true, mode: 0o700 });
+  await mkdir(linkedGitDirectory, { recursive: true, mode: 0o700 });
+  const linkedRequest = requestFixture({
+    repositoryRoot: linkedWorktreeRoot,
+    canonicalGitDirectory: linkedGitDirectory,
+    lanes: requestFixture().lanes.map((lane) => ({ ...lane, workingDirectory: linkedWorktreeRoot })),
+  });
+  const gitConfinedReplayRoot = join(linkedGitDirectory, "replay");
+  let hostCalls = 0;
+  const noHostEffects = { canonicalPath: async () => { hostCalls += 1; throw new Error("host_effect_must_not_run"); } };
+  await assert.rejects(
+    () => runMackLocalValidation(linkedRequest, runnerOptions(linkedRequest, { replayRegistryRoot: gitConfinedReplayRoot }), noHostEffects),
+    /mack_replay_registry_root_invalid/u,
+  );
+  await assert.rejects(() => lstat(gitConfinedReplayRoot), { code: "ENOENT" });
+
+  if (typeof process.geteuid === "function" && process.platform !== "win32") {
+    const foreignOwnedDirectory = await realpath("/tmp");
+    const foreignStatus = await lstat(foreignOwnedDirectory);
+    if (foreignStatus.uid !== process.geteuid()) {
+      const foreignGitRequest = requestFixture({ canonicalGitDirectory: foreignOwnedDirectory });
+      const foreignReplayRoot = join(parent, "foreign-git-replay");
+      await assert.rejects(
+        () => runMackLocalValidation(foreignGitRequest, runnerOptions(foreignGitRequest, { replayRegistryRoot: foreignReplayRoot }), noHostEffects),
+        /mack_replay_registry_root_invalid/u,
+      );
+      await assert.rejects(() => lstat(foreignReplayRoot), { code: "ENOENT" });
+
+      const foreignRepositoryRequest = requestFixture({ repositoryRoot: foreignOwnedDirectory });
+      const foreignRepositoryReplayRoot = join(parent, "foreign-repository-replay");
+      await assert.rejects(
+        () => runMackLocalValidation(foreignRepositoryRequest, runnerOptions(foreignRepositoryRequest, { replayRegistryRoot: foreignRepositoryReplayRoot }), noHostEffects),
+        /mack_replay_registry_root_invalid/u,
+      );
+      await assert.rejects(() => lstat(foreignRepositoryReplayRoot), { code: "ENOENT" });
+    } else {
+      t.diagnostic("No foreign-owned canonical directory is available on this host; ownership enforcement remains platform-conditional.");
+    }
+  }
+  assert.equal(hostCalls, 0);
+});
+
 test("real Git objects, no-shell command execution, and native no-tool inference compose end to end", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-mack-runner-real-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -376,6 +476,8 @@ test("real Git objects, no-shell command execution, and native no-tool inference
   await execFile("git", ["-C", directory, "commit", "-q", "-m", "artifact"]);
   const { stdout: artifactStdout } = await execFile("git", ["-C", directory, "rev-parse", "HEAD"], { encoding: "utf8" });
   const root = await realpath(directory);
+  const { stdout: gitDirectoryStdout } = await execFile("git", ["-C", root, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" });
+  const canonicalGitDirectory = await realpath(gitDirectoryStdout.trim());
   const executable = await realpath(process.execPath);
   const executableBytes = await import("node:fs/promises").then(({ readFile }) => readFile(executable));
   const baseRevisionId = baseStdout.trim();
@@ -384,6 +486,7 @@ test("real Git objects, no-shell command execution, and native no-tool inference
   const { stdout: sourceStdout } = await execFile("git", ["-C", root, "show", `${artifactRevisionId}:feature.mjs`], { encoding: "buffer", maxBuffer: 8_388_608 });
   const request = requestFixture({
     repositoryRoot: root,
+    canonicalGitDirectory,
     branch: "agent/issue-196",
     baseRevisionId,
     artifactRevisionId,
@@ -428,25 +531,62 @@ test("real Git objects, no-shell command execution, and native no-tool inference
   assert.equal(body.tools, undefined);
   assert.equal(requests[1].url, "http://127.0.0.1:1234/api/v1/chat");
 
-  const productionRequest = structuredClone(request);
-  productionRequest.validationRequestId = `${request.validationRequestId}:production`;
+  const omittedDependenciesRequest = structuredClone(request);
+  omittedDependenciesRequest.validationRequestId = `${request.validationRequestId}:omitted-dependencies`;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
-  let productionEvidence;
+  let omittedDependenciesEvidence;
   try {
-    productionEvidence = await runMackLocalValidation(productionRequest, runnerOptions(productionRequest));
+    omittedDependenciesEvidence = await runMackLocalValidation(omittedDependenciesRequest, runnerOptions(omittedDependenciesRequest));
   } finally {
     globalThis.fetch = originalFetch;
   }
+  assert.equal(omittedDependenciesEvidence.evidenceSource, "synthetic");
+  assert.equal(omittedDependenciesEvidence.productionEligibility, "ineligible");
+  assert.equal(omittedDependenciesEvidence.advancementEligibility, "ineligible");
+  assert.equal(omittedDependenciesEvidence.reasonCodes.includes("SYNTHETIC_EVIDENCE"), true);
+  const freshSyntheticRunner = await import(`../scripts/model/mack-validation-runner.mjs?synthetic-replay=${Date.now()}`);
+  const replayedSynthetic = await freshSyntheticRunner.runMackLocalValidation(omittedDependenciesRequest, runnerOptions(omittedDependenciesRequest));
+  assert.deepEqual(replayedSynthetic, omittedDependenciesEvidence);
+
+  let cliRequest;
+  const server = createServer((incoming, response) => {
+    response.setHeader("content-type", "application/json");
+    if (incoming.url === "/api/v1/models") {
+      response.end(JSON.stringify({ models: [{ key: cliRequest.model.modelKey, loaded_instances: [{ id: "gemma-cli-instance" }] }] }));
+      return;
+    }
+    if (incoming.url === "/api/v1/chat") {
+      response.end(JSON.stringify({ model: "gemma-cli-instance", output: [{ type: "message", content: JSON.stringify(candidate(cliRequest)) }], stats: { input_tokens: 20, output_tokens: 8, total_tokens: 28 } }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("{}");
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  t.after(() => new Promise((resolveClose) => server.close(resolveClose)));
+  const address = server.address();
+  assert.notEqual(address, null);
+  assert.equal(typeof address, "object");
+  cliRequest = structuredClone(request);
+  cliRequest.validationRequestId = `${request.validationRequestId}:cli-production`;
+  cliRequest.model.baseUrl = `http://127.0.0.1:${address.port}`;
+  const cliReplayRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-mack-cli-replay-")));
+  t.after(() => rm(cliReplayRoot, { recursive: true, force: true }));
+  const cliOptions = runnerOptions(cliRequest, { replayRegistryRoot: cliReplayRoot });
+  const productionEvidence = await runRunnerCli(cliRequest, cliOptions);
   assert.equal(productionEvidence.evidenceSource, "production");
   assert.equal(productionEvidence.productionEligibility, "eligible");
   assert.equal(productionEvidence.advancementEligibility, "eligible");
   assert.equal(productionEvidence.reasonCodes.includes("SYNTHETIC_EVIDENCE"), false);
-  const freshProductionRunner = await import(`../scripts/model/mack-validation-runner.mjs?production-replay=${Date.now()}`);
-  const replayedProduction = await freshProductionRunner.runMackLocalValidation(productionRequest, runnerOptions(productionRequest));
+  const replayedProduction = await runRunnerCli(cliRequest, cliOptions);
   assert.deepEqual(replayedProduction, productionEvidence);
+  const freshProductionRunner = await import(`../scripts/model/mack-validation-runner.mjs?production-replay=${Date.now()}`);
   await assert.rejects(
-    () => runMackLocalValidation(productionRequest, runnerOptions(productionRequest), { canonicalPath: async () => { throw new Error("injected_replay_must_not_run"); } }),
+    () => freshProductionRunner.runMackLocalValidation(cliRequest, cliOptions, { canonicalPath: async () => { throw new Error("imported_production_replay_must_not_run"); } }),
     /mack_replay_registry_evidence_invalid/u,
   );
 

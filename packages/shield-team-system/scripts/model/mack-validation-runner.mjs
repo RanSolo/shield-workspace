@@ -4,8 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream } from "node:fs";
 import { link, lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { canonicalJson } from "../../dist/mission-v2.mjs";
 import {
@@ -29,6 +28,7 @@ export const MACK_LOCAL_RUNNER_LIMITS = Object.freeze({
 const SAFE_ERROR = /^[a-z][a-z0-9_]{0,127}$/u;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/u;
 const REPLAY_RECORD_LIMIT = 4_194_304;
+const PRODUCTION_PROVENANCE = Symbol("mack-cli-production-provenance");
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("base64url")}`;
@@ -122,15 +122,29 @@ async function syncDirectory(path) {
   finally { await handle.close(); }
 }
 
-async function prepareReplayRegistryRoot(rootInput, repositoryRoot) {
-  if (typeof rootInput !== "string" || !isAbsolute(rootInput) || resolve(rootInput) !== rootInput || rootInput === repositoryRoot || rootInput.startsWith(`${repositoryRoot}${sep}`)) throw new Error("mack_replay_registry_root_invalid");
+function pathsOverlap(left, right) {
+  const contains = (parent, candidate) => {
+    const relation = relative(parent, candidate);
+    return relation === "" || (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation));
+  };
+  return contains(left, right) || contains(right, left);
+}
+
+function ownedByEffectiveUser(status) {
+  return typeof process.geteuid !== "function" || status.uid === process.geteuid();
+}
+
+async function prepareReplayRegistryRoot(rootInput, repositoryRoot, canonicalGitDirectory) {
+  if (typeof rootInput !== "string" || !isAbsolute(rootInput) || resolve(rootInput) !== rootInput || pathsOverlap(rootInput, repositoryRoot) || pathsOverlap(rootInput, canonicalGitDirectory)) throw new Error("mack_replay_registry_root_invalid");
   const repositoryStatus = await lstatOrNull(repositoryRoot);
-  if (repositoryStatus !== null && (!repositoryStatus.isDirectory() || repositoryStatus.isSymbolicLink() || await realpath(repositoryRoot) !== repositoryRoot)) throw new Error("mack_replay_registry_root_invalid");
+  const gitDirectoryStatus = await lstatOrNull(canonicalGitDirectory);
+  if (repositoryStatus === null || !repositoryStatus.isDirectory() || repositoryStatus.isSymbolicLink() || await realpath(repositoryRoot) !== repositoryRoot || !ownedByEffectiveUser(repositoryStatus)) throw new Error("mack_replay_registry_root_invalid");
+  if (gitDirectoryStatus === null || !gitDirectoryStatus.isDirectory() || gitDirectoryStatus.isSymbolicLink() || await realpath(canonicalGitDirectory) !== canonicalGitDirectory || !ownedByEffectiveUser(gitDirectoryStatus)) throw new Error("mack_replay_registry_root_invalid");
   let status = await lstatOrNull(rootInput);
   if (status === null) {
     const parent = dirname(rootInput);
     const parentStatus = await lstatOrNull(parent);
-    if (parentStatus === null || !parentStatus.isDirectory() || parentStatus.isSymbolicLink() || await realpath(parent) !== parent || join(parent, basename(rootInput)) !== rootInput) throw new Error("mack_replay_registry_root_unsafe");
+    if (parentStatus === null || !parentStatus.isDirectory() || parentStatus.isSymbolicLink() || await realpath(parent) !== parent || join(parent, basename(rootInput)) !== rootInput || !ownedByEffectiveUser(parentStatus)) throw new Error("mack_replay_registry_root_unsafe");
     try {
       await mkdir(rootInput, { mode: 0o700 });
       await syncDirectory(parent);
@@ -139,7 +153,7 @@ async function prepareReplayRegistryRoot(rootInput, repositoryRoot) {
     }
     status = await lstatOrNull(rootInput);
   }
-  if (status === null || !status.isDirectory() || status.isSymbolicLink() || await realpath(rootInput) !== rootInput || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) throw new Error("mack_replay_registry_root_unsafe");
+  if (status === null || !status.isDirectory() || status.isSymbolicLink() || await realpath(rootInput) !== rootInput || !ownedByEffectiveUser(status) || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) throw new Error("mack_replay_registry_root_unsafe");
   return rootInput;
 }
 
@@ -243,8 +257,8 @@ async function persistReplayRecord(root, recordPath, record) {
   }
 }
 
-async function runReplayTransaction({ rootInput, repositoryRoot, validationRequestId, requestDigest, validateEvidence }, operation) {
-  const root = await prepareReplayRegistryRoot(rootInput, repositoryRoot);
+async function runReplayTransaction({ rootInput, repositoryRoot, canonicalGitDirectory, validationRequestId, requestDigest, validateEvidence }, operation) {
+  const root = await prepareReplayRegistryRoot(rootInput, repositoryRoot, canonicalGitDirectory);
   const paths = replayPaths(root, validationRequestId);
   const release = await acquireReplayLock(root, paths.lock, validationRequestId, requestDigest);
   let result;
@@ -634,7 +648,7 @@ function validateCommandRegistry(request, registry) {
 }
 
 function assertPreconditionObservation(request, observation) {
-  if (!plain(observation) || observation.repository?.toLowerCase() !== request.repository.toLowerCase() || observation.canonicalRepositoryRoot !== request.repositoryRoot || observation.canonicalTopLevel !== request.repositoryRoot || observation.branch !== request.branch || observation.headRevisionId !== request.artifactRevisionId || observation.statusPorcelainBytes !== 0 || !same(observation.changedPaths, request.repositoryContext.implementationPaths)) throw new Error("mack_git_identity_mismatch");
+  if (!plain(observation) || observation.repository?.toLowerCase() !== request.repository.toLowerCase() || observation.canonicalRepositoryRoot !== request.repositoryRoot || observation.canonicalTopLevel !== request.repositoryRoot || observation.canonicalGitDirectory !== request.canonicalGitDirectory || observation.branch !== request.branch || observation.headRevisionId !== request.artifactRevisionId || observation.statusPorcelainBytes !== 0 || !same(observation.changedPaths, request.repositoryContext.implementationPaths)) throw new Error("mack_git_identity_mismatch");
 }
 
 function normalizeDependencies(injected) {
@@ -709,16 +723,17 @@ function storedEvidenceValidator(request, requestDigest, productionPath) {
   };
 }
 
-export async function runMackLocalValidation(packetInput, optionsInput, injectedDependencies) {
+async function runMackLocalValidationInternal(packetInput, optionsInput, injectedDependencies, provenance) {
   const normalized = normalizeMackLocalValidationRequestV1(packetInput);
   if (normalized.state !== "valid") throw new Error("mack_validation_request_invalid");
   const request = normalized.value;
   if (!plain(optionsInput) || Reflect.ownKeys(optionsInput).some((key) => !["commandRegistry", "apiToken", "replayRegistryRoot"].includes(key)) || !Object.hasOwn(optionsInput, "commandRegistry") || typeof optionsInput.replayRegistryRoot !== "string" || (Object.hasOwn(optionsInput, "apiToken") && typeof optionsInput.apiToken !== "string")) throw new Error("mack_runner_options_invalid");
   const commandRegistry = validateCommandRegistry(request, optionsInput.commandRegistry);
-  const productionPath = injectedDependencies === undefined;
+  const productionPath = provenance === PRODUCTION_PROVENANCE;
   return runReplayTransaction({
     rootInput: optionsInput.replayRegistryRoot,
     repositoryRoot: request.repositoryRoot,
+    canonicalGitDirectory: request.canonicalGitDirectory,
     validationRequestId: request.validationRequestId,
     requestDigest: normalized.requestDigest,
     validateEvidence: storedEvidenceValidator(request, normalized.requestDigest, productionPath),
@@ -776,6 +791,14 @@ export async function runMackLocalValidation(packetInput, optionsInput, injected
   });
 }
 
+export async function runMackLocalValidation(packetInput, optionsInput, injectedDependencies) {
+  return runMackLocalValidationInternal(packetInput, optionsInput, injectedDependencies, null);
+}
+
+async function runMackProductionValidation(packetInput, optionsInput) {
+  return runMackLocalValidationInternal(packetInput, optionsInput, undefined, PRODUCTION_PROVENANCE);
+}
+
 export const runMackValidationPacket = runMackLocalValidation;
 
 async function readStdinBounded() {
@@ -800,7 +823,7 @@ async function main() {
   if (registry.state !== "valid") throw new Error("mack_command_registry_invalid");
   const replayRegistryRoot = process.env.SHIELD_MACK_REPLAY_REGISTRY_ROOT;
   if (typeof replayRegistryRoot !== "string") throw new Error("mack_replay_registry_missing");
-  const evidence = await runMackLocalValidation(packet.value, {
+  const evidence = await runMackProductionValidation(packet.value, {
     commandRegistry: registry.value,
     replayRegistryRoot,
     ...(process.env.LOCAL_MODEL_API_TOKEN ? { apiToken: process.env.LOCAL_MODEL_API_TOKEN } : {}),
@@ -808,8 +831,7 @@ async function main() {
   process.stdout.write(`${canonicalJson(evidence)}\n`);
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
-if (import.meta.url === invokedPath) {
+if (import.meta.main === true) {
   main().catch((error) => {
     process.stderr.write(`${boundedError(error instanceof Error ? error.message : "mack_validation_failed", "mack_validation_failed")}\n`);
     process.exitCode = 1;

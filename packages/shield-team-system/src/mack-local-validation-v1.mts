@@ -64,6 +64,7 @@ export interface MackLocalValidationRequestV1 {
   readonly subjectId: string;
   readonly repository: string;
   readonly repositoryRoot: string;
+  readonly canonicalGitDirectory: string;
   readonly branch: string;
   readonly baseRevisionId: string;
   readonly artifactRevisionId: string;
@@ -175,6 +176,7 @@ export type MackLocalValidationEvidenceV1 = Readonly<{
   subjectId: string;
   repository: string;
   repositoryRoot: string;
+  canonicalGitDirectory: string;
   branch: string;
   baseRevisionId: string;
   artifactRevisionId: string;
@@ -224,7 +226,7 @@ const EMPTY_SHA256 = "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU";
 
 const REQUEST_FIELDS = [
   "schemaVersion", "contractVersion", "seatId", "missionId", "missionRevisionId",
-  "subjectId", "repository", "repositoryRoot", "branch", "baseRevisionId",
+  "subjectId", "repository", "repositoryRoot", "canonicalGitDirectory", "branch", "baseRevisionId",
   "artifactRevisionId", "validationRequestId", "model", "toolExecutorId", "scenarios",
   "lanes", "approvedTestSurfaces", "repositoryContext", "missionArtifacts",
 ] as const;
@@ -314,6 +316,7 @@ function normalizeRequest(input: unknown): MackLocalValidationRequestV1 | null {
   }
   if (typeof data(input, "repository") !== "string" || !REPOSITORY.test(data(input, "repository") as string)) return null;
   if (typeof data(input, "repositoryRoot") !== "string" || !ABSOLUTE_PATH.test(data(input, "repositoryRoot") as string)) return null;
+  if (typeof data(input, "canonicalGitDirectory") !== "string" || !ABSOLUTE_PATH.test(data(input, "canonicalGitDirectory") as string)) return null;
   if (typeof data(input, "baseRevisionId") !== "string" || !REVISION.test(data(input, "baseRevisionId") as string) || typeof data(input, "artifactRevisionId") !== "string" || !REVISION.test(data(input, "artifactRevisionId") as string) || data(input, "baseRevisionId") === data(input, "artifactRevisionId")) return null;
   if (data(input, "toolExecutorId") !== MACK_LOCAL_VALIDATION_EXECUTOR_ID) return null;
 
@@ -406,6 +409,7 @@ function normalizeRequest(input: unknown): MackLocalValidationRequestV1 | null {
     subjectId: data(input, "subjectId") as string,
     repository: data(input, "repository") as string,
     repositoryRoot: data(input, "repositoryRoot") as string,
+    canonicalGitDirectory: data(input, "canonicalGitDirectory") as string,
     branch: data(input, "branch") as string,
     baseRevisionId: data(input, "baseRevisionId") as string,
     artifactRevisionId: data(input, "artifactRevisionId") as string,
@@ -489,7 +493,7 @@ function validReceipt(lane: MackLocalValidationLaneV1, receipt: MackLocalCommand
 
 function validObservation(request: MackLocalValidationRequestV1, observation: MackLocalGitObservationV1): boolean {
   return exact(observation, ["repository", "canonicalRepositoryRoot", "canonicalTopLevel", "canonicalGitDirectory", "branch", "headRevisionId", "statusPorcelainBytes", "statusPorcelainSha256", "changedPaths"]) &&
-    observation.repository.toLowerCase() === request.repository.toLowerCase() && observation.canonicalRepositoryRoot === request.repositoryRoot && observation.canonicalTopLevel === request.repositoryRoot && ABSOLUTE_PATH.test(observation.canonicalGitDirectory) && observation.branch === request.branch && observation.headRevisionId === request.artifactRevisionId && observation.statusPorcelainBytes === 0 && observation.statusPorcelainSha256 === EMPTY_SHA256 && same(observation.changedPaths, request.repositoryContext.implementationPaths);
+    observation.repository.toLowerCase() === request.repository.toLowerCase() && observation.canonicalRepositoryRoot === request.repositoryRoot && observation.canonicalTopLevel === request.repositoryRoot && observation.canonicalGitDirectory === request.canonicalGitDirectory && observation.branch === request.branch && observation.headRevisionId === request.artifactRevisionId && observation.statusPorcelainBytes === 0 && observation.statusPorcelainSha256 === EMPTY_SHA256 && same(observation.changedPaths, request.repositoryContext.implementationPaths);
 }
 
 function validRuntime(request: MackLocalValidationRequestV1, observation: MackLocalRuntimeObservationV1): boolean {
@@ -573,6 +577,7 @@ function createEvidence(input: MackLocalEvidenceCreationInputV1): MackLocalValid
     subjectId: request.subjectId,
     repository: request.repository,
     repositoryRoot: request.repositoryRoot,
+    canonicalGitDirectory: request.canonicalGitDirectory,
     branch: request.branch,
     baseRevisionId: request.baseRevisionId,
     artifactRevisionId: request.artifactRevisionId,
