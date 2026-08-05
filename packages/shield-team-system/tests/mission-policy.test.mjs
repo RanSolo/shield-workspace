@@ -220,24 +220,72 @@ test("specialist dispatch requires exact true for Training Wheels Off", () => {
   }
 });
 
-test("specialist dispatch fails closed for hostile accessors and proxies", () => {
-  const accessor = trainingWheelsOffDispatch();
-  Object.defineProperty(accessor, "trainingWheelsOff", {
-    get() { throw new Error("trap"); },
+test("specialist dispatch rejects positive accessors and transparent proxies", () => {
+  const trainingAccessor = trainingWheelsOffDispatch();
+  Object.defineProperty(trainingAccessor, "trainingWheelsOff", {
+    enumerable: true,
+    get() { return true; },
   });
-  const prototypeProxy = new Proxy(trainingWheelsOffDispatch(), {
-    getPrototypeOf() { throw new Error("trap"); },
+  const explicitAccessor = {
+    missionState: "approved",
+    approvalSource: "coulson",
+  };
+  Object.defineProperty(explicitAccessor, "specialistDispatchApprovalSource", {
+    enumerable: true,
+    get() { return "coulson"; },
   });
-  const propertyProxy = new Proxy(trainingWheelsOffDispatch(), {
-    get(target, property, receiver) {
-      if (property === "trainingWheelsOff") throw new Error("trap");
-      return Reflect.get(target, property, receiver);
-    },
-  });
+  const transparentProxy = new Proxy(trainingWheelsOffDispatch(), {});
 
-  for (const input of [accessor, prototypeProxy, propertyProxy]) {
+  for (const input of [trainingAccessor, explicitAccessor, transparentProxy]) {
     assert.equal(canDispatchSpecialists(input), false);
   }
+});
+
+test("specialist dispatch rejects inherited authority, symbols, and non-enumerable fields", () => {
+  const inheritedExplicit = Object.assign(
+    Object.create({ specialistDispatchApprovalSource: "coulson" }),
+    { missionState: "approved", approvalSource: "coulson" },
+  );
+  const symbol = trainingWheelsOffDispatch();
+  symbol[Symbol("authority")] = "coulson";
+  const nonEnumerableTraining = trainingWheelsOffDispatch();
+  Object.defineProperty(nonEnumerableTraining, "trainingWheelsOff", {
+    enumerable: false,
+    value: true,
+  });
+  const nonEnumerableExplicit = {
+    missionState: "approved",
+    approvalSource: "coulson",
+  };
+  Object.defineProperty(nonEnumerableExplicit, "specialistDispatchApprovalSource", {
+    enumerable: false,
+    value: "coulson",
+  });
+
+  for (const input of [
+    inheritedExplicit,
+    symbol,
+    nonEnumerableTraining,
+    nonEnumerableExplicit,
+  ]) {
+    assert.equal(canDispatchSpecialists(input), false);
+  }
+});
+
+test("specialist dispatch fails closed before throwing reflection traps", () => {
+  let trapCalls = 0;
+  const reflectiveProxy = new Proxy(trainingWheelsOffDispatch(), {
+    ownKeys() {
+      trapCalls += 1;
+      throw new Error("trap");
+    },
+  });
+  const { proxy: revokedProxy, revoke } = Proxy.revocable(trainingWheelsOffDispatch(), {});
+  revoke();
+
+  assert.equal(canDispatchSpecialists(reflectiveProxy), false);
+  assert.equal(canDispatchSpecialists(revokedProxy), false);
+  assert.equal(trapCalls, 0);
 });
 
 function iteration(overrides = {}) {
