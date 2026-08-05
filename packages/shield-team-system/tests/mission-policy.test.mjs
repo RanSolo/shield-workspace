@@ -207,6 +207,39 @@ test("specialist dispatch supports explicit approval or bounded Training Wheels 
   }
 });
 
+test("specialist dispatch requires exact true for Training Wheels Off", () => {
+  const absent = trainingWheelsOffDispatch();
+  delete absent.trainingWheelsOff;
+  for (const input of [
+    absent,
+    ...[false, null, "true", "false", 0, 1, {}, { value: true }, [], [true]].map(
+      (trainingWheelsOff) => trainingWheelsOffDispatch({ trainingWheelsOff }),
+    ),
+  ]) {
+    assert.equal(canDispatchSpecialists(input), false);
+  }
+});
+
+test("specialist dispatch fails closed for hostile accessors and proxies", () => {
+  const accessor = trainingWheelsOffDispatch();
+  Object.defineProperty(accessor, "trainingWheelsOff", {
+    get() { throw new Error("trap"); },
+  });
+  const prototypeProxy = new Proxy(trainingWheelsOffDispatch(), {
+    getPrototypeOf() { throw new Error("trap"); },
+  });
+  const propertyProxy = new Proxy(trainingWheelsOffDispatch(), {
+    get(target, property, receiver) {
+      if (property === "trainingWheelsOff") throw new Error("trap");
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  for (const input of [accessor, prototypeProxy, propertyProxy]) {
+    assert.equal(canDispatchSpecialists(input), false);
+  }
+});
+
 function iteration(overrides = {}) {
   return {
     iterationContractVersion: 1,

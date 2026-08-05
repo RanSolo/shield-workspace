@@ -183,12 +183,6 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
   const normalized = normalizeDeliveryInput(input);
   if (normalized.state !== "valid") return blocked(normalized.reason);
   const snapshot = normalized.input;
-  if (!canDispatchSpecialists({
-    missionState: snapshot.missionState,
-    approvalSource: snapshot.approvalSource,
-  })) {
-    return blocked("specialist_dispatch_not_approved");
-  }
   const publication = resolveJournaledPublicationRequest(
     snapshot.publicationRequestId,
     { loadJournal: options.loadJournal },
@@ -307,6 +301,12 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
       planGateEvaluation,
       commands: published.commands,
     };
+  }
+  if (!canDispatchSpecialists({
+    missionState: snapshot.missionState,
+    approvalSource: snapshot.approvalSource,
+  })) {
+    return blocked("specialist_dispatch_not_approved", published.commands);
   }
   return {
     state: "dispatch_ready",
