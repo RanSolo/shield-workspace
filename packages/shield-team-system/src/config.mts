@@ -1,6 +1,11 @@
 import { posix } from "node:path";
 
-export const CONFIG_SCHEMA_VERSION = 1 as const;
+export const LEGACY_CONFIG_SCHEMA_VERSION = 1 as const;
+export const CONFIG_SCHEMA_VERSION = 2 as const;
+export const SUPPORTED_CONFIG_SCHEMA_VERSIONS = [
+  LEGACY_CONFIG_SCHEMA_VERSION,
+  CONFIG_SCHEMA_VERSION,
+] as const;
 export const DOCTOR_REPORT_VERSION = 1 as const;
 export const SHIELD_PACKAGE_VERSION = "0.1.0" as const;
 export const SUPPORTED_ADAPTER_IDS = ["github"] as const;
@@ -15,12 +20,49 @@ export const SUPPORTED_SEAT_IDS = [
 ] as const;
 export const SUPPORTED_MODE_IDS = ["delivery", "debugger"] as const;
 export const HUMAN_AUTHORITY_SEAT_IDS = ["coulson", "fitz", "simmons"] as const;
+export const REPOSITORY_TRUST_PROFILE_CONTRACT_VERSION = "repository.trust-profile.v1" as const;
+export const REPOSITORY_TRUST_PROFILE_IDS = [
+  "signed_human_gates",
+  "coulson_only_platform_review",
+] as const;
 
 export type AdapterId = (typeof SUPPORTED_ADAPTER_IDS)[number];
 export type SeatId = (typeof SUPPORTED_SEAT_IDS)[number];
 export type ModeId = (typeof SUPPORTED_MODE_IDS)[number];
 export type HumanAuthoritySeatId = (typeof HUMAN_AUTHORITY_SEAT_IDS)[number];
+export type RepositoryTrustProfileId = (typeof REPOSITORY_TRUST_PROFILE_IDS)[number];
 export type ShieldPathKind = "journals" | "artifacts" | "reports" | "temp";
+
+export interface RepositoryTrustProfileV1 {
+  readonly contractVersion: "repository.trust-profile.v1";
+  readonly profileId: RepositoryTrustProfileId;
+  readonly requiredShieldSigningSeatIds: readonly HumanAuthoritySeatId[];
+  readonly optionalShieldSigningSeatIds: readonly HumanAuthoritySeatId[];
+  readonly fitzSource: "shield_ed25519_binding" | "github_required_review_external";
+  readonly simmonsSource: "conditional_shield_ed25519_binding" | "conditional_external_feedback";
+  readonly externalEvidenceAdmission: "not_admitted";
+}
+
+export const REPOSITORY_TRUST_PROFILES_V1: readonly RepositoryTrustProfileV1[] = Object.freeze([
+  Object.freeze({
+    contractVersion: REPOSITORY_TRUST_PROFILE_CONTRACT_VERSION,
+    profileId: "signed_human_gates",
+    requiredShieldSigningSeatIds: Object.freeze(["coulson", "fitz"] as const),
+    optionalShieldSigningSeatIds: Object.freeze(["simmons"] as const),
+    fitzSource: "shield_ed25519_binding",
+    simmonsSource: "conditional_shield_ed25519_binding",
+    externalEvidenceAdmission: "not_admitted",
+  }),
+  Object.freeze({
+    contractVersion: REPOSITORY_TRUST_PROFILE_CONTRACT_VERSION,
+    profileId: "coulson_only_platform_review",
+    requiredShieldSigningSeatIds: Object.freeze(["coulson"] as const),
+    optionalShieldSigningSeatIds: Object.freeze([] as const),
+    fitzSource: "github_required_review_external",
+    simmonsSource: "conditional_external_feedback",
+    externalEvidenceAdmission: "not_admitted",
+  }),
+]);
 
 export interface TrustedHumanBindingRef {
   seatId: HumanAuthoritySeatId;
@@ -29,8 +71,7 @@ export interface TrustedHumanBindingRef {
 
 export type ShieldPaths = Readonly<Record<ShieldPathKind, string>>;
 
-export interface ShieldConfig {
-  schemaVersion: 1;
+interface ShieldConfigCommon {
   repositoryId: string;
   adapterId: AdapterId;
   supportedSeatIds: SeatId[];
@@ -38,6 +79,17 @@ export interface ShieldConfig {
   trustedHumanBindingRefs: TrustedHumanBindingRef[];
   paths: ShieldPaths;
 }
+
+export interface ShieldConfigV1 extends ShieldConfigCommon {
+  schemaVersion: 1;
+}
+
+export interface ShieldConfigV2 extends ShieldConfigCommon {
+  schemaVersion: 2;
+  repositoryTrustProfileId: RepositoryTrustProfileId;
+}
+
+export type ShieldConfig = ShieldConfigV1 | ShieldConfigV2;
 
 export interface ConfigIssue {
   code: string;
@@ -52,7 +104,8 @@ export type ConfigValidationResult =
 export interface CreateShieldConfigInput {
   repositoryId: string;
   coulsonBindingRef: string;
-  fitzBindingRef: string;
+  repositoryTrustProfileId?: RepositoryTrustProfileId;
+  fitzBindingRef?: string;
   simmonsBindingRef?: string;
 }
 
@@ -87,7 +140,7 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
-const CONFIG_FIELDS = [
+const CONFIG_V1_FIELDS = [
   "schemaVersion",
   "repositoryId",
   "adapterId",
@@ -96,11 +149,16 @@ const CONFIG_FIELDS = [
   "trustedHumanBindingRefs",
   "paths",
 ] as const;
+const CONFIG_V2_FIELDS = [
+  ...CONFIG_V1_FIELDS,
+  "repositoryTrustProfileId",
+] as const;
 const PATH_FIELDS = ["journals", "artifacts", "reports", "temp"] as const;
 const BINDING_FIELDS = ["seatId", "bindingRef"] as const;
 const REPOSITORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const BINDING_REF = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const CREDENTIAL_MARKER = /(?:password|token|secret|api[_-]?key)\s*[:=]|private[_-]?key/i;
+const UNCONFIGURED_BINDING_MARKER = /(?:^|[._:/-])(?:placeholder|unconfigured|unset|todo|tbd)(?:$|[._:/-])/i;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) &&
@@ -174,7 +232,20 @@ function safeShieldPath(value: unknown): value is string {
 
 function bindingRefIsSafe(value: unknown): value is string {
   return typeof value === "string" && BINDING_REF.test(value) &&
-    !value.includes("://") && !CREDENTIAL_MARKER.test(value);
+    !value.includes("://") && !CREDENTIAL_MARKER.test(value) &&
+    !UNCONFIGURED_BINDING_MARKER.test(value);
+}
+
+export function getRepositoryTrustProfileV1(profileId: RepositoryTrustProfileId): RepositoryTrustProfileV1 {
+  const profile = REPOSITORY_TRUST_PROFILES_V1.find((candidate) => candidate.profileId === profileId);
+  if (profile === undefined) throw new Error(`Unsupported repository trust profile: ${String(profileId)}.`);
+  return profile;
+}
+
+export function repositoryTrustProfileId(config: ShieldConfig): RepositoryTrustProfileId {
+  return config.schemaVersion === LEGACY_CONFIG_SCHEMA_VERSION
+    ? "signed_human_gates"
+    : config.repositoryTrustProfileId;
 }
 
 export function validateShieldConfig(input: unknown): ConfigValidationResult {
@@ -182,14 +253,15 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
   if (!isPlainObject(input)) {
     return { state: "invalid", issues: [issue("invalid_object", "config", "Config must be a plain object.")] };
   }
-  exactFields(input, CONFIG_FIELDS, "config", issues);
-  if (issues.some(({ code }) => code === "missing_field")) return { state: "invalid", issues };
+  const schemaVersion = input.schemaVersion;
+  const fields = schemaVersion === CONFIG_SCHEMA_VERSION ? CONFIG_V2_FIELDS : CONFIG_V1_FIELDS;
+  exactFields(input, fields, "config", issues);
 
-  if (input.schemaVersion !== CONFIG_SCHEMA_VERSION) {
+  if (!SUPPORTED_CONFIG_SCHEMA_VERSIONS.includes(schemaVersion as 1 | 2)) {
     issues.push(issue(
       "unsupported_schema_version",
       "config.schemaVersion",
-      `Config schemaVersion must be ${CONFIG_SCHEMA_VERSION}.`,
+      `Config schemaVersion must be one of: ${SUPPORTED_CONFIG_SCHEMA_VERSIONS.join(", ")}.`,
     ));
   }
   if (typeof input.repositoryId !== "string" || !REPOSITORY_ID.test(input.repositoryId)) {
@@ -204,6 +276,21 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
   }
   validateKnownStringArray(input.supportedSeatIds, SUPPORTED_SEAT_IDS, "config.supportedSeatIds", issues);
   validateKnownStringArray(input.supportedModeIds, SUPPORTED_MODE_IDS, "config.supportedModeIds", issues);
+
+  let profileId: RepositoryTrustProfileId | undefined;
+  if (schemaVersion === LEGACY_CONFIG_SCHEMA_VERSION) {
+    profileId = "signed_human_gates";
+  } else if (schemaVersion === CONFIG_SCHEMA_VERSION) {
+    if (!REPOSITORY_TRUST_PROFILE_IDS.includes(input.repositoryTrustProfileId as RepositoryTrustProfileId)) {
+      issues.push(issue(
+        "unsupported_repository_trust_profile",
+        "config.repositoryTrustProfileId",
+        "config.repositoryTrustProfileId must be signed_human_gates or coulson_only_platform_review.",
+      ));
+    } else {
+      profileId = input.repositoryTrustProfileId as RepositoryTrustProfileId;
+    }
+  }
 
   const bindingSeats = new Set<string>();
   if (!Array.isArray(input.trustedHumanBindingRefs)) {
@@ -237,12 +324,31 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
       }
     }
   }
-  for (const requiredSeat of ["coulson", "fitz"]) {
+  const requiredSeats = profileId === "coulson_only_platform_review" ? ["coulson"] : ["coulson", "fitz"];
+  for (const requiredSeat of requiredSeats) {
     if (!bindingSeats.has(requiredSeat)) {
       issues.push(issue(
         "missing_required_binding",
         "config.trustedHumanBindingRefs",
-        `A structural binding reference is required for ${requiredSeat}.`,
+        `A configured SHIELD signing binding reference is required for ${requiredSeat}.`,
+      ));
+    }
+  }
+  if (profileId === "coulson_only_platform_review") {
+    for (const contradictorySeat of ["fitz", "simmons"]) {
+      if (bindingSeats.has(contradictorySeat)) {
+        issues.push(issue(
+          "contradictory_binding",
+          "config.trustedHumanBindingRefs",
+          `Repository trust profile coulson_only_platform_review does not admit a ${contradictorySeat} SHIELD binding reference.`,
+        ));
+      }
+    }
+    if (Array.isArray(input.trustedHumanBindingRefs) && input.trustedHumanBindingRefs.length !== 1) {
+      issues.push(issue(
+        "invalid_binding_cardinality",
+        "config.trustedHumanBindingRefs",
+        "Repository trust profile coulson_only_platform_review requires exactly one configured human binding reference.",
       ));
     }
   }
@@ -280,16 +386,28 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
     : { state: "valid", value: input as unknown as ShieldConfig };
 }
 
-export function createShieldConfig(input: CreateShieldConfigInput): ShieldConfig {
+export function createShieldConfig(input: CreateShieldConfigInput): ShieldConfigV2 {
+  const profileId = input.repositoryTrustProfileId ?? "signed_human_gates";
+  if (!REPOSITORY_TRUST_PROFILE_IDS.includes(profileId)) {
+    throw new Error(`Unsupported repository trust profile: ${String(profileId)}.`);
+  }
   const bindings: TrustedHumanBindingRef[] = [
     { seatId: "coulson", bindingRef: input.coulsonBindingRef },
-    { seatId: "fitz", bindingRef: input.fitzBindingRef },
   ];
+  if (profileId === "signed_human_gates") {
+    if (input.fitzBindingRef === undefined) {
+      throw new Error("Repository trust profile signed_human_gates requires a Fitz binding reference.");
+    }
+    bindings.push({ seatId: "fitz", bindingRef: input.fitzBindingRef });
+  } else if (input.fitzBindingRef !== undefined || input.simmonsBindingRef !== undefined) {
+    throw new Error("Repository trust profile coulson_only_platform_review rejects Fitz and Simmons binding references.");
+  }
   if (input.simmonsBindingRef !== undefined) {
     bindings.push({ seatId: "simmons", bindingRef: input.simmonsBindingRef });
   }
-  const candidate: ShieldConfig = {
+  const candidate: ShieldConfigV2 = {
     schemaVersion: CONFIG_SCHEMA_VERSION,
+    repositoryTrustProfileId: profileId,
     repositoryId: input.repositoryId,
     adapterId: "github",
     supportedSeatIds: [...SUPPORTED_SEAT_IDS],
@@ -306,7 +424,7 @@ export function createShieldConfig(input: CreateShieldConfigInput): ShieldConfig
   if (checked.state === "invalid") {
     throw new Error(checked.issues.map(({ message }) => message).join(" "));
   }
-  return checked.value;
+  return checked.value as ShieldConfigV2;
 }
 
 export function parseShieldConfig(text: unknown): ConfigValidationResult {
@@ -337,6 +455,7 @@ export function evaluateDoctor(input: DoctorInput): DoctorReport {
     "config.adapterId",
     "config.supportedSeatIds",
     "config.supportedModeIds",
+    "config.repositoryTrustProfileId",
     "config.trustedHumanBindingRefs",
     "config.paths",
   ] as const;
@@ -376,8 +495,12 @@ export function evaluateDoctor(input: DoctorInput): DoctorReport {
     category("modes", ["config.supportedModeIds"], "Configured modes are supported and unique."),
     category(
       "bindings",
-      ["config.trustedHumanBindingRefs"],
-      "Required structural human binding references are present and credential-free.",
+      ["config.repositoryTrustProfileId", "config.trustedHumanBindingRefs"],
+      isPlainObject(input.config) &&
+          (input.config.schemaVersion === LEGACY_CONFIG_SCHEMA_VERSION ||
+           input.config.repositoryTrustProfileId === "signed_human_gates")
+        ? "Repository trust profile signed_human_gates requires verified Coulson and Fitz SHIELD Ed25519 bindings; Simmons remains optional for product-sensitive missions."
+        : "Repository trust profile coulson_only_platform_review requires a verified Coulson SHIELD Ed25519 binding. Fitz is GitHub-enforced external review; Simmons is conditional external feedback; neither is admitted as SHIELD evidence.",
     ),
     category("paths", ["config.paths"], "Configured SHIELD paths are safe and distinct."),
   ];

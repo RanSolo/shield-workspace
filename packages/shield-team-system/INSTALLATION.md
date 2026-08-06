@@ -19,15 +19,33 @@ The packed-consumer validation exercises this command's `--save-dev` and
 `--save-exact` semantics against the exact generated tarball. Registry
 publication is not part of V0.3-3.
 
-Initialize the current repository with explicit, credential-free references to
-the required human authority bindings:
+Initialization writes configuration schema 2. The default
+`signed_human_gates` repository trust profile preserves the existing explicit,
+credential-free Coulson and Fitz SHIELD signing bindings:
 
 ```sh
 npx shield init \
   --repository-id owner/repository \
+  --repository-trust-profile signed_human_gates \
   --coulson-binding-ref ed25519:sha256:<coulson-spki-digest> \
   --fitz-binding-ref ed25519:sha256:<fitz-spki-digest>
 ```
+
+Omitting `--repository-trust-profile` selects the same signed-human default and
+still requires `--fitz-binding-ref`. For a repository whose required Fitz
+review and conditional Simmons feedback remain exclusively on the external
+platform, select the explicit Coulson-only profile:
+
+```sh
+npx shield init \
+  --repository-id owner/repository \
+  --repository-trust-profile coulson_only_platform_review \
+  --coulson-binding-ref ed25519:sha256:<coulson-spki-digest>
+```
+
+That profile accepts exactly one configured SHIELD binding: Coulson. It rejects
+Fitz and Simmons binding flags. The profile does not inspect GitHub or Jira,
+admit platform state as SHIELD evidence, or report external review satisfied.
 
 Use `--root <path>` to name a repository root explicitly. Use
 `--simmons-binding-ref <ref>` only when the repository has configured Simmons as
@@ -53,6 +71,12 @@ npx shield doctor --json
 Exit status `0` means healthy, `1` means a diagnostic failed, and `2` means the
 command or environment could not be evaluated. Doctor performs no network
 requests and makes no repository changes.
+
+Doctor reports the selected repository trust profile and required cryptographic
+seats. Valid schema-1 configuration remains readable as the implicit legacy
+`signed_human_gates` profile and is never rewritten. Equivalent signed-human
+re-initialization is a byte-preserving no-op; divergent bindings fail, and
+selecting Coulson-only against schema 1 is an unsupported migration.
 
 For the local supervised mission workflow, the binding references must be the
 content-addressed Ed25519 references described in

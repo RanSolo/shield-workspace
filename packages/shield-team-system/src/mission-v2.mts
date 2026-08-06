@@ -24,12 +24,18 @@ import {
 } from "./adapter-v1.mjs";
 import { validateRuntimeBinding, type RuntimeBinding } from "./permission-v1.mjs";
 import {
+  REPOSITORY_TRUST_PROFILE_IDS,
+  repositoryTrustProfileId,
+  type ShieldConfig,
+} from "./config.mjs";
+import {
   computeReviewPublicationAuthorityDigest,
   validateReviewPublicationAuthorityV1,
   validateReviewPublicationEvidenceV1,
   type ReviewPublicationAuthorityV1,
 } from "./review-publication-v1.mjs";
 import {
+  MISSION_PROFILE_IDS,
   getMissionProfileV1,
   type MissionProfileId,
 } from "./mission-profile-v1.mjs";
@@ -1127,13 +1133,21 @@ export function createReviewEvidenceRequirements(
   return [...missionAuthorization, ...reviewRequirements];
 }
 
-export function validateRepositoryBindings(
+export type RepositoryMissionAdmission =
+  | { kind: "legacy-supervised"; requireSimmons: boolean }
+  | {
+    kind: "profile-aware";
+    profileId: MissionProfileId;
+    profileVersion: 1;
+    requireSimmons: boolean;
+  };
+
+function selectRepositoryBindings(
   registry: TrustedBindingRegistry,
   configured: readonly { seatId: string; bindingRef: string }[],
   missionId: string,
-  requireSimmons: boolean,
+  requiredSeats: readonly HumanSeat[],
 ): ContractResult<TrustedHumanBinding[]> {
-  const requiredSeats: HumanSeat[] = requireSimmons ? ["coulson", "fitz", "simmons"] : ["coulson", "fitz"];
   const selected: TrustedHumanBinding[] = [];
   for (const seatId of requiredSeats) {
     const configMatches = configured.filter((entry) => entry.seatId === seatId);
@@ -1145,6 +1159,62 @@ export function validateRepositoryBindings(
     selected.push(binding);
   }
   return valid(selected);
+}
+
+export function deriveRepositoryMissionBindings(
+  config: ShieldConfig,
+  registryInput: unknown,
+  missionId: string,
+  admission: RepositoryMissionAdmission,
+): ContractResult<TrustedHumanBinding[]> {
+  if ((config.schemaVersion !== 1 && config.schemaVersion !== 2) ||
+      (config.schemaVersion === 2 && !REPOSITORY_TRUST_PROFILE_IDS.includes(config.repositoryTrustProfileId))) {
+    return invalid("repository_trust_profile_incompatible", "Repository trust profile configuration is unsupported.");
+  }
+  const trustProfileId = repositoryTrustProfileId(config);
+  let requiredSeats: readonly HumanSeat[];
+
+  if (admission.kind === "profile-aware") {
+    if (!MISSION_PROFILE_IDS.includes(admission.profileId)) {
+      return invalid("repository_mission_profile_inconsistent", "Mission profile context is unsupported.");
+    }
+    const expectedRequireSimmons = admission.profileId === "product_sensitive";
+    if (admission.profileVersion !== 1 || admission.requireSimmons !== expectedRequireSimmons) {
+      return invalid(
+        "repository_mission_profile_inconsistent",
+        `Mission profile ${admission.profileId}@${admission.profileVersion} requires requireSimmons=${String(expectedRequireSimmons)}.`,
+      );
+    }
+  }
+
+  if (trustProfileId === "coulson_only_platform_review") {
+    if (admission.kind !== "profile-aware" || admission.profileId !== "standard") {
+      return invalid(
+        "repository_trust_profile_incompatible",
+        "Repository trust profile coulson_only_platform_review admits only profile-aware standard@1 missions.",
+      );
+    }
+    requiredSeats = ["coulson"];
+  } else if (admission.kind === "legacy-supervised") {
+    requiredSeats = admission.requireSimmons ? ["coulson", "fitz", "simmons"] : ["coulson", "fitz"];
+  } else if (admission.profileId === "product_sensitive") {
+    requiredSeats = ["coulson", "fitz", "simmons"];
+  } else {
+    requiredSeats = ["coulson", "fitz"];
+  }
+
+  const registry = validateTrustedBindingRegistry(registryInput);
+  if (registry.state === "invalid") return registry;
+  return selectRepositoryBindings(registry.value, config.trustedHumanBindingRefs, missionId, requiredSeats);
+}
+
+export function selectCoulsonOperationBinding(
+  config: ShieldConfig,
+  registry: TrustedBindingRegistry,
+): ContractResult<TrustedHumanBinding> {
+  const selected = selectRepositoryBindings(registry, config.trustedHumanBindingRefs, "*", ["coulson"]);
+  if (selected.state === "invalid") return selected;
+  return valid(selected.value[0]);
 }
 
 function validateEvidencePayload(input: unknown): ContractResult<HumanEvidencePayload> {

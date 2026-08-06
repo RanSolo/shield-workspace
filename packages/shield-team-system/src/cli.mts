@@ -7,11 +7,14 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+  REPOSITORY_TRUST_PROFILE_IDS,
   SHIELD_PACKAGE_VERSION,
   createShieldConfig,
   evaluateDoctor,
   formatShieldConfig,
   parseShieldConfig,
+  type RepositoryTrustProfileId,
+  type ShieldConfigV1,
   type DoctorReport,
 } from "./config.mjs";
 import {
@@ -60,7 +63,7 @@ function cleanGitEnvironment(): NodeJS.ProcessEnv {
 function usage(): string {
   return [
     "Usage:",
-    `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> --fitz-binding-ref <ref> [--simmons-binding-ref <ref>] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
+    `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> [--repository-trust-profile <${REPOSITORY_TRUST_PROFILE_IDS.join("|")}>] [--fitz-binding-ref <ref>] [--simmons-binding-ref <ref>] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
     "  shield doctor [--root <path>] [--json]",
     "",
     missionUsage(),
@@ -226,6 +229,7 @@ async function runInit(args: string[]): Promise<number> {
   const options = parseOptions(args, [
     "--root",
     "--repository-id",
+    "--repository-trust-profile",
     "--coulson-binding-ref",
     "--fitz-binding-ref",
     "--simmons-binding-ref",
@@ -235,13 +239,24 @@ async function runInit(args: string[]): Promise<number> {
   if (starterPipelineId !== undefined && !validateStarterPipelineId(starterPipelineId)) {
     throw new CliError(`Unsupported starter pipeline: ${starterPipelineId}.`);
   }
+  const repositoryTrustProfileId = options.values.get("--repository-trust-profile") ?? "signed_human_gates";
+  if (!REPOSITORY_TRUST_PROFILE_IDS.includes(repositoryTrustProfileId as RepositoryTrustProfileId)) {
+    throw new CliError(`Unsupported repository trust profile: ${repositoryTrustProfileId}.`);
+  }
+  if (repositoryTrustProfileId === "coulson_only_platform_review" &&
+      (options.values.has("--fitz-binding-ref") || options.values.has("--simmons-binding-ref"))) {
+    throw new CliError("Repository trust profile coulson_only_platform_review rejects --fitz-binding-ref and --simmons-binding-ref.");
+  }
   const root = await inspectRoot(options.values.get("--root"), true);
   const rootIssue = await repositoryRootIssue(root, { allowMissingPackage: starterPipelineId !== undefined });
   if (rootIssue !== null) throw new CliError(rootIssue);
   const config = createShieldConfig({
     repositoryId: required(options, "--repository-id"),
+    repositoryTrustProfileId: repositoryTrustProfileId as RepositoryTrustProfileId,
     coulsonBindingRef: required(options, "--coulson-binding-ref"),
-    fitzBindingRef: required(options, "--fitz-binding-ref"),
+    ...(repositoryTrustProfileId === "signed_human_gates"
+      ? { fitzBindingRef: required(options, "--fitz-binding-ref") }
+      : {}),
     ...(options.values.has("--simmons-binding-ref")
       ? { simmonsBindingRef: options.values.get("--simmons-binding-ref") as string }
       : {}),
@@ -256,8 +271,30 @@ async function runInit(args: string[]): Promise<number> {
   const configState = await inspectTarget(configPath);
   const pipelineProfileState = starterPipelineId !== undefined ? await inspectTarget(pipelineProfilePath) : { exists: false };
   const ignoreState = await inspectTarget(ignorePath);
-  if (configState.exists && configState.content !== configContent) {
-    throw new CliError(`Existing configuration differs; refusing to overwrite: ${configPath}.`);
+  if (configState.exists) {
+    const existing = parseShieldConfig(configState.content);
+    if (existing.state === "invalid") {
+      throw new CliError(`Existing configuration differs; refusing to overwrite: ${configPath}.`);
+    }
+    if (existing.value.schemaVersion === 1) {
+      if (repositoryTrustProfileId === "coulson_only_platform_review") {
+        throw new CliError("Selecting coulson_only_platform_review against schema-1 configuration is an unsupported migration.");
+      }
+      const { repositoryTrustProfileId: _profileId, ...common } = config;
+      const equivalentLegacy: ShieldConfigV1 = { ...common, schemaVersion: 1 };
+      if (formatShieldConfig(existing.value) !== formatShieldConfig(equivalentLegacy)) {
+        throw new CliError(`Existing schema-1 configuration differs; refusing to overwrite: ${configPath}.`);
+      }
+      if (starterPipelineId === undefined) {
+        if (ignoreState.exists && ignoreState.content !== IGNORE_CONTENT) {
+          throw new CliError(`Existing SHIELD ignore file differs; refusing to overwrite: ${ignorePath}.`);
+        }
+        process.stdout.write("SHIELD schema-1 configuration is already initialized; no files changed.\n");
+        return 0;
+      }
+    } else if (formatShieldConfig(existing.value) !== configContent) {
+      throw new CliError(`Existing configuration differs; refusing to overwrite: ${configPath}.`);
+    }
   }
   if (ignoreState.exists && ignoreState.content !== IGNORE_CONTENT) {
     throw new CliError(`Existing SHIELD ignore file differs; refusing to overwrite: ${ignorePath}.`);
@@ -329,12 +366,21 @@ async function runDoctor(args: string[]): Promise<number> {
   await inspectDirectory(shieldDirectory);
   const configState = await inspectTarget(configPath);
   const parsed = configState.exists ? parseShieldConfig(configState.content) : null;
+  let rawConfig: unknown;
+  if (configState.exists && parsed?.state === "invalid") {
+    try { rawConfig = JSON.parse(configState.content as string) as unknown; }
+    catch { rawConfig = undefined; }
+  }
   const report = evaluateDoctor({
     repositoryRootReady: rootIssue === null,
     ...(rootIssue === null ? {} : { repositoryRootIssue: rootIssue }),
     packageVersion: await installedPackageVersion(),
     configPresent: configState.exists,
-    ...(parsed?.state === "valid" ? { config: parsed.value } : parsed ? { config: {} } : {}),
+    ...(parsed?.state === "valid"
+      ? { config: parsed.value }
+      : parsed?.state === "invalid" && rawConfig !== undefined
+        ? { config: rawConfig }
+        : {}),
   });
   if (parsed?.state === "invalid") {
     const schema = report.checks.find(({ id }) => id === "config-schema");
