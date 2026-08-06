@@ -19,8 +19,8 @@
     { "seatId": "daisy" },
     { "seatId": "fury" },
     { "seatId": "may" },
-    { "seatId": "mack" },
-    { "seatId": "coulson" }
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
   ],
   "activatedModes": [
     {
