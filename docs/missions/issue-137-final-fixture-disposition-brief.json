@@ -40,5 +40,6 @@
   "requiredExecutionGateRoleIds": ["coulson"],
   "requiredFinalAcceptanceGateRoleIds": ["coulson"],
   "predecessorMissionId": "mission:issue-130",
-  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9"
+  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9",
+  "revisionId": "sha256:l1m9n5oUcWA3eNpu65iE52yCpaUfPihpmd1K8_pg4DA"
 }
