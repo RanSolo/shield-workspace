@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -36,16 +36,16 @@ const FIXTURE_IDENTITY_BYTES = await readFile(join(root, "fixture-identity-v1.js
 const FIXTURE_RELEASE_BASELINE = Object.freeze({
   kind: "fixture-release-baseline",
   schemaVersion: "shield.fixture.release-baseline.v1",
-  identityRecordDigest: "fda6adf3344b499d9adfc5067fe2f4408f2a8b2c0f713b7bb75c68cba4c3d25b",
+  identityRecordDigest: "4a0de87cfc777c3cd6090ec25eb7a042667a654f1d455bf9e41ef49970e3a844",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
-  launcherDigest: "242bc856d4454ac0dc7846b6d2ac8fefd8d6daeab5bf57ed637196ec169f09a0",
+  launcherDigest: "b4e1adf7cf647d533f9b32b8aa7eab449e5f78ce9fbb5f4c3ddfd9349a717615",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
     name: "@shield/team-system",
     version: "0.1.0",
     digestAlgorithm: "sha256",
-    digest: "05a8ee7222471925e49e794c7fb58fd1151dcfe2a8e2c8d20435118c340ec02e"
+    digest: "9c2eb437fc13d371b38577c31556d88b0c921f2fd2f2fc24ca22badd932a2823"
   })
 });
 const ISOLATION_ENVELOPE = Object.freeze({
@@ -65,26 +65,6 @@ const ISOLATION_ENVELOPE = Object.freeze({
     sha256: "29409e7bdb0f890a16b3e49a03fb1877aed89c884d4bf639e7ebc8c2dabeddd8"
   })
 });
-const EXPECTED_DEPENDENCY_BLOCKERS = Object.freeze([
-  Object.freeze({
-    issue: "#24",
-    code: "accepted_product_contract_required",
-    requiredState: "coulson-accepted",
-    currentFixtureState: "reviewed-and-merged-awaiting-coulson-acceptance"
-  }),
-  Object.freeze({
-    issue: "#138",
-    code: "content_address_fixture_identity_required",
-    requiredState: "implemented-and-validated",
-    currentFixtureState: "open"
-  }),
-  Object.freeze({
-    issue: "#140",
-    code: "fixture_isolation_and_rollback_safety_required",
-    requiredState: "implemented-and-validated",
-    currentFixtureState: "open"
-  })
-]);
 const REPLAY_ANCHOR_FIXTURE = Object.freeze({
   kind: "trusted-journal-replay-anchor",
   producerContractVersion: "shield.v0.3.fixture",
@@ -325,8 +305,18 @@ function packTeamSystemFromHead(destination) {
   ]);
   execFileSync("tar", ["-x", "-f", archive, "-C", destination], { encoding: "utf8" });
   execFileSync("rm", ["-rf", join(destination, "shield-team-system", "dist")]);
-  execFileSync("cp", ["-R", join(packageRoot, "dist"), join(destination, "shield-team-system", "dist")]);
-  return join(destination, "shield-team-system");
+  const isolatedPackageRoot = join(destination, "shield-team-system");
+  const isolatedNodeModules = join(isolatedPackageRoot, "node_modules");
+  execFileSync("ln", ["-s", resolve(repositoryRoot, "node_modules"), isolatedNodeModules]);
+  try {
+    execFileSync(resolve(repositoryRoot, "node_modules/.bin/tsc"), [
+      "-p",
+      join(isolatedPackageRoot, "tsconfig.build.json")
+    ]);
+  } finally {
+    execFileSync("rm", [isolatedNodeModules]);
+  }
+  return isolatedPackageRoot;
 }
 
 function packTeamSystem(destination, source = packageRoot) {
@@ -522,6 +512,7 @@ test("fixture manifest is closed, frozen, versioned, and separates the later cam
   assert.equal(validateFixtureManifest(FIXTURE_MANIFEST).state, "valid");
   assert.equal(Object.isFrozen(FIXTURE_MANIFEST), true);
   assert.equal(Object.isFrozen(FIXTURE_MANIFEST.dependencyBlockers), true);
+  assert.deepEqual(FIXTURE_MANIFEST.dependencyBlockers, []);
   assert.equal(FIXTURE_MANIFEST.ownerIssue, "#12");
   assert.equal(FIXTURE_MANIFEST.excludedCampaign.issue, "#14");
   assert.equal(FIXTURE_MANIFEST.template.testLane, "node --test test/greeting.test.mjs");
@@ -729,35 +720,24 @@ test("host launcher accepts only an externally digested replay-anchor envelope",
   );
 });
 
-test("fake text artifacts cannot claim public-surface composition", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "shield-v03-composition-"));
+test("clean exact one-path revisions produce a measured ready preflight without package effects", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-ready-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
-  const artifact = join(directory, "shield-team-system.tgz");
-  await writeFile(artifact, "not a package artifact\n");
+  const missingArtifact = join(directory, "missing-package.tgz");
   const external = join(directory, "external");
   const revisions = await createExternalRepository(external);
   const result = await composeMinimumFixture(
-    fixtureInput(artifact, external, revisions),
+    fixtureInput(missingArtifact, external, revisions),
     fixtureTrustedHostContext()
   );
-  assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "dependency_contract_unavailable");
-  assert.deepEqual(result.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
-});
-
-test("exact packed artifact preflights fixture identity and then blocks on dependency contract", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "shield-v03-packed-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
-  const artifact = packTeamSystem(directory);
-  const external = join(directory, "external");
-  const revisions = await createExternalRepository(external);
-  const result = await composeMinimumFixture(
-    fixtureInput(artifact, external, revisions),
-    fixtureTrustedHostContext()
-  );
-  assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "dependency_contract_unavailable");
-  assert.deepEqual(result.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
+  assert.equal(result.state, "ready");
+  assert.deepEqual(result.externalRevision, {
+    state: "measured",
+    repositoryRoot: await realpath(external),
+    baseRevision: revisions.baseRevision,
+    headRevision: revisions.headRevision,
+    changedPaths: ["src/greeting.mjs"]
+  });
   assert.deepEqual(result.preflight, {
     fixtureId: "fixture:v0.3:external-acceptance:1",
     fixtureIdentityState: "valid",
@@ -775,29 +755,57 @@ test("exact packed artifact preflights fixture identity and then blocks on depen
   assert.doesNotMatch(source, /packages\/shield-team-system\/dist/u);
 });
 
-test("dependency blockers preflight before package substitution and changed-path scope drift inspection", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "shield-v03-identity-"));
+test("missing, dirty, wrong-head, wrong-base, frozen-base drift, and scope drift cannot produce ready", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-closed-revisions-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
-  const artifact = join(directory, "artifact.tgz");
-  await writeFile(artifact, "artifact\n");
-  const external = join(directory, "external");
-  const revisions = await createExternalRepository(external);
-  const base = fixtureInput(artifact, external, revisions, {
-    blindStatus: "blind",
-    requireSimmons: false
+  const artifact = join(directory, "missing-package.tgz");
+  const preflight = async (external, revisions, overrides = {}) => composeMinimumFixture(
+    fixtureInput(artifact, external, revisions, overrides),
+    fixtureTrustedHostContext()
+  );
+
+  assert.equal((await preflight(
+    join(directory, "missing"),
+    { baseRevision: OID40, headRevision: OID40 }
+  )).reason, "external_repository_unavailable");
+
+  const dirty = join(directory, "dirty");
+  const dirtyRevisions = await createExternalRepository(dirty);
+  await writeFile(join(dirty, "README.md"), "dirty\n");
+  assert.equal((await preflight(dirty, dirtyRevisions)).reason, "external_revision_not_clean");
+
+  const wrongHead = join(directory, "wrong-head");
+  const wrongHeadRevisions = await createExternalRepository(wrongHead);
+  assert.equal((await preflight(wrongHead, {
+    ...wrongHeadRevisions,
+    headRevision: wrongHeadRevisions.baseRevision
+  })).reason, "head_revision_not_current");
+
+  const wrongBase = join(directory, "wrong-base");
+  const wrongBaseRevisions = await createExternalRepository(wrongBase);
+  assert.equal((await preflight(wrongBase, {
+    ...wrongBaseRevisions,
+    baseRevision: "f".repeat(wrongBaseRevisions.baseRevision.length)
+  })).reason, "base_revision_unavailable");
+
+  const frozenBase = join(directory, "frozen-base");
+  const frozenBaseRevisions = await createExternalRepository(frozenBase, {
+    baseGreetingSource: "export const greeting = () => 'substituted';\n"
   });
-  const baseResult = await composeMinimumFixture(base, fixtureTrustedHostContext());
-  assert.equal(baseResult.reason, "dependency_contract_unavailable");
-  assert.deepEqual(baseResult.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
-  await writeFile(join(external, "README.md"), "scope drift\n");
-  git(external, ["add", "README.md"]);
-  git(external, ["commit", "--quiet", "-m", "scope drift"]);
-  const driftResult = await composeMinimumFixture({
-    ...base,
-    headRevision: git(external, ["rev-parse", "HEAD"])
-  }, fixtureTrustedHostContext());
-  assert.equal(driftResult.reason, "dependency_contract_unavailable");
-  assert.deepEqual(driftResult.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
+  assert.equal(
+    (await preflight(frozenBase, frozenBaseRevisions)).reason,
+    "frozen_base_content_mismatch:src/greeting.mjs"
+  );
+
+  const scopeDrift = join(directory, "scope-drift");
+  const scopeDriftRevisions = await createExternalRepository(scopeDrift);
+  await writeFile(join(scopeDrift, "README.md"), "scope drift\n");
+  git(scopeDrift, ["add", "README.md"]);
+  git(scopeDrift, ["commit", "--quiet", "-m", "scope drift"]);
+  assert.equal((await preflight(scopeDrift, {
+    ...scopeDriftRevisions,
+    headRevision: git(scopeDrift, ["rev-parse", "HEAD"])
+  })).reason, "scope_drift");
 });
 
 test("composition rejects malformed revisions and unsupported object formats", async (context) => {
@@ -852,7 +860,7 @@ test("composition rejects malformed revisions and unsupported object formats", a
       ),
       fixtureTrustedHostContext()
     );
-    assert.equal(badFormat.reason, "dependency_contract_unavailable");
+    assert.equal(badFormat.reason, "external_repository_object_format_unsupported");
   } finally {
     process.env.PATH = previousPath;
   }
@@ -865,7 +873,7 @@ test("composition rejects malformed revisions and unsupported object formats", a
     sha256External,
     sha256Revisions
   ), fixtureTrustedHostContext());
-  assert.equal(sha256Result.reason, "dependency_contract_unavailable");
+  assert.equal(sha256Result.state, "ready");
 
   assert.equal((await composeMinimumFixture({
     ...fixtureInput(
@@ -877,8 +885,9 @@ test("composition rejects malformed revisions and unsupported object formats", a
   }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 });
 
-test("dependency blocker preflight wins even when external repository and package paths are unavailable", async () => {
+test("ready preflight requires the external repository even though package inspection is deferred", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-preflight-first-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
   const missingArtifact = join(directory, "missing-package.tgz");
   const missingExternal = join(directory, "missing-external");
   const result = await composeMinimumFixture({
@@ -889,12 +898,12 @@ test("dependency blocker preflight wins even when external repository and packag
     )
   }, fixtureTrustedHostContext());
   assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "dependency_contract_unavailable");
-  assert.deepEqual(result.blockers, EXPECTED_DEPENDENCY_BLOCKERS);
+  assert.equal(result.reason, "external_repository_unavailable");
 });
 
-test("composition rejects malformed external repository identity before blocker projection", async () => {
+test("composition rejects malformed external repository identity before revision inspection", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-malformed-root-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
   const artifact = join(directory, "artifact.tgz");
   await writeFile(artifact, "artifact\n");
   const result = await composeMinimumFixture({
@@ -909,7 +918,7 @@ test("composition rejects malformed external repository identity before blocker 
   assert.equal(result.reason, "fixture_identity_malformed");
 });
 
-test("composition rejects wrong package version and exact-package hash mismatches", async (context) => {
+test("package identity helper rejects wrong package versions while ready preflight defers package effects", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-package-version-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const baseArtifact = packTeamSystem(directory);
@@ -953,7 +962,7 @@ test("composition rejects wrong package version and exact-package hash mismatche
     external,
     revisions
   );
-  assert.equal((await composeMinimumFixture(wrongVersionInput, fixtureTrustedHostContext())).reason, "dependency_contract_unavailable");
+  assert.equal((await composeMinimumFixture(wrongVersionInput, fixtureTrustedHostContext())).state, "ready");
 
   const hashMismatchArtifact = packTeamSystem(directory);
   assert.equal((
@@ -970,6 +979,7 @@ test("trusted composition isolates offline install and public import as separate
   context.after(() => rm(directory, { recursive: true, force: true }));
   context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const artifact = packTeamSystem(directory);
+  assert.equal(await digest(artifact), FIXTURE_RELEASE_BASELINE.package.digest);
   const result = await composeExternalArtifact({
     fixtureRoot: root,
     packageArtifactPath: artifact,
@@ -983,12 +993,13 @@ test("trusted composition isolates offline install and public import as separate
     }
   });
   assert.equal(result.state, "composed", JSON.stringify(result));
+  assert.equal(result.artifactSha256, FIXTURE_RELEASE_BASELINE.package.digest);
   assert.deepEqual(result.installedPackage, { name: "@shield/team-system", version: "0.1.0" });
   assert.deepEqual(result.phases, ["composition.install", "composition.import"]);
 });
 
-test("malicious package import cannot reach network, host writes, or child execution", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "shield-v03-malicious-composition-"));
+test("substituted same-name and version package bytes are rejected before isolation or installation", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-substituted-composition-"));
   const packageDirectory = join(directory, "package");
   const marker = join(directory, "operator-marker");
   const trust = await gradingTrust();
@@ -1024,6 +1035,8 @@ test("malicious package import cannot reach network, host writes, or child execu
     ""
   ].join("\n"));
   const artifact = packTeamSystem(directory, packageDirectory);
+  assert.notEqual(await digest(artifact), FIXTURE_RELEASE_BASELINE.package.digest);
+  const rootsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-composition-")).sort();
   const result = await composeExternalArtifact({
     fixtureRoot: root,
     packageArtifactPath: artifact,
@@ -1031,12 +1044,16 @@ test("malicious package import cannot reach network, host writes, or child execu
     headRevision: OID40,
     hostContext: {
       baselinePath: trust.hostContext.baselinePath,
-      isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
+      isolationEnvelopePath: join(trust.directory, "missing-isolation-envelope.json"),
       interruptAfterPhase: null,
       faultInjection: null
     }
   });
-  assert.equal(result.state, "composed", JSON.stringify(result));
+  assert.deepEqual(result, { state: "blocked", reason: "package_artifact_digest_mismatch" });
+  assert.deepEqual(
+    (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-composition-")).sort(),
+    rootsBefore
+  );
   assert.equal(await lstat(marker).then(() => true, () => false), false);
 });
 

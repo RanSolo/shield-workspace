@@ -727,6 +727,13 @@ export async function composeExternalArtifact({
     const verifier = await import(pathToFileURL(verifierPath).href);
     const identity = await verifier.verifyFixtureIdentity(benchmarkRoot, baseline);
     if (identity.state !== "valid") return identity;
+    const artifactResolved = await regularExternalFile(resolve(packageArtifactPath), benchmarkRoot);
+    if (artifactResolved === null) return Object.freeze({ state: "blocked", reason: "package_artifact_not_regular" });
+    const artifact = await readNoFollow(artifactResolved);
+    const artifactSha256 = digest(artifact.bytes);
+    if (artifactSha256 !== baseline.package.digest) {
+      return Object.freeze({ state: "blocked", reason: "package_artifact_digest_mismatch" });
+    }
     const envelope = await loadTrustedIsolationEnvelope({
       envelopePath: hostContext.isolationEnvelopePath,
       fixtureRoot: benchmarkRoot
@@ -736,9 +743,6 @@ export async function composeExternalArtifact({
     const nodeSource = await readNoFollow(process.execPath);
     const npmCliPath = resolve(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js");
     const npmCli = await readNoFollow(npmCliPath);
-    const artifactResolved = await regularExternalFile(resolve(packageArtifactPath), benchmarkRoot);
-    if (artifactResolved === null) return Object.freeze({ state: "blocked", reason: "package_artifact_not_regular" });
-    const artifact = await readNoFollow(artifactResolved);
     supervisorRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-v03-composition-")));
     await chmod(supervisorRoot, 0o700);
     supervisorRootIdentity = await captureDisposableRoot(supervisorRoot, "shield-v03-composition-");
@@ -767,7 +771,7 @@ export async function composeExternalArtifact({
     if (probe.outcome !== "passed") return Object.freeze({ state: "blocked", reason: "isolation_not_observable" });
     const install = await runCompositionInstall({
       adapterPath: SANDBOX_EXECUTABLE, workspaceRoot, npmCliPath, npmCliSha256: digest(npmCli.bytes),
-      artifactSha256: digest(artifact.bytes), envelope, nodeIdentity: digest(nodeSource.bytes),
+      artifactSha256, envelope, nodeIdentity: digest(nodeSource.bytes),
       nodeBytes: nodeSource.bytes, binRoot,
       baseRevision, headRevision, nonce, interruptAfterPhase: hostContext.interruptAfterPhase,
       adapterVerifier
@@ -794,7 +798,7 @@ export async function composeExternalArtifact({
     }
     return Object.freeze({
       state: "composed",
-      artifactSha256: digest(artifact.bytes),
+      artifactSha256,
       installedPackage: Object.freeze({ name: manifest.name, version: manifest.version }),
       phases: Object.freeze(["composition.install", "composition.import"])
     });

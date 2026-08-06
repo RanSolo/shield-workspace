@@ -222,18 +222,35 @@ export async function composeMinimumFixture(input, trustedHostContext) {
   }
   const identity = await verifyFixtureIdentity(benchmarkRoot, trustedHostContext.releaseBaseline);
   if (identity.state !== "valid") return identity;
+  const dependencyBlockers = blockers();
+  const preflight = Object.freeze({
+    fixtureId: FIXTURE_MANIFEST.fixtureId,
+    fixtureIdentityState: identity.state,
+    hostConfiguration: Object.freeze({ ...input.hostConfiguration }),
+    blindStatus: input.blindStatus,
+    priorSolutionsVisible: input.priorSolutionsVisible
+  });
+  const evidenceInventory = createEvidenceInventory({ requireSimmons: input.requireSimmons });
+  if (dependencyBlockers.length > 0) {
+    return Object.freeze({
+      state: "blocked",
+      reason: "dependency_contract_unavailable",
+      blockers: dependencyBlockers,
+      preflight,
+      evidenceInventory
+    });
+  }
+  const externalRevision = await inspectExternalRevision({
+    externalRepositoryRoot: input.externalRepositoryRoot,
+    baseRevision: input.baseRevision,
+    headRevision: input.headRevision
+  });
+  if (externalRevision.state !== "measured") return externalRevision;
   return Object.freeze({
-    state: "blocked",
-    reason: "dependency_contract_unavailable",
-    blockers: blockers(),
-    preflight: Object.freeze({
-      fixtureId: FIXTURE_MANIFEST.fixtureId,
-      fixtureIdentityState: identity.state,
-      hostConfiguration: Object.freeze({ ...input.hostConfiguration }),
-      blindStatus: input.blindStatus,
-      priorSolutionsVisible: input.priorSolutionsVisible
-    }),
-    evidenceInventory: createEvidenceInventory({ requireSimmons: input.requireSimmons })
+    state: "ready",
+    externalRevision,
+    preflight,
+    evidenceInventory
   });
 }
 

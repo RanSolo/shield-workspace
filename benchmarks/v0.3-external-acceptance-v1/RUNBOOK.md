@@ -7,16 +7,17 @@ Issue #14.
 
 ## Current disposition
 
-The fixture intentionally stops with explicit dependency blockers:
+The fixture prerequisites are dispositioned:
 
-- Issue #24 must have a Coulson-accepted V0.3 product contract.
-- Issue #138 must provide content-addressed fixture identity, external
+- Issue #24 is closed with the accepted V0.3 product contract.
+- Issue #138 is closed with content-addressed fixture identity, external
   installation identity, and evidence/measurement-class hardening.
-- Issue #140 must isolate fixture execution and make rollback interruption-safe.
+- Issue #140 is closed with trusted isolation and interruption-safe rollback.
 
-Do not reinterpret the blocker result as a release failure or manufacture
-substitute evidence. A new fixture revision is required when the manifest-owned
-dependency states change.
+The manifest therefore has no dependency blockers. A literal `ready` result is
+only a closed, measured preflight for the supplied external revision. It is not
+human evidence and grants no package execution, fixture grading, publication,
+merge, deployment, or release authority.
 
 ## Prepare a fresh external repository
 
@@ -69,26 +70,57 @@ The current v1 driver:
 - verifies the trusted fixture identity and release baseline before any
   external repository inspection, package artifact inspection, installation,
   import, or execution;
+- inspects the exact external repository root, adoption base, and current head;
+- requires a canonical clean repository whose frozen base bytes match the
+  template and whose only base-to-head change is `src/greeting.mjs`;
 - records Fitz and optional Simmons as waiting through the returned evidence
   inventory;
 - performs no branch, PR, publication, merge, deployment, or release effect;
-- returns the explicit manifest-owned dependency blockers for the current
-  fixture revision.
+- returns literal `ready` with the measured external revision, fixture/host/blind
+  preflight, and human-evidence inventory.
 
-While those blockers remain, package installation, artifact composition,
-adapter-failure candidate generation, and candidate execution are deferred.
+Preflight does not read, install, import, or execute the package artifact and
+does not mutate either repository. Any invalid or blocked revision result stops
+the run before trusted composition.
 
-After those blockers are dispositioned, execution-capable package composition
-must use the independently pinned launcher entry point
+Execution-capable package composition must use the independently pinned launcher entry point
 `composeExternalArtifact(...)`. It copies the exact external tarball into a
 private disposable root, runs offline `npm install --ignore-scripts` as the
 separate `composition.install` phase, and imports only the three frozen public
 surfaces as `composition.import`. Both phases require the external isolation
 envelope, fresh protected-adapter evidence, bounded process-group supervision,
 one sealed worker copy per invocation, and closed revision-bound receipts.
-Direct composition remains blocked; a
+Before creating the isolation root, the launcher requires the measured tarball
+SHA-256 to equal the package digest pinned by the release baseline and identity
+record. A same-name/version package with different bytes stops with
+`package_artifact_digest_mismatch`. Direct composition remains blocked; a
 missing or uncertain denial proof is isolation `not-observable`, not evidence
 that no effect occurred.
+
+## One disposable unscored run
+
+Run this sequence once, using a newly created repository outside the SHIELD
+workspace and the exact implementation-revision package retained by the
+operator:
+
+1. Create the clean post-install/post-`shield init` adoption base described
+   above, then create one candidate commit changing only `src/greeting.mjs`.
+2. Call `launchExternalFixture(...)` with the external release-baseline path and
+   exact operator input. Require literal `ready` and retain its measured
+   revision, fixture/host/blind preflight, and evidence inventory.
+3. Call `composeExternalArtifact(...)` with the same exact revisions, package
+   path, release baseline, and isolation envelope. Require literal `composed`
+   and retain the artifact digest, installed name/version, and phase list.
+4. Call `gradeExternalFixture(...)` with the same exact revisions and trusted
+   paths. Require literal `passed`, deterministic injected failure, exact
+   restoration, capability-denial evidence, cleanup evidence, and unchanged
+   operator-checkout readback.
+5. Record exact SHIELD and external revisions, package digest, runtime/tool
+   identities, timing and usage where observable, friction, every human
+   intervention, and all returned receipts. Stop.
+
+This is a local disposable run. These calls make no GitHub or Asmark effect and
+cannot authorize Issue #29, publication, merge, deployment, or release.
 
 ## Candidate grading, failure injection, and rollback
 
