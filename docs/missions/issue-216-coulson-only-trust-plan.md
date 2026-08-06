@@ -3,7 +3,7 @@
 ## Mission binding
 
 - Mission: `mission:issue-216-coulson-only-trust`
-- Mission revision: `sha256:TlBM6kktTvl73qZbACfzwmXRlrbNo3DEFj4f0puFBeg`
+- Mission revision: `sha256:7-zmPWVJPe2pGNDs4HG1Av2m00vjsnI69lRlIjXh5v4`
 - Subject: `github:RanSolo/shield-workspace/issue/216`
 - Base: `81b4c393e1a5b98e78ee93e30b8867c7802c910a`
 - Branch: `agent/issue-216-coulson-only-profile`
