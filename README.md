@@ -3,7 +3,7 @@
 **S.H.I.E.L.D. governs autonomous coding agents for enterprise software development.**
 
 This repository is the canonical Nx workspace for the S.H.I.E.L.D. Team System, its portable framework package, and the applications used to prove and refine its workflows.
-
+SHIELD coordinates a governed enterprise software-delivery team—not an autonomous agent swarm. Work moves through accountable seats, explicit artifacts, separation of duties, and human authority.
 ## Projects
 
 * `apps/multiband` — the first proving-ground application for S.H.I.E.L.D. workflows.
