@@ -241,8 +241,7 @@ function safeShieldPath(value: unknown): value is string {
 
 function bindingRefIsSafe(value: unknown): value is string {
   return typeof value === "string" && BINDING_REF.test(value) &&
-    !value.includes("://") && !CREDENTIAL_MARKER.test(value) &&
-    !UNCONFIGURED_BINDING_MARKER.test(value);
+    !value.includes("://") && !CREDENTIAL_MARKER.test(value);
 }
 
 export function getRepositoryTrustProfileV1(profileId: RepositoryTrustProfileId): RepositoryTrustProfileV1 {
@@ -335,6 +334,13 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
           "unsafe_binding_ref",
           `${path}.bindingRef`,
           `${path}.bindingRef must be an opaque credential-free identifier.`,
+        ));
+      } else if (profileId === "coulson_only_platform_review" &&
+          UNCONFIGURED_BINDING_MARKER.test(binding.bindingRef)) {
+        issues.push(issue(
+          "unconfigured_binding_ref",
+          `${path}.bindingRef`,
+          `${path}.bindingRef must be a configured SHIELD signing binding reference.`,
         ));
       }
     }

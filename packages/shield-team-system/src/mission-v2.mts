@@ -1141,6 +1141,51 @@ export type RepositoryMissionAdmission =
     requireSimmons: boolean;
   };
 
+function validateRepositoryMissionAdmission(input: unknown): ContractResult<RepositoryMissionAdmission> {
+  const inconsistent = (...errors: string[]): ContractResult<RepositoryMissionAdmission> =>
+    invalid("repository_mission_profile_inconsistent", ...errors);
+  try {
+    if (!isPlainObject(input)) return inconsistent("Repository mission admission must be a plain object.");
+    const keys = Reflect.ownKeys(input);
+    if (keys.some((key) => typeof key !== "string")) {
+      return inconsistent("Repository mission admission has an unknown field.");
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
+        return inconsistent(`Repository mission admission field ${key} must be an enumerable data field.`);
+      }
+    }
+    const kind = descriptors.kind?.value;
+    const fields = kind === "legacy-supervised"
+      ? ["kind", "requireSimmons"]
+      : kind === "profile-aware"
+        ? ["kind", "profileId", "profileVersion", "requireSimmons"]
+        : null;
+    if (fields === null || keys.length !== fields.length || fields.some((field) => !Object.hasOwn(descriptors, field))) {
+      return inconsistent("Repository mission admission kind or fields are unsupported.");
+    }
+    if (typeof descriptors.requireSimmons.value !== "boolean") {
+      return inconsistent("Repository mission admission requireSimmons must be boolean.");
+    }
+    if (kind === "legacy-supervised") {
+      return valid({ kind, requireSimmons: descriptors.requireSimmons.value });
+    }
+    if (typeof descriptors.profileId.value !== "string" || descriptors.profileVersion.value !== 1) {
+      return inconsistent("Repository mission profile identity is unsupported.");
+    }
+    return valid({
+      kind,
+      profileId: descriptors.profileId.value as MissionProfileId,
+      profileVersion: 1,
+      requireSimmons: descriptors.requireSimmons.value,
+    });
+  } catch {
+    return inconsistent("Repository mission admission could not be inspected safely.");
+  }
+}
+
 function selectRepositoryBindings(
   registry: TrustedBindingRegistry,
   configured: readonly { seatId: string; bindingRef: string }[],
@@ -1164,7 +1209,7 @@ export function deriveRepositoryMissionBindings(
   configInput: unknown,
   registryInput: unknown,
   missionId: string,
-  admission: RepositoryMissionAdmission,
+  admissionInput: unknown,
 ): ContractResult<TrustedHumanBinding[]> {
   const checkedConfig = validateShieldConfig(configInput);
   if (checkedConfig.state === "invalid") {
@@ -1175,6 +1220,9 @@ export function deriveRepositoryMissionBindings(
   let trustProfile;
   try { trustProfile = getRepositoryTrustProfileV1(trustProfileId); }
   catch { return invalid("repository_config_invalid", "Repository trust profile configuration is unsupported."); }
+  const checkedAdmission = validateRepositoryMissionAdmission(admissionInput);
+  if (checkedAdmission.state === "invalid") return checkedAdmission;
+  const admission = checkedAdmission.value;
   let requiredSeats: readonly HumanSeat[];
 
   if (admission.kind === "profile-aware") {

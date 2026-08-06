@@ -68,6 +68,17 @@ test("creates schema 2 and preserves canonical schema-1 parsing and formatting b
   assert.deepEqual(parsed, { state: "valid", value: legacy });
   assert.equal(formatShieldConfig(parsed.value), bytes);
   assert.equal(repositoryTrustProfileId(parsed.value), "signed_human_gates");
+
+  for (const bindingRef of ["placeholder", "github:user:fitz-todo"]) {
+    const compatible = structuredClone(legacy);
+    compatible.trustedHumanBindingRefs[1].bindingRef = bindingRef;
+    assert.equal(validateShieldConfig(compatible).state, "valid");
+    assert.equal(parseShieldConfig(formatShieldConfig(compatible)).state, "valid");
+  }
+
+  const signedHuman = canonicalConfig();
+  signedHuman.trustedHumanBindingRefs[1].bindingRef = "github:user:fitz-todo";
+  assert.equal(validateShieldConfig(signedHuman).state, "valid");
 });
 
 test("enforces both profile binding cardinalities and rejects unconfigured references", () => {

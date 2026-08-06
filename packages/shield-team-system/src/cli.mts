@@ -112,6 +112,16 @@ function semanticJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function semanticLegacyConfigJson(config: ShieldConfigV1): string {
+  return semanticJson({
+    ...config,
+    supportedSeatIds: [...config.supportedSeatIds].sort(),
+    supportedModeIds: [...config.supportedModeIds].sort(),
+    trustedHumanBindingRefs: [...config.trustedHumanBindingRefs]
+      .sort((left, right) => left.seatId.localeCompare(right.seatId) || left.bindingRef.localeCompare(right.bindingRef)),
+  });
+}
+
 async function inspectRoot(rootArgument: string | undefined, writable: boolean): Promise<string> {
   const root = resolve(rootArgument ?? process.cwd());
   let stats;
@@ -291,7 +301,7 @@ async function runInit(args: string[]): Promise<number> {
       }
       const { repositoryTrustProfileId: _profileId, ...common } = config;
       const equivalentLegacy: ShieldConfigV1 = { ...common, schemaVersion: 1 };
-      if (semanticJson(existing.value) !== semanticJson(equivalentLegacy)) {
+      if (semanticLegacyConfigJson(existing.value) !== semanticLegacyConfigJson(equivalentLegacy)) {
         throw new CliError(`Existing schema-1 configuration differs; refusing to overwrite: ${configPath}.`);
       }
       if (starterPipelineId === undefined) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -18,7 +18,9 @@ import {
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   MISSION_130_JOURNAL_DIGEST,
+  replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
+import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
 import { assertPublicationAuthorizationFreshness, readInteractivePasscode } from "../dist/mission-cli.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
@@ -409,7 +411,7 @@ test("packed CLI status and report replay schema 9 without changing journal byte
 });
 
 test("Coulson-only repository admits only consistent standard profile missions and freezes one binding", async () => {
-  const { root, coulson, fitz } = await fixture(false, "coulson_only_platform_review");
+  const { root, coulson, fitz, simmons } = await fixture(false, "coulson_only_platform_review");
   const standard = profileBriefContent("mission:coulson-only-standard", "standard", false);
   await writeFile(join(root, "standard.json"), `${JSON.stringify(standard, null, 2)}\n`);
   const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", "standard.json", "--json"]);
@@ -421,28 +423,63 @@ test("Coulson-only repository admits only consistent standard profile missions a
   assert.equal(entries[0].payload.requirements.some(({ requiredRoleId }) => requiredRoleId === "fitz" || requiredRoleId === "simmons"), false);
 
   const frozenBytes = await readFile(journalPath(root, standard.missionId), "utf8");
-  await writeFile(join(root, "unsolicited-fitz.json"), `${JSON.stringify({
-    payload: {
+  for (const [seat, evidenceKind] of [[fitz, "technical_review"], [simmons, "product_domain_review"]]) {
+    const timestamp = { value: "2026-08-06T00:01:00Z", provenance: "humanRecorded" };
+    const payload = {
       schemaVersion: 1,
-      evidenceId: "evidence:fitz:unsolicited",
-      requirementId: "external:github-review",
+      evidenceId: `evidence:${seat.binding.seatId}:unsolicited`,
+      requirementId: `req:${standard.missionId}:absent:${evidenceKind}`,
       missionId: standard.missionId,
-      revisionId: "external:platform",
-      seatId: "fitz",
-      evidenceKind: "technical_review",
+      revisionId: projection.brief.revisionId,
+      seatId: seat.binding.seatId,
+      evidenceKind,
       decision: "approved",
-      humanPrincipalId: fitz.binding.humanPrincipalId,
-      bindingId: fitz.binding.bindingId,
-      signingKeyRef: fitz.binding.signingKeyRef,
-      sourceRef: "github:review:external",
-      timestamp: { value: "2026-08-06T00:01:00Z", provenance: "humanRecorded" },
-      journalSequence: 1,
-    },
-    signatureBase64: "not-admitted",
-  })}\n`);
-  const unsolicited = run(root, ["evidence", "record", "--mission-id", standard.missionId, "--evidence", "unsolicited-fitz.json", "--json"]);
-  assert.equal(unsolicited.status, 1);
-  assert.equal(await readFile(journalPath(root, standard.missionId), "utf8"), frozenBytes);
+      humanPrincipalId: seat.binding.humanPrincipalId,
+      bindingId: seat.binding.bindingId,
+      signingKeyRef: seat.binding.signingKeyRef,
+      sourceRef: `fixture-signature:${seat.binding.seatId}:unsolicited`,
+      timestamp,
+      journalSequence: projection.lastSequence + 1,
+    };
+    const envelope = {
+      payload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(payload)), seat.privateKey).toString("base64"),
+    };
+    assert.equal(verify(
+      null,
+      Buffer.from(canonicalJson(payload)),
+      createPublicKey({ key: Buffer.from(seat.binding.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }),
+      Buffer.from(envelope.signatureBase64, "base64"),
+    ), true);
+    const candidate = {
+      schemaVersion: 9,
+      entryId: `entry:${standard.missionId}:${projection.lastSequence + 1}`,
+      missionId: standard.missionId,
+      sequence: projection.lastSequence + 1,
+      type: "evidence.recorded",
+      timestamp,
+      payload: { evidence: envelope },
+    };
+    assert.equal(projection.requirements.some(({ evidenceKind: kind }) => kind === evidenceKind), false);
+    assert.equal(candidate.sequence, 1);
+    assert.equal(candidate.payload.evidence.payload.journalSequence, candidate.sequence);
+    const replayRejected = replayProfileAwareMissionJournal([...entries, candidate]);
+    assert.equal(replayRejected.state, "invalid");
+    assert.equal(replayRejected.code, "duplicate_evidence");
+    assert.match(replayRejected.errors.join(" "), /duplicate or ambiguous/u);
+    const appendRejected = await appendProfileAwareMissionEntryV1({
+      repositoryRoot: root,
+      configuredJournalPath: ".shield/journals",
+      missionId: standard.missionId,
+      entry: candidate,
+    });
+    assert.equal(appendRejected.state, "invalid");
+    assert.equal(appendRejected.code, "duplicate_evidence");
+    assert.equal(await readFile(journalPath(root, standard.missionId), "utf8"), frozenBytes);
+    const unchanged = JSON.parse(run(root, ["mission", "status", "--mission-id", standard.missionId, "--json"]).stdout);
+    assert.equal(unchanged.requirements.some(({ requiredRoleId }) => requiredRoleId === seat.binding.seatId), false);
+    assert.equal(unchanged.evidence.some(({ seatId }) => seatId === seat.binding.seatId), false);
+  }
 
   const signedConfig = createShieldConfig({
     repositoryId: "RanSolo/fixture",

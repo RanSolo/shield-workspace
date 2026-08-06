@@ -291,6 +291,44 @@ test("repository binding selectors validate unknown config and registry before s
   }
 });
 
+test("repository mission admission is a closed runtime union before binding selection", () => {
+  const { brief, coulson, fitz } = fixture();
+  const registry = { schemaVersion: 1, bindings: [coulson.binding, fitz.binding] };
+  const signed = createShieldConfig({
+    repositoryId: "RanSolo/shield-workspace",
+    coulsonBindingRef: coulson.binding.signingKeyRef,
+    fitzBindingRef: fitz.binding.signingKeyRef,
+  });
+  const accessor = { kind: "legacy-supervised", requireSimmons: false };
+  Object.defineProperty(accessor, "requireSimmons", { enumerable: true, get() { throw new Error("must not run"); } });
+  const hostile = new Proxy({}, { getPrototypeOf() { throw new Error("must not escape"); } });
+  const inherited = Object.assign(Object.create({ kind: "legacy-supervised" }), { requireSimmons: false });
+  const malformedAdmissions = [
+    null,
+    "legacy-supervised",
+    [],
+    {},
+    inherited,
+    accessor,
+    hostile,
+    { kind: "unknown", requireSimmons: false },
+    { kind: "legacy-supervised", requireSimmons: "false" },
+    { kind: "legacy-supervised", requireSimmons: false, profileId: "standard" },
+    { kind: "profile-aware", profileId: "standard", profileVersion: "1", requireSimmons: false },
+    { kind: "profile-aware", profileId: 1, profileVersion: 1, requireSimmons: false },
+    { kind: "profile-aware", profileId: "standard", profileVersion: 1, requireSimmons: false, extra: true },
+  ];
+
+  for (const admission of malformedAdmissions) {
+    let result;
+    assert.doesNotThrow(() => {
+      result = deriveRepositoryMissionBindings(signed, registry, brief.missionId, admission);
+    });
+    assert.equal(result.state, "invalid");
+    assert.equal(result.code, "repository_mission_profile_inconsistent");
+  }
+});
+
 test("approval and no-effect steps keep execution separate from human acceptance readiness", () => {
   const fixtureData = fixture();
   const { entries, coulson, fitz } = fixtureData;

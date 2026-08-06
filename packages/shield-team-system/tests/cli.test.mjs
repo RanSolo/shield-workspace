@@ -97,7 +97,7 @@ test("init defaults to signed human gates and rejects invalid profile arguments 
     [["init", "--repository-id", "RanSolo/fixture", "--repository-trust-profile", "coulson_only_platform_review"], /coulson-binding-ref/iu],
     [[...initArgs, "--repository-trust-profile", "coulson_only_platform_review"], /rejects --fitz-binding-ref/iu],
     [["init", "--repository-id", "RanSolo/fixture", "--repository-trust-profile", "hostile", "--coulson-binding-ref", "ed25519:sha256:coulson"], /unsupported repository trust profile/iu],
-    [["init", "--repository-id", "RanSolo/fixture", "--repository-trust-profile", "coulson_only_platform_review", "--coulson-binding-ref", "placeholder"], /opaque credential-free identifier/iu],
+    [["init", "--repository-id", "RanSolo/fixture", "--repository-trust-profile", "coulson_only_platform_review", "--coulson-binding-ref", "placeholder"], /configured SHIELD signing binding reference/iu],
   ];
   for (const [args, message] of cases) {
     const root = await fixture();
@@ -134,9 +134,9 @@ test("legacy equivalent re-init preserves bytes while divergence and Coulson-onl
       artifacts: legacy.paths.artifacts,
       journals: legacy.paths.journals,
     },
-    trustedHumanBindingRefs: legacy.trustedHumanBindingRefs.map(({ seatId, bindingRef }) => ({ bindingRef, seatId })),
-    supportedModeIds: legacy.supportedModeIds,
-    supportedSeatIds: legacy.supportedSeatIds,
+    trustedHumanBindingRefs: [...legacy.trustedHumanBindingRefs].reverse().map(({ seatId, bindingRef }) => ({ bindingRef, seatId })),
+    supportedModeIds: [...legacy.supportedModeIds].reverse(),
+    supportedSeatIds: [...legacy.supportedSeatIds].reverse(),
     adapterId: legacy.adapterId,
     repositoryId: legacy.repositoryId,
     schemaVersion: legacy.schemaVersion,
@@ -147,6 +147,24 @@ test("legacy equivalent re-init preserves bytes while divergence and Coulson-onl
   assert.equal(reorderedNoOp.status, 0, reorderedNoOp.stderr);
   assert.equal(await readFile(join(reordered, ".shield", "config.json"), "utf8"), reorderedBytes);
   assert.deepEqual(await readdir(join(reordered, ".shield")), ["config.json"]);
+
+  const legacyPlaceholders = await fixture();
+  await mkdir(join(legacyPlaceholders, ".shield"));
+  const compatibleLegacy = structuredClone(legacy);
+  compatibleLegacy.trustedHumanBindingRefs = [
+    { seatId: "coulson", bindingRef: "placeholder" },
+    { seatId: "fitz", bindingRef: "github:user:fitz-todo" },
+  ];
+  const compatibleBytes = `${JSON.stringify(compatibleLegacy, null, 3)}\n`;
+  await writeFile(join(legacyPlaceholders, ".shield", "config.json"), compatibleBytes);
+  const compatibleNoOp = run([
+    "init", "--repository-id", "RanSolo/fixture",
+    "--coulson-binding-ref", "placeholder",
+    "--fitz-binding-ref", "github:user:fitz-todo",
+  ], legacyPlaceholders);
+  assert.equal(compatibleNoOp.status, 0, compatibleNoOp.stderr);
+  assert.equal(await readFile(join(legacyPlaceholders, ".shield", "config.json"), "utf8"), compatibleBytes);
+  assert.deepEqual(await readdir(join(legacyPlaceholders, ".shield")), ["config.json"]);
 
   const before = await readFile(join(equivalent, ".shield", "config.json"), "utf8");
   const divergent = run([...initArgs.slice(0, -1), "github:user:different-fitz"], equivalent);
