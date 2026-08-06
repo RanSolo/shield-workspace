@@ -29,10 +29,11 @@ smuggle additional writes.
 
 `MayPlannedToolOperationsV1` becomes a bounded ordered tuple containing:
 
-1. between one and seven `writeFile` operations;
+1. between one and three `writeFile` operations;
 2. exactly one final `runValidation` operation.
 
-The total remains within the existing eight-call control-loop ceiling. Every
+The four-effect maximum plus one final no-tool response remains within the
+existing eight-round and eight-call control-loop ceilings. Every
 write path must be distinct. Normalization rejects sparse, proxy-backed,
 accessor-backed, over-limit, duplicate-path, validation-first,
 validation-middle, and multiple-validation sequences. The existing
@@ -48,13 +49,19 @@ Derive the signed authority expectation from the complete normalized sequence:
 - relative paths are the exact distinct write paths;
 - action IDs, effect classes, and capabilities remain the unique canonical
   write and validation values;
-- effect keys are the outer mission-cycle effect key plus every ordered
-  operation effect key;
+- effect keys are the outer mission-cycle effect key plus every operation
+  effect key and, for multi-write packets only, one domain-separated packet
+  sequence effect key derived from the full normalized operation digest;
 - validation command IDs contain exactly the final validation command.
 
 Set comparison remains canonical where the authority contract represents a
-set. The ordered operation array, ordered operation-effect-key array, packet
-digest, dispatch envelope, prompt, and provenance preserve execution order.
+set. The multi-write sequence effect key binds order and every full
+precondition, including `regularFileIdentity`, even though the existing
+per-write effect key intentionally retains its legacy shape. The ordered
+operation array, ordered operation-effect-key array, packet digest, dispatch
+envelope, claim bytes, prompt, provenance, and terminal receipt evidence all
+preserve that sequence binding. A legacy one-write packet receives no new key
+and retains its current authority shape.
 
 ### Pre-effect order enforcement
 
@@ -84,10 +91,13 @@ Successful completion requires:
 - the existing one completed outer mission-cycle effect and completed dispatch
   receipt.
 
-The first failed or uncertain operation stops the remaining sequence. Any
-already completed writes remain represented by durable per-call audit and
-control events. The claimed packet remains nonterminal and replay fails closed
-to recovery rather than repeating effects. Automatic rollback is not added;
+The first failed or uncertain operation stops the remaining sequence. The
+durable completed prefix contains only operations whose result audit record and
+control event both read back successfully. If either post-effect record is
+uncertain, the current operation is also uncertain and the durable packet claim
+is the recovery anchor. A claimed partial packet remains nonterminal and every
+later invocation fails closed to `recovery_required` before model or executor
+invocation, with zero repeated effects. Automatic rollback is not added;
 validation remains non-mutating and the existing recovery boundary remains in
 force.
 
@@ -113,19 +123,25 @@ Planning artifacts are immutable during implementation.
 
 ## Required tests
 
-- normalization accepts the legacy pair and a seven-write maximum packet;
-- malformed ordering, zero writes, eight writes, duplicate paths, duplicate
+- normalization accepts the legacy pair and a three-write maximum packet;
+- malformed ordering, zero writes, four writes, duplicate paths, duplicate
   effect identities, and extra validations fail closed;
 - executor/control loop completes three ordered writes then one validation;
 - reordered, omitted, repeated, or substituted calls stop before the
   mismatched effect;
-- a mid-sequence failure stops later calls and leaves durable completed-prefix
-  evidence without a successful outer effect;
-- governed authority binds every exact path and operation effect key;
+- a mid-sequence failure stops later calls and leaves only the proven durable
+  completed-prefix evidence without a successful outer effect;
+- governed authority binds every exact path, operation effect key, and the
+  multi-write sequence effect key;
+- reordered operations or a changed `regularFileIdentity` fail authority
+  binding even when paths, content, and file digests otherwise match;
 - preflight, Helicarrier envelope, claim, per-call permission narrowing,
   control events, audit records, journal effect, and terminal receipt read back
   exactly for a three-file disposable-repository integration;
 - a second invocation replays a completed packet without repeating writes;
+- a second invocation after mid-sequence failure or post-effect audit/control
+  uncertainty returns recovery before model/executor invocation and repeats no
+  effect;
 - existing one-write composition and hostile-input suites remain passing.
 
 ## Validation

@@ -13,13 +13,17 @@ change. Preserve the existing tool vocabulary and outer mission-cycle model.
 
 ## Acceptance checklist
 
-- 1–7 distinct ordered writes followed by one final validation.
+- 1–3 distinct ordered writes followed by one final validation.
 - Legacy one-write packets preserve their meaning.
-- Every operation retains exact effect-key and precondition binding.
+- Every operation retains exact effect-key and precondition binding; a
+  multi-write sequence key binds the complete ordered operation digest and full
+  preconditions while legacy one-write authority remains unchanged.
 - Sequence mismatch is rejected before the mismatched effect.
 - Success proves every per-call audit/control record plus one outer effect and
   one completed receipt.
-- Partial progress cannot be reported completed or replayed as fresh work.
+- Partial progress cannot be reported completed or replayed as fresh work;
+  post-effect evidence uncertainty uses the durable claim as its recovery
+  anchor and repeats no effect.
 - No new tool, authority class, schema, shell execution path, or automatic
   rollback.
 
