@@ -4,6 +4,7 @@ export {
   deliverGitHubCommunication,
 } from "../github/adapter-v1.mjs";
 export {
+  prepareGovernedDeliveryWorkspaceForDispatch,
   prepareDeliveryWorkspaceForDispatch,
   renderMissionHandoff,
 } from "../github/delivery-workspace.mjs";
