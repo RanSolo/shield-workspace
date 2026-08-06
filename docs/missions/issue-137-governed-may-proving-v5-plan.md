@@ -34,8 +34,11 @@ Required behavior:
 - recorded evidence accepts exactly `measured | derived | estimated |
   not-observable`;
 - pending evidence retains literal `measurementClass: null`;
-- operator-recorded evidence cannot claim `measured` without exact existing
-  dispatch attribution;
+- an operator-recorded definition whose preserved default is
+  `not-observable` cannot claim `measured` without exact existing dispatch
+  attribution; all other definitions retain their existing attribution rule;
+- one shared effective-attribution decision is used by both close and grade
+  paths so they cannot disagree about whether attribution is required;
 - human evidence remains human-only and cannot be satisfied through runtime
   attribution;
 - measurement class never grants authority, readiness, or a human gate;
@@ -46,14 +49,29 @@ Required behavior:
 Before May receives the packet, Hill must establish all of the following at the
 same exact current head:
 
-- signed schema-9 mission authorization;
+- signed schema-9 mission authorization at revision
+  `sha256:9dlJSjfWYJhFUqDi7C1l0swPYLTmGiU7h1QTwP9hlSQ`;
 - signed active Wheels Up authority for the three paths and validation effects;
-- one active May runtime binding;
+- one active May runtime binding with distinct identities:
+  `model:openai-gpt-5.6-sol`, `runtime:codex-hosted`, and
+  `executor:codex-workspace`;
 - schema-9 review-publication authorization and queued draft-PR request;
 - verified draft-PR readback for this branch and blueprint;
 - independently attributed Fury approval of this exact plan/blueprint revision;
 - a literal `dispatch_ready` result from
   `prepareGovernedDeliveryWorkspaceForDispatch` after its post-await readbacks.
+
+The complete dispatch tuple is exact-bound to repository
+`RanSolo/shield-workspace`, canonical writable root
+`/private/tmp/shield-137-v5.jPGksg/worktree`, base branch `main`, mission branch
+`agent/issue-137-governed-may-proving-v5`, the reviewed planning HEAD, and
+evaluated journal sequence `5`: sequence 0 mission begin, 1 authorization, 2
+Wheels Up, 3 May binding, 4 review-publication authorization, and 5 queued
+publication request. Mission authorization, implementation authority, May
+binding, publication authority/request, Fury evidence, PR readback, and the
+final projection must all equal that tuple. Any extra journal transition before
+dispatch requires a new exact sequence binding and Fury re-review; it is not
+silently accepted.
 
 Missing, stale, malformed, ambiguous, substituted, or drifting evidence stops
 before May. Conversational approval and caller booleans are not substitutes.
@@ -69,6 +87,17 @@ May must run:
 4. `git diff --check`;
 5. exact three-path delta and fixture-identity field checks.
 
+Delta endpoints are closed:
+
+- reviewed planning HEAD to implementation HEAD contains exactly the three
+  implementation paths listed above;
+- `602b97c5253466d4936fc64817c06ece2769b2d2` to implementation HEAD contains
+  exactly those three paths plus this v5 brief, plan, and blueprint;
+- `fixture-identity-v1.json` changes only
+  `coveredArtifacts.evidence-inventory.digest`, and `fixture.test.mjs` changes
+  only the bounded correction tests plus the corresponding independently pinned
+  fixture-identity baseline.
+
 Mack independently validates the exact implementation revision. Fury then
 performs exact-revision conformance review.
 
@@ -77,4 +106,3 @@ performs exact-revision conformance review.
 No external fresh-repository fixture run, #29, generalized runner, CLI or
 journal-schema change, extra implementation path, fabricated human evidence,
 merge, deploy, release, or final acceptance.
-
