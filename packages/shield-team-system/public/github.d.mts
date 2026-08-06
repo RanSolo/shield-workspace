@@ -329,6 +329,36 @@ export function prepareDeliveryWorkspaceForDispatch(
   },
 ): DeliveryWorkspaceResult;
 
+export interface GovernedDeliveryWorkspaceInputV1 {
+  artifactRevisionId: string;
+  workspacePlan: DeliveryWorkspacePlan;
+  body: string;
+  missionId: string;
+  subjectId: string;
+  blueprintArtifact: BlueprintArtifactAssertionV1;
+  planGateCandidate: FuryPlanReviewEvidenceCandidateV1 | null;
+  publicationRequestId: string;
+  publicationCandidateId: string;
+  publicationSourceRef: string;
+  publicationCapturedAt: AdapterTimestamp;
+  repositoryRoot: string;
+  configuredJournalPath: string;
+  missionRevisionId: string;
+  evaluatedThroughSequence: number;
+}
+
+export function prepareGovernedDeliveryWorkspaceForDispatch(
+  input: GovernedDeliveryWorkspaceInputV1,
+  options: {
+    loadJournal: () => unknown[];
+    loadFuryPlanReviewEvidence: () => unknown;
+    loadFuryDispatchReceiptEntries: () => unknown;
+    run?: CommandRunner;
+    cwd?: string;
+    realpath?: (path: string) => string;
+  },
+): Promise<DeliveryWorkspaceResult>;
+
 export function evaluateFuryPlanGateV1(
   planGate: unknown,
   expected: unknown,

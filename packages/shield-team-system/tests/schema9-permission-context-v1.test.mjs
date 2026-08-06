@@ -979,6 +979,40 @@ test("fresh calls produce distinct attestations while preserving zero duration",
   assert.notEqual(first.context.attestations[3].attestationId, second.context.attestations[3].attestationId);
 });
 
+test("schema9 permission context preserves running-state compatibility", async () => {
+  const repositoryRoot = await createGitRepository();
+  const fixture = createProfileAwareFixture({ writableRoot: repositoryRoot });
+  const sequence = fixture.projection.lastSequence + 1;
+  fixture.entries.push({
+    schemaVersion: 9,
+    entryId: `entry:${fixture.profile.missionId}:${sequence}`,
+    missionId: fixture.profile.missionId,
+    sequence,
+    type: "execution.transition",
+    timestamp: { value: "2026-07-29T16:00:00Z", provenance: "hostTrusted" },
+    payload: { from: "not-started", to: "running" },
+  });
+  const runningProjection = replay(fixture.entries);
+  await writeJournal(repositoryRoot, fixture.profile.missionId, fixture.entries);
+
+  const result = await loadSchema9PermissionContextV1(makePermissionInput({
+    repositoryRoot,
+    missionId: fixture.profile.missionId,
+    expectedDecisionId: "decision:schema9:running-compatible",
+    plan: permissionPlanFromProjection(runningProjection),
+    hostOps: makeGitHostOps({
+      repositoryRoot,
+      topLevel: repositoryRoot,
+      headFactory: () => FIXED_HEAD_REVISION,
+      probeCapability: async () => true,
+    }),
+  }));
+
+  assert.equal(result.state, "ready");
+  assert.equal(result.context.evaluatedThroughSequence, sequence);
+  assert.equal(result.context.activeBindings[0].lifecycleState, "active");
+});
+
 test("accessor-backed and throwing loader inputs fail closed before host operations", async () => {
   let getterCalls = 0;
   const missionId = "mission:schema9:hostile-input";

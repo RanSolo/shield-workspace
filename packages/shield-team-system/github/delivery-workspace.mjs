@@ -1,4 +1,5 @@
 import { canDispatchSpecialists } from "../contracts/mission-policy.mjs";
+import { isProxy } from "node:util/types";
 import {
   isFuryPlanGateArtifactPath,
 } from "../contracts/fury-plan-gate-v1.mjs";
@@ -6,12 +7,14 @@ import {
   evaluateFuryPlanReviewEvidenceV1,
   normalizeFuryPlanReviewEvidenceCandidateV1,
 } from "../dist/fury-plan-review-evidence-v1.mjs";
+import { canonicalJson } from "../dist/mission-v2.mjs";
+import { loadSchema9SeatDispatchProjectionV1 } from "../dist/schema9-seat-dispatch-projection-v1.mjs";
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
 import {
   createGitHubPublicationResultCandidate,
   validateGitHubPublicationResultIdentity,
 } from "./adapter-v1.mjs";
-import { createOrUpdatePR, validatePRWorkspaceReceipt } from "./pr-workspace.mjs";
+import { createOrUpdatePR, defaultRun, validatePRWorkspaceReceipt } from "./pr-workspace.mjs";
 import { resolveJournaledPublicationRequest } from "./publication-gate.mjs";
 
 const SEAT_NAMES = Object.freeze({
@@ -74,6 +77,17 @@ const WORKSPACE_PLAN_FIELDS = Object.freeze([
 ]);
 const BLUEPRINT_FIELDS = Object.freeze([
   "artifactId", "artifactPath", "artifactKind", "owningSeatId",
+]);
+const GOVERNED_DELIVERY_INPUT_FIELDS = Object.freeze([
+  "artifactRevisionId", "workspacePlan", "body", "missionId", "subjectId",
+  "blueprintArtifact", "planGateCandidate", "publicationRequestId",
+  "publicationCandidateId", "publicationSourceRef", "publicationCapturedAt",
+  "repositoryRoot", "configuredJournalPath", "missionRevisionId",
+  "evaluatedThroughSequence",
+]);
+const GOVERNED_OPTION_FIELDS = new Set([
+  "loadJournal", "loadFuryPlanReviewEvidence", "loadFuryDispatchReceiptEntries",
+  "run", "cwd", "realpath",
 ]);
 
 function blocked(reason, commands = []) {
@@ -172,6 +186,229 @@ function normalizeDeliveryInput(input) {
   } catch {
     return { state: "invalid", reason: "delivery_workspace_input_required" };
   }
+}
+
+function governedDataRecord(value, fields) {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value) ||
+        isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== fields.length || keys.some((key) => typeof key !== "string") ||
+        fields.some((field) => !keys.includes(field)) || keys.some((key) => !fields.includes(key))) return null;
+    const output = {};
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || descriptor.get || descriptor.set || !descriptor.enumerable) return null;
+      output[field] = descriptor.value;
+    }
+    return output;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeGovernedDeliveryInput(input) {
+  const outer = governedDataRecord(input, GOVERNED_DELIVERY_INPUT_FIELDS);
+  if (outer === null) return { state: "invalid", reason: "governed_delivery_workspace_input_required" };
+  const workspacePlan = governedDataRecord(outer.workspacePlan, WORKSPACE_PLAN_FIELDS);
+  if (workspacePlan === null) return { state: "invalid", reason: "invalid_workspace_plan" };
+  const blueprintArtifact = governedDataRecord(outer.blueprintArtifact, BLUEPRINT_FIELDS);
+  if (blueprintArtifact === null) return { state: "invalid", reason: "invalid_blueprint_artifact" };
+  const publicationCapturedAt = governedDataRecord(outer.publicationCapturedAt, ["value", "provenance"]);
+  if (publicationCapturedAt === null) return { state: "invalid", reason: "invalid_publication_candidate" };
+  if (typeof outer.repositoryRoot !== "string" || outer.repositoryRoot.trim().length === 0 ||
+      typeof outer.configuredJournalPath !== "string" || outer.configuredJournalPath.trim().length === 0 ||
+      !gateIdentifier(outer.missionRevisionId) || !Number.isSafeInteger(outer.evaluatedThroughSequence) ||
+      outer.evaluatedThroughSequence < 0) {
+    return { state: "invalid", reason: "invalid_schema9_projection_binding" };
+  }
+  const legacy = normalizeDeliveryInput({
+    missionState: "derived_from_schema9",
+    approvalSource: "derived_from_schema9",
+    artifactRevisionId: outer.artifactRevisionId,
+    workspacePlan,
+    body: outer.body,
+    missionId: outer.missionId,
+    subjectId: outer.subjectId,
+    blueprintArtifact,
+    planGateCandidate: outer.planGateCandidate,
+    publicationRequestId: outer.publicationRequestId,
+    publicationCandidateId: outer.publicationCandidateId,
+    publicationSourceRef: outer.publicationSourceRef,
+    publicationCapturedAt,
+  });
+  if (legacy.state !== "valid") return legacy;
+  return {
+    state: "valid",
+    input: Object.freeze({
+      ...legacy.input,
+      repositoryRoot: outer.repositoryRoot.trim(),
+      configuredJournalPath: outer.configuredJournalPath.trim(),
+      missionRevisionId: outer.missionRevisionId,
+      evaluatedThroughSequence: outer.evaluatedThroughSequence,
+    }),
+  };
+}
+
+function snapshotGovernedOptions(options) {
+  try {
+    if (options === null || typeof options !== "object" || Array.isArray(options) ||
+        isProxy(options) || Object.getPrototypeOf(options) !== Object.prototype) return null;
+    const keys = Reflect.ownKeys(options);
+    if (keys.some((key) => typeof key !== "string" || !GOVERNED_OPTION_FIELDS.has(key))) return null;
+    const snapshot = {};
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(options, key);
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || descriptor.get || descriptor.set || !descriptor.enumerable) return null;
+      snapshot[key] = descriptor.value;
+    }
+    if (typeof snapshot.loadJournal !== "function" ||
+        typeof snapshot.loadFuryPlanReviewEvidence !== "function" ||
+        typeof snapshot.loadFuryDispatchReceiptEntries !== "function" ||
+        (snapshot.run !== undefined && typeof snapshot.run !== "function") ||
+        (snapshot.realpath !== undefined && typeof snapshot.realpath !== "function") ||
+        (snapshot.cwd !== undefined && typeof snapshot.cwd !== "string")) return null;
+    return Object.freeze(snapshot);
+  } catch {
+    return null;
+  }
+}
+
+function loadFuryInputs(options) {
+  try {
+    return {
+      reviewEvidence: options.loadFuryPlanReviewEvidence(),
+      receiptEntries: options.loadFuryDispatchReceiptEntries(),
+    };
+  } catch {
+    return { reviewEvidence: undefined, receiptEntries: undefined };
+  }
+}
+
+function furyExpectedBinding(snapshot, publication, receipt) {
+  return {
+    schemaVersion: 1,
+    missionId: snapshot.missionId,
+    missionRevisionId: publication.request.revisionId,
+    subjectId: snapshot.subjectId,
+    repositoryId: `${receipt.repositoryOwner}/${receipt.repositoryName}`,
+    baseBranch: receipt.baseBranch,
+    branch: receipt.branchSlug,
+    prNumber: receipt.prNumber,
+    blueprintArtifactId: snapshot.blueprintArtifact.artifactId,
+    blueprintArtifactPath: snapshot.blueprintArtifact.artifactPath,
+    blueprintArtifactKind: snapshot.blueprintArtifact.artifactKind,
+    blueprintOwningSeatId: snapshot.blueprintArtifact.owningSeatId,
+    artifactRevisionId: receipt.artifactRevisionId,
+    repositoryRevisionId: receipt.artifactRevisionId,
+  };
+}
+
+function evaluateFurySnapshot(snapshot, publication, receipt, options) {
+  const fury = loadFuryInputs(options);
+  return evaluateFuryPlanReviewEvidenceV1(
+    snapshot.planGateCandidate,
+    fury.reviewEvidence,
+    fury.receiptEntries,
+    furyExpectedBinding(snapshot, publication, receipt),
+  );
+}
+
+function runReadOnly(run, commands, executable, args, options) {
+  let result;
+  try {
+    result = run(executable, args, options);
+  } catch (error) {
+    result = { exitCode: -1, stdout: "", stderr: String(error?.message ?? error) };
+  }
+  if (!result || typeof result !== "object" || !Number.isInteger(result.exitCode) ||
+      typeof result.stdout !== "string" || typeof result.stderr !== "string") {
+    result = { exitCode: -1, stdout: "", stderr: "Runner returned an invalid result." };
+  }
+  commands.push({ executable, args: [...args], exitCode: result.exitCode });
+  return result;
+}
+
+function readCurrentDraftPRReceipt(snapshot, expectedReceipt, options, commands) {
+  const run = options.run ?? defaultRun;
+  const result = runReadOnly(
+    run,
+    commands,
+    "gh",
+    [
+      "pr", "list", "--repo", `${snapshot.workspacePlan.repositoryOwner}/${snapshot.workspacePlan.repositoryName}`,
+      "--head", snapshot.workspacePlan.branchSlug, "--state", "all",
+      "--json", "number,title,url,isDraft,state,headRefName,headRefOid,baseRefName",
+    ],
+    { cwd: options.cwd },
+  );
+  if (result.exitCode !== 0) return { state: "invalid", reason: "final_pr_read_failed" };
+  let values;
+  try {
+    values = JSON.parse(result.stdout);
+  } catch {
+    return { state: "invalid", reason: "final_pr_read_invalid_json" };
+  }
+  if (!Array.isArray(values) || values.length !== 1) return { state: "invalid", reason: "final_pr_read_ambiguous" };
+  const value = values[0];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { state: "invalid", reason: "final_pr_read_invalid" };
+  const receipt = validatePRWorkspaceReceipt({
+    schemaVersion: 1,
+    repositoryOwner: snapshot.workspacePlan.repositoryOwner,
+    repositoryName: snapshot.workspacePlan.repositoryName,
+    baseBranch: value.baseRefName,
+    branchSlug: value.headRefName,
+    artifactRevisionId: value.headRefOid,
+    prNumber: value.number,
+    prUrl: value.url,
+    state: value.state,
+    isDraft: value.isDraft,
+  }, {
+    repositoryOwner: expectedReceipt.repositoryOwner,
+    repositoryName: expectedReceipt.repositoryName,
+    baseBranch: expectedReceipt.baseBranch,
+    branchSlug: expectedReceipt.branchSlug,
+    artifactRevisionId: expectedReceipt.artifactRevisionId,
+    prNumber: expectedReceipt.prNumber,
+  });
+  return receipt.state === "valid" ? receipt : { state: "invalid", reason: `final_${receipt.reason}` };
+}
+
+function publicationMatchesProjection(snapshot, publication, receipt, projection) {
+  const authority = projection.implementationAuthority.authority;
+  const binding = projection.mayRuntimeBinding.binding;
+  return projection.purpose === "specialist_dispatch" &&
+    projection.missionAuthorization.state === "authorized" &&
+    projection.profile.executionReadiness === "ready" &&
+    projection.lifecycle.execution === "not-started" &&
+    projection.authorityPath === "explicit_wheels_up" &&
+    projection.materialGateDisposition === "not_applicable_explicit_authority" &&
+    projection.missionId === snapshot.missionId &&
+    projection.subjectId === snapshot.subjectId &&
+    projection.missionRevisionId === snapshot.missionRevisionId &&
+    projection.artifactRevisionId === snapshot.artifactRevisionId &&
+    projection.evaluatedThroughSequence === snapshot.evaluatedThroughSequence &&
+    publication.evaluatedThroughSequence === projection.evaluatedThroughSequence &&
+    publication.request.missionId === projection.missionId &&
+    publication.request.subjectId === projection.subjectId &&
+    publication.request.revisionId === projection.missionRevisionId &&
+    publication.request.artifactRevisionId === projection.artifactRevisionId &&
+    publication.authority.missionId === projection.missionId &&
+    publication.authority.subjectId === projection.subjectId &&
+    publication.authority.missionRevisionId === projection.missionRevisionId &&
+    publication.authority.repositoryId === authority.repositoryId &&
+    publication.authority.canonicalRepositoryRoot === authority.canonicalWritableRoot &&
+    publication.authority.branch === authority.branch &&
+    publication.authority.baseRevisionId === authority.baseRevision &&
+    publication.authority.headRevisionId === authority.headRevision &&
+    authority.repositoryId === `${receipt.repositoryOwner}/${receipt.repositoryName}` &&
+    authority.canonicalWritableRoot === projection.repositoryObservations[1].canonicalRoot &&
+    authority.branch === receipt.branchSlug &&
+    authority.headRevision === receipt.artifactRevisionId &&
+    binding.binding.repositoryId === authority.repositoryId &&
+    binding.binding.canonicalWritableRoot === authority.canonicalWritableRoot &&
+    binding.binding.branch === authority.branch &&
+    binding.binding.artifactRevisionId === authority.artifactRevisionId;
 }
 
 /**
@@ -317,6 +554,167 @@ export function prepareDeliveryWorkspaceForDispatch(input, options = {}) {
     planGateEvaluation,
     commands: published.commands,
   };
+}
+
+/**
+ * Adds governed specialist dispatch composition without changing the legacy
+ * synchronous workspace API. Publication remains early; schema-9 authority is
+ * loaded only after independently attributed Fury evidence is eligible.
+ */
+export async function prepareGovernedDeliveryWorkspaceForDispatch(input, options = {}) {
+  const normalized = normalizeGovernedDeliveryInput(input);
+  if (normalized.state !== "valid") return blocked(normalized.reason);
+  const trusted = snapshotGovernedOptions(options);
+  if (trusted === null) return blocked("governed_delivery_workspace_options_invalid");
+  const snapshot = normalized.input;
+
+  const publication = resolveJournaledPublicationRequest(
+    snapshot.publicationRequestId,
+    { loadJournal: trusted.loadJournal },
+  );
+  if (publication.state !== "allowed") return blocked(publication.reason);
+  const publicationIdentity = {
+    candidateId: snapshot.publicationCandidateId,
+    sourceRef: snapshot.publicationSourceRef,
+    capturedAt: snapshot.publicationCapturedAt,
+  };
+  const identity = validateGitHubPublicationResultIdentity(publication, publicationIdentity);
+  if (identity.state !== "valid") return blocked(identity.reason);
+  if (publication.request.missionId !== snapshot.missionId ||
+      publication.request.subjectId !== snapshot.subjectId ||
+      publication.request.revisionId !== snapshot.missionRevisionId ||
+      publication.request.artifactRevisionId !== snapshot.artifactRevisionId ||
+      publication.authority.repositoryId !== `${snapshot.workspacePlan.repositoryOwner}/${snapshot.workspacePlan.repositoryName}` ||
+      publication.authority.canonicalRepositoryRoot !== snapshot.repositoryRoot ||
+      publication.authority.branch !== snapshot.workspacePlan.branchSlug) {
+    return blocked("publication_binding_mismatch");
+  }
+
+  const published = createOrUpdatePR(snapshot.workspacePlan, {
+    run: trusted.run,
+    cwd: trusted.cwd,
+    body: snapshot.body,
+    publicationRequestId: snapshot.publicationRequestId,
+    loadJournal: trusted.loadJournal,
+    realpath: trusted.realpath,
+  });
+  if (published.state !== "success" && published.state !== "reused") {
+    if (!published.publicationScope) return blocked(published.reason, published.commands);
+    const failedCandidate = createGitHubPublicationResultCandidate(
+      publication.request,
+      identity.value,
+      "failed",
+      "host_rejected",
+      null,
+      published.publicationScope,
+    );
+    return failedCandidate.state === "candidate"
+      ? { ...blocked(published.reason, published.commands), publicationCandidate: failedCandidate.candidate }
+      : blocked(failedCandidate.reason, published.commands);
+  }
+  const candidate = createGitHubPublicationResultCandidate(
+    publication.request,
+    identity.value,
+    "delivered",
+    null,
+    published.prUrl,
+    published.publicationScope,
+  );
+  if (candidate.state !== "candidate") return blocked(candidate.reason, published.commands);
+  const checked = validatePRWorkspaceReceipt(published.receipt, {
+    repositoryOwner: snapshot.workspacePlan.repositoryOwner,
+    repositoryName: snapshot.workspacePlan.repositoryName,
+    baseBranch: snapshot.workspacePlan.baseBranch,
+    branchSlug: snapshot.workspacePlan.branchSlug,
+    artifactRevisionId: snapshot.artifactRevisionId,
+    prNumber: published.prNumber,
+  });
+  if (checked.state !== "valid") return blocked(checked.reason, published.commands);
+
+  const initialFuryEvaluation = evaluateFurySnapshot(snapshot, publication, checked.receipt, trusted);
+  const initialPlanGateEvaluation = initialFuryEvaluation.state === "evaluated"
+    ? initialFuryEvaluation.planGateEvaluation
+    : null;
+  if (initialFuryEvaluation.dispatchEligibility !== "eligible") {
+    return {
+      state: "workspace_ready",
+      publicationAction: published.action,
+      receipt: checked.receipt,
+      publicationCandidate: candidate.candidate,
+      planReviewEvidenceEvaluation: initialFuryEvaluation,
+      planGateEvaluation: initialPlanGateEvaluation,
+      commands: published.commands,
+    };
+  }
+
+  const projectionResult = await loadSchema9SeatDispatchProjectionV1({
+    purpose: "specialist_dispatch",
+    repositoryRoot: snapshot.repositoryRoot,
+    configuredJournalPath: snapshot.configuredJournalPath,
+    missionId: snapshot.missionId,
+    expectedSubjectId: snapshot.subjectId,
+    expectedMissionRevisionId: snapshot.missionRevisionId,
+    expectedEvaluatedThroughSequence: snapshot.evaluatedThroughSequence,
+    trustedHostOps: {},
+  });
+  if (projectionResult.state !== "ready") {
+    return blocked(`seat_dispatch_projection_${projectionResult.code}`, published.commands);
+  }
+  const projection = projectionResult.projection;
+  const commands = [...published.commands];
+
+  let finalJournalEntries;
+  try {
+    finalJournalEntries = trusted.loadJournal();
+  } catch {
+    return blocked("final_publication_journal_load_failed", commands);
+  }
+  const finalPublication = resolveJournaledPublicationRequest(
+    snapshot.publicationRequestId,
+    { loadJournal: () => finalJournalEntries },
+  );
+  if (finalPublication.state !== "allowed") return blocked(`final_${finalPublication.reason}`, commands);
+  const finalIdentity = validateGitHubPublicationResultIdentity(finalPublication, publicationIdentity);
+  if (finalIdentity.state !== "valid") return blocked(`final_${finalIdentity.reason}`, commands);
+  if (canonicalJson(publication) !== canonicalJson(finalPublication)) {
+    return blocked("publication_drift_after_authority_load", commands);
+  }
+
+  const finalReceipt = readCurrentDraftPRReceipt(snapshot, checked.receipt, trusted, commands);
+  if (finalReceipt.state !== "valid") return blocked(finalReceipt.reason, commands);
+
+  const finalFuryEvaluation = evaluateFurySnapshot(snapshot, finalPublication, finalReceipt.receipt, trusted);
+  if (finalFuryEvaluation.dispatchEligibility !== "eligible" ||
+      canonicalJson(initialFuryEvaluation) !== canonicalJson(finalFuryEvaluation)) {
+    return blocked("fury_evidence_drift_after_authority_load", commands);
+  }
+  const finalPlanGateEvaluation = finalFuryEvaluation.state === "evaluated"
+    ? finalFuryEvaluation.planGateEvaluation
+    : null;
+  if (finalPlanGateEvaluation?.dispatchEligibility !== "eligible") {
+    return blocked("fury_plan_gate_not_eligible", commands);
+  }
+  if (!publicationMatchesProjection(snapshot, finalPublication, finalReceipt.receipt, projection)) {
+    return blocked("seat_dispatch_projection_binding_mismatch", commands);
+  }
+
+  const dispatchReady = {
+    state: "dispatch_ready",
+    publicationAction: published.action,
+    receipt: finalReceipt.receipt,
+    publicationCandidate: candidate.candidate,
+    planReviewEvidenceEvaluation: finalFuryEvaluation,
+    planGateEvaluation: finalPlanGateEvaluation,
+    commands,
+  };
+  const denied = blocked("specialist_dispatch_not_approved", commands);
+  const policySnapshot = {
+    missionState: "approved",
+    approvalSource: "coulson",
+    specialistDispatchApprovalSource: "coulson",
+  };
+  const allowed = canDispatchSpecialists(policySnapshot);
+  return allowed ? dispatchReady : denied;
 }
 
 /** Renders attribution from a closed seat map so callers cannot relabel actors. */
