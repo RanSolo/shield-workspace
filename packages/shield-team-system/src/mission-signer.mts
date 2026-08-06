@@ -1,18 +1,46 @@
-import { createCipheriv, createDecipheriv, createHash, generateKeyPairSync, randomBytes, scryptSync, sign, createPrivateKey, createPublicKey } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  scryptSync,
+  sign,
+  type KeyObject,
+} from "node:crypto";
+import { constants, type Stats } from "node:fs";
+import { lstat, mkdir, open, readFile, unlink, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { types } from "node:util";
 import { canonicalJson } from "./mission-v2.mjs";
 
 const KDF_N = 16_384;
 const KDF_R = 8;
 const KDF_P = 1;
+const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const SIGNER_OPEN_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+const FAILURE_MESSAGES = Object.freeze({
+  creation_failed: "creation_failed: Signer creation failed.",
+  recovery_required: "recovery_required: Signer creation state is uncertain; inspect protected host signer storage before retrying.",
+});
 
-export interface SignerBinding {
+export interface SignerCreationInput {
+  seatId: "coulson";
   bindingId: string;
   humanPrincipalId: string;
-  signingKeyRef: string;
-  publicKeySpkiBase64: string;
+}
+
+export interface SignerCreationResult {
+  readonly schemaVersion: 1;
+  readonly seatId: "coulson";
+  readonly bindingId: string;
+  readonly humanPrincipalId: string;
+  readonly signingKeyRef: string;
+  readonly publicKeySpkiBase64: string;
+  readonly signerPath: string;
 }
 
 interface StoredSigner {
@@ -24,13 +52,64 @@ interface StoredSigner {
   ciphertextBase64: string;
 }
 
-function signerDirectory(): string {
-  return join(homedir(), ".shield", "signers");
+type SignerCreationFailureCode = keyof typeof FAILURE_MESSAGES;
+type SignerCreationStage =
+  | "opened"
+  | "written"
+  | "mode_set"
+  | "synced"
+  | "verified"
+  | "before_path_identity"
+  | "before_cleanup_identity"
+  | "after_cleanup_unlink";
+
+interface FileIdentity {
+  dev: number | bigint;
+  ino: number | bigint;
 }
 
-function signerPath(signingKeyRef: string): string {
+interface SignerCreationStageContext {
+  signerPath: string;
+  handle: FileHandle;
+  identity: FileIdentity | null;
+}
+
+interface SignerCreationDependencies {
+  homeDirectory: string;
+  generateKeyPair: () => { privateKey: KeyObject; publicKey: KeyObject };
+  randomBytes: (size: number) => Buffer;
+  openSigner: (path: string) => Promise<FileHandle>;
+  write: (handle: FileHandle, content: Buffer) => Promise<void>;
+  chmod: (handle: FileHandle, mode: number) => Promise<void>;
+  sync: (handle: FileHandle) => Promise<void>;
+  stat: (handle: FileHandle) => Promise<Stats>;
+  close: (handle: FileHandle) => Promise<void>;
+  pathLstat: typeof lstat;
+  pathUnlink: typeof unlink;
+  stage: (stage: SignerCreationStage, context: SignerCreationStageContext) => Promise<void>;
+}
+
+interface FailedCreationState {
+  path: string;
+  handle: FileHandle;
+  identity: FileIdentity | null;
+  closeAttempted: boolean;
+  closeUncertain: boolean;
+}
+
+class SignerCreationError extends Error {
+  constructor(readonly code: SignerCreationFailureCode) {
+    super(FAILURE_MESSAGES[code]);
+  }
+}
+
+function signerDirectory(homeDirectory = homedir()): string {
+  return join(homeDirectory, ".shield", "signers");
+}
+
+function signerPath(signingKeyRef: string, homeDirectory = homedir()): string {
   const safeRef = signingKeyRef.replace(/[^A-Za-z0-9_-]/g, "_");
-  return join(signerDirectory(), `${safeRef}.json`);
+  return join(signerDirectory(homeDirectory), `${safeRef}.json`);
 }
 
 function deriveKey(passcode: string, salt: Buffer): Buffer {
@@ -41,31 +120,264 @@ function keyRef(publicKeySpkiBase64: string): string {
   return `ed25519:sha256:${createHash("sha256").update(Buffer.from(publicKeySpkiBase64, "base64")).digest("base64url")}`;
 }
 
-export async function createSigner(binding: SignerBinding, passcode: string): Promise<string> {
-  if (passcode.length < 8) throw new Error("Passcode must contain at least 8 characters.");
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
-  const signingKeyRef = keyRef(publicKeySpkiBase64);
-  const salt = randomBytes(16);
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", deriveKey(passcode, salt), iv);
-  const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
-  const ciphertext = Buffer.concat([cipher.update(privateKeyPem, "utf8"), cipher.final()]);
-  const record: StoredSigner = {
-    schemaVersion: 1,
-    signingKeyRef,
-    saltBase64: salt.toString("base64"),
-    ivBase64: iv.toString("base64"),
-    tagBase64: cipher.getAuthTag().toString("base64"),
-    ciphertextBase64: ciphertext.toString("base64"),
-  };
-  const path = signerPath(signingKeyRef);
-  await mkdir(signerDirectory(), { recursive: true, mode: 0o700 });
-  await writeFile(path, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
-  await chmod(path, 0o600);
-  Object.assign(binding, { signingKeyRef, publicKeySpkiBase64 });
-  return path;
+function errno(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
+
+function sameIdentity(identity: FileIdentity, stats: { dev: number | bigint; ino: number | bigint }): boolean {
+  return identity.dev === stats.dev && identity.ino === stats.ino;
+}
+
+async function secureDirectory(path: string): Promise<FileIdentity> {
+  let observed;
+  try {
+    observed = await lstat(path);
+  } catch (error) {
+    if (!errno(error, "ENOENT")) throw error;
+    await mkdir(path, { mode: 0o700 });
+    observed = await lstat(path);
+  }
+  if (observed.isSymbolicLink() || !observed.isDirectory()) throw new SignerCreationError("creation_failed");
+
+  const flags = constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_DIRECTORY ?? 0);
+  const handle = await open(path, flags);
+  try {
+    const opened = await handle.stat();
+    if (!opened.isDirectory() || opened.dev !== observed.dev || opened.ino !== observed.ino) {
+      throw new SignerCreationError("creation_failed");
+    }
+    await handle.chmod(0o700);
+    const verified = await handle.stat();
+    const finalObservation = await lstat(path);
+    if (!verified.isDirectory() || (verified.mode & 0o777) !== 0o700 ||
+        finalObservation.isSymbolicLink() || !finalObservation.isDirectory() ||
+        verified.dev !== finalObservation.dev || verified.ino !== finalObservation.ino) {
+      throw new SignerCreationError("creation_failed");
+    }
+    return { dev: verified.dev, ino: verified.ino };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function observeDirectory(path: string, identity: FileIdentity): Promise<void> {
+  const observed = await lstat(path);
+  if (observed.isSymbolicLink() || !observed.isDirectory() || !sameIdentity(identity, observed) || (observed.mode & 0o777) !== 0o700) {
+    throw new SignerCreationError("creation_failed");
+  }
+}
+
+async function prepareSignerDirectory(homeDirectory: string): Promise<{ shield: FileIdentity; signers: FileIdentity }> {
+  const shieldPath = join(homeDirectory, ".shield");
+  const shield = await secureDirectory(shieldPath);
+  const signers = await secureDirectory(join(shieldPath, "signers"));
+  await observeDirectory(shieldPath, shield);
+  await observeDirectory(join(shieldPath, "signers"), signers);
+  return { shield, signers };
+}
+
+function defaultDependencies(homeDirectory = homedir()): SignerCreationDependencies {
+  return {
+    homeDirectory,
+    generateKeyPair: () => generateKeyPairSync("ed25519"),
+    randomBytes,
+    openSigner: (path) => open(path, SIGNER_OPEN_FLAGS, 0o600),
+    write: (handle, content) => handle.writeFile(content),
+    chmod: (handle, mode) => handle.chmod(mode),
+    sync: (handle) => handle.sync(),
+    stat: (handle) => handle.stat(),
+    close: (handle) => handle.close(),
+    pathLstat: lstat,
+    pathUnlink: unlink,
+    stage: async () => undefined,
+  };
+}
+
+export function validateSignerCreationInput(value: unknown): Readonly<SignerCreationInput> {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype) {
+      throw new Error();
+    }
+    const keys = Reflect.ownKeys(value);
+    const fields = ["seatId", "bindingId", "humanPrincipalId"] as const;
+    if (keys.length !== fields.length || keys.some((key) => typeof key !== "string" || !fields.includes(key as typeof fields[number]))) {
+      throw new Error();
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (fields.some((field) => {
+      const descriptor = descriptors[field];
+      return descriptor === undefined || !descriptor.enumerable || !("value" in descriptor);
+    })) {
+      throw new Error();
+    }
+    const seatId = descriptors.seatId.value;
+    const bindingId = descriptors.bindingId.value;
+    const humanPrincipalId = descriptors.humanPrincipalId.value;
+    if (seatId !== "coulson" || typeof bindingId !== "string" || typeof humanPrincipalId !== "string" ||
+        !IDENTIFIER.test(bindingId) || !IDENTIFIER.test(humanPrincipalId) || bindingId === humanPrincipalId) {
+      throw new Error();
+    }
+    return Object.freeze({ seatId, bindingId, humanPrincipalId });
+  } catch {
+    throw new Error("Signer creation input is invalid.");
+  }
+}
+
+async function verifiedCleanup(state: FailedCreationState, dependencies: SignerCreationDependencies): Promise<boolean> {
+  if (state.identity === null) return false;
+  try {
+    await dependencies.stage("before_cleanup_identity", {
+      signerPath: state.path,
+      handle: state.handle,
+      identity: state.identity,
+    });
+    const observed = await dependencies.pathLstat(state.path);
+    if (observed.isSymbolicLink() || !observed.isFile() || !sameIdentity(state.identity, observed)) return false;
+    await dependencies.pathUnlink(state.path);
+    await dependencies.stage("after_cleanup_unlink", {
+      signerPath: state.path,
+      handle: state.handle,
+      identity: state.identity,
+    });
+    try {
+      await dependencies.pathLstat(state.path);
+      return false;
+    } catch (error) {
+      return errno(error, "ENOENT");
+    }
+  } catch {
+    return false;
+  }
+}
+
+async function failAfterCreate(state: FailedCreationState, dependencies: SignerCreationDependencies): Promise<never> {
+  if (!state.closeAttempted) {
+    state.closeAttempted = true;
+    try {
+      await dependencies.close(state.handle);
+    } catch {
+      state.closeUncertain = true;
+    }
+  }
+  const cleaned = await verifiedCleanup(state, dependencies);
+  throw new SignerCreationError(cleaned && !state.closeUncertain ? "creation_failed" : "recovery_required");
+}
+
+async function createSignerWithDependencies(
+  input: unknown,
+  passcode: string,
+  dependencies: SignerCreationDependencies,
+): Promise<SignerCreationResult> {
+  const checked = validateSignerCreationInput(input);
+  if (typeof passcode !== "string" || passcode.length < 8) throw new Error("Passcode must contain at least 8 characters.");
+
+  let encryptedRecord: Buffer;
+  let signingKeyRef: string;
+  let publicKeySpkiBase64: string;
+  let path: string;
+  try {
+    const identities = await prepareSignerDirectory(dependencies.homeDirectory);
+    await observeDirectory(join(dependencies.homeDirectory, ".shield"), identities.shield);
+    await observeDirectory(signerDirectory(dependencies.homeDirectory), identities.signers);
+
+    const { privateKey, publicKey } = dependencies.generateKeyPair();
+    publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+    signingKeyRef = keyRef(publicKeySpkiBase64);
+    const salt = dependencies.randomBytes(16);
+    const iv = dependencies.randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", deriveKey(passcode, salt), iv);
+    const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+    const ciphertext = Buffer.concat([cipher.update(privateKeyPem, "utf8"), cipher.final()]);
+    const record: StoredSigner = {
+      schemaVersion: 1,
+      signingKeyRef,
+      saltBase64: salt.toString("base64"),
+      ivBase64: iv.toString("base64"),
+      tagBase64: cipher.getAuthTag().toString("base64"),
+      ciphertextBase64: ciphertext.toString("base64"),
+    };
+    encryptedRecord = Buffer.from(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    await observeDirectory(join(dependencies.homeDirectory, ".shield"), identities.shield);
+    await observeDirectory(signerDirectory(dependencies.homeDirectory), identities.signers);
+    path = signerPath(signingKeyRef, dependencies.homeDirectory);
+  } catch {
+    throw new SignerCreationError("creation_failed");
+  }
+
+  let handle: FileHandle;
+  try {
+    handle = await dependencies.openSigner(path);
+  } catch {
+    throw new SignerCreationError("creation_failed");
+  }
+  const state: FailedCreationState = {
+    path,
+    handle,
+    identity: null,
+    closeAttempted: false,
+    closeUncertain: false,
+  };
+
+  try {
+    const opened = await dependencies.stat(handle);
+    state.identity = { dev: opened.dev, ino: opened.ino };
+    if (!opened.isFile() || opened.isSymbolicLink()) throw new Error();
+    await dependencies.stage("opened", { signerPath: path, handle, identity: state.identity });
+    await dependencies.write(handle, encryptedRecord);
+    await dependencies.stage("written", { signerPath: path, handle, identity: state.identity });
+    await dependencies.chmod(handle, 0o600);
+    await dependencies.stage("mode_set", { signerPath: path, handle, identity: state.identity });
+    await dependencies.sync(handle);
+    await dependencies.stage("synced", { signerPath: path, handle, identity: state.identity });
+    const stored = await dependencies.stat(handle);
+    if (!stored.isFile() || stored.isSymbolicLink() || !sameIdentity(state.identity, stored) || (stored.mode & 0o777) !== 0o600) {
+      throw new Error();
+    }
+    await dependencies.stage("verified", { signerPath: path, handle, identity: state.identity });
+    await dependencies.stage("before_path_identity", { signerPath: path, handle, identity: state.identity });
+    const pathStored = await dependencies.pathLstat(path);
+    if (pathStored.isSymbolicLink() || !pathStored.isFile() || !sameIdentity(state.identity, pathStored) || (pathStored.mode & 0o777) !== 0o600) {
+      throw new Error();
+    }
+  } catch {
+    return await failAfterCreate(state, dependencies);
+  }
+
+  state.closeAttempted = true;
+  try {
+    await dependencies.close(handle);
+  } catch {
+    state.closeUncertain = true;
+    return await failAfterCreate(state, dependencies);
+  }
+
+  return Object.freeze({
+    schemaVersion: 1,
+    seatId: checked.seatId,
+    bindingId: checked.bindingId,
+    humanPrincipalId: checked.humanPrincipalId,
+    signingKeyRef,
+    publicKeySpkiBase64,
+    signerPath: path,
+  });
+}
+
+export async function createSigner(input: unknown, passcode: string): Promise<SignerCreationResult> {
+  return createSignerWithDependencies(input, passcode, defaultDependencies());
+}
+
+// This deterministic seam remains outside the package export map.
+export const signerTestOnly = Object.freeze({
+  createSigner: (
+    input: unknown,
+    passcode: string,
+    overrides: Partial<SignerCreationDependencies> & Pick<SignerCreationDependencies, "homeDirectory">,
+  ): Promise<SignerCreationResult> => createSignerWithDependencies(input, passcode, {
+    ...defaultDependencies(overrides.homeDirectory),
+    ...overrides,
+  }),
+});
 
 export async function signWithSigner(signingKeyRef: string, passcode: string, payload: unknown): Promise<string> {
   const record = JSON.parse(await readFile(signerPath(signingKeyRef), "utf8")) as StoredSigner;

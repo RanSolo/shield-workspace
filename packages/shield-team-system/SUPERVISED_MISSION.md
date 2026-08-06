@@ -7,11 +7,49 @@ it performs no model invocation, seat dispatch, tool or executor call, network
 access, host-adapter behavior, or external effect. The separate `/runner`
 contract can produce a non-authoritative effect candidate for this journal.
 
+## Pre-initialization Coulson signer bootstrap
+
+Before a repository has been initialized, create a fresh encrypted Coulson
+signer candidate in protected host storage and retain its credential-free public
+binding packet for later repository-policy review:
+
+```sh
+printf '%s\n' "$PASSCODE" | npx shield mission signer bootstrap \
+  --seat coulson \
+  --binding-id binding:coulson \
+  --human-principal-id human:maintainer-1 \
+  --passcode-stdin \
+  --json
+```
+
+This command has no `--root`, does not inspect or mutate a repository, and does
+not create `.shield/config.json`, a trusted binding registry, a journal, or Git
+state. Each successful invocation creates a distinct candidate; it never finds,
+reuses, repairs, or overwrites an existing signer. Its output contains only the
+seat, exact binding and human-principal identifiers, signing-key reference, and
+public SPKI needed for later review. SHIELD does not emit or store plaintext
+private key material: the encrypted schema-1 signer record is stored only in
+host-local protected signer storage, and neither its path nor its encryption
+fields appear in bootstrap output.
+
+The confinement guarantee assumes no other process running as the same OS user
+concurrently mutates `.shield`, `signers`, or the destination signer path.
+Pre-existing symlinks and non-directories are rejected, but this JavaScript
+implementation does not claim race-free ancestor confinement against malicious
+or accidental concurrent same-user replacement.
+
+Signer generation is authority-neutral. It does not accept a person into
+repository policy, authorize a mission, grant Wheels Up, satisfy Fitz or
+Simmons, or permit publication, merge, deployment, release, or final
+acceptance. Issue #216 owns the later Coulson-only repository profile and
+initialization contract; Fitz remains GitHub platform review and conditional
+Simmons feedback remains external evidence for #216 or later adapters.
+
 ## Trust setup
 
-Human evidence uses Ed25519 signatures. SHIELD never reads or stores private
-keys. For each human seat, export the public key as SPKI DER, encode it as base64,
-and compute its configured reference with:
+Human evidence uses Ed25519 signatures. SHIELD does not emit or store plaintext
+private key material. For each human seat, export the public key as SPKI DER,
+encode it as base64, and compute its configured reference with:
 
 ```js
 import { computeEd25519SigningKeyRef } from "@shield/team-system/supervision";

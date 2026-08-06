@@ -56,7 +56,13 @@ import {
 } from "./review-publication-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
-import { createSigner, signWithSigner } from "./mission-signer.mjs";
+import {
+  createSigner,
+  signWithSigner,
+  validateSignerCreationInput,
+  type SignerCreationInput,
+  type SignerCreationResult,
+} from "./mission-signer.mjs";
 import {
   computeImplementationAuthorityDigest,
   computeSchema9RuntimeBindingDigest,
@@ -752,23 +758,65 @@ async function signerSetup(args: string[]): Promise<number> {
   const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, "*", false));
   const current = bindings.find(({ seatId }) => seatId === seat);
   if (!current) throw new MissionCliError("Configured Coulson binding is missing.", 1);
-  const passcode = await passcodeFromOptions(options);
-  const signerBinding = {
+  const signerInput = validateSignerInput({
+    seatId: "coulson",
     bindingId: current.bindingId,
     humanPrincipalId: current.humanPrincipalId,
-    signingKeyRef: current.signingKeyRef,
-    publicKeySpkiBase64: current.publicKeySpkiBase64,
-  };
-  const signerPath = await createSigner(signerBinding, passcode);
-  const nextRegistry = { ...registry, bindings: registry.bindings.map((binding) => binding.seatId === seat ? { ...binding, signingKeyRef: signerBinding.signingKeyRef, publicKeySpkiBase64: signerBinding.publicKeySpkiBase64 } : binding) };
-  const nextConfig = { ...config, trustedHumanBindingRefs: config.trustedHumanBindingRefs.map((ref) => ref.seatId === seat ? { ...ref, bindingRef: signerBinding.signingKeyRef } : ref) };
+  });
+  const passcode = await passcodeFromOptions(options);
+  const created = await createHostSigner(signerInput, passcode);
+  const nextRegistry = { ...registry, bindings: registry.bindings.map((binding) => binding.seatId === seat ? { ...binding, signingKeyRef: created.signingKeyRef, publicKeySpkiBase64: created.publicKeySpkiBase64 } : binding) };
+  const nextConfig = { ...config, trustedHumanBindingRefs: config.trustedHumanBindingRefs.map((ref) => ref.seatId === seat ? { ...ref, bindingRef: created.signingKeyRef } : ref) };
   await writeFile(registryPath, `${JSON.stringify(nextRegistry, null, 2)}\n`);
   await chmod(registryPath, 0o600);
   await writeFile(join(root, CONFIG_PATH), `${JSON.stringify(nextConfig, null, 2)}\n`);
   output(
-    { signerPath, signingKeyRef: signerBinding.signingKeyRef },
+    { signerPath: created.signerPath, signingKeyRef: created.signingKeyRef },
     options.flags.has("--json"),
-    `Coulson signer created at ${signerPath}.\nThis is a one-time host setup for future missions.\nExisting mission journals retain the binding captured at begin and must continue using their original signer.`,
+    `Coulson signer created at ${created.signerPath}.\nThis is a one-time host setup for future missions.\nExisting mission journals retain the binding captured at begin and must continue using their original signer.`,
+  );
+  return 0;
+}
+
+function validateSignerInput(input: unknown): Readonly<SignerCreationInput> {
+  try {
+    return validateSignerCreationInput(input);
+  } catch (error) {
+    throw new MissionCliError(error instanceof Error ? error.message : "Signer creation input is invalid.", 1);
+  }
+}
+
+async function createHostSigner(input: Readonly<SignerCreationInput>, passcode: string): Promise<SignerCreationResult> {
+  try {
+    return await createSigner(input, passcode);
+  } catch (error) {
+    throw new MissionCliError(error instanceof Error ? error.message : "creation_failed: Signer creation failed.", 1);
+  }
+}
+
+async function signerBootstrap(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--seat", "--binding-id", "--human-principal-id"], ["--json", "--passcode-stdin"]);
+  const seat = required(options, "--seat");
+  if (seat !== "coulson") throw new MissionCliError("Only the Coulson signer can be provisioned by this command.", 1);
+  const signerInput = validateSignerInput({
+    seatId: "coulson",
+    bindingId: required(options, "--binding-id"),
+    humanPrincipalId: required(options, "--human-principal-id"),
+  });
+  const passcode = await passcodeFromOptions(options);
+  const created = await createHostSigner(signerInput, passcode);
+  const packet = {
+    schemaVersion: 1,
+    seatId: created.seatId,
+    bindingId: created.bindingId,
+    humanPrincipalId: created.humanPrincipalId,
+    signingKeyRef: created.signingKeyRef,
+    publicKeySpkiBase64: created.publicKeySpkiBase64,
+  };
+  output(
+    packet,
+    options.flags.has("--json"),
+    `Coulson signer candidate created in protected host storage.\n${JSON.stringify(packet, null, 2)}`,
   );
   return 0;
 }
@@ -1245,6 +1293,7 @@ export function missionUsage(): string {
     "  shield mission begin --brief <file> [--root <path>] [--json]",
     "  shield mission begin --profile-aware --brief <file> [--root <path>] [--json]",
     "  shield mission begin --authorization delegated --brief <file> --delegation <revision> --eligibility <file> [--root <path>] [--json]",
+    "  shield mission signer bootstrap --seat coulson --binding-id <id> --human-principal-id <id> [--passcode-stdin] [--json]",
     "  shield mission signer setup [--seat coulson] [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
@@ -1271,6 +1320,7 @@ export async function runMissionCli(args: string[]): Promise<number> {
     if (action === "publication-result") return publicationResult(rest);
     if (action === "wheels-up") return wheelsUp(rest);
     if (action === "bind") return bindMay(rest);
+    if (action === "signer" && rest[0] === "bootstrap") return signerBootstrap(rest.slice(1));
     if (action === "signer" && rest[0] === "setup") return signerSetup(rest.slice(1));
     if (action === "approve" || action === "pause" || action === "resume" || action === "cancel") return governance(action, rest);
     if (action === "step") return step(rest);

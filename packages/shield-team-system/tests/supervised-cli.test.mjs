@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { lstat, mkdtemp, mkdir, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -20,6 +20,7 @@ import {
   MISSION_130_JOURNAL_DIGEST,
 } from "../dist/profile-aware-mission-v1.mjs";
 import { assertPublicationAuthorizationFreshness, readInteractivePasscode } from "../dist/mission-cli.mjs";
+import { signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -141,6 +142,46 @@ function run(root, args, options = {}) {
     env: { ...process.env, ...(options.env ?? {}) },
     input: options.input,
   });
+}
+
+const BOOTSTRAP_ARGS = [
+  "mission", "signer", "bootstrap",
+  "--seat", "coulson",
+  "--binding-id", "binding:coulson",
+  "--human-principal-id", "human:maintainer-1",
+  "--passcode-stdin",
+  "--json",
+];
+
+const CREATION_FAILED = "creation_failed: Signer creation failed.";
+const RECOVERY_REQUIRED = "recovery_required: Signer creation state is uncertain; inspect protected host signer storage before retrying.";
+
+function fileMode(stats) {
+  return stats.mode & 0o777;
+}
+
+function recomputeKeyRef(publicKeySpkiBase64) {
+  return `ed25519:sha256:${createHash("sha256").update(Buffer.from(publicKeySpkiBase64, "base64")).digest("base64url")}`;
+}
+
+const SIGNER_INPUT = Object.freeze({
+  seatId: "coulson",
+  bindingId: "binding:coulson",
+  humanPrincipalId: "human:maintainer-1",
+});
+
+function deterministicSignerDependencies(homeDirectory, keyPair = generateKeyPairSync("ed25519"), overrides = {}) {
+  return {
+    homeDirectory,
+    generateKeyPair: () => keyPair,
+    randomBytes: (size) => Buffer.alloc(size, 7),
+    ...overrides,
+  };
+}
+
+function expectedSignerFilename(keyPair) {
+  const publicKeySpkiBase64 = keyPair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  return `${recomputeKeyRef(publicKeySpkiBase64).replace(/[^A-Za-z0-9_-]/g, "_")}.json`;
 }
 
 function runGit(root, args) {
@@ -401,6 +442,8 @@ test("supported profile-aware CLI workflow records three independent signed tran
     { env: { HOME: homeRoot }, input: "wrong-passcode\n" },
   );
   assert.equal(badPasscode.status, 1);
+  assert.doesNotMatch(badPasscode.stderr, /wrong-passcode|privateKey|ciphertext|saltBase64|ivBase64|tagBase64/iu);
+  assert.equal(badPasscode.stderr.includes(homeRoot), false);
   assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
 
   const prematureWheels = run(
@@ -1089,6 +1132,442 @@ test("readInteractivePasscode fails if newline fails", async () => {
   assert.equal(fixture.calls.off, 1);
   assert.equal(fixture.calls.setRawMode, 2);
   assert.equal(fixture.calls.pause, 1);
+});
+
+test("pre-init signer bootstrap emits only a credential-free packet and creates fresh protected candidates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-empty-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-home-"));
+  await writeFile(join(root, "before.txt"), "repository-free working directory\n");
+
+  const first = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+  assert.equal(first.status, 0, first.stderr);
+  const firstPacket = JSON.parse(first.stdout);
+  assert.deepEqual(Object.keys(firstPacket), [
+    "schemaVersion", "seatId", "bindingId", "humanPrincipalId", "signingKeyRef", "publicKeySpkiBase64",
+  ]);
+  assert.deepEqual({
+    schemaVersion: firstPacket.schemaVersion,
+    seatId: firstPacket.seatId,
+    bindingId: firstPacket.bindingId,
+    humanPrincipalId: firstPacket.humanPrincipalId,
+  }, {
+    schemaVersion: 1,
+    seatId: "coulson",
+    bindingId: "binding:coulson",
+    humanPrincipalId: "human:maintainer-1",
+  });
+  assert.equal(firstPacket.signingKeyRef, recomputeKeyRef(firstPacket.publicKeySpkiBase64));
+  assert.equal(first.stdout.includes(homeRoot), false);
+  assert.doesNotMatch(first.stdout, /signerPath|privateKey|ciphertext|saltBase64|ivBase64|tagBase64|passcode/iu);
+  assert.equal(first.stderr, "");
+
+  const shieldDirectory = join(homeRoot, ".shield");
+  const signersDirectory = join(shieldDirectory, "signers");
+  assert.equal(fileMode(await lstat(shieldDirectory)), 0o700);
+  assert.equal(fileMode(await lstat(signersDirectory)), 0o700);
+  const firstFiles = await readdir(signersDirectory);
+  assert.equal(firstFiles.length, 1);
+  const firstPath = join(signersDirectory, firstFiles[0]);
+  const firstBytes = await readFile(firstPath);
+  const stored = JSON.parse(firstBytes.toString("utf8"));
+  assert.deepEqual(Object.keys(stored), [
+    "schemaVersion", "signingKeyRef", "saltBase64", "ivBase64", "tagBase64", "ciphertextBase64",
+  ]);
+  assert.equal(stored.schemaVersion, 1);
+  assert.equal(stored.signingKeyRef, firstPacket.signingKeyRef);
+  assert.doesNotMatch(firstBytes.toString("utf8"), /BEGIN PRIVATE KEY/u);
+  assert.equal(fileMode(await lstat(firstPath)), 0o600);
+
+  const second = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+  assert.equal(second.status, 0, second.stderr);
+  const secondPacket = JSON.parse(second.stdout);
+  assert.notEqual(secondPacket.signingKeyRef, firstPacket.signingKeyRef);
+  assert.equal((await readdir(signersDirectory)).length, 2);
+  assert.deepEqual(await readFile(firstPath), firstBytes);
+  assert.equal(fileMode(await lstat(firstPath)), 0o600);
+
+  const human = run(root, BOOTSTRAP_ARGS.filter((argument) => argument !== "--json"), {
+    env: { HOME: homeRoot }, input: "bootstrap-passcode\n",
+  });
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /created in protected host storage/u);
+  assert.match(human.stdout, /"publicKeySpkiBase64"/u);
+  assert.equal(human.stdout.includes(homeRoot), false);
+  assert.doesNotMatch(human.stdout, /signerPath|privateKey|ciphertext|saltBase64|ivBase64|tagBase64|passcode/iu);
+
+  assert.equal(await readFile(join(root, "before.txt"), "utf8"), "repository-free working directory\n");
+  await assert.rejects(lstat(join(root, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("bootstrap CLI rejects non-Coulson, malformed, colliding, missing, root, and unknown inputs before signer creation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-invalid-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-invalid-home-"));
+  const common = ["mission", "signer", "bootstrap", "--passcode-stdin"];
+  const cases = [
+    [...common, "--seat", "fitz"],
+    [...common, "--seat", "coulson", "--binding-id", "bad value", "--human-principal-id", "human:one"],
+    [...common, "--seat", "coulson", "--binding-id", "binding:one", "--human-principal-id", "bad value"],
+    [...common, "--seat", "coulson", "--binding-id", "a".repeat(257), "--human-principal-id", "human:one"],
+    [...common, "--seat", "coulson", "--binding-id", "same:id", "--human-principal-id", "same:id"],
+    [...common, "--seat", "coulson", "--binding-id", "binding:one"],
+    [...common, "--seat", "coulson", "--binding-id", "binding:one", "--human-principal-id", "human:one", "--root", root],
+    [...common, "--seat", "coulson", "--binding-id", "binding:one", "--human-principal-id", "human:one", "--unexpected"],
+  ];
+  for (const args of cases) {
+    const rejected = run(root, args, { env: { HOME: homeRoot }, input: "must-not-appear\n" });
+    assert.notEqual(rejected.status, 0, `${args.join(" ")}\n${rejected.stderr}`);
+    assert.equal(rejected.stdout, "");
+    assert.equal(rejected.stderr.includes("must-not-appear"), false);
+    assert.equal(rejected.stderr.includes(homeRoot), false);
+    await assert.rejects(lstat(join(homeRoot, ".shield")), (error) => error?.code === "ENOENT");
+  }
+
+  const short = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "short\n" });
+  assert.equal(short.status, 1);
+  assert.match(short.stderr, /at least 8 characters/u);
+  assert.equal(short.stderr.includes("short"), false);
+  await assert.rejects(lstat(join(homeRoot, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("signer creation rejects hostile closed-object inputs before key generation", async () => {
+  const accessor = {};
+  Object.defineProperties(accessor, {
+    seatId: { enumerable: true, get() { throw new Error("accessor material"); } },
+    bindingId: { enumerable: true, value: SIGNER_INPUT.bindingId },
+    humanPrincipalId: { enumerable: true, value: SIGNER_INPUT.humanPrincipalId },
+  });
+  const inherited = Object.create(SIGNER_INPUT);
+  const symbolicField = { ...SIGNER_INPUT, [Symbol("hidden")]: "value" };
+  const nonEnumerable = { ...SIGNER_INPUT };
+  Object.defineProperty(nonEnumerable, "bindingId", { enumerable: false });
+  const candidates = [
+    null,
+    [],
+    new Proxy({ ...SIGNER_INPUT }, {}),
+    accessor,
+    inherited,
+    symbolicField,
+    nonEnumerable,
+    { ...SIGNER_INPUT, extra: "field" },
+    { seatId: "coulson", bindingId: SIGNER_INPUT.bindingId },
+    { ...SIGNER_INPUT, seatId: "fitz" },
+    { ...SIGNER_INPUT, bindingId: "" },
+    { ...SIGNER_INPUT, bindingId: "a".repeat(257) },
+    { ...SIGNER_INPUT, bindingId: Symbol("binding") },
+    { ...SIGNER_INPUT, humanPrincipalId: SIGNER_INPUT.bindingId },
+  ];
+  let keyGenerationCount = 0;
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-hostile-"));
+  const dependencies = deterministicSignerDependencies(homeRoot, generateKeyPairSync("ed25519"), {
+    generateKeyPair() {
+      keyGenerationCount += 1;
+      return generateKeyPairSync("ed25519");
+    },
+  });
+  for (const candidate of candidates) {
+    await assert.rejects(
+      signerTestOnly.createSigner(candidate, "bootstrap-passcode", dependencies),
+      /Signer creation input is invalid\./u,
+    );
+  }
+  assert.equal(keyGenerationCount, 0);
+  await assert.rejects(lstat(join(homeRoot, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("bootstrap rejects static symlink and non-directory host components before key generation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-storage-"));
+  const shieldLinkHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-shield-link-"));
+  const shieldTarget = await mkdtemp(join(tmpdir(), "shield-bootstrap-shield-target-"));
+  await writeFile(join(shieldTarget, "sentinel"), "unchanged\n");
+  await symlink(shieldTarget, join(shieldLinkHome, ".shield"));
+
+  const shieldFileHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-shield-file-"));
+  await writeFile(join(shieldFileHome, ".shield"), "not a directory\n");
+
+  const signersLinkHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-signers-link-"));
+  const signersTarget = await mkdtemp(join(tmpdir(), "shield-bootstrap-signers-target-"));
+  await writeFile(join(signersTarget, "sentinel"), "unchanged\n");
+  await mkdir(join(signersLinkHome, ".shield"), { mode: 0o700 });
+  await symlink(signersTarget, join(signersLinkHome, ".shield", "signers"));
+
+  const signersFileHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-signers-file-"));
+  await mkdir(join(signersFileHome, ".shield"), { mode: 0o700 });
+  await writeFile(join(signersFileHome, ".shield", "signers"), "not a directory\n");
+
+  let keyGenerationCount = 0;
+  for (const homeRoot of [shieldLinkHome, shieldFileHome, signersLinkHome, signersFileHome]) {
+    const rejected = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+    assert.equal(rejected.status, 1, rejected.stderr);
+    assert.equal(rejected.stdout, "");
+    assert.match(rejected.stderr, /creation_failed: Signer creation failed\./u);
+    assert.equal(rejected.stderr.includes(homeRoot), false);
+    assert.doesNotMatch(rejected.stderr, /privateKey|ciphertext|saltBase64|ivBase64|tagBase64|bootstrap-passcode/iu);
+    await assert.rejects(
+      signerTestOnly.createSigner(SIGNER_INPUT, "bootstrap-passcode", deterministicSignerDependencies(
+        homeRoot,
+        generateKeyPairSync("ed25519"),
+        { generateKeyPair() { keyGenerationCount += 1; return generateKeyPairSync("ed25519"); } },
+      )),
+      (error) => error?.message === CREATION_FAILED,
+    );
+  }
+  assert.equal(keyGenerationCount, 0);
+  assert.deepEqual(await readdir(shieldTarget), ["sentinel"]);
+  assert.deepEqual(await readdir(signersTarget), ["sentinel"]);
+  assert.equal(await readFile(join(shieldTarget, "sentinel"), "utf8"), "unchanged\n");
+  assert.equal(await readFile(join(signersTarget, "sentinel"), "utf8"), "unchanged\n");
+});
+
+test("cryptographic failures use the fixed path-free creation classification", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-crypto-"));
+  const protectedDetail = `${homeRoot} ciphertextBase64 private material`;
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(homeRoot, generateKeyPairSync("ed25519"), {
+        generateKeyPair() { throw new Error(protectedDetail); },
+      }),
+    ),
+    (error) => error?.message === CREATION_FAILED && !error.message.includes(protectedDetail),
+  );
+  assert.deepEqual(await readdir(join(homeRoot, ".shield", "signers")), []);
+});
+
+test("deterministic signer collision and final symlink preserve original targets", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-collision-"));
+  const keyPair = generateKeyPairSync("ed25519");
+  const dependencies = deterministicSignerDependencies(homeRoot, keyPair);
+  const created = await signerTestOnly.createSigner(SIGNER_INPUT, "bootstrap-passcode", dependencies);
+  assert.equal(Object.isFrozen(created), true);
+  const originalBytes = await readFile(created.signerPath);
+  const originalMode = fileMode(await lstat(created.signerPath));
+  assert.equal(originalMode, 0o600);
+  await assert.rejects(
+    signerTestOnly.createSigner(SIGNER_INPUT, "bootstrap-passcode", dependencies),
+    (error) => error?.message === CREATION_FAILED && !error.message.includes(homeRoot),
+  );
+  assert.deepEqual(await readFile(created.signerPath), originalBytes);
+  assert.equal(fileMode(await lstat(created.signerPath)), originalMode);
+
+  const symlinkHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-final-link-"));
+  const signersDirectory = join(symlinkHome, ".shield", "signers");
+  await mkdir(signersDirectory, { recursive: true, mode: 0o700 });
+  const symlinkKeyPair = generateKeyPairSync("ed25519");
+  const target = join(symlinkHome, "foreign-target");
+  await writeFile(target, "foreign bytes\n", { mode: 0o600 });
+  const candidate = join(signersDirectory, expectedSignerFilename(symlinkKeyPair));
+  await symlink(target, candidate);
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(symlinkHome, symlinkKeyPair),
+    ),
+    (error) => error?.message === CREATION_FAILED,
+  );
+  assert.equal((await lstat(candidate)).isSymbolicLink(), true);
+  assert.equal(await readFile(target, "utf8"), "foreign bytes\n");
+});
+
+test("retained signer handle corrects restrictive umask and persists a verified 0600 record", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-umask-"));
+  await mkdir(join(homeRoot, ".shield", "signers"), { recursive: true, mode: 0o700 });
+  const priorUmask = process.umask(0o777);
+  let created;
+  try {
+    created = await signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(homeRoot),
+    );
+  } finally {
+    process.umask(priorUmask);
+  }
+  assert.equal(fileMode(await lstat(created.signerPath)), 0o600);
+  const record = JSON.parse(await readFile(created.signerPath, "utf8"));
+  assert.equal(record.schemaVersion, 1);
+  assert.equal(record.signingKeyRef, created.signingKeyRef);
+});
+
+test("write, partial write, fchmod, fsync, final fstat, and post-verify failures clean the same inode", async () => {
+  const cases = [
+    ["write", () => ({
+      write: async () => { throw new Error("write protected detail"); },
+    })],
+    ["partial write", () => ({
+      write: async (handle, content) => {
+        await handle.write(content.subarray(0, 17));
+        throw new Error("partial write protected detail");
+      },
+    })],
+    ["fchmod", () => ({
+      chmod: async () => { throw new Error("fchmod protected detail"); },
+    })],
+    ["fsync", () => ({
+      sync: async () => { throw new Error("fsync protected detail"); },
+    })],
+    ["final fstat", () => {
+      let calls = 0;
+      return {
+        stat: async (handle) => {
+          calls += 1;
+          if (calls === 2) throw new Error("fstat protected detail");
+          return handle.stat();
+        },
+      };
+    }],
+    ["post verify", () => ({
+      stage: async (stage) => {
+        if (stage === "verified") throw new Error("post-verify protected detail");
+      },
+    })],
+  ];
+
+  for (const [label, overrides] of cases) {
+    const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-cleanup-"));
+    const protectedDetail = `${homeRoot} ${label}`;
+    await assert.rejects(
+      signerTestOnly.createSigner(
+        SIGNER_INPUT,
+        "bootstrap-passcode",
+        deterministicSignerDependencies(homeRoot, generateKeyPairSync("ed25519"), overrides()),
+      ),
+      (error) => error?.code === "creation_failed" && error.message === CREATION_FAILED && !error.message.includes(protectedDetail),
+      label,
+    );
+    assert.deepEqual(await readdir(join(homeRoot, ".shield", "signers")), [], label);
+  }
+});
+
+test("uncertain initial identity and close failure return recovery-required without success", async () => {
+  const identityHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-identity-"));
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(identityHome, generateKeyPairSync("ed25519"), {
+        stat: async () => { throw new Error(`${identityHome} fstat material`); },
+      }),
+    ),
+    (error) => error?.code === "recovery_required" && error.message === RECOVERY_REQUIRED && !error.message.includes(identityHome),
+  );
+  assert.equal((await readdir(join(identityHome, ".shield", "signers"))).length, 1);
+
+  const closeHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-close-"));
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(closeHome, generateKeyPairSync("ed25519"), {
+        close: async (handle) => {
+          await handle.close();
+          throw new Error(`${closeHome} close material`);
+        },
+      }),
+    ),
+    (error) => error?.code === "recovery_required" && error.message === RECOVERY_REQUIRED && !error.message.includes(closeHome),
+  );
+  assert.deepEqual(await readdir(join(closeHome, ".shield", "signers")), []);
+});
+
+test("pathname identity mismatch preserves the foreign target and returns recovery-required", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-path-mismatch-"));
+  let foreignPath;
+  let displacedPath;
+  const dependencies = deterministicSignerDependencies(homeRoot, generateKeyPairSync("ed25519"), {
+    stage: async (stage, context) => {
+      if (stage !== "before_path_identity") return;
+      foreignPath = context.signerPath;
+      displacedPath = `${context.signerPath}.displaced`;
+      await rename(context.signerPath, displacedPath);
+      await writeFile(context.signerPath, "foreign replacement\n", { mode: 0o600, flag: "wx" });
+    },
+  });
+  await assert.rejects(
+    signerTestOnly.createSigner(SIGNER_INPUT, "bootstrap-passcode", dependencies),
+    (error) => error?.message === RECOVERY_REQUIRED && !error.message.includes(homeRoot),
+  );
+  assert.equal(await readFile(foreignPath, "utf8"), "foreign replacement\n");
+  assert.equal((await lstat(displacedPath)).isFile(), true);
+  assert.equal((await readdir(join(homeRoot, ".shield", "signers"))).length, 2);
+});
+
+test("unlink and cleanup-confirmation failures return recovery-required without false cleanup claims", async () => {
+  const unlinkHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-unlink-"));
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(unlinkHome, generateKeyPairSync("ed25519"), {
+        stage: async (stage) => {
+          if (stage === "verified") throw new Error("force cleanup");
+        },
+        pathUnlink: async () => { throw new Error(`${unlinkHome} unlink material`); },
+      }),
+    ),
+    (error) => error?.message === RECOVERY_REQUIRED && !error.message.includes(unlinkHome),
+  );
+  assert.equal((await readdir(join(unlinkHome, ".shield", "signers"))).length, 1);
+
+  const confirmationHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-confirmation-"));
+  let lstatCalls = 0;
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(confirmationHome, generateKeyPairSync("ed25519"), {
+        stage: async (stage) => {
+          if (stage === "verified") throw new Error("force cleanup");
+        },
+        pathLstat: async (path) => {
+          lstatCalls += 1;
+          if (lstatCalls === 2) throw Object.assign(new Error(`${confirmationHome} confirmation material`), { code: "EIO" });
+          return lstat(path);
+        },
+      }),
+    ),
+    (error) => error?.message === RECOVERY_REQUIRED && !error.message.includes(confirmationHome),
+  );
+  assert.deepEqual(await readdir(join(confirmationHome, ".shield", "signers")), []);
+});
+
+test("bootstrap leaves an existing Git worktree and repository bytes unchanged", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-repository-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-repository-home-"));
+  await writeFile(join(root, "tracked.txt"), "tracked bytes\n");
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["add", "tracked.txt"]);
+  runGit(root, ["commit", "-qm", "bootstrap fixture"]);
+  const beforeHead = runGit(root, ["rev-parse", "HEAD"]);
+  const beforeStatus = runGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  const beforeBytes = await readFile(join(root, "tracked.txt"));
+
+  const result = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(runGit(root, ["rev-parse", "HEAD"]), beforeHead);
+  assert.equal(runGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]), beforeStatus);
+  assert.deepEqual(await readFile(join(root, "tracked.txt")), beforeBytes);
+  await assert.rejects(lstat(join(root, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("help and supervised mission docs state the authority and signer-storage threat boundaries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-help-"));
+  const help = run(root, ["help"]);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /mission signer bootstrap --seat coulson --binding-id <id> --human-principal-id <id>/u);
+  const documentation = await readFile(join(packageRoot, "SUPERVISED_MISSION.md"), "utf8");
+  assert.match(documentation, /Pre-initialization Coulson signer bootstrap/u);
+  assert.match(documentation, /does not emit or store plaintext\s+private key material/u);
+  assert.match(documentation, /encrypted schema-1 signer record is stored only in\s+host-local protected signer storage/u);
+  assert.match(documentation, /no other process running as the same OS user\s+concurrently mutates/u);
+  assert.match(documentation, /does not claim race-free ancestor confinement/u);
+  assert.match(documentation, /authority-neutral/u);
+  assert.match(documentation, /Issue #216 owns/u);
+  assert.match(documentation, /Fitz remains GitHub platform review/u);
+  assert.match(documentation, /conditional\s+Simmons feedback remains external evidence/u);
 });
 
 test("passcode signer setup is one-time host setup and authorize appends Coulson approval", async () => {
