@@ -103,6 +103,15 @@ function required(options: ParsedOptions, name: string): string {
   return value;
 }
 
+function semanticJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(semanticJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${semanticJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 async function inspectRoot(rootArgument: string | undefined, writable: boolean): Promise<string> {
   const root = resolve(rootArgument ?? process.cwd());
   let stats;
@@ -282,7 +291,7 @@ async function runInit(args: string[]): Promise<number> {
       }
       const { repositoryTrustProfileId: _profileId, ...common } = config;
       const equivalentLegacy: ShieldConfigV1 = { ...common, schemaVersion: 1 };
-      if (formatShieldConfig(existing.value) !== formatShieldConfig(equivalentLegacy)) {
+      if (semanticJson(existing.value) !== semanticJson(equivalentLegacy)) {
         throw new CliError(`Existing schema-1 configuration differs; refusing to overwrite: ${configPath}.`);
       }
       if (starterPipelineId === undefined) {
@@ -382,7 +391,7 @@ async function runDoctor(args: string[]): Promise<number> {
         ? { config: rawConfig }
         : {}),
   });
-  if (parsed?.state === "invalid") {
+  if (parsed?.state === "invalid" && parsed.issues[0]?.code === "invalid_json") {
     const schema = report.checks.find(({ id }) => id === "config-schema");
     if (schema !== undefined) {
       schema.ok = false;

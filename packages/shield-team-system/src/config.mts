@@ -2,10 +2,10 @@ import { posix } from "node:path";
 
 export const LEGACY_CONFIG_SCHEMA_VERSION = 1 as const;
 export const CONFIG_SCHEMA_VERSION = 2 as const;
-export const SUPPORTED_CONFIG_SCHEMA_VERSIONS = [
+export const SUPPORTED_CONFIG_SCHEMA_VERSIONS = Object.freeze([
   LEGACY_CONFIG_SCHEMA_VERSION,
   CONFIG_SCHEMA_VERSION,
-] as const;
+] as const);
 export const DOCTOR_REPORT_VERSION = 1 as const;
 export const SHIELD_PACKAGE_VERSION = "0.1.0" as const;
 export const SUPPORTED_ADAPTER_IDS = ["github"] as const;
@@ -21,10 +21,10 @@ export const SUPPORTED_SEAT_IDS = [
 export const SUPPORTED_MODE_IDS = ["delivery", "debugger"] as const;
 export const HUMAN_AUTHORITY_SEAT_IDS = ["coulson", "fitz", "simmons"] as const;
 export const REPOSITORY_TRUST_PROFILE_CONTRACT_VERSION = "repository.trust-profile.v1" as const;
-export const REPOSITORY_TRUST_PROFILE_IDS = [
+export const REPOSITORY_TRUST_PROFILE_IDS = Object.freeze([
   "signed_human_gates",
   "coulson_only_platform_review",
-] as const;
+] as const);
 
 export type AdapterId = (typeof SUPPORTED_ADAPTER_IDS)[number];
 export type SeatId = (typeof SUPPORTED_SEAT_IDS)[number];
@@ -160,6 +160,14 @@ const BINDING_REF = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 const CREDENTIAL_MARKER = /(?:password|token|secret|api[_-]?key)\s*[:=]|private[_-]?key/i;
 const UNCONFIGURED_BINDING_MARKER = /(?:^|[._:/-])(?:placeholder|unconfigured|unset|todo|tbd)(?:$|[._:/-])/i;
 
+function isSupportedConfigSchemaVersion(value: unknown): value is 1 | 2 {
+  return value === LEGACY_CONFIG_SCHEMA_VERSION || value === CONFIG_SCHEMA_VERSION;
+}
+
+function isRepositoryTrustProfileId(value: unknown): value is RepositoryTrustProfileId {
+  return value === "signed_human_gates" || value === "coulson_only_platform_review";
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) &&
     Object.getPrototypeOf(value) === Object.prototype;
@@ -174,8 +182,9 @@ function exactFields(
   fields: readonly string[],
   path: string,
   issues: ConfigIssue[],
+  allowedFields: readonly string[] = fields,
 ): void {
-  const allowed = new Set(fields);
+  const allowed = new Set(allowedFields);
   for (const field of fields) {
     if (!Object.hasOwn(value, field)) {
       issues.push(issue("missing_field", `${path}.${field}`, `${path} is missing field: ${field}.`));
@@ -255,9 +264,15 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
   }
   const schemaVersion = input.schemaVersion;
   const fields = schemaVersion === CONFIG_SCHEMA_VERSION ? CONFIG_V2_FIELDS : CONFIG_V1_FIELDS;
-  exactFields(input, fields, "config", issues);
+  exactFields(
+    input,
+    fields,
+    "config",
+    issues,
+    isSupportedConfigSchemaVersion(schemaVersion) ? fields : CONFIG_V2_FIELDS,
+  );
 
-  if (!SUPPORTED_CONFIG_SCHEMA_VERSIONS.includes(schemaVersion as 1 | 2)) {
+  if (!isSupportedConfigSchemaVersion(schemaVersion)) {
     issues.push(issue(
       "unsupported_schema_version",
       "config.schemaVersion",
@@ -281,14 +296,14 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
   if (schemaVersion === LEGACY_CONFIG_SCHEMA_VERSION) {
     profileId = "signed_human_gates";
   } else if (schemaVersion === CONFIG_SCHEMA_VERSION) {
-    if (!REPOSITORY_TRUST_PROFILE_IDS.includes(input.repositoryTrustProfileId as RepositoryTrustProfileId)) {
+    if (!isRepositoryTrustProfileId(input.repositoryTrustProfileId)) {
       issues.push(issue(
         "unsupported_repository_trust_profile",
         "config.repositoryTrustProfileId",
         "config.repositoryTrustProfileId must be signed_human_gates or coulson_only_platform_review.",
       ));
     } else {
-      profileId = input.repositoryTrustProfileId as RepositoryTrustProfileId;
+      profileId = input.repositoryTrustProfileId;
     }
   }
 
@@ -324,7 +339,9 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
       }
     }
   }
-  const requiredSeats = profileId === "coulson_only_platform_review" ? ["coulson"] : ["coulson", "fitz"];
+  const requiredSeats = profileId === undefined
+    ? []
+    : profileId === "coulson_only_platform_review" ? ["coulson"] : ["coulson", "fitz"];
   for (const requiredSeat of requiredSeats) {
     if (!bindingSeats.has(requiredSeat)) {
       issues.push(issue(
@@ -388,7 +405,7 @@ export function validateShieldConfig(input: unknown): ConfigValidationResult {
 
 export function createShieldConfig(input: CreateShieldConfigInput): ShieldConfigV2 {
   const profileId = input.repositoryTrustProfileId ?? "signed_human_gates";
-  if (!REPOSITORY_TRUST_PROFILE_IDS.includes(profileId)) {
+  if (!isRepositoryTrustProfileId(profileId)) {
     throw new Error(`Unsupported repository trust profile: ${String(profileId)}.`);
   }
   const bindings: TrustedHumanBindingRef[] = [
@@ -499,8 +516,8 @@ export function evaluateDoctor(input: DoctorInput): DoctorReport {
       isPlainObject(input.config) &&
           (input.config.schemaVersion === LEGACY_CONFIG_SCHEMA_VERSION ||
            input.config.repositoryTrustProfileId === "signed_human_gates")
-        ? "Repository trust profile signed_human_gates requires verified Coulson and Fitz SHIELD Ed25519 bindings; Simmons remains optional for product-sensitive missions."
-        : "Repository trust profile coulson_only_platform_review requires a verified Coulson SHIELD Ed25519 binding. Fitz is GitHub-enforced external review; Simmons is conditional external feedback; neither is admitted as SHIELD evidence.",
+        ? "Repository trust profile signed_human_gates configures Coulson and Fitz binding references as required cryptographic seats; Simmons remains optional for product-sensitive missions."
+        : "Repository trust profile coulson_only_platform_review configures Coulson as the only required cryptographic seat. Fitz is GitHub-enforced external review; Simmons is conditional external feedback; neither is admitted as SHIELD evidence.",
     ),
     category("paths", ["config.paths"], "Configured SHIELD paths are safe and distinct."),
   ];

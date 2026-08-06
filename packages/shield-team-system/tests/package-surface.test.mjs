@@ -109,6 +109,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(config.LEGACY_CONFIG_SCHEMA_VERSION, 1);
   assert.equal(config.CONFIG_SCHEMA_VERSION, 2);
   assert.deepEqual(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS, [1, 2]);
+  assert.equal(Object.isFrozen(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS), true);
+  assert.equal(Object.isFrozen(config.REPOSITORY_TRUST_PROFILE_IDS), true);
   assert.equal(config.REPOSITORY_TRUST_PROFILE_CONTRACT_VERSION, "repository.trust-profile.v1");
   assert.equal(Object.isFrozen(config.REPOSITORY_TRUST_PROFILES_V1), true);
   assert.equal(root.validateShieldConfig, config.validateShieldConfig);

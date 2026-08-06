@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   CONFIG_SCHEMA_VERSION,
   LEGACY_CONFIG_SCHEMA_VERSION,
+  REPOSITORY_TRUST_PROFILE_IDS,
   REPOSITORY_TRUST_PROFILES_V1,
   SHIELD_PACKAGE_VERSION,
   SUPPORTED_CONFIG_SCHEMA_VERSIONS,
@@ -37,6 +38,8 @@ test("publishes a closed immutable repository trust profile registry and schema 
   assert.equal(LEGACY_CONFIG_SCHEMA_VERSION, 1);
   assert.equal(CONFIG_SCHEMA_VERSION, 2);
   assert.deepEqual(SUPPORTED_CONFIG_SCHEMA_VERSIONS, [1, 2]);
+  assert.equal(Object.isFrozen(SUPPORTED_CONFIG_SCHEMA_VERSIONS), true);
+  assert.equal(Object.isFrozen(REPOSITORY_TRUST_PROFILE_IDS), true);
   assert.deepEqual(REPOSITORY_TRUST_PROFILES_V1.map(({ profileId }) => profileId), [
     "signed_human_gates",
     "coulson_only_platform_review",
@@ -44,6 +47,11 @@ test("publishes a closed immutable repository trust profile registry and schema 
   assert.equal(Object.isFrozen(REPOSITORY_TRUST_PROFILES_V1), true);
   assert.equal(Object.isFrozen(REPOSITORY_TRUST_PROFILES_V1[0]), true);
   assert.equal(REPOSITORY_TRUST_PROFILES_V1[1].externalEvidenceAdmission, "not_admitted");
+
+  assert.throws(() => SUPPORTED_CONFIG_SCHEMA_VERSIONS.push(3), TypeError);
+  assert.throws(() => REPOSITORY_TRUST_PROFILE_IDS.push("hostile"), TypeError);
+  assert.equal(validateShieldConfig({ ...canonicalConfig(), schemaVersion: 3 }).state, "invalid");
+  assert.equal(validateShieldConfig({ ...canonicalConfig(), repositoryTrustProfileId: "hostile" }).state, "invalid");
 });
 
 test("creates schema 2 and preserves canonical schema-1 parsing and formatting byte-stably", () => {
@@ -122,20 +130,61 @@ test("doctor keeps stable ordering and classifies profile failures as bindings",
     });
     assert.equal(healthy.ok, true);
     assert.deepEqual(healthy.checks.map(({ id }) => id), expectedOrder);
+    assert.equal(
+      healthy.checks.find(({ id }) => id === "bindings").message,
+      config.schemaVersion === 1 || config.repositoryTrustProfileId === "signed_human_gates"
+        ? "Repository trust profile signed_human_gates configures Coulson and Fitz binding references as required cryptographic seats; Simmons remains optional for product-sensitive missions."
+        : "Repository trust profile coulson_only_platform_review configures Coulson as the only required cryptographic seat. Fitz is GitHub-enforced external review; Simmons is conditional external feedback; neither is admitted as SHIELD evidence.",
+    );
   }
+
+  const check = (report, id) => report.checks.find((candidate) => candidate.id === id);
+  const schemaHealthy = "Configuration schema and repository identity are valid.";
 
   const missingProfile = { ...canonicalConfig() };
   delete missingProfile.repositoryTrustProfileId;
   const missingReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: missingProfile });
-  assert.equal(missingReport.checks.find(({ id }) => id === "bindings").ok, false);
-  assert.equal(missingReport.checks.find(({ id }) => id === "config-schema").ok, true);
+  assert.deepEqual(check(missingReport, "config-schema"), { id: "config-schema", ok: true, message: schemaHealthy });
+  assert.deepEqual(check(missingReport, "bindings"), { id: "bindings", ok: false, message: "config is missing field: repositoryTrustProfileId." });
+
+  for (const repositoryTrustProfileId of [7, "hostile"]) {
+    const report = evaluateDoctor({
+      repositoryRootReady: true,
+      packageVersion: SHIELD_PACKAGE_VERSION,
+      configPresent: true,
+      config: { ...canonicalConfig(), repositoryTrustProfileId },
+    });
+    assert.deepEqual(check(report, "config-schema"), { id: "config-schema", ok: true, message: schemaHealthy });
+    assert.deepEqual(check(report, "bindings"), {
+      id: "bindings",
+      ok: false,
+      message: "config.repositoryTrustProfileId must be signed_human_gates or coulson_only_platform_review.",
+    });
+  }
 
   const contradictory = canonicalConfig("coulson_only_platform_review");
   contradictory.trustedHumanBindingRefs.push({ seatId: "fitz", bindingRef: "ed25519:sha256:fitz-binding-ref" });
   const contradictoryReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: contradictory });
-  assert.equal(contradictoryReport.checks.find(({ id }) => id === "bindings").ok, false);
-  assert.match(contradictoryReport.checks.find(({ id }) => id === "bindings").message, /does not admit a fitz/u);
+  assert.deepEqual(check(contradictoryReport, "config-schema"), { id: "config-schema", ok: true, message: schemaHealthy });
+  assert.deepEqual(check(contradictoryReport, "bindings"), {
+    id: "bindings",
+    ok: false,
+    message: "Repository trust profile coulson_only_platform_review does not admit a fitz SHIELD binding reference.",
+  });
+
+  const emptyCoulsonOnly = { ...canonicalConfig("coulson_only_platform_review"), trustedHumanBindingRefs: [] };
+  const cardinalityReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: emptyCoulsonOnly });
+  assert.deepEqual(check(cardinalityReport, "config-schema"), { id: "config-schema", ok: true, message: schemaHealthy });
+  assert.deepEqual(check(cardinalityReport, "bindings"), {
+    id: "bindings",
+    ok: false,
+    message: "A configured SHIELD signing binding reference is required for coulson.",
+  });
 
   const unknownReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: { ...canonicalConfig(), unknownField: true } });
-  assert.equal(unknownReport.checks.find(({ id }) => id === "config-schema").ok, false);
+  assert.deepEqual(check(unknownReport, "config-schema"), { id: "config-schema", ok: false, message: "config has unknown field: unknownField." });
+
+  const unsupportedReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: { ...canonicalConfig(), schemaVersion: 3 } });
+  assert.deepEqual(check(unsupportedReport, "config-schema"), { id: "config-schema", ok: false, message: "Config schemaVersion must be one of: 1, 2." });
+  assert.equal(check(unsupportedReport, "bindings").ok, true);
 });

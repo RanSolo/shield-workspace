@@ -125,6 +125,29 @@ test("legacy equivalent re-init preserves bytes while divergence and Coulson-onl
   assert.equal(await readFile(join(equivalent, ".shield", "config.json"), "utf8"), exactBytes);
   assert.deepEqual(await readdir(join(equivalent, ".shield")), ["config.json"]);
 
+  const reordered = await fixture();
+  await mkdir(join(reordered, ".shield"));
+  const reorderedLegacy = {
+    paths: {
+      temp: legacy.paths.temp,
+      reports: legacy.paths.reports,
+      artifacts: legacy.paths.artifacts,
+      journals: legacy.paths.journals,
+    },
+    trustedHumanBindingRefs: legacy.trustedHumanBindingRefs.map(({ seatId, bindingRef }) => ({ bindingRef, seatId })),
+    supportedModeIds: legacy.supportedModeIds,
+    supportedSeatIds: legacy.supportedSeatIds,
+    adapterId: legacy.adapterId,
+    repositoryId: legacy.repositoryId,
+    schemaVersion: legacy.schemaVersion,
+  };
+  const reorderedBytes = `${JSON.stringify(reorderedLegacy, null, 4)}\n`;
+  await writeFile(join(reordered, ".shield", "config.json"), reorderedBytes);
+  const reorderedNoOp = run(initArgs, reordered);
+  assert.equal(reorderedNoOp.status, 0, reorderedNoOp.stderr);
+  assert.equal(await readFile(join(reordered, ".shield", "config.json"), "utf8"), reorderedBytes);
+  assert.deepEqual(await readdir(join(reordered, ".shield")), ["config.json"]);
+
   const before = await readFile(join(equivalent, ".shield", "config.json"), "utf8");
   const divergent = run([...initArgs.slice(0, -1), "github:user:different-fitz"], equivalent);
   assert.equal(divergent.status, 2);
@@ -237,6 +260,10 @@ test("doctor provides deterministic human and JSON results", async () => {
   assert.equal(report.reportVersion, 1);
   assert.equal(report.checks[0].id, "repository-root");
   assert.equal(report.checks.at(-1).id, "paths");
+  assert.equal(
+    report.checks.find(({ id }) => id === "bindings").message,
+    "Repository trust profile signed_human_gates configures Coulson and Fitz binding references as required cryptographic seats; Simmons remains optional for product-sensitive missions.",
+  );
 
   const coulsonOnlyRoot = await fixture();
   assert.equal(run([
@@ -246,9 +273,9 @@ test("doctor provides deterministic human and JSON results", async () => {
   ], coulsonOnlyRoot).status, 0);
   const coulsonOnly = run(["doctor", "--json"], coulsonOnlyRoot);
   assert.equal(coulsonOnly.status, 0, coulsonOnly.stderr);
-  assert.match(
+  assert.equal(
     JSON.parse(coulsonOnly.stdout).checks.find(({ id }) => id === "bindings").message,
-    /Fitz is GitHub-enforced external review.*neither is admitted as SHIELD evidence/iu,
+    "Repository trust profile coulson_only_platform_review configures Coulson as the only required cryptographic seat. Fitz is GitHub-enforced external review; Simmons is conditional external feedback; neither is admitted as SHIELD evidence.",
   );
 });
 
@@ -263,13 +290,51 @@ test("doctor preserves raw invalid configuration and gives binding profile error
   const missingProfile = run(["doctor", "--json"], root);
   assert.equal(missingProfile.status, 1, missingProfile.stderr);
   const missingReport = JSON.parse(missingProfile.stdout);
-  assert.match(missingReport.checks.find(({ id }) => id === "bindings").message, /missing field: repositoryTrustProfileId/iu);
-  assert.doesNotMatch(missingReport.checks.find(({ id }) => id === "config-schema").message, /repositoryId|schemaVersion is missing/iu);
+  assert.deepEqual(missingReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: true, message: "Configuration schema and repository identity are valid.",
+  });
+  assert.deepEqual(missingReport.checks.find(({ id }) => id === "bindings"), {
+    id: "bindings", ok: false, message: "config is missing field: repositoryTrustProfileId.",
+  });
+
+  for (const repositoryTrustProfileId of [false, "hostile"]) {
+    await writeFile(path, `${JSON.stringify({ ...config, repositoryTrustProfileId })}\n`);
+    const result = run(["doctor", "--json"], root);
+    assert.equal(result.status, 1, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.deepEqual(report.checks.find(({ id }) => id === "config-schema"), {
+      id: "config-schema", ok: true, message: "Configuration schema and repository identity are valid.",
+    });
+    assert.deepEqual(report.checks.find(({ id }) => id === "bindings"), {
+      id: "bindings", ok: false,
+      message: "config.repositoryTrustProfileId must be signed_human_gates or coulson_only_platform_review.",
+    });
+  }
+
+  const contradictory = { ...config, repositoryTrustProfileId: "coulson_only_platform_review" };
+  await writeFile(path, `${JSON.stringify(contradictory)}\n`);
+  const contradictoryReport = JSON.parse(run(["doctor", "--json"], root).stdout);
+  assert.deepEqual(contradictoryReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: true, message: "Configuration schema and repository identity are valid.",
+  });
+  assert.deepEqual(contradictoryReport.checks.find(({ id }) => id === "bindings"), {
+    id: "bindings", ok: false,
+    message: "Repository trust profile coulson_only_platform_review does not admit a fitz SHIELD binding reference.",
+  });
 
   const unknown = { ...config, repositoryTrustProfileId: "signed_human_gates", unrelated: true };
   await writeFile(path, `${JSON.stringify(unknown)}\n`);
   const unknownReport = JSON.parse(run(["doctor", "--json"], root).stdout);
-  assert.match(unknownReport.checks.find(({ id }) => id === "config-schema").message, /unknown field: unrelated/iu);
+  assert.deepEqual(unknownReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: false, message: "config has unknown field: unrelated.",
+  });
+
+  await writeFile(path, `${JSON.stringify({ ...config, repositoryTrustProfileId: "signed_human_gates", schemaVersion: 3 })}\n`);
+  const unsupportedReport = JSON.parse(run(["doctor", "--json"], root).stdout);
+  assert.deepEqual(unsupportedReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: false, message: "Config schemaVersion must be one of: 1, 2.",
+  });
+  assert.equal(unsupportedReport.checks.find(({ id }) => id === "bindings").ok, true);
 });
 
 test("doctor returns one for an unhealthy repository and usage errors return two", async () => {
@@ -284,10 +349,9 @@ test("doctor returns one for an unhealthy repository and usage errors return two
   assert.equal(malformed.status, 1, malformed.stderr);
   const malformedReport = JSON.parse(malformed.stdout);
   assert.equal(malformedReport.ok, false);
-  assert.match(
-    malformedReport.checks.find(({ id }) => id === "config-schema").message,
-    /malformed json/i,
-  );
+  assert.deepEqual(malformedReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: false, message: "Config contains malformed JSON.",
+  });
 
   const unsupported = run(["mission", "launch"], root);
   assert.equal(unsupported.status, 2);

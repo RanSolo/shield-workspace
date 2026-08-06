@@ -24,7 +24,9 @@ import {
   validateSupervisedMissionBrief,
   verifySignedHumanEvidence,
 } from "../dist/mission-v2.mjs";
+import { createShieldConfig } from "../dist/config.mjs";
 import { canonicalDelegationJson, createDelegationLogEntry, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
+import { MISSION_PROFILE_IDS } from "../dist/mission-profile-v1.mjs";
 
 const artifactRevisionId = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
@@ -190,34 +192,31 @@ test("supervised brief participants reject unknown and V0.3-disabled dispatch se
 test("repository trust and mission admission derive exact content-addressed Ed25519 bindings", () => {
   const { brief, coulson, fitz, simmons } = fixture();
   const registry = { schemaVersion: 1, bindings: [coulson.binding, fitz.binding, simmons.binding] };
-  const configured = [
-    { seatId: "coulson", bindingRef: coulson.binding.signingKeyRef },
-    { seatId: "fitz", bindingRef: fitz.binding.signingKeyRef },
-    { seatId: "simmons", bindingRef: simmons.binding.signingKeyRef },
-  ];
-  const config = (schemaVersion, repositoryTrustProfileId, refs = configured) => ({
-    schemaVersion,
-    ...(schemaVersion === 2 ? { repositoryTrustProfileId } : {}),
+  const signed = createShieldConfig({
     repositoryId: "RanSolo/shield-workspace",
-    adapterId: "github",
-    supportedSeatIds: [],
-    supportedModeIds: [],
-    trustedHumanBindingRefs: refs,
-    paths: {},
+    coulsonBindingRef: coulson.binding.signingKeyRef,
+    fitzBindingRef: fitz.binding.signingKeyRef,
+    simmonsBindingRef: simmons.binding.signingKeyRef,
+  });
+  const { repositoryTrustProfileId: _profileId, ...legacyCommon } = signed;
+  const legacy = { ...legacyCommon, schemaVersion: 1 };
+  const coulsonOnly = createShieldConfig({
+    repositoryId: "RanSolo/shield-workspace",
+    repositoryTrustProfileId: "coulson_only_platform_review",
+    coulsonBindingRef: coulson.binding.signingKeyRef,
   });
   const seats = (result) => {
     assert.equal(result.state, "valid", result.errors?.join(" "));
     return result.value.map(({ seatId }) => seatId);
   };
 
-  assert.deepEqual(seats(deriveRepositoryMissionBindings(config(1), registry, brief.missionId, { kind: "legacy-supervised", requireSimmons: false })), ["coulson", "fitz"]);
-  assert.deepEqual(seats(deriveRepositoryMissionBindings(config(1), registry, brief.missionId, { kind: "legacy-supervised", requireSimmons: true })), ["coulson", "fitz", "simmons"]);
+  assert.deepEqual(seats(deriveRepositoryMissionBindings(legacy, registry, brief.missionId, { kind: "legacy-supervised", requireSimmons: false })), ["coulson", "fitz"]);
+  assert.deepEqual(seats(deriveRepositoryMissionBindings(legacy, registry, brief.missionId, { kind: "legacy-supervised", requireSimmons: true })), ["coulson", "fitz", "simmons"]);
   for (const profileId of ["standard", "high_assurance"]) {
-    assert.deepEqual(seats(deriveRepositoryMissionBindings(config(2, "signed_human_gates"), registry, brief.missionId, { kind: "profile-aware", profileId, profileVersion: 1, requireSimmons: false })), ["coulson", "fitz"]);
+    assert.deepEqual(seats(deriveRepositoryMissionBindings(signed, registry, brief.missionId, { kind: "profile-aware", profileId, profileVersion: 1, requireSimmons: false })), ["coulson", "fitz"]);
   }
-  assert.deepEqual(seats(deriveRepositoryMissionBindings(config(2, "signed_human_gates"), registry, brief.missionId, { kind: "profile-aware", profileId: "product_sensitive", profileVersion: 1, requireSimmons: true })), ["coulson", "fitz", "simmons"]);
+  assert.deepEqual(seats(deriveRepositoryMissionBindings(signed, registry, brief.missionId, { kind: "profile-aware", profileId: "product_sensitive", profileVersion: 1, requireSimmons: true })), ["coulson", "fitz", "simmons"]);
 
-  const coulsonOnly = config(2, "coulson_only_platform_review", [configured[0]]);
   assert.deepEqual(seats(deriveRepositoryMissionBindings(coulsonOnly, registry, brief.missionId, { kind: "profile-aware", profileId: "standard", profileVersion: 1, requireSimmons: false })), ["coulson"]);
   for (const admission of [
     { kind: "legacy-supervised", requireSimmons: false },
@@ -234,13 +233,62 @@ test("repository trust and mission admission derive exact content-addressed Ed25
     { kind: "profile-aware", profileId: "high_assurance", profileVersion: 1, requireSimmons: true },
     { kind: "profile-aware", profileId: "product_sensitive", profileVersion: 1, requireSimmons: false },
   ]) {
-    const inconsistent = deriveRepositoryMissionBindings(config(2, "signed_human_gates"), registry, brief.missionId, admission);
+    const inconsistent = deriveRepositoryMissionBindings(signed, registry, brief.missionId, admission);
     assert.equal(inconsistent.state, "invalid");
     assert.equal(inconsistent.code, "repository_mission_profile_inconsistent");
   }
 
-  assert.equal(deriveRepositoryMissionBindings(config(2, "signed_human_gates", [{ ...configured[0], bindingRef: fitz.binding.signingKeyRef }, configured[1]]), registry, brief.missionId, { kind: "legacy-supervised", requireSimmons: false }).state, "invalid");
+  const mismatched = structuredClone(signed);
+  mismatched.trustedHumanBindingRefs[0].bindingRef = fitz.binding.signingKeyRef;
+  assert.equal(deriveRepositoryMissionBindings(mismatched, registry, brief.missionId, { kind: "legacy-supervised", requireSimmons: false }).state, "invalid");
   assert.equal(selectCoulsonOperationBinding(coulsonOnly, registry).value.seatId, "coulson");
+});
+
+test("repository binding selectors validate unknown config and registry before selection", () => {
+  const { brief, coulson, fitz } = fixture();
+  const registry = { schemaVersion: 1, bindings: [coulson.binding, fitz.binding] };
+  const signed = createShieldConfig({
+    repositoryId: "RanSolo/shield-workspace",
+    coulsonBindingRef: coulson.binding.signingKeyRef,
+    fitzBindingRef: fitz.binding.signingKeyRef,
+  });
+  const contradictory = createShieldConfig({
+    repositoryId: "RanSolo/shield-workspace",
+    repositoryTrustProfileId: "coulson_only_platform_review",
+    coulsonBindingRef: coulson.binding.signingKeyRef,
+  });
+  contradictory.trustedHumanBindingRefs.push({ seatId: "fitz", bindingRef: fitz.binding.signingKeyRef });
+  const inherited = Object.assign(Object.create({ inherited: true }), signed);
+  const malformedConfigs = [null, {}, inherited, contradictory, { ...signed, schemaVersion: 3 }, { ...signed, repositoryTrustProfileId: "hostile" }];
+  for (const config of malformedConfigs) {
+    for (const result of [
+      deriveRepositoryMissionBindings(config, registry, brief.missionId, { kind: "legacy-supervised", requireSimmons: false }),
+      selectCoulsonOperationBinding(config, registry),
+    ]) {
+      assert.equal(result.state, "invalid");
+      assert.equal(result.code, "repository_config_invalid");
+    }
+  }
+
+  for (const malformedRegistry of [null, {}, Object.assign(Object.create({ inherited: true }), registry)]) {
+    assert.equal(deriveRepositoryMissionBindings(signed, malformedRegistry, brief.missionId, { kind: "legacy-supervised", requireSimmons: false }).state, "invalid");
+    assert.equal(selectCoulsonOperationBinding(signed, malformedRegistry).state, "invalid");
+  }
+
+  let appended = false;
+  try {
+    MISSION_PROFILE_IDS.push("hostile");
+    appended = true;
+  } catch {}
+  try {
+    const hostile = deriveRepositoryMissionBindings(signed, registry, brief.missionId, {
+      kind: "profile-aware", profileId: "hostile", profileVersion: 1, requireSimmons: false,
+    });
+    assert.equal(hostile.state, "invalid");
+    assert.equal(hostile.code, "repository_mission_profile_inconsistent");
+  } finally {
+    if (appended && MISSION_PROFILE_IDS.at(-1) === "hostile") MISSION_PROFILE_IDS.pop();
+  }
 });
 
 test("approval and no-effect steps keep execution separate from human acceptance readiness", () => {
