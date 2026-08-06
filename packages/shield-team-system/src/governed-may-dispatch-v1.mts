@@ -42,6 +42,7 @@ import {
 } from "./implementation-authority-v1.mjs";
 import {
   computeMayPlannedOperationsDigestV1,
+  computeMayPlannedOperationsSequenceEffectKeyV1,
   computeMayPlannedToolEffectKeyV1,
   MAY_TOOL_MAPPINGS_V1,
   normalizeMayPlannedToolOperationsV1,
@@ -351,7 +352,8 @@ type PlannedAuthorityBindingSnapshot =
   | {
       readonly state: "ready";
       readonly operations: MayPlannedToolOperationsV1;
-      readonly operationEffectKeys: readonly [string, string];
+      readonly operationEffectKeys: readonly string[];
+      readonly sequenceEffectKey: string | null;
       readonly cycleEffectKey: string;
       readonly operationsDigest: string;
     }
@@ -1009,6 +1011,7 @@ function deriveDispatchEnvelopeV1(
     validationCommandIds: Object.freeze([...wrapper.validationCommandIds]),
     plannedToolOperations: planned.operations,
     plannedToolOperationEffectKeys: planned.operationEffectKeys,
+    plannedToolOperationsSequenceEffectKey: planned.sequenceEffectKey,
     plannedToolOperationsDigest: planned.operationsDigest,
     missionCycleEffectKey: planned.cycleEffectKey,
     outputContract: Object.freeze(["changed_files", "tests_run", "unresolved_risks"]),
@@ -1137,17 +1140,23 @@ function bindPlannedAuthorityV1(
   operations: MayPlannedToolOperationsV1,
 ): PlannedAuthorityBindingSnapshot {
   const normalized = normalizeMayPlannedToolOperationsV1(operations);
-  const operationEffectKeys = Object.freeze([
-    computeMayPlannedToolEffectKeyV1(normalized[0]),
-    computeMayPlannedToolEffectKeyV1(normalized[1]),
-  ]) as readonly [string, string];
+  const operationEffectKeys = Object.freeze(normalized.map(computeMayPlannedToolEffectKeyV1));
+  const sequenceEffectKey = computeMayPlannedOperationsSequenceEffectKeyV1(normalized);
+  const paths = normalized.slice(0, -1).map((operation) => {
+    if (operation.toolName !== "writeFile") throw new Error("may_planned_operations_malformed");
+    return operation.path;
+  });
+  const validation = normalized.at(-1);
+  if (validation?.toolName !== "runValidation") {
+    return { state: "blocked", code: "planned_authority_invalid", errors: stableErrors(["Planned May validation operation is missing."]) };
+  }
   const expected = {
-    paths: [normalized[0].path].sort(),
+    paths: paths.sort(),
     actions: [MAY_TOOL_MAPPINGS_V1.writeFile.actionId, MAY_TOOL_MAPPINGS_V1.runValidation.actionId].sort(),
     effects: [MAY_TOOL_MAPPINGS_V1.writeFile.effectClass, MAY_TOOL_MAPPINGS_V1.runValidation.effectClass].sort(),
-    keys: [runnerPlan.value.effectKey, ...operationEffectKeys].sort(),
+    keys: [runnerPlan.value.effectKey, ...operationEffectKeys, ...(sequenceEffectKey === null ? [] : [sequenceEffectKey])].sort(),
     capabilities: [MAY_TOOL_MAPPINGS_V1.writeFile.capability, MAY_TOOL_MAPPINGS_V1.runValidation.capability].sort(),
-    commands: [normalized[1].commandId],
+    commands: [validation.commandId],
   };
   const authority = authoritySnapshot.authority;
   const wrapper = authoritySnapshot.bindingWrapper;
@@ -1172,6 +1181,7 @@ function bindPlannedAuthorityV1(
     state: "ready",
     operations: normalized,
     operationEffectKeys,
+    sequenceEffectKey,
     cycleEffectKey: runnerPlan.value.effectKey,
     operationsDigest: computeMayPlannedOperationsDigestV1(normalized),
   };
@@ -2230,6 +2240,7 @@ export async function runGovernedMayDispatchStepV1(
   const plannedEvidenceRefs = Object.freeze([
     plannedAuthority.cycleEffectKey,
     ...plannedAuthority.operationEffectKeys,
+    ...(plannedAuthority.sequenceEffectKey === null ? [] : [plannedAuthority.sequenceEffectKey]),
     `evidence:may-planned-operations:${plannedAuthority.operationsDigest}`,
     `evidence:may-dispatch-envelope:${envelopeSnapshot.digest}`,
   ]);
@@ -2289,7 +2300,10 @@ export async function runGovernedMayDispatchStepV1(
   if (canonicalJson(observedPreflight) !== canonicalJson(plannedAuthority.operations)) {
     return { state: "blocked", readiness: "blocked", code: "planned_preflight_invalid", errors: Object.freeze(["Live target or executable preflight does not exactly match the planned operations."]) };
   }
-  const plannedValidation = plannedAuthority.operations[1];
+  const plannedValidation = plannedAuthority.operations.at(-1);
+  if (plannedValidation?.toolName !== "runValidation") {
+    return { state: "blocked", readiness: "blocked", code: "planned_preflight_invalid", errors: Object.freeze(["Planned validation operation is missing."]) };
+  }
   const matchingCommands = dependenciesSnapshot.value.validationCommands.filter(({ commandId }) => commandId === plannedValidation.commandId);
   if (dependenciesSnapshot.value.validationCommands.length !== 1 || matchingCommands.length !== 1 || canonicalJson(matchingCommands[0]) !== canonicalJson({
     commandId: plannedValidation.commandId,
@@ -2524,6 +2538,7 @@ export async function runGovernedMayDispatchStepV1(
   const contextsByDecisionId = new Map<string, PermissionInvocationContext>();
   const executionContextsByDecisionId = new Map<string, PermissionInvocationContext>();
   const perToolDecisionOrder: string[] = [];
+  let nextSlotIndex = 0;
   const executeTool = async (plan: RunnerCyclePlan): Promise<import("./runner-v1.mjs").RunnerExecutorResult> => {
     try {
       const context = await loadFreshBoundary(plan, runnerPlan.decisionId);
@@ -2543,13 +2558,25 @@ export async function runGovernedMayDispatchStepV1(
         approvedFiles: Object.freeze([...authoritySnapshot.bindingWrapper.approvedRelativePaths]),
         validationCommands: dependenciesSnapshot.value.validationCommands,
         plannedToolOperations: plannedAuthority.operations,
-        nextCallSlot: async (slot: Readonly<Record<string, string>>) => Object.freeze({
-          ...plan,
-          cycleId: `cycle:may-control:${createHash("sha256").update(canonicalJson({ sessionId: claimResult.value.receipt.childSessionId, toolCallId: slot.toolCallId })).digest("base64url")}`,
-          actionId: slot.actionId,
-          effectClass: slot.effectClass,
-          effectKey: slot.effectKey,
-        }),
+        nextCallSlot: async (slot: Readonly<Record<string, string>>) => {
+          const expectedOperation = plannedAuthority.operations[nextSlotIndex];
+          const expectedMapping = expectedOperation === undefined ? undefined : MAY_TOOL_MAPPINGS_V1[expectedOperation.toolName];
+          if (expectedOperation === undefined || expectedMapping === undefined
+            || slot.toolName !== expectedOperation.toolName
+            || slot.actionId !== expectedMapping.actionId
+            || slot.effectClass !== expectedMapping.effectClass
+            || slot.effectKey !== plannedAuthority.operationEffectKeys[nextSlotIndex]) {
+            throw new Error("may_control_sequence_mismatch");
+          }
+          nextSlotIndex += 1;
+          return Object.freeze({
+            ...plan,
+            cycleId: `cycle:may-control:${createHash("sha256").update(canonicalJson({ sessionId: claimResult.value.receipt.childSessionId, toolCallId: slot.toolCallId })).digest("base64url")}`,
+            actionId: slot.actionId,
+            effectClass: slot.effectClass,
+            effectKey: slot.effectKey,
+          });
+        },
         getAuthorizationContext: async (activePlan: RunnerCyclePlan) => {
           const decisionId = `decision:may-control:${createHash("sha256").update(canonicalJson(activePlan)).digest("base64url")}`;
           plansByDecisionId.set(decisionId, activePlan);
@@ -2578,19 +2605,25 @@ export async function runGovernedMayDispatchStepV1(
         ...(dependenciesSnapshot.value.fetchImpl === undefined ? {} : { fetchImpl: dependenciesSnapshot.value.fetchImpl }),
         ...(dependenciesSnapshot.value.mayApiToken === undefined ? {} : { apiToken: dependenciesSnapshot.value.mayApiToken }),
       }));
-      if (control.completedToolCalls !== 2 || control.writeCalls !== 1 || control.validationCalls !== 1 || perToolDecisionOrder.length !== 2) {
+      const expectedToolCalls = plannedAuthority.operations.length;
+      if (control.completedToolCalls !== expectedToolCalls || control.writeCalls !== expectedToolCalls - 1
+        || control.validationCalls !== 1 || perToolDecisionOrder.length !== expectedToolCalls || nextSlotIndex !== expectedToolCalls) {
         throw new Error("may_control_sequence_mismatch");
       }
       const [controlRead, auditRead] = await Promise.all([controlStore.read(), permissionAudit.read()]);
       if (!plainObject(controlRead) || !Array.isArray(controlRead.orderedEvents) || !plainObject(controlRead.terminalState)
         || !plainObject(auditRead) || !Array.isArray(auditRead.entries)) throw new Error("may_control_sequence_mismatch");
       const events = controlRead.orderedEvents as Array<Record<string, unknown>>;
-      const expectedCodes = ["may_control_started", "may_control_writeFile_completed", "may_control_runValidation_completed", "may_control_completed"];
+      const expectedCodes = [
+        "may_control_started",
+        ...plannedAuthority.operations.map(({ toolName }) => `may_control_${toolName}_completed`),
+        "may_control_completed",
+      ];
       if (events.length !== expectedCodes.length || events.some((event, index) => !plainObject(event)
         || event.sessionId !== claimResult.value.receipt.childSessionId || event.code !== expectedCodes[index])) {
         throw new Error("may_control_sequence_mismatch");
       }
-      const expectedMappings = [MAY_TOOL_MAPPINGS_V1.writeFile, MAY_TOOL_MAPPINGS_V1.runValidation];
+      const expectedMappings = plannedAuthority.operations.map(({ toolName }) => MAY_TOOL_MAPPINGS_V1[toolName]);
       for (let index = 0; index < perToolDecisionOrder.length; index += 1) {
         const decisionId = perToolDecisionOrder[index];
         const activePlan = plansByDecisionId.get(decisionId);

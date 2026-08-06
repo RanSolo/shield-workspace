@@ -8,6 +8,7 @@ import { createAuditedExecutor, createPermissionAuthorizer } from "../../dist/pe
 import { validateRunnerCyclePlan } from "../../dist/runner-v1.mjs";
 import {
   computeMayExecutableIdentityV1,
+  computeMayPlannedToolEffectKeyV1,
   computeMayRegularFileIdentityV1,
   computeMayValidationEffectKeyV1,
   computeMayWriteEffectKeyV1,
@@ -647,8 +648,12 @@ export async function runMayToolCall(requestInput, dependenciesInput) {
   const mapping = MAY_TOOL_MAPPINGS[request.toolName];
   const dependencies = normalizeDependencies(dependenciesInput);
   const [root, commands] = await Promise.all([createRoot(request.repositoryRoot), normalizeCommands(dependencies.validationCommands)]);
-  const plannedOperation = dependencies.plannedToolOperations?.[request.toolName === "writeFile" ? 0 : 1];
   const effectKey = mayEffectKey(request, args, commands);
+  const matchingPlannedOperations = dependencies.plannedToolOperations?.filter(
+    (operation) => computeMayPlannedToolEffectKeyV1(operation) === effectKey,
+  );
+  if (matchingPlannedOperations !== undefined && matchingPlannedOperations.length !== 1) throw new Error("may_planned_operation_mismatch");
+  const plannedOperation = matchingPlannedOperations?.[0];
   const expected = Object.freeze({
     canonicalRoot: root.canonical, repositoryId: dependencies.repositoryId,
     reasoningRuntimeId: dependencies.reasoningRuntimeId, toolExecutorId: dependencies.toolExecutorId,
@@ -732,6 +737,9 @@ export async function runMayControlLoop(requestInput, dependenciesInput) {
   let validationCalls = 0;
   let releasedBytes = 0;
   try {
+    const plannedCommands = dependencies.plannedToolOperations === undefined
+      ? null
+      : await normalizeCommands(dependencies.validationCommands);
     for (let round = 0; round < MAY_CONTROL_LOOP_LIMITS.rounds; round += 1) {
       const inferenceTimeout = Math.min(MAY_CONTROL_LOOP_LIMITS.inferenceTimeoutMs, remainingTime(deadline, clock));
       const response = await withinDeadline(() => fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
@@ -741,7 +749,12 @@ export async function runMayControlLoop(requestInput, dependenciesInput) {
       }, { timeoutMs: inferenceTimeout, maxBytes: MAY_CONTROL_LOOP_LIMITS.responseBytes }), deadline, clock);
       const assistant = parseAssistantResponse(response);
       if (assistant.toolCalls.length === 0) {
-        if (completedToolCalls === 0 || validationCalls === 0 || typeof assistant.content !== "string" || assistant.content.trim().length === 0) throw new Error("may_control_protocol_incomplete");
+        const plannedComplete = dependencies.plannedToolOperations === undefined
+          ? completedToolCalls > 0 && validationCalls > 0
+          : completedToolCalls === dependencies.plannedToolOperations.length
+            && writeCalls === dependencies.plannedToolOperations.length - 1
+            && validationCalls === 1;
+        if (!plannedComplete || typeof assistant.content !== "string" || assistant.content.trim().length === 0) throw new Error("may_control_protocol_incomplete");
         eventCounter += 1;
         await appendControlEvent(dependencies, request.sessionId, eventCounter, "may_control_completed", {}, timing);
         return Object.freeze({
@@ -763,6 +776,13 @@ export async function runMayControlLoop(requestInput, dependenciesInput) {
       for (const id of batchIds) seenCallIds.add(id);
       callCount += assistant.toolCalls.length;
       for (const call of assistant.toolCalls) {
+        if (dependencies.plannedToolOperations !== undefined) {
+          const expectedOperation = dependencies.plannedToolOperations[completedToolCalls];
+          if (expectedOperation === undefined || call.function.name !== expectedOperation.toolName) throw new Error("may_control_sequence_mismatch");
+          const callArguments = parseArguments(call.function.name, call.function.arguments);
+          const callEffectKey = mayEffectKey({ toolName: call.function.name }, callArguments, plannedCommands);
+          if (callEffectKey !== computeMayPlannedToolEffectKeyV1(expectedOperation)) throw new Error("may_control_sequence_mismatch");
+        }
         const result = await withinDeadline(() => runMayToolCall({
           sessionId: request.sessionId,
           toolCallId: call.id,
