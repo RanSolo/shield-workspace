@@ -826,6 +826,74 @@ test("receipt identity and expected revision mismatches fail closed", () => {
   assert.equal(staleExpectedRevision.reason, "publication_binding_mismatch");
 });
 
+test("schema-9 create resumes by exact verification and reaches dispatch_ready without mutation", async () => {
+  const current = await createGovernedFixture();
+  const createRun = governedRun(current);
+  const created = await prepareGovernedDeliveryWorkspaceForDispatch(
+    governedInput(current, { planGateCandidate: null }),
+    governedOptions(current, {
+      run: createRun,
+      loadFuryPlanReviewEvidence: () => [],
+      loadFuryDispatchReceiptEntries: () => [],
+    }),
+  );
+  assert.equal(created.state, "workspace_ready");
+  assert.equal(created.publicationAction, "created_draft_pr");
+  assert.equal(createRun.calls.length, 19);
+
+  const exactPR = pr({
+    body: "Issue 44 governed Mission Workspace",
+    headRefOid: current.artifactRevisionId,
+  });
+  const resumeRun = runner([
+    ...governedInitialChecks(current.artifactRevisionId),
+    ok(JSON.stringify([exactPR])),
+    ...governedScopeChecks(current.repositoryRoot, current.artifactRevisionId),
+    ok(JSON.stringify([exactPR])),
+  ]);
+  const trace = [];
+  let journalReads = 0;
+  let furyReads = 0;
+  let dispatchReads = 0;
+  const resumed = await prepareGovernedDeliveryWorkspaceForDispatch(governedInput(current), {
+    run: (...args) => {
+      trace.push(args[0] === "gh" && args[1][0] === "pr" && args[1][1] === "list"
+        ? "command:pr-read"
+        : "command:publication");
+      return resumeRun(...args);
+    },
+    loadJournal: () => {
+      journalReads += 1;
+      trace.push(`journal:${journalReads}`);
+      return structuredClone(current.entries);
+    },
+    loadFuryPlanReviewEvidence: () => {
+      furyReads += 1;
+      trace.push(`fury:${furyReads}`);
+      return [current.bundle.evidence];
+    },
+    loadFuryDispatchReceiptEntries: () => {
+      dispatchReads += 1;
+      trace.push(`dispatch:${dispatchReads}`);
+      return current.bundle.entries;
+    },
+    realpath: (value) => value,
+  });
+
+  assert.equal(resumed.state, "dispatch_ready", JSON.stringify({ resumed, calls: resumeRun.calls }));
+  assert.equal(resumed.publicationAction, "verified_existing_draft_pr");
+  assert.equal(resumed.receipt.artifactRevisionId, current.artifactRevisionId);
+  assert.equal(resumeRun.calls.length, 17);
+  assert.equal(resumeRun.calls.some(({ executable, args }) =>
+    executable === "git" && args[0] === "push"), false);
+  assert.equal(resumeRun.calls.some(({ executable, args }) =>
+    executable === "gh" && args[0] === "pr" && ["create", "edit"].includes(args[1])), false);
+  assert.deepEqual(trace.slice(-4), ["journal:3", "command:pr-read", "fury:2", "dispatch:2"]);
+  assert.equal(journalReads, 3);
+  assert.equal(furyReads, 2);
+  assert.equal(dispatchReads, 2);
+});
+
 test("governed async workspace reaches dispatch_ready when May implementation paths exclude the exact-bound blueprint", async () => {
   const current = await createGovernedFixture();
   const trace = [];

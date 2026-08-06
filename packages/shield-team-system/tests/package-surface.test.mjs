@@ -438,6 +438,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const renderHandoff = renderMissionHandoff;
     const workspaceReceipt = null as unknown as PRWorkspaceReceipt;
     const workspaceResult = null as unknown as DeliveryWorkspaceResult;
+    const verifiedPublicationAction:
+      Extract<DeliveryWorkspaceResult, { state: "dispatch_ready" }>["publicationAction"] =
+        "verified_existing_draft_pr";
     const dispatchScope: SeatDispatchReceiptStoreScopeInput = {
       repositoryRoot: "/tmp/dispatch-store",
       repositoryId: "repo-1",
