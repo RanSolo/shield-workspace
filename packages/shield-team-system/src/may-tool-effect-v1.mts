@@ -51,7 +51,19 @@ export interface MayPlannedValidationOperationV1 {
 }
 
 export type MayPlannedToolOperationV1 = MayPlannedWriteOperationV1 | MayPlannedValidationOperationV1;
-export type MayPlannedToolOperationsV1 = readonly [MayPlannedWriteOperationV1, MayPlannedValidationOperationV1];
+export type MayPlannedToolOperationsV1 = readonly [
+  MayPlannedWriteOperationV1,
+  MayPlannedValidationOperationV1,
+] | readonly [
+  MayPlannedWriteOperationV1,
+  MayPlannedWriteOperationV1,
+  MayPlannedValidationOperationV1,
+] | readonly [
+  MayPlannedWriteOperationV1,
+  MayPlannedWriteOperationV1,
+  MayPlannedWriteOperationV1,
+  MayPlannedValidationOperationV1,
+];
 
 export interface MayWriteEffectInputV1 {
   readonly path: string;
@@ -204,8 +216,15 @@ function normalizeValidation(value: unknown): MayPlannedValidationOperationV1 {
 
 export function normalizeMayPlannedToolOperationsV1(value: unknown): MayPlannedToolOperationsV1 {
   const operations = denseArray(value);
-  if (operations === null || operations.length !== 2) throw new Error("may_planned_operations_malformed");
-  return Object.freeze([normalizeWrite(operations[0]), normalizeValidation(operations[1])]);
+  if (operations === null || operations.length < 2 || operations.length > 4) throw new Error("may_planned_operations_malformed");
+  const writes = operations.slice(0, -1).map(normalizeWrite);
+  const validation = normalizeValidation(operations.at(-1));
+  const paths = writes.map(({ path }) => path);
+  if (new Set(paths).size !== paths.length) throw new Error("may_planned_operations_malformed");
+  const normalized = Object.freeze([...writes, validation]) as MayPlannedToolOperationsV1;
+  const effectKeys = normalized.map(computeMayPlannedToolEffectKeyV1);
+  if (new Set(effectKeys).size !== effectKeys.length) throw new Error("may_planned_operations_malformed");
+  return normalized;
 }
 
 export function computeMayWriteEffectKeyV1(input: MayWriteEffectInputV1): string {
@@ -265,4 +284,14 @@ export function computeMayPlannedToolEffectKeyV1(operation: MayPlannedToolOperat
 export function computeMayPlannedOperationsDigestV1(operations: MayPlannedToolOperationsV1): string {
   const normalized = normalizeMayPlannedToolOperationsV1(operations);
   return `sha256:${createHash("sha256").update(JSON.stringify(normalized)).digest("base64url")}`;
+}
+
+export function computeMayPlannedOperationsSequenceEffectKeyV1(operations: MayPlannedToolOperationsV1): string | null {
+  const normalized = normalizeMayPlannedToolOperationsV1(operations);
+  if (normalized.length === 2) return null;
+  const digest = computeMayPlannedOperationsDigestV1(normalized);
+  return `effect:may-sequence:sha256:${createHash("sha256")
+    .update("shield:may-planned-tool-sequence:v1\0", "utf8")
+    .update(digest, "utf8")
+    .digest("hex")}`;
 }
