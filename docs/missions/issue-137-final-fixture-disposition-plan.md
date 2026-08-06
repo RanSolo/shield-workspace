@@ -13,7 +13,7 @@
 
 ## Verified current state
 
-The fixture's trusted isolation, package-composition, external-revision, failure-injection, rollback, and operator-checkout protections already exist. The fresh-main fixture suite passes 37/37 tests and builds `@shield/team-system` through its pretest.
+The fixture's trusted isolation, package-composition, external-revision, failure-injection, rollback, and operator-checkout protections already exist. The fresh-main fixture suite passes 37/37 tests and builds `@shield/team-system` through its pretest. Fury additionally confirmed that the composer currently measures a supplied tarball but does not compare that digest with the package digest pinned by the external release baseline. A substituted package with the expected name and version can therefore reach `composed`; this final disposition must close that package-content seam.
 
 The remaining defect is a stale disposition seam:
 
@@ -45,15 +45,28 @@ In `benchmarks/v0.3-external-acceptance-v1/src/driver.mjs`:
 - return a closed `ready` preflight only after the external repository is canonical, clean, based on the frozen template bytes, at the exact current head, and changed only at `src/greeting.mjs`;
 - include the measured external revision, existing fixture/host/blind preflight, and evidence inventory in that result.
 
-The driver must not install or import the package, execute candidate code, mutate either repository, or contact GitHub. Package artifact identity remains enforced by the existing independently pinned `composeExternalArtifact(...)`, which measures the exact artifact digest and verifies installed package name/version inside its isolated disposable root.
+The driver must not install or import the package, execute candidate code, mutate either repository, or contact GitHub. Package artifact identity remains the trusted launcher's responsibility.
 
-### 3. Rebind content identity and tests
+### 3. Enforce the pinned package bytes at the trusted launcher
+
+In `benchmarks/v0.3-fixture-host-launcher.mjs`, within `composeExternalArtifact(...)`:
+
+- read the regular external package artifact as it does now;
+- before creating an isolation root, installing, or importing package code, compare the measured artifact SHA-256 with `baseline.package.digest`;
+- return closed `state: "blocked", reason: "package_artifact_digest_mismatch"` on inequality;
+- preserve the existing exact installed package name/version check, isolated offline install, public-surface import, denial proof, interruption handling, and cleanup behavior.
+
+The baseline and identity record—not caller input—remain the source of the expected digest.
+
+### 4. Rebind content identity and tests
 
 In `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json`:
 
 - update only the framed SHA-256 digests for covered artifacts whose bytes change;
-- update the package digest to the exact deterministic tarball packed from the implementation revision;
+- update the package digest to an exact deterministic tarball packed from an isolated checkout of the authorized planning revision;
 - preserve the closed identity schema and package name/version.
+
+The package subtree is excluded from this mission's writable paths. May must create the pin by checking out the authorized planning revision in a fresh detached temporary worktree, building `@shield/team-system` from that checkout with the repository's locked dependencies, and running `npm pack` against that checkout with the existing `--ignore-scripts` behavior. After the implementation commit, Hill must repeat the same isolated build/pack procedure at the exact implementation revision. The two tarball SHA-256 values must be byte-identical because the package subtree is unchanged; inequality fails closed before Mack/Fury review. The exact implementation-revision artifact is retained for the disposable run.
 
 In `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`:
 
@@ -61,10 +74,12 @@ In `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`:
 - prove malformed inputs and identity drift still fail before repository/package effects;
 - prove missing, dirty, wrong-head, wrong-base, frozen-base drift, and scope drift cannot produce `ready`;
 - prove a clean exact one-path external revision produces literal `ready` with measured revision evidence and the existing human-evidence inventory;
+- prove a substituted same-name/version tarball cannot reach isolation or installation and returns `package_artifact_digest_mismatch`;
+- prove the exact pinned tarball still reaches `composed`;
 - retain focused trusted-composition, capability-denial, interruption, failure-injection, rollback, and operator-readback tests;
-- refresh only the independently pinned release-baseline digests changed by this mission.
+- refresh only the independently pinned identity-record and launcher digests changed by this mission.
 
-### 4. Correct the operator runbook
+### 5. Correct the operator runbook
 
 In `benchmarks/v0.3-external-acceptance-v1/RUNBOOK.md`:
 
@@ -80,15 +95,16 @@ In `benchmarks/v0.3-external-acceptance-v1/RUNBOOK.md`:
 - `benchmarks/v0.3-external-acceptance-v1/fixture-identity-v1.json`
 - `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/RUNBOOK.md`
+- `benchmarks/v0.3-fixture-host-launcher.mjs`
 
-The mission brief and this plan are planning artifacts and remain immutable during implementation. `benchmarks/v0.3-fixture-host-launcher.mjs`, package production code, authority contracts, GitHub adapters, Asmark repositories, and #29 are excluded.
+The mission brief and this plan are planning artifacts and remain immutable during implementation. Package production code, authority contracts, GitHub adapters, Asmark repositories, and #29 are excluded.
 
 ## Validation and exact-revision gates
 
 1. Commit only the mission brief and this plan.
 2. Fury reviews that exact planning revision. Any revision returns to the same Fury reviewer.
 3. After `FURY_PASS`, initialize and authorize the schema-9 mission, issue exact-path/effect Wheels Up, and bind May at the reviewed planning HEAD.
-4. May implements only the five writable fixture paths and commits one implementation revision whose sole parent is the authorized planning HEAD.
+4. May implements only the six writable fixture paths. Before committing, May creates the deterministic package pin from an isolated checkout of the authorized planning revision as specified above, records it in the identity file, refreshes the covered-artifact and release-baseline digests, and commits one implementation revision whose sole parent is the authorized planning HEAD.
 5. Run:
 
    ```text
@@ -97,8 +113,8 @@ The mission brief and this plan are planning artifacts and remain immutable duri
    git diff --check
    ```
 
-6. Mack independently validates the exact clean implementation revision, including identity readback and the no-effect ready preflight. Fury performs exact-revision conformance review.
-7. Only after both return `PASS`, build the exact package artifact and run once from a newly created repository outside the SHIELD workspace:
+6. Repack from an isolated checkout of the exact implementation commit and require its SHA-256 to equal the precommitted package pin. Mack then independently validates that exact clean revision, including package-byte equality, identity readback, substituted-artifact rejection, and the no-effect ready preflight. Fury performs exact-revision conformance review.
+7. Only after both return `PASS`, use that exact digest-matched implementation-revision package artifact and run once from a newly created repository outside the SHIELD workspace:
    - establish the documented post-install/post-init adoption base;
    - create one candidate commit changing only `src/greeting.mjs`;
    - obtain `ready` from `launchExternalFixture(...)`;
