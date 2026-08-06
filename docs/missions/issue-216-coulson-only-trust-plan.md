@@ -85,11 +85,13 @@ closed. Doctor remains read-only and performs no network request.
 
 Doctor must retain the raw parsed object and complete config-validation result
 long enough to classify failures truthfully. Malformed JSON, unsupported schema,
-and structural closure errors route to `config-schema`.
-`repositoryTrustProfileId`, profile/binding cardinality, missing Coulson, and
-contradictory Fitz/Simmons refs route to `bindings`. Human and JSON output use
-stable, exact messages; doctor must not replace the invalid candidate with `{}`
-and report a secondary missing-field error.
+and unknown unrelated top-level fields route to `config-schema`. Missing,
+wrong-type, or unsupported `config.repositoryTrustProfileId`, plus
+profile/binding cardinality, missing Coulson, and contradictory Fitz/Simmons
+refs, route to `bindings` and take precedence over generic structural closure
+classification for that field. Human and JSON output use stable, exact
+messages; doctor must not replace the invalid candidate with `{}` and report a
+secondary missing-field error.
 
 ### Mission startup
 
@@ -101,18 +103,24 @@ an arbitrary seat list. The complete matrix is:
 | --- | --- | --- |
 | schema 1 (implicit `signed_human_gates`) | legacy supervised, `requireSimmons=false` | Coulson + Fitz |
 | schema 1 (implicit `signed_human_gates`) | legacy supervised, `requireSimmons=true` | Coulson + Fitz + Simmons |
+| schema 2 `signed_human_gates` | legacy supervised, `requireSimmons=false` | Coulson + Fitz |
+| schema 2 `signed_human_gates` | legacy supervised, `requireSimmons=true` | Coulson + Fitz + Simmons |
 | schema 1 or schema 2 `signed_human_gates` | profile-aware `standard@1` | Coulson + Fitz |
 | schema 1 or schema 2 `signed_human_gates` | profile-aware `high_assurance@1` | Coulson + Fitz |
 | schema 1 or schema 2 `signed_human_gates` | profile-aware `product_sensitive@1` | Coulson + Fitz + Simmons |
 | schema 2 `coulson_only_platform_review` | profile-aware `standard@1` | Coulson only |
 | schema 2 `coulson_only_platform_review` | legacy, `high_assurance@1`, or `product_sensitive@1` | blocked before journal creation |
 
-Profile-aware derivation occurs only after the brief passes the canonical
-profile validator. `requireSimmons` must be `true` exactly for
+Profile-aware derivation occurs only after the brief passes the existing
+canonical profile validator. A separate repository mission-admission check then
+requires `requireSimmons` to be `true` exactly for
 `product_sensitive@1` and `false` for `standard@1` and `high_assurance@1`;
-contradiction is malformed and cannot influence binding selection. The stable
-admission failure code for a mission/profile unsupported by the repository
-trust profile is `repository_trust_profile_incompatible`.
+contradiction is `repository_mission_profile_inconsistent` and cannot influence
+binding selection or journal creation. This rule applies only to future CLI
+admission: do not tighten the shared brief validator or reinterpret historical
+schema-9 journals. The stable admission failure code for a mission/profile
+unsupported by the repository trust profile is
+`repository_trust_profile_incompatible`.
 
 Coulson signer setup and delegation operations select exactly Coulson by a
 fixed internal operation rule. They do not reuse the mission-admission matrix
@@ -154,10 +162,8 @@ May may modify only:
 8. `packages/shield-team-system/tests/supervised-cli.test.mjs`
 9. `packages/shield-team-system/INSTALLATION.md`
 10. `packages/shield-team-system/SUPERVISED_MISSION.md`
-11. `packages/shield-team-system/src/profile-aware-mission-v1.mts`
-12. `packages/shield-team-system/tests/profile-aware-mission-v1.test.mjs`
-13. `packages/shield-team-system/tests/package-surface.test.mjs`
-14. `packages/shield-team-system/PUBLIC_API.md`
+11. `packages/shield-team-system/tests/package-surface.test.mjs`
+12. `packages/shield-team-system/PUBLIC_API.md`
 
 The mission brief and plan are immutable during implementation. Generated
 declarations and build artifacts are validation output, not committed scope.
@@ -181,13 +187,16 @@ declarations and build artifacts are validation output, not committed scope.
   explicit Coulson-only migration fail before mutation;
 - a profile-aware `standard@1` mission begins from config plus registry
   containing only Coulson and creates no Fitz/Simmons requirement or evidence;
-- contradictory profile/`requireSimmons` briefs fail canonical validation before
-  binding selection;
+- contradictory profile/`requireSimmons` briefs fail repository mission
+  admission with `repository_mission_profile_inconsistent` before binding
+  selection or journal creation, while historical replay remains unchanged;
 - high-assurance and product-sensitive missions fail closed without their exact
   signed bindings, return `repository_trust_profile_incompatible` under the
   Coulson-only profile, create no journal, and remain green with
   `signed_human_gates`;
 - legacy supervised mission behavior remains unchanged;
+- schema-2 signed-human default initialization starts legacy supervised missions
+  with the same Coulson/Fitz and optional Simmons binding sets as schema 1;
 - later config/profile mutation does not alter replay of an existing journal,
   and unsolicited Fitz/Simmons evidence cannot satisfy a Coulson-only standard
   journal;
@@ -203,7 +212,7 @@ Run sequentially without filtering failures:
 
 ```text
 npm run build --workspace @shield/team-system
-node --test packages/shield-team-system/tests/config.test.mjs packages/shield-team-system/tests/cli.test.mjs packages/shield-team-system/tests/mission-v2.test.mjs packages/shield-team-system/tests/profile-aware-mission-v1.test.mjs packages/shield-team-system/tests/supervised-cli.test.mjs packages/shield-team-system/tests/package-surface.test.mjs
+node --test packages/shield-team-system/tests/config.test.mjs packages/shield-team-system/tests/cli.test.mjs packages/shield-team-system/tests/mission-v2.test.mjs packages/shield-team-system/tests/supervised-cli.test.mjs packages/shield-team-system/tests/package-surface.test.mjs
 node --test --test-concurrency=1 packages/shield-team-system/tests/*.test.mjs
 npm pack --workspace @shield/team-system --dry-run
 git diff --check
@@ -215,7 +224,7 @@ Stop on any requirement for a GitHub/Jira ingestion adapter, external service
 call, repository-specific Asmark data, fabricated Fitz/Simmons evidence,
 weakening of signed high-assurance/product-sensitive profiles, automatic config
 migration, merge/deploy/release effect, public API outside the frozen config and
-binding-selection contracts, or a path outside the fourteen authorized files.
+binding-selection contracts, or a path outside the twelve authorized files.
 
 Stop after Mack validation, Fury exact-revision conformance review, and one
 draft pull request awaiting ordinary platform review.
