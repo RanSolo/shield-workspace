@@ -113,8 +113,12 @@ lock, it must:
 6. verify exact temporary bytes, mode, regular-file identity, and confinement;
    sync it; then revalidate live lock, journal identity, unchanged original
    bytes, and the starting digest immediately before rename;
-7. atomically rename the complete candidate over the journal, preserving the
-   journal mode as `0644` in the installed candidate;
+7. under the lock, capture and validate the original regular journal inode's
+   exact permission mode; keep the temporary inode at `0600` while writing,
+   then `fchmod` it to that validated original mode, sync it again, and verify
+   the mode and retained inode identity before rename; atomically rename the
+   complete candidate over the journal and verify the installed inode retains
+   that exact mode without widening access;
 8. sync the parent directory, reread exact candidate bytes, replay the result,
    and prove that no orphan temporary path remains;
 9. return the final projection and exact receipt only after lock release is
