@@ -248,7 +248,7 @@ function readMatchingPRs(run, commands, plan, cwd) {
     [
       "pr", "list", "--repo", `${plan.repositoryOwner}/${plan.repositoryName}`,
       "--head", plan.branchSlug, "--state", "all",
-      "--json", "number,title,url,isDraft,state,headRefName,headRefOid,baseRefName",
+      "--json", "number,title,body,url,isDraft,state,headRefName,headRefOid,baseRefName",
     ],
     { cwd },
   );
@@ -367,16 +367,18 @@ export function createOrUpdatePR(plan, options = {}) {
     { loadJournal: options.loadJournal },
   );
   if (publication.state !== "allowed") return blocked(publication.reason, commands);
-  const requestedEffects = [
-    "review.branch.push",
-    lookup.pr === null
-      ? "review.pull_request.create_draft"
-      : "review.pull_request.update_draft",
-  ].sort();
-  if (JSON.stringify(requestedEffects) !== JSON.stringify(publication.request.requestedEffects) ||
-      publication.request.operation !== "publish_mission_brief") {
+  const createEffects = ["review.branch.push", "review.pull_request.create_draft"].sort();
+  const updateEffects = ["review.branch.push", "review.pull_request.update_draft"].sort();
+  const durableEffects = JSON.stringify(publication.request.requestedEffects);
+  const createRequested = durableEffects === JSON.stringify(createEffects);
+  const updateRequested = durableEffects === JSON.stringify(updateEffects);
+  const verifyExisting = lookup.pr !== null && createRequested;
+  if (publication.request.operation !== "publish_mission_brief" ||
+      (lookup.pr === null && !createRequested) ||
+      (lookup.pr !== null && !createRequested && !updateRequested)) {
     return blocked("publication_effect_mismatch", commands);
   }
+  const requestedEffects = createRequested ? createEffects : updateEffects;
   if (publication.request.targetRef !== githubPRWorkspaceTargetRef(plan)) {
     return blocked("publication_target_mismatch", commands);
   }
@@ -408,6 +410,31 @@ export function createOrUpdatePR(plan, options = {}) {
   if (observedBase.exitCode !== 0 ||
       liveBaseRevisionId !== scope.binding.baseRevisionId) {
     return blocked("publication_target_mismatch", commands);
+  }
+
+  if (verifyExisting) {
+    if (lookup.pr.title !== plan.prTitle) {
+      return blockedAfterScope("matching_pr_title_mismatch", commands, scope);
+    }
+    if (lookup.pr.body !== body) {
+      return blockedAfterScope("matching_pr_body_mismatch", commands, scope);
+    }
+    const receipt = verifiedReceipt(plan, artifactRevisionId, lookup.pr);
+    if (receipt.state !== "valid") {
+      return blockedAfterScope("existing_pr_failed_verification", commands, scope);
+    }
+    return {
+      state: "reused",
+      action: "verified_existing_draft_pr",
+      prNumber: receipt.receipt.prNumber,
+      prUrl: receipt.receipt.prUrl,
+      receipt: receipt.receipt,
+      publicationScope: {
+        scopeDigest: scope.scopeDigest,
+        binding: scope.binding,
+      },
+      commands,
+    };
   }
 
   const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });

@@ -245,7 +245,7 @@ export type FuryPlanGateEvaluationV1 =
 export type DeliveryWorkspaceResult =
   | {
       state: "workspace_ready";
-      publicationAction: "created_draft_pr" | "updated_existing_draft_pr";
+      publicationAction: "created_draft_pr" | "updated_existing_draft_pr" | "verified_existing_draft_pr";
       receipt: PRWorkspaceReceipt;
       publicationScope?: {
         scopeDigest: string;
@@ -258,7 +258,7 @@ export type DeliveryWorkspaceResult =
     }
   | {
       state: "dispatch_ready";
-      publicationAction: "created_draft_pr" | "updated_existing_draft_pr";
+      publicationAction: "created_draft_pr" | "updated_existing_draft_pr" | "verified_existing_draft_pr";
       receipt: PRWorkspaceReceipt;
       publicationScope?: {
         scopeDigest: string;
