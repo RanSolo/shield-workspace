@@ -3,10 +3,15 @@
 ## Mission binding
 
 - Mission: `mission:issue-208-coulson-bootstrap-v3`
+- Mission revision: `sha256:GrU6TaFTrObymGweUfiHhohwLGTlp7lWERzE1WjvBoc`
 - Subject: `github:RanSolo/shield-workspace/issue/208`
 - Fresh-main base: `c504017afc342cfb10ac9e682f36804e34eb9c9e`
 - Branch: `agent/issue-208-coulson-bootstrap-v3`
 - Mode: Delivery
+
+This mission supersedes the v2 planning/review attempt operationally; the
+schema-2 predecessor fields remain fixed to the canonical issue-130 journal as
+required by the current profile-aware contract.
 
 ## Objective and threat boundary
 
