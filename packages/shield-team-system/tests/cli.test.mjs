@@ -57,11 +57,129 @@ test("init creates only the deterministic SHIELD files and repeated init is a no
   assert.equal(await readFile(join(root, "existing.txt"), "utf8"), "preserve me\n");
   assert.equal(await readFile(join(root, ".shield", ".gitignore"), "utf8"), "/journals/\n/reports/\n/tmp/\n");
   const before = await readFile(join(root, ".shield", "config.json"), "utf8");
+  const parsed = JSON.parse(before);
+  assert.equal(parsed.schemaVersion, 2);
+  assert.equal(parsed.repositoryTrustProfileId, "signed_human_gates");
 
   const second = run(initArgs, root);
   assert.equal(second.status, 0, second.stderr);
   assert.match(second.stdout, /no files changed/i);
   assert.equal(await readFile(join(root, ".shield", "config.json"), "utf8"), before);
+});
+
+test("Coulson-only init writes exactly one binding and repeated init is a no-op", async () => {
+  const root = await fixture();
+  const args = [
+    "init",
+    "--repository-id", "RanSolo/fixture",
+    "--repository-trust-profile", "coulson_only_platform_review",
+    "--coulson-binding-ref", "ed25519:sha256:coulson",
+  ];
+  const first = run(args, root);
+  assert.equal(first.status, 0, first.stderr);
+  const path = join(root, ".shield", "config.json");
+  const before = await readFile(path, "utf8");
+  const config = JSON.parse(before);
+  assert.equal(config.schemaVersion, 2);
+  assert.equal(config.repositoryTrustProfileId, "coulson_only_platform_review");
+  assert.deepEqual(config.trustedHumanBindingRefs, [
+    { seatId: "coulson", bindingRef: "ed25519:sha256:coulson" },
+  ]);
+  const second = run(args, root);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /no files changed/iu);
+  assert.equal(await readFile(path, "utf8"), before);
+});
+
+test("init defaults to signed human gates and rejects invalid profile arguments before mutation", async () => {
+  const cases = [
+    [["init", "--repository-id", "RanSolo/fixture", "--coulson-binding-ref", "ed25519:sha256:coulson"], /fitz-binding-ref/iu],
+    [["init", "--repository-id", "RanSolo/fixture", "--repository-trust-profile", "coulson_only_platform_review"], /coulson-binding-ref/iu],
+    [[...initArgs, "--repository-trust-profile", "coulson_only_platform_review"], /rejects --fitz-binding-ref/iu],
+    [["init", "--repository-id", "RanSolo/fixture", "--repository-trust-profile", "hostile", "--coulson-binding-ref", "ed25519:sha256:coulson"], /unsupported repository trust profile/iu],
+    [["init", "--repository-id", "RanSolo/fixture", "--repository-trust-profile", "coulson_only_platform_review", "--coulson-binding-ref", "placeholder"], /configured SHIELD signing binding reference/iu],
+  ];
+  for (const [args, message] of cases) {
+    const root = await fixture();
+    const result = run(args, root);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, message);
+    await assert.rejects(lstat(join(root, ".shield")), { code: "ENOENT" });
+  }
+});
+
+test("legacy equivalent re-init preserves bytes while divergence and Coulson-only migration fail atomically", async () => {
+  const initialized = await fixture();
+  assert.equal(run(initArgs, initialized).status, 0);
+  const generated = JSON.parse(await readFile(join(initialized, ".shield", "config.json"), "utf8"));
+  const { repositoryTrustProfileId: _profileId, ...common } = generated;
+  const legacy = { ...common, schemaVersion: 1 };
+
+  const equivalent = await fixture();
+  await mkdir(join(equivalent, ".shield"));
+  const exactBytes = `${JSON.stringify(legacy)}\n`;
+  await writeFile(join(equivalent, ".shield", "config.json"), exactBytes);
+  const noOp = run(initArgs, equivalent);
+  assert.equal(noOp.status, 0, noOp.stderr);
+  assert.match(noOp.stdout, /schema-1.*no files changed/iu);
+  assert.equal(await readFile(join(equivalent, ".shield", "config.json"), "utf8"), exactBytes);
+  assert.deepEqual(await readdir(join(equivalent, ".shield")), ["config.json"]);
+
+  const reordered = await fixture();
+  await mkdir(join(reordered, ".shield"));
+  const reorderedLegacy = {
+    paths: {
+      temp: legacy.paths.temp,
+      reports: legacy.paths.reports,
+      artifacts: legacy.paths.artifacts,
+      journals: legacy.paths.journals,
+    },
+    trustedHumanBindingRefs: [...legacy.trustedHumanBindingRefs].reverse().map(({ seatId, bindingRef }) => ({ bindingRef, seatId })),
+    supportedModeIds: [...legacy.supportedModeIds].reverse(),
+    supportedSeatIds: [...legacy.supportedSeatIds].reverse(),
+    adapterId: legacy.adapterId,
+    repositoryId: legacy.repositoryId,
+    schemaVersion: legacy.schemaVersion,
+  };
+  const reorderedBytes = `${JSON.stringify(reorderedLegacy, null, 4)}\n`;
+  await writeFile(join(reordered, ".shield", "config.json"), reorderedBytes);
+  const reorderedNoOp = run(initArgs, reordered);
+  assert.equal(reorderedNoOp.status, 0, reorderedNoOp.stderr);
+  assert.equal(await readFile(join(reordered, ".shield", "config.json"), "utf8"), reorderedBytes);
+  assert.deepEqual(await readdir(join(reordered, ".shield")), ["config.json"]);
+
+  const legacyPlaceholders = await fixture();
+  await mkdir(join(legacyPlaceholders, ".shield"));
+  const compatibleLegacy = structuredClone(legacy);
+  compatibleLegacy.trustedHumanBindingRefs = [
+    { seatId: "coulson", bindingRef: "placeholder" },
+    { seatId: "fitz", bindingRef: "github:user:fitz-todo" },
+  ];
+  const compatibleBytes = `${JSON.stringify(compatibleLegacy, null, 3)}\n`;
+  await writeFile(join(legacyPlaceholders, ".shield", "config.json"), compatibleBytes);
+  const compatibleNoOp = run([
+    "init", "--repository-id", "RanSolo/fixture",
+    "--coulson-binding-ref", "placeholder",
+    "--fitz-binding-ref", "github:user:fitz-todo",
+  ], legacyPlaceholders);
+  assert.equal(compatibleNoOp.status, 0, compatibleNoOp.stderr);
+  assert.equal(await readFile(join(legacyPlaceholders, ".shield", "config.json"), "utf8"), compatibleBytes);
+  assert.deepEqual(await readdir(join(legacyPlaceholders, ".shield")), ["config.json"]);
+
+  const before = await readFile(join(equivalent, ".shield", "config.json"), "utf8");
+  const divergent = run([...initArgs.slice(0, -1), "github:user:different-fitz"], equivalent);
+  assert.equal(divergent.status, 2);
+  assert.match(divergent.stderr, /schema-1 configuration differs/iu);
+  assert.equal(await readFile(join(equivalent, ".shield", "config.json"), "utf8"), before);
+
+  const migration = run([
+    "init", "--repository-id", "RanSolo/fixture",
+    "--repository-trust-profile", "coulson_only_platform_review",
+    "--coulson-binding-ref", "github:user:coulson",
+  ], equivalent);
+  assert.equal(migration.status, 2);
+  assert.match(migration.stderr, /unsupported migration/iu);
+  assert.equal(await readFile(join(equivalent, ".shield", "config.json"), "utf8"), before);
 });
 
 test("init can select a starter pipeline and records a deterministic pipeline profile", async () => {
@@ -160,6 +278,81 @@ test("doctor provides deterministic human and JSON results", async () => {
   assert.equal(report.reportVersion, 1);
   assert.equal(report.checks[0].id, "repository-root");
   assert.equal(report.checks.at(-1).id, "paths");
+  assert.equal(
+    report.checks.find(({ id }) => id === "bindings").message,
+    "Repository trust profile signed_human_gates configures Coulson and Fitz binding references as required cryptographic seats; Simmons remains optional for product-sensitive missions.",
+  );
+
+  const coulsonOnlyRoot = await fixture();
+  assert.equal(run([
+    "init", "--repository-id", "RanSolo/fixture",
+    "--repository-trust-profile", "coulson_only_platform_review",
+    "--coulson-binding-ref", "ed25519:sha256:coulson",
+  ], coulsonOnlyRoot).status, 0);
+  const coulsonOnly = run(["doctor", "--json"], coulsonOnlyRoot);
+  assert.equal(coulsonOnly.status, 0, coulsonOnly.stderr);
+  assert.equal(
+    JSON.parse(coulsonOnly.stdout).checks.find(({ id }) => id === "bindings").message,
+    "Repository trust profile coulson_only_platform_review configures Coulson as the only required cryptographic seat. Fitz is GitHub-enforced external review; Simmons is conditional external feedback; neither is admitted as SHIELD evidence.",
+  );
+});
+
+test("doctor preserves raw invalid configuration and gives binding profile errors precedence", async () => {
+  const root = await fixture();
+  assert.equal(run(initArgs, root).status, 0);
+  const path = join(root, ".shield", "config.json");
+  const config = JSON.parse(await readFile(path, "utf8"));
+
+  delete config.repositoryTrustProfileId;
+  await writeFile(path, `${JSON.stringify(config)}\n`);
+  const missingProfile = run(["doctor", "--json"], root);
+  assert.equal(missingProfile.status, 1, missingProfile.stderr);
+  const missingReport = JSON.parse(missingProfile.stdout);
+  assert.deepEqual(missingReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: true, message: "Configuration schema and repository identity are valid.",
+  });
+  assert.deepEqual(missingReport.checks.find(({ id }) => id === "bindings"), {
+    id: "bindings", ok: false, message: "config is missing field: repositoryTrustProfileId.",
+  });
+
+  for (const repositoryTrustProfileId of [false, "hostile"]) {
+    await writeFile(path, `${JSON.stringify({ ...config, repositoryTrustProfileId })}\n`);
+    const result = run(["doctor", "--json"], root);
+    assert.equal(result.status, 1, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.deepEqual(report.checks.find(({ id }) => id === "config-schema"), {
+      id: "config-schema", ok: true, message: "Configuration schema and repository identity are valid.",
+    });
+    assert.deepEqual(report.checks.find(({ id }) => id === "bindings"), {
+      id: "bindings", ok: false,
+      message: "config.repositoryTrustProfileId must be signed_human_gates or coulson_only_platform_review.",
+    });
+  }
+
+  const contradictory = { ...config, repositoryTrustProfileId: "coulson_only_platform_review" };
+  await writeFile(path, `${JSON.stringify(contradictory)}\n`);
+  const contradictoryReport = JSON.parse(run(["doctor", "--json"], root).stdout);
+  assert.deepEqual(contradictoryReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: true, message: "Configuration schema and repository identity are valid.",
+  });
+  assert.deepEqual(contradictoryReport.checks.find(({ id }) => id === "bindings"), {
+    id: "bindings", ok: false,
+    message: "Repository trust profile coulson_only_platform_review does not admit a fitz SHIELD binding reference.",
+  });
+
+  const unknown = { ...config, repositoryTrustProfileId: "signed_human_gates", unrelated: true };
+  await writeFile(path, `${JSON.stringify(unknown)}\n`);
+  const unknownReport = JSON.parse(run(["doctor", "--json"], root).stdout);
+  assert.deepEqual(unknownReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: false, message: "config has unknown field: unrelated.",
+  });
+
+  await writeFile(path, `${JSON.stringify({ ...config, repositoryTrustProfileId: "signed_human_gates", schemaVersion: 3 })}\n`);
+  const unsupportedReport = JSON.parse(run(["doctor", "--json"], root).stdout);
+  assert.deepEqual(unsupportedReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: false, message: "Config schemaVersion must be one of: 1, 2.",
+  });
+  assert.equal(unsupportedReport.checks.find(({ id }) => id === "bindings").ok, true);
 });
 
 test("doctor returns one for an unhealthy repository and usage errors return two", async () => {
@@ -174,10 +367,9 @@ test("doctor returns one for an unhealthy repository and usage errors return two
   assert.equal(malformed.status, 1, malformed.stderr);
   const malformedReport = JSON.parse(malformed.stdout);
   assert.equal(malformedReport.ok, false);
-  assert.match(
-    malformedReport.checks.find(({ id }) => id === "config-schema").message,
-    /malformed json/i,
-  );
+  assert.deepEqual(malformedReport.checks.find(({ id }) => id === "config-schema"), {
+    id: "config-schema", ok: false, message: "Config contains malformed JSON.",
+  });
 
   const unsupported = run(["mission", "launch"], root);
   assert.equal(unsupported.status, 2);

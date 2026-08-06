@@ -24,6 +24,11 @@ import {
 } from "./adapter-v1.mjs";
 import { validateRuntimeBinding, type RuntimeBinding } from "./permission-v1.mjs";
 import {
+  getRepositoryTrustProfileV1,
+  repositoryTrustProfileId,
+  validateShieldConfig,
+} from "./config.mjs";
+import {
   computeReviewPublicationAuthorityDigest,
   validateReviewPublicationAuthorityV1,
   validateReviewPublicationEvidenceV1,
@@ -1127,13 +1132,66 @@ export function createReviewEvidenceRequirements(
   return [...missionAuthorization, ...reviewRequirements];
 }
 
-export function validateRepositoryBindings(
+export type RepositoryMissionAdmission =
+  | { kind: "legacy-supervised"; requireSimmons: boolean }
+  | {
+    kind: "profile-aware";
+    profileId: MissionProfileId;
+    profileVersion: 1;
+    requireSimmons: boolean;
+  };
+
+function validateRepositoryMissionAdmission(input: unknown): ContractResult<RepositoryMissionAdmission> {
+  const inconsistent = (...errors: string[]): ContractResult<RepositoryMissionAdmission> =>
+    invalid("repository_mission_profile_inconsistent", ...errors);
+  try {
+    if (!isPlainObject(input)) return inconsistent("Repository mission admission must be a plain object.");
+    const keys = Reflect.ownKeys(input);
+    if (keys.some((key) => typeof key !== "string")) {
+      return inconsistent("Repository mission admission has an unknown field.");
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
+        return inconsistent(`Repository mission admission field ${key} must be an enumerable data field.`);
+      }
+    }
+    const kind = descriptors.kind?.value;
+    const fields = kind === "legacy-supervised"
+      ? ["kind", "requireSimmons"]
+      : kind === "profile-aware"
+        ? ["kind", "profileId", "profileVersion", "requireSimmons"]
+        : null;
+    if (fields === null || keys.length !== fields.length || fields.some((field) => !Object.hasOwn(descriptors, field))) {
+      return inconsistent("Repository mission admission kind or fields are unsupported.");
+    }
+    if (typeof descriptors.requireSimmons.value !== "boolean") {
+      return inconsistent("Repository mission admission requireSimmons must be boolean.");
+    }
+    if (kind === "legacy-supervised") {
+      return valid({ kind, requireSimmons: descriptors.requireSimmons.value });
+    }
+    if (typeof descriptors.profileId.value !== "string" || descriptors.profileVersion.value !== 1) {
+      return inconsistent("Repository mission profile identity is unsupported.");
+    }
+    return valid({
+      kind,
+      profileId: descriptors.profileId.value as MissionProfileId,
+      profileVersion: 1,
+      requireSimmons: descriptors.requireSimmons.value,
+    });
+  } catch {
+    return inconsistent("Repository mission admission could not be inspected safely.");
+  }
+}
+
+function selectRepositoryBindings(
   registry: TrustedBindingRegistry,
   configured: readonly { seatId: string; bindingRef: string }[],
   missionId: string,
-  requireSimmons: boolean,
+  requiredSeats: readonly HumanSeat[],
 ): ContractResult<TrustedHumanBinding[]> {
-  const requiredSeats: HumanSeat[] = requireSimmons ? ["coulson", "fitz", "simmons"] : ["coulson", "fitz"];
   const selected: TrustedHumanBinding[] = [];
   for (const seatId of requiredSeats) {
     const configMatches = configured.filter((entry) => entry.seatId === seatId);
@@ -1145,6 +1203,75 @@ export function validateRepositoryBindings(
     selected.push(binding);
   }
   return valid(selected);
+}
+
+export function deriveRepositoryMissionBindings(
+  configInput: unknown,
+  registryInput: unknown,
+  missionId: string,
+  admissionInput: unknown,
+): ContractResult<TrustedHumanBinding[]> {
+  const checkedConfig = validateShieldConfig(configInput);
+  if (checkedConfig.state === "invalid") {
+    return invalid("repository_config_invalid", ...checkedConfig.issues.map(({ message }) => message));
+  }
+  const config = checkedConfig.value;
+  const trustProfileId = repositoryTrustProfileId(config);
+  let trustProfile;
+  try { trustProfile = getRepositoryTrustProfileV1(trustProfileId); }
+  catch { return invalid("repository_config_invalid", "Repository trust profile configuration is unsupported."); }
+  const checkedAdmission = validateRepositoryMissionAdmission(admissionInput);
+  if (checkedAdmission.state === "invalid") return checkedAdmission;
+  const admission = checkedAdmission.value;
+  let requiredSeats: readonly HumanSeat[];
+
+  if (admission.kind === "profile-aware") {
+    let missionProfile;
+    try { missionProfile = getMissionProfileV1(admission.profileId); }
+    catch { return invalid("repository_mission_profile_inconsistent", "Mission profile context is unsupported."); }
+    const expectedRequireSimmons = missionProfile.profileId === "product_sensitive";
+    if (admission.profileVersion !== missionProfile.version || admission.requireSimmons !== expectedRequireSimmons) {
+      return invalid(
+        "repository_mission_profile_inconsistent",
+        `Mission profile ${admission.profileId}@${admission.profileVersion} requires requireSimmons=${String(expectedRequireSimmons)}.`,
+      );
+    }
+  }
+
+  if (trustProfile.profileId === "coulson_only_platform_review") {
+    if (admission.kind !== "profile-aware" || admission.profileId !== "standard") {
+      return invalid(
+        "repository_trust_profile_incompatible",
+        "Repository trust profile coulson_only_platform_review admits only profile-aware standard@1 missions.",
+      );
+    }
+    requiredSeats = ["coulson"];
+  } else if (admission.kind === "legacy-supervised") {
+    requiredSeats = admission.requireSimmons ? ["coulson", "fitz", "simmons"] : ["coulson", "fitz"];
+  } else if (admission.profileId === "product_sensitive") {
+    requiredSeats = ["coulson", "fitz", "simmons"];
+  } else {
+    requiredSeats = ["coulson", "fitz"];
+  }
+
+  const registry = validateTrustedBindingRegistry(registryInput);
+  if (registry.state === "invalid") return registry;
+  return selectRepositoryBindings(registry.value, config.trustedHumanBindingRefs, missionId, requiredSeats);
+}
+
+export function selectCoulsonOperationBinding(
+  configInput: unknown,
+  registryInput: unknown,
+): ContractResult<TrustedHumanBinding> {
+  const checkedConfig = validateShieldConfig(configInput);
+  if (checkedConfig.state === "invalid") {
+    return invalid("repository_config_invalid", ...checkedConfig.issues.map(({ message }) => message));
+  }
+  const registry = validateTrustedBindingRegistry(registryInput);
+  if (registry.state === "invalid") return registry;
+  const selected = selectRepositoryBindings(registry.value, checkedConfig.value.trustedHumanBindingRefs, "*", ["coulson"]);
+  if (selected.state === "invalid") return selected;
+  return valid(selected.value[0]);
 }
 
 function validateEvidencePayload(input: unknown): ContractResult<HumanEvidencePayload> {

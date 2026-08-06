@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -18,7 +18,9 @@ import {
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   MISSION_130_JOURNAL_DIGEST,
+  replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
+import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
 import { assertPublicationAuthorizationFreshness, readInteractivePasscode } from "../dist/mission-cli.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
@@ -52,7 +54,7 @@ function authority(seatId) {
   };
 }
 
-async function fixture(requireSimmons = false) {
+async function fixture(requireSimmons = false, repositoryTrustProfileId = "signed_human_gates") {
   const root = await mkdtemp(join(tmpdir(), "shield-supervised-"));
   await writeFile(join(root, "package.json"), "{\"private\":true}\n");
   await mkdir(join(root, ".shield"));
@@ -61,15 +63,22 @@ async function fixture(requireSimmons = false) {
   const simmons = authority("simmons");
   const config = createShieldConfig({
     repositoryId: "RanSolo/fixture",
+    repositoryTrustProfileId,
     coulsonBindingRef: coulson.binding.signingKeyRef,
-    fitzBindingRef: fitz.binding.signingKeyRef,
-    ...(requireSimmons ? { simmonsBindingRef: simmons.binding.signingKeyRef } : {}),
+    ...(repositoryTrustProfileId === "signed_human_gates"
+      ? {
+        fitzBindingRef: fitz.binding.signingKeyRef,
+        ...(requireSimmons ? { simmonsBindingRef: simmons.binding.signingKeyRef } : {}),
+      }
+      : {}),
   });
   await writeFile(join(root, ".shield", "config.json"), formatShieldConfig(config));
   await writeFile(join(root, ".shield", ".gitignore"), "/journals/\n/reports/\n/tmp/\n");
   await writeFile(join(root, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({
     schemaVersion: 1,
-    bindings: requireSimmons ? [coulson.binding, fitz.binding, simmons.binding] : [coulson.binding, fitz.binding],
+    bindings: repositoryTrustProfileId === "coulson_only_platform_review"
+      ? [coulson.binding]
+      : requireSimmons ? [coulson.binding, fitz.binding, simmons.binding] : [coulson.binding, fitz.binding],
   }, null, 2)}\n`);
   const brief = createSupervisedMissionBrief({
     schemaVersion: 1,
@@ -133,6 +142,35 @@ async function profileAwareFixture() {
   await mkdir(journalRoot, { recursive: true });
   await writeFile(path, `${JSON.stringify(entry)}\n`);
   return { ...current, brief, entry, journalPath: path };
+}
+
+function profileBriefContent(missionId, profileId, requireSimmons) {
+  const requiredExecutionGateRoleIds = profileId === "standard"
+    ? ["coulson"]
+    : profileId === "high_assurance" ? ["coulson", "fitz"] : ["coulson", "simmons"];
+  const created = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Exercise repository trust profile admission without external evidence.",
+    subjectId: "issue:216",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: true,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true,
+    },
+    participants: ["hill", "may", "coulson", ...(profileId === "high_assurance" ? ["fitz"] : []), ...(profileId === "product_sensitive" ? ["simmons"] : [])]
+      .map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons,
+    createdAt: { value: "2026-08-06T00:00:00Z", provenance: "hostTrusted" },
+    profileId,
+    profileVersion: 1,
+    requiredExecutionGateRoleIds,
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...content } = created;
+  return content;
 }
 
 function run(root, args, options = {}) {
@@ -370,6 +408,135 @@ test("packed CLI status and report replay schema 9 without changing journal byte
   assert.deepEqual(parsedReport.entries, [entry]);
   assert.equal(parsedReport.projection.schemaVersion, 9);
   assert.equal(await readFile(journalPath, "utf8"), before);
+});
+
+test("Coulson-only repository admits only consistent standard profile missions and freezes one binding", async () => {
+  const { root, coulson, fitz, simmons } = await fixture(false, "coulson_only_platform_review");
+  const standard = profileBriefContent("mission:coulson-only-standard", "standard", false);
+  await writeFile(join(root, "standard.json"), `${JSON.stringify(standard, null, 2)}\n`);
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", "standard.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const projection = JSON.parse(begun.stdout).projection;
+  assert.deepEqual(projection.requirements.map(({ requiredRoleId }) => requiredRoleId), ["coulson", "coulson"]);
+  const entries = await readJournalEntries(root, standard.missionId);
+  assert.deepEqual(entries[0].payload.trustedBindings.map(({ seatId }) => seatId), ["coulson"]);
+  assert.equal(entries[0].payload.requirements.some(({ requiredRoleId }) => requiredRoleId === "fitz" || requiredRoleId === "simmons"), false);
+
+  const frozenBytes = await readFile(journalPath(root, standard.missionId), "utf8");
+  for (const [seat, evidenceKind] of [[fitz, "technical_review"], [simmons, "product_domain_review"]]) {
+    const timestamp = { value: "2026-08-06T00:01:00Z", provenance: "humanRecorded" };
+    const payload = {
+      schemaVersion: 1,
+      evidenceId: `evidence:${seat.binding.seatId}:unsolicited`,
+      requirementId: `req:${standard.missionId}:absent:${evidenceKind}`,
+      missionId: standard.missionId,
+      revisionId: projection.brief.revisionId,
+      seatId: seat.binding.seatId,
+      evidenceKind,
+      decision: "approved",
+      humanPrincipalId: seat.binding.humanPrincipalId,
+      bindingId: seat.binding.bindingId,
+      signingKeyRef: seat.binding.signingKeyRef,
+      sourceRef: `fixture-signature:${seat.binding.seatId}:unsolicited`,
+      timestamp,
+      journalSequence: projection.lastSequence + 1,
+    };
+    const envelope = {
+      payload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(payload)), seat.privateKey).toString("base64"),
+    };
+    assert.equal(verify(
+      null,
+      Buffer.from(canonicalJson(payload)),
+      createPublicKey({ key: Buffer.from(seat.binding.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }),
+      Buffer.from(envelope.signatureBase64, "base64"),
+    ), true);
+    const candidate = {
+      schemaVersion: 9,
+      entryId: `entry:${standard.missionId}:${projection.lastSequence + 1}`,
+      missionId: standard.missionId,
+      sequence: projection.lastSequence + 1,
+      type: "evidence.recorded",
+      timestamp,
+      payload: { evidence: envelope },
+    };
+    assert.equal(projection.requirements.some(({ evidenceKind: kind }) => kind === evidenceKind), false);
+    assert.equal(candidate.sequence, 1);
+    assert.equal(candidate.payload.evidence.payload.journalSequence, candidate.sequence);
+    const replayRejected = replayProfileAwareMissionJournal([...entries, candidate]);
+    assert.equal(replayRejected.state, "invalid");
+    assert.equal(replayRejected.code, "duplicate_evidence");
+    assert.match(replayRejected.errors.join(" "), /duplicate or ambiguous/u);
+    const appendRejected = await appendProfileAwareMissionEntryV1({
+      repositoryRoot: root,
+      configuredJournalPath: ".shield/journals",
+      missionId: standard.missionId,
+      entry: candidate,
+    });
+    assert.equal(appendRejected.state, "invalid");
+    assert.equal(appendRejected.code, "duplicate_evidence");
+    assert.equal(await readFile(journalPath(root, standard.missionId), "utf8"), frozenBytes);
+    const unchanged = JSON.parse(run(root, ["mission", "status", "--mission-id", standard.missionId, "--json"]).stdout);
+    assert.equal(unchanged.requirements.some(({ requiredRoleId }) => requiredRoleId === seat.binding.seatId), false);
+    assert.equal(unchanged.evidence.some(({ seatId }) => seatId === seat.binding.seatId), false);
+  }
+
+  const signedConfig = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: coulson.binding.signingKeyRef,
+    fitzBindingRef: fitz.binding.signingKeyRef,
+  });
+  await writeFile(join(root, ".shield", "config.json"), formatShieldConfig(signedConfig));
+  const replayed = run(root, ["mission", "status", "--mission-id", standard.missionId, "--json"]);
+  assert.equal(replayed.status, 0, replayed.stderr);
+  assert.deepEqual(JSON.parse(replayed.stdout).requirements, projection.requirements);
+});
+
+test("repository mission admission failures create no journal", async () => {
+  const coulsonOnly = await fixture(false, "coulson_only_platform_review");
+  const blocked = [
+    [profileBriefContent("mission:coulson-only-high", "high_assurance", false), "repository_trust_profile_incompatible"],
+    [profileBriefContent("mission:coulson-only-product", "product_sensitive", true), "repository_trust_profile_incompatible"],
+    [profileBriefContent("mission:coulson-only-inconsistent", "standard", true), "repository_mission_profile_inconsistent"],
+  ];
+  for (const [brief, code] of blocked) {
+    const path = `${brief.missionId.split(":").at(-1)}.json`;
+    await writeFile(join(coulsonOnly.root, path), `${JSON.stringify(brief)}\n`);
+    const result = run(coulsonOnly.root, ["mission", "begin", "--profile-aware", "--brief", path, "--json"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(code, "u"));
+    await assert.rejects(lstat(journalPath(coulsonOnly.root, brief.missionId)), { code: "ENOENT" });
+  }
+
+  const legacy = run(coulsonOnly.root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(legacy.status, 1);
+  assert.match(legacy.stderr, /repository_trust_profile_incompatible/u);
+  await assert.rejects(lstat(journalPath(coulsonOnly.root, coulsonOnly.brief.missionId)), { code: "ENOENT" });
+
+  for (const [profileId, requireSimmons] of [["standard", true], ["high_assurance", true], ["product_sensitive", false]]) {
+    const signed = await fixture(profileId === "product_sensitive");
+    const brief = profileBriefContent(`mission:signed-inconsistent-${profileId}`, profileId, requireSimmons);
+    await writeFile(join(signed.root, "brief.json"), `${JSON.stringify(brief)}\n`);
+    const result = run(signed.root, ["mission", "begin", "--profile-aware", "--brief", "brief.json", "--json"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /repository_mission_profile_inconsistent/u);
+    await assert.rejects(lstat(journalPath(signed.root, brief.missionId)), { code: "ENOENT" });
+  }
+});
+
+test("signed-human repository keeps high-assurance and product-sensitive profile admission", async () => {
+  for (const [profileId, requireSimmons, expectedBindings] of [
+    ["high_assurance", false, ["coulson", "fitz"]],
+    ["product_sensitive", true, ["coulson", "fitz", "simmons"]],
+  ]) {
+    const { root } = await fixture(requireSimmons);
+    const brief = profileBriefContent(`mission:signed-${profileId}`, profileId, requireSimmons);
+    await writeFile(join(root, "brief.json"), `${JSON.stringify(brief)}\n`);
+    const result = run(root, ["mission", "begin", "--profile-aware", "--brief", "brief.json", "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    const entries = await readJournalEntries(root, brief.missionId);
+    assert.deepEqual(entries[0].payload.trustedBindings.map(({ seatId }) => seatId), expectedBindings);
+  }
 });
 
 test("supported profile-aware CLI workflow records three independent signed transitions and survives restart replay", async () => {
@@ -1600,6 +1767,21 @@ test("passcode signer setup is one-time host setup and authorize appends Coulson
   assert.equal(projection.governance.state, "approved");
   assert.equal(projection.authorization.state, "authorized");
   assert.equal(projection.evidence[0].sourceRef, `passcode-signer:${brief.missionId}`);
+});
+
+test("Coulson signer setup uses the fixed Coulson operation rule under the Coulson-only profile", async () => {
+  const { root } = await fixture(false, "coulson_only_platform_review");
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "coulson-only-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+  const config = JSON.parse(await readFile(join(root, ".shield", "config.json"), "utf8"));
+  assert.equal(config.repositoryTrustProfileId, "coulson_only_platform_review");
+  assert.deepEqual(config.trustedHumanBindingRefs.map(({ seatId }) => seatId), ["coulson"]);
 });
 
 test("passcode authorization persists durable approval entry and rejects retries", async () => {

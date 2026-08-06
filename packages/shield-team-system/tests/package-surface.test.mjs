@@ -106,12 +106,20 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof missionRuntime.runMissionCycle, "function");
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
-  assert.equal(config.CONFIG_SCHEMA_VERSION, 1);
+  assert.equal(config.LEGACY_CONFIG_SCHEMA_VERSION, 1);
+  assert.equal(config.CONFIG_SCHEMA_VERSION, 2);
+  assert.deepEqual(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS, [1, 2]);
+  assert.equal(Object.isFrozen(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS), true);
+  assert.equal(Object.isFrozen(config.REPOSITORY_TRUST_PROFILE_IDS), true);
+  assert.equal(config.REPOSITORY_TRUST_PROFILE_CONTRACT_VERSION, "repository.trust-profile.v1");
+  assert.equal(Object.isFrozen(config.REPOSITORY_TRUST_PROFILES_V1), true);
   assert.equal(root.validateShieldConfig, config.validateShieldConfig);
   assert.equal(supervision.SUPERVISED_JOURNAL_SCHEMA_VERSION, 2);
   assert.equal(supervision.RUNNER_JOURNAL_SCHEMA_VERSION, 5);
   assert.equal(supervision.REVIEW_JOURNAL_SCHEMA_VERSION, 7);
   assert.equal(typeof supervision.createSupervisedMissionBrief, "function");
+  assert.equal(typeof supervision.deriveRepositoryMissionBindings, "function");
+  assert.equal(typeof supervision.selectCoulsonOperationBinding, "function");
   assert.equal(typeof supervision.createExecutionEffectEntry, "function");
   assert.equal(typeof supervision.createReviewSubjectSupersessionEntry, "function");
   assert.equal(typeof supervision.createFuryReviewEntry, "function");
@@ -290,8 +298,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
     import { HILL_READINESS_SCHEMA_VERSION, evaluateHillReadinessV1, type HillReadinessCandidateV1, type HillReadinessHostObservationV1 } from "@shield/team-system/hill-readiness";
-    import { CONFIG_SCHEMA_VERSION, type ShieldConfig } from "@shield/team-system/config";
-    import { RUNNER_JOURNAL_SCHEMA_VERSION, SUPERVISED_JOURNAL_SCHEMA_VERSION, createExecutionEffectEntry, createSupervisedMissionBrief, type RunnerSupervisedEffectCandidate, type SupervisedMissionBrief } from "@shield/team-system/supervision";
+    import { CONFIG_SCHEMA_VERSION, LEGACY_CONFIG_SCHEMA_VERSION, SUPPORTED_CONFIG_SCHEMA_VERSIONS, type RepositoryTrustProfileId, type ShieldConfig, type ShieldConfigV1, type ShieldConfigV2 } from "@shield/team-system/config";
+    import { RUNNER_JOURNAL_SCHEMA_VERSION, SUPERVISED_JOURNAL_SCHEMA_VERSION, createExecutionEffectEntry, createSupervisedMissionBrief, deriveRepositoryMissionBindings, selectCoulsonOperationBinding, type RunnerSupervisedEffectCandidate, type SupervisedMissionBrief } from "@shield/team-system/supervision";
     import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
@@ -370,8 +378,17 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const hillCandidate = null as unknown as HillReadinessCandidateV1;
     const hillObservation = null as unknown as HillReadinessHostObservationV1;
     const hillEvaluation = evaluateHillReadinessV1(hillCandidate, hillObservation);
-    const configSchema: 1 = CONFIG_SCHEMA_VERSION;
+    const legacyConfigSchema: 1 = LEGACY_CONFIG_SCHEMA_VERSION;
+    const configSchema: 2 = CONFIG_SCHEMA_VERSION;
+    const supportedConfigSchemas: readonly [1, 2] = SUPPORTED_CONFIG_SCHEMA_VERSIONS;
     const config = null as unknown as ShieldConfig;
+    const configV1 = null as unknown as ShieldConfigV1;
+    const configV2 = null as unknown as ShieldConfigV2;
+    const trustProfileId: RepositoryTrustProfileId = configV2.repositoryTrustProfileId;
+    const legacySchemaDiscriminant: 1 = configV1.schemaVersion;
+    const currentSchemaDiscriminant: 2 = configV2.schemaVersion;
+    const deriveBindings = deriveRepositoryMissionBindings;
+    const selectCoulson = selectCoulsonOperationBinding;
     const supervisedSchema: 2 = SUPERVISED_JOURNAL_SCHEMA_VERSION;
     const runnerJournalSchema: 5 = RUNNER_JOURNAL_SCHEMA_VERSION;
     const supervisedBrief = null as unknown as SupervisedMissionBrief;
@@ -532,7 +549,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
@@ -597,13 +614,13 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     if (typeof appendSeatDispatchReceiptEntryV1 !== "function" || typeof claimSeatDispatchPacketV1 !== "function" || typeof readSeatDispatchReceiptByReceiptIdV1 !== "function") {
       throw new Error("dispatch-receipts exports missing");
     }
-    if (CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected config schema");
+    if (CONFIG_SCHEMA_VERSION !== 2) throw new Error("unexpected config schema");
     const config = createShieldConfig({
       repositoryId: "fixture/javascript-consumer",
       coulsonBindingRef: "github:user:coulson",
       fitzBindingRef: "github:user:fitz",
     });
-    if (config.adapterId !== "github") throw new Error("unexpected adapter");
+    if (config.adapterId !== "github" || config.repositoryTrustProfileId !== "signed_human_gates") throw new Error("unexpected adapter or trust profile");
   `);
   execFileSync(process.execPath, [join(javascriptFixture, "consumer.mjs")], {
     cwd: javascriptFixture,

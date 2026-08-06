@@ -12,9 +12,10 @@ import {
   createEvidenceEntry,
   createGovernanceEntry,
   createMissionBegunEntry,
+  deriveRepositoryMissionBindings,
   planMissionStep,
   replaySupervisedMissionJournal,
-  validateRepositoryBindings,
+  selectCoulsonOperationBinding,
   validateSupervisedMissionBrief,
   validateTrustedBindingRegistry,
   type ContractResult,
@@ -35,11 +36,13 @@ import {
 import {
   createProfileAwareCommunicationRequestEntryV1,
   createProfileAwareCommunicationResultEntryV1,
+  createProfileAwareMissionBrief,
   createProfileAwareGovernanceDecisionEntryV1,
   createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareReviewPublicationAuthorizationEntryV1,
   createProfileAwareRuntimeBindingRecordedEntryV1,
   profileAwareMissionIntakeV1,
+  validateProfileAwareMissionBrief,
   type ProfileAwareMissionBriefContentV1,
   type ProfileAwareProjectionV1,
   type SignedProfileEvidenceV1,
@@ -504,12 +507,27 @@ async function begin(args: string[]): Promise<number> {
     if (!plainObject(briefInput) || typeof briefInput.missionId !== "string" || typeof briefInput.requireSimmons !== "boolean") {
       throw new MissionCliError("Profile-aware mission brief identity is malformed.", 1);
     }
-    const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
-    const bindings = unwrap(validateRepositoryBindings(
+    let canonicalBrief;
+    try {
+      canonicalBrief = createProfileAwareMissionBrief(briefInput as unknown as ProfileAwareMissionBriefContentV1);
+    } catch (error) {
+      throw new MissionCliError(`profile_invalid: ${error instanceof Error ? error.message : "Profile-aware brief is invalid."}`, 1);
+    }
+    const checkedBrief = validateProfileAwareMissionBrief(canonicalBrief);
+    if (checkedBrief.state === "invalid") {
+      throw new MissionCliError(`${checkedBrief.code}: ${checkedBrief.errors.join(" ")}`, 1);
+    }
+    const registry = await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry");
+    const bindings = unwrap(deriveRepositoryMissionBindings(
+      config,
       registry,
-      config.trustedHumanBindingRefs,
-      briefInput.missionId,
-      briefInput.requireSimmons,
+      checkedBrief.value.missionId,
+      {
+        kind: "profile-aware",
+        profileId: checkedBrief.value.profileId,
+        profileVersion: checkedBrief.value.profileVersion,
+        requireSimmons: checkedBrief.value.requireSimmons,
+      },
     ));
     const intake = unwrap(profileAwareMissionIntakeV1({
       brief: briefInput as unknown as ProfileAwareMissionBriefContentV1,
@@ -527,8 +545,13 @@ async function begin(args: string[]): Promise<number> {
     return 0;
   }
   const brief = unwrap(validateSupervisedMissionBrief(briefInput));
-  const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
-  const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, brief.missionId, brief.requireSimmons));
+  const registry = await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry");
+  const bindings = unwrap(deriveRepositoryMissionBindings(
+    config,
+    registry,
+    brief.missionId,
+    { kind: "legacy-supervised", requireSimmons: brief.requireSimmons },
+  ));
   const authorization = options.values.get("--authorization") ?? "supervised";
   if (authorization !== "supervised" && authorization !== "delegated") throw new MissionCliError("--authorization must be supervised or delegated.");
   if (authorization === "supervised" && (options.values.has("--delegation") || options.values.has("--eligibility"))) throw new MissionCliError("Supervised begin cannot include delegation inputs.");
@@ -564,8 +587,7 @@ async function delegation(command: "grant" | "revoke", args: string[]): Promise<
   const options = parseOptions(args, ["--root", "--evidence"], ["--json"]);
   const root = await exactRoot(options.values.get("--root"), true); const config = await repositoryConfig(root);
   const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(join(root, BINDINGS_PATH), "Trusted binding registry"))) as TrustedBindingRegistry;
-  const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, "*", false));
-  const coulson = bindings.find(({ seatId }) => seatId === "coulson"); if (!coulson) throw new MissionCliError("Configured Coulson binding is missing.", 1);
+  const coulson = unwrap(selectCoulsonOperationBinding(config, registry));
   const envelope = await jsonFile(resolve(root, required(options, "--evidence")), "Signed delegation evidence") as SignedWheelsOffDelegation | SignedWheelsOffRevocation;
   const entry = createDelegationLogEntry(envelope, command === "grant" ? "delegation.granted" : "delegation.revoked");
   const projection = unwrap(await appendDelegationEntry({ repositoryRoot: root, repositoryId: config.repositoryId, binding: coulson, entry }));
@@ -755,9 +777,7 @@ async function signerSetup(args: string[]): Promise<number> {
   if (seat !== "coulson") throw new MissionCliError("Only the Coulson signer can be provisioned by this command.");
   const registryPath = join(root, BINDINGS_PATH);
   const registry = unwrap(validateTrustedBindingRegistry(await jsonFile(registryPath, "Trusted binding registry"))) as TrustedBindingRegistry;
-  const bindings = unwrap(validateRepositoryBindings(registry, config.trustedHumanBindingRefs, "*", false));
-  const current = bindings.find(({ seatId }) => seatId === seat);
-  if (!current) throw new MissionCliError("Configured Coulson binding is missing.", 1);
+  const current = unwrap(selectCoulsonOperationBinding(config, registry));
   const signerInput = validateSignerInput({
     seatId: "coulson",
     bindingId: current.bindingId,

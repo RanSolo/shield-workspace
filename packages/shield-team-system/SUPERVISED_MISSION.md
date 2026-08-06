@@ -79,10 +79,23 @@ binding registry at `.shield/trusted-human-bindings.json`:
 }
 ```
 
-Include one exact binding for Fitz and, only when required, Simmons. Repository
-configuration is the trust root: signature verification proves key possession,
-while authorization requires an exact configured seat binding. An unsigned
-file, username, flag, prompt, or unverified text has no authority.
+Under `signed_human_gates`, include one exact binding for Fitz and, only when
+required, Simmons. Under `coulson_only_platform_review`, include exactly the
+Coulson binding shown above. Repository configuration is the trust root:
+signature verification proves key possession, while authorization requires an
+exact configured seat binding. An unsigned file, username, GitHub review, Jira
+comment, issue status, branch-protection observation, flag, prompt, or
+unverified text has no SHIELD authority.
+
+The Coulson-only profile admits only a canonical profile-aware `standard@1`
+brief with `requireSimmons: false`. Its sequence-0 journal freezes exactly the
+Coulson trusted binding and Coulson authorization/final-acceptance requirements.
+Fitz remains GitHub-required external review, Simmons remains conditional
+external feedback, and neither is represented as a requirement or admitted as
+SHIELD evidence. Legacy supervised, `high_assurance@1`, and
+`product_sensitive@1` admission fail before journal creation under this
+repository profile. Signed-human repositories preserve their existing legacy
+and all three profile-aware admission paths.
 
 ## Begin
 
@@ -98,6 +111,9 @@ npx shield mission status --mission-id mission:example
 Begin appends an explicit `mission.begun` event containing the immutable brief
 revision, trusted public bindings, Coulson authorization requirement, Fitz
 technical-review requirement, and optional Simmons product/domain requirement.
+For profile-aware admission use `--profile-aware`; repository trust compatibility
+and canonical `profileId`/`requireSimmons` consistency are checked before any
+journal is created.
 
 ## Which path do I use?
 
@@ -221,6 +237,9 @@ npx shield mission report --mission-id mission:example --json
 schema 2–8 journals use supervised replay; canonical schema 9 journals use
 profile-aware replay. A journal that mixes schema 9 with a legacy schema fails
 closed, and neither format is reinterpreted through the other replay contract.
+Repository trust profiles are CLI admission policy only and are not journal
+fields. Later configuration changes therefore cannot reinterpret an existing
+schema-9 journal.
 `step` remains the supervised journal transition command.
 
 The first step records `not-started → running`; the second records
