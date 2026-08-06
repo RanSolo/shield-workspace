@@ -744,7 +744,7 @@ function validDispatchLedger(record, entries = validFuryReceiptEntries(record.fu
   };
 }
 
-function governedMayReceiptEntries({ projection, furyRecord, packetId, parentSessionId, originalSequence, terminalState = null, dispatchEnvelopeDigest = null, plannedOperations = FIXTURE_PLANNED_OPERATIONS }) {
+function governedMayReceiptEntries({ projection, furyRecord, packetId, parentSessionId, originalSequence, terminalState = null, dispatchEnvelopeDigest = null, packetDigest = null, plannedOperations = FIXTURE_PLANNED_OPERATIONS }) {
   const authority = projection.implementationAuthority;
   const baseEntries = validFuryReceiptEntries(furyRecord.furyDispatchIdentity);
   const claimKey = createHash("sha256").update(new TextEncoder().encode(
@@ -789,7 +789,7 @@ function governedMayReceiptEntries({ projection, furyRecord, packetId, parentSes
       `evidence:governed-may-original-sequence:${originalSequence}`,
       authority.authorityRef,
       furyRecord.evidenceId,
-      `evidence:packet-binding:seat-dispatch-v1:${claimKey}:sha256:${"B".repeat(43)}`,
+      `evidence:packet-binding:seat-dispatch-v1:${claimKey}:${packetDigest ?? `sha256:${"B".repeat(43)}`}`,
     ],
     timestamp: "2026-08-03T18:00:02Z",
     logSequence: 2,
@@ -1161,6 +1161,56 @@ test("completes one exact governed dispatch after a valid profile-aware journal"
   assert.match(result.evidence.blueprintDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
   assert.match(result.evidence.dispatchEnvelopeDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
   assert.deepEqual(callCounts, {});
+});
+
+test("legacy envelope and packet digests match the predecessor vector and replay its terminal receipt", async () => {
+  const predecessorEnvelopeAndPacketDigest = "sha256:Gv0cRIlg5akLuKn9yBmZyI5OrkHUlmuJ4Hz0VlVszds";
+  const predecessorPacketId = "packet:governed-may:kUFxwJgMBcM3rXUlww9OSoMQlQoo76TN_IalxTFD5dg";
+  const projection = validProjection({ lastSequence: 4 });
+  const furyRecord = validFuryRecord(projection);
+  const helicarrierCapture = {};
+  const fresh = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord),
+    observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
+    readTrackedFile: async () => validBlueprintBytes(),
+    helicarrier: passingHelicarrier(helicarrierCapture),
+  }));
+
+  assert.equal(Object.hasOwn(helicarrierCapture.envelope, "plannedToolOperationsSequenceEffectKey"), false);
+  assert.equal(fresh.evidence.dispatchEnvelopeDigest, predecessorEnvelopeAndPacketDigest);
+  assert.equal(fresh.evidence.packetId, predecessorPacketId);
+  const entries = governedMayReceiptEntries({
+    projection,
+    furyRecord,
+    packetId: predecessorPacketId,
+    parentSessionId: fresh.evidence.parentSessionId,
+    originalSequence: 4,
+    terminalState: "completed",
+    dispatchEnvelopeDigest: predecessorEnvelopeAndPacketDigest,
+    packetDigest: predecessorEnvelopeAndPacketDigest,
+  });
+  const started = entries.find(({ kind, accountableSeatId }) => kind === "dispatch.started" && accountableSeatId === "may");
+  assert.ok(started.inputEvidenceRefs.some((ref) => ref.endsWith(`:${predecessorEnvelopeAndPacketDigest}`)));
+  const advancedProjection = { ...projection, lastSequence: 5, implementationAuthorityState: "revoked", activeRuntimeBindings: [] };
+  const replayed = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
+    readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection: advancedProjection } }),
+    readFuryEvidence: async () => validFuryLedger([furyRecord]),
+    readDispatchReceipts: async () => validDispatchLedger(furyRecord, entries),
+    readTrackedFile: async () => validBlueprintBytes(),
+    validationCommands: [],
+    observeDeliveryWorkspace: async () => { throw new Error("predecessor replay must not observe live workspace"); },
+    observeMayToolPreflight: async () => { throw new Error("predecessor replay must not observe live tool state"); },
+    runMayControlLoop: async () => { throw new Error("predecessor replay must not invoke model or executor"); },
+    helicarrier: {
+      certification,
+      validate: () => { throw new Error("predecessor replay must not recompile"); },
+      compile: () => { throw new Error("predecessor replay must not recompile"); },
+    },
+  }));
+  assert.equal(replayed.state, "replayed", JSON.stringify(replayed));
+  assert.equal(replayed.evidence.dispatchEnvelopeDigest, predecessorEnvelopeAndPacketDigest);
 });
 
 test("derives stable dispatch identities and rejects an unscoped advanced cycle", async () => {
@@ -1967,102 +2017,162 @@ test("requires recovery for a durable governed May start without a terminal", as
   assert.equal(result.evidence.state, "started");
 });
 
-test("claimed multi-write packets recover without repeating a partial or uncertain effect", async () => {
-  for (const mode of ["mid_sequence_failure", "post_effect_control_uncertain"]) {
-    const operations = threeWriteFixtureOperations();
-    const { projection, operationEffectKeys } = projectionForPlannedOperations(operations);
-    const furyRecord = validFuryRecord(projection);
-    let started;
-    let modelCalls = 0;
-    let completedEffects = 0;
-    let recovering = false;
-    const durableCompletedIndices = [];
-    const dispatchEntries = () => [
-      ...validFuryReceiptEntries(furyRecord.furyDispatchIdentity),
-      ...(started === undefined ? [] : [started]),
+test("real executor recovery repeats no write after audit-result or control-event uncertainty", async (context) => {
+  for (const mode of ["audit_result_uncertain", "control_event_uncertain"]) {
+    const repositoryRoot = await realpath(await mkdtemp(join(tmpdir(), `shield-governed-may-${mode}-`)));
+    context.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+    await mkdir(join(repositoryRoot, "src"), { recursive: true });
+    const git = async (args) => (await execFile("git", args, { cwd: repositoryRoot, encoding: "utf8" })).stdout.trim();
+    await git(["init", "-b", "main"]);
+    await writeFile(join(repositoryRoot, "base.txt"), "base\n", "utf8");
+    await git(["add", "base.txt"]);
+    await git(["-c", "user.name=shield", "-c", "user.email=shield@example.invalid", "commit", "-m", "fixture base"]);
+    const baseRevision = await git(["rev-parse", "HEAD"]);
+    await writeFile(join(repositoryRoot, "head.txt"), "head\n", "utf8");
+    await git(["add", "head.txt"]);
+    await git(["-c", "user.name=shield", "-c", "user.email=shield@example.invalid", "commit", "-m", "fixture head"]);
+    const headRevision = await git(["rev-parse", "HEAD"]);
+    const executable = await realpath(process.execPath);
+    const executableInfo = await stat(executable);
+    const relativePaths = ["src/one.txt", "src/two.txt", "src/three.txt"];
+    const contents = ["one\n", "two\n", "three\n"];
+    const validationScript = "const f=require('fs');for(const n of['one','two','three'])if(f.readFileSync('src/'+n+'.txt','utf8')!==n+'\\n')process.exit(2)";
+    const plannedOperations = [
+      ...relativePaths.map((path, index) => ({ toolName: "writeFile", path, content: contents[index], precondition: { kind: "absent" } })),
+      {
+        toolName: "runValidation", commandId: "validation:test", executable,
+        args: ["-e", validationScript], timeoutMs: 30_000,
+        executableIdentity: `${executableInfo.dev}:${executableInfo.ino}:${executableInfo.mode}:${executableInfo.size}:${executableInfo.mtimeMs}`,
+      },
     ];
-    const deps = validDependencies({}, {
+    const baseProjection = validProjection();
+    const baseAuthority = baseProjection.implementationAuthority;
+    const cycleIdentity = deriveMissionCycleIdentityV1({
+      repositoryRoot, configuredJournalPath: ".shield/missions", missionId: baseAuthority.missionId,
+      expectedSubjectId: baseAuthority.subjectId, expectedRevisionId: baseAuthority.missionRevisionId,
+      expectedSequence: baseProjection.lastSequence, seatId: "may", actionId: "repository.write_file",
+      effectClass: "behavioral_implementation", validationId: "validation:test", activatedModes: [],
+      actionAllowlist: ["repository.run_validation", "repository.write_file"],
+    });
+    const operationEffectKeys = plannedOperations.map(computeMayPlannedToolEffectKeyV1);
+    const sequenceEffectKey = computeMayPlannedOperationsSequenceEffectKeyV1(plannedOperations);
+    assert.ok(sequenceEffectKey);
+    const authority = {
+      ...baseAuthority, artifactRevisionId: headRevision, canonicalWritableRoot: repositoryRoot,
+      branch: "main", baseRevision, headRevision, approvedRelativePaths: [...relativePaths].sort(),
+      approvedEffectKeys: [cycleIdentity.effectKey, ...operationEffectKeys, sequenceEffectKey].sort(),
+    };
+    const baseWrapper = baseProjection.activeRuntimeBindings[0];
+    const binding = {
+      ...baseWrapper.binding, artifactRevisionId: headRevision, canonicalWritableRoot: repositoryRoot, branch: "main",
+      approvedScope: { ...baseWrapper.binding.approvedScope, effectKeys: [...authority.approvedEffectKeys] },
+    };
+    const wrapper = {
+      ...baseWrapper, binding, implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
+      approvedRelativePaths: [...relativePaths].sort(), baseRevision, headRevision,
+    };
+    const projection = {
+      ...baseProjection, implementationAuthority: authority,
+      implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
+      runtimeBindings: [wrapper], activeRuntimeBindings: [wrapper],
+    };
+    const furyRecord = validFuryRecord(projection);
+    const furyEntries = validFuryReceiptEntries(furyRecord.furyDispatchIdentity);
+    let started;
+    let recovering = false;
+    let fetchCalls = 0;
+    let uncertaintyInjected = false;
+    const auditEntries = [];
+    const controlEvents = [];
+    const responses = [
+      { models: [{ key: authority.modelId, loaded_instances: [{ id: binding.reasoningRuntimeId }], capabilities: { trained_for_tool_use: true } }] },
+      { choices: [{ message: { role: "assistant", content: null, tool_calls: [{
+        id: `call:${mode}:write-one`, type: "function",
+        function: { name: "writeFile", arguments: JSON.stringify({ path: relativePaths[0], content: contents[0], expectedSha256: "absent" }) },
+      }] } }] },
+    ];
+    const dependencies = validDependencies({}, {
       readMissionJournal: async () => ({ state: "valid", value: { kind: "profile-aware", entries: [], projection } }),
       readFuryEvidence: async () => validFuryLedger([furyRecord]),
-      readDispatchReceipts: async () => validDispatchLedger(
-        furyRecord,
-        recovering ? dispatchEntries() : validFuryReceiptEntries(furyRecord.furyDispatchIdentity),
-      ),
+      readDispatchReceipts: async () => validDispatchLedger(furyRecord, recovering && started !== undefined ? [...furyEntries, started] : furyEntries),
       observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
       readTrackedFile: async () => validBlueprintBytes(),
-      helicarrier: passingHelicarrier(),
-      plannedToolOperations: operations,
+      readWorkspaceStatus: async () => {
+        const status = await git(["status", "--porcelain=v1", "--untracked-files=all"]);
+        return status === "" ? [] : status.split("\n").map((line) => line.slice(3)).sort();
+      },
       loadPermissionContext: async (input) => ({
         state: "ready",
         context: validPermissionContext({ ...projection, lastSequence: input.plan.evaluatedThroughSequence }, input.expectedDecisionId),
       }),
+      schema9HostOps: {
+        realpath: async (value) => value,
+        access: async () => undefined,
+        execFile: async (command, args, options) => (await execFile(command, args, { ...options, encoding: "utf8" })).stdout,
+        probeCapability: async () => true,
+        now: () => "2026-08-03T20:06:00Z",
+      },
+      helicarrier: passingHelicarrier(),
+      plannedToolOperations: plannedOperations,
+      validationCommands: [{ commandId: "validation:test", executable, args: ["-e", validationScript], timeoutMs: 30_000 }],
       claimDispatchPacket: async (input) => {
-        const claimed = claimedPacket(input, validFuryReceiptEntries(furyRecord.furyDispatchIdentity));
+        const claimed = claimedPacket(input, furyEntries);
         started = claimed.started;
         return claimed;
       },
-      runMayControlLoop: async (request, dependencies) => {
-        modelCalls += 1;
-        await dependencies.appendControlEvent({ eventId: `event:${mode}:start`, sessionId: request.sessionId, code: "may_control_started", toolCallId: null });
-        const runOperation = async (index, outcome, appendCompletedControl) => {
-          const operation = operations[index];
-          const mapping = operation.toolName === "writeFile"
-            ? { actionId: "repository.write_file", effectClass: "behavioral_implementation" }
-            : { actionId: "repository.run_validation", effectClass: "verification" };
-          const plan = await dependencies.nextCallSlot({
-            toolCallId: `call:${mode}:${index}`,
-            toolName: operation.toolName,
-            effectKey: operationEffectKeys[index],
-            ...mapping,
-          });
-          const authorization = await dependencies.getAuthorizationContext(plan);
-          const execution = await dependencies.getExecutionContext({ decisionId: authorization.decisionId });
-          for (const [recordType, recordOutcome, evidence] of [
-            ["permission.decision", "allow", authorization],
-            ["tool.invocation", "allow", execution],
-            ["tool.result", outcome, execution],
-          ]) {
-            await dependencies.appendIfAbsent({
-              recordId: `record:${mode}:${index}:${recordType}`,
-              decisionId: authorization.decisionId,
-              recordType,
-              outcome: recordOutcome,
-              actionId: mapping.actionId,
-              effectClass: mapping.effectClass,
-              effectKey: operationEffectKeys[index],
-              evidenceRefs: evidence.attestations.map(({ attestationId }) => attestationId),
-            });
+      createPermissionAuditStore: ({ ledgerId }) => ({
+        ledgerId,
+        read: async () => ({ entries: structuredClone(auditEntries), bytes: "", missing: false }),
+        appendIfAbsent: async (record) => {
+          auditEntries.push(structuredClone(record));
+          if (!uncertaintyInjected && mode === "audit_result_uncertain" && record.recordType === "tool.result" && record.effectKey === operationEffectKeys[0]) {
+            uncertaintyInjected = true;
+            throw new Error("audit_result_receipt_uncertain");
           }
-          if (outcome === "completed") completedEffects += 1;
-          if (appendCompletedControl) {
-            await dependencies.appendControlEvent({
-              eventId: `event:${mode}:${index}`,
-              sessionId: request.sessionId,
-              code: `may_control_${operation.toolName}_completed`,
-              toolCallId: `call:${mode}:${index}`,
-            });
-            durableCompletedIndices.push(index);
+          return {
+            schemaVersion: 1, ledgerId: record.ledgerId, recordId: record.recordId,
+            decisionId: record.decisionId, digest: record.digest, appended: true,
+            ledgerSequence: auditEntries.length - 1,
+          };
+        },
+      }),
+      createMayControlEventStore: ({ sessionId }) => ({
+        sessionId,
+        read: async () => ({ orderedEvents: structuredClone(controlEvents), terminalState: { state: "none" } }),
+        appendControlEvent: async (event) => {
+          controlEvents.push(structuredClone(event));
+          if (!uncertaintyInjected && mode === "control_event_uncertain" && event.code === "may_control_writeFile_completed") {
+            uncertaintyInjected = true;
+            throw new Error("control_event_receipt_uncertain");
           }
-        };
-        await runOperation(0, "completed", mode === "mid_sequence_failure");
-        if (mode === "mid_sequence_failure") await runOperation(1, "failed", false);
-        throw new Error(mode);
+          return { eventId: event.eventId, appended: true };
+        },
+      }),
+      runMayControlLoop,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify(responses.shift()), { status: 200, headers: { "content-type": "application/json" } });
       },
       runMissionCycle: runExecutingMissionCycle,
     });
-
-    const first = await runGovernedMayDispatchStepV1(validInput(), deps);
+    const input = { ...validInput(), repositoryRoot };
+    const first = await runGovernedMayDispatchStepV1(input, dependencies);
     assert.equal(first.state, "recovery_required", `${mode}: ${JSON.stringify(first)}`);
-    assert.equal(completedEffects, 1, mode);
-    assert.deepEqual(durableCompletedIndices, mode === "mid_sequence_failure" ? [0] : [], mode);
+    assert.equal(uncertaintyInjected, true, `${mode}: ${JSON.stringify(first)}`);
+    assert.equal(await readFile(join(repositoryRoot, relativePaths[0]), "utf8"), contents[0]);
+    assert.equal(await stat(join(repositoryRoot, relativePaths[1])).then(() => true, () => false), false);
+    const firstIdentity = await stat(join(repositoryRoot, relativePaths[0]));
+    const firstBytes = await readFile(join(repositoryRoot, relativePaths[0]));
+    const callsAfterFirst = fetchCalls;
     recovering = true;
-    const recoveryLedger = replaySeatDispatchReceiptsV1(dispatchEntries());
-    assert.equal(recoveryLedger.state, "valid", `${mode}: ${JSON.stringify(recoveryLedger)}`);
-    const second = await runGovernedMayDispatchStepV1(validInput(), deps);
+    const second = await runGovernedMayDispatchStepV1(input, dependencies);
     assert.equal(second.state, "recovery_required", mode);
     assert.equal(second.code, "dispatch_receipt_recovery_required", mode);
-    assert.equal(modelCalls, 1, mode);
-    assert.equal(completedEffects, 1, mode);
+    assert.equal(fetchCalls, callsAfterFirst, mode);
+    assert.deepEqual(await readFile(join(repositoryRoot, relativePaths[0])), firstBytes, mode);
+    const secondIdentity = await stat(join(repositoryRoot, relativePaths[0]));
+    assert.equal(`${secondIdentity.dev}:${secondIdentity.ino}:${secondIdentity.size}:${secondIdentity.mtimeMs}:${secondIdentity.ctimeMs}`, `${firstIdentity.dev}:${firstIdentity.ino}:${firstIdentity.size}:${firstIdentity.mtimeMs}:${firstIdentity.ctimeMs}`, mode);
+    assert.equal(await stat(join(repositoryRoot, relativePaths[1])).then(() => true, () => false), false);
   }
 });
 

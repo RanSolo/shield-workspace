@@ -1011,7 +1011,7 @@ function deriveDispatchEnvelopeV1(
     validationCommandIds: Object.freeze([...wrapper.validationCommandIds]),
     plannedToolOperations: planned.operations,
     plannedToolOperationEffectKeys: planned.operationEffectKeys,
-    plannedToolOperationsSequenceEffectKey: planned.sequenceEffectKey,
+    ...(planned.sequenceEffectKey === null ? {} : { plannedToolOperationsSequenceEffectKey: planned.sequenceEffectKey }),
     plannedToolOperationsDigest: planned.operationsDigest,
     missionCycleEffectKey: planned.cycleEffectKey,
     outputContract: Object.freeze(["changed_files", "tests_run", "unresolved_risks"]),
