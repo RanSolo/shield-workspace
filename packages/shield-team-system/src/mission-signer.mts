@@ -8,6 +8,7 @@ import {
   randomBytes,
   scryptSync,
   sign,
+  verify,
   type KeyObject,
 } from "node:crypto";
 import { constants, type Stats } from "node:fs";
@@ -395,3 +396,116 @@ export async function signWithSigner(signingKeyRef: string, passcode: string, pa
     throw new Error("Unable to unlock signer; check the passcode and signer record.");
   }
 }
+
+type BatchSignerDependencies = {
+  readSigner: (path: string) => Promise<string>;
+  signPayload: (payload: Buffer, privateKey: KeyObject, index: number) => Buffer;
+};
+
+function freezeCanonicalList(payloads: unknown): readonly unknown[] {
+  if (!Array.isArray(payloads) || Object.getPrototypeOf(payloads) !== Array.prototype || payloads.length === 0 || payloads.length > 32) {
+    throw new Error("Signer payload batch is invalid.");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(payloads);
+  if (Reflect.ownKeys(payloads).length !== payloads.length + 1) throw new Error("Signer payload batch is invalid.");
+  for (let index = 0; index < payloads.length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (!descriptor || !("value" in descriptor) || descriptor.get || descriptor.set || !descriptor.enumerable) {
+      throw new Error("Signer payload batch is invalid.");
+    }
+  }
+  let snapshot: unknown[];
+  try {
+    snapshot = JSON.parse(canonicalJson(payloads)) as unknown[];
+  } catch {
+    throw new Error("Signer payload batch is invalid.");
+  }
+  const freeze = (value: unknown): unknown => {
+    if (value !== null && typeof value === "object") {
+      for (const child of Object.values(value)) freeze(child);
+      Object.freeze(value);
+    }
+    return value;
+  };
+  return freeze(snapshot) as readonly unknown[];
+}
+
+async function signPayloadBatchWithDependencies(
+  signingKeyRef: string,
+  publicKeySpkiBase64: string,
+  passcode: string,
+  payloads: unknown,
+  dependencies: BatchSignerDependencies,
+): Promise<readonly string[]> {
+  const frozenPayloads = freezeCanonicalList(payloads);
+  let privateKey: KeyObject | null = null;
+  try {
+    const record = JSON.parse(await dependencies.readSigner(signerPath(signingKeyRef))) as StoredSigner;
+    if (record.schemaVersion !== 1 || record.signingKeyRef !== signingKeyRef) throw new Error();
+    const configuredPublicKey = createPublicKey({
+      key: Buffer.from(publicKeySpkiBase64, "base64"),
+      format: "der",
+      type: "spki",
+    });
+    if (keyRef(publicKeySpkiBase64) !== signingKeyRef) throw new Error();
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      deriveKey(passcode, Buffer.from(record.saltBase64, "base64")),
+      Buffer.from(record.ivBase64, "base64"),
+    );
+    decipher.setAuthTag(Buffer.from(record.tagBase64, "base64"));
+    const pem = Buffer.concat([
+      decipher.update(Buffer.from(record.ciphertextBase64, "base64")),
+      decipher.final(),
+    ]).toString("utf8");
+    privateKey = createPrivateKey(pem);
+    const unlockedPublicKey = createPublicKey(privateKey);
+    const unlockedSpki = unlockedPublicKey.export({ format: "der", type: "spki" }).toString("base64");
+    if (unlockedSpki !== publicKeySpkiBase64 || keyRef(unlockedSpki) !== signingKeyRef) throw new Error();
+
+    const signatures: string[] = [];
+    for (const [index, payload] of frozenPayloads.entries()) {
+      const bytes = Buffer.from(canonicalJson(payload), "utf8");
+      const signature = dependencies.signPayload(bytes, privateKey, index);
+      if (!verify(null, bytes, configuredPublicKey, signature)) throw new Error();
+      signatures.push(signature.toString("base64"));
+    }
+    return Object.freeze(signatures);
+  } catch {
+    throw new Error("Unable to unlock signer or complete payload batch; check the passcode, signer record, and trusted binding.");
+  } finally {
+    privateKey = null;
+  }
+}
+
+export async function signPayloadBatchWithSigner(
+  signingKeyRef: string,
+  publicKeySpkiBase64: string,
+  passcode: string,
+  payloads: unknown,
+): Promise<readonly string[]> {
+  return signPayloadBatchWithDependencies(signingKeyRef, publicKeySpkiBase64, passcode, payloads, {
+    readSigner: (path) => readFile(path, "utf8"),
+    signPayload: (payload, privateKey) => sign(null, payload, privateKey),
+  });
+}
+
+export const batchSignerTestOnly = Object.freeze({
+  signPayloadBatch: (
+    signingKeyRef: string,
+    publicKeySpkiBase64: string,
+    passcode: string,
+    payloads: unknown,
+    overrides: Partial<BatchSignerDependencies>,
+  ): Promise<readonly string[]> => signPayloadBatchWithDependencies(
+    signingKeyRef,
+    publicKeySpkiBase64,
+    passcode,
+    payloads,
+    {
+      readSigner: (path) => readFile(path, "utf8"),
+      signPayload: (payload, privateKey) => sign(null, payload, privateKey),
+      ...overrides,
+    },
+  ),
+});
