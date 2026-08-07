@@ -66,6 +66,7 @@ function migrationHandle(handle, overrides = {}) {
 async function migrationFixture() {
   const root = await fixture();
   await mkdir(join(root, ".shield"));
+  await writeFile(join(root, ".shield", ".gitignore"), "/journals/\n/reports/\n/tmp/\n");
   const candidate = createShieldConfig({
     repositoryId: "RanSolo/fixture",
     coulsonBindingRef: "github:user:coulson",
@@ -78,6 +79,66 @@ async function migrationFixture() {
   await writeFile(path, legacyBytes, { mode: 0o640 });
   await chmod(path, 0o640);
   return { root, path, candidate, legacy, legacyBytes };
+}
+
+function driftIdentity(stats) {
+  return new Proxy(stats, {
+    get: (target, key) => key === "ino" ? target.ino + 1 : Reflect.get(target, key, target),
+  });
+}
+
+async function migrationStateSnapshot(state) {
+  const shieldPath = join(state.root, ".shield");
+  const names = (await readdir(shieldPath)).sort();
+  return Promise.all(names.map(async (name) => {
+    const path = join(shieldPath, name);
+    return {
+      name,
+      bytes: await readFile(path),
+      mode: (await stat(path)).mode & 0o7777,
+    };
+  }));
+}
+
+async function assertLegacyCleanupAndRetry(state, label) {
+  assert.equal(await readFile(state.path, "utf8"), state.legacyBytes, label);
+  assert.equal((await stat(state.path)).mode & 0o7777, 0o640, label);
+  assert.deepEqual(
+    (await readdir(join(state.root, ".shield"))).filter((name) => name.includes("migrate")),
+    [],
+    label,
+  );
+  await migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+    nonce: () => "fedcba9876543210",
+  });
+  assert.equal(await readFile(state.path, "utf8"), formatShieldConfig(state.candidate), label);
+  assert.equal((await stat(state.path)).mode & 0o7777, 0o640, label);
+  assert.deepEqual(
+    (await readdir(join(state.root, ".shield"))).filter((name) => name.includes("migrate")),
+    [],
+    label,
+  );
+}
+
+async function assertDeterministicMigrationClassification(state, label) {
+  const before = await migrationStateSnapshot(state);
+  const migrationArtifacts = before.filter(({ name }) => name.includes("migrate"));
+  if (migrationArtifacts.length > 0) {
+    await assert.rejects(migrateConfigFile(
+      state.path,
+      state.legacyBytes,
+      state.legacy,
+      state.candidate,
+      { nonce: () => "abcdef0123456789" },
+    ), /recovery_required.*do not retry blindly/iu, label);
+  } else {
+    const config = JSON.parse(await readFile(state.path, "utf8"));
+    const args = config.schemaVersion === 3 ? [...initArgs, "--migrate-config"] : initArgs;
+    const result = run(args, state.root);
+    assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+    assert.match(result.stdout, /no files changed/iu, label);
+  }
+  assert.deepEqual(await migrationStateSnapshot(state), before, label);
 }
 
 test("init creates only the deterministic SHIELD files and repeated init is a no-op", async () => {
@@ -378,104 +439,299 @@ test("short migration write proves cleanup and permits a successful retry", asyn
       },
     },
   }), /failed before rename/iu);
-  assert.equal(await readFile(state.path, "utf8"), state.legacyBytes);
-  assert.equal((await stat(state.path)).mode & 0o7777, 0o640);
-  assert.equal((await readdir(join(state.root, ".shield"))).some((name) => name.includes("migrate")), false);
-  await migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
-    nonce: () => "fedcba9876543210",
-  });
-  assert.equal(await readFile(state.path, "utf8"), formatShieldConfig(state.candidate));
+  await assertLegacyCleanupAndRetry(state, "short temporary write");
 });
 
-test("pre-rename sync and identity substitution preserve exact legacy state", async () => {
-  for (const fault of ["mode-sync", "temp-identity", "directory-sync"]) {
-    const state = await migrationFixture();
-    let tempSyncs = 0;
-    let tempLstats = 0;
-    let directorySyncs = 0;
-    await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
-      nonce: () => "0123456789abcdef",
-      operations: {
+test("migration pre-rename operation faults prove exact cleanup and permit a successful retry", async () => {
+  const cases = [
+    {
+      name: "lock create",
+      operations: (state) => ({
+        async open(path, flags, mode) {
+          if (path === `${state.path}.migrate.lock`) throw new Error("lock create fault");
+          return open(path, flags, mode);
+        },
+      }),
+    },
+    {
+      name: "lock write",
+      operations: (state) => ({
         async open(path, flags, mode) {
           const handle = await open(path, flags, mode);
-          if (path.includes(".config.json.migrate-") && path.endsWith(".tmp") && fault === "mode-sync") {
-            return migrationHandle(handle, {
-              sync: async () => {
-                tempSyncs += 1;
-                if (tempSyncs === 2) throw new Error("mode sync fault");
-                await handle.sync();
-              },
-            });
-          }
-          if (path === join(state.root, ".shield") && fault === "directory-sync") {
+          if (path !== `${state.path}.migrate.lock`) return handle;
+          return migrationHandle(handle, {
+            write: async () => { throw new Error("lock write fault"); },
+          });
+        },
+      }),
+    },
+    {
+      name: "lock sync",
+      operations: (state) => ({
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (path !== `${state.path}.migrate.lock`) return handle;
+          return migrationHandle(handle, {
+            sync: async () => { throw new Error("lock sync fault"); },
+          });
+        },
+      }),
+    },
+    {
+      name: "lock marker identity",
+      operations: (state) => {
+        let lockLstats = 0;
+        return {
+          async lstat(path) {
+            const stats = await lstat(path);
+            if (path === `${state.path}.migrate.lock` && ++lockLstats === 1) return driftIdentity(stats);
+            return stats;
+          },
+        };
+      },
+    },
+    {
+      name: "source open",
+      operations: (state) => ({
+        async open(path, flags, mode) {
+          if (path === state.path) throw new Error("source open fault");
+          return open(path, flags, mode);
+        },
+      }),
+    },
+    {
+      name: "source read",
+      operations: (state) => ({
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (path !== state.path) return handle;
+          return migrationHandle(handle, {
+            read: async () => { throw new Error("source read fault"); },
+          });
+        },
+      }),
+    },
+    {
+      name: "source final revalidation drift",
+      operations: (state) => {
+        let sourceLstats = 0;
+        return {
+          async lstat(path) {
+            const stats = await lstat(path);
+            if (path === state.path && ++sourceLstats === 2) return driftIdentity(stats);
+            return stats;
+          },
+        };
+      },
+    },
+    {
+      name: "initial temporary sync",
+      operations: () => ({
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (!path.includes(".config.json.migrate-") || !path.endsWith(".tmp")) return handle;
+          let tempSyncs = 0;
+          return migrationHandle(handle, {
+            sync: async () => {
+              tempSyncs += 1;
+              if (tempSyncs === 1) throw new Error("initial temporary sync fault");
+              await handle.sync();
+            },
+          });
+        },
+      }),
+    },
+    {
+      name: "temporary readback",
+      operations: () => ({
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (!path.includes(".config.json.migrate-") || !path.endsWith(".tmp")) return handle;
+          return migrationHandle(handle, {
+            read: async (buffer, offset, length, position) => {
+              const result = await handle.read(buffer, offset, length, position);
+              if (result.bytesRead > 0) buffer[offset] ^= 1;
+              return result;
+            },
+          });
+        },
+      }),
+    },
+    {
+      name: "mode restoration sync",
+      operations: () => ({
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (!path.includes(".config.json.migrate-") || !path.endsWith(".tmp")) return handle;
+          let tempSyncs = 0;
+          return migrationHandle(handle, {
+            sync: async () => {
+              tempSyncs += 1;
+              if (tempSyncs === 2) throw new Error("mode restoration sync fault");
+              await handle.sync();
+            },
+          });
+        },
+      }),
+    },
+    {
+      name: "temporary identity",
+      operations: () => {
+        let tempLstats = 0;
+        return {
+          async lstat(path) {
+            const stats = await lstat(path);
+            if (path.includes(".config.json.migrate-") && path.endsWith(".tmp") && ++tempLstats === 1) {
+              return driftIdentity(stats);
+            }
+            return stats;
+          },
+        };
+      },
+    },
+    {
+      name: "initial directory sync",
+      operations: (state) => {
+        let directorySyncs = 0;
+        return {
+          async open(path, flags, mode) {
+            const handle = await open(path, flags, mode);
+            if (path !== join(state.root, ".shield")) return handle;
             return migrationHandle(handle, {
               sync: async () => {
                 directorySyncs += 1;
-                if (directorySyncs === 1) throw new Error("directory sync fault");
+                if (directorySyncs === 1) throw new Error("initial directory sync fault");
                 await handle.sync();
               },
             });
-          }
-          return handle;
-        },
-        async lstat(path) {
-          const stats = await lstat(path);
-          if (path.includes(".config.json.migrate-") && path.endsWith(".tmp") && fault === "temp-identity") {
-            tempLstats += 1;
-            if (tempLstats === 1) {
-              return new Proxy(stats, { get: (target, key) => key === "ino" ? target.ino + 1 : Reflect.get(target, key, target) });
-            }
-          }
-          return stats;
-        },
+          },
+        };
       },
-    }), /failed before rename/iu, fault);
-    assert.equal(await readFile(state.path, "utf8"), state.legacyBytes, fault);
-    assert.equal((await stat(state.path)).mode & 0o7777, 0o640, fault);
-    assert.equal((await readdir(join(state.root, ".shield"))).some((name) => name.includes("migrate")), false, fault);
+    },
+    {
+      name: "lock final revalidation",
+      operations: (state) => {
+        let lockLstats = 0;
+        return {
+          async lstat(path) {
+            const stats = await lstat(path);
+            if (path === `${state.path}.migrate.lock` && ++lockLstats === 2) return driftIdentity(stats);
+            return stats;
+          },
+        };
+      },
+    },
+  ];
+
+  for (const fault of cases) {
+    const state = await migrationFixture();
+    await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+      nonce: () => "0123456789abcdef",
+      operations: fault.operations(state),
+    }), /failed before rename/iu, fault.name);
+    await assertLegacyCleanupAndRetry(state, fault.name);
   }
 });
 
-test("ambiguous rename and installed bound-readback failures require recovery", async () => {
-  for (const fault of ["ambiguous-rename", "installed-identity", "bound-readback", "installed-close", "post-rename-directory-sync"]) {
-    const state = await migrationFixture();
-    let configOpens = 0;
-    let directorySyncs = 0;
-    await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
-      nonce: () => "0123456789abcdef",
-      operations: {
-        async rename(source, destination) {
-          await rename(source, destination);
-          if (fault === "ambiguous-rename") throw new Error("ambiguous rename fault");
-        },
+test("migration rename, installed-readback, and lock-release uncertainty require recovery and stable classification", async () => {
+  const cases = [
+    {
+      name: "short lock write",
+      expected: "legacy",
+      operations: (state) => ({
         async open(path, flags, mode) {
           const handle = await open(path, flags, mode);
-          if (path === state.path) {
-            configOpens += 1;
-            if (configOpens === 2 && fault === "installed-identity") {
-              return migrationHandle(handle, {
-                stat: async () => {
-                  const stats = await handle.stat();
-                  return new Proxy(stats, { get: (target, key) => key === "ino" ? target.ino + 1 : Reflect.get(target, key, target) });
-                },
-              });
-            }
-            if (configOpens === 2 && fault === "bound-readback") {
-              return migrationHandle(handle, {
-                read: async (buffer, offset, length, position) => {
-                  const result = await handle.read(buffer, offset, length, position);
-                  if (result.bytesRead > 0) buffer[offset] ^= 1;
-                  return result;
-                },
-              });
-            }
-            if (configOpens === 2 && fault === "installed-close") {
-              return migrationHandle(handle, {
-                close: async () => { await handle.close(); throw new Error("close fault"); },
-              });
-            }
-          }
-          if (path === join(state.root, ".shield") && fault === "post-rename-directory-sync") {
+          if (path !== `${state.path}.migrate.lock`) return handle;
+          return migrationHandle(handle, {
+            write: async (buffer, offset, length, position) => handle.write(buffer, offset, length - 1, position),
+          });
+        },
+      }),
+    },
+    {
+      name: "ambiguous rename",
+      expected: "candidate",
+      operations: () => ({
+        async rename(source, destination) {
+          await rename(source, destination);
+          throw new Error("ambiguous rename fault");
+        },
+      }),
+    },
+    {
+      name: "installed open",
+      expected: "candidate",
+      operations: (state) => {
+        let configOpens = 0;
+        return {
+          async open(path, flags, mode) {
+            if (path === state.path && ++configOpens === 2) throw new Error("installed open fault");
+            return open(path, flags, mode);
+          },
+        };
+      },
+    },
+    {
+      name: "installed identity",
+      expected: "candidate",
+      operations: (state) => {
+        let configOpens = 0;
+        return {
+          async open(path, flags, mode) {
+            const handle = await open(path, flags, mode);
+            if (path !== state.path || ++configOpens !== 2) return handle;
+            return migrationHandle(handle, {
+              stat: async () => driftIdentity(await handle.stat()),
+            });
+          },
+        };
+      },
+    },
+    {
+      name: "installed bound readback",
+      expected: "candidate",
+      operations: (state) => {
+        let configOpens = 0;
+        return {
+          async open(path, flags, mode) {
+            const handle = await open(path, flags, mode);
+            if (path !== state.path || ++configOpens !== 2) return handle;
+            return migrationHandle(handle, {
+              read: async (buffer, offset, length, position) => {
+                const result = await handle.read(buffer, offset, length, position);
+                if (result.bytesRead > 0) buffer[offset] ^= 1;
+                return result;
+              },
+            });
+          },
+        };
+      },
+    },
+    {
+      name: "installed close",
+      expected: "candidate",
+      operations: (state) => {
+        let configOpens = 0;
+        return {
+          async open(path, flags, mode) {
+            const handle = await open(path, flags, mode);
+            if (path !== state.path || ++configOpens !== 2) return handle;
+            return migrationHandle(handle, {
+              close: async () => { await handle.close(); throw new Error("installed close fault"); },
+            });
+          },
+        };
+      },
+    },
+    {
+      name: "post-rename directory sync",
+      expected: "candidate",
+      operations: (state) => {
+        let directorySyncs = 0;
+        return {
+          async open(path, flags, mode) {
+            const handle = await open(path, flags, mode);
+            if (path !== join(state.root, ".shield")) return handle;
             return migrationHandle(handle, {
               sync: async () => {
                 directorySyncs += 1;
@@ -483,16 +739,109 @@ test("ambiguous rename and installed bound-readback failures require recovery", 
                 await handle.sync();
               },
             });
-          }
-          return handle;
-        },
+          },
+        };
       },
-    }), /recovery_required/iu, fault);
-    assert.equal(await readFile(state.path, "utf8"), formatShieldConfig(state.candidate), fault);
+    },
+    {
+      name: "lock release identity",
+      expected: "candidate",
+      operations: (state) => {
+        let lockLstats = 0;
+        return {
+          async lstat(path) {
+            const stats = await lstat(path);
+            if (path === `${state.path}.migrate.lock` && ++lockLstats === 3) return driftIdentity(stats);
+            return stats;
+          },
+        };
+      },
+    },
+    {
+      name: "lock release close",
+      expected: "candidate",
+      operations: (state) => ({
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (path !== `${state.path}.migrate.lock`) return handle;
+          return migrationHandle(handle, {
+            close: async () => { await handle.close(); throw new Error("lock release close fault"); },
+          });
+        },
+      }),
+    },
+    {
+      name: "lock release unlink",
+      expected: "candidate",
+      operations: (state) => ({
+        async unlink(path) {
+          if (path === `${state.path}.migrate.lock`) throw new Error("lock release unlink fault");
+          await unlink(path);
+        },
+      }),
+    },
+    {
+      name: "lock release absence",
+      expected: "candidate",
+      operations: (state) => {
+        let successfulLockLstats = 0;
+        let priorLockStats;
+        return {
+          async lstat(path) {
+            try {
+              const stats = await lstat(path);
+              if (path === `${state.path}.migrate.lock`) {
+                successfulLockLstats += 1;
+                priorLockStats = stats;
+              }
+              return stats;
+            } catch (error) {
+              if (path === `${state.path}.migrate.lock` && successfulLockLstats === 4) return priorLockStats;
+              throw error;
+            }
+          },
+        };
+      },
+    },
+    {
+      name: "lock release final directory sync",
+      expected: "candidate",
+      operations: (state) => {
+        let directorySyncs = 0;
+        return {
+          async open(path, flags, mode) {
+            const handle = await open(path, flags, mode);
+            if (path !== join(state.root, ".shield")) return handle;
+            return migrationHandle(handle, {
+              sync: async () => {
+                directorySyncs += 1;
+                await handle.sync();
+                if (directorySyncs === 3) throw new Error("lock release directory sync fault");
+              },
+            });
+          },
+        };
+      },
+    },
+  ];
+
+  for (const fault of cases) {
+    const state = await migrationFixture();
+    await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+      nonce: () => "0123456789abcdef",
+      operations: fault.operations(state),
+    }), /recovery_required.*do not retry blindly/iu, fault.name);
+    assert.equal(
+      await readFile(state.path, "utf8"),
+      fault.expected === "legacy" ? state.legacyBytes : formatShieldConfig(state.candidate),
+      fault.name,
+    );
+    assert.equal((await stat(state.path)).mode & 0o7777, 0o640, fault.name);
+    await assertDeterministicMigrationClassification(state, fault.name);
   }
 });
 
-test("cleanup close and unlink uncertainty require recovery without changing legacy bytes", async () => {
+test("migration cleanup close and unlink uncertainty require recovery without changing legacy bytes", async () => {
   for (const fault of ["close", "unlink"]) {
     const state = await migrationFixture();
     await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
@@ -513,9 +862,10 @@ test("cleanup close and unlink uncertainty require recovery without changing leg
           await unlink(path);
         },
       },
-    }), /recovery_required/iu, fault);
+    }), /recovery_required.*do not retry blindly/iu, fault);
     assert.equal(await readFile(state.path, "utf8"), state.legacyBytes, fault);
     assert.equal((await stat(state.path)).mode & 0o7777, 0o640, fault);
+    await assertDeterministicMigrationClassification(state, `temporary cleanup ${fault}`);
   }
 });
 
