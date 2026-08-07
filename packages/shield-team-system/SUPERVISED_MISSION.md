@@ -137,6 +137,72 @@ npx shield mission status --mission-id mission:example
 printf '%s\n' "$PASSCODE" | npx shield mission authorize --mission-id mission:example --passcode-stdin
 ```
 
+## One-passcode mission authorization and Wheels Up
+
+For a fresh schema-9 mission that is still waiting for Coulson authorization,
+`authorize-wheels-up` combines the initial mission decision, Wheels Up
+implementation authority, initial May runtime binding, and initial draft-review
+publication authority. It prompts once and records four separately signed,
+independently replayable existing events in one atomic journal replacement:
+
+```sh
+printf '%s\n' "$PASSCODE" | npx shield mission authorize-wheels-up \
+  --mission-id mission:example \
+  --input .shield/tmp/authorize-wheels-up.json \
+  --passcode-stdin \
+  --json
+```
+
+The input is closed and contains only these fields. Every array must be
+non-empty, sorted, and duplicate-free:
+
+```json
+{
+  "baseRevision": "<exact base commit>",
+  "modelId": "model:bounded-may",
+  "approvedRelativePaths": ["packages/example"],
+  "approvedActionIds": ["action:implement"],
+  "approvedEffectClasses": ["behavioral_implementation", "verification"],
+  "approvedEffectKeys": ["effect:implementation", "effect:validation"],
+  "approvedCapabilities": ["filesystem_write"],
+  "validationCommandIds": ["validation:test"],
+  "reasoningRuntimeId": "runtime:reasoner",
+  "toolExecutorId": "executor:tools",
+  "publicationPaths": ["packages/example/file.mts"]
+}
+```
+
+The host derives the mission, subject, revision, repository, canonical root,
+branch, HEAD, human binding, contiguous sequences, authority identifiers,
+digests, timestamp, remaining gates, and exclusions. `publicationPaths` must
+exactly equal the clean base-to-HEAD changed-path set. Symlink and gitlink paths
+are rejected. Initial publication effects are fixed to
+`review.branch.push` and `review.pull_request.create_draft`; the input cannot
+request effects.
+
+Before reading the passcode, the command displays a complete
+`shield.wheels-up-authorization-manifest.v1`. With `--json` or
+`--passcode-stdin`, a deterministically framed canonical preview is written to
+stderr so stdout remains empty until the one final
+`shield.wheels-up-authorization-receipt.v1` JSON document. Interactive human
+mode prints the complete manifest before `Passcode:`.
+
+The resulting publication authority is only for the exact displayed base,
+planning HEAD, paths, and initial draft effects. It excludes review comments,
+draft updates, ready-for-review, merge, deployment, release, and final
+acceptance. Any later implementation-HEAD push or draft update needs fresh
+exact publication authority. Existing `authorize`, `wheels-up`, `bind`, and
+`publication-authorize` commands remain available unchanged for advanced use
+and recovery.
+
+The four-entry transition uses a copy-on-write sibling journal and preserves
+the original journal permission mode. If the command reports
+`recovery_required`, or if a sibling matching
+`<journal>.batch-<nonce>.tmp` remains after interruption, inspect the exact
+journal bytes and replay before taking identity-safe recovery action. Do not
+retry blindly and do not delete or replace a temporary path whose inode has not
+been verified.
+
 If the signer has not been provisioned on this host yet, run the one-time setup
 first:
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { lstat, mkdir, mkdtemp, open, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -21,8 +21,11 @@ import {
 } from "../dist/profile-aware-mission-v1.mjs";
 import {
   appendProfileAwareMissionEntryV1,
+  appendProfileAwareMissionEntriesAtomicV1,
+  atomicBatchStoreTestOnly,
   appendSupervisedMissionEntry,
   initializeProfileAwareMissionJournalV1,
+  journalByteSha256,
   readMissionJournalForDisplay,
   readSupervisedMissionJournal,
   resolveSupervisedMissionPaths,
@@ -740,6 +743,269 @@ test("appendProfileAwareMissionEntryV1 maps lock unlink failure to recovery_requ
   assert.equal(result.state, "invalid");
   assert.equal(result.code, "recovery_required");
   assert.equal(bytes, baseline + expectedLine);
+});
+
+function atomicProfileBatch(fixture) {
+  return [fixture.governance, profileAwareTransitionEntry(fixture)];
+}
+
+test("atomic schema-9 batch replaces exact bytes, preserves mode, replays, and rejects stale digests and orphans", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-store-profile-batch-"));
+  const fixture = profileAwareFixture();
+  const paths = resolveSupervisedMissionPaths(repositoryRoot, ".shield/journals", fixture.brief.missionId).value;
+  await mkdir(paths.root, { recursive: true });
+  const baseline = profileAwareJournalBytes([fixture.begun]);
+  const entries = atomicProfileBatch(fixture);
+  const candidate = baseline + profileAwareJournalBytes(entries);
+  await writeFile(paths.journalPath, baseline, { mode: 0o640 });
+  await chmod(paths.journalPath, 0o640);
+
+  const stale = await appendProfileAwareMissionEntriesAtomicV1({
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entries,
+    expectedStartingJournalSha256: `sha256:${"0".repeat(64)}`,
+  });
+  assert.equal(stale.state, "invalid");
+  assert.equal(stale.code, "journal_stale");
+  assert.equal(await readFile(paths.journalPath, "utf8"), baseline);
+
+  const orphan = `${paths.journalPath}.batch-${"A".repeat(32)}.tmp`;
+  await writeFile(orphan, "orphan", { mode: 0o600 });
+  const blocked = await appendProfileAwareMissionEntriesAtomicV1({
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entries,
+    expectedStartingJournalSha256: journalByteSha256(baseline),
+  });
+  assert.equal(blocked.state, "invalid");
+  assert.equal(blocked.code, "recovery_required");
+  assert.equal(await readFile(paths.journalPath, "utf8"), baseline);
+  await unlink(orphan);
+
+  const result = await appendProfileAwareMissionEntriesAtomicV1({
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.brief.missionId,
+    entries,
+    expectedStartingJournalSha256: journalByteSha256(baseline),
+  });
+  assert.equal(result.state, "valid", result.errors?.join(" "));
+  assert.equal(result.value.startingSequence, 0);
+  assert.equal(result.value.endingSequence, 2);
+  assert.equal(result.value.finalJournalSha256, journalByteSha256(candidate));
+  assert.equal(await readFile(paths.journalPath, "utf8"), candidate);
+  assert.equal((await lstat(paths.journalPath)).mode & 0o777, 0o640);
+  assert.equal((await readdir(paths.root)).some((name) => name.includes(".batch-") && name.endsWith(".tmp")), false);
+  const replay = replayProfileAwareMissionJournal([fixture.begun, ...entries]);
+  assert.equal(replay.state, "valid", replay.errors?.join(" "));
+  assert.deepEqual(result.value.projection, replay.value);
+});
+
+test("atomic schema-9 batch operation faults classify creation uncertainty and preserve retry safety", async () => {
+  const scenarios = [
+    {
+      name: "open-before-create",
+      expectedCode: "journal_batch_failed",
+      orphan: false,
+      overrides: {
+        openTemp: async () => { throw Object.assign(new Error("injected open failure"), { code: "EIO" }); },
+      },
+    },
+    {
+      name: "open-after-exclusive-create-before-identity",
+      expectedCode: "recovery_required",
+      orphan: true,
+      overrides: {
+        openTemp: async (path, flags, mode) => {
+          const handle = await open(path, flags, mode);
+          await handle.close();
+          throw Object.assign(new Error("injected post-create open failure"), { code: "EIO" });
+        },
+      },
+    },
+    {
+      name: "initial-stat",
+      expectedCode: "recovery_required",
+      orphan: true,
+      overrides: {
+        statTemp: async () => { throw Object.assign(new Error("injected initial stat failure"), { code: "EIO" }); },
+      },
+    },
+    {
+      name: "write",
+      expectedCode: "journal_batch_failed",
+      orphan: false,
+      overrides: {
+        writeTemp: async () => { throw Object.assign(new Error("injected write failure"), { code: "EIO" }); },
+      },
+    },
+    {
+      name: "post-write-stat",
+      expectedCode: "journal_batch_failed",
+      orphan: false,
+      overrides: (() => {
+        let calls = 0;
+        return {
+          statTemp: async (handle) => {
+            calls += 1;
+            if (calls === 2) throw Object.assign(new Error("injected post-write stat failure"), { code: "EIO" });
+            return handle.stat();
+          },
+        };
+      })(),
+    },
+    {
+      name: "sync",
+      expectedCode: "journal_batch_failed",
+      orphan: false,
+      overrides: {
+        syncTemp: async () => { throw Object.assign(new Error("injected sync failure"), { code: "EIO" }); },
+      },
+    },
+    {
+      name: "rename",
+      expectedCode: "recovery_required",
+      orphan: true,
+      overrides: {
+        renameTemp: async () => { throw Object.assign(new Error("injected rename failure"), { code: "EIO" }); },
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), `shield-store-operation-${scenario.name}-`));
+    const fixture = profileAwareFixture();
+    const paths = resolveSupervisedMissionPaths(repositoryRoot, ".shield/journals", fixture.brief.missionId).value;
+    await mkdir(paths.root, { recursive: true });
+    const baseline = profileAwareJournalBytes([fixture.begun]);
+    const entries = atomicProfileBatch(fixture);
+    await writeFile(paths.journalPath, baseline);
+    const batchInput = {
+      repositoryRoot,
+      configuredJournalPath: ".shield/journals",
+      missionId: fixture.brief.missionId,
+      entries,
+      expectedStartingJournalSha256: journalByteSha256(baseline),
+    };
+    const result = await atomicBatchStoreTestOnly.append(batchInput, {
+      nonce: () => Buffer.alloc(24, scenarios.indexOf(scenario) + 31),
+      ...scenario.overrides,
+    });
+    assert.equal(result.state, "invalid", `${scenario.name} unexpectedly succeeded`);
+    assert.equal(result.code, scenario.expectedCode, `${scenario.name} returned the wrong classification`);
+    assert.equal(await readFile(paths.journalPath, "utf8"), baseline, `${scenario.name} changed journal bytes`);
+    const temps = (await readdir(paths.root)).filter((name) => name.includes(".batch-") && name.endsWith(".tmp"));
+    assert.equal(temps.length > 0, scenario.orphan, `${scenario.name} orphan state is wrong`);
+
+    const retry = await appendProfileAwareMissionEntriesAtomicV1(batchInput);
+    if (scenario.orphan) {
+      assert.equal(retry.state, "invalid", `${scenario.name} retry unexpectedly succeeded with an orphan`);
+      assert.equal(retry.code, "recovery_required");
+      assert.equal(await readFile(paths.journalPath, "utf8"), baseline);
+      for (const name of temps) await unlink(join(paths.root, name));
+    } else {
+      assert.equal(retry.state, "valid", `${scenario.name} clean retry failed: ${retry.errors?.join(" ")}`);
+    }
+  }
+});
+
+test("atomic schema-9 batch stage faults expose only baseline or complete candidate bytes", async () => {
+  const stages = [
+    "locked", "validated", "temp_opened", "temp_written", "temp_synced",
+    "live_revalidated", "mode_restored", "before_rename", "renamed",
+    "directory_synced", "readback_verified", "temp_absence_verified", "lock_released",
+  ];
+  const postRename = new Set(["renamed", "directory_synced", "readback_verified", "temp_absence_verified", "lock_released"]);
+  for (const targetStage of stages) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), `shield-store-batch-${targetStage}-`));
+    const fixture = profileAwareFixture();
+    const paths = resolveSupervisedMissionPaths(repositoryRoot, ".shield/journals", fixture.brief.missionId).value;
+    await mkdir(paths.root, { recursive: true });
+    const baseline = profileAwareJournalBytes([fixture.begun]);
+    const entries = atomicProfileBatch(fixture);
+    const candidate = baseline + profileAwareJournalBytes(entries);
+    await writeFile(paths.journalPath, baseline);
+    let injected = false;
+    const result = await atomicBatchStoreTestOnly.append({
+      repositoryRoot,
+      configuredJournalPath: ".shield/journals",
+      missionId: fixture.brief.missionId,
+      entries,
+      expectedStartingJournalSha256: journalByteSha256(baseline),
+    }, {
+      nonce: () => Buffer.alloc(24, stages.indexOf(targetStage) + 1),
+      stage: async (stage) => {
+        if (stage === targetStage) {
+          injected = true;
+          throw new Error(`injected ${stage} fault`);
+        }
+      },
+    });
+    assert.equal(injected, true, `${targetStage} was not reached`);
+    assert.equal(result.state, "invalid", `${targetStage} unexpectedly succeeded`);
+    assert.equal(result.code, postRename.has(targetStage) ? "recovery_required" : "journal_batch_failed");
+    const bytes = await readFile(paths.journalPath, "utf8");
+    assert.equal(bytes, postRename.has(targetStage) ? candidate : baseline, `${targetStage} exposed unexpected bytes`);
+    assert.ok(bytes === baseline || bytes === candidate);
+    assert.notEqual(bytes, `${baseline}${profileAwareJournalBytes(entries.slice(0, 1))}`);
+    if (!postRename.has(targetStage)) {
+      assert.equal((await readdir(paths.root)).some((name) => name.includes(".batch-") && name.endsWith(".tmp")), false);
+    }
+  }
+});
+
+test("subprocess termination at every atomic batch stage leaves exactly baseline or complete candidate bytes", async () => {
+  const stages = [
+    "locked", "validated", "temp_opened", "temp_written", "temp_synced",
+    "live_revalidated", "mode_restored", "before_rename", "renamed",
+    "directory_synced", "readback_verified", "temp_absence_verified", "lock_released",
+  ];
+  const scriptPath = join(await mkdtemp(join(tmpdir(), "shield-store-batch-crash-script-")), "crash.mjs");
+  await writeFile(scriptPath, `
+    import { pathToFileURL } from "node:url";
+    const [storePath, repositoryRoot, missionId, entriesJson, digest, targetStage] = process.argv.slice(2);
+    const store = await import(pathToFileURL(storePath).href);
+    await store.atomicBatchStoreTestOnly.append({
+      repositoryRoot,
+      configuredJournalPath: ".shield/journals",
+      missionId,
+      entries: JSON.parse(entriesJson),
+      expectedStartingJournalSha256: digest,
+    }, {
+      nonce: () => Buffer.alloc(24, 23),
+      stage: async (stage) => {
+        if (stage === targetStage) process.kill(process.pid, "SIGKILL");
+      },
+    });
+  `);
+
+  for (const targetStage of stages) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), `shield-store-crash-${targetStage}-`));
+    const fixture = profileAwareFixture();
+    const paths = resolveSupervisedMissionPaths(repositoryRoot, ".shield/journals", fixture.brief.missionId).value;
+    await mkdir(paths.root, { recursive: true });
+    const baseline = profileAwareJournalBytes([fixture.begun]);
+    const entries = atomicProfileBatch(fixture);
+    const candidate = baseline + profileAwareJournalBytes(entries);
+    const partial = baseline + profileAwareJournalBytes(entries.slice(0, 1));
+    await writeFile(paths.journalPath, baseline);
+    const child = spawnSync(process.execPath, [
+      scriptPath,
+      MISSION_STORE_PATH,
+      repositoryRoot,
+      fixture.brief.missionId,
+      JSON.stringify(entries),
+      journalByteSha256(baseline),
+      targetStage,
+    ], { encoding: "utf8" });
+    assert.equal(child.signal, "SIGKILL", `${targetStage} did not terminate at the requested stage: ${child.stdout}${child.stderr}`);
+    const bytes = await readFile(paths.journalPath, "utf8");
+    assert.ok(bytes === baseline || bytes === candidate, `${targetStage} exposed bytes outside the atomic oracle`);
+    assert.notEqual(bytes, partial, `${targetStage} exposed a valid one-entry prefix`);
+  }
 });
 
 test("append, sync, and restart replay preserve the exact durable projection", async () => {

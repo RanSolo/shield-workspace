@@ -21,8 +21,8 @@ import {
   replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
-import { assertPublicationAuthorizationFreshness, readInteractivePasscode } from "../dist/mission-cli.mjs";
-import { signerTestOnly } from "../dist/mission-signer.mjs";
+import { assertPublicationAuthorizationFreshness, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
+import { batchSignerTestOnly, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -725,6 +725,229 @@ test("supported profile-aware CLI workflow records three independent signed tran
   const restarted = run(root, ["mission", "status", "--mission-id", created.missionId, "--json"]);
   assert.equal(restarted.status, 0, restarted.stderr);
   assert.deepEqual(JSON.parse(restarted.stdout), projection);
+});
+
+test("authorize-wheels-up previews one closed manifest, unlocks once, signs four payloads, and emits one receipt", async () => {
+  const { root } = await fixture();
+  const homeRoot = join(root, ".shield", "tmp", "one-passcode-home");
+  await mkdir(homeRoot, { recursive: true });
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+  runGit(root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  runGit(root, ["commit", "-qm", "one-passcode base"]);
+  const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
+  await writeFile(join(root, "implementation.md"), "bounded initial draft\n");
+  runGit(root, ["add", "implementation.md"]);
+  runGit(root, ["commit", "-qm", "one-passcode head"]);
+  const headRevision = runGit(root, ["rev-parse", "HEAD"]);
+
+  const missionId = "mission:authorize-wheels-up";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Authorize one bounded implementation and initial draft publication.",
+    subjectId: "issue:203",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+    },
+    participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-06T00:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const temporaryRoot = join(root, ".shield", "tmp");
+  await mkdir(temporaryRoot, { recursive: true });
+  const { revisionId: _revisionId, ...briefContent } = brief;
+  await writeFile(join(temporaryRoot, "one-passcode-brief.json"), `${JSON.stringify(briefContent, null, 2)}\n`);
+  await writeFile(join(temporaryRoot, "one-passcode-input.json"), `${JSON.stringify({
+    baseRevision,
+    modelId: "model:bounded-may",
+    approvedRelativePaths: ["implementation.md"],
+    approvedActionIds: ["action:implement"],
+    approvedEffectClasses: ["behavioral_implementation", "verification"],
+    approvedEffectKeys: ["effect:implementation", "effect:validation"],
+    approvedCapabilities: ["filesystem_write"],
+    validationCommandIds: ["validation:test"],
+    reasoningRuntimeId: "runtime:bounded-reasoner",
+    toolExecutorId: "executor:bounded-tools",
+    publicationPaths: ["implementation.md"],
+  }, null, 2)}\n`);
+
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", ".shield/tmp/one-passcode-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  assert.equal(runGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
+  const before = await readFile(journalPath(root, missionId), "utf8");
+
+  const validInput = JSON.parse(await readFile(join(temporaryRoot, "one-passcode-input.json"), "utf8"));
+  await writeFile(join(temporaryRoot, "one-passcode-hostile.json"), `${JSON.stringify({ ...validInput, authorityId: "caller:forbidden" })}\n`);
+  const hostile = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-hostile.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(hostile.status, 1);
+  assert.doesNotMatch(hostile.stderr, /SHIELD_WHEELS_UP_MANIFEST_BEGIN/u);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  const wrongPasscode = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "wrong-passcode\n" },
+  );
+  assert.equal(wrongPasscode.status, 1);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  const missingHome = join(root, ".shield", "tmp", "missing-signer-home");
+  await mkdir(missingHome, { recursive: true });
+  const missingSigner = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    { env: { HOME: missingHome }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(missingSigner.status, 1);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  const signerDirectory = join(homeRoot, ".shield", "signers");
+  const signerFiles = await readdir(signerDirectory);
+  assert.equal(signerFiles.length, 1);
+  const signerPath = join(signerDirectory, signerFiles[0]);
+  const signerBytes = await readFile(signerPath, "utf8");
+  const mismatchedSigner = { ...JSON.parse(signerBytes), signingKeyRef: `ed25519:sha256:${"A".repeat(43)}` };
+  await writeFile(signerPath, `${JSON.stringify(mismatchedSigner, null, 2)}\n`);
+  const keyMismatch = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(keyMismatch.status, 1);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+  await writeFile(signerPath, signerBytes);
+
+  const result = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr.match(/SHIELD_WHEELS_UP_MANIFEST_BEGIN/gu)?.length, 1);
+  assert.equal(result.stderr.match(/SHIELD_WHEELS_UP_MANIFEST_END/gu)?.length, 1);
+  const receipt = JSON.parse(result.stdout);
+  assert.equal(receipt.schemaId, "shield.wheels-up-authorization-receipt.v1");
+  assert.equal(receipt.baseRevision, baseRevision);
+  assert.equal(receipt.headRevision, headRevision);
+  assert.equal(receipt.startingJournalSequence, 0);
+  assert.equal(receipt.endingJournalSequence, 4);
+  assert.deepEqual(receipt.publicationScope.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
+  assert.ok(receipt.exclusions.includes("review.comment.publish"));
+  assert.ok(receipt.exclusions.includes("review.pull_request.update_draft"));
+  assert.equal(receipt.constituents.length, 4);
+
+  const after = await readFile(journalPath(root, missionId), "utf8");
+  assert.notEqual(after, before);
+  const entries = after.trimEnd().split("\n").map(JSON.parse);
+  assert.deepEqual(entries.map(({ type }) => type), [
+    "mission.begun", "governance.decided", "implementation.authorized",
+    "runtime.binding_recorded", "review.publication_authorized",
+  ]);
+  const publicKey = createPublicKey({ key: Buffer.from(entries[0].payload.trustedBindings[0].publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
+  const envelopes = [entries[1].payload.evidence, entries[2].payload.authority, entries[3].payload.authorization, entries[4].payload.authorization];
+  for (const envelope of envelopes) {
+    assert.equal(verify(null, Buffer.from(canonicalJson(envelope.payload)), publicKey, Buffer.from(envelope.signatureBase64, "base64")), true);
+  }
+  const restarted = run(root, ["mission", "status", "--mission-id", missionId, "--json"]);
+  assert.equal(restarted.status, 0, restarted.stderr);
+  assert.equal(JSON.parse(restarted.stdout).lastSequence, 4);
+});
+
+test("batch signer performs one record read, four signatures, and exposes no partial result on each signing failure", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "shield-batch-signer-"));
+  const keyPair = generateKeyPairSync("ed25519");
+  const created = await signerTestOnly.createSigner(
+    SIGNER_INPUT,
+    "batch-passcode",
+    deterministicSignerDependencies(homeDirectory, keyPair),
+  );
+  const record = await readFile(created.signerPath, "utf8");
+  const payloads = [0, 1, 2, 3].map((index) => ({ schemaVersion: 1, index }));
+  let reads = 0;
+  let signs = 0;
+  const signatures = await batchSignerTestOnly.signPayloadBatch(
+    created.signingKeyRef,
+    created.publicKeySpkiBase64,
+    "batch-passcode",
+    payloads,
+    {
+      readSigner: async () => { reads += 1; return record; },
+      signPayload: (bytes, privateKey) => { signs += 1; return sign(null, bytes, privateKey); },
+    },
+  );
+  assert.equal(reads, 1);
+  assert.equal(signs, 4);
+  assert.equal(signatures.length, 4);
+
+  for (let failureIndex = 0; failureIndex < 4; failureIndex += 1) {
+    let attempts = 0;
+    let exposed;
+    await assert.rejects(async () => {
+      exposed = await batchSignerTestOnly.signPayloadBatch(
+        created.signingKeyRef,
+        created.publicKeySpkiBase64,
+        "batch-passcode",
+        payloads,
+        {
+          readSigner: async () => record,
+          signPayload: (bytes, privateKey, index) => {
+            attempts += 1;
+            if (index === failureIndex) throw new Error("injected constituent signing failure");
+            return sign(null, bytes, privateKey);
+          },
+        },
+      );
+    }, /complete payload batch/u);
+    assert.equal(exposed, undefined);
+    assert.equal(attempts, failureIndex + 1);
+  }
+});
+
+test("authorize-wheels-up input rejects proxy, accessor, symbolic, duplicate, and unsorted authority data", () => {
+  const valid = {
+    baseRevision: "a".repeat(40),
+    modelId: "model:bounded",
+    approvedRelativePaths: ["a", "b"],
+    approvedActionIds: ["action:a"],
+    approvedEffectClasses: ["behavioral_implementation", "verification"],
+    approvedEffectKeys: ["effect:a"],
+    approvedCapabilities: ["filesystem_write"],
+    validationCommandIds: ["validation:test"],
+    reasoningRuntimeId: "runtime:reasoner",
+    toolExecutorId: "executor:tools",
+    publicationPaths: ["a", "b"],
+  };
+  assert.deepEqual(validateAuthorizeWheelsUpInput(valid).publicationPaths, ["a", "b"]);
+  assert.throws(() => validateAuthorizeWheelsUpInput(new Proxy(valid, {})), /plain closed data object/u);
+  const accessor = { ...valid };
+  Object.defineProperty(accessor, "modelId", { enumerable: true, get: () => "model:forged" });
+  assert.throws(() => validateAuthorizeWheelsUpInput(accessor), /enumerable data fields/u);
+  const symbolic = { ...valid, [Symbol("authority")]: "caller:forbidden" };
+  assert.throws(() => validateAuthorizeWheelsUpInput(symbolic), /enumerable data fields/u);
+  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: ["b", "a"] }), /must be sorted/u);
+  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: ["a", "a"] }), /duplicates/u);
 });
 
 test("schema-9 publication CLI signs authorization, queues without passcode, and rejects file-delivered outcomes", async () => {
