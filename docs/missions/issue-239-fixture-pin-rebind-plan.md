@@ -64,7 +64,14 @@ the test baseline's:
   `02853c218a4119d45c9fde683d2ee22d1ef22f5a70618372d0bf7cf7a9af4af9`.
 
 Do not alter test behavior, assertions, fixtures, helpers, launcher/verifier
-digests, isolation values, or failure semantics.
+digests, isolation values, or failure semantics, except for one new bounded
+verifier-level negative assertion. That assertion must replace only
+`FIXTURE_RELEASE_BASELINE.package.digest` with a different syntactically valid
+64-character digest, call the existing identity verifier, and require exact
+`state: "blocked"` with reason
+`fixture_identity_package_digest_mismatch`. Preserve the existing independent
+same-name/version package-byte substitution test and its
+`package_artifact_digest_mismatch` result.
 
 ## Exact implementation scope
 
@@ -76,35 +83,47 @@ approval. Only the two benchmark paths above are implementation-mutable.
 
 ## Required validation
 
-1. Prove there is no package-subtree delta from
-   `01a4fbdba7534de799cd7f16109dc02670cf696d`.
-2. Build `@shield/team-system`, pack it twice with `--ignore-scripts`, and require
-   both tarballs to have the approved package SHA-256.
-3. Require the versioned identity file's raw SHA-256 to equal the approved
+1. Require the implementation commit to have the exact Fury-approved planning
+   revision as its sole parent, to be clean, and to change only the two
+   authorized implementation paths.
+2. Record the exact implementation commit and its
+   `packages/shield-team-system` tree OID. Require that package tree to equal
+   `99aa512f91634d1c2845ba26e2112463470540e8`, the package tree at exact current
+   main `01a4fbdba7534de799cd7f16109dc02670cf696d`.
+3. From two independent isolated checkouts or Git archives of that exact
+   implementation commit, install locked dependencies, build
+   `@shield/team-system`, and pack with `npm pack --ignore-scripts` using
+   separate pack destinations and caches. Require both tarballs to have the
+   approved package SHA-256. Any lineage, cleanliness, tree, build, or digest
+   mismatch stops before Mack.
+4. Require the versioned identity file's raw SHA-256 to equal the approved
    identity-record digest.
-4. Run the complete fixture suite:
+5. Run the complete fixture suite:
 
    ```text
    npm --prefix benchmarks/v0.3-external-acceptance-v1 test
    ```
 
-5. Run the full package suite directly with test-file concurrency one:
+6. Run the full package suite directly with test-file concurrency one:
 
    ```text
    npm run build --workspace @shield/team-system
    node --test --test-concurrency=1 packages/shield-team-system/tests/*.test.mjs
    ```
 
-6. Run package dry-run and `git diff --check`.
-7. Inspect the exact base-to-head diff and require only the two authorized data
+7. Run package dry-run and `git diff --check`.
+8. Inspect the exact base-to-head diff and require only the two authorized data
    substitutions in the implementation delta.
-8. Mack validates the exact clean implementation revision. Fury then performs
+9. Mack validates the exact clean implementation revision. Fury then performs
    exact-revision conformance review.
 
 Existing negative fixture tests must continue proving that a substituted
-package or mismatched baseline fails closed. No external disposable repository
-is created and no fixture launcher/composer/grader invocation is permitted in
-this mission.
+package or mismatched baseline fails closed. The complete automated fixture
+suite may create only its test-owned temporary repositories and invoke the
+launcher, composer, and grader through the existing test harness. No
+operational disposable acceptance run, externally supplied repository,
+out-of-suite launcher/composer/grader invocation, or #14 campaign execution is
+permitted in this mission.
 
 ## Publication and stop condition
 
