@@ -107,8 +107,11 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
   assert.equal(config.LEGACY_CONFIG_SCHEMA_VERSION, 1);
-  assert.equal(config.CONFIG_SCHEMA_VERSION, 2);
-  assert.deepEqual(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS, [1, 2]);
+  assert.equal(config.CONFIG_SCHEMA_V2_VERSION, 2);
+  assert.equal(config.CONFIG_SCHEMA_VERSION, 3);
+  assert.deepEqual(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS, [1, 2, 3]);
+  assert.deepEqual(config.SUPPORTED_ADAPTER_IDS, ["github"]);
+  assert.deepEqual(config.CONFIGURED_HOST_ADAPTER_IDS, ["github", "atlassian"]);
   assert.equal(Object.isFrozen(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS), true);
   assert.equal(Object.isFrozen(config.REPOSITORY_TRUST_PROFILE_IDS), true);
   assert.equal(config.REPOSITORY_TRUST_PROFILE_CONTRACT_VERSION, "repository.trust-profile.v1");
@@ -298,7 +301,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
     import { HILL_READINESS_SCHEMA_VERSION, evaluateHillReadinessV1, type HillReadinessCandidateV1, type HillReadinessHostObservationV1 } from "@shield/team-system/hill-readiness";
-    import { CONFIG_SCHEMA_VERSION, LEGACY_CONFIG_SCHEMA_VERSION, SUPPORTED_CONFIG_SCHEMA_VERSIONS, type RepositoryTrustProfileId, type ShieldConfig, type ShieldConfigV1, type ShieldConfigV2 } from "@shield/team-system/config";
+    import { CONFIG_SCHEMA_V2_VERSION, CONFIG_SCHEMA_VERSION, LEGACY_CONFIG_SCHEMA_VERSION, SUPPORTED_CONFIG_SCHEMA_VERSIONS, configuredAdapterIds, migrateShieldConfig, type ConfiguredHostAdapterId, type DoctorReport, type DoctorReportV2, type RepositoryTrustProfileId, type ShieldConfig, type ShieldConfigV1, type ShieldConfigV2, type ShieldConfigV3 } from "@shield/team-system/config";
     import { RUNNER_JOURNAL_SCHEMA_VERSION, SUPERVISED_JOURNAL_SCHEMA_VERSION, createExecutionEffectEntry, createSupervisedMissionBrief, deriveRepositoryMissionBindings, selectCoulsonOperationBinding, type RunnerSupervisedEffectCandidate, type SupervisedMissionBrief } from "@shield/team-system/supervision";
     import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
@@ -379,14 +382,24 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const hillObservation = null as unknown as HillReadinessHostObservationV1;
     const hillEvaluation = evaluateHillReadinessV1(hillCandidate, hillObservation);
     const legacyConfigSchema: 1 = LEGACY_CONFIG_SCHEMA_VERSION;
-    const configSchema: 2 = CONFIG_SCHEMA_VERSION;
-    const supportedConfigSchemas: readonly [1, 2] = SUPPORTED_CONFIG_SCHEMA_VERSIONS;
+    const configSchemaV2: 2 = CONFIG_SCHEMA_V2_VERSION;
+    const configSchema: 3 = CONFIG_SCHEMA_VERSION;
+    const supportedConfigSchemas: readonly [1, 2, 3] = SUPPORTED_CONFIG_SCHEMA_VERSIONS;
     const config = null as unknown as ShieldConfig;
     const configV1 = null as unknown as ShieldConfigV1;
     const configV2 = null as unknown as ShieldConfigV2;
+    const configV3 = null as unknown as ShieldConfigV3;
     const trustProfileId: RepositoryTrustProfileId = configV2.repositoryTrustProfileId;
+    const configuredHostAdapterId: ConfiguredHostAdapterId = configV3.adapterIds[0];
+    const projectedAdapters: ConfiguredHostAdapterId[] = configuredAdapterIds(config);
+    const migratedConfig: ShieldConfigV3 = migrateShieldConfig(config);
+    const doctorV1 = null as unknown as DoctorReport;
+    const doctorV2 = null as unknown as DoctorReportV2;
+    const doctorV1Version: 1 = doctorV1.reportVersion;
+    const doctorV2Version: 2 = doctorV2.reportVersion;
     const legacySchemaDiscriminant: 1 = configV1.schemaVersion;
-    const currentSchemaDiscriminant: 2 = configV2.schemaVersion;
+    const priorSchemaDiscriminant: 2 = configV2.schemaVersion;
+    const currentSchemaDiscriminant: 3 = configV3.schemaVersion;
     const deriveBindings = deriveRepositoryMissionBindings;
     const selectCoulson = selectCoulsonOperationBinding;
     const supervisedSchema: 2 = SUPERVISED_JOURNAL_SCHEMA_VERSION;
@@ -581,7 +594,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   );
   await writeFile(join(javascriptFixture, "consumer.mjs"), `
     import { appendSeatDispatchReceiptEntryV1, claimSeatDispatchPacketV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
-    import { CONFIG_SCHEMA_VERSION, createShieldConfig } from "@shield/team-system/config";
+    import { CONFIG_SCHEMA_VERSION, configuredAdapterIds, createShieldConfig, migrateShieldConfig } from "@shield/team-system/config";
     const packageBase = new URL("./node_modules/@shield/team-system/", import.meta.url);
     await import(new URL("dist/dispatch-receipts.mjs", packageBase).href);
     await import(new URL("dist/seat-dispatch-store.mjs", packageBase).href);
@@ -614,13 +627,13 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     if (typeof appendSeatDispatchReceiptEntryV1 !== "function" || typeof claimSeatDispatchPacketV1 !== "function" || typeof readSeatDispatchReceiptByReceiptIdV1 !== "function") {
       throw new Error("dispatch-receipts exports missing");
     }
-    if (CONFIG_SCHEMA_VERSION !== 2) throw new Error("unexpected config schema");
+    if (CONFIG_SCHEMA_VERSION !== 3) throw new Error("unexpected config schema");
     const config = createShieldConfig({
       repositoryId: "fixture/javascript-consumer",
       coulsonBindingRef: "github:user:coulson",
       fitzBindingRef: "github:user:fitz",
     });
-    if (config.adapterId !== "github" || config.repositoryTrustProfileId !== "signed_human_gates") throw new Error("unexpected adapter or trust profile");
+    if (configuredAdapterIds(config)[0] !== "github" || migrateShieldConfig(config).schemaVersion !== 3 || config.repositoryTrustProfileId !== "signed_human_gates") throw new Error("unexpected adapter or trust profile");
   `);
   execFileSync(process.execPath, [join(javascriptFixture, "consumer.mjs")], {
     cwd: javascriptFixture,

@@ -1,11 +1,11 @@
 import { constants } from "node:fs";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFile as execFileNode } from "node:child_process";
-import { access, chmod, lstat, mkdir, readFile, realpath as fsRealpath, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, open, readFile, realpath as fsRealpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { stdin as input, stdout as outputStream } from "node:process";
 import { types } from "node:util";
-import { parseShieldConfig, type ShieldConfig } from "./config.mjs";
+import { configuredAdapterIds, parseShieldConfig, type ShieldConfig } from "./config.mjs";
 import {
   canonicalJson,
   createDelegatedAuthorizationEntry,
@@ -164,6 +164,59 @@ async function repositoryConfig(root: string): Promise<ShieldConfig> {
   const parsed = parseShieldConfig(await regularTextFile(join(root, CONFIG_PATH), "SHIELD configuration"));
   if (parsed.state === "invalid") throw new MissionCliError(parsed.issues.map(({ message }) => message).join(" "), 1);
   return parsed.value;
+}
+
+interface RepositoryConfigSnapshot {
+  config: ShieldConfig;
+  bytes: string;
+  identity: string;
+}
+
+async function repositoryConfigSnapshot(root: string): Promise<RepositoryConfigSnapshot> {
+  const path = join(root, CONFIG_PATH);
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = await handle.stat();
+    if (!before.isFile()) throw new MissionCliError(`SHIELD configuration must be a regular file: ${path}.`);
+    const bytes = await handle.readFile("utf8");
+    const after = await handle.stat();
+    const pathStats = await lstat(path);
+    if (pathStats.isSymbolicLink() || !pathStats.isFile() ||
+        before.dev !== after.dev || before.ino !== after.ino ||
+        before.dev !== pathStats.dev || before.ino !== pathStats.ino) {
+      throw new MissionCliError("SHIELD configuration path identity changed during snapshot.", 1);
+    }
+    const parsed = parseShieldConfig(bytes);
+    if (parsed.state === "invalid") throw new MissionCliError(parsed.issues.map(({ message }) => message).join(" "), 1);
+    return {
+      config: canonicalSnapshot(parsed.value),
+      bytes,
+      identity: `${String(before.dev)}:${String(before.ino)}:${String(before.mode & 0o7777)}`,
+    };
+  } catch (error) {
+    if (error instanceof MissionCliError) throw error;
+    throw new MissionCliError(`SHIELD configuration is missing, unsafe, or unreadable: ${path}.`, 1);
+  } finally {
+    if (handle !== undefined) await handle.close();
+  }
+}
+
+function requireGitHubConfiguration(snapshot: RepositoryConfigSnapshot): void {
+  if (!configuredAdapterIds(snapshot.config).includes("github")) {
+    throw new MissionCliError("GitHub review publication requires github in the frozen repository configuration.", 1);
+  }
+}
+
+export function assertRepositoryConfigFresh(
+  initial: RepositoryConfigSnapshot,
+  fresh: RepositoryConfigSnapshot,
+): void {
+  requireGitHubConfiguration(fresh);
+  if (initial.bytes !== fresh.bytes || initial.identity !== fresh.identity ||
+      canonicalJson(initial.config) !== canonicalJson(fresh.config)) {
+    throw new MissionCliError("SHIELD configuration drifted before GitHub request append.", 1);
+  }
 }
 
 function unwrap<T>(result: ContractResult<T>): T {
@@ -1118,7 +1171,9 @@ async function publicationAuthorize(args: string[]): Promise<number> {
 async function publicationRequest(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json"]);
   const root = await exactRoot(options.values.get("--root"), true);
-  const config = await repositoryConfig(root);
+  const configSnapshot = await repositoryConfigSnapshot(root);
+  requireGitHubConfiguration(configSnapshot);
+  const config = configSnapshot.config;
   const missionId = required(options, "--mission-id");
   const current = await currentProfileAwareMission(root, config, missionId);
   const intent = publicationRequestIntent(await jsonFile(resolve(root, required(options, "--input")), "Publication request input"));
@@ -1147,7 +1202,12 @@ async function publicationRequest(args: string[]): Promise<number> {
     request,
     timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
   }));
-  const appended = unwrap(await appendProfileAwareMissionEntryV1({ ...missionPaths(root, config, missionId), entry }));
+  const freshConfigSnapshot = await repositoryConfigSnapshot(root);
+  assertRepositoryConfigFresh(configSnapshot, freshConfigSnapshot);
+  const appended = unwrap(await appendProfileAwareMissionEntryV1({
+    ...missionPaths(root, freshConfigSnapshot.config, missionId),
+    entry,
+  }));
   output(appended.projection, options.flags.has("--json"), profileAwareStatusText(appended.projection));
   return 0;
 }

@@ -198,8 +198,8 @@ test("repository trust and mission admission derive exact content-addressed Ed25
     fitzBindingRef: fitz.binding.signingKeyRef,
     simmonsBindingRef: simmons.binding.signingKeyRef,
   });
-  const { repositoryTrustProfileId: _profileId, ...legacyCommon } = signed;
-  const legacy = { ...legacyCommon, schemaVersion: 1 };
+  const { repositoryTrustProfileId: _profileId, adapterIds: _adapterIds, ...legacyCommon } = signed;
+  const legacy = { ...legacyCommon, schemaVersion: 1, adapterId: "github" };
   const coulsonOnly = createShieldConfig({
     repositoryId: "RanSolo/shield-workspace",
     repositoryTrustProfileId: "coulson_only_platform_review",
@@ -259,7 +259,7 @@ test("repository binding selectors validate unknown config and registry before s
   });
   contradictory.trustedHumanBindingRefs.push({ seatId: "fitz", bindingRef: fitz.binding.signingKeyRef });
   const inherited = Object.assign(Object.create({ inherited: true }), signed);
-  const malformedConfigs = [null, {}, inherited, contradictory, { ...signed, schemaVersion: 3 }, { ...signed, repositoryTrustProfileId: "hostile" }];
+  const malformedConfigs = [null, {}, inherited, contradictory, { ...signed, schemaVersion: 4 }, { ...signed, repositoryTrustProfileId: "hostile" }];
   for (const config of malformedConfigs) {
     for (const result of [
       deriveRepositoryMissionBindings(config, registry, brief.missionId, { kind: "legacy-supervised", requireSimmons: false }),

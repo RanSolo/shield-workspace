@@ -21,7 +21,7 @@ import {
   replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
-import { assertPublicationAuthorizationFreshness, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
+import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
 import { batchSignerTestOnly, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 
@@ -1050,6 +1050,21 @@ test("schema-9 publication CLI signs authorization, queues without passcode, and
     targetRef: "github:issue:149",
     requestedEffects: ["review.comment.publish"],
   }, null, 2)}\n`);
+  const repositoryConfigPath = join(root, ".shield", "config.json");
+  const repositoryConfig = JSON.parse(await readFile(repositoryConfigPath, "utf8"));
+  repositoryConfig.adapterIds = ["atlassian"];
+  await writeFile(repositoryConfigPath, `${JSON.stringify(repositoryConfig, null, 2)}\n`);
+  const beforeMissingGitHub = await readFile(journalPath(root, missionId), "utf8");
+  const missingGitHub = run(root, [
+    "mission", "publication-request", "--mission-id", missionId,
+    "--input", ".shield/tmp/publication-request.json", "--json",
+  ]);
+  assert.equal(missingGitHub.status, 1);
+  assert.match(missingGitHub.stderr, /requires github/iu);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), beforeMissingGitHub);
+
+  repositoryConfig.adapterIds = ["github", "atlassian"];
+  await writeFile(repositoryConfigPath, `${JSON.stringify(repositoryConfig, null, 2)}\n`);
   const requested = run(root, [
     "mission", "publication-request", "--mission-id", missionId,
     "--input", ".shield/tmp/publication-request.json", "--json",
@@ -1214,6 +1229,27 @@ test("schema-9 publication freshness rejects every post-passcode repository and 
       label,
     );
   }
+});
+
+test("GitHub publication config freshness rejects byte, identity, meaning, and membership drift", () => {
+  const config = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    adapterIds: ["github", "atlassian"],
+    coulsonBindingRef: "ed25519:sha256:coulson",
+    fitzBindingRef: "ed25519:sha256:fitz",
+  });
+  const initial = { config, bytes: formatShieldConfig(config), identity: "1:2:420" };
+  assert.doesNotThrow(() => assertRepositoryConfigFresh(initial, structuredClone(initial)));
+  assert.throws(() => assertRepositoryConfigFresh(initial, { ...structuredClone(initial), bytes: `${initial.bytes}\n` }), /drifted/iu);
+  assert.throws(() => assertRepositoryConfigFresh(initial, { ...structuredClone(initial), identity: "1:3:420" }), /drifted/iu);
+  const changed = structuredClone(initial);
+  changed.config.paths.reports = ".shield/other-reports";
+  changed.bytes = formatShieldConfig(changed.config);
+  assert.throws(() => assertRepositoryConfigFresh(initial, changed), /drifted/iu);
+  const withoutGitHub = structuredClone(initial);
+  withoutGitHub.config.adapterIds = ["atlassian"];
+  withoutGitHub.bytes = formatShieldConfig(withoutGitHub.config);
+  assert.throws(() => assertRepositoryConfigFresh(initial, withoutGitHub), /requires github/iu);
 });
 
 test("packed CLI rejects mixed schema 9 and legacy entries without changing journal bytes", async () => {
