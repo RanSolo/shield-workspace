@@ -512,6 +512,19 @@ test("migration pre-rename operation faults prove exact cleanup and permit a suc
       }),
     },
     {
+      name: "source initial path identity",
+      operations: (state) => {
+        let sourceLstats = 0;
+        return {
+          async lstat(path) {
+            const stats = await lstat(path);
+            if (path === state.path && ++sourceLstats === 1) return driftIdentity(stats);
+            return stats;
+          },
+        };
+      },
+    },
+    {
       name: "source final revalidation drift",
       operations: (state) => {
         let sourceLstats = 0;
@@ -523,6 +536,17 @@ test("migration pre-rename operation faults prove exact cleanup and permit a suc
           },
         };
       },
+    },
+    {
+      name: "temporary creation",
+      operations: () => ({
+        async open(path, flags, mode) {
+          if (path.includes(".config.json.migrate-") && path.endsWith(".tmp")) {
+            throw new Error("temporary creation fault");
+          }
+          return open(path, flags, mode);
+        },
+      }),
     },
     {
       name: "initial temporary sync",
@@ -645,6 +669,15 @@ test("migration rename, installed-readback, and lock-release uncertainty require
           return migrationHandle(handle, {
             write: async (buffer, offset, length, position) => handle.write(buffer, offset, length - 1, position),
           });
+        },
+      }),
+    },
+    {
+      name: "rename before effect",
+      expected: "legacy",
+      operations: () => ({
+        async rename() {
+          throw new Error("rename before effect fault");
         },
       }),
     },
