@@ -15,19 +15,27 @@ signatures, effects, publication semantics, human gates, or any external system.
 ## Implementation
 
 1. Define one locale-independent comparator for canonical repository-relative
-   path ordering in `mission-cli.mts`. It must compare JavaScript strings by
-   deterministic UTF-16 code-unit order and must not depend on host locale.
-2. Apply that comparator consistently to strict input-array validation and to
+   publication-path ordering in `mission-cli.mts`. It must compare JavaScript
+   strings by deterministic UTF-16 code-unit order and must not depend on host
+   locale.
+2. Add a dedicated publication-path validator, or parameterize the existing
+   helper explicitly, and apply the comparator only to `publicationPaths` and
    Git-observed changed, symlink, and gitlink path arrays used by the combined
-   authorization flow.
+   authorization flow. Preserve the existing `localeCompare` contract for
+   `approvedRelativePaths`, all other `approved*` arrays, capabilities, and
+   `validationCommandIds`; add a regression assertion proving those arrays did
+   not silently adopt the publication-path comparator.
 3. Preserve exact array equality after both sides use the same canonical
    ordering. Do not replace the exact closed-set check with set-only matching.
 4. Add focused CLI tests proving a legitimate mixed uppercase/lowercase
    base-to-HEAD change set can be authorized and that unsorted, duplicate,
    missing, extra, malformed, symlink, and gitlink cases remain fail closed.
 5. Cover non-ASCII ordering with deterministic inputs or reject unsupported
-   path characters explicitly. Prove repeated construction yields stable
-   manifest and receipt digests.
+   path characters explicitly. In two fresh Node/CLI processes, construct from
+   byte-equivalent controlled inputs with fixed timestamps, root, revisions,
+   signer material, and starting journal bytes; assert identical manifest and
+   receipt digests. Assert canonical order in the manifest changed/authorized
+   paths and receipt authorized paths.
 
 ## Exact implementation scope
 
