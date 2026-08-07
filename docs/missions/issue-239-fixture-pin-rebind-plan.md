@@ -112,8 +112,12 @@ approval. Only the two benchmark paths above are implementation-mutable.
    ```
 
 7. Run package dry-run and `git diff --check`.
-8. Inspect the exact base-to-head diff and require only the two authorized data
-   substitutions in the implementation delta.
+8. Require the exact Fury-approved-planning-revision-to-implementation-HEAD
+   diff to contain exactly four changes in the two mutable files: the identity
+   package digest, the test identity-record digest, the test package digest,
+   and the bounded verifier-level negative assertion. Separately require the
+   base-to-head diff to contain only the two immutable planning artifacts plus
+   that exact implementation delta.
 9. Mack validates the exact clean implementation revision. Fury then performs
    exact-revision conformance review.
 
