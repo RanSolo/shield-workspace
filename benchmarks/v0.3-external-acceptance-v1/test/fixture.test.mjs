@@ -36,7 +36,7 @@ const FIXTURE_IDENTITY_BYTES = await readFile(join(root, "fixture-identity-v1.js
 const FIXTURE_RELEASE_BASELINE = Object.freeze({
   kind: "fixture-release-baseline",
   schemaVersion: "shield.fixture.release-baseline.v1",
-  identityRecordDigest: "4a0de87cfc777c3cd6090ec25eb7a042667a654f1d455bf9e41ef49970e3a844",
+  identityRecordDigest: "d494a075b8a4a217e60f42cd89c738d4abbd397e86b189f346190d8961c4dfcc",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
   launcherDigest: "b4e1adf7cf647d533f9b32b8aa7eab449e5f78ce9fbb5f4c3ddfd9349a717615",
   verifierIdentity: `node:${process.version}`,
@@ -45,7 +45,7 @@ const FIXTURE_RELEASE_BASELINE = Object.freeze({
     name: "@shield/team-system",
     version: "0.1.0",
     digestAlgorithm: "sha256",
-    digest: "9c2eb437fc13d371b38577c31556d88b0c921f2fd2f2fc24ca22badd932a2823"
+    digest: "02853c218a4119d45c9fde683d2ee22d1ef22f5a70618372d0bf7cf7a9af4af9"
   })
 });
 const ISOLATION_ENVELOPE = Object.freeze({
@@ -565,6 +565,19 @@ test("fixture identity preflight rejects covered drift before composition", asyn
 });
 
 test("fixture identity verifier rejects missing/malformed baselines, modified verifier identity, and identity symlinks", async (context) => {
+  const { copied: packageDigestCopy, outcome: packageDigestOutcome } = await verifyCopyIdentity(async () => {}, {
+    ...FIXTURE_RELEASE_BASELINE,
+    package: {
+      ...FIXTURE_RELEASE_BASELINE.package,
+      digest: "f".repeat(64)
+    }
+  });
+  context.after(async () => {
+    await rm(packageDigestCopy, { recursive: true, force: true });
+  });
+  assert.equal(packageDigestOutcome.state, "blocked");
+  assert.equal(packageDigestOutcome.reason, "fixture_identity_package_digest_mismatch");
+
   const { copied: missingCopy, outcome: missingBaseline } = await verifyCopyIdentity(async () => {}, undefined);
   context.after(async () => {
     await rm(missingCopy, { recursive: true, force: true });
