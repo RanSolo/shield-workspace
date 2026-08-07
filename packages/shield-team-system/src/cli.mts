@@ -274,43 +274,41 @@ async function createFileWithoutOverwrite(path: string, content: string): Promis
   }
 }
 
-export type ConfigMigrationStage =
-  | "classification"
-  | "lock_create"
-  | "lock_write"
-  | "lock_sync"
-  | "lock_identity"
-  | "source_open"
-  | "source_identity"
-  | "temporary_create"
-  | "temporary_identity"
-  | "temporary_write"
-  | "temporary_sync"
-  | "temporary_mode"
-  | "source_revalidation"
-  | "lock_revalidation"
-  | "rename"
-  | "renamed"
-  | "installed_identity"
-  | "parent_sync"
-  | "readback"
-  | "temporary_cleanup"
-  | "lock_release";
+type ConfigMigrationFileHandle = Pick<
+  Awaited<ReturnType<typeof open>>,
+  "chmod" | "close" | "read" | "stat" | "sync" | "write"
+>;
+
+export interface ConfigMigrationOperations {
+  open(path: string, flags: number, mode?: number): Promise<ConfigMigrationFileHandle>;
+  lstat(path: string): ReturnType<typeof lstat>;
+  readdir(path: string): Promise<string[]>;
+  rename(source: string, destination: string): Promise<void>;
+  unlink(path: string): Promise<void>;
+}
 
 export interface ConfigMigrationDependencies {
-  stage?: (stage: ConfigMigrationStage) => void | Promise<void>;
   nonce?: () => string;
+  operations?: Partial<ConfigMigrationOperations>;
 }
+
+const DEFAULT_CONFIG_MIGRATION_OPERATIONS: ConfigMigrationOperations = {
+  open: async (path, flags, mode) => open(path, flags, mode),
+  lstat,
+  readdir: async (path) => readdir(path),
+  rename,
+  unlink,
+};
 
 function sameIdentity(left: { dev: number | bigint; ino: number | bigint }, right: { dev: number | bigint; ino: number | bigint }): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-function fileMode(stats: { mode: number }): number {
-  return stats.mode & 0o7777;
+function fileMode(stats: { mode: number | bigint }): number {
+  return typeof stats.mode === "bigint" ? Number(stats.mode & 0o7777n) : stats.mode & 0o7777;
 }
 
-async function exactHandleBytes(handle: Awaited<ReturnType<typeof open>>, size: number): Promise<Buffer> {
+async function exactHandleBytes(handle: ConfigMigrationFileHandle, size: number): Promise<Buffer> {
   const bytes = Buffer.alloc(size);
   let offset = 0;
   while (offset < size) {
@@ -321,29 +319,36 @@ async function exactHandleBytes(handle: Awaited<ReturnType<typeof open>>, size: 
   return bytes;
 }
 
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+async function syncDirectory(path: string, operations: ConfigMigrationOperations): Promise<void> {
+  const handle = await operations.open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
-async function pathIdentity(path: string, expected: { dev: number | bigint; ino: number | bigint; mode: number }): Promise<boolean> {
-  const stats = await lstat(path);
+async function pathIdentity(
+  path: string,
+  expected: { dev: number | bigint; ino: number | bigint; mode: number },
+  operations: ConfigMigrationOperations,
+): Promise<boolean> {
+  const stats = await operations.lstat(path);
   return !stats.isSymbolicLink() && stats.isFile() && sameIdentity(stats, expected) && fileMode(stats) === expected.mode;
 }
 
-async function absent(path: string): Promise<boolean> {
-  try { await lstat(path); return false; }
+async function absent(path: string, operations: ConfigMigrationOperations): Promise<boolean> {
+  try { await operations.lstat(path); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 }
 
-async function configMigrationRecoveryIssue(configPath: string): Promise<string | null> {
+async function configMigrationRecoveryIssue(
+  configPath: string,
+  operations: ConfigMigrationOperations = DEFAULT_CONFIG_MIGRATION_OPERATIONS,
+): Promise<string | null> {
   const parent = dirname(configPath);
   const tempPrefix = `.${basename(configPath)}.migrate-`;
-  const siblings = await readdir(parent);
+  const siblings = await operations.readdir(parent);
   if (siblings.some((name) => name.startsWith(tempPrefix) && name.endsWith(".tmp"))) {
     return "recovery_required: orphaned configuration migration temporary state requires identity-safe operator recovery.";
   }
-  if (!await absent(`${configPath}.migrate.lock`)) {
+  if (!await absent(`${configPath}.migrate.lock`, operations)) {
     return "recovery_required: configuration migration lock or conflicting state is present.";
   }
   return null;
@@ -356,15 +361,19 @@ export async function migrateConfigFile(
   candidate: ShieldConfigV3,
   dependencies: ConfigMigrationDependencies = {},
 ): Promise<void> {
-  const stage = dependencies.stage ?? (() => undefined);
   const nonce = dependencies.nonce ?? (() => randomBytes(16).toString("hex"));
+  const operations: ConfigMigrationOperations = {
+    ...DEFAULT_CONFIG_MIGRATION_OPERATIONS,
+    ...dependencies.operations,
+  };
   const parent = dirname(configPath);
   const lockPath = `${configPath}.migrate.lock`;
   const tempPrefix = `.${basename(configPath)}.migrate-`;
   let tempPath: string | null = null;
-  let lockHandle: Awaited<ReturnType<typeof open>> | null = null;
-  let sourceHandle: Awaited<ReturnType<typeof open>> | null = null;
-  let tempHandle: Awaited<ReturnType<typeof open>> | null = null;
+  let lockHandle: ConfigMigrationFileHandle | null = null;
+  let sourceHandle: ConfigMigrationFileHandle | null = null;
+  let tempHandle: ConfigMigrationFileHandle | null = null;
+  let installedHandle: ConfigMigrationFileHandle | null = null;
   let lockIdentity: { dev: number | bigint; ino: number | bigint; mode: number } | null = null;
   let tempIdentity: { dev: number | bigint; ino: number | bigint; mode: number } | null = null;
   let sourceIdentity: { dev: number | bigint; ino: number | bigint; mode: number } | null = null;
@@ -376,36 +385,29 @@ export async function migrateConfigFile(
   const candidateBytes = formatShieldConfig(candidate);
 
   try {
-    await stage("classification");
-    const recoveryIssue = await configMigrationRecoveryIssue(configPath);
+    const recoveryIssue = await configMigrationRecoveryIssue(configPath, operations);
     if (recoveryIssue !== null) throw new CliError(recoveryIssue);
 
-    await stage("lock_create");
-    lockHandle = await open(lockPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    lockHandle = await operations.open(lockPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     await lockHandle.chmod(0o600);
     const lockStats = await lockHandle.stat();
     lockIdentity = { dev: lockStats.dev, ino: lockStats.ino, mode: 0o600 };
-    await stage("lock_write");
     const lockWrite = await lockHandle.write(Buffer.from(lockToken), 0, Buffer.byteLength(lockToken), 0);
     if (lockWrite.bytesWritten !== Buffer.byteLength(lockToken)) throw new Error("Migration lock write was incomplete.");
     lockExpectedBytes = lockToken;
-    await stage("lock_sync");
     await lockHandle.sync();
-    await syncDirectory(parent);
-    await stage("lock_identity");
-    if (!await pathIdentity(lockPath, lockIdentity) ||
+    await syncDirectory(parent, operations);
+    if (!await pathIdentity(lockPath, lockIdentity, operations) ||
         (await lockHandle.stat()).size !== Buffer.byteLength(lockToken) ||
         !(await exactHandleBytes(lockHandle, Buffer.byteLength(lockToken))).equals(Buffer.from(lockToken))) {
       throw new Error("Migration lock identity or marker is invalid.");
     }
 
-    await stage("source_open");
-    sourceHandle = await open(configPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    sourceHandle = await operations.open(configPath, constants.O_RDONLY | constants.O_NOFOLLOW);
     const sourceStats = await sourceHandle.stat();
     if (!sourceStats.isFile()) throw new Error("Configuration source is not a regular file.");
     sourceIdentity = { dev: sourceStats.dev, ino: sourceStats.ino, mode: fileMode(sourceStats) };
-    await stage("source_identity");
-    if (!await pathIdentity(configPath, sourceIdentity)) throw new Error("Configuration source identity changed.");
+    if (!await pathIdentity(configPath, sourceIdentity, operations)) throw new Error("Configuration source identity changed.");
     const sourceBytes = await exactHandleBytes(sourceHandle, Number(sourceStats.size));
     if (!sourceBytes.equals(Buffer.from(expectedOriginalBytes))) throw new Error("Configuration source bytes changed.");
     const reparsed = parseShieldConfig(sourceBytes.toString("utf8"));
@@ -417,55 +419,49 @@ export async function migrateConfigFile(
     const generatedNonce = nonce();
     if (!/^[a-f0-9]{16,128}$/u.test(generatedNonce)) throw new Error("Configuration migration nonce is invalid.");
     tempPath = join(parent, `${tempPrefix}${generatedNonce}.tmp`);
-    await stage("temporary_create");
-    tempHandle = await open(tempPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    tempHandle = await operations.open(tempPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     await tempHandle.chmod(0o600);
     const initialTempStats = await tempHandle.stat();
     tempIdentity = { dev: initialTempStats.dev, ino: initialTempStats.ino, mode: 0o600 };
-    await stage("temporary_identity");
-    if (!await pathIdentity(tempPath, tempIdentity)) throw new Error("Migration temporary identity is invalid.");
-    await stage("temporary_write");
+    if (!await pathIdentity(tempPath, tempIdentity, operations)) throw new Error("Migration temporary identity is invalid.");
     const candidateBuffer = Buffer.from(candidateBytes);
     const tempWrite = await tempHandle.write(candidateBuffer, 0, candidateBuffer.length, 0);
     if (tempWrite.bytesWritten !== candidateBuffer.length) throw new Error("Migration temporary write was incomplete.");
-    await stage("temporary_sync");
     await tempHandle.sync();
     if ((await tempHandle.stat()).size !== candidateBuffer.length) throw new Error("Migration temporary size is not exact.");
     const written = await exactHandleBytes(tempHandle, candidateBuffer.length);
     if (!written.equals(candidateBuffer)) throw new Error("Migration temporary readback is not exact.");
-    await stage("temporary_mode");
     await tempHandle.chmod(sourceIdentity.mode);
     tempIdentity.mode = sourceIdentity.mode;
-    if (!await pathIdentity(tempPath, tempIdentity) || fileMode(await tempHandle.stat()) !== sourceIdentity.mode) {
+    await tempHandle.sync();
+    if (!await pathIdentity(tempPath, tempIdentity, operations) || fileMode(await tempHandle.stat()) !== sourceIdentity.mode) {
       throw new Error("Migration temporary mode restoration failed.");
     }
 
-    await stage("source_revalidation");
-    if (!await pathIdentity(configPath, sourceIdentity) ||
-        (await sourceHandle.stat()).size !== sourceBytes.length ||
-        !(await exactHandleBytes(sourceHandle, sourceBytes.length)).equals(sourceBytes)) {
+    if ((await sourceHandle.stat()).size !== sourceBytes.length ||
+        !(await exactHandleBytes(sourceHandle, sourceBytes.length)).equals(sourceBytes) ||
+        !await pathIdentity(configPath, sourceIdentity, operations)) {
       throw new Error("Configuration source changed before replacement.");
     }
-    await stage("lock_revalidation");
-    if (!await pathIdentity(lockPath, lockIdentity)) throw new Error("Migration lock changed before replacement.");
     if ((await lockHandle.stat()).size !== Buffer.byteLength(lockToken)) throw new Error("Migration lock marker size changed before replacement.");
     const lockBytes = await exactHandleBytes(lockHandle, Buffer.byteLength(lockToken));
-    if (!lockBytes.equals(Buffer.from(lockToken))) throw new Error("Migration lock marker changed before replacement.");
+    if (!lockBytes.equals(Buffer.from(lockToken)) || !await pathIdentity(lockPath, lockIdentity, operations)) {
+      throw new Error("Migration lock marker or path changed before replacement.");
+    }
 
-    await stage("rename");
     renameAttempted = true;
-    await rename(tempPath, configPath);
-    await stage("renamed");
-    await stage("installed_identity");
-    if (!await pathIdentity(configPath, tempIdentity)) throw new Error("Installed configuration identity is invalid.");
-    await stage("parent_sync");
-    await syncDirectory(parent);
-    await stage("readback");
-    const installedBytes = await readFile(configPath, "utf8");
-    const installed = parseShieldConfig(installedBytes);
-    if (installedBytes !== candidateBytes || installed.state === "invalid" ||
+    await operations.rename(tempPath, configPath);
+    await syncDirectory(parent, operations);
+    installedHandle = await operations.open(configPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const installedBytes = await exactHandleBytes(installedHandle, candidateBuffer.length);
+    const installedStats = await installedHandle.stat();
+    const installed = parseShieldConfig(installedBytes.toString("utf8"));
+    if (!installedStats.isFile() || !sameIdentity(installedStats, tempIdentity) ||
+        fileMode(installedStats) !== tempIdentity.mode || installedStats.size !== candidateBuffer.length ||
+        !installedBytes.equals(candidateBuffer) || !await pathIdentity(configPath, tempIdentity, operations) ||
+        installed.state === "invalid" ||
         semanticConfigJson(installed.value) !== semanticConfigJson(candidate)) {
-      throw new Error("Installed configuration readback is not exact and equivalent.");
+      throw new Error("Installed configuration identity, readback, or meaning is not exact.");
     }
   } catch (error) {
     operationError = error;
@@ -474,37 +470,39 @@ export async function migrateConfigFile(
 
   if (tempHandle !== null && tempIdentity === null) recoveryRequired = true;
   if (lockHandle !== null && lockIdentity === null) recoveryRequired = true;
+  if (installedHandle !== null) {
+    try { await installedHandle.close(); } catch { recoveryRequired = true; }
+    installedHandle = null;
+  }
   if (tempHandle !== null) {
     try { await tempHandle.close(); } catch { recoveryRequired = true; }
     tempHandle = null;
   }
   if (!renameAttempted && tempPath !== null && tempIdentity !== null) {
     try {
-      await stage("temporary_cleanup");
-      if (!await pathIdentity(tempPath, tempIdentity)) throw new Error("Temporary identity changed during cleanup.");
-      await unlink(tempPath);
-      if (!await absent(tempPath)) throw new Error("Temporary cleanup could not be verified.");
+      if (!await pathIdentity(tempPath, tempIdentity, operations)) throw new Error("Temporary identity changed during cleanup.");
+      await operations.unlink(tempPath);
+      if (!await absent(tempPath, operations)) throw new Error("Temporary cleanup could not be verified.");
     } catch { recoveryRequired = true; }
   } else if (!renameAttempted && tempPath !== null && tempHandle === null && tempIdentity === null) {
-    try { if (!await absent(tempPath)) recoveryRequired = true; } catch { recoveryRequired = true; }
+    try { if (!await absent(tempPath, operations)) recoveryRequired = true; } catch { recoveryRequired = true; }
   }
   if (sourceHandle !== null) {
     try { await sourceHandle.close(); } catch { recoveryRequired = true; }
   }
   if (lockHandle !== null && lockIdentity !== null) {
     try {
-      await stage("lock_release");
-      if (!await pathIdentity(lockPath, lockIdentity) ||
-          (await lockHandle.stat()).size !== Buffer.byteLength(lockExpectedBytes) ||
-          !(await exactHandleBytes(lockHandle, Buffer.byteLength(lockExpectedBytes))).equals(Buffer.from(lockExpectedBytes))) {
+      if ((await lockHandle.stat()).size !== Buffer.byteLength(lockExpectedBytes) ||
+          !(await exactHandleBytes(lockHandle, Buffer.byteLength(lockExpectedBytes))).equals(Buffer.from(lockExpectedBytes)) ||
+          !await pathIdentity(lockPath, lockIdentity, operations)) {
         throw new Error("Migration lock identity changed during release.");
       }
       await lockHandle.close();
       lockHandle = null;
-      if (!await pathIdentity(lockPath, lockIdentity)) throw new Error("Migration lock path changed during release.");
-      await unlink(lockPath);
-      if (!await absent(lockPath)) throw new Error("Migration lock release could not be verified.");
-      await syncDirectory(parent);
+      if (!await pathIdentity(lockPath, lockIdentity, operations)) throw new Error("Migration lock path changed during release.");
+      await operations.unlink(lockPath);
+      if (!await absent(lockPath, operations)) throw new Error("Migration lock release could not be verified.");
+      await syncDirectory(parent, operations);
     } catch { recoveryRequired = true; }
   }
   if (lockHandle !== null) {
@@ -603,12 +601,8 @@ async function runInit(args: string[]): Promise<number> {
   if (ignoreState.exists && ignoreState.content !== IGNORE_CONTENT) {
     throw new CliError(`Existing SHIELD ignore file differs; refusing to overwrite: ${ignorePath}.`);
   }
-  if (!shieldExists) await mkdir(shieldDirectory);
-  let migrated = false;
-  if (legacyMigration !== null && options.flags.has("--migrate-config")) {
-    await migrateConfigFile(configPath, legacyMigration.bytes, legacyMigration.config, config);
-    migrated = true;
-  }
+  let pipelineProfileContent: string | null = null;
+  let starterHasNoSupportedLanes = false;
   if (starterPipelineId !== undefined) {
     const packageScripts = await readPackageScripts(root);
     const starterSelection = createStarterPipelineSelectionV1({
@@ -617,11 +611,21 @@ async function runInit(args: string[]): Promise<number> {
       packageScripts,
       discoveredAt: new Date(0).toISOString(),
     });
-    const pipelineProfileContent = `${JSON.stringify(starterSelection.profile, null, 2)}\n`;
+    pipelineProfileContent = `${JSON.stringify(starterSelection.profile, null, 2)}\n`;
     if (pipelineProfileState.exists && pipelineProfileState.content !== pipelineProfileContent) {
       throw new CliError(`Existing starter pipeline profile differs; refusing to overwrite: ${pipelineProfilePath}.`);
     }
-    if (!pipelineProfileState.exists && starterSelection.profile.supported.length === 0) {
+    starterHasNoSupportedLanes = starterSelection.profile.supported.length === 0;
+  }
+  if (!shieldExists) await mkdir(shieldDirectory);
+  let migrated = false;
+  if (legacyMigration !== null && options.flags.has("--migrate-config")) {
+    await migrateConfigFile(configPath, legacyMigration.bytes, legacyMigration.config, config);
+    migrated = true;
+  }
+  if (starterPipelineId !== undefined) {
+    if (pipelineProfileContent === null) throw new CliError("Starter pipeline preflight was not completed.");
+    if (!pipelineProfileState.exists && starterHasNoSupportedLanes) {
       process.stdout.write(
         `Starter pipeline ${starterPipelineId} selected, but no matching package scripts were discovered; lanes were recorded as unavailable.\n`,
       );

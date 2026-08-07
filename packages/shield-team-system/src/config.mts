@@ -683,7 +683,7 @@ export function evaluateDoctor(input: DoctorInput): DoctorReportV2 {
     path === "config.adapterIds" || path.startsWith("config.adapterIds[")
   );
   const doctorAdapterIds = input.configPresent ? doctorConfiguredAdapterIds(input.config) : null;
-  if (doctorAdapterIds !== null) {
+  if (doctorAdapterIds !== null && rawAdapterIssues.length === 0) {
     adapterChecks = doctorAdapterIds.map((adapterId) => ({
       id: "adapter",
       adapterId,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, lstat, mkdtemp, mkdir, open, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -48,6 +49,35 @@ async function starterFixture() {
     ) + "\n",
   );
   return root;
+}
+
+function migrationHandle(handle, overrides = {}) {
+  return {
+    chmod: (...args) => handle.chmod(...args),
+    close: (...args) => handle.close(...args),
+    read: (...args) => handle.read(...args),
+    stat: (...args) => handle.stat(...args),
+    sync: (...args) => handle.sync(...args),
+    write: (...args) => handle.write(...args),
+    ...overrides,
+  };
+}
+
+async function migrationFixture() {
+  const root = await fixture();
+  await mkdir(join(root, ".shield"));
+  const candidate = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: "github:user:coulson",
+    fitzBindingRef: "github:user:fitz",
+  });
+  const { adapterIds: _adapterIds, ...common } = candidate;
+  const legacy = { ...common, schemaVersion: 2, adapterId: "github" };
+  const path = join(root, ".shield", "config.json");
+  const legacyBytes = formatShieldConfig(legacy);
+  await writeFile(path, legacyBytes, { mode: 0o640 });
+  await chmod(path, 0o640);
+  return { root, path, candidate, legacy, legacyBytes };
 }
 
 test("init creates only the deterministic SHIELD files and repeated init is a no-op", async () => {
@@ -269,60 +299,224 @@ test("migration rejects adapter expansion and orphaned state without touching le
   assert.equal(await readFile(path, "utf8"), bytes);
 });
 
-test("migration fault stages preserve legacy before rename and classify uncertainty after rename", async () => {
-  const beforeRename = [
-    "classification", "lock_create", "lock_write", "lock_sync", "lock_identity",
-    "source_open", "source_identity", "temporary_create", "temporary_identity",
-    "temporary_write", "temporary_sync", "temporary_mode", "source_revalidation",
-    "lock_revalidation", "rename",
-  ];
-  const afterRename = ["renamed", "installed_identity", "parent_sync", "readback", "lock_release"];
-  const baseCandidate = createShieldConfig({
-    repositoryId: "RanSolo/fixture",
-    coulsonBindingRef: "github:user:coulson",
-    fitzBindingRef: "github:user:fitz",
-  });
-  const { adapterIds: _adapterIds, ...common } = baseCandidate;
-  const legacy = { ...common, schemaVersion: 2, adapterId: "github" };
-  const legacyBytes = formatShieldConfig(legacy);
-
-  const exercise = async (failedStage, alsoFailCleanup = false) => {
-    const root = await fixture();
-    await mkdir(join(root, ".shield"));
-    const path = join(root, ".shield", "config.json");
-    await writeFile(path, legacyBytes, { mode: 0o640 });
-    await assert.rejects(
-      migrateConfigFile(path, legacyBytes, legacy, baseCandidate, {
-        nonce: () => "0123456789abcdef",
-        stage(stageName) {
-          if (stageName === failedStage || (alsoFailCleanup && stageName === "temporary_cleanup")) {
-            throw new Error(`fault:${stageName}`);
-          }
-        },
-      }),
-      failedStage === "lock_release" || afterRename.includes(failedStage) || alsoFailCleanup
-        ? /recovery_required/iu
-        : /failed before rename/iu,
-    );
-    return { root, path };
+test("migration syncs restored mode and orders retained-handle reads before final path identity", async () => {
+  const state = await migrationFixture();
+  let configOpenCount = 0;
+  let sourceReads = 0;
+  let lockReads = 0;
+  let installedRead = false;
+  let tempSyncs = 0;
+  let modeRestored = false;
+  let syncedAfterMode = false;
+  let sourcePathChecks = 0;
+  let lockPathChecks = 0;
+  const operations = {
+    async open(path, flags, mode) {
+      const handle = await open(path, flags, mode);
+      if (path.endsWith("config.json.migrate.lock")) {
+        return migrationHandle(handle, {
+          read: async (...args) => { lockReads += 1; return handle.read(...args); },
+        });
+      }
+      if (path.includes(".config.json.migrate-") && path.endsWith(".tmp")) {
+        return migrationHandle(handle, {
+          chmod: async (nextMode) => { await handle.chmod(nextMode); if (nextMode === 0o640) modeRestored = true; },
+          sync: async () => { tempSyncs += 1; await handle.sync(); if (modeRestored) syncedAfterMode = true; },
+        });
+      }
+      if (path === state.path) {
+        configOpenCount += 1;
+        if (configOpenCount === 1) {
+          return migrationHandle(handle, {
+            read: async (...args) => { sourceReads += 1; return handle.read(...args); },
+          });
+        }
+        assert.notEqual(flags & constants.O_NOFOLLOW, 0);
+        return migrationHandle(handle, {
+          read: async (...args) => { installedRead = true; return handle.read(...args); },
+        });
+      }
+      return handle;
+    },
+    async lstat(path) {
+      const stats = await lstat(path);
+      if (path === state.path) {
+        sourcePathChecks += 1;
+        if (sourcePathChecks === 2) assert.equal(sourceReads >= 2, true);
+        if (sourcePathChecks === 3) assert.equal(installedRead, true);
+      }
+      if (path.endsWith("config.json.migrate.lock")) {
+        lockPathChecks += 1;
+        if (lockPathChecks === 2) assert.equal(lockReads >= 2, true);
+      }
+      return stats;
+    },
   };
+  await migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+    nonce: () => "0123456789abcdef",
+    operations,
+  });
+  assert.equal(tempSyncs, 2);
+  assert.equal(syncedAfterMode, true);
+  assert.equal(sourcePathChecks >= 3, true);
+  assert.equal(lockPathChecks >= 2, true);
+  assert.equal(await readFile(state.path, "utf8"), formatShieldConfig(state.candidate));
+  assert.equal((await stat(state.path)).mode & 0o7777, 0o640);
+});
 
-  for (const stageName of beforeRename) {
-    const { root, path } = await exercise(stageName);
-    assert.equal(await readFile(path, "utf8"), legacyBytes, stageName);
-    assert.equal((await readdir(join(root, ".shield"))).some((name) => name.includes("migrate")), false, stageName);
+test("short migration write proves cleanup and permits a successful retry", async () => {
+  const state = await migrationFixture();
+  await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+    nonce: () => "0123456789abcdef",
+    operations: {
+      async open(path, flags, mode) {
+        const handle = await open(path, flags, mode);
+        if (!path.includes(".config.json.migrate-") || !path.endsWith(".tmp")) return handle;
+        return migrationHandle(handle, {
+          write: async (buffer, offset, length, position) => handle.write(buffer, offset, length - 1, position),
+        });
+      },
+    },
+  }), /failed before rename/iu);
+  assert.equal(await readFile(state.path, "utf8"), state.legacyBytes);
+  assert.equal((await stat(state.path)).mode & 0o7777, 0o640);
+  assert.equal((await readdir(join(state.root, ".shield"))).some((name) => name.includes("migrate")), false);
+  await migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+    nonce: () => "fedcba9876543210",
+  });
+  assert.equal(await readFile(state.path, "utf8"), formatShieldConfig(state.candidate));
+});
+
+test("pre-rename sync and identity substitution preserve exact legacy state", async () => {
+  for (const fault of ["mode-sync", "temp-identity", "directory-sync"]) {
+    const state = await migrationFixture();
+    let tempSyncs = 0;
+    let tempLstats = 0;
+    let directorySyncs = 0;
+    await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+      nonce: () => "0123456789abcdef",
+      operations: {
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (path.includes(".config.json.migrate-") && path.endsWith(".tmp") && fault === "mode-sync") {
+            return migrationHandle(handle, {
+              sync: async () => {
+                tempSyncs += 1;
+                if (tempSyncs === 2) throw new Error("mode sync fault");
+                await handle.sync();
+              },
+            });
+          }
+          if (path === join(state.root, ".shield") && fault === "directory-sync") {
+            return migrationHandle(handle, {
+              sync: async () => {
+                directorySyncs += 1;
+                if (directorySyncs === 1) throw new Error("directory sync fault");
+                await handle.sync();
+              },
+            });
+          }
+          return handle;
+        },
+        async lstat(path) {
+          const stats = await lstat(path);
+          if (path.includes(".config.json.migrate-") && path.endsWith(".tmp") && fault === "temp-identity") {
+            tempLstats += 1;
+            if (tempLstats === 1) {
+              return new Proxy(stats, { get: (target, key) => key === "ino" ? target.ino + 1 : Reflect.get(target, key, target) });
+            }
+          }
+          return stats;
+        },
+      },
+    }), /failed before rename/iu, fault);
+    assert.equal(await readFile(state.path, "utf8"), state.legacyBytes, fault);
+    assert.equal((await stat(state.path)).mode & 0o7777, 0o640, fault);
+    assert.equal((await readdir(join(state.root, ".shield"))).some((name) => name.includes("migrate")), false, fault);
   }
-  for (const stageName of afterRename) {
-    const { root, path } = await exercise(stageName);
-    assert.equal(await readFile(path, "utf8"), formatShieldConfig(baseCandidate), stageName);
-    if (stageName === "lock_release") {
-      const retry = run([...initArgs, "--migrate-config"], root);
-      assert.equal(retry.status, 2);
-      assert.match(retry.stderr, /recovery_required.*lock.*do not retry blindly/iu);
-    }
+});
+
+test("ambiguous rename and installed bound-readback failures require recovery", async () => {
+  for (const fault of ["ambiguous-rename", "installed-identity", "bound-readback", "installed-close", "post-rename-directory-sync"]) {
+    const state = await migrationFixture();
+    let configOpens = 0;
+    let directorySyncs = 0;
+    await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+      nonce: () => "0123456789abcdef",
+      operations: {
+        async rename(source, destination) {
+          await rename(source, destination);
+          if (fault === "ambiguous-rename") throw new Error("ambiguous rename fault");
+        },
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (path === state.path) {
+            configOpens += 1;
+            if (configOpens === 2 && fault === "installed-identity") {
+              return migrationHandle(handle, {
+                stat: async () => {
+                  const stats = await handle.stat();
+                  return new Proxy(stats, { get: (target, key) => key === "ino" ? target.ino + 1 : Reflect.get(target, key, target) });
+                },
+              });
+            }
+            if (configOpens === 2 && fault === "bound-readback") {
+              return migrationHandle(handle, {
+                read: async (buffer, offset, length, position) => {
+                  const result = await handle.read(buffer, offset, length, position);
+                  if (result.bytesRead > 0) buffer[offset] ^= 1;
+                  return result;
+                },
+              });
+            }
+            if (configOpens === 2 && fault === "installed-close") {
+              return migrationHandle(handle, {
+                close: async () => { await handle.close(); throw new Error("close fault"); },
+              });
+            }
+          }
+          if (path === join(state.root, ".shield") && fault === "post-rename-directory-sync") {
+            return migrationHandle(handle, {
+              sync: async () => {
+                directorySyncs += 1;
+                if (directorySyncs === 2) throw new Error("post-rename directory sync fault");
+                await handle.sync();
+              },
+            });
+          }
+          return handle;
+        },
+      },
+    }), /recovery_required/iu, fault);
+    assert.equal(await readFile(state.path, "utf8"), formatShieldConfig(state.candidate), fault);
   }
-  const cleanupFault = await exercise("source_revalidation", true);
-  assert.equal(await readFile(cleanupFault.path, "utf8"), legacyBytes);
+});
+
+test("cleanup close and unlink uncertainty require recovery without changing legacy bytes", async () => {
+  for (const fault of ["close", "unlink"]) {
+    const state = await migrationFixture();
+    await assert.rejects(migrateConfigFile(state.path, state.legacyBytes, state.legacy, state.candidate, {
+      nonce: () => "0123456789abcdef",
+      operations: {
+        async open(path, flags, mode) {
+          const handle = await open(path, flags, mode);
+          if (!path.includes(".config.json.migrate-") || !path.endsWith(".tmp")) return handle;
+          return migrationHandle(handle, {
+            write: async (buffer, offset, length, position) => handle.write(buffer, offset, length - 1, position),
+            ...(fault === "close" ? { close: async () => { await handle.close(); throw new Error("close fault"); } } : {}),
+          });
+        },
+        async unlink(path) {
+          if (fault === "unlink" && path.includes(".config.json.migrate-") && path.endsWith(".tmp")) {
+            throw new Error("unlink fault");
+          }
+          await unlink(path);
+        },
+      },
+    }), /recovery_required/iu, fault);
+    assert.equal(await readFile(state.path, "utf8"), state.legacyBytes, fault);
+    assert.equal((await stat(state.path)).mode & 0o7777, 0o640, fault);
+  }
 });
 
 test("init can select a starter pipeline and records a deterministic pipeline profile", async () => {
@@ -393,6 +587,30 @@ test("starter selection is fail-atomic when .shield/.gitignore diverges", async 
   await assert.rejects(lstat(join(root, ".shield", "pipeline-profile.json")), { code: "ENOENT" });
   await assert.rejects(lstat(join(root, ".shield", "config.json")), { code: "ENOENT" });
   assert.equal(await readFile(join(root, ".shield", ".gitignore"), "utf8"), "different\n");
+});
+
+test("starter-profile divergence is preflighted before legacy migration", async () => {
+  const root = await starterFixture();
+  await mkdir(join(root, ".shield"));
+  const current = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: "github:user:coulson",
+    fitzBindingRef: "github:user:fitz",
+  });
+  const { adapterIds: _adapterIds, ...common } = current;
+  const legacy = { ...common, schemaVersion: 2, adapterId: "github" };
+  const configPath = join(root, ".shield", "config.json");
+  const legacyBytes = `${JSON.stringify(legacy)}\n`;
+  await writeFile(configPath, legacyBytes);
+  await chmod(configPath, 0o640);
+  await writeFile(join(root, ".shield", "pipeline-profile.json"), "{\"owned\":true}\n");
+
+  const result = run([...initArgs, "--starter-pipeline", "minimal", "--migrate-config"], root);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /starter pipeline profile differs/iu);
+  assert.equal(await readFile(configPath, "utf8"), legacyBytes);
+  assert.equal((await stat(configPath)).mode & 0o7777, 0o640);
+  assert.equal((await readdir(join(root, ".shield"))).some((name) => name.includes("migrate")), false);
 });
 
 test("init rejects a symlinked SHIELD directory", async () => {

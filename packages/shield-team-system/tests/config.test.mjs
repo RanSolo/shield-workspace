@@ -189,3 +189,21 @@ test("doctor produces one redacted null adapter failure for every invalid adapte
     { adapterId: null, ok: false },
   ]);
 });
+
+test("doctor treats simultaneous schema-3 adapter fields as one redacted adapter failure", () => {
+  const config = { ...canonicalConfig("signed_human_gates", ["github", "atlassian"]), adapterId: "token=secret" };
+  const report = evaluateDoctor({
+    repositoryRootReady: true,
+    packageVersion: SHIELD_PACKAGE_VERSION,
+    configPresent: true,
+    config,
+  });
+  const adapterChecks = report.checks.filter(({ id }) => id === "adapter");
+  assert.deepEqual(adapterChecks, [{
+    id: "adapter",
+    adapterId: null,
+    ok: false,
+    message: "Configured host adapter selection is invalid.",
+  }]);
+  assert.doesNotMatch(JSON.stringify(adapterChecks), /token|secret/iu);
+});
