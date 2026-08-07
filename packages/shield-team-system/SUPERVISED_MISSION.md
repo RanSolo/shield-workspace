@@ -316,6 +316,14 @@ Journal v4 records a communication request before an adapter effect and then
 records its correlated `delivered`, `failed`, or `unknown` result. Those states
 never satisfy evidence or alter governance, execution, or readiness.
 
+Repository configuration schema 3 may admit GitHub and Atlassian concurrently,
+but review publication remains the existing GitHub-specific operation. Request
+construction freezes the validated repository configuration, requires `github`,
+emits `adapterId: "github"`, and rereads the same configuration immediately
+before journal append. Byte, identity, meaning, or membership drift fails before
+the request is queued. Configured Atlassian identity alone creates no operation,
+credential lookup, external call, delivery behavior, or publication authority.
+
 Journal v5 carries the v4 communication contract forward and adds
 `execution.effect_recorded`. The runner candidate is bound to the exact mission,
 subject, revision, prior sequence, cycle, seat, action, authorization decision,
