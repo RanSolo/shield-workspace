@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { lstat, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
+const { migrateConfigFile } = await import("../dist/cli.mjs");
+const { createShieldConfig, formatShieldConfig } = await import("../dist/config.mjs");
 const initArgs = [
   "init",
   "--repository-id", "RanSolo/fixture",
@@ -58,8 +60,9 @@ test("init creates only the deterministic SHIELD files and repeated init is a no
   assert.equal(await readFile(join(root, ".shield", ".gitignore"), "utf8"), "/journals/\n/reports/\n/tmp/\n");
   const before = await readFile(join(root, ".shield", "config.json"), "utf8");
   const parsed = JSON.parse(before);
-  assert.equal(parsed.schemaVersion, 2);
+  assert.equal(parsed.schemaVersion, 3);
   assert.equal(parsed.repositoryTrustProfileId, "signed_human_gates");
+  assert.deepEqual(parsed.adapterIds, ["github"]);
 
   const second = run(initArgs, root);
   assert.equal(second.status, 0, second.stderr);
@@ -80,7 +83,7 @@ test("Coulson-only init writes exactly one binding and repeated init is a no-op"
   const path = join(root, ".shield", "config.json");
   const before = await readFile(path, "utf8");
   const config = JSON.parse(before);
-  assert.equal(config.schemaVersion, 2);
+  assert.equal(config.schemaVersion, 3);
   assert.equal(config.repositoryTrustProfileId, "coulson_only_platform_review");
   assert.deepEqual(config.trustedHumanBindingRefs, [
     { seatId: "coulson", bindingRef: "ed25519:sha256:coulson" },
@@ -112,8 +115,8 @@ test("legacy equivalent re-init preserves bytes while divergence and Coulson-onl
   const initialized = await fixture();
   assert.equal(run(initArgs, initialized).status, 0);
   const generated = JSON.parse(await readFile(join(initialized, ".shield", "config.json"), "utf8"));
-  const { repositoryTrustProfileId: _profileId, ...common } = generated;
-  const legacy = { ...common, schemaVersion: 1 };
+  const { repositoryTrustProfileId: _profileId, adapterIds: _adapterIds, ...common } = generated;
+  const legacy = { ...common, schemaVersion: 1, adapterId: "github" };
 
   const equivalent = await fixture();
   await mkdir(join(equivalent, ".shield"));
@@ -178,8 +181,148 @@ test("legacy equivalent re-init preserves bytes while divergence and Coulson-onl
     "--coulson-binding-ref", "github:user:coulson",
   ], equivalent);
   assert.equal(migration.status, 2);
-  assert.match(migration.stderr, /unsupported migration/iu);
+  assert.match(migration.stderr, /differs from the requested migration/iu);
   assert.equal(await readFile(join(equivalent, ".shield", "config.json"), "utf8"), before);
+});
+
+test("init accepts only normalized registry-ordered adapter selections", async () => {
+  const root = await fixture();
+  const dual = run([...initArgs, "--adapters", "github,atlassian"], root);
+  assert.equal(dual.status, 0, dual.stderr);
+  assert.deepEqual(JSON.parse(await readFile(join(root, ".shield", "config.json"), "utf8")).adapterIds, ["github", "atlassian"]);
+
+  for (const [value, message] of [
+    ["", /non-empty normalized/iu],
+    ["github, github", /normalized/iu],
+    ["github,github", /unique/iu],
+    ["atlassian,github", /registry/iu],
+    ["gitlab", /unsupported/iu],
+  ]) {
+    const invalidRoot = await fixture();
+    const result = run([...initArgs, "--adapters", value], invalidRoot);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, message);
+    await assert.rejects(lstat(join(invalidRoot, ".shield")), { code: "ENOENT" });
+  }
+});
+
+test("explicit schema-1 and schema-2 migration is mode-preserving, exact, and repeatable", async () => {
+  const current = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: "github:user:coulson",
+    fitzBindingRef: "github:user:fitz",
+  });
+  const { adapterIds: _adapterIds, ...v2Common } = current;
+  const v2 = { ...v2Common, schemaVersion: 2, adapterId: "github" };
+  const { repositoryTrustProfileId: _profileId, ...v1Common } = v2;
+  const v1 = { ...v1Common, schemaVersion: 1 };
+
+  for (const legacy of [v1, v2]) {
+    const root = await fixture();
+    await mkdir(join(root, ".shield"));
+    const path = join(root, ".shield", "config.json");
+    const originalBytes = `${JSON.stringify(legacy)}\n`;
+    await writeFile(path, originalBytes);
+    await chmod(path, 0o640);
+
+    const preserved = run(initArgs, root);
+    assert.equal(preserved.status, 0, preserved.stderr);
+    assert.match(preserved.stdout, new RegExp(`schema-${legacy.schemaVersion}.*no files changed`, "iu"));
+    assert.equal(await readFile(path, "utf8"), originalBytes);
+
+    const migrated = run([...initArgs, "--migrate-config"], root);
+    assert.equal(migrated.status, 0, migrated.stderr);
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), current);
+    assert.equal((await stat(path)).mode & 0o7777, 0o640);
+    assert.equal((await readdir(join(root, ".shield"))).some((name) => name.includes("migrate")), false);
+
+    const repeated = run([...initArgs, "--migrate-config"], root);
+    assert.equal(repeated.status, 0, repeated.stderr);
+    assert.match(repeated.stdout, /no files changed/iu);
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), current);
+  }
+});
+
+test("migration rejects adapter expansion and orphaned state without touching legacy bytes", async () => {
+  const root = await fixture();
+  await mkdir(join(root, ".shield"));
+  const current = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: "github:user:coulson",
+    fitzBindingRef: "github:user:fitz",
+  });
+  const { adapterIds: _adapterIds, ...common } = current;
+  const legacy = { ...common, schemaVersion: 2, adapterId: "github" };
+  const path = join(root, ".shield", "config.json");
+  const bytes = formatShieldConfig(legacy);
+  await writeFile(path, bytes);
+
+  const expansion = run([...initArgs, "--adapters", "github,atlassian", "--migrate-config"], root);
+  assert.equal(expansion.status, 2);
+  assert.match(expansion.stderr, /differs from the requested migration/iu);
+  assert.equal(await readFile(path, "utf8"), bytes);
+
+  await writeFile(join(root, ".shield", ".config.json.migrate-deadbeefdeadbeef.tmp"), "orphan\n", { mode: 0o600 });
+  const orphan = run([...initArgs, "--migrate-config"], root);
+  assert.equal(orphan.status, 2);
+  assert.match(orphan.stderr, /recovery_required.*orphaned/iu);
+  assert.equal(await readFile(path, "utf8"), bytes);
+});
+
+test("migration fault stages preserve legacy before rename and classify uncertainty after rename", async () => {
+  const beforeRename = [
+    "classification", "lock_create", "lock_write", "lock_sync", "lock_identity",
+    "source_open", "source_identity", "temporary_create", "temporary_identity",
+    "temporary_write", "temporary_sync", "temporary_mode", "source_revalidation",
+    "lock_revalidation", "rename",
+  ];
+  const afterRename = ["renamed", "installed_identity", "parent_sync", "readback", "lock_release"];
+  const baseCandidate = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: "github:user:coulson",
+    fitzBindingRef: "github:user:fitz",
+  });
+  const { adapterIds: _adapterIds, ...common } = baseCandidate;
+  const legacy = { ...common, schemaVersion: 2, adapterId: "github" };
+  const legacyBytes = formatShieldConfig(legacy);
+
+  const exercise = async (failedStage, alsoFailCleanup = false) => {
+    const root = await fixture();
+    await mkdir(join(root, ".shield"));
+    const path = join(root, ".shield", "config.json");
+    await writeFile(path, legacyBytes, { mode: 0o640 });
+    await assert.rejects(
+      migrateConfigFile(path, legacyBytes, legacy, baseCandidate, {
+        nonce: () => "0123456789abcdef",
+        stage(stageName) {
+          if (stageName === failedStage || (alsoFailCleanup && stageName === "temporary_cleanup")) {
+            throw new Error(`fault:${stageName}`);
+          }
+        },
+      }),
+      failedStage === "lock_release" || afterRename.includes(failedStage) || alsoFailCleanup
+        ? /recovery_required/iu
+        : /failed before rename/iu,
+    );
+    return { root, path };
+  };
+
+  for (const stageName of beforeRename) {
+    const { root, path } = await exercise(stageName);
+    assert.equal(await readFile(path, "utf8"), legacyBytes, stageName);
+    assert.equal((await readdir(join(root, ".shield"))).some((name) => name.includes("migrate")), false, stageName);
+  }
+  for (const stageName of afterRename) {
+    const { root, path } = await exercise(stageName);
+    assert.equal(await readFile(path, "utf8"), formatShieldConfig(baseCandidate), stageName);
+    if (stageName === "lock_release") {
+      const retry = run([...initArgs, "--migrate-config"], root);
+      assert.equal(retry.status, 2);
+      assert.match(retry.stderr, /recovery_required.*lock.*do not retry blindly/iu);
+    }
+  }
+  const cleanupFault = await exercise("source_revalidation", true);
+  assert.equal(await readFile(cleanupFault.path, "utf8"), legacyBytes);
 });
 
 test("init can select a starter pipeline and records a deterministic pipeline profile", async () => {
@@ -275,7 +418,8 @@ test("doctor provides deterministic human and JSON results", async () => {
   assert.equal(json.status, 0, json.stderr);
   const report = JSON.parse(json.stdout);
   assert.equal(report.ok, true);
-  assert.equal(report.reportVersion, 1);
+  assert.equal(report.reportVersion, 2);
+  assert.deepEqual(report.checks.filter(({ id }) => id === "adapter").map(({ adapterId }) => adapterId), ["github"]);
   assert.equal(report.checks[0].id, "repository-root");
   assert.equal(report.checks.at(-1).id, "paths");
   assert.equal(
@@ -347,10 +491,10 @@ test("doctor preserves raw invalid configuration and gives binding profile error
     id: "config-schema", ok: false, message: "config has unknown field: unrelated.",
   });
 
-  await writeFile(path, `${JSON.stringify({ ...config, repositoryTrustProfileId: "signed_human_gates", schemaVersion: 3 })}\n`);
+  await writeFile(path, `${JSON.stringify({ ...config, repositoryTrustProfileId: "signed_human_gates", schemaVersion: 4 })}\n`);
   const unsupportedReport = JSON.parse(run(["doctor", "--json"], root).stdout);
   assert.deepEqual(unsupportedReport.checks.find(({ id }) => id === "config-schema"), {
-    id: "config-schema", ok: false, message: "Config schemaVersion must be one of: 1, 2.",
+    id: "config-schema", ok: false, message: "Config schemaVersion must be one of: 1, 2, 3.",
   });
   assert.equal(unsupportedReport.checks.find(({ id }) => id === "bindings").ok, true);
 });

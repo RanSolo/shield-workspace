@@ -1,21 +1,28 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { access, link, lstat, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { access, link, lstat, mkdir, open, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   REPOSITORY_TRUST_PROFILE_IDS,
+  CONFIGURED_HOST_ADAPTER_IDS,
   SHIELD_PACKAGE_VERSION,
   createShieldConfig,
   evaluateDoctor,
   formatShieldConfig,
+  migrateShieldConfig,
   parseShieldConfig,
+  type ConfiguredHostAdapterId,
   type RepositoryTrustProfileId,
+  type ShieldConfig,
   type ShieldConfigV1,
-  type DoctorReport,
+  type ShieldConfigV2,
+  type ShieldConfigV3,
+  type DoctorReportV2,
 } from "./config.mjs";
 import {
   STARTER_PIPELINE_IDS,
@@ -63,7 +70,7 @@ function cleanGitEnvironment(): NodeJS.ProcessEnv {
 function usage(): string {
   return [
     "Usage:",
-    `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> [--repository-trust-profile <${REPOSITORY_TRUST_PROFILE_IDS.join("|")}>] [--fitz-binding-ref <ref>] [--simmons-binding-ref <ref>] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
+    `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> [--repository-trust-profile <${REPOSITORY_TRUST_PROFILE_IDS.join("|")}>] [--fitz-binding-ref <ref>] [--simmons-binding-ref <ref>] [--adapters <${CONFIGURED_HOST_ADAPTER_IDS.join(",")}>] [--migrate-config] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
     "  shield doctor [--root <path>] [--json]",
     "",
     missionUsage(),
@@ -112,7 +119,7 @@ function semanticJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function semanticLegacyConfigJson(config: ShieldConfigV1): string {
+function semanticConfigJson(config: ShieldConfig): string {
   return semanticJson({
     ...config,
     supportedSeatIds: [...config.supportedSeatIds].sort(),
@@ -120,6 +127,29 @@ function semanticLegacyConfigJson(config: ShieldConfigV1): string {
     trustedHumanBindingRefs: [...config.trustedHumanBindingRefs]
       .sort((left, right) => left.seatId.localeCompare(right.seatId) || left.bindingRef.localeCompare(right.bindingRef)),
   });
+}
+
+function configuredAdaptersOption(value: string | undefined): ConfiguredHostAdapterId[] {
+  if (value === undefined) return ["github"];
+  const entries = value.split(",");
+  if (entries.length === 0 || entries.some((entry) => entry.length === 0 || entry.trim() !== entry)) {
+    throw new CliError("--adapters must be a non-empty normalized comma-separated list.");
+  }
+  const seen = new Set<string>();
+  let previous = -1;
+  for (const entry of entries) {
+    if (!CONFIGURED_HOST_ADAPTER_IDS.includes(entry as ConfiguredHostAdapterId)) {
+      throw new CliError(`Unsupported configured host adapter: ${entry}.`);
+    }
+    if (seen.has(entry)) throw new CliError("--adapters must contain unique adapters.");
+    const registryIndex = CONFIGURED_HOST_ADAPTER_IDS.indexOf(entry as ConfiguredHostAdapterId);
+    if (registryIndex <= previous) {
+      throw new CliError("--adapters must follow the frozen configured-host registry order.");
+    }
+    seen.add(entry);
+    previous = registryIndex;
+  }
+  return entries as ConfiguredHostAdapterId[];
 }
 
 async function inspectRoot(rootArgument: string | undefined, writable: boolean): Promise<string> {
@@ -244,6 +274,254 @@ async function createFileWithoutOverwrite(path: string, content: string): Promis
   }
 }
 
+export type ConfigMigrationStage =
+  | "classification"
+  | "lock_create"
+  | "lock_write"
+  | "lock_sync"
+  | "lock_identity"
+  | "source_open"
+  | "source_identity"
+  | "temporary_create"
+  | "temporary_identity"
+  | "temporary_write"
+  | "temporary_sync"
+  | "temporary_mode"
+  | "source_revalidation"
+  | "lock_revalidation"
+  | "rename"
+  | "renamed"
+  | "installed_identity"
+  | "parent_sync"
+  | "readback"
+  | "temporary_cleanup"
+  | "lock_release";
+
+export interface ConfigMigrationDependencies {
+  stage?: (stage: ConfigMigrationStage) => void | Promise<void>;
+  nonce?: () => string;
+}
+
+function sameIdentity(left: { dev: number | bigint; ino: number | bigint }, right: { dev: number | bigint; ino: number | bigint }): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function fileMode(stats: { mode: number }): number {
+  return stats.mode & 0o7777;
+}
+
+async function exactHandleBytes(handle: Awaited<ReturnType<typeof open>>, size: number): Promise<Buffer> {
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const result = await handle.read(bytes, offset, size - offset, offset);
+    if (result.bytesRead === 0) throw new Error("File read was incomplete.");
+    offset += result.bytesRead;
+  }
+  return bytes;
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0));
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function pathIdentity(path: string, expected: { dev: number | bigint; ino: number | bigint; mode: number }): Promise<boolean> {
+  const stats = await lstat(path);
+  return !stats.isSymbolicLink() && stats.isFile() && sameIdentity(stats, expected) && fileMode(stats) === expected.mode;
+}
+
+async function absent(path: string): Promise<boolean> {
+  try { await lstat(path); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+}
+
+async function configMigrationRecoveryIssue(configPath: string): Promise<string | null> {
+  const parent = dirname(configPath);
+  const tempPrefix = `.${basename(configPath)}.migrate-`;
+  const siblings = await readdir(parent);
+  if (siblings.some((name) => name.startsWith(tempPrefix) && name.endsWith(".tmp"))) {
+    return "recovery_required: orphaned configuration migration temporary state requires identity-safe operator recovery.";
+  }
+  if (!await absent(`${configPath}.migrate.lock`)) {
+    return "recovery_required: configuration migration lock or conflicting state is present.";
+  }
+  return null;
+}
+
+export async function migrateConfigFile(
+  configPath: string,
+  expectedOriginalBytes: string,
+  expectedLegacy: ShieldConfigV1 | ShieldConfigV2,
+  candidate: ShieldConfigV3,
+  dependencies: ConfigMigrationDependencies = {},
+): Promise<void> {
+  const stage = dependencies.stage ?? (() => undefined);
+  const nonce = dependencies.nonce ?? (() => randomBytes(16).toString("hex"));
+  const parent = dirname(configPath);
+  const lockPath = `${configPath}.migrate.lock`;
+  const tempPrefix = `.${basename(configPath)}.migrate-`;
+  let tempPath: string | null = null;
+  let lockHandle: Awaited<ReturnType<typeof open>> | null = null;
+  let sourceHandle: Awaited<ReturnType<typeof open>> | null = null;
+  let tempHandle: Awaited<ReturnType<typeof open>> | null = null;
+  let lockIdentity: { dev: number | bigint; ino: number | bigint; mode: number } | null = null;
+  let tempIdentity: { dev: number | bigint; ino: number | bigint; mode: number } | null = null;
+  let sourceIdentity: { dev: number | bigint; ino: number | bigint; mode: number } | null = null;
+  let renameAttempted = false;
+  let recoveryRequired = false;
+  let operationError: unknown;
+  const lockToken = `shield-config-migration:v1:${nonce()}\n`;
+  let lockExpectedBytes = "";
+  const candidateBytes = formatShieldConfig(candidate);
+
+  try {
+    await stage("classification");
+    const recoveryIssue = await configMigrationRecoveryIssue(configPath);
+    if (recoveryIssue !== null) throw new CliError(recoveryIssue);
+
+    await stage("lock_create");
+    lockHandle = await open(lockPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    await lockHandle.chmod(0o600);
+    const lockStats = await lockHandle.stat();
+    lockIdentity = { dev: lockStats.dev, ino: lockStats.ino, mode: 0o600 };
+    await stage("lock_write");
+    const lockWrite = await lockHandle.write(Buffer.from(lockToken), 0, Buffer.byteLength(lockToken), 0);
+    if (lockWrite.bytesWritten !== Buffer.byteLength(lockToken)) throw new Error("Migration lock write was incomplete.");
+    lockExpectedBytes = lockToken;
+    await stage("lock_sync");
+    await lockHandle.sync();
+    await syncDirectory(parent);
+    await stage("lock_identity");
+    if (!await pathIdentity(lockPath, lockIdentity) ||
+        (await lockHandle.stat()).size !== Buffer.byteLength(lockToken) ||
+        !(await exactHandleBytes(lockHandle, Buffer.byteLength(lockToken))).equals(Buffer.from(lockToken))) {
+      throw new Error("Migration lock identity or marker is invalid.");
+    }
+
+    await stage("source_open");
+    sourceHandle = await open(configPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const sourceStats = await sourceHandle.stat();
+    if (!sourceStats.isFile()) throw new Error("Configuration source is not a regular file.");
+    sourceIdentity = { dev: sourceStats.dev, ino: sourceStats.ino, mode: fileMode(sourceStats) };
+    await stage("source_identity");
+    if (!await pathIdentity(configPath, sourceIdentity)) throw new Error("Configuration source identity changed.");
+    const sourceBytes = await exactHandleBytes(sourceHandle, Number(sourceStats.size));
+    if (!sourceBytes.equals(Buffer.from(expectedOriginalBytes))) throw new Error("Configuration source bytes changed.");
+    const reparsed = parseShieldConfig(sourceBytes.toString("utf8"));
+    if (reparsed.state === "invalid" || reparsed.value.schemaVersion === 3 ||
+        semanticConfigJson(reparsed.value) !== semanticConfigJson(expectedLegacy)) {
+      throw new Error("Configuration source meaning changed.");
+    }
+
+    const generatedNonce = nonce();
+    if (!/^[a-f0-9]{16,128}$/u.test(generatedNonce)) throw new Error("Configuration migration nonce is invalid.");
+    tempPath = join(parent, `${tempPrefix}${generatedNonce}.tmp`);
+    await stage("temporary_create");
+    tempHandle = await open(tempPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    await tempHandle.chmod(0o600);
+    const initialTempStats = await tempHandle.stat();
+    tempIdentity = { dev: initialTempStats.dev, ino: initialTempStats.ino, mode: 0o600 };
+    await stage("temporary_identity");
+    if (!await pathIdentity(tempPath, tempIdentity)) throw new Error("Migration temporary identity is invalid.");
+    await stage("temporary_write");
+    const candidateBuffer = Buffer.from(candidateBytes);
+    const tempWrite = await tempHandle.write(candidateBuffer, 0, candidateBuffer.length, 0);
+    if (tempWrite.bytesWritten !== candidateBuffer.length) throw new Error("Migration temporary write was incomplete.");
+    await stage("temporary_sync");
+    await tempHandle.sync();
+    if ((await tempHandle.stat()).size !== candidateBuffer.length) throw new Error("Migration temporary size is not exact.");
+    const written = await exactHandleBytes(tempHandle, candidateBuffer.length);
+    if (!written.equals(candidateBuffer)) throw new Error("Migration temporary readback is not exact.");
+    await stage("temporary_mode");
+    await tempHandle.chmod(sourceIdentity.mode);
+    tempIdentity.mode = sourceIdentity.mode;
+    if (!await pathIdentity(tempPath, tempIdentity) || fileMode(await tempHandle.stat()) !== sourceIdentity.mode) {
+      throw new Error("Migration temporary mode restoration failed.");
+    }
+
+    await stage("source_revalidation");
+    if (!await pathIdentity(configPath, sourceIdentity) ||
+        (await sourceHandle.stat()).size !== sourceBytes.length ||
+        !(await exactHandleBytes(sourceHandle, sourceBytes.length)).equals(sourceBytes)) {
+      throw new Error("Configuration source changed before replacement.");
+    }
+    await stage("lock_revalidation");
+    if (!await pathIdentity(lockPath, lockIdentity)) throw new Error("Migration lock changed before replacement.");
+    if ((await lockHandle.stat()).size !== Buffer.byteLength(lockToken)) throw new Error("Migration lock marker size changed before replacement.");
+    const lockBytes = await exactHandleBytes(lockHandle, Buffer.byteLength(lockToken));
+    if (!lockBytes.equals(Buffer.from(lockToken))) throw new Error("Migration lock marker changed before replacement.");
+
+    await stage("rename");
+    renameAttempted = true;
+    await rename(tempPath, configPath);
+    await stage("renamed");
+    await stage("installed_identity");
+    if (!await pathIdentity(configPath, tempIdentity)) throw new Error("Installed configuration identity is invalid.");
+    await stage("parent_sync");
+    await syncDirectory(parent);
+    await stage("readback");
+    const installedBytes = await readFile(configPath, "utf8");
+    const installed = parseShieldConfig(installedBytes);
+    if (installedBytes !== candidateBytes || installed.state === "invalid" ||
+        semanticConfigJson(installed.value) !== semanticConfigJson(candidate)) {
+      throw new Error("Installed configuration readback is not exact and equivalent.");
+    }
+  } catch (error) {
+    operationError = error;
+    recoveryRequired = renameAttempted || (error instanceof CliError && error.message.startsWith("recovery_required:"));
+  }
+
+  if (tempHandle !== null && tempIdentity === null) recoveryRequired = true;
+  if (lockHandle !== null && lockIdentity === null) recoveryRequired = true;
+  if (tempHandle !== null) {
+    try { await tempHandle.close(); } catch { recoveryRequired = true; }
+    tempHandle = null;
+  }
+  if (!renameAttempted && tempPath !== null && tempIdentity !== null) {
+    try {
+      await stage("temporary_cleanup");
+      if (!await pathIdentity(tempPath, tempIdentity)) throw new Error("Temporary identity changed during cleanup.");
+      await unlink(tempPath);
+      if (!await absent(tempPath)) throw new Error("Temporary cleanup could not be verified.");
+    } catch { recoveryRequired = true; }
+  } else if (!renameAttempted && tempPath !== null && tempHandle === null && tempIdentity === null) {
+    try { if (!await absent(tempPath)) recoveryRequired = true; } catch { recoveryRequired = true; }
+  }
+  if (sourceHandle !== null) {
+    try { await sourceHandle.close(); } catch { recoveryRequired = true; }
+  }
+  if (lockHandle !== null && lockIdentity !== null) {
+    try {
+      await stage("lock_release");
+      if (!await pathIdentity(lockPath, lockIdentity) ||
+          (await lockHandle.stat()).size !== Buffer.byteLength(lockExpectedBytes) ||
+          !(await exactHandleBytes(lockHandle, Buffer.byteLength(lockExpectedBytes))).equals(Buffer.from(lockExpectedBytes))) {
+        throw new Error("Migration lock identity changed during release.");
+      }
+      await lockHandle.close();
+      lockHandle = null;
+      if (!await pathIdentity(lockPath, lockIdentity)) throw new Error("Migration lock path changed during release.");
+      await unlink(lockPath);
+      if (!await absent(lockPath)) throw new Error("Migration lock release could not be verified.");
+      await syncDirectory(parent);
+    } catch { recoveryRequired = true; }
+  }
+  if (lockHandle !== null) {
+    try { await lockHandle.close(); } catch { recoveryRequired = true; }
+  }
+
+  if (recoveryRequired) {
+    const classification = operationError instanceof CliError && operationError.message.startsWith("recovery_required:")
+      ? operationError.message
+      : "recovery_required: configuration migration state is uncertain";
+    throw new CliError(`${classification}; do not retry blindly.`);
+  }
+  if (operationError !== undefined) {
+    throw new CliError(`Configuration migration failed before rename; original preserved: ${operationError instanceof Error ? operationError.message : String(operationError)}`);
+  }
+}
+
 async function runInit(args: string[]): Promise<number> {
   const options = parseOptions(args, [
     "--root",
@@ -252,8 +530,10 @@ async function runInit(args: string[]): Promise<number> {
     "--coulson-binding-ref",
     "--fitz-binding-ref",
     "--simmons-binding-ref",
+    "--adapters",
     "--starter-pipeline",
-  ]);
+  ], ["--migrate-config"]);
+  const adapterIds = configuredAdaptersOption(options.values.get("--adapters"));
   const starterPipelineId = options.values.get("--starter-pipeline");
   if (starterPipelineId !== undefined && !validateStarterPipelineId(starterPipelineId)) {
     throw new CliError(`Unsupported starter pipeline: ${starterPipelineId}.`);
@@ -271,6 +551,7 @@ async function runInit(args: string[]): Promise<number> {
   if (rootIssue !== null) throw new CliError(rootIssue);
   const config = createShieldConfig({
     repositoryId: required(options, "--repository-id"),
+    adapterIds,
     repositoryTrustProfileId: repositoryTrustProfileId as RepositoryTrustProfileId,
     coulsonBindingRef: required(options, "--coulson-binding-ref"),
     ...(repositoryTrustProfileId === "signed_human_gates"
@@ -290,28 +571,32 @@ async function runInit(args: string[]): Promise<number> {
   const configState = await inspectTarget(configPath);
   const pipelineProfileState = starterPipelineId !== undefined ? await inspectTarget(pipelineProfilePath) : { exists: false };
   const ignoreState = await inspectTarget(ignorePath);
+  let legacyMigration: { bytes: string; config: ShieldConfigV1 | ShieldConfigV2 } | null = null;
   if (configState.exists) {
     const existing = parseShieldConfig(configState.content);
     if (existing.state === "invalid") {
       throw new CliError(`Existing configuration differs; refusing to overwrite: ${configPath}.`);
     }
-    if (existing.value.schemaVersion === 1) {
-      if (repositoryTrustProfileId === "coulson_only_platform_review") {
-        throw new CliError("Selecting coulson_only_platform_review against schema-1 configuration is an unsupported migration.");
+    if (options.flags.has("--migrate-config") && existing.value.schemaVersion === 3) {
+      const recoveryIssue = await configMigrationRecoveryIssue(configPath);
+      if (recoveryIssue !== null) throw new CliError(`${recoveryIssue} Do not retry blindly.`);
+    }
+    if (existing.value.schemaVersion === 1 || existing.value.schemaVersion === 2) {
+      const migrated = migrateShieldConfig(existing.value);
+      if (semanticConfigJson(migrated) !== semanticConfigJson(config)) {
+        throw new CliError(`Existing schema-${existing.value.schemaVersion} configuration differs from the requested migration; refusing to overwrite: ${configPath}.`);
       }
-      const { repositoryTrustProfileId: _profileId, ...common } = config;
-      const equivalentLegacy: ShieldConfigV1 = { ...common, schemaVersion: 1 };
-      if (semanticLegacyConfigJson(existing.value) !== semanticLegacyConfigJson(equivalentLegacy)) {
-        throw new CliError(`Existing schema-1 configuration differs; refusing to overwrite: ${configPath}.`);
-      }
+      legacyMigration = { bytes: configState.content as string, config: existing.value };
       if (starterPipelineId === undefined) {
         if (ignoreState.exists && ignoreState.content !== IGNORE_CONTENT) {
           throw new CliError(`Existing SHIELD ignore file differs; refusing to overwrite: ${ignorePath}.`);
         }
-        process.stdout.write("SHIELD schema-1 configuration is already initialized; no files changed.\n");
-        return 0;
+        if (!options.flags.has("--migrate-config")) {
+          process.stdout.write(`SHIELD schema-${existing.value.schemaVersion} configuration is already initialized; no files changed.\n`);
+          return 0;
+        }
       }
-    } else if (formatShieldConfig(existing.value) !== configContent) {
+    } else if (semanticConfigJson(existing.value) !== semanticConfigJson(config)) {
       throw new CliError(`Existing configuration differs; refusing to overwrite: ${configPath}.`);
     }
   }
@@ -319,6 +604,11 @@ async function runInit(args: string[]): Promise<number> {
     throw new CliError(`Existing SHIELD ignore file differs; refusing to overwrite: ${ignorePath}.`);
   }
   if (!shieldExists) await mkdir(shieldDirectory);
+  let migrated = false;
+  if (legacyMigration !== null && options.flags.has("--migrate-config")) {
+    await migrateConfigFile(configPath, legacyMigration.bytes, legacyMigration.config, config);
+    migrated = true;
+  }
   if (starterPipelineId !== undefined) {
     const packageScripts = await readPackageScripts(root);
     const starterSelection = createStarterPipelineSelectionV1({
@@ -352,8 +642,12 @@ async function runInit(args: string[]): Promise<number> {
   if (starterPipelineId !== undefined && !pipelineProfileState.exists) {
     created.push(PIPELINE_PROFILE_RELATIVE_PATH);
   }
-  if (created.length === 0) {
+  if (created.length === 0 && !migrated) {
     process.stdout.write("SHIELD is already initialized; no files changed.\n");
+  } else if (created.length === 0) {
+    process.stdout.write(`Migrated SHIELD configuration: ${CONFIG_RELATIVE_PATH}\n`);
+  } else if (migrated) {
+    process.stdout.write(`Migrated SHIELD configuration and initialized: ${created.join(", ")}\n`);
   } else {
     process.stdout.write(`Initialized SHIELD: ${created.join(", ")}\n`);
   }
@@ -370,8 +664,11 @@ async function installedPackageVersion(): Promise<string | null> {
   }
 }
 
-function renderDoctor(report: DoctorReport): string {
-  const lines = report.checks.map(({ id, ok, message }) => `${ok ? "PASS" : "FAIL"} ${id}: ${message}`);
+function renderDoctor(report: DoctorReportV2): string {
+  const lines = report.checks.map((entry) => {
+    const suffix = "adapterId" in entry ? ` [${entry.adapterId ?? "unclassified"}]` : "";
+    return `${entry.ok ? "PASS" : "FAIL"} ${entry.id}${suffix}: ${entry.message}`;
+  });
   lines.push(report.ok ? "SHIELD doctor: healthy." : "SHIELD doctor: action required.");
   return `${lines.join("\n")}\n`;
 }
@@ -427,12 +724,19 @@ export async function runCli(args: string[]): Promise<number> {
   throw new CliError(`Unsupported command: ${command}.\n${usage()}`);
 }
 
-try {
-  process.exitCode = await runCli(process.argv.slice(2));
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`SHIELD: ${message}\n`);
-  process.exitCode = error instanceof CliError || error instanceof MissionCliError ? error.exitCode : 2;
+let cliIsMain = false;
+if (process.argv[1] !== undefined) {
+  try { cliIsMain = fileURLToPath(import.meta.url) === await realpath(resolve(process.argv[1])); }
+  catch { cliIsMain = import.meta.url === pathToFileURL(resolve(process.argv[1])).href; }
+}
+if (cliIsMain) {
+  try {
+    process.exitCode = await runCli(process.argv.slice(2));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`SHIELD: ${message}\n`);
+    process.exitCode = error instanceof CliError || error instanceof MissionCliError ? error.exitCode : 2;
+  }
 }
 
 export { SHIELD_PACKAGE_VERSION };

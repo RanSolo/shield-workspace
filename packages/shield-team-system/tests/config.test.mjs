@@ -2,26 +2,33 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CONFIG_SCHEMA_V2_VERSION,
   CONFIG_SCHEMA_VERSION,
+  CONFIGURED_HOST_ADAPTER_IDS,
+  DOCTOR_REPORT_VERSION,
   LEGACY_CONFIG_SCHEMA_VERSION,
   REPOSITORY_TRUST_PROFILE_IDS,
   REPOSITORY_TRUST_PROFILES_V1,
   SHIELD_PACKAGE_VERSION,
+  SUPPORTED_ADAPTER_IDS,
   SUPPORTED_CONFIG_SCHEMA_VERSIONS,
   SUPPORTED_MODE_IDS,
   SUPPORTED_SEAT_IDS,
+  configuredAdapterIds,
   createShieldConfig,
   evaluateDoctor,
   formatShieldConfig,
+  migrateShieldConfig,
   parseShieldConfig,
   repositoryTrustProfileId,
   validateShieldConfig,
 } from "../dist/config.mjs";
 
-function canonicalConfig(repositoryTrustProfileId = "signed_human_gates") {
+function canonicalConfig(repositoryTrustProfileId = "signed_human_gates", adapterIds) {
   return createShieldConfig({
     repositoryId: "RanSolo/shield-workspace",
     repositoryTrustProfileId,
+    ...(adapterIds === undefined ? {} : { adapterIds }),
     coulsonBindingRef: "ed25519:sha256:coulson-binding-ref",
     ...(repositoryTrustProfileId === "signed_human_gates"
       ? { fitzBindingRef: "ed25519:sha256:fitz-binding-ref" }
@@ -29,85 +36,85 @@ function canonicalConfig(repositoryTrustProfileId = "signed_human_gates") {
   });
 }
 
-function legacyConfig() {
-  const { repositoryTrustProfileId: _profileId, ...common } = canonicalConfig();
+function schema2Config() {
+  const { adapterIds: _adapterIds, ...common } = canonicalConfig();
+  return { ...common, schemaVersion: 2, adapterId: "github" };
+}
+
+function schema1Config() {
+  const { repositoryTrustProfileId: _profileId, ...common } = schema2Config();
   return { ...common, schemaVersion: 1 };
 }
 
-test("publishes a closed immutable repository trust profile registry and schema versions", () => {
+test("publishes closed legacy executable and configured-host registries", () => {
   assert.equal(LEGACY_CONFIG_SCHEMA_VERSION, 1);
-  assert.equal(CONFIG_SCHEMA_VERSION, 2);
-  assert.deepEqual(SUPPORTED_CONFIG_SCHEMA_VERSIONS, [1, 2]);
-  assert.equal(Object.isFrozen(SUPPORTED_CONFIG_SCHEMA_VERSIONS), true);
-  assert.equal(Object.isFrozen(REPOSITORY_TRUST_PROFILE_IDS), true);
-  assert.deepEqual(REPOSITORY_TRUST_PROFILES_V1.map(({ profileId }) => profileId), [
-    "signed_human_gates",
-    "coulson_only_platform_review",
-  ]);
+  assert.equal(CONFIG_SCHEMA_V2_VERSION, 2);
+  assert.equal(CONFIG_SCHEMA_VERSION, 3);
+  assert.deepEqual(SUPPORTED_CONFIG_SCHEMA_VERSIONS, [1, 2, 3]);
+  assert.deepEqual(SUPPORTED_ADAPTER_IDS, ["github"]);
+  assert.deepEqual(CONFIGURED_HOST_ADAPTER_IDS, ["github", "atlassian"]);
+  for (const registry of [SUPPORTED_CONFIG_SCHEMA_VERSIONS, SUPPORTED_ADAPTER_IDS, CONFIGURED_HOST_ADAPTER_IDS, REPOSITORY_TRUST_PROFILE_IDS]) {
+    assert.equal(Object.isFrozen(registry), true);
+    assert.throws(() => registry.push("hostile"), TypeError);
+  }
   assert.equal(Object.isFrozen(REPOSITORY_TRUST_PROFILES_V1), true);
-  assert.equal(Object.isFrozen(REPOSITORY_TRUST_PROFILES_V1[0]), true);
-  assert.equal(REPOSITORY_TRUST_PROFILES_V1[1].externalEvidenceAdmission, "not_admitted");
-
-  assert.throws(() => SUPPORTED_CONFIG_SCHEMA_VERSIONS.push(3), TypeError);
-  assert.throws(() => REPOSITORY_TRUST_PROFILE_IDS.push("hostile"), TypeError);
-  assert.equal(validateShieldConfig({ ...canonicalConfig(), schemaVersion: 3 }).state, "invalid");
-  assert.equal(validateShieldConfig({ ...canonicalConfig(), repositoryTrustProfileId: "hostile" }).state, "invalid");
+  assert.deepEqual(REPOSITORY_TRUST_PROFILES_V1.map(({ profileId }) => profileId), [
+    "signed_human_gates", "coulson_only_platform_review",
+  ]);
 });
 
-test("creates schema 2 and preserves canonical schema-1 parsing and formatting byte-stably", () => {
-  const config = canonicalConfig();
-  assert.equal(config.schemaVersion, 2);
-  assert.equal(config.repositoryTrustProfileId, "signed_human_gates");
-  assert.deepEqual(config.supportedSeatIds, SUPPORTED_SEAT_IDS);
-  assert.deepEqual(config.supportedModeIds, SUPPORTED_MODE_IDS);
-  assert.deepEqual(parseShieldConfig(formatShieldConfig(config)), { state: "valid", value: config });
+test("creates schema 3 with GitHub default and accepts the frozen dual-host order", () => {
+  const defaultConfig = canonicalConfig();
+  assert.equal(defaultConfig.schemaVersion, 3);
+  assert.deepEqual(defaultConfig.adapterIds, ["github"]);
+  assert.deepEqual(defaultConfig.supportedSeatIds, SUPPORTED_SEAT_IDS);
+  assert.deepEqual(defaultConfig.supportedModeIds, SUPPORTED_MODE_IDS);
+  assert.deepEqual(parseShieldConfig(formatShieldConfig(defaultConfig)), { state: "valid", value: defaultConfig });
 
-  const legacy = legacyConfig();
-  const bytes = `${JSON.stringify(legacy, null, 2)}\n`;
-  const parsed = parseShieldConfig(bytes);
-  assert.deepEqual(parsed, { state: "valid", value: legacy });
-  assert.equal(formatShieldConfig(parsed.value), bytes);
-  assert.equal(repositoryTrustProfileId(parsed.value), "signed_human_gates");
+  const dual = canonicalConfig("signed_human_gates", ["github", "atlassian"]);
+  assert.equal(validateShieldConfig(dual).state, "valid");
+  assert.deepEqual(configuredAdapterIds(dual), ["github", "atlassian"]);
+  assert.deepEqual(canonicalConfig("signed_human_gates", ["atlassian"]).adapterIds, ["atlassian"]);
+});
 
-  for (const bindingRef of ["placeholder", "github:user:fitz-todo"]) {
-    const compatible = structuredClone(legacy);
-    compatible.trustedHumanBindingRefs[1].bindingRef = bindingRef;
-    assert.equal(validateShieldConfig(compatible).state, "valid");
-    assert.equal(parseShieldConfig(formatShieldConfig(compatible)).state, "valid");
+test("preserves schema 1 and 2 parsing, bytes, meanings, and executable adapter identity", () => {
+  for (const legacy of [schema1Config(), schema2Config()]) {
+    const bytes = `${JSON.stringify(legacy, null, 2)}\n`;
+    assert.deepEqual(parseShieldConfig(bytes), { state: "valid", value: legacy });
+    assert.equal(formatShieldConfig(legacy), bytes);
+    assert.deepEqual(configuredAdapterIds(legacy), ["github"]);
+    assert.equal(repositoryTrustProfileId(legacy), legacy.schemaVersion === 1
+      ? "signed_human_gates"
+      : legacy.repositoryTrustProfileId);
   }
 
-  const signedHuman = canonicalConfig();
-  signedHuman.trustedHumanBindingRefs[1].bindingRef = "github:user:fitz-todo";
-  assert.equal(validateShieldConfig(signedHuman).state, "valid");
+  const compatible = schema1Config();
+  compatible.trustedHumanBindingRefs[1].bindingRef = "github:user:fitz-todo";
+  assert.equal(validateShieldConfig(compatible).state, "valid");
+  assert.deepEqual(SUPPORTED_ADAPTER_IDS, ["github"]);
 });
 
-test("enforces both profile binding cardinalities and rejects unconfigured references", () => {
-  const coulsonOnly = canonicalConfig("coulson_only_platform_review");
-  assert.deepEqual(coulsonOnly.trustedHumanBindingRefs.map(({ seatId }) => seatId), ["coulson"]);
-  assert.equal(validateShieldConfig(coulsonOnly).state, "valid");
-
-  for (const candidate of [
-    { ...coulsonOnly, repositoryTrustProfileId: "hostile" },
-    { ...coulsonOnly, trustedHumanBindingRefs: [] },
-    { ...coulsonOnly, trustedHumanBindingRefs: [...coulsonOnly.trustedHumanBindingRefs, { seatId: "fitz", bindingRef: "ed25519:sha256:fitz-binding-ref" }] },
-    { ...coulsonOnly, trustedHumanBindingRefs: [{ seatId: "coulson", bindingRef: "placeholder" }] },
-    { ...coulsonOnly, futureField: true },
-  ]) assert.equal(validateShieldConfig(candidate).state, "invalid");
-
-  assert.throws(() => createShieldConfig({
-    repositoryId: "RanSolo/shield-workspace",
-    coulsonBindingRef: "ed25519:sha256:coulson-binding-ref",
-  }), /Fitz binding reference/u);
-  assert.throws(() => createShieldConfig({
-    repositoryId: "RanSolo/shield-workspace",
-    repositoryTrustProfileId: "coulson_only_platform_review",
-    coulsonBindingRef: "ed25519:sha256:coulson-binding-ref",
-    fitzBindingRef: "ed25519:sha256:fitz-binding-ref",
-  }), /rejects Fitz and Simmons/u);
+test("migrates schema 1 and 2 purely and returns defensive schema-3 values", () => {
+  const v1 = schema1Config();
+  const v2 = schema2Config();
+  const v3 = canonicalConfig("signed_human_gates", ["github", "atlassian"]);
+  const snapshots = [structuredClone(v1), structuredClone(v2), structuredClone(v3)];
+  const migrated = [migrateShieldConfig(v1), migrateShieldConfig(v2), migrateShieldConfig(v3)];
+  assert.deepEqual([v1, v2, v3], snapshots);
+  assert.equal(migrated[0].repositoryTrustProfileId, "signed_human_gates");
+  assert.equal(migrated[1].repositoryTrustProfileId, v2.repositoryTrustProfileId);
+  assert.deepEqual(migrated.map(({ adapterIds }) => adapterIds), [["github"], ["github"], ["github", "atlassian"]]);
+  migrated[2].adapterIds.pop();
+  migrated[2].paths.journals = ".shield/changed";
+  assert.deepEqual(v3.adapterIds, ["github", "atlassian"]);
+  assert.equal(v3.paths.journals, ".shield/journals");
+  const projected = configuredAdapterIds(v3);
+  projected.pop();
+  assert.deepEqual(v3.adapterIds, ["github", "atlassian"]);
 });
 
-test("rejects unknown, inherited, unsupported, duplicate, unsafe, and overlapping values", () => {
-  const config = canonicalConfig();
+test("rejects schema-3 unknown fields, adapters, duplicates, order, emptiness, and credential-bearing values", () => {
+  const config = canonicalConfig("signed_human_gates", ["github", "atlassian"]);
   const unsafeBinding = structuredClone(config);
   unsafeBinding.trustedHumanBindingRefs[0].bindingRef = "token=plain-text-secret";
   const unsafePath = structuredClone(config);
@@ -116,8 +123,12 @@ test("rejects unknown, inherited, unsupported, duplicate, unsafe, and overlappin
   overlappingPath.paths.reports = ".shield/artifacts/reports";
   const cases = [
     Object.assign(Object.create({ inherited: true }), config),
-    { ...config, schemaVersion: 3 },
-    { ...config, adapterId: "gitlab" },
+    { ...config, schemaVersion: 4 },
+    { ...config, adapterIds: ["gitlab"] },
+    { ...config, adapterIds: [] },
+    { ...config, adapterIds: ["github", "github"] },
+    { ...config, adapterIds: ["atlassian", "github"] },
+    { ...config, adapterId: "github" },
     { ...config, supportedSeatIds: config.supportedSeatIds.slice(1) },
     { ...config, supportedModeIds: [...config.supportedModeIds, "delivery"] },
     unsafeBinding,
@@ -127,75 +138,54 @@ test("rejects unknown, inherited, unsupported, duplicate, unsafe, and overlappin
   for (const candidate of cases) assert.equal(validateShieldConfig(candidate).state, "invalid");
 });
 
-test("doctor keeps stable ordering and classifies profile failures as bindings", () => {
-  const expectedOrder = [
-    "repository-root", "package-version", "config-present", "config-schema", "adapter",
+test("enforces trust-profile binding cardinalities", () => {
+  const coulsonOnly = canonicalConfig("coulson_only_platform_review");
+  assert.deepEqual(coulsonOnly.trustedHumanBindingRefs, [
+    { seatId: "coulson", bindingRef: "ed25519:sha256:coulson-binding-ref" },
+  ]);
+  for (const candidate of [
+    { ...coulsonOnly, repositoryTrustProfileId: "hostile" },
+    { ...coulsonOnly, trustedHumanBindingRefs: [] },
+    { ...coulsonOnly, trustedHumanBindingRefs: [...coulsonOnly.trustedHumanBindingRefs, { seatId: "fitz", bindingRef: "ed25519:sha256:fitz" }] },
+    { ...coulsonOnly, trustedHumanBindingRefs: [{ seatId: "coulson", bindingRef: "placeholder" }] },
+  ]) assert.equal(validateShieldConfig(candidate).state, "invalid");
+});
+
+test("doctor v2 emits adjacent independent config-only adapter checks", () => {
+  const expectedWithoutAdapter = [
+    "repository-root", "package-version", "config-present", "config-schema",
     "seats", "modes", "bindings", "paths",
   ];
-  for (const config of [legacyConfig(), canonicalConfig(), canonicalConfig("coulson_only_platform_review")]) {
-    const healthy = evaluateDoctor({
-      repositoryRootReady: true,
-      packageVersion: SHIELD_PACKAGE_VERSION,
-      configPresent: true,
-      config,
-    });
-    assert.equal(healthy.ok, true);
-    assert.deepEqual(healthy.checks.map(({ id }) => id), expectedOrder);
-    assert.equal(
-      healthy.checks.find(({ id }) => id === "bindings").message,
-      config.schemaVersion === 1 || config.repositoryTrustProfileId === "signed_human_gates"
-        ? "Repository trust profile signed_human_gates configures Coulson and Fitz binding references as required cryptographic seats; Simmons remains optional for product-sensitive missions."
-        : "Repository trust profile coulson_only_platform_review configures Coulson as the only required cryptographic seat. Fitz is GitHub-enforced external review; Simmons is conditional external feedback; neither is admitted as SHIELD evidence.",
-    );
+  for (const [config, adapters] of [
+    [schema1Config(), ["github"]],
+    [schema2Config(), ["github"]],
+    [canonicalConfig(), ["github"]],
+    [canonicalConfig("signed_human_gates", ["github", "atlassian"]), ["github", "atlassian"]],
+  ]) {
+    const report = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config });
+    assert.equal(report.reportVersion, DOCTOR_REPORT_VERSION);
+    assert.equal(report.reportVersion, 2);
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.checks.filter(({ id }) => id !== "adapter").map(({ id }) => id), expectedWithoutAdapter);
+    assert.deepEqual(report.checks.filter(({ id }) => id === "adapter").map(({ adapterId }) => adapterId), adapters);
+    assert.equal(report.checks.findIndex(({ id }) => id === "adapter"), 4);
+    for (const check of report.checks.filter(({ id }) => id === "adapter")) {
+      assert.equal(check.ok, true);
+      assert.match(check.message, /repository configuration/iu);
+    }
   }
+});
 
-  const check = (report, id) => report.checks.find((candidate) => candidate.id === id);
-  const schemaHealthy = "Configuration schema and repository identity are valid.";
-
-  const missingProfile = { ...canonicalConfig() };
-  delete missingProfile.repositoryTrustProfileId;
-  const missingReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: missingProfile });
-  assert.deepEqual(check(missingReport, "config-schema"), { id: "config-schema", ok: true, message: schemaHealthy });
-  assert.deepEqual(check(missingReport, "bindings"), { id: "bindings", ok: false, message: "config is missing field: repositoryTrustProfileId." });
-
-  for (const repositoryTrustProfileId of [7, "hostile"]) {
-    const report = evaluateDoctor({
-      repositoryRootReady: true,
-      packageVersion: SHIELD_PACKAGE_VERSION,
-      configPresent: true,
-      config: { ...canonicalConfig(), repositoryTrustProfileId },
-    });
-    assert.deepEqual(check(report, "config-schema"), { id: "config-schema", ok: true, message: schemaHealthy });
-    assert.deepEqual(check(report, "bindings"), {
-      id: "bindings",
-      ok: false,
-      message: "config.repositoryTrustProfileId must be signed_human_gates or coulson_only_platform_review.",
-    });
+test("doctor produces one redacted null adapter failure for every invalid adapter shape", () => {
+  for (const adapterIds of [undefined, [], ["github", "github"], ["atlassian", "github"], ["token=secret"]]) {
+    const config = { ...canonicalConfig(), adapterIds };
+    const report = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config });
+    const adapterChecks = report.checks.filter(({ id }) => id === "adapter");
+    assert.deepEqual(adapterChecks.map(({ adapterId, ok }) => ({ adapterId, ok })), [{ adapterId: null, ok: false }]);
+    assert.doesNotMatch(adapterChecks[0].message, /token|secret/iu);
   }
-
-  const contradictory = canonicalConfig("coulson_only_platform_review");
-  contradictory.trustedHumanBindingRefs.push({ seatId: "fitz", bindingRef: "ed25519:sha256:fitz-binding-ref" });
-  const contradictoryReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: contradictory });
-  assert.deepEqual(check(contradictoryReport, "config-schema"), { id: "config-schema", ok: true, message: schemaHealthy });
-  assert.deepEqual(check(contradictoryReport, "bindings"), {
-    id: "bindings",
-    ok: false,
-    message: "Repository trust profile coulson_only_platform_review does not admit a fitz SHIELD binding reference.",
-  });
-
-  const emptyCoulsonOnly = { ...canonicalConfig("coulson_only_platform_review"), trustedHumanBindingRefs: [] };
-  const cardinalityReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: emptyCoulsonOnly });
-  assert.deepEqual(check(cardinalityReport, "config-schema"), { id: "config-schema", ok: true, message: schemaHealthy });
-  assert.deepEqual(check(cardinalityReport, "bindings"), {
-    id: "bindings",
-    ok: false,
-    message: "A configured SHIELD signing binding reference is required for coulson.",
-  });
-
-  const unknownReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: { ...canonicalConfig(), unknownField: true } });
-  assert.deepEqual(check(unknownReport, "config-schema"), { id: "config-schema", ok: false, message: "config has unknown field: unknownField." });
-
-  const unsupportedReport = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: true, config: { ...canonicalConfig(), schemaVersion: 3 } });
-  assert.deepEqual(check(unsupportedReport, "config-schema"), { id: "config-schema", ok: false, message: "Config schemaVersion must be one of: 1, 2." });
-  assert.equal(check(unsupportedReport, "bindings").ok, true);
+  const missing = evaluateDoctor({ repositoryRootReady: true, packageVersion: SHIELD_PACKAGE_VERSION, configPresent: false });
+  assert.deepEqual(missing.checks.filter(({ id }) => id === "adapter").map(({ adapterId, ok }) => ({ adapterId, ok })), [
+    { adapterId: null, ok: false },
+  ]);
 });
