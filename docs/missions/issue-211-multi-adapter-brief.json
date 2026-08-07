@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 2,
+  "missionId": "mission:issue-211",
+  "objective": "Implement issue #211 as one bounded prerequisite PR: introduce a deterministic multi-adapter repository configuration, migration, initialization, and doctor contract that supports GitHub and Atlassian concurrently while preserving GitHub defaults, excluding host API calls, credentials, publication-authority changes, delivery reconciliation, and Atlassian operations; stop after Mack and Fury exact-revision review without merging, deploying, or releasing.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/211",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": true,
+    "credentialsOrSecurity": true,
+    "externalCommunication": false,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-07T01:15:16Z",
+    "provenance": "hostTrusted"
+  },
+  "profileId": "standard",
+  "profileVersion": 1,
+  "requiredExecutionGateRoleIds": ["coulson"],
+  "requiredFinalAcceptanceGateRoleIds": ["coulson"],
+  "predecessorMissionId": "mission:issue-130",
+  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9"
+}
