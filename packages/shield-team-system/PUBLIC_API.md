@@ -14,7 +14,7 @@ package artifact.
 | `@shield/team-system/modes` | Mode manifests, registries, and seat-context resolution |
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
 | `@shield/team-system/hill-readiness` | Pure advisory `hill.readiness.v1` classification for exact seat-owned artifact revisions using closed, host-asserted evidence |
-| `@shield/team-system/config` | Closed schema-1/schema-2/schema-3 repository configuration validation, separate executable and configured-host adapter identities, explicit pure migration, immutable `repository.trust-profile.v1` registry, and doctor report v1/v2 types |
+| `@shield/team-system/config` | Closed schema-1/schema-2 repository configuration validation, immutable `repository.trust-profile.v1` registry, and doctor reports |
 | `@shield/team-system/supervision` | Supervised journals v2-v8 plus repository-derived mission binding admission for legacy and profile-aware starts, including revision-bound Fury review and supersession history, publication-bound v8 communication, authoritative runtime-binding lifecycle, canonical mission briefs, Ed25519 human evidence, readiness, communication, and execution-effect replay |
 | `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
 | `@shield/team-system/adapter` | Closed host-neutral adapter v1 contracts plus publication-bound adapter v2 communication requests and result evidence |
@@ -53,20 +53,13 @@ contains the additive configuration, CLI, and V0.3-4 supervision contracts; it
 does not migrate or reinterpret the existing package runtime.
 
 The `/config` surface names schema 1 as `LEGACY_CONFIG_SCHEMA_VERSION`, schema 2
-as `CONFIG_SCHEMA_V2_VERSION`, schema 3 as the creation
-`CONFIG_SCHEMA_VERSION`, and exposes `SUPPORTED_CONFIG_SCHEMA_VERSIONS` as
-`[1, 2, 3]`. `ShieldConfigV1`, `ShieldConfigV2`, and `ShieldConfigV3` are closed
-shapes joined by the `ShieldConfig` union. Schema 1 and 2 retain executable
-`adapterId: "github"`; schema 3 uses ordered `adapterIds` from the separate
-`CONFIGURED_HOST_ADAPTER_IDS` registry. `configuredAdapterIds(...)` returns a
-defensive projection and `migrateShieldConfig(...)` performs a pure closed
-conversion. `DoctorReport` remains the report-v1 type and `DoctorReportV2`
-describes current independent config-only adapter checks. Schema 1 remains
-readable as implicit `signed_human_gates`. The immutable
-`REPOSITORY_TRUST_PROFILES_V1` registry is descriptive only: it creates no
-authority and admits no external platform evidence. Configuring Atlassian adds
-no executable adapter, credential, network behavior, or publication authority.
-`/supervision` exposes repository-derived mission binding
+as the creation `CONFIG_SCHEMA_VERSION`, and exposes
+`SUPPORTED_CONFIG_SCHEMA_VERSIONS` as `[1, 2]`. `ShieldConfigV1` and
+`ShieldConfigV2` are closed shapes joined by the `ShieldConfig` union. New
+configuration includes `repositoryTrustProfileId`; schema 1 remains readable as
+implicit `signed_human_gates`. The immutable `REPOSITORY_TRUST_PROFILES_V1`
+registry is descriptive only: it creates no authority and admits no external
+platform evidence. `/supervision` exposes repository-derived mission binding
 selection and a separate fixed Coulson-operation selector; callers cannot
 supply an arbitrary seat list.
 

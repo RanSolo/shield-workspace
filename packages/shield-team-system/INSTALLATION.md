@@ -19,10 +19,9 @@ The packed-consumer validation exercises this command's `--save-dev` and
 `--save-exact` semantics against the exact generated tarball. Registry
 publication is not part of V0.3-3.
 
-Initialization writes configuration schema 3. The default
+Initialization writes configuration schema 2. The default
 `signed_human_gates` repository trust profile preserves the existing explicit,
-credential-free Coulson and Fitz SHIELD signing bindings and configures only
-the GitHub host adapter:
+credential-free Coulson and Fitz SHIELD signing bindings:
 
 ```sh
 npx shield init \
@@ -55,26 +54,6 @@ a conditional product/domain authority. Initialization creates only
 existing targets, unsupported values, credentials, and unsafe paths. Repeating
 the identical command is a no-op.
 
-To configure both admitted hosts, provide the normalized, registry-ordered,
-duplicate-free list explicitly:
-
-```sh
-npx shield init \
-  --repository-id owner/repository \
-  --coulson-binding-ref ed25519:sha256:<coulson-spki-digest> \
-  --fitz-binding-ref ed25519:sha256:<fitz-spki-digest> \
-  --adapters github,atlassian
-```
-
-This is repository configuration only. It does not add an executable Atlassian
-adapter, discover credentials, call Atlassian, or grant publication authority.
-Schema 1 and 2 remain byte-compatible and are not rewritten by ordinary
-initialization. After first confirming an identical deterministic schema-3
-candidate, migrate either legacy schema explicitly with `--migrate-config`.
-Migration uses an exclusive no-follow lock and verified atomic replacement;
-`recovery_required` means the operator must inspect the migration state and
-must not retry blindly.
-
 When you want SHIELD to capture an initial execution lane profile, add
 `--starter-pipeline <minimal|web-app|service-api|database-backed-app|enterprise>`.
 In that mode, initialization also writes `.shield/pipeline-profile.json` by
@@ -95,10 +74,9 @@ requests and makes no repository changes.
 
 Doctor reports the selected repository trust profile and required cryptographic
 seats. Valid schema-1 configuration remains readable as the implicit legacy
-`signed_human_gates` profile. Doctor report v2 emits one adjacent adapter check
-per configured host. Those checks mean only that repository configuration
-admits the host; they do not probe executable code, credentials, authentication,
-network access, or host health.
+`signed_human_gates` profile and is never rewritten. Equivalent signed-human
+re-initialization is a byte-preserving no-op; divergent bindings fail, and
+selecting Coulson-only against schema 1 is an unsupported migration.
 
 For the local supervised mission workflow, the binding references must be the
 content-addressed Ed25519 references described in
@@ -108,12 +86,13 @@ changing kernel evidence semantics.
 
 ## Upgrade, rollback, and uninstall
 
-Configuration migration is explicit; there is no automatic migration.
+V0.3-3 provides documentation only for these lifecycle operations. It does not
+provide mutation commands or automatic migrations.
 
 - Before upgrading, preserve `.shield/config.json`, journals, artifacts, and
   reports, then install the new exact version and run `shield doctor`. An
-  unsupported config version fails closed. Schema 1 or 2 may be converted only
-  with an equivalent `shield init ... --migrate-config` invocation.
+  unsupported config version fails closed until an explicit migration procedure
+  is supplied by a later authorized release.
 - To roll back package code, reinstall the prior exact version. Do not rewrite
   durable SHIELD evidence to make it appear compatible; restore only from an
   evidence-preserving repository backup when the prior version cannot read it.
