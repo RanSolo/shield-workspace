@@ -719,10 +719,30 @@ type AtomicBatchStage =
 type AtomicBatchDependencies = {
   nonce: (size: number) => Uint8Array;
   stage: (stage: AtomicBatchStage) => Promise<void>;
+  openTemp: (path: string, flags: number, mode: number) => Promise<unknown>;
+  statTemp: (handle: unknown) => Promise<{
+    dev: number | bigint;
+    ino: number | bigint;
+    mode: number;
+    size: number;
+    isFile: () => boolean;
+    isSymbolicLink: () => boolean;
+  }>;
+  writeTemp: (handle: unknown, content: string) => Promise<number>;
+  syncTemp: (handle: unknown) => Promise<void>;
+  renameTemp: (source: string, destination: string) => Promise<void>;
 };
 
 function defaultAtomicBatchDependencies(): AtomicBatchDependencies {
-  return { nonce: randomBytes, stage: async () => undefined };
+  return {
+    nonce: randomBytes,
+    stage: async () => undefined,
+    openTemp: (path, flags, mode) => open(path, flags, mode),
+    statTemp: (handle) => (handle as Awaited<ReturnType<typeof open>>).stat(),
+    writeTemp: async (handle, content) => (await (handle as Awaited<ReturnType<typeof open>>).write(content, 0, "utf8")).bytesWritten,
+    syncTemp: (handle) => (handle as Awaited<ReturnType<typeof open>>).sync(),
+    renameTemp: rename,
+  };
 }
 
 function sameFileIdentity(
@@ -786,6 +806,15 @@ async function cleanupRetainedTemp(
   }
 }
 
+async function provePathAbsent(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
 async function appendProfileAwareMissionEntriesAtomicWithDependencies(
   input: unknown,
   dependencies: AtomicBatchDependencies,
@@ -806,6 +835,7 @@ async function appendProfileAwareMissionEntriesAtomicWithDependencies(
   let result: ContractResult<ProfileAwareBatchReceipt> = invalid("journal_batch_failed", "Profile-aware mission batch did not complete.");
   let renameAttempted = false;
   let tempPath: string | null = null;
+  let tempCreationState: "not_attempted" | "uncertain" | "opened" = "not_attempted";
   let tempIdentity: { dev: number | bigint; ino: number | bigint } | null = null;
   let tempHandle: Awaited<ReturnType<typeof open>> | undefined;
   let closeUncertain = false;
@@ -851,12 +881,14 @@ async function appendProfileAwareMissionEntriesAtomicWithDependencies(
           if (fromRoot === "" || fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || dirname(tempPath) !== paths.value.root) {
             throw new Error("Batch temporary-file confinement failed.");
           }
-          tempHandle = await open(
+          tempCreationState = "uncertain";
+          tempHandle = await dependencies.openTemp(
             tempPath,
             constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
             0o600,
-          );
-          const opened = await tempHandle.stat();
+          ) as Awaited<ReturnType<typeof open>>;
+          tempCreationState = "opened";
+          const opened = await dependencies.statTemp(tempHandle);
           tempIdentity = { dev: opened.dev, ino: opened.ino };
           const openedPath = await lstat(tempPath);
           if (!opened.isFile() || opened.isSymbolicLink() || (opened.mode & 0o777) !== 0o600 ||
@@ -864,9 +896,9 @@ async function appendProfileAwareMissionEntriesAtomicWithDependencies(
             throw new Error("Batch temporary-file identity is invalid.");
           }
           await dependencies.stage("temp_opened");
-          const write = await tempHandle.write(candidateBytes, 0, "utf8");
-          if (write.bytesWritten !== lineLength(candidateBytes)) throw new Error("Batch temporary-file write was incomplete.");
-          const written = await tempHandle.stat();
+          const bytesWritten = await dependencies.writeTemp(tempHandle, candidateBytes);
+          if (bytesWritten !== lineLength(candidateBytes)) throw new Error("Batch temporary-file write was incomplete.");
+          const written = await dependencies.statTemp(tempHandle);
           if (!sameFileIdentity(tempIdentity, written) || written.size !== lineLength(candidateBytes) || (written.mode & 0o777) !== 0o600) {
             throw new Error("Batch temporary-file size or identity changed.");
           }
@@ -876,7 +908,7 @@ async function appendProfileAwareMissionEntriesAtomicWithDependencies(
             throw new Error("Batch temporary-file bytes are not exact.");
           }
           await dependencies.stage("temp_written");
-          await tempHandle.sync();
+          await dependencies.syncTemp(tempHandle);
           await dependencies.stage("temp_synced");
 
           if (!await verifyProfileAwareLockToken(token.value)) throw new Error("Mission journal lock changed before batch replacement.");
@@ -888,8 +920,8 @@ async function appendProfileAwareMissionEntriesAtomicWithDependencies(
           }
           await dependencies.stage("live_revalidated");
           await tempHandle.chmod(original.value.mode);
-          await tempHandle.sync();
-          const modeChecked = await tempHandle.stat();
+          await dependencies.syncTemp(tempHandle);
+          const modeChecked = await dependencies.statTemp(tempHandle);
           const tempPathChecked = await lstat(tempPath);
           if (!modeChecked.isFile() || !sameFileIdentity(tempIdentity, modeChecked) || (modeChecked.mode & 0o777) !== original.value.mode ||
               tempPathChecked.isSymbolicLink() || !tempPathChecked.isFile() || !sameFileIdentity(tempIdentity, tempPathChecked) ||
@@ -909,7 +941,7 @@ async function appendProfileAwareMissionEntriesAtomicWithDependencies(
           }
           await dependencies.stage("before_rename");
           renameAttempted = true;
-          await rename(tempPath, paths.value.journalPath);
+          await dependencies.renameTemp(tempPath, paths.value.journalPath);
           await dependencies.stage("renamed");
           const installed = await lstat(paths.value.journalPath);
           if (installed.isSymbolicLink() || !installed.isFile() || !sameFileIdentity(tempIdentity, installed) ||
@@ -954,8 +986,11 @@ async function appendProfileAwareMissionEntriesAtomicWithDependencies(
   if (tempHandle) {
     try { await tempHandle.close(); } catch { closeUncertain = true; }
   }
-  if (!renameAttempted && tempPath !== null && tempIdentity !== null) {
-    if (!await cleanupRetainedTemp(tempPath, tempIdentity, paths.value.root)) {
+  if (!renameAttempted && tempCreationState !== "not_attempted" && tempPath !== null) {
+    const cleanupProven = tempIdentity === null
+      ? await provePathAbsent(tempPath)
+      : await cleanupRetainedTemp(tempPath, tempIdentity, paths.value.root);
+    if (!cleanupProven) {
       result = invalid("recovery_required", "Batch temporary-file cleanup could not be proven.");
     }
   }

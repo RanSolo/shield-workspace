@@ -804,6 +804,114 @@ test("atomic schema-9 batch replaces exact bytes, preserves mode, replays, and r
   assert.deepEqual(result.value.projection, replay.value);
 });
 
+test("atomic schema-9 batch operation faults classify creation uncertainty and preserve retry safety", async () => {
+  const scenarios = [
+    {
+      name: "open-before-create",
+      expectedCode: "journal_batch_failed",
+      orphan: false,
+      overrides: {
+        openTemp: async () => { throw Object.assign(new Error("injected open failure"), { code: "EIO" }); },
+      },
+    },
+    {
+      name: "open-after-exclusive-create-before-identity",
+      expectedCode: "recovery_required",
+      orphan: true,
+      overrides: {
+        openTemp: async (path, flags, mode) => {
+          const handle = await open(path, flags, mode);
+          await handle.close();
+          throw Object.assign(new Error("injected post-create open failure"), { code: "EIO" });
+        },
+      },
+    },
+    {
+      name: "initial-stat",
+      expectedCode: "recovery_required",
+      orphan: true,
+      overrides: {
+        statTemp: async () => { throw Object.assign(new Error("injected initial stat failure"), { code: "EIO" }); },
+      },
+    },
+    {
+      name: "write",
+      expectedCode: "journal_batch_failed",
+      orphan: false,
+      overrides: {
+        writeTemp: async () => { throw Object.assign(new Error("injected write failure"), { code: "EIO" }); },
+      },
+    },
+    {
+      name: "post-write-stat",
+      expectedCode: "journal_batch_failed",
+      orphan: false,
+      overrides: (() => {
+        let calls = 0;
+        return {
+          statTemp: async (handle) => {
+            calls += 1;
+            if (calls === 2) throw Object.assign(new Error("injected post-write stat failure"), { code: "EIO" });
+            return handle.stat();
+          },
+        };
+      })(),
+    },
+    {
+      name: "sync",
+      expectedCode: "journal_batch_failed",
+      orphan: false,
+      overrides: {
+        syncTemp: async () => { throw Object.assign(new Error("injected sync failure"), { code: "EIO" }); },
+      },
+    },
+    {
+      name: "rename",
+      expectedCode: "recovery_required",
+      orphan: true,
+      overrides: {
+        renameTemp: async () => { throw Object.assign(new Error("injected rename failure"), { code: "EIO" }); },
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), `shield-store-operation-${scenario.name}-`));
+    const fixture = profileAwareFixture();
+    const paths = resolveSupervisedMissionPaths(repositoryRoot, ".shield/journals", fixture.brief.missionId).value;
+    await mkdir(paths.root, { recursive: true });
+    const baseline = profileAwareJournalBytes([fixture.begun]);
+    const entries = atomicProfileBatch(fixture);
+    await writeFile(paths.journalPath, baseline);
+    const batchInput = {
+      repositoryRoot,
+      configuredJournalPath: ".shield/journals",
+      missionId: fixture.brief.missionId,
+      entries,
+      expectedStartingJournalSha256: journalByteSha256(baseline),
+    };
+    const result = await atomicBatchStoreTestOnly.append(batchInput, {
+      nonce: () => Buffer.alloc(24, scenarios.indexOf(scenario) + 31),
+      ...scenario.overrides,
+    });
+    assert.equal(result.state, "invalid", `${scenario.name} unexpectedly succeeded`);
+    assert.equal(result.code, scenario.expectedCode, `${scenario.name} returned the wrong classification`);
+    assert.equal(await readFile(paths.journalPath, "utf8"), baseline, `${scenario.name} changed journal bytes`);
+    const temps = (await readdir(paths.root)).filter((name) => name.includes(".batch-") && name.endsWith(".tmp"));
+    assert.equal(temps.length > 0, scenario.orphan, `${scenario.name} orphan state is wrong`);
+
+    const retry = await appendProfileAwareMissionEntriesAtomicV1(batchInput);
+    if (scenario.orphan) {
+      assert.equal(retry.state, "invalid", `${scenario.name} retry unexpectedly succeeded with an orphan`);
+      assert.equal(retry.code, "recovery_required");
+      assert.equal(await readFile(paths.journalPath, "utf8"), baseline);
+      for (const name of temps) await unlink(join(paths.root, name));
+    } else {
+      assert.equal(retry.state, "valid", `${scenario.name} clean retry failed: ${retry.errors?.join(" ")}`);
+    }
+  }
+});
+
 test("atomic schema-9 batch stage faults expose only baseline or complete candidate bytes", async () => {
   const stages = [
     "locked", "validated", "temp_opened", "temp_written", "temp_synced",
