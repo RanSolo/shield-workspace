@@ -331,7 +331,17 @@ function strictClosedDataObject(value: unknown, fields: readonly string[], label
   return Object.fromEntries(fields.map((field) => [field, descriptors[field].value]));
 }
 
-function strictSortedStrings(value: unknown, label: string): string[] {
+type StringComparator = (left: string, right: string) => number;
+
+function canonicalPublicationPathCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function strictSortedStrings(
+  value: unknown,
+  label: string,
+  compare: StringComparator = (left, right) => left.localeCompare(right),
+): string[] {
   if (!Array.isArray(value) || types.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype ||
       value.length < 1 || value.length > 256 || Reflect.ownKeys(value).length !== value.length + 1) {
     throw new MissionCliError(`${label} must be a non-empty dense sorted array.`, 1);
@@ -346,7 +356,7 @@ function strictSortedStrings(value: unknown, label: string): string[] {
     }
     result.push(descriptor.value);
   }
-  const sorted = [...result].sort((left, right) => left.localeCompare(right));
+  const sorted = [...result].sort(compare);
   if (result.some((item, index) => item !== sorted[index]) || new Set(result).size !== result.length) {
     throw new MissionCliError(`${label} must be sorted and contain no duplicates.`, 1);
   }
@@ -377,7 +387,7 @@ export function validateAuthorizeWheelsUpInput(value: unknown): Readonly<Authori
     validationCommandIds: strictSortedStrings(input.validationCommandIds, "validationCommandIds"),
     reasoningRuntimeId: input.reasoningRuntimeId as string,
     toolExecutorId: input.toolExecutorId as string,
-    publicationPaths: strictSortedStrings(input.publicationPaths, "publicationPaths"),
+    publicationPaths: strictSortedStrings(input.publicationPaths, "publicationPaths", canonicalPublicationPathCompare),
   };
   return Object.freeze(result);
 }
@@ -500,6 +510,7 @@ async function observePublicationRepository(
   configuredRepositoryId: string,
   baseRevisionInput: string,
   authorizedPaths: readonly string[],
+  pathComparator?: StringComparator,
 ): Promise<PublicationRepositoryObservation> {
   if (baseRevisionInput.trim() !== baseRevisionInput || baseRevisionInput.length === 0) {
     throw new MissionCliError("Publication baseRevision is malformed.", 1);
@@ -535,7 +546,7 @@ async function observePublicationRepository(
       headRevision,
       baseAncestor: true,
       statusEntries: nulRecords(status, "Repository status"),
-      changedPaths: nulRecords(changed, "Repository change set").sort(),
+      changedPaths: nulRecords(changed, "Repository change set").sort(pathComparator),
       baseTreeEntries: exactTreeEntries(baseTree, "Base tree", authorizedPaths),
       headTreeEntries: exactTreeEntries(headTree, "HEAD tree", authorizedPaths),
     };
@@ -560,11 +571,11 @@ export function assertPublicationAuthorizationFreshness(input: {
   }
 }
 
-function publicationPathKinds(observation: PublicationRepositoryObservation) {
+function publicationPathKinds(observation: PublicationRepositoryObservation, pathComparator?: StringComparator) {
   const all = [...observation.baseTreeEntries, ...observation.headTreeEntries];
   return {
-    symlinks: [...new Set(all.filter(({ mode }) => mode === "120000").map(({ path }) => path))].sort(),
-    gitlinks: [...new Set(all.filter(({ mode, type }) => mode === "160000" || type === "commit").map(({ path }) => path))].sort(),
+    symlinks: [...new Set(all.filter(({ mode }) => mode === "120000").map(({ path }) => path))].sort(pathComparator),
+    gitlinks: [...new Set(all.filter(({ mode, type }) => mode === "160000" || type === "commit").map(({ path }) => path))].sort(pathComparator),
   };
 }
 
@@ -1295,8 +1306,14 @@ async function prepareAuthorizeWheelsUp(
     throw new MissionCliError("May seat, reasoning runtime, model, and tool executor must be mutually distinct and cannot be mission participants.", 1);
   }
 
-  const observation = await observePublicationRepository(root, config.repositoryId, intent.baseRevision, intent.publicationPaths);
-  const pathKinds = publicationPathKinds(observation);
+  const observation = await observePublicationRepository(
+    root,
+    config.repositoryId,
+    intent.baseRevision,
+    intent.publicationPaths,
+    canonicalPublicationPathCompare,
+  );
+  const pathKinds = publicationPathKinds(observation, canonicalPublicationPathCompare);
   if (observation.remoteRepositoryId !== config.repositoryId) throw new MissionCliError("Repository origin does not match configured repository identity.", 1);
   if (observation.statusEntries.length !== 0) throw new MissionCliError("Authorize Wheels Up requires an exactly clean workspace.", 1);
   if (canonicalJson(observation.changedPaths) !== canonicalJson(intent.publicationPaths)) {

@@ -174,12 +174,23 @@ function profileBriefContent(missionId, profileId, requireSimmons) {
 }
 
 function run(root, args, options = {}) {
-  return spawnSync(process.execPath, [cli, ...args], {
+  return spawnSync(process.execPath, [...(options.nodeArgs ?? []), cli, ...args], {
     cwd: root,
     encoding: "utf8",
     env: { ...process.env, ...(options.env ?? {}) },
     input: options.input,
   });
+}
+
+function fixedClockNodeArgs(timestamp) {
+  const source = `const NativeDate = globalThis.Date; const fixed = ${JSON.stringify(timestamp)}; globalThis.Date = class extends NativeDate { constructor(...args) { super(...(args.length === 0 ? [fixed] : args)); } static now() { return new NativeDate(fixed).getTime(); } };`;
+  return ["--import", `data:text/javascript,${encodeURIComponent(source)}`];
+}
+
+function wheelsUpManifest(stderr) {
+  const match = /SHIELD_WHEELS_UP_MANIFEST_BEGIN\n(?<manifest>[\s\S]*?)\nSHIELD_WHEELS_UP_MANIFEST_END/u.exec(stderr);
+  assert.ok(match?.groups?.manifest, stderr);
+  return JSON.parse(match.groups.manifest);
 }
 
 const BOOTSTRAP_ARGS = [
@@ -727,7 +738,7 @@ test("supported profile-aware CLI workflow records three independent signed tran
   assert.deepEqual(JSON.parse(restarted.stdout), projection);
 });
 
-test("authorize-wheels-up previews one closed manifest, unlocks once, signs four payloads, and emits one receipt", async () => {
+test("authorize-wheels-up canonically orders mixed-case publication paths and has stable fresh-process digests", async () => {
   const { root } = await fixture();
   const homeRoot = join(root, ".shield", "tmp", "one-passcode-home");
   await mkdir(homeRoot, { recursive: true });
@@ -745,10 +756,14 @@ test("authorize-wheels-up previews one closed manifest, unlocks once, signs four
   runGit(root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
   runGit(root, ["commit", "-qm", "one-passcode base"]);
   const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
-  await writeFile(join(root, "implementation.md"), "bounded initial draft\n");
-  runGit(root, ["add", "implementation.md"]);
+  const publicationPaths = ["Z-upper-implementation.md", "a-lower-implementation.md", "Ω-implementation.md", "中-implementation.md"];
+  for (const path of publicationPaths) await writeFile(join(root, path), `bounded initial draft: ${path}\n`);
+  runGit(root, ["add", "--", ...publicationPaths]);
   runGit(root, ["commit", "-qm", "one-passcode head"]);
   const headRevision = runGit(root, ["rev-parse", "HEAD"]);
+  const observedPublicationPaths = runGit(root, ["diff", "--name-only", "--no-renames", "-z", baseRevision, headRevision, "--"])
+    .split("\0").filter(Boolean).sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+  assert.deepEqual(observedPublicationPaths, publicationPaths);
 
   const missionId = "mission:authorize-wheels-up";
   const brief = createProfileAwareMissionBrief({
@@ -786,7 +801,7 @@ test("authorize-wheels-up previews one closed manifest, unlocks once, signs four
     validationCommandIds: ["validation:test"],
     reasoningRuntimeId: "runtime:bounded-reasoner",
     toolExecutorId: "executor:bounded-tools",
-    publicationPaths: ["implementation.md"],
+    publicationPaths,
   }, null, 2)}\n`);
 
   const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", ".shield/tmp/one-passcode-brief.json", "--json"]);
@@ -804,6 +819,22 @@ test("authorize-wheels-up previews one closed manifest, unlocks once, signs four
   assert.equal(hostile.status, 1);
   assert.doesNotMatch(hostile.stderr, /SHIELD_WHEELS_UP_MANIFEST_BEGIN/u);
   assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  for (const [name, paths] of [
+    ["missing", publicationPaths.slice(0, -1)],
+    ["extra", [...publicationPaths.slice(0, 2), "z-extra.md", ...publicationPaths.slice(2)]],
+  ]) {
+    const inputPath = join(temporaryRoot, `one-passcode-${name}.json`);
+    await writeFile(inputPath, `${JSON.stringify({ ...validInput, publicationPaths: paths })}\n`);
+    const closedSetMismatch = run(
+      root,
+      ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", `.shield/tmp/one-passcode-${name}.json`, "--passcode-stdin", "--json"],
+      { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+    );
+    assert.equal(closedSetMismatch.status, 1, name);
+    assert.match(closedSetMismatch.stderr, /must exactly equal/u, name);
+    assert.equal(await readFile(journalPath(root, missionId), "utf8"), before, name);
+  }
 
   const wrongPasscode = run(
     root,
@@ -839,15 +870,43 @@ test("authorize-wheels-up previews one closed manifest, unlocks once, signs four
   assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
   await writeFile(signerPath, signerBytes);
 
-  const result = run(
+  const fixedTimestamp = "2026-08-07T12:34:56.000Z";
+  const firstResult = run(
     root,
     ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
-    { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+    {
+      env: { HOME: homeRoot, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" },
+      input: "one-passcode-secret\n",
+      nodeArgs: fixedClockNodeArgs(fixedTimestamp),
+    },
   );
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stderr.match(/SHIELD_WHEELS_UP_MANIFEST_BEGIN/gu)?.length, 1);
-  assert.equal(result.stderr.match(/SHIELD_WHEELS_UP_MANIFEST_END/gu)?.length, 1);
-  const receipt = JSON.parse(result.stdout);
+  assert.equal(firstResult.status, 0, firstResult.stderr);
+  const firstJournal = await readFile(journalPath(root, missionId), "utf8");
+  await writeFile(journalPath(root, missionId), before);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  const secondResult = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    {
+      env: { HOME: homeRoot, LANG: "sv_SE.UTF-8", LC_ALL: "sv_SE.UTF-8" },
+      input: "one-passcode-secret\n",
+      nodeArgs: fixedClockNodeArgs(fixedTimestamp),
+    },
+  );
+  assert.equal(secondResult.status, 0, secondResult.stderr);
+  assert.equal(secondResult.stderr.match(/SHIELD_WHEELS_UP_MANIFEST_BEGIN/gu)?.length, 1);
+  assert.equal(secondResult.stderr.match(/SHIELD_WHEELS_UP_MANIFEST_END/gu)?.length, 1);
+  const firstManifest = wheelsUpManifest(firstResult.stderr);
+  const secondManifest = wheelsUpManifest(secondResult.stderr);
+  const firstReceipt = JSON.parse(firstResult.stdout);
+  const receipt = JSON.parse(secondResult.stdout);
+  assert.equal(firstManifest.manifestDigest, secondManifest.manifestDigest);
+  assert.equal(firstReceipt.receiptDigest, receipt.receiptDigest);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), firstJournal);
+  assert.deepEqual(secondManifest.repository.changedPaths, publicationPaths);
+  assert.deepEqual(secondManifest.publicationAuthority.authorizedPaths, publicationPaths);
+  assert.deepEqual(receipt.publicationScope.authorizedPaths, publicationPaths);
   assert.equal(receipt.schemaId, "shield.wheels-up-authorization-receipt.v1");
   assert.equal(receipt.baseRevision, baseRevision);
   assert.equal(receipt.headRevision, headRevision);
@@ -925,29 +984,109 @@ test("batch signer performs one record read, four signatures, and exposes no par
   }
 });
 
-test("authorize-wheels-up input rejects proxy, accessor, symbolic, duplicate, and unsorted authority data", () => {
+test("authorize-wheels-up keeps locale ordering for non-publication arrays and rejects malformed publication data", () => {
+  const localeOrdered = ["Z", "a"].sort((left, right) => left.localeCompare(right));
+  const publicationOrdered = ["Z", "a"];
   const valid = {
     baseRevision: "a".repeat(40),
     modelId: "model:bounded",
-    approvedRelativePaths: ["a", "b"],
-    approvedActionIds: ["action:a"],
-    approvedEffectClasses: ["behavioral_implementation", "verification"],
-    approvedEffectKeys: ["effect:a"],
-    approvedCapabilities: ["filesystem_write"],
-    validationCommandIds: ["validation:test"],
+    approvedRelativePaths: localeOrdered,
+    approvedActionIds: localeOrdered,
+    approvedEffectClasses: localeOrdered,
+    approvedEffectKeys: localeOrdered,
+    approvedCapabilities: localeOrdered,
+    validationCommandIds: localeOrdered,
     reasoningRuntimeId: "runtime:reasoner",
     toolExecutorId: "executor:tools",
-    publicationPaths: ["a", "b"],
+    publicationPaths: publicationOrdered,
   };
-  assert.deepEqual(validateAuthorizeWheelsUpInput(valid).publicationPaths, ["a", "b"]);
+  const validated = validateAuthorizeWheelsUpInput(valid);
+  for (const field of [
+    "approvedRelativePaths", "approvedActionIds", "approvedEffectClasses", "approvedEffectKeys",
+    "approvedCapabilities", "validationCommandIds",
+  ]) assert.deepEqual(validated[field], localeOrdered, field);
+  assert.deepEqual(validated.publicationPaths, publicationOrdered);
   assert.throws(() => validateAuthorizeWheelsUpInput(new Proxy(valid, {})), /plain closed data object/u);
   const accessor = { ...valid };
   Object.defineProperty(accessor, "modelId", { enumerable: true, get: () => "model:forged" });
   assert.throws(() => validateAuthorizeWheelsUpInput(accessor), /enumerable data fields/u);
   const symbolic = { ...valid, [Symbol("authority")]: "caller:forbidden" };
   assert.throws(() => validateAuthorizeWheelsUpInput(symbolic), /enumerable data fields/u);
-  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: ["b", "a"] }), /must be sorted/u);
-  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: ["a", "a"] }), /duplicates/u);
+  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: ["a", "Z"] }), /must be sorted/u);
+  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: ["Z", "Z"] }), /duplicates/u);
+  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: [""] }), /malformed/u);
+});
+
+test("authorize-wheels-up rejects symlink and gitlink publication paths without journal mutation", async () => {
+  for (const pathKind of ["symlink", "gitlink"]) {
+    const { root } = await fixture();
+    runGit(root, ["init", "-q"]);
+    runGit(root, ["config", "user.email", "shield@example.invalid"]);
+    runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+    runGit(root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+    runGit(root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+    runGit(root, ["commit", "-qm", `${pathKind} base`]);
+    const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
+    const publicationPath = pathKind === "symlink" ? "A-symlink.md" : "A-gitlink";
+    if (pathKind === "symlink") {
+      await symlink("package.json", join(root, publicationPath));
+      runGit(root, ["add", "--", publicationPath]);
+    } else {
+      runGit(root, ["update-index", "--add", "--cacheinfo", `160000,${baseRevision},${publicationPath}`]);
+    }
+    runGit(root, ["commit", "-qm", `${pathKind} head`]);
+    if (pathKind === "gitlink") await mkdir(join(root, publicationPath));
+
+    const missionId = `mission:authorize-wheels-up-${pathKind}`;
+    const brief = createProfileAwareMissionBrief({
+      schemaVersion: 2,
+      missionId,
+      objective: `Reject one ${pathKind} from initial draft publication.`,
+      subjectId: "issue:236",
+      riskFlags: {
+        production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+        externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+      },
+      participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+      activatedModes: [],
+      requireSimmons: false,
+      createdAt: { value: "2026-08-07T00:00:00Z", provenance: "humanRecorded" },
+      profileId: "standard",
+      profileVersion: 1,
+      requiredExecutionGateRoleIds: ["coulson"],
+      requiredFinalAcceptanceGateRoleIds: ["coulson"],
+      predecessorMissionId: "mission:issue-130",
+      predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+    });
+    const temporaryRoot = join(root, ".shield", "tmp");
+    await mkdir(temporaryRoot, { recursive: true });
+    const { revisionId: _revisionId, ...briefContent } = brief;
+    await writeFile(join(temporaryRoot, `${pathKind}-brief.json`), `${JSON.stringify(briefContent, null, 2)}\n`);
+    await writeFile(join(temporaryRoot, `${pathKind}-input.json`), `${JSON.stringify({
+      baseRevision,
+      modelId: "model:bounded-may",
+      approvedRelativePaths: [publicationPath],
+      approvedActionIds: ["action:implement"],
+      approvedEffectClasses: ["behavioral_implementation", "verification"],
+      approvedEffectKeys: ["effect:implementation", "effect:validation"],
+      approvedCapabilities: ["filesystem_write"],
+      validationCommandIds: ["validation:test"],
+      reasoningRuntimeId: "runtime:bounded-reasoner",
+      toolExecutorId: "executor:bounded-tools",
+      publicationPaths: [publicationPath],
+    }, null, 2)}\n`);
+    const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", `.shield/tmp/${pathKind}-brief.json`, "--json"]);
+    assert.equal(begun.status, 0, begun.stderr);
+    const before = await readFile(journalPath(root, missionId), "utf8");
+    const rejected = run(
+      root,
+      ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", `.shield/tmp/${pathKind}-input.json`, "--passcode-stdin", "--json"],
+      { input: "unused-passcode\n" },
+    );
+    assert.equal(rejected.status, 1, pathKind);
+    assert.match(rejected.stderr, new RegExp(`${pathKind}_path_denied`, "u"), pathKind);
+    assert.equal(await readFile(journalPath(root, missionId), "utf8"), before, pathKind);
+  }
 });
 
 test("schema-9 publication CLI signs authorization, queues without passcode, and rejects file-delivered outcomes", async () => {
