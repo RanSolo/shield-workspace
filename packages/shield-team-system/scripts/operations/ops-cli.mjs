@@ -13,11 +13,12 @@ const commands = new Map([
 function usage() {
   return [
     "Usage:",
-    "  shield-ops evidence run [evidence-run options] -- <command> [args...]",
-    "  shield-ops acceptance check [acceptance-check options]",
+    "  shield-ops evidence run --spec FILE --expected-spec-sha256 SHA256 --command-id ID --output FILE",
+    "  shield-ops acceptance check --spec FILE --manifest FILE --expected-spec-sha256 SHA256 [options]",
     "",
     "These commands create non-authoritative operational evidence. They do not grant",
-    "mission authority, advance a journal, publish, merge, deploy, or release.",
+    "mission authority, provenance, execution attestation, journal advancement,",
+    "publication, merge, deployment, or release.",
   ].join("\n");
 }
 
