@@ -21,6 +21,10 @@ passcodes.
   `19b94b0e9e96f17e4294c568374547bdbc7f5448158409c6c84cda1ba82683f9`.
 - Bootstrap receipt SHA-256:
   `166bf2e00fd1e0df5695b9d7d2d9a0f60e460f5f25e3983b0da29356960d180a`.
+- Tool registry SHA-256:
+  `42398802299eb2de7921509b6ae72881589e4b67dcf94db6b434aef47dfaa376`.
+- Tool harvest SHA-256:
+  `2e54e0e1a750391e6ef04d21a846fd7645332314cf5318fe84e28090d9e8efe2`.
 
 ## Promoted tool stack
 
@@ -32,7 +36,7 @@ The tools were promoted as a reviewable stack ordered by lifecycle use:
 | #243         | `c2c872a21f2ba790f3b5dca49f9f67c61161b434` | Flight preflight, fixture closure, construction observation, and doctor |
 | #244         | `62afbd5c842670336f37522833f60f6814728de3` | Non-authoritative state initialization and deterministic Hill routing   |
 | #245         | `fbdc15e649bb4ddcec1e86672f62ad0c35df80ae` | Exact handoffs, convergence checks, and teardown planning               |
-| #246         | `b9180d70faa07cf3c23b71590c59ecd05d590011` | Experimental tool harvest and promotion evidence                        |
+| #246         | `3ce004e54fb72ba0884268a03f247ade71db0aa9` | Experimental tool harvest and portable promotion evidence               |
 
 Tool artifact SHA-256 values at the top of that stack:
 
@@ -49,7 +53,7 @@ Tool artifact SHA-256 values at the top of that stack:
 | `handoff-compile.mjs`    | `b64ae00561223cd572d0be7a0584880deffad442eb9c082a2c3d978eee318b8f` |
 | `integration-check.mjs`  | `a9a9723afa222bc856b12b422e5e002601187dfe72fe08d2ef9d0bccd01a94b4` |
 | `teardown-plan.mjs`      | `08d4868db7da0ca70aa12010abe6add205b5858e0e3a94ac7da3e106b0298295` |
-| `tool-harvest.mjs`       | `cbd797d999333fa6e2b0f917f4b85ecff5697d3b4c25208839942783882e0d5f` |
+| `tool-harvest.mjs`       | `bb5265d83bb89bd136da24048cca7d0537e71f649792a6259367f420f0bd8f49` |
 | `ops-cli.mjs`            | `ff4aefca4f9b1521fa2a9e0df3b8ce84cf3603639898089414501f518dda74c9` |
 
 ## Observed results
@@ -62,6 +66,8 @@ Tool artifact SHA-256 values at the top of that stack:
 | Acceptance reuse                         | Independent reviewed RED and exact-head GREEN workflows used in both first-wave lanes                                                                                     |
 | Comparison protocol                      | Same acceptance vocabulary; 3 warmups and 20 measured generations for full-document lanes                                                                                 |
 | Focused promoted-tool validation         | 30/30 tests passed                                                                                                                                                        |
+| Harvested tools                          | 13                                                                                                                                                                        |
+| Observed aggregate reuse                 | 15 uses; the `shield-ops` dispatcher count remains `null`                                                                                                                 |
 | Setup elapsed time                       | `null` — no trustworthy start/end measurement was captured                                                                                                                |
 | Token cost                               | `null` — no portable trustworthy measurement was captured                                                                                                                 |
 | Disk cost                                | `null` — worktree, dependency, and artifact usage was not measured consistently                                                                                           |
@@ -97,6 +103,12 @@ The evidence, preflight, control, convergence, and harvest helpers are
 tests and documentation justify review on a supported `shield-ops` surface,
 but they remain non-authoritative. Human publication review decides whether
 they become operable.
+
+The machine-readable [tool registry](./nxt-449-tool-registry.json) and
+[harvest report](./nxt-449-tool-harvest.json) close the temporary self-tooling
+experiment. All investment and time-avoidance measurements remain unknown, so
+the harvest reports aggregate net return as `null` rather than manufacturing
+an ROI.
 
 The experiment does **not** prove Helicarrier construction, isolated dependency
 environments, validated state updates, journal-backed cross-chat delivery,
