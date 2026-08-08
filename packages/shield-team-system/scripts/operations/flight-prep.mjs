@@ -1,230 +1,123 @@
 #!/usr/bin/env node
 
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { lstat, mkdir } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const TOOL_VERSION = '0.1.0-local-prototype';
-
-const sha256 = (value) => createHash('sha256').update(value).digest('hex');
-
-const stableJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
-
-const git = (repositoryPath, args) =>
-  execFileSync('git', ['-C', repositoryPath, ...args], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
-
-const runGitCheck = (repositoryPath, args) => {
-  try {
-    return git(repositoryPath, args);
-  } catch {
-    return undefined;
-  }
-};
+import {
+  assertNoSymlinkComponents,
+  canonicalExistingPath,
+  canonicalNewPath,
+  git,
+  resolveContainedPath,
+  sha256,
+  snapshotFile,
+  stableJson,
+  tryGit,
+  writeNewFile,
+} from './common.mjs';
+import {
+  TOOL_VERSION,
+  canonicalRelativePath,
+  validateManifestContract,
+} from './flight-common.mjs';
 
 const parseArguments = (argv) => {
   const arguments_ = [...argv];
   const manifestPath = arguments_.shift();
   let outputPath;
-
   while (arguments_.length > 0) {
     const argument = arguments_.shift();
     if (argument === '--output') {
       outputPath = arguments_.shift();
       if (!outputPath) throw new Error('--output requires a directory path.');
-      continue;
-    }
-    throw new Error(`Unknown argument: ${argument}`);
+    } else throw new Error(`Unknown argument: ${argument}`);
   }
-
-  if (!manifestPath) {
-    throw new Error('Usage: flight-prep.mjs MANIFEST.json [--output DIRECTORY]');
-  }
-
+  if (!manifestPath) throw new Error('Usage: shield-ops flight prep MANIFEST.json [--output NEW_DIRECTORY]');
   return { manifestPath: resolve(manifestPath), outputPath: outputPath && resolve(outputPath) };
 };
 
-const assertString = (value, field, errors) => {
-  if (typeof value !== 'string' || value.trim() === '') errors.push(`${field} must be a string.`);
-};
+const gitBranchExists = (repositoryPath, branch) =>
+  tryGit(repositoryPath, ['show-ref', '--verify', `refs/heads/${branch}`]) !== undefined ||
+  tryGit(repositoryPath, ['show-ref', '--verify', `refs/remotes/origin/${branch}`]) !== undefined;
 
-const normalizeOwnedPath = (value) => value.replace(/\/\*\*?$/u, '').replace(/\/$/u, '');
-
-const pathsOverlap = (left, right) => {
-  const normalizedLeft = normalizeOwnedPath(left);
-  const normalizedRight = normalizeOwnedPath(right);
-  return (
-    normalizedLeft === normalizedRight ||
-    normalizedLeft.startsWith(`${normalizedRight}/`) ||
-    normalizedRight.startsWith(`${normalizedLeft}/`)
-  );
-};
-
-const validateRelativeOwnedPath = (value) => {
-  if (typeof value !== 'string' || value.trim() === '') return false;
-  if (isAbsolute(value)) return false;
-  const normalized = normalize(value);
-  return normalized !== '..' && !normalized.startsWith(`..${sep}`);
-};
-
-const validateManifest = (manifest) => {
-  const errors = [];
-  if (manifest.schemaVersion !== 1) errors.push('schemaVersion must equal 1.');
-  assertString(manifest.flightId, 'flightId', errors);
-  assertString(manifest.objective, 'objective', errors);
-  assertString(manifest.repository?.path, 'repository.path', errors);
-  assertString(manifest.repository?.baseRef, 'repository.baseRef', errors);
-  assertString(manifest.integration?.branch, 'integration.branch', errors);
-
-  if (!Array.isArray(manifest.lanes) || manifest.lanes.length === 0) {
-    errors.push('lanes must contain at least one lane.');
+const isAncestor = (repositoryPath, ancestor, descendant) => {
+  try {
+    execFileSync('git', ['-C', repositoryPath, 'merge-base', '--is-ancestor', ancestor, descendant], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
   }
-  if (!Array.isArray(manifest.missions) || manifest.missions.length === 0) {
-    errors.push('missions must contain at least one mission.');
-  }
-
-  const lanes = manifest.lanes ?? [];
-  const missions = manifest.missions ?? [];
-  const laneIds = new Set();
-  for (const [index, lane] of lanes.entries()) {
-    assertString(lane.id, `lanes[${index}].id`, errors);
-    assertString(lane.chatLabel, `lanes[${index}].chatLabel`, errors);
-    if (laneIds.has(lane.id)) errors.push(`Duplicate lane ID: ${lane.id}`);
-    laneIds.add(lane.id);
-  }
-
-  const missionIds = new Set();
-  const branches = new Set();
-  const worktrees = new Set();
-  for (const [index, mission] of missions.entries()) {
-    const prefix = `missions[${index}]`;
-    assertString(mission.id, `${prefix}.id`, errors);
-    assertString(mission.title, `${prefix}.title`, errors);
-    assertString(mission.lane, `${prefix}.lane`, errors);
-    assertString(mission.branch, `${prefix}.branch`, errors);
-    assertString(mission.worktree, `${prefix}.worktree`, errors);
-    if (!Number.isInteger(mission.activationWave) || mission.activationWave < 1) {
-      errors.push(`${mission.id} activationWave must be a positive integer.`);
-    }
-
-    if (missionIds.has(mission.id)) errors.push(`Duplicate mission ID: ${mission.id}`);
-    missionIds.add(mission.id);
-    if (!laneIds.has(mission.lane)) errors.push(`${mission.id} references unknown lane ${mission.lane}.`);
-
-    if (branches.has(mission.branch)) errors.push(`Duplicate planned branch: ${mission.branch}`);
-    branches.add(mission.branch);
-    if (worktrees.has(mission.worktree)) errors.push(`Duplicate planned worktree: ${mission.worktree}`);
-    worktrees.add(mission.worktree);
-
-    if (!isAbsolute(mission.worktree ?? '')) {
-      errors.push(`${mission.id} worktree must be an absolute path.`);
-    }
-    if (!Array.isArray(mission.dependsOn)) errors.push(`${mission.id} dependsOn must be an array.`);
-    if (!Array.isArray(mission.writablePaths) || mission.writablePaths.length === 0) {
-      errors.push(`${mission.id} must declare writablePaths.`);
-    } else {
-      for (const ownedPath of mission.writablePaths) {
-        if (!validateRelativeOwnedPath(ownedPath)) {
-          errors.push(`${mission.id} has invalid writable path: ${ownedPath}`);
-        }
-      }
-    }
-    if (!Array.isArray(mission.deliverables) || mission.deliverables.length === 0) {
-      errors.push(`${mission.id} must declare deliverables.`);
-    }
-  }
-
-  for (const mission of missions) {
-    for (const dependency of mission.dependsOn ?? []) {
-      if (!missionIds.has(dependency)) errors.push(`${mission.id} has unknown dependency ${dependency}.`);
-      if (dependency === mission.id) errors.push(`${mission.id} cannot depend on itself.`);
-    }
-  }
-
-  const missionById = new Map(missions.map((mission) => [mission.id, mission]));
-  const visiting = new Set();
-  const visited = new Set();
-  const visit = (missionId, path = []) => {
-    if (visiting.has(missionId)) {
-      errors.push(`Mission dependency cycle: ${[...path, missionId].join(' -> ')}`);
-      return;
-    }
-    if (visited.has(missionId) || !missionById.has(missionId)) return;
-    visiting.add(missionId);
-    for (const dependency of missionById.get(missionId).dependsOn ?? []) {
-      visit(dependency, [...path, missionId]);
-    }
-    visiting.delete(missionId);
-    visited.add(missionId);
-  };
-  for (const mission of missions) visit(mission.id);
-
-  const ownedPaths = missions.flatMap((mission) =>
-    (mission.writablePaths ?? []).map((ownedPath) => ({ missionId: mission.id, ownedPath })),
-  );
-  for (let leftIndex = 0; leftIndex < ownedPaths.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < ownedPaths.length; rightIndex += 1) {
-      const left = ownedPaths[leftIndex];
-      const right = ownedPaths[rightIndex];
-      if (left.missionId !== right.missionId && pathsOverlap(left.ownedPath, right.ownedPath)) {
-        errors.push(
-          `Writable path collision: ${left.missionId} (${left.ownedPath}) and ${right.missionId} (${right.ownedPath}).`,
-        );
-      }
-    }
-  }
-
-  if (!manifest.evaluationContract || typeof manifest.evaluationContract !== 'object') {
-    errors.push('evaluationContract is required.');
-  }
-
-  return errors;
 };
 
 const resolveRepository = async (manifest) => {
-  const repositoryPath = resolve(manifest.repository.path);
-  const repositoryStat = await stat(repositoryPath).catch(() => undefined);
-  if (!repositoryStat?.isDirectory()) throw new Error(`Repository path does not exist: ${repositoryPath}`);
+  const repositoryPath = await canonicalExistingPath(manifest.repository.path).catch(() => undefined);
+  if (!repositoryPath) throw new Error(`Repository path does not exist: ${manifest.repository.path}`);
+  const root = await canonicalExistingPath(git(repositoryPath, ['rev-parse', '--show-toplevel']));
+  if (root !== repositoryPath) throw new Error(`repository.path must identify the Git root. Resolved root: ${root}`);
 
-  const root = git(repositoryPath, ['rev-parse', '--show-toplevel']);
-  if (resolve(root) !== repositoryPath) {
-    throw new Error(`repository.path must be the Git root. Resolved root: ${root}`);
+  let baseRefRevision;
+  try {
+    baseRefRevision = git(root, ['rev-parse', '--verify', `${manifest.repository.baseRef}^{commit}`]);
+  } catch {
+    throw new Error(`Base ref is unavailable: ${manifest.repository.baseRef}`);
   }
-
-  const baseRevision = git(repositoryPath, ['rev-parse', `${manifest.repository.baseRef}^{commit}`]);
-  const remoteUrl = runGitCheck(repositoryPath, ['remote', 'get-url', 'origin']);
-  const status = git(repositoryPath, ['status', '--porcelain=v1']);
+  if (baseRefRevision !== manifest.repository.baseRevision) {
+    throw new Error(`Base ref drift: ${manifest.repository.baseRef} resolves to ${baseRefRevision}; expected ${manifest.repository.baseRevision}.`);
+  }
+  try {
+    git(root, ['cat-file', '-e', `${manifest.repository.baseRevision}^{commit}`]);
+  } catch {
+    throw new Error(`Exact base revision is unavailable: ${manifest.repository.baseRevision}`);
+  }
+  const inspectedHead = git(root, ['rev-parse', 'HEAD']);
+  if (!isAncestor(root, manifest.repository.baseRevision, inspectedHead)) {
+    throw new Error(`Required ancestry drift: ${manifest.repository.baseRevision} is not an ancestor of ${inspectedHead}.`);
+  }
+  if (inspectedHead !== manifest.repository.baseRevision) {
+    throw new Error(`Phase HEAD drift: repository HEAD is ${inspectedHead}; expected exact base ${manifest.repository.baseRevision}.`);
+  }
 
   const collisions = [];
-  if (runGitCheck(repositoryPath, ['show-ref', '--verify', `refs/heads/${manifest.integration.branch}`])) {
-    collisions.push(`Integration branch already exists locally: ${manifest.integration.branch}`);
-  }
-  if (runGitCheck(repositoryPath, ['show-ref', '--verify', `refs/remotes/origin/${manifest.integration.branch}`])) {
-    collisions.push(`Integration branch already exists on origin: ${manifest.integration.branch}`);
+  if (gitBranchExists(root, manifest.integration.branch)) {
+    collisions.push(`Integration branch already exists locally or on origin: ${manifest.integration.branch}`);
   }
 
+  const canonicalWorktrees = new Map();
+  const worktreeIdentities = new Map();
   for (const mission of manifest.missions) {
-    if (runGitCheck(repositoryPath, ['show-ref', '--verify', `refs/heads/${mission.branch}`])) {
-      collisions.push(`Mission branch already exists locally: ${mission.branch}`);
+    if (gitBranchExists(root, mission.branch)) {
+      collisions.push(`Mission branch already exists locally or on origin: ${mission.branch}`);
     }
-    if (runGitCheck(repositoryPath, ['show-ref', '--verify', `refs/remotes/origin/${mission.branch}`])) {
-      collisions.push(`Mission branch already exists on origin: ${mission.branch}`);
-    }
-    if (existsSync(mission.worktree)) collisions.push(`Mission worktree path already exists: ${mission.worktree}`);
+    await assertNoSymlinkComponents(mission.worktree);
+    const existing = await lstat(mission.worktree).catch((error) => {
+      if (error?.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    const canonicalWorktree = existing
+      ? await canonicalExistingPath(mission.worktree)
+      : await canonicalNewPath(mission.worktree);
+    canonicalWorktrees.set(mission.id, canonicalWorktree);
+    const priorMission = worktreeIdentities.get(canonicalWorktree);
+    if (priorMission) collisions.push(`Canonical worktree collision: ${priorMission} and ${mission.id} resolve to ${canonicalWorktree}.`);
+    worktreeIdentities.set(canonicalWorktree, mission.id);
+    if (existing) collisions.push(`Mission worktree path already exists: ${mission.worktree}`);
   }
 
+  const status = git(root, ['status', '--porcelain=v1']);
   return {
-    root: repositoryPath,
-    remoteUrl,
-    baseRef: manifest.repository.baseRef,
-    baseRevision,
-    inspectedWorktreeDirty: status !== '',
-    collisions,
+    repository: {
+      root,
+      remoteUrl: tryGit(root, ['remote', 'get-url', 'origin']) ?? null,
+      baseRef: manifest.repository.baseRef,
+      baseRevision: manifest.repository.baseRevision,
+      inspectedHead,
+      inspectedBranch: tryGit(root, ['branch', '--show-current']) || null,
+      inspectedWorktreeClean: status === '',
+      collisions,
+    },
+    canonicalWorktrees,
   };
 };
 
@@ -244,10 +137,11 @@ const initialEligibility = (mission) => {
   return 'staged-for-later-wave';
 };
 
-const resolvePlan = (manifest, repository) => {
+const resolvePlan = (manifest, repositoryResult) => {
   const missionById = new Map(manifest.missions.map((mission) => [mission.id, mission]));
   return {
     schemaVersion: 1,
+    planType: 'feature-flight-resolved-plan',
     prototype: {
       name: 'flight-prep',
       version: TOOL_VERSION,
@@ -256,15 +150,13 @@ const resolvePlan = (manifest, repository) => {
     },
     flightId: manifest.flightId,
     objective: manifest.objective,
-    sourceIssue: manifest.sourceIssue,
-    repository,
-    integration: {
-      ...manifest.integration,
-      status: 'declared-not-created',
-    },
+    ...(manifest.sourceIssue ? { sourceIssue: manifest.sourceIssue } : {}),
+    repository: repositoryResult.repository,
+    integration: { ...manifest.integration, status: 'declared-not-created' },
     lanes: manifest.lanes,
     missions: manifest.missions.map((mission) => ({
       ...mission,
+      worktree: repositoryResult.canonicalWorktrees.get(mission.id),
       dependencyLevel: dependencyLevel(mission.id, missionById),
       initialEligibility: initialEligibility(mission),
       constructionStatus: 'planned-not-created',
@@ -277,48 +169,30 @@ const resolvePlan = (manifest, repository) => {
 const makeLaunchPacket = (plan, mission) => {
   const contract = plan.evaluationContract;
   return `# ${mission.title}\n\n` +
-    `Set: \`${plan.flightId}\`  \n` +
-    `Mission: \`${mission.id}\`  \n` +
-    `Lane: \`${mission.lane}\`  \n` +
-    `Initial status: **${mission.initialEligibility}**\n\n` +
-    `## Exact construction target\n\n` +
-    `- Repository: \`${plan.repository.root}\`\n` +
-    `- Base ref: \`${plan.repository.baseRef}\`\n` +
-    `- Resolved base revision: \`${plan.repository.baseRevision}\`\n` +
-    `- Planned branch: \`${mission.branch}\`\n` +
-    `- Planned worktree: \`${mission.worktree}\`\n` +
-    `- Integration branch: \`${plan.integration.branch}\` (declared, not created)\n` +
+    `Set: \`${plan.flightId}\`  \nMission: \`${mission.id}\`  \nLane: \`${mission.lane}\`  \n` +
+    `Initial status: **${mission.initialEligibility}**\n\n## Exact construction target\n\n` +
+    `- Repository: \`${plan.repository.root}\`\n- Base ref: \`${plan.repository.baseRef}\`\n` +
+    `- Resolved base revision: \`${plan.repository.baseRevision}\`\n- Planned branch: \`${mission.branch}\`\n` +
+    `- Planned worktree: \`${mission.worktree}\`\n- Integration branch: \`${plan.integration.branch}\` (declared, not created)\n` +
     `- Dependencies: ${mission.dependsOn.length === 0 ? 'none' : mission.dependsOn.map((dependency) => `\`${dependency}\``).join(', ')}\n\n` +
-    `## Bounded scope\n\n` +
-    `${mission.scope}\n\n` +
-    `Writable paths:\n${mission.writablePaths.map((ownedPath) => `- \`${ownedPath}\``).join('\n')}\n\n` +
+    `## Bounded scope\n\n${mission.scope}\n\nWritable paths:\n${mission.writablePaths.map((ownedPath) => `- \`${ownedPath}\``).join('\n')}\n\n` +
     `Deliverables:\n${mission.deliverables.map((deliverable) => `- ${deliverable}`).join('\n')}\n\n` +
-    `## Frozen evidence contract\n\n` +
-    `Fixture: \`${contract.fixtureId}\` version \`${contract.version}\`\n\n` +
+    `## Frozen evidence contract\n\nFixture: \`${contract.fixtureId}\` version \`${contract.version}\`\n\n` +
     `Required scorecard dimensions:\n${contract.scorecard.map((dimension) => `- ${dimension}`).join('\n')}\n\n` +
-    `## Fail-closed launch boundary\n\n` +
-    `This packet is non-authoritative. Before execution, initialize and independently authorize this mission against fresh exact repository, root, branch, base, HEAD, runtime, and executor bindings. Refresh or replace this packet if any exact construction target changes. Do not merge, deploy, release, or update Jira from this packet.\n`;
+    '## Fail-closed launch boundary\n\nThis packet is observational and non-authoritative. Before execution, independently authorize this mission against fresh exact repository, branch, base, HEAD, runtime, and executor bindings. Do not merge, deploy, release, or update external systems from this packet.\n';
 };
 
 const makeEvidenceTemplate = (plan, mission) => ({
   schemaVersion: 1,
   flightId: plan.flightId,
   missionId: mission.id,
+  missionSlug: mission.slug,
   library: mission.library,
   baseRevision: plan.repository.baseRevision,
   implementationRevision: null,
   status: 'pending',
-  fixture: {
-    id: plan.evaluationContract.fixtureId,
-    version: plan.evaluationContract.version,
-  },
-  measurements: {
-    setupMinutes: null,
-    implementationMinutes: null,
-    generationDurationMs: null,
-    outputBytes: null,
-    pageCount: null,
-  },
+  fixture: { id: plan.evaluationContract.fixtureId, version: plan.evaluationContract.version },
+  measurements: { setupMinutes: null, implementationMinutes: null, generationDurationMs: null, outputBytes: null, pageCount: null },
   scorecard: Object.fromEntries(plan.evaluationContract.scorecard.map((dimension) => [dimension, null])),
   capabilities: {},
   advantages: [],
@@ -331,114 +205,89 @@ const makeEvidenceTemplate = (plan, mission) => ({
 
 const makeReadme = (plan) => {
   const laneLines = plan.lanes.map((lane) => {
-    const missions = plan.missions
-      .filter((mission) => mission.lane === lane.id)
+    const missions = plan.missions.filter((mission) => mission.lane === lane.id)
       .sort((left, right) => left.activationWave - right.activationWave);
     return `- **${lane.chatLabel} / ${lane.teamLabel}:** ${missions.map((mission) => mission.title).join(' -> ')}`;
   });
-  return `# ${plan.flightId} local bootstrap package\n\n` +
-    `This package was generated by a local non-authoritative prototype. It creates no branches, worktrees, journals, signatures, runtime bindings, approvals, publication rights, or integration rights.\n\n` +
-    `Base: \`${plan.repository.baseRef}\` at \`${plan.repository.baseRevision}\`\n\n` +
-    `## Lane plan\n\n${laneLines.join('\n')}\n\n` +
-    `## Contents\n\n` +
-    `- \`flight-plan.resolved.json\`: exact resolved plan and dependency graph.\n` +
-    `- \`evaluation-contract.json\`: common fixture and scorecard contract.\n` +
-    `- \`packets/\`: one non-authoritative launch packet per mission.\n` +
-    `- \`evidence/\`: one evidence template per mission.\n` +
-    `- \`bootstrap-receipt.json\`: hashes and construction observations.\n\n` +
-    `Every mission must still be initialized and authorized independently against fresh exact state.\n`;
+  return `# ${plan.flightId} bootstrap package\n\nThis package is observational and non-authoritative. It creates no branches, worktrees, journals, signatures, runtime bindings, approvals, publication rights, or integration rights.\n\nBase: \`${plan.repository.baseRef}\` at \`${plan.repository.baseRevision}\`\n\n## Lane plan\n\n${laneLines.join('\n')}\n\n## Contents\n\n- \`flight-plan.resolved.json\`: closed resolved plan and dependency graph.\n- \`evaluation-contract.json\`: closed fixture and scorecard contract.\n- \`packets/\`: one launch packet per mission slug.\n- \`evidence/\`: one evidence template per mission slug.\n- \`bootstrap-receipt.json\`: closed inventory and construction observations.\n\nEvery mission still requires independent authorization against fresh exact state.\n`;
 };
 
-const writePackage = async ({ plan, manifestBytes, manifestPath, outputPath }) => {
-  if (existsSync(outputPath)) throw new Error(`Output path already exists: ${outputPath}`);
+const writePackage = async ({ plan, manifestSnapshot, outputPath }) => {
+  const outputRoot = await canonicalNewPath(outputPath);
+  if (canonicalRelativePath(basename(outputRoot)) !== basename(outputRoot)) {
+    throw new Error(`Output directory name is not a canonical generated name: ${basename(outputRoot)}`);
+  }
+  if (await lstat(outputRoot).catch(() => undefined)) throw new Error(`Output path already exists: ${outputRoot}`);
+  await mkdir(outputRoot, { mode: 0o700 });
+  await mkdir(resolveContainedPath(outputRoot, 'packets'), { mode: 0o700 });
+  await mkdir(resolveContainedPath(outputRoot, 'evidence'), { mode: 0o700 });
 
-  await mkdir(join(outputPath, 'packets'), { recursive: true });
-  await mkdir(join(outputPath, 'evidence'), { recursive: true });
-
-  const toolPath = fileURLToPath(import.meta.url);
-  const toolBytes = await readFile(toolPath);
+  const toolSnapshot = await snapshotFile(fileURLToPath(import.meta.url));
   const generatedFiles = [];
-  const writeArtifact = async (path, content) => {
-    await writeFile(join(outputPath, path), content, { encoding: 'utf8', flag: 'wx' });
-    generatedFiles.push({ path, sha256: sha256(content) });
+  const writeArtifact = async (relativePath, content) => {
+    if (canonicalRelativePath(relativePath) !== relativePath) throw new Error(`Unsafe generated artifact path: ${relativePath}`);
+    const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+    await writeNewFile(resolveContainedPath(outputRoot, relativePath), bytes);
+    generatedFiles.push({ path: relativePath, bytes: bytes.length, sha256: sha256(bytes) });
   };
 
   await writeArtifact('README.md', makeReadme(plan));
   await writeArtifact('flight-plan.resolved.json', stableJson(plan));
   await writeArtifact('evaluation-contract.json', stableJson(plan.evaluationContract));
-
   for (const mission of plan.missions) {
-    const slug = mission.id.replaceAll(':', '-');
-    await writeArtifact(`packets/${slug}.md`, makeLaunchPacket(plan, mission));
-    await writeArtifact(`evidence/${slug}.json`, stableJson(makeEvidenceTemplate(plan, mission)));
+    await writeArtifact(`packets/${mission.slug}.md`, makeLaunchPacket(plan, mission));
+    await writeArtifact(`evidence/${mission.slug}.json`, stableJson(makeEvidenceTemplate(plan, mission)));
   }
 
   const receipt = {
     schemaVersion: 1,
+    receiptType: 'feature-flight-bootstrap',
     flightId: plan.flightId,
     generatedAt: new Date().toISOString(),
     authority: 'none',
     repository: plan.repository,
-    manifest: {
-      path: manifestPath,
-      sha256: sha256(manifestBytes),
-    },
-    tool: {
-      path: toolPath,
-      version: TOOL_VERSION,
-      sha256: sha256(toolBytes),
-    },
+    manifest: { path: manifestSnapshot.path, bytes: manifestSnapshot.size, sha256: manifestSnapshot.sha256 },
+    tool: { path: toolSnapshot.path, version: TOOL_VERSION, bytes: toolSnapshot.size, sha256: toolSnapshot.sha256 },
     observations: {
-      initialEligibleMissions: plan.missions
-        .filter((mission) => mission.initialEligibility === 'eligible-after-independent-authorization')
-        .map((mission) => mission.id),
-      stagedMissions: plan.missions
-        .filter((mission) => mission.initialEligibility === 'staged-for-later-wave')
-        .map((mission) => mission.id),
-      initiallyBlockedMissions: plan.missions
-        .filter((mission) => mission.initialEligibility === 'blocked-by-dependencies')
-        .map((mission) => mission.id),
-      repositoryInspectionWasDirty: plan.repository.inspectedWorktreeDirty,
+      initialEligibleMissions: plan.missions.filter((mission) => mission.initialEligibility === 'eligible-after-independent-authorization').map((mission) => mission.id),
+      stagedMissions: plan.missions.filter((mission) => mission.initialEligibility === 'staged-for-later-wave').map((mission) => mission.id),
+      initiallyBlockedMissions: plan.missions.filter((mission) => mission.initialEligibility === 'blocked-by-dependencies').map((mission) => mission.id),
+      repositoryInspectionWasClean: plan.repository.inspectedWorktreeClean,
       collisions: plan.repository.collisions,
     },
     generatedFiles,
   };
   await writeArtifact('bootstrap-receipt.json', stableJson(receipt));
+  return outputRoot;
 };
 
 export const prepareFlight = async ({ manifestPath, outputPath }) => {
-  const manifestBytes = await readFile(manifestPath);
-  const manifest = JSON.parse(manifestBytes.toString('utf8'));
-  const errors = validateManifest(manifest);
-  if (errors.length > 0) throw new Error(`Invalid flight manifest:\n- ${errors.join('\n- ')}`);
-
-  const repository = await resolveRepository(manifest);
-  if (repository.collisions.length > 0) {
-    throw new Error(`Construction collisions detected:\n- ${repository.collisions.join('\n- ')}`);
+  const manifestSnapshot = await snapshotFile(manifestPath);
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestSnapshot.bytes.toString('utf8'));
+  } catch (error) {
+    throw new Error(`Invalid flight manifest JSON: ${error instanceof Error ? error.message : error}`);
   }
-  const plan = resolvePlan(manifest, repository);
-
-  if (outputPath) await writePackage({ plan, manifestBytes, manifestPath, outputPath });
+  const errors = validateManifestContract(manifest);
+  if (errors.length > 0) throw new Error(`Invalid flight manifest:\n- ${errors.join('\n- ')}`);
+  const repositoryResult = await resolveRepository(manifest);
+  if (repositoryResult.repository.collisions.length > 0) {
+    throw new Error(`Construction collisions detected:\n- ${repositoryResult.repository.collisions.join('\n- ')}`);
+  }
+  const plan = resolvePlan(manifest, repositoryResult);
+  if (outputPath) await writePackage({ plan, manifestSnapshot, outputPath });
   return plan;
 };
 
 const main = async () => {
   const arguments_ = parseArguments(process.argv.slice(2));
-  const plan = await prepareFlight(arguments_);
-  console.log(`Flight: ${plan.flightId}`);
-  console.log(`Base: ${plan.repository.baseRef} @ ${plan.repository.baseRevision}`);
-  console.log(`Lanes: ${plan.lanes.length}`);
-  console.log(`Missions: ${plan.missions.length}`);
-  console.log(
-    `Initially eligible: ${plan.missions.filter((mission) => mission.initialEligibility === 'eligible-after-independent-authorization').length}`,
-  );
-  console.log(
-    `Staged: ${plan.missions.filter((mission) => mission.initialEligibility === 'staged-for-later-wave').length}`,
-  );
-  console.log(
-    `Initially blocked: ${plan.missions.filter((mission) => mission.initialEligibility === 'blocked-by-dependencies').length}`,
-  );
-  console.log('Authority: none (planning output only)');
+  const result = await prepareFlight(arguments_);
+  console.log(`Flight: ${result.flightId}`);
+  console.log(`Base: ${result.repository.baseRef} @ ${result.repository.baseRevision}`);
+  console.log(`Lanes: ${result.lanes.length}`);
+  console.log(`Missions: ${result.missions.length}`);
+  console.log('Authority: none (observational planning output only)');
   if (arguments_.outputPath) console.log(`Package: ${arguments_.outputPath}`);
 };
 
