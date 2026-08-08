@@ -20,3 +20,6 @@ missions, premature execution, and multiple active missions in one lane.
 
 The routing report is advice for Feature Hill. It does not dispatch a seat,
 authorize a mission, mutate the state file, or append a journal entry.
+
+For ownership changes, integration, and recovery, continue with
+[Feature Flight convergence tools](./feature-flight-convergence-tools.md).

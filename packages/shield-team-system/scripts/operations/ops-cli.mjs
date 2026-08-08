@@ -14,6 +14,9 @@ const commands = new Map([
   ["flight doctor", "flight-doctor.mjs"],
   ["flight state-init", "flight-state-init.mjs"],
   ["flight route", "hill-kernel.mjs"],
+  ["handoff compile", "handoff-compile.mjs"],
+  ["integration check", "integration-check.mjs"],
+  ["teardown plan", "teardown-plan.mjs"],
 ]);
 
 function usage() {
@@ -27,6 +30,9 @@ function usage() {
     "  shield-ops flight doctor --plan <file> [--output <file>]",
     "  shield-ops flight state-init --plan <file> --output <new-file>",
     "  shield-ops flight route --plan <file> --state <file> [--output <file>]",
+    "  shield-ops handoff compile [handoff-compile options]",
+    "  shield-ops integration check --plan <file> --target-mission <id> --packet <file>... [--output <file>]",
+    "  shield-ops teardown plan --plan <file> [--integration-ref <ref>] [--output <file>]",
     "",
     "These commands create non-authoritative operational evidence. They do not grant",
     "mission authority, advance a journal, publish, merge, deploy, or release.",
