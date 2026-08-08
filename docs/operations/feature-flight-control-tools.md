@@ -8,8 +8,10 @@ small deterministic computations over durable files.
 
 `shield-ops flight state-init` creates one non-authoritative, create-only state
 snapshot with every mission planned and every authority reference explicitly
-null. The host or controlling Hill may later write new state observations, but
-a status string never substitutes for journal evidence or human authority.
+null. The current surface does not provide a state-update command. Do not edit
+the snapshot in place; follow the explicit immutable snapshot contract in the
+[Feature Flight runbook](./feature-flight-runbook.md#state-update-contract).
+A status string never substitutes for journal evidence or human authority.
 
 ## Compute legal routing
 

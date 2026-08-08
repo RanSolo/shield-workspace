@@ -10,7 +10,9 @@ responsibilities, review gates, and operating workflow portable across repos.
 
 Operational helpers promoted from dogfood experiments are exposed through
 `shield-ops`. They produce non-authoritative evidence and are documented under
-[`docs/operations`](../../docs/operations/mission-evidence-tools.md).
+[`docs/operations`](../../docs/operations/feature-flight-runbook.md). The
+[NXT-449 experiment report](../../docs/experiments/nxt-449-feature-flight.md)
+records the evidence and remaining gaps behind the promoted surface.
 
 ## Public package surface
 
