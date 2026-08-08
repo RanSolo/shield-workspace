@@ -24,3 +24,6 @@ evidence only; it performs no merge.
 unintegrated, and integrated-clean worktrees. It never deletes anything. Even
 an integrated clean worktree is only eligible for a later human-confirmed
 removal operation.
+
+After the flight, evaluate temporary self-tooling with the
+[experimental tool promotion process](./experimental-tool-promotion.md).

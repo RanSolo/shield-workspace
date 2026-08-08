@@ -17,6 +17,7 @@ const commands = new Map([
   ["handoff compile", "handoff-compile.mjs"],
   ["integration check", "integration-check.mjs"],
   ["teardown plan", "teardown-plan.mjs"],
+  ["tool harvest", "tool-harvest.mjs"],
 ]);
 
 function usage() {
@@ -33,6 +34,7 @@ function usage() {
     "  shield-ops handoff compile [handoff-compile options]",
     "  shield-ops integration check --plan <file> --target-mission <id> --packet <file>... [--output <file>]",
     "  shield-ops teardown plan --plan <file> [--integration-ref <ref>] [--output <file>]",
+    "  shield-ops tool harvest --registry <file> [--output <file>]",
     "",
     "These commands create non-authoritative operational evidence. They do not grant",
     "mission authority, advance a journal, publish, merge, deploy, or release.",

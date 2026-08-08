@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "example-helper",
+      "path": "./example-helper.mjs",
+      "trigger": "A repeated bounded operation was slower or less reliable by hand.",
+      "purpose": "Make the operation deterministic and inspectable.",
+      "inputs": ["declared input"],
+      "outputs": ["create-only report"],
+      "minutesInvested": null,
+      "minutesAvoidedPerUse": null,
+      "reuseCount": 0,
+      "errorsPrevented": ["known failure mode"],
+      "evidenceImproved": ["exact artifact identity"],
+      "recommendation": "retain-local"
+    }
+  ]
+}
