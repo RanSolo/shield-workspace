@@ -44,6 +44,9 @@ export const checkConstruction = async ({ planPath, requireCreated = false, load
   if (repositoryCheck.repository && !repositoryCheck.repository.clean) {
     errors.push('Planning repository worktree drift: repository is dirty.');
   }
+  if (repositoryCheck.repository && repositoryCheck.repository.branch !== plan.repository.inspectedBranch) {
+    errors.push(`Planning repository branch drift: observed ${repositoryCheck.repository.branch ?? '<detached>'}; expected ${plan.repository.inspectedBranch ?? '<detached>'}.`);
+  }
   const observations = [];
 
   for (const mission of plan.missions) {
@@ -75,6 +78,14 @@ export const checkConstruction = async ({ planPath, requireCreated = false, load
     const canonicalPath = await canonicalExistingPath(mission.worktree).catch(() => undefined);
     const repository = canonicalPath ? inspectGit(canonicalPath) : null;
     const repositoryRoot = repository ? await canonicalExistingPath(repository.root).catch(() => undefined) : undefined;
+    if (repositoryRoot && repositoryRoot === repositoryCheck.repository?.root) {
+      observations.push({
+        missionId: mission.id, path: canonicalPath ?? mission.worktree, status: 'planning-repository-collision', branch: repository?.branch ?? null,
+        expectedBranch: mission.branch, head: repository?.head ?? null, expectedHead: plan.repository.baseRevision, clean: repository?.clean ?? null,
+      });
+      errors.push(`${mission.id} observed mission root equals the currently inspected planning repository root: ${repositoryRoot}.`);
+      continue;
+    }
     if (!repository || !canonicalPath || repositoryRoot !== canonicalPath || canonicalPath !== expectedPath) {
       observations.push({
         missionId: mission.id, path: canonicalPath ?? mission.worktree, status: 'collision-not-worktree', branch: null,

@@ -98,6 +98,9 @@ test('assertPlan and doctor reject substituted producer-derived plan state', asy
     ['invalid repository observation type', (plan) => { plan.repository.remoteUrl = false; }, /remoteUrl must be null or a non-empty string/u],
     ['recorded construction collision', (plan) => { plan.repository.collisions = ['fake collision']; }, /collisions must be empty/u],
     ['integration branch substitution', (plan) => { plan.integration.branch = plan.repository.inspectedBranch; }, /integration\.branch must differ from the inspected repository branch/u],
+    ['mission branch substitution', (plan) => { plan.missions[0].branch = plan.repository.inspectedBranch; }, /mission:a branch must differ from the inspected repository branch/u],
+    ['mission root substitution', (plan) => { plan.missions[0].worktree = plan.repository.root; }, /mission:a worktree must differ from the planning repository root/u],
+    ['prototype notice substitution', (plan) => { plan.prototype.notice = 'AUTHORIZED'; }, /prototype\.notice must equal the fixed producer notice/u],
   ];
   for (const [label, mutate, pattern] of mutations) {
     const plan = structuredClone(original);
@@ -107,6 +110,45 @@ test('assertPlan and doctor reject substituted producer-derived plan state', asy
     await assert.rejects(diagnoseFlight({ planPath: context.planPath }), pattern, `${label} must fail doctor`);
   }
   await writeFile(context.planPath, stableJson(original));
+});
+
+test('assertPlan and doctor reject Darwin aliases of the planning repository root', { skip: process.platform !== 'darwin' }, async () => {
+  const context = await setupPackage();
+  const plan = JSON.parse(await readFile(context.planPath, 'utf8'));
+  plan.missions[0].worktree = plan.repository.root.startsWith('/private/var/')
+    ? plan.repository.root.replace(/^\/private\/var/u, '/var')
+    : plan.repository.root.replace(/^\/var/u, '/private/var');
+  assert.throws(() => assertPlan(plan), /mission:a worktree must differ from the planning repository root/u);
+  await writeFile(context.planPath, stableJson(plan));
+  await assert.rejects(diagnoseFlight({ planPath: context.planPath }), /mission:a worktree must differ from the planning repository root/u);
+});
+
+test('construction check independently rejects the planning repository as an observed mission root', async () => {
+  const context = await setupPackage();
+  const planBytes = await readFile(context.planPath);
+  const plan = JSON.parse(planBytes.toString('utf8'));
+  plan.missions[0].worktree = plan.repository.root;
+  const construction = await checkConstruction({
+    planPath: context.planPath,
+    loadedPlan: {
+      plan,
+      snapshot: { path: context.planPath, size: planBytes.length, sha256: sha256(planBytes) },
+    },
+  });
+  assert.equal(construction.ok, false);
+  assert.equal(construction.observations[0].status, 'planning-repository-collision');
+  assert.match(construction.errors.join('\n'), /observed mission root equals the currently inspected planning repository root/u);
+});
+
+test('construction check and doctor reject same-HEAD planning branch drift', async () => {
+  const context = await setupPackage();
+  git(context.repo, ['switch', '-c', 'planning-branch-drift']);
+  const construction = await checkConstruction({ planPath: context.planPath });
+  assert.equal(construction.ok, false);
+  assert.match(construction.errors.join('\n'), /Planning repository branch drift: observed planning-branch-drift; expected main/u);
+  const doctor = await diagnoseFlight({ planPath: context.planPath });
+  assert.equal(doctor.ok, false);
+  assert.match(doctor.errors.join('\n'), /Planning repository branch drift: observed planning-branch-drift; expected main/u);
 });
 
 test('construction check explicitly rejects stale HEAD and wrong ancestry', async () => {

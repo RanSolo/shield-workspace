@@ -8,9 +8,11 @@ import {
   git,
   inspectGit,
   nonEmptyString,
+  normalizeSystemPathAlias,
 } from './common.mjs';
 
 export const TOOL_VERSION = '1.0.0';
+export const PLAN_NOTICE = 'Planning output only. This artifact grants no mission authority or repository effect.';
 export const GIT_REVISION_PATTERN = /^[a-f0-9]{40}$/u;
 export const MISSION_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const POSIX_COMPONENT_PATTERN = /^[A-Za-z0-9._@+-]+$/u;
@@ -266,6 +268,7 @@ export const validatePlan = (plan) => {
   if (!nonEmptyString(plan.flightId) || !nonEmptyString(plan.objective)) errors.push('Plan flightId and objective are required.');
   if (exactKeys(plan.prototype, ['name', 'version', 'authority', 'notice'], 'plan.prototype', errors)) {
     if (plan.prototype.name !== 'flight-prep' || plan.prototype.version !== TOOL_VERSION || plan.prototype.authority !== 'none') errors.push('Plan prototype identity is unsupported.');
+    if (plan.prototype.notice !== PLAN_NOTICE) errors.push('Plan prototype.notice must equal the fixed producer notice.');
   }
   if (exactKeys(plan.repository, ['root', 'remoteUrl', 'baseRef', 'baseRevision', 'inspectedHead', 'inspectedBranch', 'inspectedWorktreeClean', 'collisions'], 'plan.repository', errors)) {
     if (!nonEmptyString(plan.repository.root) || !isAbsolute(plan.repository.root)) errors.push('Plan repository.root must be absolute.');
@@ -300,6 +303,12 @@ export const validatePlan = (plan) => {
   for (const mission of resolvedMissions) {
     if (!laneIds.has(mission.lane)) errors.push(`${mission.id} references unknown lane ${mission.lane}.`);
     if (mission.branch === plan.integration?.branch) errors.push(`${mission.id} branch must be role-distinct from the integration branch.`);
+    if (mission.branch === plan.repository?.inspectedBranch) errors.push(`${mission.id} branch must differ from the inspected repository branch.`);
+    if (nonEmptyString(mission.worktree) && isAbsolute(mission.worktree) &&
+        nonEmptyString(plan.repository?.root) && isAbsolute(plan.repository.root) &&
+        normalizeSystemPathAlias(mission.worktree) === normalizeSystemPathAlias(plan.repository.root)) {
+      errors.push(`${mission.id} worktree must differ from the planning repository root.`);
+    }
     const expectedLevel = dependencyLevels.get(mission.id);
     if (expectedLevel !== undefined && mission.dependencyLevel !== expectedLevel) {
       errors.push(`${mission.id} dependencyLevel is ${mission.dependencyLevel}; expected producer-derived level ${expectedLevel}.`);

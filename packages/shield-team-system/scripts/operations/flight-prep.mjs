@@ -18,6 +18,7 @@ import {
   writeNewFile,
 } from './common.mjs';
 import {
+  PLAN_NOTICE,
   TOOL_VERSION,
   canonicalRelativePath,
   deriveDependencyLevels,
@@ -132,7 +133,7 @@ const resolvePlan = (manifest, repositoryResult) => {
       name: 'flight-prep',
       version: TOOL_VERSION,
       authority: 'none',
-      notice: 'Planning output only. This artifact grants no mission authority or repository effect.',
+      notice: PLAN_NOTICE,
     },
     flightId: manifest.flightId,
     objective: manifest.objective,
