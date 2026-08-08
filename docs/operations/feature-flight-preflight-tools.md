@@ -30,3 +30,5 @@ the host has independently constructed every declared worktree.
 fixture binding, construction observations, and artifact hashes. A healthy
 report means the observed topology is internally consistent; it is not Wheels
 Up authority.
+
+After preflight, continue with [Feature Flight control tools](./feature-flight-control-tools.md).

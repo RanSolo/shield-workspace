@@ -12,6 +12,8 @@ const commands = new Map([
   ["fixture build", "fixture-build.mjs"],
   ["construction check", "construction-check.mjs"],
   ["flight doctor", "flight-doctor.mjs"],
+  ["flight state-init", "flight-state-init.mjs"],
+  ["flight route", "hill-kernel.mjs"],
 ]);
 
 function usage() {
@@ -23,6 +25,8 @@ function usage() {
     "  shield-ops fixture build --output <new-directory>",
     "  shield-ops construction check --plan <file> [--require-created] [--output <file>]",
     "  shield-ops flight doctor --plan <file> [--output <file>]",
+    "  shield-ops flight state-init --plan <file> --output <new-file>",
+    "  shield-ops flight route --plan <file> --state <file> [--output <file>]",
     "",
     "These commands create non-authoritative operational evidence. They do not grant",
     "mission authority, advance a journal, publish, merge, deploy, or release.",
