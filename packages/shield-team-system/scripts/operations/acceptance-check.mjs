@@ -110,9 +110,9 @@ const validateReceipt = ({ receipt, mapping, spec, tool }) => {
   if (exactKeys(receipt.command, ['executable', 'argv'], 'receipt.command', errors) && declaredCommand) {
     if (receipt.command.executable !== declaredCommand.executable || JSON.stringify(receipt.command.argv) !== JSON.stringify(declaredCommand.argv)) errors.push('receipt.command does not exactly match the spec-declared executable and argv.');
   }
-  if (exactKeys(receipt.repository, ['root', 'branch', 'beforeHead', 'afterHead', 'beforeClean', 'afterClean'], 'receipt.repository', errors)) {
-    if (receipt.repository.root !== spec.value?.repository?.root) errors.push('receipt.repository.root does not match the acceptance spec.');
-    if (receipt.repository.branch !== spec.value?.repository?.branch) errors.push('receipt.repository.branch does not match the acceptance spec.');
+  if (exactKeys(receipt.repository, ['beforeRoot', 'beforeBranch', 'beforeHead', 'beforeClean', 'afterRoot', 'afterBranch', 'afterHead', 'afterClean'], 'receipt.repository', errors)) {
+    if (receipt.repository.beforeRoot !== spec.value?.repository?.root || receipt.repository.afterRoot !== spec.value?.repository?.root || receipt.repository.beforeRoot !== receipt.repository.afterRoot) errors.push('receipt repository roots do not match the acceptance spec and each other.');
+    if (receipt.repository.beforeBranch !== spec.value?.repository?.branch || receipt.repository.afterBranch !== spec.value?.repository?.branch || receipt.repository.beforeBranch !== receipt.repository.afterBranch) errors.push('receipt repository branches do not match the acceptance spec and each other.');
     if (receipt.repository.beforeHead !== mapping.expectedRevision || receipt.repository.afterHead !== mapping.expectedRevision) errors.push('receipt does not bind clean before and after state to the manifest revision.');
     if (receipt.repository.beforeClean !== true || receipt.repository.afterClean !== true) errors.push('receipt does not bind clean before and after worktree state.');
   }
@@ -256,6 +256,7 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
     }
     if (!Array.isArray(criterion.validation.commandIds) || !criterion.validation.commandIds.includes(mapping.commandId)) errors.push(`${mapping.criterionId} does not declare command ${mapping.commandId}.`);
     if (phase === 'red' && mapping.phase !== 'red') errors.push('RED manifest may contain only RED receipts.');
+    if (phase === 'red' && mapping.phase === 'red' && mapping.expectedRevision !== expectedRevision) errors.push(`${mapping.criterionId} RED receipt is not bound to the RED gate revision.`);
     if (phase === 'green' && mapping.phase === 'green' && mapping.expectedRevision !== expectedRevision) errors.push(`${mapping.criterionId} GREEN receipt is not bound to the gate revision.`);
     const receipt = receiptsById.get(mapping.receiptId);
     if (receipt && mapping.phase === 'red' && (receipt.result?.status !== 'completed' || !Number.isInteger(receipt.result?.exitCode) || receipt.result.exitCode === 0)) errors.push(`${mapping.criterionId} RED receipt must record a completed failing command.`);

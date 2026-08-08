@@ -9,6 +9,7 @@ import { sha256, writeNewFile } from '../scripts/operations/common.mjs';
 import { runEvidence } from '../scripts/operations/evidence-run.mjs';
 
 const git = (path, args) => execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
+const makeOutput = async (name) => join(await realpath(await mkdtemp(join(tmpdir(), 'evidence-output-'))), name);
 
 const makeRepository = async () => {
   const created = await mkdtemp(join(tmpdir(), 'evidence-run-'));
@@ -56,7 +57,7 @@ const writeSpec = async (repository, commandOverrides = {}) => {
 test('executes only the selected spec command and writes a closed, private receipt', async () => {
   const repository = await makeRepository();
   const spec = await writeSpec(repository);
-  const output = join(repository, '.receipts', 'pass.json');
+  const output = await makeOutput('pass.json');
   const priorSecret = process.env.TEST_SECRET;
   process.env.TEST_SECRET = 'must-not-cross-boundary';
   try {
@@ -64,6 +65,10 @@ test('executes only the selected spec command and writes a closed, private recei
     assert.equal(exitCode, 0);
     assert.equal(receipt.command.executable, process.execPath);
     assert.deepEqual(receipt.command.argv, spec.spec.commands[0].argv);
+    assert.equal(receipt.repository.beforeRoot, repository);
+    assert.equal(receipt.repository.afterRoot, repository);
+    assert.equal(receipt.repository.beforeBranch, 'main');
+    assert.equal(receipt.repository.afterBranch, 'main');
     assert.equal(receipt.repository.beforeHead, git(repository, ['rev-parse', 'HEAD']));
     assert.equal(receipt.repository.afterHead, receipt.repository.beforeHead);
     assert.equal(receipt.repository.beforeClean, true);
@@ -85,11 +90,11 @@ test('rejects a wrong spec digest and an undeclared command before execution', a
   const repository = await makeRepository();
   const spec = await writeSpec(repository);
   await assert.rejects(
-    runEvidence({ output: join(repository, '.receipts', 'wrong.json'), specPath: spec.path, expectedSpecSha256: 'c'.repeat(64), commandId: 'test' }),
+    runEvidence({ output: await makeOutput('wrong.json'), specPath: spec.path, expectedSpecSha256: 'c'.repeat(64), commandId: 'test' }),
     /spec digest/u,
   );
   await assert.rejects(
-    runEvidence({ output: join(repository, '.receipts', 'unknown.json'), specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'not-declared' }),
+    runEvidence({ output: await makeOutput('unknown.json'), specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'not-declared' }),
     /not declared/u,
   );
 });
@@ -97,7 +102,7 @@ test('rejects a wrong spec digest and an undeclared command before execution', a
 test('truthfully records timeout and signal state with stdin disabled', async () => {
   const repository = await makeRepository();
   const spec = await writeSpec(repository, { argv: ['-e', 'setInterval(() => {}, 1000)'], timeoutMs: 30, artifacts: [] });
-  const { receipt, exitCode } = await runEvidence({ output: join(repository, '.receipts', 'timeout.json'), specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'test' });
+  const { receipt, exitCode } = await runEvidence({ output: await makeOutput('timeout.json'), specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'test' });
   assert.equal(exitCode, 2);
   assert.equal(receipt.result.status, 'timed-out');
   assert.equal(receipt.result.timedOut, true);
@@ -108,10 +113,46 @@ test('truthfully records timeout and signal state with stdin disabled', async ()
 test('fails closed when a declared artifact is missing', async () => {
   const repository = await makeRepository();
   const spec = await writeSpec(repository, { argv: ['-e', 'process.exit(0)'], artifacts: ['artifacts/missing.txt'] });
-  const { receipt, exitCode } = await runEvidence({ output: join(repository, '.receipts', 'missing.json'), specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'test' });
+  const { receipt, exitCode } = await runEvidence({ output: await makeOutput('missing.json'), specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'test' });
   assert.equal(exitCode, 2);
   assert.equal(receipt.result.artifactErrors.length, 1);
   assert.equal(receipt.artifacts.length, 0);
+});
+
+test('rejects unignored receipt output inside the measured repository before execution', async () => {
+  const repository = await makeRepository();
+  const spec = await writeSpec(repository, { argv: ['-e', 'process.exit(0)'], artifacts: [] });
+  const output = join(repository, 'receipt.json');
+  let executed = false;
+  await assert.rejects(
+    runEvidence(
+      { output, specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'test' },
+      { execute: async () => { executed = true; throw new Error('must not execute'); } },
+    ),
+    /outside the measured repository/u,
+  );
+  assert.equal(executed, false);
+  await assert.rejects(lstat(output), (error) => error?.code === 'ENOENT');
+});
+
+test('records and rejects same-HEAD branch switches and detached HEAD', async (t) => {
+  const cases = [
+    ['branch switch', "require('child_process').execFileSync('git', ['switch', '-c', 'alternate'])", 'alternate'],
+    ['detached HEAD', "require('child_process').execFileSync('git', ['switch', '--detach'])", null],
+  ];
+  for (const [name, script, expectedAfterBranch] of cases) await t.test(name, async () => {
+    const repository = await makeRepository();
+    const spec = await writeSpec(repository, { argv: ['-e', script], artifacts: [] });
+    const { receipt, exitCode } = await runEvidence({ output: await makeOutput(`${name.replaceAll(' ', '-')}.json`), specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'test' });
+    assert.equal(exitCode, 2);
+    assert.equal(receipt.repository.beforeRoot, repository);
+    assert.equal(receipt.repository.afterRoot, repository);
+    assert.equal(receipt.repository.beforeBranch, 'main');
+    assert.equal(receipt.repository.afterBranch, expectedAfterBranch);
+    assert.equal(receipt.repository.beforeHead, receipt.repository.afterHead);
+    assert.equal(receipt.repository.beforeClean, true);
+    assert.equal(receipt.repository.afterClean, true);
+  });
 });
 
 test('create-only writer rejects symlink parents and targets', async () => {

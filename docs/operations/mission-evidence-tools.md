@@ -46,9 +46,12 @@ npx shield-ops evidence run \
 ```
 
 Version 1 receipts are closed and bind the spec digest, command ID, exact
-executable/argv, canonical repository root, branch, clean before and after HEAD,
-timeout and truthful result state, redacted output and hashes, declared artifact
-results and hashes, plus the `evidence-run` path/version/file hash. Arguments are
+executable/argv, actual canonical repository root and branch before and after,
+clean before and after HEAD, timeout and truthful result state, redacted output
+and hashes, declared artifact results and hashes, plus the `evidence-run`
+path/version/file hash. Receipt output must be outside the measured repository;
+the output target is resolved and rejected before command execution if it is
+inside the repository, including through a canonical alias. Arguments are
 recorded exactly, so credentials and secrets must never be placed in the spec or
 argv. Credential-like output is redacted, and credential environment variables
 are not forwarded.

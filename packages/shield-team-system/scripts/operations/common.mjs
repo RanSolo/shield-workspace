@@ -71,15 +71,22 @@ const canonicalExistingDirectory = async (directory, dependencies = defaultWrite
   return absoluteDirectory;
 };
 
-export const writeNewFile = async (path, content, injectedDependencies) => {
+export const resolveNewFilePath = async (path, injectedDependencies) => {
   const dependencies = { ...defaultWriteDependencies, ...injectedDependencies };
   const absolutePath = resolve(path);
-  const parent = await canonicalExistingDirectory(dirname(absolutePath), dependencies);
+  await canonicalExistingDirectory(dirname(absolutePath), dependencies);
   const existing = await dependencies.lstat(absolutePath).catch((error) => {
     if (error?.code === 'ENOENT') return undefined;
     throw error;
   });
   if (existing) throw new Error(`Refusing to overwrite existing file: ${absolutePath}`);
+  return absolutePath;
+};
+
+export const writeNewFile = async (path, content, injectedDependencies) => {
+  const dependencies = { ...defaultWriteDependencies, ...injectedDependencies };
+  const absolutePath = await resolveNewFilePath(path, dependencies);
+  const parent = dirname(absolutePath);
 
   const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
   let handle;

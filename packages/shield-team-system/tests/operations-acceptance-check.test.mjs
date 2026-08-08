@@ -21,7 +21,8 @@ const makeFixture = async () => {
   await writeFile(join(repository, '.gitignore'), '.receipts/\nspec.json\nmanifest.json\n');
   git(repository, ['add', 'README.md', '.gitignore']);
   git(repository, ['commit', '-m', 'fixture']);
-  await mkdir(join(repository, '.receipts'));
+  const evidenceDirectory = await realpath(await mkdtemp(join(tmpdir(), 'acceptance-evidence-')));
+  await mkdir(join(evidenceDirectory, '.receipts'));
   const revision = git(repository, ['rev-parse', 'HEAD']);
   const spec = {
     schemaVersion: 1,
@@ -49,7 +50,7 @@ const makeFixture = async () => {
   const specPath = join(repository, 'spec.json');
   await writeJson(specPath, spec);
   const specBytes = await readFile(specPath);
-  return { repository, revision, spec, specPath, specSha256: sha256(specBytes), manifestPath: join(repository, 'manifest.json') };
+  return { repository, evidenceDirectory, revision, spec, specPath, specSha256: sha256(specBytes), manifestPath: join(evidenceDirectory, 'manifest.json') };
 };
 
 const baseManifest = (fixture, phase, expectedRevision = null) => ({
@@ -65,20 +66,20 @@ const baseManifest = (fixture, phase, expectedRevision = null) => ({
 });
 
 const runReceipt = async (fixture, commandId, name) => {
-  const path = join(fixture.repository, '.receipts', `${name}.json`);
+  const path = join(fixture.evidenceDirectory, '.receipts', `${name}.json`);
   const { receipt } = await runEvidence({ output: path, specPath: fixture.specPath, expectedSpecSha256: fixture.specSha256, commandId });
   const bytes = await readFile(path);
   return { path, relativePath: `.receipts/${name}.json`, receipt, sha256: sha256(bytes) };
 };
 
-const mapping = (fixture, receipt, phase, commandId) => ({
+const mapping = (fixture, receipt, phase, commandId, expectedRevision = fixture.revision) => ({
   criterionId: 'AC-1',
   phase,
   commandId,
   receiptId: receipt.receipt.receiptId,
   receiptSha256: receipt.sha256,
   path: receipt.relativePath,
-  expectedRevision: fixture.revision,
+  expectedRevision,
 });
 
 const check = (fixture, phase, expectedRevision) => checkAcceptance({
@@ -122,21 +123,40 @@ test('accepts exact RED evidence at its manifest-bound baseline revision', async
   assert.equal(report.ok, true, report.errors.join('\n'));
 });
 
-test('accepts exact GREEN, prior RED, and manual evidence', async () => {
+test('rejects a stale RED receipt mapping against a newer RED gate revision', async () => {
   const fixture = await makeFixture();
   const red = await runReceipt(fixture, 'red-test', 'red');
-  const green = await runReceipt(fixture, 'green-test', 'green');
-  const manifest = baseManifest(fixture, 'green', fixture.revision);
-  manifest.receipts.push(mapping(fixture, red, 'red', 'red-test'), mapping(fixture, green, 'green', 'green-test'));
-  manifest.manualEvidence.push({ criterionId: 'AC-2', performedBy: 'operator:test', performedAt: '2026-08-07T00:00:00.000Z', revision: fixture.revision, observation: 'The field moved and the preview updated.' });
+  await writeFile(join(fixture.repository, 'README.md'), 'fixture\nnew RED gate\n');
+  git(fixture.repository, ['add', 'README.md']);
+  git(fixture.repository, ['commit', '-m', 'new RED gate']);
+  const newerRevision = git(fixture.repository, ['rev-parse', 'HEAD']);
+  const manifest = baseManifest(fixture, 'red', newerRevision);
+  manifest.receipts.push(mapping(fixture, red, 'red', 'red-test', fixture.revision));
   await writeJson(fixture.manifestPath, manifest);
-  const report = await check(fixture, 'green', fixture.revision);
+  const report = await check(fixture, 'red', newerRevision);
+  assert.equal(report.ok, false);
+  assert.match(report.errors.join('\n'), /RED receipt is not bound to the RED gate revision/u);
+});
+
+test('accepts exact GREEN with historical RED and current manual evidence', async () => {
+  const fixture = await makeFixture();
+  const red = await runReceipt(fixture, 'red-test', 'red');
+  await writeFile(join(fixture.repository, 'README.md'), 'fixture\nGREEN gate\n');
+  git(fixture.repository, ['add', 'README.md']);
+  git(fixture.repository, ['commit', '-m', 'GREEN gate']);
+  const greenRevision = git(fixture.repository, ['rev-parse', 'HEAD']);
+  const green = await runReceipt(fixture, 'green-test', 'green');
+  const manifest = baseManifest(fixture, 'green', greenRevision);
+  manifest.receipts.push(mapping(fixture, red, 'red', 'red-test', fixture.revision), mapping(fixture, green, 'green', 'green-test', greenRevision));
+  manifest.manualEvidence.push({ criterionId: 'AC-2', performedBy: 'operator:test', performedAt: '2026-08-07T00:00:00.000Z', revision: greenRevision, observation: 'The field moved and the preview updated.' });
+  await writeJson(fixture.manifestPath, manifest);
+  const report = await check(fixture, 'green', greenRevision);
   assert.equal(report.ok, true, report.errors.join('\n'));
 });
 
 test('rejects a forged minimal receipt and receipt-byte digest replacement', async () => {
   const fixture = await makeFixture();
-  const forgedPath = join(fixture.repository, '.receipts', 'forged.json');
+  const forgedPath = join(fixture.evidenceDirectory, '.receipts', 'forged.json');
   const forged = { schemaVersion: 1, receiptType: 'mission-command-evidence', receiptId: 'evidence:forged' };
   await writeJson(forgedPath, forged);
   const manifest = baseManifest(fixture, 'red', fixture.revision);
@@ -156,10 +176,10 @@ test('rejects missing or wrong command, root, branch, and tool bindings', async 
   const cases = [
     ['command', (receipt) => { receipt.commandId = 'wrong'; }],
     ['missing command', (receipt) => { delete receipt.command; }],
-    ['root', (receipt) => { receipt.repository.root = '/wrong/root'; }],
-    ['missing root', (receipt) => { delete receipt.repository.root; }],
-    ['branch', (receipt) => { receipt.repository.branch = 'wrong-branch'; }],
-    ['missing branch', (receipt) => { delete receipt.repository.branch; }],
+    ['root', (receipt) => { receipt.repository.afterRoot = '/wrong/root'; }],
+    ['missing beforeRoot', (receipt) => { delete receipt.repository.beforeRoot; }],
+    ['branch', (receipt) => { receipt.repository.afterBranch = 'wrong-branch'; }],
+    ['missing beforeBranch', (receipt) => { delete receipt.repository.beforeBranch; }],
     ['tool', (receipt) => { receipt.tool.sha256 = 'd'.repeat(64); }],
     ['missing tool', (receipt) => { delete receipt.tool; }],
   ];

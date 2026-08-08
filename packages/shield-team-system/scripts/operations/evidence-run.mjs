@@ -3,13 +3,14 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
   inspectGit,
   readJsonSnapshot,
   redact,
+  resolveNewFilePath,
   SHA256_PATTERN,
   sha256,
   snapshotFile,
@@ -132,6 +133,11 @@ const resolveArtifact = (root, artifactPath) => {
   return absolutePath;
 };
 
+const pathIsInside = (root, candidate) => {
+  const fromRoot = relative(root, candidate);
+  return fromRoot === '' || (fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
+};
+
 export const runEvidence = async (options, injected = {}) => {
   if (!SHA256_PATTERN.test(options.expectedSpecSha256 ?? '')) throw new Error('Expected spec SHA-256 must be a lowercase digest.');
   const specSnapshot = await readJsonSnapshot(options.specPath, injected.snapshotDependencies);
@@ -146,6 +152,10 @@ export const runEvidence = async (options, injected = {}) => {
 
   const repositoryRoot = await realpath(spec.repository.root);
   if (repositoryRoot !== spec.repository.root) throw new Error('Acceptance spec repository root is not canonical.');
+  const outputPath = await resolveNewFilePath(options.output, injected.writeDependencies);
+  if (pathIsInside(repositoryRoot, outputPath)) {
+    throw new Error('Evidence receipt output must be outside the measured repository.');
+  }
   const gitBefore = inspectGit(repositoryRoot);
   if (!gitBefore || gitBefore.root !== repositoryRoot || gitBefore.branch !== spec.repository.branch) {
     throw new Error('Acceptance spec repository identity does not match the selected worktree.');
@@ -185,11 +195,13 @@ export const runEvidence = async (options, injected = {}) => {
     commandId: command.id,
     command: { executable: command.executable, argv: [...command.argv] },
     repository: {
-      root: repositoryRoot,
-      branch: spec.repository.branch,
+      beforeRoot: gitBefore.root,
+      beforeBranch: gitBefore.branch,
       beforeHead: gitBefore.head,
-      afterHead: gitAfter?.head ?? null,
       beforeClean: gitBefore.clean,
+      afterRoot: gitAfter?.root ?? null,
+      afterBranch: gitAfter?.branch ?? null,
+      afterHead: gitAfter?.head ?? null,
       afterClean: gitAfter?.clean ?? false,
     },
     startedAt: startedAt.toISOString(),
@@ -214,11 +226,14 @@ export const runEvidence = async (options, injected = {}) => {
     },
   };
 
-  const outputPath = await writeNewFile(options.output, stableJson(receipt), injected.writeDependencies);
+  await writeNewFile(outputPath, stableJson(receipt), injected.writeDependencies);
   if (stdout.text) process.stdout.write(stdout.text);
   if (stderr.text) process.stderr.write(stderr.text);
 
-  const gitStable = gitBefore.clean && gitAfter?.clean === true && gitBefore.head === gitAfter?.head;
+  const gitStable = gitBefore.root === repositoryRoot && gitAfter?.root === repositoryRoot &&
+    gitBefore.root === gitAfter?.root && gitBefore.branch === spec.repository.branch &&
+    gitAfter?.branch === spec.repository.branch && gitBefore.branch === gitAfter?.branch &&
+    gitBefore.head === gitAfter?.head && gitBefore.clean && gitAfter?.clean === true;
   const exitCode = result.status === 'completed' && result.code === 0 && artifactErrors.length === 0 && gitStable
     ? 0
     : (result.status === 'completed' && Number.isInteger(result.code) && result.code !== 0 ? result.code : 2);
