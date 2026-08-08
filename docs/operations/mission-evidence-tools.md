@@ -39,3 +39,6 @@ npx shield-ops acceptance check \
 
 Both commands are create-only when writing evidence. Neither command signs,
 authorizes, dispatches, publishes, merges, deploys, or releases anything.
+
+For the tools used before a multi-mission launch, see
+[Feature Flight preflight tools](./feature-flight-preflight-tools.md).
