@@ -13,7 +13,9 @@ and one advisory disposition:
 - `retain-local`: useful in the current context but not ready for a supported surface;
 - `promotion-candidate`: enough evidence exists to request separate scope and review.
 
-Artifact paths may be absolute or relative to the registry file. Unknown time
+Artifact paths may be absolute or relative to the registry file. The report
+preserves the declared path instead of leaking the resolved host path, so a
+registry using relative paths produces a portable report. Unknown time
 measurements remain `null`; the harvester never turns missing measurements into
 zero-cost claims. Its report is create-only when `--output` is supplied and is
 always non-authoritative.
