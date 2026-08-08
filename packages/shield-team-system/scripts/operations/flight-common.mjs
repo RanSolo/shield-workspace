@@ -106,6 +106,31 @@ export const validateBranchRef = (value) => {
   }
 };
 
+export const deriveInitialEligibility = (mission) => {
+  if (mission.dependsOn.length > 0) return 'blocked-by-dependencies';
+  if (mission.activationWave === 1) return 'eligible-after-independent-authorization';
+  return 'staged-for-later-wave';
+};
+
+export const deriveDependencyLevels = (missions) => {
+  const byId = new Map(missions.map((mission) => [mission.id, mission]));
+  const levels = new Map();
+  const visiting = new Set();
+  const visit = (missionId) => {
+    if (levels.has(missionId)) return levels.get(missionId);
+    if (visiting.has(missionId) || !byId.has(missionId)) return null;
+    visiting.add(missionId);
+    const dependencyLevels = byId.get(missionId).dependsOn.map((dependency) => visit(dependency));
+    visiting.delete(missionId);
+    if (dependencyLevels.some((level) => level === null)) return null;
+    const level = dependencyLevels.length === 0 ? 0 : Math.max(...dependencyLevels) + 1;
+    levels.set(missionId, level);
+    return level;
+  };
+  for (const mission of missions) visit(mission.id);
+  return levels;
+};
+
 const validateMission = (mission, label, errors, { resolved }) => {
   const manifestFields = [
     'id', 'slug', 'title', 'library', 'lane', 'branch', 'worktree', 'activationWave',
@@ -120,7 +145,7 @@ const validateMission = (mission, label, errors, { resolved }) => {
   if (!MISSION_SLUG_PATTERN.test(mission.slug ?? '')) errors.push(`${label}.slug must be a strict lowercase safe slug.`);
   if (mission.slug !== derivedSlug) errors.push(`${label}.slug must equal the derived slug ${derivedSlug || '<empty>'}.`);
   if (!validateBranchRef(mission.branch)) errors.push(`${label}.branch is not a valid Git branch ref.`);
-  if (!isAbsolute(mission.worktree ?? '')) errors.push(`${label}.worktree must be an absolute path.`);
+  if (!nonEmptyString(mission.worktree) || !isAbsolute(mission.worktree)) errors.push(`${label}.worktree must be an absolute path.`);
   if (!Number.isInteger(mission.activationWave) || mission.activationWave < 1) errors.push(`${label}.activationWave must be a positive integer.`);
   validateStringArray(mission.dependsOn, `${label}.dependsOn`, errors, { allowEmpty: true });
   if (validateStringArray(mission.writablePaths, `${label}.writablePaths`, errors)) {
@@ -133,9 +158,10 @@ const validateMission = (mission, label, errors, { resolved }) => {
   validateStringArray(mission.deliverables, `${label}.deliverables`, errors);
   if (resolved) {
     if (!Number.isInteger(mission.dependencyLevel) || mission.dependencyLevel < 0) errors.push(`${label}.dependencyLevel must be a non-negative integer.`);
-    for (const field of ['initialEligibility', 'constructionStatus', 'authorityStatus']) {
-      if (!nonEmptyString(mission[field])) errors.push(`${label}.${field} must be a non-empty string.`);
-    }
+    if (Array.isArray(mission.dependsOn) && Number.isInteger(mission.activationWave) &&
+        mission.initialEligibility !== deriveInitialEligibility(mission)) errors.push(`${label}.initialEligibility does not match its dependencies and activation wave.`);
+    if (mission.constructionStatus !== 'planned-not-created') errors.push(`${label}.constructionStatus must equal planned-not-created.`);
+    if (mission.authorityStatus !== 'not-initialized') errors.push(`${label}.authorityStatus must equal not-initialized.`);
   }
   return true;
 };
@@ -242,22 +268,42 @@ export const validatePlan = (plan) => {
     if (plan.prototype.name !== 'flight-prep' || plan.prototype.version !== TOOL_VERSION || plan.prototype.authority !== 'none') errors.push('Plan prototype identity is unsupported.');
   }
   if (exactKeys(plan.repository, ['root', 'remoteUrl', 'baseRef', 'baseRevision', 'inspectedHead', 'inspectedBranch', 'inspectedWorktreeClean', 'collisions'], 'plan.repository', errors)) {
-    if (!isAbsolute(plan.repository.root ?? '')) errors.push('Plan repository.root must be absolute.');
+    if (!nonEmptyString(plan.repository.root) || !isAbsolute(plan.repository.root)) errors.push('Plan repository.root must be absolute.');
     if (!nonEmptyString(plan.repository.baseRef)) errors.push('Plan repository.baseRef is required.');
     if (!GIT_REVISION_PATTERN.test(plan.repository.baseRevision ?? '') || !GIT_REVISION_PATTERN.test(plan.repository.inspectedHead ?? '')) errors.push('Plan repository revisions must be exact 40-character revisions.');
+    if (plan.repository.inspectedHead !== plan.repository.baseRevision) errors.push('Plan repository.inspectedHead must equal the exact base revision.');
+    if (plan.repository.remoteUrl !== null && !nonEmptyString(plan.repository.remoteUrl)) errors.push('Plan repository.remoteUrl must be null or a non-empty string.');
+    if (plan.repository.inspectedBranch !== null && !validateBranchRef(plan.repository.inspectedBranch)) errors.push('Plan repository.inspectedBranch must be null or a valid Git branch ref.');
     if (typeof plan.repository.inspectedWorktreeClean !== 'boolean') errors.push('Plan repository.inspectedWorktreeClean must be boolean.');
-    if (!Array.isArray(plan.repository.collisions)) errors.push('Plan repository.collisions must be an array.');
+    if (!Array.isArray(plan.repository.collisions) || plan.repository.collisions.some((collision) => !nonEmptyString(collision))) errors.push('Plan repository.collisions must be an array of non-empty strings.');
+    else if (plan.repository.collisions.length !== 0) errors.push('Plan repository.collisions must be empty for a resolved plan.');
   }
-  if (exactKeys(plan.integration, ['branch', 'status'], 'plan.integration', errors) && !validateBranchRef(plan.integration.branch)) errors.push('Plan integration.branch is invalid.');
+  if (exactKeys(plan.integration, ['branch', 'status'], 'plan.integration', errors)) {
+    if (!validateBranchRef(plan.integration.branch)) errors.push('Plan integration.branch is invalid.');
+    if (plan.integration.status !== 'declared-not-created') errors.push('Plan integration.status must equal declared-not-created.');
+    if (plan.integration.branch === plan.repository?.inspectedBranch) errors.push('Plan integration.branch must differ from the inspected repository branch.');
+  }
   if (!Array.isArray(plan.lanes) || plan.lanes.length === 0) errors.push('Plan lanes must not be empty.');
+  const laneIds = new Set();
   for (const [index, lane] of (Array.isArray(plan.lanes) ? plan.lanes : []).entries()) {
     const label = `plan.lanes[${index}]`;
     if (!exactKeys(lane, ['id', 'chatLabel', 'teamLabel'], label, errors)) continue;
     for (const field of ['id', 'chatLabel', 'teamLabel']) if (!nonEmptyString(lane[field])) errors.push(`${label}.${field} must be a non-empty string.`);
+    if (laneIds.has(lane.id)) errors.push(`Duplicate lane ID: ${lane.id}`);
+    laneIds.add(lane.id);
   }
   validateMissions(plan.missions, errors, { resolved: true });
-  for (const mission of (Array.isArray(plan.missions) ? plan.missions.filter((entry) => entry && typeof entry === 'object') : [])) {
+  const resolvedMissions = Array.isArray(plan.missions)
+    ? plan.missions.filter((entry) => entry && typeof entry === 'object' && Array.isArray(entry.dependsOn))
+    : [];
+  const dependencyLevels = deriveDependencyLevels(resolvedMissions);
+  for (const mission of resolvedMissions) {
+    if (!laneIds.has(mission.lane)) errors.push(`${mission.id} references unknown lane ${mission.lane}.`);
     if (mission.branch === plan.integration?.branch) errors.push(`${mission.id} branch must be role-distinct from the integration branch.`);
+    const expectedLevel = dependencyLevels.get(mission.id);
+    if (expectedLevel !== undefined && mission.dependencyLevel !== expectedLevel) {
+      errors.push(`${mission.id} dependencyLevel is ${mission.dependencyLevel}; expected producer-derived level ${expectedLevel}.`);
+    }
   }
   errors.push(...validateEvaluationContract(plan.evaluationContract, 'plan.evaluationContract'));
   return errors;

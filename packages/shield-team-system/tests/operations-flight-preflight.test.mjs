@@ -11,6 +11,7 @@ import { buildFixture } from '../scripts/operations/fixture-build.mjs';
 import { diagnoseFlight } from '../scripts/operations/flight-doctor.mjs';
 import { prepareFlight } from '../scripts/operations/flight-prep.mjs';
 import { sha256, stableJson } from '../scripts/operations/common.mjs';
+import { assertPlan } from '../scripts/operations/flight-common.mjs';
 
 const git = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
 
@@ -80,6 +81,32 @@ test('prep artifacts feed construction and doctor consumers without authority', 
   assert.equal(doctor.ok, true, doctor.errors.join('\n'));
   assert.equal(doctor.authority, 'none');
   assert.equal(doctor.fixture.verifiedFiles.length, 9);
+});
+
+test('assertPlan and doctor reject substituted producer-derived plan state', async () => {
+  const context = await setupPackage();
+  const original = JSON.parse(await readFile(context.planPath, 'utf8'));
+  const mutations = [
+    ['fake integration creation', (plan) => { plan.integration.status = 'created'; }, /integration\.status must equal declared-not-created/u],
+    ['fake mission construction', (plan) => { plan.missions[0].constructionStatus = 'created'; }, /constructionStatus must equal planned-not-created/u],
+    ['fake mission authority', (plan) => { plan.missions[0].authorityStatus = 'authorized'; }, /authorityStatus must equal not-initialized/u],
+    ['false eligibility', (plan) => { plan.missions[0].initialEligibility = 'blocked-by-dependencies'; }, /initialEligibility does not match/u],
+    ['duplicate lane', (plan) => { plan.lanes.push({ ...plan.lanes[0] }); }, /Duplicate lane ID/u],
+    ['unknown mission lane', (plan) => { plan.missions[0].lane = 'unknown'; }, /references unknown lane/u],
+    ['false dependency level', (plan) => { plan.missions[0].dependencyLevel = 1; }, /expected producer-derived level 0/u],
+    ['false repository head', (plan) => { plan.repository.inspectedHead = 'f'.repeat(40); }, /inspectedHead must equal the exact base revision/u],
+    ['invalid repository observation type', (plan) => { plan.repository.remoteUrl = false; }, /remoteUrl must be null or a non-empty string/u],
+    ['recorded construction collision', (plan) => { plan.repository.collisions = ['fake collision']; }, /collisions must be empty/u],
+    ['integration branch substitution', (plan) => { plan.integration.branch = plan.repository.inspectedBranch; }, /integration\.branch must differ from the inspected repository branch/u],
+  ];
+  for (const [label, mutate, pattern] of mutations) {
+    const plan = structuredClone(original);
+    mutate(plan);
+    assert.throws(() => assertPlan(plan), pattern, `${label} must fail assertPlan`);
+    await writeFile(context.planPath, stableJson(plan));
+    await assert.rejects(diagnoseFlight({ planPath: context.planPath }), pattern, `${label} must fail doctor`);
+  }
+  await writeFile(context.planPath, stableJson(original));
 });
 
 test('construction check explicitly rejects stale HEAD and wrong ancestry', async () => {
@@ -186,4 +213,40 @@ test('doctor rejects absolute/traversing fixture entries and fixture symlinks', 
   const linkedReport = await diagnoseFlight({ planPath: linked.planPath });
   assert.equal(linkedReport.ok, false);
   assert.match(linkedReport.errors.join('\n'), /symlink|unsafe/iu);
+});
+
+test('doctor rejects final and intermediate symlinks in supplied fixture manifest paths', async () => {
+  const finalLink = await setupPackage();
+  const finalBindingPath = join(finalLink.packageRoot, 'fixture-binding.json');
+  const finalBinding = JSON.parse(await readFile(finalBindingPath, 'utf8'));
+  const linkedManifest = join(finalLink.root, 'fixture-manifest-link.json');
+  await symlink(finalBinding.manifestPath, linkedManifest);
+  finalBinding.manifestPath = linkedManifest;
+  await writeFile(finalBindingPath, stableJson(finalBinding));
+  const finalReport = await diagnoseFlight({ planPath: finalLink.planPath });
+  assert.equal(finalReport.ok, false);
+  assert.match(finalReport.errors.join('\n'), /symlink component/u);
+
+  const intermediateLink = await setupPackage();
+  const intermediateBindingPath = join(intermediateLink.packageRoot, 'fixture-binding.json');
+  const intermediateBinding = JSON.parse(await readFile(intermediateBindingPath, 'utf8'));
+  const linkedFixtureRoot = join(intermediateLink.root, 'fixture-root-link');
+  await symlink(intermediateLink.fixtureRoot, linkedFixtureRoot);
+  intermediateBinding.manifestPath = join(linkedFixtureRoot, 'fixture-manifest.json');
+  await writeFile(intermediateBindingPath, stableJson(intermediateBinding));
+  const intermediateReport = await diagnoseFlight({ planPath: intermediateLink.planPath });
+  assert.equal(intermediateReport.ok, false);
+  assert.match(intermediateReport.errors.join('\n'), /symlink component/u);
+});
+
+test('doctor preserves Darwin /var and /private/var fixture path equivalence', { skip: process.platform !== 'darwin' }, async () => {
+  const context = await setupPackage();
+  const bindingPath = join(context.packageRoot, 'fixture-binding.json');
+  const binding = JSON.parse(await readFile(bindingPath, 'utf8'));
+  binding.manifestPath = binding.manifestPath.startsWith('/private/var/')
+    ? binding.manifestPath.replace(/^\/private\/var/u, '/var')
+    : binding.manifestPath.replace(/^\/var/u, '/private/var');
+  await writeFile(bindingPath, stableJson(binding));
+  const report = await diagnoseFlight({ planPath: context.planPath });
+  assert.equal(report.ok, true, report.errors.join('\n'));
 });

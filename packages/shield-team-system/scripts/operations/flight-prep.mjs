@@ -20,6 +20,8 @@ import {
 import {
   TOOL_VERSION,
   canonicalRelativePath,
+  deriveDependencyLevels,
+  deriveInitialEligibility,
   validateManifestContract,
 } from './flight-common.mjs';
 
@@ -121,24 +123,8 @@ const resolveRepository = async (manifest) => {
   };
 };
 
-const dependencyLevel = (missionId, missionById, cache = new Map()) => {
-  if (cache.has(missionId)) return cache.get(missionId);
-  const mission = missionById.get(missionId);
-  const level = mission.dependsOn.length === 0
-    ? 0
-    : Math.max(...mission.dependsOn.map((dependency) => dependencyLevel(dependency, missionById, cache))) + 1;
-  cache.set(missionId, level);
-  return level;
-};
-
-const initialEligibility = (mission) => {
-  if (mission.dependsOn.length > 0) return 'blocked-by-dependencies';
-  if (mission.activationWave === 1) return 'eligible-after-independent-authorization';
-  return 'staged-for-later-wave';
-};
-
 const resolvePlan = (manifest, repositoryResult) => {
-  const missionById = new Map(manifest.missions.map((mission) => [mission.id, mission]));
+  const dependencyLevels = deriveDependencyLevels(manifest.missions);
   return {
     schemaVersion: 1,
     planType: 'feature-flight-resolved-plan',
@@ -157,8 +143,8 @@ const resolvePlan = (manifest, repositoryResult) => {
     missions: manifest.missions.map((mission) => ({
       ...mission,
       worktree: repositoryResult.canonicalWorktrees.get(mission.id),
-      dependencyLevel: dependencyLevel(mission.id, missionById),
-      initialEligibility: initialEligibility(mission),
+      dependencyLevel: dependencyLevels.get(mission.id),
+      initialEligibility: deriveInitialEligibility(mission),
       constructionStatus: 'planned-not-created',
       authorityStatus: 'not-initialized',
     })),

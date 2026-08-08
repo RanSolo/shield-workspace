@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { checkConstruction, loadPlanSnapshot } from './construction-check.mjs';
 import {
   SHA256_PATTERN,
-  canonicalExistingPath,
+  assertNoSymlinkComponents,
   exactKeys,
   resolveContainedPath,
   snapshotFile,
@@ -92,7 +92,7 @@ const validateFixtureBinding = (binding, plan) => {
   if (binding.fixtureId !== plan.evaluationContract.fixtureId) errors.push('Fixture binding fixtureId does not match the evaluation contract.');
   if (binding.fixtureVersion !== plan.evaluationContract.version) errors.push('Fixture binding version does not match the evaluation contract.');
   if (binding.classification !== 'synthetic-test-data' || binding.containsCustomerData !== false) errors.push('Fixture binding does not bind synthetic, customer-free data.');
-  if (!isAbsolute(binding.manifestPath ?? '')) errors.push('Fixture binding manifestPath must be absolute.');
+  if (typeof binding.manifestPath !== 'string' || !isAbsolute(binding.manifestPath)) errors.push('Fixture binding manifestPath must be absolute.');
   if (!SHA256_PATTERN.test(binding.manifestSha256 ?? '')) errors.push('Fixture binding manifestSha256 is invalid.');
   return errors;
 };
@@ -209,10 +209,10 @@ export const diagnoseFlight = async ({ planPath }) => {
     errors.push(`Fixture binding is required and invalid or unavailable: ${error instanceof Error ? error.message : error}`);
   }
 
-  if (binding && isAbsolute(binding.manifestPath ?? '')) {
+  if (binding && typeof binding.manifestPath === 'string' && isAbsolute(binding.manifestPath)) {
     try {
-      const canonicalManifestPath = await canonicalExistingPath(binding.manifestPath);
-      const manifestSnapshot = await snapshotFile(canonicalManifestPath);
+      const noSymlinkManifestPath = await assertNoSymlinkComponents(binding.manifestPath);
+      const manifestSnapshot = await snapshotFile(noSymlinkManifestPath);
       const manifest = parseJsonSnapshot(manifestSnapshot, 'fixture manifest');
       errors.push(...validateFixtureManifest(manifest));
       if (manifestSnapshot.sha256 !== binding.manifestSha256) errors.push('Fixture manifest SHA-256 does not match its binding.');
