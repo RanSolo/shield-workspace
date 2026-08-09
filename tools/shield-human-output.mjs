@@ -151,10 +151,18 @@ export const renderHumanActions = (text) => {
   return lines.length > 0 ? `${lines.join("\n")}\n` : "No human action required.\n";
 };
 
-const readStdin = async () => {
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  return Buffer.concat(chunks).toString("utf8");
+const renderStreamingStdin = async () => {
+  let text = "";
+  let lastRendered = "";
+  for await (const chunk of process.stdin) {
+    text += chunk.toString("utf8");
+    const rendered = renderHumanActions(text);
+    if (rendered !== "No human action required.\n" && rendered !== lastRendered) {
+      process.stdout.write(rendered);
+      lastRendered = rendered;
+    }
+  }
+  if (lastRendered === "") process.stdout.write("No human action required.\n");
 };
 
 const main = async () => {
@@ -163,9 +171,11 @@ const main = async () => {
     process.stdout.write("Usage: shield-human-output [TRANSCRIPT ...]\n       COMMAND 2>&1 | shield-human-output\n");
     return;
   }
-  const text = paths.length === 0
-    ? await readStdin()
-    : (await Promise.all(paths.map((path) => readFile(resolve(path), "utf8")))).join("\n");
+  if (paths.length === 0) {
+    await renderStreamingStdin();
+    return;
+  }
+  const text = (await Promise.all(paths.map((path) => readFile(resolve(path), "utf8")))).join("\n");
   process.stdout.write(renderHumanActions(text));
 };
 
