@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, realpath, rename, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -172,6 +172,25 @@ test("valid genesis emits one exact plan-ordered candidate and deterministic std
   assert.equal(first.missions[0].disposition, "candidate");
   assert.equal(first.missions[1].disposition, "not-selected");
   assert.doesNotMatch(JSON.stringify(first), /dispatch_ready/u);
+});
+
+test("dependency-bearing projection reports wave, unmet dependencies, and waiting disposition", async () => {
+  const root = await fixtureRoot();
+  const plan = planFixture(root);
+  plan.missions[1].activationWave = 2;
+  plan.missions[1].dependsOn = ["Mission-A"];
+  plan.missions[1].dependencyLevel = 1;
+  plan.missions[1].initialEligibility = "blocked-by-dependencies";
+  const planRecord = await writePlan(root, plan);
+  const state = stateFixture(planRecord.plan, planRecord.identity);
+  const result = await runGenesis({ root, planRecord, state });
+  assert.equal(result.currentWave, 1);
+  assert.deepEqual(result.nextCandidate, {
+    missionId: "Mission-A", lane: "Lane-A", activationWave: 1,
+    action: "request-exact-child-authorization",
+  });
+  assert.deepEqual(result.missions[1].unmetDependencies, ["Mission-A"]);
+  assert.equal(result.missions[1].disposition, "waiting-for-dependencies");
 });
 
 test("identical real CLI invocations emit byte-identical stdout", async () => {
@@ -386,6 +405,29 @@ test("non-genesis replay rejects absence, digest drift, discontinuity, cross-pla
   assert.match(validateImmediateTransition(planRecord.plan, waveRegressionPrior, current).join("\n"), /regressed/u);
 });
 
+test("non-genesis replay rejects a cross-flight predecessor", async () => {
+  const root = await fixtureRoot();
+  const planRecord = await writePlan(root);
+  const predecessor = stateFixture(planRecord.plan, planRecord.identity, {
+    sequence: 1, predecessorSha256: "7".repeat(64),
+  });
+  predecessor.flightId = "Other-Flight";
+  const predecessorSnapshot = await writeState(root, "cross-flight-predecessor.json", predecessor);
+  const current = stateFixture(planRecord.plan, planRecord.identity, {
+    sequence: 2, predecessorSha256: predecessorSnapshot.sha256,
+  });
+  const currentSnapshot = await writeState(root, "cross-flight-current.json", current);
+  await assert.rejects(computeFeatureFlightStatus({
+    planPath: planRecord.snapshot.path,
+    expectedPlanSha256: planRecord.snapshot.sha256,
+    statePath: currentSnapshot.path,
+    expectedStateSha256: currentSnapshot.sha256,
+    expectedStateSequence: 2,
+    predecessorStatePath: predecessorSnapshot.path,
+    expectedPredecessorSha256: predecessorSnapshot.sha256,
+  }), /predecessor\.flightId must equal the resolved plan flightId/u);
+});
+
 test("resolved-plan validator rejects closed-shape and identity attacks", async () => {
   const root = await fixtureRoot();
   const base = planFixture(root);
@@ -409,6 +451,54 @@ test("resolved-plan validator rejects closed-shape and identity attacks", async 
   cycle.missions[1].initialEligibility = "blocked-by-dependencies";
   cases.push([cycle, /dependency cycle/u]);
   for (const [candidate, pattern] of cases) assert.match(validateResolvedPlan(candidate).join("\n"), pattern);
+});
+
+test("resolved-plan validator rejects controls and worktree normalization or folded collisions", async () => {
+  const root = await fixtureRoot();
+  const base = planFixture(root);
+  const controlIdentity = clone(base);
+  controlIdentity.flightId = "Flight-\u0001";
+  assert.match(validateResolvedPlan(controlIdentity).join("\n"), /flightId must be a non-empty printable ASCII string/u);
+
+  const controlPath = clone(base);
+  controlPath.missions[0].writablePaths = ["packages/alpha/\u001f/**"];
+  assert.match(validateResolvedPlan(controlPath).join("\n"), /normalized relative ownership path/u);
+
+  const nonNormalizedWorktree = clone(base);
+  nonNormalizedWorktree.missions[1].worktree = `${root}/nested/../bravo`;
+  assert.match(validateResolvedPlan(nonNormalizedWorktree).join("\n"), /already-normalized absolute ASCII path/u);
+
+  const foldedWorktree = clone(base);
+  foldedWorktree.missions[1].worktree = join(root, "ALPHA");
+  assert.match(validateResolvedPlan(foldedWorktree).join("\n"), /mission worktree identities.*duplicates.*ASCII/u);
+});
+
+test("fan-out dependencies require exact canonical predecessor bytes", async () => {
+  const root = await fixtureRoot();
+  const plan = planFixture(root);
+  plan.missions[1].activationWave = 2;
+  plan.missions[1].dependsOn = ["Mission-A"];
+  plan.missions[1].dependencyLevel = 1;
+  plan.missions[1].initialEligibility = "blocked-by-dependencies";
+  plan.lanes.push({ id: "Lane-C", chatLabel: "Charlie chat", teamLabel: "Charlie team" });
+  plan.missions.push({
+    ...clone(plan.missions[1]),
+    id: "Mission-C",
+    slug: "mission-c",
+    title: "Charlie",
+    library: "charlie",
+    lane: "Lane-C",
+    branch: "agent/charlie",
+    worktree: join(root, "charlie"),
+    writablePaths: ["packages/charlie/**"],
+    scope: "Build charlie.",
+    deliverables: ["Charlie output"],
+  });
+  assert.deepEqual(validateResolvedPlan(plan), []);
+
+  const foldedReference = clone(plan);
+  foldedReference.missions[2].dependsOn = ["mission-a"];
+  assert.match(validateResolvedPlan(foldedReference).join("\n"), /dependency mission-a must use canonical mission ID bytes/u);
 });
 
 test("state validator rejects closed-shape, membership, lane, and timestamp drift", async () => {
@@ -448,6 +538,13 @@ test("snapshot rejects BOM, malformed UTF-8, symlinks, aliases, and replacement 
   await symlink(good, link);
   await assert.rejects(readFlightJsonSnapshot(link), /symlinks|canonical aliases/u);
   await assert.rejects(readFlightJsonSnapshot(`${root}/./good.json`), /canonical and absolute/u);
+  const realParent = join(root, "real-parent");
+  const linkedParent = join(root, "linked-parent");
+  await mkdir(realParent);
+  await writeFile(join(realParent, "nested.json"), "{}\n");
+  await symlink(realParent, linkedParent, "dir");
+  await assert.rejects(readFlightJsonSnapshot(join(linkedParent, "nested.json")), /symlinks|canonical aliases/u);
+  await assert.rejects(readFlightJsonSnapshot(`${realParent}/../real-parent/nested.json`), /canonical and absolute/u);
   const replacement = join(root, "replacement.json");
   await writeFile(replacement, "{}\n");
   await assert.rejects(readFlightJsonSnapshot(replacement, {
