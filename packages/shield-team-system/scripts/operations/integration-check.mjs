@@ -17,7 +17,7 @@ import {
   stableJson,
   writeNewFile,
 } from './common.mjs';
-import { assertPlan, GIT_REVISION_PATTERN, pathMatches } from './flight-common.mjs';
+import { assertPlan, canonicalRelativePath, GIT_REVISION_PATTERN, pathMatches } from './flight-common.mjs';
 import { evaluateAcceptanceSnapshots } from './acceptance-check.mjs';
 import {
   sameArtifactIdentity,
@@ -31,7 +31,7 @@ import {
   validateHandoffPredecessor,
   validateHandoffState,
 } from './handoff-state.mjs';
-import { assertOutputOutsideFlightWorktrees, compareUtf8 } from './convergence-common.mjs';
+import { assertOutputOutsideFlightWorktrees, compareUtf8, orderedChangedPaths } from './convergence-common.mjs';
 
 export const INTEGRATION_REPORT_TYPE = 'feature-flight-integration-check';
 export const INTEGRATION_REPORT_NOTICE = 'Compatibility evidence only. This report grants no merge authority and performs no merge, approval, publication, deployment, or release.';
@@ -99,16 +99,11 @@ export const validateIntegrationReport = (report) => {
     if (!exactKeys(evidence, ['missionId', 'worktree', 'branch', 'revision', 'changedPaths', 'packet', 'sources'], label, errors)) continue;
     if (![evidence.missionId, evidence.worktree, evidence.branch].every(nonEmptyString) ||
         !GIT_REVISION_PATTERN.test(evidence.revision ?? '') || !Array.isArray(evidence.changedPaths) ||
-        evidence.changedPaths.some((path) => !nonEmptyString(path))) errors.push(`${label} is malformed.`);
+        evidence.changedPaths.some((path) => canonicalRelativePath(path) !== path)) errors.push(`${label} is malformed.`);
     validateArtifact(evidence.packet, `${label}.packet`, errors);
     validateSourceSet(evidence.sources, `${label}.sources`, errors, registerSource);
   }
   return errors;
-};
-
-const orderedChangedPaths = (worktree, baseRevision, head) => {
-  const output = git(worktree, ['diff', '--name-only', '--diff-filter=ACDMRTUXB', `${baseRevision}..${head}`]);
-  return output === '' ? [] : output.split('\n').sort(compareUtf8);
 };
 
 const parseJsonSnapshot = (snapshot, label, errors) => {
@@ -268,6 +263,12 @@ const replayPacketSources = async ({
         acceptance.expectedRevision !== manifest.expectedRevision || acceptance.phase !== packet.acceptance?.phase ||
         acceptance.ok !== packet.acceptance?.ok || acceptance.expectedRevision !== packet.acceptance?.expectedRevision) {
       errors.push(`${mission.id} acceptance report, manifest, and packet bindings do not exactly agree.`);
+    }
+    const canonicalSpecRoot = nonEmptyString(spec.repository?.root)
+      ? await canonicalExistingPath(spec.repository.root).catch(() => undefined)
+      : undefined;
+    if (canonicalSpecRoot !== worktree || spec.repository?.root !== worktree || spec.repository?.branch !== mission.branch) {
+      errors.push(`${mission.id} acceptance spec repository root or branch does not exactly match the canonical planned mission worktree.`);
     }
     if (acceptance.phase !== 'green' || acceptance.ok !== true || acceptance.errors?.length !== 0 ||
         acceptance.expectedRevision !== head) {

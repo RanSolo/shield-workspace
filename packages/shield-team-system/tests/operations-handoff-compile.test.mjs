@@ -320,6 +320,71 @@ test('handoff compile recomputes full GREEN criterion semantics and rejects empt
   await assert.rejects(() => compileHandoff(aliased.options), /non-symlink regular file/u);
 });
 
+test('handoff compile rejects a zero-receipt manual acceptance spec bound to the wrong repository', async () => {
+  const fixture = await createConvergenceFixture();
+  const inputs = await createHandoffInputs(fixture, 'mission:a', 'wrong-spec-repository');
+  const spec = JSON.parse(await readFile(inputs.specPath, 'utf8'));
+  spec.repository.root = fixture.repository;
+  spec.commands = [];
+  spec.criteria = [{
+    id: 'criterion:manual',
+    sourceText: 'A reviewer confirms the result.',
+    validation: { mode: 'manual', procedure: ['Inspect the result.'], expectedResult: 'The result is correct.' },
+  }];
+  await writeJson(inputs.specPath, spec);
+  const specSha256 = await digest(inputs.specPath);
+  await writeJson(inputs.manifestPath, {
+    schemaVersion: 1,
+    manifestType: 'mission-evidence-manifest',
+    missionId: 'mission:a',
+    specSha256,
+    phase: 'green',
+    expectedRevision: inputs.head,
+    receipts: [],
+    redNotApplicable: [],
+    manualEvidence: [{
+      criterionId: 'criterion:manual',
+      performedBy: 'reviewer:test',
+      performedAt: '2026-01-01T00:00:00.000Z',
+      revision: inputs.head,
+      observation: 'The result is correct.',
+    }],
+  });
+  const acceptance = await checkAcceptance({
+    specPath: inputs.specPath,
+    manifestPath: inputs.manifestPath,
+    expectedSpecSha256: specSha256,
+    phase: 'green',
+    expectedRevision: inputs.head,
+  });
+  assert.equal(acceptance.ok, true, acceptance.errors.join('\n'));
+  await writeJson(inputs.acceptancePath, acceptance);
+  await assert.rejects(() => compileHandoff({
+    ...inputs.options,
+    receipts: [],
+  }), /spec repository root and branch do not exactly match/u);
+});
+
+test('handoff changed-path reader rejects whitespace and control names without trimming', async (context) => {
+  const cases = [
+    { name: 'leading whitespace', path: (worktree) => join(worktree, 'a', ' leading.txt') },
+    { name: 'newline and control', path: (worktree) => join(worktree, 'a', 'line\ncontrol-\u0001.txt') },
+  ];
+  for (const item of cases) {
+    await context.test(item.name, async () => {
+      const fixture = await createConvergenceFixture();
+      await writeFile(item.path(fixture.worktreeA), 'adversarial\n');
+      git(fixture.worktreeA, ['add', '-A']);
+      git(fixture.worktreeA, ['commit', '-m', `add ${item.name}`]);
+      const inputs = await createHandoffInputs(fixture, 'mission:a', `path-${item.name.replaceAll(' ', '-')}`);
+      await assert.rejects(
+        () => compileHandoff(inputs.options),
+        /noncanonical path|not valid UTF-8/u,
+      );
+    });
+  }
+});
+
 test('handoff compile verifies receipt-declared artifact bytes in the exact worktree', async () => {
   const fixture = await createConvergenceFixture();
   const inputs = await createHandoffInputs(fixture, 'mission:a', 'artifact-forgery');
@@ -466,4 +531,37 @@ test('resume packets preserve incomplete closed acceptance without claiming comp
   assert.equal(result.packet.acceptance.phase, 'structure');
   assert.equal(result.packet.acceptance.expectedRevision, null);
   assert.deepEqual(result.packet.evidence.receipts, []);
+});
+
+test('resume packets accept valid RED acceptance with a completed failing RED receipt', async () => {
+  const fixture = await createConvergenceFixture();
+  const inputs = await createHandoffInputs(fixture, 'mission:a', 'resume-red');
+  const receipt = JSON.parse(await readFile(inputs.receiptPath, 'utf8'));
+  receipt.result.exitCode = 1;
+  await writeJson(inputs.receiptPath, receipt);
+  const receiptSha256 = await digest(inputs.receiptPath);
+  const manifest = JSON.parse(await readFile(inputs.manifestPath, 'utf8'));
+  manifest.phase = 'red';
+  manifest.receipts[0].phase = 'red';
+  manifest.receipts[0].receiptSha256 = receiptSha256;
+  manifest.redNotApplicable = [];
+  await writeJson(inputs.manifestPath, manifest);
+  const acceptance = await checkAcceptance({
+    specPath: inputs.specPath,
+    manifestPath: inputs.manifestPath,
+    expectedSpecSha256: await digest(inputs.specPath),
+    phase: 'red',
+    expectedRevision: inputs.head,
+  });
+  assert.equal(acceptance.ok, true, acceptance.errors.join('\n'));
+  await writeJson(inputs.acceptancePath, acceptance);
+  const result = await compileHandoff({
+    ...inputs.options,
+    mode: 'resume',
+    outputDir: join(inputs.directory, 'resume-red-output'),
+  });
+  assert.equal(result.packet.mode, 'resume');
+  assert.equal(result.packet.acceptance.phase, 'red');
+  assert.equal(result.packet.acceptance.ok, true);
+  assert.equal(result.packet.evidence.receipts[0].receiptId, 'evidence:resume-red');
 });

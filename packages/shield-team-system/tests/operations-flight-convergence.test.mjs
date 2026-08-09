@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
-import { readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { checkAcceptance } from '../scripts/operations/acceptance-check.mjs';
 import { sha256 } from '../scripts/operations/common.mjs';
-import { compareUtf8, parseWorktreeListPorcelain } from '../scripts/operations/convergence-common.mjs';
+import { compareUtf8, parseNullDelimitedGitPaths, parseWorktreeListPorcelain } from '../scripts/operations/convergence-common.mjs';
 import { checkIntegration, validateIntegrationReport } from '../scripts/operations/integration-check.mjs';
 import {
   ARCHIVE_PAYLOAD_FORMAT,
@@ -336,6 +337,62 @@ test('integration recomputes acceptance-spec coverage instead of trusting a forg
   assert.match(report.errors.join('\n'), /does not exactly equal full semantics recomputed/u);
 });
 
+test('integration rejects a self-consistent manual-only acceptance spec bound to the wrong repository', async () => {
+  const flight = await completedFlight();
+  const packet = JSON.parse(await readFile(flight.aPath, 'utf8'));
+  const spec = JSON.parse(await readFile(flight.aInputs.specPath, 'utf8'));
+  spec.repository.root = flight.fixture.repository;
+  spec.commands = [];
+  spec.criteria = [{
+    id: 'criterion:manual',
+    sourceText: 'A reviewer confirms the result.',
+    validation: { mode: 'manual', procedure: ['Inspect the result.'], expectedResult: 'The result is correct.' },
+  }];
+  await writeJson(flight.aInputs.specPath, spec);
+  const specIdentity = await sourceIdentity(flight.aInputs.specPath);
+  await writeJson(flight.aInputs.manifestPath, {
+    schemaVersion: 1,
+    manifestType: 'mission-evidence-manifest',
+    missionId: 'mission:a',
+    specSha256: specIdentity.sha256,
+    phase: 'green',
+    expectedRevision: flight.aInputs.head,
+    receipts: [],
+    redNotApplicable: [],
+    manualEvidence: [{
+      criterionId: 'criterion:manual',
+      performedBy: 'reviewer:test',
+      performedAt: '2026-01-01T00:00:00.000Z',
+      revision: flight.aInputs.head,
+      observation: 'The result is correct.',
+    }],
+  });
+  const acceptance = await checkAcceptance({
+    specPath: flight.aInputs.specPath,
+    manifestPath: flight.aInputs.manifestPath,
+    expectedSpecSha256: specIdentity.sha256,
+    phase: 'green',
+    expectedRevision: flight.aInputs.head,
+  });
+  assert.equal(acceptance.ok, true, acceptance.errors.join('\n'));
+  await writeJson(flight.aInputs.acceptancePath, acceptance);
+  packet.acceptance.spec = specIdentity;
+  packet.acceptance.report = await sourceIdentity(flight.aInputs.acceptancePath);
+  packet.acceptance.manifest = await sourceIdentity(flight.aInputs.manifestPath);
+  packet.acceptance.receiptDigests = [];
+  packet.evidence.receipts = [];
+  packet.evidence.artifacts = [];
+  const forgedPacketPath = join(flight.fixture.root, 'wrong-spec-repository-packet.json');
+  await writeJson(forgedPacketPath, packet);
+  const report = await checkIntegration({
+    planPath: flight.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [forgedPacketPath, flight.bPath],
+  });
+  assert.equal(report.ok, false);
+  assert.match(report.errors.join('\n'), /acceptance spec repository root or branch does not exactly match/u);
+});
+
 test('integration verifies receipt-declared artifact bytes and confines output outside every flight worktree', async () => {
   const staleArtifact = await completedFlight();
   await writeFile(join(staleArtifact.fixture.worktreeA, 'a/result.txt'), 'substituted artifact\n');
@@ -376,6 +433,64 @@ test('teardown inventories tracked, untracked, and ignored files and preserves u
   assert.ok(worktree.inventory.some((item) => item.category === 'untracked' && item.path === 'untracked.txt'));
   assert.ok(worktree.inventory.some((item) => item.category === 'ignored' && item.path === 'ignored.bin'));
   assert.match(report.notice, /No worktree.*removed/u);
+});
+
+test('teardown inventory rejects whitespace and control paths without trimming', async (context) => {
+  const cases = [
+    { name: 'leading whitespace', path: (worktree) => join(worktree, ' leading.txt') },
+    { name: 'newline and control', path: (worktree) => join(worktree, 'line\ncontrol-\u0001.txt') },
+  ];
+  for (const item of cases) {
+    await context.test(item.name, async () => {
+      const fixture = await createConvergenceFixture();
+      const integrationRef = createIntegrationBranch(fixture);
+      await writeFile(item.path(fixture.worktreeA), 'adversarial\n');
+      await assert.rejects(
+        () => planTeardown({ planPath: fixture.planPath, integrationRef }),
+        /noncanonical path|not valid UTF-8/u,
+      );
+    });
+  }
+});
+
+test('teardown preserves a mission path replaced by a foreign repository and skips ancestry', async () => {
+  const fixture = await createConvergenceFixture();
+  const integrationRef = createIntegrationBranch(fixture);
+  await rename(fixture.worktreeA, `${fixture.worktreeA}-displaced`);
+  await mkdir(fixture.worktreeA);
+  git(fixture.worktreeA, ['init', '--initial-branch=main']);
+  git(fixture.worktreeA, ['config', 'user.email', 'foreign@example.invalid']);
+  git(fixture.worktreeA, ['config', 'user.name', 'Foreign Repository']);
+  await writeFile(join(fixture.worktreeA, 'FOREIGN.md'), 'foreign\n');
+  git(fixture.worktreeA, ['add', '.']);
+  git(fixture.worktreeA, ['commit', '-m', 'foreign']);
+
+  const report = await planTeardown({ planPath: fixture.planPath, integrationRef });
+  const worktree = report.worktrees[0];
+  assert.equal(worktree.disposition, 'preserve-foreign-repository');
+  assert.equal(worktree.recoverable, false);
+  assert.equal(worktree.refEvidence, null);
+  assert.equal(worktree.integration, null);
+  assert.deepEqual(worktree.inventory, []);
+});
+
+test('teardown rejects replacement of the planned repository before resolving integration refs', async () => {
+  const fixture = await createConvergenceFixture();
+  const integrationRef = createIntegrationBranch(fixture);
+  await rename(fixture.repository, `${fixture.repository}-displaced`);
+  await mkdir(fixture.repository);
+  git(fixture.repository, ['init', '--initial-branch=main']);
+  git(fixture.repository, ['config', 'user.email', 'foreign@example.invalid']);
+  git(fixture.repository, ['config', 'user.name', 'Foreign Repository']);
+  await writeFile(join(fixture.repository, 'FOREIGN.md'), 'foreign\n');
+  git(fixture.repository, ['add', '.']);
+  git(fixture.repository, ['commit', '-m', 'foreign']);
+  git(fixture.repository, ['branch', fixture.plan.integration.branch]);
+
+  await assert.rejects(
+    () => planTeardown({ planPath: fixture.planPath, integrationRef }),
+    /base ref does not resolve to exact base/u,
+  );
 });
 
 test('teardown rejects ambiguous archive recoverability without changing the worktree', async () => {
@@ -532,4 +647,16 @@ test('worktree porcelain parser preserves newline and control paths and rejects 
   assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`worktree ${controlledPath}\nHEAD ${'a'.repeat(40)}\n`, 'utf8')), /NUL-delimited/u);
   assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`HEAD ${'a'.repeat(40)}\0\0`, 'utf8')), /malformed record/u);
   assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`worktree ${controlledPath}\0unknown field\0\0`, 'utf8')), /malformed record/u);
+});
+
+test('NUL Git path parser preserves canonical bytes and rejects whitespace, controls, truncation, and invalid UTF-8', () => {
+  assert.deepEqual(
+    parseNullDelimitedGitPaths(Buffer.from('a/result.txt\0z/file.txt\0', 'utf8')),
+    ['a/result.txt', 'z/file.txt'],
+  );
+  for (const path of [' leading.txt', 'a/line\nname', 'a/control-\u0001']) {
+    assert.throws(() => parseNullDelimitedGitPaths(Buffer.from(`${path}\0`, 'utf8')), /noncanonical path/u);
+  }
+  assert.throws(() => parseNullDelimitedGitPaths(Buffer.from('a/result.txt', 'utf8')), /not NUL-delimited/u);
+  assert.throws(() => parseNullDelimitedGitPaths(Buffer.from([0xff, 0])), /not valid UTF-8/u);
 });

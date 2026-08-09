@@ -69,10 +69,17 @@ counts, errors, and final disposition. The supplied report must exactly equal
 that recomputation; an empty automated criterion or empty GREEN evidence cannot
 pass. The report receipt-digest set must exactly equal the supplied closed
 evidence manifest and receipt set. Receipt repository and result bindings are
-rechecked, and every receipt-declared artifact is verified against the actual
-bytes in the canonical mission worktree. Changed paths are
+rechecked by phase: RED receipts must be completed failing commands at their
+exact receipt revision, while GREEN receipts must be completed successful
+commands. Resume packets may preserve valid structure, RED, or GREEN acceptance
+without claiming completion; checkout and review remain current-HEAD GREEN
+only. The snapshotted spec's repository root and branch must exactly equal the
+canonical mission worktree and planned branch, including valid manual-only
+specs with no commands or receipts. Every receipt-declared artifact is verified
+against the actual bytes in that worktree. Changed paths are read from raw
+NUL-delimited `git diff --name-only -z` bytes with fatal UTF-8 decoding,
 recomputed from exact `base..HEAD`, persisted in locale-independent UTF-8 byte
-order, and every path must be owned by the mission.
+order, and required to be canonical and owned by the mission.
 
 The closed v2 packet binds flight, exact plan, mission, canonical repository
 and worktree, branch, base ref/revision, HEAD, ordered changed paths, state,
@@ -96,13 +103,17 @@ packet identity set to equal the target mission's declared dependencies. It
 also snapshots each packet-bound handoff state, predecessor, acceptance spec,
 acceptance report, evidence manifest, receipt, and receipt-declared artifact
 source once. Full acceptance semantics are recomputed from those snapshots.
+The replayed acceptance spec repository root and branch must again equal the
+canonical planned mission worktree and branch, so a self-consistent report and
+manifest cannot substitute a spec for another checkout.
 Every source must have its exact canonical path, byte count, and digest and is
 registered with its packet, role, receipt ID, and artifact path as applicable.
 Reusing one canonical source for distinct logical sources is rejected, and the
 closed report validator independently requires global source-path uniqueness.
 It re-resolves the current base and mission branch refs, canonical worktrees,
 branches, HEADs, cleanliness, and ancestry, then recomputes the
-locale-independent ordered `base..HEAD` changed paths. Missing, stale, aliased,
+locale-independent ordered `base..HEAD` changed paths through the same raw
+NUL-delimited, fatal-UTF-8 reader. Missing, stale, aliased,
 unexpected, duplicate, substituted, fabricated, out-of-scope, or
 exact-path-colliding packets or sources fail closed.
 
@@ -119,10 +130,17 @@ npx shield-ops teardown plan \
   --output /absolute/path/to/new-teardown-report.json
 ```
 
-Teardown is read-only. It inventories tracked, modified tracked, untracked,
-and ignored files for every existing canonical mission worktree. The optional
-integration ref must be exactly `refs/heads/{plan.integration.branch}`; the
-tool resolves that full ref with `show-ref --verify` before any ancestry check.
+Teardown is read-only. Before resolving any integration ref, it proves the
+planned repository root is still canonical, its exact base ref still resolves
+to the planned revision, and its canonical common Git directory is available.
+Every mission worktree must resolve to that same common Git directory; a
+foreign repository or replaced path is preserved and no branch-ref or ancestry
+eligibility check is attempted for it. It inventories tracked, modified
+tracked, untracked, and ignored files using raw NUL-delimited Git byte output,
+fatal UTF-8 decoding, and canonical relative-path validation. The optional
+integration ref must be exactly `refs/heads/{plan.integration.branch}`; only
+then does the tool resolve that full ref with `show-ref --verify` before any
+ancestry check.
 Exact mission branch-ref evidence must recover the observed HEAD. Every
 unrecorded regular file or symlink must either remain preserved or be matched
 by one unambiguous closed archive manifest and its actual external payload. The

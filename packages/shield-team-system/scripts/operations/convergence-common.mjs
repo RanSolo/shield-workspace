@@ -8,9 +8,44 @@ import {
   isPathContained,
   normalizeSystemPathAlias,
 } from './common.mjs';
+import { canonicalRelativePath } from './flight-common.mjs';
 
 export const compareUtf8 = (left, right) =>
   Buffer.compare(Buffer.from(String(left), 'utf8'), Buffer.from(String(right), 'utf8'));
+
+export const parseNullDelimitedGitPaths = (bytes, label = 'Git path output') => {
+  if (!(bytes instanceof Uint8Array)) throw new Error(`${label} is not a raw byte snapshot.`);
+  if (bytes.length === 0) return [];
+  if (bytes.at(-1) !== 0) throw new Error(`${label} is truncated or not NUL-delimited.`);
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`${label} is not valid UTF-8.`);
+  }
+  const paths = text.split('\0');
+  paths.pop();
+  if (paths.some((path) => path === '')) throw new Error(`${label} contains an empty path record.`);
+  for (const path of paths) {
+    if (canonicalRelativePath(path) !== path) throw new Error(`${label} contains a noncanonical path: ${JSON.stringify(path)}.`);
+  }
+  return paths;
+};
+
+export const readNullDelimitedGitPaths = (cwd, args, label = 'Git path output') => {
+  const bytes = execFileSync('git', ['-C', cwd, ...args], {
+    encoding: null,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return parseNullDelimitedGitPaths(bytes, label);
+};
+
+export const orderedChangedPaths = (worktree, baseRevision, head) =>
+  readNullDelimitedGitPaths(
+    worktree,
+    ['diff', '--name-only', '-z', '--diff-filter=ACDMRTUXB', `${baseRevision}..${head}`],
+    'Exact base..HEAD changed-path output',
+  ).sort(compareUtf8);
 
 const containsOrEquals = (root, candidate) =>
   candidate === root || isPathContained(root, candidate);

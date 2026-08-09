@@ -27,7 +27,7 @@ import {
   validateHandoffPredecessor,
   validateHandoffState,
 } from './handoff-state.mjs';
-import { assertOutputOutsideFlightWorktrees, compareUtf8 } from './convergence-common.mjs';
+import { assertOutputOutsideFlightWorktrees, compareUtf8, orderedChangedPaths } from './convergence-common.mjs';
 
 export const HANDOFF_PACKET_TYPE = 'exact-mission-handoff';
 export const HANDOFF_PACKET_NOTICE = 'Coordination evidence only. This packet grants no human approval, mission authority, merge authority, or publication authority.';
@@ -154,8 +154,8 @@ export const validateReceipt = (receipt, mapping, acceptance, mission, repositor
   if (exactKeys(receipt.repository, ['beforeRoot', 'beforeBranch', 'beforeHead', 'beforeClean', 'afterRoot', 'afterBranch', 'afterHead', 'afterClean'], `${label}.repository`, errors)) {
     if (receipt.repository.beforeRoot !== repository.worktree || receipt.repository.afterRoot !== repository.worktree ||
         receipt.repository.beforeBranch !== mission.branch || receipt.repository.afterBranch !== mission.branch ||
-        receipt.repository.beforeHead !== repository.head || receipt.repository.afterHead !== repository.head ||
-        receipt.repository.beforeClean !== true || receipt.repository.afterClean !== true) errors.push(`${label}.repository is not bound to the clean exact mission worktree and HEAD.`);
+        receipt.repository.beforeHead !== mapping.expectedRevision || receipt.repository.afterHead !== mapping.expectedRevision ||
+        receipt.repository.beforeClean !== true || receipt.repository.afterClean !== true) errors.push(`${label}.repository is not bound to the clean exact mission worktree and receipt revision.`);
   }
   if (!nonEmptyString(receipt.startedAt) || Number.isNaN(Date.parse(receipt.startedAt)) ||
       !nonEmptyString(receipt.completedAt) || Number.isNaN(Date.parse(receipt.completedAt)) ||
@@ -166,9 +166,15 @@ export const validateReceipt = (receipt, mapping, acceptance, mission, repositor
     errors.push(`${label}.durationMs does not match its timestamps.`);
   }
   if (exactKeys(receipt.result, ['status', 'exitCode', 'signal', 'timedOut', 'spawnError', 'artifactErrors'], `${label}.result`, errors)) {
-    if (receipt.result.status !== 'completed' || receipt.result.exitCode !== 0 || receipt.result.signal !== null ||
-        receipt.result.timedOut !== false || receipt.result.spawnError !== null ||
-        !Array.isArray(receipt.result.artifactErrors) || receipt.result.artifactErrors.length !== 0) errors.push(`${label} does not record successful GREEN evidence.`);
+    const completedCleanly = receipt.result.status === 'completed' && receipt.result.signal === null &&
+      receipt.result.timedOut === false && receipt.result.spawnError === null &&
+      Array.isArray(receipt.result.artifactErrors) && receipt.result.artifactErrors.length === 0;
+    if (mapping.phase === 'green' && (!completedCleanly || receipt.result.exitCode !== 0)) {
+      errors.push(`${label} does not record successful GREEN evidence.`);
+    }
+    if (mapping.phase === 'red' && (!completedCleanly || !Number.isInteger(receipt.result.exitCode) || receipt.result.exitCode === 0)) {
+      errors.push(`${label} does not record a completed failing RED command.`);
+    }
   }
   if (exactKeys(receipt.output, ['stdout', 'stderr'], `${label}.output`, errors)) {
     for (const stream of ['stdout', 'stderr']) {
@@ -223,7 +229,10 @@ export const validateHandoffPacket = (packet) => {
     if (![packet.repository.root, packet.repository.worktree, packet.repository.branch, packet.repository.baseRef].every(nonEmptyString) ||
         !GIT_REVISION_PATTERN.test(packet.repository.baseRevision ?? '') || !GIT_REVISION_PATTERN.test(packet.repository.head ?? '') ||
         packet.repository.clean !== true) errors.push('Packet repository identity is malformed.');
-    validateStringArray(packet.repository.changedPaths, 'packet.repository.changedPaths', errors);
+    if (!Array.isArray(packet.repository.changedPaths) ||
+        packet.repository.changedPaths.some((path) => canonicalRelativePath(path) !== path)) {
+      errors.push('packet.repository.changedPaths must contain only canonical relative paths.');
+    }
   }
   if (!Number.isSafeInteger(packet.sequence) || packet.sequence < 0) errors.push('packet.sequence must be a non-negative safe integer.');
   if (packet.sequence === 0) {
@@ -264,11 +273,6 @@ export const validateHandoffPacket = (packet) => {
     }
   }
   return errors;
-};
-
-const orderedChangedPaths = (worktree, baseRevision, head) => {
-  const output = git(worktree, ['diff', '--name-only', '--diff-filter=ACDMRTUXB', `${baseRevision}..${head}`]);
-  return output === '' ? [] : output.split('\n').sort(compareUtf8);
 };
 
 const requireCanonicalWorktree = async (value, mission) => {
@@ -393,6 +397,13 @@ export const compileHandoff = async (options) => {
   const acceptance = acceptanceSnapshot.value;
   const manifest = manifestSnapshot.value;
   errors.push(...validateAcceptanceReport(acceptance), ...validateEvidenceManifest(manifest));
+  const specRepository = specSnapshot.value?.repository;
+  const canonicalSpecRoot = nonEmptyString(specRepository?.root)
+    ? await canonicalExistingPath(specRepository.root).catch(() => undefined)
+    : undefined;
+  if (canonicalSpecRoot !== worktree || specRepository?.root !== worktree || specRepository?.branch !== mission.branch) {
+    errors.push('Acceptance spec repository root and branch do not exactly match the canonical mission worktree and planned branch.');
+  }
   if (acceptance.specPath !== specSnapshot.path || acceptance.specSha256 !== specSnapshot.sha256) {
     errors.push('Acceptance report does not bind the canonical supplied acceptance spec snapshot.');
   }
@@ -410,8 +421,8 @@ export const compileHandoff = async (options) => {
   for (const mapping of (Array.isArray(manifest.receipts) ? manifest.receipts : [])) {
     if (mappingByDigest.has(mapping.receiptSha256)) errors.push(`Duplicate manifest receipt digest: ${mapping.receiptSha256}`);
     mappingByDigest.set(mapping.receiptSha256, mapping);
-    if (options.mode !== 'resume' && (mapping.phase !== 'green' || mapping.expectedRevision !== repository?.head)) {
-      errors.push(`Receipt ${mapping.receiptId} is not GREEN evidence at current HEAD.`);
+    if (options.mode !== 'resume' && mapping.phase === 'green' && mapping.expectedRevision !== repository?.head) {
+      errors.push(`GREEN receipt ${mapping.receiptId} is not evidence at current HEAD.`);
     }
   }
   const summarySet = new Set((Array.isArray(acceptance.receiptSummaries) ? acceptance.receiptSummaries : []).map((item) =>

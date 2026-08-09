@@ -25,6 +25,7 @@ import {
   assertOutputOutsideFlightWorktrees,
   compareUtf8,
   inspectExternalArtifactPath,
+  readNullDelimitedGitPaths,
 } from './convergence-common.mjs';
 
 export const TEARDOWN_REPORT_TYPE = 'feature-flight-teardown-plan';
@@ -34,7 +35,6 @@ export const ARCHIVE_TYPE = 'feature-flight-recovery-archive';
 export const ARCHIVE_PAYLOAD_TYPE = 'feature-flight-recovery-payload';
 export const ARCHIVE_PAYLOAD_FORMAT = 'json-base64-v1';
 
-const splitNull = (value) => value.split('\0').filter((item) => item !== '');
 const fileIdentityKey = (item) => `${item.path}\0${item.category}`;
 const orderedFiles = (items) => [...items].sort((left, right) => compareUtf8(fileIdentityKey(left), fileIdentityKey(right)));
 
@@ -196,12 +196,12 @@ const inventoryFile = async (worktree, path, category, recordedAtHead) => {
 };
 
 const inventoryWorktree = async (worktree) => {
-  const tracked = splitNull(git(worktree, ['ls-files', '-z']));
-  const untracked = splitNull(git(worktree, ['ls-files', '--others', '--exclude-standard', '-z']));
-  const ignored = splitNull(git(worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']));
+  const tracked = readNullDelimitedGitPaths(worktree, ['ls-files', '-z'], 'Tracked-file inventory');
+  const untracked = readNullDelimitedGitPaths(worktree, ['ls-files', '--others', '--exclude-standard', '-z'], 'Untracked-file inventory');
+  const ignored = readNullDelimitedGitPaths(worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'], 'Ignored-file inventory');
   const modified = new Set([
-    ...splitNull(git(worktree, ['diff', '--name-only', '-z'])),
-    ...splitNull(git(worktree, ['diff', '--cached', '--name-only', '-z'])),
+    ...readNullDelimitedGitPaths(worktree, ['diff', '--name-only', '-z'], 'Modified-file inventory'),
+    ...readNullDelimitedGitPaths(worktree, ['diff', '--cached', '--name-only', '-z'], 'Staged-file inventory'),
   ]);
   const entries = [];
   for (const path of tracked) entries.push(await inventoryFile(worktree, path, 'tracked', !modified.has(path)));
@@ -307,9 +307,29 @@ export const planTeardown = async ({ planPath, integrationRef, archiveEvidencePa
   if (integrationRef !== undefined && integrationRef !== expectedIntegrationRef) {
     throw new Error(`Integration ref must exactly equal ${expectedIntegrationRef}; aliases, tags, commits, and mission refs are unsupported.`);
   }
+  const planRoot = await canonicalExistingPath(plan.repository.root).catch(() => undefined);
+  const plannedRepository = planRoot === plan.repository.root ? inspectGit(planRoot) : null;
+  if (!plannedRepository || plannedRepository.root !== planRoot) {
+    throw new Error('Planned repository root is unavailable, non-canonical, or no longer a Git worktree root.');
+  }
+  let planGitDirectory;
+  try {
+    planGitDirectory = await canonicalExistingPath(git(planRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+  } catch {
+    throw new Error('Planned repository common Git directory is unavailable or non-canonical.');
+  }
+  let baseRefRevision;
+  try {
+    baseRefRevision = git(planRoot, ['rev-parse', '--verify', `${plan.repository.baseRef}^{commit}`]);
+  } catch {
+    throw new Error(`Planned repository base ref is unavailable: ${plan.repository.baseRef}.`);
+  }
+  if (baseRefRevision !== plan.repository.baseRevision) {
+    throw new Error(`Planned repository base ref does not resolve to exact base ${plan.repository.baseRevision}.`);
+  }
   let integrationRevision;
   try {
-    integrationRevision = git(plan.repository.root, ['show-ref', '--verify', '--hash', expectedIntegrationRef]);
+    integrationRevision = git(planRoot, ['show-ref', '--verify', '--hash', expectedIntegrationRef]);
   } catch {
     throw new Error(`Exact integration branch ref is unavailable: ${expectedIntegrationRef}.`);
   }
@@ -366,6 +386,29 @@ export const planTeardown = async ({ planPath, integrationRef, archiveEvidencePa
         disposition: 'preserve-path-collision',
         recoverable: false,
         observed: null,
+        refEvidence: null,
+        inventory: [],
+        unrecordedArtifacts: [],
+        archiveEvidence,
+        integration: null,
+      });
+      continue;
+    }
+    let worktreeGitDirectory;
+    try {
+      worktreeGitDirectory = await canonicalExistingPath(git(path, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+    } catch {}
+    if (worktreeGitDirectory !== planGitDirectory) {
+      const archiveEvidence = archiveEntries.length > 0
+        ? archiveEvidenceFor(mission, observed, [], archiveEntries)
+        : null;
+      if (archiveEvidence) archiveRecords.push(archiveEvidence);
+      worktrees.push({
+        missionId: mission.id,
+        path,
+        disposition: 'preserve-foreign-repository',
+        recoverable: false,
+        observed: { branch: observed.branch, head: observed.head, clean: observed.clean },
         refEvidence: null,
         inventory: [],
         unrecordedArtifacts: [],
