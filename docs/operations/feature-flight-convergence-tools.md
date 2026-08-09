@@ -163,3 +163,6 @@ worktree. Observed paths come from NUL-delimited
 unresolved, or non-canonical observations fail closed, including paths with
 embedded newlines or other control characters. Outputs are create-only and are
 not written when confinement or validation fails.
+
+After the flight, evaluate temporary self-tooling with the
+[experimental tool promotion process](./experimental-tool-promotion.md).

@@ -18,6 +18,7 @@ const commands = new Map([
   ["handoff compile", "handoff-compile.mjs"],
   ["integration check", "integration-check.mjs"],
   ["teardown plan", "teardown-plan.mjs"],
+  ["tool harvest", "tool-harvest.mjs"],
 ]);
 
 function usage() {
@@ -35,6 +36,7 @@ function usage() {
     "  shield-ops handoff compile --flight-plan FILE --mission-id ID --worktree PATH --acceptance-report FILE --evidence-manifest FILE --state FILE --expected-state-sha256 SHA256 --expected-state-sequence N [--predecessor-state FILE --expected-predecessor-sha256 SHA256] --receipt FILE... --output-dir NEW_DIRECTORY [--mode MODE]",
     "  shield-ops integration check --plan FILE --target-mission ID --packet FILE... [--output NEW_FILE]",
     "  shield-ops teardown plan --plan FILE [--integration-ref refs/heads/PLAN_INTEGRATION_BRANCH] [--archive-evidence FILE]... [--output NEW_FILE]",
+    "  shield-ops tool harvest --registry FILE [--output NEW_FILE]",
     "",
     "These commands create non-authoritative operational evidence. They do not grant",
     "mission authority, provenance, execution attestation, journal advancement,",
