@@ -8,7 +8,7 @@ effect.
 ## Initialize closed observed state
 
 ```bash
-npx shield-ops flight state-init \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs flight state-init \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --output /absolute/path/to/new-flight-state.json
 ```
@@ -37,7 +37,7 @@ human authority.
 ## Compute advisory routing
 
 ```bash
-npx shield-ops flight route \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs flight route \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --state /absolute/path/to/flight-state-1.json \
   --expected-state-sha256 STATE_SHA256 \

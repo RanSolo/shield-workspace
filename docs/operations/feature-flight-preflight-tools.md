@@ -8,7 +8,7 @@ deployments, or releases.
 ## Prepare a closed flight package
 
 ```bash
-npx shield-ops flight prep /absolute/path/to/manifest.json \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs flight prep /absolute/path/to/manifest.json \
   --output /absolute/path/to/new-package
 ```
 
@@ -66,7 +66,7 @@ exact generated-file inventory.
 ## Build the shared synthetic fixture
 
 ```bash
-npx shield-ops fixture build --output /absolute/path/to/new-fixture
+node packages/shield-team-system/scripts/operations/ops-cli.mjs fixture build --output /absolute/path/to/new-fixture
 ```
 
 Ghostscript availability and version are checked before any output directory is
@@ -84,7 +84,7 @@ resolved plan with these exact fields: `schemaVersion`, `bindingType`,
 ## Verify construction
 
 ```bash
-npx shield-ops construction check \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs construction check \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --require-created \
   --output /absolute/path/to/new-construction-report.json
@@ -99,7 +99,7 @@ explicitly.
 ## Diagnose the complete package
 
 ```bash
-npx shield-ops flight doctor \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs flight doctor \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --output /absolute/path/to/new-doctor-report.json
 ```
