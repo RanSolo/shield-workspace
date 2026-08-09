@@ -8,10 +8,14 @@ effect.
 ## Initialize closed observed state
 
 ```bash
-npx shield-ops flight state-init \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs flight state-init \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --output /absolute/path/to/new-flight-state.json
 ```
+
+The current surface does not provide a state-update command. Do not edit the
+snapshot in place; follow the explicit immutable snapshot contract in the
+[Feature Flight runbook](./feature-flight-runbook.md#state-update-contract).
 
 The create-only producer emits closed flight-state version 2. Every state binds
 the exact resolved-plan path, byte count, and SHA-256; flight ID; sequence;
@@ -33,7 +37,7 @@ human authority.
 ## Compute advisory routing
 
 ```bash
-npx shield-ops flight route \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs flight route \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --state /absolute/path/to/flight-state-1.json \
   --expected-state-sha256 STATE_SHA256 \
@@ -56,17 +60,17 @@ and mission objects require exact plan membership and cardinality; their
 JavaScript object-key enumeration order is not an identity signal. The closed
 transition table is:
 
-| From | Allowed current status |
-| --- | --- |
-| `planned` | `planned`, `authorized`, `cancelled`, `superseded` |
+| From         | Allowed current status                                                 |
+| ------------ | ---------------------------------------------------------------------- |
+| `planned`    | `planned`, `authorized`, `cancelled`, `superseded`                     |
 | `authorized` | `authorized`, `active`, `blocked`, `failed`, `cancelled`, `superseded` |
-| `active` | `active`, `blocked`, `failed`, `complete`, `cancelled`, `superseded` |
-| `blocked` | `blocked`, `active`, `failed`, `cancelled`, `superseded` |
-| `failed` | `failed`, `blocked`, `cancelled`, `superseded` |
-| `complete` | `complete`, `integrated`, `cancelled`, `superseded` |
-| `integrated` | `integrated` |
-| `cancelled` | `cancelled` |
-| `superseded` | `superseded` |
+| `active`     | `active`, `blocked`, `failed`, `complete`, `cancelled`, `superseded`   |
+| `blocked`    | `blocked`, `active`, `failed`, `cancelled`, `superseded`               |
+| `failed`     | `failed`, `blocked`, `cancelled`, `superseded`                         |
+| `complete`   | `complete`, `integrated`, `cancelled`, `superseded`                    |
+| `integrated` | `integrated`                                                           |
+| `cancelled`  | `cancelled`                                                            |
+| `superseded` | `superseded`                                                           |
 
 Mission removal or extra identity, lifecycle rollback, lane or activation-wave
 identity drift, wave regression, and clearing or substituting an established

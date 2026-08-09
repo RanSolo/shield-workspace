@@ -8,7 +8,7 @@ authority, publication authority, or permission to remove a worktree.
 ## Record closed handoff state
 
 ```bash
-npx shield-ops handoff state \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs handoff state \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --mission mission:a \
   --worktree /canonical/mission/worktree \
@@ -27,7 +27,7 @@ exact sequence-minus-one predecessor snapshot and its externally expected
 SHA-256:
 
 ```bash
-npx shield-ops handoff state \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs handoff state \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --mission mission:a \
   --worktree /canonical/mission/worktree \
@@ -41,7 +41,7 @@ npx shield-ops handoff state \
 ## Compile exact handoffs
 
 ```bash
-npx shield-ops handoff compile \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs handoff compile \
   --flight-plan /absolute/path/to/flight-plan.resolved.json \
   --mission-id mission:a \
   --worktree /canonical/mission/worktree \
@@ -90,7 +90,7 @@ machine-readable object level. The Markdown file is presentation-only.
 ## Prove integration readiness
 
 ```bash
-npx shield-ops integration check \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs integration check \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --target-mission mission:integration \
   --packet /absolute/path/to/dependency-a/handoff.json \
@@ -123,7 +123,7 @@ no checkout, merge, approval, publication, deployment, or release.
 ## Plan recoverable teardown
 
 ```bash
-npx shield-ops teardown plan \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs teardown plan \
   --plan /absolute/path/to/flight-plan.resolved.json \
   --integration-ref refs/heads/feature/test \
   --archive-evidence /absolute/path/to/recovery-archive.json \
