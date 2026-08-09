@@ -92,3 +92,6 @@ fields are `schemaVersion`, `reportType`, `authority`, `notice`,
 Legacy `legalActions` and `events` fields are rejected. The report remains
 advice for Feature Hill and performs no authority decision, dispatch, state
 write, journal mutation, merge, deployment, release, or other external effect.
+
+For ownership changes, integration, and recovery, continue with
+[Feature Flight convergence tools](./feature-flight-convergence-tools.md).
