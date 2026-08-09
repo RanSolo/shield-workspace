@@ -18,6 +18,14 @@ command validates exact Feature Flight plan/state bytes and, when supplied, one
 immediate predecessor edge. Its stdout projection always has `authority:none`
 and `gateEligible:false`; it performs no dispatch, mutation, or external effect.
 
+The internal [`runFeatureFlightStepV1`](./docs/operations/feature-flight-step.md)
+operations seam composes one already-active, dependency-free Daisy coordination
+cycle. It uses trusted schema-9 Runner replay and a host-owned atomic external
+claim store, persists a legal `active -> complete` successor, and writes the
+terminal result last. Its triad remains non-authoritative, gate-ineligible, and
+explicitly uncertain about effects outside the unchanged selected repository.
+No run/resume CLI is exposed.
+
 ## Public package surface
 
 The supported V0.3 consumer entry points are the package root plus `/mission`,

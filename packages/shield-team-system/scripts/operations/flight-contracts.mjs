@@ -519,3 +519,33 @@ export const validateImmediateTransition = (plan, predecessor, state) => {
   }
   return errors;
 };
+
+export const buildActiveToCompleteSuccessor = (plan, planIdentity, currentState, currentStateIdentity, missionId, observedAt) => {
+  assertResolvedPlan(plan);
+  assertFlightState(plan, planIdentity, currentState);
+  if (!sameArtifactIdentity(currentState.plan, planIdentity)) throw new Error("Current state plan identity does not match the supplied plan identity.");
+  if (!plan.missions.some((mission) => mission.id === missionId)) throw new Error("Successor mission is not present in the resolved plan.");
+  if (currentState.missions[missionId].status !== "active") throw new Error("Successor mission must currently be active.");
+  if (!SHA256_PATTERN.test(currentStateIdentity?.sha256 ?? "")) throw new Error("Current state identity must contain a lowercase SHA-256 digest.");
+  if (typeof observedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(observedAt) ||
+      Number.isNaN(Date.parse(observedAt)) || new Date(observedAt).toISOString() !== observedAt) {
+    throw new Error("Successor observedAt must be canonical UTC RFC 3339 with milliseconds.");
+  }
+
+  const successor = structuredClone(currentState);
+  successor.sequence += 1;
+  successor.predecessorSha256 = currentStateIdentity.sha256;
+  successor.missions[missionId].status = "complete";
+  successor.missions[missionId].authorityEvidence = null;
+  successor.lanes[successor.missions[missionId].lane].activeMissionId = null;
+  successor.wave.current = currentWaveFor(plan, successor);
+  successor.observedAt = observedAt;
+  successor.tool = { name: FLIGHT_STATE_SUCCESSOR_TOOL, version: FLIGHT_CONTRACT_VERSION };
+
+  const stateErrors = validateFlightState(plan, planIdentity, successor, "successor");
+  const transitionErrors = validateImmediateTransition(plan, currentState, successor);
+  if (stateErrors.length > 0 || transitionErrors.length > 0) {
+    throw new Error(`Invalid active-to-complete successor:\n- ${[...stateErrors, ...transitionErrors].join("\n- ")}`);
+  }
+  return successor;
+};
