@@ -114,3 +114,5 @@ be outside the package so they do not become unbound extra files.
 A healthy construction or doctor report is structural, observational evidence
 only. It is not Wheels Up, provenance, execution attestation, approval, or
 permission to act.
+
+After preflight, continue with [Feature Flight control tools](./feature-flight-control-tools.md).
