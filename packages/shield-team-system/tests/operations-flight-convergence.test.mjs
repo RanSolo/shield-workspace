@@ -439,6 +439,7 @@ test('teardown inventory rejects whitespace and control paths without trimming',
   const cases = [
     { name: 'leading whitespace', path: (worktree) => join(worktree, ' leading.txt') },
     { name: 'newline and control', path: (worktree) => join(worktree, 'line\ncontrol-\u0001.txt') },
+    { name: 'leading BOM', path: (worktree) => join(worktree, '\uFEFFfirst.txt') },
   ];
   for (const item of cases) {
     await context.test(item.name, async () => {
@@ -647,6 +648,10 @@ test('worktree porcelain parser preserves newline and control paths and rejects 
   assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`worktree ${controlledPath}\nHEAD ${'a'.repeat(40)}\n`, 'utf8')), /NUL-delimited/u);
   assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`HEAD ${'a'.repeat(40)}\0\0`, 'utf8')), /malformed record/u);
   assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`worktree ${controlledPath}\0unknown field\0\0`, 'utf8')), /malformed record/u);
+  assert.throws(
+    () => parseWorktreeListPorcelain(Buffer.from(`\uFEFFworktree /tmp/first\0HEAD ${'a'.repeat(40)}\0detached\0\0`, 'utf8')),
+    /malformed record/u,
+  );
 });
 
 test('NUL Git path parser preserves canonical bytes and rejects whitespace, controls, truncation, and invalid UTF-8', () => {
@@ -657,6 +662,10 @@ test('NUL Git path parser preserves canonical bytes and rejects whitespace, cont
   for (const path of [' leading.txt', 'a/line\nname', 'a/control-\u0001']) {
     assert.throws(() => parseNullDelimitedGitPaths(Buffer.from(`${path}\0`, 'utf8')), /noncanonical path/u);
   }
+  assert.throws(
+    () => parseNullDelimitedGitPaths(Buffer.from('\uFEFFfirst.txt\0', 'utf8')),
+    /noncanonical path.*\uFEFFfirst\.txt/u,
+  );
   assert.throws(() => parseNullDelimitedGitPaths(Buffer.from('a/result.txt', 'utf8')), /not NUL-delimited/u);
   assert.throws(() => parseNullDelimitedGitPaths(Buffer.from([0xff, 0])), /not valid UTF-8/u);
 });

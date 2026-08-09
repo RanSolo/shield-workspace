@@ -19,7 +19,7 @@ export const parseNullDelimitedGitPaths = (bytes, label = 'Git path output') => 
   if (bytes.at(-1) !== 0) throw new Error(`${label} is truncated or not NUL-delimited.`);
   let text;
   try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new Error(`${label} is not valid UTF-8.`);
   }
@@ -58,7 +58,7 @@ export const parseWorktreeListPorcelain = (bytes) => {
   }
   let text;
   try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new Error('Git worktree inventory is not valid UTF-8.');
   }

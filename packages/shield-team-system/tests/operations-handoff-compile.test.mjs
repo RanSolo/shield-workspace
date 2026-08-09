@@ -385,6 +385,23 @@ test('handoff changed-path reader rejects whitespace and control names without t
   }
 });
 
+test('handoff changed-path reader preserves and rejects a first BOM-leading filename', async () => {
+  const fixture = await createConvergenceFixture();
+  const revisedBase = git(fixture.worktreeA, ['rev-parse', 'HEAD']);
+  git(fixture.repository, ['reset', '--hard', revisedBase]);
+  fixture.plan.repository.baseRevision = revisedBase;
+  fixture.plan.repository.inspectedHead = revisedBase;
+  await writeJson(fixture.planPath, fixture.plan);
+  await writeFile(join(fixture.worktreeA, '\uFEFFfirst.txt'), 'adversarial\n');
+  git(fixture.worktreeA, ['add', '-A']);
+  git(fixture.worktreeA, ['commit', '-m', 'add BOM-leading path']);
+  const inputs = await createHandoffInputs(fixture, 'mission:a', 'path-leading-bom');
+  await assert.rejects(
+    () => compileHandoff(inputs.options),
+    /noncanonical path.*\uFEFFfirst\.txt/u,
+  );
+});
+
 test('handoff compile verifies receipt-declared artifact bytes in the exact worktree', async () => {
   const fixture = await createConvergenceFixture();
   const inputs = await createHandoffInputs(fixture, 'mission:a', 'artifact-forgery');
