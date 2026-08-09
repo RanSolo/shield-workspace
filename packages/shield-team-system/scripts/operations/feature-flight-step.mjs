@@ -512,7 +512,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
 
   let claimReached = false;
   let claimArtifact;
-  let claimDirectoryIdentity;
+  let claimHierarchyIdentity;
   let runnerContract;
   try {
     runnerContract = await runRunnerCycle(prepared.runner, {
@@ -526,7 +526,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
           const claimed = await dependencies.stepStore.claimStep(storeInput(prepared, { claim }));
           if (claimed.status !== "claimed") return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_conflict" };
           claimArtifact = claimed.claim;
-          claimDirectoryIdentity = claimed.directoryIdentity;
+          claimHierarchyIdentity = claimed.hierarchyIdentity;
           return { runnerContractVersion: 1, outcome: "claimed" };
         } catch {
           return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_failed" };
@@ -547,7 +547,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
     if (!claimReached) return stoppedProjection(prepared, runnerResult);
     return (await existingDisposition(prepared)) ?? recoveryProjection(prepared, "claim_boundary_uncertain");
   }
-  if (prepared.invocationCount !== 1 || claimArtifact === undefined || claimDirectoryIdentity === undefined) {
+  if (prepared.invocationCount !== 1 || claimArtifact === undefined || claimHierarchyIdentity === undefined) {
     return recoveryProjection(prepared, "invocation_or_claim_uncertain");
   }
 
@@ -564,7 +564,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
       prepared.plan, prepared.planArtifact, prepared.state, prepared.stateArtifact, prepared.mission.id, completedAt,
     );
     successorSnapshot = await dependencies.stepStore.writeSuccessor(storeInput(prepared, {
-      successor, expectedDirectoryIdentity: claimDirectoryIdentity,
+      successor, expectedHierarchyIdentity: claimHierarchyIdentity,
     }));
     const successorErrors = validateFeatureFlightStepSuccessor(prepared.plan, prepared.planArtifact, prepared.state, successorSnapshot.value);
     if (successorErrors.length > 0) throw new Error(successorErrors.join(" "));
@@ -595,7 +595,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
     const resultErrors = validateFeatureFlightStepResult(result);
     if (resultErrors.length > 0) throw new Error(resultErrors.join(" "));
     await dependencies.stepStore.writeResult(storeInput(prepared, {
-      result, expectedDirectoryIdentity: claimDirectoryIdentity,
+      result, expectedHierarchyIdentity: claimHierarchyIdentity,
     }));
   } catch {
     return recoveryProjection(prepared, successorSnapshot === undefined ? "successor_write_uncertain" : "result_write_uncertain");
@@ -603,7 +603,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
 
   let terminal;
   try {
-    terminal = await dependencies.stepStore.readStep(storeInput(prepared, { expectedDirectoryIdentity: claimDirectoryIdentity }));
+    terminal = await dependencies.stepStore.readStep(storeInput(prepared, { expectedHierarchyIdentity: claimHierarchyIdentity }));
     const triad = validateTriad(prepared, terminal);
     return {
       schemaVersion: 1, resultType: "feature-flight-step-projection", ...resultBase(prepared), outcome: "completed",

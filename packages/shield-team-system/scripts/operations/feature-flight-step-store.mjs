@@ -133,14 +133,22 @@ const openHierarchy = async (input, io, { allowMissing = false } = {}) => {
   }
 };
 
-const directoryToken = (retained) => Object.freeze({ path: retained.path, dev: retained.identity.dev, ino: retained.identity.ino });
+const identityToken = (retained) => Object.freeze({ path: retained.path, dev: retained.identity.dev, ino: retained.identity.ino });
+const hierarchyToken = (hierarchy) => Object.freeze({
+  root: identityToken(hierarchy.root),
+  effects: identityToken(hierarchy.effects),
+  effect: identityToken(hierarchy.directory),
+});
 const matchesToken = (retained, token) => token !== null && typeof token === "object" && !Array.isArray(token) &&
   Object.getPrototypeOf(token) === Object.prototype && Object.keys(token).length === 3 &&
   token.path === retained.path && token.dev === retained.identity.dev && token.ino === retained.identity.ino;
 
-const assertExpectedDirectory = (hierarchy, expected) => {
-  if (!hierarchy.directory || !matchesToken(hierarchy.directory, expected)) {
-    throw new Error("Feature Flight effect directory does not match the successful claim identity.");
+const assertExpectedHierarchy = (hierarchy, expected) => {
+  if (!hierarchy.root || !hierarchy.effects || !hierarchy.directory || expected === null || typeof expected !== "object" ||
+      Array.isArray(expected) || Object.getPrototypeOf(expected) !== Object.prototype ||
+      Object.keys(expected).length !== 3 || !matchesToken(hierarchy.root, expected.root) ||
+      !matchesToken(hierarchy.effects, expected.effects) || !matchesToken(hierarchy.directory, expected.effect)) {
+    throw new Error("Feature Flight claim hierarchy does not match the successful claim identity.");
   }
 };
 
@@ -173,7 +181,7 @@ const readFile = async (path, io) => {
 };
 
 const createFile = async (path, value, hierarchy, io) => {
-  assertExpectedDirectory(hierarchy, hierarchy.expectedDirectoryIdentity);
+  assertExpectedHierarchy(hierarchy, hierarchy.expectedHierarchyIdentity);
   await assertHierarchy(hierarchy, io);
   let file;
   const bytes = canonicalBytes(value);
@@ -227,12 +235,13 @@ export const claimStep = async (input, injected = {}) => {
     await syncRetained(effects, "Feature Flight effects directory");
     directory = await retainDirectory(context.paths.directory, io);
     await syncRetained(directory, "Feature Flight effect directory");
-    const token = directoryToken(directory);
-    const hierarchy = { ...context, effects, directory, expectedDirectoryIdentity: token };
+    const hierarchy = { ...context, effects, directory };
+    const token = hierarchyToken(hierarchy);
+    hierarchy.expectedHierarchyIdentity = token;
     const claim = await createFile(context.paths.claim, input.claim, hierarchy, io);
     await assertHierarchy(hierarchy, io);
     await closeRetained(directory, effects, context.root);
-    return { status: "claimed", claim, directoryIdentity: token };
+    return { status: "claimed", claim, hierarchyIdentity: token };
   } catch (error) {
     await closeRetained(directory, effects, context.root).catch(() => {});
     throw error;
@@ -248,14 +257,14 @@ export const readStep = async (input, injected = {}) => {
       await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root);
       return { status: "absent", paths: hierarchy.paths };
     }
-    if (input.expectedDirectoryIdentity !== undefined) assertExpectedDirectory(hierarchy, input.expectedDirectoryIdentity);
+    if (input.expectedHierarchyIdentity !== undefined) assertExpectedHierarchy(hierarchy, input.expectedHierarchyIdentity);
     const [claim, successor, result] = await Promise.all([
       readFile(hierarchy.paths.claim, io), readFile(hierarchy.paths.successor, io), readFile(hierarchy.paths.result, io),
     ]);
     await assertHierarchy(hierarchy, io);
-    const token = directoryToken(hierarchy.directory);
+    const token = hierarchyToken(hierarchy);
     await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root);
-    const core = { paths: hierarchy.paths, claim, successor, result, directoryIdentity: token };
+    const core = { paths: hierarchy.paths, claim, successor, result, hierarchyIdentity: token };
     if (claim === null) return { status: "malformed", ...core };
     if (input.expectedAttemptDigest !== undefined && claim.value.attemptDigest !== input.expectedAttemptDigest) return { status: "conflicting", ...core };
     if (successor === null && result === null) return { status: "claimed", ...core };
@@ -271,9 +280,9 @@ export const readStep = async (input, injected = {}) => {
 const writeArtifact = async (input, filename, value, injected) => {
   const io = dependencies(injected);
   const hierarchy = await openHierarchy(input, io);
-  hierarchy.expectedDirectoryIdentity = input.expectedDirectoryIdentity;
+  hierarchy.expectedHierarchyIdentity = input.expectedHierarchyIdentity;
   try {
-    assertExpectedDirectory(hierarchy, input.expectedDirectoryIdentity);
+    assertExpectedHierarchy(hierarchy, input.expectedHierarchyIdentity);
     const snapshot = await createFile(hierarchy.paths[filename], value, hierarchy, io);
     await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root);
     return snapshot;
