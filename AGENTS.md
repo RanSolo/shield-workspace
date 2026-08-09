@@ -23,8 +23,18 @@ contract and must preserve the actual runtime/model and distinct host-tool
 executor identities in evidence. A local model is the seat executor, never the
 seat itself or a source of authority.
 
-Do not substitute an unnamed generic subagent for a SHIELD seat. Generated
-thread nicknames are display labels, not seat identities.
+The only permitted SHIELD subagent roles are `hill`, `daisy`, `fury`, `may`,
+and `mack`, as registered in `.codex/config.toml` and backed by the matching
+`.codex/agents/<seat>.toml` file. Route work to the seat whose contract owns
+it; do not substitute an unnamed or generic `default`, `worker`, `explorer`,
+or other fallback subagent. If no registered seat can fulfill the request,
+stop and escalate to Hill instead of silently falling back.
+
+Generated thread nicknames are display labels, not seat identities. The
+configured seat name, agent file, role instructions, and recorded agent role
+are authoritative. The project configuration pins each seat's nickname
+candidate to its canonical lowercase seat name where the host supports that
+setting.
 
 ## Workflow
 
