@@ -4,299 +4,347 @@
 
 - Repository: `RanSolo/shield-workspace`
 - Branch: `agent/issue-251-helicarrier-v0-slice-2`
-- Base and initial HEAD: `59c896c6c24594c5d2ab6e61d312bdf0e6bd443c`
+- Base: `59c896c6c24594c5d2ab6e61d312bdf0e6bd443c`
+- Initial plan commit: `d75ab11375d75658568be6e8fa6dab36c4c4babc`
+- Initial plan SHA-256:
+  `97e04706627c08eb387fb21dbbfea82603ce34e8b1379e53b60be03b292d6763`
 - Mission: `mission:issue-251-slice-2`
 - Mission revision: `sha256:CYMfPAQVBT8bwxdtthxUfT-oN1F8V7mN8ZuZ8L9BOeU`
-- Parent issue: #251
-- Predecessor implementation: PR #254 / Feature Flight status controller
 
-This file will be committed before implementation and supplied to Fury with
-its exact commit and SHA-256. It does not attempt a self-referential binding.
+This revision corrects the initial plan after Fury review. Its exact commit and
+SHA-256 are supplied externally for re-review.
 
-## Decision
+## Revised decision
 
-Slice 2 adds one host-composable `runFeatureFlightStepV1` boundary. It composes
-the merged Feature Flight status projection with the existing Runner V1
-authorization and one-cycle contract. It adds only the durable composition
-artifacts missing between those boundaries:
+Slice 2 proves the smallest safe effectful Helicarrier step: one already-active,
+explicitly authorized, read-only Daisy coordination cycle.
 
-1. an invocation manifest;
-2. an execute-once claim;
-3. a terminal step-result receipt; and
-4. one closed successor Feature Flight state.
+The controller:
 
-The trusted host supplies an existing Runner V1 authorizer, exactly one
-adapter, a pure validator, and repository observation. Runner V1 validates the
-authorization decision and execution identities. Helicarrier neither parses a
-new authority format nor accepts a caller boolean such as `authorized: true`.
+1. structurally replays the merged Feature Flight plan/state boundary;
+2. obtains Runner V1 input from trusted schema-9 journal replay, never from the
+   invocation manifest;
+3. obtains adapter/runtime/executor identity from a trusted host descriptor;
+4. claims one stable logical step atomically in a host-owned external store;
+5. invokes the trusted Daisy adapter at most once;
+6. persists one legal `active -> complete` successor state; and
+7. writes the terminal result receipt last so no incomplete artifact can look
+   terminal.
 
-This slice intentionally adds no `shield-ops flight run` command. A CLI cannot
-safely manufacture trusted authorizer/adapter dependencies from JSON. The
-module is the bounded composition seam that a later slice may wire to a real
-host adapter. The existing `shield-ops flight status` command remains the only
-operator command.
+This slice excludes May because behavioral implementation must continue through
+`runGovernedMayDispatchStepV1`. It excludes Mack because generic V0.3 dispatch
+does not admit Mack. It excludes Fury because review-gate composition is a later
+slice. Human seats remain impossible.
+
+No `shield-ops flight run` CLI is added. A CLI cannot safely synthesize trusted
+journal replay, adapter identity, or host claim-store dependencies from JSON.
 
 ## Reuse map
 
-| Concern | Existing owner reused unchanged |
+| Concern | Canonical owner reused unchanged |
 | --- | --- |
-| Exact plan/state/predecessor snapshots and candidate selection | `computeFeatureFlightStatus` in `feature-flight-controller.mjs` |
-| Plan/state schema, transitions, current-wave calculation | `flight-contracts.mjs` |
-| Authorization decision, one-cycle execution, identity validation, stop semantics | `runRunnerCycle` and Runner V1 validators from `@shield/team-system/runner` |
-| Reserved-output identity, durable write, file/parent sync, rollback | `retainReservedOutput`, `writeReservedOutput`, `snapshotFile`, and `stableJson` from `common.mjs` |
-| Exact Git root/branch/HEAD/clean observation | injected host observer returning the closed repository observation defined below; no remote observation in this slice |
+| Exact plan/state/predecessor byte replay | `computeFeatureFlightStatus` |
+| Plan/state schema, lane consistency, current wave, legal transitions | `flight-contracts.mjs` |
+| Trusted mission projection and exact Runner input | host dependency backed by existing schema-9 replay and Runner V1 input construction |
+| Authorization, identity checks, one-cycle stop semantics | `runRunnerCycle` and Runner V1 validators |
+| Daisy seat and `coordination` effect constraints | Runner V1 role/effect contracts plus this narrower controller policy |
+| Canonical JSON and snapshot primitives | `common.mjs` |
 
-Seat dispatch receipts and governed-May dispatch remain authoritative sources
-for their own domains but are not copied into the Feature Flight composition
-artifacts. The Runner authorizer/adapter may itself be backed by those systems;
-Helicarrier treats their details as opaque existing authority and execution
-boundaries.
+The new claim store adapts the durability pattern of `seat-dispatch-store.mts`
+but owns a distinct Feature Flight composition artifact and external namespace.
+It does not copy the seat-dispatch event/receipt schema.
 
-## New module boundary
+## New files and API
 
-Add `packages/shield-team-system/scripts/operations/feature-flight-step.mjs`.
-It exports:
+Add:
+
+- `packages/shield-team-system/scripts/operations/feature-flight-step-store.mjs`;
+- `packages/shield-team-system/scripts/operations/feature-flight-step.mjs`;
+- `packages/shield-team-system/tests/operations-feature-flight-step.test.mjs`.
+
+`feature-flight-step.mjs` exports:
 
 - `FEATURE_FLIGHT_STEP_CONTRACT_VERSION = "1.0.0"`;
-- closed validators for the invocation manifest, claim, and result receipt;
+- closed artifact validators;
 - `runFeatureFlightStepV1(input, trustedDependencies)`.
 
-The module is packaged as an internal operations component for later CLI
-composition. It is not a new public package export in this slice.
+The API is an internal packaged operations seam for later CLI composition, not
+a new public package export.
 
-## Closed invocation input
+## Caller input
 
-`runFeatureFlightStepV1` accepts exactly:
+The caller supplies exactly:
 
-- the exact status inputs already accepted by `computeFeatureFlightStatus`:
-  plan path/digest, state path/digest/sequence, and the paired predecessor
-  path/digest when non-genesis;
-- one closed `feature-flight-step-invocation` schema version 1 manifest;
-- three distinct absolute reserved output paths: claim, result, successor;
-- `maxSteps`, exactly integer `1`.
+- plan path and expected digest;
+- current state path, expected digest, and sequence;
+- paired predecessor path/digest when the current state is non-genesis;
+- `maxSteps:1`;
+- one closed routing hint containing only `flightId` and `missionId`.
 
-The invocation manifest contains exactly:
+The caller supplies no Runner projection, governance state, authorization,
+adapter identity, runtime identity, executor identity, timestamp, repository
+expectation, store root, output path, result status, or PASS-like decision.
 
-- `schemaVersion:1`, `manifestType:"feature-flight-step-invocation"`;
-- `flightId`, `missionId`, `lane`, and `activationWave`, exactly matching the
-  status projection's sole `nextCandidate`;
-- exact plan and current-state artifact identities;
-- nullable predecessor artifact identity matching the status projection;
-- exact repository expectation `{root,branch,head,clean:true}` where root is
-  canonical absolute, branch is a nonempty string, and head is lowercase
-  40-hex;
-- exact adapter identity `{adapterId,adapterVersion,runtimeId,executorId}`;
-- one Runner V1 cycle input;
-- `resultStatusOnCompleted:"complete"` and
-  `resultStatusOnFailed:"failed"` as fixed policy constants;
-- one canonical host-trusted `startedAt` timestamp;
-- exact relative output names for claim, result, and successor. Paths in the
-  manifest are names only; the separately supplied absolute paths must have
-  those basenames and share one external canonical parent.
+The plan/state paths retain the exact snapshot/path constraints from Slice 1.
+The routing hint must name the exact active mission discovered below; it grants
+no authority.
 
-The Runner plan must bind the candidate and flight state:
+## Trusted dependency boundary
 
-- `missionId` equals the candidate mission ID;
-- `seatId` is one of `daisy`, `fury`, `may`, or `mack` and equals an explicit
-  closed candidate-seat mapping supplied by the resolved plan extension in the
-  manifest; no human seat is dispatchable;
-- `cycleId`, `subjectId`, `revisionId`, `evaluatedThroughSequence`, action,
-  effect class/key, validation ID, modes, and allowlist remain Runner-owned;
-- `evaluatedThroughSequence` equals the current flight-state sequence;
-- `stopCondition` is `after_one_cycle`;
-- the Runner projection is execute-ready and its mission/revision/sequence
-  identity exactly matches the Runner plan;
-- one invocation manifest maps one candidate to one Runner cycle only.
+`trustedDependencies` is snapshotted before the first await and contains only
+own enumerable data fields:
 
-The existing Feature Flight resolved plan does not currently assign a seat.
-The manifest therefore contains `candidateSeatId`; this is routing data, not
-authority. It must equal the Runner seat and a named SHIELD specialist. A later
-plan schema may own seat routing; this slice does not revise plan schema 1.
+- `loadRunnerCycleInput(context)` — replays the current schema-9 mission journal
+  and returns one Runner V1 input plus its exact canonical bytes/digest;
+- `authorizeRunner(plan)` — existing Runner V1 authorizer;
+- `invokeDaisyAdapter(plan, decision, descriptor)` — sole adapter invocation;
+- `validateDaisyResult(plan, executorResult)` — pure Runner V1 validation;
+- `observeRepository(root)` — host-observed exact root/branch/HEAD/clean tuple;
+- `adapterDescriptor` — trusted closed
+  `{adapterId,adapterVersion,runtimeId,executorId}`;
+- `claimStoreRoot` — trusted host-owned canonical absolute directory;
+- `clock.now()` — trusted canonical UTC millisecond timestamp;
+- the atomic step-store and snapshot primitives, replaceable only in tests.
 
-## Trusted dependency contract
+Proxy-backed, accessor-backed, inherited, missing, extra, or mutable dependency
+shapes fail before the store or adapter is touched. Descriptor values are
+snapshotted and frozen. Adapter output cannot override attribution.
 
-`trustedDependencies` is a plain closed data object containing only:
+Runtime and host-tool executor remain separate identities. The result receipt
+states only that the trusted host supplied and observed those identities; it
+does not treat model self-report as host observation.
 
-- `observeRepository(root)`, returning exact
-  `{root,branch,head,clean}`;
-- `authorizeRunner(plan)`, an existing Runner V1 authorizer;
-- `invokeAdapter(plan, decision)`, the sole adapter call;
-- `validateAdapterResult(plan, executorResult)`, a pure Runner V1 validator;
-- optional injected snapshot/reserved-output primitives used only by tests.
+## Trusted Runner binding
 
-Every function is snapshotted before the first await. Accessor-backed,
-inherited, proxy-backed, missing, or extra dependencies fail before any claim
-write or adapter invocation.
+The returned Runner input is validated unchanged by Runner V1 and must satisfy:
 
-The controller counts adapter calls itself. Any second attempted call is a
-contract defect and returns recovery-required without making the second call.
-Validation is not an adapter invocation and must be pure.
+- mission/subject/revision/evaluated journal sequence agree throughout its
+  projection, resolved mode context, and plan;
+- its canonical digest is computed by the controller and bound into the step;
+- `plan.seatId === "daisy"`;
+- `plan.effectClass === "coordination"`;
+- `plan.stopCondition === "after_one_cycle"`;
+- Daisy participates and is executable under the replayed projection;
+- governance, mission authorization, execution status, and execute readiness
+  are accepted only from the trusted replayed projection;
+- Runner `evaluatedThroughSequence` remains the journal sequence and is never
+  equated with Feature Flight state sequence.
 
-## Durable composition artifacts
+The Runner mission ID equals the active Feature Flight mission ID. Runner
+revision and journal sequence remain independent from the flight-state sequence
+and repository HEAD and are separately recorded.
 
-All three files are canonical JSON with a trailing newline, closed and
-versioned, and live outside every resolved-plan mission worktree and repository
-root. The caller pre-creates each as an empty mode-0600 non-symlink regular
-file. Parent and target identities are retained before the first write.
+## Active Feature Flight selection
 
-### Execute-once claim
+`computeFeatureFlightStatus` remains the structural snapshot owner. For this
+slice, the expected structural result is its existing
+`authority-verification-required` global stop, because `active` is an
+authority-derived status.
 
-`feature-flight-step-claim` schema version 1 contains:
+After trusted Runner replay succeeds, the controller may select exactly one
+mission only when:
 
-- contract/tool identity;
-- deterministic `stepId`, derived from canonical manifest bytes;
-- exact manifest, plan, state, and nullable predecessor identities;
-- candidate mission/lane/wave and Runner cycle identity;
-- adapter/runtime/executor identity;
-- expected repository observation;
-- `startedAt`;
-- `authority:"none"` and an explicit notice that the claim grants no authority.
+- the route names an exact plan mission;
+- current state status is `active`;
+- that mission's lane names it as the sole `activeMissionId`;
+- every other lane has no active mission;
+- its dependencies are structurally `integrated`;
+- its state revision is lowercase 40-hex;
+- plan mission worktree and branch equal the host-observed repository root and
+  branch; and
+- observed HEAD equals the active state's revision and the worktree is clean.
 
-The claim is written, synced, and read back before authorization or adapter
-invocation. Exact replay behavior:
+The authority global stop is not ignored generally. It is discharged only for
+this exact active Daisy mission by the separately trusted Runner replay and
+authorization decision. Any other authority-derived status remains blocked.
 
-- all three exact artifacts present: validate and return the existing result
-  with `replayed:true`, invoking nothing;
-- claim present but result or successor absent: return `recovery_required` and
-  invoke nothing;
-- result/successor without the exact claim, conflicting nonempty bytes, or
-  malformed artifacts: return `recovery_required` and invoke nothing;
-- three empty reserved outputs: eligible for a first attempt.
+## Stable logical identity
 
-Recovery or completion of partial attempts is deferred. This slice only
-detects and stops.
+The controller derives `stepId` from canonical bytes containing only:
 
-### Terminal result receipt
+- contract version;
+- exact flight, plan identity, current state identity, and state sequence;
+- active mission/lane/wave and current repository revision;
+- trusted Runner input digest, Runner mission revision, journal sequence,
+  action ID, validation ID, and effect key;
+- trusted adapter/runtime/executor descriptor.
 
-`feature-flight-step-result` schema version 1 contains:
+Timestamp, artifact paths, store location, process identity, and caller-provided
+labels are excluded. The same logical effect therefore has one step ID across
+calls and cannot be moved to an alternate caller-selected store.
 
-- exact claim identity and `stepId`;
-- exact adapter/runtime/executor identity;
-- repository observations immediately before claim and immediately after the
-  Runner cycle;
-- the validated Runner cycle result;
-- exact successor bytes/size/digest computed before either terminal write;
-- `adapterInvocationCount`, exactly `0` for a pre-effect Runner stop or `1`
-  after invocation;
-- outcome `completed`, `failed`, or `recovery_required` derived from Runner
-  output, never caller supplied;
-- `authority:"none"`, `gateEligible:false`, and a non-authoritative notice.
+## Host-owned atomic store
 
-The receipt does not duplicate Runner authorization artifacts, seat-dispatch
-receipts, or effect records. It embeds the validated Runner result and binds
-its exact canonical digest.
+`feature-flight-step-store.mjs` implements a closed external store rooted only
+at trusted `claimStoreRoot`.
 
-### Successor Feature Flight state
+- The root must already exist, be canonical, non-symlink, mode 0700, and lie
+  outside the repository root and every plan worktree under exact and
+  ASCII-folded/canonical comparison.
+- Artifact paths are derived internally as
+  `<root>/steps/<stepId>/{claim.json,successor.json,result.json}`; callers do not
+  choose them.
+- The first claimant atomically creates `<stepId>` with exclusive directory
+  creation. Parent identity and directory durability are synced and verified.
+- If the directory already exists, no caller may invoke the adapter. The store
+  snapshots and classifies the exact artifacts as terminal replay, in-progress
+  recovery required, malformed/conflicting, or unavailable.
+- Concurrent calls and calls attempting a different external parent resolve to
+  the same trusted namespace; at most the exclusive creator may continue.
+- Every file is create-only mode 0600, written through retained non-symlink
+  handles, synced, parent-synced, closed, and read back exactly.
+- Lock/directory/file creation, partial write, sync, close, identity drift, or
+  readback uncertainty never reports claim or terminal success.
 
-The successor remains `non-authoritative-flight-state` schema version 2 and is
-validated by the existing `assertFlightState` plus
-`validateImmediateTransition` against the current state.
+The store exports only bounded `claimStep`, `readStep`, `writeSuccessor`, and
+`writeResult` operations. It performs no adapter or authority work.
 
-- `sequence` increments exactly once and `predecessorSha256` equals the exact
-  current-state digest;
-- tool is exactly `flight-state-successor-recorder@1.0.0`;
-- plan, flight, repository, lanes, and unaffected missions remain unchanged;
-- on validated Runner `advanced/effect_completed`, the selected mission becomes
-  `complete` with revision equal to the post-cycle observed lowercase 40-hex
-  repository HEAD;
-- on a deterministic executor or validator failure after one invocation, it
-  becomes `failed` with the post-cycle observed HEAD;
-- authorization wait/deny/stale/malformed, claim failure, executor uncertainty,
-  malformed executor/validator output, repository identity drift, or any
-  recovery-required condition produces no successor state;
-- current wave is recomputed by `currentWaveFor`; lane active mission remains
-  null because authority-aware active routing is outside this slice;
-- `authorityEvidence` remains null. Completion is observed coordination state,
-  not verified authority or acceptance.
+## Artifact contracts
 
-The result receipt is durably written and read back first. The successor is
-then written and read back. Success is exposed only after both exact readbacks
-and an unchanged claim readback.
+All artifacts are closed canonical JSON with a trailing newline and
+`authority:"none"`.
 
-## Deterministic execution order
+### Claim
 
-1. Snapshot and validate closed inputs/dependencies without host calls.
-2. Snapshot plan/state/predecessor and compute status.
-3. Require exactly one candidate and no global stop.
-4. Validate manifest/candidate/Runner/output-path bindings.
-5. Observe exact repository root/branch/HEAD/clean and compare to manifest.
-6. Retain all three reserved outputs and classify replay/partial/conflict.
-7. Write, sync, and read back the execute-once claim.
-8. Run `runRunnerCycle` once:
-   - existing authorizer first;
-   - claim callback returns claimed only after durable claim readback;
-   - adapter callback permits at most one call;
-   - pure validator callback follows Runner V1.
-9. Observe repository again and reject root/branch ambiguity or malformed HEAD.
-10. Derive and validate the result receipt and successor entirely in memory.
-11. Write/read back result, then write/read back successor, then re-read claim.
-12. Return one closed result projection.
+`feature-flight-step-claim` schema 1 binds:
 
-No adapter call occurs before steps 1–7 pass. No false success is returned
-after any write/readback/release uncertainty.
+- step ID and contract/tool identity;
+- exact plan/current/predecessor identities;
+- active mission/lane/wave and repository tuple;
+- trusted Runner input digest and independent Runner identity fields;
+- trusted adapter/runtime/executor descriptor;
+- host-trusted claim timestamp;
+- an explicit notice that the claim grants no authority.
+
+The claim must be durably read back before `runRunnerCycle` is entered.
+
+### Successor
+
+Only Runner `advanced/effect_completed` may produce a successor. The selected
+mission transitions legally from `active` to `complete`:
+
+- sequence increments once;
+- predecessor digest equals the exact current-state digest;
+- tool is `flight-state-successor-recorder@1.0.0`;
+- mission revision remains the same observed 40-hex HEAD;
+- its lane `activeMissionId` becomes null;
+- all other state is preserved except recomputed current wave;
+- `authorityEvidence` remains null.
+
+The existing state validator and immediate-transition validator must accept the
+successor before any terminal artifact write.
+
+Any Runner post-dispatch stopped result—including executor failure, uncertainty,
+malformed output, identity mismatch, validator failure, or validator mismatch—
+is `recovery_required` and produces no successor. Pre-dispatch Runner stops
+produce no adapter call and no successor.
+
+### Result receipt
+
+`feature-flight-step-result` schema 1 binds:
+
+- exact claim and successor artifact identities;
+- validated Runner advanced result and its canonical digest;
+- repository observations before claim and after the cycle, which must be
+  byte-identical because Daisy is read-only;
+- trusted adapter/runtime/executor descriptor;
+- invocation count exactly 1;
+- host-trusted completion timestamp not earlier than claim timestamp;
+- outcome exactly `completed`;
+- `gateEligible:false` and a notice that the triad is coordination evidence,
+  not human acceptance or implementation authority.
+
+Write order is claim, adapter, successor, result. The result is terminal only
+when exact claim-successor-result validation succeeds. Because result is written
+last, a successor without a result is visibly incomplete. After result write,
+all three are re-read and cross-validated before returning success.
+
+## Execution order
+
+1. Snapshot/validate caller and trusted dependency shapes.
+2. Snapshot plan/state/predecessor through the Slice 1 boundary.
+3. Load and validate the trusted Runner input and descriptor.
+4. Select the exact active Daisy mission and validate independent identity
+   domains.
+5. Observe exact mission worktree/branch/HEAD/clean state.
+6. Derive stable step ID and inspect the trusted store.
+7. Return exact terminal replay or recovery-required for any existing step.
+8. Invoke Runner V1. Its authorizer runs before the claim callback.
+9. The claim callback atomically claims/writes/readbacks the step; only a
+   claimed result permits continuation.
+10. The adapter callback counts and permits exactly one Daisy invocation.
+11. Any pre-dispatch stop returns `stopped`; any post-dispatch stop returns
+    `recovery_required` with claim identity and no successor.
+12. On Runner advanced, re-observe unchanged repository state.
+13. Derive and validate the legal successor, then write/read it.
+14. Derive result binding the successor, write/read it last, and re-read the
+    complete triad.
+15. Return `completed` only after exact terminal readback.
 
 ## Result projection
 
-Return one closed discriminated result:
+Closed result variants are:
 
-- `completed`: one adapter invocation, durable result and successor identities;
-- `failed`: one deterministic failed adapter/validation outcome plus durable
-  result and failed successor identities;
-- `stopped`: Runner stopped before adapter invocation, no terminal artifacts;
-- `replayed`: exact terminal artifacts reused, zero invocation;
-- `recovery_required`: partial, conflicting, uncertain, or post-effect
-  durability/freshness state, never success.
+- `completed`: one adapter invocation and exact terminal triad;
+- `replayed`: exact existing terminal triad and zero invocation;
+- `stopped`: authorization/pre-dispatch Runner stop and zero invocation;
+- `recovery_required`: claim-only, successor-only, malformed/conflicting store,
+  any post-dispatch stop, or any durability/readback/identity uncertainty.
 
-Each result binds `stepId`, exact plan/state/claim/result/successor identities,
-Runner reason, adapter invocation count, and deterministic reason code. It
-grants no authority and is not human acceptance.
+There is no `failed` terminal variant in this slice. Every projection preserves
+flight/state/Runner/adapter identities and grants no authority.
 
 ## Files
 
 - Retain this plan.
-- Add `packages/shield-team-system/scripts/operations/feature-flight-step.mjs`.
-- Update `packages/shield-team-system/scripts/operations/flight-contracts.mjs`
-  only for reusable successor construction/validation helpers.
-- Add `packages/shield-team-system/tests/operations-feature-flight-step.test.mjs`.
-- Update `packages/shield-team-system/tests/package-surface.test.mjs` to prove
-  the packed internal operations component is present and loadable.
-- Add mirrored `docs/operations/feature-flight-step.md` and
-  `packages/shield-team-system/docs/operations/feature-flight-step.md`.
-- Update both persisted-artifact contract matrices and the package README.
+- Add `scripts/operations/feature-flight-step-store.mjs`.
+- Add `scripts/operations/feature-flight-step.mjs`.
+- Update `scripts/operations/flight-contracts.mjs` only with a pure legal
+  active-to-complete successor builder.
+- Add `tests/operations-feature-flight-step.test.mjs`.
+- Update `tests/operations-feature-flight-controller.test.mjs` for the explicit
+  authority-stop-to-trusted-active composition boundary.
+- Update `tests/package-surface.test.mjs` for packed internal file presence.
+- Add mirrored `docs/operations/feature-flight-step.md` files.
+- Update both persisted-artifact contract matrices and package README.
 
-No existing Runner, dispatch-receipt, governed-May, mission, permission,
-authority, or CLI source is modified in this slice.
+No Runner, governed-May, seat-dispatch, authority, permission, journal, package
+export, or CLI source changes.
 
-## Tests and validation
+## Required tests
 
-- Happy path writes claim, invokes one adapter, writes result then successor,
-  and produces a valid immediate state edge.
-- Exact terminal retry invokes no dependency with effects and returns identical
-  artifact identities.
-- Claim-only, result-only, successor-only, malformed, conflicting, symlinked,
-  aliased, non-0600, replaced, partial-write, sync, close, and readback failures
-  never invoke or never report success according to their phase.
-- Authorization wait/deny/stale/malformed and repository mismatch fail before
-  adapter invocation; pre-claim failures leave every output empty.
-- Adapter throw, malformed identity, failed, uncertain, duplicate-call attempt,
-  and validator failure have exact deterministic classifications.
-- Successful and deterministic failed invocations each produce the permitted
-  successor status; uncertainty produces no successor.
-- Human seat, candidate mismatch, wrong wave, wrong plan/state/predecessor,
-  wrong Runner sequence/identity, extra fields, proxies, accessors, sparse
-  arrays, BOM/malformed UTF-8, and path overlap fail closed.
-- Output paths must be external to repository and every mission worktree,
-  distinct after canonicalization and ASCII folding, and precreated mode 0600.
-- Focused tests, package surface/pack, full team-system, Multiband tests, build,
-  mirrored-doc equality, allowlist check, and `git diff --check` pass.
+- Valid active Daisy cycle: trusted authorization, one atomic claim, one adapter
+  call, legal active-to-complete successor, result-last terminal triad.
+- Exact retry returns replay with zero authorizer/adapter/write calls.
+- Simultaneous calls expose at most one adapter invocation.
+- Caller attempts to vary timestamps, output locations, store roots, Runner
+  input, adapter identity, or repository expectations are impossible or do not
+  change step identity.
+- Stale/malformed trusted projection, distinct flight/journal sequences, wrong
+  mission/worktree/branch/HEAD, dirty state, wrong lane/active mission, and
+  missing dependencies stop before claim and adapter.
+- Mack, May, Fury, human seats, non-coordination effects, and generic adapters
+  fail before claim. May cannot bypass governed-May.
+- Every Runner authorization/pre-dispatch stop invokes no adapter. Every Runner
+  post-dispatch stopped reason returns recovery-required and no successor.
+- Adapter throw, second-call attempt, attribution spoof, repository mutation,
+  and validator defect cannot report success.
+- Alternate-parent replay, claim-only, successor-only, result without exact
+  predecessor artifacts, malformed/noncanonical bytes, symlinks, aliases,
+  traversal, casefold collisions, mode drift, partial write, sync, close,
+  directory durability, and final readback faults fail closed.
+- Successor passes existing state and immediate-edge validators; planned to
+  complete/failed shortcuts remain rejected.
+- Focused tests, package surface/pack, full team-system, Multiband, build,
+  mirrored-doc equality, changed-path allowlist, and `git diff --check` pass.
 - Mack validates and Fury reviews the exact implementation revision.
 
 ## Exclusions
 
-- No CLI `flight run`, `resume`, or multi-step loop.
-- No partial-attempt recovery or lease takeover.
-- No remote fetch, push, divergence, ancestry, or reconciliation behavior.
-- No review-gate, Mack/Fury automation, human-gate composition, or proving run.
-- No new authority class, signed schema, seat-dispatch schema, or journal entry.
-- No model-specific adapter, local-model invocation, merge, deployment,
-  release, cleanup, or destructive operation.
+- No May implementation, Fury review, Mack validation, human-seat, or generic
+  specialist dispatch.
+- No CLI run/resume, partial recovery, lease takeover, multi-step loop, remote
+  fetch/push/drift/reconciliation, review gates, proving flight, merge,
+  deployment, release, cleanup, or destructive effect.
+- No new authority class, signed schema, journal entry, seat-dispatch schema,
+  or caller-asserted authorization/attribution.
