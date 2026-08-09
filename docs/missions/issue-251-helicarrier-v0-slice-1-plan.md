@@ -75,8 +75,9 @@ accessor-backed, symbolic, sparse, or extra data fails closed.
   IDs, and writable paths are identity-bearing ASCII only. Human-facing title,
   objective, scope, and deliverable text may contain valid non-BOM UTF-8.
 - Constants: `schemaVersion:1`, `planType:"feature-flight-resolved-plan"`;
-  `prototype` is exactly `{name:"flight-prep", version:"1.0.0",
-  authority:"none", notice:<fixed planning-only notice>}`.
+  `prototype` is exactly name `flight-prep`, version `1.0.0`, authority
+  `none`, and this one-line notice literal:
+  `Planning output only. This artifact grants no mission authority or repository effect.`
 - `repository`: exactly `root`, `remoteUrl`, `baseRef`, `baseRevision`,
   `inspectedHead`, `inspectedBranch`, `inspectedWorktreeClean`, `collisions`.
   Revisions are lowercase 40-hex Git commits; `inspectedHead` equals
@@ -105,6 +106,11 @@ accessor-backed, symbolic, sparse, or extra data fails closed.
   `activationWave` is a positive safe integer; `dependencyLevel` is a
   non-negative safe integer; worktree is absolute; `dependsOn` is dense and
   may be empty; `writablePaths` and `deliverables` are dense and nonempty.
+- A structural worktree path is normalized only by Node's current-platform
+  `path.normalize`: the supplied absolute value must already equal that result
+  and may not end in a separator unless it is the filesystem root. Its
+  collision key is that unchanged normalized string with ASCII `A`–`Z` mapped
+  to `a`–`z`; no filesystem lookup or Unicode normalization is implied.
 - Integration, mission, and inspected branches are nonempty opaque ASCII refs
   using `[A-Za-z0-9._/@+-]+`, with `/` allowed internally; reject leading or
   trailing `/` or `.`, `//`, `..`, `@{`, backslash, control bytes, and `.lock`
@@ -118,13 +124,18 @@ accessor-backed, symbolic, sparse, or extra data fails closed.
   and writable-path identities are duplicate-free under exact and ASCII-folded
   comparison.
 - Dependencies reference known missions, are duplicate-free, exclude self,
-  and form an acyclic graph. Plan array order is authoritative tie order.
+  and form an acyclic graph. Duplicate-free applies independently within each
+  mission's `dependsOn` array; fan-out is valid and different missions may
+  share a predecessor. Every dependency must equal the canonical mission ID
+  byte-for-byte, not merely after ASCII folding. Plan array order is
+  authoritative tie order.
 - Writable paths use normalized `/`, reject absolute paths, `.`/`..`, empty
   components, control characters, BOM, backslash, traversal, and wildcards
   except a final ownership `/**`; ownership may not overlap across missions.
 - `evaluationContract`: exactly `fixtureId`, positive integer `version`, and a
   duplicate-free nonempty dense `scorecard` string array; fixture ID and every
-  scorecard item are nonempty strings.
+  scorecard item are nonempty strings. Positive integer means a safe integer
+  greater than zero.
 
 ## Exact state contract
 
@@ -135,7 +146,8 @@ version 2, preserving the selected #244 type/version.
   `flightId`, `plan`, `sequence`, `predecessorSha256`, `repository`, `wave`,
   `lanes`, `missions`, `observedAt`, `tool`.
 - Constants: `schemaVersion:2`, `stateType:"non-authoritative-flight-state"`,
-  `authority:"none"`, and the fixed observed-coordination notice.
+  `authority:"none"`, and this one-line notice literal:
+  `Observed coordination state only. Lifecycle status and authorityEvidence do not grant or prove SHIELD or human authority.`
 - Artifact identity is exactly `{path, bytes, sha256}` where bytes is a
   non-negative safe integer and SHA-256 is raw lowercase 64-hex.
 - `plan` equals the exact supplied plan artifact identity. `flightId` equals
@@ -161,11 +173,14 @@ version 2, preserving the selected #244 type/version.
   exactly `lane`, `activationWave`, `status`, `revision`, `authorityEvidence`.
   Lane/wave equal the plan and `authorityEvidence` is always null.
 - Status is one of `planned`, `authorized`, `active`, `blocked`, `failed`,
-  `complete`, `integrated`, `cancelled`, `superseded`. `planned`, `blocked`, and
-  `failed` require revision null. Every other status requires lowercase 40-hex
-  revision and triggers the global authority stop below.
-- `observedAt` is a valid timestamp string. It is recorded data, not trusted
-  freshness evidence.
+  `complete`, `integrated`, `cancelled`, `superseded`. `planned` requires
+  revision null. `blocked` and `failed` allow null or lowercase 40-hex. Every
+  other status requires lowercase 40-hex and triggers the global authority stop
+  below.
+- `observedAt` is canonical UTC RFC 3339 in exactly
+  `YYYY-MM-DDTHH:mm:ss.sssZ` form and must round-trip unchanged through
+  `new Date(value).toISOString()`. It is recorded data, not trusted freshness
+  evidence.
 
 ### Immediate-edge transition table
 
@@ -183,9 +198,11 @@ The only structurally allowed predecessor-to-current status transitions are:
 | `cancelled` | `cancelled` |
 | `superseded` | `superseded` |
 
-Lane and activation wave never change. Once non-null, revision never clears or
-changes. Current wave never decreases and cannot change from null back to a
-number. This validates one structural edge only; authority statuses still stop.
+Lane and activation wave never change. A null revision may become exact 40-hex;
+once non-null it never clears or changes. Thus revision-bearing
+`authorized/active -> blocked/failed` edges remain structurally valid. Current
+wave never decreases and cannot change from null back to a number. This
+validates one structural edge only; authority statuses still stop.
 
 ## Input bytes, paths, and replay limits
 
@@ -239,7 +256,8 @@ missions with dependencies remain `waiting-for-dependencies` and all others are
 The output is closed schema version 1 with exactly:
 
 - `schemaVersion:1`, `statusType:"shield-feature-flight-status"`;
-- `authority:"none"`, `gateEligible:false`, fixed advisory `notice`;
+- `authority:"none"`, `gateEligible:false`, and this one-line notice literal:
+  `Advisory structural projection only. This status grants no mission or human authority, proves no freshness, and performs no dispatch or external effect.`
 - `controller:{id:"shield-feature-flight-controller",version:"1.0.0"}`;
 - `freshness:{latestStateProven:false,completeHistoryProven:false,
   immediatePredecessorProven:<boolean>}`;
@@ -304,11 +322,16 @@ success; diagnostics go to stderr with nonzero exit.
   sequence discontinuity, cross-flight/plan replay, lifecycle regression,
   revision clearing/substitution, and wave regression fail closed.
 - An internally valid immediate edge reports that earlier history is unproven.
+- Every transition-table edge has a positive test, including revision-bearing
+  `authorized/active -> blocked/failed`; invalid revision clearing/substitution
+  remains negative.
 - Unknown keys, sparse/accessor/inherited/symbolic data, identity membership
   drift, cycles, duplicate/case-folded identities, lane ambiguity, path overlap,
   traversal, BOM, control characters, backslash, symlinks, canonical aliases,
   malformed UTF-8, and path replacement during snapshot fail closed.
 - CLI help and every argument error use the real operations CLI.
+- Repeated invocations over identical input bytes and arguments emit
+  byte-identical stdout.
 - Packed install includes the command and mirrored documentation.
 - Run focused tests, package-surface/pack, full team-system, and Multiband.
 - Mack validates and Fury reviews the exact implementation revision.
