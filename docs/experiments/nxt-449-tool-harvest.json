@@ -8,22 +8,28 @@
     "version": "0.1.0-local-prototype"
   },
   "registry": {
-    "path": "docs/experiments/nxt-449-tool-registry.json",
-    "bytes": 10683,
-    "sha256": "42398802299eb2de7921509b6ae72881589e4b67dcf94db6b434aef47dfaa376"
+    "artifactRoot": "../..",
+    "bytes": 11682,
+    "sha256": "fba835d2b3c64b5898d99dcb8919b03c27d2e1e2ea74cfc0e54048bef9a47bc2"
   },
   "totals": {
-    "minutesInvested": 0,
-    "observedMinutesAvoided": 0,
-    "reuseCount": 15,
-    "unknownInvestmentCount": 13,
-    "unknownAvoidanceCount": 13,
-    "netObservedMinutes": null
+    "minutesInvested": null,
+    "knownMinutesInvested": 0,
+    "unknownInvestmentCount": 14,
+    "observedMinutesAvoided": null,
+    "knownObservedMinutesAvoided": 0,
+    "unknownAvoidanceCount": 14,
+    "reuseCount": null,
+    "knownReuseCount": 15,
+    "unknownReuseCount": 1,
+    "netObservedMinutes": null,
+    "knownNetObservedMinutes": 0,
+    "unknownNetObservedMinutesCount": 14
   },
   "tools": [
     {
       "name": "evidence-run",
-      "path": "../../packages/shield-team-system/scripts/operations/evidence-run.mjs",
+      "path": "packages/shield-team-system/scripts/operations/evidence-run.mjs",
       "trigger": "RED and GREEN commands needed exact, redacted, create-only receipts instead of chat summaries.",
       "purpose": "Run one command without a shell and bind its result, Git state, output, and declared artifacts.",
       "inputs": [
@@ -33,7 +39,7 @@
         "declared artifacts"
       ],
       "outputs": [
-        "local-command-evidence receipt"
+        "mission-command-evidence receipt"
       ],
       "minutesInvested": null,
       "minutesAvoidedPerUse": null,
@@ -51,20 +57,22 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/evidence-run.mjs",
-        "bytes": 5225,
-        "sha256": "6e548e8ab2cee7b14ec13b17dbbac004502a8c566957d416d03b804e94d057df"
+        "path": "packages/shield-team-system/scripts/operations/evidence-run.mjs",
+        "bytes": 10153,
+        "sha256": "144b3f9bf79ea6de978e634e6fefbd1ce6871558eba94fb71fc95b4793ea2ab1"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "acceptance-check",
-      "path": "../../packages/shield-team-system/scripts/operations/acceptance-check.mjs",
+      "path": "packages/shield-team-system/scripts/operations/acceptance-check.mjs",
       "trigger": "Source acceptance criteria disappeared when plans paraphrased the ticket.",
       "purpose": "Enforce criterion-level RED/GREEN traceability and named manual evidence.",
       "inputs": [
-        "acceptance contract",
+        "acceptance spec",
+        "evidence manifest",
+        "expected spec digest",
         "phase",
         "expected revision",
         "command receipts"
@@ -88,16 +96,16 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/acceptance-check.mjs",
-        "bytes": 11492,
-        "sha256": "e60105a79e9411a38b1d89118721dae1468b9fb418cae2a9d4ded4244ddc0604"
+        "path": "packages/shield-team-system/scripts/operations/acceptance-check.mjs",
+        "bytes": 26494,
+        "sha256": "452dd20f8d2dcfbe4942a6e1b0ecb76ec2768c0f585c55ac607c1c9f5886b09a"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "flight-prep",
-      "path": "../../packages/shield-team-system/scripts/operations/flight-prep.mjs",
+      "path": "packages/shield-team-system/scripts/operations/flight-prep.mjs",
       "trigger": "Multiple POC lanes needed one frozen DAG, topology, and writable-path contract.",
       "purpose": "Validate and compile a create-only resolved Feature Flight package.",
       "inputs": [
@@ -125,16 +133,16 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/flight-prep.mjs",
-        "bytes": 18602,
-        "sha256": "e8e090fc4bd368e9036b9a0908fc3225b716ca101a545b337bbef52baa2b993b"
+        "path": "packages/shield-team-system/scripts/operations/flight-prep.mjs",
+        "bytes": 21088,
+        "sha256": "1c762df64e91ee672aeac8aa8e43722e798bf152d740596b129a67676a7d9135"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "fixture-build",
-      "path": "../../packages/shield-team-system/scripts/operations/fixture-build.mjs",
+      "path": "packages/shield-team-system/scripts/operations/fixture-build.mjs",
       "trigger": "Independent PDF POCs lacked one authoritative customer-free comparison fixture.",
       "purpose": "Create the bounded synthetic PDF fixture and hash every artifact.",
       "inputs": [
@@ -143,7 +151,8 @@
       "outputs": [
         "synthetic inputs",
         "negative inputs",
-        "fixture manifest"
+        "fixture manifest",
+        "fixture build receipt"
       ],
       "minutesInvested": null,
       "minutesAvoidedPerUse": null,
@@ -160,16 +169,16 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/fixture-build.mjs",
-        "bytes": 10475,
-        "sha256": "198099de8ecbea28509b60f9e575f84c3d79dacb0c3de2e6190742481472fa88"
+        "path": "packages/shield-team-system/scripts/operations/fixture-build.mjs",
+        "bytes": 13056,
+        "sha256": "71fc4b14fc0aa0580bbd0e80e6603a7e9db9d9038eced002ae633b5e140b013a"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "construction-check",
-      "path": "../../packages/shield-team-system/scripts/operations/construction-check.mjs",
+      "path": "packages/shield-team-system/scripts/operations/construction-check.mjs",
       "trigger": "Lane chats could not safely infer whether planned worktrees and branches existed at the frozen base.",
       "purpose": "Observe the declared worktree topology without constructing or deleting it.",
       "inputs": [
@@ -193,16 +202,16 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/construction-check.mjs",
-        "bytes": 3036,
-        "sha256": "45af6f7b908858116fdc0a86667aa0c41a9441400c0c7f624f482aa4eda06eac"
+        "path": "packages/shield-team-system/scripts/operations/construction-check.mjs",
+        "bytes": 7136,
+        "sha256": "ae1bd95192cfd3fb3bd8f3bc68d8d2ed3e8a106558c933cf593f7b347cd02d4f"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "flight-doctor",
-      "path": "../../packages/shield-team-system/scripts/operations/flight-doctor.mjs",
+      "path": "packages/shield-team-system/scripts/operations/flight-doctor.mjs",
       "trigger": "Flight readiness facts were distributed across packages, fixtures, worktrees, and artifact hashes.",
       "purpose": "Compose non-authoritative preflight health into one fail-closed report.",
       "inputs": [
@@ -228,16 +237,16 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/flight-doctor.mjs",
-        "bytes": 5517,
-        "sha256": "cfde8a402ec6d215d1667053109ed81e5fba3fc4d6582d32bbccc54eec29caaa"
+        "path": "packages/shield-team-system/scripts/operations/flight-doctor.mjs",
+        "bytes": 17888,
+        "sha256": "5d1d588b2beeffddccacc995a0739046a38e57e3c31198eaa32643ad49dadb9a"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "flight-state-init",
-      "path": "../../packages/shield-team-system/scripts/operations/flight-state-init.mjs",
+      "path": "packages/shield-team-system/scripts/operations/flight-state-init.mjs",
       "trigger": "The controlling Hill needed durable coordination state without inventing authority.",
       "purpose": "Create the initial immutable observation with every mission planned and authority references null.",
       "inputs": [
@@ -259,18 +268,18 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/flight-state-init.mjs",
-        "bytes": 1814,
-        "sha256": "a73320341731bf05a929f820aa27c6ff4b48397b6714ce5e1a1c76c4db9ea828"
+        "path": "packages/shield-team-system/scripts/operations/flight-state-init.mjs",
+        "bytes": 2802,
+        "sha256": "286717733c7c1593893d6aab19efb70381d2f8dd081adf67b9c7b5c8eae3623c"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "hill-kernel",
-      "path": "../../packages/shield-team-system/scripts/operations/hill-kernel.mjs",
+      "path": "packages/shield-team-system/scripts/operations/hill-kernel.mjs",
       "trigger": "Routine dependency, lane, and activation decisions consumed controller context.",
-      "purpose": "Compute legal routing candidates from the frozen plan and one immutable observation.",
+      "purpose": "Compute advisory routing candidates from the frozen plan and one immutable observation.",
       "inputs": [
         "resolved flight plan",
         "flight-state observation"
@@ -289,20 +298,57 @@
       "evidenceImproved": [
         "deterministic current wave",
         "explicit unmet dependencies",
-        "legal next-action candidates"
+        "advisory next-action candidates"
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/hill-kernel.mjs",
-        "bytes": 6509,
-        "sha256": "01b7a1c9d93ee7309464170f9b13a674bebbcb84c96fe4c97a44c5969d59f584"
+        "path": "packages/shield-team-system/scripts/operations/hill-kernel.mjs",
+        "bytes": 25385,
+        "sha256": "441c9efeaadc072f75a7aa0701937ca92748e47bb546912ab9ccb52f747a1394"
+      },
+      "observedMinutesAvoided": null,
+      "netObservedMinutes": null
+    },
+    {
+      "name": "handoff-state",
+      "path": "packages/shield-team-system/scripts/operations/handoff-state.mjs",
+      "trigger": "Mission ownership changes needed a compact state snapshot bound to exact flight and repository identity.",
+      "purpose": "Record a create-only closed handoff state without creating authority or advancing a journal.",
+      "inputs": [
+        "flight plan",
+        "mission",
+        "worktree",
+        "closed status",
+        "sequence",
+        "optional predecessor"
+      ],
+      "outputs": [
+        "closed handoff-state observation"
+      ],
+      "minutesInvested": null,
+      "minutesAvoidedPerUse": null,
+      "reuseCount": 0,
+      "errorsPrevented": [
+        "chat-only handoff state",
+        "stale predecessor reuse",
+        "wrong-worktree ownership transfer"
+      ],
+      "evidenceImproved": [
+        "exact mission checkout identity",
+        "sequence and predecessor binding"
+      ],
+      "recommendation": "promotion-candidate",
+      "artifact": {
+        "path": "packages/shield-team-system/scripts/operations/handoff-state.mjs",
+        "bytes": 14274,
+        "sha256": "1d45dd3397c479b1cbff39d5c3d879f43a27d2f8327286bbd93a6156927f2663"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "handoff-compile",
-      "path": "../../packages/shield-team-system/scripts/operations/handoff-compile.mjs",
+      "path": "packages/shield-team-system/scripts/operations/handoff-compile.mjs",
       "trigger": "Large cross-chat handoffs repeated facts already present in exact evidence.",
       "purpose": "Compile compact exact-head checkout, review, or resume packets.",
       "inputs": [
@@ -310,7 +356,9 @@
         "mission state",
         "worktree",
         "acceptance report",
-        "command receipts"
+        "evidence manifest",
+        "command receipts",
+        "state digest and sequence"
       ],
       "outputs": [
         "handoff JSON",
@@ -330,16 +378,16 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/handoff-compile.mjs",
-        "bytes": 9471,
-        "sha256": "b64ae00561223cd572d0be7a0584880deffad442eb9c082a2c3d978eee318b8f"
+        "path": "packages/shield-team-system/scripts/operations/handoff-compile.mjs",
+        "bytes": 37929,
+        "sha256": "c301d382d3224c0cd354dafad0743190f1918f9cbb043583d46f8824bc2e01f2"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "integration-check",
-      "path": "../../packages/shield-team-system/scripts/operations/integration-check.mjs",
+      "path": "packages/shield-team-system/scripts/operations/integration-check.mjs",
       "trigger": "Parallel lanes needed deterministic convergence checks before any integration action.",
       "purpose": "Verify exact dependency packets and detect stale, missing, unexpected, or colliding inputs.",
       "inputs": [
@@ -363,21 +411,22 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/integration-check.mjs",
-        "bytes": 5082,
-        "sha256": "a9a9723afa222bc856b12b422e5e002601187dfe72fe08d2ef9d0bccd01a94b4"
+        "path": "packages/shield-team-system/scripts/operations/integration-check.mjs",
+        "bytes": 28596,
+        "sha256": "9dd12d51ec1261c72d9f2b33ca27fedd552ad300c87863bc44dc8274227a1039"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "teardown-plan",
-      "path": "../../packages/shield-team-system/scripts/operations/teardown-plan.mjs",
+      "path": "packages/shield-team-system/scripts/operations/teardown-plan.mjs",
       "trigger": "Staged worktrees needed recoverability classification without destructive automation.",
       "purpose": "Classify worktrees for later human-confirmed retention or cleanup.",
       "inputs": [
         "flight plan",
-        "optional integration revision"
+        "optional exact planned integration branch ref",
+        "optional archive evidence"
       ],
       "outputs": [
         "non-destructive teardown plan"
@@ -395,16 +444,16 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/teardown-plan.mjs",
-        "bytes": 3469,
-        "sha256": "08d4868db7da0ca70aa12010abe6add205b5858e0e3a94ac7da3e106b0298295"
+        "path": "packages/shield-team-system/scripts/operations/teardown-plan.mjs",
+        "bytes": 26809,
+        "sha256": "ed89d31651a3a301937494873684dcd3127304e04d3da65575e219bdea2e4f0c"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "tool-harvest",
-      "path": "../../packages/shield-team-system/scripts/operations/tool-harvest.mjs",
+      "path": "packages/shield-team-system/scripts/operations/tool-harvest.mjs",
       "trigger": "Temporary self-tools needed an evidence-backed discard, retention, or promotion decision.",
       "purpose": "Hash bounded helpers and preserve observed reuse and unknown return honestly.",
       "inputs": [
@@ -428,16 +477,16 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/tool-harvest.mjs",
-        "bytes": 4794,
-        "sha256": "bb5265d83bb89bd136da24048cca7d0537e71f649792a6259367f420f0bd8f49"
+        "path": "packages/shield-team-system/scripts/operations/tool-harvest.mjs",
+        "bytes": 12958,
+        "sha256": "4beb642fe84f143beb44c726a341c181f4e7e3370fd873f12709506ffcfaec7e"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
     },
     {
       "name": "shield-ops",
-      "path": "../../packages/shield-team-system/scripts/operations/ops-cli.mjs",
+      "path": "packages/shield-team-system/scripts/operations/ops-cli.mjs",
       "trigger": "Operational helpers needed a surface visibly separate from the authority-bearing shield CLI.",
       "purpose": "Route supported non-authoritative operations and reject unknown commands.",
       "inputs": [
@@ -459,9 +508,9 @@
       ],
       "recommendation": "promotion-candidate",
       "artifact": {
-        "path": "../../packages/shield-team-system/scripts/operations/ops-cli.mjs",
-        "bytes": 2882,
-        "sha256": "ff4aefca4f9b1521fa2a9e0df3b8ce84cf3603639898089414501f518dda74c9"
+        "path": "packages/shield-team-system/scripts/operations/ops-cli.mjs",
+        "bytes": 3662,
+        "sha256": "14f1935f90014f4bd2a3faccaf588089a6719bd3077cd2cbe038d0aa08369b9d"
       },
       "observedMinutesAvoided": null,
       "netObservedMinutes": null
