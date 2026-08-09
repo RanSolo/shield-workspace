@@ -101,7 +101,7 @@ own enumerable data fields:
 - `validateDaisyResult(plan, executorResult)` — pure Runner V1 validation;
 - `observeRepository(root)` — host-observed exact root/branch/HEAD/clean tuple;
 - `adapterDescriptor` — trusted closed
-  `{adapterId,adapterVersion,runtimeId,executorId}`;
+  `{adapterId,adapterVersion,capabilityClass,runtimeId,executorId}`;
 - `claimStoreRoot` — trusted host-owned canonical absolute directory;
 - `clock.now()` — trusted canonical UTC millisecond timestamp;
 - the atomic step-store and snapshot primitives, replaceable only in tests.
@@ -114,6 +114,22 @@ Runtime and host-tool executor remain separate identities. The result receipt
 states only that the trusted host supplied and observed those identities; it
 does not treat model self-report as host observation.
 
+The only admitted adapter policy is fixed before claim:
+
+- `adapterId:"shield.daisy.readonly"`;
+- `adapterVersion:"1.0.0"`;
+- `capabilityClass:"read_only_coordination"`;
+- Runner `actionId:"action:feature-flight.daisy.reconnaissance"`;
+- Runner `effectClass:"coordination"`;
+- Runner `validationId:"validation:feature-flight.daisy-result-v1"`.
+
+The function itself remains a host-trusted dependency; the contract does not
+claim cryptographic containment of external model behavior. Repository
+readback proves only that the selected worktree remained unchanged. The result
+records external effect containment as uncertain and stays gate-ineligible.
+Any other descriptor, action, effect class, or validation ID fails before the
+claim store is touched.
+
 ## Trusted Runner binding
 
 The returned Runner input is validated unchanged by Runner V1 and must satisfy:
@@ -122,7 +138,8 @@ The returned Runner input is validated unchanged by Runner V1 and must satisfy:
   projection, resolved mode context, and plan;
 - its canonical digest is computed by the controller and bound into the step;
 - `plan.seatId === "daisy"`;
-- `plan.effectClass === "coordination"`;
+- `plan.actionId`, `plan.effectClass`, and `plan.validationId` equal the fixed
+  Daisy adapter policy above;
 - `plan.stopCondition === "after_one_cycle"`;
 - Daisy participates and is executable under the replayed projection;
 - governance, mission authorization, execution status, and execute readiness
@@ -148,7 +165,8 @@ mission only when:
 - current state status is `active`;
 - that mission's lane names it as the sole `activeMissionId`;
 - every other lane has no active mission;
-- its dependencies are structurally `integrated`;
+- `mission.dependsOn` is empty; this slice does not authenticate integrated
+  predecessor authority;
 - its state revision is lowercase 40-hex;
 - plan mission worktree and branch equal the host-observed repository root and
   branch; and
@@ -156,22 +174,33 @@ mission only when:
 
 The authority global stop is not ignored generally. It is discharged only for
 this exact active Daisy mission by the separately trusted Runner replay and
-authorization decision. Any other authority-derived status remains blocked.
+authorization decision. For the selected mission, the optional immediate
+predecessor may show only legal `authorized` or `active` status. Any other
+authority-derived status in current or predecessor state, including every
+other mission, remains blocked.
 
-## Stable logical identity
+## Stable effect claim and attempt evidence
 
-The controller derives `stepId` from canonical bytes containing only:
+The exclusive namespace key is `effectClaimId`, not the variable attempt
+identity. It is lowercase 64-hex SHA-256 over UTF-8 canonical JSON bytes with
+no trailing newline, using domain `shield-feature-flight-effect-claim.v1` and
+exactly:
 
-- contract version;
-- exact flight, plan identity, current state identity, and state sequence;
-- active mission/lane/wave and current repository revision;
-- trusted Runner input digest, Runner mission revision, journal sequence,
-  action ID, validation ID, and effect key;
-- trusted adapter/runtime/executor descriptor.
+- flight ID and exact resolved-plan digest;
+- mission ID, Runner subject ID, and Runner mission revision;
+- Runner action ID, effect class, and effect key.
 
-Timestamp, artifact paths, store location, process identity, and caller-provided
-labels are excluded. The same logical effect therefore has one step ID across
-calls and cannot be moved to an alternate caller-selected store.
+Timestamp, current-state digest/sequence, journal sequence, cycle ID,
+Runner-input digest, adapter/runtime/executor descriptor, artifact paths, store
+location, and process identity are excluded from `effectClaimId`.
+
+Variable attempt evidence is bound inside the claim: exact current and
+predecessor state identities, flight sequence, Runner input digest, journal
+sequence, cycle ID, validation ID, repository observation, adapter descriptor,
+and timestamp. Once an `effectClaimId` directory exists, different attempt
+evidence conflicts and returns recovery-required; it never creates another
+executable step. A legal alternate `active -> active` state or later journal
+replay with the same effect claim therefore cannot invoke again.
 
 ## Host-owned atomic store
 
@@ -182,9 +211,9 @@ at trusted `claimStoreRoot`.
   outside the repository root and every plan worktree under exact and
   ASCII-folded/canonical comparison.
 - Artifact paths are derived internally as
-  `<root>/steps/<stepId>/{claim.json,successor.json,result.json}`; callers do not
+  `<root>/effects/<effectClaimId>/{claim.json,successor.json,result.json}`; callers do not
   choose them.
-- The first claimant atomically creates `<stepId>` with exclusive directory
+- The first claimant atomically creates `<effectClaimId>` with exclusive directory
   creation. Parent identity and directory durability are synced and verified.
 - If the directory already exists, no caller may invoke the adapter. The store
   snapshots and classifies the exact artifacts as terminal replay, in-progress
@@ -208,7 +237,7 @@ All artifacts are closed canonical JSON with a trailing newline and
 
 `feature-flight-step-claim` schema 1 binds:
 
-- step ID and contract/tool identity;
+- effect claim ID, variable attempt identity digest, and contract/tool identity;
 - exact plan/current/predecessor identities;
 - active mission/lane/wave and repository tuple;
 - trusted Runner input digest and independent Runner identity fields;
@@ -251,7 +280,8 @@ produce no adapter call and no successor.
 - invocation count exactly 1;
 - host-trusted completion timestamp not earlier than claim timestamp;
 - outcome exactly `completed`;
-- `gateEligible:false` and a notice that the triad is coordination evidence,
+- `effectContainment:"external_uncertain_repository_unchanged"`,
+  `gateEligible:false`, and a notice that the triad is coordination evidence,
   not human acceptance or implementation authority.
 
 Write order is claim, adapter, successor, result. The result is terminal only
@@ -263,18 +293,22 @@ all three are re-read and cross-validated before returning success.
 
 1. Snapshot/validate caller and trusted dependency shapes.
 2. Snapshot plan/state/predecessor through the Slice 1 boundary.
-3. Load and validate the trusted Runner input and descriptor.
+3. Load and validate the trusted Runner input and fixed adapter policy.
 4. Select the exact active Daisy mission and validate independent identity
    domains.
 5. Observe exact mission worktree/branch/HEAD/clean state.
-6. Derive stable step ID and inspect the trusted store.
+6. Derive invariant effect claim ID plus variable attempt digest and inspect the
+   trusted store.
 7. Return exact terminal replay or recovery-required for any existing step.
 8. Invoke Runner V1. Its authorizer runs before the claim callback.
 9. The claim callback atomically claims/writes/readbacks the step; only a
    claimed result permits continuation.
 10. The adapter callback counts and permits exactly one Daisy invocation.
-11. Any pre-dispatch stop returns `stopped`; any post-dispatch stop returns
-    `recovery_required` with claim identity and no successor.
+11. Runner stops reached before its claim callback return `stopped`. After the
+    claim callback is reached, every `invocation_claim_*` or post-dispatch stop
+    triggers an exact store reread: a terminal triad returns `replayed`; any
+    nonterminal, conflicting, absent, or uncertain claim state returns
+    `recovery_required`. It never returns ordinary `stopped`.
 12. On Runner advanced, re-observe unchanged repository state.
 13. Derive and validate the legal successor, then write/read it.
 14. Derive result binding the successor, write/read it last, and re-read the
@@ -316,17 +350,25 @@ export, or CLI source changes.
 - Valid active Daisy cycle: trusted authorization, one atomic claim, one adapter
   call, legal active-to-complete successor, result-last terminal triad.
 - Exact retry returns replay with zero authorizer/adapter/write calls.
-- Simultaneous calls expose at most one adapter invocation.
+- Simultaneous calls expose at most one adapter invocation; the concurrent
+  loser rereads the store and returns replay or recovery-required, never an
+  ordinary pre-dispatch stop.
+- A legal alternate `active -> active` state and later trusted journal replay
+  with the same effect claim cannot produce a second invocation.
 - Caller attempts to vary timestamps, output locations, store roots, Runner
   input, adapter identity, or repository expectations are impossible or do not
   change step identity.
+- Post-`mkdir` claim-write failure leaves recovery-required evidence and never
+  invokes. Every `invocation_claim_*` path follows the store-reread matrix.
 - Stale/malformed trusted projection, distinct flight/journal sequences, wrong
   mission/worktree/branch/HEAD, dirty state, wrong lane/active mission, and
-  missing dependencies stop before claim and adapter.
-- Mack, May, Fury, human seats, non-coordination effects, and generic adapters
+  nonempty dependencies stop before claim and adapter.
+- Nonempty dependencies, Mack, May, Fury, human seats, non-coordination
+  effects, non-fixed action/validation IDs, and nonmatching adapter policies
   fail before claim. May cannot bypass governed-May.
-- Every Runner authorization/pre-dispatch stop invokes no adapter. Every Runner
-  post-dispatch stopped reason returns recovery-required and no successor.
+- Every Runner stop reached before its claim callback invokes no adapter and is
+  `stopped`. Claim-boundary and post-dispatch stops follow the mandatory store
+  reread and return replay or recovery-required with no new successor.
 - Adapter throw, second-call attempt, attribution spoof, repository mutation,
   and validator defect cannot report success.
 - Alternate-parent replay, claim-only, successor-only, result without exact
