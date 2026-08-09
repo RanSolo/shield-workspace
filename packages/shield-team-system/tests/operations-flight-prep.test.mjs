@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
@@ -168,6 +168,48 @@ test('serializes cooperating concurrent publishers with an atomic sibling reserv
 
   assert.ok(await lstat(join(outputPath, 'bootstrap-receipt.json')));
   assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
+});
+
+test('acquisition failure does not delete a lock replacement raced after identity validation', async () => {
+  const repositoryPath = await makeRepository();
+  const directory = await mkdtemp(join(tmpdir(), 'flight-prep-lock-acquire-race-'));
+  const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
+  const outputPath = join(directory, 'generated');
+  const lockPath = join(directory, '.generated.publish.lock');
+  const displacedOwnedLock = `${lockPath}.owned-displaced`;
+  let replaced = false;
+
+  await assert.rejects(prepareFlight({
+    manifestPath,
+    outputPath,
+    packageDependencies: {
+      open: async (path, ...arguments_) => {
+        const handle = await open(path, ...arguments_);
+        if (path !== lockPath) return handle;
+        return {
+          stat: () => handle.stat(),
+          sync: async () => { throw new Error('injected acquisition sync failure'); },
+          close: () => handle.close(),
+        };
+      },
+      lstat: async (path) => {
+        if (path === lockPath && !replaced) {
+          const ownedIdentity = await lstat(path);
+          await rename(path, displacedOwnedLock);
+          await writeFile(path, 'foreign replacement\n');
+          replaced = true;
+          return ownedIdentity;
+        }
+        return lstat(path);
+      },
+    },
+  }), /injected acquisition sync failure/u);
+
+  const quarantine = (await readdir(directory)).find((name) => name.startsWith('.generated.publish.lock.release-'));
+  assert.ok(quarantine, 'the raced replacement must remain quarantined instead of being deleted');
+  assert.equal(await readFile(join(directory, quarantine), 'utf8'), 'foreign replacement\n');
+  assert.ok(await lstat(displacedOwnedLock));
+  assert.equal(await lstat(outputPath).catch(() => undefined), undefined);
 });
 
 test('retains a raced destination and removes only its owned reservation and staging', async () => {

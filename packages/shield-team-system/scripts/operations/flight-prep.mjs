@@ -253,6 +253,17 @@ const syncDirectory = async (path, dependencies) => {
 
 const sameInode = (left, right) => left.dev === right.dev && left.ino === right.ino;
 
+const quarantineOwnedPublicationLock = async (lockPath, identity, dependencies) => {
+  if (!identity) return;
+  const current = await dependencies.lstat(lockPath).catch(() => undefined);
+  if (!current || !sameInode(identity, current)) return;
+  const quarantinePath = `${lockPath}.release-${randomUUID()}`;
+  const quarantined = await dependencies.rename(lockPath, quarantinePath)
+    .then(() => dependencies.lstat(quarantinePath).catch(() => undefined))
+    .catch(() => undefined);
+  if (quarantined && sameInode(identity, quarantined)) await dependencies.unlink(quarantinePath).catch(() => {});
+};
+
 const acquirePublicationLock = async (lockPath, dependencies) => {
   let handle;
   let identity;
@@ -264,9 +275,8 @@ const acquirePublicationLock = async (lockPath, dependencies) => {
     await handle.sync();
     return { handle, identity };
   } catch (error) {
+    await quarantineOwnedPublicationLock(lockPath, identity, dependencies);
     if (handle) await handle.close().catch(() => {});
-    const current = identity && await dependencies.lstat(lockPath).catch(() => undefined);
-    if (current && sameInode(identity, current)) await dependencies.unlink(lockPath).catch(() => {});
     if (error?.code === 'EEXIST') throw new Error('Output publication is already reserved by another flight-prep process.');
     throw error;
   }
@@ -275,13 +285,7 @@ const acquirePublicationLock = async (lockPath, dependencies) => {
 const releasePublicationLock = async (lockPath, lock, dependencies) => {
   if (!lock) return;
   const { handle, identity } = lock;
-  const current = await dependencies.lstat(lockPath).catch(() => undefined);
-  if (current && sameInode(identity, current)) {
-    const quarantinePath = `${lockPath}.release-${randomUUID()}`;
-    await dependencies.rename(lockPath, quarantinePath).catch(() => {});
-    const quarantined = await dependencies.lstat(quarantinePath).catch(() => undefined);
-    if (quarantined && sameInode(identity, quarantined)) await dependencies.unlink(quarantinePath).catch(() => {});
-  }
+  await quarantineOwnedPublicationLock(lockPath, identity, dependencies);
   await handle.close().catch(() => {});
 };
 

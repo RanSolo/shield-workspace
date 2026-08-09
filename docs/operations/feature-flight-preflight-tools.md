@@ -45,16 +45,17 @@ no-replace directory rename, Linux/WSL publication uses GNU `mv` with
 `--no-copy`, `--no-clobber`, and `--no-target-directory` to reach the
 kernel-native create-only move path; the tool fails closed on platforms without
 this primitive. This prevents even a non-cooperating writer from having an
-empty destination replaced after
-the last existence check. Success additionally requires the staging path to
-disappear and the final directory to retain the staged inode, so a successful
-no-clobber no-op is not mistaken for publication. Cooperating flight-prep
-processes additionally acquire an atomic create-exclusive sibling
-`.OUTPUT.publish.lock` reservation.
+empty destination replaced after the last existence check. Success additionally
+requires the staging path to disappear and the final directory to retain the
+staged inode, so a successful no-clobber no-op is not mistaken for publication.
+Cooperating flight-prep processes additionally acquire an atomic
+create-exclusive sibling `.OUTPUT.publish.lock` reservation.
 
-A pre-publication failure removes only owned staging state. Lock cleanup moves
-the reservation to an unguessable quarantine name and verifies its inode before
-deletion, avoiding deletion of a raced replacement entry. After an interrupted
+A pre-publication failure removes only owned staging state. Both acquisition-
+failure and normal lock cleanup move the reservation to an unguessable
+quarantine name and verify its inode before deletion, avoiding deletion of a
+raced replacement entry. A replacement detected after the cleanup identity
+check remains quarantined rather than being deleted. After an interrupted
 process, operators must verify no publisher is active before removing a stale
 reservation. If the final rename succeeds but parent-directory durability sync
 fails, the tool reports explicitly that the complete package was published and
