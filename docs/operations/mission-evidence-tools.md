@@ -6,6 +6,10 @@ They remain a separate `shield-ops` surface. Their output is contract-relative
 structural evidence with `authority:none`; it is never provenance, an execution
 attestation, human acceptance, or permission to act.
 
+Run every example from the repository root with the checked-in local CLI. Do
+not substitute `npx` or a globally installed package; the local path binds the
+command surface to the checkout under review.
+
 ## Freeze the acceptance spec
 
 Create the acceptance spec before running evidence. Version 1 is a closed JSON
@@ -38,7 +42,7 @@ and the declared timeout is enforced.
 
 ```bash
 mkdir -m 700 /absolute/path/to/evidence
-npx shield-ops evidence run \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs evidence run \
   --spec /absolute/path/to/acceptance-spec.json \
   --expected-spec-sha256 "$EXPECTED_SPEC_SHA256" \
   --command-id package-tests \
@@ -81,7 +85,7 @@ tool identity, dirty or changed Git state, stale revisions, output hash changes,
 and incomplete RED/GREEN/manual evidence.
 
 ```bash
-npx shield-ops acceptance check \
+node packages/shield-team-system/scripts/operations/ops-cli.mjs acceptance check \
   --spec /absolute/path/to/acceptance-spec.json \
   --manifest /absolute/path/to/evidence/manifest.json \
   --expected-spec-sha256 "$EXPECTED_SPEC_SHA256" \
