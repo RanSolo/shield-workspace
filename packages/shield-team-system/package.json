@@ -6,7 +6,8 @@
   "main": "./public/index.mjs",
   "types": "./public/index.d.mts",
   "bin": {
-    "shield": "./dist/cli.mjs"
+    "shield": "./dist/cli.mjs",
+    "shield-ops": "./scripts/operations/ops-cli.mjs"
   },
   "exports": {
     ".": {
@@ -135,6 +136,7 @@
     "agents",
     "contracts",
     "dist",
+    "docs",
     "github",
     "modes",
     "playbooks",

@@ -203,7 +203,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   await writeFile(join(fixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
   const packOutput = JSON.parse(execFileSync(
     "npm",
-    ["pack", packageRoot, "--json", "--pack-destination", fixture, "--cache", npmCache],
+    ["pack", packageRoot, "--json", "--ignore-scripts", "--pack-destination", fixture, "--cache", npmCache],
     { encoding: "utf8" },
   ));
   const packed = packOutput[0];
@@ -268,6 +268,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "public/github.mjs",
     "public/github.d.mts",
     "dist/cli.mjs",
+    "docs/operations/mission-evidence-tools.md",
+    "docs/operations/persisted-artifact-contract-matrix.md",
     "INSTALLATION.md",
     "PUBLIC_API.md",
     "SUPERVISED_MISSION.md",
@@ -583,6 +585,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     encoding: "utf8",
   }));
   assert.equal(doctor.ok, true);
+  const opsBin = join(fixture, "node_modules", ".bin", "shield-ops");
+  const opsHelp = execFileSync(opsBin, ["--help"], { cwd: fixture, encoding: "utf8" });
+  assert.match(opsHelp, /advisory structural consistency only/u);
+  assert.match(opsHelp, /gateEligible:false/u);
 
   const javascriptFixture = await mkdtemp(join(tmpdir(), "shield-js-consumer-"));
   execFileSync("git", ["init", "--quiet"], { cwd: javascriptFixture });
