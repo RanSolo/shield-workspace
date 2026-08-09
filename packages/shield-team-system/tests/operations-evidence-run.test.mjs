@@ -97,6 +97,10 @@ test('redacts complete credential values identically from stdout and stderr', as
     'Basic basic.secret.remainder==',
     'tool --token token.secret.remainder --secret "quoted secret remainder" --password=password.secret.remainder',
     'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signatureRemainder',
+    'unsecured-jwt eyJhbGciOiJub25lIn0.e30.',
+    'one-character-signature eyJhbGciOiJub25lIn0.e30.x',
+    'ordinary-dotted-values 12.34.56 release.2026.08',
+    'json-without-alg e30.e30.x',
     '',
   ].join('\n');
   const expected = [
@@ -106,6 +110,10 @@ test('redacts complete credential values identically from stdout and stderr', as
     'Basic [REDACTED]',
     'tool --token [REDACTED] --secret [REDACTED] --password=[REDACTED]',
     'jwt [REDACTED]',
+    'unsecured-jwt [REDACTED]',
+    'one-character-signature [REDACTED]',
+    'ordinary-dotted-values 12.34.56 release.2026.08',
+    'json-without-alg e30.e30.x',
     '',
   ].join('\n');
 

@@ -158,8 +158,27 @@ const authorizationAssignmentPattern = /\b(authorization\s*=\s*)[^\r\n]*/giu;
 const sensitiveFlagPattern = /(^|[\s,;])(--(?:token|secret|password))([ \t]*=[ \t]*|[ \t]+)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gimu;
 const assignmentPattern = /\b(passcode|password|secret|token)(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/giu;
 const bearerPattern = /\b(Bearer|Basic)[ \t]+[^\s,;'"`]+/giu;
-const jwtPattern = /(^|[^A-Za-z0-9_-])(?:[A-Za-z0-9_-]{2,}\.){2,}[A-Za-z0-9_-]{2,}(?=$|[^A-Za-z0-9_-])/gmu;
+const jwtCandidatePattern = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]*)(?=$|[^A-Za-z0-9_.-])/gmu;
 const knownTokenPattern = /\b(?:gh[opsu]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|AKIA[A-Z0-9]{16})[^\s,;'"`]*/gu;
+
+const decodeBase64UrlJson = (segment) => {
+  try {
+    const bytes = Buffer.from(segment, 'base64url');
+    if (bytes.toString('base64url') !== segment) return undefined;
+    return JSON.parse(bytes.toString('utf8'));
+  } catch {
+    return undefined;
+  }
+};
+
+const jwtCandidateReplacement = (match, prefix, headerSegment, payloadSegment) => {
+  const header = decodeBase64UrlJson(headerSegment);
+  const payload = decodeBase64UrlJson(payloadSegment);
+  const object = (candidate) => candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate);
+  return object(header) && object(payload) && typeof header.alg === 'string' && header.alg !== ''
+    ? `${prefix}[REDACTED]`
+    : match;
+};
 
 export const redact = (value) =>
   String(value)
@@ -169,7 +188,7 @@ export const redact = (value) =>
       `${prefix}${flag}${separator.includes('=') ? '=' : ' '}[REDACTED]`)
     .replace(assignmentPattern, '$1$2[REDACTED]')
     .replace(bearerPattern, '$1 [REDACTED]')
-    .replace(jwtPattern, '$1[REDACTED]')
+    .replace(jwtCandidatePattern, jwtCandidateReplacement)
     .replace(knownTokenPattern, '[REDACTED]');
 
 export const readJsonSnapshot = async (path, injected) => {
