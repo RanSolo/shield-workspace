@@ -12,6 +12,7 @@ import {
   FLIGHT_STATE_NOTICE,
   LIFECYCLE_TRANSITIONS,
   artifactIdentity,
+  buildActiveToCompleteSuccessor,
   validateFlightState,
   validateImmediateTransition,
   validateResolvedPlan,
@@ -227,6 +228,33 @@ test("current authority-derived statuses always apply the authority global stop"
       assert.equal(result.missions[0].disposition, "authority-verification-required");
     });
   }
+});
+
+test("an exact active state remains an authority stop until the separate trusted Slice 2 composition discharges it", async () => {
+  const root = await fixtureRoot();
+  const planRecord = await writePlan(root);
+  const state = stateFixture(planRecord.plan, planRecord.identity, { statuses: { "Mission-A": "active" } });
+  const stateSnapshot = await writeState(root, "active-state.json", state);
+  const structural = await computeFeatureFlightStatus({
+    planPath: planRecord.snapshot.path,
+    expectedPlanSha256: planRecord.snapshot.sha256,
+    statePath: stateSnapshot.path,
+    expectedStateSha256: stateSnapshot.sha256,
+    expectedStateSequence: 0,
+  });
+  assert.deepEqual(structural.globalStop, { code: "authority-verification-required" });
+  assert.equal(structural.nextCandidate, null);
+
+  const successor = buildActiveToCompleteSuccessor(
+    planRecord.plan,
+    planRecord.identity,
+    state,
+    artifactIdentity(stateSnapshot),
+    "Mission-A",
+    "2026-08-09T12:00:01.000Z",
+  );
+  assert.equal(successor.missions["Mission-A"].status, "complete");
+  assert.deepEqual(validateImmediateTransition(planRecord.plan, state, successor), []);
 });
 
 test("blocked and failed current states use the lower-precedence operator stop", async (t) => {
