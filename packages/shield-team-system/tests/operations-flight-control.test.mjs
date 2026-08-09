@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -286,7 +286,13 @@ test("flight-prep resolved-plan output is consumed by state-init and route", asy
   const manifestPath = join(root, "manifest.json");
   const packagePath = join(root, "package");
   await writeFile(manifestPath, stableJson(manifest));
-  await prepareFlight({ manifestPath, outputPath: packagePath });
+  await prepareFlight({
+    manifestPath,
+    outputPath: packagePath,
+    packageDependencies: process.platform === "linux"
+      ? undefined
+      : { nativeNoReplaceSupported: true, runNativeNoReplaceMove: rename },
+  });
 
   const planPath = join(packagePath, "flight-plan.resolved.json");
   const statePath = join(root, "flight-state.json");

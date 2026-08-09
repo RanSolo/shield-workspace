@@ -86,6 +86,68 @@ test('executes only the selected spec command and writes a closed, private recei
   }
 });
 
+test('redacts complete credential values identically from stdout and stderr', async () => {
+  const repository = await makeRepository();
+  const spec = await writeSpec(repository, { argv: ['-e', 'process.exit(0)'], artifacts: [] });
+  const output = await makeOutput('redacted.json');
+  const adversarialOutput = [
+    'Authorization: Bearer header.secret.remainder trailing-secret',
+    'authorization: Basic basic-header.secret.remainder trailing-basic-header',
+    'Bearer bearer.secret.remainder',
+    'Basic basic.secret.remainder==',
+    'tool --token token.secret.remainder --secret "quoted secret remainder" --password=password.secret.remainder',
+    'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signatureRemainder',
+    'unsecured-jwt eyJhbGciOiJub25lIn0.e30.',
+    'one-character-signature eyJhbGciOiJub25lIn0.e30.x',
+    'ordinary-dotted-values 12.34.56 release.2026.08',
+    'json-without-alg e30.e30.x',
+    '',
+  ].join('\n');
+  const expected = [
+    'Authorization: [REDACTED]',
+    'authorization: [REDACTED]',
+    'Bearer [REDACTED]',
+    'Basic [REDACTED]',
+    'tool --token [REDACTED] --secret [REDACTED] --password=[REDACTED]',
+    'jwt [REDACTED]',
+    'unsecured-jwt [REDACTED]',
+    'one-character-signature [REDACTED]',
+    'ordinary-dotted-values 12.34.56 release.2026.08',
+    'json-without-alg e30.e30.x',
+    '',
+  ].join('\n');
+
+  const { receipt, exitCode } = await runEvidence(
+    { output, specPath: spec.path, expectedSpecSha256: spec.sha256, commandId: 'test' },
+    {
+      execute: async () => ({
+        status: 'completed',
+        code: 0,
+        signal: null,
+        timedOut: false,
+        error: null,
+        stdout: { bytes: Buffer.from(adversarialOutput), truncated: false },
+        stderr: { bytes: Buffer.from(adversarialOutput), truncated: false },
+      }),
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(receipt.output.stdout.text, expected);
+  assert.equal(receipt.output.stderr.text, expected);
+  const serialized = await readFile(output, 'utf8');
+  assert.doesNotMatch(
+    serialized,
+    /header\.secret|trailing-secret|basic-header\.secret|trailing-basic-header|bearer\.secret|basic\.secret|token\.secret|quoted secret|password\.secret|eyJhbGci|signatureRemainder/u,
+  );
+  assert.deepEqual(receipt.evidence, {
+    classification: 'contract-relative-structural-evidence',
+    authority: 'none',
+    provenance: false,
+    executionAttestation: false,
+  });
+});
+
 test('rejects a wrong spec digest and an undeclared command before execution', async () => {
   const repository = await makeRepository();
   const spec = await writeSpec(repository);
