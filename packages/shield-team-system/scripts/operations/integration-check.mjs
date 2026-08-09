@@ -4,12 +4,12 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { assertPlan, pathMatches } from './flight-common.mjs';
-import { hashFile, readJson, stableJson, writeNewFile } from './common.mjs';
+import { hashFile, readJsonSnapshot, stableJson, writeNewFile } from './common.mjs';
 
 const TOOL_VERSION = '0.1.0-local-prototype';
 
 export const checkIntegration = async ({ planPath, targetMissionId, packetPaths }) => {
-  const plan = assertPlan(await readJson(planPath));
+  const plan = assertPlan((await readJsonSnapshot(planPath)).value);
   const target = plan.missions.find((mission) => mission.id === targetMissionId);
   if (!target) throw new Error(`Target mission is not in the plan: ${targetMissionId}`);
   if ((target.dependsOn ?? []).length === 0) throw new Error(`${targetMissionId} has no declared integration dependencies.`);
@@ -18,7 +18,7 @@ export const checkIntegration = async ({ planPath, targetMissionId, packetPaths 
   const packets = new Map();
   for (const path of packetPaths) {
     const absolutePath = resolve(path);
-    const packet = await readJson(absolutePath);
+    const packet = (await readJsonSnapshot(absolutePath)).value;
     const missionId = packet.mission?.id;
     if (!missionId) errors.push(`${absolutePath} has no mission id.`);
     else if (packets.has(missionId)) errors.push(`Duplicate packet for ${missionId}.`);

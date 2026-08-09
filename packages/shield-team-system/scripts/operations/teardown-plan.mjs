@@ -5,12 +5,12 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { assertPlan } from './flight-common.mjs';
-import { git, hashFile, inspectGit, readJson, stableJson, tryGit, writeNewFile } from './common.mjs';
+import { git, hashFile, inspectGit, readJsonSnapshot, stableJson, tryGit, writeNewFile } from './common.mjs';
 
 const TOOL_VERSION = '0.1.0-local-prototype';
 
 export const planTeardown = async ({ planPath, integrationRef }) => {
-  const plan = assertPlan(await readJson(planPath));
+  const plan = assertPlan((await readJsonSnapshot(planPath)).value);
   const repositoryRoot = plan.repository?.root;
   const resolvedIntegrationRef = integrationRef ?? plan.integration?.branch;
   const integrationRevision = repositoryRoot && resolvedIntegrationRef

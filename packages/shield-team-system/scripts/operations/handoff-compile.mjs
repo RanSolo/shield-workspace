@@ -8,7 +8,7 @@ import {
   git,
   hashFile,
   inspectGit,
-  readJson,
+  readJsonSnapshot,
   stableJson,
   tryGit,
   writeNewFile,
@@ -91,11 +91,14 @@ export const compileHandoff = async (options) => {
   const worktree = resolve(options.worktree);
   if (existsSync(outputDirectory)) throw new Error(`Refusing existing output directory: ${outputDirectory}`);
 
-  const [flightPlan, acceptance, state] = await Promise.all([
-    readJson(flightPlanPath),
-    readJson(acceptancePath),
-    readJson(statePath),
+  const [flightPlanSnapshot, acceptanceSnapshot, stateSnapshot] = await Promise.all([
+    readJsonSnapshot(flightPlanPath),
+    readJsonSnapshot(acceptancePath),
+    readJsonSnapshot(statePath),
   ]);
+  const flightPlan = flightPlanSnapshot.value;
+  const acceptance = acceptanceSnapshot.value;
+  const state = stateSnapshot.value;
   const mission = flightPlan.missions?.find((candidate) => candidate.id === options.missionId);
   if (!mission) throw new Error(`Mission not found in flight plan: ${options.missionId}`);
 
@@ -146,7 +149,7 @@ export const compileHandoff = async (options) => {
   const receipts = [];
   for (const receiptPath of options.receipts) {
     const absolutePath = resolve(receiptPath);
-    const receipt = await readJson(absolutePath);
+    const receipt = (await readJsonSnapshot(absolutePath)).value;
     if (receipt.receiptType !== 'local-command-evidence' || receipt.schemaVersion !== 1) {
       errors.push(`${absolutePath} is not a supported evidence receipt.`);
     }
