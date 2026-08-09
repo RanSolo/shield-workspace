@@ -41,16 +41,26 @@ Package writes are create-only and confined beneath a private mode `0700`
 sibling staging directory. Complete artifacts and directories are synced,
 staging is atomically renamed to the final root, and the parent directory is
 synced. Because portable Node filesystem APIs do not provide an absolute
-no-replace directory rename, cooperating flight-prep processes first acquire an
-atomic create-exclusive sibling `.OUTPUT.publish.lock` reservation and retain a
-final-path recheck immediately before rename. A pre-publication failure removes
-only inode-verified owned lock and staging state and leaves no published partial
-package. After an interrupted process, operators must verify no publisher is
-active before removing a stale reservation. If the final rename succeeds but
-parent-directory durability sync fails, the tool reports explicitly that the
-complete package was published and does not remove it. The package contains a
-closed resolved plan, evaluation contract, mission packets/templates, and a
-bootstrap receipt with a nonempty exact generated-file inventory.
+no-replace directory rename, Linux/WSL publication uses GNU `mv` with
+`--no-copy`, `--no-clobber`, and `--no-target-directory` to reach the
+kernel-native create-only move path; the tool fails closed on platforms without
+this primitive. This prevents even a non-cooperating writer from having an
+empty destination replaced after
+the last existence check. Success additionally requires the staging path to
+disappear and the final directory to retain the staged inode, so a successful
+no-clobber no-op is not mistaken for publication. Cooperating flight-prep
+processes additionally acquire an atomic create-exclusive sibling
+`.OUTPUT.publish.lock` reservation.
+
+A pre-publication failure removes only owned staging state. Lock cleanup moves
+the reservation to an unguessable quarantine name and verifies its inode before
+deletion, avoiding deletion of a raced replacement entry. After an interrupted
+process, operators must verify no publisher is active before removing a stale
+reservation. If the final rename succeeds but parent-directory durability sync
+fails, the tool reports explicitly that the complete package was published and
+does not remove it. The package contains a closed resolved plan, evaluation
+contract, mission packets/templates, and a bootstrap receipt with a nonempty
+exact generated-file inventory.
 
 ## Build the shared synthetic fixture
 

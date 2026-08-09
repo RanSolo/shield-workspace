@@ -175,24 +175,43 @@ test('retains a raced destination and removes only its owned reservation and sta
   const directory = await mkdtemp(join(tmpdir(), 'flight-prep-raced-output-'));
   const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
   const outputPath = join(directory, 'generated');
-  let finalPathChecks = 0;
 
   await assert.rejects(prepareFlight({
     manifestPath,
     outputPath,
     packageDependencies: {
-      lstat: async (path) => {
-        if (path === outputPath) {
-          finalPathChecks += 1;
-          if (finalPathChecks === 3) await mkdir(outputPath);
-        }
-        return lstat(path);
+      beforePublish: async ({ finalRoot }) => {
+        assert.equal(finalRoot, outputPath);
+        await mkdir(finalRoot);
+        await writeFile(join(finalRoot, 'raced-writer-marker'), 'must survive\n');
       },
     },
-  }), /Output path already exists/u);
+  }), /Create-only atomic package publication/u);
 
   assert.ok((await lstat(outputPath)).isDirectory());
-  assert.deepEqual(await readdir(outputPath), []);
+  assert.equal(await readFile(join(outputPath, 'raced-writer-marker'), 'utf8'), 'must survive\n');
+  assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
+});
+
+test('rejects a successful no-clobber no-op when staging did not move', async () => {
+  const repositoryPath = await makeRepository();
+  const directory = await mkdtemp(join(tmpdir(), 'flight-prep-no-clobber-no-op-'));
+  const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
+  const outputPath = join(directory, 'generated');
+
+  await assert.rejects(prepareFlight({
+    manifestPath,
+    outputPath,
+    packageDependencies: {
+      beforePublish: async ({ finalRoot }) => {
+        await mkdir(finalRoot);
+        await writeFile(join(finalRoot, 'existing'), 'foreign\n');
+      },
+      runNativeNoReplaceMove: () => undefined,
+    },
+  }), /returned an invalid filesystem state/u);
+
+  assert.equal(await readFile(join(outputPath, 'existing'), 'utf8'), 'foreign\n');
   assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
 });
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { chmod, lstat, mkdir, mkdtemp, open, rename, rm, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -236,7 +237,13 @@ const makeReadme = (plan) => {
   return `# ${plan.flightId} bootstrap package\n\nThis package is observational and non-authoritative. It creates no branches, worktrees, journals, signatures, runtime bindings, approvals, publication rights, or integration rights.\n\nBase: \`${plan.repository.baseRef}\` at \`${plan.repository.baseRevision}\`\n\n## Lane plan\n\n${laneLines.join('\n')}\n\n## Contents\n\n- \`flight-plan.resolved.json\`: closed resolved plan and dependency graph.\n- \`evaluation-contract.json\`: closed fixture and scorecard contract.\n- \`packets/\`: one launch packet per mission slug.\n- \`evidence/\`: one evidence template per mission slug.\n- \`bootstrap-receipt.json\`: closed inventory and construction observations.\n\nEvery mission still requires independent authorization against fresh exact state.\n`;
 };
 
-const defaultPackageDependencies = { chmod, lstat, mkdir, mkdtemp, open, rename, rm, unlink, writeNewFile };
+const runNativeNoReplaceMove = (stagingRoot, finalRoot) => execFileSync('/usr/bin/mv', [
+  '--no-copy', '--no-clobber', '--no-target-directory', stagingRoot, finalRoot,
+], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+const defaultPackageDependencies = {
+  chmod, lstat, mkdir, mkdtemp, open, rename, rm, runNativeNoReplaceMove, unlink, writeNewFile,
+};
 
 const syncDirectory = async (path, dependencies) => {
   if (dependencies.syncDirectory) return dependencies.syncDirectory(path);
@@ -255,9 +262,7 @@ const acquirePublicationLock = async (lockPath, dependencies) => {
     identity = await handle.stat();
     if (!identity.isFile()) throw new Error('Publication reservation is not a regular file.');
     await handle.sync();
-    await handle.close();
-    handle = undefined;
-    return identity;
+    return { handle, identity };
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
     const current = identity && await dependencies.lstat(lockPath).catch(() => undefined);
@@ -267,10 +272,40 @@ const acquirePublicationLock = async (lockPath, dependencies) => {
   }
 };
 
-const releasePublicationLock = async (lockPath, identity, dependencies) => {
-  if (!identity) return;
+const releasePublicationLock = async (lockPath, lock, dependencies) => {
+  if (!lock) return;
+  const { handle, identity } = lock;
   const current = await dependencies.lstat(lockPath).catch(() => undefined);
-  if (current && sameInode(identity, current)) await dependencies.unlink(lockPath).catch(() => {});
+  if (current && sameInode(identity, current)) {
+    const quarantinePath = `${lockPath}.release-${randomUUID()}`;
+    await dependencies.rename(lockPath, quarantinePath).catch(() => {});
+    const quarantined = await dependencies.lstat(quarantinePath).catch(() => undefined);
+    if (quarantined && sameInode(identity, quarantined)) await dependencies.unlink(quarantinePath).catch(() => {});
+  }
+  await handle.close().catch(() => {});
+};
+
+const publishDirectoryCreateOnly = async (stagingRoot, finalRoot, dependencies) => {
+  const stagingIdentity = await dependencies.lstat(stagingRoot);
+  if (!stagingIdentity.isDirectory() || stagingIdentity.isSymbolicLink()) {
+    throw new Error('Create-only atomic package publication requires a regular staging directory.');
+  }
+  if (dependencies.beforePublish) await dependencies.beforePublish({ stagingRoot, finalRoot });
+  if (process.platform !== 'linux') {
+    throw new Error('Create-only atomic directory publication requires the Linux/WSL native no-replace move primitive.');
+  }
+  try {
+    await dependencies.runNativeNoReplaceMove(stagingRoot, finalRoot);
+  } catch {
+    throw new Error('Create-only atomic package publication failed; the destination was not replaced.');
+  }
+  const [stagingState, finalState] = await Promise.all([
+    dependencies.lstat(stagingRoot).catch(() => undefined),
+    dependencies.lstat(finalRoot).catch(() => undefined),
+  ]);
+  if (stagingState || !finalState?.isDirectory() || finalState.isSymbolicLink() || !sameInode(stagingIdentity, finalState)) {
+    throw new Error('Create-only atomic package publication returned an invalid filesystem state.');
+  }
 };
 
 const writePackage = async ({ plan, manifestSnapshot, outputPath, injectedDependencies }) => {
@@ -334,7 +369,7 @@ const writePackage = async ({ plan, manifestSnapshot, outputPath, injectedDepend
     await syncDirectory(stagingRoot, dependencies);
 
     if (await dependencies.lstat(finalRoot).catch(() => undefined)) throw new Error(`Output path already exists: ${finalRoot}`);
-    await dependencies.rename(stagingRoot, finalRoot);
+    await publishDirectoryCreateOnly(stagingRoot, finalRoot, dependencies);
     stagingRoot = undefined;
     try {
       await syncDirectory(parent, dependencies);
