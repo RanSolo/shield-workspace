@@ -2,6 +2,12 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 
+import {
+  canonicalFeatureFlightBytes,
+  featureFlightSha256,
+  validateFeatureFlightTerminal,
+} from "./feature-flight-recovery.mjs";
+
 const DIGEST = /^[a-f0-9]{64}$/u;
 const defaultIo = Object.freeze({ lstat, mkdir, open, realpath });
 
@@ -87,7 +93,8 @@ const pathsFor = (root, effectClaimId) => {
   const directory = join(root, "effects", effectClaimId);
   return {
     root, effects: dirname(directory), directory,
-    claim: join(directory, "claim.json"), successor: join(directory, "successor.json"), result: join(directory, "result.json"),
+    claim: join(directory, "claim.json"), terminal: join(directory, "terminal.json"), successor: join(directory, "successor.json"),
+    result: join(directory, "result.json"), recovery: join(directory, "recovery.json"),
   };
 };
 
@@ -258,19 +265,51 @@ export const readStep = async (input, injected = {}) => {
       return { status: "absent", paths: hierarchy.paths };
     }
     if (input.expectedHierarchyIdentity !== undefined) assertExpectedHierarchy(hierarchy, input.expectedHierarchyIdentity);
-    const [claim, successor, result] = await Promise.all([
-      readFile(hierarchy.paths.claim, io), readFile(hierarchy.paths.successor, io), readFile(hierarchy.paths.result, io),
+    const safeRead = async (path) => {
+      try { return await readFile(path, io); }
+      catch (error) {
+        if (typeof error?.code === "string") throw error;
+        return { path, invalid: true, error };
+      }
+    };
+    const [claim, terminal, successor, result, recovery] = await Promise.all([
+      safeRead(hierarchy.paths.claim), safeRead(hierarchy.paths.terminal), safeRead(hierarchy.paths.successor),
+      safeRead(hierarchy.paths.result), safeRead(hierarchy.paths.recovery),
     ]);
     await assertHierarchy(hierarchy, io);
     const token = hierarchyToken(hierarchy);
     await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root);
-    const core = { paths: hierarchy.paths, claim, successor, result, hierarchyIdentity: token };
-    if (claim === null) return { status: "malformed", ...core };
+    const core = { paths: hierarchy.paths, claim, terminal, successor, result, recovery, hierarchyIdentity: token };
+    const present = (artifact) => artifact !== null;
+    const invalid = (artifact) => artifact?.invalid === true;
+    if (claim === null || invalid(claim)) return { status: "malformed", ...core };
     if (input.expectedAttemptDigest !== undefined && claim.value.attemptDigest !== input.expectedAttemptDigest) return { status: "conflicting", ...core };
-    if (successor === null && result === null) return { status: "claimed", ...core };
-    if (successor !== null && result === null) return { status: "successor_only", ...core };
-    if (successor === null && result !== null) return { status: "malformed", ...core };
-    return { status: "terminal", ...core };
+
+    const version = claim.value?.contract?.name === "shield-feature-flight-step" ? claim.value.contract.version : null;
+    if (version === "1.0.0") {
+      if (present(terminal) || present(recovery)) return { status: "legacy_malformed", ...core };
+      if (invalid(successor) || invalid(result)) return { status: "legacy_malformed", ...core };
+      if (successor === null && result === null) return { status: "legacy_claim_incomplete", ...core };
+      if (successor !== null && result === null) return { status: "legacy_successor_incomplete", ...core };
+      if (successor === null && result !== null) return { status: "legacy_malformed", ...core };
+      return { status: "legacy_terminal", ...core };
+    }
+    if (version !== "2.0.0") return { status: "malformed", ...core };
+    if (terminal === null) {
+      if (present(successor) || present(result) || present(recovery)) return { status: "malformed", ...core };
+      return { status: "claim_incomplete", ...core };
+    }
+    if (invalid(terminal) || validateFeatureFlightTerminal(terminal.value).length !== 0) return { status: "conflicting", ...core };
+    const arbiter = terminal.value;
+    const exactPayload = (artifact, payload) => artifact === null || (!invalid(artifact) &&
+      artifact.bytes.length === payload.bytes && featureFlightSha256(artifact.bytes) === payload.sha256 &&
+      artifact.bytes.equals(canonicalFeatureFlightBytes(payload.value)));
+    if (arbiter.terminalKind === "success") {
+      if (present(recovery) || !exactPayload(successor, arbiter.successor) || !exactPayload(result, arbiter.result)) return { status: "conflicting", ...core };
+      return { status: successor !== null && result !== null ? "success_terminal" : "success_materializable", ...core };
+    }
+    if (present(successor) || present(result) || !exactPayload(recovery, arbiter.recovery)) return { status: "conflicting", ...core };
+    return { status: recovery === null ? "recovery_materializable" : "recovery_terminal", ...core };
   } catch (error) {
     await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root).catch(() => {});
     throw error;
@@ -294,3 +333,50 @@ const writeArtifact = async (input, filename, value, injected) => {
 
 export const writeSuccessor = (input, injected = {}) => writeArtifact(input, "successor", input.successor, injected);
 export const writeResult = (input, injected = {}) => writeArtifact(input, "result", input.result, injected);
+
+export const arbitrateTerminal = async (input, injected = {}) => {
+  const io = dependencies(injected);
+  const hierarchy = await openHierarchy(input, io);
+  hierarchy.expectedHierarchyIdentity = input.expectedHierarchyIdentity;
+  try {
+    assertExpectedHierarchy(hierarchy, input.expectedHierarchyIdentity);
+    let created = false;
+    try {
+      await createFile(hierarchy.paths.terminal, input.terminal, hierarchy, io);
+      created = true;
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        const winner = await readFile(hierarchy.paths.terminal, io).catch(() => null);
+        if (winner === null) throw error;
+      }
+    }
+    const winner = await readFile(hierarchy.paths.terminal, io);
+    await assertHierarchy(hierarchy, io);
+    await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root);
+    return { status: created ? "created" : "exists", terminal: winner };
+  } catch (error) {
+    await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root).catch(() => {});
+    throw error;
+  }
+};
+
+export const materializeTerminal = async (input, injected = {}) => {
+  const initial = await readStep(input, injected);
+  if (!["success_materializable", "success_terminal", "recovery_materializable", "recovery_terminal"].includes(initial.status)) return initial;
+  const arbiter = initial.terminal.value;
+  const targets = arbiter.terminalKind === "success"
+    ? [["successor", arbiter.successor], ["result", arbiter.result]]
+    : [["recovery", arbiter.recovery]];
+  for (const [filename, payload] of targets) {
+    if (initial[filename] !== null) continue;
+    try {
+      await writeArtifact({ ...input, expectedHierarchyIdentity: initial.hierarchyIdentity, [filename]: payload.value }, filename, payload.value, injected);
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        const state = await readStep(input, injected);
+        return { ...state, materializationUncertain: filename };
+      }
+    }
+  }
+  return readStep({ ...input, expectedHierarchyIdentity: initial.hierarchyIdentity }, injected);
+};
