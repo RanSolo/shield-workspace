@@ -221,9 +221,17 @@ and final read. Closed v2 artifact-presence states are:
 | exact | success | absent/exact | absent/exact | absent | `success_materializable` or `success_terminal` |
 | exact | recovery | absent | absent | absent/exact | `recovery_materializable` or `recovery_terminal` |
 | absent | any | any | any | any | `malformed` |
-| exact | absent | any successor | any result/recovery | any | `malformed` |
-| exact | success | any | any | any recovery | `conflicting` |
-| exact | recovery | any | any result | any | `conflicting` |
+| exact | absent | exact/present-invalid | any | any | `malformed` |
+| exact | absent | any | exact/present-invalid | any | `malformed` |
+| exact | absent | any | any | exact/present-invalid | `malformed` |
+| exact | success | any | any | exact/present-invalid | `conflicting` |
+| exact | recovery | exact/present-invalid | any | any | `conflicting` |
+| exact | recovery | any | exact/present-invalid | any | `conflicting` |
+| exact | present-invalid | any | any | any | `conflicting` |
+| exact | success/recovery | present-invalid | any | any | `conflicting` |
+| exact | success/recovery | any | present-invalid | any | `conflicting` |
+| exact | success/recovery | any | any | present-invalid | `conflicting` |
+| present-invalid | any | any | any | any | `malformed` |
 
 `successor_without_claim` is always malformed. `claim_successor` is the only
 term for a claim plus successor. Legacy v1 states are classified by the separate
@@ -237,7 +245,7 @@ Closed phases are:
 
 Closed pre-claim stopped reasons are:
 
-- `remote_observation_unavailable`, `remote_observation_malformed`,
+- `precheck_remote_observation_unavailable`, `remote_observation_malformed`,
   `remote_descriptor_mismatch`, `remote_repository_identity_mismatch`,
   `remote_phase_or_challenge_stale`, and `preexisting_remote_drift`.
 
@@ -248,7 +256,7 @@ Closed durable reason codes are:
 
 - `interrupted_after_claim`, `adapter_uncertain`, `validation_failed`,
   `local_readback_unavailable`, `local_repository_changed`,
-  `remote_observation_unavailable`, `remote_identity_changed`, and
+  `postcheck_remote_observation_unavailable`, `remote_identity_changed`, and
   `remote_drift`.
 
 Only conditions known before recovery arbitration may become the immutable
@@ -409,7 +417,8 @@ Tests must cite requirement IDs in names or a checked-in evidence table.
 - S3-R5/R6: arbiter/recovery schema, canonical bytes, modes, symlink/alias,
   partial write, sync/close, parent/common-Git transplant, mixed terminal
   artifacts, and exact final readback. Barrier-control every result-versus-
-  recovery interleaving and every interruption before/after arbiter durability.
+  recovery interleaving and every interruption before/after arbiter durability;
+  explicitly cover recovery-arbiter-plus-successor without a result.
 - S3-R7/R8: durable-state-before-observer ordering; retry from v2 claim-only,
   success arbiter, recovery arbiter, both terminal kinds, malformed state,
   concurrent retries, arbiter conflict, and every reachable interruption
