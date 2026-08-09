@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -156,6 +156,57 @@ test("harvest rejects absolute, traversing, duplicate, and symlinked artifact pa
   await assert.rejects(harvestTools({ registryPath }), /non-symlink regular file within artifactRoot/u);
 });
 
+test("harvest rejects canonical case aliases and collisions on a case-insensitive macOS volume", async (context) => {
+  if (process.platform !== "darwin") return context.skip("requires macOS");
+  const { root, registryPath } = await createRepository("shield-tool-case-alias-");
+  const aliasPath = join(root, "tools", "HELPER.mjs");
+  const canonicalAlias = await realpath(aliasPath).catch(() => undefined);
+  if (canonicalAlias === undefined || canonicalAlias === aliasPath) {
+    return context.skip("requires a case-insensitive filesystem");
+  }
+
+  await writeRegistry(registryPath, [tool({ path: "tools/HELPER.mjs" })]);
+  await assert.rejects(harvestTools({ registryPath }), /must exactly match its canonical artifact path/u);
+
+  await writeRegistry(registryPath, [
+    tool(),
+    tool({ name: "case-alias", path: "tools/HELPER.mjs" }),
+  ]);
+  await assert.rejects(
+    harvestTools({ registryPath }),
+    /collides with another canonical artifact path/u,
+  );
+
+  await writeRegistry(registryPath);
+  const report = await harvestTools({ registryPath });
+  assert.deepEqual(await harvestTools({ registryPath }), report);
+});
+
+test("case-sensitive repositories preserve distinct portable artifact casing", async (context) => {
+  const first = await createRepository("shield-tool-case-sensitive-a-");
+  const aliasPath = join(first.root, "tools", "HELPER.mjs");
+  if (await realpath(aliasPath).catch(() => undefined)) {
+    return context.skip("requires a case-sensitive filesystem");
+  }
+  await writeFile(aliasPath, "export const upper = true;\n");
+  const entries = [
+    tool(),
+    tool({ name: "upper-helper", path: "tools/HELPER.mjs" }),
+  ];
+  await writeRegistry(first.registryPath, entries);
+
+  const second = await createRepository("shield-tool-case-sensitive-b-");
+  await writeFile(join(second.root, "tools", "HELPER.mjs"), "export const upper = true;\n");
+  await writeRegistry(second.registryPath, entries);
+
+  const firstReport = await harvestTools({ registryPath: first.registryPath });
+  assert.deepEqual(firstReport.tools.map(({ path }) => path), [
+    "tools/helper.mjs",
+    "tools/HELPER.mjs",
+  ]);
+  assert.deepEqual(await harvestTools({ registryPath: second.registryPath }), firstReport);
+});
+
 test("harvest requires artifactRoot to be a portable locator for the canonical Git root", async () => {
   const { registryPath } = await createRepository("shield-tool-root-");
   await writeRegistry(registryPath, [tool()], { artifactRoot: "." });
@@ -190,10 +241,9 @@ test("portable registry and artifact locators replay identically in another Git 
   await writeRegistry(first.registryPath);
   await writeRegistry(second.registryPath);
 
-  assert.deepEqual(
-    await harvestTools({ registryPath: first.registryPath }),
-    await harvestTools({ registryPath: second.registryPath }),
-  );
+  const firstReport = await harvestTools({ registryPath: first.registryPath });
+  assert.deepEqual(await harvestTools({ registryPath: first.registryPath }), firstReport);
+  assert.deepEqual(await harvestTools({ registryPath: second.registryPath }), firstReport);
 });
 
 test("shield-ops rejects duplicate and incomplete tool-harvest CLI options", async () => {

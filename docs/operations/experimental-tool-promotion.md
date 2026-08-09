@@ -19,8 +19,14 @@ disposition:
 canonical, non-symlink target must be the repository's Git root. Every tool
 path is a unique, normalized POSIX path relative to that root; absolute paths,
 backslashes, traversal, aliases, escapes, symlink components, directories, and
-missing artifacts fail closed. The harvester reads each accepted artifact once
-and records only the declared portable path, byte count, and SHA-256 digest.
+missing artifacts fail closed. After rejecting symlink components, the
+harvester canonicalizes every candidate, requires its canonical path to exactly
+equal the resolved spelling and remain inside `artifactRoot`, and rejects
+canonical-path collisions. This complete preflight occurs before any artifact
+content is read. Case-sensitive repositories may therefore preserve distinct
+portable paths that differ only by case, while case-insensitive aliases fail
+closed. The harvester then reads each accepted artifact once and records only
+the declared portable path, byte count, and SHA-256 digest.
 
 The report is a closed, field-by-field sanitized projection. It binds the exact
 registry byte snapshot without preserving a host path, so identical registry

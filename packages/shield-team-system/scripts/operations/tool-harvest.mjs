@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { lstat } from "node:fs/promises";
 import { dirname, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -246,18 +247,37 @@ export const harvestTools = async ({ registryPath }) => {
   const derived = registry.tools.map((entry, index) => derivedToolValues(entry, index, errors));
   if (errors.length > 0) throw new Error(`Invalid tool registry:\n- ${errors.join("\n- ")}`);
 
-  const snapshots = [];
+  const artifactCandidates = [];
+  const canonicalArtifactPaths = new Set();
   for (const [index, entry] of registry.tools.entries()) {
     const candidate = resolve(artifactRoot, ...entry.path.split("/"));
+    const label = `registry.tools[${index}].path`;
     try {
       if (!isPathContained(artifactRoot, candidate)) throw new Error("escape");
       await assertNoSymlinkComponents(candidate);
-      snapshots.push(await snapshotFile(candidate));
+      const canonicalCandidate = await canonicalExistingPath(candidate);
+      if (!isPathContained(artifactRoot, canonicalCandidate)) {
+        errors.push(`${label} canonical path must remain within artifactRoot.`);
+      }
+      if (canonicalArtifactPaths.has(canonicalCandidate)) {
+        errors.push(`${label} collides with another canonical artifact path.`);
+      } else {
+        canonicalArtifactPaths.add(canonicalCandidate);
+      }
+      if (canonicalCandidate !== candidate) {
+        errors.push(`${label} must exactly match its canonical artifact path.`);
+      }
+      const info = await lstat(candidate);
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error("not a regular file");
+      artifactCandidates[index] = candidate;
     } catch {
-      errors.push(`registry.tools[${index}].path must identify a non-symlink regular file within artifactRoot.`);
+      errors.push(`${label} must identify a non-symlink regular file within artifactRoot.`);
     }
   }
   if (errors.length > 0) throw new Error(`Invalid tool registry:\n- ${errors.join("\n- ")}`);
+
+  const snapshots = [];
+  for (const candidate of artifactCandidates) snapshots.push(await snapshotFile(candidate));
 
   const tools = registry.tools.map((entry, index) => ({
     name: entry.name,
