@@ -193,6 +193,15 @@ function wheelsUpManifest(stderr) {
   return JSON.parse(match.groups.manifest);
 }
 
+test("authorize-wheels-up rejects conflicting human and JSON output modes", () => {
+  const result = run(packageRoot, [
+    "mission", "authorize-wheels-up", "--mission-id", "mission:conflicting-output",
+    "--input", "unused.json", "--human", "--json",
+  ]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--human and --json are mutually exclusive/u);
+});
+
 const BOOTSTRAP_ARGS = [
   "mission", "signer", "bootstrap",
   "--seat", "coulson",
@@ -871,6 +880,26 @@ test("authorize-wheels-up canonically orders mixed-case publication paths and ha
   await writeFile(signerPath, signerBytes);
 
   const fixedTimestamp = "2026-08-07T12:34:56.000Z";
+  const humanResult = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--human"],
+    {
+      env: { HOME: homeRoot },
+      input: "one-passcode-secret\n",
+      nodeArgs: fixedClockNodeArgs(fixedTimestamp),
+    },
+  );
+  assert.equal(humanResult.status, 0, humanResult.stderr);
+  assert.match(humanResult.stdout, /APPROVAL NEEDED — mission:authorize-wheels-up/u);
+  assert.match(humanResult.stdout, /Enter your passcode to authorize May to:/u);
+  assert.match(humanResult.stdout, /AUTHORIZED — mission:authorize-wheels-up/u);
+  assert.match(humanResult.stdout, /Coulson: final acceptance/u);
+  assert.match(humanResult.stdout, /Fitz: technical review/u);
+  assert.doesNotMatch(humanResult.stdout, /manifestDigest|receiptDigest|sha256|startingJournalSequence/u);
+  assert.doesNotMatch(humanResult.stderr, /SHIELD_WHEELS_UP_MANIFEST_BEGIN/u);
+  const humanJournal = await readFile(journalPath(root, missionId), "utf8");
+  await writeFile(journalPath(root, missionId), before);
+
   const firstResult = run(
     root,
     ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
@@ -882,6 +911,7 @@ test("authorize-wheels-up canonically orders mixed-case publication paths and ha
   );
   assert.equal(firstResult.status, 0, firstResult.stderr);
   const firstJournal = await readFile(journalPath(root, missionId), "utf8");
+  assert.equal(firstJournal, humanJournal);
   await writeFile(journalPath(root, missionId), before);
   assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
 
