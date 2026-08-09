@@ -32,7 +32,7 @@ export const planTeardown = async ({ planPath, integrationRef }) => {
       worktrees.push({ missionId: mission.id, path, disposition: 'preserve-wrong-branch', recoverable: true, observed });
       continue;
     }
-    if (observed.dirty) {
+    if (observed.clean !== true) {
       worktrees.push({ missionId: mission.id, path, disposition: 'preserve-dirty', recoverable: true, observed });
       continue;
     }

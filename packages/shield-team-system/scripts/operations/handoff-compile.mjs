@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  canonicalNewPath,
   git,
   hashFile,
   inspectGit,
@@ -87,9 +88,8 @@ export const compileHandoff = async (options) => {
   const flightPlanPath = resolve(options.flightPlan);
   const acceptancePath = resolve(options.acceptanceReport);
   const statePath = resolve(options.state);
-  const outputDirectory = resolve(options.outputDir);
+  const outputDirectory = await canonicalNewPath(options.outputDir);
   const worktree = resolve(options.worktree);
-  if (existsSync(outputDirectory)) throw new Error(`Refusing existing output directory: ${outputDirectory}`);
 
   const [flightPlanSnapshot, acceptanceSnapshot, stateSnapshot] = await Promise.all([
     readJsonSnapshot(flightPlanPath),
@@ -112,7 +112,7 @@ export const compileHandoff = async (options) => {
     if (repository.branch !== mission.branch) {
       errors.push(`Branch is ${repository.branch}; mission requires ${mission.branch}.`);
     }
-    if (repository.dirty) errors.push('Worktree must be clean at handoff compilation.');
+    if (repository.clean !== true) errors.push('Worktree must be clean at handoff compilation.');
     const resolvedBase = baseRevision
       ? tryGit(worktree, ['rev-parse', '--verify', `${baseRevision}^{commit}`])
       : undefined;
@@ -187,7 +187,7 @@ export const compileHandoff = async (options) => {
       root: repository.root,
       branch: repository.branch,
       head: repository.head,
-      clean: !repository.dirty,
+      clean: repository.clean,
       baseRevision,
       changedPaths,
     },
@@ -201,6 +201,12 @@ export const compileHandoff = async (options) => {
     state,
     stateSource: await hashFile(statePath),
   };
+  try {
+    await mkdir(outputDirectory, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw new Error(`Refusing existing output directory: ${outputDirectory}`);
+    throw error;
+  }
   const jsonPath = await writeNewFile(`${outputDirectory}/handoff.json`, stableJson(packet));
   const markdownPath = await writeNewFile(`${outputDirectory}/handoff.md`, makeMarkdown(packet));
   return { packet, jsonPath, markdownPath };
