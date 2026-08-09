@@ -2,7 +2,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
-import { chmod, lstat, mkdir, mkdtemp, open, rename, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, open, rename, rm, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -68,6 +68,9 @@ const sanitizedRemoteIdentity = (rawRemoteUrl) => {
       throw new Error('Origin remote URL cannot be safely reduced to a credential-free repository identity.');
     }
     if (parsed.protocol === 'file:') return null;
+    if (!['git:', 'http:', 'https:', 'ssh:'].includes(parsed.protocol)) {
+      throw new Error('Origin remote URL uses an unsupported protocol and cannot be safely recorded.');
+    }
     const repositoryPath = parsed.pathname.replace(/^\/+|\/+$/gu, '');
     if (!parsed.host || !repositoryPath) {
       throw new Error('Origin remote URL cannot be safely reduced to a credential-free repository identity.');
@@ -75,12 +78,15 @@ const sanitizedRemoteIdentity = (rawRemoteUrl) => {
     return `${parsed.host}/${repositoryPath}`;
   }
 
-  const scpLike = /^(?:[^@/:\s]+@)?(\[[^\]]+\]|[^/:\s]+):\/?([^?#]+?)(?:[?#].*)?$/u.exec(remoteUrl);
-  if (scpLike) return `${scpLike[1]}/${scpLike[2].replace(/\/+$/u, '')}`;
+  const scpLike = /^(?:[a-z\d._-]+@)?(\[[a-f\d:.]+\]|[a-z\d](?:[a-z\d.-]*[a-z\d])?):([a-z\d._~+/-]+)$/iu.exec(remoteUrl);
+  if (scpLike && !scpLike[2].startsWith('/') && !scpLike[2].endsWith('/') &&
+      !scpLike[2].includes('//') && !scpLike[2].split('/').some((segment) => segment === '.' || segment === '..')) {
+    return `${scpLike[1]}/${scpLike[2]}`;
+  }
 
   // Local-path remotes have no stable host/repository identity and are not
   // needed for the observational plan contract.
-  if (!remoteUrl.includes('@')) return null;
+  if (!remoteUrl.includes('@') && !/^[a-z][a-z\d+.-]*:/iu.test(remoteUrl)) return null;
   throw new Error('Origin remote URL cannot be safely reduced to a credential-free repository identity.');
 };
 
@@ -230,11 +236,41 @@ const makeReadme = (plan) => {
   return `# ${plan.flightId} bootstrap package\n\nThis package is observational and non-authoritative. It creates no branches, worktrees, journals, signatures, runtime bindings, approvals, publication rights, or integration rights.\n\nBase: \`${plan.repository.baseRef}\` at \`${plan.repository.baseRevision}\`\n\n## Lane plan\n\n${laneLines.join('\n')}\n\n## Contents\n\n- \`flight-plan.resolved.json\`: closed resolved plan and dependency graph.\n- \`evaluation-contract.json\`: closed fixture and scorecard contract.\n- \`packets/\`: one launch packet per mission slug.\n- \`evidence/\`: one evidence template per mission slug.\n- \`bootstrap-receipt.json\`: closed inventory and construction observations.\n\nEvery mission still requires independent authorization against fresh exact state.\n`;
 };
 
-const defaultPackageDependencies = { chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeNewFile };
+const defaultPackageDependencies = { chmod, lstat, mkdir, mkdtemp, open, rename, rm, unlink, writeNewFile };
 
 const syncDirectory = async (path, dependencies) => {
+  if (dependencies.syncDirectory) return dependencies.syncDirectory(path);
   const handle = await dependencies.open(path, fsConstants.O_RDONLY);
   try { await handle.sync(); } finally { await handle.close(); }
+};
+
+const sameInode = (left, right) => left.dev === right.dev && left.ino === right.ino;
+
+const acquirePublicationLock = async (lockPath, dependencies) => {
+  let handle;
+  let identity;
+  try {
+    handle = await dependencies.open(lockPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL |
+      (fsConstants.O_NOFOLLOW ?? 0), 0o600);
+    identity = await handle.stat();
+    if (!identity.isFile()) throw new Error('Publication reservation is not a regular file.');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    return identity;
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    const current = identity && await dependencies.lstat(lockPath).catch(() => undefined);
+    if (current && sameInode(identity, current)) await dependencies.unlink(lockPath).catch(() => {});
+    if (error?.code === 'EEXIST') throw new Error('Output publication is already reserved by another flight-prep process.');
+    throw error;
+  }
+};
+
+const releasePublicationLock = async (lockPath, identity, dependencies) => {
+  if (!identity) return;
+  const current = await dependencies.lstat(lockPath).catch(() => undefined);
+  if (current && sameInode(identity, current)) await dependencies.unlink(lockPath).catch(() => {});
 };
 
 const writePackage = async ({ plan, manifestSnapshot, outputPath, injectedDependencies }) => {
@@ -247,8 +283,12 @@ const writePackage = async ({ plan, manifestSnapshot, outputPath, injectedDepend
 
   const toolSnapshot = await snapshotFile(fileURLToPath(import.meta.url));
   const parent = dirname(finalRoot);
+  const lockPath = join(parent, `.${basename(finalRoot)}.publish.lock`);
+  let lockIdentity;
   let stagingRoot;
   try {
+    lockIdentity = await acquirePublicationLock(lockPath, dependencies);
+    if (await dependencies.lstat(finalRoot).catch(() => undefined)) throw new Error(`Output path already exists: ${finalRoot}`);
     stagingRoot = await dependencies.mkdtemp(join(parent, `.${basename(finalRoot)}.staging-`));
     await dependencies.chmod(stagingRoot, 0o700);
     await dependencies.mkdir(resolveContainedPath(stagingRoot, 'packets'), { mode: 0o700 });
@@ -296,11 +336,17 @@ const writePackage = async ({ plan, manifestSnapshot, outputPath, injectedDepend
     if (await dependencies.lstat(finalRoot).catch(() => undefined)) throw new Error(`Output path already exists: ${finalRoot}`);
     await dependencies.rename(stagingRoot, finalRoot);
     stagingRoot = undefined;
-    await syncDirectory(parent, dependencies);
+    try {
+      await syncDirectory(parent, dependencies);
+    } catch (error) {
+      throw new Error(`Complete flight package was published at ${finalRoot}, but parent-directory durability sync failed: ${error instanceof Error ? error.message : error}`);
+    }
     return finalRoot;
   } catch (error) {
     if (stagingRoot) await dependencies.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
     throw error;
+  } finally {
+    await releasePublicationLock(lockPath, lockIdentity, dependencies);
   }
 };
 

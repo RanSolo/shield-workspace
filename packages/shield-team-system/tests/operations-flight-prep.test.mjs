@@ -85,6 +85,32 @@ test('persists only a credential-free remote identity', async () => {
       assert.doesNotMatch(await readFile(path, 'utf8'), new RegExp(`${canarySecret}|flight-user`, 'u'), relativePath);
     }
   }
+
+  git(repositoryPath, ['remote', 'set-url', 'origin', 'git@example.invalid:org/repo.git']);
+  const scpResult = await prepareFlight({ manifestPath });
+  assert.equal(scpResult.repository.remoteUrl, 'example.invalid/org/repo.git');
+});
+
+test('fails closed without echoing malformed or unsupported credential-bearing remotes', async () => {
+  const malformedRemotes = [
+    'user:FLIGHT_REMOTE_MALFORMED_CANARY@host:org/repo.git',
+    'https:user:FLIGHT_REMOTE_MALFORMED_CANARY@host/org/repo.git',
+    'ftp://user:FLIGHT_REMOTE_MALFORMED_CANARY@host/org/repo.git',
+  ];
+  for (const [index, remoteUrl] of malformedRemotes.entries()) {
+    const repositoryPath = await makeRepository();
+    git(repositoryPath, ['remote', 'add', 'origin', remoteUrl]);
+    const directory = await mkdtemp(join(tmpdir(), `flight-prep-malformed-remote-${index}-`));
+    const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
+    const outputPath = join(directory, 'generated');
+    await assert.rejects(prepareFlight({ manifestPath, outputPath }), (error) => {
+      assert.match(error.message, /cannot be safely|unsupported protocol/u);
+      assert.doesNotMatch(error.message, /FLIGHT_REMOTE_MALFORMED_CANARY/u);
+      return true;
+    });
+    assert.equal(await lstat(outputPath).catch(() => undefined), undefined);
+    assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
+  }
 });
 
 test('removes staging and publishes no final package when an artifact write fails', async () => {
@@ -107,7 +133,87 @@ test('removes staging and publishes no final package when an artifact write fail
   }), /injected artifact write failure/u);
 
   assert.equal(await lstat(outputPath).catch(() => undefined), undefined);
-  assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.staging-')), []);
+  assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
+});
+
+test('serializes cooperating concurrent publishers with an atomic sibling reservation', async () => {
+  const repositoryPath = await makeRepository();
+  const directory = await mkdtemp(join(tmpdir(), 'flight-prep-concurrent-'));
+  const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
+  const outputPath = join(directory, 'generated');
+  let releaseFirstWrite;
+  const firstWriteReleased = new Promise((resolve) => { releaseFirstWrite = resolve; });
+  let signalFirstWrite;
+  const firstWriteStarted = new Promise((resolve) => { signalFirstWrite = resolve; });
+  let firstWrite = true;
+
+  const firstPublisher = prepareFlight({
+    manifestPath,
+    outputPath,
+    packageDependencies: {
+      writeNewFile: async (path, bytes) => {
+        if (firstWrite) {
+          firstWrite = false;
+          signalFirstWrite();
+          await firstWriteReleased;
+        }
+        return writeNewFile(path, bytes);
+      },
+    },
+  });
+  await firstWriteStarted;
+  await assert.rejects(prepareFlight({ manifestPath, outputPath }), /already reserved/u);
+  releaseFirstWrite();
+  await firstPublisher;
+
+  assert.ok(await lstat(join(outputPath, 'bootstrap-receipt.json')));
+  assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
+});
+
+test('retains a raced destination and removes only its owned reservation and staging', async () => {
+  const repositoryPath = await makeRepository();
+  const directory = await mkdtemp(join(tmpdir(), 'flight-prep-raced-output-'));
+  const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
+  const outputPath = join(directory, 'generated');
+  let finalPathChecks = 0;
+
+  await assert.rejects(prepareFlight({
+    manifestPath,
+    outputPath,
+    packageDependencies: {
+      lstat: async (path) => {
+        if (path === outputPath) {
+          finalPathChecks += 1;
+          if (finalPathChecks === 3) await mkdir(outputPath);
+        }
+        return lstat(path);
+      },
+    },
+  }), /Output path already exists/u);
+
+  assert.ok((await lstat(outputPath)).isDirectory());
+  assert.deepEqual(await readdir(outputPath), []);
+  assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
+});
+
+test('reports a published complete package when post-rename parent sync fails', async () => {
+  const repositoryPath = await makeRepository();
+  const directory = await mkdtemp(join(tmpdir(), 'flight-prep-post-rename-sync-'));
+  const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
+  const outputPath = join(directory, 'generated');
+
+  await assert.rejects(prepareFlight({
+    manifestPath,
+    outputPath,
+    packageDependencies: {
+      syncDirectory: async (path) => {
+        if (path === directory) throw new Error('injected parent sync failure');
+      },
+    },
+  }), /Complete flight package was published.*durability sync failed.*injected parent sync failure/u);
+
+  assert.ok(await lstat(join(outputPath, 'bootstrap-receipt.json')));
+  assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
 });
 
 test('rejects dependency cycles and canonical ownership aliases', async () => {

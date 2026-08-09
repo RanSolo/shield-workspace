@@ -32,15 +32,25 @@ revision to exist and be an ancestor of HEAD, and preparation-phase HEAD to
 equal it exactly. When `origin` is a network remote, the plan's closed
 `repository.remoteUrl` field records only its credential-free host/repository
 identity; URL usernames, passwords, queries, fragments, and raw remote URLs are
-never persisted. Local-path remotes are recorded as `null`.
+never persisted. Only `git`, `http`, `https`, `ssh`, and local `file` URL
+protocols plus canonical scp-like remotes are accepted; ambiguous or malformed
+network remotes fail closed without being echoed. Local-path remotes are
+recorded as `null`.
 
 Package writes are create-only and confined beneath a private mode `0700`
 sibling staging directory. Complete artifacts and directories are synced,
 staging is atomically renamed to the final root, and the parent directory is
-synced. A pre-publication failure removes only owned staging state and leaves no
-published partial package. The package contains a closed resolved plan,
-evaluation contract, mission packets/templates, and a bootstrap receipt with a
-nonempty exact generated-file inventory.
+synced. Because portable Node filesystem APIs do not provide an absolute
+no-replace directory rename, cooperating flight-prep processes first acquire an
+atomic create-exclusive sibling `.OUTPUT.publish.lock` reservation and retain a
+final-path recheck immediately before rename. A pre-publication failure removes
+only inode-verified owned lock and staging state and leaves no published partial
+package. After an interrupted process, operators must verify no publisher is
+active before removing a stale reservation. If the final rename succeeds but
+parent-directory durability sync fails, the tool reports explicitly that the
+complete package was published and does not remove it. The package contains a
+closed resolved plan, evaluation contract, mission packets/templates, and a
+bootstrap receipt with a nonempty exact generated-file inventory.
 
 ## Build the shared synthetic fixture
 
