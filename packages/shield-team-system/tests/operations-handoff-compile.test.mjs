@@ -137,6 +137,8 @@ export const createHandoffInputs = async (fixture, missionId, suffix = missionId
   const zero = '0'.repeat(64);
   const emptyHash = sha256('');
   const evidenceToolPath = fileURLToPath(new URL('../scripts/operations/evidence-run.mjs', import.meta.url));
+  const artifactPath = `${missionId.at(-1)}/result.txt`;
+  const artifactBytes = await readFile(join(mission.worktree, artifactPath));
   await writeJson(receiptPath, {
     schemaVersion: 1,
     receiptType: 'mission-command-evidence',
@@ -169,7 +171,7 @@ export const createHandoffInputs = async (fixture, missionId, suffix = missionId
       stdout: { text: '', sha256: emptyHash, truncated: false },
       stderr: { text: '', sha256: emptyHash, truncated: false },
     },
-    artifacts: [{ path: `${missionId.at(-1)}/result.txt`, bytes: 2, sha256: zero }],
+    artifacts: [{ path: artifactPath, bytes: artifactBytes.length, sha256: sha256(artifactBytes) }],
     tool: { name: 'evidence-run', version: '1.0.0', path: evidenceToolPath, sha256: await digest(evidenceToolPath) },
   });
   const receiptSha256 = await digest(receiptPath);
@@ -285,6 +287,61 @@ test('handoff compile rejects forged acceptance receipt sets and unknown state f
   await writeJson(unknown.statePath, state);
   unknown.options.expectedStateSha256 = await digest(unknown.statePath);
   await assert.rejects(() => compileHandoff(unknown.options), /state contains unknown field unexpected/u);
+});
+
+test('handoff compile verifies receipt-declared artifact bytes in the exact worktree', async () => {
+  const fixture = await createConvergenceFixture();
+  const inputs = await createHandoffInputs(fixture, 'mission:a', 'artifact-forgery');
+  const receipt = JSON.parse(await readFile(inputs.receiptPath, 'utf8'));
+  receipt.artifacts[0].sha256 = 'f'.repeat(64);
+  await writeJson(inputs.receiptPath, receipt);
+  const receiptSha256 = await digest(inputs.receiptPath);
+  const manifest = JSON.parse(await readFile(inputs.manifestPath, 'utf8'));
+  manifest.receipts[0].receiptSha256 = receiptSha256;
+  await writeJson(inputs.manifestPath, manifest);
+  const acceptance = JSON.parse(await readFile(inputs.acceptancePath, 'utf8'));
+  acceptance.receiptSummaries[0].receiptSha256 = receiptSha256;
+  acceptance.manifestSha256 = await digest(inputs.manifestPath);
+  await writeJson(inputs.acceptancePath, acceptance);
+  await assert.rejects(
+    () => compileHandoff(inputs.options),
+    /artifact a\/result.txt does not match actual worktree bytes/u,
+  );
+});
+
+test('handoff state and packet outputs must remain outside all observed and planned worktrees', async () => {
+  const fixture = await createConvergenceFixture();
+  const inputs = await createHandoffInputs(fixture, 'mission:a', 'confined-output');
+  const stateOutput = join(fixture.worktreeA, 'state-output.json');
+  await assert.rejects(() => recordHandoffState({
+    planPath: fixture.planPath,
+    missionId: 'mission:a',
+    worktree: fixture.worktreeA,
+    statusPath: inputs.statusPath,
+    sequence: 0,
+    output: stateOutput,
+  }), /outside every observed or planned worktree/u);
+  await assert.rejects(() => readFile(stateOutput), /ENOENT/u);
+
+  const outputDir = join(fixture.worktreeA, 'handoff-output');
+  await assert.rejects(
+    () => compileHandoff({ ...inputs.options, outputDir }),
+    /outside every observed or planned worktree/u,
+  );
+  await assert.rejects(() => readFile(join(outputDir, 'handoff.json')), /ENOENT/u);
+
+  const observedOnly = join(fixture.root, 'observed-only-worktree');
+  git(fixture.repository, ['worktree', 'add', '-b', 'scratch/observed-only', observedOnly, fixture.base]);
+  const observedOutput = join(observedOnly, 'state-output.json');
+  await assert.rejects(() => recordHandoffState({
+    planPath: fixture.planPath,
+    missionId: 'mission:a',
+    worktree: fixture.worktreeA,
+    statusPath: inputs.statusPath,
+    sequence: 0,
+    output: observedOutput,
+  }), /outside every observed or planned worktree/u);
+  await assert.rejects(() => readFile(observedOutput), /ENOENT/u);
 });
 
 test('handoff compile rejects dirty, stale, branch, and canonical alias drift', async () => {

@@ -16,6 +16,7 @@ import {
   writeNewFile,
 } from './common.mjs';
 import { assertPlan, GIT_REVISION_PATTERN } from './flight-common.mjs';
+import { assertOutputOutsideFlightWorktrees } from './convergence-common.mjs';
 
 export const HANDOFF_STATE_TYPE = 'non-authoritative-mission-handoff-state';
 export const HANDOFF_STATE_NOTICE = 'Coordination state only. This snapshot grants no human approval, mission authority, merge authority, or publication authority.';
@@ -158,6 +159,7 @@ export const recordHandoffState = async ({
   const plan = assertPlan(planSnapshot.value);
   const mission = plan.missions.find((candidate) => candidate.id === missionId);
   if (!mission) throw new Error(`Mission not found in flight plan: ${missionId}`);
+  const outputPath = await assertOutputOutsideFlightWorktrees(plan, output, 'Handoff state output');
   const statusErrors = [];
   validateStatus(statusSnapshot.value, 'status', statusErrors);
   if (statusErrors.length > 0) throw new Error(`Invalid handoff status input:\n- ${statusErrors.join('\n- ')}`);
@@ -223,7 +225,7 @@ export const recordHandoffState = async ({
     validateHandoffPredecessor(state, predecessorSnapshot, expectedPredecessorSha256, errors);
   }
   if (errors.length > 0) throw new Error(`Invalid handoff state:\n- ${errors.join('\n- ')}`);
-  await writeNewFile(output, stableJson(state));
+  await writeNewFile(outputPath, stableJson(state));
   return state;
 };
 

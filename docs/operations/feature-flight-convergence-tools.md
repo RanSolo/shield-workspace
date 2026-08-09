@@ -64,8 +64,10 @@ and broken predecessor identity.
 Checkout and review packets require closed passing GREEN acceptance at current
 HEAD. The acceptance report receipt-digest set must exactly equal the supplied
 closed evidence manifest and receipt set. Receipt repository and result
-bindings are rechecked. Changed paths are recomputed in Git's deterministic
-order from exact `base..HEAD`, and every path must be owned by the mission.
+bindings are rechecked, and every receipt-declared artifact is verified against
+the actual bytes in the canonical mission worktree. Changed paths are
+recomputed from exact `base..HEAD`, persisted in locale-independent UTF-8 byte
+order, and every path must be owned by the mission.
 
 The closed v2 packet binds flight, exact plan, mission, canonical repository
 and worktree, branch, base ref/revision, HEAD, ordered changed paths, state,
@@ -86,12 +88,14 @@ npx shield-ops integration check \
 
 The checker snapshots the plan and each supplied packet once, then requires the
 packet identity set to equal the target mission's declared dependencies. It
-re-resolves the current base and mission branch refs, canonical worktrees,
-branches, HEADs, cleanliness, and ancestry. For each dependency it validates
-the closed packet, exact flight/plan/mission/repository identity, acceptance
-and receipt bindings, and a fresh ordered `base..HEAD` changed-path
-recomputation. Missing, stale, unexpected, duplicate, substituted, fabricated,
-out-of-scope, or exact-path-colliding packets fail closed.
+also snapshots each packet-bound handoff state, predecessor, acceptance report,
+evidence manifest, receipt, and receipt-declared artifact source once. Every
+source must have its exact canonical path, byte count, and digest; closed source
+validators and cross-bindings are replayed. It re-resolves the current base and
+mission branch refs, canonical worktrees, branches, HEADs, cleanliness, and
+ancestry, then recomputes the locale-independent ordered `base..HEAD` changed
+paths. Missing, stale, aliased, unexpected, duplicate, substituted, fabricated,
+out-of-scope, or exact-path-colliding packets or sources fail closed.
 
 The closed v2 integration report is compatibility evidence only. It performs
 no checkout, merge, approval, publication, deployment, or release.
@@ -107,14 +111,25 @@ npx shield-ops teardown plan \
 ```
 
 Teardown is read-only. It inventories tracked, modified tracked, untracked,
-and ignored files for every existing canonical mission worktree. Exact branch
-ref evidence must recover the observed HEAD. Every unrecorded regular file or
-symlink must either remain preserved or be matched by one unambiguous closed
-archive manifest bound to the flight, mission, canonical repository/worktree,
-branch, HEAD, and exact file category/path/type/byte-count/SHA-256 set.
+and ignored files for every existing canonical mission worktree. The optional
+integration ref must be exactly `refs/heads/{plan.integration.branch}`; the
+tool resolves that full ref with `show-ref --verify` before any ancestry check.
+Exact mission branch-ref evidence must recover the observed HEAD. Every
+unrecorded regular file or symlink must either remain preserved or be matched
+by one unambiguous closed archive manifest and its actual external payload. The
+manifest binds the payload's canonical path, bytes, SHA-256, and
+`json-base64-v1` format. The payload must be outside every removable worktree,
+must contain recoverable bytes for every file, and must exactly equal the
+flight, mission, canonical repository/worktree, branch, HEAD, and complete file
+category/path/type/byte-count/SHA-256 inventory.
 
 Missing refs, dirty worktrees, ignored or untracked artifacts without archive
 evidence, mismatched archives, path aliases, wrong branches, and clean but
 unintegrated revisions remain preservation dispositions. Even
 `eligible-for-human-confirmed-removal` is only a report value: the tool never
 deletes a file, worktree, branch, archive, or evidence artifact.
+
+All handoff-state, handoff-packet, integration-report, and teardown-report
+output paths must be outside every planned or currently observed flight
+worktree. Outputs are create-only and are not written when confinement or
+validation fails.

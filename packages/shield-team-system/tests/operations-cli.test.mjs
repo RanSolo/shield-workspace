@@ -24,7 +24,7 @@ test("operations CLI describes the non-authoritative evidence surface", () => {
   assert.match(result.stdout, /shield-ops handoff compile --flight-plan FILE/u);
   assert.match(result.stdout, /--evidence-manifest FILE --state FILE --expected-state-sha256 SHA256 --expected-state-sequence N/u);
   assert.match(result.stdout, /shield-ops integration check --plan FILE --target-mission ID --packet FILE/u);
-  assert.match(result.stdout, /shield-ops teardown plan --plan FILE.*--archive-evidence FILE/u);
+  assert.match(result.stdout, /shield-ops teardown plan --plan FILE.*--integration-ref refs\/heads\/PLAN_INTEGRATION_BRANCH.*--archive-evidence FILE/u);
   assert.match(result.stdout, /non-authoritative operational evidence/u);
   assert.match(result.stdout, /provenance, execution attestation/u);
 });

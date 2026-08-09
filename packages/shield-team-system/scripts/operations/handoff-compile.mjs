@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 import {
   SHA256_PATTERN,
   canonicalExistingPath,
-  canonicalNewPath,
   exactKeys,
   git,
   inspectGit,
@@ -26,13 +25,14 @@ import {
   validateHandoffPredecessor,
   validateHandoffState,
 } from './handoff-state.mjs';
+import { assertOutputOutsideFlightWorktrees, compareUtf8 } from './convergence-common.mjs';
 
 export const HANDOFF_PACKET_TYPE = 'exact-mission-handoff';
 export const HANDOFF_PACKET_NOTICE = 'Coordination evidence only. This packet grants no human approval, mission authority, merge authority, or publication authority.';
 export const HANDOFF_PACKET_TOOL_VERSION = '1.0.0';
 const MODES = new Set(['checkout', 'resume', 'review']);
 
-const sameArtifact = (left, right) =>
+export const sameArtifactIdentity = (left, right) =>
   left?.path === right?.path && left?.bytes === right?.bytes && left?.sha256 === right?.sha256;
 
 const validateArtifact = (value, label, errors) => {
@@ -48,7 +48,7 @@ const validateStringArray = (value, label, errors, { allowEmpty = true } = {}) =
   }
 };
 
-const validateAcceptanceReport = (report) => {
+export const validateAcceptanceReport = (report) => {
   const errors = [];
   if (!exactKeys(report, [
     'schemaVersion', 'reportType', 'evidence', 'tool', 'missionId', 'source', 'specPath',
@@ -91,7 +91,7 @@ const validateAcceptanceReport = (report) => {
   return errors;
 };
 
-const validateEvidenceManifest = (manifest) => {
+export const validateEvidenceManifest = (manifest) => {
   const errors = [];
   if (!exactKeys(manifest, [
     'schemaVersion', 'manifestType', 'missionId', 'specSha256', 'phase', 'expectedRevision',
@@ -134,7 +134,7 @@ const validateEvidenceManifest = (manifest) => {
   return errors;
 };
 
-const validateReceipt = (receipt, mapping, acceptance, mission, repository, evidenceTool, label) => {
+export const validateReceipt = (receipt, mapping, acceptance, mission, repository, evidenceTool, label) => {
   const errors = [];
   if (!exactKeys(receipt, [
     'schemaVersion', 'receiptType', 'receiptId', 'evidence', 'specSha256', 'commandId', 'command',
@@ -265,7 +265,7 @@ export const validateHandoffPacket = (packet) => {
 
 const orderedChangedPaths = (worktree, baseRevision, head) => {
   const output = git(worktree, ['diff', '--name-only', '--diff-filter=ACDMRTUXB', `${baseRevision}..${head}`]);
-  return output === '' ? [] : output.split('\n');
+  return output === '' ? [] : output.split('\n').sort(compareUtf8);
 };
 
 const requireCanonicalWorktree = async (value, mission) => {
@@ -336,6 +336,7 @@ export const compileHandoff = async (options) => {
   const plan = assertPlan(planSnapshot.value);
   const mission = plan.missions.find((candidate) => candidate.id === options.missionId);
   if (!mission) throw new Error(`Mission not found in flight plan: ${options.missionId}`);
+  const outputDirectory = await assertOutputOutsideFlightWorktrees(plan, options.outputDir, 'Handoff packet output directory');
   const worktree = await requireCanonicalWorktree(options.worktree, mission);
   const repository = inspectGit(worktree);
   const errors = [];
@@ -418,6 +419,7 @@ export const compileHandoff = async (options) => {
 
   const receiptRecords = [];
   const artifactRecords = [];
+  const artifactSnapshots = new Map();
   const suppliedDigests = new Set();
   for (const [index, snapshot] of receiptSnapshots.entries()) {
     if (suppliedDigests.has(snapshot.sha256)) errors.push(`Duplicate supplied receipt digest: ${snapshot.sha256}`);
@@ -435,6 +437,18 @@ export const compileHandoff = async (options) => {
     receiptRecords.push({ receiptId: mapping.receiptId, source: artifactIdentity(snapshot) });
     for (const artifact of (Array.isArray(snapshot.value.artifacts) ? snapshot.value.artifacts : [])) {
       artifactRecords.push({ receiptId: mapping.receiptId, ...artifact });
+      try {
+        let artifactSnapshot = artifactSnapshots.get(artifact.path);
+        if (!artifactSnapshot) {
+          artifactSnapshot = await snapshotFile(resolve(worktree, artifact.path));
+          artifactSnapshots.set(artifact.path, artifactSnapshot);
+        }
+        if (artifactSnapshot.size !== artifact.bytes || artifactSnapshot.sha256 !== artifact.sha256) {
+          errors.push(`Receipt ${mapping.receiptId} artifact ${artifact.path} does not match actual worktree bytes.`);
+        }
+      } catch (error) {
+        errors.push(`Receipt ${mapping.receiptId} artifact ${artifact.path} is unavailable or unsafe: ${error instanceof Error ? error.message : error}`);
+      }
     }
   }
   if ([...mappingByDigest.keys()].some((digest) => !suppliedDigests.has(digest))) errors.push('Evidence manifest contains a receipt not present in the supplied receipt set.');
@@ -480,17 +494,16 @@ export const compileHandoff = async (options) => {
       phase: acceptance.phase,
       ok: acceptance.ok,
       expectedRevision: acceptance.expectedRevision,
-      receiptDigests: [...suppliedDigests].sort(),
+      receiptDigests: [...suppliedDigests].sort(compareUtf8),
     },
     evidence: {
-      receipts: receiptRecords.sort((left, right) => left.receiptId.localeCompare(right.receiptId)),
-      artifacts: artifactRecords.sort((left, right) => `${left.receiptId}\0${left.path}`.localeCompare(`${right.receiptId}\0${right.path}`)),
+      receipts: receiptRecords.sort((left, right) => compareUtf8(left.receiptId, right.receiptId)),
+      artifacts: artifactRecords.sort((left, right) => compareUtf8(`${left.receiptId}\0${left.path}`, `${right.receiptId}\0${right.path}`)),
     },
   };
   const packetErrors = validateHandoffPacket(packet);
   if (packetErrors.length > 0) throw new Error(`Produced invalid handoff packet:\n- ${packetErrors.join('\n- ')}`);
 
-  const outputDirectory = await canonicalNewPath(options.outputDir);
   await mkdir(outputDirectory, { mode: 0o700 });
   const jsonPath = await writeNewFile(`${outputDirectory}/handoff.json`, stableJson(packet));
   const markdownPath = await writeNewFile(`${outputDirectory}/handoff.md`, makeMarkdown({ ...packet, stateStatus: state.status }));

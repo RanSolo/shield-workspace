@@ -34,7 +34,7 @@ function usage() {
     "  shield-ops handoff state --plan FILE --mission ID --worktree PATH --status FILE --sequence N [--predecessor-state FILE --expected-predecessor-sha256 SHA256] --output NEW_FILE",
     "  shield-ops handoff compile --flight-plan FILE --mission-id ID --worktree PATH --acceptance-report FILE --evidence-manifest FILE --state FILE --expected-state-sha256 SHA256 --expected-state-sequence N [--predecessor-state FILE --expected-predecessor-sha256 SHA256] --receipt FILE... --output-dir NEW_DIRECTORY [--mode MODE]",
     "  shield-ops integration check --plan FILE --target-mission ID --packet FILE... [--output NEW_FILE]",
-    "  shield-ops teardown plan --plan FILE [--integration-ref REF] [--archive-evidence FILE]... [--output NEW_FILE]",
+    "  shield-ops teardown plan --plan FILE [--integration-ref refs/heads/PLAN_INTEGRATION_BRANCH] [--archive-evidence FILE]... [--output NEW_FILE]",
     "",
     "These commands create non-authoritative operational evidence. They do not grant",
     "mission authority, provenance, execution attestation, journal advancement,",
