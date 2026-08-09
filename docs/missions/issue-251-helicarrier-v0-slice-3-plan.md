@@ -182,8 +182,12 @@ writes. A success winner prohibits recovery writes. Externally introduced mixed
 receipts are conflicting ephemeral recovery and are never repaired in place.
 
 Interruption after arbiter creation is recoverable without adapter invocation:
-the complete arbiter payload deterministically recreates any missing declared
-successor/result or recovery file with create-only exact-byte verification.
+the complete arbiter payload deterministically creates only an absent declared
+successor/result or recovery file with create-only exact-byte verification. A
+present partial, malformed, or wrong-byte target is conflicting ephemeral
+recovery and is never deleted, replaced, truncated, or repaired. A partial or
+malformed `terminal.json` is not a winner and is likewise untouched fail-closed
+state. Final paths therefore never treat partial bytes as materializable.
 
 Add create-only `recovery.json` as the materialized recovery receipt. It is
 closed, canonical, mode-0600, hierarchy-bound, and contains only:
@@ -225,23 +229,40 @@ and final read. Closed v2 artifact-presence states are:
 term for a claim plus successor. Legacy v1 states are classified by the separate
 compatibility matrix and never folded into these v2 states.
 
-Closed recovery phases are:
+Closed phases are:
 
-- `store_replay`, `adapter`, `validation`, `local_readback`,
+- `remote_precheck`, `store_replay`, `adapter`, `validation`, `local_readback`,
   `remote_postcheck`, `terminal_arbitration`, `successor_materialization`,
   `result_materialization`, `recovery_materialization`, `final_readback`.
+
+Closed pre-claim stopped reasons are:
+
+- `remote_observation_unavailable`, `remote_observation_malformed`,
+  `remote_descriptor_mismatch`, `remote_repository_identity_mismatch`,
+  `remote_phase_or_challenge_stale`, and `preexisting_remote_drift`.
+
+Each maps only to `remote_precheck`, zero claim/adapter calls, and the closed
+inspection-only handoff.
 
 Closed durable reason codes are:
 
 - `interrupted_after_claim`, `adapter_uncertain`, `validation_failed`,
   `local_readback_unavailable`, `local_repository_changed`,
-  `remote_observation_unavailable`, `remote_identity_changed`, `remote_drift`,
-  `terminal_arbitration_uncertain`, `successor_materialization_uncertain`,
-  `result_materialization_uncertain`, `recovery_materialization_uncertain`,
-  `final_readback_uncertain`.
+  `remote_observation_unavailable`, `remote_identity_changed`, and
+  `remote_drift`.
+
+Only conditions known before recovery arbitration may become the immutable
+reason in a recovery winner.
 
 Ephemeral-only reasons are `legacy_incomplete`,
-`unsupported_or_malformed_store`, `terminal_conflict`, and `store_unavailable`.
+`unsupported_or_malformed_store`, `terminal_conflict`, `store_unavailable`,
+`terminal_arbitration_uncertain`, `successor_materialization_uncertain`,
+`result_materialization_uncertain`, `recovery_materialization_uncertain`, and
+`final_readback_uncertain`.
+After a success winner, successor/result materialization uncertainty never
+elects recovery. After a recovery winner, recovery materialization uncertainty
+never changes its reason. An exact winner remains materializable on a later
+retry; uncertainty is reported only by the current ephemeral projection.
 Every code maps to exactly one phase, allowed invocation classification, and
 required-nullable observation fields plus the required-null recovery successor
 field in the checked-in validator.
@@ -322,8 +343,10 @@ contain fabricated commands, approval, acceptance, or reconciliation claims.
 | adapter throws or validation fails | elect recovery terminal | 0 | claim + recovery arbiter + recovery |
 | post-adapter local/remote read fails | elect recovery terminal | 0 | claim + recovery arbiter + recovery |
 | remote changes during adapter | elect recovery terminal | 0 | claim + recovery arbiter + recovery |
-| success arbiter durable, files absent/partial | materialize exact arbiter payload | 0 | successful terminal |
+| success arbiter durable, declared file absent | materialize exact arbiter payload | 0 | successful terminal |
+| success arbiter durable, declared file partial/wrong | fail closed without repair | 0 | ephemeral recovery |
 | recovery arbiter durable, receipt absent | materialize exact arbiter payload | 0 | recovery terminal |
+| recovery arbiter durable, receipt partial/wrong | fail closed without repair | 0 | ephemeral recovery |
 | success and recovery race | replay/materialize arbiter winner | 0 | exactly one terminal kind |
 | exact v1 terminal | replay legacy success | 0 | immutable v1 triad |
 | incomplete v1 state | fail closed without mutation | 0 | ephemeral recovery |
