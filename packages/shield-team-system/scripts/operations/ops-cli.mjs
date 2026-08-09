@@ -23,21 +23,22 @@ const commands = new Map([
 function usage() {
   return [
     "Usage:",
-    "  shield-ops evidence run [evidence-run options] -- <command> [args...]",
-    "  shield-ops acceptance check [acceptance-check options]",
-    "  shield-ops flight prep <manifest.json> [--output <new-directory>]",
-    "  shield-ops fixture build --output <new-directory>",
-    "  shield-ops construction check --plan <file> [--require-created] [--output <file>]",
-    "  shield-ops flight doctor --plan <file> [--output <file>]",
-    "  shield-ops flight state-init --plan <file> --output <new-file>",
-    "  shield-ops flight route --plan <file> --state <file> [--output <file>]",
+    "  shield-ops evidence run --spec FILE --expected-spec-sha256 SHA256 --command-id ID --output FILE",
+    "  shield-ops acceptance check --spec FILE --manifest FILE --expected-spec-sha256 SHA256 [options]",
+    "  shield-ops flight prep MANIFEST.json [--output NEW_DIRECTORY]",
+    "  shield-ops fixture build --output NEW_DIRECTORY",
+    "  shield-ops construction check --plan FILE [--require-created] [--output NEW_FILE]",
+    "  shield-ops flight doctor --plan FILE [--output NEW_FILE]",
+    "  shield-ops flight state-init --plan FILE --output NEW_FILE",
+    "  shield-ops flight route --plan FILE --state FILE --expected-state-sha256 SHA256 --expected-state-sequence N [--predecessor-state FILE --expected-predecessor-sha256 SHA256] [--output NEW_FILE]",
     "  shield-ops handoff compile [handoff-compile options]",
     "  shield-ops integration check --plan <file> --target-mission <id> --packet <file>... [--output <file>]",
     "  shield-ops teardown plan --plan <file> [--integration-ref <ref>] [--output <file>]",
     "  shield-ops tool harvest --registry <file> [--output <file>]",
     "",
     "These commands create non-authoritative operational evidence. They do not grant",
-    "mission authority, advance a journal, publish, merge, deploy, or release.",
+    "mission authority, provenance, execution attestation, journal advancement,",
+    "publication, merge, deployment, or release.",
   ].join("\n");
 }
 

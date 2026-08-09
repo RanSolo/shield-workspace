@@ -3,7 +3,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { hashFile, readJson, stableJson, writeNewFile } from "./common.mjs";
+import { hashFile, readJsonSnapshot, stableJson, writeNewFile } from "./common.mjs";
 
 const TOOL_VERSION = "0.1.0-local-prototype";
 const RECOMMENDATIONS = new Set([
@@ -15,7 +15,8 @@ const RECOMMENDATIONS = new Set([
 export const harvestTools = async ({ registryPath }) => {
   const absoluteRegistryPath = resolve(registryPath);
   const registryRoot = dirname(absoluteRegistryPath);
-  const registry = await readJson(absoluteRegistryPath);
+  const registrySnapshot = await readJsonSnapshot(absoluteRegistryPath);
+  const registry = registrySnapshot.value;
   const errors = [];
   if (registry.schemaVersion !== 1)
     errors.push("Registry schemaVersion must equal 1.");
@@ -105,7 +106,11 @@ export const harvestTools = async ({ registryPath }) => {
     notice:
       "Evidence and recommendations only. Promotion requires separate scope, review, and authority.",
     tool: { name: "tool-harvest", version: TOOL_VERSION },
-    registry: { ...(await hashFile(absoluteRegistryPath)), path: registryPath },
+    registry: {
+      path: registryPath,
+      bytes: registrySnapshot.size,
+      sha256: registrySnapshot.sha256,
+    },
     totals: {
       ...totals,
       netObservedMinutes:

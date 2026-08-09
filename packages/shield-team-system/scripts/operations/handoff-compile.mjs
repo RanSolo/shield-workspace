@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
-import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  canonicalNewPath,
   git,
   hashFile,
   inspectGit,
-  readJson,
+  readJsonSnapshot,
   stableJson,
   tryGit,
   writeNewFile,
@@ -87,15 +88,17 @@ export const compileHandoff = async (options) => {
   const flightPlanPath = resolve(options.flightPlan);
   const acceptancePath = resolve(options.acceptanceReport);
   const statePath = resolve(options.state);
-  const outputDirectory = resolve(options.outputDir);
+  const outputDirectory = await canonicalNewPath(options.outputDir);
   const worktree = resolve(options.worktree);
-  if (existsSync(outputDirectory)) throw new Error(`Refusing existing output directory: ${outputDirectory}`);
 
-  const [flightPlan, acceptance, state] = await Promise.all([
-    readJson(flightPlanPath),
-    readJson(acceptancePath),
-    readJson(statePath),
+  const [flightPlanSnapshot, acceptanceSnapshot, stateSnapshot] = await Promise.all([
+    readJsonSnapshot(flightPlanPath),
+    readJsonSnapshot(acceptancePath),
+    readJsonSnapshot(statePath),
   ]);
+  const flightPlan = flightPlanSnapshot.value;
+  const acceptance = acceptanceSnapshot.value;
+  const state = stateSnapshot.value;
   const mission = flightPlan.missions?.find((candidate) => candidate.id === options.missionId);
   if (!mission) throw new Error(`Mission not found in flight plan: ${options.missionId}`);
 
@@ -109,7 +112,7 @@ export const compileHandoff = async (options) => {
     if (repository.branch !== mission.branch) {
       errors.push(`Branch is ${repository.branch}; mission requires ${mission.branch}.`);
     }
-    if (repository.dirty) errors.push('Worktree must be clean at handoff compilation.');
+    if (repository.clean !== true) errors.push('Worktree must be clean at handoff compilation.');
     const resolvedBase = baseRevision
       ? tryGit(worktree, ['rev-parse', '--verify', `${baseRevision}^{commit}`])
       : undefined;
@@ -146,7 +149,7 @@ export const compileHandoff = async (options) => {
   const receipts = [];
   for (const receiptPath of options.receipts) {
     const absolutePath = resolve(receiptPath);
-    const receipt = await readJson(absolutePath);
+    const receipt = (await readJsonSnapshot(absolutePath)).value;
     if (receipt.receiptType !== 'local-command-evidence' || receipt.schemaVersion !== 1) {
       errors.push(`${absolutePath} is not a supported evidence receipt.`);
     }
@@ -184,7 +187,7 @@ export const compileHandoff = async (options) => {
       root: repository.root,
       branch: repository.branch,
       head: repository.head,
-      clean: !repository.dirty,
+      clean: repository.clean,
       baseRevision,
       changedPaths,
     },
@@ -198,6 +201,12 @@ export const compileHandoff = async (options) => {
     state,
     stateSource: await hashFile(statePath),
   };
+  try {
+    await mkdir(outputDirectory, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw new Error(`Refusing existing output directory: ${outputDirectory}`);
+    throw error;
+  }
   const jsonPath = await writeNewFile(`${outputDirectory}/handoff.json`, stableJson(packet));
   const markdownPath = await writeNewFile(`${outputDirectory}/handoff.md`, makeMarkdown(packet));
   return { packet, jsonPath, markdownPath };
