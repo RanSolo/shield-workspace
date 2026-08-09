@@ -14,11 +14,11 @@ import {
   snapshotFile,
   stableJson,
   validateAcceptanceSpec,
-  writeNewFile,
+  writeReservedOutput,
 } from './common.mjs';
 import { EVIDENCE_TOOL_NAME, EVIDENCE_TOOL_VERSION } from './evidence-run.mjs';
 
-const TOOL_VERSION = '1.0.0';
+const TOOL_VERSION = '2.0.0';
 const PHASES = new Set(['structure', 'red', 'green']);
 const REVISION_PATTERN = /^[a-f0-9]{40,64}$/u;
 
@@ -46,7 +46,7 @@ const parseArguments = (argv) => {
 const validateManifest = (manifest) => {
   const errors = [];
   if (!exactKeys(manifest, ['schemaVersion', 'manifestType', 'missionId', 'specSha256', 'phase', 'expectedRevision', 'receipts', 'redNotApplicable', 'manualEvidence'], 'manifest', errors)) return errors;
-  if (manifest.schemaVersion !== 1) errors.push('manifest.schemaVersion must equal 1.');
+  if (manifest.schemaVersion !== 2) errors.push('manifest.schemaVersion must equal 2; v1 and other predecessors are unsupported.');
   if (manifest.manifestType !== 'mission-evidence-manifest') errors.push('manifest.manifestType must equal mission-evidence-manifest.');
   if (!nonEmptyString(manifest.missionId)) errors.push('manifest.missionId must be a non-empty string.');
   if (!SHA256_PATTERN.test(manifest.specSha256)) errors.push('manifest.specSha256 must be a lowercase SHA-256 digest.');
@@ -96,14 +96,14 @@ const validateReceipt = ({ receipt, mapping, spec, tool }) => {
   const errors = [];
   const rootKeys = ['schemaVersion', 'receiptType', 'receiptId', 'evidence', 'specSha256', 'commandId', 'command', 'repository', 'startedAt', 'completedAt', 'durationMs', 'timeoutMs', 'result', 'output', 'artifacts', 'tool'];
   if (!exactKeys(receipt, rootKeys, 'receipt', errors)) return errors;
-  if (receipt.schemaVersion !== 1) errors.push('receipt.schemaVersion must equal 1.');
+  if (receipt.schemaVersion !== 2) errors.push('receipt.schemaVersion must equal 2; v1 and other predecessors are unsupported.');
   if (receipt.receiptType !== 'mission-command-evidence') errors.push('receipt.receiptType must equal mission-command-evidence.');
   if (receipt.receiptId !== mapping.receiptId) errors.push('receipt.receiptId does not match its manifest binding.');
   if (receipt.specSha256 !== spec.sha256) errors.push('receipt.specSha256 does not match the acceptance spec.');
   if (receipt.commandId !== mapping.commandId) errors.push('receipt.commandId does not match its manifest binding.');
 
-  if (exactKeys(receipt.evidence, ['classification', 'authority', 'provenance', 'executionAttestation'], 'receipt.evidence', errors)) {
-    if (receipt.evidence.classification !== 'contract-relative-structural-evidence' || receipt.evidence.authority !== 'none' || receipt.evidence.provenance !== false || receipt.evidence.executionAttestation !== false) errors.push('receipt.evidence overstates or changes the non-authoritative evidence contract.');
+  if (exactKeys(receipt.evidence, ['classification', 'authority', 'provenance', 'executionAttestation', 'producerAuthentication', 'effectContainment', 'gateEligible'], 'receipt.evidence', errors)) {
+    if (receipt.evidence.classification !== 'advisory-structural-consistency' || receipt.evidence.authority !== 'none' || receipt.evidence.provenance !== false || receipt.evidence.executionAttestation !== false || receipt.evidence.producerAuthentication !== false || receipt.evidence.effectContainment !== 'uncertain' || receipt.evidence.gateEligible !== false) errors.push('receipt.evidence overstates or changes the advisory evidence contract.');
   }
   const declaredCommand = (Array.isArray(spec.value?.commands) ? spec.value.commands : []).find((candidate) => candidate.id === mapping.commandId);
   if (!declaredCommand) errors.push(`Manifest references command not declared by spec: ${mapping.commandId}`);
@@ -161,8 +161,8 @@ const makeMarkdown = (report) => {
   const errorSection = report.errors.length === 0 ? 'No traceability errors detected.' : report.errors.map((error) => `- ${error}`).join('\n');
   return `# Acceptance traceability: ${report.missionId}\n\n` +
     `Phase: **${report.phase}**  \n` +
-    `Disposition: **${report.ok ? 'PASS' : 'FAIL'}**  \n` +
-    `Evidence classification: **contract-relative structural evidence; authority:none**  \n` +
+    `Disposition: **${report.structurallyConsistent ? 'STRUCTURALLY_CONSISTENT' : 'INCONSISTENT'}**  \n` +
+    `Evidence classification: **advisory structural consistency; authority:none; gateEligible:false**  \n` +
     `Expected revision: \`${report.expectedRevision ?? 'not required'}\`\n\n` +
     `| Criterion | Mode | RED receipts | GREEN receipts | Manual records |\n` +
     `| --- | --- | ---: | ---: | ---: |\n${rows.join('\n')}\n\n` +
@@ -188,7 +188,7 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
   if (manifestValue.missionId !== specValue.missionId) errors.push('Evidence manifest missionId does not match the acceptance spec.');
   if (manifestValue.specSha256 !== spec.sha256) errors.push('Evidence manifest does not bind the snapshotted acceptance spec digest.');
   if (manifestValue.phase !== phase) errors.push(`Evidence manifest phase is ${manifestValue.phase}; expected ${phase}.`);
-  if (manifestValue.expectedRevision !== (expectedRevision ?? null)) errors.push('Evidence manifest expectedRevision does not match the requested gate revision.');
+  if (manifestValue.expectedRevision !== (expectedRevision ?? null)) errors.push('Evidence manifest expectedRevision does not match the requested traceability revision.');
   if (phase === 'structure' && ((manifestValue.receipts?.length ?? 0) !== 0 || (manifestValue.redNotApplicable?.length ?? 0) !== 0 || (manifestValue.manualEvidence?.length ?? 0) !== 0)) errors.push('Structure manifest must not contain post-run evidence.');
   if (phase === 'red' && (manifestValue.manualEvidence?.length ?? 0) !== 0) errors.push('RED manifest must not contain manual GREEN evidence.');
 
@@ -243,7 +243,7 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
     const criterion = criterionById.get(item.criterionId);
     if (!criterion || criterion.validation?.mode !== 'manual') errors.push(`Manual evidence references non-manual criterion ${item.criterionId}.`);
     if (manualIds.has(item.criterionId)) errors.push(`Duplicate manual evidence for ${item.criterionId}.`);
-    if (item.revision !== expectedRevision) errors.push(`${item.criterionId} manual evidence revision does not match the gate revision.`);
+    if (item.revision !== expectedRevision) errors.push(`${item.criterionId} manual evidence revision does not match the requested traceability revision.`);
     manualIds.add(item.criterionId);
   }
 
@@ -256,8 +256,8 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
     }
     if (!Array.isArray(criterion.validation.commandIds) || !criterion.validation.commandIds.includes(mapping.commandId)) errors.push(`${mapping.criterionId} does not declare command ${mapping.commandId}.`);
     if (phase === 'red' && mapping.phase !== 'red') errors.push('RED manifest may contain only RED receipts.');
-    if (phase === 'red' && mapping.phase === 'red' && mapping.expectedRevision !== expectedRevision) errors.push(`${mapping.criterionId} RED receipt is not bound to the RED gate revision.`);
-    if (phase === 'green' && mapping.phase === 'green' && mapping.expectedRevision !== expectedRevision) errors.push(`${mapping.criterionId} GREEN receipt is not bound to the gate revision.`);
+    if (phase === 'red' && mapping.phase === 'red' && mapping.expectedRevision !== expectedRevision) errors.push(`${mapping.criterionId} RED receipt is not bound to the requested RED traceability revision.`);
+    if (phase === 'green' && mapping.phase === 'green' && mapping.expectedRevision !== expectedRevision) errors.push(`${mapping.criterionId} GREEN receipt is not bound to the requested GREEN traceability revision.`);
     const receipt = receiptsById.get(mapping.receiptId);
     if (receipt && mapping.phase === 'red' && (receipt.result?.status !== 'completed' || !Number.isInteger(receipt.result?.exitCode) || receipt.result.exitCode === 0)) errors.push(`${mapping.criterionId} RED receipt must record a completed failing command.`);
     if (receipt && mapping.phase === 'green' && (receipt.result?.status !== 'completed' || receipt.result?.exitCode !== 0 || receipt.result?.timedOut !== false || receipt.result?.artifactErrors?.length !== 0)) errors.push(`${mapping.criterionId} GREEN receipt must record a completed successful command and all artifact hashes.`);
@@ -278,9 +278,13 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     reportType: 'acceptance-traceability',
-    evidence: { classification: 'contract-relative-structural-evidence', authority: 'none', provenance: false, executionAttestation: false },
+    evidence: {
+      classification: 'advisory-structural-consistency', authority: 'none', provenance: false,
+      executionAttestation: false, producerAuthentication: false, effectContainment: 'uncertain',
+      gateEligible: false, manualAttribution: 'caller_asserted_unverified',
+    },
     tool: { name: 'acceptance-check', version: TOOL_VERSION },
     missionId: specValue.missionId ?? null,
     source: specValue.source ?? null,
@@ -290,7 +294,7 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
     manifestSha256: manifest.sha256,
     phase,
     expectedRevision: expectedRevision ?? null,
-    ok: errors.length === 0,
+    structurallyConsistent: errors.length === 0,
     errors,
     receiptSummaries,
     criteria: specCriteria.map((criterion) => ({
@@ -308,10 +312,10 @@ const main = async () => {
   const options = parseArguments(process.argv.slice(2));
   const report = await checkAcceptance(options);
   const markdown = makeMarkdown(report);
-  if (options.markdown) await writeNewFile(options.markdown, markdown);
-  if (options.report) await writeNewFile(options.report, stableJson(report));
+  if (options.markdown) await writeReservedOutput(options.markdown, markdown);
+  if (options.report) await writeReservedOutput(options.report, stableJson(report));
   process.stdout.write(markdown);
-  if (!report.ok) process.exitCode = 2;
+  if (!report.structurallyConsistent) process.exitCode = 2;
 };
 
 if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {

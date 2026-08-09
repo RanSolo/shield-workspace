@@ -10,17 +10,18 @@ import {
   inspectGit,
   readJsonSnapshot,
   redact,
-  resolveNewFilePath,
+  releaseReservedOutput,
+  retainReservedOutput,
   SHA256_PATTERN,
   sha256,
   snapshotFile,
   stableJson,
   validateAcceptanceSpec,
-  writeNewFile,
+  writeReservedOutput,
 } from './common.mjs';
 
 export const EVIDENCE_TOOL_NAME = 'evidence-run';
-export const EVIDENCE_TOOL_VERSION = '1.0.0';
+export const EVIDENCE_TOOL_VERSION = '2.0.0';
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 const KILL_GRACE_MS = 250;
 const ENVIRONMENT_ALLOWLIST = new Set([
@@ -152,11 +153,13 @@ export const runEvidence = async (options, injected = {}) => {
 
   const repositoryRoot = await realpath(spec.repository.root);
   if (repositoryRoot !== spec.repository.root) throw new Error('Acceptance spec repository root is not canonical.');
-  const outputPath = await resolveNewFilePath(options.output, injected.writeDependencies);
-  if (pathIsInside(repositoryRoot, outputPath)) {
-    throw new Error('Evidence receipt output must be outside the measured repository.');
-  }
-  const gitBefore = inspectGit(repositoryRoot);
+  const outputReservation = await retainReservedOutput(options.output, injected.writeDependencies);
+  const outputPath = outputReservation.absolutePath;
+  try {
+    if (pathIsInside(repositoryRoot, outputPath)) {
+      throw new Error('Evidence receipt output must be outside the measured repository.');
+    }
+    const gitBefore = inspectGit(repositoryRoot);
   if (!gitBefore || gitBefore.root !== repositoryRoot || gitBefore.branch !== spec.repository.branch) {
     throw new Error('Acceptance spec repository identity does not match the selected worktree.');
   }
@@ -182,14 +185,17 @@ export const runEvidence = async (options, injected = {}) => {
   const stdout = outputRecord(result.stdout);
   const stderr = outputRecord(result.stderr);
   const receipt = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     receiptType: 'mission-command-evidence',
     receiptId: `evidence:${randomUUID()}`,
     evidence: {
-      classification: 'contract-relative-structural-evidence',
+      classification: 'advisory-structural-consistency',
       authority: 'none',
       provenance: false,
       executionAttestation: false,
+      producerAuthentication: false,
+      effectContainment: 'uncertain',
+      gateEligible: false,
     },
     specSha256: specSnapshot.sha256,
     commandId: command.id,
@@ -226,7 +232,7 @@ export const runEvidence = async (options, injected = {}) => {
     },
   };
 
-  await writeNewFile(outputPath, stableJson(receipt), injected.writeDependencies);
+  await writeReservedOutput(outputReservation, stableJson(receipt));
   if (stdout.text) process.stdout.write(stdout.text);
   if (stderr.text) process.stderr.write(stderr.text);
 
@@ -237,7 +243,10 @@ export const runEvidence = async (options, injected = {}) => {
   const exitCode = result.status === 'completed' && result.code === 0 && artifactErrors.length === 0 && gitStable
     ? 0
     : (result.status === 'completed' && Number.isInteger(result.code) && result.code !== 0 ? result.code : 2);
-  return { receipt, exitCode, outputPath };
+    return { receipt, exitCode, outputPath };
+  } finally {
+    await releaseReservedOutput(outputReservation);
+  }
 };
 
 const main = async () => {

@@ -16,9 +16,11 @@ function usage() {
     "  shield-ops evidence run --spec FILE --expected-spec-sha256 SHA256 --command-id ID --output FILE",
     "  shield-ops acceptance check --spec FILE --manifest FILE --expected-spec-sha256 SHA256 [options]",
     "",
-    "These commands create non-authoritative operational evidence. They do not grant",
-    "mission authority, provenance, execution attestation, journal advancement,",
-    "publication, merge, deployment, or release.",
+    "These v2 commands report advisory structural consistency only. Every result",
+    "has authority:none, effectContainment:uncertain, and gateEligible:false.",
+    "They do not grant identity, provenance, acceptance, publication, merge,",
+    "deployment, release, or any other authority. Output files must be pre-created,",
+    "empty, non-symlink regular files with mode 0600.",
   ].join("\n");
 }
 

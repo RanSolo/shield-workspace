@@ -25,7 +25,7 @@ const makeFixture = async () => {
   await mkdir(join(evidenceDirectory, '.receipts'));
   const revision = git(repository, ['rev-parse', 'HEAD']);
   const spec = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     specType: 'mission-acceptance-spec',
     missionId: 'mission:test',
     source: { key: 'TEST-1', sha256: 'b'.repeat(64), criteriaCount: 2 },
@@ -54,7 +54,7 @@ const makeFixture = async () => {
 };
 
 const baseManifest = (fixture, phase, expectedRevision = null) => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   manifestType: 'mission-evidence-manifest',
   missionId: fixture.spec.missionId,
   specSha256: fixture.specSha256,
@@ -67,6 +67,7 @@ const baseManifest = (fixture, phase, expectedRevision = null) => ({
 
 const runReceipt = async (fixture, commandId, name) => {
   const path = join(fixture.evidenceDirectory, '.receipts', `${name}.json`);
+  await writeFile(path, '', { flag: 'wx', mode: 0o600 });
   const { receipt } = await runEvidence({ output: path, specPath: fixture.specPath, expectedSpecSha256: fixture.specSha256, commandId });
   const bytes = await readFile(path);
   return { path, relativePath: `.receipts/${name}.json`, receipt, sha256: sha256(bytes) };
@@ -94,9 +95,24 @@ test('passes a complete closed structural spec and empty manifest', async () => 
   const fixture = await makeFixture();
   await writeJson(fixture.manifestPath, baseManifest(fixture, 'structure'));
   const report = await check(fixture, 'structure');
-  assert.equal(report.ok, true, report.errors.join('\n'));
+  assert.equal(report.structurallyConsistent, true, report.errors.join('\n'));
+  assert.equal(report.evidence.gateEligible, false);
   assert.equal(report.evidence.authority, 'none');
   assert.equal(report.evidence.provenance, false);
+  assert.equal(Object.hasOwn(report, 'ok'), false);
+});
+
+test('rejects v1 operation artifacts without silent migration', async () => {
+  const fixture = await makeFixture();
+  fixture.spec.schemaVersion = 1;
+  await writeJson(fixture.specPath, fixture.spec);
+  const v1Digest = sha256(await readFile(fixture.specPath));
+  const manifest = baseManifest({ ...fixture, specSha256: v1Digest }, 'structure');
+  manifest.schemaVersion = 1;
+  await writeJson(fixture.manifestPath, manifest);
+  const report = await checkAcceptance({ specPath: fixture.specPath, manifestPath: fixture.manifestPath, expectedSpecSha256: v1Digest });
+  assert.equal(report.structurallyConsistent, false);
+  assert.match(report.errors.join('\n'), /schemaVersion must equal 2/u);
 });
 
 test('rejects unknown spec and manifest fields and a missing externally supplied spec digest', async () => {
@@ -108,7 +124,7 @@ test('rejects unknown spec and manifest fields and a missing externally supplied
   manifest.unexpected = true;
   await writeJson(fixture.manifestPath, manifest);
   const report = await checkAcceptance({ specPath: fixture.specPath, manifestPath: fixture.manifestPath, expectedSpecSha256: changedSha });
-  assert.equal(report.ok, false);
+  assert.equal(report.structurallyConsistent, false);
   assert.match(report.errors.join('\n'), /unknown field unexpected/u);
   await assert.rejects(checkAcceptance({ specPath: fixture.specPath, manifestPath: fixture.manifestPath }), /Expected spec SHA-256/u);
 });
@@ -120,10 +136,10 @@ test('accepts exact RED evidence at its manifest-bound baseline revision', async
   manifest.receipts.push(mapping(fixture, red, 'red', 'red-test'));
   await writeJson(fixture.manifestPath, manifest);
   const report = await check(fixture, 'red', fixture.revision);
-  assert.equal(report.ok, true, report.errors.join('\n'));
+  assert.equal(report.structurallyConsistent, true, report.errors.join('\n'));
 });
 
-test('rejects a stale RED receipt mapping against a newer RED gate revision', async () => {
+test('rejects a stale RED receipt mapping against a newer RED traceability revision', async () => {
   const fixture = await makeFixture();
   const red = await runReceipt(fixture, 'red-test', 'red');
   await writeFile(join(fixture.repository, 'README.md'), 'fixture\nnew RED gate\n');
@@ -134,8 +150,8 @@ test('rejects a stale RED receipt mapping against a newer RED gate revision', as
   manifest.receipts.push(mapping(fixture, red, 'red', 'red-test', fixture.revision));
   await writeJson(fixture.manifestPath, manifest);
   const report = await check(fixture, 'red', newerRevision);
-  assert.equal(report.ok, false);
-  assert.match(report.errors.join('\n'), /RED receipt is not bound to the RED gate revision/u);
+  assert.equal(report.structurallyConsistent, false);
+  assert.match(report.errors.join('\n'), /RED receipt is not bound to the requested RED traceability revision/u);
 });
 
 test('accepts exact GREEN with historical RED and current manual evidence', async () => {
@@ -151,19 +167,21 @@ test('accepts exact GREEN with historical RED and current manual evidence', asyn
   manifest.manualEvidence.push({ criterionId: 'AC-2', performedBy: 'operator:test', performedAt: '2026-08-07T00:00:00.000Z', revision: greenRevision, observation: 'The field moved and the preview updated.' });
   await writeJson(fixture.manifestPath, manifest);
   const report = await check(fixture, 'green', greenRevision);
-  assert.equal(report.ok, true, report.errors.join('\n'));
+  assert.equal(report.structurallyConsistent, true, report.errors.join('\n'));
+  assert.equal(report.evidence.manualAttribution, 'caller_asserted_unverified');
+  assert.equal(report.evidence.gateEligible, false);
 });
 
 test('rejects a forged minimal receipt and receipt-byte digest replacement', async () => {
   const fixture = await makeFixture();
   const forgedPath = join(fixture.evidenceDirectory, '.receipts', 'forged.json');
-  const forged = { schemaVersion: 1, receiptType: 'mission-command-evidence', receiptId: 'evidence:forged' };
+  const forged = { schemaVersion: 2, receiptType: 'mission-command-evidence', receiptId: 'evidence:forged' };
   await writeJson(forgedPath, forged);
   const manifest = baseManifest(fixture, 'red', fixture.revision);
   manifest.receipts.push({ criterionId: 'AC-1', phase: 'red', commandId: 'red-test', receiptId: forged.receiptId, receiptSha256: sha256(await readFile(forgedPath)), path: '.receipts/forged.json', expectedRevision: fixture.revision });
   await writeJson(fixture.manifestPath, manifest);
   let report = await check(fixture, 'red', fixture.revision);
-  assert.equal(report.ok, false);
+  assert.equal(report.structurallyConsistent, false);
   assert.match(report.errors.join('\n'), /receipt\.(?:evidence|specSha256|commandId).*required/u);
 
   manifest.receipts[0].receiptSha256 = 'c'.repeat(64);
@@ -193,7 +211,7 @@ test('rejects missing or wrong command, root, branch, and tool bindings', async 
     manifest.receipts.push(mapping(fixture, red, 'red', 'red-test'));
     await writeJson(fixture.manifestPath, manifest);
     const report = await check(fixture, 'red', fixture.revision);
-    assert.equal(report.ok, false);
+    assert.equal(report.structurallyConsistent, false);
     const missingField = name.slice(8);
     const expected = name === 'missing command' || name === 'missing tool'
       ? new RegExp(`receipt\\.${missingField} is required`, 'u')
@@ -212,10 +230,59 @@ test('rejects duplicate receipt ID, digest, and path reuse', async () => {
   manifest.receipts.push(item, { ...item });
   await writeJson(fixture.manifestPath, manifest);
   const report = await check(fixture, 'red', fixture.revision);
-  assert.equal(report.ok, false);
+  assert.equal(report.structurallyConsistent, false);
   assert.match(report.errors.join('\n'), /reuses receipt ID/u);
   assert.match(report.errors.join('\n'), /reuses receipt digest/u);
   assert.match(report.errors.join('\n'), /sets are not exactly equal/u);
+});
+
+test('cross-manifest receipt replay can be structurally consistent but never gate eligible', async () => {
+  const fixture = await makeFixture();
+  const red = await runReceipt(fixture, 'red-test', 'replay');
+  const first = baseManifest(fixture, 'red', fixture.revision);
+  first.receipts.push(mapping(fixture, red, 'red', 'red-test'));
+  await writeJson(fixture.manifestPath, first);
+  const firstReport = await check(fixture, 'red', fixture.revision);
+  assert.equal(firstReport.structurallyConsistent, true, firstReport.errors.join('\n'));
+
+  const replayManifestPath = join(fixture.evidenceDirectory, 'replayed-manifest.json');
+  await writeJson(replayManifestPath, structuredClone(first));
+  const replayReport = await checkAcceptance({
+    specPath: fixture.specPath,
+    manifestPath: replayManifestPath,
+    expectedSpecSha256: fixture.specSha256,
+    phase: 'red',
+    expectedRevision: fixture.revision,
+  });
+  assert.equal(replayReport.structurallyConsistent, true, replayReport.errors.join('\n'));
+  assert.equal(replayReport.evidence.producerAuthentication, false);
+  assert.equal(replayReport.evidence.gateEligible, false);
+});
+
+test('a complete caller-forged receipt can be structurally consistent but never gains provenance or gate eligibility', async () => {
+  const fixture = await makeFixture();
+  const genuine = await runReceipt(fixture, 'red-test', 'forgery-source');
+  const forgedPath = join(fixture.evidenceDirectory, '.receipts', 'complete-forgery.json');
+  const forged = structuredClone(genuine.receipt);
+  forged.receiptId = 'evidence:caller-forged-complete';
+  await writeJson(forgedPath, forged);
+  const forgedBytes = await readFile(forgedPath);
+  const manifest = baseManifest(fixture, 'red', fixture.revision);
+  manifest.receipts.push({
+    criterionId: 'AC-1',
+    phase: 'red',
+    commandId: 'red-test',
+    receiptId: forged.receiptId,
+    receiptSha256: sha256(forgedBytes),
+    path: '.receipts/complete-forgery.json',
+    expectedRevision: fixture.revision,
+  });
+  await writeJson(fixture.manifestPath, manifest);
+  const report = await check(fixture, 'red', fixture.revision);
+  assert.equal(report.structurallyConsistent, true, report.errors.join('\n'));
+  assert.equal(report.evidence.provenance, false);
+  assert.equal(report.evidence.producerAuthentication, false);
+  assert.equal(report.evidence.gateEligible, false);
 });
 
 test('snapshots spec bytes from one retained file handle despite path replacement', async () => {
@@ -234,6 +301,6 @@ test('snapshots spec bytes from one retained file handle despite path replacemen
   };
   const report = await checkAcceptance({ specPath: fixture.specPath, manifestPath: fixture.manifestPath, expectedSpecSha256: originalSha }, { snapshotDependencies: { open: injectedOpen } });
   assert.equal(replaced, true);
-  assert.equal(report.ok, true, report.errors.join('\n'));
+  assert.equal(report.structurallyConsistent, true, report.errors.join('\n'));
   assert.equal(report.specSha256, originalSha);
 });

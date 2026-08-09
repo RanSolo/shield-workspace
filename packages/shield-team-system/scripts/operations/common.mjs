@@ -5,7 +5,6 @@ import {
   lstat,
   open,
   realpath,
-  unlink,
 } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
 
@@ -48,12 +47,14 @@ const defaultWriteDependencies = {
   lstat,
   open,
   realpath,
-  unlink,
-  write: (handle, bytes) => handle.writeFile(bytes),
-  chmod: (handle, mode) => handle.chmod(mode),
+  write: async (handle, bytes) => {
+    const { bytesWritten } = await handle.write(bytes, 0, bytes.length, 0);
+    if (bytesWritten !== bytes.length) throw new Error('Reserved output write was incomplete.');
+  },
   sync: (handle) => handle.sync(),
   close: (handle) => handle.close(),
   stat: (handle) => handle.stat(),
+  truncate: (handle, length) => handle.truncate(length),
 };
 
 const sameInode = (left, right) => left.dev === right.dev && left.ino === right.ino;
@@ -71,58 +72,120 @@ const canonicalExistingDirectory = async (directory, dependencies = defaultWrite
   return absoluteDirectory;
 };
 
-export const resolveNewFilePath = async (path, injectedDependencies) => {
-  const dependencies = { ...defaultWriteDependencies, ...injectedDependencies };
+const reservedTarget = async (path, dependencies) => {
   const absolutePath = resolve(path);
   await canonicalExistingDirectory(dirname(absolutePath), dependencies);
   const existing = await dependencies.lstat(absolutePath).catch((error) => {
     if (error?.code === 'ENOENT') return undefined;
     throw error;
   });
-  if (existing) throw new Error(`Refusing to overwrite existing file: ${absolutePath}`);
-  return absolutePath;
+  if (!existing?.isFile() || existing.isSymbolicLink()) {
+    throw new Error(`Reserved output must be a precreated non-symlink regular file: ${absolutePath}`);
+  }
+  if (existing.size !== 0) throw new Error(`Reserved output must be empty: ${absolutePath}`);
+  if ((existing.mode & 0o777) !== 0o600) throw new Error(`Reserved output must have mode 0600: ${absolutePath}`);
+  return { absolutePath, identity: existing };
 };
 
-export const writeNewFile = async (path, content, injectedDependencies) => {
+export const resolveReservedOutputPath = async (path, injectedDependencies) => {
   const dependencies = { ...defaultWriteDependencies, ...injectedDependencies };
-  const absolutePath = await resolveNewFilePath(path, dependencies);
+  return (await reservedTarget(path, dependencies)).absolutePath;
+};
+
+export const retainReservedOutput = async (path, injectedDependencies) => {
+  const dependencies = { ...defaultWriteDependencies, ...injectedDependencies };
+  const { absolutePath, identity: targetBeforeOpen } = await reservedTarget(path, dependencies);
   const parent = dirname(absolutePath);
-
-  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
-  let handle;
-  let createdIdentity;
-  let closed = false;
+  let parentHandle;
+  let targetHandle;
+  const currentIdentity = async (candidate) => dependencies.lstat(candidate).catch(() => undefined);
   try {
-    const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL |
-      (fsConstants.O_NOFOLLOW ?? 0);
-    handle = await dependencies.open(absolutePath, flags, 0o600);
-    createdIdentity = await dependencies.stat(handle);
-    if (!createdIdentity.isFile()) throw new Error(`Created output is not a regular file: ${absolutePath}`);
-    await dependencies.write(handle, bytes);
-    await dependencies.chmod(handle, 0o600);
-    await dependencies.sync(handle);
-    const finalIdentity = await dependencies.stat(handle);
-    if (!finalIdentity.isFile() || !sameInode(createdIdentity, finalIdentity)) {
-      throw new Error(`Created output identity changed: ${absolutePath}`);
+    const parentFlags = fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | (fsConstants.O_NOFOLLOW ?? 0);
+    parentHandle = await dependencies.open(parent, parentFlags);
+    const parentIdentity = await dependencies.stat(parentHandle);
+    const parentAtOpen = await currentIdentity(parent);
+    if (!parentIdentity.isDirectory() || !parentAtOpen?.isDirectory() || parentAtOpen.isSymbolicLink() || !sameInode(parentIdentity, parentAtOpen)) {
+      throw new Error(`Reserved output parent identity changed: ${parent}`);
     }
-    await dependencies.close(handle);
-    closed = true;
-    handle = undefined;
 
-    const parentHandle = await dependencies.open(parent, fsConstants.O_RDONLY);
-    try {
-      await dependencies.sync(parentHandle);
-    } finally {
-      await dependencies.close(parentHandle);
+    await dependencies.beforeTargetOpen?.({ path: absolutePath, parent, parentHandle });
+    targetHandle = await dependencies.open(absolutePath, fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0));
+    const targetIdentity = await dependencies.stat(targetHandle);
+    if (!targetIdentity.isFile() || targetIdentity.size !== 0 || (targetIdentity.mode & 0o777) !== 0o600 || !sameInode(targetBeforeOpen, targetIdentity)) {
+      throw new Error(`Reserved output target identity changed: ${absolutePath}`);
     }
+    return { absolutePath, parent, parentHandle, parentIdentity, targetHandle, targetIdentity, dependencies };
+  } catch (error) {
+    if (targetHandle) await dependencies.close(targetHandle).catch(() => {});
+    if (parentHandle) await dependencies.close(parentHandle).catch(() => {});
+    throw error;
+  }
+};
+
+export const releaseReservedOutput = async (reservation) => {
+  const errors = [];
+  if (reservation.targetHandle) {
+    await reservation.dependencies.close(reservation.targetHandle).catch((error) => errors.push(error));
+    reservation.targetHandle = undefined;
+  }
+  if (reservation.parentHandle) {
+    await reservation.dependencies.close(reservation.parentHandle).catch((error) => errors.push(error));
+    reservation.parentHandle = undefined;
+  }
+  if (errors.length > 0) throw new AggregateError(errors, `Reserved output handle release failed: ${reservation.absolutePath}`);
+};
+
+export const writeReservedOutput = async (pathOrReservation, content, injectedDependencies) => {
+  const ownedReservation = typeof pathOrReservation === 'string';
+  const reservation = ownedReservation
+    ? await retainReservedOutput(pathOrReservation, injectedDependencies)
+    : pathOrReservation;
+  const { absolutePath, parent, parentIdentity, targetIdentity, dependencies } = reservation;
+  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+  let writeStarted = false;
+
+  const currentIdentity = async (candidate) => dependencies.lstat(candidate).catch(() => undefined);
+  const assertStable = async () => {
+    const [currentParent, currentTarget, retainedTarget] = await Promise.all([
+      currentIdentity(parent),
+      currentIdentity(absolutePath),
+      dependencies.stat(reservation.targetHandle),
+    ]);
+    if (!currentParent?.isDirectory() || currentParent.isSymbolicLink() || !sameInode(parentIdentity, currentParent)) {
+      throw new Error(`Reserved output parent identity changed: ${parent}`);
+    }
+    if (!currentTarget?.isFile() || currentTarget.isSymbolicLink() || !sameInode(targetIdentity, currentTarget) ||
+        !retainedTarget.isFile() || !sameInode(targetIdentity, retainedTarget)) {
+      throw new Error(`Reserved output target identity changed: ${absolutePath}`);
+    }
+  };
+
+  try {
+    await assertStable();
+    await dependencies.beforeWrite?.({ path: absolutePath, parent, parentHandle: reservation.parentHandle, targetHandle: reservation.targetHandle });
+    await assertStable();
+    writeStarted = true;
+    await dependencies.write(reservation.targetHandle, bytes);
+    await dependencies.sync(reservation.targetHandle);
+    await dependencies.afterWrite?.({ path: absolutePath, parent, parentHandle: reservation.parentHandle, targetHandle: reservation.targetHandle });
+    await assertStable();
+    await dependencies.sync(reservation.parentHandle);
+    await releaseReservedOutput(reservation);
     return absolutePath;
   } catch (error) {
-    if (handle && !closed) await dependencies.close(handle).catch(() => {});
-    if (createdIdentity) {
-      const current = await dependencies.lstat(absolutePath).catch(() => undefined);
-      if (current && sameInode(createdIdentity, current)) await dependencies.unlink(absolutePath).catch(() => {});
+    if (writeStarted && reservation.targetHandle) {
+      try {
+        await dependencies.truncate(reservation.targetHandle, 0);
+        await dependencies.sync(reservation.targetHandle);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], `Reserved output became uncertain and rollback failed: ${absolutePath}`);
+      }
     }
     throw error;
+  } finally {
+    if (ownedReservation || reservation.targetHandle || reservation.parentHandle) {
+      await releaseReservedOutput(reservation).catch(() => {});
+    }
   }
 };
 
@@ -155,11 +218,74 @@ export const hashFile = async (path) => {
 
 const authorizationHeaderPattern = /\b(authorization[ \t]*:[ \t]*)[^\r\n]*/giu;
 const authorizationAssignmentPattern = /\b(authorization\s*=\s*)[^\r\n]*/giu;
-const sensitiveFlagPattern = /(^|[\s,;])(--(?:token|secret|password))([ \t]*=[ \t]*|[ \t]+)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gimu;
+const sensitiveFlagPattern = /(^|[\s,;])(--(?:authorization|passcode|password|secret|token|api[-_]?key|access[-_]?token))([ \t]*=[ \t]*|[ \t]+)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gimu;
 const assignmentPattern = /\b(passcode|password|secret|token)(\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/giu;
 const bearerPattern = /\b(Bearer|Basic)[ \t]+[^\s,;'"`]+/giu;
 const jwtCandidatePattern = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]*)(?=$|[^A-Za-z0-9_.-])/gmu;
 const knownTokenPattern = /\b(?:gh[opsu]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|AKIA[A-Z0-9]{16})[^\s,;'"`]*/gu;
+const structuredSecretPattern = /(["'](?:authorization|passcode|password|secret|token|api[-_]?key|access[-_]?token)["'][ \t]*:[ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\r\n]+)/giu;
+const sensitiveNamePattern = /^(?:authorization|passcode|password|secret|token|api[-_]?key|access[-_]?token)$/iu;
+const sensitiveFlagNamePattern = /^--(?:authorization|passcode|password|secret|token|api[-_]?key|access[-_]?token)(?:=|$)/iu;
+const embeddedSensitiveFlagPattern = /(?:^|[\s,;])--(?:authorization|passcode|password|secret|token|api[-_]?key|access[-_]?token)(?:\s|=|$)/iu;
+
+const redactStructuredValue = (value) => {
+  if (Array.isArray(value)) return value.map(redactStructuredValue);
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key,
+    sensitiveNamePattern.test(key.replaceAll(/[._]/gu, '-')) ? '[REDACTED]' : redactStructuredValue(child),
+  ]));
+};
+
+const structuredValueContainsSecret = (value) => {
+  if (Array.isArray(value)) return value.some(structuredValueContainsSecret);
+  if (!isPlainObject(value)) return false;
+  return Object.entries(value).some(([key, child]) =>
+    sensitiveNamePattern.test(key.replaceAll(/[._]/gu, '-')) || structuredValueContainsSecret(child));
+};
+
+const jsonFragmentEnd = (value, start) => {
+  const stack = [];
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === '{') stack.push('}');
+    else if (character === '[') stack.push(']');
+    else if (character === '}' || character === ']') {
+      if (stack.pop() !== character) return undefined;
+      if (stack.length === 0) return index + 1;
+    }
+  }
+  return undefined;
+};
+
+const redactStructuredFragments = (input) => {
+  const value = String(input);
+  let output = '';
+  let cursor = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '{' && value[index] !== '[') continue;
+    const end = jsonFragmentEnd(value, index);
+    if (end === undefined) continue;
+    try {
+      const parsed = JSON.parse(value.slice(index, end));
+      if (!structuredValueContainsSecret(parsed)) continue;
+      output += value.slice(cursor, index);
+      output += JSON.stringify(redactStructuredValue(parsed));
+      cursor = end;
+      index = end - 1;
+    } catch {}
+  }
+  return `${output}${value.slice(cursor)}`;
+};
 
 const decodeBase64UrlJson = (segment) => {
   try {
@@ -181,7 +307,7 @@ const jwtCandidateReplacement = (match, prefix, headerSegment, payloadSegment) =
 };
 
 export const redact = (value) =>
-  String(value)
+  redactStructuredFragments(value)
     .replace(authorizationHeaderPattern, '$1[REDACTED]')
     .replace(authorizationAssignmentPattern, '$1[REDACTED]')
     .replace(sensitiveFlagPattern, (_match, prefix, flag, separator) =>
@@ -189,7 +315,15 @@ export const redact = (value) =>
     .replace(assignmentPattern, '$1$2[REDACTED]')
     .replace(bearerPattern, '$1 [REDACTED]')
     .replace(jwtCandidatePattern, jwtCandidateReplacement)
+    .replace(structuredSecretPattern, '$1"[REDACTED]"')
     .replace(knownTokenPattern, '[REDACTED]');
+
+export const credentialBearingArgument = (value) => {
+  if (typeof value !== 'string') return true;
+  if (sensitiveFlagNamePattern.test(value) || embeddedSensitiveFlagPattern.test(value) || redact(value) !== value) return true;
+  try { return structuredValueContainsSecret(JSON.parse(value)); }
+  catch { return false; }
+};
 
 export const readJsonSnapshot = async (path, injected) => {
   const snapshot = await snapshotFile(path, injected);
@@ -234,7 +368,7 @@ const validateStringArray = (value, label, errors, { allowEmpty = false } = {}) 
 export const validateAcceptanceSpec = (spec) => {
   const errors = [];
   if (!exactKeys(spec, ['schemaVersion', 'specType', 'missionId', 'source', 'repository', 'commands', 'criteria'], 'spec', errors)) return errors;
-  if (spec.schemaVersion !== 1) errors.push('spec.schemaVersion must equal 1.');
+  if (spec.schemaVersion !== 2) errors.push('spec.schemaVersion must equal 2; v1 and other predecessors are unsupported.');
   if (spec.specType !== 'mission-acceptance-spec') errors.push('spec.specType must equal mission-acceptance-spec.');
   if (!nonEmptyString(spec.missionId)) errors.push('spec.missionId must be a non-empty string.');
 
@@ -258,6 +392,14 @@ export const validateAcceptanceSpec = (spec) => {
     commandIds.add(command.id);
     if (!nonEmptyString(command.executable) || !isAbsolute(command.executable)) errors.push(`${label}.executable must be an absolute path.`);
     validateStringArray(command.argv, `${label}.argv`, errors, { allowEmpty: true });
+    if (Array.isArray(command.argv)) {
+      for (const [argumentIndex, argument] of command.argv.entries()) {
+        const prior = command.argv[argumentIndex - 1];
+        if (credentialBearingArgument(argument) || (typeof prior === 'string' && sensitiveFlagNamePattern.test(prior))) {
+          errors.push(`${label}.argv contains a credential-bearing argument at index ${argumentIndex}.`);
+        }
+      }
+    }
     if (!Number.isInteger(command.timeoutMs) || command.timeoutMs < 1 || command.timeoutMs > 3_600_000) errors.push(`${label}.timeoutMs must be an integer from 1 through 3600000.`);
     validateStringArray(command.artifacts, `${label}.artifacts`, errors, { allowEmpty: true });
     if (Array.isArray(command.artifacts) && new Set(command.artifacts).size !== command.artifacts.length) errors.push(`${label}.artifacts contains duplicates.`);

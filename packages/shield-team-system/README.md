@@ -9,8 +9,9 @@ This baseline uses the approved S.H.I.E.L.D. team mapping and keeps the team
 responsibilities, review gates, and operating workflow portable across repos.
 
 Operational helpers promoted from dogfood experiments are exposed through
-`shield-ops`. They produce non-authoritative evidence and are documented under
-[`docs/operations`](../../docs/operations/mission-evidence-tools.md).
+`shield-ops`. They produce advisory, non-gate-eligible structural evidence and
+are documented in the packed package under
+[`docs/operations`](./docs/operations/mission-evidence-tools.md).
 
 ## Public package surface
 

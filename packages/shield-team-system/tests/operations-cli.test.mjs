@@ -13,8 +13,10 @@ test("operations CLI describes the non-authoritative evidence surface", () => {
   assert.match(result.stdout, /shield-ops evidence run/u);
   assert.match(result.stdout, /--expected-spec-sha256/u);
   assert.match(result.stdout, /--manifest/u);
-  assert.match(result.stdout, /non-authoritative operational evidence/u);
-  assert.match(result.stdout, /provenance, execution attestation/u);
+  assert.match(result.stdout, /advisory structural consistency only/u);
+  assert.match(result.stdout, /effectContainment:uncertain/u);
+  assert.match(result.stdout, /gateEligible:false/u);
+  assert.match(result.stdout, /pre-created/u);
 });
 
 test("operations CLI fails closed on unknown commands", () => {
