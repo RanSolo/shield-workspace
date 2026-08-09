@@ -13,6 +13,11 @@ Operational helpers promoted from dogfood experiments are exposed through
 are documented in the packed package under
 [`docs/operations`](./docs/operations/mission-evidence-tools.md).
 
+The effect-free [`shield-ops flight status`](./docs/operations/feature-flight-controller.md)
+command validates exact Feature Flight plan/state bytes and, when supplied, one
+immediate predecessor edge. Its stdout projection always has `authority:none`
+and `gateEligible:false`; it performs no dispatch, mutation, or external effect.
+
 ## Public package surface
 
 The supported V0.3 consumer entry points are the package root plus `/mission`,

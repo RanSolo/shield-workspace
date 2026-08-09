@@ -269,7 +269,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "public/github.d.mts",
     "dist/cli.mjs",
     "docs/operations/mission-evidence-tools.md",
+    "docs/operations/feature-flight-controller.md",
     "docs/operations/persisted-artifact-contract-matrix.md",
+    "scripts/operations/flight-contracts.mjs",
+    "scripts/operations/feature-flight-controller.mjs",
     "INSTALLATION.md",
     "PUBLIC_API.md",
     "SUPERVISED_MISSION.md",
@@ -589,6 +592,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const opsHelp = execFileSync(opsBin, ["--help"], { cwd: fixture, encoding: "utf8" });
   assert.match(opsHelp, /advisory structural consistency only/u);
   assert.match(opsHelp, /gateEligible:false/u);
+  assert.match(opsHelp, /shield-ops flight status/u);
+  const flightHelp = execFileSync(opsBin, ["flight", "status", "--help"], { cwd: fixture, encoding: "utf8" });
+  assert.match(flightHelp, /--expected-plan-sha256/u);
+  assert.match(flightHelp, /--expected-predecessor-sha256/u);
 
   const javascriptFixture = await mkdtemp(join(tmpdir(), "shield-js-consumer-"));
   execFileSync("git", ["init", "--quiet"], { cwd: javascriptFixture });
