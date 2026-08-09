@@ -86,6 +86,10 @@ import {
   type Schema9RuntimeBindingV1,
 } from "./implementation-authority-v1.mjs";
 import type { RuntimeBinding } from "./permission-v1.mjs";
+import {
+  renderAuthorizeWheelsUpHumanV1,
+  renderAuthorizeWheelsUpReceiptHumanV1,
+} from "./mission-human-output-v1.mjs";
 
 const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
@@ -1558,7 +1562,12 @@ function assertPreparedAuthorizeWheelsUpFresh(initial: PreparedAuthorizeWheelsUp
 }
 
 async function authorizeWheelsUp(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--passcode-stdin"]);
+  const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--human", "--passcode-stdin"]);
+  if (options.flags.has("--json") && options.flags.has("--human")) {
+    throw new MissionCliError("--human and --json are mutually exclusive.");
+  }
+  const humanMode = options.flags.has("--human") ||
+    (!options.flags.has("--json") && !options.flags.has("--passcode-stdin"));
   const root = await exactRoot(options.values.get("--root"), true);
   const config = await repositoryConfig(root);
   const missionId = required(options, "--mission-id");
@@ -1567,8 +1576,8 @@ async function authorizeWheelsUp(args: string[]): Promise<number> {
   const prepared = await prepareAuthorizeWheelsUp(root, config, missionId, intent, timestamp);
 
   const framedManifest = `SHIELD_WHEELS_UP_MANIFEST_BEGIN\n${canonicalJson(prepared.manifest)}\nSHIELD_WHEELS_UP_MANIFEST_END\n`;
-  if (options.flags.has("--json") || options.flags.has("--passcode-stdin")) process.stderr.write(framedManifest);
-  else process.stdout.write(`Authorize Wheels Up manifest:\n${JSON.stringify(prepared.manifest, null, 2)}\n`);
+  if (humanMode) process.stdout.write(`${renderAuthorizeWheelsUpHumanV1(prepared.manifest as Parameters<typeof renderAuthorizeWheelsUpHumanV1>[0])}\n`);
+  else process.stderr.write(framedManifest);
 
   const passcode = await passcodeFromOptions(options, options.flags.has("--json") ? process.stderr : outputStream);
   let signatures: readonly string[];
@@ -1694,7 +1703,13 @@ async function authorizeWheelsUp(args: string[]): Promise<number> {
     remainingHumanGates: remainingOnePasscodeHumanGates(prepared.current),
   };
   const receipt = canonicalSnapshot({ ...receiptWithoutDigest, receiptDigest: canonicalDigest(receiptWithoutDigest) });
-  output(receipt, options.flags.has("--json"), `Authorize Wheels Up completed.\n${JSON.stringify(receipt, null, 2)}`);
+  output(
+    receipt,
+    options.flags.has("--json"),
+    humanMode
+      ? renderAuthorizeWheelsUpReceiptHumanV1(receipt)
+      : `Authorize Wheels Up completed.\n${JSON.stringify(receipt, null, 2)}`,
+  );
   return 0;
 }
 
@@ -1934,7 +1949,7 @@ export function missionUsage(): string {
     "  shield mission signer bootstrap --seat coulson --binding-id <id> --human-principal-id <id> [--passcode-stdin] [--json]",
     "  shield mission signer setup [--seat coulson] [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
-    "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
+    "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",
     "  shield mission publication-result --mission-id <id> --input <file> [--root <path>] [--json]",

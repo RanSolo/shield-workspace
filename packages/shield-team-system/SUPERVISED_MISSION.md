@@ -146,12 +146,16 @@ publication authority. It prompts once and records four separately signed,
 independently replayable existing events in one atomic journal replacement:
 
 ```sh
-printf '%s\n' "$PASSCODE" | npx shield mission authorize-wheels-up \
+npx shield mission authorize-wheels-up \
   --mission-id mission:example \
-  --input .shield/tmp/authorize-wheels-up.json \
-  --passcode-stdin \
-  --json
+  --input .shield/tmp/authorize-wheels-up.json
 ```
+
+The normal interactive view shows only the decision: what May may do, what is
+excluded, and which human gates remain. Use `--human --passcode-stdin` for the
+same concise output with piped passcode input. Automation can use
+`--json --passcode-stdin` to retain the complete framed manifest and structured
+receipt; `--human` and `--json` are mutually exclusive.
 
 The input is closed and contains only these fields. Every array must be
 non-empty, sorted, and duplicate-free:
