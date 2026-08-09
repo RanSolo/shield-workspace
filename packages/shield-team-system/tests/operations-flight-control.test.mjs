@@ -41,8 +41,27 @@ const mission = ({ root, id, lane, wave, dependsOn = [] }) => ({
   authorityStatus: "not-initialized",
 });
 
-async function fixture() {
+async function fixture({ integerLikeIds = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "shield-flight-control-"));
+  const lanes = integerLikeIds
+    ? [
+        { id: "2", chatLabel: "Lane two chat", teamLabel: "Lane two team" },
+        { id: "1", chatLabel: "Lane one chat", teamLabel: "Lane one team" },
+      ]
+    : [
+        { id: "alpha", chatLabel: "Alpha chat", teamLabel: "Alpha team" },
+        { id: "bravo", chatLabel: "Bravo chat", teamLabel: "Bravo team" },
+      ];
+  const missions = integerLikeIds
+    ? [
+        mission({ root, id: "2", lane: "2", wave: 1 }),
+        mission({ root, id: "1", lane: "1", wave: 2, dependsOn: ["2"] }),
+      ]
+    : [
+        mission({ root, id: "mission:a", lane: "alpha", wave: 1 }),
+        mission({ root, id: "mission:b", lane: "bravo", wave: 1, dependsOn: ["mission:a"] }),
+        mission({ root, id: "mission:c", lane: "alpha", wave: 2 }),
+      ];
   const plan = {
     schemaVersion: 1,
     planType: "feature-flight-resolved-plan",
@@ -60,15 +79,8 @@ async function fixture() {
       collisions: [],
     },
     integration: { branch: "integration/control", status: "declared-not-created" },
-    lanes: [
-      { id: "alpha", chatLabel: "Alpha chat", teamLabel: "Alpha team" },
-      { id: "bravo", chatLabel: "Bravo chat", teamLabel: "Bravo team" },
-    ],
-    missions: [
-      mission({ root, id: "mission:a", lane: "alpha", wave: 1 }),
-      mission({ root, id: "mission:b", lane: "bravo", wave: 1, dependsOn: ["mission:a"] }),
-      mission({ root, id: "mission:c", lane: "alpha", wave: 2 }),
-    ],
+    lanes,
+    missions,
     evaluationContract: { fixtureId: "fixture:synthetic", version: 1, scorecard: ["correctness"] },
   };
   const planPath = join(root, "flight-plan.resolved.json");
@@ -176,6 +188,19 @@ test("flight-state producer emits closed v2 genesis consumed by flight route", a
     () => initializeFlightState({ planPath: context.planPath, output: context.genesisPath }),
     /Refusing to overwrite/u,
   );
+});
+
+test("integer-like lane and mission IDs route by plan order, not object enumeration order", async () => {
+  const context = await fixture({ integerLikeIds: true });
+  assert.deepEqual(context.plan.lanes.map(({ id }) => id), ["2", "1"]);
+  assert.deepEqual(context.plan.missions.map(({ id }) => id), ["2", "1"]);
+  assert.deepEqual(Object.keys(context.genesis.lanes), ["1", "2"]);
+  assert.deepEqual(Object.keys(context.genesis.missions), ["1", "2"]);
+
+  const report = await routeGenesis(context);
+  assert.deepEqual(report.missions.map(({ id }) => id), ["2", "1"]);
+  assert.deepEqual(report.missions[0].advisoryCandidates, ["request-independent-authority-verification"]);
+  assert.deepEqual(report.missions[1].unmetDependencies, ["2"]);
 });
 
 test("state producer identity is closed by genesis or successor sequence", async () => {
@@ -345,11 +370,11 @@ test("closed state rejects unknown fields at every nested contract level", async
   }
 });
 
-test("closed state rejects mission removal and identity-reordering", async () => {
+test("closed state rejects mission identity removal but accepts object-key reordering", async () => {
   const context = await fixture();
   const removed = successor(context);
   delete removed.missions["mission:b"];
-  await assert.rejects(() => routeSuccessor(context, removed), /exact planned mission identity and order|missing mission:b/u);
+  await assert.rejects(() => routeSuccessor(context, removed), /exact planned identity membership and cardinality|missing mission:b/u);
 
   const reordered = successor(context);
   reordered.missions = {
@@ -357,7 +382,8 @@ test("closed state rejects mission removal and identity-reordering", async () =>
     "mission:a": reordered.missions["mission:a"],
     "mission:c": reordered.missions["mission:c"],
   };
-  await assert.rejects(() => routeSuccessor(context, reordered), /exact planned mission identity and order/u);
+  const report = await routeSuccessor(context, reordered);
+  assert.deepEqual(report.missions.map(({ id }) => id), ["mission:a", "mission:b", "mission:c"]);
 });
 
 test("resolved-plan and state consumers reject missing lane and activation wave instead of defaulting", async () => {

@@ -55,8 +55,8 @@ const artifactIdentity = (snapshot) => ({
 const sameArtifactIdentity = (left, right) =>
   left.path === right.path && left.bytes === right.bytes && left.sha256 === right.sha256;
 
-const sameOrderedIdentities = (actual, expected) =>
-  actual.length === expected.length && actual.every((identity, index) => identity === expected[index]);
+const hasExactIdentityMembership = (actual, expected) =>
+  actual.length === expected.size && actual.every((identity) => expected.has(identity));
 
 const currentWaveFor = (plan, state) => {
   const dependencyReadyNonterminal = plan.missions.filter((mission) =>
@@ -109,10 +109,9 @@ const validateState = (plan, planIdentity, state, label = "state") => {
   if (!state.lanes || typeof state.lanes !== "object" || Array.isArray(state.lanes)) {
     errors.push(`${label}.lanes must be an object keyed by planned lane id.`);
   } else {
-    const plannedLaneOrder = plan.lanes.map((lane) => lane.id);
-    const plannedLaneIds = new Set(plannedLaneOrder);
-    if (!sameOrderedIdentities(Object.keys(state.lanes), plannedLaneOrder)) {
-      errors.push(`${label}.lanes must preserve the exact planned lane identity and order.`);
+    const plannedLaneIds = new Set(plan.lanes.map((lane) => lane.id));
+    if (!hasExactIdentityMembership(Object.keys(state.lanes), plannedLaneIds)) {
+      errors.push(`${label}.lanes must preserve exact planned identity membership and cardinality.`);
     }
     for (const lane of plan.lanes) {
       const record = state.lanes[lane.id];
@@ -130,10 +129,9 @@ const validateState = (plan, planIdentity, state, label = "state") => {
   if (!state.missions || typeof state.missions !== "object" || Array.isArray(state.missions)) {
     errors.push(`${label}.missions must be an object keyed by planned mission id.`);
   } else {
-    const plannedMissionOrder = plan.missions.map((mission) => mission.id);
-    const plannedIds = new Set(plannedMissionOrder);
-    if (!sameOrderedIdentities(Object.keys(state.missions), plannedMissionOrder)) {
-      errors.push(`${label}.missions must preserve the exact planned mission identity and order.`);
+    const plannedIds = new Set(plan.missions.map((mission) => mission.id));
+    if (!hasExactIdentityMembership(Object.keys(state.missions), plannedIds)) {
+      errors.push(`${label}.missions must preserve exact planned identity membership and cardinality.`);
     }
     for (const mission of plan.missions) {
       const record = state.missions[mission.id];

@@ -51,7 +51,10 @@ sequence minus one. Genesis rejects predecessor inputs. Missing, malformed,
 stale, or conflicting evidence fails closed.
 
 For every successor, the router compares predecessor and current mission tuples
-in exact plan order. The closed transition table is:
+by exact identity while iterating deterministically in plan order. State lane
+and mission objects require exact plan membership and cardinality; their
+JavaScript object-key enumeration order is not an identity signal. The closed
+transition table is:
 
 | From | Allowed current status |
 | --- | --- |
@@ -65,7 +68,7 @@ in exact plan order. The closed transition table is:
 | `cancelled` | `cancelled` |
 | `superseded` | `superseded` |
 
-Mission removal or reordering, lifecycle rollback, lane or activation-wave
+Mission removal or extra identity, lifecycle rollback, lane or activation-wave
 identity drift, wave regression, and clearing or substituting an established
 revision are rejected.
 
