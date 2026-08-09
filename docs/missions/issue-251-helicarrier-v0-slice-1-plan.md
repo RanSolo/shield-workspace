@@ -70,33 +70,61 @@ accessor-backed, symbolic, sparse, or extra data fails closed.
 - Top level: exactly `schemaVersion`, `planType`, `prototype`, `flightId`,
   `objective`, `repository`, `integration`, `lanes`, `missions`,
   `evaluationContract`; optional `sourceIssue` is the only optional key.
+- `flightId`, `objective`, and present `sourceIssue` are nonempty strings.
+  `flightId`, lane IDs, mission IDs, slugs, branches, worktrees, dependency
+  IDs, and writable paths are identity-bearing ASCII only. Human-facing title,
+  objective, scope, and deliverable text may contain valid non-BOM UTF-8.
 - Constants: `schemaVersion:1`, `planType:"feature-flight-resolved-plan"`;
   `prototype` is exactly `{name:"flight-prep", version:"1.0.0",
   authority:"none", notice:<fixed planning-only notice>}`.
 - `repository`: exactly `root`, `remoteUrl`, `baseRef`, `baseRevision`,
   `inspectedHead`, `inspectedBranch`, `inspectedWorktreeClean`, `collisions`.
   Revisions are lowercase 40-hex Git commits; `inspectedHead` equals
-  `baseRevision`; `collisions` is empty. Root and refs are structural
-  declarations only and do not prove live repository identity.
+  `baseRevision`; root is absolute ASCII; `remoteUrl` and `inspectedBranch` are
+  null or nonempty ASCII strings; `inspectedWorktreeClean` is boolean;
+  `collisions` is an empty dense array. Root and refs are opaque structural
+  declarations only and do not prove live repository identity. Slice 1 runs no
+  `git check-ref-format` subprocess and does not claim exact #243 ref semantics.
 - `integration`: exactly `branch` and `status`; status is
   `declared-not-created`.
-- Each lane: exactly `id`, `chatLabel`, `teamLabel`.
+- `lanes` and `missions` are nonempty dense arrays. Each lane is exactly `id`,
+  `chatLabel`, `teamLabel`; all three are nonempty strings and ID is ASCII.
 - Each mission: exactly `id`, `slug`, `title`, `library`, `lane`, `branch`,
   `worktree`, `activationWave`, `dependsOn`, `writablePaths`, `scope`,
   `deliverables`, `dependencyLevel`, `initialEligibility`,
   `constructionStatus`, `authorityStatus`.
 - Mission constants are `constructionStatus:"planned-not-created"` and
   `authorityStatus:"not-initialized"`. `dependencyLevel` is recomputed;
-  `initialEligibility` is recomputed. Mission, slug, lane, branch, worktree,
-  and writable-path identities are unique under exact and Unicode-default
-  case-folded comparison.
+  `initialEligibility` is exactly `blocked-by-dependencies` when dependencies
+  are nonempty, `eligible-after-independent-authorization` when dependencies
+  are empty and wave is 1, otherwise `staged-for-later-wave`.
+- Mission ID, title, library, lane, branch, worktree, scope, and every
+  deliverable are nonempty strings. `slug` is lowercase ASCII
+  `[a-z0-9]+(?:-[a-z0-9]+)*` and equals mission ID normalized by replacing each
+  non-alphanumeric run with `-`, lowercasing ASCII, and trimming `-`.
+  `activationWave` is a positive safe integer; `dependencyLevel` is a
+  non-negative safe integer; worktree is absolute; `dependsOn` is dense and
+  may be empty; `writablePaths` and `deliverables` are dense and nonempty.
+- Integration, mission, and inspected branches are nonempty opaque ASCII refs
+  using `[A-Za-z0-9._/@+-]+`, with `/` allowed internally; reject leading or
+  trailing `/` or `.`, `//`, `..`, `@{`, backslash, control bytes, and `.lock`
+  suffix. Integration, inspected, and mission branches are role-distinct.
+- Identity comparison uses exact ASCII bytes, then deterministic ASCII fold
+  replacing only `A` through `Z` with `a` through `z`; non-ASCII identity
+  fields are rejected. Use the test vectors `Lane-A == lane-a`,
+  `agent/X == agent/x`, and `A/Path/** == a/path/**`. No Unicode database or
+  locale participates.
+- Mission ID, slug, lane, branch, normalized absolute worktree, dependency,
+  and writable-path identities are duplicate-free under exact and ASCII-folded
+  comparison.
 - Dependencies reference known missions, are duplicate-free, exclude self,
   and form an acyclic graph. Plan array order is authoritative tie order.
 - Writable paths use normalized `/`, reject absolute paths, `.`/`..`, empty
   components, control characters, BOM, backslash, traversal, and wildcards
   except a final ownership `/**`; ownership may not overlap across missions.
 - `evaluationContract`: exactly `fixtureId`, positive integer `version`, and a
-  duplicate-free nonempty `scorecard` string array.
+  duplicate-free nonempty dense `scorecard` string array; fixture ID and every
+  scorecard item are nonempty strings.
 
 ## Exact state contract
 
@@ -119,11 +147,16 @@ version 2, preserving the selected #244 type/version.
 - `repository` is exactly `root`, `baseRef`, `baseRevision`,
   `integrationBranch` and equals the plan declarations.
 - `wave` is exactly `{current}` where current is null or a positive safe
-  integer. It is recomputed from plan order, dependency status, and mission
-  statuses; mismatch fails closed.
+  integer. Recompute by taking, in plan order, missions whose status is not
+  `integrated` and whose dependencies all have structural status `integrated`;
+  current is null when that list is empty, otherwise the minimum
+  `activationWave`. Supplied mismatch fails closed even though any integrated
+  status later causes the authority global stop.
 - `lanes` is an object with exact plan lane membership. Each value is exactly
-  `{activeMissionId}`, but Slice 1 requires every value to be null because any
-  active state is an unverified-authority global stop.
+  `{activeMissionId}`. A lane with exactly one active mission names that mission;
+  every other lane is null. Unknown occupants, the wrong occupant, or multiple
+  active missions in one lane fail structurally; a structurally valid active
+  mission then causes the authority global stop.
 - `missions` is an object with exact plan mission membership. Each value is
   exactly `lane`, `activationWave`, `status`, `revision`, `authorityEvidence`.
   Lane/wave equal the plan and `authorityEvidence` is always null.
@@ -133,6 +166,26 @@ version 2, preserving the selected #244 type/version.
   revision and triggers the global authority stop below.
 - `observedAt` is a valid timestamp string. It is recorded data, not trusted
   freshness evidence.
+
+### Immediate-edge transition table
+
+The only structurally allowed predecessor-to-current status transitions are:
+
+| From | Allowed current status |
+| --- | --- |
+| `planned` | `planned`, `authorized`, `cancelled`, `superseded` |
+| `authorized` | `authorized`, `active`, `blocked`, `failed`, `cancelled`, `superseded` |
+| `active` | `active`, `blocked`, `failed`, `complete`, `cancelled`, `superseded` |
+| `blocked` | `blocked`, `active`, `failed`, `cancelled`, `superseded` |
+| `failed` | `failed`, `blocked`, `cancelled`, `superseded` |
+| `complete` | `complete`, `integrated`, `cancelled`, `superseded` |
+| `integrated` | `integrated` |
+| `cancelled` | `cancelled` |
+| `superseded` | `superseded` |
+
+Lane and activation wave never change. Once non-null, revision never clears or
+changes. Current wave never decreases and cannot change from null back to a
+number. This validates one structural edge only; authority statuses still stop.
 
 ## Input bytes, paths, and replay limits
 
@@ -151,7 +204,12 @@ version 2, preserving the selected #244 type/version.
 ## Global stops and deterministic precedence
 
 Validation errors throw in deterministic contract/plan/state/predecessor order
-and emit no status document. After valid structural replay, apply exactly:
+and emit no status document. Within each closed object, report missing fields
+in the matrix order above, then unknown own string keys in ASCII order. Report
+array errors in array order. For membership objects, report missing expected
+identities in plan order, then unknown own string keys in ASCII order. Symbolic,
+inherited, accessor-backed, and prototype errors precede field errors. After
+valid structural replay, apply exactly:
 
 1. If current or predecessor contains `authorized`, `active`, `complete`,
    `integrated`, `cancelled`, or `superseded`, return global stop
@@ -165,6 +223,16 @@ and emit no status document. After valid structural replay, apply exactly:
 
 Whenever a global stop exists, `nextCandidate` is null. The controller never
 emits `dispatch_ready`, PASS, approval, acceptance, or verified authority.
+
+Under `authority-verification-required`, missions carrying an authority-derived
+status get disposition `authority-verification-required`; every other mission
+is `not-selected`. Under `operator-disposition-required`, blocked/failed
+missions get that disposition and every other mission is `not-selected`. With
+no global stop, the chosen mission is `candidate`; planned missions with
+nonempty dependencies are `waiting-for-dependencies`; all other planned
+missions are `not-selected`. Under `no-structurally-eligible-candidate`, planned
+missions with dependencies remain `waiting-for-dependencies` and all others are
+`not-selected`.
 
 ## Exact status output
 
@@ -187,6 +255,9 @@ Mission disposition is one of `candidate`, `waiting-for-dependencies`,
 `authority-verification-required`, `operator-disposition-required`, or
 `not-selected`. Dependency and error ordering follows plan array order, never
 locale or object enumeration.
+
+`immediatePredecessorProven` is false for valid genesis and true only after a
+valid non-genesis predecessor edge. It never implies earlier history.
 
 ## CLI
 
@@ -213,6 +284,11 @@ success; diagnostics go to stderr with nonzero exit.
 - Update `packages/shield-team-system/tests/operations-cli.test.mjs`.
 - Add mirrored `docs/operations/feature-flight-controller.md` and
   `packages/shield-team-system/docs/operations/feature-flight-controller.md`.
+- Update mirrored `docs/operations/persisted-artifact-contract-matrix.md` and
+  `packages/shield-team-system/docs/operations/persisted-artifact-contract-matrix.md`
+  with the canonical plan/state/status owners, versions, digest bindings,
+  authority/freshness limits, and explicit rejection of superseded prototype
+  artifacts unless byte-for-byte compatible with the consolidated validators.
 - Update `packages/shield-team-system/README.md` and
   `packages/shield-team-system/tests/package-surface.test.mjs`.
 - Retain this mission plan.
