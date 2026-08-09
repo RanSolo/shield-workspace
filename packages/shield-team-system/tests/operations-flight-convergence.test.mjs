@@ -1,67 +1,147 @@
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import test from "node:test";
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import test from 'node:test';
 
-import { checkIntegration } from "../scripts/operations/integration-check.mjs";
-import { planTeardown } from "../scripts/operations/teardown-plan.mjs";
-import { stableJson } from "../scripts/operations/common.mjs";
+import { checkIntegration, validateIntegrationReport } from '../scripts/operations/integration-check.mjs';
+import { planTeardown, validateTeardownReport } from '../scripts/operations/teardown-plan.mjs';
+import { compileHandoff } from '../scripts/operations/handoff-compile.mjs';
+import { createConvergenceFixture, createHandoffInputs } from './operations-handoff-compile.test.mjs';
 
-const git = (cwd, args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+const git = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+const writeJson = (path, value) => writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "shield-flight-convergence-"));
-  const repo = join(root, "repo");
-  const worktree = join(root, "worktree-a");
-  await mkdir(repo);
-  git(repo, ["init", "--initial-branch=main"]);
-  git(repo, ["config", "user.email", "operations@example.invalid"]);
-  git(repo, ["config", "user.name", "SHIELD Operations"]);
-  await writeFile(join(repo, "README.md"), "base\n");
-  git(repo, ["add", "."]);
-  git(repo, ["commit", "-m", "base"]);
-  const base = git(repo, ["rev-parse", "HEAD"]);
-  git(repo, ["worktree", "add", "-b", "spike/a", worktree, base]);
-  const missions = [
-    { id: "mission:a", title: "A", lane: "alpha", branch: "spike/a", worktree, activationWave: 1, dependsOn: [], writablePaths: ["a/**"], deliverables: ["A"] },
-    { id: "mission:b", title: "B", lane: "bravo", branch: "spike/b", worktree: join(root, "worktree-b"), activationWave: 1, dependsOn: [], writablePaths: ["b/**"], deliverables: ["B"] },
-    { id: "mission:integration", title: "Integrate", lane: "alpha", branch: "feature/test", worktree: join(root, "integration"), activationWave: 2, dependsOn: ["mission:a", "mission:b"], writablePaths: ["integration/**"], deliverables: ["ADR"] },
-  ];
-  const plan = { schemaVersion: 1, flightId: "flight:test", repository: { root: repo, baseRevision: base, collisions: [] }, integration: { branch: "main" }, missions };
-  const planPath = join(root, "plan.json");
-  await writeFile(planPath, stableJson(plan));
-  return { root, repo, worktree, base, missions, planPath };
-}
+const completedFlight = async () => {
+  const fixture = await createConvergenceFixture({ twoDependencies: true });
+  const aInputs = await createHandoffInputs(fixture, 'mission:a', 'integration-a');
+  const bInputs = await createHandoffInputs(fixture, 'mission:b', 'integration-b');
+  const a = await compileHandoff(aInputs.options);
+  const b = await compileHandoff(bInputs.options);
+  return { fixture, aInputs, bInputs, aPath: a.jsonPath, bPath: b.jsonPath };
+};
 
-const packet = (mission, head) => ({
-  schemaVersion: 1,
-  packetType: "exact-mission-handoff",
-  mode: "checkout",
-  mission: { id: mission.id },
-  repository: { branch: mission.branch, head, clean: true, changedPaths: [`${mission.id.slice(-1)}/result.txt`] },
-  acceptance: { phase: "green", ok: true, expectedRevision: head },
+test('integration re-resolves every exact dependency packet and emits a closed non-merge report', async () => {
+  const flight = await completedFlight();
+  const report = await checkIntegration({
+    planPath: flight.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [flight.aPath, flight.bPath],
+  });
+  assert.equal(report.ok, true, report.errors.join('\n'));
+  assert.equal(report.authority, 'none');
+  assert.match(report.notice, /grants no merge authority/u);
+  assert.deepEqual(validateIntegrationReport(report), []);
+  assert.deepEqual(report.dependencyEvidence.map((item) => item.changedPaths), [['a/result.txt'], ['b/result.txt']]);
 });
 
-test("integration check requires every exact dependency packet", async () => {
-  const f = await fixture();
-  const a = join(f.root, "a.json");
-  const b = join(f.root, "b.json");
-  await writeFile(a, stableJson(packet(f.missions[0], "a".repeat(40))));
-  await writeFile(b, stableJson(packet(f.missions[1], "b".repeat(40))));
-  const pass = await checkIntegration({ planPath: f.planPath, targetMissionId: "mission:integration", packetPaths: [a, b] });
-  assert.equal(pass.ok, true);
-  assert.equal(pass.authority, "none");
-  const blocked = await checkIntegration({ planPath: f.planPath, targetMissionId: "mission:integration", packetPaths: [a] });
-  assert.equal(blocked.ok, false);
-  assert.match(blocked.errors.join("\n"), /Missing exact packet for dependency mission:b/u);
+test('integration rejects missing, unexpected, fabricated, stale, and substituted packets', async () => {
+  const flight = await completedFlight();
+  const missing = await checkIntegration({
+    planPath: flight.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [flight.aPath],
+  });
+  assert.equal(missing.ok, false);
+  assert.match(missing.errors.join('\n'), /Missing exact packet for dependency mission:b/u);
+
+  const original = JSON.parse(await readFile(flight.aPath, 'utf8'));
+  const fabricatedPath = join(flight.fixture.root, 'fabricated-packet.json');
+  await writeJson(fabricatedPath, {
+    ...original,
+    repository: { ...original.repository, changedPaths: ['a/fabricated.txt'] },
+  });
+  const fabricated = await checkIntegration({
+    planPath: flight.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [fabricatedPath, flight.bPath],
+  });
+  assert.equal(fabricated.ok, false);
+  assert.match(fabricated.errors.join('\n'), /changed paths do not exactly match/u);
+
+  const substitutedPath = join(flight.fixture.root, 'substituted-packet.json');
+  await writeJson(substitutedPath, {
+    ...original,
+    flight: { ...original.flight, id: 'flight:forged' },
+    repository: { ...original.repository, branch: 'spike/substituted' },
+  });
+  const substituted = await checkIntegration({
+    planPath: flight.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [substitutedPath, flight.bPath],
+  });
+  assert.equal(substituted.ok, false);
+  assert.match(substituted.errors.join('\n'), /substituted|repository identity/u);
+
+  git(flight.fixture.worktreeA, ['commit', '--allow-empty', '-m', 'move dependency ref']);
+  const stale = await checkIntegration({
+    planPath: flight.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [flight.aPath, flight.bPath],
+  });
+  assert.equal(stale.ok, false);
+  assert.match(stale.errors.join('\n'), /packet is stale|no longer resolves/u);
+
+  const unexpectedPath = join(flight.fixture.root, 'unexpected-packet.json');
+  await writeJson(unexpectedPath, {
+    ...original,
+    mission: { ...original.mission, id: 'mission:unexpected' },
+  });
+  const unexpected = await checkIntegration({
+    planPath: flight.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [flight.aPath, flight.bPath, unexpectedPath],
+  });
+  assert.equal(unexpected.ok, false);
+  assert.match(unexpected.errors.join('\n'), /Unexpected packet for non-dependency/u);
 });
 
-test("teardown planning never deletes and preserves clean unintegrated work", async () => {
-  const f = await fixture();
-  const report = await planTeardown({ planPath: f.planPath, integrationRef: "main" });
-  assert.equal(report.authority, "none");
-  assert.equal(report.worktrees[0].disposition, "eligible-for-human-confirmed-removal");
+test('teardown inventories tracked, untracked, and ignored files and preserves unrecorded artifacts', async () => {
+  const fixture = await createConvergenceFixture();
+  await writeFile(join(fixture.worktreeA, 'untracked.txt'), 'untracked\n');
+  await writeFile(join(fixture.worktreeA, '.git', 'info-placeholder'), '').catch(() => {});
+  const excludePath = git(fixture.worktreeA, ['rev-parse', '--git-path', 'info/exclude']);
+  await writeFile(excludePath, 'ignored.bin\n', { flag: 'a' });
+  await writeFile(join(fixture.worktreeA, 'ignored.bin'), 'ignored\n');
+
+  const report = await planTeardown({ planPath: fixture.planPath, integrationRef: 'main' });
+  assert.deepEqual(validateTeardownReport(report), []);
+  const worktree = report.worktrees[0];
+  assert.equal(worktree.disposition, 'preserve-unrecorded-artifacts');
+  assert.equal(worktree.recoverable, false);
+  assert.ok(worktree.inventory.some((item) => item.category === 'tracked'));
+  assert.ok(worktree.inventory.some((item) => item.category === 'untracked' && item.path === 'untracked.txt'));
+  assert.ok(worktree.inventory.some((item) => item.category === 'ignored' && item.path === 'ignored.bin'));
   assert.match(report.notice, /No worktree.*removed/u);
+});
+
+test('teardown rejects ambiguous archive recoverability without changing the worktree', async () => {
+  const fixture = await createConvergenceFixture();
+  await writeFile(join(fixture.worktreeA, 'artifact.bin'), 'artifact\n');
+  const observedHead = git(fixture.worktreeA, ['rev-parse', 'HEAD']);
+  const archivePath = join(fixture.root, 'archive.json');
+  await writeJson(archivePath, {
+    schemaVersion: 1,
+    archiveType: 'feature-flight-recovery-archive',
+    authority: 'none',
+    flightId: fixture.plan.flightId,
+    missionId: 'mission:a',
+    repository: {
+      root: fixture.repository,
+      worktree: fixture.worktreeA,
+      branch: 'spike/a',
+      head: observedHead,
+    },
+    files: [],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    tool: { name: 'external-archive', version: '1.0.0' },
+  });
+  const report = await planTeardown({
+    planPath: fixture.planPath,
+    integrationRef: 'main',
+    archiveEvidencePaths: [archivePath],
+  });
+  assert.equal(report.worktrees[0].disposition, 'preserve-ambiguous-recoverability');
+  assert.equal(report.worktrees[0].archiveEvidence.matched, false);
+  assert.equal(await readFile(join(fixture.worktreeA, 'artifact.bin'), 'utf8'), 'artifact\n');
 });
