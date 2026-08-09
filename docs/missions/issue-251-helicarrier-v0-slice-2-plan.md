@@ -177,7 +177,10 @@ this exact active Daisy mission by the separately trusted Runner replay and
 authorization decision. For the selected mission, the optional immediate
 predecessor may show only legal `authorized` or `active` status. Any other
 authority-derived status in current or predecessor state, including every
-other mission, remains blocked.
+other mission, remains blocked. After that narrow discharge, the controller
+reapplies the existing operator-disposition rule independently: any current
+mission in `blocked` or `failed` status stops before claim, even when the Slice
+1 projection reported the higher-precedence authority stop first.
 
 ## Stable effect claim and attempt evidence
 
@@ -245,7 +248,9 @@ All artifacts are closed canonical JSON with a trailing newline and
 - host-trusted claim timestamp;
 - an explicit notice that the claim grants no authority.
 
-The claim must be durably read back before `runRunnerCycle` is entered.
+The claim must be durably read back before the Runner claim callback returns
+`claimed` and before adapter invocation. Runner is entered first so its
+authorizer retains precedence over claim creation.
 
 ### Successor
 
@@ -366,6 +371,8 @@ export, or CLI source changes.
 - Nonempty dependencies, Mack, May, Fury, human seats, non-coordination
   effects, non-fixed action/validation IDs, and nonmatching adapter policies
   fail before claim. May cannot bypass governed-May.
+- A selected active Daisy mission plus any other current `blocked` or `failed`
+  mission reapplies the operator stop and invokes neither claim nor adapter.
 - Every Runner stop reached before its claim callback invokes no adapter and is
   `stopped`. Claim-boundary and post-dispatch stops follow the mandatory store
   reread and return replay or recovery-required with no new successor.
