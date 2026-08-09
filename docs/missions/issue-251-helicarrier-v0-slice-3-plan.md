@@ -40,12 +40,12 @@ Excluded:
 - Feature Flight CLI exposure or an unbounded controller loop;
 - proving flights, merge, deployment, and release.
 
-## Existing contracts reused unchanged
+## Preserved boundaries and version transition
 
 1. `runFeatureFlightStepV1` remains the only one-cycle composition seam.
 2. Runner V1 remains the authority/claim/execute/validate sequence.
 3. `feature-flight-step-store.mjs` remains the create-only, hierarchy-bound
-   artifact store.
+   artifact store, extended by one shared terminal arbiter.
 4. The stable `effectClaimId` continues to identify the logical effect and
    excludes timestamps, attempt state, and observations.
 5. The legal successful successor remains exactly `active -> complete`.
@@ -55,40 +55,78 @@ Excluded:
 7. Existing PR publication code is evidence for observation discipline only;
    Feature Flight must not import publication authority or GitHub mutation.
 
+Slice 3 is a breaking persisted-artifact revision:
+
+- Slice 2 claim/result contract `1.0.0` remains immutable legacy evidence.
+- Slice 3 claim/result/recovery/terminal contract is `2.0.0`.
+- `effectClaimId` remains stable, so a Slice 3 reader must classify legacy bytes
+  at the same store location before any fresh observation or effect callback.
+- An exact valid Slice 2 terminal triad replays successfully as
+  `legacy_replayed`, with no repository/remote/Runner effect callback.
+- An exact valid incomplete Slice 2 claim or claim/successor returns ephemeral
+  `recovery_required` with reason `legacy_incomplete`; Slice 3 writes nothing to
+  that directory and never invokes.
+- Malformed or unknown contract versions remain untouched and return ephemeral
+  `recovery_required` with reason `unsupported_or_malformed_store`.
+- Slice 3 never interprets v1 bytes as v2, overwrites a legacy path, or adds a
+  v2 arbiter/receipt to an incomplete v1 directory.
+
 ## Requirement IDs
 
 Every implementation and test handoff must map evidence to these stable IDs.
 
 ### S3-R1 — Closed remote observation
 
+Trusted dependencies include a separately frozen observer descriptor:
+
+- `observerId:"shield.feature-flight.remote-observer"`;
+- `observerVersion:"1.0.0"`;
+- `capabilityClass:"remote_branch_read_only"`;
+- distinct bounded runtime and executor identities;
+- fixed `remoteName:"origin"`;
+- `urlNormalization:"shield-git-remote-url-v1"`;
+- selected repository root, canonical common-Git directory plus stable
+  device/inode identity, and normalized origin URL identity.
+
+The selected full ref is controller-derived as `refs/heads/<mission.branch>`;
+neither caller nor observer chooses it. The normalizer accepts only the existing
+repository's configured origin URL and produces one bounded identity for
+equivalent SCP/SSH forms; credentials, fragments, queries, control characters,
+ambiguous paths, and alternate hosts/owners/repositories fail closed.
+
 Add a strict plain-data `feature-flight-remote-observation` value containing:
 
 - schema and contract version;
 - `authority:"none"` and a fixed non-authoritative notice;
-- selected repository root and canonical common-Git directory;
-- remote name and normalized remote URL identity;
-- selected branch;
+- selected repository root;
+- canonical common-Git directory plus its stable device/inode identity;
+- exact observer descriptor identity;
+- remote name, normalized remote URL identity, and controller-derived full ref;
 - observed remote head (`null` for absent, otherwise exact Git revision);
 - host-trusted canonical observation timestamp;
-- runtime/tool identity for the observer.
+- phase (`pre_claim` or `post_adapter`) and exact controller challenge digest.
 
 Reject proxies, accessors, inherited/symbol/non-enumerable/unknown fields,
 malformed paths, control characters, noncanonical timestamps, malformed Git
 revisions, and unbounded identities. Snapshot the value once before use.
 
 The observer is a trusted injected capability. Core Feature Flight code performs
-no network or Git command itself. The observer contract permits read-only remote
-observation only and grants no authority.
+no network or Git command itself. Plain-data validation cannot prove that an
+injected closure is non-mutating; fresh read-only behavior is explicitly part of
+the host TCB and the capability surface accepts no mutation function. The
+observer contract grants no authority.
 
 ### S3-R2 — Pre-claim remote gate
 
-After all existing local and authority preparation, but before Runner
-authorization/claim/adapter callbacks, observe the selected branch once.
+For an absent store only, after deterministic input replay and existing local
+and authority preparation, but before Runner authorization/claim/adapter
+callbacks, observe the selected branch once.
 
 The baseline is admissible only when:
 
 - the observation binds the selected worktree's repository/common-Git identity,
-  branch, configured remote identity, and trusted observer identity; and
+  full ref, configured remote identity, trusted observer descriptor, phase, and
+  pre-claim challenge; and
 - the remote branch is absent or its exact head equals the active mission's
   local HEAD.
 
@@ -98,7 +136,8 @@ It must identify the reason without suggesting destructive reconciliation.
 
 ### S3-R3 — Claim binding
 
-Persist the exact pre-claim remote observation in `claim.json`. Recompute
+Persist the exact pre-claim remote observation and independently trusted
+observer descriptor in v2 `claim.json`. Recompute
 `attemptDigest` over it. Terminal validation must exact-match it to the prepared
 trusted observation. Existing effect-claim identity remains unchanged.
 
@@ -107,26 +146,54 @@ trusted observation. Existing effect-claim identity remains unchanged.
 After one validated adapter result and local repository readback, but before
 writing a successful successor, observe the same remote branch again.
 
-The second observation must retain the exact repository, common-Git, remote,
-branch, and observer identities and the exact remote head (including `null`)
-from the claim. Only the timestamp may advance. Any change, failure, or ambiguity
+The second observation uses a distinct post-adapter challenge and must retain the
+exact repository, common-Git device/inode, remote, full-ref, and observer
+identities and the exact remote head (including `null`) from the claim. Its
+timestamp must be greater than or equal to the pre-claim observation and claim
+timestamp and no later than the completion/recovery timestamp. Equality is
+allowed; rollback is rejected. Any change, failure, stale phase/challenge, or ambiguity
 is post-claim and must produce `recovery_required`; it must never write a
 successful successor/result or invoke the adapter again.
 
-### S3-R5 — Durable recovery receipt
+### S3-R5 — Atomic terminal arbiter and durable recovery receipt
 
-Add create-only `recovery.json` beneath the claimed effect directory. It is a
-closed, canonical, mode-0600, hierarchy-bound artifact written with the same
-durability and readback guarantees as the existing artifacts.
+Add one create-only `terminal.json` arbiter beneath the claimed effect
+directory. Success and recovery must atomically compete for this single
+pathname before either side writes a successor, `result.json`, or
+`recovery.json`. `O_EXCL` on the arbiter—not separate receipt paths—selects the
+only terminal kind. A loser reads and follows the exact winner.
 
-It contains only:
+The closed v2 arbiter contains:
+
+- schema/artifact/contract identity, `authority:"none"`, and fixed notice;
+- effect claim, attempt, and exact claim artifact identities;
+- `terminalKind:"success"|"recovery"`;
+- a complete canonical intended payload bundle:
+  - success: exact successor value and exact result value;
+  - recovery: required-null successor value and exact recovery value;
+- exact canonical byte lengths and SHA-256 identities for every intended
+  materialized artifact;
+- hierarchy identity and arbiter timestamp.
+
+The arbiter is itself canonical, mode-0600, hierarchy-bound, synced,
+parent-synced, and exactly read back. Once it exists, retries materialize or
+verify only its declared payloads. A recovery winner prohibits successor/result
+writes. A success winner prohibits recovery writes. Externally introduced mixed
+receipts are conflicting ephemeral recovery and are never repaired in place.
+
+Interruption after arbiter creation is recoverable without adapter invocation:
+the complete arbiter payload deterministically recreates any missing declared
+successor/result or recovery file with create-only exact-byte verification.
+
+Add create-only `recovery.json` as the materialized recovery receipt. It is
+closed, canonical, mode-0600, hierarchy-bound, and contains only:
 
 - schema/artifact/contract identity, `authority:"none"`, and fixed notice;
 - effect claim and attempt identities;
 - exact claim artifact identity;
-- optional successor identity when one already exists;
+- required-null successor identity;
 - exact reason code and phase;
-- exact baseline and latest remote observations when available;
+- exact baseline and required-nullable latest remote observations;
 - invocation count classification (`zero_or_unknown` or `one_completed`), never
   an assertion that an uncertain invocation did or did not happen;
 - `effectState:"uncertain_do_not_reinvoke"`;
@@ -140,30 +207,77 @@ claim is permitted.
 
 ### S3-R6 — Closed store states
 
-Extend store replay to distinguish:
+The exact three-level claim hierarchy token remains required for every write
+and final read. Closed v2 artifact-presence states are:
 
-- absent;
-- claim only;
-- claim plus successor;
-- successful terminal claim/successor/result;
-- recovery terminal claim/recovery;
-- recovery terminal claim/successor/recovery;
-- malformed/conflicting mixtures.
+| Claim | Arbiter | Successor | Result | Recovery | Classification |
+| --- | --- | --- | --- | --- | --- |
+| absent | absent | absent | absent | absent | `absent` |
+| exact | absent | absent | absent | absent | `claim_incomplete` |
+| exact | success | absent/exact | absent/exact | absent | `success_materializable` or `success_terminal` |
+| exact | recovery | absent | absent | absent/exact | `recovery_materializable` or `recovery_terminal` |
+| absent | any | any | any | any | `malformed` |
+| exact | absent | any successor | any result/recovery | any | `malformed` |
+| exact | success | any | any | any recovery | `conflicting` |
+| exact | recovery | any | any result | any | `conflicting` |
 
-`result.json` and `recovery.json` are mutually exclusive. A recovery receipt
-cannot coexist with a result. The exact three-level claim hierarchy token must
-remain required for all writes and final reads.
+`successor_without_claim` is always malformed. `claim_successor` is the only
+term for a claim plus successor. Legacy v1 states are classified by the separate
+compatibility matrix and never folded into these v2 states.
+
+Closed recovery phases are:
+
+- `store_replay`, `adapter`, `validation`, `local_readback`,
+  `remote_postcheck`, `terminal_arbitration`, `successor_materialization`,
+  `result_materialization`, `recovery_materialization`, `final_readback`.
+
+Closed durable reason codes are:
+
+- `interrupted_after_claim`, `adapter_uncertain`, `validation_failed`,
+  `local_readback_unavailable`, `local_repository_changed`,
+  `remote_observation_unavailable`, `remote_identity_changed`, `remote_drift`,
+  `terminal_arbitration_uncertain`, `successor_materialization_uncertain`,
+  `result_materialization_uncertain`, `recovery_materialization_uncertain`,
+  `final_readback_uncertain`.
+
+Ephemeral-only reasons are `legacy_incomplete`,
+`unsupported_or_malformed_store`, `terminal_conflict`, and `store_unavailable`.
+Every code maps to exactly one phase, allowed invocation classification, and
+required-nullable observation fields plus the required-null recovery successor
+field in the checked-in validator.
 
 ### S3-R7 — Deterministic retry
+
+Normative entry order is:
+
+1. Validate and snapshot caller/dependencies.
+2. Replay only deterministic plan/state/Runner evidence required to derive the
+   stable `effectClaimId`; no repository observer, remote observer, Runner
+   authorization/claim, adapter, or result-validator callback may run.
+3. Read and classify durable store state.
+4. Replay an exact legacy/v2 success, replay/materialize an exact v2 arbiter, or
+   terminalize an exact incomplete v2 claim as recovery—still with no effect
+   callbacks.
+5. Only when the store is absent, run full local/remote preflight and Runner.
+
+"Zero callbacks/effects" permits deterministic Runner-input loading and store
+reads/writes required for location, replay, and materialization. It excludes
+repository observation, remote observation, Runner authorization/claim,
+adapter invocation, and result validation.
 
 Retry behavior is conservative and exact:
 
 - absent store: normal preflight may proceed;
-- exact successful terminal: return `replayed`, zero callbacks/effects;
+- exact v1/v2 successful terminal: return `legacy_replayed` or `replayed` with
+  zero effect callbacks;
 - exact recovery terminal: return `recovery_required` with the same durable
-  recovery identity, zero callbacks/effects;
-- claim-only or claim-plus-successor: write or replay a recovery receipt, never
+  recovery identity and zero effect callbacks;
+- exact v2 arbiter with missing declared files: materialize exact winner bytes,
+  then replay with zero effect callbacks;
+- exact v2 claim-only: atomically elect and materialize recovery, never
   authorize or invoke;
+- exact incomplete v1 claim or claim/successor: return ephemeral
+  `legacy_incomplete`, never write or invoke;
 - malformed, conflicting, or unreadable state: return ephemeral
   `recovery_required`, never mutate uncertain evidence and never invoke.
 
@@ -172,10 +286,17 @@ duplicating a potentially completed effect.
 
 ### S3-R8 — Recovery precedence
 
-After the claim boundary, a recoverable classification overrides ordinary
-Runner stops and local/remote observation errors. A successful result may be
-returned only after exact terminal readback. A recovery result may be returned
-as durable only after exact claim/recovery (and optional successor) readback.
+Durable state classification precedes fresh local/remote observation and all
+effect callbacks. After a new claim boundary, recovery overrides ordinary
+Runner stops and observation errors. Success may be returned only after exact
+claim/arbiter/successor/result readback. Durable recovery may be returned only
+after exact claim/arbiter/recovery plus the required-null successor field
+readback.
+
+If success and recovery race, the exact valid arbiter winner controls. The loser
+must not write its receipt. An uncertain arbiter create is reread; an exact
+winner is followed, while absent/malformed/conflicting readback returns
+ephemeral recovery without further mutation.
 
 ### S3-R9 — No remote mutation
 
@@ -193,17 +314,19 @@ contain fabricated commands, approval, acceptance, or reconciliation claims.
 
 ## Interruption matrix
 
-| Boundary | Retry behavior | Adapter calls on retry | Durable outcome |
+| Boundary | Retry behavior | Effect callbacks on retry | Durable outcome |
 | --- | --- | ---: | --- |
 | before claim | rerun full preflight | at most one after a new claim | normal |
 | directory exists without valid claim | fail closed | 0 | ephemeral recovery |
-| claim durable, adapter not known | never invoke | 0 | claim + recovery |
-| adapter throws or validation fails | never invoke | 0 | claim + recovery |
-| post-adapter local/remote read fails | never invoke | 0 | claim + recovery |
-| remote changes during adapter | never invoke | 0 | claim + recovery |
-| successor durable, result absent | never invoke | 0 | claim + successor + recovery |
-| result durable and exact | replay success | 0 | successful triad |
-| recovery durable and exact | replay recovery | 0 | recovery terminal |
+| v2 claim durable, adapter state unknown | elect recovery terminal | 0 | claim + recovery arbiter + recovery |
+| adapter throws or validation fails | elect recovery terminal | 0 | claim + recovery arbiter + recovery |
+| post-adapter local/remote read fails | elect recovery terminal | 0 | claim + recovery arbiter + recovery |
+| remote changes during adapter | elect recovery terminal | 0 | claim + recovery arbiter + recovery |
+| success arbiter durable, files absent/partial | materialize exact arbiter payload | 0 | successful terminal |
+| recovery arbiter durable, receipt absent | materialize exact arbiter payload | 0 | recovery terminal |
+| success and recovery race | replay/materialize arbiter winner | 0 | exactly one terminal kind |
+| exact v1 terminal | replay legacy success | 0 | immutable v1 triad |
+| incomplete v1 state | fail closed without mutation | 0 | ephemeral recovery |
 | final readback uncertain | fail closed | 0 | ephemeral recovery |
 
 ## Remote-drift matrix
@@ -236,6 +359,8 @@ Modify:
 - `packages/shield-team-system/tests/operations-feature-flight-step.test.mjs`
 - `packages/shield-team-system/tests/operations-feature-flight-controller.test.mjs`
 - `packages/shield-team-system/tests/package-surface.test.mjs`
+- `docs/operations/feature-flight-step.md`
+- `packages/shield-team-system/docs/operations/feature-flight-step.md`
 - `docs/operations/persisted-artifact-contract-matrix.md`
 - `packages/shield-team-system/docs/operations/persisted-artifact-contract-matrix.md`
 - `packages/shield-team-system/README.md`
@@ -248,20 +373,26 @@ publication adapters, GitHub mutation code, package exports, or CLI surfaces.
 
 Tests must cite requirement IDs in names or a checked-in evidence table.
 
-- S3-R1/R2: strict hostile observation objects; absent/equal/adrift remote;
-  wrong root/common-Git/remote/branch/observer; unavailable observer; all with
-  exact pre-effect callback counts.
+- S3-R1/R2: strict hostile descriptor/observation objects; absent/equal/adrift
+  remote; wrong root/common-Git device/inode/remote/full-ref/observer;
+  unavailable observer; challenge replay, wrong phase, cached response, equal
+  timestamps, timestamp rollback, URL-normalization equivalence/rejection; all
+  with exact pre-effect callback counts.
 - S3-R3: claim substitution and attempt-digest recomputation for every remote
   observation identity.
 - S3-R4: post-adapter absent-to-present and revision-to-different-revision drift,
   identity substitution, unavailable/malformed second observation, and no
   successor/result.
-- S3-R5/R6: recovery artifact schema, canonical bytes, modes, symlink/alias,
-  partial write, sync/close, parent transplant, mixed terminal artifacts, and
-  exact final readback.
-- S3-R7/R8: retry from claim-only, successor-only, recovery terminal, success
-  terminal, malformed state, concurrent retries, recovery-write conflict, and
-  every reachable interruption boundary; prove zero reinvocation.
+- S3-R5/R6: arbiter/recovery schema, canonical bytes, modes, symlink/alias,
+  partial write, sync/close, parent/common-Git transplant, mixed terminal
+  artifacts, and exact final readback. Barrier-control every result-versus-
+  recovery interleaving and every interruption before/after arbiter durability.
+- S3-R7/R8: durable-state-before-observer ordering; retry from v2 claim-only,
+  success arbiter, recovery arbiter, both terminal kinds, malformed state,
+  concurrent retries, arbiter conflict, and every reachable interruption
+  boundary; prove zero effect callbacks and no second invocation.
+- Compatibility: exact v1 success replay, v1 claim-only, v1 claim/successor,
+  malformed/unknown versions, no v1 mutation, and no v1/v2 reinterpretation.
 - S3-R9: source/static guard and injected-call accounting proving no remote
   mutation capability exists.
 - S3-R10: closed handoff grammar and no raw command/free-form authority text.
