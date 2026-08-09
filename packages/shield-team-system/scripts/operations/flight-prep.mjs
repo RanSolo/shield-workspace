@@ -242,7 +242,8 @@ const runNativeNoReplaceMove = (stagingRoot, finalRoot) => execFileSync('/usr/bi
 ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
 const defaultPackageDependencies = {
-  chmod, lstat, mkdir, mkdtemp, open, rename, rm, runNativeNoReplaceMove, unlink, writeNewFile,
+  chmod, lstat, mkdir, mkdtemp, nativeNoReplaceSupported: process.platform === 'linux', open, rename, rm,
+  runNativeNoReplaceMove, unlink, writeNewFile,
 };
 
 const syncDirectory = async (path, dependencies) => {
@@ -295,7 +296,7 @@ const publishDirectoryCreateOnly = async (stagingRoot, finalRoot, dependencies) 
     throw new Error('Create-only atomic package publication requires a regular staging directory.');
   }
   if (dependencies.beforePublish) await dependencies.beforePublish({ stagingRoot, finalRoot });
-  if (process.platform !== 'linux') {
+  if (!dependencies.nativeNoReplaceSupported) {
     throw new Error('Create-only atomic directory publication requires the Linux/WSL native no-replace move primitive.');
   }
   try {

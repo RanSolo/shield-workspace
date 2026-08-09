@@ -169,13 +169,18 @@ const makeMarkdown = (report) => {
     `## Findings\n\n${errorSection}\n`;
 };
 
-export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha256, phase = 'structure', expectedRevision }, injected = {}) => {
+export const evaluateAcceptanceSnapshots = async ({
+  spec,
+  manifest,
+  receiptSnapshots,
+  expectedSpecSha256,
+  phase = 'structure',
+  expectedRevision,
+  tool,
+}) => {
   if (!PHASES.has(phase)) throw new Error(`Unknown phase: ${phase}`);
   if (!SHA256_PATTERN.test(expectedSpecSha256 ?? '')) throw new Error('Expected spec SHA-256 must be a lowercase digest.');
   if (phase !== 'structure' && !REVISION_PATTERN.test(expectedRevision ?? '')) throw new Error(`An exact expected revision is required for phase ${phase}.`);
-
-  const spec = await readJsonSnapshot(specPath, injected.snapshotDependencies);
-  const manifest = await readJsonSnapshot(manifestPath, injected.snapshotDependencies);
   const specValue = isPlainObject(spec.value) ? spec.value : {};
   const manifestValue = isPlainObject(manifest.value) ? manifest.value : {};
   const errors = validateAcceptanceSpec(spec.value);
@@ -192,12 +197,17 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
   if (phase === 'structure' && ((manifestValue.receipts?.length ?? 0) !== 0 || (manifestValue.redNotApplicable?.length ?? 0) !== 0 || (manifestValue.manualEvidence?.length ?? 0) !== 0)) errors.push('Structure manifest must not contain post-run evidence.');
   if (phase === 'red' && (manifestValue.manualEvidence?.length ?? 0) !== 0) errors.push('RED manifest must not contain manual GREEN evidence.');
 
-  const tool = await snapshotFile(fileURLToPath(new URL('./evidence-run.mjs', import.meta.url)));
   const receiptSummaries = [];
   const receiptsById = new Map();
+  const suppliedByPath = new Map();
+  for (const snapshot of receiptSnapshots) {
+    if (suppliedByPath.has(snapshot.path)) errors.push(`Supplied receipt snapshot path is duplicated: ${snapshot.path}.`);
+    suppliedByPath.set(snapshot.path, snapshot);
+  }
   const seenIds = new Set();
   const seenDigests = new Set();
   const seenPaths = new Set();
+  const consumedPaths = new Set();
   const manifestDirectory = dirname(manifest.path);
   const manifestReceipts = Array.isArray(manifestValue.receipts) ? manifestValue.receipts : [];
   for (const [index, mapping] of manifestReceipts.entries()) {
@@ -215,17 +225,21 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
       errors.push(`${label}.path escapes the manifest directory.`);
       continue;
     }
-    try {
-      const receipt = await readJsonSnapshot(receiptPath, injected.snapshotDependencies);
-      if (receipt.sha256 !== mapping.receiptSha256) errors.push(`${label} digest does not match the snapshotted receipt bytes.`);
-      errors.push(...validateReceipt({ receipt: receipt.value, mapping, spec, tool }).map((error) => `${label}: ${error}`));
-      receiptsById.set(mapping.receiptId, receipt.value);
-      receiptSummaries.push({ criterionId: mapping.criterionId, phase: mapping.phase, commandId: mapping.commandId, receiptId: mapping.receiptId, receiptSha256: receipt.sha256, path: mapping.path });
-    } catch (error) {
-      errors.push(`${label}: ${error instanceof Error ? error.message : error}`);
+    const receipt = suppliedByPath.get(receiptPath);
+    if (!receipt) {
+      errors.push(`${label}: exact receipt snapshot is absent.`);
+      continue;
     }
+    consumedPaths.add(receipt.path);
+    if (receipt.sha256 !== mapping.receiptSha256) errors.push(`${label} digest does not match the snapshotted receipt bytes.`);
+    errors.push(...validateReceipt({ receipt: receipt.value, mapping, spec, tool }).map((error) => `${label}: ${error}`));
+    receiptsById.set(mapping.receiptId, receipt.value);
+    receiptSummaries.push({ criterionId: mapping.criterionId, phase: mapping.phase, commandId: mapping.commandId, receiptId: mapping.receiptId, receiptSha256: receipt.sha256, path: mapping.path });
   }
-  if (receiptSummaries.length !== manifestReceipts.length || seenIds.size !== manifestReceipts.length || seenDigests.size !== manifestReceipts.length) errors.push('Manifest and snapshotted receipt sets are not exactly equal.');
+  if (receiptSummaries.length !== manifestReceipts.length || seenIds.size !== manifestReceipts.length ||
+      seenDigests.size !== manifestReceipts.length || consumedPaths.size !== suppliedByPath.size) {
+    errors.push('Manifest and snapshotted receipt sets are not exactly equal.');
+  }
 
   const specCriteria = Array.isArray(specValue.criteria) ? specValue.criteria : [];
   const criterionById = new Map(specCriteria.map((criterion) => [criterion.id, criterion]));
@@ -263,10 +277,11 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
     if (receipt && mapping.phase === 'green' && (receipt.result?.status !== 'completed' || receipt.result?.exitCode !== 0 || receipt.result?.timedOut !== false || receipt.result?.artifactErrors?.length !== 0)) errors.push(`${mapping.criterionId} GREEN receipt must record a completed successful command and all artifact hashes.`);
   }
 
-  if (errors.length === 0 && phase !== 'structure') {
+  if (phase !== 'structure') {
     for (const criterion of specCriteria) {
+      if (!isPlainObject(criterion) || !isPlainObject(criterion.validation)) continue;
       if (criterion.validation.mode === 'automated') {
-        const mappings = manifestReceipts.filter((item) => item.criterionId === criterion.id);
+        const mappings = manifestReceipts.filter((item) => isPlainObject(item) && item.criterionId === criterion.id);
         const redMappings = mappings.filter((item) => item.phase === 'red');
         const greenMappings = mappings.filter((item) => item.phase === 'green');
         if (redMappings.length === 0 && !rationaleIds.has(criterion.id)) errors.push(`${criterion.id} requires RED evidence or a RED-not-applicable rationale.`);
@@ -302,6 +317,38 @@ export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha2
       manualEvidence: (Array.isArray(manifestValue.manualEvidence) ? manifestValue.manualEvidence : []).filter((item) => item.criterionId === criterion.id).length,
     })),
   };
+};
+
+export const checkAcceptance = async ({ specPath, manifestPath, expectedSpecSha256, phase = 'structure', expectedRevision }, injected = {}) => {
+  if (!PHASES.has(phase)) throw new Error(`Unknown phase: ${phase}`);
+  if (!SHA256_PATTERN.test(expectedSpecSha256 ?? '')) throw new Error('Expected spec SHA-256 must be a lowercase digest.');
+  if (phase !== 'structure' && !REVISION_PATTERN.test(expectedRevision ?? '')) throw new Error(`An exact expected revision is required for phase ${phase}.`);
+
+  const [spec, manifest, tool] = await Promise.all([
+    readJsonSnapshot(specPath, injected.snapshotDependencies),
+    readJsonSnapshot(manifestPath, injected.snapshotDependencies),
+    snapshotFile(fileURLToPath(new URL('./evidence-run.mjs', import.meta.url))),
+  ]);
+  const manifestReceipts = Array.isArray(manifest.value?.receipts) ? manifest.value.receipts : [];
+  const receiptPaths = new Set();
+  for (const mapping of manifestReceipts) {
+    if (!isPlainObject(mapping) || !nonEmptyString(mapping.path)) continue;
+    const receiptPath = resolve(dirname(manifest.path), mapping.path);
+    const relativePath = relative(dirname(manifest.path), receiptPath);
+    if (relativePath === '..' || relativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) continue;
+    receiptPaths.add(receiptPath);
+  }
+  const receiptSnapshots = (await Promise.all([...receiptPaths].map((path) =>
+    readJsonSnapshot(path, injected.snapshotDependencies).catch(() => null)))).filter((snapshot) => snapshot !== null);
+  return evaluateAcceptanceSnapshots({
+    spec,
+    manifest,
+    receiptSnapshots,
+    expectedSpecSha256,
+    phase,
+    expectedRevision,
+    tool,
+  });
 };
 
 const main = async () => {
