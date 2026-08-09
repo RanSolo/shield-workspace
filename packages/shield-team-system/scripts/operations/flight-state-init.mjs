@@ -9,6 +9,8 @@ import { readJsonSnapshot, stableJson, writeNewFile } from "./common.mjs";
 export const FLIGHT_STATE_TYPE = "non-authoritative-flight-state";
 export const FLIGHT_STATE_NOTICE = "Observed coordination state only. Lifecycle status and authorityEvidence do not grant or prove SHIELD or human authority.";
 export const FLIGHT_STATE_TOOL_VERSION = "1.0.0";
+export const FLIGHT_STATE_GENESIS_PRODUCER = "flight-state-init";
+export const FLIGHT_STATE_SUCCESSOR_PRODUCER = "flight-state-successor-recorder";
 
 const artifactIdentity = (snapshot) => ({
   path: snapshot.path,
@@ -45,7 +47,7 @@ export const initializeFlightState = async ({ planPath, output }) => {
       authorityEvidence: null,
     }])),
     observedAt: new Date().toISOString(),
-    tool: { name: "flight-state-init", version: FLIGHT_STATE_TOOL_VERSION },
+    tool: { name: FLIGHT_STATE_GENESIS_PRODUCER, version: FLIGHT_STATE_TOOL_VERSION },
   };
   await writeNewFile(output, stableJson(state));
   return state;

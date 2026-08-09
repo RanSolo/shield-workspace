@@ -9,8 +9,12 @@ import { fileURLToPath } from "node:url";
 import { sha256, snapshotFile, stableJson } from "../scripts/operations/common.mjs";
 import { PLAN_NOTICE } from "../scripts/operations/flight-common.mjs";
 import { prepareFlight } from "../scripts/operations/flight-prep.mjs";
-import { initializeFlightState } from "../scripts/operations/flight-state-init.mjs";
-import { computeFlightStatus } from "../scripts/operations/hill-kernel.mjs";
+import {
+  FLIGHT_STATE_GENESIS_PRODUCER,
+  FLIGHT_STATE_SUCCESSOR_PRODUCER,
+  initializeFlightState,
+} from "../scripts/operations/flight-state-init.mjs";
+import { computeFlightStatus, validateRoutingAdviceReport } from "../scripts/operations/hill-kernel.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "scripts", "operations", "ops-cli.mjs");
@@ -89,12 +93,30 @@ const routeGenesis = (context, overrides = {}) => computeFlightStatus({
   ...overrides,
 });
 
+const deriveRoutingFields = (context, state) => {
+  for (const lane of context.plan.lanes) state.lanes[lane.id].activeMissionId = null;
+  for (const plannedMission of context.plan.missions) {
+    if (state.missions[plannedMission.id].status === "active") {
+      state.lanes[plannedMission.lane].activeMissionId = plannedMission.id;
+    }
+  }
+  const ready = context.plan.missions.filter((plannedMission) =>
+    state.missions[plannedMission.id].status !== "integrated" &&
+    plannedMission.dependsOn.every((dependency) => state.missions[dependency].status === "integrated"),
+  );
+  state.wave.current = ready.length === 0
+    ? null
+    : Math.min(...ready.map((plannedMission) => plannedMission.activationWave));
+};
+
 const successor = (context, mutate = () => {}) => {
   const state = structuredClone(context.genesis);
   state.sequence = 1;
   state.predecessorSha256 = context.genesisSnapshot.sha256;
   state.observedAt = "2026-08-08T22:00:00.000Z";
+  state.tool.name = FLIGHT_STATE_SUCCESSOR_PRODUCER;
   mutate(state);
+  deriveRoutingFields(context, state);
   return state;
 };
 
@@ -111,12 +133,34 @@ const routeSuccessor = async (context, state, overrides = {}) => {
   });
 };
 
+const routeTransition = async (context, predecessor, mutateCurrent = () => {}) => {
+  const predecessorStored = await writeState(context, predecessor, `predecessor-${Math.random()}.json`);
+  const current = structuredClone(predecessor);
+  current.sequence = predecessor.sequence + 1;
+  current.predecessorSha256 = predecessorStored.snapshot.sha256;
+  current.observedAt = "2026-08-08T22:01:00.000Z";
+  current.tool.name = FLIGHT_STATE_SUCCESSOR_PRODUCER;
+  mutateCurrent(current);
+  deriveRoutingFields(context, current);
+  const currentStored = await writeState(context, current, `current-${Math.random()}.json`);
+  const report = await computeFlightStatus({
+    planPath: context.planPath,
+    statePath: currentStored.path,
+    expectedStateSha256: currentStored.snapshot.sha256,
+    expectedStateSequence: current.sequence,
+    predecessorStatePath: predecessorStored.path,
+    expectedPredecessorSha256: predecessorStored.snapshot.sha256,
+  });
+  return { report, predecessorStored, current, currentStored };
+};
+
 test("flight-state producer emits closed v2 genesis consumed by flight route", async () => {
   const context = await fixture();
   assert.equal(context.genesis.schemaVersion, 2);
   assert.equal(context.genesis.authority, "none");
   assert.equal(context.genesis.sequence, 0);
   assert.equal(context.genesis.predecessorSha256, null);
+  assert.equal(context.genesis.tool.name, FLIGHT_STATE_GENESIS_PRODUCER);
   assert.equal(context.genesis.missions["mission:a"].lane, "alpha");
   assert.equal(context.genesis.missions["mission:c"].activationWave, 2);
   assert.equal(context.genesis.plan.sha256, sha256(await readFile(context.planPath)));
@@ -132,6 +176,52 @@ test("flight-state producer emits closed v2 genesis consumed by flight route", a
     () => initializeFlightState({ planPath: context.planPath, output: context.genesisPath }),
     /Refusing to overwrite/u,
   );
+});
+
+test("state producer identity is closed by genesis or successor sequence", async () => {
+  const context = await fixture();
+  const validSuccessor = successor(context);
+  const report = await routeSuccessor(context, validSuccessor);
+  assert.equal(validSuccessor.tool.name, FLIGHT_STATE_SUCCESSOR_PRODUCER);
+  assert.equal(report.sequence, 1);
+
+  const forgedGenesis = structuredClone(context.genesis);
+  forgedGenesis.tool.name = FLIGHT_STATE_SUCCESSOR_PRODUCER;
+  const forgedGenesisStored = await writeState(context, forgedGenesis, "forged-genesis-producer.json");
+  await assert.rejects(
+    () => computeFlightStatus({
+      planPath: context.planPath,
+      statePath: forgedGenesisStored.path,
+      expectedStateSha256: forgedGenesisStored.snapshot.sha256,
+      expectedStateSequence: 0,
+    }),
+    /sequence-specific flight-state-init producer/u,
+  );
+
+  const forgedSuccessor = successor(context);
+  forgedSuccessor.tool.name = FLIGHT_STATE_GENESIS_PRODUCER;
+  await assert.rejects(() => routeSuccessor(context, forgedSuccessor), /sequence-specific flight-state-successor-recorder producer/u);
+});
+
+test("routing advice report has one exact closed shape and rejects legacy action fields", async () => {
+  const context = await fixture();
+  const report = await routeGenesis(context);
+  assert.deepEqual(Object.keys(report), [
+    "schemaVersion", "reportType", "authority", "notice", "freshnessNotice", "tool", "flightId",
+    "sequence", "currentWave", "plan", "state", "predecessor", "stateExpectation", "missions", "advisories",
+  ]);
+  assert.deepEqual(Object.keys(report.missions[0]), [
+    "id", "lane", "activationWave", "status", "revision", "unmetDependencies", "disposition", "advisoryCandidates",
+  ]);
+  assert.deepEqual(Object.keys(report.advisories[0]), ["missionId", "candidate"]);
+  assert.deepEqual(validateRoutingAdviceReport(report), []);
+
+  const withEvents = structuredClone(report);
+  withEvents.events = [];
+  assert.match(validateRoutingAdviceReport(withEvents).join("\n"), /unknown field events/u);
+  const withLegalActions = structuredClone(report);
+  withLegalActions.missions[0].legalActions = ["activate"];
+  assert.match(validateRoutingAdviceReport(withLegalActions).join("\n"), /unknown field legalActions/u);
 });
 
 test("flight-prep resolved-plan output is consumed by state-init and route", async () => {
@@ -255,6 +345,21 @@ test("closed state rejects unknown fields at every nested contract level", async
   }
 });
 
+test("closed state rejects mission removal and identity-reordering", async () => {
+  const context = await fixture();
+  const removed = successor(context);
+  delete removed.missions["mission:b"];
+  await assert.rejects(() => routeSuccessor(context, removed), /exact planned mission identity and order|missing mission:b/u);
+
+  const reordered = successor(context);
+  reordered.missions = {
+    "mission:b": reordered.missions["mission:b"],
+    "mission:a": reordered.missions["mission:a"],
+    "mission:c": reordered.missions["mission:c"],
+  };
+  await assert.rejects(() => routeSuccessor(context, reordered), /exact planned mission identity and order/u);
+});
+
 test("resolved-plan and state consumers reject missing lane and activation wave instead of defaulting", async () => {
   for (const field of ["lane", "activationWave"]) {
     const context = await fixture();
@@ -281,15 +386,14 @@ test("resolved-plan and state consumers reject missing lane and activation wave 
   }
 });
 
-test("null authority evidence never promotes authority-derived lifecycle observations", async () => {
+test("every authority-derived lifecycle status replays only through authority verification", async () => {
   const context = await fixture();
-  for (const status of ["authorized", "active", "complete", "integrated"]) {
-    const state = successor(context, (next) => {
+  for (const status of ["authorized", "active", "complete", "integrated", "cancelled", "superseded"]) {
+    const predecessor = successor(context, (next) => {
       next.missions["mission:a"].status = status;
       next.missions["mission:a"].revision = revision("b");
-      if (status === "active") next.lanes.alpha.activeMissionId = "mission:a";
     });
-    const report = await routeSuccessor(context, state);
+    const { report } = await routeTransition(context, predecessor);
     const observed = report.missions.find(({ id }) => id === "mission:a");
     assert.equal(observed.disposition, "requires-authority-verification", status);
     assert.deepEqual(observed.advisoryCandidates, ["requires-authority-verification"], status);
@@ -297,6 +401,115 @@ test("null authority evidence never promotes authority-derived lifecycle observa
     assert.equal(allCandidates.every((candidate) => candidate === "requires-authority-verification"), true, status);
     assert.equal(allCandidates.some((candidate) => ["activate", "continue", "complete", "integrate"].includes(candidate)), false, status);
   }
+});
+
+test("every authority-derived lifecycle rollback fails closed", async () => {
+  const context = await fixture();
+  const rollbacks = new Map([
+    ["authorized", "planned"],
+    ["active", "authorized"],
+    ["complete", "active"],
+    ["integrated", "complete"],
+    ["cancelled", "planned"],
+    ["superseded", "planned"],
+  ]);
+  for (const [priorStatus, currentStatus] of rollbacks) {
+    const predecessor = successor(context, (state) => {
+      state.missions["mission:a"].status = priorStatus;
+      state.missions["mission:a"].revision = revision("b");
+    });
+    await assert.rejects(
+      () => routeTransition(context, predecessor, (state) => {
+        state.missions["mission:a"].status = currentStatus;
+      }),
+      new RegExp(`${priorStatus} -> ${currentStatus} is not allowed`, "u"),
+      `${priorStatus} -> ${currentStatus}`,
+    );
+  }
+});
+
+test("authority-derived predecessor state forces verification-only routing after blocking or failure", async () => {
+  const context = await fixture();
+  for (const currentStatus of ["blocked", "failed"]) {
+    const predecessor = successor(context, (state) => {
+      state.missions["mission:a"].status = "active";
+      state.missions["mission:a"].revision = revision("b");
+    });
+    const { report } = await routeTransition(context, predecessor, (state) => {
+      state.missions["mission:a"].status = currentStatus;
+    });
+    const allCandidates = report.missions.flatMap(({ advisoryCandidates }) => advisoryCandidates);
+    assert.equal(allCandidates.length > 0, true);
+    assert.equal(allCandidates.every((candidate) => candidate === "requires-authority-verification"), true);
+  }
+});
+
+test("cancelled and superseded observations cannot advance lane or wave routing", async () => {
+  const context = await fixture();
+  for (const status of ["cancelled", "superseded"]) {
+    const predecessor = successor(context, (state) => {
+      state.missions["mission:a"].status = "active";
+      state.missions["mission:a"].revision = revision("b");
+    });
+    const { report } = await routeTransition(context, predecessor, (state) => {
+      state.missions["mission:a"].status = status;
+    });
+    assert.equal(report.currentWave, 1, status);
+    assert.deepEqual(report.missions.find(({ id }) => id === "mission:a").advisoryCandidates, ["requires-authority-verification"]);
+    assert.deepEqual(report.missions.find(({ id }) => id === "mission:c").advisoryCandidates, []);
+  }
+});
+
+test("successor replay rejects revision clearing, revision substitution, and wave regression", async () => {
+  const context = await fixture();
+  const active = successor(context, (state) => {
+    state.missions["mission:a"].status = "active";
+    state.missions["mission:a"].revision = revision("b");
+  });
+  await assert.rejects(
+    () => routeTransition(context, active, (state) => {
+      state.missions["mission:a"].status = "blocked";
+      state.missions["mission:a"].revision = null;
+    }),
+    /revision cannot be cleared/u,
+  );
+
+  const authorized = successor(context, (state) => {
+    state.missions["mission:a"].status = "authorized";
+    state.missions["mission:a"].revision = revision("b");
+  });
+  await assert.rejects(
+    () => routeTransition(context, authorized, (state) => {
+      state.missions["mission:a"].status = "active";
+      state.missions["mission:a"].revision = revision("c");
+    }),
+    /revision cannot be substituted/u,
+  );
+
+  const waveTwo = successor(context, (state) => {
+    state.missions["mission:a"].status = "integrated";
+    state.missions["mission:a"].revision = revision("b");
+    state.missions["mission:b"].status = "integrated";
+    state.missions["mission:b"].revision = revision("c");
+  });
+  const predecessorStored = await writeState(context, waveTwo, "wave-two-predecessor.json");
+  const regressed = structuredClone(waveTwo);
+  regressed.sequence = 2;
+  regressed.predecessorSha256 = predecessorStored.snapshot.sha256;
+  regressed.observedAt = "2026-08-08T22:02:00.000Z";
+  regressed.wave.current = 1;
+  const regressedStored = await writeState(context, regressed, "wave-regression.json");
+  await assert.rejects(
+    () => computeFlightStatus({
+      planPath: context.planPath,
+      statePath: regressedStored.path,
+      expectedStateSha256: regressedStored.snapshot.sha256,
+      expectedStateSequence: 2,
+      predecessorStatePath: predecessorStored.path,
+      expectedPredecessorSha256: predecessorStored.snapshot.sha256,
+    }),
+    /wave.current is 1; expected 2/u,
+  );
 });
 
 test("forged authority evidence fails closed", async () => {

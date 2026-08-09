@@ -13,18 +13,38 @@ import {
   writeNewFile,
 } from "./common.mjs";
 import {
+  FLIGHT_STATE_GENESIS_PRODUCER,
   FLIGHT_STATE_NOTICE,
+  FLIGHT_STATE_SUCCESSOR_PRODUCER,
   FLIGHT_STATE_TOOL_VERSION,
   FLIGHT_STATE_TYPE,
 } from "./flight-state-init.mjs";
 
 const TOOL_VERSION = "1.0.0";
-const AUTHORITY_DERIVED_STATUSES = new Set(["authorized", "active", "complete", "integrated"]);
-const TERMINAL_STATUSES = new Set(["integrated", "cancelled", "superseded"]);
+const AUTHORITY_DERIVED_STATUSES = new Set(["authorized", "active", "complete", "integrated", "cancelled", "superseded"]);
+const ROUTING_TERMINAL_STATUSES = new Set(["integrated"]);
 const MISSION_STATUSES = new Set([
   "planned", "authorized", "active", "blocked", "failed", "complete", "integrated", "cancelled", "superseded",
 ]);
+const LIFECYCLE_TRANSITIONS = new Map([
+  ["planned", new Set(["planned", "authorized", "cancelled", "superseded"])],
+  ["authorized", new Set(["authorized", "active", "blocked", "failed", "cancelled", "superseded"])],
+  ["active", new Set(["active", "blocked", "failed", "complete", "cancelled", "superseded"])],
+  ["blocked", new Set(["blocked", "active", "failed", "cancelled", "superseded"])],
+  ["failed", new Set(["failed", "blocked", "cancelled", "superseded"])],
+  ["complete", new Set(["complete", "integrated", "cancelled", "superseded"])],
+  ["integrated", new Set(["integrated"])],
+  ["cancelled", new Set(["cancelled"])],
+  ["superseded", new Set(["superseded"])],
+]);
 const FRESHNESS_NOTICE = "The expected state SHA-256 and sequence prove only the supplied snapshot; they do not prove that it is the latest flight state.";
+const REPORT_NOTICE = "Routing advice only. This report grants no mission or human authority and performs no dispatch, journal mutation, or external effect.";
+const ADVISORY_CANDIDATES = new Set([
+  "requires-authority-verification",
+  "request-recovery-decision",
+  "request-blocker-review",
+  "request-independent-authority-verification",
+]);
 
 const artifactIdentity = (snapshot) => ({
   path: snapshot.path,
@@ -35,9 +55,12 @@ const artifactIdentity = (snapshot) => ({
 const sameArtifactIdentity = (left, right) =>
   left.path === right.path && left.bytes === right.bytes && left.sha256 === right.sha256;
 
+const sameOrderedIdentities = (actual, expected) =>
+  actual.length === expected.length && actual.every((identity, index) => identity === expected[index]);
+
 const currentWaveFor = (plan, state) => {
   const dependencyReadyNonterminal = plan.missions.filter((mission) =>
-    !TERMINAL_STATUSES.has(state.missions[mission.id].status) &&
+    !ROUTING_TERMINAL_STATUSES.has(state.missions[mission.id].status) &&
     mission.dependsOn.every((dependency) => state.missions[dependency].status === "integrated"),
   );
   return dependencyReadyNonterminal.length === 0
@@ -86,7 +109,11 @@ const validateState = (plan, planIdentity, state, label = "state") => {
   if (!state.lanes || typeof state.lanes !== "object" || Array.isArray(state.lanes)) {
     errors.push(`${label}.lanes must be an object keyed by planned lane id.`);
   } else {
-    const plannedLaneIds = new Set(plan.lanes.map((lane) => lane.id));
+    const plannedLaneOrder = plan.lanes.map((lane) => lane.id);
+    const plannedLaneIds = new Set(plannedLaneOrder);
+    if (!sameOrderedIdentities(Object.keys(state.lanes), plannedLaneOrder)) {
+      errors.push(`${label}.lanes must preserve the exact planned lane identity and order.`);
+    }
     for (const lane of plan.lanes) {
       const record = state.lanes[lane.id];
       if (!record) errors.push(`${label}.lanes is missing ${lane.id}.`);
@@ -103,7 +130,11 @@ const validateState = (plan, planIdentity, state, label = "state") => {
   if (!state.missions || typeof state.missions !== "object" || Array.isArray(state.missions)) {
     errors.push(`${label}.missions must be an object keyed by planned mission id.`);
   } else {
-    const plannedIds = new Set(plan.missions.map((mission) => mission.id));
+    const plannedMissionOrder = plan.missions.map((mission) => mission.id);
+    const plannedIds = new Set(plannedMissionOrder);
+    if (!sameOrderedIdentities(Object.keys(state.missions), plannedMissionOrder)) {
+      errors.push(`${label}.missions must preserve the exact planned mission identity and order.`);
+    }
     for (const mission of plan.missions) {
       const record = state.missions[mission.id];
       const missionLabel = `${label}.missions.${mission.id}`;
@@ -128,7 +159,12 @@ const validateState = (plan, planIdentity, state, label = "state") => {
 
   if (!nonEmptyString(state.observedAt) || Number.isNaN(Date.parse(state.observedAt))) errors.push(`${label}.observedAt must be a timestamp string.`);
   if (exactKeys(state.tool, ["name", "version"], `${label}.tool`, errors)) {
-    if (state.tool.name !== "flight-state-init" || state.tool.version !== FLIGHT_STATE_TOOL_VERSION) errors.push(`${label}.tool identity is unsupported.`);
+    const expectedProducer = state.sequence === 0
+      ? FLIGHT_STATE_GENESIS_PRODUCER
+      : state.sequence > 0 ? FLIGHT_STATE_SUCCESSOR_PRODUCER : null;
+    if (state.tool.name !== expectedProducer || state.tool.version !== FLIGHT_STATE_TOOL_VERSION) {
+      errors.push(`${label}.tool must identify the sequence-specific ${expectedProducer ?? "valid"} producer.`);
+    }
   }
 
   if (errors.length === 0) {
@@ -154,6 +190,87 @@ const validateState = (plan, planIdentity, state, label = "state") => {
     }
     const expectedWave = currentWaveFor(plan, state);
     if (state.wave.current !== expectedWave) errors.push(`${label}.wave.current is ${state.wave.current}; expected ${expectedWave}.`);
+  }
+  return errors;
+};
+
+const validateLifecycleTransition = (plan, predecessor, state) => {
+  const errors = [];
+  if (predecessor.wave.current === null && state.wave.current !== null) {
+    errors.push("Flight wave cannot regress from terminal null to an active wave.");
+  } else if (predecessor.wave.current !== null && state.wave.current !== null &&
+             state.wave.current < predecessor.wave.current) {
+    errors.push(`Flight wave regressed from ${predecessor.wave.current} to ${state.wave.current}.`);
+  }
+  for (const mission of plan.missions) {
+    const prior = predecessor.missions[mission.id];
+    const current = state.missions[mission.id];
+    if (!prior || !current) continue;
+    const allowed = LIFECYCLE_TRANSITIONS.get(prior.status);
+    if (!allowed?.has(current.status)) {
+      errors.push(`${mission.id} lifecycle transition ${prior.status} -> ${current.status} is not allowed.`);
+    }
+    if (current.lane !== prior.lane || current.activationWave !== prior.activationWave) {
+      errors.push(`${mission.id} lane or activation-wave identity changed across the predecessor transition.`);
+    }
+    if (prior.revision !== null && current.revision !== prior.revision) {
+      errors.push(current.revision === null
+        ? `${mission.id} revision cannot be cleared after it is established.`
+        : `${mission.id} revision cannot be substituted after it is established.`);
+    }
+  }
+  return errors;
+};
+
+const validateArtifactIdentity = (value, label, errors) => {
+  if (!exactKeys(value, ["path", "bytes", "sha256"], label, errors)) return;
+  if (!nonEmptyString(value.path)) errors.push(`${label}.path must be a non-empty string.`);
+  if (!Number.isSafeInteger(value.bytes) || value.bytes < 0) errors.push(`${label}.bytes must be a non-negative safe integer.`);
+  if (!SHA256_PATTERN.test(value.sha256 ?? "")) errors.push(`${label}.sha256 must be a lowercase SHA-256 digest.`);
+};
+
+export const validateRoutingAdviceReport = (report) => {
+  const errors = [];
+  if (!exactKeys(report, [
+    "schemaVersion", "reportType", "authority", "notice", "freshnessNotice", "tool", "flightId",
+    "sequence", "currentWave", "plan", "state", "predecessor", "stateExpectation", "missions", "advisories",
+  ], "report", errors)) return errors;
+  if (report.schemaVersion !== 1) errors.push("report.schemaVersion must equal 1.");
+  if (report.reportType !== "hill-flight-routing-advice") errors.push("report.reportType must equal hill-flight-routing-advice.");
+  if (report.authority !== "none") errors.push("report.authority must equal none.");
+  if (report.notice !== REPORT_NOTICE) errors.push("report.notice must equal the fixed producer notice.");
+  if (report.freshnessNotice !== FRESHNESS_NOTICE) errors.push("report.freshnessNotice must equal the fixed freshness limitation.");
+  if (exactKeys(report.tool, ["name", "version"], "report.tool", errors) &&
+      (report.tool.name !== "hill-kernel" || report.tool.version !== TOOL_VERSION)) errors.push("report.tool identity is unsupported.");
+  if (!nonEmptyString(report.flightId)) errors.push("report.flightId must be a non-empty string.");
+  if (!Number.isSafeInteger(report.sequence) || report.sequence < 0) errors.push("report.sequence must be a non-negative safe integer.");
+  if (report.currentWave !== null && (!Number.isSafeInteger(report.currentWave) || report.currentWave < 1)) errors.push("report.currentWave must be null or a positive safe integer.");
+  validateArtifactIdentity(report.plan, "report.plan", errors);
+  validateArtifactIdentity(report.state, "report.state", errors);
+  if (report.predecessor !== null) validateArtifactIdentity(report.predecessor, "report.predecessor", errors);
+  if (exactKeys(report.stateExpectation, ["expectedSha256", "expectedSequence", "matchedSuppliedSnapshot", "provesLatestState"], "report.stateExpectation", errors)) {
+    if (!SHA256_PATTERN.test(report.stateExpectation.expectedSha256 ?? "")) errors.push("report.stateExpectation.expectedSha256 must be a lowercase SHA-256 digest.");
+    if (!Number.isSafeInteger(report.stateExpectation.expectedSequence) || report.stateExpectation.expectedSequence < 0) errors.push("report.stateExpectation.expectedSequence must be a non-negative safe integer.");
+    if (report.stateExpectation.matchedSuppliedSnapshot !== true) errors.push("report.stateExpectation.matchedSuppliedSnapshot must equal true.");
+    if (report.stateExpectation.provesLatestState !== false) errors.push("report.stateExpectation.provesLatestState must equal false.");
+  }
+  if (!Array.isArray(report.missions)) errors.push("report.missions must be an array.");
+  else for (const [index, mission] of report.missions.entries()) {
+    const label = `report.missions[${index}]`;
+    if (!exactKeys(mission, ["id", "lane", "activationWave", "status", "revision", "unmetDependencies", "disposition", "advisoryCandidates"], label, errors)) continue;
+    if (!nonEmptyString(mission.id) || !nonEmptyString(mission.lane)) errors.push(`${label} identity fields must be non-empty strings.`);
+    if (!Number.isSafeInteger(mission.activationWave) || mission.activationWave < 1) errors.push(`${label}.activationWave must be a positive safe integer.`);
+    if (!MISSION_STATUSES.has(mission.status)) errors.push(`${label}.status is unsupported.`);
+    if (mission.revision !== null && !GIT_REVISION_PATTERN.test(mission.revision ?? "")) errors.push(`${label}.revision must be null or an exact revision.`);
+    if (!Array.isArray(mission.unmetDependencies) || mission.unmetDependencies.some((dependency) => !nonEmptyString(dependency))) errors.push(`${label}.unmetDependencies must be an array of non-empty strings.`);
+    if (!nonEmptyString(mission.disposition)) errors.push(`${label}.disposition must be a non-empty string.`);
+    if (!Array.isArray(mission.advisoryCandidates) || mission.advisoryCandidates.some((candidate) => !ADVISORY_CANDIDATES.has(candidate))) errors.push(`${label}.advisoryCandidates contains an unsupported candidate.`);
+  }
+  if (!Array.isArray(report.advisories)) errors.push("report.advisories must be an array.");
+  else for (const [index, advisory] of report.advisories.entries()) {
+    const label = `report.advisories[${index}]`;
+    if (!exactKeys(advisory, ["missionId", "candidate"], label, errors)) continue;
+    if (!nonEmptyString(advisory.missionId) || !ADVISORY_CANDIDATES.has(advisory.candidate)) errors.push(`${label} is unsupported.`);
   }
   return errors;
 };
@@ -203,11 +320,13 @@ export const computeFlightStatus = async ({
     if (!sameArtifactIdentity(predecessorSnapshot.value.plan, state.plan)) predecessorErrors.push("Predecessor plan identity does not match the current state.");
     if (predecessorSnapshot.value.sequence !== state.sequence - 1) predecessorErrors.push("Predecessor sequence must equal current sequence minus one.");
     if (predecessorErrors.length > 0) throw new Error(`Invalid predecessor flight state:\n- ${predecessorErrors.join("\n- ")}`);
+    const transitionErrors = validateLifecycleTransition(plan, predecessorSnapshot.value, state);
+    if (transitionErrors.length > 0) throw new Error(`Invalid flight state transition:\n- ${transitionErrors.join("\n- ")}`);
   }
 
   const activeByLane = new Map(plan.lanes.map((lane) => [lane.id, state.lanes[lane.id].activeMissionId]));
-  const hasAuthorityDerivedState = plan.missions.some((mission) =>
-    AUTHORITY_DERIVED_STATUSES.has(state.missions[mission.id].status),
+  const hasAuthorityDerivedState = [state, predecessorSnapshot?.value].filter(Boolean).some((snapshot) =>
+    plan.missions.some((mission) => AUTHORITY_DERIVED_STATUSES.has(snapshot.missions[mission.id].status)),
   );
   const missions = plan.missions.map((mission) => {
     const record = state.missions[mission.id];
@@ -229,7 +348,7 @@ export const computeFlightStatus = async ({
     } else if (record.status === "blocked") {
       disposition = "blocked";
       advisoryCandidates = ["request-blocker-review"];
-    } else if (TERMINAL_STATUSES.has(record.status)) {
+    } else if (ROUTING_TERMINAL_STATUSES.has(record.status)) {
       disposition = record.status;
     } else if (unmetDependencies.length > 0) {
       disposition = "waiting-for-integrated-dependencies";
@@ -260,11 +379,11 @@ export const computeFlightStatus = async ({
     };
   });
 
-  return {
+  const report = {
     schemaVersion: 1,
     reportType: "hill-flight-routing-advice",
     authority: "none",
-    notice: "Routing advice only. This report grants no mission or human authority and performs no dispatch, journal mutation, or external effect.",
+    notice: REPORT_NOTICE,
     freshnessNotice: FRESHNESS_NOTICE,
     tool: { name: "hill-kernel", version: TOOL_VERSION },
     flightId: plan.flightId,
@@ -283,6 +402,9 @@ export const computeFlightStatus = async ({
     advisories: missions.flatMap((mission) =>
       mission.advisoryCandidates.map((candidate) => ({ missionId: mission.id, candidate }))),
   };
+  const reportErrors = validateRoutingAdviceReport(report);
+  if (reportErrors.length > 0) throw new Error(`Invalid routing advice report:\n- ${reportErrors.join("\n- ")}`);
+  return report;
 };
 
 const parse = (argv) => {
