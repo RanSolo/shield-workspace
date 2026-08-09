@@ -173,8 +173,9 @@ export const validateFeatureFlightStepClaim = (value) => {
     validateAdapter(value.adapter, "claim.adapter");
     const descriptor = Object.freeze(deepCopy(value.remoteObserver));
     validateFeatureFlightRemoteObserverDescriptor(descriptor);
+    const challenge = featureFlightRemoteChallenge(value.effectClaimId, descriptor, value.baselineRemoteObservation.fullRef, "pre_claim");
     validateFeatureFlightRemoteObservation(value.baselineRemoteObservation, {
-      descriptor, fullRef: value.baselineRemoteObservation.fullRef, phase: "pre_claim", challenge: value.baselineRemoteObservation.challenge,
+      descriptor, fullRef: value.baselineRemoteObservation.fullRef, phase: "pre_claim", challenge,
     });
   } catch (error) { errors.push(error.message); }
   return errors;
@@ -198,11 +199,13 @@ export const validateFeatureFlightStepResult = (value) => {
     validateAdapter(value.adapter, "result.adapter");
     const descriptor = Object.freeze(deepCopy(value.remoteObserver));
     validateFeatureFlightRemoteObserverDescriptor(descriptor);
+    const baselineChallenge = featureFlightRemoteChallenge(value.effectClaimId, descriptor, value.baselineRemoteObservation.fullRef, "pre_claim");
     validateFeatureFlightRemoteObservation(value.baselineRemoteObservation, {
-      descriptor, fullRef: value.baselineRemoteObservation.fullRef, phase: "pre_claim", challenge: value.baselineRemoteObservation.challenge,
+      descriptor, fullRef: value.baselineRemoteObservation.fullRef, phase: "pre_claim", challenge: baselineChallenge,
     });
+    const latestChallenge = featureFlightRemoteChallenge(value.effectClaimId, descriptor, value.baselineRemoteObservation.fullRef, "post_adapter");
     validateFeatureFlightRemoteObservation(value.latestRemoteObservation, {
-      descriptor, fullRef: value.baselineRemoteObservation.fullRef, phase: "post_adapter", challenge: value.latestRemoteObservation.challenge,
+      descriptor, fullRef: value.baselineRemoteObservation.fullRef, phase: "post_adapter", challenge: latestChallenge,
     });
     timestamp(value.claimedAt, "result.claimedAt"); timestamp(value.completedAt, "result.completedAt");
     if (Date.parse(value.completedAt) < Date.parse(value.claimedAt)) throw new Error("Result completion timestamp precedes claim timestamp.");
@@ -389,26 +392,43 @@ const validateRunnerResultIdentity = (prepared, claim, runnerResult) => {
   }
 };
 
-const validateV2Terminal = (prepared, step) => {
-  if (!["success_terminal", "recovery_terminal"].includes(step?.status)) throw new Error("Feature Flight terminal winner is not fully materialized.");
+const payloadIdentityAt = (path, payload) => ({ path, bytes: payload.bytes, sha256: payload.sha256 });
+
+const validateV2Intent = (prepared, step) => {
+  if (!["success_materializable", "success_terminal", "recovery_materializable", "recovery_terminal"].includes(step?.status)) {
+    throw new Error("Feature Flight terminal winner is not classifiable.");
+  }
   const claim = validatePreparedClaim(prepared, step.claim); const claimIdentity = identity(step.claim); const arbiter = step.terminal.value;
   const errors = validateFeatureFlightTerminal(arbiter);
   if (arbiter.effectClaimId !== claim.effectClaimId || arbiter.attemptDigest !== claim.attemptDigest || !sameJson(arbiter.claim, claimIdentity) ||
       !sameJson(arbiter.hierarchyIdentity, step.hierarchyIdentity)) errors.push("Terminal arbiter does not bind the exact claim hierarchy.");
   if (Date.parse(arbiter.recordedAt) < Date.parse(claim.claimedAt)) errors.push("Terminal arbiter timestamp precedes claim.");
   if (arbiter.terminalKind === "recovery") {
-    const recovery = step.recovery.value;
+    const recovery = arbiter.recovery?.value;
     errors.push(...validateFeatureFlightRecovery(recovery));
-    if (!sameJson(arbiter.recovery.value, recovery) || recovery.effectClaimId !== claim.effectClaimId || recovery.attemptDigest !== claim.attemptDigest ||
+    if (recovery?.effectClaimId !== claim.effectClaimId || recovery?.attemptDigest !== claim.attemptDigest ||
         !sameJson(recovery.claim, claimIdentity) || !sameJson(recovery.baselineRemoteObservation, claim.baselineRemoteObservation) ||
         recovery.recordedAt !== arbiter.recordedAt || recovery.successor !== null) errors.push("Recovery receipt does not bind the exact claim and arbiter.");
-    if (recovery.latestRemoteObservation !== null && Date.parse(recovery.latestRemoteObservation.observedAt) > Date.parse(recovery.recordedAt)) errors.push("Recovery observation exceeds receipt timestamp.");
+    try {
+      const descriptor = prepared.remoteObserverDescriptor; const fullRef = fullRefFor(prepared);
+      const baselineChallenge = featureFlightRemoteChallenge(claim.effectClaimId, descriptor, fullRef, "pre_claim");
+      validateFeatureFlightRemoteObservation(recovery.baselineRemoteObservation, { descriptor, fullRef, phase: "pre_claim", challenge: baselineChallenge });
+      if (recovery.latestRemoteObservation !== null) {
+        const latestChallenge = featureFlightRemoteChallenge(claim.effectClaimId, descriptor, fullRef, "post_adapter");
+        validateFeatureFlightRemoteObservation(recovery.latestRemoteObservation, { descriptor, fullRef, phase: "post_adapter", challenge: latestChallenge });
+        if (Date.parse(recovery.latestRemoteObservation.observedAt) > Date.parse(recovery.recordedAt)) throw new Error("Recovery observation exceeds receipt timestamp.");
+      }
+      if (recovery.reason === "remote_drift" && recovery.latestRemoteObservation.remoteHead === recovery.baselineRemoteObservation.remoteHead) {
+        throw new Error("Remote drift recovery does not contain a changed remote head.");
+      }
+    } catch (error) { errors.push(error.message); }
     if (errors.length !== 0) throw new Error(errors.join(" "));
-    return { kind: "recovery", claimIdentity, terminalIdentity: identity(step.terminal), recoveryIdentity: identity(step.recovery), recovery };
+    return { kind: "recovery", claimIdentity, recoveryIdentity: payloadIdentityAt(step.paths.recovery, arbiter.recovery), recovery };
   }
-  const successor = step.successor.value; const result = step.result.value; const successorIdentity = identity(step.successor);
+  const successor = arbiter.successor?.value; const result = arbiter.result?.value;
+  const successorIdentity = payloadIdentityAt(step.paths.successor, arbiter.successor);
   errors.push(...validateFeatureFlightStepSuccessor(prepared.plan, prepared.planArtifact, prepared.state, successor), ...validateFeatureFlightStepResult(result));
-  if (!sameJson(arbiter.successor.value, successor) || !sameJson(arbiter.result.value, result) || result.effectClaimId !== claim.effectClaimId ||
+  if (result?.effectClaimId !== claim.effectClaimId || result.flightId !== claim.flightId ||
       result.attemptDigest !== claim.attemptDigest || !sameJson(result.claim, claimIdentity) || !sameJson(result.successor, successorIdentity) ||
       result.runnerResultSha256 !== featureFlightDigest(result.runnerResult) || !sameJson(result.adapter, claim.adapter) ||
       !sameJson(result.remoteObserver, claim.remoteObserver) || !sameJson(result.repositoryBefore, claim.repository) ||
@@ -423,7 +443,20 @@ const validateV2Terminal = (prepared, step) => {
         Date.parse(latest.observedAt) < Date.parse(claim.claimedAt) || Date.parse(latest.observedAt) > Date.parse(result.completedAt)) throw new Error("Terminal remote observation freshness or head is invalid.");
   } catch (error) { errors.push(error.message); }
   if (errors.length !== 0) throw new Error(errors.join(" "));
-  return { kind: "success", claimIdentity, terminalIdentity: identity(step.terminal), successorIdentity, resultIdentity: identity(step.result), result };
+  return { kind: "success", claimIdentity, successorIdentity, resultIdentity: payloadIdentityAt(step.paths.result, arbiter.result), result };
+};
+
+const validateV2Terminal = (prepared, step) => {
+  if (!["success_terminal", "recovery_terminal"].includes(step?.status)) throw new Error("Feature Flight terminal winner is not fully materialized.");
+  const intent = validateV2Intent(prepared, step);
+  if (intent.kind === "recovery") {
+    if (!sameJson(identity(step.recovery), intent.recoveryIdentity)) throw new Error("Materialized recovery does not match terminal intent.");
+    return { ...intent, terminalIdentity: identity(step.terminal), recoveryIdentity: identity(step.recovery) };
+  }
+  if (!sameJson(identity(step.successor), intent.successorIdentity) || !sameJson(identity(step.result), intent.resultIdentity)) {
+    throw new Error("Materialized success receipts do not match terminal intent.");
+  }
+  return { ...intent, terminalIdentity: identity(step.terminal), successorIdentity: identity(step.successor), resultIdentity: identity(step.result) };
 };
 
 const validateLegacyClaim = (prepared, snapshot) => {
@@ -448,7 +481,8 @@ const validateLegacyClaim = (prepared, snapshot) => {
       !sameJson(claim.plan, prepared.planArtifact) || !sameJson(claim.currentState, prepared.stateArtifact) || !sameJson(claim.predecessor, prepared.predecessorArtifact) ||
       claim.repository?.root !== prepared.mission.worktree || claim.repository?.branch !== prepared.mission.branch ||
       claim.repository?.head !== prepared.state.missions[prepared.mission.id].revision || claim.repository?.clean !== true ||
-      claim.flight?.sequence !== prepared.state.sequence || claim.flight?.missionId !== prepared.mission.id || claim.flight?.lane !== prepared.mission.lane ||
+      claim.flightId !== prepared.plan.flightId || claim.flight?.sequence !== prepared.state.sequence || claim.flight?.wave !== prepared.state.wave.current ||
+      claim.flight?.missionId !== prepared.mission.id || claim.flight?.lane !== prepared.mission.lane ||
       !sameJson(claim.runner, resultBase(prepared).runner) || !sameJson(claim.adapter, prepared.adapterDescriptor)) errors.push("Legacy claim exact binding is invalid.");
   if (errors.length !== 0) throw new Error(errors.join(" "));
   return claim;
@@ -459,10 +493,25 @@ const validateLegacyTriad = (prepared, step) => {
   const claim = validateLegacyClaim(prepared, step.claim); const successor = step.successor.value; const result = step.result.value;
   const errors = [...artifactErrors(result, LEGACY_RESULT_FIELDS, "feature-flight-step-result", LEGACY_VERSION),
     ...validateFeatureFlightStepSuccessor(prepared.plan, prepared.planArtifact, prepared.state, successor)];
-  if (result.notice !== RESULT_NOTICE || !sameJson(result.claim, identity(step.claim)) || !sameJson(result.successor, identity(step.successor)) || result.effectClaimId !== claim.effectClaimId ||
-      result.attemptDigest !== claim.attemptDigest || !sameJson(result.repositoryBefore, claim.repository) || !sameJson(result.repositoryAfter, claim.repository) ||
-      result.outcome !== "completed" || result.invocationCount !== 1 || result.gateEligible !== false) errors.push("Legacy terminal triad exact binding is invalid.");
-  try { validateRunnerResultIdentity(prepared, claim, result.runnerResult); } catch (error) { errors.push(error.message); }
+  try {
+    exactDataObject(result.claim, ["path", "bytes", "sha256"], [], "legacy result.claim");
+    exactDataObject(result.successor, ["path", "bytes", "sha256"], [], "legacy result.successor");
+    exactDataObject(result.repositoryBefore, ["root", "branch", "head", "clean"], [], "legacy result.repositoryBefore");
+    exactDataObject(result.repositoryAfter, ["root", "branch", "head", "clean"], [], "legacy result.repositoryAfter");
+    validateAdapter(result.adapter, "legacy result.adapter");
+    timestamp(result.claimedAt, "legacy result.claimedAt"); timestamp(result.completedAt, "legacy result.completedAt");
+    validateRunnerResultIdentity(prepared, claim, result.runnerResult);
+    const expectedSuccessor = buildActiveToCompleteSuccessor(prepared.plan, prepared.planArtifact, prepared.state, prepared.stateArtifact, prepared.mission.id, result.completedAt);
+    if (!sameJson(successor, expectedSuccessor)) throw new Error("Legacy successor is not bound to the completion timestamp.");
+  } catch (error) { errors.push(error.message); }
+  if (result.notice !== RESULT_NOTICE || result.flightId !== claim.flightId || !sameJson(result.claim, identity(step.claim)) ||
+      !sameJson(result.successor, identity(step.successor)) || result.effectClaimId !== claim.effectClaimId || result.attemptDigest !== claim.attemptDigest ||
+      result.runnerResultSha256 !== featureFlightDigest(result.runnerResult) || !sameJson(result.repositoryBefore, claim.repository) ||
+      !sameJson(result.repositoryAfter, claim.repository) || !sameJson(result.adapter, claim.adapter) || result.claimedAt !== claim.claimedAt ||
+      result.completedAt !== successor.observedAt || result.outcome !== "completed" || result.invocationCount !== 1 ||
+      result.effectContainment !== "external_uncertain_repository_unchanged" || result.gateEligible !== false) {
+    errors.push("Legacy terminal triad exact binding is invalid.");
+  }
   if (errors.length !== 0) throw new Error(errors.join(" "));
   return { claimIdentity: identity(step.claim), successorIdentity: identity(step.successor), resultIdentity: identity(step.result), result };
 };
@@ -484,6 +533,8 @@ const followWinner = async (prepared, step) => {
   let current = step;
   try { validatePreparedClaim(prepared, current.claim); }
   catch { return ephemeralRecovery(prepared, "unsupported_or_malformed_store", current); }
+  try { validateV2Intent(prepared, current); }
+  catch { return ephemeralRecovery(prepared, "terminal_conflict", current); }
   if (["success_materializable", "recovery_materializable"].includes(current.status)) {
     try { current = await prepared.dependencies.stepStore.materializeTerminal(storeInput(prepared, { expectedHierarchyIdentity: current.hierarchyIdentity })); }
     catch { return ephemeralRecovery(prepared, current.terminal?.value?.terminalKind === "success" ? "successor_materialization_uncertain" : "recovery_materialization_uncertain", current); }
@@ -568,8 +619,8 @@ const existingDisposition = async (prepared) => {
 
 const precheckReason = (error) => {
   if (/phase or challenge/u.test(error?.message ?? "")) return "remote_phase_or_challenge_stale";
-  if (/observer descriptor/u.test(error?.message ?? "")) return "remote_descriptor_mismatch";
-  if (/identity does not match/u.test(error?.message ?? "")) return "remote_repository_identity_mismatch";
+  if (/repository\/common-Git identity/u.test(error?.message ?? "")) return "remote_repository_identity_mismatch";
+  if (/descriptor fields|observer descriptor/u.test(error?.message ?? "")) return "remote_descriptor_mismatch";
   return "remote_observation_malformed";
 };
 
@@ -639,7 +690,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
   let latestRemoteObservation;
   try { latestRemoteObservation = await observeRemote(prepared, "post_adapter"); }
   catch (error) {
-    const reason = /identity does not match|phase or challenge/u.test(error?.message ?? "") ? "remote_identity_changed" : "postcheck_remote_observation_unavailable";
+    const reason = /repository\/common-Git identity|descriptor fields|phase or challenge/u.test(error?.message ?? "") ? "remote_identity_changed" : "postcheck_remote_observation_unavailable";
     return terminalizeRecovery(prepared, claimArtifact, claimHierarchyIdentity, reason);
   }
   const claim = claimArtifact.value;
@@ -653,7 +704,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
 
   let completedAt;
   try { completedAt = timestamp(await dependencies.clock.now(), "completion timestamp"); }
-  catch { return terminalizeRecovery(prepared, claimArtifact, claimHierarchyIdentity, "adapter_uncertain", latestRemoteObservation); }
+  catch { return terminalizeRecovery(prepared, claimArtifact, claimHierarchyIdentity, "adapter_uncertain"); }
   if (Date.parse(completedAt) < Date.parse(latestRemoteObservation.observedAt)) return terminalizeRecovery(prepared, claimArtifact, claimHierarchyIdentity, "remote_identity_changed", latestRemoteObservation);
   const successor = buildActiveToCompleteSuccessor(prepared.plan, prepared.planArtifact, prepared.state, prepared.stateArtifact, prepared.mission.id, completedAt);
   const successorBytes = canonicalFeatureFlightBytes(successor);

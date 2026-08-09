@@ -122,7 +122,7 @@ const OBSERVATION_FIELDS = [
   "observedAt", "phase", "challenge",
 ];
 
-export const validateFeatureFlightRemoteObservation = (value, expected) => {
+const validateRemoteObservationShape = (value) => {
   exactFeatureFlightObject(value, OBSERVATION_FIELDS, [], "remote observation");
   exactFeatureFlightObject(value.observer, ["observerId", "observerVersion", "runtimeId", "executorId"], [], "remote observation observer");
   if (value.schemaVersion !== 1 || value.artifactType !== "feature-flight-remote-observation" ||
@@ -139,16 +139,22 @@ export const validateFeatureFlightRemoteObservation = (value, expected) => {
   if (value.remoteHead !== null && (typeof value.remoteHead !== "string" || !REVISION.test(value.remoteHead))) throw new Error("Remote observation remoteHead is malformed.");
   validateFeatureFlightTimestamp(value.observedAt, "remote observation observedAt");
   if (!["pre_claim", "post_adapter"].includes(value.phase) || !SHA256.test(value.challenge ?? "")) throw new Error("Remote observation phase or challenge is malformed.");
+  return value;
+};
+
+export const validateFeatureFlightRemoteObservation = (value, expected) => {
+  validateRemoteObservationShape(value);
   const descriptor = expected.descriptor;
   const expectedObserver = {
     observerId: descriptor.observerId, observerVersion: descriptor.observerVersion,
     runtimeId: descriptor.runtimeId, executorId: descriptor.executorId,
   };
-  const matches = value.repositoryRoot === descriptor.repositoryRoot && value.commonGitDirectory === descriptor.commonGitDirectory &&
-    value.commonGitDevice === descriptor.commonGitDevice && value.commonGitInode === descriptor.commonGitInode &&
-    Object.keys(expectedObserver).every((field) => value.observer[field] === expectedObserver[field]) && value.remoteName === descriptor.remoteName &&
-    value.remoteUrlIdentity === descriptor.remoteUrlIdentity && value.fullRef === expected.fullRef;
-  if (!matches) throw new Error("Remote observation identity does not match the trusted observer descriptor.");
+  const repositoryMatches = value.repositoryRoot === descriptor.repositoryRoot && value.commonGitDirectory === descriptor.commonGitDirectory &&
+    value.commonGitDevice === descriptor.commonGitDevice && value.commonGitInode === descriptor.commonGitInode;
+  if (!repositoryMatches) throw new Error("Remote observation repository/common-Git identity does not match the trusted observer descriptor.");
+  const descriptorMatches = Object.keys(expectedObserver).every((field) => value.observer[field] === expectedObserver[field]) &&
+    value.remoteName === descriptor.remoteName && value.remoteUrlIdentity === descriptor.remoteUrlIdentity && value.fullRef === expected.fullRef;
+  if (!descriptorMatches) throw new Error("Remote observation descriptor fields do not match the trusted observer descriptor.");
   if (value.phase !== expected.phase || value.challenge !== expected.challenge) throw new Error("Remote observation phase or challenge is stale.");
   return Object.freeze(structuredClone(value));
 };
@@ -215,8 +221,20 @@ export const validateFeatureFlightRecovery = (value) => {
     if (value.successor !== null) throw new Error("Recovery successor identity must be null.");
     const rule = FEATURE_FLIGHT_RECOVERY_REASONS[value.reason];
     if (rule === undefined || value.phase !== rule[0] || value.invocationClassification !== rule[1]) throw new Error("Recovery reason mapping is invalid.");
-    if (value.baselineRemoteObservation !== null) exactFeatureFlightObject(value.baselineRemoteObservation, OBSERVATION_FIELDS, [], "recovery.baselineRemoteObservation");
-    if (value.latestRemoteObservation !== null) exactFeatureFlightObject(value.latestRemoteObservation, OBSERVATION_FIELDS, [], "recovery.latestRemoteObservation");
+    if (value.baselineRemoteObservation === null) throw new Error("Recovery baseline remote observation is required.");
+    validateRemoteObservationShape(value.baselineRemoteObservation);
+    if (value.baselineRemoteObservation.phase !== "pre_claim") throw new Error("Recovery baseline remote observation phase is invalid.");
+    const latestMustBeNull = ["interrupted_after_claim", "adapter_uncertain", "validation_failed", "local_readback_unavailable",
+      "local_repository_changed", "postcheck_remote_observation_unavailable"].includes(value.reason);
+    if (latestMustBeNull && value.latestRemoteObservation !== null) throw new Error("Recovery reason requires a null latest remote observation.");
+    if (value.reason === "remote_drift" && value.latestRemoteObservation === null) throw new Error("Remote drift recovery requires a latest remote observation.");
+    if (value.latestRemoteObservation !== null) {
+      validateRemoteObservationShape(value.latestRemoteObservation);
+      if (value.latestRemoteObservation.phase !== "post_adapter") throw new Error("Recovery latest remote observation phase is invalid.");
+    }
+    if (value.reason === "remote_drift" && value.latestRemoteObservation.remoteHead === value.baselineRemoteObservation.remoteHead) {
+      throw new Error("Remote drift recovery requires a changed remote head.");
+    }
     if (value.effectState !== "uncertain_do_not_reinvoke" || value.gateEligible !== false || value.nextAction !== FEATURE_FLIGHT_NEXT_ACTION) throw new Error("Recovery disposition is invalid.");
     validateFeatureFlightTimestamp(value.recordedAt, "recovery.recordedAt");
   } catch (error) { errors.push(error.message); }
