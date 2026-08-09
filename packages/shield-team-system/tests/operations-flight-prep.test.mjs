@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, open, readdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import { prepareFlight } from '../scripts/operations/flight-prep.mjs';
 import { writeNewFile } from '../scripts/operations/common.mjs';
 
 const git = (path, args) => execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
+const nativePublicationTest = { skip: process.platform !== 'linux' };
 
 const makeRepository = async () => {
   const path = await mkdtemp(join(tmpdir(), 'flight-prep-repo-'));
@@ -52,7 +53,7 @@ const writeManifest = async (directory, manifest) => {
   return path;
 };
 
-test('validates and writes a confined non-authoritative package', async () => {
+test('validates and writes a confined non-authoritative package', nativePublicationTest, async () => {
   const repositoryPath = await makeRepository();
   const directory = await mkdtemp(join(tmpdir(), 'flight-prep-output-'));
   const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
@@ -67,7 +68,7 @@ test('validates and writes a confined non-authoritative package', async () => {
   assert.deepEqual(receipt.observations.initiallyBlockedMissions, ['mission:test:b']);
 });
 
-test('persists only a credential-free remote identity', async () => {
+test('persists only a credential-free remote identity', nativePublicationTest, async () => {
   const repositoryPath = await makeRepository();
   const canarySecret = 'FLIGHT_REMOTE_CANARY_7ad182';
   git(repositoryPath, ['remote', 'add', 'origin', `https://flight-user:${canarySecret}@example.invalid/org/repo.git?access_token=${canarySecret}#${canarySecret}`]);
@@ -136,7 +137,7 @@ test('removes staging and publishes no final package when an artifact write fail
   assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
 });
 
-test('serializes cooperating concurrent publishers with an atomic sibling reservation', async () => {
+test('serializes cooperating concurrent publishers with an atomic sibling reservation', nativePublicationTest, async () => {
   const repositoryPath = await makeRepository();
   const directory = await mkdtemp(join(tmpdir(), 'flight-prep-concurrent-'));
   const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
@@ -175,7 +176,7 @@ test('acquisition failure does not delete a lock replacement raced after identit
   const directory = await mkdtemp(join(tmpdir(), 'flight-prep-lock-acquire-race-'));
   const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
   const outputPath = join(directory, 'generated');
-  const lockPath = join(directory, '.generated.publish.lock');
+  const lockPath = join(await realpath(directory), '.generated.publish.lock');
   const displacedOwnedLock = `${lockPath}.owned-displaced`;
   let replaced = false;
 
@@ -212,7 +213,7 @@ test('acquisition failure does not delete a lock replacement raced after identit
   assert.equal(await lstat(outputPath).catch(() => undefined), undefined);
 });
 
-test('retains a raced destination and removes only its owned reservation and staging', async () => {
+test('retains a raced destination and removes only its owned reservation and staging', nativePublicationTest, async () => {
   const repositoryPath = await makeRepository();
   const directory = await mkdtemp(join(tmpdir(), 'flight-prep-raced-output-'));
   const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
@@ -235,7 +236,7 @@ test('retains a raced destination and removes only its owned reservation and sta
   assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
 });
 
-test('rejects a successful no-clobber no-op when staging did not move', async () => {
+test('rejects a successful no-clobber no-op when staging did not move', nativePublicationTest, async () => {
   const repositoryPath = await makeRepository();
   const directory = await mkdtemp(join(tmpdir(), 'flight-prep-no-clobber-no-op-'));
   const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
@@ -257,7 +258,7 @@ test('rejects a successful no-clobber no-op when staging did not move', async ()
   assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.')), []);
 });
 
-test('reports a published complete package when post-rename parent sync fails', async () => {
+test('reports a published complete package when post-rename parent sync fails', nativePublicationTest, async () => {
   const repositoryPath = await makeRepository();
   const directory = await mkdtemp(join(tmpdir(), 'flight-prep-post-rename-sync-'));
   const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));

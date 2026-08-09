@@ -295,7 +295,7 @@ export const validateAcceptanceSpec = (spec) => {
     if (!nonEmptyString(spec.repository.branch)) errors.push('spec.repository.branch must be a non-empty string.');
   }
 
-  if (!Array.isArray(spec.commands) || spec.commands.length === 0) errors.push('spec.commands must be a non-empty array.');
+  if (!Array.isArray(spec.commands)) errors.push('spec.commands must be an array.');
   const commandIds = new Set();
   for (const [index, command] of (Array.isArray(spec.commands) ? spec.commands : []).entries()) {
     const label = `spec.commands[${index}]`;

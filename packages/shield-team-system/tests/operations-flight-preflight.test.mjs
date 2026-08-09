@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { copyFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -51,7 +51,13 @@ const setupPackage = async ({ createWorktree = false } = {}) => {
   };
   const manifestPath = join(root, 'manifest.json');
   await writeFile(manifestPath, stableJson(manifest));
-  await prepareFlight({ manifestPath, outputPath: packageRoot });
+  await prepareFlight({
+    manifestPath,
+    outputPath: packageRoot,
+    packageDependencies: process.platform === 'linux'
+      ? undefined
+      : { nativeNoReplaceSupported: true, runNativeNoReplaceMove: rename },
+  });
   const planPath = join(packageRoot, 'flight-plan.resolved.json');
   const fixture = await buildFixture({ outputDirectory: fixtureRoot, runGhostscript: fakeGhostscript });
   const binding = {

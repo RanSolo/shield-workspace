@@ -1,18 +1,19 @@
 {
   "schemaVersion": 1,
+  "artifactRoot": "../../../..",
   "tools": [
     {
-      "name": "example-helper",
-      "path": "./example-helper.mjs",
-      "trigger": "A repeated bounded operation was slower or less reliable by hand.",
-      "purpose": "Make the operation deterministic and inspectable.",
-      "inputs": ["declared input"],
-      "outputs": ["create-only report"],
+      "name": "tool-harvest",
+      "path": "packages/shield-team-system/scripts/operations/tool-harvest.mjs",
+      "trigger": "A bounded experimental helper needs a portable promotion record.",
+      "purpose": "Snapshot the declared tool and preserve observed value without granting authority.",
+      "inputs": ["closed tool registry"],
+      "outputs": ["non-authoritative harvest report"],
       "minutesInvested": null,
       "minutesAvoidedPerUse": null,
       "reuseCount": 0,
-      "errorsPrevented": ["known failure mode"],
-      "evidenceImproved": ["exact artifact identity"],
+      "errorsPrevented": ["unreviewed helper promotion"],
+      "evidenceImproved": ["exact registry and artifact identity"],
       "recommendation": "retain-local"
     }
   ]
