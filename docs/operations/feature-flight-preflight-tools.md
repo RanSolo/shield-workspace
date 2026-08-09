@@ -29,8 +29,16 @@ spellings as one filesystem identity.
 
 Preparation requires the base ref to resolve to the supplied revision, that
 revision to exist and be an ancestor of HEAD, and preparation-phase HEAD to
-equal it exactly. Package writes are create-only and confined beneath the
-canonical new output root. The package contains a closed resolved plan,
+equal it exactly. When `origin` is a network remote, the plan's closed
+`repository.remoteUrl` field records only its credential-free host/repository
+identity; URL usernames, passwords, queries, fragments, and raw remote URLs are
+never persisted. Local-path remotes are recorded as `null`.
+
+Package writes are create-only and confined beneath a private mode `0700`
+sibling staging directory. Complete artifacts and directories are synced,
+staging is atomically renamed to the final root, and the parent directory is
+synced. A pre-publication failure removes only owned staging state and leaves no
+published partial package. The package contains a closed resolved plan,
 evaluation contract, mission packets/templates, and a bootstrap receipt with a
 nonempty exact generated-file inventory.
 

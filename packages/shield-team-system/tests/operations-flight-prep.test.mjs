@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { prepareFlight } from '../scripts/operations/flight-prep.mjs';
+import { writeNewFile } from '../scripts/operations/common.mjs';
 
 const git = (path, args) => execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
 
@@ -64,6 +65,49 @@ test('validates and writes a confined non-authoritative package', async () => {
   assert.equal(receipt.authority, 'none');
   assert.equal(receipt.generatedFiles.length, 7);
   assert.deepEqual(receipt.observations.initiallyBlockedMissions, ['mission:test:b']);
+});
+
+test('persists only a credential-free remote identity', async () => {
+  const repositoryPath = await makeRepository();
+  const canarySecret = 'FLIGHT_REMOTE_CANARY_7ad182';
+  git(repositoryPath, ['remote', 'add', 'origin', `https://flight-user:${canarySecret}@example.invalid/org/repo.git?access_token=${canarySecret}#${canarySecret}`]);
+  const directory = await mkdtemp(join(tmpdir(), 'flight-prep-remote-'));
+  const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
+  const outputPath = join(directory, 'generated');
+
+  const result = await prepareFlight({ manifestPath, outputPath });
+
+  assert.equal(result.repository.remoteUrl, 'example.invalid/org/repo.git');
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(`${canarySecret}|flight-user`, 'u'));
+  for (const relativePath of await readdir(outputPath, { recursive: true })) {
+    const path = join(outputPath, relativePath);
+    if ((await lstat(path)).isFile()) {
+      assert.doesNotMatch(await readFile(path, 'utf8'), new RegExp(`${canarySecret}|flight-user`, 'u'), relativePath);
+    }
+  }
+});
+
+test('removes staging and publishes no final package when an artifact write fails', async () => {
+  const repositoryPath = await makeRepository();
+  const directory = await mkdtemp(join(tmpdir(), 'flight-prep-atomic-failure-'));
+  const manifestPath = await writeManifest(directory, makeManifest(repositoryPath));
+  const outputPath = join(directory, 'generated');
+  let writes = 0;
+
+  await assert.rejects(prepareFlight({
+    manifestPath,
+    outputPath,
+    packageDependencies: {
+      writeNewFile: async (path, bytes) => {
+        writes += 1;
+        if (writes === 3) throw new Error('injected artifact write failure');
+        return writeNewFile(path, bytes);
+      },
+    },
+  }), /injected artifact write failure/u);
+
+  assert.equal(await lstat(outputPath).catch(() => undefined), undefined);
+  assert.deepEqual((await readdir(directory)).filter((name) => name.startsWith('.generated.staging-')), []);
 });
 
 test('rejects dependency cycles and canonical ownership aliases', async () => {
