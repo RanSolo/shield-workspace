@@ -1618,6 +1618,13 @@ test("S3-R7 compatibility: every closed v1 terminal binding rejects canonical su
       const successor = await rewriteCanonical(join(directory, "successor.json"), (value) => { value.observedAt = "2026-08-09T13:00:02.000Z"; });
       await rewriteCanonical(join(directory, "result.json"), (result) => { result.successor = successor.identity; });
     }],
+    ["completion before claim", async (directory) => {
+      const successor = await rewriteCanonical(join(directory, "successor.json"), (value) => { value.observedAt = "2026-08-09T12:59:59.000Z"; });
+      await rewriteCanonical(join(directory, "result.json"), (result) => {
+        result.completedAt = successor.value.observedAt;
+        result.successor = successor.identity;
+      });
+    }],
   ];
   for (const [name, substitute] of cases) await t.test(name, async () => {
     const f = await fixture(); const { directory } = await seedLegacyTerminal(f); await substitute(directory);

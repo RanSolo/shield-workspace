@@ -500,6 +500,9 @@ const validateLegacyTriad = (prepared, step) => {
     exactDataObject(result.repositoryAfter, ["root", "branch", "head", "clean"], [], "legacy result.repositoryAfter");
     validateAdapter(result.adapter, "legacy result.adapter");
     timestamp(result.claimedAt, "legacy result.claimedAt"); timestamp(result.completedAt, "legacy result.completedAt");
+    if (Date.parse(result.completedAt) < Date.parse(result.claimedAt)) {
+      throw new Error("Result completion timestamp precedes claim timestamp.");
+    }
     validateRunnerResultIdentity(prepared, claim, result.runnerResult);
     const expectedSuccessor = buildActiveToCompleteSuccessor(prepared.plan, prepared.planArtifact, prepared.state, prepared.stateArtifact, prepared.mission.id, result.completedAt);
     if (!sameJson(successor, expectedSuccessor)) throw new Error("Legacy successor is not bound to the completion timestamp.");
