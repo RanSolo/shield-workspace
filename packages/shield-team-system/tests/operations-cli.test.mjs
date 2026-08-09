@@ -13,6 +13,10 @@ test("operations CLI describes the non-authoritative evidence surface", () => {
   assert.match(result.stdout, /shield-ops evidence run/u);
   assert.match(result.stdout, /--expected-spec-sha256/u);
   assert.match(result.stdout, /--manifest/u);
+  assert.match(result.stdout, /shield-ops flight prep MANIFEST\.json/u);
+  assert.match(result.stdout, /shield-ops fixture build --output NEW_DIRECTORY/u);
+  assert.match(result.stdout, /shield-ops construction check --plan FILE/u);
+  assert.match(result.stdout, /shield-ops flight doctor --plan FILE/u);
   assert.match(result.stdout, /non-authoritative operational evidence/u);
   assert.match(result.stdout, /provenance, execution attestation/u);
 });

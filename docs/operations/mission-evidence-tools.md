@@ -104,3 +104,6 @@ Neither command signs, authorizes, dispatches, advances a journal, publishes,
 merges, deploys, releases, or establishes provenance or execution attestation.
 Older hand-written prototype receipts are intentionally rejected by the closed
 version 1 contract.
+
+For the tools used before a multi-mission launch, see
+[Feature Flight preflight tools](./feature-flight-preflight-tools.md).

@@ -8,6 +8,10 @@ const operationsRoot = dirname(fileURLToPath(import.meta.url));
 const commands = new Map([
   ["evidence run", "evidence-run.mjs"],
   ["acceptance check", "acceptance-check.mjs"],
+  ["flight prep", "flight-prep.mjs"],
+  ["fixture build", "fixture-build.mjs"],
+  ["construction check", "construction-check.mjs"],
+  ["flight doctor", "flight-doctor.mjs"],
 ]);
 
 function usage() {
@@ -15,6 +19,10 @@ function usage() {
     "Usage:",
     "  shield-ops evidence run --spec FILE --expected-spec-sha256 SHA256 --command-id ID --output FILE",
     "  shield-ops acceptance check --spec FILE --manifest FILE --expected-spec-sha256 SHA256 [options]",
+    "  shield-ops flight prep MANIFEST.json [--output NEW_DIRECTORY]",
+    "  shield-ops fixture build --output NEW_DIRECTORY",
+    "  shield-ops construction check --plan FILE [--require-created] [--output NEW_FILE]",
+    "  shield-ops flight doctor --plan FILE [--output NEW_FILE]",
     "",
     "These commands create non-authoritative operational evidence. They do not grant",
     "mission authority, provenance, execution attestation, journal advancement,",

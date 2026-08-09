@@ -7,7 +7,8 @@ import {
   realpath,
   unlink,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
+import { platform } from 'node:os';
+import { basename, dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
 export const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
@@ -27,6 +28,52 @@ export const tryGit = (cwd, args) => {
   } catch {
     return undefined;
   }
+};
+
+export const normalizeSystemPathAlias = (value) => {
+  const absolutePath = resolve(value);
+  if (platform() === 'darwin' && (absolutePath === '/var' || absolutePath.startsWith('/var/'))) {
+    return `/private${absolutePath}`;
+  }
+  return absolutePath;
+};
+
+export const canonicalExistingPath = async (value) =>
+  realpath(normalizeSystemPathAlias(value));
+
+export const assertNoSymlinkComponents = async (value) => {
+  const absolutePath = normalizeSystemPathAlias(value);
+  const components = absolutePath.split(sep).filter(Boolean);
+  let current = sep;
+  for (const component of components) {
+    current = resolve(current, component);
+    const info = await lstat(current).catch((error) => {
+      if (error?.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (!info) break;
+    if (info.isSymbolicLink()) throw new Error(`Path contains a symlink component: ${current}`);
+  }
+  return absolutePath;
+};
+
+export const canonicalNewPath = async (value) => {
+  const absolutePath = normalizeSystemPathAlias(value);
+  await assertNoSymlinkComponents(absolutePath);
+  const canonicalParent = await canonicalExistingPath(dirname(absolutePath)).catch(() => undefined);
+  if (!canonicalParent) throw new Error(`Path parent must exist: ${dirname(absolutePath)}`);
+  return resolve(canonicalParent, basename(absolutePath));
+};
+
+export const isPathContained = (root, candidate) => {
+  const difference = relative(root, candidate);
+  return difference !== '' && !isAbsolute(difference) && difference !== '..' && !difference.startsWith(`..${sep}`);
+};
+
+export const resolveContainedPath = (root, relativePath) => {
+  const candidate = resolve(root, relativePath);
+  if (!isPathContained(root, candidate)) throw new Error(`Path escapes canonical output root: ${relativePath}`);
+  return candidate;
 };
 
 export const inspectGit = (cwd) => {
@@ -59,7 +106,7 @@ const defaultWriteDependencies = {
 const sameInode = (left, right) => left.dev === right.dev && left.ino === right.ino;
 
 const canonicalExistingDirectory = async (directory, dependencies = defaultWriteDependencies) => {
-  const absoluteDirectory = resolve(directory);
+  const absoluteDirectory = normalizeSystemPathAlias(directory);
   const canonicalDirectory = await dependencies.realpath(absoluteDirectory).catch(() => undefined);
   if (canonicalDirectory !== absoluteDirectory) {
     throw new Error(`Output parent must be an existing canonical non-symlink directory: ${absoluteDirectory}`);
@@ -73,7 +120,7 @@ const canonicalExistingDirectory = async (directory, dependencies = defaultWrite
 
 export const resolveNewFilePath = async (path, injectedDependencies) => {
   const dependencies = { ...defaultWriteDependencies, ...injectedDependencies };
-  const absolutePath = resolve(path);
+  const absolutePath = normalizeSystemPathAlias(path);
   await canonicalExistingDirectory(dirname(absolutePath), dependencies);
   const existing = await dependencies.lstat(absolutePath).catch((error) => {
     if (error?.code === 'ENOENT') return undefined;
@@ -127,7 +174,7 @@ export const writeNewFile = async (path, content, injectedDependencies) => {
 };
 
 export const snapshotFile = async (path, injected = {}) => {
-  const absolutePath = resolve(path);
+  const absolutePath = normalizeSystemPathAlias(path);
   await canonicalExistingDirectory(dirname(absolutePath));
   const pathInfo = await lstat(absolutePath).catch(() => undefined);
   if (!pathInfo?.isFile() || pathInfo.isSymbolicLink()) {

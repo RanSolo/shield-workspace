@@ -203,7 +203,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   await writeFile(join(fixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
   const packOutput = JSON.parse(execFileSync(
     "npm",
-    ["pack", packageRoot, "--json", "--pack-destination", fixture, "--cache", npmCache],
+    ["pack", packageRoot, "--json", "--ignore-scripts", "--pack-destination", fixture, "--cache", npmCache],
     { encoding: "utf8" },
   ));
   const packed = packOutput[0];
