@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { checkAcceptance } from '../scripts/operations/acceptance-check.mjs';
 import { sha256 } from '../scripts/operations/common.mjs';
 import { PLAN_NOTICE } from '../scripts/operations/flight-common.mjs';
 import { compileHandoff, validateHandoffPacket } from '../scripts/operations/handoff-compile.mjs';
@@ -117,6 +118,7 @@ export const createHandoffInputs = async (fixture, missionId, suffix = missionId
   const receiptPath = join(directory, 'receipt.json');
   const manifestPath = join(directory, 'manifest.json');
   const acceptancePath = join(directory, 'acceptance.json');
+  const specPath = join(directory, 'spec.json');
   await writeJson(statusPath, {
     currentGate: 'implementation-complete',
     decisions: [],
@@ -134,11 +136,31 @@ export const createHandoffInputs = async (fixture, missionId, suffix = missionId
     sequence: 0,
     output: statePath,
   });
-  const zero = '0'.repeat(64);
+  const sourceSha256 = '0'.repeat(64);
   const emptyHash = sha256('');
   const evidenceToolPath = fileURLToPath(new URL('../scripts/operations/evidence-run.mjs', import.meta.url));
   const artifactPath = `${missionId.at(-1)}/result.txt`;
   const artifactBytes = await readFile(join(mission.worktree, artifactPath));
+  await writeJson(specPath, {
+    schemaVersion: 1,
+    specType: 'mission-acceptance-spec',
+    missionId,
+    source: { key: 'source:test', sha256: sourceSha256, criteriaCount: 1 },
+    repository: { root: mission.worktree, branch: mission.branch },
+    commands: [{ id: 'test', executable: '/usr/bin/true', argv: [], timeoutMs: 1000, artifacts: [artifactPath] }],
+    criteria: [{
+      id: 'criterion:test',
+      sourceText: 'It works',
+      validation: {
+        mode: 'automated',
+        testPaths: ['test/convergence.test.mjs'],
+        commandIds: ['test'],
+        negativeCaseRequired: false,
+        negativeTestPaths: [],
+      },
+    }],
+  });
+  const specSha256 = await digest(specPath);
   await writeJson(receiptPath, {
     schemaVersion: 1,
     receiptType: 'mission-command-evidence',
@@ -149,7 +171,7 @@ export const createHandoffInputs = async (fixture, missionId, suffix = missionId
       provenance: false,
       executionAttestation: false,
     },
-    specSha256: zero,
+    specSha256,
     commandId: 'test',
     command: { executable: '/usr/bin/true', argv: [] },
     repository: {
@@ -188,45 +210,22 @@ export const createHandoffInputs = async (fixture, missionId, suffix = missionId
     schemaVersion: 1,
     manifestType: 'mission-evidence-manifest',
     missionId,
-    specSha256: zero,
+    specSha256,
     phase: 'green',
     expectedRevision: head,
     receipts: [mapping],
-    redNotApplicable: [],
+    redNotApplicable: [{ criterionId: 'criterion:test', rationale: 'Existing behavior is not meaningfully red-testable in this fixture.' }],
     manualEvidence: [],
   });
-  await writeJson(acceptancePath, {
-    schemaVersion: 1,
-    reportType: 'acceptance-traceability',
-    evidence: {
-      classification: 'contract-relative-structural-evidence',
-      authority: 'none',
-      provenance: false,
-      executionAttestation: false,
-    },
-    tool: { name: 'acceptance-check', version: '1.0.0' },
-    missionId,
-    source: { key: 'source:test', sha256: zero, criteriaCount: 1 },
-    specPath: join(directory, 'spec.json'),
-    specSha256: zero,
+  const acceptance = await checkAcceptance({
+    specPath,
     manifestPath,
-    manifestSha256: await digest(manifestPath),
+    expectedSpecSha256: specSha256,
     phase: 'green',
     expectedRevision: head,
-    ok: true,
-    errors: [],
-    receiptSummaries: [{
-      criterionId: mapping.criterionId,
-      phase: mapping.phase,
-      commandId: mapping.commandId,
-      receiptId: mapping.receiptId,
-      receiptSha256: mapping.receiptSha256,
-      path: mapping.path,
-    }],
-    criteria: [{
-      id: 'criterion:test', sourceText: 'It works', mode: 'automated', redEvidence: 0, greenEvidence: 1, manualEvidence: 0,
-    }],
   });
+  assert.equal(acceptance.ok, true, acceptance.errors.join('\n'));
+  await writeJson(acceptancePath, acceptance);
   const options = {
     flightPlan: fixture.planPath,
     missionId,
@@ -240,7 +239,7 @@ export const createHandoffInputs = async (fixture, missionId, suffix = missionId
     outputDir: join(directory, 'handoff-output'),
     mode: 'checkout',
   };
-  return { directory, mission, head, statusPath, statePath, receiptPath, manifestPath, acceptancePath, options };
+  return { directory, mission, head, statusPath, statePath, specPath, receiptPath, manifestPath, acceptancePath, options };
 };
 
 test('handoff state and packet producers emit closed v2 contracts from single exact snapshots', async () => {
@@ -256,6 +255,11 @@ test('handoff state and packet producers emit closed v2 contracts from single ex
   assert.deepEqual(result.packet.repository.changedPaths, ['a/result.txt']);
   assert.equal(result.packet.sequence, 0);
   assert.equal(result.packet.predecessor, null);
+  assert.deepEqual(result.packet.acceptance.spec, {
+    path: inputs.specPath,
+    bytes: (await readFile(inputs.specPath)).length,
+    sha256: await digest(inputs.specPath),
+  });
   assert.equal(result.packet.authority, 'none');
   assert.match(await readFile(result.markdownPath, 'utf8'), /grants no human approval/u);
 });
@@ -287,6 +291,33 @@ test('handoff compile rejects forged acceptance receipt sets and unknown state f
   await writeJson(unknown.statePath, state);
   unknown.options.expectedStateSha256 = await digest(unknown.statePath);
   await assert.rejects(() => compileHandoff(unknown.options), /state contains unknown field unexpected/u);
+});
+
+test('handoff compile recomputes full GREEN criterion semantics and rejects empty automated evidence', async () => {
+  const fixture = await createConvergenceFixture();
+  const inputs = await createHandoffInputs(fixture, 'mission:a', 'forged-green');
+  const manifest = JSON.parse(await readFile(inputs.manifestPath, 'utf8'));
+  manifest.receipts = [];
+  await writeJson(inputs.manifestPath, manifest);
+  const acceptance = JSON.parse(await readFile(inputs.acceptancePath, 'utf8'));
+  acceptance.manifestSha256 = await digest(inputs.manifestPath);
+  acceptance.receiptSummaries = [];
+  acceptance.criteria = [];
+  acceptance.ok = true;
+  acceptance.errors = [];
+  await writeJson(inputs.acceptancePath, acceptance);
+  await assert.rejects(() => compileHandoff({
+    ...inputs.options,
+    receipts: [],
+  }), /does not exactly equal full acceptance semantics|requires GREEN evidence/u);
+
+  const aliased = await createHandoffInputs(fixture, 'mission:a', 'aliased-spec');
+  const specAlias = join(aliased.directory, 'spec-alias.json');
+  await symlink(aliased.specPath, specAlias);
+  const aliasedAcceptance = JSON.parse(await readFile(aliased.acceptancePath, 'utf8'));
+  aliasedAcceptance.specPath = specAlias;
+  await writeJson(aliased.acceptancePath, aliasedAcceptance);
+  await assert.rejects(() => compileHandoff(aliased.options), /non-symlink regular file/u);
 });
 
 test('handoff compile verifies receipt-declared artifact bytes in the exact worktree', async () => {
@@ -330,7 +361,7 @@ test('handoff state and packet outputs must remain outside all observed and plan
   );
   await assert.rejects(() => readFile(join(outputDir, 'handoff.json')), /ENOENT/u);
 
-  const observedOnly = join(fixture.root, 'observed-only-worktree');
+  const observedOnly = join(fixture.root, 'observed\ncontrol\tworktree');
   git(fixture.repository, ['worktree', 'add', '-b', 'scratch/observed-only', observedOnly, fixture.base]);
   const observedOutput = join(observedOnly, 'state-output.json');
   await assert.rejects(() => recordHandoffState({
@@ -342,6 +373,16 @@ test('handoff state and packet outputs must remain outside all observed and plan
     output: observedOutput,
   }), /outside every observed or planned worktree/u);
   await assert.rejects(() => readFile(observedOutput), /ENOENT/u);
+
+  await rename(observedOnly, `${observedOnly}-moved`);
+  await assert.rejects(() => recordHandoffState({
+    planPath: fixture.planPath,
+    missionId: 'mission:a',
+    worktree: fixture.worktreeA,
+    statusPath: inputs.statusPath,
+    sequence: 0,
+    output: join(fixture.root, 'outside-state.json'),
+  }), /unresolved or non-canonical/u);
 });
 
 test('handoff compile rejects dirty, stale, branch, and canonical alias drift', async () => {
@@ -404,6 +445,7 @@ test('resume packets preserve incomplete closed acceptance without claiming comp
   manifest.phase = 'structure';
   manifest.expectedRevision = null;
   manifest.receipts = [];
+  manifest.redNotApplicable = [];
   await writeJson(inputs.manifestPath, manifest);
   const acceptance = JSON.parse(await readFile(inputs.acceptancePath, 'utf8'));
   acceptance.manifestSha256 = await digest(inputs.manifestPath);

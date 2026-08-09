@@ -62,18 +62,23 @@ or HEAD drift, base-ref drift, broken ancestry, dirty worktrees, stale state,
 and broken predecessor identity.
 
 Checkout and review packets require closed passing GREEN acceptance at current
-HEAD. The acceptance report receipt-digest set must exactly equal the supplied
-closed evidence manifest and receipt set. Receipt repository and result
-bindings are rechecked, and every receipt-declared artifact is verified against
-the actual bytes in the canonical mission worktree. Changed paths are
+HEAD. The compiler canonically snapshots the acceptance spec named by the
+report and reuses the full `acceptance-check` evaluator to recompute criterion
+coverage, command bindings, receipt semantics, manual evidence, evidence
+counts, errors, and final disposition. The supplied report must exactly equal
+that recomputation; an empty automated criterion or empty GREEN evidence cannot
+pass. The report receipt-digest set must exactly equal the supplied closed
+evidence manifest and receipt set. Receipt repository and result bindings are
+rechecked, and every receipt-declared artifact is verified against the actual
+bytes in the canonical mission worktree. Changed paths are
 recomputed from exact `base..HEAD`, persisted in locale-independent UTF-8 byte
 order, and every path must be owned by the mission.
 
 The closed v2 packet binds flight, exact plan, mission, canonical repository
 and worktree, branch, base ref/revision, HEAD, ordered changed paths, state,
-acceptance report, evidence manifest, receipts, receipt artifacts, sequence,
-and predecessor. Unknown fields are rejected at every machine-readable object
-level. The Markdown file is presentation-only.
+acceptance spec, acceptance report, evidence manifest, receipts, receipt
+artifacts, sequence, and predecessor. Unknown fields are rejected at every
+machine-readable object level. The Markdown file is presentation-only.
 
 ## Prove integration readiness
 
@@ -88,14 +93,18 @@ npx shield-ops integration check \
 
 The checker snapshots the plan and each supplied packet once, then requires the
 packet identity set to equal the target mission's declared dependencies. It
-also snapshots each packet-bound handoff state, predecessor, acceptance report,
-evidence manifest, receipt, and receipt-declared artifact source once. Every
-source must have its exact canonical path, byte count, and digest; closed source
-validators and cross-bindings are replayed. It re-resolves the current base and
-mission branch refs, canonical worktrees, branches, HEADs, cleanliness, and
-ancestry, then recomputes the locale-independent ordered `base..HEAD` changed
-paths. Missing, stale, aliased, unexpected, duplicate, substituted, fabricated,
-out-of-scope, or exact-path-colliding packets or sources fail closed.
+also snapshots each packet-bound handoff state, predecessor, acceptance spec,
+acceptance report, evidence manifest, receipt, and receipt-declared artifact
+source once. Full acceptance semantics are recomputed from those snapshots.
+Every source must have its exact canonical path, byte count, and digest and is
+registered with its packet, role, receipt ID, and artifact path as applicable.
+Reusing one canonical source for distinct logical sources is rejected, and the
+closed report validator independently requires global source-path uniqueness.
+It re-resolves the current base and mission branch refs, canonical worktrees,
+branches, HEADs, cleanliness, and ancestry, then recomputes the
+locale-independent ordered `base..HEAD` changed paths. Missing, stale, aliased,
+unexpected, duplicate, substituted, fabricated, out-of-scope, or
+exact-path-colliding packets or sources fail closed.
 
 The closed v2 integration report is compatibility evidence only. It performs
 no checkout, merge, approval, publication, deployment, or release.
@@ -131,5 +140,8 @@ deletes a file, worktree, branch, archive, or evidence artifact.
 
 All handoff-state, handoff-packet, integration-report, and teardown-report
 output paths must be outside every planned or currently observed flight
-worktree. Outputs are create-only and are not written when confinement or
-validation fails.
+worktree. Observed paths come from NUL-delimited
+`git worktree list --porcelain -z` records; malformed, invalid UTF-8,
+unresolved, or non-canonical observations fail closed, including paths with
+embedded newlines or other control characters. Outputs are create-only and are
+not written when confinement or validation fails.

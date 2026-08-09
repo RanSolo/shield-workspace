@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   SHA256_PATTERN,
@@ -20,6 +21,7 @@ import {
   writeNewFile,
 } from './common.mjs';
 import { assertPlan, canonicalRelativePath, GIT_REVISION_PATTERN, pathMatches } from './flight-common.mjs';
+import { evaluateAcceptanceSnapshots } from './acceptance-check.mjs';
 import {
   artifactIdentity,
   validateHandoffPredecessor,
@@ -231,7 +233,8 @@ export const validateHandoffPacket = (packet) => {
         !SHA256_PATTERN.test(packet.predecessor.sha256 ?? '') || packet.predecessor.sequence !== packet.sequence - 1) errors.push('packet.predecessor is malformed.');
   }
   if (exactKeys(packet.state, ['source'], 'packet.state', errors)) validatePacketArtifact(packet.state.source, 'packet.state.source', errors);
-  if (exactKeys(packet.acceptance, ['report', 'manifest', 'phase', 'ok', 'expectedRevision', 'receiptDigests'], 'packet.acceptance', errors)) {
+  if (exactKeys(packet.acceptance, ['spec', 'report', 'manifest', 'phase', 'ok', 'expectedRevision', 'receiptDigests'], 'packet.acceptance', errors)) {
+    validatePacketArtifact(packet.acceptance.spec, 'packet.acceptance.spec', errors);
     validatePacketArtifact(packet.acceptance.report, 'packet.acceptance.report', errors);
     validatePacketArtifact(packet.acceptance.manifest, 'packet.acceptance.manifest', errors);
     if (!['structure', 'red', 'green'].includes(packet.acceptance.phase) || typeof packet.acceptance.ok !== 'boolean' ||
@@ -333,6 +336,7 @@ export const compileHandoff = async (options) => {
     ...options.receipts.map((path) => readJsonSnapshot(path)),
   ]);
   const evidenceToolSnapshot = await snapshotFile(fileURLToPath(new URL('./evidence-run.mjs', import.meta.url)));
+  const specSnapshot = await readJsonSnapshot(acceptanceSnapshot.value?.specPath);
   const plan = assertPlan(planSnapshot.value);
   const mission = plan.missions.find((candidate) => candidate.id === options.missionId);
   if (!mission) throw new Error(`Mission not found in flight plan: ${options.missionId}`);
@@ -389,6 +393,9 @@ export const compileHandoff = async (options) => {
   const acceptance = acceptanceSnapshot.value;
   const manifest = manifestSnapshot.value;
   errors.push(...validateAcceptanceReport(acceptance), ...validateEvidenceManifest(manifest));
+  if (acceptance.specPath !== specSnapshot.path || acceptance.specSha256 !== specSnapshot.sha256) {
+    errors.push('Acceptance report does not bind the canonical supplied acceptance spec snapshot.');
+  }
   if (acceptance.missionId !== mission.id || manifest.missionId !== mission.id) errors.push('Acceptance report and evidence manifest must match the mission.');
   if (acceptance.manifestPath !== manifestSnapshot.path || acceptance.manifestSha256 !== manifestSnapshot.sha256) errors.push('Acceptance report does not bind the supplied evidence manifest snapshot.');
   if (acceptance.specSha256 !== manifest.specSha256) errors.push('Acceptance report and evidence manifest spec digests differ.');
@@ -416,6 +423,19 @@ export const compileHandoff = async (options) => {
     errors.push('Acceptance receipt digest set does not exactly equal the evidence manifest receipt set.');
   }
   if (receiptSnapshots.length !== mappingByDigest.size) errors.push('Supplied receipt set does not exactly equal the evidence manifest receipt set.');
+
+  const recomputedAcceptance = await evaluateAcceptanceSnapshots({
+    spec: specSnapshot,
+    manifest: manifestSnapshot,
+    receiptSnapshots,
+    expectedSpecSha256: acceptance.specSha256,
+    phase: acceptance.phase,
+    expectedRevision: acceptance.expectedRevision ?? undefined,
+    tool: evidenceToolSnapshot,
+  });
+  if (!isDeepStrictEqual(recomputedAcceptance, acceptance)) {
+    errors.push('Acceptance report does not exactly equal full acceptance semantics recomputed from canonical source snapshots.');
+  }
 
   const receiptRecords = [];
   const artifactRecords = [];
@@ -489,6 +509,7 @@ export const compileHandoff = async (options) => {
     predecessor: state.predecessor,
     state: { source: artifactIdentity(stateSnapshot) },
     acceptance: {
+      spec: artifactIdentity(specSnapshot),
       report: artifactIdentity(acceptanceSnapshot),
       manifest: artifactIdentity(manifestSnapshot),
       phase: acceptance.phase,

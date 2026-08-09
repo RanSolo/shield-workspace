@@ -2,6 +2,7 @@
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   SHA256_PATTERN,
@@ -17,6 +18,7 @@ import {
   writeNewFile,
 } from './common.mjs';
 import { assertPlan, GIT_REVISION_PATTERN, pathMatches } from './flight-common.mjs';
+import { evaluateAcceptanceSnapshots } from './acceptance-check.mjs';
 import {
   sameArtifactIdentity,
   validateAcceptanceReport,
@@ -41,17 +43,31 @@ const validateArtifact = (value, label, errors) => {
       !SHA256_PATTERN.test(value.sha256 ?? '')) errors.push(`${label} is malformed.`);
 };
 
-const validateSourceSet = (sources, label, errors) => {
-  if (!exactKeys(sources, ['state', 'predecessor', 'acceptance', 'manifest', 'receipts', 'artifacts'], label, errors)) return;
+const validateSourceSet = (sources, label, errors, registerSource) => {
+  if (!exactKeys(sources, ['state', 'predecessor', 'acceptance', 'spec', 'manifest', 'receipts', 'artifacts'], label, errors)) return;
   if (sources.state !== null) validateArtifact(sources.state, `${label}.state`, errors);
   if (sources.predecessor !== null) validateArtifact(sources.predecessor, `${label}.predecessor`, errors);
   if (sources.acceptance !== null) validateArtifact(sources.acceptance, `${label}.acceptance`, errors);
+  if (sources.spec !== null) validateArtifact(sources.spec, `${label}.spec`, errors);
   if (sources.manifest !== null) validateArtifact(sources.manifest, `${label}.manifest`, errors);
-  for (const field of ['receipts', 'artifacts']) {
-    if (!Array.isArray(sources[field])) errors.push(`${label}.${field} must be an array.`);
-    for (const [index, source] of (Array.isArray(sources[field]) ? sources[field] : []).entries()) {
-      validateArtifact(source, `${label}.${field}[${index}]`, errors);
-    }
+  for (const [role, source] of [['state', sources.state], ['predecessor', sources.predecessor], ['acceptance', sources.acceptance], ['spec', sources.spec], ['manifest', sources.manifest]]) {
+    if (source !== null) registerSource(source, `${label}.${role}`);
+  }
+  if (!Array.isArray(sources.receipts)) errors.push(`${label}.receipts must be an array.`);
+  for (const [index, receipt] of (Array.isArray(sources.receipts) ? sources.receipts : []).entries()) {
+    const receiptLabel = `${label}.receipts[${index}]`;
+    if (!exactKeys(receipt, ['receiptId', 'source'], receiptLabel, errors)) continue;
+    if (!nonEmptyString(receipt.receiptId)) errors.push(`${receiptLabel}.receiptId is malformed.`);
+    validateArtifact(receipt.source, `${receiptLabel}.source`, errors);
+    registerSource(receipt.source, receiptLabel);
+  }
+  if (!Array.isArray(sources.artifacts)) errors.push(`${label}.artifacts must be an array.`);
+  for (const [index, artifact] of (Array.isArray(sources.artifacts) ? sources.artifacts : []).entries()) {
+    const artifactLabel = `${label}.artifacts[${index}]`;
+    if (!exactKeys(artifact, ['receiptId', 'artifactPath', 'source'], artifactLabel, errors)) continue;
+    if (!nonEmptyString(artifact.receiptId) || !nonEmptyString(artifact.artifactPath)) errors.push(`${artifactLabel} identity is malformed.`);
+    validateArtifact(artifact.source, `${artifactLabel}.source`, errors);
+    registerSource(artifact.source, artifactLabel);
   }
 };
 
@@ -71,6 +87,13 @@ export const validateIntegrationReport = (report) => {
   if (typeof report.ok !== 'boolean' || !Array.isArray(report.errors) || report.errors.some((item) => !nonEmptyString(item))) errors.push('Integration report result is malformed.');
   if (Array.isArray(report.errors) && report.ok !== (report.errors.length === 0)) errors.push('report.ok must exactly reflect whether errors is empty.');
   if (!Array.isArray(report.dependencyEvidence)) errors.push('report.dependencyEvidence must be an array.');
+  const sourcePaths = new Map();
+  const registerSource = (source, label) => {
+    if (!nonEmptyString(source?.path)) return;
+    const previous = sourcePaths.get(source.path);
+    if (previous !== undefined) errors.push(`${label} reuses canonical source path already registered by ${previous}.`);
+    else sourcePaths.set(source.path, label);
+  };
   for (const [index, evidence] of (Array.isArray(report.dependencyEvidence) ? report.dependencyEvidence : []).entries()) {
     const label = `report.dependencyEvidence[${index}]`;
     if (!exactKeys(evidence, ['missionId', 'worktree', 'branch', 'revision', 'changedPaths', 'packet', 'sources'], label, errors)) continue;
@@ -78,7 +101,7 @@ export const validateIntegrationReport = (report) => {
         !GIT_REVISION_PATTERN.test(evidence.revision ?? '') || !Array.isArray(evidence.changedPaths) ||
         evidence.changedPaths.some((path) => !nonEmptyString(path))) errors.push(`${label} is malformed.`);
     validateArtifact(evidence.packet, `${label}.packet`, errors);
-    validateSourceSet(evidence.sources, `${label}.sources`, errors);
+    validateSourceSet(evidence.sources, `${label}.sources`, errors, registerSource);
   }
   return errors;
 };
@@ -99,13 +122,27 @@ const parseJsonSnapshot = (snapshot, label, errors) => {
 
 const sourceReader = () => {
   const observations = new Map();
-  return async (identity, label, errors, { json = true } = {}) => {
+  const registrations = new Map();
+  return async (identity, label, errors, { json = true, logicalSource } = {}) => {
+    if (!isPlainObject(logicalSource)) {
+      errors.push(`${label} has no closed packet/role logical source identity.`);
+      return undefined;
+    }
     if (!identity || !nonEmptyString(identity.path)) {
       errors.push(`${label} has no bound source path.`);
       return undefined;
     }
     const canonical = await canonicalExistingPath(identity.path).catch(() => undefined);
     const cacheKey = canonical ?? identity.path;
+    if (canonical !== undefined) {
+      const registration = JSON.stringify(logicalSource);
+      const previous = registrations.get(canonical);
+      if (previous !== undefined && previous.registration !== registration) {
+        errors.push(`${label} reuses canonical source ${canonical} already registered by ${previous.label}.`);
+      } else if (previous === undefined) {
+        registrations.set(canonical, { registration, label });
+      }
+    }
     let observation = observations.get(cacheKey);
     if (!observation) {
       try {
@@ -143,6 +180,7 @@ const artifactKey = (item) => JSON.stringify([item?.receiptId, item?.path, item?
 
 const replayPacketSources = async ({
   packet,
+  packetSource,
   mission,
   plan,
   planIdentity,
@@ -156,21 +194,33 @@ const replayPacketSources = async ({
     state: null,
     predecessor: null,
     acceptance: null,
+    spec: null,
     manifest: null,
     receipts: [],
     artifacts: [],
   };
+  const logicalSource = (role, detail = {}) => ({
+    packetPath: packetSource.path,
+    packetSha256: packetSource.sha256,
+    missionId: mission.id,
+    role,
+    ...detail,
+  });
   const packetReceiptList = Array.isArray(packet.evidence?.receipts) ? packet.evidence.receipts : [];
   const packetReceipts = new Map(packetReceiptList.map((receipt) => [receipt?.source?.sha256, receipt]));
   const receiptSnapshots = new Map();
   for (const [index, packetReceipt] of packetReceiptList.entries()) {
-    const receiptSnapshot = await readSource(packetReceipt?.source, `${mission.id} packet receipt[${index}]`, errors);
+    const receiptSnapshot = await readSource(packetReceipt?.source, `${mission.id} packet receipt[${index}]`, errors, {
+      logicalSource: logicalSource('receipt', { receiptId: packetReceipt?.receiptId }),
+    });
     if (!receiptSnapshot) continue;
-    sourceEvidence.receipts.push(artifactIdentity(receiptSnapshot));
+    sourceEvidence.receipts.push({ receiptId: packetReceipt.receiptId, source: artifactIdentity(receiptSnapshot) });
     receiptSnapshots.set(packetReceipt.source.sha256, receiptSnapshot);
   }
 
-  const stateSnapshot = await readSource(packet.state?.source, `${mission.id} state`, errors);
+  const stateSnapshot = await readSource(packet.state?.source, `${mission.id} state`, errors, {
+    logicalSource: logicalSource('state'),
+  });
   const state = stateSnapshot?.value;
   if (isPlainObject(state)) {
     errors.push(...validateHandoffState(plan, planIdentity, state, `${mission.id} state`));
@@ -183,7 +233,9 @@ const replayPacketSources = async ({
     }
     if (packet.sequence === 0 && packet.predecessor !== null) errors.push(`${mission.id} genesis packet has predecessor evidence.`);
     if (packet.sequence > 0 && packet.predecessor) {
-      const predecessorSnapshot = await readSource(packet.predecessor, `${mission.id} predecessor state`, errors);
+      const predecessorSnapshot = await readSource(packet.predecessor, `${mission.id} predecessor state`, errors, {
+        logicalSource: logicalSource('predecessor'),
+      });
       if (isPlainObject(predecessorSnapshot?.value)) {
         errors.push(...validateHandoffState(plan, planIdentity, predecessorSnapshot.value, `${mission.id} predecessor`));
         validateHandoffPredecessor(state, predecessorSnapshot, packet.predecessor.sha256, errors);
@@ -192,16 +244,25 @@ const replayPacketSources = async ({
     }
   }
 
-  const acceptanceSnapshot = await readSource(packet.acceptance?.report, `${mission.id} acceptance report`, errors);
-  const manifestSnapshot = await readSource(packet.acceptance?.manifest, `${mission.id} evidence manifest`, errors);
+  const acceptanceSnapshot = await readSource(packet.acceptance?.report, `${mission.id} acceptance report`, errors, {
+    logicalSource: logicalSource('acceptance'),
+  });
+  const specSnapshot = await readSource(packet.acceptance?.spec, `${mission.id} acceptance spec`, errors, {
+    logicalSource: logicalSource('spec'),
+  });
+  const manifestSnapshot = await readSource(packet.acceptance?.manifest, `${mission.id} evidence manifest`, errors, {
+    logicalSource: logicalSource('manifest'),
+  });
   const acceptance = acceptanceSnapshot?.value;
+  const spec = specSnapshot?.value;
   const manifest = manifestSnapshot?.value;
   if (acceptance !== undefined) errors.push(...validateAcceptanceReport(acceptance).map((error) => `${mission.id}: ${error}`));
   if (manifest !== undefined) errors.push(...validateEvidenceManifest(manifest).map((error) => `${mission.id}: ${error}`));
-  if (isPlainObject(acceptance) && isPlainObject(manifest)) {
+  if (isPlainObject(acceptance) && isPlainObject(spec) && isPlainObject(manifest)) {
     const acceptanceSummaries = Array.isArray(acceptance.receiptSummaries) ? acceptance.receiptSummaries : [];
     const manifestReceipts = Array.isArray(manifest.receipts) ? manifest.receipts : [];
-    if (acceptance.missionId !== mission.id || manifest.missionId !== mission.id ||
+    if (acceptance.missionId !== mission.id || spec.missionId !== mission.id || manifest.missionId !== mission.id ||
+        acceptance.specPath !== specSnapshot.path || acceptance.specSha256 !== specSnapshot.sha256 ||
         acceptance.manifestPath !== manifestSnapshot.path || acceptance.manifestSha256 !== manifestSnapshot.sha256 ||
         acceptance.specSha256 !== manifest.specSha256 || acceptance.phase !== manifest.phase ||
         acceptance.expectedRevision !== manifest.expectedRevision || acceptance.phase !== packet.acceptance?.phase ||
@@ -253,8 +314,15 @@ const replayPacketSources = async ({
           replayedArtifacts.push(expected);
           const absolutePath = resolve(worktree, artifact.path);
           const actual = await readSource({ path: absolutePath, bytes: artifact.bytes, sha256: artifact.sha256 },
-            `${mission.id} receipt artifact ${artifact.path}`, errors, { json: false });
-          if (actual) sourceEvidence.artifacts.push(artifactIdentity(actual));
+            `${mission.id} receipt artifact ${artifact.path}`, errors, {
+              json: false,
+              logicalSource: logicalSource('artifact', { receiptId: mapping.receiptId, artifactPath: artifact.path }),
+            });
+          if (actual) sourceEvidence.artifacts.push({
+            receiptId: mapping.receiptId,
+            artifactPath: artifact.path,
+            source: artifactIdentity(actual),
+          });
         }
       }
     }
@@ -264,13 +332,26 @@ const replayPacketSources = async ({
     if (JSON.stringify(expectedArtifacts) !== JSON.stringify(packetArtifacts)) {
       errors.push(`${mission.id} packet artifact identities do not exactly equal replayed receipt artifacts.`);
     }
+    const recomputedAcceptance = await evaluateAcceptanceSnapshots({
+      spec: specSnapshot,
+      manifest: manifestSnapshot,
+      receiptSnapshots: [...receiptSnapshots.values()],
+      expectedSpecSha256: acceptance.specSha256,
+      phase: acceptance.phase,
+      expectedRevision: acceptance.expectedRevision ?? undefined,
+      tool: evidenceTool,
+    });
+    if (!isDeepStrictEqual(recomputedAcceptance, acceptance)) {
+      errors.push(`${mission.id} acceptance report does not exactly equal full semantics recomputed from canonical source snapshots.`);
+    }
   }
 
   if (stateSnapshot) sourceEvidence.state = artifactIdentity(stateSnapshot);
   if (acceptanceSnapshot) sourceEvidence.acceptance = artifactIdentity(acceptanceSnapshot);
+  if (specSnapshot) sourceEvidence.spec = artifactIdentity(specSnapshot);
   if (manifestSnapshot) sourceEvidence.manifest = artifactIdentity(manifestSnapshot);
-  sourceEvidence.receipts.sort((left, right) => compareUtf8(left.path, right.path));
-  sourceEvidence.artifacts.sort((left, right) => compareUtf8(left.path, right.path));
+  sourceEvidence.receipts.sort((left, right) => compareUtf8(left.receiptId, right.receiptId));
+  sourceEvidence.artifacts.sort((left, right) => compareUtf8(`${left.receiptId}\0${left.artifactPath}`, `${right.receiptId}\0${right.artifactPath}`));
   return sourceEvidence;
 };
 
@@ -383,6 +464,7 @@ export const checkIntegration = async ({ planPath, targetMissionId, packetPaths,
     }
     const sources = await replayPacketSources({
       packet,
+      packetSource: source,
       mission,
       plan,
       planIdentity,

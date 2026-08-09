@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { sha256 } from '../scripts/operations/common.mjs';
-import { compareUtf8 } from '../scripts/operations/convergence-common.mjs';
+import { compareUtf8, parseWorktreeListPorcelain } from '../scripts/operations/convergence-common.mjs';
 import { checkIntegration, validateIntegrationReport } from '../scripts/operations/integration-check.mjs';
 import {
   ARCHIVE_PAYLOAD_FORMAT,
@@ -93,11 +93,22 @@ test('integration re-resolves every exact dependency packet and emits a closed n
   assert.deepEqual(validateIntegrationReport(report), []);
   assert.deepEqual(report.dependencyEvidence.map((item) => item.changedPaths), [['a/result.txt'], ['b/result.txt']]);
   assert.equal(report.dependencyEvidence[0].sources.state.path, flight.aInputs.statePath);
-  assert.deepEqual(report.dependencyEvidence[0].sources.receipts, [await sourceIdentity(flight.aInputs.receiptPath)]);
-  assert.deepEqual(report.dependencyEvidence[0].sources.artifacts, [await sourceIdentity(join(flight.fixture.worktreeA, 'a/result.txt'))]);
+  assert.deepEqual(report.dependencyEvidence[0].sources.spec, await sourceIdentity(flight.aInputs.specPath));
+  assert.deepEqual(report.dependencyEvidence[0].sources.receipts, [{
+    receiptId: 'evidence:integration-a',
+    source: await sourceIdentity(flight.aInputs.receiptPath),
+  }]);
+  assert.deepEqual(report.dependencyEvidence[0].sources.artifacts, [{
+    receiptId: 'evidence:integration-a',
+    artifactPath: 'a/result.txt',
+    source: await sourceIdentity(join(flight.fixture.worktreeA, 'a/result.txt')),
+  }]);
   const openReport = structuredClone(report);
   openReport.dependencyEvidence[0].sources.fabricated = true;
   assert.match(validateIntegrationReport(openReport).join('\n'), /sources contains unknown field fabricated/u);
+  const collidingReport = structuredClone(report);
+  collidingReport.dependencyEvidence[0].sources.spec = collidingReport.dependencyEvidence[0].sources.state;
+  assert.match(validateIntegrationReport(collidingReport).join('\n'), /reuses canonical source path/u);
 });
 
 test('integration rejects missing, unexpected, fabricated, stale, and substituted packets', async () => {
@@ -203,7 +214,7 @@ test('integration replays every canonical packet-bound source and rejects stale,
     assert.equal(report.ok, false);
     assert.match(report.errors.join('\n'), /acceptance report source is absent or unsafe/u);
     const evidence = report.dependencyEvidence.find((item) => item.missionId === 'mission:a');
-    assert.deepEqual(evidence.sources.receipts, packet.evidence.receipts.map(({ source }) => source));
+    assert.deepEqual(evidence.sources.receipts, packet.evidence.receipts.map(({ receiptId, source }) => ({ receiptId, source })));
   }
 
   {
@@ -230,13 +241,11 @@ test('integration replays every canonical packet-bound source and rejects stale,
     packetA.state.source = packetB.state.source;
     const packetPath = join(flight.fixture.root, 'substituted-source-packet.json');
     await writeJson(packetPath, packetA);
-    const report = await checkIntegration({
+    await assert.rejects(() => checkIntegration({
       planPath: flight.fixture.planPath,
       targetMissionId: 'mission:integration',
       packetPaths: [packetPath, flight.bPath],
-    });
-    assert.equal(report.ok, false);
-    assert.match(report.errors.join('\n'), /state source does not exactly match packet and live repository identity/u);
+    }), /reuses canonical source path/u);
   }
 
   {
@@ -265,16 +274,66 @@ test('integration replays every canonical packet-bound source and rejects stale,
     packetA.evidence.receipts[0].source = packetB.evidence.receipts[0].source;
     const packetPath = join(flight.fixture.root, 'substituted-receipt-packet.json');
     await writeJson(packetPath, packetA);
-    const report = await checkIntegration({
+    await assert.rejects(() => checkIntegration({
       planPath: flight.fixture.planPath,
       targetMissionId: 'mission:integration',
       packetPaths: [packetPath, flight.bPath],
-    });
-    assert.equal(report.ok, false);
-    assert.match(report.errors.join('\n'), /receipt digest sets differ/u);
-    const evidence = report.dependencyEvidence.find((item) => item.missionId === 'mission:a');
-    assert.deepEqual(evidence.sources.receipts, [packetB.evidence.receipts[0].source]);
+    }), /reuses canonical source path/u);
   }
+});
+
+test('integration rejects canonical source reuse across packet roles and packet identities', async () => {
+  const samePacket = await completedFlight();
+  const packetA = JSON.parse(await readFile(samePacket.aPath, 'utf8'));
+  packetA.acceptance.spec = packetA.acceptance.manifest;
+  const samePacketPath = join(samePacket.fixture.root, 'same-packet-source-collision.json');
+  await writeJson(samePacketPath, packetA);
+  await assert.rejects(() => checkIntegration({
+    planPath: samePacket.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [samePacketPath, samePacket.bPath],
+  }), /reuses canonical source path/u);
+
+  const crossPacket = await completedFlight();
+  const first = JSON.parse(await readFile(crossPacket.aPath, 'utf8'));
+  const second = JSON.parse(await readFile(crossPacket.bPath, 'utf8'));
+  second.acceptance.spec = first.acceptance.spec;
+  const crossPacketPath = join(crossPacket.fixture.root, 'cross-packet-source-collision.json');
+  await writeJson(crossPacketPath, second);
+  await assert.rejects(() => checkIntegration({
+    planPath: crossPacket.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [crossPacket.aPath, crossPacketPath],
+  }), /reuses canonical source path/u);
+});
+
+test('integration recomputes acceptance-spec coverage instead of trusting a forged GREEN report', async () => {
+  const flight = await completedFlight();
+  const manifest = JSON.parse(await readFile(flight.aInputs.manifestPath, 'utf8'));
+  manifest.receipts = [];
+  await writeJson(flight.aInputs.manifestPath, manifest);
+  const acceptance = JSON.parse(await readFile(flight.aInputs.acceptancePath, 'utf8'));
+  acceptance.manifestSha256 = (await sourceIdentity(flight.aInputs.manifestPath)).sha256;
+  acceptance.receiptSummaries = [];
+  acceptance.criteria = [];
+  acceptance.ok = true;
+  acceptance.errors = [];
+  await writeJson(flight.aInputs.acceptancePath, acceptance);
+  const packet = JSON.parse(await readFile(flight.aPath, 'utf8'));
+  packet.acceptance.report = await sourceIdentity(flight.aInputs.acceptancePath);
+  packet.acceptance.manifest = await sourceIdentity(flight.aInputs.manifestPath);
+  packet.acceptance.receiptDigests = [];
+  packet.evidence.receipts = [];
+  packet.evidence.artifacts = [];
+  const packetPath = join(flight.fixture.root, 'forged-green-packet.json');
+  await writeJson(packetPath, packet);
+  const report = await checkIntegration({
+    planPath: flight.fixture.planPath,
+    targetMissionId: 'mission:integration',
+    packetPaths: [packetPath, flight.bPath],
+  });
+  assert.equal(report.ok, false);
+  assert.match(report.errors.join('\n'), /does not exactly equal full semantics recomputed/u);
 });
 
 test('integration verifies receipt-declared artifact bytes and confines output outside every flight worktree', async () => {
@@ -464,4 +523,13 @@ test('teardown rejects internal, absent, substituted, and incomplete archive pay
 
 test('persisted convergence ordering is locale-independent UTF-8 byte order', () => {
   assert.deepEqual(['ä', 'z', 'a'].sort(compareUtf8), ['a', 'z', 'ä']);
+});
+
+test('worktree porcelain parser preserves newline and control paths and rejects malformed records', () => {
+  const controlledPath = '/tmp/worktree\nwith-tab\tand-control-\u0001';
+  const bytes = Buffer.from(`worktree ${controlledPath}\0HEAD ${'a'.repeat(40)}\0detached\0\0`, 'utf8');
+  assert.deepEqual(parseWorktreeListPorcelain(bytes), [controlledPath]);
+  assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`worktree ${controlledPath}\nHEAD ${'a'.repeat(40)}\n`, 'utf8')), /NUL-delimited/u);
+  assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`HEAD ${'a'.repeat(40)}\0\0`, 'utf8')), /malformed record/u);
+  assert.throws(() => parseWorktreeListPorcelain(Buffer.from(`worktree ${controlledPath}\0unknown field\0\0`, 'utf8')), /malformed record/u);
 });
