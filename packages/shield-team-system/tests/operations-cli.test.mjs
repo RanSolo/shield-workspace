@@ -11,7 +11,17 @@ test("operations CLI describes the non-authoritative evidence surface", () => {
   const result = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /shield-ops evidence run/u);
+  assert.match(result.stdout, /--expected-spec-sha256/u);
+  assert.match(result.stdout, /--manifest/u);
+  assert.match(result.stdout, /shield-ops flight prep MANIFEST\.json/u);
+  assert.match(result.stdout, /shield-ops fixture build --output NEW_DIRECTORY/u);
+  assert.match(result.stdout, /shield-ops construction check --plan FILE/u);
+  assert.match(result.stdout, /shield-ops flight doctor --plan FILE/u);
+  assert.match(result.stdout, /shield-ops flight state-init --plan FILE --output NEW_FILE/u);
+  assert.match(result.stdout, /shield-ops flight route --plan FILE --state FILE --expected-state-sha256 SHA256 --expected-state-sequence N/u);
+  assert.match(result.stdout, /--predecessor-state FILE --expected-predecessor-sha256 SHA256/u);
   assert.match(result.stdout, /non-authoritative operational evidence/u);
+  assert.match(result.stdout, /provenance, execution attestation/u);
 });
 
 test("operations CLI fails closed on unknown commands", () => {

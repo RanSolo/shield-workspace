@@ -6,22 +6,25 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { compileHandoff } from '../scripts/operations/handoff-compile.mjs';
+import { PLAN_NOTICE } from '../scripts/operations/flight-common.mjs';
 
 const runGit = (cwd, args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 const writeJson = (path, value) => writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 
 const fixture = async () => {
   const root = await mkdtemp(join(tmpdir(), 'shield-handoff-'));
-  const repo = join(root, 'repo');
-  await mkdir(join(repo, 'allowed'), { recursive: true });
-  runGit(root, ['init', repo]);
-  runGit(repo, ['config', 'user.email', 'prototype@example.invalid']);
-  runGit(repo, ['config', 'user.name', 'Prototype']);
-  await writeFile(join(repo, 'README.md'), 'base\n');
-  runGit(repo, ['add', '.']);
-  runGit(repo, ['commit', '-m', 'base']);
-  const base = runGit(repo, ['rev-parse', 'HEAD']);
-  runGit(repo, ['checkout', '-b', 'spike/test']);
+  const planningRepo = join(root, 'repo');
+  const repo = join(root, 'worktree');
+  await mkdir(planningRepo);
+  runGit(planningRepo, ['init', '--initial-branch=main']);
+  runGit(planningRepo, ['config', 'user.email', 'prototype@example.invalid']);
+  runGit(planningRepo, ['config', 'user.name', 'Prototype']);
+  await writeFile(join(planningRepo, 'README.md'), 'base\n');
+  runGit(planningRepo, ['add', '.']);
+  runGit(planningRepo, ['commit', '-m', 'base']);
+  const base = runGit(planningRepo, ['rev-parse', 'HEAD']);
+  runGit(planningRepo, ['worktree', 'add', '-b', 'spike/test', repo, base]);
+  await mkdir(join(repo, 'allowed'));
   await writeFile(join(repo, 'allowed', 'result.txt'), 'evidence\n');
   runGit(repo, ['add', '.']);
   runGit(repo, ['commit', '-m', 'result']);
@@ -34,15 +37,41 @@ const fixture = async () => {
   const receiptPath = join(root, 'receipt.json');
   await writeJson(planPath, {
     schemaVersion: 1,
+    planType: 'feature-flight-resolved-plan',
+    prototype: { name: 'flight-prep', version: '1.0.0', authority: 'none', notice: PLAN_NOTICE },
     flightId: 'flight:test',
-    repository: { baseRevision: base },
+    objective: 'Test exact mission handoff compilation.',
+    repository: {
+      root: planningRepo,
+      remoteUrl: null,
+      baseRef: 'refs/heads/main',
+      baseRevision: base,
+      inspectedHead: base,
+      inspectedBranch: 'main',
+      inspectedWorktreeClean: true,
+      collisions: [],
+    },
+    integration: { branch: 'integration/test', status: 'declared-not-created' },
+    lanes: [{ id: 'alpha', chatLabel: 'Alpha chat', teamLabel: 'Alpha team' }],
     missions: [{
       id: missionId,
+      slug: 'mission-test',
       title: 'Test mission',
+      library: 'library-test',
+      lane: 'alpha',
       branch: 'spike/test',
+      worktree: repo,
+      activationWave: 1,
+      dependsOn: [],
       writablePaths: ['allowed/**'],
+      scope: 'Compile an exact mission handoff.',
       deliverables: ['Evidence'],
+      dependencyLevel: 0,
+      initialEligibility: 'eligible-after-independent-authorization',
+      constructionStatus: 'planned-not-created',
+      authorityStatus: 'not-initialized',
     }],
+    evaluationContract: { fixtureId: 'fixture:handoff', version: 1, scorecard: ['correctness'] },
   });
   await writeJson(acceptancePath, {
     schemaVersion: 1,
@@ -89,9 +118,17 @@ test('compiles an exact clean scoped checkout packet', async () => {
   const f = await fixture();
   const result = await compileHandoff(optionsFor(f));
   assert.equal(result.packet.repository.head, f.head);
+  assert.equal(result.packet.repository.clean, true);
   assert.deepEqual(result.packet.repository.changedPaths, ['allowed/result.txt']);
   assert.equal(result.packet.authority, 'none');
   assert.match(await readFile(result.markdownPath, 'utf8'), /grants no human approval/u);
+});
+
+test('refuses an existing output directory', async () => {
+  const f = await fixture();
+  const options = optionsFor(f);
+  await mkdir(options.outputDir);
+  await assert.rejects(() => compileHandoff(options), /Refusing existing output directory/u);
 });
 
 test('rejects a dirty worktree', async () => {
