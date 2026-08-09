@@ -39,6 +39,7 @@ const DEPENDENCY_FIELDS = [
 const DEPENDENCY_OPTIONAL_FIELDS = ["stepStore", "snapshotDependencies"];
 const DESCRIPTOR_FIELDS = ["adapterId", "adapterVersion", "capabilityClass", "runtimeId", "executorId"];
 const STORE_FIELDS = ["claimStep", "readStep", "writeSuccessor", "writeResult"];
+const HOST_IDENTITY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const builtInStepStore = Object.freeze(Object.fromEntries(STORE_FIELDS.map((field) => [field, defaultStepStore[field]])));
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -47,7 +48,6 @@ const canonicalValue = (value) => Array.isArray(value) ? value.map(canonicalValu
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]))
     : value;
 const canonicalJson = (value) => JSON.stringify(canonicalValue(value));
-const persistedBytes = (value) => Buffer.from(`${JSON.stringify(canonicalValue(value), null, 2)}\n`, "utf8");
 const digestValue = (value) => sha256(Buffer.from(canonicalJson(value), "utf8"));
 const deepCopy = (value) => JSON.parse(JSON.stringify(value));
 const sameJson = (left, right) => canonicalJson(left) === canonicalJson(right);
@@ -100,6 +100,7 @@ const resultBase = (prepared) => ({
     revisionId: prepared.runner.plan.revisionId,
     evaluatedThroughSequence: prepared.runner.plan.evaluatedThroughSequence,
     cycleId: prepared.runner.plan.cycleId,
+    seatId: prepared.runner.plan.seatId,
     actionId: prepared.runner.plan.actionId,
     effectClass: prepared.runner.plan.effectClass,
     effectKey: prepared.runner.plan.effectKey,
@@ -163,7 +164,7 @@ export const validateFeatureFlightStepClaim = (value) => {
       exactDataObject(value.flight, ["sequence", "wave", "missionId", "lane"], [], "claim.flight");
       exactDataObject(value.repository, ["root", "branch", "head", "clean"], [], "claim.repository");
       exactDataObject(value.runner, [
-        "missionId", "subjectId", "revisionId", "evaluatedThroughSequence", "cycleId", "actionId", "effectClass",
+        "missionId", "subjectId", "revisionId", "evaluatedThroughSequence", "cycleId", "seatId", "actionId", "effectClass",
         "effectKey", "validationId", "inputSha256",
       ], [], "claim.runner");
       exactDataObject(value.adapter, DESCRIPTOR_FIELDS, [], "claim.adapter");
@@ -220,6 +221,20 @@ const validateTriad = (prepared, step) => {
   ];
   const claimIdentity = identity(step.claim);
   const successorIdentity = identity(step.successor);
+  const expectedAttemptDigest = digestValue({
+    plan: claim.plan,
+    currentState: claim.currentState,
+    predecessor: claim.predecessor,
+    sequence: claim.flight?.sequence,
+    runnerInputSha256: claim.runner?.inputSha256,
+    journalSequence: claim.runner?.evaluatedThroughSequence,
+    cycleId: claim.runner?.cycleId,
+    validationId: claim.runner?.validationId,
+    repository: claim.repository,
+    adapter: claim.adapter,
+    claimedAt: claim.claimedAt,
+  });
+  if (claim.attemptDigest !== expectedAttemptDigest) errors.push("Claim attemptDigest does not match its exact canonical attempt evidence.");
   if (claim.effectClaimId !== prepared.effectClaimId || claim.flightId !== prepared.plan.flightId ||
       !sameJson(claim.plan, prepared.planArtifact) || !sameJson(claim.currentState, prepared.stateArtifact) ||
       !sameJson(claim.predecessor, prepared.predecessorArtifact) || !sameJson(claim.runner, resultBase(prepared).runner) ||
@@ -227,15 +242,48 @@ const validateTriad = (prepared, step) => {
       !sameJson(claim.flight, {
         sequence: prepared.state.sequence, wave: prepared.state.wave.current, missionId: prepared.mission.id, lane: prepared.mission.lane,
       })) errors.push("Claim does not match the requested exact step.");
-  if (result.effectClaimId !== claim.effectClaimId || result.attemptDigest !== claim.attemptDigest ||
+  if (result.effectClaimId !== claim.effectClaimId || result.attemptDigest !== claim.attemptDigest || result.flightId !== prepared.plan.flightId ||
       !sameJson(result.claim, claimIdentity) || !sameJson(result.successor, successorIdentity) ||
       result.runnerResultSha256 !== digestValue(result.runnerResult) || !sameJson(result.adapter, claim.adapter) ||
-      result.claimedAt !== claim.claimedAt) errors.push("Terminal result does not bind the exact claim and successor.");
+      !sameJson(result.adapter, prepared.adapterDescriptor) || !sameJson(result.repositoryBefore, prepared.repositoryBefore) ||
+      !sameJson(result.repositoryAfter, prepared.repositoryBefore) || result.claimedAt !== claim.claimedAt ||
+      result.completedAt !== successor.observedAt) errors.push("Terminal result does not bind the exact prepared claim, successor, repository, and timestamps.");
   const runnerChecked = validateRunnerCycleResult(result.runnerResult);
   if (runnerChecked.state !== "valid" || result.runnerResult.outcome !== "advanced" || result.runnerResult.reason !== "effect_completed") {
     errors.push("Terminal result does not contain one valid advanced Runner result.");
+  } else {
+    const runner = result.runnerResult;
+    const candidate = runner.effectRecordCandidate;
+    const payload = candidate.payload;
+    if (runner.missionId !== prepared.runner.plan.missionId || runner.missionId !== claim.runner.missionId ||
+        runner.subjectId !== prepared.runner.plan.subjectId || runner.subjectId !== claim.runner.subjectId ||
+        runner.revisionId !== prepared.runner.plan.revisionId || runner.revisionId !== claim.runner.revisionId ||
+        runner.evaluatedThroughSequence !== prepared.runner.plan.evaluatedThroughSequence ||
+        runner.evaluatedThroughSequence !== claim.runner.evaluatedThroughSequence ||
+        runner.cycleId !== prepared.runner.plan.cycleId || runner.cycleId !== claim.runner.cycleId ||
+        runner.actionId !== prepared.runner.plan.actionId || runner.actionId !== claim.runner.actionId ||
+        runner.effectKey !== prepared.runner.plan.effectKey || runner.effectKey !== claim.runner.effectKey ||
+        candidate.missionId !== runner.missionId || candidate.subjectId !== runner.subjectId || candidate.revisionId !== runner.revisionId ||
+        candidate.journalSchemaVersion !== prepared.runner.projection.journalSchemaVersion ||
+        candidate.expectedPreviousSequence !== runner.evaluatedThroughSequence || payload.cycleId !== runner.cycleId ||
+        payload.subjectId !== runner.subjectId || payload.revisionId !== runner.revisionId ||
+        payload.evaluatedThroughSequence !== runner.evaluatedThroughSequence ||
+        payload.seatId !== prepared.runner.plan.seatId || payload.seatId !== claim.runner.seatId ||
+        payload.actionId !== prepared.runner.plan.actionId || payload.actionId !== claim.runner.actionId ||
+        payload.effectClass !== prepared.runner.plan.effectClass || payload.effectClass !== claim.runner.effectClass ||
+        payload.effectKey !== prepared.runner.plan.effectKey || payload.effectKey !== claim.runner.effectKey ||
+        claim.runner.validationId !== prepared.runner.plan.validationId) {
+      errors.push("Terminal Runner result identity does not exactly match the trusted Runner plan and claim.");
+    }
   }
-  if (successor.predecessorSha256 !== prepared.stateArtifact.sha256 || successor.sequence !== prepared.state.sequence + 1 ||
+  let expectedSuccessor;
+  try {
+    expectedSuccessor = buildActiveToCompleteSuccessor(
+      prepared.plan, prepared.planArtifact, prepared.state, prepared.stateArtifact, prepared.mission.id, result.completedAt,
+    );
+  } catch {}
+  if (expectedSuccessor === undefined || !sameJson(successor, expectedSuccessor) ||
+      successor.predecessorSha256 !== prepared.stateArtifact.sha256 || successor.sequence !== prepared.state.sequence + 1 ||
       successor.missions[prepared.mission.id].status !== "complete" || successor.missions[prepared.mission.id].revision !== prepared.repositoryBefore.head) {
     errors.push("Terminal successor does not complete the selected exact active mission.");
   }
@@ -253,7 +301,9 @@ const snapshotDependencies = (trusted) => {
     adapterId: trusted.adapterDescriptor.adapterId,
     adapterVersion: trusted.adapterDescriptor.adapterVersion,
     capabilityClass: trusted.adapterDescriptor.capabilityClass,
-  }, ADAPTER_POLICY) || ![trusted.adapterDescriptor.runtimeId, trusted.adapterDescriptor.executorId].every((entry) => typeof entry === "string" && entry.length > 0)) {
+  }, ADAPTER_POLICY) || ![trusted.adapterDescriptor.runtimeId, trusted.adapterDescriptor.executorId].every((entry) =>
+    typeof entry === "string" && HOST_IDENTITY_PATTERN.test(entry)) ||
+      trusted.adapterDescriptor.runtimeId === trusted.adapterDescriptor.executorId) {
     throw new Error("Trusted Daisy adapter descriptor does not match the fixed Slice 2 policy.");
   }
   exactDataObject(trusted.clock, ["now"], [], "trustedDependencies.clock");
@@ -462,6 +512,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
 
   let claimReached = false;
   let claimArtifact;
+  let claimDirectoryIdentity;
   let runnerContract;
   try {
     runnerContract = await runRunnerCycle(prepared.runner, {
@@ -475,6 +526,7 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
           const claimed = await dependencies.stepStore.claimStep(storeInput(prepared, { claim }));
           if (claimed.status !== "claimed") return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_conflict" };
           claimArtifact = claimed.claim;
+          claimDirectoryIdentity = claimed.directoryIdentity;
           return { runnerContractVersion: 1, outcome: "claimed" };
         } catch {
           return { runnerContractVersion: 1, outcome: "blocked", reason: "invocation_claim_failed" };
@@ -495,7 +547,9 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
     if (!claimReached) return stoppedProjection(prepared, runnerResult);
     return (await existingDisposition(prepared)) ?? recoveryProjection(prepared, "claim_boundary_uncertain");
   }
-  if (prepared.invocationCount !== 1 || claimArtifact === undefined) return recoveryProjection(prepared, "invocation_or_claim_uncertain");
+  if (prepared.invocationCount !== 1 || claimArtifact === undefined || claimDirectoryIdentity === undefined) {
+    return recoveryProjection(prepared, "invocation_or_claim_uncertain");
+  }
 
   let repositoryAfter;
   try { repositoryAfter = validateRepository(await dependencies.observeRepository(prepared.mission.worktree)); }
@@ -509,7 +563,9 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
     successor = buildActiveToCompleteSuccessor(
       prepared.plan, prepared.planArtifact, prepared.state, prepared.stateArtifact, prepared.mission.id, completedAt,
     );
-    successorSnapshot = await dependencies.stepStore.writeSuccessor(storeInput(prepared, { successor }));
+    successorSnapshot = await dependencies.stepStore.writeSuccessor(storeInput(prepared, {
+      successor, expectedDirectoryIdentity: claimDirectoryIdentity,
+    }));
     const successorErrors = validateFeatureFlightStepSuccessor(prepared.plan, prepared.planArtifact, prepared.state, successorSnapshot.value);
     if (successorErrors.length > 0) throw new Error(successorErrors.join(" "));
     const claim = claimArtifact.value;
@@ -538,14 +594,16 @@ export const runFeatureFlightStepV1 = async (input, trustedDependencies) => {
     };
     const resultErrors = validateFeatureFlightStepResult(result);
     if (resultErrors.length > 0) throw new Error(resultErrors.join(" "));
-    await dependencies.stepStore.writeResult(storeInput(prepared, { result }));
+    await dependencies.stepStore.writeResult(storeInput(prepared, {
+      result, expectedDirectoryIdentity: claimDirectoryIdentity,
+    }));
   } catch {
     return recoveryProjection(prepared, successorSnapshot === undefined ? "successor_write_uncertain" : "result_write_uncertain");
   }
 
   let terminal;
   try {
-    terminal = await dependencies.stepStore.readStep(storeInput(prepared));
+    terminal = await dependencies.stepStore.readStep(storeInput(prepared, { expectedDirectoryIdentity: claimDirectoryIdentity }));
     const triad = validateTriad(prepared, terminal);
     return {
       schemaVersion: 1, resultType: "feature-flight-step-projection", ...resultBase(prepared), outcome: "completed",

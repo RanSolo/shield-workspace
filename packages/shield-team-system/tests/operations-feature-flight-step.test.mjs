@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -20,6 +21,7 @@ import {
   validateFlightState,
   validateImmediateTransition,
 } from "../scripts/operations/flight-contracts.mjs";
+import * as productionStepStore from "../scripts/operations/feature-flight-step-store.mjs";
 
 const REVISION = "4".repeat(40);
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -29,6 +31,8 @@ const canonicalValue = (value) => Array.isArray(value) ? value.map(canonicalValu
     : value;
 const canonicalJson = (value) => JSON.stringify(canonicalValue(value));
 const fileBytes = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+const persistedBytes = (value) => Buffer.from(`${JSON.stringify(canonicalValue(value), null, 2)}\n`, "utf8");
+const artifactIdentityFor = (path, bytes) => ({ path, bytes: bytes.length, sha256: sha256(bytes) });
 
 const planFixture = (repositoryRoot, worktree) => ({
   schemaVersion: 1,
@@ -53,7 +57,7 @@ const planFixture = (repositoryRoot, worktree) => ({
   evaluationContract: { fixtureId: "fixture-251-slice-2", version: 1, scorecard: ["one cycle"] },
 });
 
-const stateFixture = (plan, planIdentity, status, sequence, predecessorSha256) => ({
+const stateFixture = (plan, planIdentity, status, sequence, predecessorSha256, peerStatus = "planned") => ({
   schemaVersion: 2,
   stateType: "non-authoritative-flight-state",
   authority: "none",
@@ -69,10 +73,16 @@ const stateFixture = (plan, planIdentity, status, sequence, predecessorSha256) =
     integrationBranch: plan.integration.branch,
   },
   wave: { current: 1 },
-  lanes: { "lane-daisy": { activeMissionId: status === "active" ? "mission:daisy-251" : null } },
-  missions: {
-    "mission:daisy-251": { lane: "lane-daisy", activationWave: 1, status, revision: REVISION, authorityEvidence: null },
-  },
+  lanes: Object.fromEntries(plan.lanes.map((lane) => [lane.id, {
+    activeMissionId: lane.id === "lane-daisy" && status === "active" ? "mission:daisy-251" : null,
+  }])),
+  missions: Object.fromEntries(plan.missions.map((mission) => {
+    const missionStatus = mission.id === "mission:daisy-251" ? status : peerStatus;
+    return [mission.id, {
+      lane: mission.lane, activationWave: mission.activationWave, status: missionStatus,
+      revision: missionStatus === "planned" ? null : REVISION, authorityEvidence: null,
+    }];
+  })),
   observedAt: "2026-08-09T12:00:00.000Z",
   tool: { name: sequence === 0 ? "flight-state-init" : "flight-state-successor-recorder", version: "1.0.0" },
 });
@@ -124,20 +134,30 @@ const fixture = async (behaviors = {}) => {
   const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-feature-flight-step-")));
   const repositoryRoot = join(parent, "repository");
   const worktree = join(repositoryRoot, "daisy-worktree");
+  const peerWorktree = join(repositoryRoot, "peer-worktree");
   const artifactRoot = join(parent, "artifacts");
   const storeRoot = join(parent, "claim-store");
-  await Promise.all([mkdir(worktree, { recursive: true }), mkdir(artifactRoot), mkdir(storeRoot, { mode: 0o700 })]);
+  await Promise.all([mkdir(worktree, { recursive: true }), mkdir(peerWorktree, { recursive: true }), mkdir(artifactRoot), mkdir(storeRoot, { mode: 0o700 })]);
   await chmod(storeRoot, 0o700);
   const plan = planFixture(repositoryRoot, worktree);
+  if (behaviors.peerStatus !== undefined) {
+    plan.lanes.push({ id: "lane-peer", chatLabel: "Peer chat", teamLabel: "Peer team" });
+    plan.missions.push({
+      id: "mission:peer-251", slug: "mission-peer-251", title: "Peer mission", library: "peer",
+      lane: "lane-peer", branch: "agent/peer-251", worktree: peerWorktree, activationWave: 1, dependsOn: [],
+      writablePaths: ["packages/peer/**"], scope: "Peer scope.", deliverables: ["Peer output"], dependencyLevel: 0,
+      initialEligibility: "eligible-after-independent-authorization", constructionStatus: "planned-not-created", authorityStatus: "not-initialized",
+    });
+  }
   const planPath = join(artifactRoot, "plan.json");
   const planBytes = fileBytes(plan);
   await writeFile(planPath, planBytes);
   const planIdentity = { path: planPath, bytes: planBytes.length, sha256: sha256(planBytes) };
-  const predecessor = stateFixture(plan, planIdentity, "authorized", 0, null);
+  const predecessor = stateFixture(plan, planIdentity, "authorized", 0, null, "planned");
   const predecessorPath = join(artifactRoot, "state-0.json");
   const predecessorBytes = fileBytes(predecessor);
   await writeFile(predecessorPath, predecessorBytes);
-  const current = stateFixture(plan, planIdentity, "active", 1, sha256(predecessorBytes));
+  const current = stateFixture(plan, planIdentity, "active", 1, sha256(predecessorBytes), behaviors.peerStatus);
   const statePath = join(artifactRoot, "state-1.json");
   const stateBytes = fileBytes(current);
   await writeFile(statePath, stateBytes);
@@ -176,8 +196,55 @@ const fixture = async (behaviors = {}) => {
     claimStoreRoot: storeRoot,
     clock,
   });
-  return { parent, repositoryRoot, worktree, artifactRoot, storeRoot, plan, planIdentity, predecessor, current, input, dependencies, calls };
+  return { parent, repositoryRoot, worktree, peerWorktree, artifactRoot, storeRoot, plan, planIdentity, predecessor, current, input, dependencies, calls };
 };
+
+const withDependencies = (fixtureRecord, overrides) => Object.freeze({ ...fixtureRecord.dependencies, ...overrides });
+
+const rewriteCanonical = async (path, mutate) => {
+  const value = JSON.parse(await readFile(path, "utf8"));
+  mutate(value);
+  const bytes = persistedBytes(value);
+  await writeFile(path, bytes);
+  return { value, bytes, identity: artifactIdentityFor(path, bytes) };
+};
+
+const frozenStore = (overrides = {}) => Object.freeze({
+  claimStep: productionStepStore.claimStep,
+  readStep: productionStepStore.readStep,
+  writeSuccessor: productionStepStore.writeSuccessor,
+  writeResult: productionStepStore.writeResult,
+  ...overrides,
+});
+
+const replaceDirectory = async (path) => {
+  await rename(path, `${path}.retained-original`);
+  await mkdir(path, { mode: 0o700 });
+  await chmod(path, 0o700);
+};
+
+const wrappedHandle = (handle, overrides = {}) => ({
+  stat: (...args) => handle.stat(...args),
+  write: (...args) => handle.write(...args),
+  sync: (...args) => handle.sync(...args),
+  close: (...args) => handle.close(...args),
+  readFile: (...args) => handle.readFile(...args),
+  ...overrides,
+});
+
+const attemptDigestForClaim = (claim) => sha256(Buffer.from(canonicalJson({
+  plan: claim.plan,
+  currentState: claim.currentState,
+  predecessor: claim.predecessor,
+  sequence: claim.flight.sequence,
+  runnerInputSha256: claim.runner.inputSha256,
+  journalSequence: claim.runner.evaluatedThroughSequence,
+  cycleId: claim.runner.cycleId,
+  validationId: claim.runner.validationId,
+  repository: claim.repository,
+  adapter: claim.adapter,
+  claimedAt: claim.claimedAt,
+})));
 
 test("one authorized active Daisy cycle writes claim, successor, result and returns an exact terminal triad", async () => {
   const f = await fixture();
@@ -216,6 +283,64 @@ test("exact retry replays the terminal triad without authorization, invocation, 
   assert.equal(f.calls.invoke, before.invoke);
   assert.equal(f.calls.validate, before.validate);
   assert.equal(f.calls.clock, before.clock);
+});
+
+test("terminal replay rejects canonical substitutions in every independently bound domain", async (t) => {
+  const cases = [
+    ["attempt evidence timestamp", async ({ claimPath, resultPath }) => {
+      const claim = await rewriteCanonical(claimPath, (value) => { value.claimedAt = "2026-08-09T13:00:00.500Z"; });
+      await rewriteCanonical(resultPath, (value) => { value.claim = claim.identity; value.claimedAt = claim.value.claimedAt; });
+    }],
+    ["Runner mission identity", async ({ resultPath }) => rewriteCanonical(resultPath, (value) => {
+      const missionId = "mission:substituted-251";
+      value.runnerResult.missionId = missionId;
+      value.runnerResult.effectRecordCandidate.missionId = missionId;
+      value.runnerResultSha256 = sha256(Buffer.from(canonicalJson(value.runnerResult)));
+    })],
+    ["Runner seat attribution", async ({ resultPath }) => rewriteCanonical(resultPath, (value) => {
+      value.runnerResult.effectRecordCandidate.payload.seatId = "may";
+      value.runnerResultSha256 = sha256(Buffer.from(canonicalJson(value.runnerResult)));
+    })],
+    ["result flight", async ({ resultPath }) => rewriteCanonical(resultPath, (value) => { value.flightId = "mission:other-flight"; })],
+    ["repository pair", async ({ resultPath }) => rewriteCanonical(resultPath, (value) => {
+      value.repositoryBefore.branch = "agent/substituted";
+      value.repositoryAfter.branch = "agent/substituted";
+    })],
+    ["result adapter", async ({ resultPath }) => rewriteCanonical(resultPath, (value) => { value.adapter.runtimeId = "runtime:substituted"; })],
+    ["completion timestamp", async ({ resultPath }) => rewriteCanonical(resultPath, (value) => {
+      value.completedAt = "2026-08-09T13:00:02.000Z";
+    })],
+    ["successor observation", async ({ successorPath, resultPath }) => {
+      const successor = await rewriteCanonical(successorPath, (value) => { value.observedAt = "2026-08-09T13:00:02.000Z"; });
+      await rewriteCanonical(resultPath, (value) => { value.successor = successor.identity; });
+    }],
+    ["claim validation identity with recomputed attempt digest", async ({ claimPath, resultPath }) => {
+      const claim = await rewriteCanonical(claimPath, (value) => {
+        value.runner.validationId = "validation:substituted";
+        value.attemptDigest = attemptDigestForClaim(value);
+      });
+      await rewriteCanonical(resultPath, (value) => {
+        value.claim = claim.identity;
+        value.attemptDigest = claim.value.attemptDigest;
+      });
+    }],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async () => {
+      const f = await fixture();
+      const completed = await runFeatureFlightStepV1(f.input, f.dependencies);
+      const directory = join(f.storeRoot, "effects", completed.effectClaimId);
+      await mutate({
+        claimPath: join(directory, "claim.json"),
+        successorPath: join(directory, "successor.json"),
+        resultPath: join(directory, "result.json"),
+      });
+      const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
+      assert.equal(replay.outcome, "recovery_required");
+      assert.equal(replay.reason, "terminal_triad_conflict");
+      assert.equal(f.calls.invoke, 1);
+    });
+  }
 });
 
 test("alternate active state and later journal replay retain one invariant effect claim and cannot invoke twice", async () => {
@@ -283,6 +408,135 @@ test("simultaneous calls invoke Daisy at most once and the loser never returns o
   assert.ok(results.every((result) => ["completed", "recovery_required", "replayed"].includes(result.outcome)));
 });
 
+test("directory replacement at claim readback, writes, or retained triad hierarchy never reports success", async (t) => {
+  for (const phase of ["claim-readback", "successor-write", "result-write", "final-read", "final-effects", "final-root"]) {
+    await t.test(phase, async () => {
+      const f = await fixture();
+      let replaced = false;
+      const replaceOnce = async (path) => {
+        if (replaced) return;
+        replaced = true;
+        await replaceDirectory(path);
+      };
+      const store = phase === "claim-readback" ? frozenStore({
+        claimStep: (input) => productionStepStore.claimStep(input, {
+          lstat: async (path) => {
+            if (path.endsWith("/claim.json")) await replaceOnce(dirname(path));
+            return lstat(path);
+          },
+        }),
+      }) : phase === "successor-write" ? frozenStore({
+        writeSuccessor: async (input) => {
+          await replaceOnce(input.expectedDirectoryIdentity.path);
+          return productionStepStore.writeSuccessor(input);
+        },
+      }) : phase === "result-write" ? frozenStore({
+        writeResult: async (input) => {
+          await replaceOnce(input.expectedDirectoryIdentity.path);
+          return productionStepStore.writeResult(input);
+        },
+      }) : frozenStore({
+        readStep: async (input) => {
+          if (input.expectedDirectoryIdentity !== undefined) {
+            const target = phase === "final-root" ? f.storeRoot
+              : phase === "final-effects" ? join(f.storeRoot, "effects")
+                : input.expectedDirectoryIdentity.path;
+            await replaceOnce(target);
+          }
+          return productionStepStore.readStep(input);
+        },
+      });
+      const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
+      assert.equal(result.outcome, "recovery_required");
+      assert.equal(replaced, true);
+      assert.equal(f.calls.invoke, phase === "claim-readback" ? 0 : 1);
+    });
+  }
+});
+
+test("claim boundary rereads post-mkdir and invocation-claim failures as recovery-required", async (t) => {
+  await t.test("post-mkdir claim open failure", async () => {
+    const f = await fixture();
+    const store = frozenStore({
+      claimStep: (input) => productionStepStore.claimStep(input, {
+        open: async (path, flags, mode) => {
+          if (path.endsWith("/claim.json") && (flags & fsConstants.O_WRONLY) !== 0) throw new Error("injected claim open failure");
+          return open(path, flags, mode);
+        },
+      }),
+    });
+    const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
+    assert.equal(result.outcome, "recovery_required");
+    assert.equal(result.storeStatus, "malformed");
+    assert.equal(f.calls.invoke, 0);
+  });
+  for (const outcome of ["throw", "conflict"]) {
+    await t.test(`invocation claim ${outcome}`, async () => {
+      const f = await fixture();
+      const store = frozenStore({
+        claimStep: outcome === "throw" ? async () => { throw new Error("claim failed"); }
+          : async () => ({ status: "exists", step: { status: "claimed" } }),
+      });
+      const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
+      assert.equal(result.outcome, "recovery_required");
+      assert.notEqual(result.outcome, "stopped");
+      assert.equal(f.calls.invoke, 0);
+    });
+  }
+  await t.test("invocation claim clock failure", async () => {
+    const f = await fixture();
+    const clock = Object.freeze({ now: async () => { throw new Error("clock failed"); } });
+    const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { clock }));
+    assert.equal(result.outcome, "recovery_required");
+    assert.notEqual(result.outcome, "stopped");
+    assert.equal(f.calls.invoke, 0);
+  });
+});
+
+test("partial write, sync, close, and directory durability faults never invoke or report a claim", async (t) => {
+  const cases = [
+    ["partial-write", (handle) => wrappedHandle(handle, { write: async (bytes) => ({ bytesWritten: bytes.length - 1 }) })],
+    ["file-sync", (handle) => wrappedHandle(handle, { sync: async () => { throw new Error("injected file sync failure"); } })],
+    ["file-close", (handle) => {
+      let failed = false;
+      return wrappedHandle(handle, { close: async () => {
+        if (!failed) { failed = true; throw new Error("injected file close failure"); }
+        return handle.close();
+      } });
+    }],
+  ];
+  for (const [name, wrap] of cases) {
+    await t.test(name, async () => {
+      const f = await fixture();
+      const store = frozenStore({
+        claimStep: (input) => productionStepStore.claimStep(input, {
+          open: async (path, flags, mode) => {
+            const handle = await open(path, flags, mode);
+            return path.endsWith("/claim.json") && (flags & fsConstants.O_WRONLY) !== 0 ? wrap(handle) : handle;
+          },
+        }),
+      });
+      const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
+      assert.equal(result.outcome, "recovery_required");
+      assert.equal(f.calls.invoke, 0);
+    });
+  }
+  await t.test("effects directory sync", async () => {
+    const f = await fixture();
+    const store = frozenStore({
+      claimStep: (input) => productionStepStore.claimStep(input, {
+        open: async (path, flags, mode) => {
+          const handle = await open(path, flags, mode);
+          return path.endsWith("/effects") ? wrappedHandle(handle, { sync: async () => { throw new Error("injected directory sync failure"); } }) : handle;
+        },
+      }),
+    });
+    const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
+    assert.equal(result.outcome, "recovery_required");
+    assert.equal(f.calls.invoke, 0);
+  });
+});
+
 test("pre-claim Runner denial is stopped and creates no effect directory", async () => {
   const f = await fixture({ authorize: (plan) => permission(plan, "deny") });
   const result = await runFeatureFlightStepV1(f.input, f.dependencies);
@@ -299,6 +553,93 @@ test("post-claim adapter failure leaves recovery-required evidence and no succes
   const directory = join(f.storeRoot, "effects", result.effectClaimId);
   await readFile(join(directory, "claim.json"));
   await assert.rejects(readFile(join(directory, "successor.json")), /ENOENT/u);
+});
+
+test("repository mutation, validator defect, and executor attribution substitution remain nonterminal", async (t) => {
+  const cases = [
+    ["repository mutation", { observe: (root, count) => ({ root, branch: "agent/daisy-251", head: REVISION, clean: count === 1 }) }],
+    ["validator throw", { validate: async () => { throw new Error("validator defect"); } }],
+    ["validator identity", { validate: (plan) => validator(plan, { validationId: "validation:substituted" }) }],
+    ["executor attribution", { invoke: (plan) => executor(plan, { seatId: "may" }) }],
+  ];
+  for (const [name, behavior] of cases) {
+    await t.test(name, async () => {
+      const f = await fixture(behavior);
+      const result = await runFeatureFlightStepV1(f.input, f.dependencies);
+      assert.equal(result.outcome, "recovery_required");
+      assert.equal(f.calls.invoke, 1);
+      const directory = join(f.storeRoot, "effects", result.effectClaimId);
+      await assert.rejects(readFile(join(directory, "successor.json")), /ENOENT/u);
+    });
+  }
+});
+
+test("store symlink, alias, and mode drift fail closed without authorization or invocation", async (t) => {
+  await t.test("root alias", async () => {
+    const f = await fixture();
+    const alias = `${f.storeRoot}/../claim-store`;
+    const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { claimStoreRoot: alias }));
+    assert.equal(result.outcome, "recovery_required");
+    assert.equal(f.calls.authorize, 0);
+    assert.equal(f.calls.invoke, 0);
+  });
+  await t.test("symlink root", async () => {
+    const f = await fixture();
+    const link = join(f.parent, "claim-store-link");
+    await symlink(f.storeRoot, link, "dir");
+    const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { claimStoreRoot: link }));
+    assert.equal(result.outcome, "recovery_required");
+    assert.equal(f.calls.authorize, 0);
+    assert.equal(f.calls.invoke, 0);
+  });
+  await t.test("root mode", async () => {
+    const f = await fixture();
+    await chmod(f.storeRoot, 0o755);
+    const result = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(result.outcome, "recovery_required");
+    assert.equal(f.calls.authorize, 0);
+    assert.equal(f.calls.invoke, 0);
+  });
+  for (const kind of ["symlink", "mode"]) {
+    await t.test(`claim ${kind}`, async () => {
+      const f = await fixture();
+      const completed = await runFeatureFlightStepV1(f.input, f.dependencies);
+      const claimPath = join(f.storeRoot, "effects", completed.effectClaimId, "claim.json");
+      if (kind === "symlink") {
+        const retained = `${claimPath}.retained`;
+        await rename(claimPath, retained);
+        await symlink(retained, claimPath);
+      } else {
+        await chmod(claimPath, 0o644);
+      }
+      const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
+      assert.equal(replay.outcome, "recovery_required");
+      assert.equal(f.calls.invoke, 1);
+    });
+  }
+});
+
+test("an active Daisy mission plus any blocked or failed peer stops before claim", async (t) => {
+  for (const peerStatus of ["blocked", "failed"]) {
+    await t.test(peerStatus, async () => {
+      const f = await fixture({ peerStatus });
+      const genesis = stateFixture(f.plan, f.planIdentity, "active", 0, null, peerStatus);
+      const stateBytes = fileBytes(genesis);
+      await writeFile(f.input.statePath, stateBytes);
+      const input = {
+        planPath: f.input.planPath,
+        expectedPlanSha256: f.input.expectedPlanSha256,
+        statePath: f.input.statePath,
+        expectedStateSha256: sha256(stateBytes),
+        expectedStateSequence: 0,
+        maxSteps: 1,
+        routing: f.input.routing,
+      };
+      await assert.rejects(runFeatureFlightStepV1(input, f.dependencies), /admissible dependency-free active Daisy mission/u);
+      assert.equal(f.calls.authorize, 0);
+      assert.equal(f.calls.invoke, 0);
+    });
+  }
 });
 
 test("wrong active identity, blocked peer, dependencies, adapter policy, and mutable dependencies fail before claim", async (t) => {
@@ -333,6 +674,27 @@ test("wrong active identity, blocked peer, dependencies, adapter policy, and mut
     const f = await fixture();
     const wrong = Object.freeze({ ...f.dependencies, adapterDescriptor: Object.freeze({ ...f.dependencies.adapterDescriptor, adapterId: "other" }) });
     await assert.rejects(runFeatureFlightStepV1(f.input, wrong), /fixed Slice 2 policy/u);
+    assert.equal(f.calls.load, 0);
+  });
+  await t.test("runtime and executor collision", async () => {
+    const f = await fixture();
+    const collision = Object.freeze({
+      ...f.dependencies,
+      adapterDescriptor: Object.freeze({
+        ...f.dependencies.adapterDescriptor,
+        executorId: f.dependencies.adapterDescriptor.runtimeId,
+      }),
+    });
+    await assert.rejects(runFeatureFlightStepV1(f.input, collision), /fixed Slice 2 policy/u);
+    assert.equal(f.calls.load, 0);
+  });
+  await t.test("unbounded runtime identity", async () => {
+    const f = await fixture();
+    const malformed = Object.freeze({
+      ...f.dependencies,
+      adapterDescriptor: Object.freeze({ ...f.dependencies.adapterDescriptor, runtimeId: `runtime:${"x".repeat(300)}` }),
+    });
+    await assert.rejects(runFeatureFlightStepV1(f.input, malformed), /fixed Slice 2 policy/u);
     assert.equal(f.calls.load, 0);
   });
 });

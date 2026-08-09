@@ -12,22 +12,20 @@ const overlaps = (left, right) => {
   const b = folded(right);
   return a === b || a.startsWith(`${b}${sep}`) || b.startsWith(`${a}${sep}`);
 };
-
 const canonicalValue = (value) => Array.isArray(value) ? value.map(canonicalValue)
   : value !== null && typeof value === "object"
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]))
     : value;
-
 const canonicalBytes = (value) => Buffer.from(`${JSON.stringify(canonicalValue(value), null, 2)}\n`, "utf8");
-
 const dependencies = (injected = {}) => Object.freeze({ ...defaultIo, ...injected });
 
 const strictRoot = async (root, excludedRoots, io) => {
   if (typeof root !== "string" || !isAbsolute(root) || normalize(root) !== root || resolve(root) !== root) {
     throw new Error("Feature Flight claim-store root must be a canonical absolute path.");
   }
-  const canonical = await io.realpath(root).catch(() => undefined);
-  const info = await io.lstat(root).catch(() => undefined);
+  const [canonical, info] = await Promise.all([
+    io.realpath(root).catch(() => undefined), io.lstat(root).catch(() => undefined),
+  ]);
   if (canonical !== root || !info?.isDirectory() || info.isSymbolicLink() || (info.mode & 0o777) !== 0o700) {
     throw new Error("Feature Flight claim-store root must be an existing canonical non-symlink mode-0700 directory.");
   }
@@ -37,7 +35,7 @@ const strictRoot = async (root, excludedRoots, io) => {
   if (excludedRoots.some((entry) => overlaps(root, entry))) {
     throw new Error("Feature Flight claim-store root must be outside the repository and every plan worktree.");
   }
-  return { root, identity: info };
+  return info;
 };
 
 const retainDirectory = async (path, io) => {
@@ -46,84 +44,109 @@ const retainDirectory = async (path, io) => {
     throw new Error(`Feature Flight store directory is unavailable or unsafe: ${path}`);
   }
   const handle = await io.open(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
-  const retained = await handle.stat();
-  if (!retained.isDirectory() || !sameInode(before, retained)) {
-    await handle.close().catch(() => {});
-    throw new Error(`Feature Flight store directory identity changed: ${path}`);
-  }
-  return { handle, identity: retained };
-};
-
-const syncAndClose = async (retained, label) => {
-  let syncError;
-  try { await retained.handle.sync(); } catch (error) { syncError = error; }
-  let closeError;
-  try { await retained.handle.close(); } catch (error) { closeError = error; }
-  if (syncError || closeError) throw new AggregateError([syncError, closeError].filter(Boolean), `${label} durability is uncertain.`);
-};
-
-const ensureEffects = async (root, rootIdentity, io) => {
-  const path = join(root, "effects");
   try {
-    await io.mkdir(path, { mode: 0o700 });
-    const retainedRoot = await retainDirectory(root, io);
-    if (!sameInode(rootIdentity, retainedRoot.identity)) {
-      await retainedRoot.handle.close().catch(() => {});
-      throw new Error("Feature Flight claim-store root identity changed.");
+    const identity = await handle.stat();
+    if (!identity.isDirectory() || (identity.mode & 0o777) !== 0o700 || !sameInode(before, identity)) {
+      throw new Error(`Feature Flight store directory identity changed: ${path}`);
     }
-    await syncAndClose(retainedRoot, "Feature Flight claim-store root");
+    return { path, handle, identity };
   } catch (error) {
-    if (error?.code !== "EEXIST") throw error;
+    await handle.close().catch(() => {});
+    throw error;
   }
-  const canonical = await io.realpath(path).catch(() => undefined);
-  if (canonical !== path) throw new Error("Feature Flight effects directory must be canonical and non-symlink.");
-  return { path, ...(await retainDirectory(path, io)) };
+};
+
+const assertRetainedDirectory = async (retained, io) => {
+  const [linked, canonical, opened] = await Promise.all([
+    io.lstat(retained.path).catch(() => undefined),
+    io.realpath(retained.path).catch(() => undefined),
+    retained.handle.stat().catch(() => undefined),
+  ]);
+  if (canonical !== retained.path || !linked?.isDirectory() || linked.isSymbolicLink() ||
+      (linked.mode & 0o777) !== 0o700 || !opened?.isDirectory() || (opened.mode & 0o777) !== 0o700 ||
+      !sameInode(retained.identity, linked) || !sameInode(retained.identity, opened)) {
+    throw new Error(`Feature Flight store directory identity changed: ${retained.path}`);
+  }
+};
+
+const closeRetained = async (...retained) => {
+  const errors = [];
+  for (const entry of retained) {
+    if (entry?.handle) await entry.handle.close().catch((error) => errors.push(error));
+  }
+  if (errors.length > 0) throw new AggregateError(errors, "Feature Flight store directory close is uncertain.");
+};
+
+const syncRetained = async (retained, label) => {
+  try { await retained.handle.sync(); }
+  catch (error) { throw new AggregateError([error], `${label} durability is uncertain.`); }
 };
 
 const pathsFor = (root, effectClaimId) => {
   if (!DIGEST.test(effectClaimId ?? "")) throw new Error("effectClaimId must be a lowercase SHA-256 digest.");
   const directory = join(root, "effects", effectClaimId);
   return {
-    directory,
-    claim: join(directory, "claim.json"),
-    successor: join(directory, "successor.json"),
-    result: join(directory, "result.json"),
+    root, effects: dirname(directory), directory,
+    claim: join(directory, "claim.json"), successor: join(directory, "successor.json"), result: join(directory, "result.json"),
   };
 };
 
-const createFile = async (path, value, directoryIdentity, io) => {
-  const parent = dirname(path);
-  const retainedParent = await retainDirectory(parent, io);
-  if (!sameInode(directoryIdentity, retainedParent.identity)) {
-    await retainedParent.handle.close().catch(() => {});
-    throw new Error(`Feature Flight artifact parent identity changed: ${parent}`);
+const rootContext = async (input, io) => {
+  const rootIdentity = await strictRoot(input.root, input.excludedRoots, io);
+  const paths = pathsFor(input.root, input.effectClaimId);
+  const root = await retainDirectory(paths.root, io);
+  if (!sameInode(rootIdentity, root.identity)) {
+    await closeRetained(root).catch(() => {});
+    throw new Error("Feature Flight claim-store root identity changed while opening.");
   }
-  let file;
-  const bytes = canonicalBytes(value);
+  return { paths, root };
+};
+
+const openHierarchy = async (input, io, { allowMissing = false } = {}) => {
+  const context = await rootContext(input, io);
+  let effects;
+  let directory;
   try {
-    file = await io.open(path, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
-    const identity = await file.stat();
-    if (!identity.isFile() || (identity.mode & 0o777) !== 0o600 || identity.size !== 0) throw new Error(`Feature Flight artifact target is unsafe: ${path}`);
-    const written = await file.write(bytes, 0, bytes.length, 0);
-    if (written.bytesWritten !== bytes.length) throw new Error(`Feature Flight artifact write was partial: ${path}`);
-    await file.sync();
-    const retained = await file.stat();
-    const linked = await io.lstat(path).catch(() => undefined);
-    if (!retained.isFile() || retained.size !== bytes.length || !linked?.isFile() || linked.isSymbolicLink() || !sameInode(identity, retained) || !sameInode(identity, linked)) {
-      throw new Error(`Feature Flight artifact identity changed: ${path}`);
+    const effectsInfo = await io.lstat(context.paths.effects).catch((error) => error?.code === "ENOENT" ? undefined : Promise.reject(error));
+    if (effectsInfo === undefined) {
+      if (!allowMissing) throw new Error("Feature Flight effects directory is unavailable.");
+      await assertRetainedDirectory(context.root, io);
+      return { ...context, effects: null, directory: null };
     }
-    await file.close();
-    file = undefined;
-    await retainedParent.handle.sync();
-    await retainedParent.handle.close();
-    const snapshot = await readFile(path, io);
-    if (!snapshot.bytes.equals(bytes)) throw new Error(`Feature Flight artifact readback differed: ${path}`);
-    return snapshot;
+    effects = await retainDirectory(context.paths.effects, io);
+    const directoryInfo = await io.lstat(context.paths.directory).catch((error) => error?.code === "ENOENT" ? undefined : Promise.reject(error));
+    if (directoryInfo === undefined) {
+      if (!allowMissing) throw new Error("Feature Flight effect directory is unavailable.");
+      await Promise.all([assertRetainedDirectory(context.root, io), assertRetainedDirectory(effects, io)]);
+      return { ...context, effects, directory: null };
+    }
+    directory = await retainDirectory(context.paths.directory, io);
+    await Promise.all([
+      assertRetainedDirectory(context.root, io),
+      assertRetainedDirectory(effects, io),
+      assertRetainedDirectory(directory, io),
+    ]);
+    return { ...context, effects, directory };
   } catch (error) {
-    if (file) await file.close().catch(() => {});
-    await retainedParent.handle.close().catch(() => {});
+    await closeRetained(directory, effects, context.root).catch(() => {});
     throw error;
   }
+};
+
+const directoryToken = (retained) => Object.freeze({ path: retained.path, dev: retained.identity.dev, ino: retained.identity.ino });
+const matchesToken = (retained, token) => token !== null && typeof token === "object" && !Array.isArray(token) &&
+  Object.getPrototypeOf(token) === Object.prototype && Object.keys(token).length === 3 &&
+  token.path === retained.path && token.dev === retained.identity.dev && token.ino === retained.identity.ino;
+
+const assertExpectedDirectory = (hierarchy, expected) => {
+  if (!hierarchy.directory || !matchesToken(hierarchy.directory, expected)) {
+    throw new Error("Feature Flight effect directory does not match the successful claim identity.");
+  }
+};
+
+const assertHierarchy = async (hierarchy, io) => {
+  const retained = [hierarchy.root, hierarchy.effects, hierarchy.directory].filter(Boolean);
+  await Promise.all(retained.map((entry) => assertRetainedDirectory(entry, io)));
 };
 
 const readFile = async (path, io) => {
@@ -135,9 +158,9 @@ const readFile = async (path, io) => {
     const opened = await handle.stat();
     if (!opened.isFile() || !sameInode(before, opened)) throw new Error(`Feature Flight artifact identity changed while opening: ${path}`);
     const bytes = await handle.readFile();
-    const retained = await handle.stat();
-    const after = await io.lstat(path).catch(() => undefined);
-    if (!retained.isFile() || retained.size !== bytes.length || !after?.isFile() || after.isSymbolicLink() || !sameInode(opened, retained) || !sameInode(opened, after)) {
+    const [retained, after] = await Promise.all([handle.stat(), io.lstat(path).catch(() => undefined)]);
+    if (!retained.isFile() || retained.size !== bytes.length || !after?.isFile() || after.isSymbolicLink() ||
+        (after.mode & 0o777) !== 0o600 || !sameInode(opened, retained) || !sameInode(opened, after)) {
       throw new Error(`Feature Flight artifact identity changed during read: ${path}`);
     }
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -149,71 +172,116 @@ const readFile = async (path, io) => {
   }
 };
 
-const context = async (input, injected) => {
-  const io = dependencies(injected);
-  const root = await strictRoot(input.root, input.excludedRoots, io);
-  const paths = pathsFor(root.root, input.effectClaimId);
-  const effectsPath = dirname(paths.directory);
-  const effects = await io.lstat(effectsPath).catch((error) => error?.code === "ENOENT" ? undefined : Promise.reject(error));
-  if (effects !== undefined) {
-    const canonicalEffects = await io.realpath(effectsPath).catch(() => undefined);
-    if (canonicalEffects !== effectsPath || !effects.isDirectory() || effects.isSymbolicLink() || (effects.mode & 0o777) !== 0o700) {
-      throw new Error("Feature Flight effects directory is unsafe.");
+const createFile = async (path, value, hierarchy, io) => {
+  assertExpectedDirectory(hierarchy, hierarchy.expectedDirectoryIdentity);
+  await assertHierarchy(hierarchy, io);
+  let file;
+  const bytes = canonicalBytes(value);
+  try {
+    file = await io.open(path, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
+    const opened = await file.stat();
+    if (!opened.isFile() || (opened.mode & 0o777) !== 0o600 || opened.size !== 0) throw new Error(`Feature Flight artifact target is unsafe: ${path}`);
+    const written = await file.write(bytes, 0, bytes.length, 0);
+    if (written.bytesWritten !== bytes.length) throw new Error(`Feature Flight artifact write was partial: ${path}`);
+    await file.sync();
+    const [retained, linked] = await Promise.all([file.stat(), io.lstat(path).catch(() => undefined)]);
+    if (!retained.isFile() || retained.size !== bytes.length || !linked?.isFile() || linked.isSymbolicLink() ||
+        (linked.mode & 0o777) !== 0o600 || !sameInode(opened, retained) || !sameInode(opened, linked)) {
+      throw new Error(`Feature Flight artifact identity changed: ${path}`);
     }
+    await file.close();
+    file = undefined;
+    await syncRetained(hierarchy.directory, "Feature Flight effect directory");
+    await assertHierarchy(hierarchy, io);
+    const snapshot = await readFile(path, io);
+    if (!snapshot.bytes.equals(bytes)) throw new Error(`Feature Flight artifact readback differed: ${path}`);
+    await assertHierarchy(hierarchy, io);
+    return snapshot;
+  } catch (error) {
+    if (file) await file.close().catch(() => {});
+    throw error;
   }
-  return { io, root, paths };
 };
 
 export const claimStep = async (input, injected = {}) => {
-  const { io, root, paths } = await context(input, injected);
-  const effects = await ensureEffects(root.root, root.identity, io);
-  let created = false;
+  const io = dependencies(injected);
+  const context = await rootContext(input, io);
+  let effects;
+  let directory;
   try {
-    await io.mkdir(paths.directory, { mode: 0o700 });
-    created = true;
+    let effectsCreated = false;
+    try { await io.mkdir(context.paths.effects, { mode: 0o700 }); effectsCreated = true; }
+    catch (error) { if (error?.code !== "EEXIST") throw error; }
+    if (effectsCreated) await syncRetained(context.root, "Feature Flight claim-store root");
+    effects = await retainDirectory(context.paths.effects, io);
+    await Promise.all([assertRetainedDirectory(context.root, io), assertRetainedDirectory(effects, io)]);
+
+    let created = false;
+    try { await io.mkdir(context.paths.directory, { mode: 0o700 }); created = true; }
+    catch (error) { if (error?.code !== "EEXIST") throw error; }
+    if (!created) {
+      await assertHierarchy({ ...context, effects, directory: null }, io);
+      await closeRetained(effects, context.root);
+      return { status: "exists", step: await readStep(input, injected) };
+    }
+    await syncRetained(effects, "Feature Flight effects directory");
+    directory = await retainDirectory(context.paths.directory, io);
+    await syncRetained(directory, "Feature Flight effect directory");
+    const token = directoryToken(directory);
+    const hierarchy = { ...context, effects, directory, expectedDirectoryIdentity: token };
+    const claim = await createFile(context.paths.claim, input.claim, hierarchy, io);
+    await assertHierarchy(hierarchy, io);
+    await closeRetained(directory, effects, context.root);
+    return { status: "claimed", claim, directoryIdentity: token };
   } catch (error) {
-    if (error?.code !== "EEXIST") throw error;
+    await closeRetained(directory, effects, context.root).catch(() => {});
+    throw error;
   }
-  if (!created) {
-    await effects.handle.close();
-    return { status: "exists", step: await readStep(input, injected) };
-  }
-  await syncAndClose(effects, "Feature Flight effects directory");
-  const canonical = await io.realpath(paths.directory).catch(() => undefined);
-  if (canonical !== paths.directory) throw new Error("Feature Flight effect directory is not canonical.");
-  const retained = await retainDirectory(paths.directory, io);
-  await syncAndClose(retained, "Feature Flight effect directory");
-  const directoryIdentity = await io.lstat(paths.directory);
-  const claim = await createFile(paths.claim, input.claim, directoryIdentity, io);
-  return { status: "claimed", claim };
 };
 
 export const readStep = async (input, injected = {}) => {
-  const { io, paths } = await context(input, injected);
-  const directory = await io.lstat(paths.directory).catch((error) => error?.code === "ENOENT" ? undefined : Promise.reject(error));
-  if (directory === undefined) return { status: "absent", paths };
-  if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o777) !== 0o700) throw new Error("Feature Flight effect directory is unsafe.");
-  const [claim, successor, result] = await Promise.all([
-    readFile(paths.claim, io), readFile(paths.successor, io), readFile(paths.result, io),
-  ]);
-  if (claim === null) return { status: "malformed", paths, claim, successor, result };
-  if (input.expectedAttemptDigest !== undefined && claim.value.attemptDigest !== input.expectedAttemptDigest) {
-    return { status: "conflicting", paths, claim, successor, result };
+  const io = dependencies(injected);
+  const hierarchy = await openHierarchy(input, io, { allowMissing: true });
+  try {
+    if (hierarchy.effects === null || hierarchy.directory === null) {
+      await assertHierarchy(hierarchy, io);
+      await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root);
+      return { status: "absent", paths: hierarchy.paths };
+    }
+    if (input.expectedDirectoryIdentity !== undefined) assertExpectedDirectory(hierarchy, input.expectedDirectoryIdentity);
+    const [claim, successor, result] = await Promise.all([
+      readFile(hierarchy.paths.claim, io), readFile(hierarchy.paths.successor, io), readFile(hierarchy.paths.result, io),
+    ]);
+    await assertHierarchy(hierarchy, io);
+    const token = directoryToken(hierarchy.directory);
+    await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root);
+    const core = { paths: hierarchy.paths, claim, successor, result, directoryIdentity: token };
+    if (claim === null) return { status: "malformed", ...core };
+    if (input.expectedAttemptDigest !== undefined && claim.value.attemptDigest !== input.expectedAttemptDigest) return { status: "conflicting", ...core };
+    if (successor === null && result === null) return { status: "claimed", ...core };
+    if (successor !== null && result === null) return { status: "successor_only", ...core };
+    if (successor === null && result !== null) return { status: "malformed", ...core };
+    return { status: "terminal", ...core };
+  } catch (error) {
+    await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root).catch(() => {});
+    throw error;
   }
-  if (successor === null && result === null) return { status: "claimed", paths, claim, successor, result };
-  if (successor !== null && result === null) return { status: "successor_only", paths, claim, successor, result };
-  if (successor === null && result !== null) return { status: "malformed", paths, claim, successor, result };
-  return { status: "terminal", paths, claim, successor, result };
 };
 
-export const writeSuccessor = async (input, injected = {}) => {
-  const { io, paths } = await context(input, injected);
-  const directoryIdentity = await io.lstat(paths.directory);
-  return createFile(paths.successor, input.successor, directoryIdentity, io);
+const writeArtifact = async (input, filename, value, injected) => {
+  const io = dependencies(injected);
+  const hierarchy = await openHierarchy(input, io);
+  hierarchy.expectedDirectoryIdentity = input.expectedDirectoryIdentity;
+  try {
+    assertExpectedDirectory(hierarchy, input.expectedDirectoryIdentity);
+    const snapshot = await createFile(hierarchy.paths[filename], value, hierarchy, io);
+    await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root);
+    return snapshot;
+  } catch (error) {
+    await closeRetained(hierarchy.directory, hierarchy.effects, hierarchy.root).catch(() => {});
+    throw error;
+  }
 };
 
-export const writeResult = async (input, injected = {}) => {
-  const { io, paths } = await context(input, injected);
-  const directoryIdentity = await io.lstat(paths.directory);
-  return createFile(paths.result, input.result, directoryIdentity, io);
-};
+export const writeSuccessor = (input, injected = {}) => writeArtifact(input, "successor", input.successor, injected);
+export const writeResult = (input, injected = {}) => writeArtifact(input, "result", input.result, injected);
