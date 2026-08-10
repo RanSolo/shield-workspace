@@ -38,7 +38,7 @@ const FIXTURE_RELEASE_BASELINE = Object.freeze({
   schemaVersion: "shield.fixture.release-baseline.v1",
   identityRecordDigest: "d494a075b8a4a217e60f42cd89c738d4abbd397e86b189f346190d8961c4dfcc",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
-  launcherDigest: "b4e1adf7cf647d533f9b32b8aa7eab449e5f78ce9fbb5f4c3ddfd9349a717615",
+  launcherDigest: "8ecec87e2b248a7454fa27bd0eb91adaccb763350d7048f1e4db3a72ef3c1396",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
@@ -654,6 +654,36 @@ test("host launcher requires a closed host context", async () => {
         baselinePath: "outside.json",
         authoritativeReceiptJournalPath: null,
         attributionContext: null
+      }
+    }),
+    /host_context_not_closed/
+  );
+});
+
+test("host launcher accepts captured baseline bytes without reopening a baseline pathname", async () => {
+  const result = await launchExternalFixture({
+    fixtureRoot: root,
+    operatorInput: { releaseBaseline: FIXTURE_RELEASE_BASELINE },
+    hostContext: {
+      baselineBytes: Buffer.from(JSON.stringify(FIXTURE_RELEASE_BASELINE), "utf8"),
+      authoritativeReceiptJournalPath: null,
+      attributionContext: null,
+      toolingContext: null
+    }
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.reason, "fixture_input_not_closed");
+
+  await assert.rejects(
+    launchExternalFixture({
+      fixtureRoot: root,
+      operatorInput: {},
+      hostContext: {
+        baselinePath: "/must/not/open.json",
+        baselineBytes: Buffer.from("{}"),
+        authoritativeReceiptJournalPath: null,
+        attributionContext: null,
+        toolingContext: null
       }
     }),
     /host_context_not_closed/

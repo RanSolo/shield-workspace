@@ -397,16 +397,50 @@ export function createPermissionAuthorizer(dependencies: PermissionAuthorizerDep
     const evaluation = evaluatePermission(plan, context);
     if (evaluation.binding === null) throw new Error(evaluation.reasonCode);
     const binding = evaluation.binding;
-    const decision: RunnerPermissionDecision = { runnerContractVersion: 1, decisionId: context.decisionId, outcome: evaluation.outcome,
-      missionId: plan.missionId, subjectId: plan.subjectId, revisionId: plan.revisionId, evaluatedThroughSequence: plan.evaluatedThroughSequence,
-      cycleId: plan.cycleId, seatId: plan.seatId, actionId: plan.actionId, effectClass: plan.effectClass, effectKey: plan.effectKey,
-      reasonCode: evaluation.reasonCode, authorizationArtifact: artifact(plan, context, evaluation, binding) };
+    const decision = createRunnerPermissionDecisionV1(plan, context);
     const record = auditRecord(plan, context, binding, dependencies.ledgerId, "permission.decision", evaluation.outcome, `audit:${context.decisionId}`, context.evaluatedAt, null, evaluation.attestationIds);
     const receipt = await dependencies.appendIfAbsent(record);
     if (validatePermissionAuditReceipt(receipt, record).state === "invalid") throw new Error("audit_receipt_mismatch");
     used.add(context.decisionId);
     return decision;
   };
+}
+
+/**
+ * Builds the Runner permission decision without writing audit or claim state.
+ * The caller remains responsible for acquiring a fresh context for each run.
+ */
+export function createRunnerPermissionDecisionV1(
+  planInput: unknown,
+  contextInput: unknown,
+): RunnerPermissionDecision {
+  const checkedPlan = validateRunnerCyclePlan(planInput);
+  if (checkedPlan.state === "invalid") throw new Error("permission_plan_malformed");
+  const checkedContext = validatePermissionInvocationContext(contextInput);
+  if (checkedContext.state === "invalid") throw new Error("permission_context_malformed");
+  const plan = immutableJsonCopy(checkedPlan.value);
+  const context = immutableJsonCopy(checkedContext.value);
+  const evaluation = evaluatePermission(plan, context);
+  if (evaluation.binding === null) throw new Error(evaluation.reasonCode);
+  const decision: RunnerPermissionDecision = {
+    runnerContractVersion: 1,
+    decisionId: context.decisionId,
+    outcome: evaluation.outcome,
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    revisionId: plan.revisionId,
+    evaluatedThroughSequence: plan.evaluatedThroughSequence,
+    cycleId: plan.cycleId,
+    seatId: plan.seatId,
+    actionId: plan.actionId,
+    effectClass: plan.effectClass,
+    effectKey: plan.effectKey,
+    reasonCode: evaluation.reasonCode,
+    authorizationArtifact: artifact(plan, context, evaluation, evaluation.binding),
+  };
+  const checkedDecision = validateRunnerPermissionDecision(decision);
+  if (checkedDecision.state === "invalid") throw new Error("permission_decision_malformed");
+  return immutableJsonCopy(checkedDecision.value);
 }
 
 function exactDecision(plan: RunnerCyclePlan, decision: RunnerPermissionDecision, context: PermissionInvocationContext): RuntimeBinding | null {

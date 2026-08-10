@@ -165,17 +165,41 @@ export async function loadTrustedIsolationEnvelope({ envelopePath, fixtureRoot }
   });
 }
 
-const HOST_CONTEXT_FIELDS = Object.freeze([
+const HOST_CONTEXT_PATH_FIELDS = Object.freeze([
   "baselinePath",
   "authoritativeReceiptJournalPath",
   "attributionContext",
   "toolingContext"
 ]);
+const HOST_CONTEXT_BYTES_FIELDS = Object.freeze([
+  "baselineBytes",
+  "authoritativeReceiptJournalPath",
+  "attributionContext",
+  "toolingContext"
+]);
+
+function parseCapturedBaseline(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) {
+    throw new Error("baseline_bytes_malformed");
+  }
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("baseline_bytes_malformed");
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("baseline_bytes_malformed");
+  }
+}
 
 export async function launchExternalFixture({ fixtureRoot, operatorInput, hostContext }) {
-  if (!exact(hostContext, HOST_CONTEXT_FIELDS) ||
-      typeof hostContext.baselinePath !== "string" ||
-      hostContext.baselinePath.length === 0 ||
+  const pathForm = exact(hostContext, HOST_CONTEXT_PATH_FIELDS) &&
+    typeof hostContext.baselinePath === "string" && hostContext.baselinePath.length > 0;
+  const bytesForm = exact(hostContext, HOST_CONTEXT_BYTES_FIELDS) && hostContext.baselineBytes instanceof Uint8Array;
+  if ((!pathForm && !bytesForm) ||
       hostContext.authoritativeReceiptJournalPath !== null ||
       hostContext.attributionContext !== null ||
       hostContext.toolingContext !== null) {
@@ -184,13 +208,17 @@ export async function launchExternalFixture({ fixtureRoot, operatorInput, hostCo
   const root = await realpath(resolve(fixtureRoot)).catch(() => null);
   if (root === null) throw new Error("fixture_root_not_regular");
   let baseline;
-  try {
-    baseline = await readExternalJson(resolve(hostContext.baselinePath), root);
-  } catch (error) {
-    if (error instanceof Error && error.message === "external_trust_input_not_regular") {
-      throw new Error("baseline_path_not_regular");
+  if (bytesForm) {
+    baseline = parseCapturedBaseline(hostContext.baselineBytes);
+  } else {
+    try {
+      baseline = await readExternalJson(resolve(hostContext.baselinePath), root);
+    } catch (error) {
+      if (error instanceof Error && error.message === "external_trust_input_not_regular") {
+        throw new Error("baseline_path_not_regular");
+      }
+      throw error;
     }
-    throw error;
   }
   const launcherBytes = await readFile(fileURLToPath(import.meta.url));
   if (baseline.launcherDigest !== digest(launcherBytes)) throw new Error("launcher_digest_mismatch");
