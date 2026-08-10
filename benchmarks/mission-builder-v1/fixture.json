@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "mission.builder.benchmark.v1",
+  "before": {
+    "hillTokens": 12000,
+    "handoffs": 9,
+    "elapsedMilliseconds": 600000,
+    "repeatedContextReads": 7,
+    "humanInterventions": 4
+  },
+  "after": {
+    "hillTokens": 4500,
+    "handoffs": 6,
+    "elapsedMilliseconds": 240000,
+    "repeatedContextReads": 2,
+    "humanInterventions": 2
+  },
+  "expectedDeltas": {
+    "hillTokens": -7500,
+    "handoffs": -3,
+    "elapsedMilliseconds": -360000,
+    "repeatedContextReads": -5,
+    "humanInterventions": -2
+  }
+}

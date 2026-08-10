@@ -38,6 +38,7 @@ test("exports only the documented public package specifiers", async () => {
     "./implementation-authority",
     "./daisy-coordination-authority",
     "./mission-runtime",
+    "./mission-builder",
     "./sonarqube",
     "./mack-validation",
     "./qa-mode",
@@ -74,6 +75,7 @@ test("loads every supported runtime specifier", async () => {
   const missionProfile = await import("@shield/team-system/mission-profile");
   const profileAwareMission = await import("@shield/team-system/profile-aware-mission");
   const missionRuntime = await import("@shield/team-system/mission-runtime");
+  const missionBuilder = await import("@shield/team-system/mission-builder");
   const implementationAuthority = await import("@shield/team-system/implementation-authority");
   const daisyCoordinationAuthority = await import("@shield/team-system/daisy-coordination-authority");
   const sonarqube = await import("@shield/team-system/sonarqube");
@@ -109,6 +111,9 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof daisyCoordinationAuthority.validateDaisyCoordinationAuthorityV1, "function");
   assert.equal(daisyCoordinationAuthority.verifySignedImplementationAuthorityV1, undefined);
   assert.equal(typeof missionRuntime.runMissionCycle, "function");
+  assert.equal(missionBuilder.MISSION_BUILDER_CONTRACT_VERSION, "mission.builder.v1");
+  assert.equal(typeof missionBuilder.buildMissionDefinitionV1, "function");
+  assert.equal(root.buildMissionDefinitionV1, missionBuilder.buildMissionDefinitionV1);
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
   assert.equal(config.LEGACY_CONFIG_SCHEMA_VERSION, 1);
@@ -252,6 +257,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/permission-audit-v1.d.mts",
     "dist/mission-runtime-v1.mjs",
     "dist/mission-runtime-v1.d.mts",
+    "dist/mission-builder-v1.mjs",
+    "dist/mission-builder-v1.d.mts",
     "dist/dispatch-receipts.mjs",
     "dist/dispatch-receipts.d.mts",
     "dist/seat-dispatch-store.mjs",
@@ -294,6 +301,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "SUPERVISED_MISSION.md",
     "WHEELS_OFF.md",
     "PERMISSION_BOUNDARY.md",
+    "MISSION_BUILDER.md",
   ]) {
     assert.ok(packedPaths.has(path), `packed artifact is missing ${path}`);
   }
@@ -345,6 +353,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { type ProfileAwareProjectionV1 } from "@shield/team-system/profile-aware-mission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import { deriveMissionCycleIdentityV1, runMissionCycle, type MissionCycleInputV1, type MissionCycleResultV1 } from "@shield/team-system/mission-runtime";
+    import { MISSION_BUILDER_CONTRACT_VERSION, buildMissionDefinitionV1, projectMissionStatusV1, type MissionDefinitionV1, type MissionAdvanceInputV1, type MissionStatusProjectionV1 } from "@shield/team-system/mission-builder";
     import { REVIEW_PUBLICATION_CONTRACT_VERSION, evaluateReviewPublicationV1, type ReviewPublicationAuthorityV1, type ReviewPublicationProposalV1 } from "@shield/team-system/review-publication";
     import { PIPELINE_PROFILE_CONTRACT_VERSION, selectPipelineModesV1, type RepositoryPipelineProfileV1 } from "@shield/team-system/pipeline";
     import { SONARQUBE_EVIDENCE_CONTRACT_VERSION, evaluateSonarQubeEvidenceV1, type SonarQubeEvidenceV1 } from "@shield/team-system/sonarqube";

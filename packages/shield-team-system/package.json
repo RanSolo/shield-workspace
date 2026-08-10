@@ -110,6 +110,10 @@
       "types": "./dist/mission-runtime-v1.d.mts",
       "import": "./dist/mission-runtime-v1.mjs"
     },
+    "./mission-builder": {
+      "types": "./dist/mission-builder-v1.d.mts",
+      "import": "./dist/mission-builder-v1.mjs"
+    },
     "./sonarqube": {
       "types": "./dist/sonarqube-evidence-v1.d.mts",
       "import": "./dist/sonarqube-evidence-v1.mjs"
@@ -151,6 +155,7 @@
     "SUPERVISED_MISSION.md",
     "WHEELS_OFF.md",
     "PERMISSION_BOUNDARY.md",
+    "MISSION_BUILDER.md",
     "PUBLIC_API.md",
     "TECHNICAL_DESIGN.md",
     "scorecard.md"
