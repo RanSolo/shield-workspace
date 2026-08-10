@@ -446,7 +446,7 @@ const validateV2Intent = (prepared, step) => {
   return { kind: "success", claimIdentity, successorIdentity, resultIdentity: payloadIdentityAt(step.paths.result, arbiter.result), result };
 };
 
-const validateV2Terminal = (prepared, step) => {
+const validateMaterializedV2Terminal = (prepared, step) => {
   if (!["success_terminal", "recovery_terminal"].includes(step?.status)) throw new Error("Feature Flight terminal winner is not fully materialized.");
   const intent = validateV2Intent(prepared, step);
   if (intent.kind === "recovery") {
@@ -457,6 +457,12 @@ const validateV2Terminal = (prepared, step) => {
     throw new Error("Materialized success receipts do not match terminal intent.");
   }
   return { ...intent, terminalIdentity: identity(step.terminal), successorIdentity: identity(step.successor), resultIdentity: identity(step.result) };
+};
+
+export const evaluateSuccessfulFeatureFlightTerminalV2 = (prepared, step) => {
+  const terminal = validateMaterializedV2Terminal(prepared, step);
+  if (terminal.kind !== "success") throw new Error("Feature Flight terminal winner is not successful.");
+  return deepCopy(terminal);
 };
 
 const validateLegacyClaim = (prepared, snapshot) => {
@@ -550,7 +556,9 @@ const followWinner = async (prepared, step) => {
     catch { return ephemeralRecovery(prepared, "final_readback_uncertain", current); }
   }
   try {
-    const terminal = validateV2Terminal(prepared, current);
+    const terminal = current.terminal?.value?.terminalKind === "success"
+      ? evaluateSuccessfulFeatureFlightTerminalV2(prepared, current)
+      : validateMaterializedV2Terminal(prepared, current);
     return terminal.kind === "success" ? replayProjection(prepared, terminal) : durableRecoveryProjection(prepared, terminal);
   } catch { return ephemeralRecovery(prepared, current?.status === "conflicting" ? "terminal_conflict" : "final_readback_uncertain", current); }
 };

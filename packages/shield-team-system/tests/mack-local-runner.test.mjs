@@ -10,7 +10,12 @@ import { promisify } from "node:util";
 import test, { after } from "node:test";
 
 import { canonicalJson } from "../dist/mission-v2.mjs";
-import { runMackLocalValidation } from "../scripts/model/mack-validation-runner.mjs";
+import { normalizeMackLocalValidationRequestV1 } from "../dist/mack-local-validation-v1.mjs";
+import {
+  readMackProductionValidationRegistryV1,
+  reconstructMackSyntheticEvidenceV1,
+  runMackLocalValidation,
+} from "../scripts/model/mack-validation-runner.mjs";
 
 const execFile = promisify(execFileCallback);
 const runnerPath = fileURLToPath(new URL("../scripts/model/mack-validation-runner.mjs", import.meta.url));
@@ -210,6 +215,36 @@ test("runner keeps the model narrow and constructs synthetic, ineligible evidenc
   assert.equal(inferenceInput.runtime.loadedInstanceId, "gemma-instance");
   assert.equal(inferenceInput.prompt.includes(request.lanes[0].argv[0]), false);
   assert.match(inferenceInput.systemPrompt, /host alone owns identities, command outcomes, coverage, final status, routing/i);
+  const normalized = normalizeMackLocalValidationRequestV1(request);
+  assert.equal(normalized.state, "valid");
+  assert.deepEqual(reconstructMackSyntheticEvidenceV1(request, normalized.requestDigest, evidence), evidence);
+});
+
+test("protected production readback is pinned to one request ID and digest and rejects synthetic registry evidence", async (t) => {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-mack-readback-")));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, "registry");
+  const request = requestFixture();
+  const deps = dependencies(request);
+  const { allowed } = injectedWithoutCounters(deps);
+  await runMackLocalValidation(request, runnerOptions(request, { replayRegistryRoot: root }), allowed);
+  const normalized = normalizeMackLocalValidationRequestV1(request);
+  assert.equal(normalized.state, "valid");
+  const binding = { replayRegistryRoot: root, validationRequestId: request.validationRequestId, requestDigest: normalized.requestDigest };
+  assert.deepEqual(await readMackProductionValidationRegistryV1(request, binding), {
+    state: "invalid",
+    reasonCode: "mack_production_evidence_invalid",
+  });
+  assert.equal((await readMackProductionValidationRegistryV1(request, { ...binding, requestDigest: `sha256:${"Z".repeat(43)}` })).state, "invalid");
+  const absent = structuredClone(request);
+  absent.validationRequestId = `${request.validationRequestId}:absent`;
+  const absentNormalized = normalizeMackLocalValidationRequestV1(absent);
+  assert.equal(absentNormalized.state, "valid");
+  assert.equal((await readMackProductionValidationRegistryV1(absent, {
+    replayRegistryRoot: root,
+    validationRequestId: absent.validationRequestId,
+    requestDigest: absentNormalized.requestDigest,
+  })).state, "waiting");
 });
 
 test("nonzero, signal, timeout, launch failure, and truncation receipts cannot become eligible", async () => {
@@ -582,6 +617,16 @@ test("real Git objects, no-shell command execution, and native no-tool inference
   assert.equal(productionEvidence.productionEligibility, "eligible");
   assert.equal(productionEvidence.advancementEligibility, "eligible");
   assert.equal(productionEvidence.reasonCodes.includes("SYNTHETIC_EVIDENCE"), false);
+  const normalizedCliRequest = normalizeMackLocalValidationRequestV1(cliRequest);
+  assert.equal(normalizedCliRequest.state, "valid");
+  const protectedReadback = await readMackProductionValidationRegistryV1(cliRequest, {
+    replayRegistryRoot: cliReplayRoot,
+    validationRequestId: cliRequest.validationRequestId,
+    requestDigest: normalizedCliRequest.requestDigest,
+  });
+  assert.equal(protectedReadback.state, "verified");
+  assert.deepEqual(protectedReadback.evidence, productionEvidence);
+  assert.equal(protectedReadback.record.path, replayPath(cliReplayRoot, cliRequest, "json"));
   const replayedProduction = await runRunnerCli(cliRequest, cliOptions);
   assert.deepEqual(replayedProduction, productionEvidence);
   const freshProductionRunner = await import(`../scripts/model/mack-validation-runner.mjs?production-replay=${Date.now()}`);

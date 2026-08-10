@@ -97,7 +97,7 @@ async function lstatOrNull(path) {
 async function readPrivateRegularFile(path, { minBytes, maxBytes, unsafeCode }) {
   const status = await lstatOrNull(path);
   if (status === null) return null;
-  if (!status.isFile() || status.isSymbolicLink() || status.nlink !== 1 || (process.platform !== "win32" && (status.mode & 0o077) !== 0) || status.size < minBytes || status.size > maxBytes) throw new Error(unsafeCode);
+  if (!status.isFile() || status.isSymbolicLink() || status.nlink !== 1 || !ownedByEffectiveUser(status) || (process.platform !== "win32" && (status.mode & 0o077) !== 0) || status.size < minBytes || status.size > maxBytes) throw new Error(unsafeCode);
   let handle;
   try {
     handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
@@ -153,6 +153,16 @@ async function prepareReplayRegistryRoot(rootInput, repositoryRoot, canonicalGit
     }
     status = await lstatOrNull(rootInput);
   }
+  if (status === null || !status.isDirectory() || status.isSymbolicLink() || await realpath(rootInput) !== rootInput || !ownedByEffectiveUser(status) || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) throw new Error("mack_replay_registry_root_unsafe");
+  return rootInput;
+}
+
+async function inspectReplayRegistryRoot(rootInput, repositoryRoot, canonicalGitDirectory) {
+  if (typeof rootInput !== "string" || !isAbsolute(rootInput) || resolve(rootInput) !== rootInput || pathsOverlap(rootInput, repositoryRoot) || pathsOverlap(rootInput, canonicalGitDirectory)) throw new Error("mack_replay_registry_root_invalid");
+  const [repositoryStatus, gitDirectoryStatus] = await Promise.all([lstatOrNull(repositoryRoot), lstatOrNull(canonicalGitDirectory)]);
+  if (repositoryStatus === null || !repositoryStatus.isDirectory() || repositoryStatus.isSymbolicLink() || await realpath(repositoryRoot) !== repositoryRoot || !ownedByEffectiveUser(repositoryStatus)) throw new Error("mack_replay_registry_root_invalid");
+  if (gitDirectoryStatus === null || !gitDirectoryStatus.isDirectory() || gitDirectoryStatus.isSymbolicLink() || await realpath(canonicalGitDirectory) !== canonicalGitDirectory || !ownedByEffectiveUser(gitDirectoryStatus)) throw new Error("mack_replay_registry_root_invalid");
+  const status = await lstatOrNull(rootInput);
   if (status === null || !status.isDirectory() || status.isSymbolicLink() || await realpath(rootInput) !== rootInput || !ownedByEffectiveUser(status) || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) throw new Error("mack_replay_registry_root_unsafe");
   return rootInput;
 }
@@ -220,14 +230,21 @@ function evidenceDigest(evidence) {
   return sha256(Buffer.from(canonicalJson(withoutDigest), "utf8"));
 }
 
-async function readReplayRecord(recordPath) {
+async function readReplayRecordSnapshot(recordPath) {
   const bytes = await readPrivateRegularFile(recordPath, { minBytes: 2, maxBytes: REPLAY_RECORD_LIMIT, unsafeCode: "mack_replay_registry_record_unsafe" });
   if (bytes === null) return null;
   const raw = bytes.toString("utf8");
   const parsed = strictParseJson(raw.endsWith("\n") ? raw.slice(0, -1) : raw, { maxBytes: REPLAY_RECORD_LIMIT, maxDepth: 64, rejectControlCharacters: false });
   if (!raw.endsWith("\n") || parsed.state !== "valid" || !exactPlain(parsed.value, ["schemaVersion", "validationRequestId", "requestDigest", "evidenceDigest", "evidence"]) || parsed.value.schemaVersion !== 1 || canonicalJson(parsed.value) + "\n" !== raw) throw new Error("mack_replay_registry_record_malformed");
   if (!DIGEST.test(parsed.value.requestDigest) || !DIGEST.test(parsed.value.evidenceDigest) || parsed.value.evidenceDigest !== parsed.value.evidence?.evidenceDigest || evidenceDigest(parsed.value.evidence) !== parsed.value.evidenceDigest) throw new Error("mack_replay_registry_record_malformed");
-  return parsed.value;
+  return Object.freeze({
+    value: parsed.value,
+    artifact: Object.freeze({ path: recordPath, bytes: bytes.byteLength, sha256: sha256(bytes) }),
+  });
+}
+
+async function readReplayRecord(recordPath) {
+  return (await readReplayRecordSnapshot(recordPath))?.value ?? null;
 }
 
 async function persistReplayRecord(root, recordPath, record) {
@@ -690,7 +707,10 @@ function promoteProductionEvidence(syntheticEvidence) {
   return deepFreeze(promoted);
 }
 
-function reconstructSyntheticEvidence(request, requestDigest, evidence) {
+export function reconstructMackSyntheticEvidenceV1(requestInput, requestDigest, evidence) {
+  const normalized = normalizeMackLocalValidationRequestV1(requestInput);
+  if (normalized.state !== "valid" || normalized.requestDigest !== requestDigest) return null;
+  const request = normalized.value;
   if (!plain(evidence)) return null;
   const created = createMackLocalValidationEvidenceV1({
     request,
@@ -713,7 +733,7 @@ function reconstructSyntheticEvidence(request, requestDigest, evidence) {
 function storedEvidenceValidator(request, requestDigest, productionPath) {
   return (evidence) => {
     try {
-      const synthetic = reconstructSyntheticEvidence(request, requestDigest, evidence);
+      const synthetic = reconstructMackSyntheticEvidenceV1(request, requestDigest, evidence);
       if (synthetic === null) return false;
       const expected = productionPath ? promoteProductionEvidence(synthetic) : synthetic;
       return same(expected, evidence) && evidenceDigest(evidence) === evidence.evidenceDigest;
@@ -721,6 +741,50 @@ function storedEvidenceValidator(request, requestDigest, productionPath) {
       return false;
     }
   };
+}
+
+export async function readMackProductionValidationRegistryV1(packetInput, bindingInput) {
+  const normalized = normalizeMackLocalValidationRequestV1(packetInput);
+  if (normalized.state !== "valid" || !exactPlain(bindingInput, ["replayRegistryRoot", "validationRequestId", "requestDigest"]) ||
+      bindingInput.validationRequestId !== normalized.value.validationRequestId || bindingInput.requestDigest !== normalized.requestDigest) {
+    return deepFreeze({ state: "invalid", reasonCode: "mack_request_binding_invalid" });
+  }
+  const request = normalized.value;
+  try {
+    const root = await inspectReplayRegistryRoot(bindingInput.replayRegistryRoot, request.repositoryRoot, request.canonicalGitDirectory);
+    const paths = replayPaths(root, request.validationRequestId);
+    const lockStatus = await lstatOrNull(paths.lock);
+    if (lockStatus !== null) return deepFreeze({ state: "recovery", reasonCode: "mack_registry_readback_uncertain" });
+    const snapshot = await readReplayRecordSnapshot(paths.record);
+    if (await lstatOrNull(paths.lock) !== null) return deepFreeze({ state: "recovery", reasonCode: "mack_registry_readback_uncertain" });
+    if (snapshot === null) return deepFreeze({
+      state: "waiting",
+      validationRequestId: request.validationRequestId,
+      requestDigest: normalized.requestDigest,
+    });
+    const record = snapshot.value;
+    if (record.validationRequestId !== request.validationRequestId || record.requestDigest !== normalized.requestDigest ||
+        record.evidenceDigest !== record.evidence?.evidenceDigest) {
+      return deepFreeze({ state: "invalid", reasonCode: "mack_registry_binding_conflict" });
+    }
+    if (!storedEvidenceValidator(request, normalized.requestDigest, true)(record.evidence)) {
+      return deepFreeze({ state: "invalid", reasonCode: "mack_production_evidence_invalid" });
+    }
+    return deepFreeze({
+      state: "verified",
+      validationRequestId: request.validationRequestId,
+      requestDigest: normalized.requestDigest,
+      record: snapshot.artifact,
+      evidence: record.evidence,
+    });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "mack_registry_readback_uncertain";
+    const invalidCodes = new Set(["mack_replay_registry_record_malformed"]);
+    return deepFreeze({
+      state: invalidCodes.has(code) ? "invalid" : "recovery",
+      reasonCode: invalidCodes.has(code) ? "mack_production_evidence_invalid" : "mack_registry_readback_uncertain",
+    });
+  }
 }
 
 async function runMackLocalValidationInternal(packetInput, optionsInput, injectedDependencies, provenance) {
