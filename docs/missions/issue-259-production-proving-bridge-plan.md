@@ -64,6 +64,14 @@ ownership. Each Lane Hill retains its lane-local context, dispatches only the
 seats needed inside that lane, and returns compact exact-revision packets to
 Controlling Hill:
 
+Each implementation Lane Hill retains dedicated Daisy, May, Mack, and Fury
+thread handles for the life of its lane and resumes them as facts,
+implementation, validation, or conformance work becomes necessary. The lane
+descriptions below assign write ownership and primary work; they do not reduce
+the Lane Hill's governed team. Lane Mack and Fury remain independent of May.
+After lane-local review, Controlling Hill routes the converged exact revision
+through a separate flight-level Mack validation and Fury conformance gate.
+
 1. **Core/adapter Lane Hill** dispatches May for the permission refactor,
    operations CLI, production run composition, external-acceptance adapter,
    host-launcher compatibility seam, ESM-loader fixture, and their focused
