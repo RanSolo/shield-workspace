@@ -19,10 +19,12 @@ Create/modify only these files in implementation work:
 - `packages/shield-team-system/scripts/operations/ops-cli.mjs`
 - `packages/shield-team-system/scripts/operations/feature-flight-run.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/feature-flight-adapter.mjs`
+- `benchmarks/v0.3-fixture-host-launcher.mjs` (backward-compatible captured-baseline input)
 - `packages/shield-team-system/tests/permission-v1.test.mjs`
 - `packages/shield-team-system/tests/operations-cli.test.mjs`
 - `packages/shield-team-system/tests/operations-feature-flight-run.test.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/test/feature-flight-adapter.test.mjs`
+- `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
 - `packages/shield-team-system/tests/fixtures/esm-loader.mjs`
 
 No other production, fixture, package, schema, or policy path is in scope.
@@ -56,27 +58,29 @@ Input is a closed manifest containing only:
 
 All routing, authority, implementation/runtime/executor, and effect identities are derived only from replayed signed evidence and host observation and are never accepted from manifest input.
 
-Daisy-ready projection fields used for these derivations are exact projection fields:
+The command performs exactly one raw `replayProfileAwareMissionJournalV1` call and requires its valid schema-9 replay result. Bind only these actual replay fields:
 
 - `missionId`
-- `subjectId`
-- `brief`
-- `implementationAuthority`
-- `implementationAuthorityState`
+- `brief.subjectId`
+- `brief.revisionId`
+- `brief.participants`
+- `authorization`
 - `daisyCoordinationAuthority`
-- `daisyCoordinationBinding`
-- `activeRuntimeBindings`
-- `durableArtifactRoot`
+- `daisyCoordinationAuthorityState`
+- exactly one entry in `activeDaisyRuntimeBindings`
+- `lastSequence`
 
-Claim root must be derived solely from `durableArtifactRoot` and must not be sourced from manifest values.
+Claim root is derived solely from `daisyCoordinationAuthority.durableArtifactRoot`. The active Daisy binding must carry the same durable-artifact root exactly. May's `implementationAuthority` and `activeRuntimeBindings` are forbidden on this Daisy path.
 
 ### 3) Exact adapter restriction
 
-`benchmarks/v0.3-external-acceptance-v1/feature-flight-adapter.mjs` may call only `launchExternalFixture`.
+`benchmarks/v0.3-external-acceptance-v1/feature-flight-adapter.mjs` exports exactly one factory, `createFeatureFlightAdapterV1({ launchExternalFixture })`. The host supplies that one trusted function as an own data field. The returned adapter accepts exactly `(plan, decision, adapterContext)` and may call only the injected `launchExternalFixture` once.
 
 - `compose` and `grade` are forbidden.
-- It accepts only the exact bound runner plan and permission decision.
-- Adapter import must be import-free (captured-byte execution only) with no external module follow.
+- `adapterContext` is a frozen closed data object containing the fully derived `fixtureRoot`, eight-field `operatorInput`, captured release-baseline bytes, and closed launcher host context. No authority or permission result is accepted there.
+- Adapter import is from captured source bytes only; loading the adapter may not follow external modules. The trusted launcher may subsequently import its existing verifier and driver after it has consumed the captured baseline bytes.
+- Extend `launchExternalFixture` backward-compatibly so its closed `hostContext` accepts either the existing `baselinePath` form or a mutually exclusive captured-baseline byte form. The captured form parses the supplied exact bytes and never opens `releaseBaseline` by pathname. Existing callers and path-form behavior remain unchanged.
+- Map launcher results exhaustively: `ready` -> executor `completed`; `blocked` or `invalid` -> executor `failed`; thrown/import/structural uncertainty -> executor `uncertain`. Every mapped result copies all identity fields from the exact runner plan, uses only stable reason/summary text, supplies nonempty evidence refs, and must pass `validateRunnerExecutorResult` before return.
 
 ### 4) Permission and claim purity
 
@@ -85,29 +89,25 @@ Claim root must be derived solely from `durableArtifactRoot` and must not be sou
 - No filesystem writes.
 - No audit write before claim.
 - No manifest-derived authority/effect interpretation.
-- Permission check/replay decision must be called fresh inside the execution callback; do not cache it outside the callback.
+- The fresh `authorizeRunner(plan)` callback calls `createRunnerPermissionDecisionV1(plan, frozenContext)` before claim, matching Runner's authorize-before-claim contract. The decision is not caller supplied or cached across runs.
 - `authorization` in execution is purely derived from the callback decision and replayed projection.
 
-## Mandatory 12-step fail-before-effects order
+## Mandatory executable fail-before-effects order
 
 1. Parse manifest with unknown-key rejection.
 2. Validate `contract` + `version`, and verify only the allowed manifest key set.
-3. Resolve manifest paths via canonical path checks (no alias-following semantics).
-4. Verify each required path is a regular file where required and each `sha256` matches exact on-disk bytes.
+3. Open every artifact with no-follow semantics, retain descriptors, require regular files, capture descriptor identity and exact bytes, and verify before/after descriptor identity without pathname aliasing.
+4. Verify each declared `sha256` against the captured bytes. Parse manifest, runner, schema-9, plan/state/predecessor, adapter, package, and release-baseline data only from those bytes.
 5. Validate `sequence` as numeric and manifest-consistent with predecessor lineage.
-6. Replay one schema-9 projection/authority/claim chain via a single core-replay call.
+6. Replay the captured schema-9 journal exactly once with `replayProfileAwareMissionJournalV1`; require the precise valid replay variant and fields listed above.
 7. Re-observe repository identity from host root, branch, HEAD, and remote metadata and compare to replayed projection, including `commonGit`, `origin`, `remote`, and `participant` invariants.
 8. Validate `fixtureRoot` identity against derived effective fixture boundary.
-9. Resolve routing/authority/runtime/executor claims from replayed projection only and compare against fixed invariants.
-10. Enforce at-most-one model/runtime/executor and fixed tuple constraints.
-11. Invoke `createRunnerPermissionDecisionV1` inside the execute callback; require allow/authorized only from local pure decision.
-12. In execute callback after durable claim creation only:
-   - derive adapter descriptor from policy + replayed identities,
-   - capture adapter source bytes from descriptor-backed regular-file descriptor,
-   - import exact captured source bytes without pathname reopen,
-   - invoke adapter once through `launchExternalFixture`.
+9. Resolve routing, Daisy coordination authority, active Daisy runtime binding, model/runtime/executor, claim root, and fixed effect tuple only from replay plus host observation. Require exactly one active Daisy binding; require seat, runtime, model, and executor identities to be pairwise distinct; and prohibit runtime/model/executor identity from equaling any participant identity.
+10. Derive and freeze the runner permission context, claim root, remote descriptor, adapter descriptor, launcher inputs, and captured adapter/baseline bytes before calling the step. Supply captured plan/state/predecessor readers through `snapshotDependencies` so the step never reopens them.
+11. Invoke exactly one `runFeatureFlightStepV1` with `maxSteps: 1`. Its fresh `authorizeRunner(plan)` callback invokes pure `createRunnerPermissionDecisionV1(plan, frozenContext)`; an authorized decision permits the existing core claim to execute next.
+12. Only the step's execute callback, after durable claim, imports the already-captured adapter bytes, instantiates the factory with the trusted launcher, invokes the adapter once, maps its result, and validates the mapped executor result.
 
-Any failure before step 12 is terminal and may not trigger fixture execution, adapter import, or claim/result mutation.
+Any failure before the core claim may not mutate claim/result state, import the adapter, or invoke the launcher. Any failure after claim must produce the existing actionable recovery state and may not retry import or launch.
 
 ## Mandatory exact validations
 
@@ -116,9 +116,10 @@ Any failure before step 12 is terminal and may not trigger fixture execution, ad
 - One optional `predecessor` entry may be present; present predecessor entries must still satisfy hash/regular-file checks and sequence lineage.
 - Runner input/schema9/adapters/releaseBaseline/package artifact bytes must match manifest digests exactly.
 - No caller may assert allow/deny, review, completion, or gate result in manifest.
-- Adapter import is only via captured source artifact and occurs only after durable claim.
-- Descriptor-backed capture must be of regular file identity and exact source bytes only.
+- Adapter import is only via retained captured source bytes and occurs only after durable claim.
+- Every artifact uses no-follow descriptor capture, regular-file checks, before/after descriptor identity checks, and captured-byte reuse. No validated artifact is reopened by pathname for consumption.
 - No mutation occurs for any validation or precondition failure.
+- The eight launcher operator fields are derived exactly: `packageArtifactPath`, `externalRepositoryRoot`, `baseRevision`, `headRevision`, `hostConfiguration`, `blindStatus`, `priorSolutionsVisible`, and `requireSimmons`. The host context is closed and uses the captured release-baseline bytes; receipt, attribution, and tooling fields remain null for this read-only preflight.
 
 ## Mandatory hostile matrix (non-negotiable)
 
@@ -129,10 +130,10 @@ Any failure before step 12 is terminal and may not trigger fixture execution, ad
 5. manifest byte drift -> rejected before effects.
 6. repo identity substitution (`commonGit`, `origin`, `remote`, `participant`) -> rejected before effects.
 7. spawned real CLI boundary -> rejected before effects.
-8. simultaneous at-most-one violation -> rejected before effects.
+8. zero/multiple active Daisy bindings, identity collision/impersonation, or fixed-identity mismatch -> rejected before effects.
 9. replay zero calls / replay ambiguity -> rejected before effects.
 10. post-claim recovery (non-recoverable/terminal states) -> no second real adapter invocation.
-11. exact launcher counts and launcher-sequence discipline -> enforced.
+11. exact counts: every pre-claim rejection `claim/import/launcher = 0/0/0`; fresh success `1/1/1`; terminal replay `0/0/0`; incomplete/post-claim recovery performs no import or launcher reinvocation; concurrent contenders have aggregate launcher count at most one; import/launcher failure becomes terminal recovery with no second import or launch.
 12. authority path/claim mismatch -> rejected before effects.
 13. fixed tuple substitution (`action`, `effect`, `runtime`, `executor`, `fixture`, `package`, `repository`, `plan`, `state`, `sequence`) -> rejected before effects.
 14. caller-submitted PASS/allow/review/completion -> rejected before effects.
@@ -140,11 +141,15 @@ Any failure before step 12 is terminal and may not trigger fixture execution, ad
 
 ## Mandatory exact executable validation commands
 
+- `npm run build --workspace @shield/team-system`
 - `node --test packages/shield-team-system/tests/operations-cli.test.mjs`
 - `node --test packages/shield-team-system/tests/operations-feature-flight-run.test.mjs`
 - `node --test benchmarks/v0.3-external-acceptance-v1/test/feature-flight-adapter.test.mjs`
 - `node --test packages/shield-team-system/tests/permission-v1.test.mjs`
+- `node --test benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
 - `npm test --workspace packages/shield-team-system`
+
+The spawned real-CLI test invokes Node with `--loader packages/shield-team-system/tests/fixtures/esm-loader.mjs` and a fixture-controlled loader that records/rejects adapter pathname reopening or external-module following before the trusted launcher boundary. Compatibility assertions preserve `createPermissionAuthorizer`, audited executor behavior, existing May decisions, all existing CLI commands/help, and exit codes.
 
 ## Measurement separation
 
