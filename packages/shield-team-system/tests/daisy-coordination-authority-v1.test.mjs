@@ -50,12 +50,12 @@ function replay(entries) {
   return result.value;
 }
 
-function baseFixture() {
+function baseFixture(includeDaisy = true) {
   const coulson = signer();
   const brief = createProfileAwareMissionBrief({
     schemaVersion: 2, missionId: "mission:test:daisy-coordination", objective: "Authorize bounded Daisy reconnaissance.",
     subjectId: "issue:test:daisy-coordination", riskFlags,
-    participants: [{ seatId: "hill" }, { seatId: "daisy" }, { seatId: "coulson" }], activatedModes: [], requireSimmons: false,
+    participants: [{ seatId: "hill" }, ...(includeDaisy ? [{ seatId: "daisy" }] : []), { seatId: "coulson" }], activatedModes: [], requireSimmons: false,
     createdAt: { value: "2026-08-10T12:00:00Z", provenance: "humanRecorded" }, profileId: "standard", profileVersion: 1,
     requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"],
     predecessorMissionId: "mission:issue-130", predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
@@ -136,6 +136,28 @@ test("fresh signed Daisy authority and N+2 runtime binding replay without changi
   assert.equal(current.projection.daisyCoordinationAuthoritySequence, 2);
   assert.equal(current.projection.activeDaisyRuntimeBindings[0].effectiveSequence, 3);
   assert.equal(current.projection.daisyRuntimeBindings.length, 1);
+});
+
+test("constructor and raw replay reject coordination authority when Daisy is not a participant", () => {
+  const current = baseFixture(false);
+  const authority = authorityEnvelope(current);
+  assert.throws(() => createProfileAwareDaisyCoordinationAuthorityEntryV1({
+    projection: current.projection,
+    trustedBindings: [current.coulson.binding],
+    authority,
+  }), /Daisy to be a mission participant/u);
+
+  const replayed = replayProfileAwareMissionJournal([...current.entries, {
+    schemaVersion: 9,
+    entryId: `entry:${current.brief.missionId}:2`,
+    missionId: current.brief.missionId,
+    sequence: 2,
+    type: "coordination.authorized",
+    timestamp: authority.payload.issuedAt,
+    payload: { authority },
+  }]);
+  assert.equal(replayed.state, "invalid");
+  assert.equal(replayed.code, "seat_mismatch");
 });
 
 test("authority and binding validators reject digest, tuple, identity, overlap, proxy, and accessor substitution", () => {

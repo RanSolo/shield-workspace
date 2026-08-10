@@ -694,6 +694,9 @@ export function createProfileAwareDaisyCoordinationAuthorityEntryV1(input: {
       hasDaisyCoordinationProjection(input.projection)) {
     throw new Error("Daisy coordination authority requires an authorized not-started mission with no prior Daisy authority.");
   }
+  if (!input.projection.brief.participants.some(({ seatId }) => seatId === "daisy")) {
+    throw new Error("Daisy coordination authority requires Daisy to be a mission participant.");
+  }
   const sequenceValue = input.projection.lastSequence + 1;
   const checked = verifySignedDaisyCoordinationAuthorityV1(input.authority, input.trustedBindings, {
     missionId: input.projection.missionId,
@@ -1278,6 +1281,9 @@ function replayProfileAwareMissionJournalUnchecked(entries: unknown): ProfileAwa
       if (authorization !== "authorized" || execution !== "not-started" || finalAcceptance !== "waiting" ||
           daisyCoordinationAuthorityState !== "waiting" || daisyCoordinationAuthority !== null) {
         return invalid("ordering_invalid", "Daisy coordination authority is duplicated, reauthorized, or late.");
+      }
+      if (!brief.participants.some(({ seatId }) => seatId === "daisy")) {
+        return invalid("seat_mismatch", "Daisy coordination authority requires Daisy to be a mission participant.");
       }
       const checked = verifySignedDaisyCoordinationAuthorityV1(entry.payload.authority, bindingRegistry.value.bindings, {
         missionId: brief.missionId,

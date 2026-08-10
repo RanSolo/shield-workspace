@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
-import { lstat, mkdtemp, mkdir, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -22,7 +22,7 @@ import {
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
 import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
-import { batchSignerTestOnly, signerTestOnly } from "../dist/mission-signer.mjs";
+import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -962,6 +962,138 @@ test("authorize-wheels-up canonically orders mixed-case publication paths and ha
   const restarted = run(root, ["mission", "status", "--mission-id", missionId, "--json"]);
   assert.equal(restarted.status, 0, restarted.stderr);
   assert.equal(JSON.parse(restarted.stdout).lastSequence, 4);
+});
+
+async function daisySignerFreshnessFixture() {
+  const { root } = await fixture();
+  const homeRoot = join(root, ".shield", "tmp", "daisy-signer-home");
+  await mkdir(homeRoot, { recursive: true });
+  const passcode = "daisy-snapshot-passcode";
+  const setup = run(root, [
+    "mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json",
+  ], { env: { HOME: homeRoot }, input: `${passcode}\n` });
+  assert.equal(setup.status, 0, setup.stderr);
+
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+  runGit(root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  runGit(root, ["commit", "-qm", "Daisy signer freshness fixture"]);
+
+  const missionId = "mission:test:daisy-signer-freshness";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Prove exact signer freshness for bounded Daisy coordination.",
+    subjectId: "issue:test:daisy-signer-freshness",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: true,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true,
+    },
+    participants: ["hill", "daisy", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-10T12:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...briefContent } = brief;
+  const artifactRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-daisy-snapshot-artifacts-")));
+  const inputPath = join(root, ".shield", "tmp", "daisy-snapshot-input.json");
+  const briefPath = join(root, ".shield", "tmp", "daisy-snapshot-brief.json");
+  await writeFile(briefPath, `${JSON.stringify(briefContent, null, 2)}\n`);
+  await writeFile(inputPath, `${JSON.stringify({
+    effectKey: "effect:test:daisy-snapshot-read",
+    approvedReadRoots: [await realpath(root)],
+    durableArtifactRoot: artifactRoot,
+    runtimeId: "runtime:test:daisy-snapshot",
+    modelId: "model:test:daisy-snapshot",
+    executorId: "executor:test:daisy-snapshot",
+  }, null, 2)}\n`);
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", briefPath, "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const authorized = run(root, [
+    "mission", "authorize", "--mission-id", missionId, "--passcode-stdin", "--json",
+  ], { env: { HOME: homeRoot }, input: `${passcode}\n` });
+  assert.equal(authorized.status, 0, authorized.stderr);
+  const signerDirectory = join(homeRoot, ".shield", "signers");
+  const signerFiles = await readdir(signerDirectory);
+  assert.equal(signerFiles.length, 1);
+  return {
+    root, homeRoot, passcode, missionId, inputPath,
+    journalPath: journalPath(root, missionId),
+    signerPath: join(signerDirectory, signerFiles[0]),
+  };
+}
+
+async function runDaisySignerRewrite(current, mutate) {
+  const child = spawn(process.execPath, [
+    cli, "mission", "authorize-daisy-coordination", "--mission-id", current.missionId,
+    "--input", current.inputPath, "--passcode-stdin", "--json",
+  ], { cwd: current.root, env: { ...process.env, HOME: current.homeRoot }, stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let mutation = null;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    if (mutation === null && stderr.includes("SHIELD_DAISY_COORDINATION_MANIFEST_END")) {
+      mutation = Promise.resolve(mutate()).then(() => child.stdin.end(`${current.passcode}\n`));
+    }
+  });
+  const status = await new Promise((resolveStatus, reject) => {
+    child.once("error", reject);
+    child.once("close", resolveStatus);
+  });
+  if (mutation !== null) await mutation;
+  return { status, stdout, stderr, mutated: mutation !== null };
+}
+
+test("authorize-daisy-coordination rejects exact signer byte, inode, and mode drift after successful signing", async () => {
+  for (const scenario of ["whitespace", "field-order", "equivalent-number", "inode", "mode"]) {
+    const current = await daisySignerFreshnessFixture();
+    const baseline = await readFile(current.journalPath, "utf8");
+    const original = await readFile(current.signerPath, "utf8");
+    const record = JSON.parse(original);
+    const result = await runDaisySignerRewrite(current, async () => {
+      if (scenario === "whitespace") {
+        await writeFile(current.signerPath, `  ${JSON.stringify(record)}\n`);
+      } else if (scenario === "field-order") {
+        await writeFile(current.signerPath, `${JSON.stringify(Object.fromEntries(Object.entries(record).reverse()), null, 2)}\n`);
+      } else if (scenario === "equivalent-number") {
+        await writeFile(current.signerPath, original.replace('"schemaVersion": 1', '"schemaVersion": 1e0'));
+      } else if (scenario === "inode") {
+        const replacement = `${current.signerPath}.replacement`;
+        await writeFile(replacement, original, { mode: 0o600 });
+        await rename(replacement, current.signerPath);
+      } else {
+        await chmod(current.signerPath, 0o640);
+      }
+    });
+    assert.equal(result.mutated, true, scenario);
+    assert.equal(result.status, 1, `${scenario}: ${result.stderr}`);
+    assert.match(result.stderr, /Mission signer snapshot changed after display/u, scenario);
+    assert.equal(result.stdout, "", scenario);
+    const finalJournal = await readFile(current.journalPath, "utf8");
+    assert.equal(finalJournal, baseline, scenario);
+    assert.doesNotMatch(finalJournal, /coordination\.(?:authorized|runtime_bound)/u, scenario);
+  }
+});
+
+test("mission signer snapshot rejects a symlink instead of following it", async () => {
+  const current = await daisySignerFreshnessFixture();
+  const target = `${current.signerPath}.target`;
+  await rename(current.signerPath, target);
+  await symlink(target, current.signerPath);
+  const signingKeyRef = JSON.parse(await readFile(target, "utf8")).signingKeyRef;
+  await assert.rejects(captureMissionSignerSnapshot(signingKeyRef, current.homeRoot));
 });
 
 test("batch signer performs one record read, four signatures, and exposes no partial result on each signing failure", async () => {

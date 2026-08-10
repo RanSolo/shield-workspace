@@ -70,6 +70,8 @@ import {
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import {
+  assertMissionSignerSnapshotUnchanged,
+  captureMissionSignerSnapshot,
   createSigner,
   signPayloadBatchWithSigner,
   signWithSigner,
@@ -1848,6 +1850,14 @@ async function prepareAuthorizeDaisyCoordination(
       current.projection.finalAcceptance !== "waiting" || Object.hasOwn(current.projection, "daisyCoordinationAuthority")) {
     throw new MissionCliError("Authorize Daisy coordination requires an authorized not-started mission with no prior Daisy authority or binding.", 1);
   }
+  if (!current.projection.brief.participants.some(({ seatId }) => seatId === "daisy")) {
+    throw new MissionCliError("Authorize Daisy coordination requires Daisy to be a mission participant.", 1);
+  }
+  if (DAISY_COORDINATION_ACTION_ID !== "action:feature-flight.daisy.reconnaissance" ||
+      DAISY_COORDINATION_EFFECT_CLASS !== "coordination" ||
+      DAISY_COORDINATION_CAPABILITY_CLASS !== "read_only_coordination") {
+    throw new MissionCliError("Authorize Daisy coordination fixed tuple is unavailable.", 1);
+  }
   const observation = await observeDaisyCoordinationRepository(root, config.repositoryId);
   const intent = await canonicalDaisyIntentRoots(uncheckedIntent, observation);
   const identities = ["daisy", intent.runtimeId, intent.modelId, intent.executorId];
@@ -1978,6 +1988,8 @@ function assertPreparedAuthorizeDaisyFresh(initial: PreparedAuthorizeDaisyCoordi
       initial.configurationPathIdentity !== fresh.configurationPathIdentity || initial.inputBytes !== fresh.inputBytes ||
       initial.journalBytes !== fresh.journalBytes || initial.startingJournalSha256 !== fresh.startingJournalSha256 ||
       canonicalJson(initial.observation) !== canonicalJson(fresh.observation) || canonicalJson(initial.current.entries) !== canonicalJson(fresh.current.entries) ||
+      canonicalJson(initial.current.projection) !== canonicalJson(fresh.current.projection) ||
+      canonicalJson(initial.humanBinding) !== canonicalJson(fresh.humanBinding) ||
       canonicalJson(initial.payloads) !== canonicalJson(fresh.payloads) || canonicalJson(initial.manifest) !== canonicalJson(fresh.manifest)) {
     throw new MissionCliError("Authorize Daisy coordination input, signer binding, repository, or journal changed after display.", 1);
   }
@@ -1991,6 +2003,15 @@ async function authorizeDaisyCoordination(args: string[]): Promise<number> {
   const config = await repositoryConfig(root);
   const issuedAt = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
   const prepared = await prepareAuthorizeDaisyCoordination(root, config, missionId, inputPath, issuedAt);
+  let signerSnapshot1;
+  try {
+    signerSnapshot1 = await captureMissionSignerSnapshot(prepared.humanBinding.signingKeyRef);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new MissionCliError("No local Coulson signer was found for this mission binding.", 1);
+    }
+    throw new MissionCliError(error instanceof Error ? error.message : "Coulson signer snapshot failed.", 1);
+  }
   process.stderr.write(`SHIELD_DAISY_COORDINATION_MANIFEST_BEGIN\n${canonicalJson(prepared.manifest)}\nSHIELD_DAISY_COORDINATION_MANIFEST_END\n`);
   const passcode = await passcodeFromOptions(options, options.flags.has("--json") ? process.stderr : outputStream);
   let signatures: readonly string[];
@@ -2006,11 +2027,12 @@ async function authorizeDaisyCoordination(args: string[]): Promise<number> {
       throw new MissionCliError(`Independent Daisy coordination signature verification failed for constituent ${index + 1}.`, 1);
     }
   }
-  const afterSigning = await prepareAuthorizeDaisyCoordination(root, await repositoryConfig(root), missionId, inputPath, issuedAt);
+  const afterSigningConfig = await repositoryConfig(root);
+  const afterSigning = await prepareAuthorizeDaisyCoordination(root, afterSigningConfig, missionId, inputPath, issuedAt);
   assertPreparedAuthorizeDaisyFresh(prepared, afterSigning);
-  const trustedBindings = profileAwareBindings(prepared.current);
-  const stagedEntries = [...prepared.current.entries];
-  let stagedProjection = prepared.current.projection;
+  const trustedBindings = profileAwareBindings(afterSigning.current);
+  const stagedEntries = [...afterSigning.current.entries];
+  let stagedProjection = afterSigning.current.projection;
   const authorityEntry = produce(() => createProfileAwareDaisyCoordinationAuthorityEntryV1({
     projection: stagedProjection,
     trustedBindings,
@@ -2028,14 +2050,17 @@ async function authorizeDaisyCoordination(args: string[]): Promise<number> {
   stagedProjection = unwrap(replayProfileAwareMissionJournal(stagedEntries));
   const batchEntries = [authorityEntry, runtimeEntry];
   if (canonicalJson(batchEntries.map(({ type, sequence }) => ({ type, sequence }))) !== canonicalJson([
-    { type: "coordination.authorized", sequence: prepared.current.projection.lastSequence + 1 },
-    { type: "coordination.runtime_bound", sequence: prepared.current.projection.lastSequence + 2 },
+    { type: "coordination.authorized", sequence: afterSigning.current.projection.lastSequence + 1 },
+    { type: "coordination.runtime_bound", sequence: afterSigning.current.projection.lastSequence + 2 },
   ])) throw new MissionCliError("Constructed Daisy coordination batch is not the frozen consecutive two-entry transition.", 1);
-  const beforeStoreConfig = await repositoryConfig(root);
-  const beforeStore = await prepareAuthorizeDaisyCoordination(root, beforeStoreConfig, missionId, inputPath, issuedAt);
-  assertPreparedAuthorizeDaisyFresh(prepared, beforeStore);
+  const signerSnapshot2 = await captureMissionSignerSnapshot(prepared.humanBinding.signingKeyRef);
+  try {
+    assertMissionSignerSnapshotUnchanged(signerSnapshot1, signerSnapshot2);
+  } catch (error) {
+    throw new MissionCliError(error instanceof Error ? error.message : "Mission signer snapshot changed after display.", 1);
+  }
   const stored = unwrap(await appendProfileAwareMissionEntriesAtomicV1({
-    ...missionPaths(root, beforeStoreConfig, missionId), entries: batchEntries,
+    ...missionPaths(root, afterSigningConfig, missionId), entries: batchEntries,
     expectedStartingJournalSha256: prepared.startingJournalSha256,
   }));
   if (canonicalJson(stored.projection) !== canonicalJson(stagedProjection)) throw new MissionCliError("Durable Daisy coordination projection differs from staged replay.", 1);

@@ -78,7 +78,7 @@ function profileJournalPath(root, missionId) {
   return join(root, ".shield", "journals", `${Buffer.from(missionId).toString("base64url")}.jsonl`);
 }
 
-async function daisyCliFixture() {
+async function daisyCliFixture(includeDaisy = true) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "shield-daisy-cli-")));
   const artifactRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-daisy-artifacts-")));
   const coulson = cliAuthority("coulson");
@@ -121,7 +121,7 @@ async function daisyCliFixture() {
       production: false, destructive: false, migration: false, credentialsOrSecurity: true,
       externalCommunication: false, hillHighRisk: true, merge: false, deploy: false, release: false,
     },
-    participants: ["hill", "daisy", "coulson"].map((seatId) => ({ seatId })),
+    participants: ["hill", ...(includeDaisy ? ["daisy"] : []), "coulson"].map((seatId) => ({ seatId })),
     activatedModes: [],
     requireSimmons: false,
     createdAt: { value: "2026-08-10T12:00:00Z", provenance: "humanRecorded" },
@@ -230,6 +230,24 @@ test("authorize-daisy-coordination is one-passcode, drift-closed, and atomically
   assert.equal(entries[3].payload.binding.authoritySequence, 2);
   assert.equal(entries[3].payload.authorization.payload.previousJournalSequence, 2);
   assert.equal(entries[3].payload.authorization.payload.journalSequence, 3);
+});
+
+test("authorize-daisy-coordination rejects a nonparticipant Daisy before manifest, passcode, signature, or append", async () => {
+  const current = await daisyCliFixture(false);
+  const baseline = await readFile(current.journalPath, "utf8");
+  const signerDirectory = join(current.homeRoot, ".shield", "signers");
+  const [signerName] = await readdir(signerDirectory);
+  const signerPath = join(signerDirectory, signerName);
+  const signerBefore = await readFile(signerPath, "utf8");
+
+  const result = runDaisyAuthorization(current, `${current.passcode}\n`);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /requires Daisy to be a mission participant/u);
+  assert.doesNotMatch(result.stderr, /SHIELD_DAISY_COORDINATION_MANIFEST_BEGIN|Passcode:/u);
+  assert.equal(result.stdout, "");
+  assert.equal(await readFile(signerPath, "utf8"), signerBefore);
+  assert.equal(await readFile(current.journalPath, "utf8"), baseline);
+  assert.doesNotMatch(baseline, /coordination\.(?:authorized|runtime_bound)/u);
 });
 
 test("authorize-daisy-coordination aborts post-display journal, repository, and signer drift without appending", async () => {
