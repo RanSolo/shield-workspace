@@ -11,16 +11,32 @@
 
 ## Objective
 
-Make a routine SHIELD transition feel like a key turning a lock:
+Make governed local-agent orchestration produce a net savings in hosted Hill
+reasoning. Deterministic software must compile the evidence, packets, checks,
+and next action that Hill currently reconstructs manually. Routine success
+should pass through Hill without repository rediscovery or action-payload
+repair; only scope decisions, genuine ambiguity, and human gates should require
+Hill reasoning.
+
+The operator consequence should still feel like a key turning a lock:
 
 1. Hill freezes the small set of planning decisions that cannot be observed.
-2. Deterministic software derives every live repository, journal, signer,
+2. Mission Builder compiles those exact Fury-reviewed decisions once.
+3. Hill invokes one stable command with a mission ID and reviewed-intent
+   reference; Hill does not select a transition command, author action JSON,
+   sort paths, reconstruct bindings, or interpret raw journal output.
+4. Deterministic software derives every live repository, journal, signer,
    revision, path, effect, runtime, and gate fact.
-3. The complete transition is preflighted before a passcode prompt.
-4. Coulson sees only the exact decision, exclusions, remaining human gates,
+5. The complete transition is preflighted before a passcode prompt.
+6. Coulson sees only the exact decision, exclusions, remaining human gates,
    and PIN/cancel action.
-5. A successful PIN performs exactly one existing authorized transition and
+7. A successful PIN performs exactly one existing authorized transition and
    returns to an empty shell prompt.
+
+The primary efficiency outcome is turnkey operation for Hill and decisive local
+packets whose value exceeds their hosted orchestration/review cost. The current
+CLI is already usable; concise human output is a secondary boundary and must be
+preserved or minimally corrected rather than redesigned for its own sake.
 
 This parent plan also makes local Daisy, May, and Mack practical under bounded
 context by compiling decisive packets and allowing governed Mack validation to
@@ -50,6 +66,21 @@ repository as benchmark evidence and are not treated as repository facts.
 
 ## Architecture boundary
 
+### Nx project boundary
+
+Create a focused `@shield/mission-preparation` Nx library for authority-none,
+deterministic orchestration inputs and projections. It owns reviewed intent,
+selection, candidate compilation, preflight evidence, and stable reason codes.
+It has no signer, journal mutation, GitHub, model invocation, or human-authority
+capability. `@shield/team-system` remains the effectful host/CLI adapter and
+invokes existing signing and atomic-append behavior.
+
+The dependency direction is from the host adapter to the preparation library;
+the preparation library does not import CLI or effectful host code. Focused
+library tests are the fast iteration loop. Nx affected validation still runs
+downstream consumers before exact-revision acceptance, so the boundary reduces
+development churn without hiding impact.
+
 ### The key is a reviewed plan intent, not inferred authority
 
 Repository and journal observations cannot determine planning decisions such
@@ -58,26 +89,39 @@ runtime choice. `prepare-next` must not infer those decisions from an issue,
 model prose, changed files, notebook memory, or repository heuristics.
 
 Define one closed, content-addressed `mission.transition-intent.v1` produced by
-Mission Builder/Helicarrier from an exact Fury-reviewed plan. It contains only
+Mission Builder as the sole production compiler from an exact Fury-reviewed
+plan. Helicarrier V0 remains experimental and does not own this path. The
+compiler input binds the exact repository and planning base, plan commit,
+repository-relative plan path, raw-byte SHA-256, additive parent-plan Fury
+review-evidence digest/PASS verdict, and compiler contract/version. The existing
+implementation-blueprint Fury evidence is not treated as if it covered this
+parent plan. Missing, stale, conflicting, or revision-mismatched plan/review
+evidence prevents intent production.
+
+The intent is a closed discriminated union by transition kind and contains only
 the decisions that cannot be observed:
 
 - mission and reviewed-plan identity;
 - transition family and bounded desired outcome;
 - approved implementation/publication paths;
 - approved action, effect, capability, and validation IDs;
-- selected seat, model, runtime, and executor identities where applicable;
+- selected model, runtime, and executor identities where applicable;
 - explicit exclusions;
 - packet/validation campaign declarations where applicable.
 
-The intent grants no authority. Its exact digest is an input to preparation,
-signing, receipts, packet compilation, and replay. Current repository, branch,
+Adapter-fixed facts—including the May seat, initial-draft effects, and
+intrinsic exclusions—are derived by the adapter and cannot be caller-selected.
+The intent grants no authority. Its exact digest binds the prepared candidate,
+manifest, machine evidence, and authority-none preparation receipt. Lane A0
+does not add it or reviewed-plan identity to the four existing signed authority
+payloads or journal entries. Current repository, branch,
 HEAD, base ancestry, path kinds, journal sequence/state, signer binding,
 authority identities, timestamps, runtime observation, and remaining gates are
 always host-derived.
 
 ### One dispatcher, existing transition meanings
 
-Add one canonical operator command:
+Expose one thin canonical orchestration command:
 
 ```text
 shield mission prepare-next \
@@ -85,11 +129,21 @@ shield mission prepare-next \
   --intent <reviewed-transition-intent.json>
 ```
 
-Interactive mode prepares, preflights, and renders the exact next eligible
-transition, then prompts once. Machine mode may emit the prepared candidate and
-human-decision projection without signing or appending.
+This is a host facade over the preparation library, not the primary product or
+a replacement command language. Interactive mode prepares, preflights, and
+renders the exact next eligible
+transition, then prompts once. `--prepare-only --json` is an explicit
+preparation-only machine mode: it does not read stdin, invoke a signer, append
+to a journal, contact GitHub, or invoke a model. Existing
+`authorize-wheels-up --json` behavior is unchanged.
 
-The dispatcher calls transition-specific adapters that reuse the existing
+The dispatcher uses a literal transition-kind registry and an exhaustive
+`(intent variant, replayed projection state) -> adapter or stable reason` table.
+There are no dynamic command names, function references, action-to-command
+lookups, fallback adapters, or model-selected transitions. Adapter-fixed facts
+override or reject conflicting intent data.
+
+Transition-specific adapters reuse the existing
 validators, preparation functions, signers, stores, and replay checks. It does
 not introduce a new authority class or reinterpret:
 
@@ -117,6 +171,10 @@ Preparation returns a closed candidate containing:
 - machine evidence reference;
 - stable reason code or ready state.
 
+The preparation receipt is authority-none and content-addressed. It proves the
+intent/plan binding and exact preflight observations without changing existing
+signed journal semantics.
+
 No temporary action-specific JSON is required from the operator. Preparation
 may use protected external temporary artifacts, but they are authority-none,
 credential-free, create-only, and safely disposable.
@@ -128,20 +186,27 @@ post-passcode drift check.
 
 ## Sequential implementation lanes
 
-All lane briefs, worktrees, dependency installation, exact base, validation
-commands, and stop conditions should be prepared in one setup operation. Lanes
-then execute in order. Each lane ends with an exact-head Mack packet and Fury
-conformance before the next lane begins.
+All child briefs, expected writable paths, validation commands, and stop
+conditions are frozen in one parent setup operation. Dependent worktrees are
+not created from the planning base. Each child starts from the exact accepted
+predecessor revision, installs dependencies once, and ends with exact-head Mack
+validation and Fury conformance before the next child begins.
 
-### Lane A — key-turn fresh-mission vertical slice
+### Lane A0 — preparation-library vertical slice
 
-Deliver the reviewed-intent contract, pure next-transition selector, action
-input compiler for fresh schema-9 `authorize-wheels-up`, concise human decision
-projection, and canonical `prepare-next` CLI path. Reuse:
+Create `@shield/mission-preparation` and deliver the reviewed-intent contract,
+pure next-transition selector, fresh schema-9 `authorize-wheels-up` candidate
+compiler, concise decision projection, and authority-none preparation receipt.
+This slice proves the library boundary with no signer, journal mutation, CLI
+prompt, GitHub operation, or model invocation.
+
+### Lane A1 — existing CLI/effect-path integration
+
+Connect the accepted Lane A0 candidate to the canonical `prepare-next` facade
+and the existing `authorize-wheels-up` effect path. Reuse:
 
 - `validateAuthorizeWheelsUpInput` semantics;
 - `prepareAuthorizeWheelsUp`;
-- `renderAuthorizeWheelsUpHumanV1`;
 - `signPayloadBatchWithSigner`;
 - `appendProfileAwareMissionEntriesAtomicV1`;
 - canonical publication-path ordering.
@@ -150,21 +215,61 @@ Do not replace the intended distinction between ordinary sorted identifiers
 and canonical publication paths. Do not collapse pre- and post-passcode
 freshness into one stale snapshot.
 
-Lane A is complete when a fresh mission can be prepared and authorized without
+Lane A1 is complete when a fresh mission can be prepared and authorized without
 hand-authored action JSON and with exactly one human decision prompt.
 
-### Lane B — additional existing transition adapters
+Minimally extend human rendering only where needed to show the exact mission, revision,
+repository, branch, HEAD, paths, action/effect/capability/validation IDs,
+selected model/runtime/executor, exclusions, and remaining gates. Preserve
+`renderAuthorizeWheelsUpHumanV1` and its snapshots unchanged. Keep preparation
+inside `mission-cli.mts`, or extract its private helpers once and route both old
+and new commands through the same implementation with fixed-vector tests.
 
-Add supported publication-only and runtime-binding preparation through the same
-intent/dispatcher boundary. Every adapter produces the exact input already
-accepted by the existing command and invokes the existing authority path.
+Lane A0 writable paths are limited to the new library and workspace metadata:
+
+| Path | Purpose |
+| --- | --- |
+| `packages/mission-preparation/package.json` | Nx/npm project and focused targets |
+| `packages/mission-preparation/tsconfig.build.json` | Isolated build boundary |
+| `packages/mission-preparation/src/**` | Authority-none contracts and compiler |
+| `packages/mission-preparation/tests/**` | Focused contract/adversarial tests |
+| `package-lock.json` | Workspace membership lock update |
+
+Lane A1 writable paths are limited to the accepted library dependency and host
+adapter integration:
+
+| Path | Purpose |
+| --- | --- |
+| `packages/shield-team-system/package.json` | Exact library dependency |
+| `packages/shield-team-system/src/mission-builder-v1.mts` | Sole production compiler invocation |
+| `packages/shield-team-system/src/mission-cli.mts` | Existing host/effect-path integration |
+| `packages/shield-team-system/src/mission-human-output-v1.mts` | Minimal additive decision fields if required |
+| `packages/shield-team-system/tests/supervised-cli.test.mjs` | Spawned CLI, freshness, and compatibility vectors |
+| `packages/shield-team-system/tests/mission-human-output.test.mjs` | Exact decision snapshots |
+| `package-lock.json` | Exact dependency lock update |
+
+Package exports remain unchanged unless the child review proves a new public
+contract is required. Legacy direct-command and output vectors must pass.
+
+### Lane B1 — publication-only adapter
+
+Add publication-only preparation through the same intent/dispatcher boundary.
+The adapter produces the exact input already accepted by the existing command
+and invokes the existing authority path.
+
+### Lane B2 — runtime-binding adapter
+
+After B1 is accepted, add runtime-binding preparation through the same closed
+boundary. Reviewed selected runtime/model/executor identities remain distinct
+from host-observed loaded-instance facts.
 
 Do not add a generic dynamic command interpreter. Unsupported or ambiguous
 mission states return one stable reason and no PIN prompt or mutation.
 
-### Lane C — bounded local packet compiler
+### Lane C — bounded local packet compiler child issue
 
-Add a host-neutral packet compiler used by local Daisy, May, and Mack. Input is
+Add a host-neutral packet contract/compiler, then integrate one seat per
+accepted child slice. Input is
 a closed packet intent containing exact mission/repository/revision/seat,
 requested output contract, ordered evidence references, selected runtime/model,
 context ceiling, reserved output/reasoning allowance, and stop conditions.
@@ -178,15 +283,24 @@ The compiler:
 - never retrieves hidden chain-of-thought or grants tools/authority;
 - emits one content-addressed packet artifact and dispatch candidate.
 
-Tokenizer accuracy is provider-specific. The host must use a trusted provider
-token-count boundary when available; otherwise it uses a conservative declared
-estimator and cannot label the packet exact-fit. Model-reported counters are
-post-dispatch observations, not preflight proof.
+For LM Studio, the host applies the exact loaded instance's prompt template,
+counts the final rendered conversation—including system prompt and output
+contract—with that instance's tokenizer, and compares the count to its observed
+context length. The packet binds loaded-instance ID, model key,
+tokenizer/template identity, context length, counter method, input count,
+maximum generated-token reservation, hidden-reasoning reservation, safety
+margin, and safe ceiling. If the endpoint cannot prove whether an output cap
+includes hidden reasoning, reserve both or refuse dispatch.
 
-### Lane D — governed multi-packet Mack campaign
+A fallback estimator may only come from a host-owned, versioned registry proven
+conservative for the exact model/template/tokenizer. Packet-declared estimators
+are rejected. Model-reported counters remain post-dispatch observations.
+
+### Lane D — governed multi-packet Mack campaign child issue
 
 Extend local Mack additively with a campaign contract rather than weakening the
-existing single-packet request. One campaign binds:
+existing single-packet request. One campaign separates immutable
+`campaignRequestId` and request digest from the final evidence digest and binds:
 
 - exact mission, subject, repository, base, artifact HEAD, and changed paths;
 - one host-executed ordered validation-lane receipt set;
@@ -194,14 +308,24 @@ existing single-packet request. One campaign binds:
 - exact runtime/model/executor identity and campaign context budget;
 - complete required-scenario coverage and packet-result cardinality;
 - each packet request, prompt, response, and assessment digest;
-- one stable campaign ID and digest.
+- one stable request ID, request digest, and final evidence digest.
 
-Host commands execute once for the campaign. Model packets may only assess
+The existing trusted command registry remains the sole executable-command
+source. Packet/model content cannot supply command authority. The campaign
+store uses an external canonical private root, no-follow access, owner/mode/link
+checks, locking, create-only claims, ordered started/completed records, fsync,
+exact readback, orphan handling, and conflict rejection. Git/runtime identity
+is captured before and after commands, around every packet, and at aggregation.
+V1 requires one exact loaded-instance/model/runtime/executor identity throughout.
+
+Host commands execute once for the campaign. If a command or inference may have
+started but durable completion is absent, return `recovery_required`; never
+rerun automatically. Model packets may only assess
 their assigned evidence. The aggregate report is derived by the host:
 
 - every required host lane must pass;
-- every required scenario must have exactly one permitted assessment owner or
-  an explicit deterministic combination rule;
+- every required scenario must have exactly one assessment owner; combination
+  rules are deferred from V1;
 - failed/uncertain assessments veto coverage;
 - missing, duplicate, stale, cross-runtime, cross-revision, reordered, or
   conflicting packet evidence fails closed;
@@ -209,9 +333,12 @@ their assigned evidence. The aggregate report is derived by the host:
 - replay returns the exact durable campaign record and performs no second host
   command or model invocation.
 
-The existing one-packet Mack contract remains valid and unchanged.
+Define an additive campaign contract/reader and deterministic host projection
+into unchanged `mack.validation.v0`, identifying every accepting consumer. The
+existing `mack.local-validation.v1`, replay registry, and one-packet contract
+remain valid and unchanged.
 
-### Lane E — before/after dogfood proof
+### Lane E — authority-none before/after proving issue
 
 Run the key-turn command on a fresh bounded mission and compare it with #259.
 Record authority-none metrics from host/provider sources:
@@ -221,13 +348,20 @@ Record authority-none metrics from host/provider sources:
 - pre-PIN preflight failures;
 - human decisions and PIN prompts;
 - Hill tokens;
+- Hill tokens attributable specifically to payload construction, context
+  repackaging, preflight repair, polling, and result normalization;
 - local packet input/output/reasoning tokens;
+- accepted local findings versus discarded/retried packets;
 - repeated repository/context reads;
 - elapsed time;
 - handoffs and repair cycles.
 
 The target is not zero human intervention. It is one informed human decision
-per actual authority transition and no human effort spent repairing mechanics.
+per actual authority transition, no Hill-authored mechanical evidence fields,
+no deterministic preflight repair loop, and strictly less hosted Hill
+orchestration work than the #259 baseline while preserving accepted local
+output quality. If local dispatch plus orchestration does not beat the hosted
+baseline, the proving disposition is revise or no-adopt rather than success.
 
 ## Acceptance matrix
 
@@ -238,15 +372,16 @@ per actual authority transition and no human effort spent repairing mechanics.
 | A3 | One clear human decision | Snapshot test contains exact scope, exclusions, remaining gates, PIN/cancel only |
 | A4 | No-effect cancel/failure | Spawned CLI proves unchanged journal, Git, GitHub, model, and target bytes |
 | A5 | Post-PIN freshness | Every repository/journal/signer drift class blocks before signature append |
-| A6 | Exact existing semantics | Derived input/replayed entries equal direct existing-command vectors |
-| A7 | Clean success/retry | One append, clean terminal return, exact retry cannot duplicate authority |
+| A6 | Exact existing semantics | Derived action input and four replayed entries equal direct existing-command vectors; intent binding remains authority-none |
+| A7 | Clean success/retry | One atomic batch append containing four entries, clean terminal return, exact retry cannot duplicate authority |
 | A8 | Unsupported state | One stable reason, no PIN, no mutation |
-| C1 | Budgeted packet | Over-budget fails before inference; exact artifacts and allowances are reported |
+| C1 | Budgeted packet | Exact loaded-instance tokenizer/template proves fit; unavailable or over-budget count fails before inference |
 | C2 | Seat/authority isolation | Packet cannot change seat, tools, authority, mission, revision, or output schema |
 | D1 | Host evidence separation | Model result cannot override failed/unavailable command receipt |
 | D2 | Complete aggregation | Missing/duplicate/reordered/conflicting packet or scenario evidence fails closed |
-| D3 | Exact replay | Campaign replay performs no command or inference and returns identical evidence |
+| D3 | Exact replay | Replay performs no command or inference and returns identical evidence; uncertain started work requires recovery |
 | E1 | Measured improvement | Before/after evidence uses host/provider counters and authority-none classification |
+| E2 | Net local savings | Zero Hill-authored mechanical fields/retries and strictly lower hosted orchestration usage than #259 with accepted local output |
 
 ## Validation strategy
 
@@ -256,10 +391,17 @@ one checked-in validation wrapper only if it composes existing targets without
 hiding failures or broadening authority.
 
 Required adversarial classes include malformed/extra/accessor/proxy input,
-locale/path ordering, symlink/gitlink/path alias, signer and journal drift,
-cancel/empty/wrong PIN, partial append/durability uncertainty, runtime identity
-drift, context substitution, budget undercount, packet cardinality conflict,
-and campaign replay after interruption.
+strict duplicate-key JSON and byte/depth/count ceilings, locale/path ordering,
+symlink/hardlink/FIFO/device/gitlink/path alias, owner/mode/link and inode/byte
+replacement before display/after PIN/before append, signer and journal drift,
+cancel/empty/wrong PIN, journal locking/mixed schema/partial
+write/rename/fsync/readback uncertainty/orphan state, non-loopback or ambiguous
+runtime, model/context/tokenizer/template substitution, cross-packet instance
+drift, budget undercount or unavailable exact counter, provider truncation,
+packet cardinality/ownership/order/substitution conflict, trusted-command
+substitution, campaign request-ID conflict, crash at each store/command/packet
+stage, A-B-A replay, and preservation of legacy commands, package exports,
+single-packet Mack, and consumer vectors.
 
 ## Human output boundary
 
@@ -293,15 +435,14 @@ truth. Every retrieved entry remains reference-only and is revalidated.
 
 ## Fury decisions requested
 
-1. Is `mission.transition-intent.v1` the correct minimal trust-neutral source of
-   non-observable planning decisions, and should Mission Builder or Helicarrier
-   be its sole production compiler?
-2. Is the fresh `authorize-wheels-up` vertical slice the correct first key-turn
-   implementation boundary?
+1. Does the corrected Mission Builder-only parent-plan binding close production
+   intent provenance without making Hill reconstruct governance evidence?
+2. Is the `@shield/mission-preparation` A0 boundary followed by thin A1
+   `authorize-wheels-up` integration the correct first implementation path?
 3. Should the local Mack campaign aggregate model scenario assessments by
    exclusive ownership only in V1, deferring combination rules?
-4. Are Lanes A-E correctly separated into bounded child PRs, or should Lane C/D
-   remain a separate child issue from the operator key-turn path?
+4. Are Lane A0, A1, B1, B2, C, D, and authority-none E sufficiently independent
+   and predecessor-bound for sequential child issues?
 
 Implementation remains blocked until Fury approves the exact plan and Coulson
 authorizes the first child slice.
