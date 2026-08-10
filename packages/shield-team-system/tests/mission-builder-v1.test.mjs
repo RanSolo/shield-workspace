@@ -617,6 +617,33 @@ test("Mack self-reports are preserved and repair exhaustion is deterministic", a
   assert.equal(exhaustedResult.outcome, "blocked");
   assert.equal(exhaustedResult.reasonCode, "repair_exhausted");
   assert.equal(exhaustedResult.dispatchEffects, 1);
+  assert.equal(exhaustedResult.status.currentState, "blocked");
+  assert.equal(exhaustedResult.status.nextTransition, null);
+  assert.equal(exhaustedResult.status.stopReason, "repair_exhausted");
+  const exhaustedRetry = await advance(exhausted);
+  assert.equal(exhaustedRetry.outcome, "blocked");
+  assert.equal(exhaustedRetry.reasonCode, "repair_exhausted");
+  assert.equal(exhaustedRetry.dispatchEffects, 0);
+  assert.equal(exhausted.dispatches, 1);
+
+  const nonzero = harness("delivery", { maximumRepairs: 1 });
+  await advance(nonzero);
+  const nonzeroOriginal = nonzero.dependencies.mack.dispatch;
+  nonzero.dependencies.mack.dispatch = async (handoff) => {
+    const result = await nonzeroOriginal(handoff);
+    const report = { ...result.report, status: "fail", recommendedRoute: "may" };
+    const reportRef = `mack-report:${hash("shield.mack-report.v1", report).slice(7)}`;
+    nonzero.reports.set(reportRef, report);
+    return { reportRef, report };
+  };
+  assert.equal((await advance(nonzero)).outcome, "advanced");
+  const finalRepair = await advance(nonzero);
+  assert.equal(finalRepair.outcome, "blocked");
+  assert.equal(finalRepair.reasonCode, "repair_exhausted");
+  assert.equal(finalRepair.status.currentState, "blocked");
+  assert.equal(finalRepair.status.nextTransition, null);
+  assert.equal(finalRepair.status.stopReason, "repair_exhausted");
+  assert.equal((await advance(nonzero)).dispatchEffects, 0);
 });
 
 test("altered Mack dispatch identity is receipt-invalid with zero effects", async () => {
@@ -637,6 +664,24 @@ test("altered Mack dispatch identity is receipt-invalid with zero effects", asyn
   assert.equal(result.outcome, "blocked");
   assert.equal(result.reasonCode, "receipt_invalid");
   assert.equal(result.dispatchEffects, 0);
+  assert.equal(h.dispatches, 1);
+});
+
+test("stale completed Mack identity without a step receipt cannot be adopted", async () => {
+  const h = harness("delivery");
+  await advance(h);
+  await advance(h);
+  h.stepReceipts.pop();
+  const staleRuntime = runtime("mack");
+  staleRuntime.runtimeSelfReport = { kind: "runtime.self_report.observed", runtimeId: "runtime:stale", model: "model:stale", evidenceRefs: ["evidence:stale:runtime"] };
+  staleRuntime.executorSelfReport = { kind: "executor.self_report.observed", executorId: "executor:stale", evidenceRefs: ["evidence:stale:executor"] };
+  const workSeat = h.definition.steps.find((step) => step.adapter === "mission_cycle").seatId;
+  const result = await advanceMissionV1({ schemaVersion: 1, contractVersion: "mission.advance.v1", definition: h.definition,
+    observation: observation(h, { runtimeBindings: [runtime(workSeat), staleRuntime] }) }, h.dependencies);
+  assert.equal(result.outcome, "blocked");
+  assert.equal(result.reasonCode, "receipt_invalid");
+  assert.equal(result.dispatchEffects, 0);
+  assert.equal(h.stepReceipts.length, 1);
   assert.equal(h.dispatches, 1);
 });
 
