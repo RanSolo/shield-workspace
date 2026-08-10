@@ -10,6 +10,16 @@ import {
   type Schema9RuntimeBindingV1,
 } from "./implementation-authority-v1.mjs";
 import {
+  DAISY_COORDINATION_ACTION_ID,
+  DAISY_COORDINATION_CAPABILITY_CLASS,
+  DAISY_COORDINATION_EFFECT_CLASS,
+  DAISY_COORDINATION_VALIDATION_ID,
+  compareDaisyCanonicalStringsV1,
+  rootsOverlapV1,
+  type DaisyCoordinationAuthorityV1,
+  type DaisyCoordinationRuntimeBindingV1,
+} from "./daisy-coordination-authority-v1.mjs";
+import {
   validatePermissionInvocationContext,
   type HostPermissionAttestation,
   type PermissionInvocationContext,
@@ -27,7 +37,22 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 
 type ResultOk<T> = { state: "ready"; context: T };
 type ResultBlocked = { state: "blocked"; code: Schema9PermissionContextBlockedCode; errors: string[] };
-export type Schema9PermissionContextResult = ResultOk<PermissionInvocationContext> | ResultBlocked;
+export interface DaisyCoordinationReadyPermissionV1 {
+  authorityRef: string;
+  authorityDigest: string;
+  authoritySequence: number;
+  approvedReadRoots: readonly string[];
+  durableArtifactRoot: string;
+  bindingId: string;
+  bindingVersion: number;
+  runtimeId: string;
+  modelId: string;
+  executorId: string;
+}
+export type Schema9PermissionContextResult =
+  | ResultOk<PermissionInvocationContext>
+  | { state: "ready"; context: PermissionInvocationContext; daisyCoordination: Readonly<DaisyCoordinationReadyPermissionV1> }
+  | ResultBlocked;
 
 export type Schema9PermissionContextBlockedCode =
   | "input_invalid"
@@ -100,10 +125,11 @@ interface LoaderSnapshot {
 }
 
 interface ProjectionPermissionState {
-  authority: ImplementationAuthorityV1;
-  bindingWrapper: Schema9RuntimeBindingV1;
   binding: RuntimeBinding;
   requiredCapabilities: string[];
+  artifactRevisionId: string;
+  daisyCoordination: DaisyCoordinationReadyPermissionV1 | null;
+  approvedReadRoots: string[];
 }
 
 function plain(value: unknown): value is Record<string, unknown> {
@@ -166,7 +192,9 @@ function snapshotInput(input: unknown): ResultOk<LoaderSnapshot> | ResultBlocked
   if (planValue.state === "invalid") return blocked("input_invalid", [`Schema9 permission plan is invalid: ${planValue.code}.`, ...planValue.errors]);
   const plan = jsonCopy(planValue.value);
   if (plan.missionId !== missionId) return blocked("input_invalid", ["Schema9 permission plan missionId must match the missionId input."]);
-  if (plan.seatId !== "may") return blocked("input_invalid", ["Schema9 permission loader requires the May seat."]);
+  const exactDaisyPlan = plan.seatId === "daisy" && plan.actionId === DAISY_COORDINATION_ACTION_ID &&
+    plan.effectClass === DAISY_COORDINATION_EFFECT_CLASS && plan.validationId === DAISY_COORDINATION_VALIDATION_ID;
+  if (plan.seatId !== "may" && !exactDaisyPlan) return blocked("input_invalid", ["Schema9 permission loader requires May or the exact Daisy coordination tuple."]);
   const opsInput = field("trustedHostOps");
   const resolvedOps: Schema9PermissionContextTrustedHostOps = {
     realpath: defaultHostOps.realpath,
@@ -299,7 +327,7 @@ function buildContext(
     missionId: plan.missionId,
     subjectId: plan.subjectId,
     missionRevisionId: plan.revisionId,
-    artifactRevisionId: snapshot.authority.artifactRevisionId,
+    artifactRevisionId: snapshot.artifactRevisionId,
     evaluatedThroughSequence: plan.evaluatedThroughSequence,
     reasoningRuntimeId: snapshot.binding.reasoningRuntimeId,
     toolExecutorId: snapshot.binding.toolExecutorId,
@@ -323,14 +351,102 @@ function buildContext(
 }
 
 function permissionStateFromProjection(projection: Schema9SeatDispatchProjectionV1): ProjectionPermissionState {
-  const authority = jsonCopy(projection.implementationAuthority.authority);
-  const bindingWrapper = jsonCopy(projection.mayRuntimeBinding.binding);
+  if (projection.authorityPath === "daisy_feature_flight_coordination") {
+    const authority: DaisyCoordinationAuthorityV1 = jsonCopy(projection.daisyCoordinationAuthority.authority);
+    const binding: DaisyCoordinationRuntimeBindingV1 = jsonCopy(projection.daisyRuntimeBinding.binding);
+    const runtimeBinding: RuntimeBinding = {
+      bindingSchemaVersion: 1,
+      bindingId: binding.bindingId,
+      bindingVersion: binding.bindingVersion,
+      missionId: binding.missionId,
+      subjectId: binding.subjectId,
+      missionRevisionId: binding.missionRevisionId,
+      seatId: "daisy",
+      reasoningRuntimeId: binding.runtimeId,
+      toolExecutorId: binding.executorId,
+      repositoryId: binding.repositoryId,
+      canonicalWritableRoot: binding.durableArtifactRoot,
+      branch: binding.branch,
+      artifactRevisionId: binding.headRevision,
+      recordedAtSequence: binding.effectiveSequence,
+      activeThroughSequence: null,
+      lifecycleState: "active",
+      approvedScope: {
+        actionIds: [binding.actionId],
+        effectClasses: [binding.effectClass],
+        effectKeys: [binding.effectKey],
+        capabilities: [binding.capabilityClass],
+      },
+      coulsonAuthorizationRef: binding.coulsonAuthorizationRef,
+    };
+    return {
+      binding: runtimeBinding,
+      requiredCapabilities: [DAISY_COORDINATION_CAPABILITY_CLASS],
+      artifactRevisionId: authority.headRevision,
+      approvedReadRoots: [...authority.approvedReadRoots],
+      daisyCoordination: {
+        authorityRef: authority.authorityRef,
+        authorityDigest: projection.daisyCoordinationAuthority.digest,
+        authoritySequence: projection.daisyCoordinationAuthority.sequence,
+        approvedReadRoots: [...authority.approvedReadRoots],
+        durableArtifactRoot: authority.durableArtifactRoot,
+        bindingId: binding.bindingId,
+        bindingVersion: binding.bindingVersion,
+        runtimeId: binding.runtimeId,
+        modelId: binding.modelId,
+        executorId: binding.executorId,
+      },
+    };
+  }
+  const authority: ImplementationAuthorityV1 = jsonCopy(projection.implementationAuthority.authority);
+  const bindingWrapper: Schema9RuntimeBindingV1 = jsonCopy(projection.mayRuntimeBinding.binding);
   return {
-    authority,
-    bindingWrapper,
     binding: jsonCopy(bindingWrapper.binding),
     requiredCapabilities: [...bindingWrapper.binding.approvedScope.capabilities].sort(),
+    artifactRevisionId: authority.artifactRevisionId,
+    daisyCoordination: null,
+    approvedReadRoots: [],
   };
+}
+
+interface DaisyHostRootObservation {
+  durableArtifactRoot: string;
+  approvedReadRoots: string[];
+  worktreeRoots: string[];
+}
+
+async function observeDaisyHostRoots(
+  snapshot: LoaderSnapshot,
+  state: ProjectionPermissionState,
+): Promise<{ observation: DaisyHostRootObservation | null; error: string | null }> {
+  if (state.daisyCoordination === null) return { observation: null, error: null };
+  const durable = await snapshot.ops.realpath(state.daisyCoordination.durableArtifactRoot);
+  if (durable !== state.daisyCoordination.durableArtifactRoot) return { observation: null, error: "Daisy durable artifact root is not canonical on the host." };
+  const approvedReadRoots: string[] = [];
+  for (const readRoot of state.approvedReadRoots) {
+    const canonicalReadRoot = await snapshot.ops.realpath(readRoot);
+    if (canonicalReadRoot !== readRoot) return { observation: null, error: "A Daisy approved read root is not canonical on the host." };
+    if (rootsOverlapV1(durable, readRoot)) return { observation: null, error: "Daisy durable artifact root overlaps an approved read root." };
+    approvedReadRoots.push(canonicalReadRoot);
+  }
+  const output = await snapshot.ops.execFile("git", ["-C", snapshot.repositoryRoot, "worktree", "list", "--porcelain"], { cwd: snapshot.repositoryRoot });
+  const worktreePaths = output.split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
+  if (worktreePaths.length === 0) return { observation: null, error: "Git worktree inventory is empty." };
+  const worktreeRoots: string[] = [];
+  for (const worktreePath of worktreePaths) {
+    const worktreeRoot = await snapshot.ops.realpath(worktreePath);
+    if (rootsOverlapV1(durable, worktreeRoot)) return { observation: null, error: "Daisy durable artifact root overlaps a repository worktree." };
+    worktreeRoots.push(worktreeRoot);
+  }
+  worktreeRoots.sort(compareDaisyCanonicalStringsV1);
+  if (new Set(worktreeRoots).size !== worktreeRoots.length) return { observation: null, error: "Git worktree inventory is ambiguous." };
+  return { observation: { durableArtifactRoot: durable, approvedReadRoots, worktreeRoots }, error: null };
+}
+
+function immutableDaisyPermission(value: DaisyCoordinationReadyPermissionV1): Readonly<DaisyCoordinationReadyPermissionV1> {
+  const copy = { ...value, approvedReadRoots: [...value.approvedReadRoots] };
+  Object.freeze(copy.approvedReadRoots);
+  return Object.freeze(copy);
 }
 
 function projectionBlocked(
@@ -363,11 +479,21 @@ export async function loadSchema9PermissionContextV1(input: Schema9PermissionCon
     expectedSubjectId: validated.plan.subjectId,
     expectedMissionRevisionId: validated.plan.revisionId,
     expectedEvaluatedThroughSequence: validated.plan.evaluatedThroughSequence,
+    plan: validated.plan,
     trustedHostOps: { realpath: ops.realpath, execFile: ops.execFile },
   };
   const firstProjection = await loadSchema9SeatDispatchProjectionV1(projectionInput);
   if (firstProjection.state === "blocked") return projectionBlocked(firstProjection.code, firstProjection.errors);
   const firstState = permissionStateFromProjection(firstProjection.projection);
+
+  let firstRootObservation: DaisyHostRootObservation | null;
+  try {
+    const roots = await observeDaisyHostRoots(validated, firstState);
+    if (roots.error !== null) return blocked("root_mismatch", [roots.error]);
+    firstRootObservation = roots.observation;
+  } catch {
+    return blocked("root_mismatch", ["Daisy root or worktree observation failed."]);
+  }
 
   try {
     await observeWritability(ops, firstState.binding.canonicalWritableRoot);
@@ -404,5 +530,17 @@ export async function loadSchema9PermissionContextV1(input: Schema9PermissionCon
   const context = buildContext(firstState, validated.hostId, validated.plan, validated.expectedDecisionId, evaluatedAt, capabilityStates);
   const checkedContext = validatePermissionInvocationContext(context);
   if (checkedContext.state === "invalid") return blocked("context_invalid", checkedContext.errors);
+  try {
+    const roots = await observeDaisyHostRoots(validated, firstState);
+    if (roots.error !== null) return blocked("root_mismatch", [roots.error]);
+    if (!same(firstRootObservation, roots.observation)) {
+      return blocked("root_mismatch", ["Daisy durable root, approved read roots, or canonical worktree inventory drifted during permission probes."]);
+    }
+  } catch {
+    return blocked("root_mismatch", ["Daisy root or worktree reobservation failed after permission probes."]);
+  }
+  if (firstState.daisyCoordination !== null) {
+    return { state: "ready", context: checkedContext.value, daisyCoordination: immutableDaisyPermission(firstState.daisyCoordination) };
+  }
   return { state: "ready", context: checkedContext.value };
 }

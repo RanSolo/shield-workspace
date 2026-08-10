@@ -5,13 +5,15 @@ import { execFile as execFileCallback } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 
 import { canonicalJson, computeEd25519SigningKeyRef, createMissionBegunEntry, createSupervisedMissionBrief } from "../dist/mission-v2.mjs";
 import {
   createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareImplementationAuthorityRevocationEntryV1,
+  createProfileAwareDaisyCoordinationAuthorityEntryV1,
+  createProfileAwareDaisyRuntimeBindingEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   createProfileAwareRuntimeBindingRecordedEntryV1,
@@ -23,7 +25,13 @@ import {
   computeRuntimeBindingDigest,
   computeSchema9RuntimeBindingDigest,
 } from "../dist/implementation-authority-v1.mjs";
+import {
+  computeDaisyCoordinationAuthorityDigest,
+  computeDaisyCoordinationRuntimeBindingDigest,
+} from "../dist/daisy-coordination-authority-v1.mjs";
 import { loadSchema9PermissionContextV1 } from "../dist/schema9-permission-context-v1.mjs";
+import { loadSchema9SeatDispatchProjectionV1 } from "../dist/schema9-seat-dispatch-projection-v1.mjs";
+import { createPermissionAuthorizer } from "../dist/permission-v1.mjs";
 import { resolveSupervisedMissionPaths } from "../dist/mission-store.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -49,7 +57,12 @@ function signPayload(payload, privateKey) {
 }
 
 function authoritySigner() {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const privateKey = createPrivateKey({
+    key: Buffer.from("MC4CAQAwBQYDK2VwBCIEID/cisfo2rCW/eukdWSETKZs3ISkUTRw94WoAnBmWpkg", "base64"),
+    format: "der",
+    type: "pkcs8",
+  });
+  const publicKey = createPublicKey(privateKey);
   return {
     privateKey,
     binding: {
@@ -68,7 +81,11 @@ function authoritySigner() {
   };
 }
 
-function missionBrief(profile = "standard") {
+function canonicalSha256(value) {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+function missionBrief(profile = "standard", includeDaisy = false) {
   const profileGates = profile === "standard" ? ["coulson"] : profile === "high_assurance" ? ["coulson", "fitz"] : ["coulson", "simmons"];
   return createProfileAwareMissionBrief({
     schemaVersion: 2,
@@ -76,7 +93,7 @@ function missionBrief(profile = "standard") {
     objective: "Permission context fixture for schema-9 loader coverage.",
     subjectId: `issue:schema9-${profile}`,
     riskFlags,
-    participants: [{ seatId: "hill" }, { seatId: "may" }, ...profileGates.map((seatId) => ({ seatId }))],
+    participants: [{ seatId: "hill" }, { seatId: "may" }, ...(includeDaisy ? [{ seatId: "daisy" }] : []), ...profileGates.map((seatId) => ({ seatId }))],
     activatedModes: [],
     requireSimmons: false,
     createdAt: { value: "2026-07-29T15:00:00Z", provenance: "humanRecorded" },
@@ -272,7 +289,7 @@ function replay(entries) {
 }
 
 function createProfileAwareFixture(options = {}) {
-  const profile = missionBrief(options.profileId ?? "standard");
+  const profile = missionBrief(options.profileId ?? "standard", options.includeDaisy === true);
   const trusted = authoritySigner();
   const writableRoot = options.writableRoot ?? "/workspace/repository";
   const entries = [createProfileAwareMissionBegunEntry(profile, [trusted.binding])];
@@ -441,11 +458,191 @@ function makeGitHostOps({
         const head = await headFactory();
         return `${head}\n`;
       }
+      if (command.endsWith("worktree list --porcelain")) {
+        return `worktree ${repositoryRoot}\nHEAD ${await headFactory()}\nbranch refs/heads/${branchFactory()}\n\n`;
+      }
       throw new Error(`Unsupported command: ${command}`);
     },
     probeCapability,
   };
 }
+
+async function createDaisyPermissionFixture(repositoryRoot) {
+  const fixture = createProfileAwareFixture({ writableRoot: repositoryRoot, includeDaisy: true });
+  const durableArtifactRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-daisy-artifacts-")));
+  const authoritySequence = fixture.projection.lastSequence + 1;
+  const authorityPayload = {
+    schemaVersion: 1,
+    contractVersion: "daisy-coordination-authority.v1",
+    authorityKind: "daisy_feature_flight_coordination",
+    authorityRef: `authority:${fixture.profile.missionId}:daisy:${authoritySequence}`,
+    missionId: fixture.profile.missionId,
+    subjectId: fixture.profile.subjectId,
+    missionRevisionId: fixture.profile.revisionId,
+    evaluatedThroughSequence: fixture.projection.lastSequence,
+    repositoryId: "repository:issue-181",
+    canonicalRepositoryRoot: repositoryRoot,
+    branch: "main",
+    headRevision: FIXED_HEAD_REVISION,
+    seatId: "daisy",
+    actionId: "action:feature-flight.daisy.reconnaissance",
+    effectClass: "coordination",
+    effectKey: "effect:daisy:reconnaissance",
+    capabilityClass: "read_only_coordination",
+    approvedReadRoots: [repositoryRoot],
+    durableArtifactRoot,
+    issuedAt: { value: `2026-07-29T15:${String(authoritySequence).padStart(2, "0")}:00Z`, provenance: "humanRecorded" },
+    signingKeyRef: fixture.trusted.binding.signingKeyRef,
+  };
+  const authority = {
+    ...signPayload(authorityPayload, fixture.trusted.privateKey),
+    authorityDigest: computeDaisyCoordinationAuthorityDigest(authorityPayload),
+  };
+  fixture.entries.push(createProfileAwareDaisyCoordinationAuthorityEntryV1({
+    projection: fixture.projection,
+    trustedBindings: [fixture.trusted.binding],
+    authority,
+  }));
+  fixture.projection = replay(fixture.entries);
+  const bindingSequence = fixture.projection.lastSequence + 1;
+  const authorizationId = `authorization:${fixture.profile.missionId}:daisy:${bindingSequence}`;
+  const binding = {
+    schemaVersion: 1,
+    contractVersion: "daisy-coordination-runtime-binding.v1",
+    bindingId: `binding:${fixture.profile.missionId}:daisy`,
+    bindingVersion: 1,
+    priorBindingId: null,
+    priorBindingVersion: null,
+    missionId: fixture.profile.missionId,
+    subjectId: fixture.profile.subjectId,
+    missionRevisionId: fixture.profile.revisionId,
+    seatId: "daisy",
+    runtimeId: "runtime:daisy:permission",
+    modelId: "model:daisy:permission",
+    executorId: "executor:daisy:permission",
+    actionId: authorityPayload.actionId,
+    effectClass: authorityPayload.effectClass,
+    effectKey: authorityPayload.effectKey,
+    capabilityClass: authorityPayload.capabilityClass,
+    repositoryId: authorityPayload.repositoryId,
+    canonicalRepositoryRoot: repositoryRoot,
+    branch: "main",
+    headRevision: FIXED_HEAD_REVISION,
+    durableArtifactRoot,
+    authorityRef: authorityPayload.authorityRef,
+    authorityDigest: authority.authorityDigest,
+    authoritySequence,
+    effectiveSequence: bindingSequence,
+    lifecycleState: "active",
+    coulsonAuthorizationRef: authorizationId,
+  };
+  const authorizationPayload = {
+    schemaVersion: 1,
+    contractVersion: "daisy-coordination-runtime-binding-authorization.v1",
+    authorizationId,
+    missionId: fixture.profile.missionId,
+    subjectId: fixture.profile.subjectId,
+    seatId: "daisy",
+    bindingId: binding.bindingId,
+    bindingVersion: 1,
+    priorBindingId: null,
+    priorBindingVersion: null,
+    bindingDigest: computeDaisyCoordinationRuntimeBindingDigest(binding),
+    authorityRef: authorityPayload.authorityRef,
+    authorityDigest: authority.authorityDigest,
+    authoritySequence,
+    decision: "approved",
+    previousJournalSequence: bindingSequence - 1,
+    journalSequence: bindingSequence,
+    signingKeyRef: fixture.trusted.binding.signingKeyRef,
+    sourceRef: `source:daisy:permission:${bindingSequence}`,
+    issuedAt: { value: `2026-07-29T15:${String(bindingSequence).padStart(2, "0")}:00Z`, provenance: "humanRecorded" },
+  };
+  fixture.entries.push(createProfileAwareDaisyRuntimeBindingEntryV1({
+    projection: fixture.projection,
+    trustedBindings: [fixture.trusted.binding],
+    binding,
+    authorization: signPayload(authorizationPayload, fixture.trusted.privateKey),
+  }));
+  fixture.projection = replay(fixture.entries);
+  return { ...fixture, durableArtifactRoot };
+}
+
+test("Daisy coordination permission returns its immutable exact authority and durable-root binding", async () => {
+  const repositoryRoot = await createGitRepository();
+  const fixture = await createDaisyPermissionFixture(repositoryRoot);
+  await writeJournal(repositoryRoot, fixture.profile.missionId, fixture.entries);
+  const plan = permissionPlanFromProjection(fixture.projection, {
+    seatId: "daisy",
+    actionId: "action:feature-flight.daisy.reconnaissance",
+    effectClass: "coordination",
+    effectKey: "effect:daisy:reconnaissance",
+    validationId: "validation:feature-flight.daisy-result-v1",
+  });
+  const result = await loadSchema9PermissionContextV1(makePermissionInput({
+    repositoryRoot,
+    missionId: fixture.profile.missionId,
+    expectedDecisionId: "decision:schema9:daisy-ready",
+    plan,
+    hostOps: makeGitHostOps({ repositoryRoot, headFactory: () => FIXED_HEAD_REVISION }),
+  }));
+  assert.equal(result.state, "ready");
+  assert.equal(result.context.activeBindings[0].seatId, "daisy");
+  assert.equal(result.context.canonicalWritableRoot, fixture.durableArtifactRoot);
+  assert.deepEqual(result.context.requiredCapabilities, ["read_only_coordination"]);
+  assert.equal(result.daisyCoordination.authorityRef, fixture.projection.daisyCoordinationAuthority.authorityRef);
+  assert.equal(result.daisyCoordination.durableArtifactRoot, fixture.durableArtifactRoot);
+  assert.equal(Object.isFrozen(result.daisyCoordination), true);
+  assert.equal(Object.isFrozen(result.daisyCoordination.approvedReadRoots), true);
+});
+
+test("Daisy permission reobserves canonical roots and worktrees after probes and fails closed on drift or faults", async () => {
+  const repositoryRoot = await createGitRepository();
+  const otherWorktreeRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-daisy-other-worktree-")));
+  const fixture = await createDaisyPermissionFixture(repositoryRoot);
+  await writeJournal(repositoryRoot, fixture.profile.missionId, fixture.entries);
+  const plan = permissionPlanFromProjection(fixture.projection, {
+    seatId: "daisy",
+    actionId: "action:feature-flight.daisy.reconnaissance",
+    effectClass: "coordination",
+    effectKey: "effect:daisy:reconnaissance",
+    validationId: "validation:feature-flight.daisy-result-v1",
+  });
+
+  for (const scenario of ["inventory-drift", "observer-fault"]) {
+    let probeCalls = 0;
+    let worktreeCalls = 0;
+    let postProbeReobservation = false;
+    const hostOps = makeGitHostOps({
+      repositoryRoot,
+      headFactory: () => FIXED_HEAD_REVISION,
+      probeCapability: async () => { probeCalls += 1; return true; },
+    });
+    const baseExecFile = hostOps.execFile;
+    hostOps.execFile = async (...args) => {
+      if (args[1].join(" ").endsWith("worktree list --porcelain")) {
+        worktreeCalls += 1;
+        if (worktreeCalls === 2) {
+          postProbeReobservation = probeCalls > 0;
+          if (scenario === "observer-fault") throw new Error("injected post-probe worktree fault");
+          return `worktree ${repositoryRoot}\nHEAD ${FIXED_HEAD_REVISION}\nbranch refs/heads/main\n\nworktree ${otherWorktreeRoot}\nHEAD ${FIXED_HEAD_REVISION}\nbranch refs/heads/other\n\n`;
+        }
+      }
+      return baseExecFile(...args);
+    };
+    const result = await loadSchema9PermissionContextV1(makePermissionInput({
+      repositoryRoot,
+      missionId: fixture.profile.missionId,
+      expectedDecisionId: `decision:schema9:daisy-${scenario}`,
+      plan,
+      hostOps,
+    }));
+    assert.equal(result.state, "blocked", scenario);
+    assert.equal(result.code, "root_mismatch", scenario);
+    assert.equal(worktreeCalls, 2, scenario);
+    assert.equal(postProbeReobservation, true, scenario);
+  }
+});
 
 test("schema9 permission context load is ready on valid replay with all required bindings and capabilities", async () => {
   const repositoryRoot = await createGitRepository();
@@ -465,12 +662,86 @@ test("schema9 permission context load is ready on valid replay with all required
     }),
   );
   assert.equal(result.state, "ready");
+  assert.deepEqual(Object.keys(result), ["state", "context"]);
+  assert.equal(Object.hasOwn(result, "daisyCoordination"), false);
   const context = result.context;
   const expectedCapabilities = ["filesystem_write", "github_issues"];
   assert.deepEqual(context.requiredCapabilities, expectedCapabilities);
   assert.equal(context.attestations.length, 4);
   assert.equal(context.attestations.filter((attestation) => attestation.kind === "capability").length, 2);
   assert.equal(context.attestations.every((attestation) => attestation.expiresAt === attestation.observedAt), true);
+});
+
+test("May replay, dispatch projection, permission context, and permission artifact retain fixed canonical bytes", async () => {
+  const repositoryRoot = "/private/tmp/shield-team-system-may-golden-v1";
+  await mkdir(repositoryRoot, { recursive: true });
+  assert.equal(await realpath(repositoryRoot), repositoryRoot);
+  const fixture = createProfileAwareFixture({ writableRoot: repositoryRoot });
+  await writeJournal(repositoryRoot, fixture.profile.missionId, fixture.entries);
+  const plan = permissionPlanFromProjection(fixture.projection, {
+    actionId: "edit:implementation",
+    effectKey: "effect:implementation",
+    validationId: "validation:lint",
+  });
+  const hostOps = {
+    realpath: (path) => realpath(path),
+    access: async (path) => { assert.equal(path, repositoryRoot); },
+    now: () => "2026-08-10T18:00:00Z",
+    execFile: async (_command, args) => {
+      const command = args.join(" ");
+      if (command.endsWith("rev-parse --show-toplevel")) return `${repositoryRoot}\n`;
+      if (command.endsWith("rev-parse --abbrev-ref HEAD")) return "main\n";
+      if (command.endsWith("rev-parse HEAD")) return `${FIXED_HEAD_REVISION}\n`;
+      throw new Error(`Unsupported command: ${command}`);
+    },
+    probeCapability: async () => true,
+  };
+  const dispatch = await loadSchema9SeatDispatchProjectionV1({
+    purpose: "specialist_dispatch",
+    repositoryRoot,
+    configuredJournalPath: ".shield/journals",
+    missionId: fixture.profile.missionId,
+    expectedSubjectId: fixture.profile.subjectId,
+    expectedMissionRevisionId: fixture.profile.revisionId,
+    expectedEvaluatedThroughSequence: fixture.projection.lastSequence,
+    plan,
+    trustedHostOps: { realpath: hostOps.realpath, execFile: hostOps.execFile },
+  });
+  assert.equal(dispatch.state, "ready", dispatch.errors?.join(" "));
+  const permission = await loadSchema9PermissionContextV1(makePermissionInput({
+    repositoryRoot,
+    missionId: fixture.profile.missionId,
+    expectedDecisionId: "decision:schema9:may-golden",
+    plan,
+    hostOps,
+  }));
+  assert.equal(permission.state, "ready", permission.errors?.join(" "));
+  const authorize = createPermissionAuthorizer({
+    ledgerId: "ledger:schema9:may-golden",
+    getContext: () => permission.context,
+    appendIfAbsent: (record) => ({
+      schemaVersion: 1,
+      ledgerId: record.ledgerId,
+      recordId: record.recordId,
+      decisionId: record.decisionId,
+      digest: record.digest,
+      appended: true,
+      ledgerSequence: 0,
+    }),
+  });
+  const decision = await authorize(plan);
+  assert.equal(decision.outcome, "allow");
+  assert.deepEqual({
+    replay: canonicalSha256(fixture.projection),
+    dispatch: canonicalSha256(dispatch.projection),
+    permissionContext: canonicalSha256(permission.context),
+    permissionArtifact: canonicalSha256(decision.authorizationArtifact),
+  }, {
+    replay: "fe51c2fe0a3bb1da1b088dacf471812017e06eaed8c10c8f60ecc35849da5b31",
+    dispatch: "7807dfba77b82224ec70f0f7963da9996c31e606303ee405567e1d84ead40a19",
+    permissionContext: "191b35aa4c02fc73e6160def668d4fd03bd73017b916cb7968462adb9e9b525e",
+    permissionArtifact: "7c09aafc562421e66929a97516f62dc1214bde27b70ac5b64064b20609d33a6e",
+  });
 });
 
 test("production filesystem and git observers load the exact live repository", async () => {

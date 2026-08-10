@@ -36,6 +36,7 @@ test("exports only the documented public package specifiers", async () => {
     "./mission-profile",
     "./profile-aware-mission",
     "./implementation-authority",
+    "./daisy-coordination-authority",
     "./mission-runtime",
     "./sonarqube",
     "./mack-validation",
@@ -74,6 +75,7 @@ test("loads every supported runtime specifier", async () => {
   const profileAwareMission = await import("@shield/team-system/profile-aware-mission");
   const missionRuntime = await import("@shield/team-system/mission-runtime");
   const implementationAuthority = await import("@shield/team-system/implementation-authority");
+  const daisyCoordinationAuthority = await import("@shield/team-system/daisy-coordination-authority");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
   const qaMode = await import("@shield/team-system/qa-mode");
@@ -103,6 +105,9 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION, "implementation-authority.v1");
   assert.equal(typeof implementationAuthority.validateImplementationAuthorityV1, "function");
   assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_KIND, "wheels_up");
+  assert.equal(daisyCoordinationAuthority.DAISY_COORDINATION_AUTHORITY_KIND, "daisy_feature_flight_coordination");
+  assert.equal(typeof daisyCoordinationAuthority.validateDaisyCoordinationAuthorityV1, "function");
+  assert.equal(daisyCoordinationAuthority.verifySignedImplementationAuthorityV1, undefined);
   assert.equal(typeof missionRuntime.runMissionCycle, "function");
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
@@ -228,6 +233,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/adapter-v1.mjs",
     "dist/adapter-v1.d.mts",
     "dist/implementation-authority-v1.mjs",
+    "dist/daisy-coordination-authority-v1.mjs",
+    "dist/daisy-coordination-authority-v1.d.mts",
+    "public/daisy-coordination-authority.mjs",
+    "public/daisy-coordination-authority.d.mts",
     "dist/implementation-authority-v1.d.mts",
     "dist/runner-v1.mjs",
     "dist/runner-v1.d.mts",
@@ -333,6 +342,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { runGovernedMayDispatchStepV1 } from "@shield/team-system/governed-may-dispatch";
     import { CANONICAL_ROLE_IDS, CANONICAL_ROLE_REGISTRY_V1, ROLE_TAXONOMY_CONTRACT_VERSION, isCanonicalRoleId, validateRoleAssignment, type CanonicalRoleId, type RoleAssignmentScope, type RoleRoute } from "@shield/team-system/roles";
     import { MISSION_PROFILE_CONTRACT_VERSION, type MissionProfileV1, type MissionRoleDefinitionV1, type MissionRoleId, MISSION_ROLE_IDS, CANONICAL_MISSION_ROLE_REGISTRY_V1 } from "@shield/team-system/mission-profile";
+    import { type ProfileAwareProjectionV1 } from "@shield/team-system/profile-aware-mission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import { deriveMissionCycleIdentityV1, runMissionCycle, type MissionCycleInputV1, type MissionCycleResultV1 } from "@shield/team-system/mission-runtime";
     import { REVIEW_PUBLICATION_CONTRACT_VERSION, evaluateReviewPublicationV1, type ReviewPublicationAuthorityV1, type ReviewPublicationProposalV1 } from "@shield/team-system/review-publication";
@@ -365,6 +375,11 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       IMPLEMENTATION_AUTHORITY_KIND,
       type ImplementationAuthorityV1,
     } from "@shield/team-system/implementation-authority";
+    import {
+      DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION,
+      validateDaisyCoordinationAuthorityV1,
+      type DaisyCoordinationAuthorityV1,
+    } from "@shield/team-system/daisy-coordination-authority";
     import {
       claimSeatDispatchPacketV1,
       type SeatDispatchPacketClaimContractResultV1,
@@ -455,6 +470,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const reviewPublicationProposal = null as unknown as ReviewPublicationProposalV1;
     const evaluateReviewPublication = evaluateReviewPublicationV1;
     const pipelineContract: "pipeline.profile.v1" = PIPELINE_PROFILE_CONTRACT_VERSION;
+    interface CompatibleProfileProjection extends ProfileAwareProjectionV1 { consumerTag: "compatible" }
+    const compatibleProfileProjection = null as unknown as CompatibleProfileProjection;
+    const compatibleProfileTag: "compatible" = compatibleProfileProjection.consumerTag;
     const pipelineProfile = null as unknown as RepositoryPipelineProfileV1;
     const selectPipeline = selectPipelineModesV1;
     const sonarContract: "sonarqube.evidence.v1" = SONARQUBE_EVIDENCE_CONTRACT_VERSION;
@@ -485,6 +503,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const implementationAuthorityContract: "implementation-authority.v1" = IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION;
     const implementationAuthorityKind: "wheels_up" = IMPLEMENTATION_AUTHORITY_KIND;
     const authority: ImplementationAuthorityV1 = null as unknown as ImplementationAuthorityV1;
+    const daisyAuthorityContract: "daisy-coordination-authority.v1" = DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION;
+    const daisyAuthority: DaisyCoordinationAuthorityV1 = null as unknown as DaisyCoordinationAuthorityV1;
+    const validateDaisyAuthority = validateDaisyCoordinationAuthorityV1;
     const replayFuryEvidence = replayFuryPlanReviewEvidenceLedgerV1;
     const validateReceipt = validatePRWorkspaceReceipt;
     const renderHandoff = renderMissionHandoff;

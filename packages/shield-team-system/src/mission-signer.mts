@@ -53,6 +53,21 @@ interface StoredSigner {
   ciphertextBase64: string;
 }
 
+type MissionSignerSnapshotRecord = Readonly<{
+  schemaVersion: 1;
+  signingKeyRef: string;
+  signerPath: string;
+  descriptorBefore: Readonly<{ device: string; inode: string; mode: number }>;
+  pathBefore: Readonly<{ device: string; inode: string; mode: number }>;
+  byteLength: number;
+  bytesBase64: string;
+  bytesSha256: string;
+  descriptorAfter: Readonly<{ device: string; inode: string; mode: number }>;
+  pathAfter: Readonly<{ device: string; inode: string; mode: number }>;
+}>;
+
+export type MissionSignerSnapshot = Readonly<{ readonly opaqueMissionSignerSnapshot: never }>;
+
 type SignerCreationFailureCode = keyof typeof FAILURE_MESSAGES;
 type SignerCreationStage =
   | "opened"
@@ -127,6 +142,67 @@ function errno(error: unknown, code: string): boolean {
 
 function sameIdentity(identity: FileIdentity, stats: { dev: number | bigint; ino: number | bigint }): boolean {
   return identity.dev === stats.dev && identity.ino === stats.ino;
+}
+
+function snapshotIdentity(stats: Stats): Readonly<{ device: string; inode: string; mode: number }> {
+  return Object.freeze({ device: String(stats.dev), inode: String(stats.ino), mode: stats.mode });
+}
+
+function assertSnapshotFile(
+  descriptor: Stats,
+  pathObservation: Stats,
+  label: string,
+): void {
+  if (!descriptor.isFile() || descriptor.isSymbolicLink() || pathObservation.isSymbolicLink() ||
+      !pathObservation.isFile() || descriptor.dev !== pathObservation.dev || descriptor.ino !== pathObservation.ino ||
+      descriptor.mode !== pathObservation.mode) {
+    throw new Error(`Mission signer snapshot ${label} identity is invalid.`);
+  }
+}
+
+export async function captureMissionSignerSnapshot(
+  signingKeyRef: string,
+  homeDirectory = homedir(),
+): Promise<MissionSignerSnapshot> {
+  const path = signerPath(signingKeyRef, homeDirectory);
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const descriptorBefore = await handle.stat();
+    const pathBefore = await lstat(path);
+    assertSnapshotFile(descriptorBefore, pathBefore, "before read");
+    const bytes = await handle.readFile();
+    const descriptorAfter = await handle.stat();
+    const pathAfter = await lstat(path);
+    assertSnapshotFile(descriptorAfter, pathAfter, "after read");
+    if (descriptorBefore.dev !== descriptorAfter.dev || descriptorBefore.ino !== descriptorAfter.ino ||
+        descriptorBefore.mode !== descriptorAfter.mode) {
+      throw new Error("Mission signer snapshot descriptor changed during read.");
+    }
+    const record: MissionSignerSnapshotRecord = Object.freeze({
+      schemaVersion: 1,
+      signingKeyRef,
+      signerPath: path,
+      descriptorBefore: snapshotIdentity(descriptorBefore),
+      pathBefore: snapshotIdentity(pathBefore),
+      byteLength: bytes.byteLength,
+      bytesBase64: bytes.toString("base64"),
+      bytesSha256: createHash("sha256").update(bytes).digest("hex"),
+      descriptorAfter: snapshotIdentity(descriptorAfter),
+      pathAfter: snapshotIdentity(pathAfter),
+    });
+    return record as unknown as MissionSignerSnapshot;
+  } finally {
+    await handle.close();
+  }
+}
+
+export function assertMissionSignerSnapshotUnchanged(
+  initial: MissionSignerSnapshot,
+  fresh: MissionSignerSnapshot,
+): void {
+  if (canonicalJson(initial) !== canonicalJson(fresh)) {
+    throw new Error("Mission signer snapshot changed after display.");
+  }
 }
 
 async function secureDirectory(path: string): Promise<FileIdentity> {
