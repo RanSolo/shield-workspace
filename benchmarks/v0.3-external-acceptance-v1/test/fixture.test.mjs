@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -12,8 +12,19 @@ import {
   evaluateSeatDispatchAttributionV1
 } from "@shield/team-system/dispatch-receipts";
 
-import { verifyFixtureIdentity } from "../verify-fixture-identity.mjs";
-import { launchExternalFixture, loadTrustedReplayAnchor } from "../../v0.3-fixture-host-launcher.mjs";
+import {
+  adapterMetadataMatches,
+  cleanupEvidenceState,
+  composeExternalArtifact,
+  gradeExternalFixture,
+  hostEvidenceStable,
+  launchExternalFixture,
+  loadTrustedWorkerSource,
+  loadTrustedIsolationEnvelope,
+  loadTrustedReplayAnchor,
+  verifySealedPrivateCopy,
+  validateIsolationReceipt
+} from "../../v0.3-fixture-host-launcher.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageRoot = resolve(root, "../../packages/shield-team-system");
@@ -25,16 +36,33 @@ const FIXTURE_IDENTITY_BYTES = await readFile(join(root, "fixture-identity-v1.js
 const FIXTURE_RELEASE_BASELINE = Object.freeze({
   kind: "fixture-release-baseline",
   schemaVersion: "shield.fixture.release-baseline.v1",
-  identityRecordDigest: "f66abfdda721838676a3d86064f09e43bb521b9fd7ca7b526bfc06fc0d60ab33",
+  identityRecordDigest: "d494a075b8a4a217e60f42cd89c738d4abbd397e86b189f346190d8961c4dfcc",
   verifierDigest: "0606191ca365169a788a857ab1dace7f8df9a6869ee442a80df3eb593e95237d",
-  launcherDigest: "4ad8b4c850575360323127be1a6b544e6d1601019a3ba6f93338f6d20c5bfdab",
+  launcherDigest: "b4e1adf7cf647d533f9b32b8aa7eab449e5f78ce9fbb5f4c3ddfd9349a717615",
   verifierIdentity: `node:${process.version}`,
   launcherIdentity: `node:${process.execPath}`,
   package: Object.freeze({
     name: "@shield/team-system",
     version: "0.1.0",
     digestAlgorithm: "sha256",
-    digest: "05a8ee7222471925e49e794c7fb58fd1151dcfe2a8e2c8d20435118c340ec02e"
+    digest: "02853c218a4119d45c9fde683d2ee22d1ef22f5a70618372d0bf7cf7a9af4af9"
+  })
+});
+const ISOLATION_ENVELOPE = Object.freeze({
+  schemaVersion: "shield.fixture.isolation-envelope.v1",
+  adapter: Object.freeze({
+    adapterId: "macos-sandbox-exec",
+    contractVersion: "v1",
+    executableSha256: "8290e4be7387a0df83cd1559e86afd880464f269450573d012795761fe298f16",
+    cdHashSha256: "2f619ca893522eb88a87dc31ddc1e8cad98f237d4672f6f9d0c9f05395572463"
+  }),
+  denialPolicy: Object.freeze({
+    policyId: "deny-network-host-write-v1",
+    policySha256: "407e468cf29c448c0eee70a1637c0aa792c7cbd2f4e5e8d5020d5b2652b528af"
+  }),
+  worker: Object.freeze({
+    entryPoint: "v0.3-fixture-isolation-worker.mjs",
+    sha256: "29409e7bdb0f890a16b3e49a03fb1877aed89c884d4bf639e7ebc8c2dabeddd8"
   })
 });
 const REPLAY_ANCHOR_FIXTURE = Object.freeze({
@@ -134,6 +162,28 @@ const REPLAY_ANCHOR_PROJECTION = Object.freeze({
   currentSequence: 1,
   lifecycle: "mission:lifecycle"
 });
+const preflightDirectory = await mkdtemp(join(tmpdir(), "shield-v03-entry-preflight-"));
+try {
+  const baselinePath = join(preflightDirectory, "release-baseline.json");
+  await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  const preflight = await launchExternalFixture({
+    fixtureRoot: root,
+    operatorInput: {},
+    hostContext: {
+      baselinePath,
+      authoritativeReceiptJournalPath: null,
+      attributionContext: null,
+      toolingContext: null
+    }
+  });
+  if (preflight.state !== "invalid" || preflight.reason !== "fixture_input_not_closed") {
+    throw new Error(`fixture launcher preflight failed: ${preflight.state}:${preflight.reason}`);
+  }
+} finally {
+  await rm(preflightDirectory, { recursive: true, force: true });
+}
+
+const { verifyFixtureIdentity } = await import("../verify-fixture-identity.mjs");
 const fixtureIdentity = await verifyFixtureIdentity(root, FIXTURE_RELEASE_BASELINE);
 if (fixtureIdentity.state !== "valid") {
   throw new Error(`fixture identity preflight failed: ${fixtureIdentity.state}:${fixtureIdentity.reason}`);
@@ -255,8 +305,18 @@ function packTeamSystemFromHead(destination) {
   ]);
   execFileSync("tar", ["-x", "-f", archive, "-C", destination], { encoding: "utf8" });
   execFileSync("rm", ["-rf", join(destination, "shield-team-system", "dist")]);
-  execFileSync("cp", ["-R", join(packageRoot, "dist"), join(destination, "shield-team-system", "dist")]);
-  return join(destination, "shield-team-system");
+  const isolatedPackageRoot = join(destination, "shield-team-system");
+  const isolatedNodeModules = join(isolatedPackageRoot, "node_modules");
+  execFileSync("ln", ["-s", resolve(repositoryRoot, "node_modules"), isolatedNodeModules]);
+  try {
+    execFileSync(resolve(repositoryRoot, "node_modules/.bin/tsc"), [
+      "-p",
+      join(isolatedPackageRoot, "tsconfig.build.json")
+    ]);
+  } finally {
+    execFileSync("rm", [isolatedNodeModules]);
+  }
+  return isolatedPackageRoot;
 }
 
 function packTeamSystem(destination, source = packageRoot) {
@@ -385,10 +445,9 @@ async function createExternalRepository(directory, {
   });
 }
 
-function fixtureInput(artifact, artifactDigest, directory, revisions, overrides = {}) {
+function fixtureInput(artifact, directory, revisions, overrides = {}) {
   return {
     packageArtifactPath: artifact,
-    packageArtifactSha256: artifactDigest,
     externalRepositoryRoot: directory,
     baseRevision: revisions.baseRevision,
     headRevision: revisions.headRevision,
@@ -400,9 +459,30 @@ function fixtureInput(artifact, artifactDigest, directory, revisions, overrides 
     blindStatus: "partially-informed",
     priorSolutionsVisible: false,
     requireSimmons: true,
-    releaseBaseline: FIXTURE_RELEASE_BASELINE,
     ...overrides
   };
+}
+
+function fixtureTrustedHostContext(overrides = {}) {
+  return {
+    releaseBaseline: FIXTURE_RELEASE_BASELINE,
+    validatedToolingContext: null,
+    authoritativeReceiptEntries: null,
+    attributionContext: null,
+    ...overrides
+  };
+}
+
+async function gradingTrust(interruptAfterPhase = null, failAfterCheckpoint = null, faultInjection = null) {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-grading-trust-"));
+  const baselinePath = join(directory, "release-baseline.json");
+  const isolationEnvelopePath = join(directory, "isolation-envelope.json");
+  await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  await writeFile(isolationEnvelopePath, JSON.stringify(ISOLATION_ENVELOPE));
+  return Object.freeze({
+    directory,
+    hostContext: Object.freeze({ baselinePath, isolationEnvelopePath, interruptAfterPhase, failAfterCheckpoint, faultInjection })
+  });
 }
 
 async function withFixtureCopy(mutator) {
@@ -432,6 +512,7 @@ test("fixture manifest is closed, frozen, versioned, and separates the later cam
   assert.equal(validateFixtureManifest(FIXTURE_MANIFEST).state, "valid");
   assert.equal(Object.isFrozen(FIXTURE_MANIFEST), true);
   assert.equal(Object.isFrozen(FIXTURE_MANIFEST.dependencyBlockers), true);
+  assert.deepEqual(FIXTURE_MANIFEST.dependencyBlockers, []);
   assert.equal(FIXTURE_MANIFEST.ownerIssue, "#12");
   assert.equal(FIXTURE_MANIFEST.excludedCampaign.issue, "#14");
   assert.equal(FIXTURE_MANIFEST.template.testLane, "node --test test/greeting.test.mjs");
@@ -484,6 +565,19 @@ test("fixture identity preflight rejects covered drift before composition", asyn
 });
 
 test("fixture identity verifier rejects missing/malformed baselines, modified verifier identity, and identity symlinks", async (context) => {
+  const { copied: packageDigestCopy, outcome: packageDigestOutcome } = await verifyCopyIdentity(async () => {}, {
+    ...FIXTURE_RELEASE_BASELINE,
+    package: {
+      ...FIXTURE_RELEASE_BASELINE.package,
+      digest: "f".repeat(64)
+    }
+  });
+  context.after(async () => {
+    await rm(packageDigestCopy, { recursive: true, force: true });
+  });
+  assert.equal(packageDigestOutcome.state, "blocked");
+  assert.equal(packageDigestOutcome.reason, "fixture_identity_package_digest_mismatch");
+
   const { copied: missingCopy, outcome: missingBaseline } = await verifyCopyIdentity(async () => {}, undefined);
   context.after(async () => {
     await rm(missingCopy, { recursive: true, force: true });
@@ -537,9 +631,84 @@ test("host launcher rejects a candidate-modified verifier before import", async 
   const baselinePath = join(outside, "release-baseline.json");
   await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
   await assert.rejects(
-    launchExternalFixture({ fixtureRoot: copied, baselinePath, input: {} }),
+    launchExternalFixture({
+      fixtureRoot: copied,
+      operatorInput: {},
+      hostContext: {
+        baselinePath,
+        authoritativeReceiptJournalPath: null,
+        attributionContext: null,
+        toolingContext: null
+      }
+    }),
     /verifier_digest_mismatch/
   );
+});
+
+test("host launcher requires a closed host context", async () => {
+  await assert.rejects(
+    launchExternalFixture({
+      fixtureRoot: root,
+      operatorInput: {},
+      hostContext: {
+        baselinePath: "outside.json",
+        authoritativeReceiptJournalPath: null,
+        attributionContext: null
+      }
+    }),
+    /host_context_not_closed/
+  );
+});
+
+test("host launcher reaches composition only with an external baseline and keeps host fields out of operator input", async (context) => {
+  const outside = await mkdtemp(join(tmpdir(), "shield-v03-valid-host-baseline-"));
+  context.after(() => rm(outside, { recursive: true, force: true }));
+  const baselinePath = join(outside, "release-baseline.json");
+  await writeFile(baselinePath, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  const result = await launchExternalFixture({
+    fixtureRoot: root,
+    operatorInput: { releaseBaseline: FIXTURE_RELEASE_BASELINE },
+    hostContext: {
+      baselinePath,
+      authoritativeReceiptJournalPath: null,
+      attributionContext: null,
+      toolingContext: null
+    }
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.reason, "fixture_input_not_closed");
+});
+
+test("host launcher rejects fixture-local baselines through canonical root and parent symlinks", async (context) => {
+  const copied = await withFixtureCopy(async () => {});
+  const outside = await mkdtemp(join(tmpdir(), "shield-v03-symlinked-host-baseline-"));
+  context.after(() => rm(copied, { recursive: true, force: true }));
+  context.after(() => rm(outside, { recursive: true, force: true }));
+  const localBaseline = join(copied, "release-baseline.json");
+  await writeFile(localBaseline, JSON.stringify(FIXTURE_RELEASE_BASELINE));
+  const linkedRoot = join(outside, "fixture-root");
+  const linkedParent = join(outside, "fixture-parent");
+  await symlink(copied, linkedRoot);
+  await symlink(copied, linkedParent);
+
+  for (const candidate of [
+    { fixtureRoot: linkedRoot, baselinePath: localBaseline },
+    { fixtureRoot: copied, baselinePath: join(linkedParent, "release-baseline.json") }
+  ]) {
+    await assert.rejects(
+      launchExternalFixture({
+        fixtureRoot: candidate.fixtureRoot,
+        operatorInput: {},
+        hostContext: {
+          baselinePath: candidate.baselinePath,
+          authoritativeReceiptJournalPath: null,
+          attributionContext: null,
+          toolingContext: null
+        }
+      }),
+      /baseline_path_not_regular/
+    );
+  }
 });
 
 test("host launcher accepts only an externally digested replay-anchor envelope", async (context) => {
@@ -564,65 +733,91 @@ test("host launcher accepts only an externally digested replay-anchor envelope",
   );
 });
 
-test("fake text artifacts cannot claim public-surface composition", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "shield-v03-composition-"));
+test("clean exact one-path revisions produce a measured ready preflight without package effects", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-ready-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
-  const artifact = join(directory, "shield-team-system.tgz");
-  await writeFile(artifact, "not a package artifact\n");
+  const missingArtifact = join(directory, "missing-package.tgz");
   const external = join(directory, "external");
   const revisions = await createExternalRepository(external);
   const result = await composeMinimumFixture(
-    fixtureInput(artifact, await digest(artifact), external, revisions)
+    fixtureInput(missingArtifact, external, revisions),
+    fixtureTrustedHostContext()
   );
-  assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "package_artifact_digest_mismatch");
-});
-
-test("exact packed artifact preflights package identity and then blocks on dependency contract", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "shield-v03-packed-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
-  const artifact = packTeamSystem(directory);
-  const external = join(directory, "external");
-  const revisions = await createExternalRepository(external);
-  const result = await composeMinimumFixture(
-    fixtureInput(artifact, await digest(artifact), external, revisions)
-  );
-  assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "dependency_contract_unavailable");
-  assert.deepEqual(result.blockers.map(({ issue }) => issue), ["#24", "#112", "#113"]);
-  assert.equal(result.identity.installedPackage.name, "@shield/team-system");
-  assert.equal(result.identity.externalRevision.baseRevision, revisions.baseRevision);
-  assert.equal(result.identity.externalRevision.headRevision, revisions.headRevision);
-  assert.deepEqual(result.identity.externalRevision.changedPaths, ["src/greeting.mjs"]);
-  assert.equal(result.foundation.hostFailureCandidateState, "valid");
-  assert.equal(result.foundation.hostEffectsPerformed, false);
-  assert.equal(result.foundation.expectedFitzState, "waiting");
-  assert.equal(result.foundation.expectedSimmonsState, "waiting");
+  assert.equal(result.state, "ready");
+  assert.deepEqual(result.externalRevision, {
+    state: "measured",
+    repositoryRoot: await realpath(external),
+    baseRevision: revisions.baseRevision,
+    headRevision: revisions.headRevision,
+    changedPaths: ["src/greeting.mjs"]
+  });
+  assert.deepEqual(result.preflight, {
+    fixtureId: "fixture:v0.3:external-acceptance:1",
+    fixtureIdentityState: "valid",
+    hostConfiguration: {
+      adapterId: "github",
+      repository: "fixture/external-v03",
+      branch: "fixture/mission-1"
+    },
+    blindStatus: "partially-informed",
+    priorSolutionsVisible: false
+  });
   assert.equal(result.evidenceInventory.find(({ evidenceId }) => evidenceId === "fitz.technical-review").state, "waiting");
 
   const source = await readFile(join(root, "src/driver.mjs"), "utf8");
   assert.doesNotMatch(source, /packages\/shield-team-system\/dist/u);
 });
 
-test("composition rejects package substitution and changed-path scope drift", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "shield-v03-identity-"));
+test("missing, dirty, wrong-head, wrong-base, frozen-base drift, and scope drift cannot produce ready", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-closed-revisions-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
-  const artifact = join(directory, "artifact.tgz");
-  await writeFile(artifact, "artifact\n");
-  const external = join(directory, "external");
-  const revisions = await createExternalRepository(external);
-  const base = fixtureInput(artifact, "0".repeat(64), external, revisions, {
-    blindStatus: "blind",
-    requireSimmons: false
+  const artifact = join(directory, "missing-package.tgz");
+  const preflight = async (external, revisions, overrides = {}) => composeMinimumFixture(
+    fixtureInput(artifact, external, revisions, overrides),
+    fixtureTrustedHostContext()
+  );
+
+  assert.equal((await preflight(
+    join(directory, "missing"),
+    { baseRevision: OID40, headRevision: OID40 }
+  )).reason, "external_repository_unavailable");
+
+  const dirty = join(directory, "dirty");
+  const dirtyRevisions = await createExternalRepository(dirty);
+  await writeFile(join(dirty, "README.md"), "dirty\n");
+  assert.equal((await preflight(dirty, dirtyRevisions)).reason, "external_revision_not_clean");
+
+  const wrongHead = join(directory, "wrong-head");
+  const wrongHeadRevisions = await createExternalRepository(wrongHead);
+  assert.equal((await preflight(wrongHead, {
+    ...wrongHeadRevisions,
+    headRevision: wrongHeadRevisions.baseRevision
+  })).reason, "head_revision_not_current");
+
+  const wrongBase = join(directory, "wrong-base");
+  const wrongBaseRevisions = await createExternalRepository(wrongBase);
+  assert.equal((await preflight(wrongBase, {
+    ...wrongBaseRevisions,
+    baseRevision: "f".repeat(wrongBaseRevisions.baseRevision.length)
+  })).reason, "base_revision_unavailable");
+
+  const frozenBase = join(directory, "frozen-base");
+  const frozenBaseRevisions = await createExternalRepository(frozenBase, {
+    baseGreetingSource: "export const greeting = () => 'substituted';\n"
   });
-  assert.equal((await composeMinimumFixture(base)).reason, "package_artifact_digest_mismatch");
-  await writeFile(join(external, "README.md"), "scope drift\n");
-  git(external, ["add", "README.md"]);
-  git(external, ["commit", "--quiet", "-m", "scope drift"]);
-  assert.equal((await composeMinimumFixture({
-    ...base,
-    packageArtifactSha256: await digest(artifact),
-    headRevision: git(external, ["rev-parse", "HEAD"])
+  assert.equal(
+    (await preflight(frozenBase, frozenBaseRevisions)).reason,
+    "frozen_base_content_mismatch:src/greeting.mjs"
+  );
+
+  const scopeDrift = join(directory, "scope-drift");
+  const scopeDriftRevisions = await createExternalRepository(scopeDrift);
+  await writeFile(join(scopeDrift, "README.md"), "scope drift\n");
+  git(scopeDrift, ["add", "README.md"]);
+  git(scopeDrift, ["commit", "--quiet", "-m", "scope drift"]);
+  assert.equal((await preflight(scopeDrift, {
+    ...scopeDriftRevisions,
+    headRevision: git(scopeDrift, ["rev-parse", "HEAD"])
   })).reason, "scope_drift");
 });
 
@@ -633,22 +828,22 @@ test("composition rejects malformed revisions and unsupported object formats", a
   await writeFile(artifact, "artifact\n");
   const external = join(directory, "external");
   const revisions = await createExternalRepository(external);
-  const input = fixtureInput(artifact, await digest(artifact), external, revisions);
+  const input = fixtureInput(artifact, external, revisions);
 
   assert.equal((await composeMinimumFixture({
     ...input,
     baseRevision: revisions.baseRevision.slice(0, 4)
-  })).reason, "external_revision_identity_malformed");
+  }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 
   assert.equal((await composeMinimumFixture({
     ...input,
     baseRevision: `ZZ${revisions.baseRevision.slice(2)}`
-  })).reason, "external_revision_identity_malformed");
+  }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 
   assert.equal((await composeMinimumFixture({
     ...input,
     baseRevision: `${revisions.baseRevision}dead`
-  })).reason, "external_revision_identity_malformed");
+  }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 
   const unsupportedObjectFormatRepository = join(directory, "unsupported-format");
   const unsupportedRevisions = await createExternalRepository(unsupportedObjectFormatRepository);
@@ -670,13 +865,13 @@ test("composition rejects malformed revisions and unsupported object formats", a
   const previousPath = process.env.PATH;
   try {
     process.env.PATH = `${fakeGitDirectory}:${previousPath}`;
-  const badFormat = await composeMinimumFixture(
+    const badFormat = await composeMinimumFixture(
       fixtureInput(
         badFormatArtifact,
-        await digest(badFormatArtifact),
         unsupportedObjectFormatRepository,
         unsupportedRevisions
-      )
+      ),
+      fixtureTrustedHostContext()
     );
     assert.equal(badFormat.reason, "external_repository_object_format_unsupported");
   } finally {
@@ -688,24 +883,55 @@ test("composition rejects malformed revisions and unsupported object formats", a
   const sha256Artifact = packTeamSystem(directory);
   const sha256Result = await composeMinimumFixture(fixtureInput(
     sha256Artifact,
-    await digest(sha256Artifact),
     sha256External,
     sha256Revisions
-  ));
-  assert.equal(sha256Result.reason, "dependency_contract_unavailable");
+  ), fixtureTrustedHostContext());
+  assert.equal(sha256Result.state, "ready");
 
   assert.equal((await composeMinimumFixture({
     ...fixtureInput(
       sha256Artifact,
-      await digest(sha256Artifact),
       sha256External,
       sha256Revisions
     ),
     headRevision: `${sha256Revisions.headRevision.slice(0, 40)}`
-  })).reason, "external_revision_identity_malformed");
+  }, fixtureTrustedHostContext())).reason, "external_revision_identity_malformed");
 });
 
-test("composition rejects wrong package version and exact-package hash mismatches", async (context) => {
+test("ready preflight requires the external repository even though package inspection is deferred", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-preflight-first-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const missingArtifact = join(directory, "missing-package.tgz");
+  const missingExternal = join(directory, "missing-external");
+  const result = await composeMinimumFixture({
+    ...fixtureInput(
+      missingArtifact,
+      missingExternal,
+      { baseRevision: OID40, headRevision: OID40 }
+    )
+  }, fixtureTrustedHostContext());
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reason, "external_repository_unavailable");
+});
+
+test("composition rejects malformed external repository identity before revision inspection", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-malformed-root-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const artifact = join(directory, "artifact.tgz");
+  await writeFile(artifact, "artifact\n");
+  const result = await composeMinimumFixture({
+    ...fixtureInput(
+      artifact,
+      directory,
+      { baseRevision: OID40, headRevision: OID40 }
+    ),
+    externalRepositoryRoot: null
+  }, fixtureTrustedHostContext());
+  assert.equal(result.state, "invalid");
+  assert.equal(result.reason, "fixture_identity_malformed");
+});
+
+test("package identity helper rejects wrong package versions while ready preflight defers package effects", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-package-version-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const baseArtifact = packTeamSystem(directory);
@@ -746,36 +972,163 @@ test("composition rejects wrong package version and exact-package hash mismatche
   const revisions = await createExternalRepository(external);
   const wrongVersionInput = fixtureInput(
     wrongArtifact,
-    await digest(wrongArtifact),
     external,
     revisions
   );
-  assert.equal((await composeMinimumFixture(wrongVersionInput)).reason, "package_artifact_digest_mismatch");
+  assert.equal((await composeMinimumFixture(wrongVersionInput, fixtureTrustedHostContext())).state, "ready");
 
   const hashMismatchArtifact = packTeamSystem(directory);
   assert.equal((
     await composeMinimumFixture({
-    ...fixtureInput(hashMismatchArtifact, await digest(hashMismatchArtifact), external, revisions),
-    packageArtifactSha256: "0".repeat(64)
-  })
-  ).reason, "package_artifact_digest_mismatch");
+      ...fixtureInput(hashMismatchArtifact, external, revisions),
+      packageArtifactSha256: "0".repeat(64)
+    }, fixtureTrustedHostContext())
+  ).reason, "fixture_input_not_closed");
+});
+
+test("trusted composition isolates offline install and public import as separate phases", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-isolated-composition-"));
+  const trust = await gradingTrust();
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
+  const artifact = packTeamSystem(directory);
+  assert.equal(await digest(artifact), FIXTURE_RELEASE_BASELINE.package.digest);
+  const result = await composeExternalArtifact({
+    fixtureRoot: root,
+    packageArtifactPath: artifact,
+    baseRevision: OID40,
+    headRevision: OID40,
+    hostContext: {
+      baselinePath: trust.hostContext.baselinePath,
+      isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
+      interruptAfterPhase: null,
+      faultInjection: null
+    }
+  });
+  assert.equal(result.state, "composed", JSON.stringify(result));
+  assert.equal(result.artifactSha256, FIXTURE_RELEASE_BASELINE.package.digest);
+  assert.deepEqual(result.installedPackage, { name: "@shield/team-system", version: "0.1.0" });
+  assert.deepEqual(result.phases, ["composition.install", "composition.import"]);
+});
+
+test("substituted same-name and version package bytes are rejected before isolation or installation", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-substituted-composition-"));
+  const packageDirectory = join(directory, "package");
+  const marker = join(directory, "operator-marker");
+  const trust = await gradingTrust();
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
+  await mkdir(packageDirectory);
+  await writeFile(join(packageDirectory, "package.json"), `${JSON.stringify({
+    name: "@shield/team-system",
+    version: "0.1.0",
+    type: "module",
+    exports: {
+      "./config": "./probe.mjs",
+      "./supervision": "./probe.mjs",
+      "./adapter": "./probe.mjs"
+    }
+  })}\n`);
+  await writeFile(join(packageDirectory, "probe.mjs"), [
+    'import { spawnSync } from "node:child_process";',
+    'import { writeFileSync } from "node:fs";',
+    'import { createConnection } from "node:net";',
+    "let writeDenied = false;",
+    `try { writeFileSync(${JSON.stringify(marker)}, "forbidden"); } catch (error) { writeDenied = ["EPERM", "EACCES"].includes(error?.code); }`,
+    'const child = spawnSync("/usr/bin/true");',
+    'const childDenied = ["EPERM", "EACCES", "ENOENT"].includes(child.error?.code);',
+    "const networkDenied = await new Promise((done) => {",
+    '  const socket = createConnection({ host: "127.0.0.1", port: 9 });',
+    "  const timer = setTimeout(() => { socket.destroy(); done(false); }, 1000);",
+    '  socket.once("connect", () => { clearTimeout(timer); socket.destroy(); done(false); });',
+    '  socket.once("error", (error) => { clearTimeout(timer); done(["EPERM", "EACCES"].includes(error?.code)); });',
+    "});",
+    'if (!writeDenied || !childDenied || !networkDenied) throw new Error("CAPABILITY_DENIAL_MISSING");',
+    "export const isolated = true;",
+    ""
+  ].join("\n"));
+  const artifact = packTeamSystem(directory, packageDirectory);
+  assert.notEqual(await digest(artifact), FIXTURE_RELEASE_BASELINE.package.digest);
+  const rootsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-composition-")).sort();
+  const result = await composeExternalArtifact({
+    fixtureRoot: root,
+    packageArtifactPath: artifact,
+    baseRevision: OID40,
+    headRevision: OID40,
+    hostContext: {
+      baselinePath: trust.hostContext.baselinePath,
+      isolationEnvelopePath: join(trust.directory, "missing-isolation-envelope.json"),
+      interruptAfterPhase: null,
+      faultInjection: null
+    }
+  });
+  assert.deepEqual(result, { state: "blocked", reason: "package_artifact_digest_mismatch" });
+  assert.deepEqual(
+    (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-composition-")).sort(),
+    rootsBefore
+  );
+  assert.equal(await lstat(marker).then(() => true, () => false), false);
+});
+
+test("composition reaps real interruptions at probe, install, and import checkpoints", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-composition-interruption-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const artifact = packTeamSystem(directory);
+  const rootsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-composition-")).sort();
+  for (const phase of ["isolation.probe", "composition.install", "composition.import"]) {
+    const trust = await gradingTrust();
+    try {
+      const result = await composeExternalArtifact({
+        fixtureRoot: root,
+        packageArtifactPath: artifact,
+        baseRevision: OID40,
+        headRevision: OID40,
+        hostContext: {
+          baselinePath: trust.hostContext.baselinePath,
+          isolationEnvelopePath: trust.hostContext.isolationEnvelopePath,
+          interruptAfterPhase: phase,
+          faultInjection: null
+        }
+      });
+      assert.equal(result.state, "blocked", JSON.stringify(result));
+      assert.equal(result.phase, phase);
+      assert.equal(result.reaped, true);
+      assert.equal(
+        result.reason,
+        phase === "composition.install" ? "composition_install_interrupted" : "worker_interrupted"
+      );
+      assert.deepEqual(
+        (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-composition-")).sort(),
+        rootsBefore
+      );
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
 });
 test("baseline defect fails and fixture-only injection restores the exact passing candidate", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-defect-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const revisions = await createExternalRepository(directory);
-  const result = await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
   });
   assert.equal(result.state, "passed", JSON.stringify(result));
   assert.equal(result.injectedOutcome, "failed");
   assert.equal(result.rollbackOutcome, "passed");
   assert.equal(result.candidateSha256, result.restoredSha256);
   assert.deepEqual(result.externalRevision.changedPaths, ["src/greeting.mjs"]);
-  assert.deepEqual(result.networkObservability, {
-    state: "not-observable",
-    reason: "no_network_sandbox"
+  assert.deepEqual(result.capabilityIsolation, {
+    state: "verified-denied",
+    adapterId: "macos-sandbox-exec",
+    policyId: "deny-network-host-write-v1",
+    network: "denied",
+    hostWrites: "workspace-only"
   });
   assert.equal(Object.hasOwn(result, "networkEffectsPerformed"), false);
   assert.equal(
@@ -784,16 +1137,347 @@ test("baseline defect fails and fixture-only injection restores the exact passin
   );
 });
 
+test("isolation receipts reject malformed, substituted, replayed, and cross-boundary evidence", () => {
+  const request = {
+    schemaVersion: "shield.fixture.isolation-request.v1",
+    invocationId: "1".repeat(64),
+    workspaceRoot: "/private/tmp/shield-v03-supervisor-proof/workspace",
+    baseRevision: OID40,
+    headRevision: "2".repeat(40),
+    phase: "grade.candidate",
+    targetSha256: "3".repeat(64),
+    targetMode: 0o644,
+    testSha256: "4".repeat(64),
+    testMode: 0o644,
+    executableSha256: "5".repeat(64),
+    workerSha256: "6".repeat(64),
+    probeSha256: null,
+    argv: ["--test", "test/greeting.test.mjs"],
+    adapterId: "macos-sandbox-exec",
+    adapterPath: "/usr/bin/sandbox-exec",
+    adapterSha256: "7".repeat(64),
+    adapterCdHashSha256: "8".repeat(64),
+    adapterArgv: ["-p", "profile", "/private/node", "/private/worker", "/private/request"],
+    policyId: "deny-network-host-write-v1",
+    policyContractSha256: "9".repeat(64),
+    concretePolicySha256: "a".repeat(64),
+    hostEvidenceDigest: "b".repeat(64),
+    executionPermitPath: "/private/tmp/shield-v03-supervisor-proof/workspace/execution.permit",
+    timeoutMs: 30_000,
+    maxOutputBytes: 262_144
+  };
+  const receipt = {
+    ...request,
+    schemaVersion: "shield.fixture.isolation-receipt.v1",
+    outcome: "passed",
+    outputSha256: "c".repeat(64)
+  };
+  const terminal = { receipt };
+  assert.equal(validateIsolationReceipt(terminal, request), true);
+
+  const substitutions = [
+    { ...receipt, invocationId: "d".repeat(64) },
+    { ...receipt, phase: "grade.injected" },
+    { ...receipt, workspaceRoot: `${request.workspaceRoot}-other` },
+    { ...receipt, headRevision: "e".repeat(40) },
+    { ...receipt, executableSha256: "f".repeat(64) },
+    { ...receipt, adapterArgv: [...receipt.adapterArgv, "extra"] }
+  ];
+  for (const substituted of substitutions) {
+    assert.equal(validateIsolationReceipt({ receipt: substituted }, request), false);
+  }
+
+  const missing = { ...receipt };
+  delete missing.hostEvidenceDigest;
+  assert.equal(validateIsolationReceipt({ receipt: missing }, request), false);
+  assert.equal(validateIsolationReceipt({ receipt: { ...receipt, unknown: true } }, request), false);
+  assert.equal(validateIsolationReceipt({ receipt, unknown: true }, request), false);
+  assert.equal(validateIsolationReceipt({ receipt: { ...receipt, outcome: "uncertain" } }, request), false);
+  assert.equal(validateIsolationReceipt({ receipt: { ...receipt, outputSha256: "invalid" } }, request), false);
+});
+
+test("malicious candidate network, operator-write, and child-process probes are denied", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-malicious-candidate-"));
+  const trust = await gradingTrust();
+  const marker = join(directory, "operator-marker");
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
+  const revisions = await createExternalRepository(directory);
+  await writeFile(join(directory, "src/greeting.mjs"), [
+    'import { spawnSync } from "node:child_process";',
+    'import { writeFileSync } from "node:fs";',
+    'import { createConnection } from "node:net";',
+    "",
+    "let writeDenied = false;",
+    `try { writeFileSync(${JSON.stringify(marker)}, "forbidden"); } catch (error) { writeDenied = error?.code === "EPERM" || error?.code === "EACCES"; }`,
+    'const child = spawnSync("/usr/bin/true");',
+    'const childDenied = ["EPERM", "EACCES", "ENOENT"].includes(child.error?.code);',
+    "const networkDenied = await new Promise((done) => {",
+    '  const socket = createConnection({ host: "127.0.0.1", port: 9 });',
+    "  const timer = setTimeout(() => { socket.destroy(); done(false); }, 1000);",
+    "  socket.once(\"connect\", () => { clearTimeout(timer); socket.destroy(); done(false); });",
+    '  socket.once("error", (error) => { clearTimeout(timer); done(error?.code === "EPERM" || error?.code === "EACCES"); });',
+    "});",
+    'if (!writeDenied || !childDenied || !networkDenied) throw new Error("CAPABILITY_DENIAL_MISSING");',
+    "",
+    "export function greeting(name) {",
+    "  return `Hello, ${name.trim()}!`;",
+    "}",
+    ""
+  ].join("\n"));
+  git(directory, ["add", "src/greeting.mjs"]);
+  git(directory, ["commit", "--quiet", "-m", "add malicious capability probes"]);
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    baseRevision: revisions.baseRevision,
+    headRevision: git(directory, ["rev-parse", "HEAD"]),
+    hostContext: trust.hostContext
+  });
+  assert.equal(result.state, "passed", JSON.stringify(result));
+  assert.equal(await lstat(marker).then(() => true, () => false), false);
+  assert.equal(result.capabilityIsolation.network, "denied");
+  assert.equal(result.capabilityIsolation.hostWrites, "workspace-only");
+});
+
+test("real worker interruption at every grading phase preserves the exact operator checkout", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-interruption-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const revisions = await createExternalRepository(directory);
+  const snapshot = async () => {
+    const target = join(directory, "src/greeting.mjs");
+    const fixtureTest = join(directory, "test/greeting.test.mjs");
+    const targetInfo = await lstat(target);
+    const testInfo = await lstat(fixtureTest);
+    return {
+      head: git(directory, ["rev-parse", "HEAD"]),
+      status: execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: directory }),
+      target: await readFile(target),
+      targetMode: targetInfo.mode & 0o777,
+      fixtureTest: await readFile(fixtureTest),
+      testMode: testInfo.mode & 0o777
+    };
+  };
+  const before = await snapshot();
+  const temporaryRootsBefore = (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-supervisor-")).sort();
+  for (const phase of ["isolation.probe", "grade.candidate", "grade.injected", "grade.restored"]) {
+    const trust = await gradingTrust(phase);
+    try {
+      const result = await gradeExternalFixture({
+        fixtureRoot: root,
+        operatorRepositoryRoot: directory,
+        ...revisions,
+        hostContext: trust.hostContext
+      });
+      assert.equal(result.state, "blocked");
+      assert.equal(result.reason, "worker_interrupted");
+      assert.equal(result.phase, phase);
+      assert.equal(result.reaped, true);
+      const after = await snapshot();
+      assert.equal(after.head, before.head);
+      assert.ok(after.status.equals(before.status));
+      assert.ok(after.target.equals(before.target));
+      assert.equal(after.targetMode, before.targetMode);
+      assert.ok(after.fixtureTest.equals(before.fixtureTest));
+      assert.equal(after.testMode, before.testMode);
+      assert.deepEqual(
+        (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-supervisor-")).sort(),
+        temporaryRootsBefore
+      );
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
+  for (const checkpoint of [
+    "workspace.prepared", "candidate.passed", "defect.injected", "injected.failed",
+    "candidate.restored", "restored.passed", "workspace.removed", "operator.reverified"
+  ]) {
+    const trust = await gradingTrust(null, checkpoint);
+    try {
+      const result = await gradeExternalFixture({
+        fixtureRoot: root,
+        operatorRepositoryRoot: directory,
+        ...revisions,
+        hostContext: trust.hostContext
+      });
+      assert.deepEqual(result, { state: "blocked", reason: "host_checkpoint_interrupted", checkpoint });
+      const after = await snapshot();
+      assert.equal(after.head, before.head);
+      assert.ok(after.status.equals(before.status));
+      assert.ok(after.target.equals(before.target));
+      assert.equal(after.targetMode, before.targetMode);
+      assert.ok(after.fixtureTest.equals(before.fixtureTest));
+      assert.equal(after.testMode, before.testMode);
+      assert.deepEqual(
+        (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-supervisor-")).sort(),
+        temporaryRootsBefore
+      );
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("direct grading refuses execution without the trusted supervisor", async () => {
+  assert.deepEqual(await gradeCandidateWithFailureInjection({}), {
+    state: "blocked",
+    reason: "trusted_isolation_supervisor_required"
+  });
+});
+
+test("isolation envelope is external, content-addressed, and substitution fails closed", async (context) => {
+  const trust = await gradingTrust();
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
+  assert.deepEqual(await loadTrustedIsolationEnvelope({
+    envelopePath: trust.hostContext.isolationEnvelopePath,
+    fixtureRoot: root
+  }), ISOLATION_ENVELOPE);
+  await writeFile(trust.hostContext.isolationEnvelopePath, JSON.stringify({
+    ...ISOLATION_ENVELOPE,
+    worker: { ...ISOLATION_ENVELOPE.worker, sha256: "0".repeat(64) }
+  }));
+  await assert.rejects(loadTrustedIsolationEnvelope({
+    envelopePath: trust.hostContext.isolationEnvelopePath,
+    fixtureRoot: root
+  }), /isolation_envelope_digest_mismatch/);
+
+  for (const substituted of [
+    { ...ISOLATION_ENVELOPE, denialPolicy: { ...ISOLATION_ENVELOPE.denialPolicy, policySha256: "1".repeat(64) } },
+    { ...ISOLATION_ENVELOPE, adapter: { ...ISOLATION_ENVELOPE.adapter, executableSha256: "2".repeat(64) } },
+    { ...ISOLATION_ENVELOPE, unknown: true }
+  ]) {
+    await writeFile(trust.hostContext.isolationEnvelopePath, JSON.stringify(substituted));
+    await assert.rejects(loadTrustedIsolationEnvelope({
+      envelopePath: trust.hostContext.isolationEnvelopePath,
+      fixtureRoot: root
+    }), /isolation_envelope_digest_mismatch/);
+  }
+});
+
+test("adapter, worker, sealed-copy, pre-spawn, and cleanup substitutions fail closed", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-isolation-seams-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const identity = { dev: 1n, ino: 2n, mode: 0o100555n, uid: 0n, gid: 0n };
+  const protectedMetadata = {
+    ...identity,
+    isFile: () => true,
+    isSymbolicLink: () => false
+  };
+  assert.equal(adapterMetadataMatches(identity, protectedMetadata, protectedMetadata), true);
+  assert.equal(adapterMetadataMatches(identity, { ...protectedMetadata, ino: 3n }, protectedMetadata), false);
+  assert.equal(adapterMetadataMatches(identity, { ...protectedMetadata, mode: 0o100577n }, protectedMetadata), false);
+  assert.equal(adapterMetadataMatches(identity, { ...protectedMetadata, uid: 501n }, protectedMetadata), false);
+
+  const workerBytes = await readFile(resolve(root, "../v0.3-fixture-isolation-worker.mjs"));
+  const workerDigest = createHash("sha256").update(workerBytes).digest("hex");
+  const workerPath = join(directory, "worker.mjs");
+  await writeFile(workerPath, workerBytes);
+  assert.equal((await loadTrustedWorkerSource(workerPath, workerDigest)).bytes.equals(workerBytes), true);
+  await writeFile(workerPath, "substituted");
+  await assert.rejects(loadTrustedWorkerSource(workerPath, workerDigest), /isolation_capability_identity_mismatch/);
+  const linkedWorker = join(directory, "worker-link.mjs");
+  await symlink(workerPath, linkedWorker);
+  await assert.rejects(loadTrustedWorkerSource(linkedWorker, workerDigest));
+
+  const privateCopy = join(directory, "private-worker.mjs");
+  await writeFile(privateCopy, workerBytes, { mode: 0o500 });
+  await chmod(privateCopy, 0o500);
+  assert.equal(await verifySealedPrivateCopy(privateCopy, workerDigest, true), true);
+  await chmod(privateCopy, 0o700);
+  await writeFile(privateCopy, "substituted");
+  await chmod(privateCopy, 0o500);
+  await assert.rejects(verifySealedPrivateCopy(privateCopy, workerDigest, true), /private_copy_identity_mismatch/);
+
+  const proof = { nonce: "nonce", digest: "3".repeat(64) };
+  assert.equal(hostEvidenceStable(proof, { ...proof }), true);
+  assert.equal(hostEvidenceStable(proof, { ...proof, nonce: "replayed" }), false);
+  assert.equal(hostEvidenceStable(proof, { ...proof, digest: "4".repeat(64) }), false);
+  assert.equal(cleanupEvidenceState(false, false), "verified-removed");
+  assert.equal(cleanupEvidenceState(true, false), "uncertain");
+  assert.equal(cleanupEvidenceState(false, true), "uncertain");
+});
+
+test("real supervisor fault points block before promotion and preserve root disposition", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shield-v03-supervisor-faults-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const revisions = await createExternalRepository(directory);
+  const operatorBefore = {
+    head: git(directory, ["rev-parse", "HEAD"]),
+    status: execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: directory }),
+    target: await readFile(join(directory, "src/greeting.mjs")),
+    fixtureTest: await readFile(join(directory, "test/greeting.test.mjs"))
+  };
+  const roots = async () => (await readdir(tmpdir())).filter((name) => name.startsWith("shield-v03-supervisor-")).sort();
+  const assertOperatorUnchanged = async () => {
+    assert.equal(git(directory, ["rev-parse", "HEAD"]), operatorBefore.head);
+    assert.ok(execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: directory }).equals(operatorBefore.status));
+    assert.ok((await readFile(join(directory, "src/greeting.mjs"))).equals(operatorBefore.target));
+    assert.ok((await readFile(join(directory, "test/greeting.test.mjs"))).equals(operatorBefore.fixtureTest));
+  };
+
+  for (const fault of ["pre-spawn-evidence-drift", "private-worker-substitution"]) {
+    const rootsBefore = await roots();
+    const trust = await gradingTrust(null, null, fault);
+    try {
+      const result = await gradeExternalFixture({
+        fixtureRoot: root,
+        operatorRepositoryRoot: directory,
+        ...revisions,
+        hostContext: trust.hostContext
+      });
+      assert.deepEqual(result, {
+        state: "blocked",
+        reason: "isolation_not_observable",
+        phase: "isolation.probe",
+        reaped: true
+      });
+      assert.deepEqual(await roots(), rootsBefore);
+      await assertOperatorUnchanged();
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
+
+  for (const [fault, reason] of [
+    ["reap-evidence-uncertain", "disposable_cleanup_unsafe"],
+    ["cleanup-failure", "disposable_cleanup_failed"]
+  ]) {
+    const rootsBefore = await roots();
+    const trust = await gradingTrust(null, null, fault);
+    try {
+      const result = await gradeExternalFixture({
+        fixtureRoot: root,
+        operatorRepositoryRoot: directory,
+        ...revisions,
+        hostContext: trust.hostContext
+      });
+      assert.deepEqual(result, { state: "blocked", reason });
+      await assertOperatorUnchanged();
+      const rootsAfter = await roots();
+      const retained = rootsAfter.filter((name) => !rootsBefore.includes(name));
+      assert.equal(retained.length, 1);
+      await rm(join(tmpdir(), retained[0]), { recursive: true, force: true });
+      assert.deepEqual(await roots(), rootsBefore);
+    } finally {
+      await rm(trust.directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("frozen adoption base rejects arbitrary source and exact-test substitution", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-frozen-base-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const substitutedSource = join(directory, "source");
   const sourceRevisions = await createExternalRepository(substitutedSource, {
     baseGreetingSource: "export const greeting = () => 'substituted';\n"
   });
-  assert.equal((await gradeCandidateWithFailureInjection({
-    fixtureRoot: substitutedSource,
-    ...sourceRevisions
+  assert.equal((await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: substitutedSource,
+    ...sourceRevisions,
+    hostContext: trust.hostContext
   })).reason, "frozen_base_content_mismatch:src/greeting.mjs");
 
   const substitutedTest = join(directory, "test");
@@ -804,33 +1488,43 @@ test("frozen adoption base rejects arbitrary source and exact-test substitution"
       ""
     ].join("\n")
   });
-  assert.equal((await gradeCandidateWithFailureInjection({
-    fixtureRoot: substitutedTest,
-    ...testRevisions
+  assert.equal((await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: substitutedTest,
+    ...testRevisions,
+    hostContext: trust.hostContext
   })).reason, "frozen_base_content_mismatch:test/greeting.test.mjs");
 });
 
 test("unexpected untracked files block while ignored files do not expand exact test selection", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-untracked-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const revisions = await createExternalRepository(directory);
   await writeFile(join(directory, "test/untracked.test.mjs"), "throw new Error('untracked');\n");
-  assert.equal((await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
-  })).reason, "external_revision_not_clean");
+  assert.equal((await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
+  })).reason, "operator_revision_not_exact");
   await rm(join(directory, "test/untracked.test.mjs"));
   await writeFile(join(directory, "notes.txt"), "unexpected untracked file\n");
-  assert.equal((await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
-  })).reason, "external_revision_not_clean");
+  assert.equal((await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
+  })).reason, "operator_revision_not_exact");
   await rm(join(directory, "notes.txt"));
 
   await writeFile(join(directory, "test/extra.test.mjs"), "throw new Error('must not execute');\n");
-  const result = await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
   });
   assert.equal(result.state, "passed", JSON.stringify(result));
 });
@@ -844,11 +1538,10 @@ test("blind classification rejects visible prior solutions", async (context) => 
   const revisions = await createExternalRepository(external);
   const result = await composeMinimumFixture(fixtureInput(
     artifact,
-    await digest(artifact),
     external,
     revisions,
     { blindStatus: "blind", priorSolutionsVisible: true }
-  ));
+  ), fixtureTrustedHostContext());
   assert.equal(result.state, "invalid");
   assert.equal(result.reason, "blind_status_contradiction");
 });
@@ -1228,8 +1921,10 @@ test("evidence inventory attribution requires exact replay matching", () => {
 test("fixture-only grader rejects a target that escapes through a symlink", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-symlink-"));
   const outside = await mkdtemp(join(tmpdir(), "shield-v03-outside-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
   context.after(() => rm(outside, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const revisions = await createExternalRepository(directory);
   const outsideTarget = join(outside, "greeting.mjs");
   await writeFile(outsideTarget, "outside bytes\n");
@@ -1241,20 +1936,24 @@ test("fixture-only grader rejects a target that escapes through a symlink", asyn
     ...revisions,
     headRevision: git(directory, ["rev-parse", "HEAD"])
   };
-  const result = await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...symlinkRevisions
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...symlinkRevisions,
+    hostContext: trust.hostContext
   });
   assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "fixture_target_unavailable");
+  assert.equal(result.reason, "operator_snapshot_unavailable");
   assert.equal(await readFile(outsideTarget, "utf8"), "outside bytes\n");
 });
 
-test("fixture-only grader never follows a symlink substituted during failure injection", async (context) => {
+test("disposable failure injection never exposes defect bytes in the operator checkout", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shield-v03-race-"));
   const outside = await mkdtemp(join(tmpdir(), "shield-v03-race-outside-"));
+  const trust = await gradingTrust();
   context.after(() => rm(directory, { recursive: true, force: true }));
   context.after(() => rm(outside, { recursive: true, force: true }));
+  context.after(() => rm(trust.directory, { recursive: true, force: true }));
   const outsideTarget = join(outside, "greeting.mjs");
   await writeFile(outsideTarget, "outside bytes\n");
   const revisions = await createExternalRepository(directory);
@@ -1275,13 +1974,20 @@ test("fixture-only grader never follows a symlink substituted during failure inj
       await new Promise((done) => setImmediate(done));
     }
   })();
-  const result = await gradeCandidateWithFailureInjection({
-    fixtureRoot: directory,
-    ...revisions
+  const result = await gradeExternalFixture({
+    fixtureRoot: root,
+    operatorRepositoryRoot: directory,
+    ...revisions,
+    hostContext: trust.hostContext
   });
   watching = false;
   await watcher;
-  assert.equal(result.state, "blocked");
-  assert.equal(result.reason, "fixture_target_changed_before_rollback");
+  assert.equal(result.state, "passed", JSON.stringify(result));
+  assert.equal(await readFile(join(directory, "src/greeting.mjs"), "utf8"), [
+    "export function greeting(name) {",
+    "  return `Hello, ${name.trim()}!`;",
+    "}",
+    ""
+  ].join("\n"));
   assert.equal(await readFile(outsideTarget, "utf8"), "outside bytes\n");
 });

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "missionId": "mission:issue-239",
+  "objective": "Rebind the V0.3 fixture identity to the deterministic exact current-main package digest by changing only the versioned fixture identity record and its independently pinned test baseline, validate the exact revision, and return immediately to mission:issue-29-current-candidate-proof; do not change product or fixture behavior, execute the fixture, perform Asmark work, enter #14, merge, deploy, release, or fabricate any human gate.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/239",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": false,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-07T19:00:27Z",
+    "provenance": "hostTrusted"
+  },
+  "profileId": "standard",
+  "profileVersion": 1,
+  "requiredExecutionGateRoleIds": ["coulson"],
+  "requiredFinalAcceptanceGateRoleIds": ["coulson"],
+  "predecessorMissionId": "mission:issue-130",
+  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9"
+}

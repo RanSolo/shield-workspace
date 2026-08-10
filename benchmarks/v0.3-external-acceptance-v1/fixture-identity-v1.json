@@ -4,7 +4,7 @@
   "coveredArtifacts": {
     "manifest": {
       "path": "fixture-manifest.mjs",
-      "digest": "f4fe11a15e259261789e29c84e6eb218055bc140ef65592e7db56f995a8b9595"
+      "digest": "00e6fe2858667789ca9cf6f9bcfc3e4bcb58b1394bc55defdd914c3c4006958e"
     },
     "template-package": {
       "path": "template/package.json",
@@ -20,17 +20,17 @@
     },
     "grading-driver": {
       "path": "src/driver.mjs",
-      "digest": "721023859405f79c4e640428f215f62621d5a8aa2b8edbbeef4689bca474cf11"
+      "digest": "438082e4497c3e04970bc5ad306282d735e04731b36d641affa1c3f9d165b725"
     },
     "evidence-inventory": {
       "path": "evidence-inventory.mjs",
-      "digest": "b66382037957b0866a8f57b951b044fe166ef1dcbfcc1de0969754f11399d3c5"
+      "digest": "3e437157cc5bdad22c9c31df39bce1a25f895cb8ad0fbf5efd1a43ccd3cb39a7"
     }
   },
   "package": {
     "name": "@shield/team-system",
     "version": "0.1.0",
     "digestAlgorithm": "sha256",
-    "digest": "05a8ee7222471925e49e794c7fb58fd1151dcfe2a8e2c8d20435118c340ec02e"
+    "digest": "02853c218a4119d45c9fde683d2ee22d1ef22f5a70618372d0bf7cf7a9af4af9"
   }
 }

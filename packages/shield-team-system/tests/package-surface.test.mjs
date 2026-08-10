@@ -27,12 +27,16 @@ test("exports only the documented public package specifiers", async () => {
     "./adapter",
     "./runner",
     "./permission",
+    "./schema9-permission-context",
+    "./governed-may-dispatch",
     "./roles",
     "./permission-audit",
     "./review-publication",
     "./pipeline",
     "./mission-profile",
     "./profile-aware-mission",
+    "./implementation-authority",
+    "./daisy-coordination-authority",
     "./mission-runtime",
     "./mission-builder",
     "./sonarqube",
@@ -62,6 +66,8 @@ test("loads every supported runtime specifier", async () => {
   const adapter = await import("@shield/team-system/adapter");
   const runner = await import("@shield/team-system/runner");
   const permission = await import("@shield/team-system/permission");
+  const schema9PermissionContext = await import("@shield/team-system/schema9-permission-context");
+  const governedMayDispatch = await import("@shield/team-system/governed-may-dispatch");
   const roles = await import("@shield/team-system/roles");
   const permissionAudit = await import("@shield/team-system/permission-audit");
   const reviewPublication = await import("@shield/team-system/review-publication");
@@ -70,6 +76,8 @@ test("loads every supported runtime specifier", async () => {
   const profileAwareMission = await import("@shield/team-system/profile-aware-mission");
   const missionRuntime = await import("@shield/team-system/mission-runtime");
   const missionBuilder = await import("@shield/team-system/mission-builder");
+  const implementationAuthority = await import("@shield/team-system/implementation-authority");
+  const daisyCoordinationAuthority = await import("@shield/team-system/daisy-coordination-authority");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
   const qaMode = await import("@shield/team-system/qa-mode");
@@ -83,6 +91,7 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof intake.missionIntakeV1, "function");
   assert.equal(typeof intake.profileAwareMissionIntakeV1, "function");
   assert.equal(typeof dispatchReceipts.appendSeatDispatchReceiptEntryV1, "function");
+  assert.equal(typeof dispatchReceipts.claimSeatDispatchPacketV1, "function");
   assert.equal(typeof dispatchReceipts.readSeatDispatchReceiptByReceiptIdV1, "function");
   assert.equal(typeof dispatchReceipts.readSeatDispatchReceiptsByChildTaskSessionV1, "function");
   assert.equal(typeof dispatchReceipts.replaySeatDispatchReceiptsV1, "function");
@@ -94,18 +103,36 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof missionProfile.freezeMissionRequirementsV1, "function");
   assert.equal(profileAwareMission.PROFILE_AWARE_JOURNAL_SCHEMA_VERSION, 9);
   assert.equal(typeof profileAwareMission.replayProfileAwareMissionJournal, "function");
+  assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_SCHEMA_VERSION, 1);
+  assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION, "implementation-authority.v1");
+  assert.equal(typeof implementationAuthority.validateImplementationAuthorityV1, "function");
+  assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_KIND, "wheels_up");
+  assert.equal(daisyCoordinationAuthority.DAISY_COORDINATION_AUTHORITY_KIND, "daisy_feature_flight_coordination");
+  assert.equal(typeof daisyCoordinationAuthority.validateDaisyCoordinationAuthorityV1, "function");
+  assert.equal(daisyCoordinationAuthority.verifySignedImplementationAuthorityV1, undefined);
   assert.equal(typeof missionRuntime.runMissionCycle, "function");
   assert.equal(missionBuilder.MISSION_BUILDER_CONTRACT_VERSION, "mission.builder.v1");
   assert.equal(typeof missionBuilder.buildMissionDefinitionV1, "function");
   assert.equal(root.buildMissionDefinitionV1, missionBuilder.buildMissionDefinitionV1);
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
-  assert.equal(config.CONFIG_SCHEMA_VERSION, 1);
+  assert.equal(config.LEGACY_CONFIG_SCHEMA_VERSION, 1);
+  assert.equal(config.CONFIG_SCHEMA_V2_VERSION, 2);
+  assert.equal(config.CONFIG_SCHEMA_VERSION, 3);
+  assert.deepEqual(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS, [1, 2, 3]);
+  assert.deepEqual(config.SUPPORTED_ADAPTER_IDS, ["github"]);
+  assert.deepEqual(config.CONFIGURED_HOST_ADAPTER_IDS, ["github", "atlassian"]);
+  assert.equal(Object.isFrozen(config.SUPPORTED_CONFIG_SCHEMA_VERSIONS), true);
+  assert.equal(Object.isFrozen(config.REPOSITORY_TRUST_PROFILE_IDS), true);
+  assert.equal(config.REPOSITORY_TRUST_PROFILE_CONTRACT_VERSION, "repository.trust-profile.v1");
+  assert.equal(Object.isFrozen(config.REPOSITORY_TRUST_PROFILES_V1), true);
   assert.equal(root.validateShieldConfig, config.validateShieldConfig);
   assert.equal(supervision.SUPERVISED_JOURNAL_SCHEMA_VERSION, 2);
   assert.equal(supervision.RUNNER_JOURNAL_SCHEMA_VERSION, 5);
   assert.equal(supervision.REVIEW_JOURNAL_SCHEMA_VERSION, 7);
   assert.equal(typeof supervision.createSupervisedMissionBrief, "function");
+  assert.equal(typeof supervision.deriveRepositoryMissionBindings, "function");
+  assert.equal(typeof supervision.selectCoulsonOperationBinding, "function");
   assert.equal(typeof supervision.createExecutionEffectEntry, "function");
   assert.equal(typeof supervision.createReviewSubjectSupersessionEntry, "function");
   assert.equal(typeof supervision.createFuryReviewEntry, "function");
@@ -116,6 +143,8 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof runner.runRunnerCycle, "function");
   assert.equal(permission.PERMISSION_CONTRACT_VERSION, 1);
   assert.equal(typeof permission.evaluatePermission, "function");
+  assert.equal(typeof schema9PermissionContext.loadSchema9PermissionContextV1, "function");
+  assert.equal(typeof governedMayDispatch.runGovernedMayDispatchStepV1, "function");
   assert.equal(roles.ROLE_TAXONOMY_SCHEMA_VERSION, 1);
   assert.equal(roles.ROLE_TAXONOMY_CONTRACT_VERSION, "roles.v1");
   assert.deepEqual(roles.CANONICAL_ROLE_IDS, [
@@ -153,6 +182,10 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof github.prepareDeliveryWorkspaceForDispatch, "function");
   assert.equal(github.FURY_PLAN_GATE_CONTRACT_VERSION, "fury.plan-gate.v1");
   assert.equal(typeof github.evaluateFuryPlanGateV1, "function");
+  assert.equal(github.FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION, "fury.plan-review-evidence.v1");
+  assert.equal(typeof github.evaluateFuryPlanReviewEvidenceV1, "function");
+  assert.equal(typeof github.replayFuryPlanReviewEvidenceLedgerV1, "function");
+  assert.equal(github.deriveFuryPlanReviewEvidenceV1, undefined);
   assert.equal(typeof github.validatePRWorkspaceReceipt, "function");
   assert.equal(typeof github.renderMissionHandoff, "function");
 });
@@ -180,7 +213,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   await writeFile(join(fixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
   const packOutput = JSON.parse(execFileSync(
     "npm",
-    ["pack", packageRoot, "--json", "--pack-destination", fixture, "--cache", npmCache],
+    ["pack", packageRoot, "--json", "--ignore-scripts", "--pack-destination", fixture, "--cache", npmCache],
     { encoding: "utf8" },
   ));
   const packed = packOutput[0];
@@ -204,10 +237,20 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/delegation-v1.d.mts",
     "dist/adapter-v1.mjs",
     "dist/adapter-v1.d.mts",
+    "dist/implementation-authority-v1.mjs",
+    "dist/daisy-coordination-authority-v1.mjs",
+    "dist/daisy-coordination-authority-v1.d.mts",
+    "public/daisy-coordination-authority.mjs",
+    "public/daisy-coordination-authority.d.mts",
+    "dist/implementation-authority-v1.d.mts",
     "dist/runner-v1.mjs",
     "dist/runner-v1.d.mts",
     "dist/permission-v1.mjs",
     "dist/permission-v1.d.mts",
+    "dist/schema9-permission-context-v1.mjs",
+    "dist/schema9-permission-context-v1.d.mts",
+    "dist/governed-may-dispatch-v1.mjs",
+    "dist/governed-may-dispatch-v1.d.mts",
     "dist/role-taxonomy-v1.mjs",
     "dist/role-taxonomy-v1.d.mts",
     "dist/permission-audit-v1.mjs",
@@ -241,6 +284,18 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "public/github.mjs",
     "public/github.d.mts",
     "dist/cli.mjs",
+    "docs/operations/mission-evidence-tools.md",
+    "docs/operations/feature-flight-controller.md",
+    "docs/operations/feature-flight-step.md",
+    "docs/operations/feature-flight-recovery.md",
+    "docs/operations/feature-flight-review-gates.md",
+    "docs/operations/persisted-artifact-contract-matrix.md",
+    "scripts/operations/flight-contracts.mjs",
+    "scripts/operations/feature-flight-controller.mjs",
+    "scripts/operations/feature-flight-step-store.mjs",
+    "scripts/operations/feature-flight-recovery.mjs",
+    "scripts/operations/feature-flight-step.mjs",
+    "scripts/operations/feature-flight-review-gates.mjs",
     "INSTALLATION.md",
     "PUBLIC_API.md",
     "SUPERVISED_MISSION.md",
@@ -249,6 +304,16 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "MISSION_BUILDER.md",
   ]) {
     assert.ok(packedPaths.has(path), `packed artifact is missing ${path}`);
+  }
+  const packedMackRunner = await readFile(join(packageRoot, "scripts/model/mack-validation-runner.mjs"), "utf8");
+  assert.match(packedMackRunner, /export async function readMackProductionValidationRegistryV1/u);
+  assert.doesNotMatch(packedMackRunner, /export (?:async )?function promoteProductionEvidence/u);
+  for (const document of ["feature-flight-review-gates.md", "persisted-artifact-contract-matrix.md"]) {
+    assert.equal(
+      await readFile(join(packageRoot, "docs/operations", document), "utf8"),
+      await readFile(join(workspaceRoot, "docs/operations", document), "utf8"),
+      `${document} package mirror drifted`,
+    );
   }
 
   const tarball = join(fixture, packed.filename);
@@ -275,14 +340,17 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { MODE_MANIFEST_SCHEMA_VERSION, type ModeManifest } from "@shield/team-system/modes";
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
     import { HILL_READINESS_SCHEMA_VERSION, evaluateHillReadinessV1, type HillReadinessCandidateV1, type HillReadinessHostObservationV1 } from "@shield/team-system/hill-readiness";
-    import { CONFIG_SCHEMA_VERSION, type ShieldConfig } from "@shield/team-system/config";
-    import { RUNNER_JOURNAL_SCHEMA_VERSION, SUPERVISED_JOURNAL_SCHEMA_VERSION, createExecutionEffectEntry, createSupervisedMissionBrief, type RunnerSupervisedEffectCandidate, type SupervisedMissionBrief } from "@shield/team-system/supervision";
+    import { CONFIG_SCHEMA_V2_VERSION, CONFIG_SCHEMA_VERSION, LEGACY_CONFIG_SCHEMA_VERSION, SUPPORTED_CONFIG_SCHEMA_VERSIONS, configuredAdapterIds, migrateShieldConfig, type ConfiguredHostAdapterId, type DoctorReport, type DoctorReportV2, type RepositoryTrustProfileId, type ShieldConfig, type ShieldConfigV1, type ShieldConfigV2, type ShieldConfigV3 } from "@shield/team-system/config";
+    import { RUNNER_JOURNAL_SCHEMA_VERSION, SUPERVISED_JOURNAL_SCHEMA_VERSION, createExecutionEffectEntry, createSupervisedMissionBrief, deriveRepositoryMissionBindings, selectCoulsonOperationBinding, type RunnerSupervisedEffectCandidate, type SupervisedMissionBrief } from "@shield/team-system/supervision";
     import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
     import { RUNNER_CONTRACT_VERSION, runRunnerCycle, type RunnerCycleInput } from "@shield/team-system/runner";
     import { PERMISSION_CONTRACT_VERSION, evaluatePermission, type RuntimeBinding } from "@shield/team-system/permission";
+    import { loadSchema9PermissionContextV1, type Schema9PermissionContextInput, type Schema9PermissionContextResult } from "@shield/team-system/schema9-permission-context";
+    import { runGovernedMayDispatchStepV1 } from "@shield/team-system/governed-may-dispatch";
     import { CANONICAL_ROLE_IDS, CANONICAL_ROLE_REGISTRY_V1, ROLE_TAXONOMY_CONTRACT_VERSION, isCanonicalRoleId, validateRoleAssignment, type CanonicalRoleId, type RoleAssignmentScope, type RoleRoute } from "@shield/team-system/roles";
     import { MISSION_PROFILE_CONTRACT_VERSION, type MissionProfileV1, type MissionRoleDefinitionV1, type MissionRoleId, MISSION_ROLE_IDS, CANONICAL_MISSION_ROLE_REGISTRY_V1 } from "@shield/team-system/mission-profile";
+    import { type ProfileAwareProjectionV1 } from "@shield/team-system/profile-aware-mission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import { deriveMissionCycleIdentityV1, runMissionCycle, type MissionCycleInputV1, type MissionCycleResultV1 } from "@shield/team-system/mission-runtime";
     import { MISSION_BUILDER_CONTRACT_VERSION, buildMissionDefinitionV1, projectMissionStatusV1, type MissionDefinitionV1, type MissionAdvanceInputV1, type MissionStatusProjectionV1 } from "@shield/team-system/mission-builder";
@@ -294,18 +362,39 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { runLocalToolSession, runMayControlLoop, runMayToolCall, type LocalToolSessionRequest, type MayControlLoopDependencies, type MayControlLoopRequest, type MayToolCallRequest, type MayToolExecutorDependencies } from "@shield/team-system/local-tools";
     import {
       FURY_PLAN_GATE_CONTRACT_VERSION,
+      FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION,
       createGitHubFollowUpCandidate,
       deliverGitHubCommunication,
       evaluateFuryPlanGateV1,
+      evaluateFuryPlanReviewEvidenceV1,
       prepareDeliveryWorkspaceForDispatch,
+      replayFuryPlanReviewEvidenceLedgerV1,
       renderMissionHandoff,
       validatePRWorkspaceReceipt,
       type DeliveryWorkspaceResult,
       type FuryPlanGateEnvelopeV1,
+      type FuryPlanReviewEvidenceCandidateV1,
+      type FuryPlanReviewEvidenceEvaluationV1,
       type GitHubFollowUpCandidateInput,
       type PRWorkspaceReceipt,
     } from "@shield/team-system/github";
     import {
+      IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION,
+      IMPLEMENTATION_AUTHORITY_SCHEMA_VERSION,
+      IMPLEMENTATION_AUTHORITY_KIND,
+      type ImplementationAuthorityV1,
+    } from "@shield/team-system/implementation-authority";
+    import {
+      DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION,
+      validateDaisyCoordinationAuthorityV1,
+      type DaisyCoordinationAuthorityV1,
+    } from "@shield/team-system/daisy-coordination-authority";
+    import {
+      claimSeatDispatchPacketV1,
+      type SeatDispatchPacketClaimContractResultV1,
+      type SeatDispatchPacketClaimFailureCodeV1,
+      type SeatDispatchPacketClaimInputV1,
+      type SeatDispatchPacketClaimResultV1,
       type SeatDispatchReceiptStoreAppendInput,
       type SeatDispatchReceiptStoreAppendResult,
       type SeatDispatchReceiptStoreByChildInput,
@@ -338,8 +427,27 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const hillCandidate = null as unknown as HillReadinessCandidateV1;
     const hillObservation = null as unknown as HillReadinessHostObservationV1;
     const hillEvaluation = evaluateHillReadinessV1(hillCandidate, hillObservation);
-    const configSchema: 1 = CONFIG_SCHEMA_VERSION;
+    const legacyConfigSchema: 1 = LEGACY_CONFIG_SCHEMA_VERSION;
+    const configSchemaV2: 2 = CONFIG_SCHEMA_V2_VERSION;
+    const configSchema: 3 = CONFIG_SCHEMA_VERSION;
+    const supportedConfigSchemas: readonly [1, 2, 3] = SUPPORTED_CONFIG_SCHEMA_VERSIONS;
     const config = null as unknown as ShieldConfig;
+    const configV1 = null as unknown as ShieldConfigV1;
+    const configV2 = null as unknown as ShieldConfigV2;
+    const configV3 = null as unknown as ShieldConfigV3;
+    const trustProfileId: RepositoryTrustProfileId = configV2.repositoryTrustProfileId;
+    const configuredHostAdapterId: ConfiguredHostAdapterId = configV3.adapterIds[0];
+    const projectedAdapters: ConfiguredHostAdapterId[] = configuredAdapterIds(config);
+    const migratedConfig: ShieldConfigV3 = migrateShieldConfig(config);
+    const doctorV1 = null as unknown as DoctorReport;
+    const doctorV2 = null as unknown as DoctorReportV2;
+    const doctorV1Version: 1 = doctorV1.reportVersion;
+    const doctorV2Version: 2 = doctorV2.reportVersion;
+    const legacySchemaDiscriminant: 1 = configV1.schemaVersion;
+    const priorSchemaDiscriminant: 2 = configV2.schemaVersion;
+    const currentSchemaDiscriminant: 3 = configV3.schemaVersion;
+    const deriveBindings = deriveRepositoryMissionBindings;
+    const selectCoulson = selectCoulsonOperationBinding;
     const supervisedSchema: 2 = SUPERVISED_JOURNAL_SCHEMA_VERSION;
     const runnerJournalSchema: 5 = RUNNER_JOURNAL_SCHEMA_VERSION;
     const supervisedBrief = null as unknown as SupervisedMissionBrief;
@@ -355,6 +463,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const permissionContract: 1 = PERMISSION_CONTRACT_VERSION;
     const runtimeBinding = null as unknown as RuntimeBinding;
     const evaluate = evaluatePermission;
+    const schema9PermissionContextInput = null as unknown as Schema9PermissionContextInput;
+    const schema9PermissionContextResult = null as unknown as Schema9PermissionContextResult;
+    const loadSchema9Context = loadSchema9PermissionContextV1;
+    const runGovernedMayDispatch = runGovernedMayDispatchStepV1;
     const auditSchema: 1 = PERMISSION_AUDIT_SCHEMA_VERSION;
     const auditRecord = null as unknown as PermissionAuditRecord;
     const replayAudit = replayPermissionAuditLedger;
@@ -367,6 +479,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const reviewPublicationProposal = null as unknown as ReviewPublicationProposalV1;
     const evaluateReviewPublication = evaluateReviewPublicationV1;
     const pipelineContract: "pipeline.profile.v1" = PIPELINE_PROFILE_CONTRACT_VERSION;
+    interface CompatibleProfileProjection extends ProfileAwareProjectionV1 { consumerTag: "compatible" }
+    const compatibleProfileProjection = null as unknown as CompatibleProfileProjection;
+    const compatibleProfileTag: "compatible" = compatibleProfileProjection.consumerTag;
     const pipelineProfile = null as unknown as RepositoryPipelineProfileV1;
     const selectPipeline = selectPipelineModesV1;
     const sonarContract: "sonarqube.evidence.v1" = SONARQUBE_EVIDENCE_CONTRACT_VERSION;
@@ -388,10 +503,26 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const furyContract: "fury.plan-gate.v1" = FURY_PLAN_GATE_CONTRACT_VERSION;
     const furyGate = null as unknown as FuryPlanGateEnvelopeV1;
     const evaluateFury = evaluateFuryPlanGateV1;
+    const furyEvidenceContract: "fury.plan-review-evidence.v1" = FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION;
+    const furyEvidenceCandidate = null as unknown as FuryPlanReviewEvidenceCandidateV1;
+    const furyEvidenceEvaluation: FuryPlanReviewEvidenceEvaluationV1 = evaluateFuryPlanReviewEvidenceV1(
+      furyEvidenceCandidate, [], [], null,
+    );
+    const implementationAuthoritySchema: 1 = IMPLEMENTATION_AUTHORITY_SCHEMA_VERSION;
+    const implementationAuthorityContract: "implementation-authority.v1" = IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION;
+    const implementationAuthorityKind: "wheels_up" = IMPLEMENTATION_AUTHORITY_KIND;
+    const authority: ImplementationAuthorityV1 = null as unknown as ImplementationAuthorityV1;
+    const daisyAuthorityContract: "daisy-coordination-authority.v1" = DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION;
+    const daisyAuthority: DaisyCoordinationAuthorityV1 = null as unknown as DaisyCoordinationAuthorityV1;
+    const validateDaisyAuthority = validateDaisyCoordinationAuthorityV1;
+    const replayFuryEvidence = replayFuryPlanReviewEvidenceLedgerV1;
     const validateReceipt = validatePRWorkspaceReceipt;
     const renderHandoff = renderMissionHandoff;
     const workspaceReceipt = null as unknown as PRWorkspaceReceipt;
     const workspaceResult = null as unknown as DeliveryWorkspaceResult;
+    const verifiedPublicationAction:
+      Extract<DeliveryWorkspaceResult, { state: "dispatch_ready" }>["publicationAction"] =
+        "verified_existing_draft_pr";
     const dispatchScope: SeatDispatchReceiptStoreScopeInput = {
       repositoryRoot: "/tmp/dispatch-store",
       repositoryId: "repo-1",
@@ -425,6 +556,33 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       code: "test",
       errors: ["expected"],
     };
+    const packetClaimInput = null as unknown as SeatDispatchPacketClaimInputV1;
+    const packetClaimResult = null as unknown as SeatDispatchPacketClaimResultV1;
+    const packetClaimFailure: SeatDispatchPacketClaimFailureCodeV1 = "output_evidence_misplacement";
+    const packetClaimContract: SeatDispatchPacketClaimContractResultV1 = {
+      state: "invalid",
+      code: packetClaimFailure,
+      errors: ["expected"],
+    };
+    const claimPacket = claimSeatDispatchPacketV1;
+    function assertPacketClaimNarrowing(outcome: SeatDispatchPacketClaimContractResultV1): void {
+      if (outcome.state === "valid") {
+        if (outcome.value.claimStatus === "claimed") {
+          const disposition: "execute_once" = outcome.value.executionDisposition;
+          void disposition;
+        } else {
+          // @ts-expect-error already_claimed does not expose an executable disposition.
+          const forbiddenDisposition: "execute_once" = outcome.value.executionDisposition;
+          void forbiddenDisposition;
+        }
+      } else {
+        // @ts-expect-error invalid outcomes do not expose a claim value.
+        const invalidValue: SeatDispatchPacketClaimResultV1 = outcome.value;
+        // @ts-expect-error invalid outcomes do not expose executionDisposition.
+        const invalidDisposition = outcome.value.executionDisposition;
+        void [invalidValue, invalidDisposition];
+      }
+    }
     const roleTaxonomyContract: "roles.v1" = ROLE_TAXONOMY_CONTRACT_VERSION;
     const dispatchSeatOnly: RoleAssignmentScope = "dispatch";
     const route: RoleRoute = "dispatch_seat";
@@ -456,7 +614,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-    void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, configSchema, config, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
@@ -477,6 +635,14 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     encoding: "utf8",
   }));
   assert.equal(doctor.ok, true);
+  const opsBin = join(fixture, "node_modules", ".bin", "shield-ops");
+  const opsHelp = execFileSync(opsBin, ["--help"], { cwd: fixture, encoding: "utf8" });
+  assert.match(opsHelp, /advisory structural consistency only/u);
+  assert.match(opsHelp, /gateEligible:false/u);
+  assert.match(opsHelp, /shield-ops flight status/u);
+  const flightHelp = execFileSync(opsBin, ["flight", "status", "--help"], { cwd: fixture, encoding: "utf8" });
+  assert.match(flightHelp, /--expected-plan-sha256/u);
+  assert.match(flightHelp, /--expected-predecessor-sha256/u);
 
   const javascriptFixture = await mkdtemp(join(tmpdir(), "shield-js-consumer-"));
   execFileSync("git", ["init", "--quiet"], { cwd: javascriptFixture });
@@ -487,12 +653,13 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     { cwd: javascriptFixture, stdio: "pipe" },
   );
   await writeFile(join(javascriptFixture, "consumer.mjs"), `
-    import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
-    import { CONFIG_SCHEMA_VERSION, createShieldConfig } from "@shield/team-system/config";
+    import { appendSeatDispatchReceiptEntryV1, claimSeatDispatchPacketV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
+    import { CONFIG_SCHEMA_VERSION, configuredAdapterIds, createShieldConfig, migrateShieldConfig } from "@shield/team-system/config";
     const packageBase = new URL("./node_modules/@shield/team-system/", import.meta.url);
     await import(new URL("dist/dispatch-receipts.mjs", packageBase).href);
     await import(new URL("dist/seat-dispatch-store.mjs", packageBase).href);
     await import(new URL("dist/seat-dispatch-receipt-v1.mjs", packageBase).href);
+    await import(new URL("dist/implementation-authority-v1.mjs", packageBase).href);
     if (SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH !== ".shield/dispatch-receipts.jsonl") throw new Error("unexpected dispatch receipt log path");
     const parentResult = await readSeatDispatchReceiptsByParentMissionSessionV1({
       repositoryRoot: "/tmp/dispatch-store",
@@ -517,16 +684,16 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     if (parentResult.state !== "invalid" || childResult.state !== "invalid" || byReceiptResult.state !== "invalid") {
       throw new Error("unexpected dispatch-receipts query states");
     }
-    if (typeof appendSeatDispatchReceiptEntryV1 !== "function" || typeof readSeatDispatchReceiptByReceiptIdV1 !== "function") {
+    if (typeof appendSeatDispatchReceiptEntryV1 !== "function" || typeof claimSeatDispatchPacketV1 !== "function" || typeof readSeatDispatchReceiptByReceiptIdV1 !== "function") {
       throw new Error("dispatch-receipts exports missing");
     }
-    if (CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected config schema");
+    if (CONFIG_SCHEMA_VERSION !== 3) throw new Error("unexpected config schema");
     const config = createShieldConfig({
       repositoryId: "fixture/javascript-consumer",
       coulsonBindingRef: "github:user:coulson",
       fitzBindingRef: "github:user:fitz",
     });
-    if (config.adapterId !== "github") throw new Error("unexpected adapter");
+    if (configuredAdapterIds(config)[0] !== "github" || migrateShieldConfig(config).schemaVersion !== 3 || config.repositoryTrustProfileId !== "signed_human_gates") throw new Error("unexpected adapter or trust profile");
   `);
   execFileSync(process.execPath, [join(javascriptFixture, "consumer.mjs")], {
     cwd: javascriptFixture,

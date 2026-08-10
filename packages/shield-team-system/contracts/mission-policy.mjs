@@ -1,3 +1,5 @@
+import { types as utilTypes } from "node:util";
+
 export const MISSION_DECISIONS = Object.freeze([
   "approve",
   "edit",
@@ -163,25 +165,76 @@ export function evaluateLightweightTimeout(input) {
   return { allowed: true, reason: "verified_lightweight_timeout" };
 }
 
+const SPECIALIST_DISPATCH_FIELDS = Object.freeze([
+  "missionState",
+  "approvalSource",
+  "specialistDispatchApprovalSource",
+  "trainingWheelsOff",
+  "furyPlanGate",
+  "planWithinApprovedScope",
+  "repositoryIdentityVerified",
+  "branchRevisionVerified",
+  "validationObligationsBound",
+  "runtimeExecutorBindingCurrent",
+  "materialScopeChange",
+  "materialRiskIncrease",
+  "authorityDecisionRequired",
+  "destructiveOrExternalEffect",
+  "unresolvedTradeoff",
+  "finalHumanGate",
+]);
+
+function specialistDispatchSnapshot(input) {
+  if (input === null || typeof input !== "object" || Array.isArray(input) ||
+      utilTypes.isProxy(input) || Object.getPrototypeOf(input) !== Object.prototype) {
+    return null;
+  }
+  const keys = Reflect.ownKeys(input);
+  if (keys.some((key) => typeof key !== "string")) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  if (keys.some((key) => {
+    const descriptor = descriptors[key];
+    return !descriptor || !("value" in descriptor) || descriptor.get || descriptor.set;
+  })) return null;
+
+  const snapshot = {};
+  for (const field of SPECIALIST_DISPATCH_FIELDS) {
+    const descriptor = descriptors[field];
+    if (!descriptor) {
+      if (field in input) return null;
+      snapshot[field] = undefined;
+      continue;
+    }
+    if (!descriptor.enumerable) return null;
+    snapshot[field] = descriptor.value;
+  }
+  return snapshot;
+}
+
 export function canDispatchSpecialists(input) {
-  if (!isPlainObject(input)) return false;
-  if (input.missionState !== "approved" || input.approvalSource !== "coulson") return false;
-  if (input.specialistDispatchApprovalSource === "coulson") return true;
-  if (input.trainingWheelsOff !== true) return true;
-  return (
-    input.furyPlanGate === "approved" &&
-    input.planWithinApprovedScope === true &&
-    input.repositoryIdentityVerified === true &&
-    input.branchRevisionVerified === true &&
-    input.validationObligationsBound === true &&
-    input.runtimeExecutorBindingCurrent === true &&
-    input.materialScopeChange === false &&
-    input.materialRiskIncrease === false &&
-    input.authorityDecisionRequired === false &&
-    input.destructiveOrExternalEffect === false &&
-    input.unresolvedTradeoff === false &&
-    input.finalHumanGate === false
-  );
+  try {
+    const snapshot = specialistDispatchSnapshot(input);
+    if (snapshot === null) return false;
+    if (snapshot.missionState !== "approved" || snapshot.approvalSource !== "coulson") return false;
+    if (snapshot.specialistDispatchApprovalSource === "coulson") return true;
+    if (snapshot.trainingWheelsOff !== true) return false;
+    return (
+      snapshot.furyPlanGate === "approved" &&
+      snapshot.planWithinApprovedScope === true &&
+      snapshot.repositoryIdentityVerified === true &&
+      snapshot.branchRevisionVerified === true &&
+      snapshot.validationObligationsBound === true &&
+      snapshot.runtimeExecutorBindingCurrent === true &&
+      snapshot.materialScopeChange === false &&
+      snapshot.materialRiskIncrease === false &&
+      snapshot.authorityDecisionRequired === false &&
+      snapshot.destructiveOrExternalEffect === false &&
+      snapshot.unresolvedTradeoff === false &&
+      snapshot.finalHumanGate === false
+    );
+  } catch {
+    return false;
+  }
 }
 
 export const SPECIALIST_ITERATION_CONTRACT_VERSION = 1;

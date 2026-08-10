@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { EventEmitter } from "node:events";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import {
   canonicalJson,
@@ -13,9 +14,23 @@ import {
   createSupervisedMissionBrief,
 } from "../dist/mission-v2.mjs";
 import { canonicalDelegationJson, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
+import {
+  createProfileAwareMissionBegunEntry,
+  createProfileAwareMissionBrief,
+  MISSION_130_JOURNAL_DIGEST,
+  replayProfileAwareMissionJournal,
+} from "../dist/profile-aware-mission-v1.mjs";
+import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
+import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
+import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
+import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
+
+function journalPath(root, missionId) {
+  return join(root, ".shield", "journals", `${Buffer.from(missionId).toString("base64url")}.jsonl`);
+}
 
 function authority(seatId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -39,7 +54,7 @@ function authority(seatId) {
   };
 }
 
-async function fixture(requireSimmons = false) {
+async function fixture(requireSimmons = false, repositoryTrustProfileId = "signed_human_gates") {
   const root = await mkdtemp(join(tmpdir(), "shield-supervised-"));
   await writeFile(join(root, "package.json"), "{\"private\":true}\n");
   await mkdir(join(root, ".shield"));
@@ -48,15 +63,22 @@ async function fixture(requireSimmons = false) {
   const simmons = authority("simmons");
   const config = createShieldConfig({
     repositoryId: "RanSolo/fixture",
+    repositoryTrustProfileId,
     coulsonBindingRef: coulson.binding.signingKeyRef,
-    fitzBindingRef: fitz.binding.signingKeyRef,
-    ...(requireSimmons ? { simmonsBindingRef: simmons.binding.signingKeyRef } : {}),
+    ...(repositoryTrustProfileId === "signed_human_gates"
+      ? {
+        fitzBindingRef: fitz.binding.signingKeyRef,
+        ...(requireSimmons ? { simmonsBindingRef: simmons.binding.signingKeyRef } : {}),
+      }
+      : {}),
   });
   await writeFile(join(root, ".shield", "config.json"), formatShieldConfig(config));
   await writeFile(join(root, ".shield", ".gitignore"), "/journals/\n/reports/\n/tmp/\n");
   await writeFile(join(root, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({
     schemaVersion: 1,
-    bindings: requireSimmons ? [coulson.binding, fitz.binding, simmons.binding] : [coulson.binding, fitz.binding],
+    bindings: repositoryTrustProfileId === "coulson_only_platform_review"
+      ? [coulson.binding]
+      : requireSimmons ? [coulson.binding, fitz.binding, simmons.binding] : [coulson.binding, fitz.binding],
   }, null, 2)}\n`);
   const brief = createSupervisedMissionBrief({
     schemaVersion: 1,
@@ -84,8 +106,146 @@ async function fixture(requireSimmons = false) {
   return { root, brief, coulson, fitz, simmons };
 }
 
-function run(root, args) {
-  return spawnSync(process.execPath, [cli, ...args], { cwd: root, encoding: "utf8" });
+async function profileAwareFixture() {
+  const current = await fixture();
+  const missionId = "mission:cli-profile-aware";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Read one profile-aware mission without changing it.",
+    subjectId: "issue:130",
+    riskFlags: {
+      production: false,
+      destructive: false,
+      migration: false,
+      credentialsOrSecurity: false,
+      externalCommunication: false,
+      merge: false,
+      deploy: false,
+      release: false,
+      hillHighRisk: true,
+    },
+    participants: ["hill", "may", "coulson", "fitz"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-07-29T15:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const entry = createProfileAwareMissionBegunEntry(brief, [current.coulson.binding, current.fitz.binding]);
+  const journalRoot = join(current.root, ".shield", "journals");
+  const path = journalPath(current.root, missionId);
+  await mkdir(journalRoot, { recursive: true });
+  await writeFile(path, `${JSON.stringify(entry)}\n`);
+  return { ...current, brief, entry, journalPath: path };
+}
+
+function profileBriefContent(missionId, profileId, requireSimmons) {
+  const requiredExecutionGateRoleIds = profileId === "standard"
+    ? ["coulson"]
+    : profileId === "high_assurance" ? ["coulson", "fitz"] : ["coulson", "simmons"];
+  const created = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Exercise repository trust profile admission without external evidence.",
+    subjectId: "issue:216",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: true,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true,
+    },
+    participants: ["hill", "may", "coulson", ...(profileId === "high_assurance" ? ["fitz"] : []), ...(profileId === "product_sensitive" ? ["simmons"] : [])]
+      .map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons,
+    createdAt: { value: "2026-08-06T00:00:00Z", provenance: "hostTrusted" },
+    profileId,
+    profileVersion: 1,
+    requiredExecutionGateRoleIds,
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...content } = created;
+  return content;
+}
+
+function run(root, args, options = {}) {
+  return spawnSync(process.execPath, [...(options.nodeArgs ?? []), cli, ...args], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, ...(options.env ?? {}) },
+    input: options.input,
+  });
+}
+
+function fixedClockNodeArgs(timestamp) {
+  const source = `const NativeDate = globalThis.Date; const fixed = ${JSON.stringify(timestamp)}; globalThis.Date = class extends NativeDate { constructor(...args) { super(...(args.length === 0 ? [fixed] : args)); } static now() { return new NativeDate(fixed).getTime(); } };`;
+  return ["--import", `data:text/javascript,${encodeURIComponent(source)}`];
+}
+
+function wheelsUpManifest(stderr) {
+  const match = /SHIELD_WHEELS_UP_MANIFEST_BEGIN\n(?<manifest>[\s\S]*?)\nSHIELD_WHEELS_UP_MANIFEST_END/u.exec(stderr);
+  assert.ok(match?.groups?.manifest, stderr);
+  return JSON.parse(match.groups.manifest);
+}
+
+test("authorize-wheels-up rejects conflicting human and JSON output modes", () => {
+  const result = run(packageRoot, [
+    "mission", "authorize-wheels-up", "--mission-id", "mission:conflicting-output",
+    "--input", "unused.json", "--human", "--json",
+  ]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--human and --json are mutually exclusive/u);
+});
+
+const BOOTSTRAP_ARGS = [
+  "mission", "signer", "bootstrap",
+  "--seat", "coulson",
+  "--binding-id", "binding:coulson",
+  "--human-principal-id", "human:maintainer-1",
+  "--passcode-stdin",
+  "--json",
+];
+
+const CREATION_FAILED = "creation_failed: Signer creation failed.";
+const RECOVERY_REQUIRED = "recovery_required: Signer creation state is uncertain; inspect protected host signer storage before retrying.";
+
+function fileMode(stats) {
+  return stats.mode & 0o777;
+}
+
+function recomputeKeyRef(publicKeySpkiBase64) {
+  return `ed25519:sha256:${createHash("sha256").update(Buffer.from(publicKeySpkiBase64, "base64")).digest("base64url")}`;
+}
+
+const SIGNER_INPUT = Object.freeze({
+  seatId: "coulson",
+  bindingId: "binding:coulson",
+  humanPrincipalId: "human:maintainer-1",
+});
+
+function deterministicSignerDependencies(homeDirectory, keyPair = generateKeyPairSync("ed25519"), overrides = {}) {
+  return {
+    homeDirectory,
+    generateKeyPair: () => keyPair,
+    randomBytes: (size) => Buffer.alloc(size, 7),
+    ...overrides,
+  };
+}
+
+function expectedSignerFilename(keyPair) {
+  const publicKeySpkiBase64 = keyPair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  return `${recomputeKeyRef(publicKeySpkiBase64).replace(/[^A-Za-z0-9_-]/g, "_")}.json`;
+}
+
+function runGit(root, args) {
+  const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8", env: { ...process.env, LANG: "C", LC_ALL: "C" } });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
 }
 
 function evidenceGovernanceTarget(decision, resumeState = "approved") {
@@ -123,6 +283,78 @@ async function writeEvidence(root, name, envelope) {
   const path = join(root, name);
   await writeFile(path, `${JSON.stringify(envelope, null, 2)}\n`);
   return name;
+}
+
+const PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE = "Passcode prompt setup failed.";
+const PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE = "Passcode prompt cleanup failed.";
+
+function createInteractivePromptFixture({
+  syncData,
+  failSetRawMode = false,
+  failOnDataRegistration = false,
+  failResume = false,
+  failPromptWrite = false,
+  failOff = false,
+  failSetRawModeRestore = false,
+  failPause = false,
+  failNewline = false,
+} = {}) {
+  const stream = new EventEmitter();
+  const calls = {
+    setRawMode: 0,
+    on: 0,
+    off: 0,
+    resume: 0,
+    pause: 0,
+    write: 0,
+  };
+  const output = [];
+  const outputStream = {
+    write(value) {
+      calls.write += 1;
+      output.push(value);
+      if (failPromptWrite && value === "Passcode: ") throw new Error("Prompt write failure.");
+      if (failNewline && value === "\n") throw new Error("Prompt write failure.");
+      return true;
+    },
+  };
+  const inputStream = {
+    setRawMode(mode) {
+      calls.setRawMode += 1;
+      if (mode ? failSetRawMode : failSetRawModeRestore) throw new Error("setRawMode failure.");
+    },
+    on(eventName, listener) {
+      calls.on += 1;
+      if (failOnDataRegistration) throw new Error("on() registration failure.");
+      stream.on(eventName, listener);
+    },
+    off(eventName, listener) {
+      calls.off += 1;
+      if (failOff) throw new Error("off() failure.");
+      stream.off(eventName, listener);
+    },
+    resume() {
+      calls.resume += 1;
+      if (syncData) stream.emit("data", syncData);
+      if (failResume) throw new Error("resume() failure.");
+    },
+    pause() {
+      calls.pause += 1;
+      if (failPause) throw new Error("pause() failure.");
+    },
+    emitData(chunk) {
+      stream.emit("data", chunk);
+    },
+  };
+  return { inputStream, outputStream, calls, output };
+}
+
+async function readJournalEntries(root, missionId) {
+  const contents = await readFile(journalPath(root, missionId), "utf8");
+  return contents
+    .split("\n")
+    .filter((entry) => entry.length > 0)
+    .map((entry) => JSON.parse(entry));
 }
 
 test("packed CLI path completes execution while Fitz readiness remains waiting", async () => {
@@ -173,6 +405,1208 @@ test("packed CLI path completes execution while Fitz readiness remains waiting",
   assert.equal(report.status, 0, report.stderr);
   assert.equal(JSON.parse(report.stdout).entries.length, 5);
   assert.equal(await readFile(journalPath, "utf8"), beforeReadOnlyCommands);
+});
+
+test("packed CLI status and report replay schema 9 without changing journal bytes", async () => {
+  const { root, brief, entry, journalPath } = await profileAwareFixture();
+  const before = await readFile(journalPath, "utf8");
+  const status = run(root, ["mission", "status", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(status.status, 0, status.stderr);
+  const projection = JSON.parse(status.stdout);
+  assert.equal(projection.schemaVersion, 9);
+  assert.equal(projection.authorization, "waiting");
+  assert.equal(projection.readiness.execute, "waiting");
+
+  const human = run(root, ["mission", "status", "--mission-id", brief.missionId]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /Profile: standard@1/u);
+  assert.match(human.stdout, /Next journal sequence: 1/u);
+
+  const report = run(root, ["mission", "report", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(report.status, 0, report.stderr);
+  const parsedReport = JSON.parse(report.stdout);
+  assert.deepEqual(parsedReport.entries, [entry]);
+  assert.equal(parsedReport.projection.schemaVersion, 9);
+  assert.equal(await readFile(journalPath, "utf8"), before);
+});
+
+test("Coulson-only repository admits only consistent standard profile missions and freezes one binding", async () => {
+  const { root, coulson, fitz, simmons } = await fixture(false, "coulson_only_platform_review");
+  const standard = profileBriefContent("mission:coulson-only-standard", "standard", false);
+  await writeFile(join(root, "standard.json"), `${JSON.stringify(standard, null, 2)}\n`);
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", "standard.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const projection = JSON.parse(begun.stdout).projection;
+  assert.deepEqual(projection.requirements.map(({ requiredRoleId }) => requiredRoleId), ["coulson", "coulson"]);
+  const entries = await readJournalEntries(root, standard.missionId);
+  assert.deepEqual(entries[0].payload.trustedBindings.map(({ seatId }) => seatId), ["coulson"]);
+  assert.equal(entries[0].payload.requirements.some(({ requiredRoleId }) => requiredRoleId === "fitz" || requiredRoleId === "simmons"), false);
+
+  const frozenBytes = await readFile(journalPath(root, standard.missionId), "utf8");
+  for (const [seat, evidenceKind] of [[fitz, "technical_review"], [simmons, "product_domain_review"]]) {
+    const timestamp = { value: "2026-08-06T00:01:00Z", provenance: "humanRecorded" };
+    const payload = {
+      schemaVersion: 1,
+      evidenceId: `evidence:${seat.binding.seatId}:unsolicited`,
+      requirementId: `req:${standard.missionId}:absent:${evidenceKind}`,
+      missionId: standard.missionId,
+      revisionId: projection.brief.revisionId,
+      seatId: seat.binding.seatId,
+      evidenceKind,
+      decision: "approved",
+      humanPrincipalId: seat.binding.humanPrincipalId,
+      bindingId: seat.binding.bindingId,
+      signingKeyRef: seat.binding.signingKeyRef,
+      sourceRef: `fixture-signature:${seat.binding.seatId}:unsolicited`,
+      timestamp,
+      journalSequence: projection.lastSequence + 1,
+    };
+    const envelope = {
+      payload,
+      signatureBase64: sign(null, Buffer.from(canonicalJson(payload)), seat.privateKey).toString("base64"),
+    };
+    assert.equal(verify(
+      null,
+      Buffer.from(canonicalJson(payload)),
+      createPublicKey({ key: Buffer.from(seat.binding.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }),
+      Buffer.from(envelope.signatureBase64, "base64"),
+    ), true);
+    const candidate = {
+      schemaVersion: 9,
+      entryId: `entry:${standard.missionId}:${projection.lastSequence + 1}`,
+      missionId: standard.missionId,
+      sequence: projection.lastSequence + 1,
+      type: "evidence.recorded",
+      timestamp,
+      payload: { evidence: envelope },
+    };
+    assert.equal(projection.requirements.some(({ evidenceKind: kind }) => kind === evidenceKind), false);
+    assert.equal(candidate.sequence, 1);
+    assert.equal(candidate.payload.evidence.payload.journalSequence, candidate.sequence);
+    const replayRejected = replayProfileAwareMissionJournal([...entries, candidate]);
+    assert.equal(replayRejected.state, "invalid");
+    assert.equal(replayRejected.code, "duplicate_evidence");
+    assert.match(replayRejected.errors.join(" "), /duplicate or ambiguous/u);
+    const appendRejected = await appendProfileAwareMissionEntryV1({
+      repositoryRoot: root,
+      configuredJournalPath: ".shield/journals",
+      missionId: standard.missionId,
+      entry: candidate,
+    });
+    assert.equal(appendRejected.state, "invalid");
+    assert.equal(appendRejected.code, "duplicate_evidence");
+    assert.equal(await readFile(journalPath(root, standard.missionId), "utf8"), frozenBytes);
+    const unchanged = JSON.parse(run(root, ["mission", "status", "--mission-id", standard.missionId, "--json"]).stdout);
+    assert.equal(unchanged.requirements.some(({ requiredRoleId }) => requiredRoleId === seat.binding.seatId), false);
+    assert.equal(unchanged.evidence.some(({ seatId }) => seatId === seat.binding.seatId), false);
+  }
+
+  const signedConfig = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: coulson.binding.signingKeyRef,
+    fitzBindingRef: fitz.binding.signingKeyRef,
+  });
+  await writeFile(join(root, ".shield", "config.json"), formatShieldConfig(signedConfig));
+  const replayed = run(root, ["mission", "status", "--mission-id", standard.missionId, "--json"]);
+  assert.equal(replayed.status, 0, replayed.stderr);
+  assert.deepEqual(JSON.parse(replayed.stdout).requirements, projection.requirements);
+});
+
+test("repository mission admission failures create no journal", async () => {
+  const coulsonOnly = await fixture(false, "coulson_only_platform_review");
+  const blocked = [
+    [profileBriefContent("mission:coulson-only-high", "high_assurance", false), "repository_trust_profile_incompatible"],
+    [profileBriefContent("mission:coulson-only-product", "product_sensitive", true), "repository_trust_profile_incompatible"],
+    [profileBriefContent("mission:coulson-only-inconsistent", "standard", true), "repository_mission_profile_inconsistent"],
+  ];
+  for (const [brief, code] of blocked) {
+    const path = `${brief.missionId.split(":").at(-1)}.json`;
+    await writeFile(join(coulsonOnly.root, path), `${JSON.stringify(brief)}\n`);
+    const result = run(coulsonOnly.root, ["mission", "begin", "--profile-aware", "--brief", path, "--json"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(code, "u"));
+    await assert.rejects(lstat(journalPath(coulsonOnly.root, brief.missionId)), { code: "ENOENT" });
+  }
+
+  const legacy = run(coulsonOnly.root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(legacy.status, 1);
+  assert.match(legacy.stderr, /repository_trust_profile_incompatible/u);
+  await assert.rejects(lstat(journalPath(coulsonOnly.root, coulsonOnly.brief.missionId)), { code: "ENOENT" });
+
+  for (const [profileId, requireSimmons] of [["standard", true], ["high_assurance", true], ["product_sensitive", false]]) {
+    const signed = await fixture(profileId === "product_sensitive");
+    const brief = profileBriefContent(`mission:signed-inconsistent-${profileId}`, profileId, requireSimmons);
+    await writeFile(join(signed.root, "brief.json"), `${JSON.stringify(brief)}\n`);
+    const result = run(signed.root, ["mission", "begin", "--profile-aware", "--brief", "brief.json", "--json"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /repository_mission_profile_inconsistent/u);
+    await assert.rejects(lstat(journalPath(signed.root, brief.missionId)), { code: "ENOENT" });
+  }
+});
+
+test("signed-human repository keeps high-assurance and product-sensitive profile admission", async () => {
+  for (const [profileId, requireSimmons, expectedBindings] of [
+    ["high_assurance", false, ["coulson", "fitz"]],
+    ["product_sensitive", true, ["coulson", "fitz", "simmons"]],
+  ]) {
+    const { root } = await fixture(requireSimmons);
+    const brief = profileBriefContent(`mission:signed-${profileId}`, profileId, requireSimmons);
+    await writeFile(join(root, "brief.json"), `${JSON.stringify(brief)}\n`);
+    const result = run(root, ["mission", "begin", "--profile-aware", "--brief", "brief.json", "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    const entries = await readJournalEntries(root, brief.missionId);
+    assert.deepEqual(entries[0].payload.trustedBindings.map(({ seatId }) => seatId), expectedBindings);
+  }
+});
+
+test("supported profile-aware CLI workflow records three independent signed transitions and survives restart replay", async () => {
+  const { root } = await fixture();
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["add", "package.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  runGit(root, ["commit", "-qm", "fixture base"]);
+  const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
+  await writeFile(join(root, "operator.txt"), "operator workflow\n");
+  runGit(root, ["add", "operator.txt"]);
+  runGit(root, ["commit", "-qm", "fixture head"]);
+  const headRevision = runGit(root, ["rev-parse", "HEAD"]);
+
+  const created = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId: "mission:cli-profile-workflow",
+    objective: "Prove one supported schema-9 signing workflow without model invocation.",
+    subjectId: "issue:187",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+    },
+    participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-04T00:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...briefContent } = created;
+  await writeFile(join(root, "profile-brief.json"), `${JSON.stringify(briefContent, null, 2)}\n`);
+  await writeFile(join(root, "wheels-up.json"), `${JSON.stringify({
+    baseRevision,
+    modelId: "model:gemma-4-31b",
+    approvedRelativePaths: ["packages/shield-team-system"],
+    approvedActionIds: ["action:implement"],
+    approvedEffectClasses: ["behavioral_implementation", "verification"],
+    approvedEffectKeys: ["effect:implementation", "effect:validation"],
+    approvedCapabilities: ["filesystem_write"],
+    validationCommandIds: ["validation:test"],
+  }, null, 2)}\n`);
+  await writeFile(join(root, "may-binding.json"), `${JSON.stringify({
+    reasoningRuntimeId: "runtime:lm-studio",
+    toolExecutorId: "executor:shield-host",
+  }, null, 2)}\n`);
+
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", "profile-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  assert.equal(JSON.parse(begun.stdout).projection.schemaVersion, 9);
+  let durableBytes = await readFile(journalPath(root, created.missionId), "utf8");
+
+  const badPasscode = run(
+    root,
+    ["mission", "authorize", "--mission-id", created.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "wrong-passcode\n" },
+  );
+  assert.equal(badPasscode.status, 1);
+  assert.doesNotMatch(badPasscode.stderr, /wrong-passcode|privateKey|ciphertext|saltBase64|ivBase64|tagBase64/iu);
+  assert.equal(badPasscode.stderr.includes(homeRoot), false);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  const prematureWheels = run(
+    root,
+    ["mission", "wheels-up", "--mission-id", created.missionId, "--input", "wheels-up.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(prematureWheels.status, 1, prematureWheels.stderr);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  const authorize = run(
+    root,
+    ["mission", "authorize", "--mission-id", created.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(authorize.status, 0, authorize.stderr);
+  assert.equal(JSON.parse(authorize.stdout).authorization, "authorized");
+  durableBytes = await readFile(journalPath(root, created.missionId), "utf8");
+
+  const overbroadWheels = JSON.parse(await readFile(join(root, "wheels-up.json"), "utf8"));
+  overbroadWheels.repositoryId = "caller:forbidden";
+  await writeFile(join(root, "overbroad-wheels-up.json"), `${JSON.stringify(overbroadWheels)}\n`);
+  const rejectedOverbroad = run(
+    root,
+    ["mission", "wheels-up", "--mission-id", created.missionId, "--input", "overbroad-wheels-up.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedOverbroad.status, 1);
+  assert.match(rejectedOverbroad.stderr, /must contain exactly/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  await writeFile(join(root, "non-ancestor-wheels-up.json"), `${JSON.stringify({
+    ...JSON.parse(await readFile(join(root, "wheels-up.json"), "utf8")),
+    baseRevision: "cccccccccccccccccccccccccccccccccccccccc",
+  })}\n`);
+  const rejectedBase = run(
+    root,
+    ["mission", "wheels-up", "--mission-id", created.missionId, "--input", "non-ancestor-wheels-up.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedBase.status, 1);
+  assert.match(rejectedBase.stderr, /must exist and be an ancestor/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  const wheels = run(
+    root,
+    ["mission", "wheels-up", "--mission-id", created.missionId, "--input", "wheels-up.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(wheels.status, 0, wheels.stderr);
+  assert.equal(JSON.parse(wheels.stdout).implementationAuthorityState, "authorized");
+  durableBytes = await readFile(journalPath(root, created.missionId), "utf8");
+
+  const configPath = join(root, ".shield", "config.json");
+  const configBytes = await readFile(configPath, "utf8");
+  const changedConfig = { ...JSON.parse(configBytes), repositoryId: "RanSolo/changed-repository" };
+  await writeFile(configPath, `${JSON.stringify(changedConfig, null, 2)}\n`);
+  const rejectedRepositoryId = run(
+    root,
+    ["mission", "bind", "--mission-id", created.missionId, "--input", "may-binding.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedRepositoryId.status, 1);
+  assert.match(rejectedRepositoryId.stderr, /Repository ID no longer matches Wheels Up authority/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+  await writeFile(configPath, configBytes);
+
+  const originalBranch = runGit(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  runGit(root, ["switch", "-q", "-c", "fixture/stale-binding-host"]);
+  const rejectedBranch = run(
+    root,
+    ["mission", "bind", "--mission-id", created.missionId, "--input", "may-binding.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedBranch.status, 1);
+  assert.match(rejectedBranch.stderr, /root, branch, or HEAD no longer matches/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+  runGit(root, ["switch", "-q", originalBranch]);
+
+  await writeFile(join(root, "colliding-may-binding.json"), `${JSON.stringify({
+    reasoningRuntimeId: "model:gemma-4-31b",
+    toolExecutorId: "executor:shield-host",
+  })}\n`);
+  const rejectedBinding = run(
+    root,
+    ["mission", "bind", "--mission-id", created.missionId, "--input", "colliding-may-binding.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(rejectedBinding.status, 1);
+  assert.match(rejectedBinding.stderr, /must be mutually distinct/u);
+  assert.equal(await readFile(journalPath(root, created.missionId), "utf8"), durableBytes);
+
+  const bound = run(
+    root,
+    ["mission", "bind", "--mission-id", created.missionId, "--input", "may-binding.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(bound.status, 0, bound.stderr);
+  const projection = JSON.parse(bound.stdout);
+  assert.equal(projection.lastSequence, 3);
+  assert.equal(projection.activeRuntimeBindings.length, 1);
+  assert.equal(projection.activeRuntimeBindings[0].binding.reasoningRuntimeId, "runtime:lm-studio");
+  assert.equal(projection.activeRuntimeBindings[0].binding.toolExecutorId, "executor:shield-host");
+  assert.equal(projection.activeRuntimeBindings[0].modelId, "model:gemma-4-31b");
+  assert.equal(projection.activeRuntimeBindings[0].headRevision, headRevision);
+
+  const entries = await readJournalEntries(root, created.missionId);
+  assert.deepEqual(entries.map(({ type }) => type), [
+    "mission.begun", "governance.decided", "implementation.authorized", "runtime.binding_recorded",
+  ]);
+  assert.equal(new Set(entries.slice(1).map(({ payload }) => payload.evidence?.signatureBase64 ?? payload.authority?.signatureBase64 ?? payload.authorization?.signatureBase64)).size, 3);
+  const restarted = run(root, ["mission", "status", "--mission-id", created.missionId, "--json"]);
+  assert.equal(restarted.status, 0, restarted.stderr);
+  assert.deepEqual(JSON.parse(restarted.stdout), projection);
+});
+
+test("authorize-wheels-up canonically orders mixed-case publication paths and has stable fresh-process digests", async () => {
+  const { root } = await fixture();
+  const homeRoot = join(root, ".shield", "tmp", "one-passcode-home");
+  await mkdir(homeRoot, { recursive: true });
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+  runGit(root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  runGit(root, ["commit", "-qm", "one-passcode base"]);
+  const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
+  const publicationPaths = ["Z-upper-implementation.md", "a-lower-implementation.md", "Ω-implementation.md", "中-implementation.md"];
+  for (const path of publicationPaths) await writeFile(join(root, path), `bounded initial draft: ${path}\n`);
+  runGit(root, ["add", "--", ...publicationPaths]);
+  runGit(root, ["commit", "-qm", "one-passcode head"]);
+  const headRevision = runGit(root, ["rev-parse", "HEAD"]);
+  const observedPublicationPaths = runGit(root, ["diff", "--name-only", "--no-renames", "-z", baseRevision, headRevision, "--"])
+    .split("\0").filter(Boolean).sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+  assert.deepEqual(observedPublicationPaths, publicationPaths);
+
+  const missionId = "mission:authorize-wheels-up";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Authorize one bounded implementation and initial draft publication.",
+    subjectId: "issue:203",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+    },
+    participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-06T00:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const temporaryRoot = join(root, ".shield", "tmp");
+  await mkdir(temporaryRoot, { recursive: true });
+  const { revisionId: _revisionId, ...briefContent } = brief;
+  await writeFile(join(temporaryRoot, "one-passcode-brief.json"), `${JSON.stringify(briefContent, null, 2)}\n`);
+  await writeFile(join(temporaryRoot, "one-passcode-input.json"), `${JSON.stringify({
+    baseRevision,
+    modelId: "model:bounded-may",
+    approvedRelativePaths: ["implementation.md"],
+    approvedActionIds: ["action:implement"],
+    approvedEffectClasses: ["behavioral_implementation", "verification"],
+    approvedEffectKeys: ["effect:implementation", "effect:validation"],
+    approvedCapabilities: ["filesystem_write"],
+    validationCommandIds: ["validation:test"],
+    reasoningRuntimeId: "runtime:bounded-reasoner",
+    toolExecutorId: "executor:bounded-tools",
+    publicationPaths,
+  }, null, 2)}\n`);
+
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", ".shield/tmp/one-passcode-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  assert.equal(runGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
+  const before = await readFile(journalPath(root, missionId), "utf8");
+
+  const validInput = JSON.parse(await readFile(join(temporaryRoot, "one-passcode-input.json"), "utf8"));
+  await writeFile(join(temporaryRoot, "one-passcode-hostile.json"), `${JSON.stringify({ ...validInput, authorityId: "caller:forbidden" })}\n`);
+  const hostile = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-hostile.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(hostile.status, 1);
+  assert.doesNotMatch(hostile.stderr, /SHIELD_WHEELS_UP_MANIFEST_BEGIN/u);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  for (const [name, paths] of [
+    ["missing", publicationPaths.slice(0, -1)],
+    ["extra", [...publicationPaths.slice(0, 2), "z-extra.md", ...publicationPaths.slice(2)]],
+  ]) {
+    const inputPath = join(temporaryRoot, `one-passcode-${name}.json`);
+    await writeFile(inputPath, `${JSON.stringify({ ...validInput, publicationPaths: paths })}\n`);
+    const closedSetMismatch = run(
+      root,
+      ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", `.shield/tmp/one-passcode-${name}.json`, "--passcode-stdin", "--json"],
+      { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+    );
+    assert.equal(closedSetMismatch.status, 1, name);
+    assert.match(closedSetMismatch.stderr, /must exactly equal/u, name);
+    assert.equal(await readFile(journalPath(root, missionId), "utf8"), before, name);
+  }
+
+  const wrongPasscode = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "wrong-passcode\n" },
+  );
+  assert.equal(wrongPasscode.status, 1);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  const missingHome = join(root, ".shield", "tmp", "missing-signer-home");
+  await mkdir(missingHome, { recursive: true });
+  const missingSigner = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    { env: { HOME: missingHome }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(missingSigner.status, 1);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  const signerDirectory = join(homeRoot, ".shield", "signers");
+  const signerFiles = await readdir(signerDirectory);
+  assert.equal(signerFiles.length, 1);
+  const signerPath = join(signerDirectory, signerFiles[0]);
+  const signerBytes = await readFile(signerPath, "utf8");
+  const mismatchedSigner = { ...JSON.parse(signerBytes), signingKeyRef: `ed25519:sha256:${"A".repeat(43)}` };
+  await writeFile(signerPath, `${JSON.stringify(mismatchedSigner, null, 2)}\n`);
+  const keyMismatch = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "one-passcode-secret\n" },
+  );
+  assert.equal(keyMismatch.status, 1);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+  await writeFile(signerPath, signerBytes);
+
+  const fixedTimestamp = "2026-08-07T12:34:56.000Z";
+  const humanResult = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--human"],
+    {
+      env: { HOME: homeRoot },
+      input: "one-passcode-secret\n",
+      nodeArgs: fixedClockNodeArgs(fixedTimestamp),
+    },
+  );
+  assert.equal(humanResult.status, 0, humanResult.stderr);
+  assert.match(humanResult.stdout, /APPROVAL NEEDED — mission:authorize-wheels-up/u);
+  assert.match(humanResult.stdout, /Enter your passcode to authorize May to:/u);
+  assert.match(humanResult.stdout, /AUTHORIZED — mission:authorize-wheels-up/u);
+  assert.match(humanResult.stdout, /Coulson: final acceptance/u);
+  assert.match(humanResult.stdout, /Fitz: technical review/u);
+  assert.doesNotMatch(humanResult.stdout, /manifestDigest|receiptDigest|sha256|startingJournalSequence/u);
+  assert.doesNotMatch(humanResult.stderr, /SHIELD_WHEELS_UP_MANIFEST_BEGIN/u);
+  const humanJournal = await readFile(journalPath(root, missionId), "utf8");
+  await writeFile(journalPath(root, missionId), before);
+
+  const firstResult = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    {
+      env: { HOME: homeRoot, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" },
+      input: "one-passcode-secret\n",
+      nodeArgs: fixedClockNodeArgs(fixedTimestamp),
+    },
+  );
+  assert.equal(firstResult.status, 0, firstResult.stderr);
+  const firstJournal = await readFile(journalPath(root, missionId), "utf8");
+  assert.equal(firstJournal, humanJournal);
+  await writeFile(journalPath(root, missionId), before);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), before);
+
+  const secondResult = run(
+    root,
+    ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", ".shield/tmp/one-passcode-input.json", "--passcode-stdin", "--json"],
+    {
+      env: { HOME: homeRoot, LANG: "sv_SE.UTF-8", LC_ALL: "sv_SE.UTF-8" },
+      input: "one-passcode-secret\n",
+      nodeArgs: fixedClockNodeArgs(fixedTimestamp),
+    },
+  );
+  assert.equal(secondResult.status, 0, secondResult.stderr);
+  assert.equal(secondResult.stderr.match(/SHIELD_WHEELS_UP_MANIFEST_BEGIN/gu)?.length, 1);
+  assert.equal(secondResult.stderr.match(/SHIELD_WHEELS_UP_MANIFEST_END/gu)?.length, 1);
+  const firstManifest = wheelsUpManifest(firstResult.stderr);
+  const secondManifest = wheelsUpManifest(secondResult.stderr);
+  const firstReceipt = JSON.parse(firstResult.stdout);
+  const receipt = JSON.parse(secondResult.stdout);
+  assert.equal(firstManifest.manifestDigest, secondManifest.manifestDigest);
+  assert.equal(firstReceipt.receiptDigest, receipt.receiptDigest);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), firstJournal);
+  assert.deepEqual(secondManifest.repository.changedPaths, publicationPaths);
+  assert.deepEqual(secondManifest.publicationAuthority.authorizedPaths, publicationPaths);
+  assert.deepEqual(receipt.publicationScope.authorizedPaths, publicationPaths);
+  assert.equal(receipt.schemaId, "shield.wheels-up-authorization-receipt.v1");
+  assert.equal(receipt.baseRevision, baseRevision);
+  assert.equal(receipt.headRevision, headRevision);
+  assert.equal(receipt.startingJournalSequence, 0);
+  assert.equal(receipt.endingJournalSequence, 4);
+  assert.deepEqual(receipt.publicationScope.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
+  assert.ok(receipt.exclusions.includes("review.comment.publish"));
+  assert.ok(receipt.exclusions.includes("review.pull_request.update_draft"));
+  assert.equal(receipt.constituents.length, 4);
+
+  const after = await readFile(journalPath(root, missionId), "utf8");
+  assert.notEqual(after, before);
+  const entries = after.trimEnd().split("\n").map(JSON.parse);
+  assert.deepEqual(entries.map(({ type }) => type), [
+    "mission.begun", "governance.decided", "implementation.authorized",
+    "runtime.binding_recorded", "review.publication_authorized",
+  ]);
+  const publicKey = createPublicKey({ key: Buffer.from(entries[0].payload.trustedBindings[0].publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
+  const envelopes = [entries[1].payload.evidence, entries[2].payload.authority, entries[3].payload.authorization, entries[4].payload.authorization];
+  for (const envelope of envelopes) {
+    assert.equal(verify(null, Buffer.from(canonicalJson(envelope.payload)), publicKey, Buffer.from(envelope.signatureBase64, "base64")), true);
+  }
+  const restarted = run(root, ["mission", "status", "--mission-id", missionId, "--json"]);
+  assert.equal(restarted.status, 0, restarted.stderr);
+  assert.equal(JSON.parse(restarted.stdout).lastSequence, 4);
+});
+
+async function daisySignerFreshnessFixture() {
+  const { root } = await fixture();
+  const homeRoot = join(root, ".shield", "tmp", "daisy-signer-home");
+  await mkdir(homeRoot, { recursive: true });
+  const passcode = "daisy-snapshot-passcode";
+  const setup = run(root, [
+    "mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json",
+  ], { env: { HOME: homeRoot }, input: `${passcode}\n` });
+  assert.equal(setup.status, 0, setup.stderr);
+
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+  runGit(root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  runGit(root, ["commit", "-qm", "Daisy signer freshness fixture"]);
+
+  const missionId = "mission:test:daisy-signer-freshness";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Prove exact signer freshness for bounded Daisy coordination.",
+    subjectId: "issue:test:daisy-signer-freshness",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: true,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true,
+    },
+    participants: ["hill", "daisy", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-10T12:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...briefContent } = brief;
+  const artifactRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-daisy-snapshot-artifacts-")));
+  const inputPath = join(root, ".shield", "tmp", "daisy-snapshot-input.json");
+  const briefPath = join(root, ".shield", "tmp", "daisy-snapshot-brief.json");
+  await writeFile(briefPath, `${JSON.stringify(briefContent, null, 2)}\n`);
+  await writeFile(inputPath, `${JSON.stringify({
+    effectKey: "effect:test:daisy-snapshot-read",
+    approvedReadRoots: [await realpath(root)],
+    durableArtifactRoot: artifactRoot,
+    runtimeId: "runtime:test:daisy-snapshot",
+    modelId: "model:test:daisy-snapshot",
+    executorId: "executor:test:daisy-snapshot",
+  }, null, 2)}\n`);
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", briefPath, "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const authorized = run(root, [
+    "mission", "authorize", "--mission-id", missionId, "--passcode-stdin", "--json",
+  ], { env: { HOME: homeRoot }, input: `${passcode}\n` });
+  assert.equal(authorized.status, 0, authorized.stderr);
+  const signerDirectory = join(homeRoot, ".shield", "signers");
+  const signerFiles = await readdir(signerDirectory);
+  assert.equal(signerFiles.length, 1);
+  return {
+    root, homeRoot, passcode, missionId, inputPath,
+    journalPath: journalPath(root, missionId),
+    signerPath: join(signerDirectory, signerFiles[0]),
+  };
+}
+
+async function runDaisySignerRewrite(current, mutate) {
+  const child = spawn(process.execPath, [
+    cli, "mission", "authorize-daisy-coordination", "--mission-id", current.missionId,
+    "--input", current.inputPath, "--passcode-stdin", "--json",
+  ], { cwd: current.root, env: { ...process.env, HOME: current.homeRoot }, stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let mutation = null;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    if (mutation === null && stderr.includes("SHIELD_DAISY_COORDINATION_MANIFEST_END")) {
+      mutation = Promise.resolve(mutate()).then(() => child.stdin.end(`${current.passcode}\n`));
+    }
+  });
+  const status = await new Promise((resolveStatus, reject) => {
+    child.once("error", reject);
+    child.once("close", resolveStatus);
+  });
+  if (mutation !== null) await mutation;
+  return { status, stdout, stderr, mutated: mutation !== null };
+}
+
+test("authorize-daisy-coordination rejects exact signer byte, inode, and mode drift after successful signing", async () => {
+  for (const scenario of ["whitespace", "field-order", "equivalent-number", "inode", "mode"]) {
+    const current = await daisySignerFreshnessFixture();
+    const baseline = await readFile(current.journalPath, "utf8");
+    const original = await readFile(current.signerPath, "utf8");
+    const record = JSON.parse(original);
+    const result = await runDaisySignerRewrite(current, async () => {
+      if (scenario === "whitespace") {
+        await writeFile(current.signerPath, `  ${JSON.stringify(record)}\n`);
+      } else if (scenario === "field-order") {
+        await writeFile(current.signerPath, `${JSON.stringify(Object.fromEntries(Object.entries(record).reverse()), null, 2)}\n`);
+      } else if (scenario === "equivalent-number") {
+        await writeFile(current.signerPath, original.replace('"schemaVersion": 1', '"schemaVersion": 1e0'));
+      } else if (scenario === "inode") {
+        const replacement = `${current.signerPath}.replacement`;
+        await writeFile(replacement, original, { mode: 0o600 });
+        await rename(replacement, current.signerPath);
+      } else {
+        await chmod(current.signerPath, 0o640);
+      }
+    });
+    assert.equal(result.mutated, true, scenario);
+    assert.equal(result.status, 1, `${scenario}: ${result.stderr}`);
+    assert.match(result.stderr, /Mission signer snapshot changed after display/u, scenario);
+    assert.equal(result.stdout, "", scenario);
+    const finalJournal = await readFile(current.journalPath, "utf8");
+    assert.equal(finalJournal, baseline, scenario);
+    assert.doesNotMatch(finalJournal, /coordination\.(?:authorized|runtime_bound)/u, scenario);
+  }
+});
+
+test("mission signer snapshot rejects a symlink instead of following it", async () => {
+  const current = await daisySignerFreshnessFixture();
+  const target = `${current.signerPath}.target`;
+  await rename(current.signerPath, target);
+  await symlink(target, current.signerPath);
+  const signingKeyRef = JSON.parse(await readFile(target, "utf8")).signingKeyRef;
+  await assert.rejects(captureMissionSignerSnapshot(signingKeyRef, current.homeRoot));
+});
+
+test("batch signer performs one record read, four signatures, and exposes no partial result on each signing failure", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "shield-batch-signer-"));
+  const keyPair = generateKeyPairSync("ed25519");
+  const created = await signerTestOnly.createSigner(
+    SIGNER_INPUT,
+    "batch-passcode",
+    deterministicSignerDependencies(homeDirectory, keyPair),
+  );
+  const record = await readFile(created.signerPath, "utf8");
+  const payloads = [0, 1, 2, 3].map((index) => ({ schemaVersion: 1, index }));
+  let reads = 0;
+  let signs = 0;
+  const signatures = await batchSignerTestOnly.signPayloadBatch(
+    created.signingKeyRef,
+    created.publicKeySpkiBase64,
+    "batch-passcode",
+    payloads,
+    {
+      readSigner: async () => { reads += 1; return record; },
+      signPayload: (bytes, privateKey) => { signs += 1; return sign(null, bytes, privateKey); },
+    },
+  );
+  assert.equal(reads, 1);
+  assert.equal(signs, 4);
+  assert.equal(signatures.length, 4);
+
+  for (let failureIndex = 0; failureIndex < 4; failureIndex += 1) {
+    let attempts = 0;
+    let exposed;
+    await assert.rejects(async () => {
+      exposed = await batchSignerTestOnly.signPayloadBatch(
+        created.signingKeyRef,
+        created.publicKeySpkiBase64,
+        "batch-passcode",
+        payloads,
+        {
+          readSigner: async () => record,
+          signPayload: (bytes, privateKey, index) => {
+            attempts += 1;
+            if (index === failureIndex) throw new Error("injected constituent signing failure");
+            return sign(null, bytes, privateKey);
+          },
+        },
+      );
+    }, /complete payload batch/u);
+    assert.equal(exposed, undefined);
+    assert.equal(attempts, failureIndex + 1);
+  }
+});
+
+test("authorize-wheels-up keeps locale ordering for non-publication arrays and rejects malformed publication data", () => {
+  const localeOrdered = ["Z", "a"].sort((left, right) => left.localeCompare(right));
+  const publicationOrdered = ["Z", "a"];
+  const valid = {
+    baseRevision: "a".repeat(40),
+    modelId: "model:bounded",
+    approvedRelativePaths: localeOrdered,
+    approvedActionIds: localeOrdered,
+    approvedEffectClasses: localeOrdered,
+    approvedEffectKeys: localeOrdered,
+    approvedCapabilities: localeOrdered,
+    validationCommandIds: localeOrdered,
+    reasoningRuntimeId: "runtime:reasoner",
+    toolExecutorId: "executor:tools",
+    publicationPaths: publicationOrdered,
+  };
+  const validated = validateAuthorizeWheelsUpInput(valid);
+  for (const field of [
+    "approvedRelativePaths", "approvedActionIds", "approvedEffectClasses", "approvedEffectKeys",
+    "approvedCapabilities", "validationCommandIds",
+  ]) assert.deepEqual(validated[field], localeOrdered, field);
+  assert.deepEqual(validated.publicationPaths, publicationOrdered);
+  assert.throws(() => validateAuthorizeWheelsUpInput(new Proxy(valid, {})), /plain closed data object/u);
+  const accessor = { ...valid };
+  Object.defineProperty(accessor, "modelId", { enumerable: true, get: () => "model:forged" });
+  assert.throws(() => validateAuthorizeWheelsUpInput(accessor), /enumerable data fields/u);
+  const symbolic = { ...valid, [Symbol("authority")]: "caller:forbidden" };
+  assert.throws(() => validateAuthorizeWheelsUpInput(symbolic), /enumerable data fields/u);
+  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: ["a", "Z"] }), /must be sorted/u);
+  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: ["Z", "Z"] }), /duplicates/u);
+  assert.throws(() => validateAuthorizeWheelsUpInput({ ...valid, publicationPaths: [""] }), /malformed/u);
+});
+
+test("authorize-wheels-up rejects symlink and gitlink publication paths without journal mutation", async () => {
+  for (const pathKind of ["symlink", "gitlink"]) {
+    const { root } = await fixture();
+    runGit(root, ["init", "-q"]);
+    runGit(root, ["config", "user.email", "shield@example.invalid"]);
+    runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+    runGit(root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+    runGit(root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+    runGit(root, ["commit", "-qm", `${pathKind} base`]);
+    const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
+    const publicationPath = pathKind === "symlink" ? "A-symlink.md" : "A-gitlink";
+    if (pathKind === "symlink") {
+      await symlink("package.json", join(root, publicationPath));
+      runGit(root, ["add", "--", publicationPath]);
+    } else {
+      runGit(root, ["update-index", "--add", "--cacheinfo", `160000,${baseRevision},${publicationPath}`]);
+    }
+    runGit(root, ["commit", "-qm", `${pathKind} head`]);
+    if (pathKind === "gitlink") await mkdir(join(root, publicationPath));
+
+    const missionId = `mission:authorize-wheels-up-${pathKind}`;
+    const brief = createProfileAwareMissionBrief({
+      schemaVersion: 2,
+      missionId,
+      objective: `Reject one ${pathKind} from initial draft publication.`,
+      subjectId: "issue:236",
+      riskFlags: {
+        production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+        externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+      },
+      participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+      activatedModes: [],
+      requireSimmons: false,
+      createdAt: { value: "2026-08-07T00:00:00Z", provenance: "humanRecorded" },
+      profileId: "standard",
+      profileVersion: 1,
+      requiredExecutionGateRoleIds: ["coulson"],
+      requiredFinalAcceptanceGateRoleIds: ["coulson"],
+      predecessorMissionId: "mission:issue-130",
+      predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+    });
+    const temporaryRoot = join(root, ".shield", "tmp");
+    await mkdir(temporaryRoot, { recursive: true });
+    const { revisionId: _revisionId, ...briefContent } = brief;
+    await writeFile(join(temporaryRoot, `${pathKind}-brief.json`), `${JSON.stringify(briefContent, null, 2)}\n`);
+    await writeFile(join(temporaryRoot, `${pathKind}-input.json`), `${JSON.stringify({
+      baseRevision,
+      modelId: "model:bounded-may",
+      approvedRelativePaths: [publicationPath],
+      approvedActionIds: ["action:implement"],
+      approvedEffectClasses: ["behavioral_implementation", "verification"],
+      approvedEffectKeys: ["effect:implementation", "effect:validation"],
+      approvedCapabilities: ["filesystem_write"],
+      validationCommandIds: ["validation:test"],
+      reasoningRuntimeId: "runtime:bounded-reasoner",
+      toolExecutorId: "executor:bounded-tools",
+      publicationPaths: [publicationPath],
+    }, null, 2)}\n`);
+    const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", `.shield/tmp/${pathKind}-brief.json`, "--json"]);
+    assert.equal(begun.status, 0, begun.stderr);
+    const before = await readFile(journalPath(root, missionId), "utf8");
+    const rejected = run(
+      root,
+      ["mission", "authorize-wheels-up", "--mission-id", missionId, "--input", `.shield/tmp/${pathKind}-input.json`, "--passcode-stdin", "--json"],
+      { input: "unused-passcode\n" },
+    );
+    assert.equal(rejected.status, 1, pathKind);
+    assert.match(rejected.stderr, new RegExp(`${pathKind}_path_denied`, "u"), pathKind);
+    assert.equal(await readFile(journalPath(root, missionId), "utf8"), before, pathKind);
+  }
+});
+
+test("schema-9 publication CLI signs authorization, queues without passcode, and rejects file-delivered outcomes", async () => {
+  const { root } = await fixture();
+  const homeRoot = join(root, ".shield", "tmp", "home");
+  await mkdir(homeRoot, { recursive: true });
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "publication-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+  await writeFile(join(root, "AGENTS.md"), "ordinary tracked file\n");
+  runGit(root, ["add", "package.json", "mission-brief.json", "AGENTS.md", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  runGit(root, ["commit", "-qm", "publication base"]);
+  const baseRevision = runGit(root, ["rev-parse", "HEAD"]);
+  await writeFile(join(root, "review-artifact.md"), "schema 9 publication\n");
+  await symlink("AGENTS.md", join(root, ":AGENTS.md"));
+  runGit(root, ["add", "review-artifact.md", "./:AGENTS.md"]);
+  runGit(root, ["commit", "-qm", "publication head"]);
+
+  const missionId = "mission:cli-schema9-publication";
+  const created = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Exercise the supported schema-9 review publication lifecycle.",
+    subjectId: "issue:149",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+    },
+    participants: ["hill", "may", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-05T00:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const temporaryRoot = join(root, ".shield", "tmp");
+  await mkdir(temporaryRoot, { recursive: true });
+  const { revisionId: _revisionId, ...briefContent } = created;
+  await writeFile(join(temporaryRoot, "publication-brief.json"), `${JSON.stringify(briefContent, null, 2)}\n`);
+  await writeFile(join(temporaryRoot, "publication-authorize.json"), `${JSON.stringify({
+    baseRevision,
+    authorizedPaths: ["review-artifact.md"],
+    permittedEffects: ["review.comment.publish"],
+  }, null, 2)}\n`);
+
+  const begun = run(root, ["mission", "begin", "--profile-aware", "--brief", ".shield/tmp/publication-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const authorizedMission = run(
+    root,
+    ["mission", "authorize", "--mission-id", missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "publication-passcode\n" },
+  );
+  assert.equal(authorizedMission.status, 0, authorizedMission.stderr);
+
+  await writeFile(join(temporaryRoot, "publication-colon-path.json"), `${JSON.stringify({
+    baseRevision,
+    authorizedPaths: [":AGENTS.md", "review-artifact.md"],
+    permittedEffects: ["review.comment.publish"],
+  }, null, 2)}\n`);
+  const beforeColonPath = await readFile(journalPath(root, missionId), "utf8");
+  const colonPath = run(
+    root,
+    ["mission", "publication-authorize", "--mission-id", missionId, "--input", ".shield/tmp/publication-colon-path.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "publication-passcode\n" },
+  );
+  assert.equal(colonPath.status, 1);
+  assert.match(colonPath.stderr, /symlink_path_denied/u);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), beforeColonPath);
+  await unlink(join(root, ":AGENTS.md"));
+  runGit(root, ["add", "--all"]);
+  runGit(root, ["commit", "-qm", "remove colon path"]);
+
+  const publicationAuthorized = run(
+    root,
+    ["mission", "publication-authorize", "--mission-id", missionId, "--input", ".shield/tmp/publication-authorize.json", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "publication-passcode\n" },
+  );
+  assert.equal(publicationAuthorized.status, 0, publicationAuthorized.stderr);
+  let projection = JSON.parse(publicationAuthorized.stdout);
+  const authorizationId = `authorization:${missionId}:review-publish:2`;
+  assert.equal(projection.publicationAuthorizations[0].authorization.authorizationId, authorizationId);
+  assert.equal(projection.publicationAuthorizations[0].authority.authorityRef, authorizationId);
+  assert.equal(projection.publicationAuthorizations[0].authorization.sourceRef, "cli:publication-authorize:2");
+
+  await writeFile(join(temporaryRoot, "publication-request.json"), `${JSON.stringify({
+    authorizationId,
+    operation: "publish_status",
+    targetRef: "github:issue:149",
+    requestedEffects: ["review.comment.publish"],
+  }, null, 2)}\n`);
+  const repositoryConfigPath = join(root, ".shield", "config.json");
+  const repositoryConfig = JSON.parse(await readFile(repositoryConfigPath, "utf8"));
+  repositoryConfig.adapterIds = ["atlassian"];
+  await writeFile(repositoryConfigPath, `${JSON.stringify(repositoryConfig, null, 2)}\n`);
+  const beforeMissingGitHub = await readFile(journalPath(root, missionId), "utf8");
+  const missingGitHub = run(root, [
+    "mission", "publication-request", "--mission-id", missionId,
+    "--input", ".shield/tmp/publication-request.json", "--json",
+  ]);
+  assert.equal(missingGitHub.status, 1);
+  assert.match(missingGitHub.stderr, /requires github/iu);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), beforeMissingGitHub);
+
+  repositoryConfig.adapterIds = ["github", "atlassian"];
+  await writeFile(repositoryConfigPath, `${JSON.stringify(repositoryConfig, null, 2)}\n`);
+  const requested = run(root, [
+    "mission", "publication-request", "--mission-id", missionId,
+    "--input", ".shield/tmp/publication-request.json", "--json",
+  ]);
+  assert.equal(requested.status, 0, requested.stderr);
+  projection = JSON.parse(requested.stdout);
+  const request = projection.communication.requests[0];
+  assert.equal(request.requestId, `request:${missionId}:review-publish:3`);
+  assert.equal(request.adapterId, "github");
+  assert.equal(request.state, "queued");
+
+  const authority = projection.publicationAuthorizations[0].authority;
+  const scope = evaluateReviewPublicationV1(authority, {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    missionId,
+    subjectId: created.subjectId,
+    missionRevisionId: created.revisionId,
+    repositoryId: authority.repositoryId,
+    canonicalRepositoryRoot: authority.canonicalRepositoryRoot,
+    branch: authority.branch,
+    baseRevisionId: authority.baseRevisionId,
+    headRevisionId: authority.headRevisionId,
+    proposedChangedPaths: ["review-artifact.md"],
+    observedChangedPaths: ["review-artifact.md"],
+    requestedEffects: ["review.comment.publish"],
+    observedSymlinkPaths: [],
+    observedGitlinkPaths: [],
+    workspaceClean: true,
+  });
+  assert.equal(scope.state, "allowed");
+  const candidate = {
+    adapterContractVersion: 2,
+    adapterId: "github",
+    candidateKind: "communication_result",
+    candidateId: "candidate:cli:schema9:publication:4",
+    missionId,
+    subjectId: created.subjectId,
+    revisionId: created.revisionId,
+    humanPrincipalId: null,
+    bindingId: null,
+    sourceRef: "github:issue:149:readback",
+    capturedAt: { value: new Date().toISOString(), provenance: "hostTrusted" },
+    payload: {
+      requestId: request.requestId,
+      outcome: "delivered",
+      failureReason: null,
+      receiptRef: "github:issue:149:comment:1",
+      operation: request.operation,
+      targetRef: request.targetRef,
+      scopeDigest: scope.scopeDigest,
+      publicationBinding: scope.binding,
+    },
+  };
+  await writeFile(join(temporaryRoot, "publication-delivered.json"), `${JSON.stringify(candidate, null, 2)}\n`);
+  const beforeForgedDelivered = await readFile(journalPath(root, missionId), "utf8");
+  const forgedDelivered = run(root, [
+    "mission", "publication-result", "--mission-id", missionId,
+    "--input", ".shield/tmp/publication-delivered.json", "--json",
+  ]);
+  assert.equal(forgedDelivered.status, 1);
+  assert.match(forgedDelivered.stderr, /File-supplied delivered publication results are forbidden/u);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), beforeForgedDelivered);
+
+  candidate.payload.outcome = "failed";
+  candidate.payload.failureReason = "host_rejected";
+  candidate.payload.receiptRef = null;
+  await writeFile(join(temporaryRoot, "publication-failed.json"), `${JSON.stringify(candidate, null, 2)}\n`);
+  const failed = run(root, [
+    "mission", "publication-result", "--mission-id", missionId,
+    "--input", ".shield/tmp/publication-failed.json", "--json",
+  ]);
+  assert.equal(failed.status, 0, failed.stderr);
+  projection = JSON.parse(failed.stdout);
+  assert.equal(projection.communication.state, "failed");
+  assert.equal(projection.communication.requests[0].state, "failed");
+
+  const requestedAgain = run(root, [
+    "mission", "publication-request", "--mission-id", missionId,
+    "--input", ".shield/tmp/publication-request.json", "--json",
+  ]);
+  assert.equal(requestedAgain.status, 0, requestedAgain.stderr);
+  projection = JSON.parse(requestedAgain.stdout);
+  const secondRequest = projection.communication.requests[1];
+  assert.equal(secondRequest.requestId, `request:${missionId}:review-publish:5`);
+  const unknownCandidate = structuredClone(candidate);
+  unknownCandidate.candidateId = "candidate:cli:schema9:publication:6";
+  unknownCandidate.payload.requestId = secondRequest.requestId;
+  unknownCandidate.payload.outcome = "unknown";
+  unknownCandidate.payload.failureReason = "unknown";
+  unknownCandidate.payload.receiptRef = null;
+  unknownCandidate.capturedAt = { value: new Date().toISOString(), provenance: "hostTrusted" };
+  await writeFile(join(temporaryRoot, "publication-unknown.json"), `${JSON.stringify(unknownCandidate, null, 2)}\n`);
+  const unknown = run(root, [
+    "mission", "publication-result", "--mission-id", missionId,
+    "--input", ".shield/tmp/publication-unknown.json", "--json",
+  ]);
+  assert.equal(unknown.status, 0, unknown.stderr);
+  projection = JSON.parse(unknown.stdout);
+  assert.equal(projection.communication.requests[1].state, "unknown");
+
+  const entries = await readJournalEntries(root, missionId);
+  assert.deepEqual(entries.slice(2).map(({ type }) => type), [
+    "review.publication_authorized", "communication.requested", "communication.result_recorded",
+    "communication.requested", "communication.result_recorded",
+  ]);
+  assert.equal(entries[2].entryId, `entry:${missionId}:2`);
+  assert.equal(entries[3].entryId, `entry:${missionId}:3`);
+  const restarted = run(root, ["mission", "status", "--mission-id", missionId, "--json"]);
+  assert.equal(restarted.status, 0, restarted.stderr);
+  assert.deepEqual(JSON.parse(restarted.stdout), projection);
+});
+
+test("schema-9 publication freshness rejects every post-passcode repository and journal drift class", () => {
+  const observation = {
+    configuredRepositoryId: "RanSolo/fixture",
+    originUrl: "https://github.com/RanSolo/fixture.git",
+    remoteRepositoryId: "RanSolo/fixture",
+    canonicalRoot: "/tmp/fixture",
+    gitTopLevel: "/tmp/fixture",
+    branch: "agent/issue-149",
+    baseRevision: "a".repeat(40),
+    headRevision: "b".repeat(40),
+    baseAncestor: true,
+    statusEntries: [],
+    changedPaths: ["review-artifact.md"],
+    baseTreeEntries: [],
+    headTreeEntries: [{ mode: "100644", type: "blob", path: "review-artifact.md" }],
+  };
+  const cases = [
+    ["repository configuration", { configurationIdentity: "config:changed" }],
+    ["configured repository ID", { configuredRepositoryId: "RanSolo/other" }],
+    ["origin URL", { originUrl: "https://github.com/RanSolo/other.git" }],
+    ["remote repository ID", { remoteRepositoryId: "RanSolo/other" }],
+    ["canonical root", { canonicalRoot: "/tmp/other" }],
+    ["Git top level", { gitTopLevel: "/tmp/other" }],
+    ["branch", { branch: "agent/other" }],
+    ["base revision", { baseRevision: "c".repeat(40) }],
+    ["HEAD revision", { headRevision: "d".repeat(40) }],
+    ["ancestry", { baseAncestor: false }],
+    ["status", { statusEntries: ["?? untracked"] }],
+    ["changed paths", { changedPaths: ["other.md"] }],
+    ["tree path", { headTreeEntries: [{ mode: "100644", type: "blob", path: "other.md" }] }],
+    ["symlink mode", { headTreeEntries: [{ mode: "120000", type: "blob", path: "review-artifact.md" }] }],
+    ["gitlink mode", { headTreeEntries: [{ mode: "160000", type: "commit", path: "review-artifact.md" }] }],
+    ["journal sequence", { journalSequence: 3 }],
+  ];
+  for (const [label, drift] of cases) {
+    const freshObservation = structuredClone(observation);
+    const { configurationIdentity, journalSequence, ...observationDrift } = drift;
+    Object.assign(freshObservation, observationDrift);
+    assert.throws(
+      () => assertPublicationAuthorizationFreshness({
+        initialConfigurationIdentity: "config:initial",
+        freshConfigurationIdentity: configurationIdentity ?? "config:initial",
+        initialObservation: observation,
+        freshObservation,
+        initialJournalSequence: 2,
+        freshJournalSequence: journalSequence ?? 2,
+      }),
+      /changed while authorization was being signed/u,
+      label,
+    );
+  }
+});
+
+test("GitHub publication config freshness rejects byte, identity, meaning, and membership drift", () => {
+  const config = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    adapterIds: ["github", "atlassian"],
+    coulsonBindingRef: "ed25519:sha256:coulson",
+    fitzBindingRef: "ed25519:sha256:fitz",
+  });
+  const initial = { config, bytes: formatShieldConfig(config), identity: "1:2:420" };
+  assert.doesNotThrow(() => assertRepositoryConfigFresh(initial, structuredClone(initial)));
+  assert.throws(() => assertRepositoryConfigFresh(initial, { ...structuredClone(initial), bytes: `${initial.bytes}\n` }), /drifted/iu);
+  assert.throws(() => assertRepositoryConfigFresh(initial, { ...structuredClone(initial), identity: "1:3:420" }), /drifted/iu);
+  const changed = structuredClone(initial);
+  changed.config.paths.reports = ".shield/other-reports";
+  changed.bytes = formatShieldConfig(changed.config);
+  assert.throws(() => assertRepositoryConfigFresh(initial, changed), /drifted/iu);
+  const withoutGitHub = structuredClone(initial);
+  withoutGitHub.config.adapterIds = ["atlassian"];
+  withoutGitHub.bytes = formatShieldConfig(withoutGitHub.config);
+  assert.throws(() => assertRepositoryConfigFresh(initial, withoutGitHub), /requires github/iu);
+});
+
+test("packed CLI rejects mixed schema 9 and legacy entries without changing journal bytes", async () => {
+  const { root, brief, entry, journalPath } = await profileAwareFixture();
+  const mixed = `${JSON.stringify(entry)}\n${JSON.stringify({ ...entry, schemaVersion: 8 })}\n`;
+  await writeFile(journalPath, mixed);
+  const result = run(root, ["mission", "status", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /schema_mixed/u);
+  assert.equal(await readFile(journalPath, "utf8"), mixed);
+});
+
+test("packed CLI rejects an unknown journal schema without changing journal bytes", async () => {
+  const { root, brief, entry, journalPath } = await profileAwareFixture();
+  const unknown = `${JSON.stringify({ ...entry, schemaVersion: 10 })}\n`;
+  await writeFile(journalPath, unknown);
+  const result = run(root, ["mission", "status", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /unsupported_schema/u);
+  assert.equal(await readFile(journalPath, "utf8"), unknown);
+});
+
+test("packed CLI status rejects a profile-aware journal stored for another mission", async () => {
+  const { root, journalPath: sourcePath } = await profileAwareFixture();
+  const requestedMissionId = "mission:cli-profile-aware-alias";
+  const bytes = await readFile(sourcePath, "utf8");
+  const mismatchedPath = journalPath(root, requestedMissionId);
+  await writeFile(mismatchedPath, bytes);
+  const result = run(root, ["mission", "status", "--mission-id", requestedMissionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /mission_mismatch/u);
+  assert.equal(await readFile(mismatchedPath, "utf8"), bytes);
+});
+
+test("packed CLI report rejects a legacy journal stored for another mission", async () => {
+  const { root, brief } = await fixture();
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const bytes = await readFile(journalPath(root, brief.missionId), "utf8");
+  const requestedMissionId = "mission:cli-alias";
+  const mismatchedPath = journalPath(root, requestedMissionId);
+  await writeFile(mismatchedPath, bytes);
+  const result = run(root, ["mission", "report", "--mission-id", requestedMissionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /mission_mismatch/u);
+  assert.equal(await readFile(mismatchedPath, "utf8"), bytes);
+});
+
+test("packed CLI rejects malformed profile-aware JSON without changing journal bytes", async () => {
+  const { root, brief, entry, journalPath } = await profileAwareFixture();
+  const malformed = `${JSON.stringify(entry)}\n{not-json}\n`;
+  await writeFile(journalPath, malformed);
+  const result = run(root, ["mission", "report", "--mission-id", brief.missionId, "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /recovery_required/u);
+  assert.equal(await readFile(journalPath, "utf8"), malformed);
 });
 
 test("unsigned, tampered, stale-revision, and wrong-sequence evidence writes nothing", async () => {
@@ -240,6 +1674,752 @@ test("conditional Simmons is waiting only when declared by the immutable brief",
   assert.deepEqual(projection.readiness.accept.requirementStatuses.map(({ requiredSeatId }) => requiredSeatId), ["fitz", "simmons"]);
   assert.equal(projection.requirements.filter(({ requiredSeatId }) => requiredSeatId === "simmons").length, 1);
   assert.equal(projection.missionId, brief.missionId);
+});
+
+test("readInteractivePasscode resolves interactive input and preserves setup lifecycle", async () => {
+  const fixture = createInteractivePromptFixture();
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("dummy-passcode\n"));
+  assert.equal(await attempt, "dummy-passcode");
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.on, 1);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+  assert.equal(fixture.output.some((chunk) => chunk === "dummy-passcode"), false);
+});
+
+test("readInteractivePasscode handles cancellation and empty input", async () => {
+  const cancelled = createInteractivePromptFixture();
+  const cancellation = readInteractivePasscode(cancelled.inputStream, cancelled.outputStream);
+  cancelled.inputStream.emitData(Buffer.from([3]));
+  await assert.rejects(cancellation, /Passcode prompt cancelled\./u);
+  assert.equal(cancelled.calls.on, 1);
+  assert.equal(cancelled.calls.off, 1);
+  assert.equal(cancelled.calls.setRawMode, 2);
+  assert.equal(cancelled.calls.resume, 1);
+  assert.equal(cancelled.calls.pause, 1);
+  assert.equal(cancelled.output.join(""), "Passcode: \n");
+
+  const empty = createInteractivePromptFixture();
+  const emptyAttempt = readInteractivePasscode(empty.inputStream, empty.outputStream);
+  empty.inputStream.emitData(Buffer.from("\n"));
+  await assert.rejects(emptyAttempt, /Passcode input was empty\./u);
+  assert.equal(empty.calls.on, 1);
+  assert.equal(empty.calls.off, 1);
+  assert.equal(empty.calls.setRawMode, 2);
+  assert.equal(empty.calls.resume, 1);
+  assert.equal(empty.calls.pause, 1);
+  assert.equal(empty.output.join(""), "Passcode: \n");
+});
+
+test("readInteractivePasscode resolves once and ignores post-settlement data for CRLF", async () => {
+  const fixture = createInteractivePromptFixture();
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("ready\r\nignored"));
+  assert.equal(await attempt, "ready");
+  fixture.inputStream.emitData(Buffer.from("and-more"));
+  assert.equal(fixture.calls.on, 1);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+});
+
+test("readInteractivePasscode prefers setup failures over interactive outcomes", async () => {
+  const fixture = createInteractivePromptFixture({
+    syncData: Buffer.from("interactive-passcode\n"),
+    failResume: true,
+  });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+  assert.equal(fixture.output.some((chunk) => chunk.includes("interactive-passcode")), false);
+});
+
+test("readInteractivePasscode prefers cleanup failures over setup outcomes when sync settle races resume failure", async () => {
+  const fixture = createInteractivePromptFixture({
+    syncData: Buffer.from("interactive-passcode\n"),
+    failResume: true,
+    failPause: true,
+  });
+  const error = await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"),
+  );
+  const message = error instanceof Error ? error.message : `${error}`;
+  assert.equal(message.includes("interactive-passcode"), false);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.calls.write, 2);
+});
+
+test("readInteractivePasscode fails if prompt write fails during setup", async () => {
+  const fixture = createInteractivePromptFixture({ failPromptWrite: true });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.setRawMode, 0);
+  assert.equal(fixture.calls.on, 0);
+  assert.equal(fixture.calls.off, 0);
+  assert.equal(fixture.calls.resume, 0);
+  assert.equal(fixture.calls.pause, 0);
+  assert.equal(fixture.calls.write, 2);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+});
+
+test("readInteractivePasscode fails if raw-mode enablement fails", async () => {
+  const fixture = createInteractivePromptFixture({ failSetRawMode: true });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.on, 0);
+  assert.equal(fixture.calls.off, 0);
+  assert.equal(fixture.calls.resume, 0);
+  assert.equal(fixture.calls.pause, 0);
+  assert.equal(fixture.calls.write, 2);
+});
+
+test("readInteractivePasscode fails if listener registration fails", async () => {
+  const fixture = createInteractivePromptFixture({ failOnDataRegistration: true });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.on, 1);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.resume, 0);
+  assert.equal(fixture.calls.pause, 0);
+});
+
+test("readInteractivePasscode fails if resume fails", async () => {
+  const fixture = createInteractivePromptFixture({ failResume: true });
+  await assert.rejects(
+    readInteractivePasscode(fixture.inputStream, fixture.outputStream),
+    new RegExp(PASSCODE_PROMPT_SETUP_FAILURE_MESSAGE, "u"),
+  );
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.on, 1);
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.resume, 1);
+  assert.equal(fixture.calls.pause, 1);
+});
+
+test("readInteractivePasscode fails if listener removal fails and still tears down", async () => {
+  const fixture = createInteractivePromptFixture({ failOff: true });
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("authorized\n"));
+  await assert.rejects(attempt, new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"));
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.output.join(""), "Passcode: \n");
+});
+
+test("readInteractivePasscode fails if raw-mode restoration fails", async () => {
+  const fixture = createInteractivePromptFixture({ failSetRawModeRestore: true });
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("authorized\n"));
+  await assert.rejects(attempt, new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"));
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.pause, 1);
+});
+
+test("readInteractivePasscode fails if pause fails", async () => {
+  const fixture = createInteractivePromptFixture({ failPause: true });
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("authorized\n"));
+  await assert.rejects(attempt, new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"));
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.pause, 1);
+  assert.equal(fixture.calls.write, 2);
+});
+
+test("readInteractivePasscode fails if newline fails", async () => {
+  const fixture = createInteractivePromptFixture({ failNewline: true });
+  const attempt = readInteractivePasscode(fixture.inputStream, fixture.outputStream);
+  fixture.inputStream.emitData(Buffer.from("authorized\n"));
+  await assert.rejects(attempt, new RegExp(PASSCODE_PROMPT_CLEANUP_FAILURE_MESSAGE, "u"));
+  assert.equal(fixture.calls.off, 1);
+  assert.equal(fixture.calls.setRawMode, 2);
+  assert.equal(fixture.calls.pause, 1);
+});
+
+test("pre-init signer bootstrap emits only a credential-free packet and creates fresh protected candidates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-empty-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-home-"));
+  await writeFile(join(root, "before.txt"), "repository-free working directory\n");
+
+  const first = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+  assert.equal(first.status, 0, first.stderr);
+  const firstPacket = JSON.parse(first.stdout);
+  assert.deepEqual(Object.keys(firstPacket), [
+    "schemaVersion", "seatId", "bindingId", "humanPrincipalId", "signingKeyRef", "publicKeySpkiBase64",
+  ]);
+  assert.deepEqual({
+    schemaVersion: firstPacket.schemaVersion,
+    seatId: firstPacket.seatId,
+    bindingId: firstPacket.bindingId,
+    humanPrincipalId: firstPacket.humanPrincipalId,
+  }, {
+    schemaVersion: 1,
+    seatId: "coulson",
+    bindingId: "binding:coulson",
+    humanPrincipalId: "human:maintainer-1",
+  });
+  assert.equal(firstPacket.signingKeyRef, recomputeKeyRef(firstPacket.publicKeySpkiBase64));
+  assert.equal(first.stdout.includes(homeRoot), false);
+  assert.doesNotMatch(first.stdout, /signerPath|privateKey|ciphertext|saltBase64|ivBase64|tagBase64|passcode/iu);
+  assert.equal(first.stderr, "");
+
+  const shieldDirectory = join(homeRoot, ".shield");
+  const signersDirectory = join(shieldDirectory, "signers");
+  assert.equal(fileMode(await lstat(shieldDirectory)), 0o700);
+  assert.equal(fileMode(await lstat(signersDirectory)), 0o700);
+  const firstFiles = await readdir(signersDirectory);
+  assert.equal(firstFiles.length, 1);
+  const firstPath = join(signersDirectory, firstFiles[0]);
+  const firstBytes = await readFile(firstPath);
+  const stored = JSON.parse(firstBytes.toString("utf8"));
+  assert.deepEqual(Object.keys(stored), [
+    "schemaVersion", "signingKeyRef", "saltBase64", "ivBase64", "tagBase64", "ciphertextBase64",
+  ]);
+  assert.equal(stored.schemaVersion, 1);
+  assert.equal(stored.signingKeyRef, firstPacket.signingKeyRef);
+  assert.doesNotMatch(firstBytes.toString("utf8"), /BEGIN PRIVATE KEY/u);
+  assert.equal(fileMode(await lstat(firstPath)), 0o600);
+
+  const second = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+  assert.equal(second.status, 0, second.stderr);
+  const secondPacket = JSON.parse(second.stdout);
+  assert.notEqual(secondPacket.signingKeyRef, firstPacket.signingKeyRef);
+  assert.equal((await readdir(signersDirectory)).length, 2);
+  assert.deepEqual(await readFile(firstPath), firstBytes);
+  assert.equal(fileMode(await lstat(firstPath)), 0o600);
+
+  const human = run(root, BOOTSTRAP_ARGS.filter((argument) => argument !== "--json"), {
+    env: { HOME: homeRoot }, input: "bootstrap-passcode\n",
+  });
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /created in protected host storage/u);
+  assert.match(human.stdout, /"publicKeySpkiBase64"/u);
+  assert.equal(human.stdout.includes(homeRoot), false);
+  assert.doesNotMatch(human.stdout, /signerPath|privateKey|ciphertext|saltBase64|ivBase64|tagBase64|passcode/iu);
+
+  assert.equal(await readFile(join(root, "before.txt"), "utf8"), "repository-free working directory\n");
+  await assert.rejects(lstat(join(root, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("bootstrap CLI rejects non-Coulson, malformed, colliding, missing, root, and unknown inputs before signer creation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-invalid-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-invalid-home-"));
+  const common = ["mission", "signer", "bootstrap", "--passcode-stdin"];
+  const cases = [
+    [...common, "--seat", "fitz"],
+    [...common, "--seat", "coulson", "--binding-id", "bad value", "--human-principal-id", "human:one"],
+    [...common, "--seat", "coulson", "--binding-id", "binding:one", "--human-principal-id", "bad value"],
+    [...common, "--seat", "coulson", "--binding-id", "a".repeat(257), "--human-principal-id", "human:one"],
+    [...common, "--seat", "coulson", "--binding-id", "same:id", "--human-principal-id", "same:id"],
+    [...common, "--seat", "coulson", "--binding-id", "binding:one"],
+    [...common, "--seat", "coulson", "--binding-id", "binding:one", "--human-principal-id", "human:one", "--root", root],
+    [...common, "--seat", "coulson", "--binding-id", "binding:one", "--human-principal-id", "human:one", "--unexpected"],
+  ];
+  for (const args of cases) {
+    const rejected = run(root, args, { env: { HOME: homeRoot }, input: "must-not-appear\n" });
+    assert.notEqual(rejected.status, 0, `${args.join(" ")}\n${rejected.stderr}`);
+    assert.equal(rejected.stdout, "");
+    assert.equal(rejected.stderr.includes("must-not-appear"), false);
+    assert.equal(rejected.stderr.includes(homeRoot), false);
+    await assert.rejects(lstat(join(homeRoot, ".shield")), (error) => error?.code === "ENOENT");
+  }
+
+  const short = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "short\n" });
+  assert.equal(short.status, 1);
+  assert.match(short.stderr, /at least 8 characters/u);
+  assert.equal(short.stderr.includes("short"), false);
+  await assert.rejects(lstat(join(homeRoot, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("signer creation rejects hostile closed-object inputs before key generation", async () => {
+  const accessor = {};
+  Object.defineProperties(accessor, {
+    seatId: { enumerable: true, get() { throw new Error("accessor material"); } },
+    bindingId: { enumerable: true, value: SIGNER_INPUT.bindingId },
+    humanPrincipalId: { enumerable: true, value: SIGNER_INPUT.humanPrincipalId },
+  });
+  const inherited = Object.create(SIGNER_INPUT);
+  const symbolicField = { ...SIGNER_INPUT, [Symbol("hidden")]: "value" };
+  const nonEnumerable = { ...SIGNER_INPUT };
+  Object.defineProperty(nonEnumerable, "bindingId", { enumerable: false });
+  const candidates = [
+    null,
+    [],
+    new Proxy({ ...SIGNER_INPUT }, {}),
+    accessor,
+    inherited,
+    symbolicField,
+    nonEnumerable,
+    { ...SIGNER_INPUT, extra: "field" },
+    { seatId: "coulson", bindingId: SIGNER_INPUT.bindingId },
+    { ...SIGNER_INPUT, seatId: "fitz" },
+    { ...SIGNER_INPUT, bindingId: "" },
+    { ...SIGNER_INPUT, bindingId: "a".repeat(257) },
+    { ...SIGNER_INPUT, bindingId: Symbol("binding") },
+    { ...SIGNER_INPUT, humanPrincipalId: SIGNER_INPUT.bindingId },
+  ];
+  let keyGenerationCount = 0;
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-hostile-"));
+  const dependencies = deterministicSignerDependencies(homeRoot, generateKeyPairSync("ed25519"), {
+    generateKeyPair() {
+      keyGenerationCount += 1;
+      return generateKeyPairSync("ed25519");
+    },
+  });
+  for (const candidate of candidates) {
+    await assert.rejects(
+      signerTestOnly.createSigner(candidate, "bootstrap-passcode", dependencies),
+      /Signer creation input is invalid\./u,
+    );
+  }
+  assert.equal(keyGenerationCount, 0);
+  await assert.rejects(lstat(join(homeRoot, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("bootstrap rejects static symlink and non-directory host components before key generation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-storage-"));
+  const shieldLinkHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-shield-link-"));
+  const shieldTarget = await mkdtemp(join(tmpdir(), "shield-bootstrap-shield-target-"));
+  await writeFile(join(shieldTarget, "sentinel"), "unchanged\n");
+  await symlink(shieldTarget, join(shieldLinkHome, ".shield"));
+
+  const shieldFileHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-shield-file-"));
+  await writeFile(join(shieldFileHome, ".shield"), "not a directory\n");
+
+  const signersLinkHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-signers-link-"));
+  const signersTarget = await mkdtemp(join(tmpdir(), "shield-bootstrap-signers-target-"));
+  await writeFile(join(signersTarget, "sentinel"), "unchanged\n");
+  await mkdir(join(signersLinkHome, ".shield"), { mode: 0o700 });
+  await symlink(signersTarget, join(signersLinkHome, ".shield", "signers"));
+
+  const signersFileHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-signers-file-"));
+  await mkdir(join(signersFileHome, ".shield"), { mode: 0o700 });
+  await writeFile(join(signersFileHome, ".shield", "signers"), "not a directory\n");
+
+  let keyGenerationCount = 0;
+  for (const homeRoot of [shieldLinkHome, shieldFileHome, signersLinkHome, signersFileHome]) {
+    const rejected = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+    assert.equal(rejected.status, 1, rejected.stderr);
+    assert.equal(rejected.stdout, "");
+    assert.match(rejected.stderr, /creation_failed: Signer creation failed\./u);
+    assert.equal(rejected.stderr.includes(homeRoot), false);
+    assert.doesNotMatch(rejected.stderr, /privateKey|ciphertext|saltBase64|ivBase64|tagBase64|bootstrap-passcode/iu);
+    await assert.rejects(
+      signerTestOnly.createSigner(SIGNER_INPUT, "bootstrap-passcode", deterministicSignerDependencies(
+        homeRoot,
+        generateKeyPairSync("ed25519"),
+        { generateKeyPair() { keyGenerationCount += 1; return generateKeyPairSync("ed25519"); } },
+      )),
+      (error) => error?.message === CREATION_FAILED,
+    );
+  }
+  assert.equal(keyGenerationCount, 0);
+  assert.deepEqual(await readdir(shieldTarget), ["sentinel"]);
+  assert.deepEqual(await readdir(signersTarget), ["sentinel"]);
+  assert.equal(await readFile(join(shieldTarget, "sentinel"), "utf8"), "unchanged\n");
+  assert.equal(await readFile(join(signersTarget, "sentinel"), "utf8"), "unchanged\n");
+});
+
+test("cryptographic failures use the fixed path-free creation classification", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-crypto-"));
+  const protectedDetail = `${homeRoot} ciphertextBase64 private material`;
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(homeRoot, generateKeyPairSync("ed25519"), {
+        generateKeyPair() { throw new Error(protectedDetail); },
+      }),
+    ),
+    (error) => error?.message === CREATION_FAILED && !error.message.includes(protectedDetail),
+  );
+  assert.deepEqual(await readdir(join(homeRoot, ".shield", "signers")), []);
+});
+
+test("deterministic signer collision and final symlink preserve original targets", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-collision-"));
+  const keyPair = generateKeyPairSync("ed25519");
+  const dependencies = deterministicSignerDependencies(homeRoot, keyPair);
+  const created = await signerTestOnly.createSigner(SIGNER_INPUT, "bootstrap-passcode", dependencies);
+  assert.equal(Object.isFrozen(created), true);
+  const originalBytes = await readFile(created.signerPath);
+  const originalMode = fileMode(await lstat(created.signerPath));
+  assert.equal(originalMode, 0o600);
+  await assert.rejects(
+    signerTestOnly.createSigner(SIGNER_INPUT, "bootstrap-passcode", dependencies),
+    (error) => error?.message === CREATION_FAILED && !error.message.includes(homeRoot),
+  );
+  assert.deepEqual(await readFile(created.signerPath), originalBytes);
+  assert.equal(fileMode(await lstat(created.signerPath)), originalMode);
+
+  const symlinkHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-final-link-"));
+  const signersDirectory = join(symlinkHome, ".shield", "signers");
+  await mkdir(signersDirectory, { recursive: true, mode: 0o700 });
+  const symlinkKeyPair = generateKeyPairSync("ed25519");
+  const target = join(symlinkHome, "foreign-target");
+  await writeFile(target, "foreign bytes\n", { mode: 0o600 });
+  const candidate = join(signersDirectory, expectedSignerFilename(symlinkKeyPair));
+  await symlink(target, candidate);
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(symlinkHome, symlinkKeyPair),
+    ),
+    (error) => error?.message === CREATION_FAILED,
+  );
+  assert.equal((await lstat(candidate)).isSymbolicLink(), true);
+  assert.equal(await readFile(target, "utf8"), "foreign bytes\n");
+});
+
+test("retained signer handle corrects restrictive umask and persists a verified 0600 record", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-umask-"));
+  await mkdir(join(homeRoot, ".shield", "signers"), { recursive: true, mode: 0o700 });
+  const priorUmask = process.umask(0o777);
+  let created;
+  try {
+    created = await signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(homeRoot),
+    );
+  } finally {
+    process.umask(priorUmask);
+  }
+  assert.equal(fileMode(await lstat(created.signerPath)), 0o600);
+  const record = JSON.parse(await readFile(created.signerPath, "utf8"));
+  assert.equal(record.schemaVersion, 1);
+  assert.equal(record.signingKeyRef, created.signingKeyRef);
+});
+
+test("write, partial write, fchmod, fsync, final fstat, and post-verify failures clean the same inode", async () => {
+  const cases = [
+    ["write", () => ({
+      write: async () => { throw new Error("write protected detail"); },
+    })],
+    ["partial write", () => ({
+      write: async (handle, content) => {
+        await handle.write(content.subarray(0, 17));
+        throw new Error("partial write protected detail");
+      },
+    })],
+    ["fchmod", () => ({
+      chmod: async () => { throw new Error("fchmod protected detail"); },
+    })],
+    ["fsync", () => ({
+      sync: async () => { throw new Error("fsync protected detail"); },
+    })],
+    ["final fstat", () => {
+      let calls = 0;
+      return {
+        stat: async (handle) => {
+          calls += 1;
+          if (calls === 2) throw new Error("fstat protected detail");
+          return handle.stat();
+        },
+      };
+    }],
+    ["post verify", () => ({
+      stage: async (stage) => {
+        if (stage === "verified") throw new Error("post-verify protected detail");
+      },
+    })],
+  ];
+
+  for (const [label, overrides] of cases) {
+    const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-cleanup-"));
+    const protectedDetail = `${homeRoot} ${label}`;
+    await assert.rejects(
+      signerTestOnly.createSigner(
+        SIGNER_INPUT,
+        "bootstrap-passcode",
+        deterministicSignerDependencies(homeRoot, generateKeyPairSync("ed25519"), overrides()),
+      ),
+      (error) => error?.code === "creation_failed" && error.message === CREATION_FAILED && !error.message.includes(protectedDetail),
+      label,
+    );
+    assert.deepEqual(await readdir(join(homeRoot, ".shield", "signers")), [], label);
+  }
+});
+
+test("uncertain initial identity and close failure return recovery-required without success", async () => {
+  const identityHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-identity-"));
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(identityHome, generateKeyPairSync("ed25519"), {
+        stat: async () => { throw new Error(`${identityHome} fstat material`); },
+      }),
+    ),
+    (error) => error?.code === "recovery_required" && error.message === RECOVERY_REQUIRED && !error.message.includes(identityHome),
+  );
+  assert.equal((await readdir(join(identityHome, ".shield", "signers"))).length, 1);
+
+  const closeHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-close-"));
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(closeHome, generateKeyPairSync("ed25519"), {
+        close: async (handle) => {
+          await handle.close();
+          throw new Error(`${closeHome} close material`);
+        },
+      }),
+    ),
+    (error) => error?.code === "recovery_required" && error.message === RECOVERY_REQUIRED && !error.message.includes(closeHome),
+  );
+  assert.deepEqual(await readdir(join(closeHome, ".shield", "signers")), []);
+});
+
+test("pathname identity mismatch preserves the foreign target and returns recovery-required", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-path-mismatch-"));
+  let foreignPath;
+  let displacedPath;
+  const dependencies = deterministicSignerDependencies(homeRoot, generateKeyPairSync("ed25519"), {
+    stage: async (stage, context) => {
+      if (stage !== "before_path_identity") return;
+      foreignPath = context.signerPath;
+      displacedPath = `${context.signerPath}.displaced`;
+      await rename(context.signerPath, displacedPath);
+      await writeFile(context.signerPath, "foreign replacement\n", { mode: 0o600, flag: "wx" });
+    },
+  });
+  await assert.rejects(
+    signerTestOnly.createSigner(SIGNER_INPUT, "bootstrap-passcode", dependencies),
+    (error) => error?.message === RECOVERY_REQUIRED && !error.message.includes(homeRoot),
+  );
+  assert.equal(await readFile(foreignPath, "utf8"), "foreign replacement\n");
+  assert.equal((await lstat(displacedPath)).isFile(), true);
+  assert.equal((await readdir(join(homeRoot, ".shield", "signers"))).length, 2);
+});
+
+test("unlink and cleanup-confirmation failures return recovery-required without false cleanup claims", async () => {
+  const unlinkHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-unlink-"));
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(unlinkHome, generateKeyPairSync("ed25519"), {
+        stage: async (stage) => {
+          if (stage === "verified") throw new Error("force cleanup");
+        },
+        pathUnlink: async () => { throw new Error(`${unlinkHome} unlink material`); },
+      }),
+    ),
+    (error) => error?.message === RECOVERY_REQUIRED && !error.message.includes(unlinkHome),
+  );
+  assert.equal((await readdir(join(unlinkHome, ".shield", "signers"))).length, 1);
+
+  const confirmationHome = await mkdtemp(join(tmpdir(), "shield-bootstrap-confirmation-"));
+  let lstatCalls = 0;
+  await assert.rejects(
+    signerTestOnly.createSigner(
+      SIGNER_INPUT,
+      "bootstrap-passcode",
+      deterministicSignerDependencies(confirmationHome, generateKeyPairSync("ed25519"), {
+        stage: async (stage) => {
+          if (stage === "verified") throw new Error("force cleanup");
+        },
+        pathLstat: async (path) => {
+          lstatCalls += 1;
+          if (lstatCalls === 2) throw Object.assign(new Error(`${confirmationHome} confirmation material`), { code: "EIO" });
+          return lstat(path);
+        },
+      }),
+    ),
+    (error) => error?.message === RECOVERY_REQUIRED && !error.message.includes(confirmationHome),
+  );
+  assert.deepEqual(await readdir(join(confirmationHome, ".shield", "signers")), []);
+});
+
+test("bootstrap leaves an existing Git worktree and repository bytes unchanged", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-repository-"));
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-repository-home-"));
+  await writeFile(join(root, "tracked.txt"), "tracked bytes\n");
+  runGit(root, ["init", "-q"]);
+  runGit(root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(root, ["add", "tracked.txt"]);
+  runGit(root, ["commit", "-qm", "bootstrap fixture"]);
+  const beforeHead = runGit(root, ["rev-parse", "HEAD"]);
+  const beforeStatus = runGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  const beforeBytes = await readFile(join(root, "tracked.txt"));
+
+  const result = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(runGit(root, ["rev-parse", "HEAD"]), beforeHead);
+  assert.equal(runGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]), beforeStatus);
+  assert.deepEqual(await readFile(join(root, "tracked.txt")), beforeBytes);
+  await assert.rejects(lstat(join(root, ".shield")), (error) => error?.code === "ENOENT");
+});
+
+test("help and supervised mission docs state the authority and signer-storage threat boundaries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-bootstrap-help-"));
+  const help = run(root, ["help"]);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /mission signer bootstrap --seat coulson --binding-id <id> --human-principal-id <id>/u);
+  const documentation = await readFile(join(packageRoot, "SUPERVISED_MISSION.md"), "utf8");
+  assert.match(documentation, /Pre-initialization Coulson signer bootstrap/u);
+  assert.match(documentation, /does not emit or store plaintext\s+private key material/u);
+  assert.match(documentation, /encrypted schema-1 signer record is stored only in\s+host-local protected signer storage/u);
+  assert.match(documentation, /no other process running as the same OS user\s+concurrently mutates/u);
+  assert.match(documentation, /does not claim race-free ancestor confinement/u);
+  assert.match(documentation, /authority-neutral/u);
+  assert.match(documentation, /Issue #216 owns/u);
+  assert.match(documentation, /Fitz remains GitHub platform review/u);
+  assert.match(documentation, /conditional\s+Simmons feedback remains external evidence/u);
+});
+
+test("passcode signer setup is one-time host setup and authorize appends Coulson approval", async () => {
+  const { root, brief } = await fixture();
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+  const setupOutput = JSON.parse(setup.stdout);
+  assert.match(setupOutput.signerPath, /\/\.shield\/signers\//);
+  assert.match(setupOutput.signingKeyRef, /^ed25519:sha256:/);
+
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  let projection = JSON.parse(begun.stdout).projection;
+  assert.equal(projection.governance.state, "proposed");
+
+  const authorized = run(
+    root,
+    ["mission", "authorize", "--mission-id", brief.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(authorized.status, 0, authorized.stderr);
+  projection = JSON.parse(authorized.stdout);
+  assert.equal(projection.governance.state, "approved");
+  assert.equal(projection.authorization.state, "authorized");
+  assert.equal(projection.evidence[0].sourceRef, `passcode-signer:${brief.missionId}`);
+});
+
+test("Coulson signer setup uses the fixed Coulson operation rule under the Coulson-only profile", async () => {
+  const { root } = await fixture(false, "coulson_only_platform_review");
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "coulson-only-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+  const config = JSON.parse(await readFile(join(root, ".shield", "config.json"), "utf8"));
+  assert.equal(config.repositoryTrustProfileId, "coulson_only_platform_review");
+  assert.deepEqual(config.trustedHumanBindingRefs.map(({ seatId }) => seatId), ["coulson"]);
+});
+
+test("passcode authorization persists durable approval entry and rejects retries", async () => {
+  const { root, brief } = await fixture();
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+
+  const setup = run(
+    root,
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const authorized = run(
+    root,
+    ["mission", "authorize", "--mission-id", brief.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(authorized.status, 0, authorized.stderr);
+
+  const journalEntries = await readJournalEntries(root, brief.missionId);
+  const governanceApprovals = journalEntries.filter(({ type, payload }) => type === "governance.decided" && payload.decision === "approve");
+  assert.equal(governanceApprovals.length, 1);
+  const governanceEvidence = governanceApprovals[0].payload.evidence.payload;
+  assert.equal(governanceEvidence.evidenceKind, "mission_authorization");
+  assert.equal(governanceEvidence.seatId, "coulson");
+  assert.equal(governanceEvidence.revisionId, brief.revisionId);
+  assert.equal(governanceApprovals[0].payload.evidence.payload.sourceRef, `passcode-signer:${brief.missionId}`);
+
+  const journalBytes = await readFile(journalPath(root, brief.missionId), "utf8");
+  const retry = run(
+    root,
+    ["mission", "authorize", "--mission-id", brief.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(retry.status, 1);
+  assert.match(retry.stderr, /governance_denied: Cannot approve from approved/u);
+  const retryBytes = await readFile(journalPath(root, brief.missionId), "utf8");
+  assert.equal(retryBytes, journalBytes);
+  const retryEntries = await readJournalEntries(root, brief.missionId);
+  const retryApprovals = retryEntries.filter(({ type, payload }) => type === "governance.decided" && payload.decision === "approve");
+  assert.equal(retryApprovals.length, 1);
+});
+
+test("authorize explains when the local signer has not been provisioned", async () => {
+  const { root, brief } = await fixture();
+  const homeRoot = join(root, "home");
+  await mkdir(homeRoot, { recursive: true });
+
+  const begun = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+
+  const authorized = run(
+    root,
+    ["mission", "authorize", "--mission-id", brief.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "routine-passcode\n" },
+  );
+  assert.equal(authorized.status, 1);
+  assert.match(
+    authorized.stderr,
+    /No local Coulson signer was found for this mission binding/,
+  );
+  assert.match(
+    authorized.stderr,
+    /shield mission signer setup --seat coulson/,
+  );
+});
+
+test("supervised begin preserves malformed-brief precedence over a malformed binding registry", async () => {
+  const { root } = await fixture();
+  await writeFile(join(root, "mission-brief.json"), "{}\n");
+  await writeFile(join(root, ".shield", "trusted-human-bindings.json"), "{}\n");
+  const result = run(root, ["mission", "begin", "--brief", "mission-brief.json", "--json"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Mission brief/u);
+  assert.doesNotMatch(result.stderr, /Trusted binding registry/u);
 });
 
 test("Wheels Off grants, delegates begin deterministically, reports source, and invalidates fail closed", async () => {

@@ -14,12 +14,14 @@ package artifact.
 | `@shield/team-system/modes` | Mode manifests, registries, and seat-context resolution |
 | `@shield/team-system/workspace` | Review-workspace validation and deterministic PR-body generation |
 | `@shield/team-system/hill-readiness` | Pure advisory `hill.readiness.v1` classification for exact seat-owned artifact revisions using closed, host-asserted evidence |
-| `@shield/team-system/config` | Closed V0.3 repository configuration validation and doctor reports |
-| `@shield/team-system/supervision` | Supervised journals v2-v8, including revision-bound Fury review and supersession history, publication-bound v8 communication, authoritative runtime-binding lifecycle, canonical mission briefs, Ed25519 human evidence, readiness, communication, and execution-effect replay |
+| `@shield/team-system/config` | Closed schema-1/schema-2/schema-3 repository configuration validation, separate executable and configured-host adapter identities, explicit pure migration, immutable `repository.trust-profile.v1` registry, and doctor report v1/v2 types |
+| `@shield/team-system/supervision` | Supervised journals v2-v8 plus repository-derived mission binding admission for legacy and profile-aware starts, including revision-bound Fury review and supersession history, publication-bound v8 communication, authoritative runtime-binding lifecycle, canonical mission briefs, Ed25519 human evidence, readiness, communication, and execution-effect replay |
 | `@shield/team-system/delegation` | Closed Wheels Off v1 delegation, revocation, eligibility, and deterministic evaluation contracts |
 | `@shield/team-system/adapter` | Closed host-neutral adapter v1 contracts plus publication-bound adapter v2 communication requests and result evidence |
 | `@shield/team-system/runner` | Closed one-cycle runner v1 with an injected pre-executor authorization boundary, at-most-once executor dispatch, result validation, and journal-ready evidence candidates |
 | `@shield/team-system/permission` | Closed runtime bindings, host attestations, deny-by-default per-call evaluation, verified authorizer, and fresh executor preflight |
+| `@shield/team-system/schema9-permission-context` | Replay-bound, read-only schema-9 permission context loader that revalidates live repository root/branch/HEAD and capability state and returns context or blocked result; it never composes dispatch, invokes a model, or executes effects |
+| `@shield/team-system/governed-may-dispatch` | Canonical single-step May coordinator that derives one exact packet from durable schema-9 authority and attributed Fury evidence, fails closed before invocation, and records exact-bound durable outcomes |
 | `@shield/team-system/roles` | Canonical mission role registry, classification, routing, and assignment validation |
 | `@shield/team-system/permission-audit` | Closed digest-bound decision/result evidence, exact append receipts, and non-authoritative ledger replay |
 | `@shield/team-system/review-publication` | Pure host-neutral exact-path and permitted-effect evaluation for `review.publish` and Wheels Up review publication |
@@ -51,6 +53,24 @@ modules remain their runtime source of truth. The isolated TypeScript build
 contains the additive configuration, CLI, and V0.3-4 supervision contracts; it
 does not migrate or reinterpret the existing package runtime.
 
+The `/config` surface names schema 1 as `LEGACY_CONFIG_SCHEMA_VERSION`, schema 2
+as `CONFIG_SCHEMA_V2_VERSION`, schema 3 as the creation
+`CONFIG_SCHEMA_VERSION`, and exposes `SUPPORTED_CONFIG_SCHEMA_VERSIONS` as
+`[1, 2, 3]`. `ShieldConfigV1`, `ShieldConfigV2`, and `ShieldConfigV3` are closed
+shapes joined by the `ShieldConfig` union. Schema 1 and 2 retain executable
+`adapterId: "github"`; schema 3 uses ordered `adapterIds` from the separate
+`CONFIGURED_HOST_ADAPTER_IDS` registry. `configuredAdapterIds(...)` returns a
+defensive projection and `migrateShieldConfig(...)` performs a pure closed
+conversion. `DoctorReport` remains the report-v1 type and `DoctorReportV2`
+describes current independent config-only adapter checks. Schema 1 remains
+readable as implicit `signed_human_gates`. The immutable
+`REPOSITORY_TRUST_PROFILES_V1` registry is descriptive only: it creates no
+authority and admits no external platform evidence. Configuring Atlassian adds
+no executable adapter, credential, network behavior, or publication authority.
+`/supervision` exposes repository-derived mission binding
+selection and a separate fixed Coulson-operation selector; callers cannot
+supply an arbitrary seat list.
+
 ## Capability status
 
 | Product-contract capability | V0.3-2 status |
@@ -66,6 +86,7 @@ does not migrate or reinterpret the existing package runtime.
 | Bounded local human-evidence requirements and readiness | Supported through `/supervision`; v2-v6 retain mission-plan review requirements, while v7 binds Fitz and optional Simmons review requirements to the current repository-artifact revision after an exact-revision Fury gate |
 | One-cycle execution seam | Supported through `/runner`; authorization, execution, and result validation are injected by the caller |
 | Profile-aware mission-cycle composition | Supported through `/mission-runtime`; host journal, permission, execution, validation, and clock capabilities remain injected and human evidence remains external |
+| Single-step governed May dispatch | Supported through `/governed-may-dispatch`; callers supply only mission location and host identity while durable authority, attributed review evidence, live repository state, packet scope, runtime identity, and replay determine whether at most one bounded May cycle may run |
 | Per-call runtime-bound permission decisions | Supported through `/permission`; real environmental probes remain owned by Issue #34 |
 | Permission analytics evidence | Supported through `/permission-audit`; dashboards and analytics products remain owned by Issue #13 |
 | Exact-scope review publication | Supported through `/review-publication`; the pure evaluator binds authority and observed proposals, while `/github` performs host observation before push, draft-PR mutation, or review-comment publication |
@@ -123,6 +144,11 @@ Delegated missions use journal schema v3 while schema-v2 supervised journals
 remain supported without reinterpretation. Wheels Off exposes standing
 pre-authorization only; it does not grant runner execution, define a policy DSL,
 perform host inspection, or confer merge/deploy/release authority.
+
+`@shield/team-system/schema9-permission-context` is a replay-first loader for
+schema-9 authority and binding history. It performs live repository root/branch/HEAD
+and capability checks, and returns only read-only context or blocked outcomes. It
+does not compose dispatch, invoke model execution, or trigger an external effect.
 
 ## Compatibility and breaking changes
 

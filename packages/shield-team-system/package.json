@@ -6,7 +6,8 @@
   "main": "./public/index.mjs",
   "types": "./public/index.d.mts",
   "bin": {
-    "shield": "./dist/cli.mjs"
+    "shield": "./dist/cli.mjs",
+    "shield-ops": "./scripts/operations/ops-cli.mjs"
   },
   "exports": {
     ".": {
@@ -65,6 +66,14 @@
       "types": "./dist/permission-v1.d.mts",
       "import": "./dist/permission-v1.mjs"
     },
+    "./schema9-permission-context": {
+      "types": "./dist/schema9-permission-context-v1.d.mts",
+      "import": "./dist/schema9-permission-context-v1.mjs"
+    },
+    "./governed-may-dispatch": {
+      "types": "./dist/governed-may-dispatch-v1.d.mts",
+      "import": "./dist/governed-may-dispatch-v1.mjs"
+    },
     "./roles": {
       "types": "./dist/role-taxonomy-v1.d.mts",
       "import": "./dist/role-taxonomy-v1.mjs"
@@ -88,6 +97,14 @@
     "./profile-aware-mission": {
       "types": "./dist/profile-aware-mission-v1.d.mts",
       "import": "./dist/profile-aware-mission-v1.mjs"
+    },
+    "./implementation-authority": {
+      "types": "./dist/implementation-authority-v1.d.mts",
+      "import": "./dist/implementation-authority-v1.mjs"
+    },
+    "./daisy-coordination-authority": {
+      "types": "./public/daisy-coordination-authority.d.mts",
+      "import": "./public/daisy-coordination-authority.mjs"
     },
     "./mission-runtime": {
       "types": "./dist/mission-runtime-v1.d.mts",
@@ -127,6 +144,7 @@
     "agents",
     "contracts",
     "dist",
+    "docs",
     "github",
     "modes",
     "playbooks",

@@ -8,6 +8,33 @@ Original source locations remain unchanged.
 This baseline uses the approved S.H.I.E.L.D. team mapping and keeps the team
 responsibilities, review gates, and operating workflow portable across repos.
 
+Operational helpers promoted from dogfood experiments are exposed through
+`shield-ops`. They produce advisory, non-gate-eligible structural evidence and
+are documented in the packed package under
+[`docs/operations`](./docs/operations/mission-evidence-tools.md).
+
+The effect-free [`shield-ops flight status`](./docs/operations/feature-flight-controller.md)
+command validates exact Feature Flight plan/state bytes and, when supplied, one
+immediate predecessor edge. Its stdout projection always has `authority:none`
+and `gateEligible:false`; it performs no dispatch, mutation, or external effect.
+
+The internal [`runFeatureFlightStepV1`](./docs/operations/feature-flight-step.md)
+operations seam composes one already-active, dependency-free Daisy coordination
+cycle. It classifies its external execute-once store before fresh effects, uses
+a frozen read-only remote observer around the adapter call, and selects success
+or [recovery](./docs/operations/feature-flight-recovery.md) through one atomic
+terminal arbiter. Exact v1 success evidence replays read-only; every durable
+claim prohibits adapter reinvocation. All evidence remains non-authoritative,
+gate-ineligible, and externally uncertain. No run/resume CLI is exposed.
+
+The companion
+[`projectFeatureFlightReviewGatesV1`](./docs/operations/feature-flight-review-gates.md)
+replays only an exact successful Slice 3 terminal, protected production Mack
+readback, and descriptor-pinned schema-8 Fury/Fitz/conditional-Simmons history.
+It returns one deterministic in-memory checkpoint and always retains the final
+`coulson_final_acceptance_required` human stop. It adds no store, CLI, dispatch,
+state mutation, or proof flight.
+
 ## Public package surface
 
 The supported V0.3 consumer entry points are the package root plus `/mission`,

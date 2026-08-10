@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "missionId": "mission:issue-196-local-mack",
+  "objective": "Extend the seat-first runtime contract so Mack may use an explicitly selected governed local runtime while preserving independent exact-revision validation, closed runtime attribution, hosted compatibility, and human/Fury authority boundaries; stop after implementation review and do not alter or reinterpret issue #149 evidence in this mission.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/196",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": false,
+    "externalCommunication": false,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-05T16:13:31Z",
+    "provenance": "hostTrusted"
+  },
+  "profileId": "standard",
+  "profileVersion": 1,
+  "requiredExecutionGateRoleIds": ["coulson"],
+  "requiredFinalAcceptanceGateRoleIds": ["coulson"],
+  "predecessorMissionId": "mission:issue-130",
+  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9"
+}

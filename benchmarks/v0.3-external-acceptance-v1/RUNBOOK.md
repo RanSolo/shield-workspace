@@ -7,15 +7,17 @@ Issue #14.
 
 ## Current disposition
 
-The fixture intentionally stops with explicit dependency blockers:
+The fixture prerequisites are dispositioned:
 
-- Issue #24 must have a Coulson-accepted V0.3 product contract.
-- Issue #112 must provide revision-bound Fury conformance and supersession.
-- Issue #113 must enforce exact-scope `review.publish`.
+- Issue #24 is closed with the accepted V0.3 product contract.
+- Issue #138 is closed with content-addressed fixture identity, external
+  installation identity, and evidence/measurement-class hardening.
+- Issue #140 is closed with trusted isolation and interruption-safe rollback.
 
-Do not reinterpret the blocker result as a release failure or manufacture
-substitute evidence. A new fixture revision is required when those contracts
-become available.
+The manifest therefore has no dependency blockers. A literal `ready` result is
+only a closed, measured preflight for the supplied external revision. It is not
+human evidence and grants no package execution, fixture grading, publication,
+merge, deployment, or release authority.
 
 ## Prepare a fresh external repository
 
@@ -51,58 +53,117 @@ the fixture root. That baseline pins the launcher digest, verifier digest,
 identity-record digest, and package identity. The launcher verifies those
 digests before importing any fixture module.
 
-The host also supplies a trusted-journal replay-anchor envelope from outside
-the fixture root. The envelope digest must match its canonical projection;
-fixture evidence cannot provide or replace that anchor. The launcher then
-passes the baseline to `composeMinimumFixture(...)` with the measured artifact
-digest, external repository root, exact base and current head revisions,
-GitHub host configuration, blind classification, and conditional Simmons
-choice. Caller-supplied changed paths are not accepted.
+The trusted-journal replay-anchor envelope is loaded separately from
+`launchExternalFixture(...)`; its digest must match its canonical projection,
+and fixture evidence cannot provide or replace that anchor. The launcher passes
+`operatorInput` to `composeMinimumFixture(...)` with the package artifact path,
+external repository root, exact base and current head revisions, GitHub host
+configuration, blind classification, prior-solution visibility, and conditional
+Simmons choice. It supplies the release baseline through the separate trusted
+host context, so package identity and digest never come from operator input.
+Caller-supplied changed paths are not accepted.
 
 The current v1 driver:
 
-- copies the supplied artifact bytes into a fresh temporary Git repository,
-  installs only that exact local artifact with scripts and network access
-  disabled, and consumes the documented `@shield/team-system/config`,
-  `@shield/team-system/supervision`, and `@shield/team-system/adapter`
-  specifiers;
-- rejects a fake, substituted, un-installable, wrong-name, or un-importable
-  artifact before claiming composition;
-- creates a non-authoritative adapter-failure candidate without contacting
-  GitHub;
-- records Fitz and optional Simmons as waiting;
+- validates the closed input shape, blind-status constraints, host
+  configuration, and syntactic external revision identity;
+- verifies the trusted fixture identity and release baseline before any
+  external repository inspection, package artifact inspection, installation,
+  import, or execution;
+- inspects the exact external repository root, adoption base, and current head;
+- requires a canonical clean repository whose frozen base bytes match the
+  template and whose only base-to-head change is `src/greeting.mjs`;
+- records Fitz and optional Simmons as waiting through the returned evidence
+  inventory;
 - performs no branch, PR, publication, merge, deployment, or release effect;
-- returns the explicit #24, #112, and #113 blockers.
+- returns literal `ready` with the measured external revision, fixture/host/blind
+  preflight, and human-evidence inventory.
+
+Preflight does not read, install, import, or execute the package artifact and
+does not mutate either repository. Any invalid or blocked revision result stops
+the run before trusted composition.
+
+Execution-capable package composition must use the independently pinned launcher entry point
+`composeExternalArtifact(...)`. It copies the exact external tarball into a
+private disposable root, runs offline `npm install --ignore-scripts` as the
+separate `composition.install` phase, and imports only the three frozen public
+surfaces as `composition.import`. Both phases require the external isolation
+envelope, fresh protected-adapter evidence, bounded process-group supervision,
+one sealed worker copy per invocation, and closed revision-bound receipts.
+Before creating the isolation root, the launcher requires the measured tarball
+SHA-256 to equal the package digest pinned by the release baseline and identity
+record. A same-name/version package with different bytes stops with
+`package_artifact_digest_mismatch`. Direct composition remains blocked; a
+missing or uncertain denial proof is isolation `not-observable`, not evidence
+that no effect occurred.
+
+## One disposable unscored run
+
+Run this sequence once, using a newly created repository outside the SHIELD
+workspace and the exact implementation-revision package retained by the
+operator:
+
+1. Create the clean post-install/post-`shield init` adoption base described
+   above, then create one candidate commit changing only `src/greeting.mjs`.
+2. Call `launchExternalFixture(...)` with the external release-baseline path and
+   exact operator input. Require literal `ready` and retain its measured
+   revision, fixture/host/blind preflight, and evidence inventory.
+3. Call `composeExternalArtifact(...)` with the same exact revisions, package
+   path, release baseline, and isolation envelope. Require literal `composed`
+   and retain the artifact digest, installed name/version, and phase list.
+4. Call `gradeExternalFixture(...)` with the same exact revisions and trusted
+   paths. Require literal `passed`, deterministic injected failure, exact
+   restoration, capability-denial evidence, cleanup evidence, and unchanged
+   operator-checkout readback.
+5. Record exact SHIELD and external revisions, package digest, runtime/tool
+   identities, timing and usage where observable, friction, every human
+   intervention, and all returned receipts. Stop.
+
+This is a local disposable run. These calls make no GitHub or Asmark effect and
+cannot authorize Issue #29, publication, merge, deployment, or release.
 
 ## Candidate grading, failure injection, and rollback
 
 After the human-authorized mission produces a candidate that passes
-`node --test`, call `gradeCandidateWithFailureInjection({ fixtureRoot,
-baseRevision, headRevision })`.
+`node --test`, do not call the grading driver directly. Invoke the independently
+pinned host launcher and call `gradeExternalFixture(...)` with the benchmark
+fixture root, operator repository root, exact base/head revisions, and a closed
+trusted host context containing external release-baseline and isolation-envelope
+paths. Direct driver grading and composition fail closed with
+`trusted_isolation_supervisor_required`.
 
-The fixture-only grader:
+The trusted supervisor:
 
-1. verifies and records the exact base, current head, and Git-derived paths;
-2. verifies the frozen defective source and exact test bytes at the adoption
-   base and rejects unexpected untracked files while respecting normal Git
-   ignore rules;
-3. records the candidate digest;
-4. executes only `test/greeting.test.mjs`;
-5. replaces only `src/greeting.mjs` with the frozen defective bytes;
-6. requires the deterministic lane to fail;
-7. restores the exact candidate bytes in a `finally` path;
-8. requires the lane to pass again; and
-9. proves the restored digest equals the original candidate digest.
+1. snapshots exact operator HEAD, porcelain bytes, target/test bytes, and modes;
+2. verifies the frozen base, exact head, and Git-derived change scope;
+3. archives the exact head into a fresh private disposable root;
+4. validates the external isolation envelope and the protected, Apple-signed
+   `sandbox-exec` identity, then runs a fresh nonce-bound denial probe;
+5. executes candidate, injected, and restored lanes in separately receipted
+   sandboxed worker processes with a fresh sealed worker copy for each
+   invocation, selecting only `test/greeting.test.mjs`;
+6. injects and restores bytes only inside the disposable archive;
+7. terminates and reaps an interrupted or uncertain worker;
+8. removes the disposable root after the worker is reaped; and
+9. exact-matches the operator snapshot before promoting any result.
 
-Immediately before injection and rollback, the grader reopens the target with
-no-follow semantics and verifies that the open file is the confined,
-non-symlink regular file it inspected. Replacement of the target causes a
-blocking result; the grader never follows the replacement.
+The host guarantee covers worker interruption and observable supervisor
+outcomes. A hard `SIGKILL` of the supervisor may leave an orphaned directory
+named `shield-v03-supervisor-*` under the host temporary directory, but cannot
+leave injected bytes in the operator checkout because that checkout is never a
+write target. Recover such an orphan only after confirming no owning supervisor
+or worker remains; orphan presence is not cleanup evidence for the interrupted
+run.
 
-If injection, rollback, or validation is unavailable, stop. Do not claim pass.
-Candidate execution has no network sandbox, so its result reports network
-effects as not observable. Operators must not reinterpret that state as proof
-that no network effect occurred.
+The Darwin adapter exception is closed to the canonical SIP/authenticated-root
+protected `/usr/bin/sandbox-exec`, its pinned bytes, Apple signature,
+`com.apple.sandbox-exec` identifier, and pinned CDHash. The trusted probe must
+observe private-root writes as allowed and network, out-of-root writes, and
+non-allowlisted child execution as denied under the exact pinned policy before
+candidate code starts. On another host, or if any identity, protection, probe,
+receipt, cleanup, or integrity evidence is missing or uncertain, stop with
+isolation `not-observable`. Never reinterpret that state as proof that no
+effect occurred.
 
 ## Evidence inventory
 

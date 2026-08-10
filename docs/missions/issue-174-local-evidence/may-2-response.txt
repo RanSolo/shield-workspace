@@ -1,0 +1,6 @@
+I'll start by inspecting the current state of the relevant files to understand what needs correction.
+
+<read>
+<path>/home/user/.agent/workspaces/shield-team-charter/workspace/docs/implementation-blueprints/may-0174-passcode-journal-correction.md</path>
+</read>
+

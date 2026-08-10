@@ -58,26 +58,7 @@ export const FIXTURE_MANIFEST = deepFreeze({
     ],
     priorSolutionsVisibilityMustBeRecorded: true
   },
-  dependencyBlockers: [
-    {
-      issue: "#24",
-      code: "accepted_product_contract_required",
-      requiredState: "coulson-accepted",
-      currentFixtureState: "unavailable"
-    },
-    {
-      issue: "#112",
-      code: "revision_bound_conformance_required",
-      requiredState: "implemented-and-validated",
-      currentFixtureState: "unavailable"
-    },
-    {
-      issue: "#113",
-      code: "exact_scope_review_publication_required",
-      requiredState: "implemented-and-validated",
-      currentFixtureState: "unavailable"
-    }
-  ],
+  dependencyBlockers: [],
   excludedCampaign: {
     issue: "#14",
     description: "Broader six-mission Multi Band benchmark campaign"

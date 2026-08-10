@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-137-ac4-correction",
+  "objective": "Correct issue #137 measurement-class handling so estimated evidence is representable, bind the complete corrective plan for Fury review before implementation, and stop at a corrected exact revision for Mack validation without starting the external run or issue #29.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/137",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": false,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-01T22:56:34.689Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:PoxkVrolxT0o4zBXXlSjehOjxQHjba1SWQrzlRVXMiE"
+}

@@ -5,8 +5,23 @@ import type {
 import type {
   ReviewPublicationBindingV1,
 } from "../dist/review-publication-v1.mjs";
+import type {
+  FuryPlanReviewEvidenceCandidateV1,
+  FuryPlanReviewEvidenceEvaluationV1,
+} from "../dist/fury-plan-review-evidence-v1.mjs";
 
 export * from "../dist/review-publication-v1.mjs";
+export {
+  FURY_PLAN_REVIEW_EVIDENCE_CONTRACT_VERSION,
+  FURY_PLAN_REVIEW_EVIDENCE_REASON_CODES,
+  FURY_PLAN_REVIEW_EVIDENCE_SCHEMA_VERSION,
+  evaluateFuryPlanReviewEvidenceV1,
+  replayFuryPlanReviewEvidenceLedgerV1,
+} from "../dist/fury-plan-review-evidence-v1.mjs";
+export type {
+  FuryPlanReviewEvidenceCandidateV1,
+  FuryPlanReviewEvidenceEvaluationV1,
+} from "../dist/fury-plan-review-evidence-v1.mjs";
 
 export interface CommandResult {
   exitCode: number;
@@ -230,26 +245,28 @@ export type FuryPlanGateEvaluationV1 =
 export type DeliveryWorkspaceResult =
   | {
       state: "workspace_ready";
-      publicationAction: "created_draft_pr" | "updated_existing_draft_pr";
+      publicationAction: "created_draft_pr" | "updated_existing_draft_pr" | "verified_existing_draft_pr";
       receipt: PRWorkspaceReceipt;
       publicationScope?: {
         scopeDigest: string;
         binding: Readonly<ReviewPublicationBindingV1>;
       };
       publicationCandidate: AdapterCandidateEnvelope;
-      planGateEvaluation: FuryPlanGateEvaluationV1;
+      planReviewEvidenceEvaluation: FuryPlanReviewEvidenceEvaluationV1;
+      planGateEvaluation: FuryPlanGateEvaluationV1 | null;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
   | {
       state: "dispatch_ready";
-      publicationAction: "created_draft_pr" | "updated_existing_draft_pr";
+      publicationAction: "created_draft_pr" | "updated_existing_draft_pr" | "verified_existing_draft_pr";
       receipt: PRWorkspaceReceipt;
       publicationScope?: {
         scopeDigest: string;
         binding: Readonly<ReviewPublicationBindingV1>;
       };
       publicationCandidate: AdapterCandidateEnvelope;
-      planGateEvaluation: FuryPlanGateEvaluationV1;
+      planReviewEvidenceEvaluation: FuryPlanReviewEvidenceEvaluationV1;
+      planGateEvaluation: FuryPlanGateEvaluationV1 | null;
       commands: Array<{ executable: string; args: string[]; exitCode: number }>;
     }
   | {
@@ -296,7 +313,7 @@ export function prepareDeliveryWorkspaceForDispatch(
     missionId: string;
     subjectId: string;
     blueprintArtifact: BlueprintArtifactAssertionV1;
-    planGate: FuryPlanGateEnvelopeV1 | null;
+    planGateCandidate: FuryPlanReviewEvidenceCandidateV1 | null;
     publicationRequestId: string;
     publicationCandidateId: string;
     publicationSourceRef: string;
@@ -304,11 +321,43 @@ export function prepareDeliveryWorkspaceForDispatch(
   },
   options: {
     loadJournal: () => unknown[];
+    loadFuryPlanReviewEvidence: () => unknown;
+    loadFuryDispatchReceiptEntries: () => unknown;
     run?: CommandRunner;
     cwd?: string;
     realpath?: (path: string) => string;
   },
 ): DeliveryWorkspaceResult;
+
+export interface GovernedDeliveryWorkspaceInputV1 {
+  artifactRevisionId: string;
+  workspacePlan: DeliveryWorkspacePlan;
+  body: string;
+  missionId: string;
+  subjectId: string;
+  blueprintArtifact: BlueprintArtifactAssertionV1;
+  planGateCandidate: FuryPlanReviewEvidenceCandidateV1 | null;
+  publicationRequestId: string;
+  publicationCandidateId: string;
+  publicationSourceRef: string;
+  publicationCapturedAt: AdapterTimestamp;
+  repositoryRoot: string;
+  configuredJournalPath: string;
+  missionRevisionId: string;
+  evaluatedThroughSequence: number;
+}
+
+export function prepareGovernedDeliveryWorkspaceForDispatch(
+  input: GovernedDeliveryWorkspaceInputV1,
+  options: {
+    loadJournal: () => unknown[];
+    loadFuryPlanReviewEvidence: () => unknown;
+    loadFuryDispatchReceiptEntries: () => unknown;
+    run?: CommandRunner;
+    cwd?: string;
+    realpath?: (path: string) => string;
+  },
+): Promise<DeliveryWorkspaceResult>;
 
 export function evaluateFuryPlanGateV1(
   planGate: unknown,

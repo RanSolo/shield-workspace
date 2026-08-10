@@ -211,6 +211,26 @@ test("authorizer requires a matching atomic append receipt before returning allo
   await assert.rejects(failed(plan()), /audit_receipt_mismatch/);
 });
 
+test("authorizer accepts fresh context with changed clock and attestation ids", async () => {
+  const records = [];
+  const authorize = createPermissionAuthorizer({
+    ledgerId: "ledger:permission:fresh-context:test",
+    getContext: () => context({
+      evaluatedAt: "2026-07-20T02:05:12Z",
+      attestations: [
+        attestation("repository_root", { attestationId: "attestation:repository_root:fresh" }),
+        attestation("writability", { attestationId: "attestation:writability:fresh" }),
+        attestation("capability", { attestationId: "attestation:capability:fresh" }),
+      ],
+    }),
+    appendIfAbsent: (record) => { records.push(record); return receipt(record, records.length - 1); },
+  });
+  const decision = await authorize(plan());
+  assert.equal(decision.outcome, "allow");
+  assert.equal(records.length, 1);
+  assert.equal(validatePermissionAuthorizationArtifactPayload(decision.authorizationArtifact.payload).state, "valid");
+});
+
 test("audited executor performs a fresh preflight and marks unverified result audit uncertain", async () => {
   const authorize = createPermissionAuthorizer({ ledgerId: "ledger:permission:test", getContext: () => context(), appendIfAbsent: (record) => receipt(record) });
   const decision = await authorize(plan());
@@ -364,7 +384,7 @@ test("runtime-v2 claim record atomically excludes a different decision at the sa
   assert.equal(replayRuntimeInvocationClaimsV1([...ledger.values()]).state, "valid");
 });
 
-test("runtime claim execution rejects plan or context substitution before the raw executor", async () => {
+test("runtime claim execution accepts fresh context and enforces exact-once execution", async () => {
   const records = new Map();
   const appendIfAbsent = async (record) => {
     if (records.has(record.recordId)) return { appended: false };
@@ -408,12 +428,111 @@ test("runtime claim execution rejects plan or context substitution before the ra
   assert.equal((await claimed.execute(substitutedPlan, decision)).outcome, "failed");
   assert.equal(calls, 0);
 
-  currentContext = { ...currentContext, evaluatedAt: "2026-07-20T02:05:01Z" };
-  assert.equal((await claimed.execute(currentPlan, decision)).outcome, "failed");
-  assert.equal(calls, 0);
+  currentContext = {
+    ...currentContext,
+    evaluatedAt: "2026-07-20T02:05:01Z",
+    attestations: [
+      attestation("repository_root", { attestationId: "attestation:repository_root:v2" }),
+      attestation("writability", { attestationId: "attestation:writability:v2" }),
+      attestation("capability", { attestationId: "attestation:capability:v2" }),
+    ],
+  };
+  assert.equal((await claimed.execute(currentPlan, decision)).outcome, "completed");
+  assert.equal(calls, 1);
 
   currentContext = context({ journalSchemaVersion: 9 });
-  assert.equal((await claimed.execute(currentPlan, decision)).outcome, "completed");
+  assert.equal((await claimed.execute(currentPlan, decision)).outcome, "failed");
+  assert.equal(calls, 1);
+});
+
+test("runtime claim execution rejects stable identity drift after claim", async () => {
+  const records = new Map();
+  const appendIfAbsent = async (record) => {
+    if (records.has(record.recordId)) return { appended: false };
+    records.set(record.recordId, record);
+    return receipt(record, records.size - 1);
+  };
+  const currentContext = context({ journalSchemaVersion: 9 });
+  const currentPlan = plan();
+  const decision = await createPermissionAuthorizer({
+    ledgerId: "ledger:runtime-claim-identity-denial:test",
+    appendIfAbsent,
+    getContext: () => currentContext,
+  })(currentPlan);
+  let calls = 0;
+  let executeContext = currentContext;
+  const claimed = createRuntimeClaimedExecutorV1({
+    ledgerId: "ledger:runtime-claim-identity-denial:test",
+    appendIfAbsent,
+    getContext: () => executeContext,
+    execute: () => {
+      calls += 1;
+      return {
+        runnerContractVersion: 1,
+        outcome: "completed",
+        missionId: currentPlan.missionId,
+        subjectId: currentPlan.subjectId,
+        revisionId,
+        evaluatedThroughSequence: currentPlan.evaluatedThroughSequence,
+        cycleId: currentPlan.cycleId,
+        seatId: currentPlan.seatId,
+        actionId: currentPlan.actionId,
+        effectClass: currentPlan.effectClass,
+        effectKey: currentPlan.effectKey,
+        summary: "Identity changed.",
+        evidenceRefs: ["evidence:identity-denied"],
+      };
+    },
+    now: () => "2026-07-20T02:06:00Z",
+  });
+  assert.equal((await claimed.claim(currentPlan, decision)).outcome, "claimed");
+  executeContext = { ...currentContext, branch: "main" };
+  assert.equal((await claimed.execute(currentPlan, decision)).outcome, "failed");
+  assert.equal(calls, 0);
+});
+
+test("audited executor accepts fresh context with changed clock and attestation ids", async () => {
+  const authorize = createPermissionAuthorizer({
+    ledgerId: "ledger:audited-fresh-context:test",
+    getContext: () => context(),
+    appendIfAbsent: (record) => receipt(record),
+  });
+  const decision = await authorize(plan());
+  let calls = 0;
+  const execute = createAuditedExecutor({
+    ledgerId: "ledger:audited-fresh-context:test",
+    getContext: () => context({
+      evaluatedAt: "2026-07-20T02:05:10Z",
+      attestations: [
+        attestation("repository_root", { attestationId: "attestation:repository_root:executed" }),
+        attestation("writability", { attestationId: "attestation:writability:executed" }),
+        attestation("capability", { attestationId: "attestation:capability:executed" }),
+      ],
+    }),
+    execute: () => {
+      calls += 1;
+      return {
+        runnerContractVersion: 1,
+        outcome: "completed",
+        missionId: plan().missionId,
+        subjectId: plan().subjectId,
+        revisionId,
+        evaluatedThroughSequence: 5,
+        cycleId: plan().cycleId,
+        seatId: plan().seatId,
+        actionId: plan().actionId,
+        effectClass: plan().effectClass,
+        effectKey: plan().effectKey,
+        summary: "Executed with fresh context.",
+        evidenceRefs: ["evidence:audited-fresh-context"],
+      };
+    },
+    appendIfAbsent: (record) => receipt(record),
+    nextRecordId: () => "audit-result:issue-10:3",
+    now: () => "2026-07-20T02:06:00Z",
+  });
+  const result = await execute(plan(), decision);
+  assert.equal(result.outcome, "completed");
   assert.equal(calls, 1);
 });
 

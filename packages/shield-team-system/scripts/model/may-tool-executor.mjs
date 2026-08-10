@@ -6,6 +6,15 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { createAuditedExecutor, createPermissionAuthorizer } from "../../dist/permission-v1.mjs";
 import { validateRunnerCyclePlan } from "../../dist/runner-v1.mjs";
+import {
+  computeMayExecutableIdentityV1,
+  computeMayPlannedToolEffectKeyV1,
+  computeMayRegularFileIdentityV1,
+  computeMayValidationEffectKeyV1,
+  computeMayWriteEffectKeyV1,
+  MAY_TOOL_MAPPINGS_V1,
+  normalizeMayPlannedToolOperationsV1,
+} from "../../dist/may-tool-effect-v1.mjs";
 import { LOCAL_TOOL_SAMPLING, probeLocalToolModel } from "./local-tool-broker.mjs";
 import { isSensitiveRepositoryPath } from "./repository-sensitive-policy.mjs";
 import { validateRepositoryRelativePath } from "./repository-tools.mjs";
@@ -31,18 +40,7 @@ export const MAY_CONTROL_LOOP_LIMITS = Object.freeze({
   terminalEventReserveMs: 1_000,
 });
 
-export const MAY_TOOL_MAPPINGS = Object.freeze({
-  writeFile: Object.freeze({
-    actionId: "repository.write_file",
-    effectClass: "behavioral_implementation",
-    capability: "filesystem_write",
-  }),
-  runValidation: Object.freeze({
-    actionId: "repository.run_validation",
-    effectClass: "verification",
-    capability: "process_execute",
-  }),
-});
+export const MAY_TOOL_MAPPINGS = MAY_TOOL_MAPPINGS_V1;
 
 export const MAY_TOOL_DEFINITIONS = Object.freeze([
   Object.freeze({
@@ -121,11 +119,11 @@ function rootIdentity(info) {
 }
 
 function regularFileIdentity(info) {
-  return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  return computeMayRegularFileIdentityV1(info);
 }
 
 function executableIdentity(info) {
-  return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}`;
+  return computeMayExecutableIdentityV1(info);
 }
 
 function validUtf8String(value) {
@@ -285,27 +283,12 @@ function releasedToolContent(raw) {
 }
 
 function mayEffectKey(request, args, commands) {
-  let descriptor;
   if (request.toolName === "writeFile") {
-    descriptor = {
-      contentSha256: createHash("sha256").update(Buffer.from(args.content, "utf8")).digest("hex"),
-      expectedSha256: args.expectedSha256,
-      path: args.path,
-      toolName: request.toolName,
-    };
-  } else {
-    const command = commands.get(args.commandId);
-    if (!command) throw new Error("may_validation_command_not_approved");
-    descriptor = {
-      args: command.args,
-      commandId: command.commandId,
-      executable: command.executable,
-      executableIdentity: command.executableIdentity,
-      timeoutMs: command.timeoutMs,
-      toolName: request.toolName,
-    };
+    return computeMayWriteEffectKeyV1({ path: args.path, content: args.content, expectedSha256: args.expectedSha256 });
   }
-  return `effect:may:sha256:${createHash("sha256").update(JSON.stringify(descriptor)).digest("hex")}`;
+  const command = commands.get(args.commandId);
+  if (!command) throw new Error("may_validation_command_not_approved");
+  return computeMayValidationEffectKeyV1(command);
 }
 
 function parseArguments(toolName, raw) {
@@ -386,6 +369,8 @@ function normalizeDependencies(value) {
   }
   output.approvedFiles = normalizeApprovedFiles(data(value, "approvedFiles"));
   output.validationCommands = data(value, "validationCommands");
+  const plannedToolOperations = data(value, "plannedToolOperations");
+  output.plannedToolOperations = plannedToolOperations === undefined ? undefined : normalizeMayPlannedToolOperationsV1(plannedToolOperations);
   const monotonicNow = data(value, "monotonicNow");
   if (monotonicNow !== undefined && typeof monotonicNow !== "function") throw new Error("may_executor_configuration_malformed");
   output.monotonicNow = monotonicNow ?? (() => Date.now());
@@ -415,18 +400,26 @@ async function verifyRevision(dependencies, root, baseRevision) {
   if (revision !== baseRevision) throw new Error("may_workspace_revision_mismatch");
 }
 
-async function verifyWorkspaceState(dependencies, root, baseRevision) {
+async function verifyWorkspaceState(dependencies, root, baseRevision, ignoredPath = null) {
   await verifyRevision(dependencies, root, baseRevision);
   const changed = denseArray(await dependencies.readWorkspaceStatus(root.canonical));
   if (changed === null) throw new Error("may_workspace_status_malformed");
   const seen = new Set();
+  const visible = [];
   for (const path of changed) {
     if (!validateRepositoryRelativePath(path) || isSensitiveRepositoryPath(path) || seen.has(path)) throw new Error("may_workspace_status_malformed");
-    if (!dependencies.approvedFiles.includes(path)) throw new Error("may_workspace_scope_mismatch");
     seen.add(path);
+    if (path === ignoredPath) continue;
+    if (!dependencies.approvedFiles.includes(path)) throw new Error("may_workspace_scope_mismatch");
+    visible.push(path);
   }
   if ([...seen].some((path, index, values) => index > 0 && values[index - 1].localeCompare(path) >= 0)) throw new Error("may_workspace_status_malformed");
-  return Object.freeze([...seen]);
+  return Object.freeze(visible);
+}
+
+async function matchesTemporaryIdentity(path, identity) {
+  const current = await lstat(path).catch(() => null);
+  return current?.isFile() && !current.isSymbolicLink() && rootIdentity(current) === identity;
 }
 
 async function confinedTarget(root, relativePath) {
@@ -488,29 +481,48 @@ async function snapshotWorkspace(root, changedPaths) {
   return JSON.stringify(snapshot);
 }
 
-async function writeApprovedFile(root, request, args, dependencies) {
+async function writeApprovedFile(root, request, args, dependencies, plannedOperation) {
   if (!dependencies.approvedFiles.includes(args.path)) throw new Error("may_path_not_approved");
   await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const target = await confinedTarget(root, args.path);
   const digest = await currentDigest(target);
   if ((args.expectedSha256 === "absent" && digest !== null) || (args.expectedSha256 !== "absent" && digest !== args.expectedSha256)) throw new Error("may_file_digest_mismatch");
+  if (plannedOperation !== undefined && (
+    plannedOperation.toolName !== "writeFile" ||
+    plannedOperation.path !== args.path ||
+    plannedOperation.content !== args.content ||
+    (plannedOperation.precondition.kind === "absent"
+      ? target.info !== null || args.expectedSha256 !== "absent"
+      : target.info === null || args.expectedSha256 !== plannedOperation.precondition.sha256 || regularFileIdentity(target.info) !== plannedOperation.precondition.regularFileIdentity)
+  )) throw new Error("may_planned_write_mismatch");
   await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const temporaryName = dependencies.nextTemporaryName(Object.freeze({ sessionId: request.sessionId, toolCallId: request.toolCallId }));
   if (typeof temporaryName !== "string" || !/^\.shield-may-[A-Za-z0-9_-]{8,64}\.tmp$/u.test(temporaryName)) throw new Error("may_temporary_name_invalid");
   const temporaryPath = join(target.parent, temporaryName);
   let handle;
+  let temporaryIdentity = null;
   try {
     handle = await open(temporaryPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0), target.info?.mode ?? 0o600);
+    const temporaryInfo = await handle.stat();
+    if (!temporaryInfo.isFile()) throw new Error("may_temporary_file_invalid");
+    temporaryIdentity = rootIdentity(temporaryInfo);
     const bytes = Buffer.from(args.content, "utf8");
     await handle.writeFile(bytes);
     await handle.chmod(target.info === null ? 0o600 : target.info.mode & 0o777);
     await handle.sync();
     await handle.close();
     handle = null;
-    await verifyWorkspaceState(dependencies, root, request.baseRevision);
+    const temporaryRelativePath = relative(root.canonical, temporaryPath).split(sep).join("/");
+    if (!(await matchesTemporaryIdentity(temporaryPath, temporaryIdentity))) throw new Error("may_temporary_file_changed");
+    await verifyWorkspaceState(dependencies, root, request.baseRevision, temporaryRelativePath);
+    if (!(await matchesTemporaryIdentity(temporaryPath, temporaryIdentity))) throw new Error("may_temporary_file_changed");
     const rechecked = await confinedTarget(root, args.path);
     const recheckedDigest = await currentDigest(rechecked);
-    if (recheckedDigest !== digest) throw new Error("may_file_identity_changed");
+    const recheckedIdentityMatches = target.info === null
+      ? rechecked.info === null
+      : rechecked.info !== null && regularFileIdentity(rechecked.info) === regularFileIdentity(target.info);
+    if (recheckedDigest !== digest || !recheckedIdentityMatches) throw new Error("may_file_identity_changed");
+    if (!(await matchesTemporaryIdentity(temporaryPath, temporaryIdentity))) throw new Error("may_temporary_file_changed");
     await rename(temporaryPath, target.path);
     try {
       await verifyWorkspaceState(dependencies, root, request.baseRevision);
@@ -522,12 +534,24 @@ async function writeApprovedFile(root, request, args, dependencies) {
     return Object.freeze({ state: "completed", code: "file_written", path: args.path, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
   } finally {
     await handle?.close().catch(() => {});
-    await unlink(temporaryPath).catch(() => {});
+    if (temporaryIdentity !== null) {
+      if (await matchesTemporaryIdentity(temporaryPath, temporaryIdentity)) {
+        await unlink(temporaryPath).catch(() => {});
+      }
+    }
   }
 }
 
-async function runApprovedValidation(root, request, args, dependencies, commands) {
+async function runApprovedValidation(root, request, args, dependencies, commands, plannedOperation) {
   const command = commands.get(args.commandId);
+  if (plannedOperation !== undefined && (
+    plannedOperation.toolName !== "runValidation" ||
+    plannedOperation.commandId !== args.commandId ||
+    plannedOperation.executable !== command.executable ||
+    plannedOperation.executableIdentity !== command.executableIdentity ||
+    plannedOperation.timeoutMs !== command.timeoutMs ||
+    JSON.stringify(plannedOperation.args) !== JSON.stringify(command.args)
+  )) throw new Error("may_planned_validation_mismatch");
   const workspaceBefore = await verifyWorkspaceState(dependencies, root, request.baseRevision);
   const snapshotBefore = await snapshotWorkspace(root, workspaceBefore);
   const currentExecutable = await stat(command.executable).catch(() => null);
@@ -582,6 +606,9 @@ async function runApprovedValidation(root, request, args, dependencies, commands
   } catch (error) {
     throw executorError(error instanceof Error ? error.message : "may_workspace_revision_mismatch", "uncertain");
   }
+  if (execution.signal !== null) throw new Error("may_validation_signal");
+  if (execution.code === null) throw executorError("may_validation_process_state_uncertain", "uncertain");
+  if (execution.code !== 0) throw new Error("may_validation_nonzero_exit");
   return Object.freeze({
     state: "completed", code: "validation_completed", commandId: command.commandId,
     exitCode: execution.code, signal: execution.signal, stdout: execution.stdout, stderr: execution.stderr,
@@ -622,6 +649,11 @@ export async function runMayToolCall(requestInput, dependenciesInput) {
   const dependencies = normalizeDependencies(dependenciesInput);
   const [root, commands] = await Promise.all([createRoot(request.repositoryRoot), normalizeCommands(dependencies.validationCommands)]);
   const effectKey = mayEffectKey(request, args, commands);
+  const matchingPlannedOperations = dependencies.plannedToolOperations?.filter(
+    (operation) => computeMayPlannedToolEffectKeyV1(operation) === effectKey,
+  );
+  if (matchingPlannedOperations !== undefined && matchingPlannedOperations.length !== 1) throw new Error("may_planned_operation_mismatch");
+  const plannedOperation = matchingPlannedOperations?.[0];
   const expected = Object.freeze({
     canonicalRoot: root.canonical, repositoryId: dependencies.repositoryId,
     reasoningRuntimeId: dependencies.reasoningRuntimeId, toolExecutorId: dependencies.toolExecutorId,
@@ -650,8 +682,8 @@ export async function runMayToolCall(requestInput, dependenciesInput) {
     execute: async () => {
       try {
         const result = request.toolName === "writeFile"
-          ? await writeApprovedFile(root, request, args, dependencies)
-          : await runApprovedValidation(root, request, args, dependencies, commands);
+          ? await writeApprovedFile(root, request, args, dependencies, plannedOperation)
+          : await runApprovedValidation(root, request, args, dependencies, commands, plannedOperation);
         escrow = result;
         return runnerResult(plan, "completed", request.toolName === "writeFile" ? "Approved revision-bound file write completed." : `Approved validation command completed: ${args.commandId}.`, [`may-executor:${request.sessionId}`]);
       } catch (error) {
@@ -705,6 +737,9 @@ export async function runMayControlLoop(requestInput, dependenciesInput) {
   let validationCalls = 0;
   let releasedBytes = 0;
   try {
+    const plannedCommands = dependencies.plannedToolOperations === undefined
+      ? null
+      : await normalizeCommands(dependencies.validationCommands);
     for (let round = 0; round < MAY_CONTROL_LOOP_LIMITS.rounds; round += 1) {
       const inferenceTimeout = Math.min(MAY_CONTROL_LOOP_LIMITS.inferenceTimeoutMs, remainingTime(deadline, clock));
       const response = await withinDeadline(() => fetchJson(fetchImpl, `${capability.origin}/v1/chat/completions`, {
@@ -714,7 +749,12 @@ export async function runMayControlLoop(requestInput, dependenciesInput) {
       }, { timeoutMs: inferenceTimeout, maxBytes: MAY_CONTROL_LOOP_LIMITS.responseBytes }), deadline, clock);
       const assistant = parseAssistantResponse(response);
       if (assistant.toolCalls.length === 0) {
-        if (completedToolCalls === 0 || validationCalls === 0 || typeof assistant.content !== "string" || assistant.content.trim().length === 0) throw new Error("may_control_protocol_incomplete");
+        const plannedComplete = dependencies.plannedToolOperations === undefined
+          ? completedToolCalls > 0 && validationCalls > 0
+          : completedToolCalls === dependencies.plannedToolOperations.length
+            && writeCalls === dependencies.plannedToolOperations.length - 1
+            && validationCalls === 1;
+        if (!plannedComplete || typeof assistant.content !== "string" || assistant.content.trim().length === 0) throw new Error("may_control_protocol_incomplete");
         eventCounter += 1;
         await appendControlEvent(dependencies, request.sessionId, eventCounter, "may_control_completed", {}, timing);
         return Object.freeze({
@@ -736,6 +776,13 @@ export async function runMayControlLoop(requestInput, dependenciesInput) {
       for (const id of batchIds) seenCallIds.add(id);
       callCount += assistant.toolCalls.length;
       for (const call of assistant.toolCalls) {
+        if (dependencies.plannedToolOperations !== undefined) {
+          const expectedOperation = dependencies.plannedToolOperations[completedToolCalls];
+          if (expectedOperation === undefined || call.function.name !== expectedOperation.toolName) throw new Error("may_control_sequence_mismatch");
+          const callArguments = parseArguments(call.function.name, call.function.arguments);
+          const callEffectKey = mayEffectKey({ toolName: call.function.name }, callArguments, plannedCommands);
+          if (callEffectKey !== computeMayPlannedToolEffectKeyV1(expectedOperation)) throw new Error("may_control_sequence_mismatch");
+        }
         const result = await withinDeadline(() => runMayToolCall({
           sessionId: request.sessionId,
           toolCallId: call.id,

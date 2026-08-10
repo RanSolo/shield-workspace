@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-171",
+  "objective": "Implement issue #171 as the smallest production evidence-adapter slice required for governed local-May dispatch: provide durable permission-audit and May control-event storage plus a supported current v6-v9 execution-scope and active-runtime-binding source, with exact attribution and fail-closed recovery, without synthesizing authority or invoking a local model.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/171",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-02T19:17:25Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:5ud527SOimvIoD4fXhxEoWBHxtuTm5mkppa6WT8g91s"
+}

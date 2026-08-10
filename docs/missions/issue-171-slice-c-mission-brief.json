@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-171-slice-c",
+  "objective": "Implement issue #171 Slice C as one bounded pull request: load replayed schema-9 Wheels Up authority and the active May runtime binding into a production permission context with live repository-root, branch, and HEAD freshness checks that fail closed before tool effects, without entering issue #170 composition, invoking a model, or performing external effects.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/171",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": true,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-03T21:14:04Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:4mTZkKHEO8g_duezUYanuU0U1rPHbG2vTrHB-IVVhEw"
+}

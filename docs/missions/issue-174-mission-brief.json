@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-174",
+  "objective": "Use issue #174 to prove micro-context local Daisy and May runs while implementing the smallest correct interactive-stdin lifecycle fix, measuring the minimum useful packet size without changing seat authority, dispatch contracts, or the V0.3 critical path.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/174",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": false,
+    "externalCommunication": false,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": false
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "daisy" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-02T23:26:17Z",
+    "provenance": "hostTrusted"
+  },
+  "revisionId": "sha256:F83zJdbORCh9gIUGremVJrZPDpS9_gcYicWFsS_j4JQ"
+}

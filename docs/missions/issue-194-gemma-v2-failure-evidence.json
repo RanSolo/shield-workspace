@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "missionId": "mission:issue-194-gemma-recovery-v2",
+  "missionRevisionId": "sha256:e2V-RbXrhqy7IT7sKGLzEUl_a_gupQdKDuji0eRum7U",
+  "repositoryHeadBefore": "17666963fc1f8922d28e64881dc657de4def6d4e",
+  "repositoryHeadAfter": "17666963fc1f8922d28e64881dc657de4def6d4e",
+  "repositoryStatusBefore": "clean",
+  "repositoryStatusAfter": "clean",
+  "modelId": "google/gemma-4-31b-qat",
+  "runtimeId": "runtime:lmstudio-gemma-4-31b",
+  "executorId": "executor:hill-exact-patch-applier",
+  "packetDigest": "sha256:fb1134a1eafcece60e27e96e3ede9aa10fe9923a2b3fd90fa272c03fc38e6fc2",
+  "packetBytes": 160561,
+  "responseDigest": "sha256:26b6483b861877ba666cb2f8e9b1664b462a3606f51a85c74df81e9d2cb66004",
+  "reasoningDigest": "sha256:5fc0af07d581704428040afe8f5c98749abfe5b18da2d5cfa565676b9ea688ca",
+  "reasoningBytes": 8357,
+  "patchDigest": "sha256:494a30c56944c3e9e548ba5cadf0981551e63449f64d59f60835da422f8b6fdc",
+  "patchBytes": 10964,
+  "responseStats": {
+    "inputTokens": 43099,
+    "totalOutputTokens": 5717,
+    "reasoningOutputTokens": 2305,
+    "tokensPerSecond": 8.886755059013431,
+    "timeToFirstTokenSeconds": 679.737314
+  },
+  "reportedPaths": [
+    "packages/shield-team-system/scripts/model/may-tool-executor.mjs",
+    "packages/shield-team-system/src/governed-may-dispatch-v1.mts",
+    "packages/shield-team-system/tests/governed-may-dispatch-v1.test.mjs",
+    "packages/shield-team-system/tests/may-tool-executor.test.mjs"
+  ],
+  "patchValidation": {
+    "command": "git apply --check -",
+    "exitCode": 128,
+    "stderr": "error: corrupt patch at line 48\n",
+    "stderrDigest": "sha256:92498c746ab9a74c66716a03efb363a2ae34c23fb4eddbba8bc78169bd3fe32b",
+    "applied": false
+  },
+  "disposition": "rejected_before_application"
+}

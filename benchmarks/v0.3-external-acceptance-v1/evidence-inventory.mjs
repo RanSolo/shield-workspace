@@ -1,4 +1,5 @@
 import { evaluateSeatDispatchAttributionV1 } from "@shield/team-system/dispatch-receipts";
+import { FIXTURE_MANIFEST } from "./fixture-manifest.mjs";
 
 const DEFINITION_FIELDS = Object.freeze([
   "evidenceId",
@@ -517,11 +518,10 @@ export function createEvidenceInventory({ requireSimmons = false } = {}) {
 export function gradeEvidenceInventory(inventory, options = {}) {
   const { requireSimmons = false, attributionInputs = {}, replayAnchor } = options;
   const expected = Object.freeze(expectedEntries(requireSimmons));
-  const reasons = [
-    "dependency_contract_unavailable:#24",
-    "dependency_contract_unavailable:#112",
-    "dependency_contract_unavailable:#113"
-  ];
+  const reasons = FIXTURE_MANIFEST.dependencyBlockers.map(
+    ({ issue, code, currentFixtureState }) =>
+      `dependency_contract_unavailable:${issue}:${code}:${currentFixtureState}`,
+  );
 
   const verifiedAnchor = parseReplayAnchor(replayAnchor);
   if (verifiedAnchor === null) {

@@ -23,6 +23,7 @@ import { deriveMissionCycleIdentityV1 } from "../dist/mission-runtime-v1.mjs";
 import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 import { createSeatDispatchLifecycleEventV1, createSeatDispatchStartedEventV1, replaySeatDispatchReceiptsV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import {
+  createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   replayProfileAwareMissionJournal,
@@ -173,6 +174,68 @@ function appendSignedEvidence(state, seatId, evidenceKind, type) {
   return payload;
 }
 
+function appendImplementationAuthority(state, definition) {
+  const signer = state.signers.coulson;
+  const step = definition.steps.find((item) => item.adapter === "mission_cycle");
+  assert.ok(signer);
+  assert.ok(step);
+  const sequence = state.entries.length;
+  const cycleIdentity = deriveMissionCycleIdentityV1({
+    repositoryRoot: "/workspace/repository",
+    configuredJournalPath: ".shield/journal.jsonl",
+    missionId: definition.missionId,
+    expectedSubjectId: definition.subjectId,
+    expectedRevisionId: state.brief.revisionId,
+    expectedSequence: sequence + 1,
+    seatId: step.seatId,
+    actionId: step.actionId,
+    effectClass: step.effectClass,
+    validationId: step.validationId,
+    activatedModes: definition.activatedModes.filter((mode) => mode.seatId === step.seatId),
+    actionAllowlist: definition.steps.map((item) => item.actionId),
+  });
+  const payload = {
+    schemaVersion: 1,
+    contractVersion: "implementation-authority.v1",
+    authorityKind: "wheels_up",
+    authorityRef: `authority:${state.brief.missionId}:builder`,
+    missionId: state.brief.missionId,
+    subjectId: state.brief.subjectId,
+    seatId: "may",
+    missionRevisionId: state.brief.revisionId,
+    artifactRevisionId: definition.repositoryRevision,
+    repositoryId: definition.repositoryId,
+    canonicalWritableRoot: "/workspace/repository",
+    branch: "agent/mission-builder-test",
+    baseRevision: "0000000000000000000000000000000000000000",
+    headRevision: definition.repositoryRevision,
+    modelId: "model:test",
+    approvedRelativePaths: ["packages/shield-team-system/src/mission-builder-v1.mts"],
+    approvedActionIds: [step.actionId],
+    approvedEffectClasses: [step.effectClass],
+    approvedEffectKeys: [cycleIdentity.effectKey],
+    approvedCapabilities: [...step.requiredCapabilities].sort(),
+    validationCommandIds: [step.validationId],
+    journalSequence: sequence,
+    humanPrincipalId: signer.binding.humanPrincipalId,
+    humanBindingId: signer.binding.bindingId,
+    signingKeyRef: signer.binding.signingKeyRef,
+    sourceRef: "test:mission-builder:wheels-up",
+    evidenceRef: "evidence:coulson:mission_authorization",
+    timestamp: { value: OBSERVED_AT, provenance: "humanRecorded" },
+  };
+  const authority = {
+    payload,
+    signatureBase64: sign(null, Buffer.from(canonicalJson(payload)), signer.privateKey).toString("base64"),
+  };
+  state.entries.push(createProfileAwareImplementationAuthorityEntryV1({
+    projection: state.projection,
+    trustedBindings: [signer.binding],
+    authority,
+  }));
+  state.replay();
+}
+
 function profileState(definition) {
   const signers = { coulson: signingBinding("coulson"), fitz: signingBinding("fitz") };
   const participants = [...new Set(["hill", ...definition.participants.map(({ seatId }) => seatId).filter((seatId) => seatId !== "mack")])].map((seatId) => ({ seatId }));
@@ -194,6 +257,7 @@ function profileState(definition) {
   state.replay();
   appendSignedEvidence(state, "coulson", "mission_authorization", "governance.decided");
   appendSignedEvidence(state, "fitz", "technical_review", "evidence.recorded");
+  appendImplementationAuthority(state, definition);
   return state;
 }
 
