@@ -162,6 +162,205 @@ function signedReviewEvidence(authority, projection, requirement, sequence) {
   };
 }
 
+const REVISION_IDS = Object.freeze(Object.fromEntries(
+  ["A", "B", "C", "D", "E", "F"].map((name) => [name, `git:${name.toLowerCase().repeat(40)}`]),
+));
+
+function assertInvalid(result, code, context) {
+  assert.equal(result.state, "invalid", `${context}: expected invalid, received ${result.state}`);
+  assert.equal(result.code, code, `${context}: expected invalid/${code}, received invalid/${result.code}`);
+}
+
+function lifecycleVector(name, revisionNames, options = {}) {
+  const context = `${name} [${revisionNames.join("→")}]`;
+  assert.equal(revisionNames[0], "A", `${context}: every vector must begin at A`);
+  const data = fixture();
+  let replayed = replaySupervisedMissionJournal(data.entries);
+  assert.equal(replayed.state, "valid", `${context}: initial replay must be valid`);
+  let projection = replayed.value;
+  const prefixes = [projection];
+
+  if (options.seedInitialEvidence) {
+    const rawReview = furyReview(projection, "approved", projection.lastSequence + 1, REVISION_IDS.A, false);
+    const review = createFuryReviewEntry(projection, rawReview.payload.review);
+    assert.equal(review.state, "valid", `${context}: A Fury review constructor must be valid`);
+    data.entries.push(review.value);
+    replayed = replaySupervisedMissionJournal(data.entries);
+    assert.equal(replayed.state, "valid", `${context}: A Fury review replay must be valid`);
+    projection = replayed.value;
+    prefixes.push(projection);
+
+    const requirement = projection.requirements.find(({ requiredSeatId }) => requiredSeatId === "fitz");
+    const evidence = createEvidenceEntry(
+      projection,
+      signedReviewEvidence(data.fitz, projection, requirement, projection.lastSequence + 1),
+    );
+    assert.equal(evidence.state, "valid", `${context}: A human evidence constructor must be valid`);
+    data.entries.push(evidence.value);
+    replayed = replaySupervisedMissionJournal(data.entries);
+    assert.equal(replayed.state, "valid", `${context}: A human evidence replay must be valid`);
+    projection = replayed.value;
+    prefixes.push(projection);
+  }
+
+  let constructorResult = null;
+  let rawReplay = null;
+  for (let index = 1; index < revisionNames.length; index += 1) {
+    const sequence = projection.lastSequence + 1;
+    const terminal = index === revisionNames.length - 1;
+    const reviewSubject = {
+      ...data.reviewSubject,
+      revisionId: terminal && options.terminalRevisionId
+        ? options.terminalRevisionId
+        : REVISION_IDS[revisionNames[index]],
+      supersedesRevisionId: terminal && options.terminalSupersedes
+        ? REVISION_IDS[options.terminalSupersedes]
+        : REVISION_IDS[revisionNames[index - 1]],
+      sourceRef: `github:pr:112:head-${revisionNames[index].toLowerCase()}`,
+    };
+    const timestamp = {
+      value: `2026-07-28T12:${String(sequence).padStart(2, "0")}:00Z`,
+      provenance: "hostTrusted",
+    };
+    const created = createReviewSubjectSupersessionEntry(projection, reviewSubject, timestamp);
+    if (terminal && options.rawTerminal) {
+      constructorResult = created;
+      const raw = created.state === "valid" ? structuredClone(created.value) : {
+        schemaVersion: 7,
+        entryId: `entry:${projection.missionId}:${sequence}`,
+        missionId: projection.missionId,
+        sequence,
+        type: "subject.revision_superseded",
+        timestamp,
+        payload: {
+          reviewSubject,
+          requirements: options.terminalSupersedes && options.terminalSupersedes !== revisionNames[index - 1]
+            ? structuredClone(projection.requirements)
+            : createReviewEvidenceRequirements(
+              data.brief,
+              reviewSubject,
+              sequence,
+              projection.requirements,
+            ),
+        },
+      };
+      options.mutateRaw?.(raw);
+      rawReplay = replaySupervisedMissionJournal([...data.entries, raw]);
+      break;
+    }
+    assert.equal(created.state, "valid", `${context}: transition ${index} constructor must be valid`);
+    data.entries.push(created.value);
+    replayed = replaySupervisedMissionJournal(data.entries);
+    assert.equal(replayed.state, "valid", `${context}: transition ${index} replay must be valid`);
+    projection = replayed.value;
+    prefixes.push(projection);
+  }
+
+  for (const prefix of prefixes) {
+    const ids = prefix.reviewRevisions.map(({ revisionId }) => revisionId);
+    const current = prefix.reviewRevisions.filter(({ lifecycle }) => lifecycle === "current");
+    assert.equal(new Set(ids).size, ids.length, `${context}: revision identities must be unique after sequence ${prefix.lastSequence}`);
+    assert.deepEqual(current.map(({ revisionId }) => revisionId), [prefix.reviewSubject.revisionId], `${context}: exactly the terminal revision must be current after sequence ${prefix.lastSequence}`);
+  }
+  return { context, data, projection, prefixes, constructorResult, rawReplay };
+}
+
+test("v7 deterministic A-F matrix preserves one current revision and stale evidence", () => {
+  const three = lifecycleVector("L128-01 three transitions", ["A", "B", "C", "D"]);
+  assert.equal(three.projection.furyReviews.length, 0, `${three.context}: current Fury review count must be zero`);
+  assert.deepEqual(three.projection.routeToFitz, {
+    state: "waiting",
+    revisionId: REVISION_IDS.D,
+    reviewId: null,
+    reasons: ["current_head_fury_review_required"],
+    evaluatedThroughSequence: 3,
+  }, `${three.context}: zero current Fury reviews must route to waiting/current_head_fury_review_required`);
+
+  for (const revisionNames of [["A", "B", "C", "D", "E"], ["A", "B", "C", "D", "E", "F"]]) {
+    const vector = lifecycleVector(
+      `L128-02 ${revisionNames.length - 1} transitions`,
+      revisionNames,
+      { seedInitialEvidence: true },
+    );
+    const terminal = REVISION_IDS[revisionNames.at(-1)];
+    assert.deepEqual(
+      vector.projection.reviewRevisions.map(({ revisionId, lifecycle }) => [revisionId, lifecycle]),
+      revisionNames.map((revision, index) => [REVISION_IDS[revision], index === revisionNames.length - 1 ? "current" : "stale"]),
+      `${vector.context}: every superseded revision must remain stale`,
+    );
+    assert.deepEqual(vector.projection.furyReviews.map(({ revisionId, lifecycle }) => [revisionId, lifecycle]), [[REVISION_IDS.A, "stale"]], `${vector.context}: A Fury history must remain attributable and stale`);
+    assert.deepEqual(vector.projection.evidenceHistory.map(({ revisionId, lifecycle }) => [revisionId, lifecycle]), [[REVISION_IDS.A, "stale"]], `${vector.context}: A human evidence must remain attributable and stale`);
+    assert.equal(vector.projection.routeToFitz.revisionId, terminal, `${vector.context}: routing must bind to the terminal revision`);
+    assert.equal(vector.projection.routeToFitz.state, "waiting", `${vector.context}: stale Fury review must not satisfy the terminal revision`);
+    assert.equal(vector.projection.readiness.accept.state, "waiting", `${vector.context}: stale human evidence must not satisfy the terminal revision`);
+  }
+});
+
+test("v7 deterministic adversarial matrix fails closed with exact lifecycle errors", () => {
+  for (const [name, revisions] of [
+    ["L128-03 initial stale reuse", ["A", "B", "A"]],
+    ["L128-03 later stale reuse", ["A", "B", "C", "B"]],
+  ]) {
+    const vector = lifecycleVector(name, revisions, { rawTerminal: true });
+    assertInvalid(vector.constructorResult, "revision_mismatch", `${vector.context}: constructor stale reuse`);
+    assertInvalid(vector.rawReplay, "revision_mismatch", `${vector.context}: raw replay stale reuse`);
+  }
+
+  const late = lifecycleVector("L128-04b late A review", ["A", "B", "C"]);
+  const lateContext = `${late.context}→A(review)`;
+  const rawLateReview = furyReview(late.projection, "approved", late.projection.lastSequence + 1, REVISION_IDS.A, false);
+  rawLateReview.timestamp.value = "2026-07-28T13:03:00Z";
+  rawLateReview.payload.review.decidedAt.value = rawLateReview.timestamp.value;
+  assertInvalid(createFuryReviewEntry(late.projection, rawLateReview.payload.review), "revision_mismatch", `${lateContext}: constructor`);
+  assertInvalid(replaySupervisedMissionJournal([...late.data.entries, rawLateReview]), "revision_mismatch", `${lateContext}: raw replay`);
+  assert.notEqual(late.projection.routeToFitz.state, "ready", `${lateContext}: Fitz must never become ready`);
+
+  for (const [name, verdict, code] of [
+    ["L128-05a duplicate Fury review ID", "approved", "duplicate_evidence"],
+    ["L128-05b conflicting Fury decision", "changes_requested", "decision_mismatch"],
+  ]) {
+    const vector = lifecycleVector(name, ["A"]);
+    const firstRaw = furyReview(vector.projection, "approved", 1, REVISION_IDS.A, false);
+    const first = createFuryReviewEntry(vector.projection, firstRaw.payload.review);
+    assert.equal(first.state, "valid", `${vector.context}: first Fury review constructor must be valid`);
+    const entries = [...vector.data.entries, first.value];
+    const firstReplay = replaySupervisedMissionJournal(entries);
+    assert.equal(firstReplay.state, "valid", `${vector.context}: first Fury review replay must be valid`);
+    const rawAttempt = furyReview(firstReplay.value, verdict, 2, REVISION_IDS.A, false);
+    assertInvalid(createFuryReviewEntry(firstReplay.value, rawAttempt.payload.review), code, `${vector.context}: constructor conflict`);
+    assertInvalid(replaySupervisedMissionJournal([...entries, rawAttempt]), code, `${vector.context}: raw replay conflict`);
+  }
+
+  const branch = lifecycleVector("L128-07 second child of stale A", ["A", "B", "C"], {
+    rawTerminal: true,
+    terminalSupersedes: "A",
+  });
+  assertInvalid(branch.constructorResult, "revision_mismatch", `${branch.context}: constructor wrong predecessor`);
+  assertInvalid(branch.rawReplay, "revision_mismatch", `${branch.context}: raw replay wrong predecessor`);
+  assert.equal(Object.hasOwn(branch.rawReplay, "value"), false, `${branch.context}: no multiple-current projection may be emitted`);
+
+  const malformedIdentity = lifecycleVector("L128-08a malformed identity", ["A", "B"], {
+    rawTerminal: true,
+    terminalRevisionId: "not canonical",
+  });
+  assertInvalid(malformedIdentity.constructorResult, "malformed", `${malformedIdentity.context}: constructor malformed identity`);
+  assertInvalid(malformedIdentity.rawReplay, "malformed", `${malformedIdentity.context}: raw replay malformed identity`);
+
+  const noncanonical = lifecycleVector("L128-08a noncanonical raw requirements", ["A", "B"], {
+    rawTerminal: true,
+    mutateRaw: (raw) => raw.payload.requirements.pop(),
+  });
+  assert.equal(noncanonical.constructorResult.state, "valid", `${noncanonical.context}: constructor must emit canonical requirements`);
+  assertInvalid(noncanonical.rawReplay, "malformed", `${noncanonical.context}: raw replay noncanonical requirements`);
+
+  const missing = lifecycleVector("L128-08b missing predecessor requirement", ["A"]);
+  const ambiguousProjection = structuredClone(missing.projection);
+  ambiguousProjection.requirements = ambiguousProjection.requirements.filter(({ evidenceKind }) => evidenceKind !== "technical_review");
+  const reviewSubjectB = { ...missing.data.reviewSubject, revisionId: REVISION_IDS.B, supersedesRevisionId: REVISION_IDS.A, sourceRef: "github:pr:112:head-b" };
+  const missingResult = createReviewSubjectSupersessionEntry(ambiguousProjection, reviewSubjectB, { value: "2026-07-28T12:01:00Z", provenance: "hostTrusted" });
+  assertInvalid(missingResult, "missing_requirement", `${missing.context}→B: constructor cannot derive one predecessor requirement`);
+});
+
 test("v7 begins with review-bound human requirements and waits for current-head Fury", () => {
   const { entries, reviewSubject } = fixture();
   const projection = replay(entries);
