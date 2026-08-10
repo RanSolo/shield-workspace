@@ -95,7 +95,10 @@ verdict, or route. Trusted host dependencies independently:
    registry path;
 3. load and snapshot the separately identified supervised review journal; and
 4. load one frozen review-journal descriptor derived from the host's repository
-   and review-system observations.
+   and review-system observations. The descriptor pins the canonical review
+   journal's exact artifact identity `{path,bytes,sha256}`, `reviewMissionId`,
+   `reviewMissionRevisionId`, review subject, source reference, repository, and
+   branch.
 
 The controller derives the complete cross-binding only after validating those
 artifacts and observations.
@@ -152,7 +155,10 @@ path aliases, wrong owner/mode, malformed records, or conflicting
 request/evidence digests mean `invalid` or `recovery` according to whether
 durable readback is certain. Exact mission, subject, repository,
 root/common-Git, branch, base, `currentReviewRevision`, implementation paths,
-and approved test surfaces must match.
+and approved test surfaces must match. Mack `missionId` and
+`missionRevisionId` must equal the descriptor-pinned review mission identity;
+Mack `subjectId` must equal the shared work-item subject; and Mack
+`artifactRevisionId` must equal `currentReviewRevision`.
 
 The gate maps independently validated Mack evidence to:
 
@@ -160,8 +166,9 @@ The gate maps independently validated Mack evidence to:
 - `pass` only when production and advancement eligibility are both eligible,
   report status is pass, every required scenario/lane passes, and limitations
   and reason codes are empty;
-- `revise` for product/test/coverage defects;
-- `blocked` for explicit environmental or advisory limitations;
+- `revise` for valid failing May/Mack routes;
+- `blocked` for valid inconclusive Fury/Daisy routes, including explicit
+  environmental limitations;
 - `stale` for exact-binding mismatch; and
 - `invalid` for malformed, duplicate, or conflicting evidence.
 
@@ -176,8 +183,11 @@ Replay one canonical supervised schema-8 review journal through
 evidence; using the same mission ID in both journals is rejected.
 
 The controller derives one frozen cross-binding from the validated terminal,
-both replayed mission briefs, current review subject, trusted review-journal
-descriptor, and host repository observation. The derived binding names these
+both replayed mission briefs, current review subject, exact descriptor-pinned
+review-journal artifact identity, and host repository observation. The replayed
+review journal's mission ID/revision must exactly equal the descriptor values;
+another valid journal with the same subject or source is not interchangeable.
+The derived binding names these
 subjects separately:
 
 - `executionWorkItemSubjectId`: schema-9 execution brief subject;
@@ -217,9 +227,17 @@ review repair.
 ### S4-R5 — Human-only stops
 
 Fitz and conditional Simmons requirements and evidence come only from the same
-validated current review-subject projection. Missing evidence produces an
-explicit human-only stop; current signed evidence may be reported as
-`satisfied`, while rejected, stale, conflicting, or malformed evidence stops.
+validated current review-subject projection. Current signed evidence maps
+exactly as follows:
+
+- absence -> `waiting`;
+- `approved` -> `satisfied`;
+- `changes_requested` -> `revise`; and
+- `rejected` -> `blocked`/`rejected`.
+
+Both non-approved decisions preserve the human gate identity and leave
+`correctionSeatId:null`, because human evidence names no correction seat.
+Stale, conflicting, or malformed evidence stops as invalid.
 
 Coulson final acceptance is always the last `waiting` human-only stop in this
 slice, named exactly `coulson_final_acceptance_required`. This fixed Slice 4
@@ -238,8 +256,8 @@ The closed stop precedence is:
 3. review revision-lineage failure;
 4. Mack invalid/stale/waiting/blocked/revise;
 5. Fury invalid/stale/waiting/revise;
-6. Fitz invalid/stale/waiting/rejected;
-7. conditional Simmons invalid/stale/waiting/rejected;
+6. Fitz invalid/stale/waiting/revise/rejected;
+7. conditional Simmons invalid/stale/waiting/revise/rejected;
 8. Coulson final acceptance waiting.
 
 Every terminal row maps exhaustively to:
@@ -253,9 +271,17 @@ investigationSuggestionSeatId | null
 nextAction
 ```
 
-Mack waiting names Mack as gate seat; Mack product failure names May as
-correction seat; test/coverage failure names Mack; environmental/advisory block
-has no correction seat and may suggest Daisy investigation. Fury waiting names
+Mack waiting names Mack as gate seat. Preserve the independently reconstructed
+production `report.recommendedRoute` instead of reclassifying it:
+
+- `advance` is admitted only when the existing full production pass conditions
+  all hold; advisory findings alone do not overturn that validated pass;
+- failing `may` or `mack` routes become revise outcomes with that exact
+  correction seat; and
+- inconclusive `fury` or `daisy` routes remain blocked with no correction seat
+  and the exact route only as `investigationSuggestionSeatId`.
+
+Fury waiting names
 Fury as gate seat. Fury revise projects the validated current Fury record's
 exact `nextActionSeatId` as the correction seat; it never substitutes May.
 Human waiting
