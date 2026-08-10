@@ -208,13 +208,22 @@ The resulting binding includes both mission identities,
 branch, and source artifact identities. Schema 8 proves only subject/revision
 review lineage; repository
 root, common-Git identity, and branch come from the trusted descriptor and host
-observation and are never inferred from schema-8 fields. Fury state comes only
-from the replayed current-head Fury record:
+observation and are never inferred from schema-8 fields.
 
-- no record -> `waiting`;
+For Fury, Fitz, and Simmons, valid superseded evidence remains non-current
+metadata and is not itself invalid. Apply one shared current-record rule:
+
+- no current record with valid stale history -> `stale`;
+- no current record and no prior history -> `waiting`;
+- malformed/conflicting evidence or an attempted stale append rejected by
+  journal replay -> `invalid`; and
+- only current-revision evidence may produce pass, revise, satisfied, or
+  rejected/blocked.
+
+Fury state comes only from the replayed current-head Fury record:
+
 - `changes_requested` -> `revise`;
-- `approved` -> `pass`;
-- prior-revision record -> `stale`;
+- `approved` -> `pass`; and
 - duplicate/conflicting/malformed record -> `invalid`.
 
 Review supersession is append-only A -> B. B becomes
@@ -235,9 +244,10 @@ exactly as follows:
 - `changes_requested` -> `revise`; and
 - `rejected` -> `blocked`/`rejected`.
 
-Both non-approved decisions preserve the human gate identity and leave
+Both non-approved current decisions preserve the human gate identity and leave
 `correctionSeatId:null`, because human evidence names no correction seat.
-Stale, conflicting, or malformed evidence stops as invalid.
+Valid stale history follows the shared rule above; conflicting, malformed, or
+replay-rejected stale evidence is invalid.
 
 Coulson final acceptance is always the last `waiting` human-only stop in this
 slice, named exactly `coulson_final_acceptance_required`. This fixed Slice 4
