@@ -8,14 +8,17 @@ import { validateRunnerCycleInput } from "../../dist/runner-v1.mjs";
 import { readMackProductionValidationRegistryV1 } from "../model/mack-validation-runner.mjs";
 import {
   artifactIdentity,
-  assertFlightState,
   assertResolvedPlan,
   GIT_REVISION_PATTERN,
-  validateImmediateTransition,
 } from "./flight-contracts.mjs";
-import { readFlightJsonSnapshot } from "./feature-flight-controller.mjs";
-import { canonicalFeatureFlightBytes, featureFlightDigest } from "./feature-flight-recovery.mjs";
-import { evaluateSuccessfulFeatureFlightTerminalV2 } from "./feature-flight-step.mjs";
+import { computeFeatureFlightStatus, readFlightJsonSnapshot } from "./feature-flight-controller.mjs";
+import {
+  canonicalFeatureFlightBytes,
+  normalizeFeatureFlightRemoteUrl,
+  validateFeatureFlightRemoteObserverDescriptor,
+} from "./feature-flight-recovery.mjs";
+import { readStep as readFeatureFlightStep } from "./feature-flight-step-store.mjs";
+import { evaluateSuccessfulFeatureFlightTerminalV2, prepareSuccessfulFeatureFlightStepV2 } from "./feature-flight-step.mjs";
 import { strictParseJson } from "../model/strict-json.mjs";
 
 export const FEATURE_FLIGHT_REVIEW_GATES_CONTRACT_VERSION = "1.0.0";
@@ -29,8 +32,11 @@ const INPUT_FIELDS = [
   "expectedExecutionJournalSha256", "mackRequestPath", "expectedMackRequestSha256", "reviewJournalPath",
   "expectedReviewJournalSha256",
 ];
-const DEPENDENCY_FIELDS = ["observeRepository", "mackReplayRegistryRoot", "reviewJournalDescriptor"];
-const DEPENDENCY_OPTIONAL_FIELDS = ["readMackRegistry", "snapshotDependencies"];
+const DEPENDENCY_FIELDS = [
+  "observeRepository", "mackReplayRegistryRoot", "reviewJournalDescriptor", "adapterDescriptor",
+  "remoteObserverDescriptor", "featureFlightStepStoreRoot",
+];
+const DEPENDENCY_OPTIONAL_FIELDS = ["snapshotDependencies"];
 const SNAPSHOT_DEPENDENCY_FIELDS = new Set(["lstat", "open", "realpath", "beforeRead", "afterRead"]);
 const DESCRIPTOR_FIELDS = [
   "schemaVersion", "descriptorType", "journal", "reviewMissionId", "reviewMissionRevisionId",
@@ -42,14 +48,21 @@ const REPOSITORY_FIELDS = [
   "repository", "root", "branch", "head", "clean", "commonGitDirectory", "commonGitDevice",
   "commonGitInode", "observedAt",
 ];
+const ADAPTER_FIELDS = ["adapterId", "adapterVersion", "capabilityClass", "runtimeId", "executorId"];
+const ADAPTER_POLICY = Object.freeze({ adapterId: "shield.daisy.readonly", adapterVersion: "1.0.0", capabilityClass: "read_only_coordination" });
 const RAW_DIGEST = /^[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/u;
 const SAFE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*:)[A-Za-z0-9._\/@# +,=-]{1,512}$/u;
 
 const digestBytes = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const snapshotIdentity = (snapshot) => ({ path: snapshot.path, bytes: snapshot.bytes.length, sha256: snapshot.sha256 ?? digestBytes(snapshot.bytes) });
 const checkpointDigest = (value) => `sha256:${createHash("sha256").update(canonicalJson(value), "utf8").digest("base64url")}`;
 const copy = (value) => structuredClone(value);
 const same = (left, right) => canonicalJson(left) === canonicalJson(right);
+const repositoryIdFromRemote = (value) => {
+  const parsed = new URL(normalizeFeatureFlightRemoteUrl(value));
+  return parsed.pathname.replace(/^\//u, "");
+};
 
 function plain(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) && !isProxy(value) && Object.getPrototypeOf(value) === Object.prototype;
@@ -83,10 +96,14 @@ function denseStrings(value, validator, label) {
 
 function frozenDependencies(value) {
   exact(value, DEPENDENCY_FIELDS, DEPENDENCY_OPTIONAL_FIELDS, "trustedDependencies");
-  if (!Object.isFrozen(value) || typeof value.observeRepository !== "function" ||
-      (value.readMackRegistry !== undefined && typeof value.readMackRegistry !== "function")) throw new Error("trustedDependencies must be frozen and contain read-only functions.");
-  if (value.readMackRegistry !== undefined && value.readMackRegistry === value.observeRepository) throw new Error("Trusted dependency function identities must be distinct.");
-  if (typeof value.mackReplayRegistryRoot !== "string") throw new Error("mackReplayRegistryRoot is malformed.");
+  if (!Object.isFrozen(value) || typeof value.observeRepository !== "function") throw new Error("trustedDependencies must be frozen and contain the repository observer.");
+  if (![value.mackReplayRegistryRoot, value.featureFlightStepStoreRoot].every((entry) => typeof entry === "string") ||
+      !Object.isFrozen(value.adapterDescriptor) || !Object.isFrozen(value.remoteObserverDescriptor)) throw new Error("Trusted host roots and successful-step descriptors are malformed.");
+  exact(value.adapterDescriptor, ADAPTER_FIELDS, [], "adapterDescriptor");
+  if (!same(Object.fromEntries(Object.keys(ADAPTER_POLICY).map((field) => [field, value.adapterDescriptor[field]])), ADAPTER_POLICY) ||
+      ![value.adapterDescriptor.runtimeId, value.adapterDescriptor.executorId].every((entry) => typeof entry === "string" && IDENTIFIER.test(entry)) ||
+      value.adapterDescriptor.runtimeId === value.adapterDescriptor.executorId) throw new Error("adapterDescriptor does not match the fixed Daisy policy.");
+  const remoteObserverDescriptor = validateFeatureFlightRemoteObserverDescriptor(value.remoteObserverDescriptor);
   const descriptor = value.reviewJournalDescriptor;
   exact(descriptor, DESCRIPTOR_FIELDS, [], "reviewJournalDescriptor");
   if (!Object.isFrozen(descriptor)) throw new Error("reviewJournalDescriptor must be frozen.");
@@ -109,8 +126,10 @@ function frozenDependencies(value) {
   }
   return Object.freeze({
     observeRepository: value.observeRepository,
-    readMackRegistry: value.readMackRegistry ?? readMackProductionValidationRegistryV1,
     mackReplayRegistryRoot: value.mackReplayRegistryRoot,
+    featureFlightStepStoreRoot: value.featureFlightStepStoreRoot,
+    adapterDescriptor: Object.freeze(copy(value.adapterDescriptor)),
+    remoteObserverDescriptor,
     reviewJournalDescriptor: Object.freeze({ ...copy(descriptor), implementationPaths, approvedTestSurfaces }),
     snapshotDependencies: snapshots,
   });
@@ -229,7 +248,7 @@ function furyGate(projection) {
 
 function mackGate(request, requestDigest, readback) {
   if (readback.state === "waiting") return { ...emptyGate("mack", "waiting"), requestRef: request.validationRequestId, reasonCodes: [] };
-  if (readback.state === "recovery") return { ...emptyGate("mack", "invalid"), requestRef: request.validationRequestId, reasonCodes: [readback.reasonCode] };
+  if (readback.state === "recovery") return { ...emptyGate("mack", "recovery"), requestRef: request.validationRequestId, reasonCodes: [readback.reasonCode] };
   if (readback.state !== "verified") return { ...emptyGate("mack", "invalid"), requestRef: request.validationRequestId, reasonCodes: [readback.reasonCode ?? "mack_evidence_invalid"] };
   const evidence = readback.evidence;
   if (readback.validationRequestId !== request.validationRequestId || readback.requestDigest !== requestDigest ||
@@ -259,6 +278,7 @@ function mackGate(request, requestDigest, readback) {
 
 function stopFor(gates) {
   const mack = gates.mack;
+  if (mack.state === "recovery") return ["mack_registry_recovery_required", "mack_registry_recovery", null, null, null, "recover_mack_validation_registry"];
   if (mack.state === "invalid") return ["mack_validation_invalid", "mack_validation", null, null, null, "inspect_mack_validation_evidence"];
   if (mack.state === "stale") return ["mack_validation_stale", "mack_validation", null, null, null, "refresh_mack_validation_request"];
   if (mack.state === "waiting") return ["mack_validation_required", "mack_validation", "mack", null, null, "await_mack_validation"];
@@ -288,7 +308,7 @@ export async function projectFeatureFlightReviewGatesV1(inputValue, trustedDepen
   const dependencies = frozenDependencies(trustedDependencies);
   const sourceArtifacts = {};
   let planSnapshot; let stateSnapshot; let predecessorSnapshot; let runnerSnapshot; let claimSnapshot; let terminalSnapshot; let successorSnapshot; let resultSnapshot;
-  let executionJournalSnapshot; let requestSnapshot; let reviewJournalSnapshot; let terminal;
+  let executionJournalSnapshot; let requestSnapshot; let reviewJournalSnapshot; let terminal; let prepared;
   try {
     [planSnapshot, stateSnapshot, predecessorSnapshot, runnerSnapshot, claimSnapshot, terminalSnapshot, successorSnapshot, resultSnapshot,
       executionJournalSnapshot, requestSnapshot, reviewJournalSnapshot] = await Promise.all([
@@ -310,33 +330,32 @@ export async function projectFeatureFlightReviewGatesV1(inputValue, trustedDepen
       successor: artifactIdentity(successorSnapshot), result: artifactIdentity(resultSnapshot),
       executionJournal: artifactIdentity(executionJournalSnapshot), mackRequest: artifactIdentity(requestSnapshot), reviewJournal: artifactIdentity(reviewJournalSnapshot),
     });
-    const plan = assertResolvedPlan(planSnapshot.value);
-    const planArtifact = artifactIdentity(planSnapshot);
-    const state = assertFlightState(plan, planArtifact, stateSnapshot.value);
-    const predecessor = assertFlightState(plan, planArtifact, predecessorSnapshot.value, "predecessor");
-    if (state.sequence !== input.expectedStateSequence || state.predecessorSha256 !== predecessorSnapshot.sha256 || predecessor.sequence !== state.sequence - 1 || validateImmediateTransition(plan, predecessor, state).length !== 0) throw new Error("flight_state_edge_invalid");
     const checkedRunner = validateRunnerCycleInput(runnerSnapshot.value);
     if (checkedRunner.state !== "valid" || digestBytes(Buffer.from(canonicalJson(checkedRunner.value), "utf8")) !== runnerSnapshot.sha256) throw new Error("runner_input_invalid");
-    const runner = checkedRunner.value;
-    const mission = plan.missions.find(({ id }) => id === claimSnapshot.value?.flight?.missionId);
-    if (mission === undefined || state.missions[mission.id]?.status !== "active" || state.lanes[mission.lane]?.activeMissionId !== mission.id ||
-        runner.plan.missionId !== mission.id || runner.projection.missionId !== mission.id || runner.plan.subjectId !== runner.projection.subjectId ||
-        runner.plan.revisionId !== runner.projection.revisionId || runner.plan.evaluatedThroughSequence !== runner.projection.evaluatedThroughSequence) throw new Error("flight_runner_binding_invalid");
-    const effectClaimId = featureFlightDigest({
-      domain: "shield-feature-flight-effect-claim.v1", flightId: plan.flightId, planSha256: planArtifact.sha256,
-      missionId: mission.id, subjectId: runner.plan.subjectId, missionRevision: runner.plan.revisionId,
-      actionId: runner.plan.actionId, effectClass: runner.plan.effectClass, effectKey: runner.plan.effectKey,
+    const plan = assertResolvedPlan(planSnapshot.value);
+    const stepCaller = Object.freeze({
+      planPath: input.planPath, expectedPlanSha256: input.expectedPlanSha256,
+      statePath: input.statePath, expectedStateSha256: input.expectedStateSha256, expectedStateSequence: input.expectedStateSequence,
+      predecessorStatePath: input.predecessorStatePath, expectedPredecessorSha256: input.expectedPredecessorSha256,
+      maxSteps: 1, routing: Object.freeze({ flightId: plan.flightId, missionId: checkedRunner.value.plan.missionId }),
     });
-    const prepared = {
-      plan, state, predecessor, mission, runner, effectClaimId, planArtifact, stateArtifact: artifactIdentity(stateSnapshot),
-      predecessorArtifact: artifactIdentity(predecessorSnapshot), runnerInputSha256: runnerSnapshot.sha256,
-      adapterDescriptor: copy(claimSnapshot.value.adapter), remoteObserverDescriptor: copy(claimSnapshot.value.remoteObserver),
-    };
-    const step = {
-      status: "success_terminal", claim: claimSnapshot, terminal: terminalSnapshot, successor: successorSnapshot, result: resultSnapshot,
-      hierarchyIdentity: terminalSnapshot.value.hierarchyIdentity,
-      paths: { successor: successorSnapshot.path, result: resultSnapshot.path },
-    };
+    const structuralStatus = await computeFeatureFlightStatus(stepCaller, { snapshot: dependencies.snapshotDependencies });
+    prepared = await prepareSuccessfulFeatureFlightStepV2(stepCaller, structuralStatus, Object.freeze({
+      plan: planSnapshot, state: stateSnapshot, predecessor: predecessorSnapshot,
+    }), Object.freeze({ input: checkedRunner.value, canonicalBytes: runnerSnapshot.bytes, sha256: runnerSnapshot.sha256 }), Object.freeze({
+      adapterDescriptor: dependencies.adapterDescriptor,
+      remoteObserverDescriptor: dependencies.remoteObserverDescriptor,
+      claimStoreRoot: dependencies.featureFlightStepStoreRoot,
+    }));
+    const step = await readFeatureFlightStep({
+      root: dependencies.featureFlightStepStoreRoot,
+      excludedRoots: prepared.excludedRoots,
+      effectClaimId: prepared.effectClaimId,
+    });
+    if (step.status !== "success_terminal" || !same(snapshotIdentity(step.claim), artifactIdentity(claimSnapshot)) ||
+        !same(snapshotIdentity(step.terminal), artifactIdentity(terminalSnapshot)) ||
+        !same(snapshotIdentity(step.successor), artifactIdentity(successorSnapshot)) ||
+        !same(snapshotIdentity(step.result), artifactIdentity(resultSnapshot))) throw new Error("feature_flight_store_binding_invalid");
     terminal = evaluateSuccessfulFeatureFlightTerminalV2(prepared, step);
   } catch {
     return closedFlight(sourceArtifacts);
@@ -360,6 +379,17 @@ export async function projectFeatureFlightReviewGatesV1(inputValue, trustedDepen
     return finalResult({ ...base, phase: "review_revision_lineage", stopCode: "review_revision_lineage_invalid", nextAction: "repair_review_revision_lineage" });
   }
   try {
+    const terminalRepository = terminal.result.repositoryAfter;
+    if (descriptor.repository !== repositoryIdFromRemote(terminalRepository.configuredRemoteUrl) ||
+        descriptor.repositoryRoot !== prepared.mission.worktree || descriptor.branch !== prepared.mission.branch ||
+        terminalRepository.root !== descriptor.repositoryRoot || terminalRepository.branch !== descriptor.branch ||
+        terminalRepository.commonGitDirectory !== descriptor.commonGitDirectory ||
+        terminalRepository.commonGitDevice !== descriptor.commonGitDevice || terminalRepository.commonGitInode !== descriptor.commonGitInode ||
+        prepared.remoteObserverDescriptor.repositoryRoot !== descriptor.repositoryRoot ||
+        prepared.remoteObserverDescriptor.commonGitDirectory !== descriptor.commonGitDirectory ||
+        prepared.remoteObserverDescriptor.commonGitDevice !== descriptor.commonGitDevice ||
+        prepared.remoteObserverDescriptor.commonGitInode !== descriptor.commonGitInode ||
+        repositoryIdFromRemote(prepared.remoteObserverDescriptor.configuredRemoteUrl) !== descriptor.repository) throw new Error("terminal_repository_identity_invalid");
     const observedRepository = await dependencies.observeRepository(Object.freeze({ repositoryRoot: descriptor.repositoryRoot, branch: descriptor.branch }));
     exact(observedRepository, REPOSITORY_FIELDS, [], "repository observation");
     repository = copy(observedRepository);
@@ -410,7 +440,7 @@ export async function projectFeatureFlightReviewGatesV1(inputValue, trustedDepen
       !same(request.approvedTestSurfaces, descriptor.approvedTestSurfaces);
     if (stale) mack = { ...emptyGate("mack", "stale"), requestRef: request.validationRequestId, reasonCodes: ["mack_request_exact_binding_mismatch"] };
     else {
-      const readback = await dependencies.readMackRegistry(request, Object.freeze({
+      const readback = await readMackProductionValidationRegistryV1(request, Object.freeze({
         replayRegistryRoot: dependencies.mackReplayRegistryRoot,
         validationRequestId: request.validationRequestId,
         requestDigest: normalizedRequest.requestDigest,

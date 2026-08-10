@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -245,6 +245,38 @@ test("protected production readback is pinned to one request ID and digest and r
     validationRequestId: absent.validationRequestId,
     requestDigest: absentNormalized.requestDigest,
   })).state, "waiting");
+});
+
+test("protected production readback retains registry-root identity across replacement", async (t) => {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-mack-root-retention-")));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, "registry");
+  const alternate = join(parent, "alternate");
+  const holding = join(parent, "holding");
+  await Promise.all([mkdir(root, { mode: 0o700 }), mkdir(alternate, { mode: 0o700 })]);
+  const request = requestFixture();
+  const normalized = normalizeMackLocalValidationRequestV1(request);
+  assert.equal(normalized.state, "valid");
+  const binding = { replayRegistryRoot: root, validationRequestId: request.validationRequestId, requestDigest: normalized.requestDigest };
+  let stop = false;
+  let swaps = 0;
+  const swapper = (async () => {
+    while (!stop && swaps < 10_000) {
+      await rename(root, holding);
+      await rename(alternate, root);
+      await rename(holding, alternate);
+      swaps += 1;
+      await new Promise((resolveTurn) => setImmediate(resolveTurn));
+    }
+  })();
+  let recovery = false;
+  for (let attempt = 0; attempt < 200 && !recovery; attempt += 1) {
+    recovery = (await readMackProductionValidationRegistryV1(request, binding)).state === "recovery";
+  }
+  stop = true;
+  await swapper;
+  assert.ok(swaps > 0);
+  assert.equal(recovery, true);
 });
 
 test("nonzero, signal, timeout, launch failure, and truncation receipts cannot become eligible", async () => {

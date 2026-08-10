@@ -102,11 +102,16 @@ async function readPrivateRegularFile(path, { minBytes, maxBytes, unsafeCode }) 
   try {
     handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== status.dev || opened.ino !== status.ino || opened.size !== status.size) throw new Error(unsafeCode);
+    if (!opened.isFile() || opened.nlink !== 1 || !ownedByEffectiveUser(opened) || (process.platform !== "win32" && (opened.mode & 0o077) !== 0) ||
+        opened.dev !== status.dev || opened.ino !== status.ino || opened.size !== status.size || opened.mode !== status.mode || opened.uid !== status.uid) throw new Error(unsafeCode);
     const bytes = await handle.readFile();
     const after = await handle.stat();
     const current = await lstat(path);
-    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size || current.dev !== opened.dev || current.ino !== opened.ino || bytes.byteLength !== opened.size) throw new Error(unsafeCode);
+    if (!after.isFile() || after.nlink !== 1 || !ownedByEffectiveUser(after) || (process.platform !== "win32" && (after.mode & 0o077) !== 0) ||
+        after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size || after.mode !== opened.mode || after.uid !== opened.uid ||
+        !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !ownedByEffectiveUser(current) ||
+        (process.platform !== "win32" && (current.mode & 0o077) !== 0) || current.dev !== opened.dev || current.ino !== opened.ino ||
+        current.size !== opened.size || current.mode !== opened.mode || current.uid !== opened.uid || bytes.byteLength !== opened.size) throw new Error(unsafeCode);
     return bytes;
   } catch (error) {
     if (error instanceof Error && error.message === unsafeCode) throw error;
@@ -164,7 +169,39 @@ async function inspectReplayRegistryRoot(rootInput, repositoryRoot, canonicalGit
   if (gitDirectoryStatus === null || !gitDirectoryStatus.isDirectory() || gitDirectoryStatus.isSymbolicLink() || await realpath(canonicalGitDirectory) !== canonicalGitDirectory || !ownedByEffectiveUser(gitDirectoryStatus)) throw new Error("mack_replay_registry_root_invalid");
   const status = await lstatOrNull(rootInput);
   if (status === null || !status.isDirectory() || status.isSymbolicLink() || await realpath(rootInput) !== rootInput || !ownedByEffectiveUser(status) || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) throw new Error("mack_replay_registry_root_unsafe");
-  return rootInput;
+  return { path: rootInput, identity: status };
+}
+
+async function retainReplayRegistryRoot(path, expected) {
+  const before = await lstatOrNull(path);
+  if (before === null || !before.isDirectory() || before.isSymbolicLink() || !ownedByEffectiveUser(before) ||
+      (process.platform !== "win32" && (before.mode & 0o077) !== 0) || before.dev !== expected.dev || before.ino !== expected.ino ||
+      before.mode !== expected.mode || before.uid !== expected.uid) throw new Error("mack_replay_registry_root_unsafe");
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat();
+    if (!opened.isDirectory() || !ownedByEffectiveUser(opened) || (process.platform !== "win32" && (opened.mode & 0o077) !== 0) ||
+        opened.dev !== before.dev || opened.ino !== before.ino || opened.mode !== before.mode || opened.uid !== before.uid) {
+      throw new Error("mack_replay_registry_root_unsafe");
+    }
+    return { path, handle, identity: opened };
+  } catch (error) {
+    await handle.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function assertRetainedReplayRegistryRoot(retained) {
+  const [opened, current, canonical] = await Promise.all([
+    retained.handle.stat().catch(() => null), lstatOrNull(retained.path), realpath(retained.path).catch(() => null),
+  ]);
+  if (opened === null || current === null || canonical !== retained.path || !opened.isDirectory() || !current.isDirectory() || current.isSymbolicLink() ||
+      !ownedByEffectiveUser(opened) || !ownedByEffectiveUser(current) ||
+      (process.platform !== "win32" && ((opened.mode & 0o077) !== 0 || (current.mode & 0o077) !== 0)) ||
+      opened.dev !== retained.identity.dev || opened.ino !== retained.identity.ino || opened.mode !== retained.identity.mode || opened.uid !== retained.identity.uid ||
+      current.dev !== retained.identity.dev || current.ino !== retained.identity.ino || current.mode !== retained.identity.mode || current.uid !== retained.identity.uid) {
+    throw new Error("mack_replay_registry_root_unsafe");
+  }
 }
 
 function replayPaths(root, validationRequestId) {
@@ -750,13 +787,20 @@ export async function readMackProductionValidationRegistryV1(packetInput, bindin
     return deepFreeze({ state: "invalid", reasonCode: "mack_request_binding_invalid" });
   }
   const request = normalized.value;
+  let retainedRoot;
   try {
-    const root = await inspectReplayRegistryRoot(bindingInput.replayRegistryRoot, request.repositoryRoot, request.canonicalGitDirectory);
+    const inspectedRoot = await inspectReplayRegistryRoot(bindingInput.replayRegistryRoot, request.repositoryRoot, request.canonicalGitDirectory);
+    const root = inspectedRoot.path;
+    retainedRoot = await retainReplayRegistryRoot(root, inspectedRoot.identity);
+    await assertRetainedReplayRegistryRoot(retainedRoot);
     const paths = replayPaths(root, request.validationRequestId);
     const lockStatus = await lstatOrNull(paths.lock);
+    await assertRetainedReplayRegistryRoot(retainedRoot);
     if (lockStatus !== null) return deepFreeze({ state: "recovery", reasonCode: "mack_registry_readback_uncertain" });
     const snapshot = await readReplayRecordSnapshot(paths.record);
+    await assertRetainedReplayRegistryRoot(retainedRoot);
     if (await lstatOrNull(paths.lock) !== null) return deepFreeze({ state: "recovery", reasonCode: "mack_registry_readback_uncertain" });
+    await assertRetainedReplayRegistryRoot(retainedRoot);
     if (snapshot === null) return deepFreeze({
       state: "waiting",
       validationRequestId: request.validationRequestId,
@@ -784,6 +828,8 @@ export async function readMackProductionValidationRegistryV1(packetInput, bindin
       state: invalidCodes.has(code) ? "invalid" : "recovery",
       reasonCode: invalidCodes.has(code) ? "mack_production_evidence_invalid" : "mack_registry_readback_uncertain",
     });
+  } finally {
+    await retainedRoot?.handle.close().catch(() => {});
   }
 }
 
