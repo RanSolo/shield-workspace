@@ -155,8 +155,10 @@ The host derives one closed proving tuple after descriptor-safe capture:
 - captured fixture-identity and release-baseline digests;
 - captured package digest, which must equal
   `releaseBaseline.package.digest`;
-- exact repository, branch, HEAD, mission, subject, mission revision, Runner
-  input digest, and `measurementIntentId`.
+- exact repository, branch, HEAD, mission, subject, mission revision,
+  `measurementIntentId`, and a canonical Runner-intent projection containing
+  every Runner plan/input identity except `effectKey` and any digest computed
+  from the final Runner input.
 
 Canonical JSON of that tuple is SHA-256 hashed into the exact signed Daisy
 coordination `effectKey`. The Runner plan, Daisy authority, and active binding
@@ -164,6 +166,14 @@ must all carry that effect key. The manifest may locate the release baseline
 and package bytes, but its digests are never trust anchors: captured bytes must
 match the signed proving tuple. The fixture root and adapter path are
 host-fixed and cannot be supplied by the caller.
+
+After inserting the derived effect key into the final Runner plan/input, the
+host computes the final Runner-input digest separately. That digest is verified
+against the captured bytes and bound by the existing step claim/result
+contracts, but it does not feed back into the proving-tuple hash. Tests build
+the intent, derive the effect key, finalize the Runner input, and prove that
+substitution of either the intent fields, derived key, or final input digest is
+rejected without requiring a hash fixed point.
 
 Because the existing core claim identity already includes plan digest,
 `flightId`, mission identity, and effect key, binding the complete proving
