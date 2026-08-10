@@ -640,6 +640,7 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
 const DEFINITION_FIELDS = ["schemaVersion", "contractVersion", "authority", "missionId", "subjectId", "objective", "pattern", "repositoryId", "repositoryRevision", "intakeRevisionId", "templateId", "templateVersion", "definitionRevision", "participants", "activatedModes", "prompts", "handoffs", "evidenceContracts", "steps", "graph", "repairPolicy", "escalation", "stopConditions", "stopConditionRoutes", "provenance"] as const;
 
 export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "valid"; value: MissionDefinitionV1; reasonCodes: readonly [] } | { state: "invalid"; value: null; reasonCodes: readonly string[] }> {
+  try {
   const reasons: string[] = [];
   if (!exact(input, DEFINITION_FIELDS)) return { state: "invalid", value: null, reasonCodes: ["definition_fields_not_closed"] };
   const value = input as unknown as MissionDefinitionV1;
@@ -773,6 +774,7 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
     || (value.provenance.editedDigest === null) !== (value.provenance.parentDigest === null)) reasons.push("definition_provenance_invalid");
   if (value.definitionRevision !== definitionRevision(withoutRevision(value))) reasons.push("definition_revision_mismatch");
   return reasons.length > 0 ? { state: "invalid", value: null, reasonCodes: Object.freeze([...new Set(reasons)].sort()) } : { state: "valid", value: freeze(value), reasonCodes: [] };
+  } catch { return { state: "invalid", value: null, reasonCodes: ["definition_invalid"] }; }
 }
 
 const PROVENANCE_FIELDS = ["schemaVersion", "contractVersion", "sequence", "recordId", "kind", "missionId", "repositoryId", "definitionRevision", "parentDefinitionRevision", "repositoryRevision", "actorSeatId", "templateId", "templateVersion", "intakeRevisionId", "generatedDigest", "editedDigest", "editRecord", "validationRevision", "proofreadAcceptanceDigest", "previousRecordDigest", "actorArtifactId", "actorReceiptId", "recordDigest"] as const;
@@ -791,7 +793,7 @@ export function replayMissionProvenanceV1(input: unknown): Readonly<{ state: "va
       || (record.parentDefinitionRevision !== null && !DIGEST.test(record.parentDefinitionRevision)) || !REVISION.test(record.repositoryRevision) || !["hill", "may"].includes(record.actorSeatId)
       || !ID.test(record.templateId) || record.templateVersion !== 1 || !ID.test(record.intakeRevisionId) || !DIGEST.test(record.generatedDigest) || !ID.test(record.actorArtifactId)
       || (record.editedDigest !== null && !DIGEST.test(record.editedDigest)) || (record.validationRevision !== null && !DIGEST.test(record.validationRevision))
-      || (record.proofreadAcceptanceDigest !== null && !DIGEST.test(record.proofreadAcceptanceDigest)) || (record.actorReceiptId !== null && !ID.test(record.actorReceiptId)) || !record.editRecord.every((edit) => exact(edit, ["target", "targetId", "replacementDigest"])
+      || (record.proofreadAcceptanceDigest !== null && !DIGEST.test(record.proofreadAcceptanceDigest)) || record.actorReceiptId === null || !ID.test(record.actorReceiptId) || !record.editRecord.every((edit) => exact(edit, ["target", "targetId", "replacementDigest"])
         && ["prompt", "handoff"].includes(String(edit.target)) && ID.test(String(edit.targetId)) && DIGEST.test(String(edit.replacementDigest)))) return { state: "invalid", code: "provenance_conflict" };
     if (index === 0) {
       if (record.kind !== "definition.generated" || record.actorSeatId !== "hill" || record.parentDefinitionRevision !== null || record.editedDigest !== null
@@ -842,8 +844,8 @@ function actorReceiptMatches(record: MissionProvenanceRecordV1, dispatch: Return
     || receipt.parentMissionId !== record.missionId || receipt.parentMissionRevision !== record.definitionRevision || receipt.repositoryId !== record.repositoryId
     || receipt.repositoryRevision !== record.repositoryRevision || receipt.artifactId !== record.actorArtifactId
     || receipt.artifactRevision !== record.definitionRevision || (definition !== null && (receipt.repositoryId !== definition.repositoryId || receipt.subjectId !== definition.subjectId))) return false;
-  const runtimeIds = [receipt.configuredRuntime.runtimeId, receipt.requestedRuntime.runtimeId, ...receipt.runtimeHostHistory.map((item) => item.runtimeId)];
-  const executorIds = [...receipt.executorHostHistory.map((item) => item.executorId)];
+  const runtimeIds = [receipt.configuredRuntime.runtimeId, receipt.requestedRuntime.runtimeId, ...receipt.runtimeHostHistory.map((item) => item.runtimeId), ...receipt.runtimeSelfReportHistory.map((item) => item.runtimeId)];
+  const executorIds = [...receipt.executorHostHistory.map((item) => item.executorId), ...receipt.executorSelfReportHistory.map((item) => item.executorId)];
   if (receipt.runtimeHostHistory.length === 0 || receipt.executorHostHistory.length === 0) return false;
   const seats = new Set<string>(CANONICAL_ROLE_IDS);
   return [...runtimeIds, ...executorIds].every((identity) => !seats.has(identity))
@@ -965,8 +967,12 @@ export function finalizeMissionProvenanceRecordV1(input: unknown): MissionProven
   if (!exact(input, ["proposal", "priorReplay", "actorReceiptEntries", "actorReceiptId"]) || !exact(input.proposal, PROVENANCE_FIELDS)
     || input.proposal.actorReceiptId !== null || typeof input.actorReceiptId !== "string" || !ID.test(input.actorReceiptId)
     || !dense(input.priorReplay, 256) || !dense(input.actorReceiptEntries, 512)) return null;
-  const prior = replayMissionProvenanceV1(input.priorReplay);
-  if (prior.state === "invalid" || input.proposal.sequence !== prior.value.records.length || input.proposal.previousRecordDigest !== prior.value.lastRecordDigest) return null;
+  const prior = input.priorReplay.length === 0
+    ? { state: "valid" as const, value: { records: [], lastRecordDigest: null } }
+    : replayMissionProvenanceV1(input.priorReplay);
+  if (prior.state === "invalid" || (input.priorReplay.length === 0
+    ? input.proposal.sequence !== 0 || input.proposal.kind !== "definition.generated" || input.proposal.previousRecordDigest !== null
+    : input.proposal.sequence !== prior.value.records.length || input.proposal.previousRecordDigest !== prior.value.lastRecordDigest)) return null;
   const proposal = { ...input.proposal, actorReceiptId: input.actorReceiptId, recordDigest: "" } as MissionProvenanceRecordV1;
   const { recordDigest: _ignored, ...content } = proposal;
   const record = { ...proposal, recordDigest: digest("shield.mission-provenance.v1", content) };
@@ -1093,6 +1099,7 @@ async function runnerPermissionClaimsMatch(definition: MissionDefinitionV1, obse
 }
 
 export function projectMissionStatusV1(definitionInput: unknown, receiptsInput: unknown): MissionStatusProjectionV1 | null {
+  try {
   const checked = validateMissionDefinitionV1(definitionInput);
   if (checked.state === "invalid") return null;
   const replay = replayStepReceipts(checked.value, receiptsInput);
@@ -1106,6 +1113,7 @@ export function projectMissionStatusV1(definitionInput: unknown, receiptsInput: 
     activeSeatId: node.seatId, completedEvidence: completed, nextTransition: replay.exhausted ? null : outgoing[0]?.edgeId ?? null,
     stopReason: replay.exhausted ? "repair_exhausted" : node.kind === "terminal" ? "terminal" : node.kind === "human_gate" ? "human_gate" : outgoing.length === 0 ? "repair_exhausted" : null,
   });
+  } catch { return null; }
 }
 
 function blocked(reasonCode: MissionAdvanceReasonV1, status: MissionStatusProjectionV1 | null = null, outcome: "blocked" | "waiting" | "uncertain" = "blocked"): MissionAdvanceResultV1 {
@@ -1345,11 +1353,11 @@ export function compileMissionCycleInputV1(definition: MissionDefinitionV1, obse
     || !DIGEST.test(binding.validationRevision) || !DIGEST.test(binding.proofreadAcceptanceDigest)) throw new Error("compilation binding is stale");
   const provenance = replayMissionProvenanceV1(observation.provenanceRecords);
   if (provenance.state === "invalid" || provenance.value.definitionRevision !== binding.definitionRevision
-    || provenance.value.validationRevision !== binding.validationRevision || provenance.value.proofreadAcceptanceDigest !== binding.proofreadAcceptanceDigest) throw new Error("compilation binding is stale");
+    || provenance.value.validationRevision !== binding.validationRevision || provenance.value.proofreadAcceptanceDigest !== binding.proofreadAcceptanceDigest
+    || validateObservation(definition, observation) === null) throw new Error("compilation observation is invalid");
   const compiled = compileMissionCycleInputRaw(definition, observation, step);
   return freeze({ ...compiled, compiledArtifactId: digest("shield.mission-cycle-compiled-artifact.v1", {
-    definitionRevision: binding.definitionRevision, validationRevision: binding.validationRevision, proofreadAcceptanceDigest: binding.proofreadAcceptanceDigest,
-    missionId: compiled.missionId, seatId: compiled.seatId, actionId: compiled.actionId, effectClass: compiled.effectClass,
+    compiled, definitionRevision: binding.definitionRevision, validationRevision: binding.validationRevision, proofreadAcceptanceDigest: binding.proofreadAcceptanceDigest,
   }) });
 }
 

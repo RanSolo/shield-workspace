@@ -92,9 +92,21 @@ function build(pattern = "delivery", options = {}) {
 }
 
 function accepted(buildResult) {
-  const acceptance = createMissionProofreadingAcceptanceV1({ definition: buildResult.definition, provenanceRecords: buildResult.provenanceRecords });
-  assert.ok(acceptance);
-  return [...buildResult.provenanceRecords, acceptance];
+  let entries = [];
+  const finalize = (proposal, priorReplay, seatId, receiptId, offset) => {
+    entries.push(...provenanceLifecycle(buildResult.definition, seatId, receiptId, proposal.actorArtifactId, offset, entries.at(-1)?.entryDigest ?? null));
+    const result = finalizeMissionProvenanceRecordV1({ proposal, priorReplay, actorReceiptEntries: entries, actorReceiptId: receiptId });
+    assert.ok(result);
+    return result;
+  };
+  const generated = finalize(buildResult.provenanceRecords[0], [], "hill", "receipt:provenance:generated", 0);
+  const validationProposal = createMissionValidationRecordV1({ definition: buildResult.definition, provenanceRecords: [generated] });
+  assert.ok(validationProposal);
+  const validation = finalize(validationProposal, [generated], "may", "receipt:provenance:validation", 2);
+  const proofreadingProposal = createMissionProofreadingAcceptanceV1({ definition: buildResult.definition, provenanceRecords: [generated, validation] });
+  assert.ok(proofreadingProposal);
+  const proofreading = finalize(proofreadingProposal, [generated, validation], "hill", "receipt:provenance:proofreading", 4);
+  return [generated, validation, proofreading];
 }
 
 function provenanceLifecycle(definition, seatId, receiptId, artifactId = definition.definitionRevision, logOffset = 0, previousLogDigest = null) {
@@ -260,7 +272,7 @@ function harness(pattern = "delivery", options = {}) {
   const validationEntries = provenanceLifecycle(built.definition, "may", "receipt:provenance:validation", built.definition.definitionRevision, 2, generatedEntries.at(-1).entryDigest);
   const proofreadingEntries = provenanceLifecycle(built.definition, "hill", "receipt:provenance:proofreading", built.definition.definitionRevision, 4, validationEntries.at(-1).entryDigest);
   const dispatchEntries = [...generatedEntries, ...validationEntries, ...proofreadingEntries];
-  const provenanceRecords = authenticatedProvenance(accepted(built), "receipt:provenance:generated", "receipt:provenance:validation", "receipt:provenance:proofreading");
+  const provenanceRecords = accepted(built);
   const reports = new Map();
   const audit = [];
   const executedPlans = [];
@@ -481,18 +493,14 @@ test("graph validation binds edge evidence, node-step-seat, prompt, and handoff 
 
 test("provenance freezes scope, invalidates proofreading on edits, and validates proposed appends under lock", async () => {
   const built = build("delivery");
-  const records = authenticatedProvenance(accepted(built), "receipt:provenance:generated", "receipt:provenance:validation", "receipt:provenance:proofreading");
+  const records = accepted(built);
   const edited = editMissionDefinitionTextV1({ definition: built.definition, provenanceRecords: records,
     edits: [{ target: "prompt", targetId: "prompt:delivery:may", replacement: "Hill-edited bounded implementation prompt." }] });
   assert.equal(edited.state, "edited");
   const invalidated = replayMissionProvenanceV1([...records, edited.record]);
-  assert.equal(invalidated.state, "valid");
-  assert.equal(invalidated.value.validationRevision, null);
-  assert.equal(invalidated.value.proofreadAcceptanceDigest, null);
+  assert.equal(invalidated.state, "invalid");
   const validation = createMissionValidationRecordV1({ definition: edited.definition, provenanceRecords: [...records, edited.record] });
-  const acceptance = createMissionProofreadingAcceptanceV1({ definition: edited.definition, provenanceRecords: [...records, edited.record, validation] });
-  assert.ok(validation);
-  assert.ok(acceptance);
+  assert.equal(validation, null);
 
   const frozenScope = structuredClone(built.provenanceRecords);
   frozenScope[1].repositoryRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -516,12 +524,14 @@ test("provenance freezes scope, invalidates proofreading on edits, and validates
   };
   assert.equal((await appendMissionProvenanceRecordV1(store, built.provenanceRecords[0], "lock-owner:test")).state, "blocked");
   assert.equal((await appendMissionProvenanceRecordV1(store, records[0], "lock-owner:test")).state, "recorded");
+  assert.equal((await appendMissionProvenanceRecordV1(store, records[1], "lock-owner:test")).state, "recorded");
+  assert.equal((await appendMissionProvenanceRecordV1(store, records[2], "lock-owner:test")).state, "recorded");
   const malformedBase = { ...records[1], actorSeatId: "hill" };
   const { recordDigest: _malformedDigest, ...malformedContent } = malformedBase;
   const malformed = { ...malformedBase, recordDigest: hash("shield.mission-provenance.v1", malformedContent) };
   const rejected = await appendMissionProvenanceRecordV1(store, malformed, "lock-owner:test");
   assert.equal(rejected.state, "blocked");
-  assert.equal(appendCalls, 1);
+  assert.equal(appendCalls, 3);
 
   const commitStoreRecords = [];
   const commitThenThrowStore = { ...store,
@@ -775,6 +785,33 @@ test("runner compilation is definition-bound and canonical", () => {
 test("canonical mission ordering is explicit UTF-8 byte order for mixed case and punctuation", () => {
   const values = ["a", "A", "a-", "a:", "a_", "ä"];
   assert.deepEqual([...values].sort(compareMissionCanonicalTextV1), ["A", "a", "a-", "a:", "a_", "ä"]);
+});
+
+test("public definition validation and status projection are total for hostile nested values", () => {
+  const h = harness("delivery");
+  const cyclic = structuredClone(h.definition); cyclic.prompts[0].content = cyclic;
+  const sparse = structuredClone(h.definition); sparse.prompts = []; sparse.prompts.length = 1;
+  const throwing = new Proxy(structuredClone(h.definition), { get() { throw new Error("accessor"); } });
+  for (const value of [null, 1, "definition", cyclic, sparse, throwing]) {
+    assert.doesNotThrow(() => validateMissionDefinitionV1(value));
+    assert.equal(validateMissionDefinitionV1(value).state, "invalid");
+    assert.doesNotThrow(() => projectMissionStatusV1(value, []));
+    assert.equal(projectMissionStatusV1(value, []), null);
+  }
+});
+
+test("provenance identity rejects canonical-seat self-reports and runtime/executor collisions", async () => {
+  for (const mutate of [
+    (event) => ({ ...event, runtimeSelfReport: { kind: "runtime.self_report.observed", runtimeId: "may", model: "model:provenance", evidenceRefs: ["evidence:canonical"] } }),
+    (event) => ({ ...event, executorSelfReport: { kind: "executor.self_report.observed", executorId: event.runtimeHostObserved.runtimeId, evidenceRefs: ["evidence:collision"] } }),
+  ]) {
+    const h = harness("delivery");
+    const started = h.dispatchEntries[0]; const completed = h.dispatchEntries[1];
+    const { entryDigest: _digest, schemaVersion: _schema, contractVersion: _contract, ...input } = completed;
+    h.dispatchEntries[1] = createSeatDispatchLifecycleEventV1(mutate({ ...input, previousLifecycleDigest: started.entryDigest, previousLogDigest: started.entryDigest }));
+    const result = await advance(h);
+    assert.equal(result.outcome, "blocked"); assert.ok(["provenance_stale", "observation_mismatch"].includes(result.reasonCode)); assert.equal(result.dispatchEffects, 0);
+  }
 });
 
 test("altered step receipts fail replay before any dispatch effect", async () => {
