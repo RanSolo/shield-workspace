@@ -77,6 +77,13 @@ non-projectable, and rejects reauthorization. There is no expiry field or truste
 clock behavior. Stale, mixed-seat, ambiguous, revoked, or unlinked evidence fails
 closed.
 
+#### Fury correction #1 (closed)
+
+`mission-signer.mts` is the sole owner of signer snapshot/revalidation mechanics.
+It exposes an internal, non-package-exported API used by CLI and tests via internal
+helpers; the CLI never derives, normalizes, interprets, or owns signer path
+semantics. Snapshot inputs and comparisons are treated opaque to CLI.
+
 ### Projection and permission
 
 Model seat dispatch as a discriminated union. Preserve the existing May variant
@@ -128,16 +135,29 @@ preflight every payload and repository observation, then perform a credential-fr
 signer snapshot from `mission-signer` state (signer path + bytes + path identity:
 device, inode, mode + exact byte-digest) before manifest display.
 show exactly what the PIN authorizes, collect one Coulson passcode, re-read all
-bytes and observations, and revalidate signer snapshot again immediately before
-append signed authority plus initial runtime binding as one exact consecutive
+bytes and observations, verify signatures, capture the second canonical
+no-follow signer snapshot (same exact fields as the first), require exact equality,
+and append signed authority plus initial runtime binding as one exact consecutive
 two-entry mission-store batch, read back, and emit a credential-free receipt.
 The existing batch append lock/write-sync/rename/directory-sync/readback algorithm
 is reused; no new journal writer is introduced. Empty PIN is a no-write preflight.
 Preconditions are active mission authorization, execution `not-started`, final
 acceptance waiting, and no prior Daisy authority or binding. Post-display input,
 journal, repository, or signer drift aborts without a partial batch. CLI does not
-duplicate signer-path derivation logic; it reuses signer path identity helpers from
-`mission-signer` and does not interpret or normalize paths itself.
+duplicate signer-path derivation logic; it reuses signer helpers from
+`mission-signer` and does not inspect or interpret paths.
+
+#### Fury correction #2 (closed)
+
+Transaction order is frozen as:
+`snapshot (no-follow, canonical) -> display -> passcode -> sign -> verify signatures
+-> snapshot (no-follow, canonical) -> exact equality compare -> append`.
+Each snapshot records exact regular-file bytes, SHA-256 digest, `device`, `inode`,
+and `mode`; append requires full-record equality.
+
+`supervised-cli.test.mjs` adds authorized correction-path coverage for signer snapshot
+drift, whitespace/field-order/equivalent-record rewrites that preserve key semantics,
+and post-signature aborts with no append.
 
 ## Acceptance matrix
 
@@ -157,8 +177,9 @@ duplicate signer-path derivation logic; it reuses signer path identity helpers f
 | D260-12 | post-display journal/repository/input drift | transaction aborts without partial append |
 | D260-13 | no Daisy participation in fixed coordination tuple | no manifest, no passcode read, no signature, no append |
 | D260-14 | `coordination.authorized` with non-participant Daisy at replay/constructor | malformed/rejected; no projection readiness |
-| D260-15 | signer identity path and digest drift handling | manifest pass/fail unchanged for same-key; revalidation before signing and append must enforce same path+digest |
-| D260-16 | attempted fixture/network/publication effect | absent from scope and rejected by permission |
+| D260-15 | signer identity path and digest drift handling | manifest pass/fail unchanged for same-key; snapshot pre/post compare enforces exact bytes, sha256, device, inode, and mode |
+| D260-16 | semantic-equivalent CLI-authorized record rewrite (whitespace/field order/equivalent record forms) | signing/verification rejects; no append |
+| D260-17 | attempted fixture/network/publication effect | absent from scope and rejected by permission |
 
 Tests must use hostile own-property/accessor/proxy, malformed-signature/digest,
 stale replay, cross-seat, duplicate, supersession, and revocation vectors. Existing
@@ -172,8 +193,7 @@ dispatch projection, permission context, and permission artifact.
 - `packages/shield-team-system/src/schema9-seat-dispatch-projection-v1.mts`
 - `packages/shield-team-system/src/schema9-permission-context-v1.mts`
 - `packages/shield-team-system/src/mission-cli.mts`
-- `packages/shield-team-system/src/mission-signer.mts` (only if required to expose canonical signer
-  path identity/baseline in evidence)
+- `packages/shield-team-system/src/mission-signer.mts` (mandatory; internal signer snapshot/revalidation API; non-package-exported)
 - `packages/shield-team-system/public/daisy-coordination-authority.mjs`
 - `packages/shield-team-system/public/daisy-coordination-authority.d.mts`
 - `packages/shield-team-system/package.json`
@@ -182,7 +202,7 @@ dispatch projection, permission context, and permission artifact.
 - `packages/shield-team-system/tests/schema9-seat-dispatch-projection-v1.test.mjs`
 - `packages/shield-team-system/tests/schema9-permission-context-v1.test.mjs`
 - `packages/shield-team-system/tests/cli.test.mjs`
-- `packages/shield-team-system/tests/supervised-cli.test.mjs` (focused signer-identity tests only, if required)
+- `packages/shield-team-system/tests/supervised-cli.test.mjs` (focused signer-identity tests mandatory; includes rewrite and snapshot drift negatives)
 - `packages/shield-team-system/tests/mission-store.test.mjs`
 - `packages/shield-team-system/tests/package-surface.test.mjs`
 - `docs/missions/issue-260-daisy-coordination-authority-plan.md`
