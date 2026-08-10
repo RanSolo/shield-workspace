@@ -86,14 +86,19 @@ Slice 4 is additive. It adds `feature-flight-review-gates.mjs` after the
 execute-once seam. It does not add review behavior to
 `computeFeatureFlightStatus` or `runFeatureFlightStepV1`.
 
-The caller supplies only exact artifact paths/digests and one closed binding
-that distinguishes the schema-9 execution mission from the schema-8 review
-mission. Trusted host dependencies independently:
+The caller supplies only exact artifact paths/digests. It does not supply a
+cross-binding, subject relationship, revision relationship, request identity,
+verdict, or route. Trusted host dependencies independently:
 
 1. observe the repository root, common-Git identity, branch, and HEAD;
-2. read the canonical protected Mack replay registry for the frozen request;
-   and
-3. load and snapshot the separately identified supervised review journal.
+2. load the frozen Mack request identity and read its canonical protected replay
+   registry path;
+3. load and snapshot the separately identified supervised review journal; and
+4. load one frozen review-journal descriptor derived from the host's repository
+   and review-system observations.
+
+The controller derives the complete cross-binding only after validating those
+artifacts and observations.
 
 All dependency functions and descriptors are snapshotted before the first
 await. Missing, mutable, proxy/accessor-backed, extra, or identity-colliding
@@ -139,10 +144,13 @@ confinement, owner and mode, record/request/evidence digests, production
 provenance, and exact request binding, and returns an immutable trusted
 readback. The controller never accepts arbitrary `(request,evidence)` objects.
 
-Zero current-revision records means `waiting`; exactly one is evaluated;
-multiple records, path aliases, wrong owner/mode, malformed records, or
-conflicting request/evidence digests mean `invalid` or `recovery` according to
-whether durable readback is certain. Exact mission, subject, repository,
+The trusted frozen Mack request binding includes exact `validationRequestId`
+and normalized request digest. The verifier reads only the one registry path
+canonically derived from that identity; it does not scan by revision or infer a
+revision-wide uniqueness rule. Absence at that exact path means `waiting`;
+path aliases, wrong owner/mode, malformed records, or conflicting
+request/evidence digests mean `invalid` or `recovery` according to whether
+durable readback is certain. Exact mission, subject, repository,
 root/common-Git, branch, base, `currentReviewRevision`, implementation paths,
 and approved test surfaces must match.
 
@@ -167,10 +175,28 @@ Replay one canonical supervised schema-8 review journal through
 `reviewMissionId` and `reviewMissionRevisionId` own schema-8 Fury/Fitz/Simmons
 evidence; using the same mission ID in both journals is rejected.
 
-One frozen trusted cross-binding binds both mission identities, the exact
-subject, review-journal descriptor, `flightCompletionRevision`,
-`currentReviewRevision`, repository identity, branch, and source artifact
-identities. Schema 8 proves only subject/revision review lineage; repository
+The controller derives one frozen cross-binding from the validated terminal,
+both replayed mission briefs, current review subject, trusted review-journal
+descriptor, and host repository observation. The derived binding names these
+subjects separately:
+
+- `executionWorkItemSubjectId`: schema-9 execution brief subject;
+- `reviewWorkItemSubjectId`: schema-8 review-mission brief subject, which must
+  exactly equal `executionWorkItemSubjectId`; and
+- `repositoryReviewSubjectId`: schema-8 current `ReviewSubjectRevision.subjectId`,
+  which must exactly equal the trusted review-journal descriptor's subject and
+  remain distinct from the work-item subject.
+
+The review subject's `sourceRef` must exactly equal the trusted descriptor's
+source reference for the observed repository review target. Schema-8
+`revisionId` and `supersedesRevisionId` use canonical lowercase raw 40-hex Git
+commit encoding and are compared byte-for-byte with live HEAD; prefixed digests
+or alternate encodings fail closed.
+
+The resulting binding includes both mission identities,
+`flightCompletionRevision`, `currentReviewRevision`, repository identity,
+branch, and source artifact identities. Schema 8 proves only subject/revision
+review lineage; repository
 root, common-Git identity, and branch come from the trusted descriptor and host
 observation and are never inferred from schema-8 fields. Fury state comes only
 from the replayed current-head Fury record:
@@ -230,7 +256,9 @@ nextAction
 Mack waiting names Mack as gate seat; Mack product failure names May as
 correction seat; test/coverage failure names Mack; environmental/advisory block
 has no correction seat and may suggest Daisy investigation. Fury waiting names
-Fury as gate seat and Fury revise names May as correction seat. Human waiting
+Fury as gate seat. Fury revise projects the validated current Fury record's
+exact `nextActionSeatId` as the correction seat; it never substitutes May.
+Human waiting
 names only the corresponding human gate. Invalid, stale, and recovery states
 name no synthetic approver and select a closed inspect/recover action. Daisy is
 never the accountable review gate.
@@ -278,7 +306,7 @@ The poll is observational evidence only and is not a controller acceptance gate.
 - `packages/shield-team-system/scripts/operations/feature-flight-review-gates.mjs`
 - `packages/shield-team-system/scripts/operations/feature-flight-step.mjs`
 - `packages/shield-team-system/tests/mack-local-validation-v1.test.mjs`
-- `packages/shield-team-system/tests/mack-validation-runner.test.mjs`
+- `packages/shield-team-system/tests/mack-local-runner.test.mjs`
 - `packages/shield-team-system/tests/operations-feature-flight-review-gates.test.mjs`
 - `packages/shield-team-system/tests/operations-feature-flight-step.test.mjs`
 - `packages/shield-team-system/tests/package-surface.test.mjs`
@@ -299,8 +327,9 @@ review.
 
 ## Stop
 
-After Mack and Fury pass, request bounded review-publication authority, open one
-draft PR, and stop for Coulson's operator review. The controller's own terminal
-order remains Fury -> Fitz -> conditional Simmons -> Coulson final acceptance;
-PR publication is a separate authorized external workflow. Do not mark ready,
-merge, deploy, release, run a proving flight, or enter another issue.
+After Mack and Fury pass, request bounded review-publication authority and open
+one draft PR as a separate authorized external workflow. Stop at the
+controller-projected next human gate: Fitz first, conditional Simmons when
+required, and Coulson final acceptance only after preceding current-revision
+human evidence is valid. Do not fabricate a human result, mark ready, merge,
+deploy, release, run a proving flight, or enter another issue.
