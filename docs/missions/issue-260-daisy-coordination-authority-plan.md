@@ -3,7 +3,7 @@
 ## Frozen identity and purpose
 
 - Repository: `RanSolo/shield-workspace`
-- Exact planning base: `27d3fe7ab3051fd9b8a33032912dae65c389f4f2`
+- Exact implementation head at last Fury-revise handoff: `971345ae9a8304cb1be1055c52acb2c7f40c9f49`
 - Parent/blocking relation: prerequisite for #259 and the #251 proving flight
 - Fixed seat/action/capability: `daisy`,
   `action:feature-flight.daisy.reconnaissance`, `coordination`,
@@ -34,6 +34,11 @@ The digest is not a payload field. After validating the closed payload, compute
 `sha256(canonicalJson(payload))` externally and carry that digest only in the
 signed envelope, journal entry, binding authorization, projection, and permission
 result. This avoids a self-referential digest.
+
+The constructor and raw replay path both fail closed if a `coordination.authorized`
+entry carries a non-participant Daisy seat or fixed tuple mismatch. A
+non-participant `coordination.authorized` cannot become ready authority under any
+replay or decode path.
 
 The authority grants only the fixed coordination action and bounded artifact
 writes beneath its one exact root. It grants no implementation, arbitrary process,
@@ -113,16 +118,26 @@ commands. The command derives mission/subject/revision/sequence, fixed
 seat/action/effect/capability, authority IDs, digest, and binding linkage from
 fresh replay and host observation.
 
+`prepareAuthorizeDaisyCoordination(...)` must validate Daisy participation and the
+fixed coordination tuple before manifest derivation, signer binding resolve, or any
+passcode read. Non-participant Daisy requests fail with no manifest, no signer
+unlock, and no passcode prompt.
+
 It follows the existing one-passcode display/sign/revalidate/append transaction:
-preflight every payload and repository observation, show exactly what the PIN
-authorizes, collect one Coulson passcode, re-read all bytes and observations,
+preflight every payload and repository observation, then perform a credential-free
+signer snapshot from `mission-signer` state (signer path + bytes + path identity:
+device, inode, mode + exact byte-digest) before manifest display.
+show exactly what the PIN authorizes, collect one Coulson passcode, re-read all
+bytes and observations, and revalidate signer snapshot again immediately before
 append signed authority plus initial runtime binding as one exact consecutive
 two-entry mission-store batch, read back, and emit a credential-free receipt.
 The existing batch append lock/write-sync/rename/directory-sync/readback algorithm
 is reused; no new journal writer is introduced. Empty PIN is a no-write preflight.
 Preconditions are active mission authorization, execution `not-started`, final
 acceptance waiting, and no prior Daisy authority or binding. Post-display input,
-journal, repository, or signer drift aborts without a partial batch.
+journal, repository, or signer drift aborts without a partial batch. CLI does not
+duplicate signer-path derivation logic; it reuses signer path identity helpers from
+`mission-signer` and does not interpret or normalize paths itself.
 
 ## Acceptance matrix
 
@@ -140,7 +155,10 @@ journal, repository, or signer drift aborts without a partial batch.
 | D260-10 | closed CLI input + empty PIN | credential-free manifest; no journal append |
 | D260-11 | one-passcode success | N+1 authority and N+2 binding append/read back as one atomic batch |
 | D260-12 | post-display journal/repository/input drift | transaction aborts without partial append |
-| D260-13 | attempted fixture/network/publication effect | absent from scope and rejected by permission |
+| D260-13 | no Daisy participation in fixed coordination tuple | no manifest, no passcode read, no signature, no append |
+| D260-14 | `coordination.authorized` with non-participant Daisy at replay/constructor | malformed/rejected; no projection readiness |
+| D260-15 | signer identity path and digest drift handling | manifest pass/fail unchanged for same-key; revalidation before signing and append must enforce same path+digest |
+| D260-16 | attempted fixture/network/publication effect | absent from scope and rejected by permission |
 
 Tests must use hostile own-property/accessor/proxy, malformed-signature/digest,
 stale replay, cross-seat, duplicate, supersession, and revocation vectors. Existing
@@ -154,6 +172,8 @@ dispatch projection, permission context, and permission artifact.
 - `packages/shield-team-system/src/schema9-seat-dispatch-projection-v1.mts`
 - `packages/shield-team-system/src/schema9-permission-context-v1.mts`
 - `packages/shield-team-system/src/mission-cli.mts`
+- `packages/shield-team-system/src/mission-signer.mts` (only if required to expose canonical signer
+  path identity/baseline in evidence)
 - `packages/shield-team-system/public/daisy-coordination-authority.mjs`
 - `packages/shield-team-system/public/daisy-coordination-authority.d.mts`
 - `packages/shield-team-system/package.json`
@@ -162,6 +182,7 @@ dispatch projection, permission context, and permission artifact.
 - `packages/shield-team-system/tests/schema9-seat-dispatch-projection-v1.test.mjs`
 - `packages/shield-team-system/tests/schema9-permission-context-v1.test.mjs`
 - `packages/shield-team-system/tests/cli.test.mjs`
+- `packages/shield-team-system/tests/supervised-cli.test.mjs` (focused signer-identity tests only, if required)
 - `packages/shield-team-system/tests/mission-store.test.mjs`
 - `packages/shield-team-system/tests/package-surface.test.mjs`
 - `docs/missions/issue-260-daisy-coordination-authority-plan.md`
@@ -193,3 +214,6 @@ Stop on any need to genericize May authority, accept caller-asserted authority,
 loosen exact repository/sequence binding, permit more than the fixed Daisy tuple,
 or touch #259 adapter/fixture code. This issue performs no fixture run, model
 dispatch, GitHub write, publication, merge, deployment, release, or #29 work.
+
+Classify any color environment output variation or color-env test failure as an
+#255 regression, not #260.
