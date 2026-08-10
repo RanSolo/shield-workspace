@@ -15,9 +15,9 @@ import {
   type MissionCycleResultV1,
   type ProfileAwareJournalSnapshotV1,
 } from "./mission-runtime-v1.mjs";
-import { validatePermissionInvocationContext, type PermissionInvocationContext } from "./permission-v1.mjs";
+import { evaluatePermission, replayRuntimeInvocationClaimsV1, validatePermissionInvocationContext, type PermissionInvocationContext } from "./permission-v1.mjs";
 import { replayProfileAwareMissionJournal } from "./profile-aware-mission-v1.mjs";
-import { type RunnerEffectClass, type RunnerModeReference } from "./runner-v1.mjs";
+import { type RunnerCyclePlan, type RunnerEffectClass, type RunnerModeReference } from "./runner-v1.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
@@ -237,6 +237,15 @@ export interface MissionStepReceiptV1 {
   readonly edgeId: string;
   readonly outcome: "success" | "repair" | "repair_exhausted" | "human_evidence";
   readonly evidenceRefs: readonly string[];
+  readonly runnerBinding: Readonly<{
+    readonly seatId: CanonicalRoleId;
+    configuredRuntime: RuntimeConfiguredV1;
+    requestedRuntime: RuntimeRequestedV1;
+    runtimeSelfReport: RuntimeSelfReportUnavailableV1 | RuntimeSelfReportObservedV1;
+    runtimeHostObserved: RuntimeHostObservedV1 | RuntimeHostUnobservedV1;
+    executorSelfReport: ExecutorSelfReportUnavailableV1 | ExecutorSelfReportObservedV1;
+    executorHostObserved: ExecutorHostObservedV1 | ExecutorHostUnobservedV1;
+  }> | null;
   readonly previousReceiptDigest: string | null;
   readonly receiptDigest: string;
 }
@@ -485,7 +494,7 @@ function evidenceId(pattern: MissionPatternV1, suffix: string): string { return 
 function canonicalManifestSteps(pattern: MissionPatternV1, maximumRepairs: number): MissionStepManifestV1[] {
   const spec = TEMPLATE[pattern];
   return [
-    { stepId: stepId(pattern, "work"), nodeId: nodeId(pattern, "work"), seatId: spec.owner, adapter: "mission_cycle", actionId: spec.action, effectClass: spec.effect, validationId: `validation:${pattern}:work`, promptId: `prompt:${pattern}:${spec.owner}`, handoffId: `handoff:${pattern}:${spec.owner}`, maximumAttempts: 1, requiredCapabilities: [] },
+    { stepId: stepId(pattern, "work"), nodeId: nodeId(pattern, "work"), seatId: spec.owner, adapter: "mission_cycle", actionId: spec.action, effectClass: spec.effect, validationId: `validation:${pattern}:work`, promptId: `prompt:${pattern}:${spec.owner}`, handoffId: `handoff:${pattern}:${spec.owner}`, maximumAttempts: 1, requiredCapabilities: ["filesystem_write"] },
     { stepId: stepId(pattern, "mack"), nodeId: nodeId(pattern, "mack"), seatId: "mack", adapter: "mack_host", actionId: "mission.mack.validate", effectClass: "verification", validationId: `validation:${pattern}:mack`, promptId: `prompt:${pattern}:mack`, handoffId: `handoff:${pattern}:mack`, maximumAttempts: 1 + maximumRepairs, requiredCapabilities: [] },
   ];
 }
@@ -951,22 +960,42 @@ function makeStepReceipt(input: Omit<MissionStepReceiptV1, "schemaVersion" | "co
   return freeze({ ...base, receiptDigest: stepReceiptDigest(base) });
 }
 
+function validRunnerReceiptBinding(value: unknown): boolean {
+  return plain(value) && exact(value, ["seatId", "configuredRuntime", "requestedRuntime", "runtimeSelfReport", "runtimeHostObserved", "executorSelfReport", "executorHostObserved"])
+    && typeof value.seatId === "string" && CANONICAL_ROLE_IDS.includes(value.seatId as CanonicalRoleId)
+    && plain(value.configuredRuntime) && plain(value.requestedRuntime) && plain(value.runtimeSelfReport) && plain(value.runtimeHostObserved)
+    && plain(value.executorSelfReport) && plain(value.executorHostObserved);
+}
+
+function runnerReceiptBindingMatches(value: MissionStepReceiptV1["runnerBinding"], runtime: MissionHostRuntimeObservationV1): boolean {
+  return value !== null && value.seatId === runtime.seatId && canonicalJson(value.configuredRuntime) === canonicalJson(runtime.configuredRuntime)
+    && canonicalJson(value.requestedRuntime) === canonicalJson(runtime.requestedRuntime)
+    && canonicalJson(value.runtimeSelfReport) === canonicalJson(runtime.runtimeSelfReport)
+    && canonicalJson(value.runtimeHostObserved) === canonicalJson(runtime.runtimeHostObserved)
+    && canonicalJson(value.executorSelfReport) === canonicalJson(runtime.executorSelfReport)
+    && canonicalJson(value.executorHostObserved) === canonicalJson(runtime.executorHostObserved);
+}
+
 function replayStepReceipts(definition: MissionDefinitionV1, input: unknown): { state: "valid"; currentNodeId: string; receipts: readonly MissionStepReceiptV1[]; edgeCounts: Map<string, number>; evidence: string[]; exhausted: boolean } | { state: "invalid" } {
   if (!dense(input, 256)) return { state: "invalid" };
-  let current = definition.graph.startNodeId; let previous: string | null = null; let exhausted = false; const edgeCounts = new Map<string, number>(); const evidenceRefs: string[] = [];
+  let current = definition.graph.startNodeId; let previous: string | null = null; let exhausted = false; const edgeCounts = new Map<string, number>(); const evidenceRefs: string[] = []; const stepAttempts = new Map<string, number>();
   for (let index = 0; index < input.length; index += 1) {
     const receipt = input[index] as MissionStepReceiptV1;
-    const fields = ["schemaVersion", "contractVersion", "sequence", "receiptId", "missionId", "definitionRevision", "graphRevision", "stepId", "attempt", "fromNodeId", "toNodeId", "edgeId", "outcome", "evidenceRefs", "previousReceiptDigest", "receiptDigest"];
+    const fields = ["schemaVersion", "contractVersion", "sequence", "receiptId", "missionId", "definitionRevision", "graphRevision", "stepId", "attempt", "fromNodeId", "toNodeId", "edgeId", "outcome", "evidenceRefs", "runnerBinding", "previousReceiptDigest", "receiptDigest"];
     if (!exact(receipt, fields) || receipt.sequence !== index || receipt.missionId !== definition.missionId || receipt.definitionRevision !== definition.definitionRevision || receipt.graphRevision !== definition.graph.graphRevision
       || receipt.fromNodeId !== current || receipt.previousReceiptDigest !== previous || !dense(receipt.evidenceRefs, 32) || receipt.receiptDigest !== stepReceiptDigest((({ receiptDigest: _ignored, ...rest }) => rest)(receipt))
       || receipt.receiptId !== deriveMissionStepIdentityV1(receipt.graphRevision, receipt.stepId, receipt.attempt)) return { state: "invalid" };
     const edge = definition.graph.edges.find((item) => item.edgeId === receipt.edgeId);
     const node = definition.graph.nodes.find((item) => item.nodeId === current);
     const evidence = edge && definition.evidenceContracts.find((item) => item.evidenceContractId === edge.evidenceContractId);
+    const step = definition.steps.find((item) => item.stepId === receipt.stepId);
+    const expectedAttempt = (stepAttempts.get(receipt.stepId) ?? 0) + 1;
+    if (!node || (node.kind === "runner_step" ? !validRunnerReceiptBinding(receipt.runnerBinding) : receipt.runnerBinding !== null)) return { state: "invalid" };
     if (!edge || !node || !evidence || edge.fromNodeId !== current || edge.toNodeId !== receipt.toNodeId || evidence.nodeId !== node.nodeId
       || evidence.requiredSeatId !== node.seatId || receipt.evidenceRefs.length !== 1 || !receipt.evidenceRefs.every((item) => typeof item === "string" && ID.test(item))
-      || (node.stepId ?? `human:${node.nodeId}`) !== receipt.stepId
+      || (node.stepId ?? `human:${node.nodeId}`) !== receipt.stepId || receipt.attempt !== expectedAttempt || receipt.attempt > (step?.maximumAttempts ?? 1)
       || (receipt.outcome === "human_evidence" ? evidence.kind !== "human_authority" : node.kind === "runner_step" ? evidence.kind !== "runner_effect" : evidence.kind !== "mack_report")) return { state: "invalid" };
+    stepAttempts.set(receipt.stepId, receipt.attempt);
     if (receipt.outcome === "repair_exhausted") {
       if (node.kind !== "mack_validation" || edge.condition !== "repair" || receipt.toNodeId !== current || (edgeCounts.get(edge.edgeId) ?? 0) < edge.maximumTraversals || exhausted) return { state: "invalid" };
       exhausted = true; previous = receipt.receiptDigest; evidenceRefs.push(...receipt.evidenceRefs); continue;
@@ -989,9 +1018,11 @@ function receiptEvidenceMatchesObservation(definition: MissionDefinitionV1, obse
     if (!edge || !contract || !node || contract.nodeId !== node.nodeId || contract.requiredSeatId !== node.seatId || typeof reference !== "string") return false;
     if (contract.kind === "runner_effect") {
       const step = definition.steps.find((item) => item.stepId === receipt.stepId);
+      const runtimeBinding = step && observation.runtimeBindings.find((item) => item.seatId === step.seatId);
       return !!step && observation.journalSnapshot.projection.effects.some((effect) => effect.effectKey === reference && effect.outcome === "completed"
         && effect.seatId === step.seatId && effect.actionId === step.actionId && effect.effectClass === step.effectClass
-        && effect.subjectId === definition.subjectId && effect.revisionId === observation.journalSnapshot.projection.brief.revisionId);
+        && effect.subjectId === definition.subjectId && effect.revisionId === observation.journalSnapshot.projection.brief.revisionId
+        && !!runtimeBinding && runnerReceiptBindingMatches(receipt.runnerBinding, runtimeBinding));
     }
     if (contract.kind === "mack_report") {
       const step = definition.steps.find((item) => item.stepId === receipt.stepId);
@@ -1010,6 +1041,26 @@ function receiptEvidenceMatchesObservation(definition: MissionDefinitionV1, obse
     return requirements.length === 1 && observation.journalSnapshot.projection.evidence.some((evidence) => evidence.evidenceId === reference
       && evidence.requirementId === requirements[0].requirementId && evidence.missionId === definition.missionId && evidence.revisionId === requirements[0].revisionId
       && evidence.seatId === contract.requiredSeatId && evidence.evidenceKind === contract.evidenceKind && evidence.decision === "approved");
+  });
+}
+
+async function runnerPermissionClaimsMatch(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, receipts: readonly MissionStepReceiptV1[], dependencies: MissionAdvanceDependenciesV1): Promise<boolean> {
+  const runnerReceipts = receipts.filter((receipt) => definition.steps.some((step) => step.stepId === receipt.stepId && step.adapter === "mission_cycle"));
+  if (runnerReceipts.length === 0) return true;
+  let replayed: ReturnType<typeof replayRuntimeInvocationClaimsV1>;
+  try { replayed = replayRuntimeInvocationClaimsV1(await dependencies.missionCycle.permissionAudit.read()); } catch { return false; }
+  if (replayed.state === "invalid") return false;
+  return runnerReceipts.every((receipt) => {
+    const step = definition.steps.find((item) => item.stepId === receipt.stepId);
+    const runtime = step && observation.runtimeBindings.find((item) => item.seatId === step.seatId);
+    const reference = receipt.evidenceRefs[0];
+    if (!step || !runtime || typeof reference !== "string") return false;
+    return replayed.value.some((record) => record.recordType === "tool.invocation" && record.outcome === "allow"
+      && record.missionId === definition.missionId && record.subjectId === definition.subjectId && record.revisionId === observation.journalSnapshot.projection.brief.revisionId
+      && record.seatId === step.seatId && record.actionId === step.actionId && record.effectClass === step.effectClass && record.effectKey === reference
+      && record.repositoryId === definition.repositoryId
+      && record.reasoningRuntimeId === (runtime.runtimeHostObserved.kind === "runtime.host_observed" ? runtime.runtimeHostObserved.runtimeId : null)
+      && record.toolExecutorId === (runtime.executorHostObserved.kind === "executor.host_observed" ? runtime.executorHostObserved.executorId : null));
   });
 }
 
@@ -1101,9 +1152,12 @@ function validateObservation(definition: MissionDefinitionV1, value: unknown): M
   const permissionSequence = replay.value.execution === "not-started" ? replay.value.lastSequence + 1 : replay.value.lastSequence;
   if (permission.state === "invalid" || permission.value.repositoryId !== definition.repositoryId || permission.value.canonicalWritableRoot !== value.repositoryRoot
     || permission.value.artifactRevisionId !== definition.repositoryRevision || permission.value.evaluatedThroughSequence !== permissionSequence) return null;
+  const provenance = replayMissionProvenanceV1(value.provenanceRecords);
+  const allowedDefinitionRevisions = new Set(provenance.state === "valid" ? provenance.value.records.map((record) => record.definitionRevision) : [definition.definitionRevision]);
+  allowedDefinitionRevisions.add(definition.definitionRevision);
   const dispatchReplay = replaySeatDispatchReceiptsV1(value.dispatchReceiptEntries);
   if (dispatchReplay.state === "invalid" || dispatchReplay.projections.some((receipt) => receipt.parentMissionId !== definition.missionId
-    || receipt.parentMissionRevision !== definition.definitionRevision || receipt.parentSessionId !== value.sessionId || receipt.repositoryId !== definition.repositoryId
+    || !allowedDefinitionRevisions.has(receipt.parentMissionRevision) || receipt.parentSessionId !== value.sessionId || receipt.repositoryId !== definition.repositoryId
     || receipt.repositoryWorkspaceId !== value.workspaceId || receipt.repositoryRevision !== definition.repositoryRevision || receipt.subjectId !== definition.subjectId)) return null;
   return value as unknown as MissionAdvanceHostObservationV1;
 }
@@ -1220,7 +1274,7 @@ async function runMackAdapter(definition: MissionDefinitionV1, observation: Miss
   return { state: evaluation.advancementEligibility === "eligible" ? "success" : "repair", evaluation, reportRef: dispatched.reportRef, dispatchEffects: 1 };
 }
 
-async function appendStepReceipt(receipt: MissionStepReceiptV1, store: MissionStepReceiptStoreV1): Promise<"appended" | "blocked" | "uncertain"> {
+async function appendStepReceipt(receipt: MissionStepReceiptV1, expectedReceipts: readonly MissionStepReceiptV1[], store: MissionStepReceiptStoreV1): Promise<"appended" | "blocked" | "uncertain"> {
   let result: Awaited<ReturnType<MissionStepReceiptStoreV1["append"]>>;
   try { result = await store.append({ receipt, expectedPreviousReceiptDigest: receipt.previousReceiptDigest }); }
   catch { return "uncertain"; }
@@ -1228,7 +1282,7 @@ async function appendStepReceipt(receipt: MissionStepReceiptV1, store: MissionSt
   let readback: unknown;
   try { readback = await store.read(); }
   catch { return "uncertain"; }
-  if (!dense(readback, 256)) return "uncertain";
+  if (!dense(readback, 256) || canonicalJson(readback) !== canonicalJson([...expectedReceipts, receipt])) return "uncertain";
   const exactReceipt = readback.find((item) => plain(item) && item.receiptId === receipt.receiptId);
   try { return canonicalJson(exactReceipt) === canonicalJson(receipt) ? "appended" : "uncertain"; }
   catch { return "uncertain"; }
@@ -1272,6 +1326,7 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
   if (provenance.value.validationRevision === null || provenance.value.proofreadAcceptanceDigest === null) return blocked("proofreading_required");
   const receiptReplay = replayStepReceipts(definition, observation.stepReceipts); if (receiptReplay.state === "invalid") return blocked("receipt_invalid");
   if (!receiptEvidenceMatchesObservation(definition, observation, receiptReplay.receipts)) return blocked("receipt_invalid");
+  if (!await runnerPermissionClaimsMatch(definition, observation, receiptReplay.receipts, dependencies)) return blocked("receipt_invalid");
   const status = projectMissionStatusV1(definition, observation.stepReceipts);
   if (receiptReplay.exhausted) return blocked("repair_exhausted", status);
   const node = definition.graph.nodes.find((item) => item.nodeId === receiptReplay.currentNodeId)!;
@@ -1290,8 +1345,8 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
       && item.revisionId === observation.journalSnapshot.projection.brief.revisionId && item.decision === "approved") : [];
     if (!edge || !contract || evidence.length !== 1) return blocked("human_evidence_required", status, "waiting");
     const receipt = makeStepReceipt({ sequence: receiptReplay.receipts.length, missionId: definition.missionId, definitionRevision: definition.definitionRevision, graphRevision: definition.graph.graphRevision,
-      stepId: `human:${node.nodeId}`, attempt: 1, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: "human_evidence", evidenceRefs: [evidence[0].evidenceId], previousReceiptDigest });
-    const appended = await appendStepReceipt(receipt, dependencies.stepReceiptStore);
+      stepId: `human:${node.nodeId}`, attempt: 1, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: "human_evidence", evidenceRefs: [evidence[0].evidenceId], runnerBinding: null, previousReceiptDigest });
+    const appended = await appendStepReceipt(receipt, receiptReplay.receipts, dependencies.stepReceiptStore);
     if (appended !== "appended") return blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked");
     return { outcome: "advanced", reasonCode: "complete", dispatchEffects: 0, receipt, runnerResult: null, mackEvaluation: null, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt]) };
   }
@@ -1307,13 +1362,26 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
     if (observation.permissionContext.decisionId !== identity.decisionId || runtimeBinding?.runtimeHostObserved.kind !== "runtime.host_observed"
       || runtimeBinding.runtimeHostObserved.runtimeId !== observation.permissionContext.reasoningRuntimeId || runtimeBinding.executorHostObserved.kind !== "executor.host_observed"
       || runtimeBinding.executorHostObserved.executorId !== observation.permissionContext.toolExecutorId) return blocked("observation_mismatch", status);
+    const runnerPlan: RunnerCyclePlan = { runnerContractVersion: 1, cycleId: identity.cycleId, missionId: definition.missionId, subjectId: definition.subjectId,
+      revisionId: cycleInput.expectedRevisionId, evaluatedThroughSequence: observation.permissionContext.evaluatedThroughSequence, seatId: step.seatId,
+      activatedModes: cycleInput.activatedModes, actionId: step.actionId, effectClass: step.effectClass, effectKey: identity.effectKey,
+      validationId: step.validationId, stopCondition: "after_one_cycle" };
+    let requiredCapabilities: readonly string[];
+    let permissionEvaluation: ReturnType<typeof evaluatePermission>;
+    try {
+      requiredCapabilities = dependencies.missionCycle.requiredCapabilities(runnerPlan);
+      permissionEvaluation = evaluatePermission(runnerPlan, observation.permissionContext);
+    } catch { return blocked("observation_mismatch", status); }
+    if (canonicalJson(requiredCapabilities) !== canonicalJson(step.requiredCapabilities)
+      || canonicalJson(observation.permissionContext.requiredCapabilities) !== canonicalJson(step.requiredCapabilities)
+      || permissionEvaluation.outcome !== "allow") return blocked("observation_mismatch", status);
     const runnerResult = await runMissionCycle(cycleInput, { ...dependencies.missionCycle, getPermissionContext: () => observation.permissionContext });
     if (runnerResult.outcome !== "advanced" && runnerResult.outcome !== "complete") return { ...blocked(runnerResult.outcome === "uncertain" ? "uncertain_execution" : "runner_blocked", status, runnerResult.outcome === "uncertain" ? "uncertain" : runnerResult.outcome === "waiting" ? "waiting" : "blocked"), dispatchEffects: runnerDispatchEffects(runnerResult), runnerResult };
     const edge = outgoing.find((item) => item.condition === "success"); if (!edge) return blocked("definition_invalid", status);
     const evidenceRef = "effectKey" in runnerResult ? runnerResult.effectKey : identity.effectKey;
     const receipt = makeStepReceipt({ sequence: receiptReplay.receipts.length, missionId: definition.missionId, definitionRevision: definition.definitionRevision, graphRevision: definition.graph.graphRevision,
-      stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: "success", evidenceRefs: [evidenceRef], previousReceiptDigest });
-    const appended = await appendStepReceipt(receipt, dependencies.stepReceiptStore);
+      stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: "success", evidenceRefs: [evidenceRef], runnerBinding: runtimeBinding, previousReceiptDigest });
+    const appended = await appendStepReceipt(receipt, receiptReplay.receipts, dependencies.stepReceiptStore);
     if (appended !== "appended") return { ...blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked"), dispatchEffects: runnerDispatchEffects(runnerResult), runnerResult };
     return { outcome: "advanced", reasonCode: "complete", dispatchEffects: runnerResult.outcome === "advanced" ? 1 : 0, receipt, runnerResult, mackEvaluation: null, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt]) };
   }
@@ -1325,15 +1393,15 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
     const exhaustionEdge = outgoing.find((item) => item.condition === "repair");
     if (!exhaustionEdge || !mack.reportRef) return { ...blocked("repair_exhausted", status), dispatchEffects: mack.dispatchEffects, mackEvaluation: mack.evaluation };
     const exhaustionReceipt = makeStepReceipt({ sequence: receiptReplay.receipts.length, missionId: definition.missionId, definitionRevision: definition.definitionRevision, graphRevision: definition.graph.graphRevision,
-      stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: node.nodeId, edgeId: exhaustionEdge.edgeId, outcome: "repair_exhausted", evidenceRefs: [mack.reportRef], previousReceiptDigest });
-    const appended = await appendStepReceipt(exhaustionReceipt, dependencies.stepReceiptStore);
+      stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: node.nodeId, edgeId: exhaustionEdge.edgeId, outcome: "repair_exhausted", evidenceRefs: [mack.reportRef], runnerBinding: null, previousReceiptDigest });
+    const appended = await appendStepReceipt(exhaustionReceipt, receiptReplay.receipts, dependencies.stepReceiptStore);
     if (appended !== "appended") return { ...blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked"), dispatchEffects: mack.dispatchEffects, mackEvaluation: mack.evaluation };
     return { outcome: "blocked", reasonCode: "repair_exhausted", dispatchEffects: mack.dispatchEffects, receipt: exhaustionReceipt, runnerResult: null, mackEvaluation: mack.evaluation,
       status: projectMissionStatusV1(definition, [...observation.stepReceipts, exhaustionReceipt]) };
   }
   const receipt = makeStepReceipt({ sequence: receiptReplay.receipts.length, missionId: definition.missionId, definitionRevision: definition.definitionRevision, graphRevision: definition.graph.graphRevision,
-    stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: condition, evidenceRefs: mack.reportRef ? [mack.reportRef] : [], previousReceiptDigest });
-  const appended = await appendStepReceipt(receipt, dependencies.stepReceiptStore);
+    stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: condition, evidenceRefs: mack.reportRef ? [mack.reportRef] : [], runnerBinding: null, previousReceiptDigest });
+  const appended = await appendStepReceipt(receipt, receiptReplay.receipts, dependencies.stepReceiptStore);
   if (appended !== "appended") return { ...blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked"), dispatchEffects: mack.dispatchEffects, mackEvaluation: mack.evaluation };
   return { outcome: "advanced", reasonCode: "complete", dispatchEffects: mack.dispatchEffects, receipt, runnerResult: null, mackEvaluation: mack.evaluation, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt]) };
 }

@@ -19,7 +19,7 @@ import {
 } from "../dist/mission-builder-v1.mjs";
 import { deriveMissionCycleIdentityV1 } from "../dist/mission-runtime-v1.mjs";
 import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
-import { createSeatDispatchLifecycleEventV1, createSeatDispatchStartedEventV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
+import { createSeatDispatchLifecycleEventV1, createSeatDispatchStartedEventV1, replaySeatDispatchReceiptsV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import {
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
@@ -550,6 +550,57 @@ test("exact definition provenance is required for proofreading and advance", asy
   assert.equal(result.reasonCode, "provenance_stale");
   assert.equal(result.dispatchEffects, 0);
   assert.equal(h.executedPlans.length, 0);
+});
+
+test("edited definitions revalidate, proofread, and advance only through the exact provenance chain", async () => {
+  const h = harness("delivery");
+  const edited = editMissionDefinitionTextV1({ definition: h.definition, provenanceRecords: h.provenanceRecords,
+    edits: [{ target: "prompt", targetId: h.definition.prompts[0].promptId, replacement: "Edited bounded implementation prompt." }] });
+  assert.equal(edited.state, "edited");
+  const afterEdit = [...h.provenanceRecords, edited.record];
+  const validation = createMissionValidationRecordV1({ definition: edited.definition, provenanceRecords: afterEdit });
+  assert.ok(validation);
+  const afterValidation = [...afterEdit, validation];
+  const proofreading = createMissionProofreadingAcceptanceV1({ definition: edited.definition, provenanceRecords: afterValidation });
+  assert.ok(proofreading);
+  let priorRecordDigest = null;
+  const records = [...afterValidation, proofreading].map((record, index, all) => {
+    const actorReceiptId = record.kind === "definition.edited" ? "receipt:provenance:edited" : record.kind === "definition.validated" && index === all.length - 2 ? "receipt:provenance:revalidated" : record.kind === "proofreading.accepted" && index === all.length - 1 ? "receipt:provenance:reproofreading" : record.actorReceiptId;
+    const value = { ...record, actorReceiptId, previousRecordDigest: priorRecordDigest };
+    const { recordDigest: _ignored, ...content } = value;
+    const result = { ...value, recordDigest: hash("shield.mission-provenance.v1", content) }; priorRecordDigest = result.recordDigest; return result;
+  });
+  let previousLogDigest = h.dispatchEntries.at(-1).entryDigest;
+  for (const [seatId, receiptId, artifactId] of [["hill", "receipt:provenance:edited", edited.definition.definitionRevision], ["may", "receipt:provenance:revalidated", edited.definition.definitionRevision], ["hill", "receipt:provenance:reproofreading", edited.definition.definitionRevision]]) {
+    const entries = provenanceLifecycle(edited.definition, seatId, receiptId, artifactId, h.dispatchEntries.length, previousLogDigest);
+    h.dispatchEntries.push(...entries); previousLogDigest = entries.at(-1).entryDigest;
+  }
+  h.definition = edited.definition; h.provenanceRecords = records; h.stepReceipts.length = 0; h.audit.length = 0;
+  assert.equal(replayMissionProvenanceV1(records).state, "valid", JSON.stringify(replayMissionProvenanceV1(records)));
+  assert.equal(replaySeatDispatchReceiptsV1(h.dispatchEntries).state, "valid");
+  const result = await advance(h);
+  assert.equal(result.outcome, "advanced", result.reasonCode);
+  assert.equal(h.executedPlans.length, 1);
+});
+
+test("permission preflight and receipt replay reject malformed, nonsequential, exhausted, duplicate, and polluted state with zero effects", async () => {
+  const denied = harness("delivery");
+  const deniedObservation = observation(denied);
+  deniedObservation.permissionContext.requiredCapabilities = ["unexpected_capability"];
+  const deniedResult = await advanceMissionV1({ schemaVersion: 1, contractVersion: "mission.advance.v1", definition: denied.definition, observation: deniedObservation }, denied.dependencies);
+  assert.equal(deniedResult.outcome, "blocked"); assert.equal(deniedResult.dispatchEffects, 0);
+  assert.equal(denied.executedPlans.length, 0); assert.equal(denied.stepReceipts.length, 0); assert.equal(denied.audit.length, 0); assert.equal(denied.dispatchEntries.length, 6);
+
+  const h = harness("delivery");
+  await advance(h);
+  const nonsequential = structuredClone(h.stepReceipts); nonsequential[0].attempt = 2;
+  const invalid = await advance(h, { stepReceipts: nonsequential });
+  assert.equal(invalid.reasonCode, "receipt_invalid"); assert.equal(invalid.dispatchEffects, 0); assert.equal(h.dispatches, 0);
+  const duplicate = await advance(h, { stepReceipts: [...h.stepReceipts, structuredClone(h.stepReceipts[0])] });
+  assert.equal(duplicate.reasonCode, "receipt_invalid"); assert.equal(duplicate.dispatchEffects, 0);
+  h.dependencies.stepReceiptStore.read = async () => [...structuredClone(h.stepReceipts), { polluted: true }];
+  const polluted = await advance(h);
+  assert.equal(polluted.reasonCode, "uncertain_execution"); assert.equal(polluted.dispatchEffects, 1);
 });
 
 test("Mack uses bounded host dispatch, replay does not redispatch, and human gates consume only replayed signed evidence", async () => {
