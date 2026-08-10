@@ -1,14 +1,35 @@
-# Issue #259 — production proving bridge replacement (read-only proving-flight preflight, Fury-bound)
+# Issue #259 — production proving bridge Feature Flight plan (Fury-bound)
 
 ## Frozen identity and objective
 
 - Repository: `RanSolo/shield-workspace`
-- Base: `e4a0cf095593495b6cd65d0bc64cb3b8097b5a74`
+- Base: `5de71f2550a75d558cf3a5c85ae9b551de77b628`
 - Parent: `#251`
-- Status: replacement plan for prior #259 draft; exact plan-for-Fury
+- Status: fresh-main Feature Flight plan; exact plan-for-Fury
 - Objective: add the missing production host composition boundary for **read-only proving-flight preflight** without broad redesign.
 - Exclusions (preserved): this issue does not run proving flight, does not grant authority, does not perform selection/review/completion control, and does not publish, merge, deploy, release, or enter #29.
 - This commit is docs-only: only `docs/missions/issue-259-production-proving-bridge-plan.md` is modified.
+
+## Current-main reconciliation
+
+Read-only reconnaissance at the frozen base verified that the durable core is
+already present and must be reused unchanged:
+
+- `runFeatureFlightStepV1` already enforces the fixed Daisy action,
+  validation, coordination effect, read-only capability, one-cycle stop,
+  durable claim, exact replay, successor/result triad, and recovery states.
+- schema-9 Daisy projection already requires active signed Daisy coordination
+  authority and exactly one matching active runtime binding.
+- `shield-ops` currently exposes evidence, acceptance, and `flight status`, but
+  has no `flight run` production composition command.
+- the external fixture launcher is the existing trusted boundary; fixture
+  identity, baseline, package, symlink, and isolated-phase checks remain in
+  force.
+
+Therefore this issue does not modify the step core, Daisy authority,
+schema-9 projection, mission CLI, or fixture worker. It only derives their
+existing inputs at one production host boundary, adds the narrowly injected
+fixture adapter, and records a separate authority-none measurement.
 
 ## Fury exact replacement scope
 
@@ -18,16 +39,50 @@ Create/modify only these files in implementation work:
 - `packages/shield-team-system/src/permission-v1.mts` (pure `createRunnerPermissionDecisionV1` refactor)
 - `packages/shield-team-system/scripts/operations/ops-cli.mjs`
 - `packages/shield-team-system/scripts/operations/feature-flight-run.mjs`
+- `packages/shield-team-system/scripts/operations/feature-flight-measurement.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/feature-flight-adapter.mjs`
 - `benchmarks/v0.3-fixture-host-launcher.mjs` (backward-compatible captured-baseline input)
 - `packages/shield-team-system/tests/permission-v1.test.mjs`
 - `packages/shield-team-system/tests/operations-cli.test.mjs`
 - `packages/shield-team-system/tests/operations-feature-flight-run.test.mjs`
+- `packages/shield-team-system/tests/operations-feature-flight-measurement.test.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/test/feature-flight-adapter.test.mjs`
 - `benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
 - `packages/shield-team-system/tests/fixtures/esm-loader.mjs`
 
 No other production, fixture, package, schema, or policy path is in scope.
+
+## Feature Flight construction and lane ownership
+
+Controlling Hill owns this plan, the shared interface freeze, lane sequencing,
+exact revisions, unresolved decisions, and convergence. Relay packets are
+coordination only; every receiver re-reads the repository and durable mission
+evidence before acting.
+
+The implementation flight has three lanes with non-overlapping ownership:
+
+1. **Core/adapter May lane** owns the permission refactor, operations CLI,
+   production run composition, external-acceptance adapter, host-launcher
+   compatibility seam, ESM-loader fixture, and their focused tests. This lane
+   owns the authority-to-claim-to-adapter critical path so opposite sides of
+   that seam cannot drift independently.
+2. **Measurement May lane** owns only
+   `feature-flight-measurement.mjs` and its focused test. It consumes the
+   frozen observation envelope defined below and cannot interpret authority,
+   review, completion, or routing state.
+3. **Mack acceptance lane** is independently read-only. Before implementation
+   it freezes the black-box acceptance matrix in this plan; after convergence
+   it executes the exact validation commands and maps observed results back to
+   the matrix. Mack does not edit implementation or tests.
+
+The measurement lane may proceed after Fury approves the frozen observation
+envelope. The core lane may proceed after Fury approves the complete plan and
+Coulson grants exact Wheels Up authority. Convergence occurs only after both
+write lanes produce clean exact-head handoffs. Mack then validates the combined
+revision, followed automatically by Fury exact-revision conformance review.
+
+No lane may perform the actual #251 proving flight. No lane packet grants
+authority, and no implementation lane may edit another lane's owned paths.
 
 ## Design binding
 
@@ -133,7 +188,13 @@ Any failure before the core claim may not mutate claim/result state, import the 
 8. zero/multiple active Daisy bindings, identity collision/impersonation, or fixed-identity mismatch -> rejected before effects.
 9. replay zero calls / replay ambiguity -> rejected before effects.
 10. post-claim recovery (non-recoverable/terminal states) -> no second real adapter invocation.
-11. exact counts: every pre-claim rejection `claim/import/launcher = 0/0/0`; fresh success `1/1/1`; terminal replay `0/0/0`; incomplete/post-claim recovery performs no import or launcher reinvocation; concurrent contenders have aggregate launcher count at most one; import/launcher failure becomes terminal recovery with no second import or launch.
+11. exact counts: every pre-claim rejection
+    `claim/import/launcher/measurement = 0/0/0/0`; fresh success is
+    `1/1/1/1`; terminal replay is `0/0/0/1`; incomplete/post-claim recovery
+    performs no import or launcher reinvocation and records at most one
+    measurement after durable recovery; concurrent contenders have aggregate
+    launcher count at most one; import/launcher failure becomes terminal
+    recovery with no second import or launch.
 12. authority path/claim mismatch -> rejected before effects.
 13. fixed tuple substitution (`action`, `effect`, `runtime`, `executor`, `fixture`, `package`, `repository`, `plan`, `state`, `sequence`) -> rejected before effects.
 14. caller-submitted PASS/allow/review/completion -> rejected before effects.
@@ -144,6 +205,7 @@ Any failure before the core claim may not mutate claim/result state, import the 
 - `npm run build --workspace @shield/team-system`
 - `node --test packages/shield-team-system/tests/operations-cli.test.mjs`
 - `node --test packages/shield-team-system/tests/operations-feature-flight-run.test.mjs`
+- `node --test packages/shield-team-system/tests/operations-feature-flight-measurement.test.mjs`
 - `node --test benchmarks/v0.3-external-acceptance-v1/test/feature-flight-adapter.test.mjs`
 - `node --test packages/shield-team-system/tests/permission-v1.test.mjs`
 - `node --test benchmarks/v0.3-external-acceptance-v1/test/fixture.test.mjs`
@@ -153,7 +215,48 @@ The spawned real-CLI test invokes Node with `--loader packages/shield-team-syste
 
 ## Measurement separation
 
-No measurement evidence record is authored in this issue. Measurement persistence and schema finalization are explicitly deferred to a follow-up mission.
+The production command creates a separate authority-none #161 observation only
+after the step core has returned a durable `completed`, `replayed`, or
+`recovery_required` disposition. A rejection or stop before durable claim
+creates no measurement filesystem effect.
+
+`feature-flight-measurement.mjs` accepts one deeply frozen, closed observation
+envelope assembled by the production command. It cannot read the mission
+journal, evaluate permission, invoke an adapter, or alter step artifacts. The
+envelope contains:
+
+- exact mission, subject, mission revision, repository, branch, HEAD, plan,
+  state, predecessor, runner-input, fixture, package, authority, binding, and
+  step-result identities already verified by the core lane;
+- exact seat, adapter, runtime, model, and executor identities;
+- packet byte count and digest derived from the captured runner-input bytes;
+- command start/end timestamps, latency, durable step outcome/reason, and
+  whether this invocation was a replay/recovery;
+- nullable processed-input, generated-output, reasoning-token,
+  unique-injected-context, context-chain-position, Hill-action, retry-count,
+  correction-count, intervention-count, cancellation, and provider-counter
+  fields. Values unavailable from direct command/adapter observations remain
+  `null`; they are never inferred.
+
+The writer validates a closed `feature-flight-measurement@1` object with
+`authority: "none"`, `gateEligible: false`, and an explicit notice that the
+record cannot authorize, review, complete, route, publish, or accept a mission.
+It canonicalizes the object, derives its SHA-256 identity, and performs a
+create-only no-follow write beneath a fixed measurement namespace derived from
+the verified durable-artifact root. Exact existing bytes are idempotent;
+different existing bytes, aliasing, symlinks, write/sync/close uncertainty, or
+readback mismatch return `measurement_recovery_required`.
+
+Measurement failure never rewrites or downgrades the already durable Feature
+Flight result. The CLI reports both dispositions and exits nonzero until the
+measurement is durably recorded. Retrying re-enters the step through its
+existing replay path and never reinvokes the fixture; it may then complete the
+measurement write for that replay observation.
+
+Tests prove the record is authority-none, content-addressed, create-only,
+idempotent, nullable where counters are unknown, and unable to change the
+authoritative step disposition. They inject substitution, symlink, collision,
+partial-write, sync/close, and readback failures at the measurement boundary.
 
 ## Stop conditions
 
