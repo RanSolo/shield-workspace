@@ -342,6 +342,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { runGovernedMayDispatchStepV1 } from "@shield/team-system/governed-may-dispatch";
     import { CANONICAL_ROLE_IDS, CANONICAL_ROLE_REGISTRY_V1, ROLE_TAXONOMY_CONTRACT_VERSION, isCanonicalRoleId, validateRoleAssignment, type CanonicalRoleId, type RoleAssignmentScope, type RoleRoute } from "@shield/team-system/roles";
     import { MISSION_PROFILE_CONTRACT_VERSION, type MissionProfileV1, type MissionRoleDefinitionV1, type MissionRoleId, MISSION_ROLE_IDS, CANONICAL_MISSION_ROLE_REGISTRY_V1 } from "@shield/team-system/mission-profile";
+    import { type ProfileAwareProjectionV1 } from "@shield/team-system/profile-aware-mission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import { deriveMissionCycleIdentityV1, runMissionCycle, type MissionCycleInputV1, type MissionCycleResultV1 } from "@shield/team-system/mission-runtime";
     import { REVIEW_PUBLICATION_CONTRACT_VERSION, evaluateReviewPublicationV1, type ReviewPublicationAuthorityV1, type ReviewPublicationProposalV1 } from "@shield/team-system/review-publication";
@@ -469,6 +470,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const reviewPublicationProposal = null as unknown as ReviewPublicationProposalV1;
     const evaluateReviewPublication = evaluateReviewPublicationV1;
     const pipelineContract: "pipeline.profile.v1" = PIPELINE_PROFILE_CONTRACT_VERSION;
+    interface CompatibleProfileProjection extends ProfileAwareProjectionV1 { consumerTag: "compatible" }
+    const compatibleProfileProjection = null as unknown as CompatibleProfileProjection;
+    const compatibleProfileTag: "compatible" = compatibleProfileProjection.consumerTag;
     const pipelineProfile = null as unknown as RepositoryPipelineProfileV1;
     const selectPipeline = selectPipelineModesV1;
     const sonarContract: "sonarqube.evidence.v1" = SONARQUBE_EVIDENCE_CONTRACT_VERSION;

@@ -14,6 +14,7 @@ import {
   DAISY_COORDINATION_CAPABILITY_CLASS,
   DAISY_COORDINATION_EFFECT_CLASS,
   DAISY_COORDINATION_VALIDATION_ID,
+  compareDaisyCanonicalStringsV1,
   rootsOverlapV1,
   type DaisyCoordinationAuthorityV1,
   type DaisyCoordinationRuntimeBindingV1,
@@ -408,25 +409,38 @@ function permissionStateFromProjection(projection: Schema9SeatDispatchProjection
   };
 }
 
-async function validateDaisyHostRoots(
+interface DaisyHostRootObservation {
+  durableArtifactRoot: string;
+  approvedReadRoots: string[];
+  worktreeRoots: string[];
+}
+
+async function observeDaisyHostRoots(
   snapshot: LoaderSnapshot,
   state: ProjectionPermissionState,
-): Promise<string | null> {
-  if (state.daisyCoordination === null) return null;
+): Promise<{ observation: DaisyHostRootObservation | null; error: string | null }> {
+  if (state.daisyCoordination === null) return { observation: null, error: null };
   const durable = await snapshot.ops.realpath(state.daisyCoordination.durableArtifactRoot);
-  if (durable !== state.daisyCoordination.durableArtifactRoot) return "Daisy durable artifact root is not canonical on the host.";
+  if (durable !== state.daisyCoordination.durableArtifactRoot) return { observation: null, error: "Daisy durable artifact root is not canonical on the host." };
+  const approvedReadRoots: string[] = [];
   for (const readRoot of state.approvedReadRoots) {
-    if (await snapshot.ops.realpath(readRoot) !== readRoot) return "A Daisy approved read root is not canonical on the host.";
-    if (rootsOverlapV1(durable, readRoot)) return "Daisy durable artifact root overlaps an approved read root.";
+    const canonicalReadRoot = await snapshot.ops.realpath(readRoot);
+    if (canonicalReadRoot !== readRoot) return { observation: null, error: "A Daisy approved read root is not canonical on the host." };
+    if (rootsOverlapV1(durable, readRoot)) return { observation: null, error: "Daisy durable artifact root overlaps an approved read root." };
+    approvedReadRoots.push(canonicalReadRoot);
   }
   const output = await snapshot.ops.execFile("git", ["-C", snapshot.repositoryRoot, "worktree", "list", "--porcelain"], { cwd: snapshot.repositoryRoot });
   const worktreePaths = output.split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
-  if (worktreePaths.length === 0) return "Git worktree inventory is empty.";
+  if (worktreePaths.length === 0) return { observation: null, error: "Git worktree inventory is empty." };
+  const worktreeRoots: string[] = [];
   for (const worktreePath of worktreePaths) {
     const worktreeRoot = await snapshot.ops.realpath(worktreePath);
-    if (rootsOverlapV1(durable, worktreeRoot)) return "Daisy durable artifact root overlaps a repository worktree.";
+    if (rootsOverlapV1(durable, worktreeRoot)) return { observation: null, error: "Daisy durable artifact root overlaps a repository worktree." };
+    worktreeRoots.push(worktreeRoot);
   }
-  return null;
+  worktreeRoots.sort(compareDaisyCanonicalStringsV1);
+  if (new Set(worktreeRoots).size !== worktreeRoots.length) return { observation: null, error: "Git worktree inventory is ambiguous." };
+  return { observation: { durableArtifactRoot: durable, approvedReadRoots, worktreeRoots }, error: null };
 }
 
 function immutableDaisyPermission(value: DaisyCoordinationReadyPermissionV1): Readonly<DaisyCoordinationReadyPermissionV1> {
@@ -472,9 +486,11 @@ export async function loadSchema9PermissionContextV1(input: Schema9PermissionCon
   if (firstProjection.state === "blocked") return projectionBlocked(firstProjection.code, firstProjection.errors);
   const firstState = permissionStateFromProjection(firstProjection.projection);
 
+  let firstRootObservation: DaisyHostRootObservation | null;
   try {
-    const rootError = await validateDaisyHostRoots(validated, firstState);
-    if (rootError !== null) return blocked("root_mismatch", [rootError]);
+    const roots = await observeDaisyHostRoots(validated, firstState);
+    if (roots.error !== null) return blocked("root_mismatch", [roots.error]);
+    firstRootObservation = roots.observation;
   } catch {
     return blocked("root_mismatch", ["Daisy root or worktree observation failed."]);
   }
@@ -514,6 +530,15 @@ export async function loadSchema9PermissionContextV1(input: Schema9PermissionCon
   const context = buildContext(firstState, validated.hostId, validated.plan, validated.expectedDecisionId, evaluatedAt, capabilityStates);
   const checkedContext = validatePermissionInvocationContext(context);
   if (checkedContext.state === "invalid") return blocked("context_invalid", checkedContext.errors);
+  try {
+    const roots = await observeDaisyHostRoots(validated, firstState);
+    if (roots.error !== null) return blocked("root_mismatch", [roots.error]);
+    if (!same(firstRootObservation, roots.observation)) {
+      return blocked("root_mismatch", ["Daisy durable root, approved read roots, or canonical worktree inventory drifted during permission probes."]);
+    }
+  } catch {
+    return blocked("root_mismatch", ["Daisy root or worktree reobservation failed after permission probes."]);
+  }
   if (firstState.daisyCoordination !== null) {
     return { state: "ready", context: checkedContext.value, daisyCoordination: immutableDaisyPermission(firstState.daisyCoordination) };
   }

@@ -175,6 +175,10 @@ const KEY_REF = /^ed25519:sha256:[A-Za-z0-9_-]{43}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const CANONICAL_SEATS = new Set<string>(CANONICAL_ROLE_IDS);
 
+export function compareDaisyCanonicalStringsV1(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 const valid = <T,>(value: T): Valid<T> => ({ state: "valid", value });
 const invalid = (code: string, ...errors: string[]): Invalid => ({ state: "invalid", code, errors });
 
@@ -269,7 +273,7 @@ export function validateDaisyCoordinationAuthorityV1(input: unknown): DaisyCoord
     return invalid("malformed", "Daisy coordination approved read roots are malformed.");
   }
   if (new Set(approvedReadRoots).size !== approvedReadRoots.length ||
-      approvedReadRoots.some((root, index) => index > 0 && approvedReadRoots[index - 1].localeCompare(root) >= 0)) {
+      approvedReadRoots.some((root, index) => index > 0 && compareDaisyCanonicalStringsV1(approvedReadRoots[index - 1], root) >= 0)) {
     return invalid("malformed", "Daisy coordination approved read roots must be sorted and unique.");
   }
   if (rootsOverlapV1(input.durableArtifactRoot, input.canonicalRepositoryRoot) ||

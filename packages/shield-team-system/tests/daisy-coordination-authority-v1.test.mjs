@@ -156,6 +156,52 @@ test("authority and binding validators reject digest, tuple, identity, overlap, 
   assert.equal(validateDaisyCoordinationRuntimeBindingV1({ ...runtime.binding, executorId: "fury" }).state, "invalid");
 });
 
+test("Daisy ordering and journal reflection are locale-independent and never invoke hostile accessors", () => {
+  const current = baseFixture();
+  const authority = authorityEnvelope(current, {
+    approvedReadRoots: ["/workspace/Z-read", "/workspace/a-read"],
+  });
+  const originalLocaleCompare = String.prototype.localeCompare;
+  String.prototype.localeCompare = () => { throw new Error("Daisy ordering must not consult the host locale"); };
+  try {
+    assert.equal(validateDaisyCoordinationAuthorityV1(authority.payload).state, "valid");
+  } finally {
+    String.prototype.localeCompare = originalLocaleCompare;
+  }
+
+  const authorized = authorizedFixture();
+  let accessorCalls = 0;
+  const accessorJournal = [...authorized.entries];
+  Object.defineProperty(accessorJournal, 2, {
+    enumerable: true,
+    get() { accessorCalls += 1; throw new Error("journal accessor must not execute"); },
+  });
+  const accessorResult = replayProfileAwareMissionJournal(accessorJournal);
+  assert.equal(accessorResult.state, "invalid");
+  assert.equal(accessorCalls, 0);
+
+  const accessorEntry = { ...authorized.entries[2] };
+  Object.defineProperty(accessorEntry, "type", {
+    enumerable: true,
+    get() { accessorCalls += 1; throw new Error("entry accessor must not execute"); },
+  });
+  assert.equal(replayProfileAwareMissionJournal([...authorized.entries.slice(0, 2), accessorEntry]).state, "invalid");
+  assert.equal(accessorCalls, 0);
+  assert.equal(replayProfileAwareMissionJournal(new Proxy(authorized.entries, {})).state, "invalid");
+  assert.equal(replayProfileAwareMissionJournal([
+    ...authorized.entries.slice(0, 2),
+    new Proxy(authorized.entries[2], { get() { throw new Error("entry proxy must not execute"); } }),
+  ]).state, "invalid");
+
+  for (const index of [2, 3]) {
+    const entries = authorized.entries.map((entry) => ({ ...entry }));
+    entries[index].entryId = `noncanonical:${index}`;
+    const result = replayProfileAwareMissionJournal(entries);
+    assert.equal(result.state, "invalid");
+    assert.equal(result.code, "mission_mismatch");
+  }
+});
+
 test("binding supersession is exact-linked and terminal revocation prevents projection and reauthorization", () => {
   const current = authorizedFixture();
   const replacement = bindingEnvelope(current, current.authority, 2, current.runtime.binding, 4);
@@ -163,6 +209,9 @@ test("binding supersession is exact-linked and terminal revocation prevents proj
     projection: current.projection, trustedBindings: [current.coulson.binding], priorBindingId: current.runtime.binding.bindingId,
     priorBindingVersion: 1, ...replacement,
   }));
+  const noncanonicalSupersession = current.entries.map((entry) => ({ ...entry }));
+  noncanonicalSupersession.at(-1).entryId = "noncanonical:supersession";
+  assert.equal(replayProfileAwareMissionJournal(noncanonicalSupersession).code, "mission_mismatch");
   current.projection = replay(current.entries);
   assert.equal(current.projection.activeDaisyRuntimeBindings[0].bindingVersion, 2);
 
@@ -176,6 +225,9 @@ test("binding supersession is exact-linked and terminal revocation prevents proj
   current.entries.push(createProfileAwareDaisyCoordinationAuthorityRevocationEntryV1({
     projection: current.projection, trustedBindings: [current.coulson.binding], revocation: signed(revocationPayload, current.coulson.privateKey),
   }));
+  const noncanonicalRevocation = current.entries.map((entry) => ({ ...entry }));
+  noncanonicalRevocation.at(-1).entryId = "noncanonical:revocation";
+  assert.equal(replayProfileAwareMissionJournal(noncanonicalRevocation).code, "mission_mismatch");
   current.projection = replay(current.entries);
   assert.equal(current.projection.daisyCoordinationAuthorityState, "revoked");
   assert.deepEqual(current.projection.activeDaisyRuntimeBindings, []);

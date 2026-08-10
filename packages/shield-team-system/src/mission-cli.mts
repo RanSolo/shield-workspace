@@ -94,6 +94,7 @@ import {
   DAISY_COORDINATION_CAPABILITY_CLASS,
   DAISY_COORDINATION_EFFECT_CLASS,
   DAISY_COORDINATION_VALIDATION_ID,
+  compareDaisyCanonicalStringsV1,
   computeDaisyCoordinationAuthorityDigest,
   computeDaisyCoordinationRuntimeBindingDigest,
   rootsOverlapV1,
@@ -434,7 +435,7 @@ export function validateAuthorizeDaisyCoordinationInput(value: unknown): Readonl
   }
   const intent: AuthorizeDaisyCoordinationIntent = {
     effectKey: input.effectKey as string,
-    approvedReadRoots: strictSortedStrings(input.approvedReadRoots, "approvedReadRoots"),
+    approvedReadRoots: strictSortedStrings(input.approvedReadRoots, "approvedReadRoots", compareDaisyCanonicalStringsV1),
     durableArtifactRoot: input.durableArtifactRoot as string,
     runtimeId: input.runtimeId as string,
     modelId: input.modelId as string,

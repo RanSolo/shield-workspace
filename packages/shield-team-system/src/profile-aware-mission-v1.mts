@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { types as utilTypes } from "node:util";
 import {
   canonicalJson,
   computeEd25519SigningKeyRef,
@@ -168,7 +169,16 @@ interface ProfileAwareProjectionCoreV1 {
   lastSequence: number;
 }
 
-export interface ProfileAwareProjectionWithoutDaisyCoordinationV1 extends ProfileAwareProjectionCoreV1 {
+export interface ProfileAwareProjectionV1 extends ProfileAwareProjectionCoreV1 {
+  daisyCoordinationAuthority?: DaisyCoordinationAuthorityV1;
+  daisyCoordinationAuthorityDigest?: string;
+  daisyCoordinationAuthoritySequence?: number;
+  daisyCoordinationAuthorityState?: "authorized" | "revoked";
+  daisyRuntimeBindings?: DaisyCoordinationRuntimeBindingV1[];
+  activeDaisyRuntimeBindings?: DaisyCoordinationRuntimeBindingV1[];
+}
+
+export interface ProfileAwareProjectionWithoutDaisyCoordinationV1 extends ProfileAwareProjectionV1 {
   daisyCoordinationAuthority?: never;
   daisyCoordinationAuthorityDigest?: never;
   daisyCoordinationAuthoritySequence?: never;
@@ -177,7 +187,7 @@ export interface ProfileAwareProjectionWithoutDaisyCoordinationV1 extends Profil
   activeDaisyRuntimeBindings?: never;
 }
 
-export interface ProfileAwareProjectionWithDaisyCoordinationV1 extends ProfileAwareProjectionCoreV1 {
+export interface ProfileAwareProjectionWithDaisyCoordinationV1 extends ProfileAwareProjectionV1 {
   daisyCoordinationAuthority: DaisyCoordinationAuthorityV1;
   daisyCoordinationAuthorityDigest: string;
   daisyCoordinationAuthoritySequence: number;
@@ -185,10 +195,6 @@ export interface ProfileAwareProjectionWithDaisyCoordinationV1 extends ProfileAw
   daisyRuntimeBindings: DaisyCoordinationRuntimeBindingV1[];
   activeDaisyRuntimeBindings: DaisyCoordinationRuntimeBindingV1[];
 }
-
-export type ProfileAwareProjectionV1 =
-  | ProfileAwareProjectionWithoutDaisyCoordinationV1
-  | ProfileAwareProjectionWithDaisyCoordinationV1;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/;
 const DIGEST = /^sha256:(?:[a-f0-9]{64}|[A-Za-z0-9_-]{43})$/;
@@ -201,10 +207,43 @@ const invalid = (code: string, ...errors: string[]) => ({ state: "invalid" as co
 export type ProfileAwareResult<T> = ReturnType<typeof invalid> | ReturnType<typeof valid<T>>;
 
 function plain(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+  try {
+    return value !== null && typeof value === "object" && !Array.isArray(value) &&
+      !utilTypes.isProxy(value) && Object.getPrototypeOf(value) === Object.prototype;
+  } catch {
+    return false;
+  }
 }
 function exact(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
-  return plain(value) && Object.keys(value).length === fields.length && fields.every((field) => Object.hasOwn(value, field));
+  if (!plain(value)) return false;
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== fields.length || keys.some((key) => typeof key !== "string" || !fields.includes(key))) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    return fields.every((field) => {
+      const descriptor = descriptors[field];
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+    });
+  } catch {
+    return false;
+  }
+}
+function denseDataArray(value: unknown): unknown[] | null {
+  try {
+    if (!Array.isArray(value) || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype) return null;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== value.length + 1 || !keys.includes("length")) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const result: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) return null;
+      result.push(descriptor.value);
+    }
+    return result;
+  } catch {
+    return null;
+  }
 }
 function timestamp(value: unknown): value is EvidenceTimestamp {
   return exact(value, ["value", "provenance"]) && typeof value.value === "string" && ISO.test(value.value) && Number.isFinite(Date.parse(value.value)) && (value.provenance === "humanRecorded" || value.provenance === "hostTrusted");
@@ -1049,9 +1088,10 @@ function verifyEvidence(evidence: SignedProfileEvidenceV1, expected: ProfileRequ
   return errors;
 }
 
-export function replayProfileAwareMissionJournal(entries: unknown): ProfileAwareResult<ProfileAwareProjectionV1> {
-  if (!Array.isArray(entries) || entries.length === 0) return invalid("malformed", "Profile-aware journal must contain entries.");
-  const begun = entries[0] as ProfileAwareMissionEntryV1;
+function replayProfileAwareMissionJournalUnchecked(entries: unknown): ProfileAwareResult<ProfileAwareProjectionV1> {
+  const journal = denseDataArray(entries);
+  if (journal === null || journal.length === 0) return invalid("malformed", "Profile-aware journal must contain dense data entries.");
+  const begun = journal[0] as ProfileAwareMissionEntryV1;
   if (!exact(begun, ["schemaVersion", "entryId", "missionId", "sequence", "type", "timestamp", "payload"]) || begun.schemaVersion !== 9 || begun.type !== "mission.begun" || begun.sequence !== 0) return invalid("malformed", "Profile-aware journal must begin with schema 9 mission.begun.");
   const briefResult = validateProfileAwareMissionBrief(begun.payload?.brief);
   if (briefResult.state === "invalid") return briefResult;
@@ -1086,8 +1126,8 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
   let execution: "not-started" | "running" | "completed" = "not-started";
   let finalAcceptance: "waiting" | "accepted" = "waiting";
   let previousTime = Date.parse(begun.timestamp.value);
-  for (let index = 1; index < entries.length; index += 1) {
-    const entry = entries[index] as ProfileAwareMissionEntryV1;
+  for (let index = 1; index < journal.length; index += 1) {
+    const entry = journal[index] as ProfileAwareMissionEntryV1;
     if (!exact(entry, ["schemaVersion", "entryId", "missionId", "sequence", "type", "timestamp", "payload"]) || entry.schemaVersion !== 9 || entry.sequence !== index || entry.missionId !== brief.missionId || !timestamp(entry.timestamp)) return invalid("malformed", `Entry ${index} shape or identity is invalid.`);
     if (entryIds.has(entry.entryId)) return invalid("duplicate_event", `Entry ${index} duplicates entryId.`);
     entryIds.add(entry.entryId);
@@ -1233,6 +1273,7 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
         activeRuntimeBindings.push(copySchema9RuntimeBinding(wrapper));
       }
     } else if (entry.type === "coordination.authorized") {
+      if (entry.entryId !== `entry:${brief.missionId}:${index}`) return invalid("mission_mismatch", `Entry ${index} Daisy coordination entryId is not canonical.`);
       if (!exact(entry.payload, ["authority"])) return invalid("malformed", `Entry ${index} Daisy coordination authority payload is not closed.`);
       if (authorization !== "authorized" || execution !== "not-started" || finalAcceptance !== "waiting" ||
           daisyCoordinationAuthorityState !== "waiting" || daisyCoordinationAuthority !== null) {
@@ -1254,6 +1295,7 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       daisyCoordinationAuthoritySequence = index;
       daisyCoordinationAuthorityState = "authorized";
     } else if (entry.type === "coordination.authority_revoked") {
+      if (entry.entryId !== `entry:${brief.missionId}:${index}`) return invalid("mission_mismatch", `Entry ${index} Daisy coordination entryId is not canonical.`);
       if (!exact(entry.payload, ["revocation"])) return invalid("malformed", `Entry ${index} Daisy coordination revocation payload is not closed.`);
       if (daisyCoordinationAuthority === null || daisyCoordinationAuthorityDigest === null || daisyCoordinationAuthoritySequence === null ||
           daisyCoordinationAuthorityState !== "authorized" || execution === "completed" || finalAcceptance === "accepted") {
@@ -1272,6 +1314,7 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
       daisyCoordinationAuthorityState = "revoked";
       activeDaisyRuntimeBindings = [];
     } else if (entry.type === "coordination.runtime_bound" || entry.type === "coordination.runtime_binding_superseded") {
+      if (entry.entryId !== `entry:${brief.missionId}:${index}`) return invalid("mission_mismatch", `Entry ${index} Daisy coordination entryId is not canonical.`);
       const isInitial = entry.type === "coordination.runtime_bound";
       if (!exact(entry.payload, isInitial ? ["binding", "authorization"] : ["priorBindingId", "priorBindingVersion", "binding", "authorization"])) {
         return invalid("malformed", `Entry ${index} Daisy coordination runtime binding payload is not closed.`);
@@ -1501,8 +1544,16 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
     readiness: { execute: uncertain ? "blocked" : authorization === "authorized" && !pendingExecution ? "ready" : "waiting", accept: execution === "completed" && finalAcceptance === "waiting" ? "waiting" : finalAcceptance === "accepted" ? "ready" : "blocked" },
     effects: effects.map((effect) => ({ ...effect, timestamp: { ...effect.timestamp } })),
     finalAcceptance,
-    lastSequence: entries.length - 1,
+    lastSequence: journal.length - 1,
   });
+}
+
+export function replayProfileAwareMissionJournal(entries: unknown): ProfileAwareResult<ProfileAwareProjectionV1> {
+  try {
+    return replayProfileAwareMissionJournalUnchecked(entries);
+  } catch {
+    return invalid("malformed", "Profile-aware journal reflection or data inspection failed.");
+  }
 }
 
 export function profileIsNotWeakenedV1(selected: MissionProfileId, required: MissionProfileId): boolean { return isProfileAtLeastAsStrictV1(selected, required); }

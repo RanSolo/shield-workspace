@@ -44,6 +44,16 @@ test("authorize-daisy-coordination input is closed, immutable, and fixes caller-
   const accessor = { ...intent };
   Object.defineProperty(accessor, "effectKey", { enumerable: true, get: () => intent.effectKey });
   assert.throws(() => validateAuthorizeDaisyCoordinationInput(accessor), /only enumerable data fields/);
+  const originalLocaleCompare = String.prototype.localeCompare;
+  String.prototype.localeCompare = () => { throw new Error("Daisy input ordering must not consult the host locale"); };
+  try {
+    assert.deepEqual(validateAuthorizeDaisyCoordinationInput({
+      ...intent,
+      approvedReadRoots: ["/workspace/Z-read", "/workspace/a-read"],
+    }).approvedReadRoots, ["/workspace/Z-read", "/workspace/a-read"]);
+  } finally {
+    String.prototype.localeCompare = originalLocaleCompare;
+  }
 });
 
 function cliAuthority(seatId) {
@@ -156,7 +166,7 @@ function runDaisyAuthorization(current, stdin) {
   );
 }
 
-async function runDaisyAuthorizationWithInputDrift(current) {
+async function runDaisyAuthorizationWithDrift(current, mutate) {
   const child = spawn(process.execPath, [cli,
     "mission", "authorize-daisy-coordination", "--mission-id", current.missionId,
     "--input", current.inputPath, "--passcode-stdin", "--json",
@@ -171,7 +181,7 @@ async function runDaisyAuthorizationWithInputDrift(current) {
     stderr += chunk;
     if (!drifted && stderr.includes("SHIELD_DAISY_COORDINATION_MANIFEST_END")) {
       drifted = true;
-      await writeFile(current.inputPath, `${JSON.stringify({ ...current.intent, effectKey: "effect:test:drifted" }, null, 2)}\n`);
+      await mutate();
       child.stdin.end(`${current.passcode}\n`);
     }
   });
@@ -192,7 +202,10 @@ test("authorize-daisy-coordination is one-passcode, drift-closed, and atomically
   assert.equal(empty.stderr.includes(current.passcode), false);
   assert.equal(await readFile(current.journalPath, "utf8"), baseline);
 
-  const drifted = await runDaisyAuthorizationWithInputDrift(current);
+  const drifted = await runDaisyAuthorizationWithDrift(current, () => writeFile(
+    current.inputPath,
+    `${JSON.stringify({ ...current.intent, effectKey: "effect:test:drifted" }, null, 2)}\n`,
+  ));
   assert.equal(drifted.drifted, true);
   assert.equal(drifted.status, 1, drifted.stderr);
   assert.match(drifted.stderr, /changed after display/u);
@@ -217,6 +230,37 @@ test("authorize-daisy-coordination is one-passcode, drift-closed, and atomically
   assert.equal(entries[3].payload.binding.authoritySequence, 2);
   assert.equal(entries[3].payload.authorization.payload.previousJournalSequence, 2);
   assert.equal(entries[3].payload.authorization.payload.journalSequence, 3);
+});
+
+test("authorize-daisy-coordination aborts post-display journal, repository, and signer drift without appending", async () => {
+  for (const scenario of ["journal", "repository", "signer"]) {
+    const current = await daisyCliFixture();
+    const baseline = await readFile(current.journalPath, "utf8");
+    const result = await runDaisyAuthorizationWithDrift(current, async () => {
+      if (scenario === "journal") {
+        await writeFile(current.journalPath, baseline.replace("{", "{ "));
+      } else if (scenario === "repository") {
+        await writeFile(join(current.root, "post-display-drift.txt"), "drift\n");
+        execFileSync("git", ["add", "post-display-drift.txt"], { cwd: current.root });
+        execFileSync("git", ["commit", "--quiet", "-m", "Post-display drift"], { cwd: current.root });
+      } else {
+        const signerDirectory = join(current.homeRoot, ".shield", "signers");
+        const [signerName] = await readdir(signerDirectory);
+        const signerPath = join(signerDirectory, signerName);
+        const signer = JSON.parse(await readFile(signerPath, "utf8"));
+        await writeFile(signerPath, `${JSON.stringify({ ...signer, signingKeyRef: "ed25519:sha256:drifted" })}\n`);
+      }
+    });
+    assert.equal(result.drifted, true, scenario);
+    assert.equal(result.status, 1, `${scenario}: ${result.stderr}`);
+    const finalBytes = await readFile(current.journalPath, "utf8");
+    if (scenario === "journal") {
+      assert.equal(finalBytes, baseline.replace("{", "{ "));
+    } else {
+      assert.equal(finalBytes, baseline, scenario);
+    }
+    assert.doesNotMatch(finalBytes, /coordination\.(?:authorized|runtime_bound)/u, scenario);
+  }
 });
 
 async function fixture() {
