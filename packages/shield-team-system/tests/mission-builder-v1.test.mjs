@@ -770,6 +770,21 @@ test("runner compilation is definition-bound and canonical", () => {
   const compiled = compileMissionCycleInputV1(h.definition, obs, step, compiledBinding);
   assert.deepEqual(compiled, compileMissionCycleInputV1(h.definition, obs, structuredClone(step), compiledBinding));
   assert.deepEqual(compiled.activatedModes, h.definition.activatedModes.filter((mode) => mode.seatId === step.seatId));
+  const rejectReceiptMutation = (changes) => {
+    const entries = structuredClone(obs.dispatchReceiptEntries);
+    const started = entries[0]; const completed = entries[1];
+    const { entryDigest: _digest, schemaVersion: _schema, contractVersion: _contract, ...input } = completed;
+    entries[1] = createSeatDispatchLifecycleEventV1({ ...input, ...changes, previousLifecycleDigest: started.entryDigest, previousLogDigest: started.entryDigest });
+    return entries;
+  };
+  for (const dispatchReceiptEntries of [
+    [],
+    rejectReceiptMutation({ accountableSeatId: "may" }),
+    rejectReceiptMutation({ artifactId: "artifact:wrong" }),
+    rejectReceiptMutation({ parentMissionId: "mission:mixed-scope" }),
+  ]) {
+    assert.throws(() => compileMissionCycleInputV1(h.definition, { ...obs, dispatchReceiptEntries }, step, compiledBinding), /compilation observation/);
+  }
   assert.throws(() => compileMissionCycleInputV1(h.definition, obs, { ...step, seatId: "may" }), /runner-backed manifest|stale/);
   for (const [field, replacement] of [["actionId", "mission.delivery.mutated"], ["effectClass", "verification"], ["seatId", "may"]]) {
     const mutated = structuredClone(h.definition);

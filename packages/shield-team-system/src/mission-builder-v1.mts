@@ -1354,6 +1354,8 @@ export function compileMissionCycleInputV1(definition: MissionDefinitionV1, obse
   const provenance = replayMissionProvenanceV1(observation.provenanceRecords);
   if (provenance.state === "invalid" || provenance.value.definitionRevision !== binding.definitionRevision
     || provenance.value.validationRevision !== binding.validationRevision || provenance.value.proofreadAcceptanceDigest !== binding.proofreadAcceptanceDigest
+    || !provenanceMatchesDefinition(provenance.value, definition)
+    || !provenanceActorsValidated(definition, observation, provenance.value.records)
     || validateObservation(definition, observation) === null) throw new Error("compilation observation is invalid");
   const compiled = compileMissionCycleInputRaw(definition, observation, step);
   return freeze({ ...compiled, compiledArtifactId: digest("shield.mission-cycle-compiled-artifact.v1", {
