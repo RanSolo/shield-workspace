@@ -18,18 +18,33 @@ they wait for separately recorded human evidence.
 Before `advanceMissionV1` can dispatch, the host observation must match the
 definition's repository, journal replay and digest, sequence, workspace,
 session, activated modes (including journal replay), allowlist, permission
-context, and runtime/executor observations. Provenance replay must contain the exact current definition,
-validation revision, and Hill proofreading digest. An edit invalidates prior
-validation, compiled manifests, and proofreading acceptance.
+context, and exactly one closed runtime/executor binding for every dispatchable
+participant. Binding seats, runtime identities, and executor identities are
+pairwise disjoint and cannot impersonate canonical seats; configured,
+requested, self-reported, and host-observed identities remain distinct.
+Provenance replay must contain the exact current definition, validation
+revision, and Hill proofreading digest, plus host-observed seat-dispatch
+lifecycle evidence bound to the mission, definition, repository, runtime, and
+executor. Builder records are proposals and cannot be persisted without an
+authenticated lifecycle receipt. An edit invalidates prior validation,
+compiled manifests, and proofreading acceptance.
 
 Advancement replays content-addressed step and dispatch receipts, performs at
 most one runner or Mack dispatch, appends one transition receipt with exact
 readback, and returns a replay-derived `MissionStatusProjectionV1`. Malformed,
 stale, conflicting, incomplete, mixed-scope, or uncertain evidence fails
-closed. Human gates consume only signature- and binding-validated journal
+closed; pre-effect dependency failures are blocked with zero effects and
+post-start failures are uncertain with accurate effects. Human gates consume
+only signature- and binding-validated journal
 evidence for the exact requirement, seat, mission, subject-bound revision, and
 evidence kind; caller-supplied artifact references cannot advance a gate.
 Human advancement produces zero dispatch effects.
+
+All generated ambiguity, failure, uncertainty, scope-change, stale-state,
+replay/readback, invalid-graph, missing-binding, prohibited-operation, and
+human-simulation stop conditions route to Hill. Scope changes and prohibited
+merge, publication, deploy, release, or human simulation are never dispatched
+by this slice.
 
 `MissionProvenanceStoreV1` and `MissionStepReceiptStoreV1` leave locking,
 append, replay, exact readback, conflict handling, and recovery at the host

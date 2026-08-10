@@ -19,6 +19,7 @@ import {
 } from "../dist/mission-builder-v1.mjs";
 import { deriveMissionCycleIdentityV1 } from "../dist/mission-runtime-v1.mjs";
 import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import { createSeatDispatchLifecycleEventV1, createSeatDispatchStartedEventV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import {
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
@@ -94,6 +95,37 @@ function accepted(buildResult) {
   return [...buildResult.provenanceRecords, acceptance];
 }
 
+function provenanceLifecycle(definition, seatId, receiptId, logOffset = 0, previousLogDigest = null) {
+  const runtimeId = `runtime:provenance:${seatId}`;
+  const executorId = `executor:provenance:${seatId}`;
+  const common = {
+    receiptId, dispatchId: `dispatch:${receiptId}`, parentMissionId: definition.missionId, parentMissionRevision: definition.definitionRevision,
+    parentSessionId: "session:parent", childTaskId: `task:${receiptId}`, childSessionId: `session:${receiptId}`, accountableSeatId: seatId,
+    repositoryId: definition.repositoryId, repositoryWorkspaceId: "workspace:test", repositoryRevision: definition.repositoryRevision,
+    subjectId: definition.subjectId, subjectRevision: definition.definitionRevision, artifactId: `artifact:${receiptId}`, artifactRevision: definition.definitionRevision,
+    configuredRuntime: { kind: "runtime.configured", runtimeId, model: "model:provenance" }, requestedRuntime: { kind: "runtime.requested", runtimeId, model: "model:provenance" },
+    toolExecution: { kind: "tool.execution.not_requested", reason: "not_requested" },
+    runtimeSelfReport: { kind: "runtime.self_report.observed", runtimeId, model: "model:provenance", evidenceRefs: [`evidence:${receiptId}:runtime-self`] },
+    runtimeHostObserved: { kind: "runtime.host_observed", runtimeId, model: "model:provenance", evidenceRefs: [`evidence:${receiptId}:runtime-host`] },
+    executorSelfReport: { kind: "executor.self_report.observed", executorId, evidenceRefs: [`evidence:${receiptId}:executor-self`] },
+    executorHostObserved: { kind: "executor.host_observed", executorId, evidenceRefs: [`evidence:${receiptId}:executor-host`] },
+  };
+  const started = createSeatDispatchStartedEventV1({ ...common, timestamp: OBSERVED_AT, logSequence: logOffset, previousLogDigest, lifecycleSequence: 0, previousLifecycleDigest: null, inputEvidenceRefs: [] });
+  const completed = createSeatDispatchLifecycleEventV1({ ...common, kind: "dispatch.completed", timestamp: OBSERVED_AT, logSequence: logOffset + 1, previousLogDigest: started.entryDigest, lifecycleSequence: 1, previousLifecycleDigest: started.entryDigest, outputEvidenceRefs: [`evidence:${receiptId}:output`] });
+  return [started, completed];
+}
+
+function authenticatedProvenance(records, validationReceiptId, proofreadingReceiptId) {
+  let previousRecordDigest = null;
+  return records.map((record) => {
+    const withActor = { ...record, previousRecordDigest, actorReceiptId: record.kind === "definition.validated" ? validationReceiptId : record.kind === "definition.generated" || record.kind === "proofreading.accepted" ? proofreadingReceiptId : null };
+    const { recordDigest: _ignored, ...content } = withActor;
+    const authenticated = { ...withActor, recordDigest: hash("shield.mission-provenance.v1", content) };
+    previousRecordDigest = authenticated.recordDigest;
+    return authenticated;
+  });
+}
+
 function signingBinding(seatId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
@@ -163,8 +195,10 @@ function runtime(seatId) {
     seatId,
     configuredRuntime: { kind: "runtime.configured", runtimeId: `runtime:${seatId}`, model: "model:test" },
     requestedRuntime: { kind: "runtime.requested", runtimeId: `runtime:${seatId}`, model: "model:test" },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
     runtimeHostObserved: { kind: "runtime.host_observed", runtimeId: `runtime:${seatId}`, model: "model:test", evidenceRefs: [`host:runtime:${seatId}`] },
-    executorHostObserved: { kind: "executor.host_observed", executorId: "executor:host", evidenceRefs: ["host:executor"] },
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: { kind: "executor.host_observed", executorId: `executor:${seatId}`, evidenceRefs: ["host:executor"] },
   };
 }
 
@@ -181,21 +215,21 @@ function permissionContext(definition, journal) {
   return {
     permissionContractVersion: 1, journalSchemaVersion: 9, missionId: definition.missionId, subjectId: definition.subjectId,
     missionRevisionId: journal.projection.brief.revisionId, artifactRevisionId: definition.repositoryRevision, evaluatedThroughSequence,
-    reasoningRuntimeId: `runtime:${step.seatId}`, toolExecutorId: "executor:host", repositoryId: definition.repositoryId,
+    reasoningRuntimeId: `runtime:${step.seatId}`, toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId,
     canonicalWritableRoot: "/workspace/repository", branch: "agent/mission-builder-test", requiredCapabilities: ["filesystem_write"],
     activeBindings: [{
       bindingSchemaVersion: 1, bindingId: `runtime-binding:${step.seatId}:builder`, bindingVersion: 1, missionId: definition.missionId,
       subjectId: definition.subjectId, missionRevisionId: journal.projection.brief.revisionId, seatId: step.seatId,
-      reasoningRuntimeId: `runtime:${step.seatId}`, toolExecutorId: "executor:host", repositoryId: definition.repositoryId,
+      reasoningRuntimeId: `runtime:${step.seatId}`, toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId,
       canonicalWritableRoot: "/workspace/repository", branch: "agent/mission-builder-test", artifactRevisionId: definition.repositoryRevision,
       recordedAtSequence: 1, activeThroughSequence: null, lifecycleState: "active",
       approvedScope: { actionIds: [step.actionId], effectClasses: [step.effectClass], effectKeys: [identity.effectKey], capabilities: ["filesystem_write"] },
       coulsonAuthorizationRef: "evidence:coulson:mission_authorization",
     }],
     attestations: [
-      { attestationSchemaVersion: 1, attestationId: "attestation:root", kind: "repository_root", hostId: "host:test", toolExecutorId: "executor:host", repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: null, observedValue: "/workspace/repository", observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
-      { attestationSchemaVersion: 1, attestationId: "attestation:write", kind: "writability", hostId: "host:test", toolExecutorId: "executor:host", repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: null, observedValue: true, observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
-      { attestationSchemaVersion: 1, attestationId: "attestation:filesystem", kind: "capability", hostId: "host:test", toolExecutorId: "executor:host", repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: "filesystem_write", observedValue: true, observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
+      { attestationSchemaVersion: 1, attestationId: "attestation:root", kind: "repository_root", hostId: "host:test", toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: null, observedValue: "/workspace/repository", observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
+      { attestationSchemaVersion: 1, attestationId: "attestation:write", kind: "writability", hostId: "host:test", toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: null, observedValue: true, observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
+      { attestationSchemaVersion: 1, attestationId: "attestation:filesystem", kind: "capability", hostId: "host:test", toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: "filesystem_write", observedValue: true, observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
     ],
     evaluatedAt: OBSERVED_AT, decisionId: identity.decisionId,
   };
@@ -219,7 +253,9 @@ function harness(pattern = "delivery", options = {}) {
   const built = build(pattern, options);
   const profile = profileState(built.definition);
   const stepReceipts = [];
-  const dispatchEntries = [];
+  const validationEntries = provenanceLifecycle(built.definition, "may", "receipt:provenance:validation");
+  const dispatchEntries = [...validationEntries, ...provenanceLifecycle(built.definition, "hill", "receipt:provenance:proofreading", 2, validationEntries.at(-1).entryDigest)];
+  const provenanceRecords = authenticatedProvenance(accepted(built), "receipt:provenance:validation", "receipt:provenance:proofreading");
   const reports = new Map();
   const audit = [];
   const executedPlans = [];
@@ -230,7 +266,7 @@ function harness(pattern = "delivery", options = {}) {
     return { schemaVersion: 1, ledgerId: record.ledgerId, recordId: record.recordId, decisionId: record.decisionId, digest: record.digest, appended: true, ledgerSequence: audit.length - 1 };
   };
   const value = {
-    definition: built.definition, provenanceRecords: accepted(built), profile, stepReceipts, dispatchEntries, reports, audit, executedPlans,
+    definition: built.definition, provenanceRecords, profile, stepReceipts, dispatchEntries, reports, audit, executedPlans,
     get dispatches() { return dispatches; },
     dependencies: {
       missionCycle: {
@@ -320,6 +356,57 @@ test("wrong-seat pattern activation and wrong-seat host runtime fail before runn
   assert.equal(h.executedPlans.length, 0);
 });
 
+test("runtime identity bindings are exact, disjoint, and nested failures stop before dependencies", async () => {
+  const h = harness("delivery");
+  const workSeat = h.definition.steps.find((step) => step.adapter === "mission_cycle").seatId;
+  const duplicate = observation(h, { runtimeBindings: [runtime(workSeat), runtime(workSeat), runtime("mack")] });
+  const duplicateResult = await advanceMissionV1({ schemaVersion: 1, contractVersion: "mission.advance.v1", definition: h.definition, observation: duplicate }, h.dependencies);
+  assert.equal(duplicateResult.outcome, "blocked");
+  assert.equal(duplicateResult.dispatchEffects, 0);
+  let accessed = 0;
+  const nested = observation(h);
+  nested.runtimeBindings[0].requestedRuntime = new Proxy(nested.runtimeBindings[0].requestedRuntime, { get() { accessed += 1; throw new Error("must not dereference"); } });
+  const nestedResult = await advanceMissionV1({ schemaVersion: 1, contractVersion: "mission.advance.v1", definition: h.definition, observation: nested }, h.dependencies);
+  assert.equal(nestedResult.outcome, "blocked");
+  assert.equal(nestedResult.dispatchEffects, 0);
+  assert.equal(accessed, 0);
+});
+
+test("throwing runner stores and Mack read paths classify pre- and post-start effects accurately", async () => {
+  const runnerThrow = harness("delivery");
+  runnerThrow.dependencies.missionCycle.executeTool = async () => { throw new Error("executor unavailable"); };
+  const runnerResult = await advance(runnerThrow);
+  assert.equal(runnerResult.outcome, "uncertain");
+  assert.equal(runnerResult.dispatchEffects, 1);
+
+  const storeAppendThrow = harness("delivery");
+  storeAppendThrow.dependencies.stepReceiptStore.append = async () => { throw new Error("receipt store unavailable"); };
+  const appendResult = await advance(storeAppendThrow);
+  assert.equal(appendResult.outcome, "uncertain");
+  assert.equal(appendResult.dispatchEffects, 1);
+
+  const storeReadThrow = harness("delivery");
+  storeReadThrow.dependencies.stepReceiptStore.read = async () => { throw new Error("receipt readback unavailable"); };
+  const readResult = await advance(storeReadThrow);
+  assert.equal(readResult.outcome, "uncertain");
+  assert.equal(readResult.dispatchEffects, 1);
+
+  const reportThrow = harness("delivery");
+  await advance(reportThrow);
+  await advance(reportThrow);
+  reportThrow.dependencies.mack.readReport = async () => { throw new Error("report unavailable"); };
+  const reportResult = await advance(reportThrow, { stepReceipts: [reportThrow.stepReceipts[0]] });
+  assert.equal(reportResult.outcome, "uncertain");
+  assert.equal(reportResult.dispatchEffects, 0);
+
+  const receiptThrow = harness("delivery");
+  await advance(receiptThrow);
+  receiptThrow.dependencies.mack.readReceipts = async () => { throw new Error("dispatch receipt unavailable"); };
+  const receiptResult = await advance(receiptThrow);
+  assert.equal(receiptResult.outcome, "uncertain");
+  assert.equal(receiptResult.dispatchEffects, 0);
+});
+
 test("candidate validation is closed and malformed nested values have zero effects", async () => {
   const valid = candidate();
   let accesses = 0;
@@ -355,7 +442,7 @@ test("graph validation binds edge evidence, node-step-seat, prompt, and handoff 
 
 test("provenance freezes scope, invalidates proofreading on edits, and validates proposed appends under lock", async () => {
   const built = build("delivery");
-  const records = accepted(built);
+  const records = authenticatedProvenance(accepted(built), "receipt:provenance:validation", "receipt:provenance:proofreading");
   const edited = editMissionDefinitionTextV1({ definition: built.definition, provenanceRecords: records,
     edits: [{ target: "prompt", targetId: "prompt:delivery:may", replacement: "Hill-edited bounded implementation prompt." }] });
   assert.equal(edited.state, "edited");
@@ -384,8 +471,9 @@ test("provenance freezes scope, invalidates proofreading on edits, and validates
     async recover() { return { state: "blocked", code: "manual_recovery_required" }; },
     async releaseLock() {},
   };
-  assert.equal((await appendMissionProvenanceRecordV1(store, built.provenanceRecords[0], "lock-owner:test")).state, "recorded");
-  const malformedBase = { ...built.provenanceRecords[1], actorSeatId: "hill" };
+  assert.equal((await appendMissionProvenanceRecordV1(store, built.provenanceRecords[0], "lock-owner:test")).state, "blocked");
+  assert.equal((await appendMissionProvenanceRecordV1(store, records[0], "lock-owner:test")).state, "recorded");
+  const malformedBase = { ...records[1], actorSeatId: "hill" };
   const { recordDigest: _malformedDigest, ...malformedContent } = malformedBase;
   const malformed = { ...malformedBase, recordDigest: hash("shield.mission-provenance.v1", malformedContent) };
   const rejected = await appendMissionProvenanceRecordV1(store, malformed, "lock-owner:test");

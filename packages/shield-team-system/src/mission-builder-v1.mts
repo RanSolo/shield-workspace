@@ -23,9 +23,13 @@ import {
   createSeatDispatchStartedEventV1,
   replaySeatDispatchReceiptsV1,
   type ExecutorHostObservedV1,
+  type ExecutorHostUnobservedV1,
+  type ExecutorSelfReportObservedV1,
   type ExecutorSelfReportUnavailableV1,
   type RuntimeConfiguredV1,
   type RuntimeHostObservedV1,
+  type RuntimeHostUnobservedV1,
+  type RuntimeSelfReportObservedV1,
   type RuntimeRequestedV1,
   type RuntimeSelfReportUnavailableV1,
   type SeatDispatchReceiptEventV1,
@@ -149,6 +153,7 @@ export interface MissionDefinitionV1 {
   readonly repairPolicy: Readonly<{ maximumRepairs: number; exhaustedRoute: "hill" }>;
   readonly escalation: readonly Readonly<{ reason: "ambiguous" | "failed" | "uncertain" | "scope_change"; route: "hill" | "fury" | "coulson" }>[];
   readonly stopConditions: readonly string[];
+  readonly stopConditionRoutes: readonly Readonly<{ condition: string; route: "hill" }>[];
   readonly provenance: Readonly<{ generatedDigest: string; editedDigest: string | null; parentDigest: string | null }>;
 }
 
@@ -174,6 +179,7 @@ export interface MissionProvenanceRecordV1 {
   readonly validationRevision: string | null;
   readonly proofreadAcceptanceDigest: string | null;
   readonly previousRecordDigest: string | null;
+  readonly actorReceiptId: string | null;
   readonly recordDigest: string;
 }
 
@@ -245,8 +251,10 @@ export interface MissionHostRuntimeObservationV1 {
   readonly seatId: DispatchableRoleId;
   readonly configuredRuntime: RuntimeConfiguredV1;
   readonly requestedRuntime: RuntimeRequestedV1;
-  readonly runtimeHostObserved: RuntimeHostObservedV1;
-  readonly executorHostObserved: ExecutorHostObservedV1;
+  readonly runtimeSelfReport: RuntimeSelfReportUnavailableV1 | RuntimeSelfReportObservedV1;
+  readonly runtimeHostObserved: RuntimeHostObservedV1 | RuntimeHostUnobservedV1;
+  readonly executorSelfReport: ExecutorSelfReportUnavailableV1 | ExecutorSelfReportObservedV1;
+  readonly executorHostObserved: ExecutorHostObservedV1 | ExecutorHostUnobservedV1;
 }
 
 export interface MissionAdvanceHostObservationV1 {
@@ -549,10 +557,11 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
     templateId: `mission-builder:${pattern}`, templateVersion: 1, participants, activatedModes: modes, prompts, handoffs,
     evidenceContracts, steps, graph, repairPolicy: { maximumRepairs: input.maximumRepairs as number, exhaustedRoute: "hill" },
     escalation: [
-      { reason: "ambiguous", route: "hill" }, { reason: "failed", route: "fury" },
-      { reason: "uncertain", route: "coulson" }, { reason: "scope_change", route: "coulson" },
+      { reason: "ambiguous", route: "hill" }, { reason: "failed", route: "hill" },
+      { reason: "uncertain", route: "hill" }, { reason: "scope_change", route: "hill" },
     ],
-    stopConditions: ["ambiguous_ownership", "failed_validation", "missing_binding", "scope_change", "stale_revision", "uncertain_execution"],
+    stopConditions: ["ambiguous_ownership", "failed_validation", "missing_binding", "invalid_graph", "scope_change", "stale_state", "stale_revision", "replay_failure", "readback_failure", "scope_expansion", "prohibited_merge", "prohibited_publication", "prohibited_deploy", "prohibited_release", "human_simulation", "uncertain_execution"],
+    stopConditionRoutes: ["ambiguous_ownership", "failed_validation", "missing_binding", "invalid_graph", "scope_change", "stale_state", "stale_revision", "replay_failure", "readback_failure", "scope_expansion", "prohibited_merge", "prohibited_publication", "prohibited_deploy", "prohibited_release", "human_simulation", "uncertain_execution"].map((condition) => ({ condition, route: "hill" as const })),
     provenance: { generatedDigest, editedDigest: null, parentDigest: null },
   };
   const definition = freeze({ ...content, definitionRevision: definitionRevision(content) });
@@ -563,6 +572,7 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
     parentDefinitionRevision: null, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
     templateVersion: 1, intakeRevisionId: definition.intakeRevisionId, generatedDigest, editedDigest: null, editRecord: [], validationRevision: null,
     proofreadAcceptanceDigest: null, previousRecordDigest: null,
+    actorReceiptId: null,
   });
   const validationRevision = digest("shield.mission-validation.v1", { definitionRevision: definition.definitionRevision });
   const validated = makeProvenanceRecord({
@@ -570,11 +580,12 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
     parentDefinitionRevision: definition.definitionRevision, repositoryRevision: definition.repositoryRevision, actorSeatId: "may", templateId: definition.templateId,
     templateVersion: 1, intakeRevisionId: definition.intakeRevisionId, generatedDigest, editedDigest: null, editRecord: [], validationRevision,
     proofreadAcceptanceDigest: null, previousRecordDigest: generated.recordDigest,
+    actorReceiptId: null,
   });
   return { state: "built", reasonCodes: [], definition, provenanceRecords: [generated, validated] };
 }
 
-const DEFINITION_FIELDS = ["schemaVersion", "contractVersion", "authority", "missionId", "subjectId", "objective", "pattern", "repositoryId", "repositoryRevision", "intakeRevisionId", "templateId", "templateVersion", "definitionRevision", "participants", "activatedModes", "prompts", "handoffs", "evidenceContracts", "steps", "graph", "repairPolicy", "escalation", "stopConditions", "provenance"] as const;
+const DEFINITION_FIELDS = ["schemaVersion", "contractVersion", "authority", "missionId", "subjectId", "objective", "pattern", "repositoryId", "repositoryRevision", "intakeRevisionId", "templateId", "templateVersion", "definitionRevision", "participants", "activatedModes", "prompts", "handoffs", "evidenceContracts", "steps", "graph", "repairPolicy", "escalation", "stopConditions", "stopConditionRoutes", "provenance"] as const;
 
 export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "valid"; value: MissionDefinitionV1; reasonCodes: readonly [] } | { state: "invalid"; value: null; reasonCodes: readonly string[] }> {
   const reasons: string[] = [];
@@ -698,7 +709,9 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   if (!exact(value.repairPolicy, ["maximumRepairs", "exhaustedRoute"]) || !Number.isSafeInteger(value.repairPolicy.maximumRepairs) || value.repairPolicy.maximumRepairs < 0 || value.repairPolicy.maximumRepairs > MISSION_BUILDER_MAX_REPAIRS || value.repairPolicy.exhaustedRoute !== "hill"
     || value.graph.edges.filter((edge) => edge.condition === "repair").some((edge) => edge.maximumTraversals !== value.repairPolicy.maximumRepairs)) reasons.push("repair_policy_invalid");
   if (!value.escalation.every((item) => exact(item, ["reason", "route"]) && ["ambiguous", "failed", "uncertain", "scope_change"].includes(String(item.reason)) && ["hill", "fury", "coulson"].includes(String(item.route)))) reasons.push("escalation_invalid");
-  if (!value.stopConditions.every((item) => typeof item === "string" && ID.test(item)) || new Set(value.stopConditions).size !== value.stopConditions.length) reasons.push("stop_condition_invalid");
+  if (!value.stopConditions.every((item) => typeof item === "string" && ID.test(item)) || new Set(value.stopConditions).size !== value.stopConditions.length
+    || !dense(value.stopConditionRoutes, 32) || value.stopConditionRoutes.length !== value.stopConditions.length
+    || value.stopConditionRoutes.some((item, index) => !exact(item, ["condition", "route"]) || item.condition !== value.stopConditions[index] || item.route !== "hill")) reasons.push("stop_condition_invalid");
   if (!exact(value.provenance, ["generatedDigest", "editedDigest", "parentDigest"]) || !DIGEST.test(value.provenance.generatedDigest)
     || (value.provenance.editedDigest !== null && !DIGEST.test(value.provenance.editedDigest)) || (value.provenance.parentDigest !== null && !DIGEST.test(value.provenance.parentDigest))
     || (value.provenance.editedDigest === null) !== (value.provenance.parentDigest === null)) reasons.push("definition_provenance_invalid");
@@ -706,7 +719,7 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   return reasons.length > 0 ? { state: "invalid", value: null, reasonCodes: Object.freeze([...new Set(reasons)].sort()) } : { state: "valid", value: freeze(value), reasonCodes: [] };
 }
 
-const PROVENANCE_FIELDS = ["schemaVersion", "contractVersion", "sequence", "recordId", "kind", "missionId", "definitionRevision", "parentDefinitionRevision", "repositoryRevision", "actorSeatId", "templateId", "templateVersion", "intakeRevisionId", "generatedDigest", "editedDigest", "editRecord", "validationRevision", "proofreadAcceptanceDigest", "previousRecordDigest", "recordDigest"] as const;
+const PROVENANCE_FIELDS = ["schemaVersion", "contractVersion", "sequence", "recordId", "kind", "missionId", "definitionRevision", "parentDefinitionRevision", "repositoryRevision", "actorSeatId", "templateId", "templateVersion", "intakeRevisionId", "generatedDigest", "editedDigest", "editRecord", "validationRevision", "proofreadAcceptanceDigest", "previousRecordDigest", "actorReceiptId", "recordDigest"] as const;
 
 export function replayMissionProvenanceV1(input: unknown): Readonly<{ state: "valid"; value: MissionProvenanceProjectionV1 } | { state: "invalid"; code: string }> {
   if (!dense(input, 256) || input.length === 0) return { state: "invalid", code: "malformed_provenance" };
@@ -722,7 +735,7 @@ export function replayMissionProvenanceV1(input: unknown): Readonly<{ state: "va
       || (record.parentDefinitionRevision !== null && !DIGEST.test(record.parentDefinitionRevision)) || !REVISION.test(record.repositoryRevision) || !["hill", "may"].includes(record.actorSeatId)
       || !ID.test(record.templateId) || record.templateVersion !== 1 || !ID.test(record.intakeRevisionId) || !DIGEST.test(record.generatedDigest)
       || (record.editedDigest !== null && !DIGEST.test(record.editedDigest)) || (record.validationRevision !== null && !DIGEST.test(record.validationRevision))
-      || (record.proofreadAcceptanceDigest !== null && !DIGEST.test(record.proofreadAcceptanceDigest)) || !record.editRecord.every((edit) => exact(edit, ["target", "targetId", "replacementDigest"])
+      || (record.proofreadAcceptanceDigest !== null && !DIGEST.test(record.proofreadAcceptanceDigest)) || (record.actorReceiptId !== null && !ID.test(record.actorReceiptId)) || !record.editRecord.every((edit) => exact(edit, ["target", "targetId", "replacementDigest"])
         && ["prompt", "handoff"].includes(String(edit.target)) && ID.test(String(edit.targetId)) && DIGEST.test(String(edit.replacementDigest)))) return { state: "invalid", code: "provenance_conflict" };
     if (index === 0) {
       if (record.kind !== "definition.generated" || record.actorSeatId !== "hill" || record.parentDefinitionRevision !== null || record.editedDigest !== null
@@ -769,7 +782,7 @@ export async function appendMissionProvenanceRecordV1(
   record: MissionProvenanceRecordV1,
   lockOwnerId: string,
 ): Promise<MissionProvenanceAppendResultV1> {
-  if (!ID.test(lockOwnerId) || !exact(record, PROVENANCE_FIELDS)) return { state: "blocked", code: "conflict" };
+  if (!ID.test(lockOwnerId) || !exact(record, PROVENANCE_FIELDS) || record.actorReceiptId === null) return { state: "blocked", code: "conflict" };
   const acquired = await store.acquireLock({ missionId: record.missionId, lockOwnerId });
   if (acquired.state !== "acquired") return { state: "blocked", code: acquired.code };
   try {
@@ -814,7 +827,7 @@ export function createMissionProofreadingAcceptanceV1(input: unknown): MissionPr
     sequence: replay.value.records.length, kind: "proofreading.accepted", missionId: definition.missionId, definitionRevision: definition.definitionRevision,
     parentDefinitionRevision: definition.definitionRevision, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
     templateVersion: 1, intakeRevisionId: definition.intakeRevisionId, generatedDigest: definition.provenance.generatedDigest, editedDigest: definition.provenance.editedDigest,
-    editRecord: [], validationRevision: replay.value.validationRevision, proofreadAcceptanceDigest: acceptance, previousRecordDigest: replay.value.lastRecordDigest,
+    editRecord: [], validationRevision: replay.value.validationRevision, proofreadAcceptanceDigest: acceptance, previousRecordDigest: replay.value.lastRecordDigest, actorReceiptId: null,
   });
 }
 
@@ -842,7 +855,7 @@ export function editMissionDefinitionTextV1(input: unknown): Readonly<{ state: "
     sequence: replay.value.records.length, kind: "definition.edited", missionId: definition.missionId, definitionRevision: definition.definitionRevision,
     parentDefinitionRevision: checked.value.definitionRevision, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
     templateVersion: 1, intakeRevisionId: definition.intakeRevisionId, generatedDigest: definition.provenance.generatedDigest, editedDigest, editRecord: normalized,
-    validationRevision: null, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest,
+    validationRevision: null, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest, actorReceiptId: null,
   });
   return { state: "edited", definition, record };
 }
@@ -856,7 +869,7 @@ export function createMissionValidationRecordV1(input: unknown): MissionProvenan
     sequence: replay.value.records.length, kind: "definition.validated", missionId: checked.value.missionId, definitionRevision: checked.value.definitionRevision,
     parentDefinitionRevision: checked.value.definitionRevision, repositoryRevision: checked.value.repositoryRevision, actorSeatId: "may", templateId: checked.value.templateId,
     templateVersion: 1, intakeRevisionId: checked.value.intakeRevisionId, generatedDigest: checked.value.provenance.generatedDigest, editedDigest: checked.value.provenance.editedDigest,
-    editRecord: [], validationRevision, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest,
+    editRecord: [], validationRevision, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest, actorReceiptId: null,
   });
 }
 
@@ -942,12 +955,36 @@ function blocked(reasonCode: MissionAdvanceReasonV1, status: MissionStatusProjec
   return { outcome, reasonCode, dispatchEffects: 0, receipt: null, runnerResult: null, mackEvaluation: null, status };
 }
 
+function runnerDispatchEffects(result: MissionCycleResultV1): 0 | 1 {
+  return result.outcome === "advanced" || (result.outcome === "uncertain" && (result.reasonCode === "effect_readback_mismatch" || result.reasonCode === "effect_outcome_uncertain" || result.reasonCode === "executor_uncertain" || result.reasonCode === "recovery_required")) ? 1 : 0;
+}
+
+function validEvidenceRefs(value: unknown): value is readonly string[] {
+  return dense(value, 16) && value.every((item) => typeof item === "string" && ID.test(item));
+}
+
 function validRuntime(value: unknown): value is MissionHostRuntimeObservationV1 {
-  return exact(value, ["seatId", "configuredRuntime", "requestedRuntime", "runtimeHostObserved", "executorHostObserved"]) && isDispatchableRoleId(value.seatId)
-    && plain(value.configuredRuntime) && value.configuredRuntime.kind === "runtime.configured" && ID.test(String(value.configuredRuntime.runtimeId)) && ID.test(String(value.configuredRuntime.model))
-    && plain(value.requestedRuntime) && value.requestedRuntime.kind === "runtime.requested" && ID.test(String(value.requestedRuntime.runtimeId)) && ID.test(String(value.requestedRuntime.model))
-    && plain(value.runtimeHostObserved) && value.runtimeHostObserved.kind === "runtime.host_observed" && ID.test(String(value.runtimeHostObserved.runtimeId)) && ID.test(String(value.runtimeHostObserved.model)) && dense(value.runtimeHostObserved.evidenceRefs, 16)
-    && plain(value.executorHostObserved) && value.executorHostObserved.kind === "executor.host_observed" && ID.test(String(value.executorHostObserved.executorId)) && dense(value.executorHostObserved.evidenceRefs, 16);
+  const candidate = value as MissionHostRuntimeObservationV1;
+  if (!exact(value, ["seatId", "configuredRuntime", "requestedRuntime", "runtimeSelfReport", "runtimeHostObserved", "executorSelfReport", "executorHostObserved"]) || !isDispatchableRoleId(candidate.seatId)) return false;
+  if (!exact(candidate.configuredRuntime, ["kind", "runtimeId", "model"]) || candidate.configuredRuntime.kind !== "runtime.configured" || !ID.test(candidate.configuredRuntime.runtimeId) || !ID.test(candidate.configuredRuntime.model)) return false;
+  if (!exact(candidate.requestedRuntime, ["kind", "runtimeId", "model"]) || candidate.requestedRuntime.kind !== "runtime.requested" || !ID.test(candidate.requestedRuntime.runtimeId) || !ID.test(candidate.requestedRuntime.model)) return false;
+  const selfRuntime = candidate.runtimeSelfReport;
+  if (plain(selfRuntime) && selfRuntime.kind === "runtime.self_report.unavailable") {
+    if (!exact(selfRuntime, ["kind", "reason"]) || selfRuntime.reason !== "not_reported") return false;
+  } else if (!exact(selfRuntime, ["kind", "runtimeId", "model", "evidenceRefs"]) || selfRuntime.kind !== "runtime.self_report.observed" || !ID.test(selfRuntime.runtimeId) || !ID.test(selfRuntime.model) || !validEvidenceRefs(selfRuntime.evidenceRefs)) return false;
+  const hostRuntime = candidate.runtimeHostObserved;
+  if (plain(hostRuntime) && hostRuntime.kind === "runtime.host_observed.unavailable") {
+    if (!exact(hostRuntime, ["kind", "reason"]) || hostRuntime.reason !== "unobserved") return false;
+  } else if (!exact(hostRuntime, ["kind", "runtimeId", "model", "evidenceRefs"]) || hostRuntime.kind !== "runtime.host_observed" || !ID.test(hostRuntime.runtimeId) || !ID.test(hostRuntime.model) || !validEvidenceRefs(hostRuntime.evidenceRefs)) return false;
+  const selfExecutor = candidate.executorSelfReport;
+  if (plain(selfExecutor) && selfExecutor.kind === "executor.self_report.unavailable") {
+    if (!exact(selfExecutor, ["kind", "reason"]) || selfExecutor.reason !== "not_reported") return false;
+  } else if (!exact(selfExecutor, ["kind", "executorId", "evidenceRefs"]) || selfExecutor.kind !== "executor.self_report.observed" || !ID.test(selfExecutor.executorId) || !validEvidenceRefs(selfExecutor.evidenceRefs)) return false;
+  const hostExecutor = candidate.executorHostObserved;
+  if (plain(hostExecutor) && hostExecutor.kind === "executor.host_observed.unavailable") {
+    if (!exact(hostExecutor, ["kind", "reason"]) || hostExecutor.reason !== "not_observed") return false;
+  } else if (!exact(hostExecutor, ["kind", "executorId", "evidenceRefs"]) || hostExecutor.kind !== "executor.host_observed" || !ID.test(hostExecutor.executorId) || !validEvidenceRefs(hostExecutor.evidenceRefs)) return false;
+  return true;
 }
 
 function validateObservation(definition: MissionDefinitionV1, value: unknown): MissionAdvanceHostObservationV1 | null {
@@ -958,6 +995,25 @@ function validateObservation(definition: MissionDefinitionV1, value: unknown): M
     || !dense(value.activatedModes, 16) || !value.activatedModes.every(validMode) || canonicalJson(canonicalModes(value.activatedModes)) !== canonicalJson(definition.activatedModes)
     || !dense(value.actionAllowlist, 64) || !value.actionAllowlist.every((item) => typeof item === "string" && ID.test(item)) || !dense(value.runtimeBindings, 16) || !value.runtimeBindings.every(validRuntime)
     || !dense(value.provenanceRecords, 256) || !dense(value.stepReceipts, 256) || !dense(value.dispatchReceiptEntries, 512)) return null;
+  const dispatchableParticipants = definition.participants.filter((participant) => participant.kind === "dispatchable_seat").map((participant) => participant.seatId);
+  const bindingSeats = value.runtimeBindings.map((binding) => binding.seatId);
+  const seatIds = new Set<string>(definition.participants.map((participant) => participant.seatId));
+  const identityOwners = new Map<string, string>();
+  for (const binding of value.runtimeBindings) {
+    if (!dispatchableParticipants.includes(binding.seatId) || bindingSeats.filter((seatId) => seatId === binding.seatId).length !== 1) return null;
+    const runtimeIds = [binding.configuredRuntime.runtimeId, binding.requestedRuntime.runtimeId];
+    if (binding.runtimeSelfReport.kind === "runtime.self_report.observed") runtimeIds.push(binding.runtimeSelfReport.runtimeId);
+    if (binding.runtimeHostObserved.kind === "runtime.host_observed") runtimeIds.push(binding.runtimeHostObserved.runtimeId);
+    const executorIds = [binding.executorHostObserved.kind === "executor.host_observed" ? binding.executorHostObserved.executorId : null,
+      binding.executorSelfReport.kind === "executor.self_report.observed" ? binding.executorSelfReport.executorId : null].filter((item): item is string => item !== null);
+    if ([...runtimeIds, ...executorIds].some((identity) => seatIds.has(identity)) || runtimeIds.some((runtimeId) => executorIds.includes(runtimeId))) return null;
+    for (const identity of [...new Set([...runtimeIds, ...executorIds])]) {
+      const owner = identityOwners.get(identity);
+      if (owner !== undefined && owner !== binding.seatId) return null;
+      identityOwners.set(identity, binding.seatId);
+    }
+  }
+  if (bindingSeats.length !== dispatchableParticipants.length || new Set(bindingSeats).size !== bindingSeats.length) return null;
   if (!exact(value.journalSnapshot, ["entries", "projection", "journalDigest"]) || !dense(value.journalSnapshot.entries, 4096) || typeof value.journalSnapshot.journalDigest !== "string") return null;
   const replay = replayProfileAwareMissionJournal(value.journalSnapshot.entries);
   const journalDigest = `sha256:${createHash("sha256").update(canonicalJson(value.journalSnapshot.entries)).digest("base64url")}`;
@@ -975,6 +1031,22 @@ function validateObservation(definition: MissionDefinitionV1, value: unknown): M
   return value as unknown as MissionAdvanceHostObservationV1;
 }
 
+function provenanceActorsValidated(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, records: readonly MissionProvenanceRecordV1[]): boolean {
+  const dispatch = replaySeatDispatchReceiptsV1(observation.dispatchReceiptEntries);
+  if (dispatch.state === "invalid") return false;
+  return records.filter((record) => record.kind === "definition.validated" || record.kind === "proofreading.accepted").every((record) => {
+    if (record.actorReceiptId === null) return false;
+    const receipt = dispatch.projections.find((item) => item.receiptId === record.actorReceiptId);
+    if (!receipt || receipt.state !== "completed" || receipt.accountableSeatId !== record.actorSeatId
+      || receipt.parentMissionId !== definition.missionId || receipt.parentMissionRevision !== definition.definitionRevision
+      || receipt.repositoryId !== definition.repositoryId || receipt.repositoryRevision !== definition.repositoryRevision
+      || receipt.subjectId !== definition.subjectId || receipt.runtimeHostHistory.length === 0 || receipt.executorHostHistory.length === 0) return false;
+    const runtime = receipt.runtimeHostHistory.at(-1)?.runtimeId;
+    const executor = receipt.executorHostHistory.at(-1)?.executorId;
+    return typeof runtime === "string" && typeof executor === "string" && runtime !== executor && runtime !== receipt.accountableSeatId && executor !== receipt.accountableSeatId;
+  });
+}
+
 function nextLogState(entries: readonly SeatDispatchReceiptEventV1[]): { logSequence: number; previousLogDigest: string | null } {
   const last = entries[entries.length - 1]; return { logSequence: last ? last.logSequence + 1 : 0, previousLogDigest: last?.entryDigest ?? null };
 }
@@ -982,7 +1054,7 @@ function nextLogState(entries: readonly SeatDispatchReceiptEventV1[]): { logSequ
 async function runMackAdapter(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1, attempt: number, dependencies: MackHostDispatchDependenciesV1): Promise<{ state: "success" | "repair" | "blocked" | "uncertain"; evaluation: MackEvaluationV0 | null; reportRef: string | null; dispatchEffects: 0 | 1 }> {
   const handoff = definition.handoffs.find((item) => item.handoffId === step.handoffId)!;
   const runtime = observation.runtimeBindings.find((item) => item.seatId === "mack");
-  if (!runtime) return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
+  if (!runtime || runtime.runtimeHostObserved.kind !== "runtime.host_observed" || runtime.executorHostObserved.kind !== "executor.host_observed") return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
   const short = digest("shield.mack-dispatch.v1", { graphRevision: definition.graph.graphRevision, stepId: step.stepId, attempt }).slice(7);
   const receiptId = `receipt:${short}`; const dispatchId = `dispatch:${short}`; const childTaskId = `task:${short}`; const childSessionId = `session:${short}`;
   const subjectRevision = digest("shield.mission-intake-revision.v1", definition.intakeRevisionId);
@@ -998,7 +1070,8 @@ async function runMackAdapter(definition: MissionDefinitionV1, observation: Miss
   const expected: MackExpectedBindingV0 = { missionId: definition.missionId, subjectId: definition.subjectId, repository: definition.repositoryId, branch: observation.permissionContext.branch, artifactRevisionId: definition.repositoryRevision, approvedTestSurfaces: [] };
   if (projection?.state === "completed") {
     const reportRef = projection.outputEvidenceRefs?.[0]; if (!reportRef) return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
-    const report = await dependencies.readReport(reportRef);
+    let report: unknown;
+    try { report = await dependencies.readReport(reportRef); } catch { return { state: "uncertain", evaluation: null, reportRef, dispatchEffects: 0 }; }
     if (reportRef !== `mack-report:${digest("shield.mack-report.v1", report).slice(7)}`) return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
     const evaluation = evaluateMackValidationV0(report, expected);
     if (evaluation.state === "invalid") return { state: "blocked", evaluation, reportRef, dispatchEffects: 0 };
@@ -1017,10 +1090,12 @@ async function runMackAdapter(definition: MissionDefinitionV1, observation: Miss
     executorSelfReport: selfExecutor, executorHostObserved: runtime.executorHostObserved, timestamp: dependencies.now(), logSequence: log.logSequence,
     previousLogDigest: log.previousLogDigest, lifecycleSequence: 0, previousLifecycleDigest: null, inputEvidenceRefs: [handoff.contentDigest],
   });
-  const appended = await dependencies.appendReceipt(started);
+  let appended: Awaited<ReturnType<MackHostDispatchDependenciesV1["appendReceipt"]>>;
+  try { appended = await dependencies.appendReceipt(started); } catch { return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 }; }
   if (appended.state === "uncertain") return { state: "uncertain", evaluation: null, reportRef: null, dispatchEffects: 0 };
   if (appended.state !== "appended") return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
-  replay = replaySeatDispatchReceiptsV1(await dependencies.readReceipts());
+  try { replay = replaySeatDispatchReceiptsV1(await dependencies.readReceipts()); }
+  catch { return { state: "uncertain", evaluation: null, reportRef: null, dispatchEffects: 0 }; }
   if (replay.state === "invalid") return { state: "uncertain", evaluation: null, reportRef: null, dispatchEffects: 0 };
   projection = replay.projections.find((item) => item.receiptId === receiptId);
   if (!projection || projection.state !== "started" || !expectedIdentity(projection)) return { state: "uncertain", evaluation: null, reportRef: null, dispatchEffects: 0 };
@@ -1043,21 +1118,29 @@ async function runMackAdapter(definition: MissionDefinitionV1, observation: Miss
     previousLifecycleDigest: projection.lastEntryDigest, outputEvidenceRefs: [dispatched.reportRef],
   };
   const completed = createSeatDispatchLifecycleEventV1(completedInput as never);
-  const terminalAppend = await dependencies.appendReceipt(completed);
+  let terminalAppend: Awaited<ReturnType<MackHostDispatchDependenciesV1["appendReceipt"]>>;
+  try { terminalAppend = await dependencies.appendReceipt(completed); } catch { return { state: "uncertain", evaluation, reportRef: dispatched.reportRef, dispatchEffects: 1 }; }
   if (terminalAppend.state !== "appended") return { state: "uncertain", evaluation, reportRef: dispatched.reportRef, dispatchEffects: 1 };
-  const readback = replaySeatDispatchReceiptsV1(await dependencies.readReceipts());
+  let readback: ReturnType<typeof replaySeatDispatchReceiptsV1>;
+  try { readback = replaySeatDispatchReceiptsV1(await dependencies.readReceipts()); }
+  catch { return { state: "uncertain", evaluation, reportRef: dispatched.reportRef, dispatchEffects: 1 }; }
   const completedProjection = readback.state === "valid" ? readback.projections.find((item) => item.receiptId === receiptId) : undefined;
   if (!completedProjection || completedProjection.state !== "completed" || !expectedIdentity(completedProjection) || completedProjection.outputEvidenceRefs?.[0] !== dispatched.reportRef) return { state: "uncertain", evaluation, reportRef: dispatched.reportRef, dispatchEffects: 1 };
   return { state: evaluation.advancementEligibility === "eligible" ? "success" : "repair", evaluation, reportRef: dispatched.reportRef, dispatchEffects: 1 };
 }
 
 async function appendStepReceipt(receipt: MissionStepReceiptV1, store: MissionStepReceiptStoreV1): Promise<"appended" | "blocked" | "uncertain"> {
-  const result = await store.append({ receipt, expectedPreviousReceiptDigest: receipt.previousReceiptDigest });
+  let result: Awaited<ReturnType<MissionStepReceiptStoreV1["append"]>>;
+  try { result = await store.append({ receipt, expectedPreviousReceiptDigest: receipt.previousReceiptDigest }); }
+  catch { return "uncertain"; }
   if (result.state !== "appended") return result.state;
-  const readback = await store.read();
+  let readback: unknown;
+  try { readback = await store.read(); }
+  catch { return "uncertain"; }
   if (!dense(readback, 256)) return "uncertain";
   const exactReceipt = readback.find((item) => plain(item) && item.receiptId === receipt.receiptId);
-  return canonicalJson(exactReceipt) === canonicalJson(receipt) ? "appended" : "uncertain";
+  try { return canonicalJson(exactReceipt) === canonicalJson(receipt) ? "appended" : "uncertain"; }
+  catch { return "uncertain"; }
 }
 
 export function compileMissionCycleInputV1(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1): MissionCycleInputV1 {
@@ -1093,6 +1176,7 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
   if (!observation) return blocked("observation_mismatch");
   const provenance = replayMissionProvenanceV1(observation.provenanceRecords);
   if (provenance.state === "invalid" || !provenanceMatchesDefinition(provenance.value, definition)) return blocked("provenance_stale");
+  if (!provenanceActorsValidated(definition, observation, provenance.value.records)) return blocked("provenance_stale");
   if (provenance.value.validationRevision === null || provenance.value.proofreadAcceptanceDigest === null) return blocked("proofreading_required");
   const receiptReplay = replayStepReceipts(definition, observation.stepReceipts); if (receiptReplay.state === "invalid") return blocked("receipt_invalid");
   if (!receiptEvidenceMatchesObservation(definition, observation, receiptReplay.receipts)) return blocked("receipt_invalid");
@@ -1126,16 +1210,18 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
     if (!observation.actionAllowlist.includes(step.actionId)) return blocked("observation_mismatch", status);
     const cycleInput = compileMissionCycleInputV1(definition, observation, step);
     const identity = deriveMissionCycleIdentityV1(cycleInput);
-    if (observation.permissionContext.decisionId !== identity.decisionId || observation.permissionContext.reasoningRuntimeId !== observation.runtimeBindings.find((item) => item.seatId === step.seatId)?.runtimeHostObserved.runtimeId
-      || observation.permissionContext.toolExecutorId !== observation.runtimeBindings.find((item) => item.seatId === step.seatId)?.executorHostObserved.executorId) return blocked("observation_mismatch", status);
+    const runtimeBinding = observation.runtimeBindings.find((item) => item.seatId === step.seatId);
+    if (observation.permissionContext.decisionId !== identity.decisionId || runtimeBinding?.runtimeHostObserved.kind !== "runtime.host_observed"
+      || runtimeBinding.runtimeHostObserved.runtimeId !== observation.permissionContext.reasoningRuntimeId || runtimeBinding.executorHostObserved.kind !== "executor.host_observed"
+      || runtimeBinding.executorHostObserved.executorId !== observation.permissionContext.toolExecutorId) return blocked("observation_mismatch", status);
     const runnerResult = await runMissionCycle(cycleInput, { ...dependencies.missionCycle, getPermissionContext: () => observation.permissionContext });
-    if (runnerResult.outcome !== "advanced" && runnerResult.outcome !== "complete") return { ...blocked(runnerResult.outcome === "uncertain" ? "uncertain_execution" : "runner_blocked", status, runnerResult.outcome === "uncertain" ? "uncertain" : runnerResult.outcome === "waiting" ? "waiting" : "blocked"), runnerResult };
+    if (runnerResult.outcome !== "advanced" && runnerResult.outcome !== "complete") return { ...blocked(runnerResult.outcome === "uncertain" ? "uncertain_execution" : "runner_blocked", status, runnerResult.outcome === "uncertain" ? "uncertain" : runnerResult.outcome === "waiting" ? "waiting" : "blocked"), dispatchEffects: runnerDispatchEffects(runnerResult), runnerResult };
     const edge = outgoing.find((item) => item.condition === "success"); if (!edge) return blocked("definition_invalid", status);
     const evidenceRef = "effectKey" in runnerResult ? runnerResult.effectKey : identity.effectKey;
     const receipt = makeStepReceipt({ sequence: receiptReplay.receipts.length, missionId: definition.missionId, definitionRevision: definition.definitionRevision, graphRevision: definition.graph.graphRevision,
       stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: "success", evidenceRefs: [evidenceRef], previousReceiptDigest });
     const appended = await appendStepReceipt(receipt, dependencies.stepReceiptStore);
-    if (appended !== "appended") return { ...blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked"), runnerResult };
+    if (appended !== "appended") return { ...blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked"), dispatchEffects: runnerDispatchEffects(runnerResult), runnerResult };
     return { outcome: "advanced", reasonCode: "complete", dispatchEffects: runnerResult.outcome === "advanced" ? 1 : 0, receipt, runnerResult, mackEvaluation: null, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt]) };
   }
   const mack = await runMackAdapter(definition, observation, step, attempt, dependencies.mack);
