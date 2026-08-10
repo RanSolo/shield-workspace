@@ -123,22 +123,24 @@ Input is a closed manifest containing only:
 
 All routing, authority, implementation/runtime/executor, and effect identities are derived only from replayed signed evidence and host observation and are never accepted from manifest input.
 
-The command calls the existing `loadSchema9SeatDispatchProjectionV1` exactly
-once with purpose `runner_permission`, the captured Runner plan, and the
-repository configuration's journal path. The loader owns both schema-9 journal
-replays and repository observations. Its result must be the Daisy-ready
-variant and therefore preserves all existing predicates for authorization,
-execution/final-acceptance lifecycle, profile readiness, exact execution-gate
-evidence, authority digest/sequence, one active binding, plan scope,
-repository/root/branch/HEAD freshness, and journal drift.
+The command calls the existing `loadSchema9PermissionContextV1` exactly once
+with the captured Runner plan and the repository configuration's journal path.
+That loader owns the canonical `runner_permission` projection, both schema-9
+journal/repository freshness passes, durable-root/worktree isolation checks,
+writability observation, and capability probes. Its result must be the
+Daisy-ready variant and therefore preserves all existing predicates for
+authorization, execution/final-acceptance lifecycle, profile readiness, exact
+execution-gate evidence, authority digest/sequence, one active binding, plan
+scope, repository/root/branch/HEAD freshness, journal drift, and host
+attestations.
 
-The production command exact-compares the returned projection against the
-captured Runner projection and plan: mission, subject, mission revision,
-participants, artifact revision, evaluated sequence, lifecycle, requirement
-digest, satisfied execution gates, authority path/digest/sequence, binding
-digest and identities, action/effect/validation tuple, and both repository
-observations must match. No parallel partial replay or hand-selected subset is
-permitted.
+The production command exact-compares the returned immutable permission
+context and Daisy coordination metadata against the captured Runner projection
+and plan: mission, subject, mission revision, artifact revision, evaluated
+sequence, runtime/model/executor, action/effect/capability scope, repository,
+branch, durable root, authority digest/sequence, and binding identity must
+match. No parallel partial replay, hand-selected field subset, or independently
+reconstructed permission context is permitted.
 
 Claim root is derived solely from `daisyCoordinationAuthority.durableArtifactRoot`. The active Daisy binding must carry the same durable-artifact root exactly. May's `implementationAuthority` and `activeRuntimeBindings` are forbidden on this Daisy path.
 
@@ -205,11 +207,11 @@ authorized execute-once namespace.
    adapter data only from captured bytes.
 5. Validate `sequence` as numeric and manifest-consistent with predecessor
    lineage.
-6. Call `loadSchema9SeatDispatchProjectionV1` once and require the exact
-   Daisy-ready `runner_permission` projection described above. Exact-compare it
-   to the captured Runner plan/projection and reject every lifecycle,
-   readiness, gate, authority, binding, sequence, repository, or identity
-   mismatch.
+6. Call `loadSchema9PermissionContextV1` once and require its exact Daisy-ready
+   result described above. Exact-compare the immutable permission context and
+   Daisy coordination metadata to the captured Runner plan/projection and
+   reject every lifecycle, readiness, gate, authority, binding, capability,
+   sequence, repository, or identity mismatch.
 7. Derive the complete proving tuple from captured bytes and host observation;
    require its digest-derived effect key to exact-match the signed Daisy
    authority, active binding, and Runner plan.
