@@ -65,6 +65,7 @@ const defaultDependencies = Object.freeze({
   lstat,
   open,
   realpath,
+  filesystemConstants: fsConstants,
   loadPermissionContext: loadSchema9PermissionContextV1,
   runStep: runFeatureFlightStepV1,
   persistMeasurement: persistFeatureFlightMeasurement,
@@ -178,8 +179,14 @@ async function captureFile(path, dependencies, seen, label) {
   seen.add(inode);
   let handle;
   try {
-    handle = await dependencies.open(path,
-      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+    const constants = dependencies.filesystemConstants;
+    if (!plain(constants) && constants !== fsConstants) throw new Error("Required secure-open constants are unavailable.");
+    if (!Number.isInteger(constants?.O_RDONLY) || constants.O_RDONLY < 0 ||
+        !Number.isInteger(constants?.O_NOFOLLOW) || constants.O_NOFOLLOW <= 0 ||
+        !Number.isInteger(constants?.O_NONBLOCK) || constants.O_NONBLOCK <= 0) {
+      throw new Error("Required O_NOFOLLOW and O_NONBLOCK secure-open semantics are unavailable.");
+    }
+    handle = await dependencies.open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const opened = await handle.stat();
     if (!opened.isFile() || opened.nlink !== 1 || !owned(opened) || !sameIdentity(before, opened)) {
       throw new Error(`${label} identity changed while opening.`);
@@ -484,6 +491,9 @@ export async function prepareFeatureFlightRunV1({ manifestPath }, injectedDepend
   const runner = deepFreeze(structuredClone(checkedRunner.value));
   const mission = plan.missions.find(({ id }) => id === runner.plan.missionId);
   if (!mission || state.missions[mission.id]?.status !== "active") throw new Error("Runner mission is not the one active Feature Flight mission.");
+  if (plan.evaluationContract.fixtureId !== FEATURE_FLIGHT_FIXTURE_ID || plan.evaluationContract.version !== 1) {
+    throw new Error("Feature Flight plan does not bind the fixed external-acceptance fixture.");
+  }
 
   const configPath = join(mission.worktree, CONFIG_RELATIVE_PATH);
   const configSnapshot = await captureFile(configPath, dependencies, seen, "Active repository configuration");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback, spawnSync } from "node:child_process";
-import { chmod, link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -386,10 +386,30 @@ function dependenciesFor(f, overrides = {}) {
   };
 }
 
+async function rejectBeforeStep(f, overrides, pattern) {
+  let stepCalls = 0;
+  const controlled = dependenciesFor(f, {
+    ...overrides,
+    runStep: async () => { stepCalls += 1; throw new Error("step_must_not_run"); },
+  });
+  await assert.rejects(runFeatureFlightProductionV1({ manifestPath: f.manifestPath }, controlled.dependencies), pattern);
+  assert.equal(stepCalls, 0);
+  assert.deepEqual(
+    { import: controlled.counts().import, launcher: controlled.counts().launcher, measurement: controlled.counts().measurement },
+    { import: 0, launcher: 0, measurement: 0 },
+  );
+}
+
+async function rewriteManifest(f, transform) {
+  const manifest = transform(structuredClone(f.manifest));
+  await writeFile(f.manifestPath, JSON.stringify(manifest));
+  return manifest;
+}
+
 test("signed proving tuple is non-self-referential and binds every fixed intent substitution", async (t) => {
   const f = await fixture(t);
   assert.equal(f.runner.plan.effectKey, f.proving.effectKey);
-  const changed = deriveFeatureFlightProvingTupleV1({
+  const base = {
     planDigest: f.proving.tuple.plan.sha256,
     flightId: f.proving.tuple.plan.flightId,
     fixtureRoot: f.proving.tuple.fixture.root,
@@ -397,7 +417,7 @@ test("signed proving tuple is non-self-referential and binds every fixed intent 
     adapterPath: f.proving.tuple.adapter.path,
     adapterDigest: f.proving.tuple.adapter.sha256,
     releaseBaselineDigest: f.proving.tuple.releaseBaselineSha256,
-    packageDigest: "0".repeat(64),
+    packageDigest: f.proving.tuple.packageSha256,
     repository: f.proving.tuple.repository,
     branch: f.proving.tuple.branch,
     headRevision: f.proving.tuple.headRevision,
@@ -406,8 +426,30 @@ test("signed proving tuple is non-self-referential and binds every fixed intent 
     missionRevision: f.proving.tuple.missionRevision,
     measurementIntentId: f.proving.tuple.measurementIntentId,
     runnerIntent: f.proving.tuple.runnerIntent,
-  });
-  assert.notEqual(changed.effectKey, f.proving.effectKey);
+  };
+  const substitutions = [
+    (value) => { value.planDigest = "0".repeat(64); },
+    (value) => { value.flightId = "mission:production-proving:substituted"; },
+    (value) => { value.fixtureRoot = `${value.fixtureRoot}-substituted`; },
+    (value) => { value.fixtureIdentityDigest = "0".repeat(64); },
+    (value) => { value.adapterPath = `${value.adapterPath}-substituted`; },
+    (value) => { value.adapterDigest = "0".repeat(64); },
+    (value) => { value.releaseBaselineDigest = "0".repeat(64); },
+    (value) => { value.packageDigest = "0".repeat(64); },
+    (value) => { value.repository = "other/repository"; },
+    (value) => { value.branch = "agent/substituted"; },
+    (value) => { value.headRevision = "0".repeat(40); },
+    (value) => { value.mission = "mission:substituted"; },
+    (value) => { value.subject = "github:owner/repo/issue/substituted"; },
+    (value) => { value.missionRevision = "0".repeat(64); },
+    (value) => { value.measurementIntentId = "measurement:substituted"; },
+    (value) => { value.runnerIntent.plan.actionId = "action:feature-flight.daisy.substituted"; },
+  ];
+  for (const substitute of substitutions) {
+    const changed = structuredClone(base);
+    substitute(changed);
+    assert.notEqual(deriveFeatureFlightProvingTupleV1(changed).effectKey, f.proving.effectKey);
+  }
   assert.equal(Object.hasOwn(f.proving.tuple.runnerIntent.plan, "effectKey"), false);
   assert.equal(JSON.stringify(f.proving.tuple).includes(hash(Buffer.from(canonicalJson(f.runner)))), false);
 });
@@ -579,6 +621,211 @@ test("hard links, FIFOs, unsafe modes, unknown manifest fields, and byte drift f
   }
 });
 
+test("secure capture fails closed when either required open semantic is unavailable", async (t) => {
+  for (const missing of ["O_NOFOLLOW", "O_NONBLOCK"]) {
+    const f = await fixture(t);
+    let opens = 0;
+    const constants = { O_RDONLY: 0, O_NOFOLLOW: 0x20000, O_NONBLOCK: 0x4 };
+    delete constants[missing];
+    await rejectBeforeStep(f, {
+      filesystemConstants: constants,
+      open: async () => { opens += 1; throw new Error("open_must_not_run"); },
+    }, /secure-open semantics are unavailable/);
+    assert.equal(opens, 0);
+  }
+});
+
+test("referenced artifacts reject symlink, hard-link, FIFO, unsafe mode, and replacement before claim", async (t) => {
+  {
+    const f = await fixture(t);
+    const linkedRunner = join(f.artifacts, "runner-link.json");
+    await symlink(f.manifest.runnerInput.path, linkedRunner);
+    await rewriteManifest(f, (manifest) => ({ ...manifest, runnerInput: { ...manifest.runnerInput, path: linkedRunner } }));
+    await rejectBeforeStep(f, {}, /safe non-alias regular file/);
+  }
+  {
+    const f = await fixture(t);
+    await link(f.manifest.packageArtifact.path, join(f.artifacts, "package-hardlink.tgz"));
+    await rejectBeforeStep(f, {}, /safe non-alias regular file/);
+  }
+  {
+    const f = await fixture(t);
+    const fifo = join(f.artifacts, "package.fifo");
+    await execFile("mkfifo", [fifo]);
+    await rewriteManifest(f, (manifest) => ({ ...manifest, packageArtifact: { path: fifo, sha256: "0".repeat(64) } }));
+    await rejectBeforeStep(f, {}, /safe non-alias regular file/);
+  }
+  {
+    const f = await fixture(t);
+    await chmod(f.manifest.packageArtifact.path, 0o666);
+    await rejectBeforeStep(f, {}, /safe non-alias regular file/);
+  }
+  {
+    const f = await fixture(t);
+    let replaced = false;
+    await rejectBeforeStep(f, {
+      beforeRead: async ({ path }) => {
+        if (!replaced && path === f.manifest.packageArtifact.path) {
+          replaced = true;
+          await rename(path, `${path}.retained`);
+          await writeFile(path, "replacement-artifact\n");
+        }
+      },
+    }, /identity changed during capture/);
+  }
+});
+
+test("authority absence, binding cardinality, claim-root drift, and identity impersonation reject before claim", async (t) => {
+  const variants = [
+    (value) => ({ state: "blocked", code: "authority_missing", errors: [] }),
+    (value) => { value.context.activeBindings = []; return value; },
+    (value) => { value.context.activeBindings.push(structuredClone(value.context.activeBindings[0])); return value; },
+    (value) => { value.daisyCoordination.durableArtifactRoot = join(value.daisyCoordination.durableArtifactRoot, "substituted"); return value; },
+    (value) => { value.daisyCoordination.modelId = value.daisyCoordination.runtimeId; return value; },
+    (value) => { value.daisyCoordination.executorId = "hill"; return value; },
+    (value) => { value.daisyCoordination.bindingId = "binding:daisy:substituted:1"; return value; },
+  ];
+  for (const mutate of variants) {
+    const f = await fixture(t);
+    let permissionCalls = 0;
+    await rejectBeforeStep(f, {
+      loadPermissionContext: async () => {
+        permissionCalls += 1;
+        return mutate(permissionResult({
+          claimRoot: f.claimRoot,
+          head: f.head,
+          effectKey: f.proving.effectKey,
+          approvedReadRoots: [f.artifacts, f.worktree, fixtureRoot],
+        }));
+      },
+    }, /not ready|does not exact-match|not distinct/);
+    assert.equal(permissionCalls, 1);
+  }
+});
+
+test("fixed tuple, repository, sequence, fixture binding, and caller dispositions reject before claim", async (t) => {
+  {
+    const f = await fixture(t);
+    const runner = structuredClone(f.runner);
+    runner.plan.actionId = "action:feature-flight.daisy.substituted";
+    runner.actionAllowlist = [runner.plan.actionId];
+    const bytes = Buffer.from(canonicalJson(runner));
+    await writeFile(f.manifest.runnerInput.path, bytes);
+    await rewriteManifest(f, (manifest) => ({ ...manifest, runnerInput: { ...manifest.runnerInput, sha256: hash(bytes) } }));
+    await rejectBeforeStep(f, {}, /effect key does not match|Runner input is malformed/);
+  }
+  {
+    const f = await fixture(t);
+    const bytes = Buffer.from("substituted-package\n");
+    await writeFile(f.manifest.packageArtifact.path, bytes);
+    const baseline = JSON.parse(await readFile(f.manifest.releaseBaseline.path, "utf8"));
+    baseline.package.digest = hash(bytes);
+    const baselineBytes = Buffer.from(JSON.stringify(baseline));
+    await writeFile(f.manifest.releaseBaseline.path, baselineBytes);
+    await rewriteManifest(f, (manifest) => ({
+      ...manifest,
+      packageArtifact: { ...manifest.packageArtifact, sha256: hash(bytes) },
+      releaseBaseline: { ...manifest.releaseBaseline, sha256: hash(baselineBytes) },
+    }));
+    await rejectBeforeStep(f, {}, /effect key does not match/);
+  }
+  {
+    const f = await fixture(t);
+    const plan = JSON.parse(await readFile(f.manifest.plan.path, "utf8"));
+    plan.evaluationContract.fixtureId = "fixture:substituted";
+    const bytes = canonicalFeatureFlightBytes(plan);
+    await writeFile(f.manifest.plan.path, bytes);
+    const planIdentity = { path: f.manifest.plan.path, bytes: bytes.length, sha256: hash(bytes) };
+    const predecessor = JSON.parse(await readFile(f.manifest.predecessor.path, "utf8"));
+    predecessor.plan = planIdentity;
+    const predecessorBytes = canonicalFeatureFlightBytes(predecessor);
+    await writeFile(f.manifest.predecessor.path, predecessorBytes);
+    const state = JSON.parse(await readFile(f.manifest.state.path, "utf8"));
+    state.plan = planIdentity;
+    state.predecessorSha256 = hash(predecessorBytes);
+    const stateBytes = canonicalFeatureFlightBytes(state);
+    await writeFile(f.manifest.state.path, stateBytes);
+    await rewriteManifest(f, (manifest) => ({
+      ...manifest,
+      plan: { ...manifest.plan, sha256: hash(bytes) },
+      predecessor: { ...manifest.predecessor, sha256: hash(predecessorBytes) },
+      state: { ...manifest.state, sha256: hash(stateBytes) },
+    }));
+    await rejectBeforeStep(f, {}, /fixed external-acceptance fixture/);
+  }
+  {
+    const f = await fixture(t);
+    await rewriteManifest(f, (manifest) => ({ ...manifest, sequence: 2 }));
+    await rejectBeforeStep(f, {}, /sequence and predecessor lineage/);
+  }
+  for (const disposition of [
+    { authority: "none" }, { gateEligible: false }, { allow: true }, { review: "PASS" }, { outcome: "completed" },
+  ]) {
+    const f = await fixture(t);
+    await rewriteManifest(f, (manifest) => ({ ...manifest, ...disposition }));
+    await rejectBeforeStep(f, {}, /unknown or non-data field/);
+  }
+  {
+    const f = await fixture(t);
+    await writeFile(join(f.worktree, ".shield/config.json"), `${JSON.stringify({
+      schemaVersion: 1, repositoryId: "substituted/repository", adapterId: "github",
+      supportedSeatIds: ["hill", "daisy", "coulson"], supportedModeIds: ["delivery"], trustedHumanBindingRefs: [],
+      paths: { journals: ".shield/journals", artifacts: ".shield/artifacts", reports: ".shield/reports", temp: ".shield/tmp" },
+    })}\n`);
+    await rejectBeforeStep(f, {}, /does not exact-match|signed proving tuple/);
+  }
+});
+
+test("ambiguous replay disposition cannot measure or reinvoke the adapter", async (t) => {
+  const f = await fixture(t);
+  const controlled = dependenciesFor(f, {
+    runStep: async () => ({ outcome: "replayed", gateEligible: false }),
+  });
+  await assert.rejects(runFeatureFlightProductionV1({ manifestPath: f.manifestPath }, controlled.dependencies), /attempt digest/);
+  assert.deepEqual(controlled.counts(), { permission: 1, import: 0, launcher: 0, measurement: 0 });
+});
+
+test("origin and remote-head repository substitutions stop before adapter effects", async (t) => {
+  {
+    const f = await fixture(t);
+    const controlled = dependenciesFor(f, {
+      execFile: async (command, args, options = {}) => {
+        if (command === "git" && args.includes("get-url")) return "git@github.com:other/repository.git\n";
+        const result = await execFile(command, args, {
+          ...options,
+          encoding: options.encoding ?? "utf8",
+          env: { ...process.env, PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C" },
+        });
+        return result.stdout;
+      },
+    });
+    let steps = 0;
+    controlled.dependencies.runStep = async () => { steps += 1; };
+    await assert.rejects(runFeatureFlightProductionV1({ manifestPath: f.manifestPath }, controlled.dependencies), /repository identity/);
+    assert.equal(steps, 0);
+    assert.deepEqual(controlled.counts(), { permission: 1, import: 0, launcher: 0, measurement: 0 });
+  }
+  {
+    const f = await fixture(t);
+    const controlled = dependenciesFor(f, {
+      execFile: async (command, args, options = {}) => {
+        if (command === "git" && args.includes("ls-remote")) return `${"0".repeat(40)}\trefs/heads/agent/issue-251\n`;
+        const result = await execFile(command, args, {
+          ...options,
+          encoding: options.encoding ?? "utf8",
+          env: { ...process.env, PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C" },
+        });
+        return result.stdout;
+      },
+    });
+    delete controlled.dependencies.runStep;
+    const result = await runFeatureFlightProductionV1({ manifestPath: f.manifestPath }, controlled.dependencies);
+    assert.equal(result.projection.outcome, "stopped");
+    assert.deepEqual(result.counts, { import: 0, launcher: 0, measurement: 0 });
+    assert.deepEqual(controlled.counts(), { permission: 1, import: 0, launcher: 0, measurement: 0 });
+  }
+});
+
 test("adapter import failure is entered only after the step callback and returns durable recovery without retry", async (t) => {
   const f = await fixture(t);
   let callbackCalls = 0;
@@ -671,14 +918,80 @@ test("argument parser and spawned real CLI reject malformed input before adapter
   await writeFile(manifestPath, JSON.stringify({ contract: "substituted" }));
   await writeFile(loaderLog, "");
   await chmod(loaderLog, 0o600);
-  const result = spawnSync(process.execPath, ["--loader", loader, cli, "flight", "run", "--input", manifestPath], {
+  const result = spawnSync(process.execPath, [cli, "flight", "run", "--input", manifestPath], {
     cwd: testRoot,
     encoding: "utf8",
-    env: { ...process.env, SHIELD_FEATURE_FLIGHT_LOADER_LOG: loaderLog },
+    env: { ...process.env, NODE_OPTIONS: `--loader=${loader}`, SHIELD_FEATURE_FLIGHT_LOADER_LOG: loaderLog },
   });
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /rejected before effects/u);
   const events = (await readFile(loaderLog, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
   assert.equal(events.some(({ adapterPathname }) => adapterPathname === true), false);
   assert.equal(events.some(({ followedFromCapturedAdapter }) => followedFromCapturedAdapter === true), false);
+});
+
+test("spawned valid CLI imports captured adapter bytes and recovers an absent measurement without a second launch", async (t) => {
+  const f = await fixture(t);
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "shield-feature-flight-valid-cli-")));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bin = join(directory, "bin");
+  await mkdir(bin);
+  const actualGit = (await execFile("which", ["git"], { encoding: "utf8" })).stdout.trim();
+  const gitWrapper = join(bin, "git");
+  await writeFile(gitWrapper, `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+if (args.includes("ls-remote")) {
+  process.stdout.write(${JSON.stringify(f.head)} + "\\t" + args.at(-1) + "\\n");
+  process.exit(0);
+}
+const result = spawnSync(${JSON.stringify(actualGit)}, args, { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`);
+  await chmod(gitWrapper, 0o755);
+  const loaderLog = join(directory, "loader.jsonl");
+  const launchLog = join(directory, "launch.log");
+  await writeFile(loaderLog, "");
+  await writeFile(launchLog, "");
+  const permission = permissionResult({
+    claimRoot: f.claimRoot,
+    head: f.head,
+    effectKey: f.proving.effectKey,
+    approvedReadRoots: [f.artifacts, f.worktree, fixtureRoot],
+  });
+  const environment = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    SHIELD_FEATURE_FLIGHT_CLI_FIXTURE: "1",
+    SHIELD_FEATURE_FLIGHT_PERMISSION: JSON.stringify(permission),
+    SHIELD_FEATURE_FLIGHT_LOADER_LOG: loaderLog,
+    SHIELD_FEATURE_FLIGHT_LAUNCH_LOG: launchLog,
+    NODE_OPTIONS: `--loader=${loader}`,
+  };
+  const invoke = (extra = {}) => spawnSync(process.execPath, [cli, "flight", "run", "--input", f.manifestPath], {
+    cwd: testRoot,
+    encoding: "utf8",
+    env: { ...environment, ...extra },
+  });
+
+  const uncertain = invoke({ SHIELD_FEATURE_FLIGHT_MEASUREMENT_UNCERTAIN: "1" });
+  assert.equal(uncertain.status, 1, uncertain.stderr);
+  assert.notEqual(uncertain.stdout.trim(), "", `${uncertain.stderr}\n${await readFile(loaderLog, "utf8")}`);
+  const first = JSON.parse(uncertain.stdout.trim().split("\n").at(-1));
+  assert.equal(first.projection.outcome, "completed");
+  assert.equal(first.measurement.state, "recovery_required");
+  assert.deepEqual(first.counts, { import: 1, launcher: 1, measurement: 1 });
+
+  const recovered = invoke({ SHIELD_FEATURE_FLIGHT_MEASUREMENT_UNCERTAIN: "0" });
+  assert.equal(recovered.status, 0, recovered.stderr);
+  const second = JSON.parse(recovered.stdout.trim().split("\n").at(-1));
+  assert.equal(second.projection.outcome, "replayed");
+  assert.equal(second.measurement.state, "created");
+  assert.deepEqual(second.counts, { import: 0, launcher: 0, measurement: 1 });
+  assert.equal((await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).length, 1);
+
+  const events = (await readFile(loaderLog, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+  assert.equal(events.some(({ adapterPathname }) => adapterPathname === true), false);
+  assert.equal(events.some(({ followedFromCapturedAdapter }) => followedFromCapturedAdapter === true), false);
+  assert.equal(events.some(({ url }) => typeof url === "string" && url.startsWith("data:text/javascript;base64,")), true);
 });

@@ -1,7 +1,7 @@
 import { constants as fsConstants } from "node:fs";
 import { isProxy } from "node:util/types";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import { lstat, open, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 
 import { canonicalFeatureFlightBytes, validateFeatureFlightTimestamp } from "./feature-flight-recovery.mjs";
@@ -11,7 +11,7 @@ export const FEATURE_FLIGHT_MEASUREMENT_SCHEMA_VERSION = 1;
 export const FEATURE_FLIGHT_MEASUREMENT_CONTRACT_VERSION = "1.0.0";
 export const FEATURE_FLIGHT_MEASUREMENT_ARTIFACT_TYPE = "feature-flight-measurement";
 export const FEATURE_FLIGHT_MEASUREMENT_NAMESPACE = ".shield/feature-flight-measurements";
-export const FEATURE_FLIGHT_MEASUREMENT_NOTICE = "Read-only feature-flight measurement projection only. This artifact grants no authority, no review, no route, no publication, no merge, deploy, or release rights.";
+export const FEATURE_FLIGHT_MEASUREMENT_NOTICE = "Read-only feature-flight measurement projection only. This record cannot authorize, review, complete, route, publish, or accept a mission and grants no merge, deploy, or release rights.";
 
 const HASH = /^[a-f0-9]{64}$/u;
 const GIT_REVISION = /^[a-f0-9]{40}$/u;
@@ -25,8 +25,10 @@ const BINDING_FIELDS = ["bindingId", "runtime", "executor", "seat"];
 
 const defaultDependencies = {
   lstat,
+  mkdir,
   open,
   realpath,
+  noFollowFlag: fsConstants.O_NOFOLLOW,
   sync: (handle) => handle.sync(),
   close: (handle) => handle.close(),
   write: async (handle, bytes) => {
@@ -324,10 +326,91 @@ const withClosedHandle = async (handle, close) => {
   await close(handle);
 };
 
+const requiredNoFollowFlag = (dependencies) => {
+  ensure(Number.isInteger(dependencies.noFollowFlag) && dependencies.noFollowFlag > 0,
+    "O_NOFOLLOW is required for Feature Flight measurement persistence.");
+  return dependencies.noFollowFlag;
+};
+
+const validateRetainedDirectory = async (retained, dependencies) => {
+  const pathIdentity = await dependencies.lstat(retained.path);
+  const handleIdentity = await retained.handle.stat();
+  ensure(pathIdentity.isDirectory() && !pathIdentity.isSymbolicLink(), `Retained measurement directory is invalid: ${retained.path}`);
+  ensure(handleIdentity.isDirectory(), `Retained measurement directory handle is invalid: ${retained.path}`);
+  ensure((pathIdentity.mode & 0o777) === 0o700 && (handleIdentity.mode & 0o777) === 0o700,
+    `Retained measurement directory must be 0700: ${retained.path}`);
+  ensure(pathIdentity.dev === retained.dev && pathIdentity.ino === retained.ino &&
+    handleIdentity.dev === retained.dev && handleIdentity.ino === retained.ino,
+  `Retained measurement directory identity changed: ${retained.path}`);
+  await dependencies.realpath(retained.path).then((value) =>
+    ensure(value === retained.path, `Retained measurement directory is aliased: ${retained.path}`));
+};
+
+const validateRetainedDirectories = async (retainedDirectories, dependencies) => {
+  for (const retained of retainedDirectories) await validateRetainedDirectory(retained, dependencies);
+};
+
+const retainDirectory = async (path, dependencies) => {
+  const before = await dependencies.lstat(path);
+  ensure(before.isDirectory() && !before.isSymbolicLink(), `Measurement directory is invalid or non-follow: ${path}`);
+  ensure((before.mode & 0o777) === 0o700, `Measurement directory must be 0700: ${path}`);
+  await dependencies.realpath(path).then((value) => ensure(value === path, `Measurement directory is aliased: ${path}`));
+  const handle = await dependencies.open(path,
+    fsConstants.O_RDONLY | requiredNoFollowFlag(dependencies) | (fsConstants.O_DIRECTORY ?? 0));
+  try {
+    const observed = await handle.stat();
+    ensure(observed.isDirectory() && observed.dev === before.dev && observed.ino === before.ino,
+      `Measurement directory identity changed while opening: ${path}`);
+    ensure((observed.mode & 0o777) === 0o700, `Measurement directory must be 0700: ${path}`);
+    return { path, handle, dev: observed.dev, ino: observed.ino };
+  } catch (error) {
+    await withClosedHandle(handle, dependencies.close);
+    throw error;
+  }
+};
+
+const provisionMeasurementDirectories = async ({ path, durableArtifactRoot, effectClaimId }, dependencies, retainedDirectories) => {
+  const measurementShieldRoot = join(durableArtifactRoot, ".shield");
+  const measurementNamespace = join(durableArtifactRoot, FEATURE_FLIGHT_MEASUREMENT_NAMESPACE);
+  const effectDirectory = join(measurementNamespace, effectClaimId);
+  ensure(dirname(path) === effectDirectory, "Measurement target must remain within its fixed effect directory.");
+  const paths = [durableArtifactRoot, measurementShieldRoot, measurementNamespace, effectDirectory];
+
+  retainedDirectories.push(await retainDirectory(paths[0], dependencies));
+  for (let index = 1; index < paths.length; index += 1) {
+    await validateRetainedDirectories(retainedDirectories, dependencies);
+    let created = false;
+    try {
+      await dependencies.mkdir(paths[index], { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    if (created) {
+      await dependencies.sync(retainedDirectories[index - 1].handle);
+      await validateRetainedDirectory(retainedDirectories[index - 1], dependencies);
+    }
+    retainedDirectories.push(await retainDirectory(paths[index], dependencies));
+  }
+  await validateRetainedDirectories(retainedDirectories, dependencies);
+};
+
+const closeRetainedDirectories = async (retainedDirectories, dependencies) => {
+  const errors = [];
+  for (const retained of [...retainedDirectories].reverse()) {
+    try {
+      await withClosedHandle(retained.handle, dependencies.close);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return errors;
+};
+
 const parseExistingBytes = async (path, dependencies) => {
   const parent = dirname(path);
   const parentIdentity = await dependencies.lstat(parent);
-  const targetHandle = await dependencies.open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  const targetHandle = await dependencies.open(path, fsConstants.O_RDONLY | requiredNoFollowFlag(dependencies));
   const before = await dependencies.lstat(path);
   try {
     ensure(parentIdentity.isDirectory() && !parentIdentity.isSymbolicLink(), `Invalid measurement directory: ${parent}`);
@@ -362,6 +445,7 @@ const ensureMeasurementPathSafe = async (path, dependencies) => {
 
 const readMeasurement = async (path, dependencies) => {
   try {
+    requiredNoFollowFlag(dependencies);
     await ensureMeasurementPathSafe(path, dependencies);
     await dependencies.realpath(path).then((value) => ensure(value === path, `Measurement path is not a strict non-follow path: ${path}`));
     const bytes = await parseExistingBytes(path, dependencies);
@@ -409,15 +493,22 @@ const ensureTargetMissing = async (path, dependencies) => {
   );
 };
 
-const writeMeasurement = async (path, bytes, dependencies) => {
+const writeMeasurement = async (path, bytes, dependencies, retainedParent) => {
   let handle;
+  let result;
   try {
     await ensureMeasurementPathSafe(path, dependencies);
     await ensureWriteTargetParent(path, dependencies);
     await ensureTargetMissing(path, dependencies);
     const parent = dirname(path);
     handle = await dependencies.open(path,
-      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | requiredNoFollowFlag(dependencies), 0o600);
+    const pathIdentity = await dependencies.lstat(path);
+    const handleIdentity = await handle.stat();
+    ensure(pathIdentity.isFile() && !pathIdentity.isSymbolicLink() && handleIdentity.isFile(), `Measurement artifact must be regular file: ${path}`);
+    ensure(pathIdentity.nlink === 1 && handleIdentity.nlink === 1, `Measurement artifact must have no hard links: ${path}`);
+    ensure((pathIdentity.mode & 0o777) === 0o600 && (handleIdentity.mode & 0o777) === 0o600, `Measurement artifact must be 0600: ${path}`);
+    ensure(pathIdentity.dev === handleIdentity.dev && pathIdentity.ino === handleIdentity.ino, `Measurement file identity changed: ${path}`);
     await dependencies.beforeWrite?.({ path, parent });
     await dependencies.write(handle, bytes);
     await dependencies.sync(handle);
@@ -429,13 +520,19 @@ const writeMeasurement = async (path, bytes, dependencies) => {
     if (parsed.state !== "valid" || validateFeatureFlightMeasurementRecord(parsed.value).length !== 0) {
       throw new Error("measurement_record_invalid_after_write");
     }
-    return { state: "created", record: parsed.value, bytes, path };
+    const afterPath = await dependencies.lstat(path);
+    const afterHandle = await handle.stat();
+    ensure(afterPath.dev === pathIdentity.dev && afterPath.ino === pathIdentity.ino && afterPath.nlink === 1 &&
+      afterHandle.dev === pathIdentity.dev && afterHandle.ino === pathIdentity.ino && afterHandle.nlink === 1,
+    `Measurement file identity changed: ${path}`);
+    result = { state: "created", record: parsed.value, bytes, path };
   } catch (error) {
     if (error?.code === "ENOENT") {
-      return { state: "recovery_required", reason: `Measurement path is not a strict non-follow path: ${path}`, path };
+      result = { state: "recovery_required", reason: `Measurement path is not a strict non-follow path: ${path}`, path };
+    } else {
+      result = { state: "recovery_required", reason: error instanceof Error ? error.message : String(error), path };
     }
-    return { state: "recovery_required", reason: error instanceof Error ? error.message : String(error), path };
-  } finally {
+  }
   let closeError;
   if (handle) {
     try {
@@ -444,8 +541,17 @@ const writeMeasurement = async (path, bytes, dependencies) => {
       closeError = error instanceof Error ? error.message : String(error);
     }
   }
-  if (closeError) return { state: "recovery_required", reason: `Measurement close failed: ${path}`, path };
+  let parentSyncError;
+  if (handle) {
+    try {
+      await dependencies.sync(retainedParent.handle);
+    } catch (error) {
+      parentSyncError = error instanceof Error ? error.message : String(error);
+    }
   }
+  if (closeError) return { state: "recovery_required", reason: `Measurement close failed: ${path}: ${closeError}`, path };
+  if (parentSyncError) return { state: "recovery_required", reason: `Measurement parent sync failed: ${path}: ${parentSyncError}`, path };
+  return result;
 };
 
 export const writeFeatureFlightMeasurement = async (input, injectedDependencies = {}) => {
@@ -463,24 +569,43 @@ export const writeFeatureFlightMeasurement = async (input, injectedDependencies 
     return { state: "skipped", path, reason: `No durable measurement for ${snapshot.stepOutcome}.` };
   }
 
-  const existing = await readMeasurement(path, dependencies);
-  if (existing.state === "replayed") {
-    const existingDigest = digest(existing.bytes);
-    const existingDurableIdentity = canonicalFeatureFlightBytes(durableMeasurementIdentity(existing.record));
-    const currentDurableIdentity = canonicalFeatureFlightBytes(durableMeasurementIdentity(record));
-    if (existingDurableIdentity.equals(currentDurableIdentity)) {
-      return { state: "replayed", path, record: existing.record, digest: existingDigest };
+  const retainedDirectories = [];
+  let result;
+  try {
+    requiredNoFollowFlag(dependencies);
+    await provisionMeasurementDirectories({
+      path,
+      durableArtifactRoot: snapshot.durableArtifactRoot,
+      effectClaimId: snapshot.effectClaimId,
+    }, dependencies, retainedDirectories);
+    await validateRetainedDirectories(retainedDirectories, dependencies);
+    const existing = await readMeasurement(path, dependencies);
+    await validateRetainedDirectories(retainedDirectories, dependencies);
+    if (existing.state === "replayed") {
+      const existingDigest = digest(existing.bytes);
+      const existingDurableIdentity = canonicalFeatureFlightBytes(durableMeasurementIdentity(existing.record));
+      const currentDurableIdentity = canonicalFeatureFlightBytes(durableMeasurementIdentity(record));
+      result = existingDurableIdentity.equals(currentDurableIdentity)
+        ? { state: "replayed", path, record: existing.record, digest: existingDigest }
+        : { state: "recovery_required", path, reason: "Measurement tuple does not match existing file." };
+    } else if (existing.state === "recovery_required") {
+      result = existing;
+    } else {
+      const created = await writeMeasurement(path, bytes, dependencies, retainedDirectories.at(-1));
+      await validateRetainedDirectories(retainedDirectories, dependencies);
+      result = created.state === "created"
+        ? { ...created, digest: digest(bytes), measurementIntentId: snapshot.measurementIntentId }
+        : created;
     }
-    return { state: "recovery_required", path, reason: "Measurement tuple does not match existing file." };
+  } catch (error) {
+    result = { state: "recovery_required", path, reason: error instanceof Error ? error.message : String(error) };
   }
 
-  if (existing.state === "recovery_required") return existing;
-
-  const created = await writeMeasurement(path, bytes, dependencies);
-  if (created.state === "created") {
-    return { ...created, digest: digest(bytes), measurementIntentId: snapshot.measurementIntentId };
+  const closeErrors = await closeRetainedDirectories(retainedDirectories, dependencies);
+  if (closeErrors.length !== 0) {
+    return { state: "recovery_required", path, reason: `Measurement directory close failed: ${closeErrors.join(" ")}` };
   }
-  return created;
+  return result;
 };
 
 export const buildFeatureFlightMeasurementEnvelopeFromProjection = ({

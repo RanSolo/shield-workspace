@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFile, link, mkdir, mkdtemp, open, readFile, realpath, symlink, unlink, writeFile } from "node:fs/promises";
+import { copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { rm } from "node:fs/promises";
@@ -69,8 +69,8 @@ const baseSnapshot = () => ({
 
 const withNamespace = async (root) => {
   const measurementNamespace = join(root, FEATURE_FLIGHT_MEASUREMENT_NAMESPACE, "e".repeat(64));
-  await mkdir(dirname(measurementNamespace), { recursive: true });
-  await mkdir(measurementNamespace);
+  await mkdir(dirname(measurementNamespace), { recursive: true, mode: 0o700 });
+  await mkdir(measurementNamespace, { mode: 0o700 });
   return measurementNamespace;
 };
 
@@ -107,6 +107,7 @@ test("buildFeatureFlightMeasurementRecord and envelope validators enforce stable
   assert.equal(record.schemaVersion, 1);
   assert.equal(record.authority, "none");
   assert.equal(record.gateEligible, false);
+  assert.match(record.notice, /cannot authorize, review, complete, route, publish, or accept a mission/u);
   assert.equal(record.measurementIntentId, measurementIntentId);
   assert.deepEqual(validateFeatureFlightMeasurementRecord(record), []);
 });
@@ -139,6 +140,129 @@ test("write creates measurement once, then idempotently replays the same tuple",
   assert.equal(second.digest, first.digest);
 });
 
+test("writer securely provisions and durably syncs the fixed tree from an empty 0700 root", async () => {
+  const root = await makeFixtureRoot();
+  const envelope = measurementEnvelope({
+    root,
+    projection: { outcome: "completed", reason: "effect_completed", durable: true },
+  });
+  const handlePaths = new Map();
+  const events = [];
+  const result = await writeFeatureFlightMeasurement(envelope, {
+    mkdir: async (path, options) => {
+      events.push(`mkdir:${path}`);
+      return mkdir(path, options);
+    },
+    open: async (...args) => {
+      const handle = await open(...args);
+      handlePaths.set(handle, args[0]);
+      return handle;
+    },
+    sync: async (handle) => {
+      events.push(`sync:${handlePaths.get(handle)}`);
+      return handle.sync();
+    },
+    close: async (handle) => {
+      events.push(`close:${handlePaths.get(handle)}`);
+      return handle.close();
+    },
+  });
+  assert.equal(result.state, "created");
+
+  const shieldRoot = join(root, ".shield");
+  const namespace = join(root, FEATURE_FLIGHT_MEASUREMENT_NAMESPACE);
+  const effectDirectory = dirname(result.path);
+  for (const path of [root, shieldRoot, namespace, effectDirectory]) {
+    assert.equal((await lstat(path)).mode & 0o777, 0o700);
+  }
+  for (const [child, parent] of [[shieldRoot, root], [namespace, shieldRoot], [effectDirectory, namespace]]) {
+    const createdAt = events.indexOf(`mkdir:${child}`);
+    assert.ok(createdAt >= 0);
+    assert.ok(events.indexOf(`sync:${parent}`, createdAt + 1) > createdAt);
+  }
+  const fileClosedAt = events.indexOf(`close:${result.path}`);
+  assert.ok(fileClosedAt >= 0);
+  assert.ok(events.indexOf(`sync:${effectDirectory}`, fileClosedAt + 1) > fileClosedAt);
+});
+
+test("writer fails closed before provisioning when O_NOFOLLOW is unavailable", async () => {
+  const root = await makeFixtureRoot();
+  const envelope = measurementEnvelope({
+    root,
+    projection: { outcome: "completed", reason: "effect_completed", durable: true },
+  });
+  const result = await writeFeatureFlightMeasurement(envelope, { noFollowFlag: undefined });
+  assert.equal(result.state, "recovery_required");
+  assert.match(result.reason, /O_NOFOLLOW is required/u);
+  assert.deepEqual(await readdir(root), []);
+  const readback = await readFeatureFlightMeasurement({
+    path: measurementPath({ root }),
+    snapshotDependencies: { noFollowFlag: undefined },
+  });
+  assert.equal(readback.state, "recovery_required");
+  assert.match(readback.reason, /O_NOFOLLOW is required/u);
+});
+
+test("writer rejects retained namespace directories that are not mode 0700", async () => {
+  const root = await makeFixtureRoot();
+  const shieldRoot = join(root, ".shield");
+  await mkdir(shieldRoot, { mode: 0o755 });
+  const envelope = measurementEnvelope({
+    root,
+    projection: { outcome: "completed", reason: "effect_completed", durable: true },
+  });
+  const result = await writeFeatureFlightMeasurement(envelope);
+  assert.equal(result.state, "recovery_required");
+  assert.match(result.reason, /must be 0700/u);
+  assert.deepEqual(await readdir(shieldRoot), []);
+});
+
+test("writer detects replacement of a retained effect directory", async () => {
+  const root = await makeFixtureRoot();
+  const envelope = measurementEnvelope({
+    root,
+    projection: { outcome: "completed", reason: "effect_completed", durable: true },
+  });
+  const result = await writeFeatureFlightMeasurement(envelope, {
+    afterWrite: async ({ parent }) => {
+      await rename(parent, `${parent}.moved`);
+      await mkdir(parent, { mode: 0o700 });
+    },
+  });
+  assert.equal(result.state, "recovery_required");
+  assert.match(result.reason, /Retained measurement directory identity changed/u);
+});
+
+test("writer fails closed when the retained parent cannot be synced after file close", async () => {
+  const root = await makeFixtureRoot();
+  await withNamespace(root);
+  const envelope = measurementEnvelope({
+    root,
+    projection: { outcome: "completed", reason: "effect_completed", durable: true },
+  });
+  const handlePaths = new Map();
+  let measurementClosed = false;
+  const result = await writeFeatureFlightMeasurement(envelope, {
+    open: async (...args) => {
+      const handle = await open(...args);
+      handlePaths.set(handle, args[0]);
+      return handle;
+    },
+    close: async (handle) => {
+      if (handlePaths.get(handle) === measurementPath({ root })) measurementClosed = true;
+      return handle.close();
+    },
+    sync: async (handle) => {
+      if (measurementClosed && handlePaths.get(handle) === dirname(measurementPath({ root }))) {
+        throw new Error("parent sync blocked");
+      }
+      return handle.sync();
+    },
+  });
+  assert.equal(result.state, "recovery_required");
+  assert.match(result.reason, /Measurement parent sync failed.*parent sync blocked/u);
+});
+
 test("completed measurement is the stable winner for a later replay invocation", async () => {
   const root = await makeFixtureRoot();
   await withNamespace(root);
@@ -167,7 +291,6 @@ test("completed measurement is the stable winner for a later replay invocation",
 
 test("skip writes for non-durable step outcomes while leaving filesystem untouched", async () => {
   const root = await makeFixtureRoot();
-  await withNamespace(root);
   const envelope = {
     ...measurementEnvelope({ root, projection: { outcome: "completed", reason: "effect_completed", durable: false } }),
     stepOutcome: "stopped",
@@ -178,6 +301,7 @@ test("skip writes for non-durable step outcomes while leaving filesystem untouch
   const skipped = await writeFeatureFlightMeasurement(envelope);
   assert.equal(skipped.state, "skipped");
   await assert.rejects(readFile(skipped.path));
+  assert.deepEqual(await readdir(root), []);
 });
 
 test("read existing malformed or non-canonical measurement as recovery-required", async () => {
@@ -258,7 +382,10 @@ test("sync/close uncertainty is treated as recovery boundary", async () => {
   assert.equal(syncFailure.state, "recovery_required");
 
   const closeFailure = await writeFeatureFlightMeasurement(envelope, {
-    close: async () => { throw new Error("close blocked"); },
+    close: async (handle) => {
+      await handle.close();
+      throw new Error("close blocked");
+    },
   });
   assert.equal(closeFailure.state, "recovery_required");
 });
