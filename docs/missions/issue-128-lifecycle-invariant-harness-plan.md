@@ -83,13 +83,14 @@ helper extraction removes literal duplication without changing assertions.
 
 ## Experiment measurement and disposition
 
-Use plan commit `9fadc851f31555d871e9771ad328e892809a6bba` as the
-pre-change baseline and the eventual implementation commit as the post-change
-revision. Record Node and npm versions, dependency-lock digest, CPU architecture,
-command, test count, and exact revision. Run the focused command uncached five
-times at each revision in the same worktree/environment and compare median wall
-time. Record changed lines, helper count, vector count, altered existing
-assertions, added dependencies, and added fixture files.
+Use commit `9fadc851f31555d871e9771ad328e892809a6bba` as the
+pre-test-change runtime baseline (the test file is unchanged there) and the
+eventual implementation commit as the post-change revision. Record Node and npm
+versions, dependency-lock digest, CPU architecture, command, test count, and exact
+revision. Run the focused command uncached five times at each revision in the same
+worktree/environment and compare median wall time. Record changed lines, helper
+count, vector count, altered existing assertions, added dependencies, and added
+fixture files.
 
 The implementation handoff must identify its exact SHA and contain exactly one
 `Disposition: Adopt|Revise|No change` label:
@@ -112,9 +113,10 @@ Run at the exact implementation HEAD:
 2. `git status --porcelain` (must be empty)
 3. `node --test packages/shield-team-system/tests/revision-lifecycle-v7.test.mjs`
 4. `npx nx test @shield/team-system --skip-nx-cache`
-5. `git diff --check 9fadc851f31555d871e9771ad328e892809a6bba..HEAD`
-6. `git diff --name-only 9fadc851f31555d871e9771ad328e892809a6bba..HEAD`
-   (exactly the authorized test file)
+5. `git diff --check 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD -- . ':(exclude)docs/missions/issue-128-lifecycle-invariant-harness-plan.md'`
+6. `git diff --name-only 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD -- . ':(exclude)docs/missions/issue-128-lifecycle-invariant-harness-plan.md'`
+   (exactly the authorized test file; the only excluded path is the exact
+   content-addressed plan reviewed by Fury)
 7. `git diff --check 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD`
 8. `git diff --name-only 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD`
    (exactly the plan document and authorized test file)
