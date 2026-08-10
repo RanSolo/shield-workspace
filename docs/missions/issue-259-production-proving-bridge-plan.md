@@ -59,21 +59,25 @@ exact revisions, unresolved decisions, and convergence. Relay packets are
 coordination only; every receiver re-reads the repository and durable mission
 evidence before acting.
 
-The implementation flight has three lanes with non-overlapping ownership:
+The implementation flight has three persistent Lane Hills with non-overlapping
+ownership. Each Lane Hill retains its lane-local context, dispatches only the
+seats needed inside that lane, and returns compact exact-revision packets to
+Controlling Hill:
 
-1. **Core/adapter May lane** owns the permission refactor, operations CLI,
-   production run composition, external-acceptance adapter, host-launcher
-   compatibility seam, ESM-loader fixture, and their focused tests. This lane
-   owns the authority-to-claim-to-adapter critical path so opposite sides of
-   that seam cannot drift independently.
-2. **Measurement May lane** owns only
+1. **Core/adapter Lane Hill** dispatches May for the permission refactor,
+   operations CLI, production run composition, external-acceptance adapter,
+   host-launcher compatibility seam, ESM-loader fixture, and their focused
+   tests. This lane owns the authority-to-claim-to-adapter critical path so
+   opposite sides of that seam cannot drift independently.
+2. **Measurement Lane Hill** dispatches May only for
    `feature-flight-measurement.mjs` and its focused test. It consumes the
    frozen observation envelope defined below and cannot interpret authority,
    review, completion, or routing state.
-3. **Mack acceptance lane** is independently read-only. Before implementation
-   it freezes the black-box acceptance matrix in this plan; after convergence
-   it executes the exact validation commands and maps observed results back to
-   the matrix. Mack does not edit implementation or tests.
+3. **Validation Lane Hill** dispatches Mack as an independently read-only
+   validator. Before implementation Mack freezes the black-box acceptance
+   matrix in this plan; after convergence Mack executes the exact validation
+   commands and maps observed results back to the matrix. Mack does not edit
+   implementation or tests.
 
 The measurement lane may proceed after Fury approves the frozen observation
 envelope. The core lane may proceed after Fury approves the complete plan and
@@ -104,28 +108,58 @@ Input is a closed manifest containing only:
 - `state`: `{ path, sha256 }`
 - optional `predecessor`: `{ path, sha256 }`
 - `runnerInput`: `{ path, sha256 }`
-- `schema9Journal`: `{ path, sha256 }`
-- `adapterSource`: `{ path, sha256 }`
 - `releaseBaseline`: `{ path, sha256 }`
 - `packageArtifact`: `{ path, sha256 }`
+- `measurementIntentId`
 - `sequence`
-- `fixtureRoot`: `{ path }`
 
 All routing, authority, implementation/runtime/executor, and effect identities are derived only from replayed signed evidence and host observation and are never accepted from manifest input.
 
-The command performs exactly one raw `replayProfileAwareMissionJournalV1` call and requires its valid schema-9 replay result. Bind only these actual replay fields:
+The command calls the existing `loadSchema9SeatDispatchProjectionV1` exactly
+once with purpose `runner_permission`, the captured Runner plan, and the
+repository configuration's journal path. The loader owns both schema-9 journal
+replays and repository observations. Its result must be the Daisy-ready
+variant and therefore preserves all existing predicates for authorization,
+execution/final-acceptance lifecycle, profile readiness, exact execution-gate
+evidence, authority digest/sequence, one active binding, plan scope,
+repository/root/branch/HEAD freshness, and journal drift.
 
-- `missionId`
-- `brief.subjectId`
-- `brief.revisionId`
-- `brief.participants`
-- `authorization`
-- `daisyCoordinationAuthority`
-- `daisyCoordinationAuthorityState`
-- exactly one entry in `activeDaisyRuntimeBindings`
-- `lastSequence`
+The production command exact-compares the returned projection against the
+captured Runner projection and plan: mission, subject, mission revision,
+participants, artifact revision, evaluated sequence, lifecycle, requirement
+digest, satisfied execution gates, authority path/digest/sequence, binding
+digest and identities, action/effect/validation tuple, and both repository
+observations must match. No parallel partial replay or hand-selected subset is
+permitted.
 
 Claim root is derived solely from `daisyCoordinationAuthority.durableArtifactRoot`. The active Daisy binding must carry the same durable-artifact root exactly. May's `implementationAuthority` and `activeRuntimeBindings` are forbidden on this Daisy path.
+
+### 2a) Signed proving tuple
+
+The host derives one closed proving tuple after descriptor-safe capture:
+
+- exact plan digest and `flightId`;
+- fixed fixture ID `fixture:v0.3:external-acceptance:1` and the canonical
+  fixture root derived from the checked-out repository root;
+- adapter source at the single fixed repository-relative path and its digest;
+- captured fixture-identity and release-baseline digests;
+- captured package digest, which must equal
+  `releaseBaseline.package.digest`;
+- exact repository, branch, HEAD, mission, subject, mission revision, Runner
+  input digest, and `measurementIntentId`.
+
+Canonical JSON of that tuple is SHA-256 hashed into the exact signed Daisy
+coordination `effectKey`. The Runner plan, Daisy authority, and active binding
+must all carry that effect key. The manifest may locate the release baseline
+and package bytes, but its digests are never trust anchors: captured bytes must
+match the signed proving tuple. The fixture root and adapter path are
+host-fixed and cannot be supplied by the caller.
+
+Because the existing core claim identity already includes plan digest,
+`flightId`, mission identity, and effect key, binding the complete proving
+tuple into the signed effect key prevents a self-consistent substituted plan,
+fixture, adapter, baseline, package, or measurement intent from opening a new
+authorized execute-once namespace.
 
 ### 3) Exact adapter restriction
 
@@ -149,18 +183,45 @@ Claim root is derived solely from `daisyCoordinationAuthority.durableArtifactRoo
 
 ## Mandatory executable fail-before-effects order
 
-1. Parse manifest with unknown-key rejection.
-2. Validate `contract` + `version`, and verify only the allowed manifest key set.
-3. Open every artifact with no-follow semantics, retain descriptors, require regular files, capture descriptor identity and exact bytes, and verify before/after descriptor identity without pathname aliasing.
-4. Verify each declared `sha256` against the captured bytes. Parse manifest, runner, schema-9, plan/state/predecessor, adapter, package, and release-baseline data only from those bytes.
-5. Validate `sequence` as numeric and manifest-consistent with predecessor lineage.
-6. Replay the captured schema-9 journal exactly once with `replayProfileAwareMissionJournalV1`; require the precise valid replay variant and fields listed above.
-7. Re-observe repository identity from host root, branch, HEAD, and remote metadata and compare to replayed projection, including `commonGit`, `origin`, `remote`, and `participant` invariants.
-8. Validate `fixtureRoot` identity against derived effective fixture boundary.
-9. Resolve routing, Daisy coordination authority, active Daisy runtime binding, model/runtime/executor, claim root, and fixed effect tuple only from replay plus host observation. Require exactly one active Daisy binding; require seat, runtime, model, and executor identities to be pairwise distinct; and prohibit runtime/model/executor identity from equaling any participant identity.
-10. Derive and freeze the runner permission context, claim root, remote descriptor, adapter descriptor, launcher inputs, and captured adapter/baseline bytes before calling the step. Supply captured plan/state/predecessor readers through `snapshotDependencies` so the step never reopens them.
-11. Invoke exactly one `runFeatureFlightStepV1` with `maxSteps: 1`. Its fresh `authorizeRunner(plan)` callback invokes pure `createRunnerPermissionDecisionV1(plan, frozenContext)`; an authorized decision permits the existing core claim to execute next.
-12. Only the step's execute callback, after durable claim, imports the already-captured adapter bytes, instantiates the factory with the trusted launcher, invokes the adapter once, maps its result, and validates the mapped executor result.
+1. Open the manifest itself with no-follow and nonblocking semantics; retain its
+   descriptor, require one regular file, reject symlink/hard-link aliasing and
+   unsafe mode/identity, capture exact bytes, and prove descriptor identity is
+   stable before parsing.
+2. Parse only the captured manifest bytes, reject unknown keys, and validate
+   the exact `contract` + `version`.
+3. Open every referenced or host-fixed artifact with the same retained,
+   no-follow, nonblocking regular-file rules; capture exact bytes and prove
+   before/after descriptor identity without pathname reuse or aliasing.
+4. Verify each declared digest against captured bytes. Parse runner,
+   plan/state/predecessor, package, release-baseline, fixture identity, and
+   adapter data only from captured bytes.
+5. Validate `sequence` as numeric and manifest-consistent with predecessor
+   lineage.
+6. Call `loadSchema9SeatDispatchProjectionV1` once and require the exact
+   Daisy-ready `runner_permission` projection described above. Exact-compare it
+   to the captured Runner plan/projection and reject every lifecycle,
+   readiness, gate, authority, binding, sequence, repository, or identity
+   mismatch.
+7. Derive the complete proving tuple from captured bytes and host observation;
+   require its digest-derived effect key to exact-match the signed Daisy
+   authority, active binding, and Runner plan.
+8. Resolve routing, model/runtime/executor, claim root, and fixed effect tuple
+   only from the ready projection plus host observation. Require seat, runtime,
+   model, and executor identities to be pairwise distinct and prohibit runtime,
+   model, or executor identity from equaling any participant identity.
+9. Derive and freeze the runner permission context, claim root, remote
+   descriptor, adapter descriptor, measurement intent, launcher inputs, and
+   captured adapter/baseline/package bytes before calling the step. Supply
+   captured plan/state/predecessor readers through `snapshotDependencies` so
+   the step never reopens them.
+10. Invoke exactly one `runFeatureFlightStepV1` with `maxSteps: 1`. Its fresh
+    `authorizeRunner(plan)` callback invokes pure
+    `createRunnerPermissionDecisionV1(plan, frozenContext)`; an authorized
+    decision permits the existing core claim to execute next.
+11. Only the step's execute callback, after durable claim, imports the
+    already-captured adapter bytes, instantiates the factory with the trusted
+    launcher, invokes the adapter once, maps its result, and validates the
+    mapped executor result.
 
 Any failure before the core claim may not mutate claim/result state, import the adapter, or invoke the launcher. Any failure after claim must produce the existing actionable recovery state and may not retry import or launch.
 
@@ -169,10 +230,15 @@ Any failure before the core claim may not mutate claim/result state, import the 
 - Manifest key set must be closed; unknown fields reject.
 - `maxSteps` is fixed at `1` and immutable in execution path.
 - One optional `predecessor` entry may be present; present predecessor entries must still satisfy hash/regular-file checks and sequence lineage.
-- Runner input/schema9/adapters/releaseBaseline/package artifact bytes must match manifest digests exactly.
+- Runner input, adapter, fixture identity, release-baseline, and package bytes
+  must match the signed proving tuple exactly; manifest-declared digests alone
+  never establish trust.
 - No caller may assert allow/deny, review, completion, or gate result in manifest.
 - Adapter import is only via retained captured source bytes and occurs only after durable claim.
-- Every artifact uses no-follow descriptor capture, regular-file checks, before/after descriptor identity checks, and captured-byte reuse. No validated artifact is reopened by pathname for consumption.
+- The manifest and every artifact use nonblocking no-follow descriptor capture,
+  single-link regular-file checks, before/after descriptor identity checks,
+  hard-link/alias rejection, and captured-byte reuse. No validated artifact is
+  reopened by pathname for consumption.
 - No mutation occurs for any validation or precondition failure.
 - The eight launcher operator fields are derived exactly: `packageArtifactPath`, `externalRepositoryRoot`, `baseRevision`, `headRevision`, `hostConfiguration`, `blindStatus`, `priorSolutionsVisible`, and `requireSimmons`. The host context is closed and uses the captured release-baseline bytes; receipt, attribution, and tooling fields remain null for this read-only preflight.
 
@@ -181,7 +247,9 @@ Any failure before the core claim may not mutate claim/result state, import the 
 1. authority/binding substitution -> rejected before effects.
 2. authority none / `gateEligible:false` -> rejected before effects.
 3. symlink inputs -> rejected before effects.
-4. non-regular artifact path types (symlink/nonregular/alias/device/fifo/socket) -> rejected before effects.
+4. manifest or artifact hard-link aliases, replacement, unsafe mode, or
+   non-regular path types (symlink/device/FIFO/socket) -> rejected before
+   effects without blocking on open.
 5. manifest byte drift -> rejected before effects.
 6. repo identity substitution (`commonGit`, `origin`, `remote`, `participant`) -> rejected before effects.
 7. spawned real CLI boundary -> rejected before effects.
@@ -215,10 +283,19 @@ The spawned real-CLI test invokes Node with `--loader packages/shield-team-syste
 
 ## Measurement separation
 
-The production command creates a separate authority-none #161 observation only
-after the step core has returned a durable `completed`, `replayed`, or
-`recovery_required` disposition. A rejection or stop before durable claim
-creates no measurement filesystem effect.
+The production command uses this exhaustive step-outcome table:
+
+| Step outcome                           | Measurement action                                    | CLI disposition                                           |
+| -------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------- |
+| `completed`                            | create/read the stable measurement target             | success only after durable measurement                    |
+| `replayed`                             | read the same stable target; create it only if absent | success only after durable measurement                    |
+| `recovery_required`, `durable:true`    | create/read the stable target                         | report durable step recovery plus measurement disposition |
+| `legacy_replayed`                      | no measurement                                        | nonzero, explicit legacy migration/recovery required      |
+| `recovery_required`, `durable:false`   | no measurement                                        | nonzero, preserve ephemeral recovery handoff              |
+| `stopped`, thrown, or malformed result | no measurement                                        | nonzero, no new filesystem effect                         |
+
+Thus a rejection or stop before durable claim creates no measurement
+filesystem effect, and only a durable v2 terminal can be measured.
 
 `feature-flight-measurement.mjs` accepts one deeply frozen, closed observation
 envelope assembled by the production command. It cannot read the mission
@@ -230,13 +307,19 @@ envelope contains:
   step-result identities already verified by the core lane;
 - exact seat, adapter, runtime, model, and executor identities;
 - packet byte count and digest derived from the captured runner-input bytes;
-- command start/end timestamps, latency, durable step outcome/reason, and
-  whether this invocation was a replay/recovery;
+- first-observed command start/end timestamps, latency, durable step
+  outcome/reason, and whether measurement persistence first completed during a
+  fresh, replay, or recovery invocation;
 - nullable processed-input, generated-output, reasoning-token,
   unique-injected-context, context-chain-position, Hill-action, retry-count,
   correction-count, intervention-count, cancellation, and provider-counter
   fields. Values unavailable from direct command/adapter observations remain
   `null`; they are never inferred.
+
+`measurementIntentId` is an opaque canonical identifier carried in the closed
+manifest and included in the signed proving tuple. The measurement target path
+is derived from the effect claim and that signed intent; a caller cannot choose
+a replacement intent without invalidating Daisy authority.
 
 The writer validates a closed `feature-flight-measurement@1` object with
 `authority: "none"`, `gateEligible: false`, and an explicit notice that the
@@ -249,14 +332,20 @@ readback mismatch return `measurement_recovery_required`.
 
 Measurement failure never rewrites or downgrades the already durable Feature
 Flight result. The CLI reports both dispositions and exits nonzero until the
-measurement is durably recorded. Retrying re-enters the step through its
-existing replay path and never reinvokes the fixture; it may then complete the
-measurement write for that replay observation.
+measurement is durably recorded. On retry, the writer first reads the one
+signed-intent target. A valid existing record whose stable tuple matches is the
+winner and is returned unchanged, including its original timestamps; malformed,
+conflicting, or uncertain existing bytes remain recovery-required and cannot be
+bypassed with a new pathname. If the target is proven absent, retry re-enters
+the step through its existing replay path, never reinvokes the fixture, and may
+create that same target with the newly observed timing fields.
 
 Tests prove the record is authority-none, content-addressed, create-only,
 idempotent, nullable where counters are unknown, and unable to change the
 authoritative step disposition. They inject substitution, symlink, collision,
 partial-write, sync/close, and readback failures at the measurement boundary.
+The spawned CLI retry test proves an uncertain first write cannot be bypassed
+and that an absent target can be recovered without a second fixture invocation.
 
 ## Stop conditions
 
