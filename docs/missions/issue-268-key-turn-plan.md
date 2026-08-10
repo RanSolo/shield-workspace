@@ -98,6 +98,15 @@ implementation-blueprint Fury evidence is not treated as if it covered this
 parent plan. Missing, stale, conflicting, or revision-mismatched plan/review
 evidence prevents intent production.
 
+Non-observable decisions are frozen in a separate closed
+`mission.transition-plan.v1` artifact generated through Mission Builder's typed
+planning input. It is not extracted from Markdown. Its digest is covered by
+`mission.parent-plan-review-evidence.v1`, which binds repository, planning base,
+plan commit/path/raw digest, transition-plan digest, PASS verdict, Fury seat,
+actual review runtime/model/executor, and exact Fury dispatch-receipt identity.
+The parent review evidence is authority-none and cannot substitute for Coulson
+authorization.
+
 The intent is a closed discriminated union by transition kind and contains only
 the decisions that cannot be observed:
 
@@ -126,8 +135,16 @@ Expose one thin canonical orchestration command:
 ```text
 shield mission prepare-next \
   --mission-id mission:issue-N \
-  --intent <reviewed-transition-intent.json>
+  --root .
 ```
+
+Hill does not locate or transport an intent file. After exact Fury PASS, a
+bounded host materialization operation validates the transition plan and review
+evidence, writes the content-addressed intent to a protected external store
+using no-follow identity-checked bounded I/O, and records the mission-to-intent
+reference. `prepare-next` resolves that exact reference itself. Materialization
+is authority-none, requires no Hill-authored mechanical field, and fails on
+forged, stale, cross-plan, replaced, ambiguous, or conflicting evidence.
 
 This is a host facade over the preparation library, not the primary product or
 a replacement command language. Interactive mode prepares, preflights, and
@@ -192,18 +209,27 @@ not created from the planning base. Each child starts from the exact accepted
 predecessor revision, installs dependencies once, and ends with exact-head Mack
 validation and Fury conformance before the next child begins.
 
+B1, B2, every seat-specific C integration, and D remain implementation-blocked
+until an exact predecessor-bound child plan freezes writable and forbidden
+paths, validation commands, tests, public/internal API impact, compatibility
+vectors, and migration consumers and receives its own Fury plan PASS. This is
+followed—not replaced—by exact-head Mack validation and Fury conformance.
+
 ### Lane A0 — preparation-library vertical slice
 
 Create `@shield/mission-preparation` and deliver the reviewed-intent contract,
 pure next-transition selector, fresh schema-9 `authorize-wheels-up` candidate
-compiler, concise decision projection, and authority-none preparation receipt.
+compiler, `mission.transition-plan.v1`, parent-plan review evidence validation,
+concise decision projection, and authority-none preparation receipt.
 This slice proves the library boundary with no signer, journal mutation, CLI
 prompt, GitHub operation, or model invocation.
 
 ### Lane A1 — existing CLI/effect-path integration
 
 Connect the accepted Lane A0 candidate to the canonical `prepare-next` facade
-and the existing `authorize-wheels-up` effect path. Reuse:
+and the existing `authorize-wheels-up` effect path. Add the bounded protected
+intent materialization/resolution host operation so Hill supplies only mission
+ID and root. Reuse:
 
 - `validateAuthorizeWheelsUpInput` semantics;
 - `prepareAuthorizeWheelsUp`;
@@ -216,7 +242,10 @@ and canonical publication paths. Do not collapse pre- and post-passcode
 freshness into one stale snapshot.
 
 Lane A1 is complete when a fresh mission can be prepared and authorized without
-hand-authored action JSON and with exactly one human decision prompt.
+hand-authored action JSON, intent-file transport, or a mechanical repair loop,
+and with exactly one human decision prompt. Forged, stale, replaced,
+cross-plan, missing, duplicate, and conflicting parent-review/materialization
+evidence must fail before PIN or mutation.
 
 Minimally extend human rendering only where needed to show the exact mission, revision,
 repository, branch, HEAD, paths, action/effect/capability/validation IDs,
@@ -308,6 +337,9 @@ existing single-packet request. One campaign separates immutable
 - exact runtime/model/executor identity and campaign context budget;
 - complete required-scenario coverage and packet-result cardinality;
 - each packet request, prompt, response, and assessment digest;
+- host-owned finite maxima for packet count, scenario count, evidence-reference
+  count, captured bytes, per-packet input/output/reasoning tokens, cumulative
+  reserved tokens, inference count, and campaign wall time;
 - one stable request ID, request digest, and final evidence digest.
 
 The existing trusted command registry remains the sole executable-command
@@ -317,6 +349,10 @@ checks, locking, create-only claims, ordered started/completed records, fsync,
 exact readback, orphan handling, and conflict rejection. Git/runtime identity
 is captured before and after commands, around every packet, and at aggregation.
 V1 requires one exact loaded-instance/model/runtime/executor identity throughout.
+Every packet must satisfy its loaded-context inequality, and the sum of all
+exact packet inputs plus maximum output/reasoning reservations must fit the
+cumulative campaign budget before the first inference. Zero, unbounded,
+overflowed, or packet-supplied ceilings are rejected.
 
 Host commands execute once for the campaign. If a command or inference may have
 started but durable completion is absent, return `recovery_required`; never
@@ -340,7 +376,15 @@ remain valid and unchanged.
 
 ### Lane E — authority-none before/after proving issue
 
-Run the key-turn command on a fresh bounded mission and compare it with #259.
+Before A0 implementation, freeze a content-addressed #259 baseline manifest
+containing exact source transcript/receipt references, counter provenance,
+lifecycle start/end boundaries, hosted Hill input/output tokens and turns,
+manual structured-field edits, retries, local packet counters, and independent
+acceptance result. Replay the same frozen orchestration scenario, or a matched
+scenario whose equivalence is mechanically proven; an arbitrary fresh mission
+is not comparable.
+
+Run the key-turn path and compare it with that baseline.
 Record authority-none metrics from host/provider sources:
 
 - Hill-authored structured fields;
@@ -363,10 +407,20 @@ orchestration work than the #259 baseline while preserving accepted local
 output quality. If local dispatch plus orchestration does not beat the hosted
 baseline, the proving disposition is revise or no-adopt rather than success.
 
+The primary cost is
+`hosted_hill_input_tokens + hosted_hill_output_tokens` from scope freeze through
+accepted local-result normalization. Packet construction, dispatch, polling,
+repair, retry, and normalization are included; genuine human decision turns are
+excluded symmetrically. Output-quality equivalence requires the same frozen
+scenarios and independent acceptance result. Missing trusted counters or
+unproven comparability returns `insufficient_baseline` and a no-adopt result
+rather than an estimate.
+
 ## Acceptance matrix
 
 | ID | Requirement | Minimum proof |
 | --- | --- | --- |
+| A0 | Automatic reviewed-intent handoff | Mission Builder and exact Fury dispatch evidence materialize one protected content-addressed intent; forged/stale/cross-plan evidence fails |
 | A1 | No hand-authored action JSON | Spawned CLI creates exact derived input from reviewed intent |
 | A2 | Preflight before PIN | Invalid path/order/root/branch/HEAD/journal/signer cases never request passcode |
 | A3 | One clear human decision | Snapshot test contains exact scope, exclusions, remaining gates, PIN/cancel only |
@@ -378,7 +432,7 @@ baseline, the proving disposition is revise or no-adopt rather than success.
 | C1 | Budgeted packet | Exact loaded-instance tokenizer/template proves fit; unavailable or over-budget count fails before inference |
 | C2 | Seat/authority isolation | Packet cannot change seat, tools, authority, mission, revision, or output schema |
 | D1 | Host evidence separation | Model result cannot override failed/unavailable command receipt |
-| D2 | Complete aggregation | Missing/duplicate/reordered/conflicting packet or scenario evidence fails closed |
+| D2 | Complete bounded aggregation | Missing/duplicate/reordered/conflicting evidence, over-cardinality, cumulative exhaustion, or many individually fitting packets beyond campaign budget fails closed |
 | D3 | Exact replay | Replay performs no command or inference and returns identical evidence; uncertain started work requires recovery |
 | E1 | Measured improvement | Before/after evidence uses host/provider counters and authority-none classification |
 | E2 | Net local savings | Zero Hill-authored mechanical fields/retries and strictly lower hosted orchestration usage than #259 with accepted local output |
