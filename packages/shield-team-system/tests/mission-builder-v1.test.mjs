@@ -95,14 +95,14 @@ function accepted(buildResult) {
   return [...buildResult.provenanceRecords, acceptance];
 }
 
-function provenanceLifecycle(definition, seatId, receiptId, logOffset = 0, previousLogDigest = null) {
+function provenanceLifecycle(definition, seatId, receiptId, artifactId = definition.definitionRevision, logOffset = 0, previousLogDigest = null) {
   const runtimeId = `runtime:provenance:${seatId}`;
   const executorId = `executor:provenance:${seatId}`;
   const common = {
     receiptId, dispatchId: `dispatch:${receiptId}`, parentMissionId: definition.missionId, parentMissionRevision: definition.definitionRevision,
     parentSessionId: "session:parent", childTaskId: `task:${receiptId}`, childSessionId: `session:${receiptId}`, accountableSeatId: seatId,
     repositoryId: definition.repositoryId, repositoryWorkspaceId: "workspace:test", repositoryRevision: definition.repositoryRevision,
-    subjectId: definition.subjectId, subjectRevision: definition.definitionRevision, artifactId: `artifact:${receiptId}`, artifactRevision: definition.definitionRevision,
+    subjectId: definition.subjectId, subjectRevision: definition.definitionRevision, artifactId, artifactRevision: definition.definitionRevision,
     configuredRuntime: { kind: "runtime.configured", runtimeId, model: "model:provenance" }, requestedRuntime: { kind: "runtime.requested", runtimeId, model: "model:provenance" },
     toolExecution: { kind: "tool.execution.not_requested", reason: "not_requested" },
     runtimeSelfReport: { kind: "runtime.self_report.observed", runtimeId, model: "model:provenance", evidenceRefs: [`evidence:${receiptId}:runtime-self`] },
@@ -115,10 +115,10 @@ function provenanceLifecycle(definition, seatId, receiptId, logOffset = 0, previ
   return [started, completed];
 }
 
-function authenticatedProvenance(records, validationReceiptId, proofreadingReceiptId) {
+function authenticatedProvenance(records, generatedReceiptId, validationReceiptId, proofreadingReceiptId) {
   let previousRecordDigest = null;
   return records.map((record) => {
-    const withActor = { ...record, previousRecordDigest, actorReceiptId: record.kind === "definition.validated" ? validationReceiptId : record.kind === "definition.generated" || record.kind === "proofreading.accepted" ? proofreadingReceiptId : null };
+    const withActor = { ...record, previousRecordDigest, actorReceiptId: record.kind === "definition.generated" ? generatedReceiptId : record.kind === "definition.validated" ? validationReceiptId : record.kind === "proofreading.accepted" ? proofreadingReceiptId : null };
     const { recordDigest: _ignored, ...content } = withActor;
     const authenticated = { ...withActor, recordDigest: hash("shield.mission-provenance.v1", content) };
     previousRecordDigest = authenticated.recordDigest;
@@ -253,9 +253,11 @@ function harness(pattern = "delivery", options = {}) {
   const built = build(pattern, options);
   const profile = profileState(built.definition);
   const stepReceipts = [];
-  const validationEntries = provenanceLifecycle(built.definition, "may", "receipt:provenance:validation");
-  const dispatchEntries = [...validationEntries, ...provenanceLifecycle(built.definition, "hill", "receipt:provenance:proofreading", 2, validationEntries.at(-1).entryDigest)];
-  const provenanceRecords = authenticatedProvenance(accepted(built), "receipt:provenance:validation", "receipt:provenance:proofreading");
+  const generatedEntries = provenanceLifecycle(built.definition, "hill", "receipt:provenance:generated", built.definition.templateId);
+  const validationEntries = provenanceLifecycle(built.definition, "may", "receipt:provenance:validation", built.definition.definitionRevision, 2, generatedEntries.at(-1).entryDigest);
+  const proofreadingEntries = provenanceLifecycle(built.definition, "hill", "receipt:provenance:proofreading", built.definition.definitionRevision, 4, validationEntries.at(-1).entryDigest);
+  const dispatchEntries = [...generatedEntries, ...validationEntries, ...proofreadingEntries];
+  const provenanceRecords = authenticatedProvenance(accepted(built), "receipt:provenance:generated", "receipt:provenance:validation", "receipt:provenance:proofreading");
   const reports = new Map();
   const audit = [];
   const executedPlans = [];
@@ -340,7 +342,19 @@ test("all five patterns execute the actual runner with only the owner's canonica
     assert.equal(h.executedPlans[0].seatId, OWNERS[pattern]);
     assert.deepEqual(h.executedPlans[0].activatedModes, h.definition.activatedModes.filter((mode) => mode.seatId === OWNERS[pattern]));
     assert.ok(h.executedPlans[0].activatedModes.every((mode) => mode.seatId === OWNERS[pattern]));
+    assert.deepEqual(h.definition.escalation, ["ambiguous", "failed", "uncertain", "scope_change"].map((reason) => ({ reason, route: "hill" })));
+    assert.deepEqual(h.definition.stopConditionRoutes, h.definition.stopConditions.map((condition) => ({ condition, route: "hill" })));
   }
+});
+
+test("approved escalation and stop-condition contracts reject removal, duplication, and route weakening", () => {
+  const h = harness("delivery");
+  const escalationRemoved = structuredClone(h.definition); escalationRemoved.escalation.pop();
+  assert.equal(validateMissionDefinitionV1(escalationRemoved).state, "invalid");
+  const stopDuplicated = structuredClone(h.definition); stopDuplicated.stopConditions[0] = stopDuplicated.stopConditions[1];
+  assert.equal(validateMissionDefinitionV1(stopDuplicated).state, "invalid");
+  const routeWeakened = structuredClone(h.definition); routeWeakened.stopConditionRoutes[0].route = "hill"; routeWeakened.stopConditionRoutes.pop();
+  assert.equal(validateMissionDefinitionV1(routeWeakened).state, "invalid");
 });
 
 test("wrong-seat pattern activation and wrong-seat host runtime fail before runner execution", async () => {
@@ -405,6 +419,16 @@ test("throwing runner stores and Mack read paths classify pre- and post-start ef
   const receiptResult = await advance(receiptThrow);
   assert.equal(receiptResult.outcome, "uncertain");
   assert.equal(receiptResult.dispatchEffects, 0);
+
+  const mackCommitThenThrow = harness("delivery");
+  await advance(mackCommitThenThrow);
+  mackCommitThenThrow.dependencies.mack.appendReceipt = async (event) => { mackCommitThenThrow.dispatchEntries.push(structuredClone(event)); throw new Error("committed start unavailable"); };
+  const mackCommitResult = await advance(mackCommitThenThrow);
+  assert.equal(mackCommitResult.outcome, "uncertain");
+  assert.equal(mackCommitResult.dispatchEffects, 0);
+  const mackRetry = await advance(mackCommitThenThrow);
+  assert.equal(mackRetry.outcome, "uncertain");
+  assert.equal(mackRetry.dispatchEffects, 0);
 });
 
 test("candidate validation is closed and malformed nested values have zero effects", async () => {
@@ -442,7 +466,7 @@ test("graph validation binds edge evidence, node-step-seat, prompt, and handoff 
 
 test("provenance freezes scope, invalidates proofreading on edits, and validates proposed appends under lock", async () => {
   const built = build("delivery");
-  const records = authenticatedProvenance(accepted(built), "receipt:provenance:validation", "receipt:provenance:proofreading");
+  const records = authenticatedProvenance(accepted(built), "receipt:provenance:generated", "receipt:provenance:validation", "receipt:provenance:proofreading");
   const edited = editMissionDefinitionTextV1({ definition: built.definition, provenanceRecords: records,
     edits: [{ target: "prompt", targetId: "prompt:delivery:may", replacement: "Hill-edited bounded implementation prompt." }] });
   assert.equal(edited.state, "edited");
@@ -462,12 +486,16 @@ test("provenance freezes scope, invalidates proofreading on edits, and validates
   assert.equal(replayMissionProvenanceV1(frozenScope).state, "invalid");
 
   const stored = [];
+  const actorEntries = provenanceLifecycle(built.definition, "hill", "receipt:provenance:generated", built.definition.templateId);
+  actorEntries.push(...provenanceLifecycle(built.definition, "may", "receipt:provenance:validation", built.definition.definitionRevision, 2, actorEntries.at(-1).entryDigest));
+  actorEntries.push(...provenanceLifecycle(built.definition, "hill", "receipt:provenance:proofreading", built.definition.definitionRevision, 4, actorEntries.at(-1).entryDigest));
   let appendCalls = 0;
   const store = {
     async acquireLock() { return { state: "acquired", lockToken: "lock:test" }; },
     async append({ record }) { appendCalls += 1; stored.push(record); return { state: "appended" }; },
     async replay() { return structuredClone(stored); },
     async readExact({ recordDigest }) { return stored.find((record) => record.recordDigest === recordDigest); },
+    async readActorReceipts() { return structuredClone(actorEntries); },
     async recover() { return { state: "blocked", code: "manual_recovery_required" }; },
     async releaseLock() {},
   };
@@ -479,6 +507,22 @@ test("provenance freezes scope, invalidates proofreading on edits, and validates
   const rejected = await appendMissionProvenanceRecordV1(store, malformed, "lock-owner:test");
   assert.equal(rejected.state, "blocked");
   assert.equal(appendCalls, 1);
+
+  const commitStoreRecords = [];
+  const commitThenThrowStore = { ...store,
+    async append({ record }) { commitStoreRecords.push(record); throw new Error("committed provenance append unavailable"); },
+    async replay() { return structuredClone(commitStoreRecords); },
+  };
+  const commitResult = await appendMissionProvenanceRecordV1(commitThenThrowStore, records[0], "lock-owner:test");
+  assert.deepEqual(commitResult, { state: "uncertain", code: "manual_recovery_required" });
+  const readbackRecords = [];
+  const readbackThrowStore = { ...store,
+    async append({ record }) { readbackRecords.push(record); return { state: "appended" }; },
+    async replay() { return structuredClone(readbackRecords); },
+    async readExact() { throw new Error("provenance readback unavailable"); },
+  };
+  const readbackResult = await appendMissionProvenanceRecordV1(readbackThrowStore, records[0], "lock-owner:test");
+  assert.deepEqual(readbackResult, { state: "uncertain", code: "recovery_required" });
 });
 
 test("exact definition provenance is required for proofreading and advance", async () => {

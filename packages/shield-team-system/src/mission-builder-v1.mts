@@ -45,6 +45,8 @@ import {
 
 export const MISSION_BUILDER_SCHEMA_VERSION = 1 as const;
 export const MISSION_BUILDER_CONTRACT_VERSION = "mission.builder.v1" as const;
+const APPROVED_ESCALATION_REASONS = ["ambiguous", "failed", "uncertain", "scope_change"] as const;
+const APPROVED_STOP_CONDITIONS = ["ambiguous_ownership", "failed_validation", "missing_binding", "invalid_graph", "scope_change", "stale_state", "stale_revision", "replay_failure", "readback_failure", "scope_expansion", "prohibited_merge", "prohibited_publication", "prohibited_deploy", "prohibited_release", "human_simulation", "uncertain_execution"] as const;
 export const MISSION_BUILDER_PATTERNS = Object.freeze(["debug", "delivery", "recon", "planning", "review"] as const);
 export const MISSION_BUILDER_MAX_REPAIRS = 2 as const;
 export const MISSION_BUILDER_MAX_STEPS = 16 as const;
@@ -166,6 +168,7 @@ export interface MissionProvenanceRecordV1 {
   readonly recordId: string;
   readonly kind: MissionProvenanceKindV1;
   readonly missionId: string;
+  readonly repositoryId: string;
   readonly definitionRevision: string;
   readonly parentDefinitionRevision: string | null;
   readonly repositoryRevision: string;
@@ -179,6 +182,7 @@ export interface MissionProvenanceRecordV1 {
   readonly validationRevision: string | null;
   readonly proofreadAcceptanceDigest: string | null;
   readonly previousRecordDigest: string | null;
+  readonly actorArtifactId: string;
   readonly actorReceiptId: string | null;
   readonly recordDigest: string;
 }
@@ -187,6 +191,7 @@ export interface MissionProvenanceProjectionV1 {
   readonly state: "valid";
   readonly records: readonly MissionProvenanceRecordV1[];
   readonly missionId: string;
+  readonly repositoryId: string;
   readonly definitionRevision: string;
   readonly parentDefinitionRevision: string | null;
   readonly repositoryRevision: string;
@@ -205,6 +210,7 @@ export interface MissionProvenanceStoreV1 {
   append(input: { missionId: string; lockToken: string; expectedPreviousRecordDigest: string | null; record: MissionProvenanceRecordV1 }): Promise<{ state: "appended" } | { state: "blocked"; code: "conflict" | "lock_lost" | "store_unavailable" } | { state: "uncertain"; code: "recovery_required" }>;
   replay(input: { missionId: string }): Promise<unknown>;
   readExact(input: { missionId: string; recordDigest: string }): Promise<unknown>;
+  readActorReceipts(input: { missionId: string }): Promise<unknown>;
   recover(input: { missionId: string; lockOwnerId: string }): Promise<{ state: "recovered" | "blocked"; code?: "store_unavailable" | "manual_recovery_required" }>;
   releaseLock(input: { missionId: string; lockToken: string }): Promise<void>;
 }
@@ -560,8 +566,8 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
       { reason: "ambiguous", route: "hill" }, { reason: "failed", route: "hill" },
       { reason: "uncertain", route: "hill" }, { reason: "scope_change", route: "hill" },
     ],
-    stopConditions: ["ambiguous_ownership", "failed_validation", "missing_binding", "invalid_graph", "scope_change", "stale_state", "stale_revision", "replay_failure", "readback_failure", "scope_expansion", "prohibited_merge", "prohibited_publication", "prohibited_deploy", "prohibited_release", "human_simulation", "uncertain_execution"],
-    stopConditionRoutes: ["ambiguous_ownership", "failed_validation", "missing_binding", "invalid_graph", "scope_change", "stale_state", "stale_revision", "replay_failure", "readback_failure", "scope_expansion", "prohibited_merge", "prohibited_publication", "prohibited_deploy", "prohibited_release", "human_simulation", "uncertain_execution"].map((condition) => ({ condition, route: "hill" as const })),
+    stopConditions: [...APPROVED_STOP_CONDITIONS],
+    stopConditionRoutes: APPROVED_STOP_CONDITIONS.map((condition) => ({ condition, route: "hill" as const })),
     provenance: { generatedDigest, editedDigest: null, parentDigest: null },
   };
   const definition = freeze({ ...content, definitionRevision: definitionRevision(content) });
@@ -569,17 +575,17 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
   if (checked.state === "invalid") return { state: "blocked", reasonCodes: checked.reasonCodes, definition: null, provenanceRecords: [] };
   const generated = makeProvenanceRecord({
     sequence: 0, kind: "definition.generated", missionId: definition.missionId, definitionRevision: definition.definitionRevision,
-    parentDefinitionRevision: null, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
+    parentDefinitionRevision: null, repositoryId: definition.repositoryId, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
     templateVersion: 1, intakeRevisionId: definition.intakeRevisionId, generatedDigest, editedDigest: null, editRecord: [], validationRevision: null,
-    proofreadAcceptanceDigest: null, previousRecordDigest: null,
+    proofreadAcceptanceDigest: null, previousRecordDigest: null, actorArtifactId: definition.templateId,
     actorReceiptId: null,
   });
   const validationRevision = digest("shield.mission-validation.v1", { definitionRevision: definition.definitionRevision });
   const validated = makeProvenanceRecord({
     sequence: 1, kind: "definition.validated", missionId: definition.missionId, definitionRevision: definition.definitionRevision,
-    parentDefinitionRevision: definition.definitionRevision, repositoryRevision: definition.repositoryRevision, actorSeatId: "may", templateId: definition.templateId,
+    parentDefinitionRevision: definition.definitionRevision, repositoryId: definition.repositoryId, repositoryRevision: definition.repositoryRevision, actorSeatId: "may", templateId: definition.templateId,
     templateVersion: 1, intakeRevisionId: definition.intakeRevisionId, generatedDigest, editedDigest: null, editRecord: [], validationRevision,
-    proofreadAcceptanceDigest: null, previousRecordDigest: generated.recordDigest,
+    proofreadAcceptanceDigest: null, previousRecordDigest: generated.recordDigest, actorArtifactId: definition.definitionRevision,
     actorReceiptId: null,
   });
   return { state: "built", reasonCodes: [], definition, provenanceRecords: [generated, validated] };
@@ -708,10 +714,10 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   if (value.graph?.graphRevision !== digest("shield.mission-graph.v1", graphWithoutRevision(value.graph))) reasons.push("graph_revision_mismatch");
   if (!exact(value.repairPolicy, ["maximumRepairs", "exhaustedRoute"]) || !Number.isSafeInteger(value.repairPolicy.maximumRepairs) || value.repairPolicy.maximumRepairs < 0 || value.repairPolicy.maximumRepairs > MISSION_BUILDER_MAX_REPAIRS || value.repairPolicy.exhaustedRoute !== "hill"
     || value.graph.edges.filter((edge) => edge.condition === "repair").some((edge) => edge.maximumTraversals !== value.repairPolicy.maximumRepairs)) reasons.push("repair_policy_invalid");
-  if (!value.escalation.every((item) => exact(item, ["reason", "route"]) && ["ambiguous", "failed", "uncertain", "scope_change"].includes(String(item.reason)) && ["hill", "fury", "coulson"].includes(String(item.route)))) reasons.push("escalation_invalid");
+  if (canonicalJson(value.escalation) !== canonicalJson(APPROVED_ESCALATION_REASONS.map((reason) => ({ reason, route: "hill" })))) reasons.push("escalation_invalid");
   if (!value.stopConditions.every((item) => typeof item === "string" && ID.test(item)) || new Set(value.stopConditions).size !== value.stopConditions.length
-    || !dense(value.stopConditionRoutes, 32) || value.stopConditionRoutes.length !== value.stopConditions.length
-    || value.stopConditionRoutes.some((item, index) => !exact(item, ["condition", "route"]) || item.condition !== value.stopConditions[index] || item.route !== "hill")) reasons.push("stop_condition_invalid");
+    || canonicalJson(value.stopConditions) !== canonicalJson(APPROVED_STOP_CONDITIONS)
+    || !dense(value.stopConditionRoutes, 32) || canonicalJson(value.stopConditionRoutes) !== canonicalJson(APPROVED_STOP_CONDITIONS.map((condition) => ({ condition, route: "hill" })))) reasons.push("stop_condition_invalid");
   if (!exact(value.provenance, ["generatedDigest", "editedDigest", "parentDigest"]) || !DIGEST.test(value.provenance.generatedDigest)
     || (value.provenance.editedDigest !== null && !DIGEST.test(value.provenance.editedDigest)) || (value.provenance.parentDigest !== null && !DIGEST.test(value.provenance.parentDigest))
     || (value.provenance.editedDigest === null) !== (value.provenance.parentDigest === null)) reasons.push("definition_provenance_invalid");
@@ -719,32 +725,34 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   return reasons.length > 0 ? { state: "invalid", value: null, reasonCodes: Object.freeze([...new Set(reasons)].sort()) } : { state: "valid", value: freeze(value), reasonCodes: [] };
 }
 
-const PROVENANCE_FIELDS = ["schemaVersion", "contractVersion", "sequence", "recordId", "kind", "missionId", "definitionRevision", "parentDefinitionRevision", "repositoryRevision", "actorSeatId", "templateId", "templateVersion", "intakeRevisionId", "generatedDigest", "editedDigest", "editRecord", "validationRevision", "proofreadAcceptanceDigest", "previousRecordDigest", "actorReceiptId", "recordDigest"] as const;
+const PROVENANCE_FIELDS = ["schemaVersion", "contractVersion", "sequence", "recordId", "kind", "missionId", "repositoryId", "definitionRevision", "parentDefinitionRevision", "repositoryRevision", "actorSeatId", "templateId", "templateVersion", "intakeRevisionId", "generatedDigest", "editedDigest", "editRecord", "validationRevision", "proofreadAcceptanceDigest", "previousRecordDigest", "actorArtifactId", "actorReceiptId", "recordDigest"] as const;
 
 export function replayMissionProvenanceV1(input: unknown): Readonly<{ state: "valid"; value: MissionProvenanceProjectionV1 } | { state: "invalid"; code: string }> {
   if (!dense(input, 256) || input.length === 0) return { state: "invalid", code: "malformed_provenance" };
   let definition = ""; let parentDefinition: string | null = null; let validation: string | null = null; let acceptance: string | null = null;
-  let previous: string | null = null; let missionId = ""; let repositoryRevision = ""; let templateId = ""; let intakeRevisionId = "";
+  let previous: string | null = null; let missionId = ""; let repositoryId = ""; let repositoryRevision = ""; let templateId = ""; let intakeRevisionId = "";
   let generatedDigest = ""; let editedDigest: string | null = null;
   for (let index = 0; index < input.length; index += 1) {
     const record = input[index] as MissionProvenanceRecordV1;
     if (!exact(record, PROVENANCE_FIELDS) || record.schemaVersion !== 1 || record.contractVersion !== "mission.provenance.v1" || record.sequence !== index
       || record.recordId !== `provenance:${record.missionId}:${index}` || record.previousRecordDigest !== previous || !DIGEST.test(record.recordDigest)
       || record.recordDigest !== digest("shield.mission-provenance.v1", (({ recordDigest: _ignored, ...rest }) => rest)(record)) || !dense(record.editRecord, 64)
-      || !["definition.generated", "definition.edited", "definition.validated", "proofreading.accepted"].includes(record.kind) || !ID.test(record.missionId) || !DIGEST.test(record.definitionRevision)
+      || !["definition.generated", "definition.edited", "definition.validated", "proofreading.accepted"].includes(record.kind) || !ID.test(record.missionId) || !ID.test(record.repositoryId) || !DIGEST.test(record.definitionRevision)
       || (record.parentDefinitionRevision !== null && !DIGEST.test(record.parentDefinitionRevision)) || !REVISION.test(record.repositoryRevision) || !["hill", "may"].includes(record.actorSeatId)
-      || !ID.test(record.templateId) || record.templateVersion !== 1 || !ID.test(record.intakeRevisionId) || !DIGEST.test(record.generatedDigest)
+      || !ID.test(record.templateId) || record.templateVersion !== 1 || !ID.test(record.intakeRevisionId) || !DIGEST.test(record.generatedDigest) || !ID.test(record.actorArtifactId)
       || (record.editedDigest !== null && !DIGEST.test(record.editedDigest)) || (record.validationRevision !== null && !DIGEST.test(record.validationRevision))
       || (record.proofreadAcceptanceDigest !== null && !DIGEST.test(record.proofreadAcceptanceDigest)) || (record.actorReceiptId !== null && !ID.test(record.actorReceiptId)) || !record.editRecord.every((edit) => exact(edit, ["target", "targetId", "replacementDigest"])
         && ["prompt", "handoff"].includes(String(edit.target)) && ID.test(String(edit.targetId)) && DIGEST.test(String(edit.replacementDigest)))) return { state: "invalid", code: "provenance_conflict" };
     if (index === 0) {
       if (record.kind !== "definition.generated" || record.actorSeatId !== "hill" || record.parentDefinitionRevision !== null || record.editedDigest !== null
         || record.editRecord.length !== 0 || record.validationRevision !== null || record.proofreadAcceptanceDigest !== null) return { state: "invalid", code: "generated_record_missing" };
-      missionId = record.missionId; definition = record.definitionRevision; repositoryRevision = record.repositoryRevision; templateId = record.templateId;
+      missionId = record.missionId; repositoryId = record.repositoryId; definition = record.definitionRevision; repositoryRevision = record.repositoryRevision; templateId = record.templateId;
       intakeRevisionId = record.intakeRevisionId; generatedDigest = record.generatedDigest;
-    } else if (record.missionId !== missionId || record.repositoryRevision !== repositoryRevision || record.templateId !== templateId || record.templateVersion !== 1
+    } else if (record.missionId !== missionId || record.repositoryId !== repositoryId || record.repositoryRevision !== repositoryRevision || record.templateId !== templateId || record.templateVersion !== 1
       || record.intakeRevisionId !== intakeRevisionId || record.generatedDigest !== generatedDigest) return { state: "invalid", code: "mixed_scope" };
     if (index > 0 && record.kind === "definition.generated") return { state: "invalid", code: "generated_record_duplicate" };
+    const expectedActorArtifact = record.kind === "definition.generated" ? record.templateId : record.definitionRevision;
+    if (record.actorArtifactId !== expectedActorArtifact) return { state: "invalid", code: "actor_artifact_mismatch" };
     if (record.kind === "definition.edited") {
       if (record.actorSeatId !== "hill" || record.parentDefinitionRevision !== definition || record.definitionRevision === definition || record.editedDigest === null
         || record.editRecord.length === 0 || record.validationRevision !== null || record.proofreadAcceptanceDigest !== null
@@ -764,17 +772,32 @@ export function replayMissionProvenanceV1(input: unknown): Readonly<{ state: "va
     }
     previous = record.recordDigest;
   }
-  return { state: "valid", value: freeze({ state: "valid", records: [...input] as MissionProvenanceRecordV1[], missionId, definitionRevision: definition,
+  return { state: "valid", value: freeze({ state: "valid", records: [...input] as MissionProvenanceRecordV1[], missionId, repositoryId, definitionRevision: definition,
     parentDefinitionRevision: parentDefinition, repositoryRevision, templateId, templateVersion: 1, intakeRevisionId, generatedDigest, editedDigest,
     validationRevision: validation, proofreadAcceptanceDigest: acceptance, lastRecordDigest: previous! }) };
 }
 
 function provenanceMatchesDefinition(projection: MissionProvenanceProjectionV1, definition: MissionDefinitionV1): boolean {
-  return projection.missionId === definition.missionId && projection.definitionRevision === definition.definitionRevision
+  return projection.missionId === definition.missionId && projection.repositoryId === definition.repositoryId && projection.definitionRevision === definition.definitionRevision
     && projection.parentDefinitionRevision === definition.provenance.parentDigest && projection.repositoryRevision === definition.repositoryRevision
     && projection.templateId === definition.templateId && projection.templateVersion === definition.templateVersion
     && projection.intakeRevisionId === definition.intakeRevisionId && projection.generatedDigest === definition.provenance.generatedDigest
     && projection.editedDigest === definition.provenance.editedDigest;
+}
+
+function actorReceiptMatches(record: MissionProvenanceRecordV1, dispatch: ReturnType<typeof replaySeatDispatchReceiptsV1>, definition: MissionDefinitionV1 | null): boolean {
+  if (dispatch.state === "invalid" || record.actorReceiptId === null) return false;
+  const receipt = dispatch.projections.find((item) => item.receiptId === record.actorReceiptId);
+  if (!receipt || receipt.state !== "completed" || receipt.accountableSeatId !== record.actorSeatId
+    || receipt.parentMissionId !== record.missionId || receipt.parentMissionRevision !== record.definitionRevision || receipt.repositoryId !== record.repositoryId
+    || receipt.repositoryRevision !== record.repositoryRevision || receipt.artifactId !== record.actorArtifactId
+    || receipt.artifactRevision !== record.definitionRevision || (definition !== null && (receipt.repositoryId !== definition.repositoryId || receipt.subjectId !== definition.subjectId))) return false;
+  const runtimeIds = [receipt.configuredRuntime.runtimeId, receipt.requestedRuntime.runtimeId, ...receipt.runtimeHostHistory.map((item) => item.runtimeId)];
+  const executorIds = [...receipt.executorHostHistory.map((item) => item.executorId)];
+  if (receipt.runtimeHostHistory.length === 0 || receipt.executorHostHistory.length === 0) return false;
+  const seats = new Set(["hill", "may", "daisy", "fury", "mack", "coulson", "fitz", "simmons"]);
+  return [...runtimeIds, ...executorIds].every((identity) => !seats.has(identity))
+    && !runtimeIds.some((identity) => executorIds.includes(identity));
 }
 
 export async function appendMissionProvenanceRecordV1(
@@ -798,16 +821,30 @@ export async function appendMissionProvenanceRecordV1(
     }
     const proposed = replayMissionProvenanceV1([...records, record]);
     if (proposed.state === "invalid") return { state: "blocked", code: "conflict" };
-    const appended = await store.append({ missionId: record.missionId, lockToken: acquired.lockToken, expectedPreviousRecordDigest: record.previousRecordDigest, record });
+    const actorReceipts = replaySeatDispatchReceiptsV1(await store.readActorReceipts({ missionId: record.missionId }));
+    if (!actorReceiptMatches(record, actorReceipts, null)) return { state: "blocked", code: "conflict" };
+    let appended: Awaited<ReturnType<MissionProvenanceStoreV1["append"]>>;
+    try { appended = await store.append({ missionId: record.missionId, lockToken: acquired.lockToken, expectedPreviousRecordDigest: record.previousRecordDigest, record }); }
+    catch {
+      try {
+        const recovered = await store.recover({ missionId: record.missionId, lockOwnerId });
+        return recovered.state === "recovered" ? { state: "uncertain", code: "recovery_required" } : { state: "uncertain", code: recovered.code === "store_unavailable" ? "recovery_required" : "manual_recovery_required" };
+      } catch { return { state: "uncertain", code: "manual_recovery_required" }; }
+    }
     if (appended.state === "blocked") return { state: "blocked", code: appended.code };
     if (appended.state === "uncertain") {
       const recovered = await store.recover({ missionId: record.missionId, lockOwnerId });
       if (recovered.state === "recovered") return { state: "uncertain", code: "recovery_required" };
       return recovered.code === "store_unavailable" ? { state: "blocked", code: "store_unavailable" } : { state: "uncertain", code: "manual_recovery_required" };
     }
-    const exactRecord = await store.readExact({ missionId: record.missionId, recordDigest: record.recordDigest });
+    let exactRecord: unknown;
+    try { exactRecord = await store.readExact({ missionId: record.missionId, recordDigest: record.recordDigest }); }
+    catch { return { state: "uncertain", code: "recovery_required" }; }
     if (canonicalJson(exactRecord) !== canonicalJson(record)) return { state: "blocked", code: "readback_mismatch" };
-    const replay = replayMissionProvenanceV1(await store.replay({ missionId: record.missionId }));
+    let replayed: unknown;
+    try { replayed = await store.replay({ missionId: record.missionId }); }
+    catch { return { state: "uncertain", code: "recovery_required" }; }
+    const replay = replayMissionProvenanceV1(replayed);
     if (replay.state === "invalid" || canonicalJson(replay.value.records) !== canonicalJson([...records, record])) return { state: "blocked", code: "readback_mismatch" };
     return { state: "recorded", record };
   } catch {
@@ -825,9 +862,9 @@ export function createMissionProofreadingAcceptanceV1(input: unknown): MissionPr
   const acceptance = digest("shield.mission-proofreading.v1", { definitionRevision: definition.definitionRevision, validationRevision: replay.value.validationRevision, actorSeatId: "hill" });
   return makeProvenanceRecord({
     sequence: replay.value.records.length, kind: "proofreading.accepted", missionId: definition.missionId, definitionRevision: definition.definitionRevision,
-    parentDefinitionRevision: definition.definitionRevision, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
+    parentDefinitionRevision: definition.definitionRevision, repositoryId: definition.repositoryId, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
     templateVersion: 1, intakeRevisionId: definition.intakeRevisionId, generatedDigest: definition.provenance.generatedDigest, editedDigest: definition.provenance.editedDigest,
-    editRecord: [], validationRevision: replay.value.validationRevision, proofreadAcceptanceDigest: acceptance, previousRecordDigest: replay.value.lastRecordDigest, actorReceiptId: null,
+    editRecord: [], validationRevision: replay.value.validationRevision, proofreadAcceptanceDigest: acceptance, previousRecordDigest: replay.value.lastRecordDigest, actorArtifactId: definition.definitionRevision, actorReceiptId: null,
   });
 }
 
@@ -853,9 +890,9 @@ export function editMissionDefinitionTextV1(input: unknown): Readonly<{ state: "
   if (validateMissionDefinitionV1(definition).state === "invalid") return { state: "blocked", definition: null, record: null };
   const record = makeProvenanceRecord({
     sequence: replay.value.records.length, kind: "definition.edited", missionId: definition.missionId, definitionRevision: definition.definitionRevision,
-    parentDefinitionRevision: checked.value.definitionRevision, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
+    parentDefinitionRevision: checked.value.definitionRevision, repositoryId: definition.repositoryId, repositoryRevision: definition.repositoryRevision, actorSeatId: "hill", templateId: definition.templateId,
     templateVersion: 1, intakeRevisionId: definition.intakeRevisionId, generatedDigest: definition.provenance.generatedDigest, editedDigest, editRecord: normalized,
-    validationRevision: null, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest, actorReceiptId: null,
+    validationRevision: null, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest, actorArtifactId: definition.definitionRevision, actorReceiptId: null,
   });
   return { state: "edited", definition, record };
 }
@@ -867,9 +904,9 @@ export function createMissionValidationRecordV1(input: unknown): MissionProvenan
   const validationRevision = digest("shield.mission-validation.v1", { definitionRevision: checked.value.definitionRevision });
   return makeProvenanceRecord({
     sequence: replay.value.records.length, kind: "definition.validated", missionId: checked.value.missionId, definitionRevision: checked.value.definitionRevision,
-    parentDefinitionRevision: checked.value.definitionRevision, repositoryRevision: checked.value.repositoryRevision, actorSeatId: "may", templateId: checked.value.templateId,
+    parentDefinitionRevision: checked.value.definitionRevision, repositoryId: checked.value.repositoryId, repositoryRevision: checked.value.repositoryRevision, actorSeatId: "may", templateId: checked.value.templateId,
     templateVersion: 1, intakeRevisionId: checked.value.intakeRevisionId, generatedDigest: checked.value.provenance.generatedDigest, editedDigest: checked.value.provenance.editedDigest,
-    editRecord: [], validationRevision, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest, actorReceiptId: null,
+    editRecord: [], validationRevision, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest, actorArtifactId: checked.value.definitionRevision, actorReceiptId: null,
   });
 }
 
@@ -1034,17 +1071,7 @@ function validateObservation(definition: MissionDefinitionV1, value: unknown): M
 function provenanceActorsValidated(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, records: readonly MissionProvenanceRecordV1[]): boolean {
   const dispatch = replaySeatDispatchReceiptsV1(observation.dispatchReceiptEntries);
   if (dispatch.state === "invalid") return false;
-  return records.filter((record) => record.kind === "definition.validated" || record.kind === "proofreading.accepted").every((record) => {
-    if (record.actorReceiptId === null) return false;
-    const receipt = dispatch.projections.find((item) => item.receiptId === record.actorReceiptId);
-    if (!receipt || receipt.state !== "completed" || receipt.accountableSeatId !== record.actorSeatId
-      || receipt.parentMissionId !== definition.missionId || receipt.parentMissionRevision !== definition.definitionRevision
-      || receipt.repositoryId !== definition.repositoryId || receipt.repositoryRevision !== definition.repositoryRevision
-      || receipt.subjectId !== definition.subjectId || receipt.runtimeHostHistory.length === 0 || receipt.executorHostHistory.length === 0) return false;
-    const runtime = receipt.runtimeHostHistory.at(-1)?.runtimeId;
-    const executor = receipt.executorHostHistory.at(-1)?.executorId;
-    return typeof runtime === "string" && typeof executor === "string" && runtime !== executor && runtime !== receipt.accountableSeatId && executor !== receipt.accountableSeatId;
-  });
+  return records.every((record) => actorReceiptMatches(record, dispatch, definition));
 }
 
 function nextLogState(entries: readonly SeatDispatchReceiptEventV1[]): { logSequence: number; previousLogDigest: string | null } {
@@ -1091,7 +1118,7 @@ async function runMackAdapter(definition: MissionDefinitionV1, observation: Miss
     previousLogDigest: log.previousLogDigest, lifecycleSequence: 0, previousLifecycleDigest: null, inputEvidenceRefs: [handoff.contentDigest],
   });
   let appended: Awaited<ReturnType<MackHostDispatchDependenciesV1["appendReceipt"]>>;
-  try { appended = await dependencies.appendReceipt(started); } catch { return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 }; }
+  try { appended = await dependencies.appendReceipt(started); } catch { return { state: "uncertain", evaluation: null, reportRef: null, dispatchEffects: 0 }; }
   if (appended.state === "uncertain") return { state: "uncertain", evaluation: null, reportRef: null, dispatchEffects: 0 };
   if (appended.state !== "appended") return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
   try { replay = replaySeatDispatchReceiptsV1(await dependencies.readReceipts()); }

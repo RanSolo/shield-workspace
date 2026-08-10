@@ -25,16 +25,19 @@ requested, self-reported, and host-observed identities remain distinct.
 Provenance replay must contain the exact current definition, validation
 revision, and Hill proofreading digest, plus host-observed seat-dispatch
 lifecycle evidence bound to the mission, definition, repository, runtime, and
-executor. Builder records are proposals and cannot be persisted without an
-authenticated lifecycle receipt. An edit invalidates prior validation,
-compiled manifests, and proofreading acceptance.
+executor, including the exact actor artifact and canonical-seat anti-
+impersonation checks. Builder records are proposals and cannot be persisted
+without replaying and verifying a completed lifecycle receipt. An edit
+invalidates prior validation, compiled manifests, and proofreading acceptance.
 
 Advancement replays content-addressed step and dispatch receipts, performs at
 most one runner or Mack dispatch, appends one transition receipt with exact
 readback, and returns a replay-derived `MissionStatusProjectionV1`. Malformed,
 stale, conflicting, incomplete, mixed-scope, or uncertain evidence fails
 closed; pre-effect dependency failures are blocked with zero effects and
-post-start failures are uncertain with accurate effects. Human gates consume
+post-start failures are uncertain with accurate effects. If a started Mack or
+provenance append may have committed before a throw, the result is uncertain
+with zero retry effects until replay/recovery completes. Human gates consume
 only signature- and binding-validated journal
 evidence for the exact requirement, seat, mission, subject-bound revision, and
 evidence kind; caller-supplied artifact references cannot advance a gate.
