@@ -584,7 +584,7 @@ test("provenance freezes scope, invalidates proofreading on edits, and validates
     async readExact({ recordDigest }) { return stored.find((record) => record.recordDigest === recordDigest); },
     async readActorReceipts() { return structuredClone(actorEntries); },
     async recover() { return { state: "blocked", code: "manual_recovery_required" }; },
-    async releaseLock() {},
+    async releaseLock() { return { state: "released" }; },
   };
   assert.equal((await appendMissionProvenanceRecordV1(store, built.provenanceRecords[0], "lock-owner:test")).state, "blocked");
   assert.equal((await appendMissionProvenanceRecordV1(store, records[0], "lock-owner:test")).state, "recorded");
@@ -624,6 +624,73 @@ test("provenance freezes scope, invalidates proofreading on edits, and validates
   };
   const unavailableRecovery = await appendMissionProvenanceRecordV1(unavailableRecoveryStore, records[0], "lock-owner:test");
   assert.deepEqual(unavailableRecovery, { state: "uncertain", code: "recovery_required" });
+});
+
+test("provenance append finalizes only after proven release and retries only through recovery", async () => {
+  const built = build("delivery");
+  const record = accepted(built)[0];
+  const actorEntries = provenanceLifecycle(built.definition, "hill", "receipt:provenance:generated", built.definition.templateId);
+  const makeStore = (overrides = {}) => {
+    const stored = [];
+    let appendCalls = 0;
+    let releaseCalls = 0;
+    let appendMode = "success";
+    const store = {
+      async acquireLock() { return { state: "acquired", lockToken: "lock:test" }; },
+      async append({ record: next }) {
+        appendCalls += 1;
+        if (appendMode === "blocked") return { state: "blocked", code: "store_unavailable" };
+        if (appendMode === "throw") throw new Error("append outcome unknown");
+        stored.push(next);
+        return { state: "appended" };
+      },
+      async replay() { return structuredClone(stored); },
+      async readExact({ recordDigest }) { return stored.find((item) => item.recordDigest === recordDigest); },
+      async readActorReceipts() { return structuredClone(actorEntries); },
+      async recover() { return { state: "recovered" }; },
+      async releaseLock() { releaseCalls += 1; return { state: "released" }; },
+      ...overrides,
+    };
+    return { store, stored, get appendCalls() { return appendCalls; }, get releaseCalls() { return releaseCalls; }, set appendMode(value) { appendMode = value; } };
+  };
+
+  const released = makeStore();
+  assert.deepEqual(await appendMissionProvenanceRecordV1(released.store, record, "lock-owner:test"), { state: "recorded", record });
+  assert.equal(released.appendCalls, 1);
+  assert.equal(released.releaseCalls, 1);
+
+  const throwingRelease = makeStore({ async releaseLock() { throw new Error("release uncertain"); } });
+  assert.deepEqual(await appendMissionProvenanceRecordV1(throwingRelease.store, record, "lock-owner:test"), { state: "uncertain", code: "manual_recovery_required" });
+  assert.equal(throwingRelease.appendCalls, 1);
+  assert.deepEqual(await appendMissionProvenanceRecordV1(throwingRelease.store, record, "lock-owner:test"), { state: "uncertain", code: "manual_recovery_required" });
+  assert.equal(throwingRelease.appendCalls, 1);
+
+  const blockedRelease = makeStore({
+    async append() { return { state: "blocked", code: "conflict" }; },
+    async releaseLock() { return { state: "uncertain", code: "recovery_required" }; },
+  });
+  assert.deepEqual(await appendMissionProvenanceRecordV1(blockedRelease.store, record, "lock-owner:test"), { state: "uncertain", code: "recovery_required" });
+
+  const readbackRelease = makeStore({
+    async readExact() { throw new Error("readback unavailable"); },
+    async releaseLock() { return { state: "uncertain", code: "manual_recovery_required" }; },
+  });
+  assert.deepEqual(await appendMissionProvenanceRecordV1(readbackRelease.store, record, "lock-owner:test"), { state: "uncertain", code: "manual_recovery_required" });
+
+  let replayCalls = 0;
+  const replayRelease = makeStore({
+    async replay() { replayCalls += 1; return replayCalls === 1 ? [] : [{ malformed: true }]; },
+    async releaseLock() { return { state: "uncertain", code: "recovery_required" }; },
+  });
+  assert.deepEqual(await appendMissionProvenanceRecordV1(replayRelease.store, record, "lock-owner:test"), { state: "uncertain", code: "recovery_required" });
+
+  const recoveryRetry = makeStore();
+  recoveryRetry.appendMode = "throw";
+  assert.deepEqual(await appendMissionProvenanceRecordV1(recoveryRetry.store, record, "lock-owner:test"), { state: "uncertain", code: "recovery_required" });
+  assert.equal(recoveryRetry.appendCalls, 1);
+  recoveryRetry.appendMode = "success";
+  assert.deepEqual(await appendMissionProvenanceRecordV1(recoveryRetry.store, record, "lock-owner:test"), { state: "recorded", record });
+  assert.equal(recoveryRetry.appendCalls, 2);
 });
 
 test("exact definition provenance is required for proofreading and advance", async () => {

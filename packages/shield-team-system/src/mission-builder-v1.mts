@@ -219,7 +219,7 @@ export interface MissionProvenanceStoreV1 {
   readExact(input: { missionId: string; recordDigest: string }): Promise<unknown>;
   readActorReceipts(input: { missionId: string }): Promise<unknown>;
   recover(input: { missionId: string; lockOwnerId: string }): Promise<{ state: "recovered" | "blocked"; code?: "store_unavailable" | "manual_recovery_required" }>;
-  releaseLock(input: { missionId: string; lockToken: string }): Promise<void>;
+  releaseLock(input: { missionId: string; lockToken: string }): Promise<{ state: "released" } | { state: "uncertain"; code: "recovery_required" | "manual_recovery_required" }>;
 }
 
 export type MissionProvenanceAppendResultV1 = Readonly<
@@ -860,51 +860,67 @@ export async function appendMissionProvenanceRecordV1(
   if (!ID.test(lockOwnerId) || !exact(record, PROVENANCE_FIELDS) || record.actorReceiptId === null) return { state: "blocked", code: "conflict" };
   const acquired = await store.acquireLock({ missionId: record.missionId, lockOwnerId });
   if (acquired.state !== "acquired") return { state: "blocked", code: acquired.code };
+  let pending: MissionProvenanceAppendResultV1 = { state: "blocked", code: "store_unavailable" };
   try {
     const existing = await store.replay({ missionId: record.missionId });
-    let records: readonly MissionProvenanceRecordV1[];
+    let records: readonly MissionProvenanceRecordV1[] | null = null;
     if (dense(existing, 256) && existing.length === 0) {
-      if (record.sequence !== 0 || record.previousRecordDigest !== null) return { state: "blocked", code: "conflict" };
-      records = [];
+      if (record.sequence !== 0 || record.previousRecordDigest !== null) pending = { state: "blocked", code: "conflict" };
+      else records = [];
     } else {
       const current = replayMissionProvenanceV1(existing);
-      if (current.state === "invalid" || record.sequence !== current.value.records.length || record.previousRecordDigest !== current.value.lastRecordDigest) return { state: "blocked", code: "conflict" };
-      records = current.value.records;
+      if (current.state === "invalid" || record.sequence !== current.value.records.length || record.previousRecordDigest !== current.value.lastRecordDigest) pending = { state: "blocked", code: "conflict" };
+      else records = current.value.records;
     }
-    const proposed = replayMissionProvenanceV1([...records, record]);
-    if (proposed.state === "invalid") return { state: "blocked", code: "conflict" };
-    const actorReceipts = replaySeatDispatchReceiptsV1(await store.readActorReceipts({ missionId: record.missionId }));
-    if (!actorReceiptMatches(record, actorReceipts, null)) return { state: "blocked", code: "conflict" };
-    let appended: Awaited<ReturnType<MissionProvenanceStoreV1["append"]>>;
-    try { appended = await store.append({ missionId: record.missionId, lockToken: acquired.lockToken, expectedPreviousRecordDigest: record.previousRecordDigest, record }); }
-    catch {
-      try {
-        const recovered = await store.recover({ missionId: record.missionId, lockOwnerId });
-        return recovered.state === "recovered" ? { state: "uncertain", code: "recovery_required" } : { state: "uncertain", code: recovered.code === "store_unavailable" ? "recovery_required" : "manual_recovery_required" };
-      } catch { return { state: "uncertain", code: "manual_recovery_required" }; }
+    if (pending.state === "blocked" && pending.code === "store_unavailable" && records !== null) {
+      const proposed = replayMissionProvenanceV1([...records, record]);
+      if (proposed.state === "invalid") pending = { state: "blocked", code: "conflict" };
+      else {
+        const actorReceipts = replaySeatDispatchReceiptsV1(await store.readActorReceipts({ missionId: record.missionId }));
+        if (!actorReceiptMatches(record, actorReceipts, null)) pending = { state: "blocked", code: "conflict" };
+        else {
+          let appended: Awaited<ReturnType<MissionProvenanceStoreV1["append"]>> | null = null;
+          let appendThrew = false;
+          try { appended = await store.append({ missionId: record.missionId, lockToken: acquired.lockToken, expectedPreviousRecordDigest: record.previousRecordDigest, record }); }
+          catch {
+            appendThrew = true;
+            try {
+              const recovered = await store.recover({ missionId: record.missionId, lockOwnerId });
+              pending = recovered.state === "recovered" ? { state: "uncertain", code: "recovery_required" } : { state: "uncertain", code: recovered.code === "store_unavailable" ? "recovery_required" : "manual_recovery_required" };
+            } catch { pending = { state: "uncertain", code: "manual_recovery_required" }; }
+          }
+          if (appendThrew) { /* recovery already established the pending uncertainty */ }
+          else if (appended !== null && appended.state === "blocked") pending = { state: "blocked", code: appended.code };
+          else if (appended !== null && appended.state === "uncertain") {
+            try {
+              const recovered = await store.recover({ missionId: record.missionId, lockOwnerId });
+              pending = { state: "uncertain", code: recovered.state === "recovered" || recovered.code === "store_unavailable" ? "recovery_required" : "manual_recovery_required" };
+            } catch { pending = { state: "uncertain", code: "manual_recovery_required" }; }
+          } else {
+            try {
+              const exactRecord = await store.readExact({ missionId: record.missionId, recordDigest: record.recordDigest });
+              if (canonicalJson(exactRecord) !== canonicalJson(record)) pending = { state: "blocked", code: "readback_mismatch" };
+              else {
+                const replayed = await store.replay({ missionId: record.missionId });
+                const replay = replayMissionProvenanceV1(replayed);
+                pending = replay.state === "invalid" || canonicalJson(replay.value.records) !== canonicalJson([...records, record])
+                  ? { state: "blocked", code: "readback_mismatch" } : { state: "recorded", record };
+              }
+            } catch { pending = { state: "uncertain", code: "recovery_required" }; }
+          }
+        }
+      }
     }
-    if (appended.state === "blocked") return { state: "blocked", code: appended.code };
-    if (appended.state === "uncertain") {
-      try {
-        const recovered = await store.recover({ missionId: record.missionId, lockOwnerId });
-        return { state: "uncertain", code: recovered.state === "recovered" || recovered.code === "store_unavailable" ? "recovery_required" : "manual_recovery_required" };
-      } catch { return { state: "uncertain", code: "manual_recovery_required" }; }
-    }
-    let exactRecord: unknown;
-    try { exactRecord = await store.readExact({ missionId: record.missionId, recordDigest: record.recordDigest }); }
-    catch { return { state: "uncertain", code: "recovery_required" }; }
-    if (canonicalJson(exactRecord) !== canonicalJson(record)) return { state: "blocked", code: "readback_mismatch" };
-    let replayed: unknown;
-    try { replayed = await store.replay({ missionId: record.missionId }); }
-    catch { return { state: "uncertain", code: "recovery_required" }; }
-    const replay = replayMissionProvenanceV1(replayed);
-    if (replay.state === "invalid" || canonicalJson(replay.value.records) !== canonicalJson([...records, record])) return { state: "blocked", code: "readback_mismatch" };
-    return { state: "recorded", record };
   } catch {
-    return { state: "blocked", code: "store_unavailable" };
-  } finally {
-    await store.releaseLock({ missionId: record.missionId, lockToken: acquired.lockToken }).catch(() => undefined);
+    pending = { state: "blocked", code: "store_unavailable" };
   }
+  try {
+    const released = await store.releaseLock({ missionId: record.missionId, lockToken: acquired.lockToken });
+    if (!released || released.state !== "released") {
+      pending = { state: "uncertain", code: released?.code === "recovery_required" ? "recovery_required" : "manual_recovery_required" };
+    }
+  } catch { pending = { state: "uncertain", code: "manual_recovery_required" }; }
+  return pending;
 }
 
 export function createMissionProofreadingAcceptanceV1(input: unknown): MissionProvenanceRecordV1 | null {
