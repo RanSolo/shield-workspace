@@ -36,6 +36,7 @@ import {
   type SeatDispatchReceiptProjectionV1,
 } from "./seat-dispatch-receipt-v1.mjs";
 import {
+  CANONICAL_ROLE_IDS,
   isDispatchableRoleId,
   isHumanGateRoleId,
   type CanonicalRoleId,
@@ -481,6 +482,31 @@ function nodeId(pattern: MissionPatternV1, suffix: string): string { return `nod
 function stepId(pattern: MissionPatternV1, suffix: string): string { return `step:${pattern}:${suffix}`; }
 function evidenceId(pattern: MissionPatternV1, suffix: string): string { return `evidence:${pattern}:${suffix}`; }
 
+function canonicalManifestSteps(pattern: MissionPatternV1, maximumRepairs: number): MissionStepManifestV1[] {
+  const spec = TEMPLATE[pattern];
+  return [
+    { stepId: stepId(pattern, "work"), nodeId: nodeId(pattern, "work"), seatId: spec.owner, adapter: "mission_cycle", actionId: spec.action, effectClass: spec.effect, validationId: `validation:${pattern}:work`, promptId: `prompt:${pattern}:${spec.owner}`, handoffId: `handoff:${pattern}:${spec.owner}`, maximumAttempts: 1, requiredCapabilities: [] },
+    { stepId: stepId(pattern, "mack"), nodeId: nodeId(pattern, "mack"), seatId: "mack", adapter: "mack_host", actionId: "mission.mack.validate", effectClass: "verification", validationId: `validation:${pattern}:mack`, promptId: `prompt:${pattern}:mack`, handoffId: `handoff:${pattern}:mack`, maximumAttempts: 1 + maximumRepairs, requiredCapabilities: [] },
+  ];
+}
+
+function canonicalGraphShape(pattern: MissionPatternV1, maximumRepairs: number, hasSimmons: boolean): Readonly<{ startNodeId: string; nodes: readonly MissionGraphNodeV1[]; edges: readonly MissionGraphEdgeV1[] }> {
+  const humanSeats: HumanGateRoleId[] = ["fitz", ...(hasSimmons ? ["simmons" as const] : []), "coulson"];
+  const nodes = [
+    { nodeId: nodeId(pattern, "work"), kind: "runner_step" as const, seatId: TEMPLATE[pattern].owner, stepId: stepId(pattern, "work"), terminalReason: null },
+    { nodeId: nodeId(pattern, "mack"), kind: "mack_validation" as const, seatId: "mack" as const, stepId: stepId(pattern, "mack"), terminalReason: null },
+    ...humanSeats.map((seatId) => ({ nodeId: nodeId(pattern, seatId), kind: "human_gate" as const, seatId, stepId: null, terminalReason: null })),
+    { nodeId: nodeId(pattern, "complete"), kind: "terminal" as const, seatId: null, stepId: null, terminalReason: "complete" as const },
+  ].sort((left, right) => left.nodeId.localeCompare(right.nodeId));
+  const edges = ([
+    { edgeId: `edge:${pattern}:work:mack`, fromNodeId: nodeId(pattern, "work"), toNodeId: nodeId(pattern, "mack"), condition: "success" as const, evidenceContractId: evidenceId(pattern, "work"), maximumTraversals: 1, priority: 0 },
+    { edgeId: `edge:${pattern}:mack:repair`, fromNodeId: nodeId(pattern, "mack"), toNodeId: nodeId(pattern, "mack"), condition: "repair" as const, evidenceContractId: evidenceId(pattern, "mack"), maximumTraversals: maximumRepairs, priority: 1 },
+    { edgeId: `edge:${pattern}:mack:${humanSeats[0]}`, fromNodeId: nodeId(pattern, "mack"), toNodeId: nodeId(pattern, humanSeats[0]), condition: "success" as const, evidenceContractId: evidenceId(pattern, "mack"), maximumTraversals: 1, priority: 0 },
+    ...humanSeats.map((seatId, index) => ({ edgeId: `edge:${pattern}:${seatId}:${humanSeats[index + 1] ?? "complete"}`, fromNodeId: nodeId(pattern, seatId), toNodeId: nodeId(pattern, humanSeats[index + 1] ?? "complete"), condition: "human_evidence" as const, evidenceContractId: evidenceId(pattern, seatId), maximumTraversals: 1, priority: 0 })),
+  ]).sort((left, right) => left.edgeId.localeCompare(right.edgeId));
+  return { startNodeId: nodeId(pattern, "work"), nodes, edges };
+}
+
 export function buildMissionDefinitionV1(input: unknown): Readonly<{
   state: "built" | "blocked";
   reasonCodes: readonly string[];
@@ -551,10 +577,7 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
       evidenceContractIds, source: "generated", content, contentDigest: digest("shield.mission-handoff.v1", content),
     };
   });
-  const steps: MissionStepManifestV1[] = [
-    { stepId: stepId(pattern, "work"), nodeId: nodeId(pattern, "work"), seatId: spec.owner, adapter: "mission_cycle", actionId: spec.action, effectClass: spec.effect, validationId: `validation:${pattern}:work`, promptId: `prompt:${pattern}:${spec.owner}`, handoffId: `handoff:${pattern}:${spec.owner}`, maximumAttempts: 1, requiredCapabilities: [] },
-    { stepId: stepId(pattern, "mack"), nodeId: nodeId(pattern, "mack"), seatId: "mack", adapter: "mack_host", actionId: "mission.mack.validate", effectClass: "verification", validationId: `validation:${pattern}:mack`, promptId: `prompt:${pattern}:mack`, handoffId: `handoff:${pattern}:mack`, maximumAttempts: 1 + (input.maximumRepairs as number), requiredCapabilities: [] },
-  ];
+  const steps = canonicalManifestSteps(pattern, input.maximumRepairs as number);
   const generatedDigest = digest("shield.mission-builder.generated.v1", { pattern, candidateRevision: candidate.issueObservation.issueRevisionId, graph, prompts, handoffs, steps });
   const content: Omit<MissionDefinitionV1, "definitionRevision"> = {
     schemaVersion: 1, contractVersion: MISSION_BUILDER_CONTRACT_VERSION, authority: "non_authoritative", missionId: candidate.brief.missionId,
@@ -611,6 +634,8 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   }
   if (!participantIds.has("mack") || !participantIds.has("coulson") || !participantIds.has("fitz")) reasons.push("required_participant_missing");
   const spec = TEMPLATE[value.pattern];
+  const expectedParticipantIds = new Set<string>([spec?.owner, "mack", "fitz", "coulson", ...(participantIds.has("simmons") ? ["simmons"] : [])]);
+  if (!spec || participantIds.size !== expectedParticipantIds.size || [...participantIds].some((seatId) => !expectedParticipantIds.has(seatId))) reasons.push("participant_pattern_invalid");
   if (!spec || !participantIds.has(spec.owner) || !value.activatedModes.some((mode) => mode.modeId === spec.mode && mode.seatId === spec.owner)
     || new Set(value.activatedModes.map((mode) => canonicalJson(mode))).size !== value.activatedModes.length
     || canonicalJson(value.activatedModes) !== canonicalJson(canonicalModes(value.activatedModes))) reasons.push("pattern_mode_invalid");
@@ -673,6 +698,7 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
       || (node.kind === "runner_step" && step.adapter !== "mission_cycle") || (node.kind === "mack_validation" && step.adapter !== "mack_host"))) reasons.push("node_step_relation_invalid");
   }
   if (runnerSteps !== 1) reasons.push("runner_step_count_invalid");
+  if (spec && canonicalJson(value.steps) !== canonicalJson(canonicalManifestSteps(value.pattern, value.repairPolicy?.maximumRepairs ?? -1))) reasons.push("step_manifest_invalid");
   for (const edge of value.graph?.edges ?? []) {
     if (!exact(edge, ["edgeId", "fromNodeId", "toNodeId", "condition", "evidenceContractId", "maximumTraversals", "priority"]) || !ID.test(String(edge.edgeId)) || edgeIds.has(String(edge.edgeId))
       || !nodeIds.has(String(edge.fromNodeId)) || !nodeIds.has(String(edge.toNodeId)) || !evidenceIds.has(String(edge.evidenceContractId))
@@ -712,6 +738,7 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   if (canonicalJson(value.graph?.nodes) !== canonicalJson([...(value.graph?.nodes ?? [])].sort((a, b) => a.nodeId.localeCompare(b.nodeId)))
     || canonicalJson(value.graph?.edges) !== canonicalJson([...(value.graph?.edges ?? [])].sort((a, b) => a.edgeId.localeCompare(b.edgeId)))) reasons.push("graph_not_canonical");
   if (value.graph?.graphRevision !== digest("shield.mission-graph.v1", graphWithoutRevision(value.graph))) reasons.push("graph_revision_mismatch");
+  if (spec && canonicalJson({ startNodeId: value.graph?.startNodeId, nodes: value.graph?.nodes, edges: value.graph?.edges }) !== canonicalJson(canonicalGraphShape(value.pattern, value.repairPolicy?.maximumRepairs ?? -1, participantIds.has("simmons")))) reasons.push("graph_shape_invalid");
   if (!exact(value.repairPolicy, ["maximumRepairs", "exhaustedRoute"]) || !Number.isSafeInteger(value.repairPolicy.maximumRepairs) || value.repairPolicy.maximumRepairs < 0 || value.repairPolicy.maximumRepairs > MISSION_BUILDER_MAX_REPAIRS || value.repairPolicy.exhaustedRoute !== "hill"
     || value.graph.edges.filter((edge) => edge.condition === "repair").some((edge) => edge.maximumTraversals !== value.repairPolicy.maximumRepairs)) reasons.push("repair_policy_invalid");
   if (canonicalJson(value.escalation) !== canonicalJson(APPROVED_ESCALATION_REASONS.map((reason) => ({ reason, route: "hill" })))) reasons.push("escalation_invalid");
@@ -795,7 +822,7 @@ function actorReceiptMatches(record: MissionProvenanceRecordV1, dispatch: Return
   const runtimeIds = [receipt.configuredRuntime.runtimeId, receipt.requestedRuntime.runtimeId, ...receipt.runtimeHostHistory.map((item) => item.runtimeId)];
   const executorIds = [...receipt.executorHostHistory.map((item) => item.executorId)];
   if (receipt.runtimeHostHistory.length === 0 || receipt.executorHostHistory.length === 0) return false;
-  const seats = new Set(["hill", "may", "daisy", "fury", "mack", "coulson", "fitz", "simmons"]);
+  const seats = new Set<string>(CANONICAL_ROLE_IDS);
   return [...runtimeIds, ...executorIds].every((identity) => !seats.has(identity))
     && !runtimeIds.some((identity) => executorIds.includes(identity));
 }
@@ -833,9 +860,10 @@ export async function appendMissionProvenanceRecordV1(
     }
     if (appended.state === "blocked") return { state: "blocked", code: appended.code };
     if (appended.state === "uncertain") {
-      const recovered = await store.recover({ missionId: record.missionId, lockOwnerId });
-      if (recovered.state === "recovered") return { state: "uncertain", code: "recovery_required" };
-      return recovered.code === "store_unavailable" ? { state: "blocked", code: "store_unavailable" } : { state: "uncertain", code: "manual_recovery_required" };
+      try {
+        const recovered = await store.recover({ missionId: record.missionId, lockOwnerId });
+        return { state: "uncertain", code: recovered.state === "recovered" || recovered.code === "store_unavailable" ? "recovery_required" : "manual_recovery_required" };
+      } catch { return { state: "uncertain", code: "manual_recovery_required" }; }
     }
     let exactRecord: unknown;
     try { exactRecord = await store.readExact({ missionId: record.missionId, recordDigest: record.recordDigest }); }
@@ -961,9 +989,20 @@ function receiptEvidenceMatchesObservation(definition: MissionDefinitionV1, obse
         && effect.seatId === step.seatId && effect.actionId === step.actionId && effect.effectClass === step.effectClass
         && effect.subjectId === definition.subjectId && effect.revisionId === observation.journalSnapshot.projection.brief.revisionId);
     }
-    if (contract.kind === "mack_report") return dispatch.projections.some((projection) => projection.state === "completed" && projection.accountableSeatId === "mack"
-      && projection.parentMissionId === definition.missionId && projection.parentMissionRevision === definition.definitionRevision
-      && projection.outputEvidenceRefs?.includes(reference));
+    if (contract.kind === "mack_report") {
+      const step = definition.steps.find((item) => item.stepId === receipt.stepId);
+      const identity = step && mackDispatchIdentity(definition, observation, step, receipt.attempt);
+      return !!identity && dispatch.projections.some((projection) => projection.state === "completed" && projection.receiptId === identity.receiptId
+        && projection.dispatchId === identity.dispatchId && projection.childTaskId === identity.childTaskId && projection.childSessionId === identity.childSessionId
+        && projection.parentMissionId === definition.missionId && projection.parentMissionRevision === definition.definitionRevision
+        && projection.parentSessionId === observation.sessionId && projection.repositoryId === definition.repositoryId && projection.repositoryWorkspaceId === observation.workspaceId
+        && projection.repositoryRevision === definition.repositoryRevision && projection.subjectId === definition.subjectId && projection.subjectRevision === identity.subjectRevision
+        && projection.artifactId === identity.handoff.handoffId && projection.artifactRevision === identity.handoff.contentDigest
+        && identity.runtime.runtimeHostObserved.kind === "runtime.host_observed" && identity.runtime.executorHostObserved.kind === "executor.host_observed"
+        && projection.runtimeHostHistory.at(-1)?.runtimeId === identity.runtime.runtimeHostObserved.runtimeId
+        && projection.executorHostHistory.at(-1)?.executorId === identity.runtime.executorHostObserved.executorId
+        && projection.outputEvidenceRefs?.includes(reference));
+    }
     const requirements = observation.journalSnapshot.projection.requirements.filter((requirement) => requirement.requiredRoleId === contract.requiredSeatId
       && requirement.evidenceKind === contract.evidenceKind && requirement.revisionId === observation.journalSnapshot.projection.brief.revisionId);
     return requirements.length === 1 && observation.journalSnapshot.projection.evidence.some((evidence) => evidence.evidenceId === reference
@@ -1034,7 +1073,6 @@ function validateObservation(definition: MissionDefinitionV1, value: unknown): M
     || !dense(value.provenanceRecords, 256) || !dense(value.stepReceipts, 256) || !dense(value.dispatchReceiptEntries, 512)) return null;
   const dispatchableParticipants = definition.participants.filter((participant) => participant.kind === "dispatchable_seat").map((participant) => participant.seatId);
   const bindingSeats = value.runtimeBindings.map((binding) => binding.seatId);
-  const seatIds = new Set<string>(definition.participants.map((participant) => participant.seatId));
   const identityOwners = new Map<string, string>();
   for (const binding of value.runtimeBindings) {
     if (!dispatchableParticipants.includes(binding.seatId) || bindingSeats.filter((seatId) => seatId === binding.seatId).length !== 1) return null;
@@ -1043,7 +1081,7 @@ function validateObservation(definition: MissionDefinitionV1, value: unknown): M
     if (binding.runtimeHostObserved.kind === "runtime.host_observed") runtimeIds.push(binding.runtimeHostObserved.runtimeId);
     const executorIds = [binding.executorHostObserved.kind === "executor.host_observed" ? binding.executorHostObserved.executorId : null,
       binding.executorSelfReport.kind === "executor.self_report.observed" ? binding.executorSelfReport.executorId : null].filter((item): item is string => item !== null);
-    if ([...runtimeIds, ...executorIds].some((identity) => seatIds.has(identity)) || runtimeIds.some((runtimeId) => executorIds.includes(runtimeId))) return null;
+    if ([...runtimeIds, ...executorIds].some((identity) => CANONICAL_ROLE_IDS.includes(identity as CanonicalRoleId)) || runtimeIds.some((runtimeId) => executorIds.includes(runtimeId))) return null;
     for (const identity of [...new Set([...runtimeIds, ...executorIds])]) {
       const owner = identityOwners.get(identity);
       if (owner !== undefined && owner !== binding.seatId) return null;
@@ -1078,22 +1116,30 @@ function nextLogState(entries: readonly SeatDispatchReceiptEventV1[]): { logSequ
   const last = entries[entries.length - 1]; return { logSequence: last ? last.logSequence + 1 : 0, previousLogDigest: last?.entryDigest ?? null };
 }
 
-async function runMackAdapter(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1, attempt: number, dependencies: MackHostDispatchDependenciesV1): Promise<{ state: "success" | "repair" | "blocked" | "uncertain"; evaluation: MackEvaluationV0 | null; reportRef: string | null; dispatchEffects: 0 | 1 }> {
-  const handoff = definition.handoffs.find((item) => item.handoffId === step.handoffId)!;
+function mackDispatchIdentity(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1, attempt: number) {
   const runtime = observation.runtimeBindings.find((item) => item.seatId === "mack");
-  if (!runtime || runtime.runtimeHostObserved.kind !== "runtime.host_observed" || runtime.executorHostObserved.kind !== "executor.host_observed") return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
+  const handoff = definition.handoffs.find((item) => item.handoffId === step.handoffId);
+  if (!runtime || !handoff) return null;
   const short = digest("shield.mack-dispatch.v1", { graphRevision: definition.graph.graphRevision, stepId: step.stepId, attempt }).slice(7);
-  const receiptId = `receipt:${short}`; const dispatchId = `dispatch:${short}`; const childTaskId = `task:${short}`; const childSessionId = `session:${short}`;
-  const subjectRevision = digest("shield.mission-intake-revision.v1", definition.intakeRevisionId);
+  return {
+    receiptId: `receipt:${short}`, dispatchId: `dispatch:${short}`, childTaskId: `task:${short}`, childSessionId: `session:${short}`,
+    subjectRevision: digest("shield.mission-intake-revision.v1", definition.intakeRevisionId), handoff, runtime,
+  } as const;
+}
+
+async function runMackAdapter(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1, attempt: number, dependencies: MackHostDispatchDependenciesV1): Promise<{ state: "success" | "repair" | "blocked" | "uncertain"; evaluation: MackEvaluationV0 | null; reportRef: string | null; dispatchEffects: 0 | 1; reasonCode?: "receipt_invalid" }> {
+  const identity = mackDispatchIdentity(definition, observation, step, attempt);
+  if (!identity || identity.runtime.runtimeHostObserved.kind !== "runtime.host_observed" || identity.runtime.executorHostObserved.kind !== "executor.host_observed") return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
+  const { handoff, runtime, receiptId, dispatchId, childTaskId, childSessionId, subjectRevision } = identity;
   let replay = replaySeatDispatchReceiptsV1(observation.dispatchReceiptEntries);
-  if (replay.state === "invalid") return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
+  if (replay.state === "invalid") return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0, reasonCode: "receipt_invalid" };
   let projection = replay.projections.find((item) => item.receiptId === receiptId);
-  if (replay.projections.filter((item) => item.receiptId === receiptId || item.dispatchId === dispatchId).length > (projection ? 1 : 0)) return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
+  if (replay.projections.filter((item) => item.receiptId === receiptId || item.dispatchId === dispatchId).length > (projection ? 1 : 0)) return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0, reasonCode: "receipt_invalid" };
   const expectedIdentity = (item: SeatDispatchReceiptProjectionV1): boolean => item.dispatchId === dispatchId && item.parentMissionId === definition.missionId && item.parentMissionRevision === definition.definitionRevision
     && item.parentSessionId === observation.sessionId && item.childTaskId === childTaskId && item.childSessionId === childSessionId && item.accountableSeatId === "mack"
     && item.repositoryId === definition.repositoryId && item.repositoryWorkspaceId === observation.workspaceId && item.repositoryRevision === definition.repositoryRevision
     && item.subjectId === definition.subjectId && item.subjectRevision === subjectRevision && item.artifactId === handoff.handoffId && item.artifactRevision === handoff.contentDigest;
-  if (projection && !expectedIdentity(projection)) return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
+  if (projection && !expectedIdentity(projection)) return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0, reasonCode: "receipt_invalid" };
   const expected: MackExpectedBindingV0 = { missionId: definition.missionId, subjectId: definition.subjectId, repository: definition.repositoryId, branch: observation.permissionContext.branch, artifactRevisionId: definition.repositoryRevision, approvedTestSurfaces: [] };
   if (projection?.state === "completed") {
     const reportRef = projection.outputEvidenceRefs?.[0]; if (!reportRef) return { state: "blocked", evaluation: null, reportRef: null, dispatchEffects: 0 };
@@ -1105,8 +1151,8 @@ async function runMackAdapter(definition: MissionDefinitionV1, observation: Miss
     return { state: evaluation.advancementEligibility === "eligible" ? "success" : "repair", evaluation, reportRef, dispatchEffects: 0 };
   }
   if (projection) return { state: "uncertain", evaluation: null, reportRef: null, dispatchEffects: 0 };
-  const selfRuntime: RuntimeSelfReportUnavailableV1 = { kind: "runtime.self_report.unavailable", reason: "not_reported" };
-  const selfExecutor: ExecutorSelfReportUnavailableV1 = { kind: "executor.self_report.unavailable", reason: "not_reported" };
+  const selfRuntime = runtime.runtimeSelfReport;
+  const selfExecutor = runtime.executorSelfReport;
   const log = nextLogState(replay.entries);
   const started = createSeatDispatchStartedEventV1({
     receiptId, dispatchId, parentMissionId: definition.missionId, parentMissionRevision: definition.definitionRevision, parentSessionId: observation.sessionId,
@@ -1171,6 +1217,7 @@ async function appendStepReceipt(receipt: MissionStepReceiptV1, store: MissionSt
 }
 
 export function compileMissionCycleInputV1(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1): MissionCycleInputV1 {
+  if (validateMissionDefinitionV1(definition).state === "invalid") throw new Error("definition is not canonical");
   const manifest = definition.steps.find((item) => item.stepId === step.stepId);
   const spec = TEMPLATE[definition.pattern];
   const modes = canonicalModes(definition.activatedModes.filter((mode) => mode.seatId === step.seatId));
@@ -1252,7 +1299,7 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
     return { outcome: "advanced", reasonCode: "complete", dispatchEffects: runnerResult.outcome === "advanced" ? 1 : 0, receipt, runnerResult, mackEvaluation: null, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt]) };
   }
   const mack = await runMackAdapter(definition, observation, step, attempt, dependencies.mack);
-  if (mack.state === "blocked" || mack.state === "uncertain") return { ...blocked(mack.state === "uncertain" ? "uncertain_execution" : "mack_blocked", status, mack.state), dispatchEffects: mack.dispatchEffects, mackEvaluation: mack.evaluation };
+  if (mack.state === "blocked" || mack.state === "uncertain") return { ...blocked(mack.state === "uncertain" ? "uncertain_execution" : mack.reasonCode ?? "mack_blocked", status, mack.state), dispatchEffects: mack.dispatchEffects, mackEvaluation: mack.evaluation };
   const condition = mack.state === "success" ? "success" : "repair";
   const edge = outgoing.find((item) => item.condition === condition && (receiptReplay.edgeCounts.get(item.edgeId) ?? 0) < item.maximumTraversals);
   if (!edge) return { ...blocked("repair_exhausted", status), dispatchEffects: mack.dispatchEffects, mackEvaluation: mack.evaluation };

@@ -523,6 +523,18 @@ test("provenance freezes scope, invalidates proofreading on edits, and validates
   };
   const readbackResult = await appendMissionProvenanceRecordV1(readbackThrowStore, records[0], "lock-owner:test");
   assert.deepEqual(readbackResult, { state: "uncertain", code: "recovery_required" });
+  const uncertainAppendStore = { ...store,
+    async replay() { return []; },
+    async append() { return { state: "uncertain", code: "recovery_required" }; },
+    async recover() { throw new Error("recovery unavailable"); },
+  };
+  const recoveryFailure = await appendMissionProvenanceRecordV1(uncertainAppendStore, records[0], "lock-owner:test");
+  assert.deepEqual(recoveryFailure, { state: "uncertain", code: "manual_recovery_required" });
+  const unavailableRecoveryStore = { ...uncertainAppendStore,
+    async recover() { return { state: "blocked", code: "store_unavailable" }; },
+  };
+  const unavailableRecovery = await appendMissionProvenanceRecordV1(unavailableRecoveryStore, records[0], "lock-owner:test");
+  assert.deepEqual(unavailableRecovery, { state: "uncertain", code: "recovery_required" });
 });
 
 test("exact definition provenance is required for proofreading and advance", async () => {
@@ -577,13 +589,83 @@ test("Mack uses bounded host dispatch, replay does not redispatch, and human gat
   assert.equal(h.dispatches, 1);
 });
 
+test("Mack self-reports are preserved and repair exhaustion is deterministic", async () => {
+  const h = harness("delivery", { maximumRepairs: 0 });
+  await advance(h);
+  const mackRuntime = runtime("mack");
+  mackRuntime.runtimeSelfReport = { kind: "runtime.self_report.observed", runtimeId: "runtime:self:mack", model: "model:self", evidenceRefs: ["evidence:self:runtime"] };
+  mackRuntime.executorSelfReport = { kind: "executor.self_report.observed", executorId: "executor:self:mack", evidenceRefs: ["evidence:self:executor"] };
+  const workSeat = h.definition.steps.find((step) => step.adapter === "mission_cycle").seatId;
+  const observed = await advanceMissionV1({ schemaVersion: 1, contractVersion: "mission.advance.v1", definition: h.definition,
+    observation: observation(h, { runtimeBindings: [runtime(workSeat), mackRuntime] }) }, h.dependencies);
+  assert.equal(observed.outcome, "advanced");
+  const started = h.dispatchEntries.find((entry) => entry.kind === "dispatch.started" && entry.accountableSeatId === "mack");
+  assert.equal(started.runtimeSelfReport.runtimeId, "runtime:self:mack");
+  assert.equal(started.executorSelfReport.executorId, "executor:self:mack");
+
+  const exhausted = harness("delivery", { maximumRepairs: 0 });
+  await advance(exhausted);
+  const originalDispatch = exhausted.dependencies.mack.dispatch;
+  exhausted.dependencies.mack.dispatch = async (handoff) => {
+    const result = await originalDispatch(handoff);
+    const report = { ...result.report, status: "fail", recommendedRoute: "may" };
+    const reportRef = `mack-report:${hash("shield.mack-report.v1", report).slice(7)}`;
+    exhausted.reports.set(reportRef, report);
+    return { reportRef, report };
+  };
+  const exhaustedResult = await advance(exhausted);
+  assert.equal(exhaustedResult.outcome, "blocked");
+  assert.equal(exhaustedResult.reasonCode, "repair_exhausted");
+  assert.equal(exhaustedResult.dispatchEffects, 1);
+});
+
+test("altered Mack dispatch identity is receipt-invalid with zero effects", async () => {
+  const h = harness("delivery");
+  await advance(h);
+  await advance(h);
+  const startedIndex = h.dispatchEntries.findIndex((entry) => entry.kind === "dispatch.started" && entry.accountableSeatId === "mack");
+  const completedIndex = h.dispatchEntries.findIndex((entry) => entry.kind === "dispatch.completed" && entry.accountableSeatId === "mack");
+  const started = h.dispatchEntries[startedIndex];
+  const completed = h.dispatchEntries[completedIndex];
+  const { entryDigest: _startedDigest, kind: _startedKind, schemaVersion: _startedSchema, contractVersion: _startedContract, ...startedInput } = started;
+  const alteredStarted = createSeatDispatchStartedEventV1({ ...startedInput, artifactId: "handoff:altered" });
+  const { entryDigest: _completedDigest, schemaVersion: _completedSchema, contractVersion: _completedContract, ...completedInput } = completed;
+  const alteredCompleted = createSeatDispatchLifecycleEventV1({ ...completedInput, artifactId: "handoff:altered", previousLifecycleDigest: alteredStarted.entryDigest, previousLogDigest: alteredStarted.entryDigest });
+  h.dispatchEntries[startedIndex] = alteredStarted;
+  h.dispatchEntries[completedIndex] = alteredCompleted;
+  const result = await advance(h);
+  assert.equal(result.outcome, "blocked");
+  assert.equal(result.reasonCode, "receipt_invalid");
+  assert.equal(result.dispatchEffects, 0);
+  assert.equal(h.dispatches, 1);
+});
+
 test("runner compilation is definition-bound and canonical", () => {
   const h = harness("debug");
   const obs = observation(h);
   const step = h.definition.steps.find((item) => item.adapter === "mission_cycle");
   const compiled = compileMissionCycleInputV1(h.definition, obs, step);
+  assert.deepEqual(compiled, compileMissionCycleInputV1(h.definition, obs, structuredClone(step)));
   assert.deepEqual(compiled.activatedModes, h.definition.activatedModes.filter((mode) => mode.seatId === step.seatId));
   assert.throws(() => compileMissionCycleInputV1(h.definition, obs, { ...step, seatId: "may" }), /runner-backed manifest/);
+  for (const [field, replacement] of [["actionId", "mission.delivery.mutated"], ["effectClass", "verification"], ["seatId", "may"]]) {
+    const mutated = structuredClone(h.definition);
+    mutated.steps[0][field] = replacement;
+    rehashDefinition(mutated);
+    assert.equal(validateMissionDefinitionV1(mutated).state, "invalid", field);
+  }
+});
+
+test("altered step receipts fail replay before any dispatch effect", async () => {
+  const h = harness("delivery");
+  await advance(h);
+  const altered = observation(h);
+  altered.stepReceipts[0].edgeId = "edge:delivery:invalid";
+  const result = await advanceMissionV1({ schemaVersion: 1, contractVersion: "mission.advance.v1", definition: h.definition, observation: altered }, h.dependencies);
+  assert.equal(result.outcome, "blocked");
+  assert.equal(result.reasonCode, "receipt_invalid");
+  assert.equal(result.dispatchEffects, 0);
+  assert.equal(h.dispatches, 0);
 });
 
 test("benchmark contract reports all five before/after metrics", () => {
