@@ -97,6 +97,12 @@ export interface MissionStepManifestV1 {
   readonly requiredCapabilities: readonly string[];
 }
 
+export interface MissionCompilationBindingV1 {
+  readonly definitionRevision: string;
+  readonly validationRevision: string;
+  readonly proofreadAcceptanceDigest: string;
+}
+
 export interface MissionEvidenceContractV1 {
   readonly evidenceContractId: string;
   readonly nodeId: string;
@@ -428,8 +434,16 @@ function digest(domain: string, value: unknown): string {
   return `sha256:${createHash("sha256").update(domain).update("\0").update(canonicalJson(value)).digest("base64url")}`;
 }
 
+export function compareMissionCanonicalTextV1(left: string, right: string): number {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) if (leftBytes[index] !== rightBytes[index]) return leftBytes[index] - rightBytes[index];
+  return leftBytes.length - rightBytes.length;
+}
+
 function canonicalModes(modes: readonly RunnerModeReference[]): RunnerModeReference[] {
-  return modes.map((mode) => ({ ...mode })).sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  return modes.map((mode) => ({ ...mode })).sort((left, right) => compareMissionCanonicalTextV1(canonicalJson(left), canonicalJson(right)));
 }
 
 function validMode(value: unknown): value is RunnerModeReference {
@@ -494,7 +508,7 @@ function evidenceId(pattern: MissionPatternV1, suffix: string): string { return 
 function canonicalManifestSteps(pattern: MissionPatternV1, maximumRepairs: number): MissionStepManifestV1[] {
   const spec = TEMPLATE[pattern];
   return [
-    { stepId: stepId(pattern, "work"), nodeId: nodeId(pattern, "work"), seatId: spec.owner, adapter: "mission_cycle", actionId: spec.action, effectClass: spec.effect, validationId: `validation:${pattern}:work`, promptId: `prompt:${pattern}:${spec.owner}`, handoffId: `handoff:${pattern}:${spec.owner}`, maximumAttempts: 1, requiredCapabilities: ["filesystem_write"] },
+    { stepId: stepId(pattern, "work"), nodeId: nodeId(pattern, "work"), seatId: spec.owner, adapter: "mission_cycle", actionId: spec.action, effectClass: spec.effect, validationId: `validation:${pattern}:work`, promptId: `prompt:${pattern}:${spec.owner}`, handoffId: `handoff:${pattern}:${spec.owner}`, maximumAttempts: 1, requiredCapabilities: pattern === "delivery" ? ["filesystem_write"] : ["filesystem_read"] },
     { stepId: stepId(pattern, "mack"), nodeId: nodeId(pattern, "mack"), seatId: "mack", adapter: "mack_host", actionId: "mission.mack.validate", effectClass: "verification", validationId: `validation:${pattern}:mack`, promptId: `prompt:${pattern}:mack`, handoffId: `handoff:${pattern}:mack`, maximumAttempts: 1 + maximumRepairs, requiredCapabilities: [] },
   ];
 }
@@ -506,13 +520,13 @@ function canonicalGraphShape(pattern: MissionPatternV1, maximumRepairs: number, 
     { nodeId: nodeId(pattern, "mack"), kind: "mack_validation" as const, seatId: "mack" as const, stepId: stepId(pattern, "mack"), terminalReason: null },
     ...humanSeats.map((seatId) => ({ nodeId: nodeId(pattern, seatId), kind: "human_gate" as const, seatId, stepId: null, terminalReason: null })),
     { nodeId: nodeId(pattern, "complete"), kind: "terminal" as const, seatId: null, stepId: null, terminalReason: "complete" as const },
-  ].sort((left, right) => left.nodeId.localeCompare(right.nodeId));
+  ].sort((left, right) => compareMissionCanonicalTextV1(left.nodeId, right.nodeId));
   const edges = ([
     { edgeId: `edge:${pattern}:work:mack`, fromNodeId: nodeId(pattern, "work"), toNodeId: nodeId(pattern, "mack"), condition: "success" as const, evidenceContractId: evidenceId(pattern, "work"), maximumTraversals: 1, priority: 0 },
     { edgeId: `edge:${pattern}:mack:repair`, fromNodeId: nodeId(pattern, "mack"), toNodeId: nodeId(pattern, "mack"), condition: "repair" as const, evidenceContractId: evidenceId(pattern, "mack"), maximumTraversals: maximumRepairs, priority: 1 },
     { edgeId: `edge:${pattern}:mack:${humanSeats[0]}`, fromNodeId: nodeId(pattern, "mack"), toNodeId: nodeId(pattern, humanSeats[0]), condition: "success" as const, evidenceContractId: evidenceId(pattern, "mack"), maximumTraversals: 1, priority: 0 },
     ...humanSeats.map((seatId, index) => ({ edgeId: `edge:${pattern}:${seatId}:${humanSeats[index + 1] ?? "complete"}`, fromNodeId: nodeId(pattern, seatId), toNodeId: nodeId(pattern, humanSeats[index + 1] ?? "complete"), condition: "human_evidence" as const, evidenceContractId: evidenceId(pattern, seatId), maximumTraversals: 1, priority: 0 })),
-  ]).sort((left, right) => left.edgeId.localeCompare(right.edgeId));
+  ]).sort((left, right) => compareMissionCanonicalTextV1(left.edgeId, right.edgeId));
   return { startNodeId: nodeId(pattern, "work"), nodes, edges };
 }
 
@@ -569,8 +583,8 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
       maximumTraversals: 1,
       priority: 0,
     })),
-  ] as MissionGraphEdgeV1[]).sort((left, right) => left.edgeId.localeCompare(right.edgeId));
-  const graphBase = { startNodeId: nodeId(pattern, "work"), nodes: nodes.sort((left, right) => left.nodeId.localeCompare(right.nodeId)), edges };
+  ] as MissionGraphEdgeV1[]).sort((left, right) => compareMissionCanonicalTextV1(left.edgeId, right.edgeId));
+  const graphBase = { startNodeId: nodeId(pattern, "work"), nodes: nodes.sort((left, right) => compareMissionCanonicalTextV1(left.nodeId, right.nodeId)), edges };
   const graph: MissionGraphV1 = { graphRevision: digest("shield.mission-graph.v1", graphBase), ...graphBase };
   const prompts = seats.map((seatId): MissionPromptV1 => {
     const content = buildPrompt(pattern, seatId, candidate.brief.objective);
@@ -744,8 +758,8 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   const reachable = new Set<string>([value.graph?.startNodeId]);
   for (let pass = 0; pass < (value.graph?.nodes.length ?? 0); pass += 1) for (const edge of value.graph?.edges ?? []) if (edge.maximumTraversals > 0 && reachable.has(edge.fromNodeId)) reachable.add(edge.toNodeId);
   if ((value.graph?.nodes ?? []).some((node) => !reachable.has(node.nodeId)) || terminals.some((node) => !reachable.has(node.nodeId))) reasons.push("unreachable_node");
-  if (canonicalJson(value.graph?.nodes) !== canonicalJson([...(value.graph?.nodes ?? [])].sort((a, b) => a.nodeId.localeCompare(b.nodeId)))
-    || canonicalJson(value.graph?.edges) !== canonicalJson([...(value.graph?.edges ?? [])].sort((a, b) => a.edgeId.localeCompare(b.edgeId)))) reasons.push("graph_not_canonical");
+  if (canonicalJson(value.graph?.nodes) !== canonicalJson([...(value.graph?.nodes ?? [])].sort((a, b) => compareMissionCanonicalTextV1(a.nodeId, b.nodeId)))
+    || canonicalJson(value.graph?.edges) !== canonicalJson([...(value.graph?.edges ?? [])].sort((a, b) => compareMissionCanonicalTextV1(a.edgeId, b.edgeId)))) reasons.push("graph_not_canonical");
   if (value.graph?.graphRevision !== digest("shield.mission-graph.v1", graphWithoutRevision(value.graph))) reasons.push("graph_revision_mismatch");
   if (spec && canonicalJson({ startNodeId: value.graph?.startNodeId, nodes: value.graph?.nodes, edges: value.graph?.edges }) !== canonicalJson(canonicalGraphShape(value.pattern, value.repairPolicy?.maximumRepairs ?? -1, participantIds.has("simmons")))) reasons.push("graph_shape_invalid");
   if (!exact(value.repairPolicy, ["maximumRepairs", "exhaustedRoute"]) || !Number.isSafeInteger(value.repairPolicy.maximumRepairs) || value.repairPolicy.maximumRepairs < 0 || value.repairPolicy.maximumRepairs > MISSION_BUILDER_MAX_REPAIRS || value.repairPolicy.exhaustedRoute !== "hill"
@@ -792,7 +806,7 @@ export function replayMissionProvenanceV1(input: unknown): Readonly<{ state: "va
     if (record.kind === "definition.edited") {
       if (record.actorSeatId !== "hill" || record.parentDefinitionRevision !== definition || record.definitionRevision === definition || record.editedDigest === null
         || record.editRecord.length === 0 || record.validationRevision !== null || record.proofreadAcceptanceDigest !== null
-        || canonicalJson(record.editRecord) !== canonicalJson([...record.editRecord].sort((left, right) => `${left.target}:${left.targetId}`.localeCompare(`${right.target}:${right.targetId}`)))
+        || canonicalJson(record.editRecord) !== canonicalJson([...record.editRecord].sort((left, right) => compareMissionCanonicalTextV1(`${left.target}:${left.targetId}`, `${right.target}:${right.targetId}`)))
         || new Set(record.editRecord.map((edit) => `${edit.target}:${edit.targetId}`)).size !== record.editRecord.length) return { state: "invalid", code: "edit_record_invalid" };
       parentDefinition = definition; definition = record.definitionRevision; editedDigest = record.editedDigest; validation = null; acceptance = null;
     } else if (record.definitionRevision !== definition || record.editedDigest !== editedDigest) return { state: "invalid", code: "stale_definition" };
@@ -914,7 +928,7 @@ export function editMissionDefinitionTextV1(input: unknown): Readonly<{ state: "
     if (!exact(item, ["target", "targetId", "replacement"]) || !["prompt", "handoff"].includes(String(item.target)) || !ID.test(String(item.targetId)) || typeof item.replacement !== "string" || item.replacement.length === 0 || item.replacement.length > 4096) return { state: "blocked", definition: null, record: null };
     edits.push(item as typeof edits[number]);
   }
-  edits.sort((a, b) => `${a.target}:${a.targetId}`.localeCompare(`${b.target}:${b.targetId}`));
+  edits.sort((a, b) => compareMissionCanonicalTextV1(`${a.target}:${a.targetId}`, `${b.target}:${b.targetId}`));
   if (new Set(edits.map((item) => `${item.target}:${item.targetId}`)).size !== edits.length) return { state: "blocked", definition: null, record: null };
   let matched = 0;
   const prompts = checked.value.prompts.map((prompt) => { const edit = edits.find((item) => item.target === "prompt" && item.targetId === prompt.promptId); if (!edit) return prompt; matched += 1; return { ...prompt, source: "hill_edited" as const, content: edit.replacement, contentDigest: digest("shield.mission-prompt.v1", edit.replacement) }; });
@@ -945,6 +959,20 @@ export function createMissionValidationRecordV1(input: unknown): MissionProvenan
     templateVersion: 1, intakeRevisionId: checked.value.intakeRevisionId, generatedDigest: checked.value.provenance.generatedDigest, editedDigest: checked.value.provenance.editedDigest,
     editRecord: [], validationRevision, proofreadAcceptanceDigest: null, previousRecordDigest: replay.value.lastRecordDigest, actorArtifactId: checked.value.definitionRevision, actorReceiptId: null,
   });
+}
+
+export function finalizeMissionProvenanceRecordV1(input: unknown): MissionProvenanceRecordV1 | null {
+  if (!exact(input, ["proposal", "priorReplay", "actorReceiptEntries", "actorReceiptId"]) || !exact(input.proposal, PROVENANCE_FIELDS)
+    || input.proposal.actorReceiptId !== null || typeof input.actorReceiptId !== "string" || !ID.test(input.actorReceiptId)
+    || !dense(input.priorReplay, 256) || !dense(input.actorReceiptEntries, 512)) return null;
+  const prior = replayMissionProvenanceV1(input.priorReplay);
+  if (prior.state === "invalid" || input.proposal.sequence !== prior.value.records.length || input.proposal.previousRecordDigest !== prior.value.lastRecordDigest) return null;
+  const proposal = { ...input.proposal, actorReceiptId: input.actorReceiptId, recordDigest: "" } as MissionProvenanceRecordV1;
+  const { recordDigest: _ignored, ...content } = proposal;
+  const record = { ...proposal, recordDigest: digest("shield.mission-provenance.v1", content) };
+  const actorReceipts = replaySeatDispatchReceiptsV1(input.actorReceiptEntries);
+  if (!actorReceiptMatches(record, actorReceipts, null)) return null;
+  return replayMissionProvenanceV1([...prior.value.records, record]).state === "valid" ? freeze(record) : null;
 }
 
 function stepReceiptDigest(receipt: Omit<MissionStepReceiptV1, "receiptDigest">): string { return digest("shield.mission-step-receipt.v1", receipt); }
@@ -1070,7 +1098,7 @@ export function projectMissionStatusV1(definitionInput: unknown, receiptsInput: 
   const replay = replayStepReceipts(checked.value, receiptsInput);
   if (replay.state === "invalid") return freeze({ schemaVersion: 1, contractVersion: "mission.status.v1", missionId: checked.value.missionId, definitionRevision: checked.value.definitionRevision, currentState: "blocked", currentNodeId: checked.value.graph.startNodeId, activeSeatId: null, completedEvidence: [], nextTransition: null, stopReason: "invalid_replay" });
   const node = checked.value.graph.nodes.find((item) => item.nodeId === replay.currentNodeId)!;
-  const outgoing = checked.value.graph.edges.filter((edge) => edge.fromNodeId === node.nodeId && (replay.edgeCounts.get(edge.edgeId) ?? 0) < edge.maximumTraversals).sort((a, b) => a.priority - b.priority || a.edgeId.localeCompare(b.edgeId));
+  const outgoing = checked.value.graph.edges.filter((edge) => edge.fromNodeId === node.nodeId && (replay.edgeCounts.get(edge.edgeId) ?? 0) < edge.maximumTraversals).sort((a, b) => a.priority - b.priority || compareMissionCanonicalTextV1(a.edgeId, b.edgeId));
   const completed = [...new Set(replay.evidence)].sort();
   return freeze({
     schemaVersion: 1, contractVersion: "mission.status.v1", missionId: checked.value.missionId, definitionRevision: checked.value.definitionRevision,
@@ -1288,7 +1316,7 @@ async function appendStepReceipt(receipt: MissionStepReceiptV1, expectedReceipts
   catch { return "uncertain"; }
 }
 
-export function compileMissionCycleInputV1(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1): MissionCycleInputV1 {
+function compileMissionCycleInputRaw(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1): MissionCycleInputV1 {
   if (validateMissionDefinitionV1(definition).state === "invalid") throw new Error("definition is not canonical");
   const manifest = definition.steps.find((item) => item.stepId === step.stepId);
   const spec = TEMPLATE[definition.pattern];
@@ -1311,6 +1339,20 @@ export function compileMissionCycleInputV1(definition: MissionDefinitionV1, obse
   });
 }
 
+export function compileMissionCycleInputV1(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1, binding: MissionCompilationBindingV1): MissionCycleInputV1 & { readonly compiledArtifactId: string } {
+  if (!exact(binding, ["definitionRevision", "validationRevision", "proofreadAcceptanceDigest"])
+    || binding.definitionRevision !== definition.definitionRevision
+    || !DIGEST.test(binding.validationRevision) || !DIGEST.test(binding.proofreadAcceptanceDigest)) throw new Error("compilation binding is stale");
+  const provenance = replayMissionProvenanceV1(observation.provenanceRecords);
+  if (provenance.state === "invalid" || provenance.value.definitionRevision !== binding.definitionRevision
+    || provenance.value.validationRevision !== binding.validationRevision || provenance.value.proofreadAcceptanceDigest !== binding.proofreadAcceptanceDigest) throw new Error("compilation binding is stale");
+  const compiled = compileMissionCycleInputRaw(definition, observation, step);
+  return freeze({ ...compiled, compiledArtifactId: digest("shield.mission-cycle-compiled-artifact.v1", {
+    definitionRevision: binding.definitionRevision, validationRevision: binding.validationRevision, proofreadAcceptanceDigest: binding.proofreadAcceptanceDigest,
+    missionId: compiled.missionId, seatId: compiled.seatId, actionId: compiled.actionId, effectClass: compiled.effectClass,
+  }) });
+}
+
 export async function advanceMissionV1(input: unknown, dependencies: MissionAdvanceDependenciesV1): Promise<MissionAdvanceResultV1> {
   if (!exact(input, ["schemaVersion", "contractVersion", "definition", "observation"]) || input.schemaVersion !== 1 || input.contractVersion !== "mission.advance.v1") return blocked("input_invalid");
   let checked: ReturnType<typeof validateMissionDefinitionV1>;
@@ -1331,7 +1373,7 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
   if (receiptReplay.exhausted) return blocked("repair_exhausted", status);
   const node = definition.graph.nodes.find((item) => item.nodeId === receiptReplay.currentNodeId)!;
   if (node.kind === "terminal") return { outcome: "complete", reasonCode: "complete", dispatchEffects: 0, receipt: null, runnerResult: null, mackEvaluation: null, status };
-  const outgoing = definition.graph.edges.filter((edge) => edge.fromNodeId === node.nodeId).sort((a, b) => a.priority - b.priority || a.edgeId.localeCompare(b.edgeId));
+  const outgoing = definition.graph.edges.filter((edge) => edge.fromNodeId === node.nodeId).sort((a, b) => a.priority - b.priority || compareMissionCanonicalTextV1(a.edgeId, b.edgeId));
   const previousReceiptDigest = receiptReplay.receipts.at(-1)?.receiptDigest ?? null;
   if (node.kind === "human_gate") {
     const edge = outgoing.find((item) => item.condition === "human_evidence");
@@ -1356,7 +1398,10 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
   if (attempt > step.maximumAttempts) return blocked("repair_exhausted", status);
   if (step.adapter === "mission_cycle") {
     if (!observation.actionAllowlist.includes(step.actionId)) return blocked("observation_mismatch", status);
-    const cycleInput = compileMissionCycleInputV1(definition, observation, step);
+    const compiledArtifact = compileMissionCycleInputV1(definition, observation, step, {
+      definitionRevision: definition.definitionRevision, validationRevision: provenance.value.validationRevision!, proofreadAcceptanceDigest: provenance.value.proofreadAcceptanceDigest!,
+    });
+    const { compiledArtifactId: _compiledArtifactId, ...cycleInput } = compiledArtifact;
     const identity = deriveMissionCycleIdentityV1(cycleInput);
     const runtimeBinding = observation.runtimeBindings.find((item) => item.seatId === step.seatId);
     if (observation.permissionContext.decisionId !== identity.decisionId || runtimeBinding?.runtimeHostObserved.kind !== "runtime.host_observed"

@@ -12,7 +12,9 @@ import {
   createMissionProofreadingAcceptanceV1,
   createMissionValidationRecordV1,
   editMissionDefinitionTextV1,
+  finalizeMissionProvenanceRecordV1,
   missionBuilderBenchmarkV1,
+  compareMissionCanonicalTextV1,
   projectMissionStatusV1,
   replayMissionProvenanceV1,
   validateMissionDefinitionV1,
@@ -204,6 +206,7 @@ function runtime(seatId) {
 
 function permissionContext(definition, journal) {
   const step = definition.steps.find((item) => item.adapter === "mission_cycle");
+  const requiredCapabilities = [...step.requiredCapabilities];
   const cycleInput = {
     repositoryRoot: "/workspace/repository", configuredJournalPath: ".shield/journal.jsonl", missionId: definition.missionId,
     expectedSubjectId: definition.subjectId, expectedRevisionId: journal.projection.brief.revisionId, expectedSequence: journal.projection.lastSequence,
@@ -216,20 +219,20 @@ function permissionContext(definition, journal) {
     permissionContractVersion: 1, journalSchemaVersion: 9, missionId: definition.missionId, subjectId: definition.subjectId,
     missionRevisionId: journal.projection.brief.revisionId, artifactRevisionId: definition.repositoryRevision, evaluatedThroughSequence,
     reasoningRuntimeId: `runtime:${step.seatId}`, toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId,
-    canonicalWritableRoot: "/workspace/repository", branch: "agent/mission-builder-test", requiredCapabilities: ["filesystem_write"],
+    canonicalWritableRoot: "/workspace/repository", branch: "agent/mission-builder-test", requiredCapabilities,
     activeBindings: [{
       bindingSchemaVersion: 1, bindingId: `runtime-binding:${step.seatId}:builder`, bindingVersion: 1, missionId: definition.missionId,
       subjectId: definition.subjectId, missionRevisionId: journal.projection.brief.revisionId, seatId: step.seatId,
       reasoningRuntimeId: `runtime:${step.seatId}`, toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId,
       canonicalWritableRoot: "/workspace/repository", branch: "agent/mission-builder-test", artifactRevisionId: definition.repositoryRevision,
       recordedAtSequence: 1, activeThroughSequence: null, lifecycleState: "active",
-      approvedScope: { actionIds: [step.actionId], effectClasses: [step.effectClass], effectKeys: [identity.effectKey], capabilities: ["filesystem_write"] },
+      approvedScope: { actionIds: [step.actionId], effectClasses: [step.effectClass], effectKeys: [identity.effectKey], capabilities: requiredCapabilities },
       coulsonAuthorizationRef: "evidence:coulson:mission_authorization",
     }],
     attestations: [
       { attestationSchemaVersion: 1, attestationId: "attestation:root", kind: "repository_root", hostId: "host:test", toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: null, observedValue: "/workspace/repository", observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
       { attestationSchemaVersion: 1, attestationId: "attestation:write", kind: "writability", hostId: "host:test", toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: null, observedValue: true, observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
-      { attestationSchemaVersion: 1, attestationId: "attestation:filesystem", kind: "capability", hostId: "host:test", toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: "filesystem_write", observedValue: true, observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" },
+      ...requiredCapabilities.map((capability) => ({ attestationSchemaVersion: 1, attestationId: `attestation:${capability}`, kind: "capability", hostId: "host:test", toolExecutorId: `executor:${step.seatId}`, repositoryId: definition.repositoryId, canonicalWritableRoot: "/workspace/repository", capabilityId: capability, observedValue: true, observedAt: OBSERVED_AT, expiresAt: "2026-08-10T19:00:00.000Z" })),
     ],
     evaluatedAt: OBSERVED_AT, decisionId: identity.decisionId,
   };
@@ -285,7 +288,7 @@ function harness(pattern = "delivery", options = {}) {
             evaluatedThroughSequence: plan.evaluatedThroughSequence, cycleId: plan.cycleId, seatId: plan.seatId, actionId: plan.actionId,
             effectClass: plan.effectClass, effectKey: plan.effectKey, summary: "Bounded pattern execution completed.", evidenceRefs: ["evidence:runner:success"] };
         },
-        requiredCapabilities: () => ["filesystem_write"],
+        requiredCapabilities: (plan) => [...built.definition.steps.find((item) => item.stepId === `step:${pattern}:work`).requiredCapabilities],
         validate: async (plan) => ({ runnerContractVersion: 1, outcome: "passed", missionId: plan.missionId, subjectId: plan.subjectId,
           revisionId: plan.revisionId, evaluatedThroughSequence: plan.evaluatedThroughSequence, cycleId: plan.cycleId,
           validationId: plan.validationId, effectKey: plan.effectKey, summary: "Focused validation passed." }),
@@ -368,6 +371,18 @@ test("wrong-seat pattern activation and wrong-seat host runtime fail before runn
   assert.equal(result.reasonCode, "observation_mismatch");
   assert.equal(result.dispatchEffects, 0);
   assert.equal(h.executedPlans.length, 0);
+});
+
+test("non-mutating Daisy and Fury patterns reject write-capable manifests before effects", async () => {
+  for (const pattern of ["debug", "recon", "planning", "review"]) {
+    const h = harness(pattern);
+    const mutated = structuredClone(h.definition);
+    mutated.steps[0].requiredCapabilities = ["filesystem_write"];
+    rehashDefinition(mutated);
+    assert.equal(validateMissionDefinitionV1(mutated).state, "invalid", pattern);
+    const result = await advanceMissionV1({ schemaVersion: 1, contractVersion: "mission.advance.v1", definition: mutated, observation: observation(h), }, h.dependencies);
+    assert.equal(result.outcome, "blocked"); assert.equal(result.dispatchEffects, 0); assert.equal(h.executedPlans.length, 0);
+  }
 });
 
 test("runtime identity bindings are exact, disjoint, and nested failures stop before dependencies", async () => {
@@ -557,24 +572,25 @@ test("edited definitions revalidate, proofread, and advance only through the exa
   const edited = editMissionDefinitionTextV1({ definition: h.definition, provenanceRecords: h.provenanceRecords,
     edits: [{ target: "prompt", targetId: h.definition.prompts[0].promptId, replacement: "Edited bounded implementation prompt." }] });
   assert.equal(edited.state, "edited");
-  const afterEdit = [...h.provenanceRecords, edited.record];
+  let previousLogDigest = h.dispatchEntries.at(-1).entryDigest;
+  const finalize = (proposal, priorReplay, seatId, receiptId) => {
+    const entries = provenanceLifecycle(edited.definition, seatId, receiptId, edited.definition.definitionRevision, h.dispatchEntries.length, previousLogDigest);
+    h.dispatchEntries.push(...entries); previousLogDigest = entries.at(-1).entryDigest;
+    return finalizeMissionProvenanceRecordV1({ proposal, priorReplay, actorReceiptEntries: h.dispatchEntries, actorReceiptId: receiptId });
+  };
+  const finalizedEdit = finalize(edited.record, h.provenanceRecords, "hill", "receipt:provenance:edited");
+  assert.ok(finalizedEdit);
+  const afterEdit = [...h.provenanceRecords, finalizedEdit];
   const validation = createMissionValidationRecordV1({ definition: edited.definition, provenanceRecords: afterEdit });
   assert.ok(validation);
-  const afterValidation = [...afterEdit, validation];
+  const finalizedValidation = finalize(validation, [...h.provenanceRecords, finalizedEdit], "may", "receipt:provenance:revalidated");
+  assert.ok(finalizedValidation);
+  const afterValidation = [...afterEdit, finalizedValidation];
   const proofreading = createMissionProofreadingAcceptanceV1({ definition: edited.definition, provenanceRecords: afterValidation });
   assert.ok(proofreading);
-  let priorRecordDigest = null;
-  const records = [...afterValidation, proofreading].map((record, index, all) => {
-    const actorReceiptId = record.kind === "definition.edited" ? "receipt:provenance:edited" : record.kind === "definition.validated" && index === all.length - 2 ? "receipt:provenance:revalidated" : record.kind === "proofreading.accepted" && index === all.length - 1 ? "receipt:provenance:reproofreading" : record.actorReceiptId;
-    const value = { ...record, actorReceiptId, previousRecordDigest: priorRecordDigest };
-    const { recordDigest: _ignored, ...content } = value;
-    const result = { ...value, recordDigest: hash("shield.mission-provenance.v1", content) }; priorRecordDigest = result.recordDigest; return result;
-  });
-  let previousLogDigest = h.dispatchEntries.at(-1).entryDigest;
-  for (const [seatId, receiptId, artifactId] of [["hill", "receipt:provenance:edited", edited.definition.definitionRevision], ["may", "receipt:provenance:revalidated", edited.definition.definitionRevision], ["hill", "receipt:provenance:reproofreading", edited.definition.definitionRevision]]) {
-    const entries = provenanceLifecycle(edited.definition, seatId, receiptId, artifactId, h.dispatchEntries.length, previousLogDigest);
-    h.dispatchEntries.push(...entries); previousLogDigest = entries.at(-1).entryDigest;
-  }
+  const finalizedProofreading = finalize(proofreading, [...h.provenanceRecords, finalizedEdit, finalizedValidation], "hill", "receipt:provenance:reproofreading");
+  assert.ok(finalizedProofreading);
+  const records = [...h.provenanceRecords, finalizedEdit, finalizedValidation, finalizedProofreading];
   h.definition = edited.definition; h.provenanceRecords = records; h.stepReceipts.length = 0; h.audit.length = 0;
   assert.equal(replayMissionProvenanceV1(records).state, "valid", JSON.stringify(replayMissionProvenanceV1(records)));
   assert.equal(replaySeatDispatchReceiptsV1(h.dispatchEntries).state, "valid");
@@ -740,16 +756,25 @@ test("runner compilation is definition-bound and canonical", () => {
   const h = harness("debug");
   const obs = observation(h);
   const step = h.definition.steps.find((item) => item.adapter === "mission_cycle");
-  const compiled = compileMissionCycleInputV1(h.definition, obs, step);
-  assert.deepEqual(compiled, compileMissionCycleInputV1(h.definition, obs, structuredClone(step)));
+  const compiledBinding = { definitionRevision: h.definition.definitionRevision, validationRevision: h.provenanceRecords[1].validationRevision, proofreadAcceptanceDigest: h.provenanceRecords[2].proofreadAcceptanceDigest };
+  const compiled = compileMissionCycleInputV1(h.definition, obs, step, compiledBinding);
+  assert.deepEqual(compiled, compileMissionCycleInputV1(h.definition, obs, structuredClone(step), compiledBinding));
   assert.deepEqual(compiled.activatedModes, h.definition.activatedModes.filter((mode) => mode.seatId === step.seatId));
-  assert.throws(() => compileMissionCycleInputV1(h.definition, obs, { ...step, seatId: "may" }), /runner-backed manifest/);
+  assert.throws(() => compileMissionCycleInputV1(h.definition, obs, { ...step, seatId: "may" }), /runner-backed manifest|stale/);
   for (const [field, replacement] of [["actionId", "mission.delivery.mutated"], ["effectClass", "verification"], ["seatId", "may"]]) {
     const mutated = structuredClone(h.definition);
     mutated.steps[0][field] = replacement;
     rehashDefinition(mutated);
     assert.equal(validateMissionDefinitionV1(mutated).state, "invalid", field);
   }
+  const edited = editMissionDefinitionTextV1({ definition: h.definition, provenanceRecords: h.provenanceRecords, edits: [{ target: "prompt", targetId: h.definition.prompts[0].promptId, replacement: "post-edit" }] });
+  assert.equal(edited.state, "edited");
+  assert.throws(() => compileMissionCycleInputV1(edited.definition, obs, edited.definition.steps.find((item) => item.adapter === "mission_cycle"), compiledBinding), /stale/);
+});
+
+test("canonical mission ordering is explicit UTF-8 byte order for mixed case and punctuation", () => {
+  const values = ["a", "A", "a-", "a:", "a_", "ä"];
+  assert.deepEqual([...values].sort(compareMissionCanonicalTextV1), ["A", "a", "a-", "a:", "a_", "ä"]);
 });
 
 test("altered step receipts fail replay before any dispatch effect", async () => {
