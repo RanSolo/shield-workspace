@@ -9,6 +9,7 @@ const commands = new Map([
   ["evidence run", "evidence-run.mjs"],
   ["acceptance check", "acceptance-check.mjs"],
   ["flight status", "feature-flight-controller.mjs"],
+  ["flight run", "feature-flight-run.mjs"],
 ]);
 
 function usage() {
@@ -17,6 +18,7 @@ function usage() {
     "  shield-ops evidence run --spec FILE --expected-spec-sha256 SHA256 --command-id ID --output FILE",
     "  shield-ops acceptance check --spec FILE --manifest FILE --expected-spec-sha256 SHA256 [options]",
     "  shield-ops flight status --plan FILE --expected-plan-sha256 SHA256 --state FILE --expected-state-sha256 SHA256 --expected-state-sequence N [predecessor options]",
+    "  shield-ops flight run --input FILE",
     "",
     "The evidence v2 commands report advisory structural consistency only. Their",
     "results have authority:none, effectContainment:uncertain, and gateEligible:false.",
@@ -25,6 +27,8 @@ function usage() {
     "empty, non-symlink regular files with mode 0600.",
     "Flight status is stdout-only, proves at most one immediate predecessor edge,",
     "and never dispatches or grants authority.",
+    "Flight run performs one maxSteps=1 signed Daisy proving preflight. It does not",
+    "grant authority, review, acceptance, publication, merge, deploy, or release rights.",
   ].join("\n");
 }
 

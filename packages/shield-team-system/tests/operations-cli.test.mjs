@@ -14,6 +14,8 @@ test("operations CLI describes the non-authoritative evidence surface", () => {
   assert.match(result.stdout, /--expected-spec-sha256/u);
   assert.match(result.stdout, /--manifest/u);
   assert.match(result.stdout, /shield-ops flight status/u);
+  assert.match(result.stdout, /shield-ops flight run --input FILE/u);
+  assert.match(result.stdout, /maxSteps=1/u);
   assert.match(result.stdout, /--expected-plan-sha256/u);
   assert.match(result.stdout, /stdout-only/u);
   assert.match(result.stdout, /advisory structural consistency only/u);
@@ -27,6 +29,18 @@ test("operations CLI routes flight status help through the real command", () => 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /shield-ops flight status/u);
   assert.match(result.stdout, /--expected-predecessor-sha256/u);
+});
+
+test("operations CLI routes flight run help and argument rejection through the real command", () => {
+  const help = spawnSync(process.execPath, [cli, "flight", "run", "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /shield-ops flight run --input FILE/u);
+
+  for (const args of [["flight", "run"], ["flight", "run", "--unknown", "x"], ["flight", "run", "--input", ""]]) {
+    const result = spawnSync(process.execPath, [cli, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /SHIELD flight run/u);
+  }
 });
 
 test("operations CLI fails closed on every flight argument class before projection", () => {

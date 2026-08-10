@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createAuditedExecutor,
   createPermissionAuthorizer,
+  createRunnerPermissionDecisionV1,
   createRuntimeClaimedExecutorV1,
   evaluatePermission,
   replayRuntimeInvocationClaimsV1,
@@ -192,6 +193,23 @@ test("pure evaluator exact-matches all three identities, scope, revisions, and a
   assert.equal(evaluatePermission(plan({ actionId: "deploy" }), context()).reasonCode, "action_out_of_scope");
   assert.equal(evaluatePermission(plan(), context({ attestations: [] })).reasonCode, "attestation_missing");
   assert.equal(evaluatePermission(plan(), context({ evaluatedAt: "2026-07-20T02:11:00Z" })).reasonCode, "attestation_stale");
+});
+
+test("pure Runner decision performs no audit write and returns an immutable exact allow", () => {
+  const frozenContext = context();
+  const before = JSON.stringify(frozenContext);
+  const decision = createRunnerPermissionDecisionV1(plan(), frozenContext);
+  assert.equal(decision.outcome, "allow");
+  assert.equal(decision.reasonCode, "permission_allowed");
+  assert.equal(decision.effectKey, plan().effectKey);
+  assert.equal(decision.authorizationArtifact.payload.bindingId, binding().bindingId);
+  assert.equal(Object.isFrozen(decision), true);
+  assert.equal(Object.isFrozen(decision.authorizationArtifact.payload), true);
+  assert.equal(JSON.stringify(frozenContext), before);
+
+  const denied = createRunnerPermissionDecisionV1(plan({ effectKey: "effect:substituted" }), frozenContext);
+  assert.equal(denied.outcome, "deny");
+  assert.equal(denied.reasonCode, "effect_key_out_of_scope");
 });
 
 test("authorizer requires a matching atomic append receipt before returning allow and rejects reuse", async () => {
