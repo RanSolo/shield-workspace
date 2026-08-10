@@ -35,6 +35,7 @@ import { FLIGHT_PLAN_NOTICE, FLIGHT_STATE_NOTICE } from "../scripts/operations/f
 
 const IMPLEMENTATION_PATHS = ["packages/shield-team-system/scripts/operations/feature-flight-review-gates.mjs"];
 const TEST_SURFACES = ["packages/shield-team-system/tests/operations-feature-flight-review-gates.test.mjs"];
+const anchoredReadbackSupported = ["darwin", "linux"].includes(process.platform);
 const execFile = promisify(execFileCallback);
 const runnerPath = fileURLToPath(new URL("../scripts/model/mack-validation-runner.mjs", import.meta.url));
 
@@ -409,8 +410,8 @@ test("missing Mack evidence stops at the exact protected request and identical b
   const second = await projectFeatureFlightReviewGatesV1(f.input, f.dependencies);
   assert.deepEqual(second, first);
   assert.equal(FEATURE_FLIGHT_REVIEW_GATES_CONTRACT_VERSION, "1.0.0");
-  assert.equal(first.checkpoint.stopCode, "mack_validation_required");
-  assert.equal(first.checkpoint.gateSeatId, "mack");
+  assert.equal(first.checkpoint.stopCode, anchoredReadbackSupported ? "mack_validation_required" : "mack_registry_recovery_required");
+  assert.equal(first.checkpoint.gateSeatId, anchoredReadbackSupported ? "mack" : null);
   assert.equal(first.checkpoint.authority, "none");
   assert.equal(first.checkpoint.gateEligible, false);
   assert.notEqual(first.checkpoint.binding.executionMissionId, first.checkpoint.binding.reviewMissionId);
@@ -419,7 +420,7 @@ test("missing Mack evidence stops at the exact protected request and identical b
   assert.equal(first.checkpoint.binding.currentReviewRevision, A);
 });
 
-test("current Mack, Fury, and Fitz pass only to the fixed unsatisfied Coulson final stop", async (t) => {
+test("current Mack, Fury, and Fitz pass only to the fixed unsatisfied Coulson final stop", { skip: !anchoredReadbackSupported }, async (t) => {
   const f = await fixture({ review: { furyVerdict: "approved", fitzDecision: "approved" } }); t.after(() => rm(f.parent, { recursive: true, force: true }));
   const result = await projectFeatureFlightReviewGatesV1(f.input, f.dependencies);
   assert.equal(result.checkpoint.gates.mack.state, "pass");
@@ -440,8 +441,8 @@ test("controller rejects Mack reader injection and cannot convert an absent prot
   await assert.rejects(() => projectFeatureFlightReviewGatesV1(f.input, injected), /unknown or non-data field/u);
   assert.equal(fakeCalls, 0);
   const result = await projectFeatureFlightReviewGatesV1(f.input, f.dependencies);
-  assert.equal(result.checkpoint.gates.mack.state, "waiting");
-  assert.equal(result.checkpoint.stopCode, "mack_validation_required");
+  assert.equal(result.checkpoint.gates.mack.state, anchoredReadbackSupported ? "waiting" : "recovery");
+  assert.equal(result.checkpoint.stopCode, anchoredReadbackSupported ? "mack_validation_required" : "mack_registry_recovery_required");
 });
 
 test("retained store hierarchy and shared fixed Daisy policy reject independent substitutions", async (t) => {
@@ -489,7 +490,7 @@ test("Mack protected-registry recovery has a dedicated seatless stop", async (t)
   assert.equal(result.checkpoint.investigationSuggestionSeatId, null);
 });
 
-test("real production Mack routes preserve mack, fury, and advisory-pass classifications", async (t) => {
+test("real production Mack routes preserve mack, fury, and advisory-pass classifications", { skip: !anchoredReadbackSupported }, async (t) => {
   for (const vector of [
     { profile: "mack", stopCode: "mack_validation_revise", correction: "mack", investigation: null },
     { profile: "fury", stopCode: "mack_validation_blocked", correction: null, investigation: "fury" },
@@ -509,7 +510,7 @@ test("real production Mack routes preserve mack, fury, and advisory-pass classif
   assert.equal(result.checkpoint.stopCode, "coulson_final_acceptance_required");
 });
 
-test("Fury changes_requested preserves the validated nextActionSeatId exactly", async (t) => {
+test("Fury changes_requested preserves the validated nextActionSeatId exactly", { skip: !anchoredReadbackSupported }, async (t) => {
   const f = await fixture({ review: { furyVerdict: "changes_requested", furyNextSeat: "daisy" } }); t.after(() => rm(f.parent, { recursive: true, force: true }));
   const result = await projectFeatureFlightReviewGatesV1(f.input, f.dependencies);
   assert.equal(result.checkpoint.stopCode, "fury_review_changes_requested");
@@ -528,12 +529,12 @@ test("A to B supersession keeps A stale, restarts at Mack, then exposes current-
   const current = await fixture({ review: { revision: B, staleHistory: true } });
   t.after(() => rm(current.parent, { recursive: true, force: true }));
   result = await projectFeatureFlightReviewGatesV1(current.input, current.dependencies);
-  assert.equal(result.checkpoint.gates.mack.state, "pass");
+  assert.equal(result.checkpoint.gates.mack.state, anchoredReadbackSupported ? "pass" : "recovery");
   assert.equal(result.checkpoint.gates.fury.state, "stale");
-  assert.equal(result.checkpoint.stopCode, "fury_review_stale");
+  assert.equal(result.checkpoint.stopCode, anchoredReadbackSupported ? "fury_review_stale" : "mack_registry_recovery_required");
 });
 
-test("conditional Simmons remains a distinct human-only stop and non-approval names no correction seat", async (t) => {
+test("conditional Simmons remains a distinct human-only stop and non-approval names no correction seat", { skip: !anchoredReadbackSupported }, async (t) => {
   const waiting = await fixture({ review: { requireSimmons: true, furyVerdict: "approved", fitzDecision: "approved" } });
   t.after(() => rm(waiting.parent, { recursive: true, force: true }));
   let result = await projectFeatureFlightReviewGatesV1(waiting.input, waiting.dependencies);
@@ -547,7 +548,7 @@ test("conditional Simmons remains a distinct human-only stop and non-approval na
   assert.equal(result.checkpoint.correctionSeatId, null);
 });
 
-test("the closed Mack and Fitz stop matrix preserves correction, investigation, gate, and rejection identities", async (t) => {
+test("the closed Mack and Fitz stop matrix preserves correction, investigation, gate, and rejection identities", { skip: !anchoredReadbackSupported }, async (t) => {
   const vectors = [
     {
       name: "Mack May revision",

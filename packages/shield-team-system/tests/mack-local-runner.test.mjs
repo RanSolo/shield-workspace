@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test, { after } from "node:test";
 
@@ -20,6 +20,7 @@ import {
 const execFile = promisify(execFileCallback);
 const runnerPath = fileURLToPath(new URL("../scripts/model/mack-validation-runner.mjs", import.meta.url));
 const emptyDigest = "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU";
+const anchoredReadbackSupported = ["darwin", "linux"].includes(process.platform);
 let requestCounter = 0;
 const replayParent = await realpath(await mkdtemp(join(tmpdir(), "shield-mack-replay-tests-")));
 const replayRegistryRoot = join(replayParent, "registry");
@@ -231,10 +232,9 @@ test("protected production readback is pinned to one request ID and digest and r
   const normalized = normalizeMackLocalValidationRequestV1(request);
   assert.equal(normalized.state, "valid");
   const binding = { replayRegistryRoot: root, validationRequestId: request.validationRequestId, requestDigest: normalized.requestDigest };
-  assert.deepEqual(await readMackProductionValidationRegistryV1(request, binding), {
-    state: "invalid",
-    reasonCode: "mack_production_evidence_invalid",
-  });
+  assert.deepEqual(await readMackProductionValidationRegistryV1(request, binding), anchoredReadbackSupported ? {
+    state: "invalid", reasonCode: "mack_production_evidence_invalid",
+  } : { state: "recovery", reasonCode: "mack_registry_readback_uncertain" });
   assert.equal((await readMackProductionValidationRegistryV1(request, { ...binding, requestDigest: `sha256:${"Z".repeat(43)}` })).state, "invalid");
   const absent = structuredClone(request);
   absent.validationRequestId = `${request.validationRequestId}:absent`;
@@ -244,7 +244,7 @@ test("protected production readback is pinned to one request ID and digest and r
     replayRegistryRoot: root,
     validationRequestId: absent.validationRequestId,
     requestDigest: absentNormalized.requestDigest,
-  })).state, "waiting");
+  })).state, anchoredReadbackSupported ? "waiting" : "recovery");
 });
 
 test("protected production readback retains registry-root identity across replacement", async (t) => {
@@ -656,9 +656,68 @@ test("real Git objects, no-shell command execution, and native no-tool inference
     validationRequestId: cliRequest.validationRequestId,
     requestDigest: normalizedCliRequest.requestDigest,
   });
-  assert.equal(protectedReadback.state, "verified");
-  assert.deepEqual(protectedReadback.evidence, productionEvidence);
-  assert.equal(protectedReadback.record.path, replayPath(cliReplayRoot, cliRequest, "json"));
+  assert.equal(protectedReadback.state, anchoredReadbackSupported ? "verified" : "recovery");
+  if (anchoredReadbackSupported) {
+    assert.deepEqual(protectedReadback.evidence, productionEvidence);
+    assert.equal(protectedReadback.record.path, replayPath(cliReplayRoot, cliRequest, "json"));
+  } else {
+    assert.equal(protectedReadback.reasonCode, "mack_registry_readback_uncertain");
+  }
+
+  await t.test("swap-and-restore cannot expose replacement-root passing evidence", async () => {
+    const raceParent = await realpath(await mkdtemp(join(tmpdir(), "shield-mack-anchored-race-")));
+    t.after(() => rm(raceParent, { recursive: true, force: true }));
+    const originalRoot = join(raceParent, "original");
+    const replacementRoot = join(raceParent, "replacement");
+    const holdingRoot = join(raceParent, "holding");
+    await mkdir(originalRoot, { mode: 0o700 });
+    await cp(cliReplayRoot, replacementRoot, { recursive: true, preserveTimestamps: true });
+    await assert.rejects(() => lstat(replayPath(originalRoot, cliRequest, "json")), { code: "ENOENT" });
+    assert.equal((await lstat(replayPath(replacementRoot, cliRequest, "json"))).isFile(), true);
+    const raceScript = join(raceParent, "race.mjs");
+    await writeFile(raceScript, `
+import assert from "node:assert/strict";
+import { mock } from "node:test";
+import * as realFs from "node:fs/promises";
+
+const [requestRaw, originalRoot, replacementRoot, holdingRoot, runnerUrl] = process.argv.slice(2);
+let swaps = 0;
+const open = async (path, ...args) => {
+  if (typeof path === "string" && /^(?:\\/(?:proc\\/self|dev)\\/fd\\/[0-9]+|\\/\\.vol\\/[0-9]+\\/[0-9]+)$/u.test(path)) {
+    await realFs.rename(originalRoot, holdingRoot);
+    await realFs.rename(replacementRoot, originalRoot);
+    await realFs.rename(originalRoot, replacementRoot);
+    await realFs.rename(holdingRoot, originalRoot);
+    swaps += 1;
+  }
+  return realFs.open(path, ...args);
+};
+const namedExports = Object.fromEntries(Object.entries(realFs).filter(([name]) => name !== "default"));
+namedExports.open = open;
+mock.module("node:fs/promises", { namedExports });
+const { normalizeMackLocalValidationRequestV1 } = await import(new URL("../../dist/mack-local-validation-v1.mjs", runnerUrl));
+const { readMackProductionValidationRegistryV1 } = await import(\`\${runnerUrl}?race=\${Date.now()}\`);
+const request = JSON.parse(requestRaw);
+const normalized = normalizeMackLocalValidationRequestV1(request);
+assert.equal(normalized.state, "valid");
+const binding = { replayRegistryRoot: originalRoot, validationRequestId: request.validationRequestId, requestDigest: normalized.requestDigest };
+const states = [];
+for (let attempt = 0; attempt < 3; attempt += 1) states.push((await readMackProductionValidationRegistryV1(request, binding)).state);
+assert.ok(swaps >= 3);
+assert.deepEqual(states, ["recovery", "recovery", "recovery"]);
+assert.equal(states.some((state) => state === "verified" || state === "pass"), false);
+process.stdout.write(JSON.stringify({ swaps, states }));
+`, { mode: 0o600 });
+    const { stdout } = await execFile(process.execPath, [
+      "--experimental-test-module-mocks", raceScript, JSON.stringify(cliRequest), originalRoot, replacementRoot, holdingRoot,
+      pathToFileURL(runnerPath).href,
+    ], { encoding: "utf8", maxBuffer: 8_388_608 });
+    const raced = JSON.parse(stdout);
+    assert.ok(raced.swaps >= 3);
+    assert.deepEqual(raced.states, ["recovery", "recovery", "recovery"]);
+    assert.equal(raced.states.includes("verified"), false);
+    assert.equal(raced.states.includes("pass"), false);
+  });
   const replayedProduction = await runRunnerCli(cliRequest, cliOptions);
   assert.deepEqual(replayedProduction, productionEvidence);
   const freshProductionRunner = await import(`../scripts/model/mack-validation-runner.mjs?production-replay=${Date.now()}`);

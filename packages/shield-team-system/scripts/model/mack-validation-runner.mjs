@@ -199,9 +199,32 @@ async function assertRetainedReplayRegistryRoot(retained) {
       !ownedByEffectiveUser(opened) || !ownedByEffectiveUser(current) ||
       (process.platform !== "win32" && ((opened.mode & 0o077) !== 0 || (current.mode & 0o077) !== 0)) ||
       opened.dev !== retained.identity.dev || opened.ino !== retained.identity.ino || opened.mode !== retained.identity.mode || opened.uid !== retained.identity.uid ||
-      current.dev !== retained.identity.dev || current.ino !== retained.identity.ino || current.mode !== retained.identity.mode || current.uid !== retained.identity.uid) {
+      opened.ctimeMs !== retained.identity.ctimeMs || opened.birthtimeMs !== retained.identity.birthtimeMs ||
+      current.dev !== retained.identity.dev || current.ino !== retained.identity.ino || current.mode !== retained.identity.mode || current.uid !== retained.identity.uid ||
+      current.ctimeMs !== retained.identity.ctimeMs || current.birthtimeMs !== retained.identity.birthtimeMs) {
     throw new Error("mack_replay_registry_root_unsafe");
   }
+}
+
+async function retainedReplayRegistryAnchor(retained) {
+  const candidates = process.platform === "darwin"
+    ? [{ path: `/.vol/${retained.identity.dev}/${retained.identity.ino}`, noFollow: true }]
+    : process.platform === "linux"
+      ? [{ path: `/proc/self/fd/${retained.handle.fd}`, noFollow: false }]
+      : [{ path: `/proc/self/fd/${retained.handle.fd}`, noFollow: false }, { path: `/dev/fd/${retained.handle.fd}`, noFollow: false }];
+  for (const candidate of candidates) {
+    let duplicate;
+    try {
+      duplicate = await open(candidate.path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | (candidate.noFollow ? (fsConstants.O_NOFOLLOW ?? 0) : 0));
+      const identity = await duplicate.stat();
+      if (identity.isDirectory() && identity.dev === retained.identity.dev && identity.ino === retained.identity.ino) return candidate.path;
+    } catch {
+      // Try the next kernel-provided descriptor namespace.
+    } finally {
+      await duplicate?.close().catch(() => {});
+    }
+  }
+  throw new Error("mack_replay_registry_anchor_unavailable");
 }
 
 function replayPaths(root, validationRequestId) {
@@ -267,7 +290,7 @@ function evidenceDigest(evidence) {
   return sha256(Buffer.from(canonicalJson(withoutDigest), "utf8"));
 }
 
-async function readReplayRecordSnapshot(recordPath) {
+async function readReplayRecordSnapshot(recordPath, artifactPath = recordPath) {
   const bytes = await readPrivateRegularFile(recordPath, { minBytes: 2, maxBytes: REPLAY_RECORD_LIMIT, unsafeCode: "mack_replay_registry_record_unsafe" });
   if (bytes === null) return null;
   const raw = bytes.toString("utf8");
@@ -276,7 +299,7 @@ async function readReplayRecordSnapshot(recordPath) {
   if (!DIGEST.test(parsed.value.requestDigest) || !DIGEST.test(parsed.value.evidenceDigest) || parsed.value.evidenceDigest !== parsed.value.evidence?.evidenceDigest || evidenceDigest(parsed.value.evidence) !== parsed.value.evidenceDigest) throw new Error("mack_replay_registry_record_malformed");
   return Object.freeze({
     value: parsed.value,
-    artifact: Object.freeze({ path: recordPath, bytes: bytes.byteLength, sha256: sha256(bytes) }),
+    artifact: Object.freeze({ path: artifactPath, bytes: bytes.byteLength, sha256: sha256(bytes) }),
   });
 }
 
@@ -794,12 +817,15 @@ export async function readMackProductionValidationRegistryV1(packetInput, bindin
     retainedRoot = await retainReplayRegistryRoot(root, inspectedRoot.identity);
     await assertRetainedReplayRegistryRoot(retainedRoot);
     const paths = replayPaths(root, request.validationRequestId);
-    const lockStatus = await lstatOrNull(paths.lock);
+    const anchor = await retainedReplayRegistryAnchor(retainedRoot);
+    const anchoredRecord = join(anchor, basename(paths.record));
+    const anchoredLock = join(anchor, basename(paths.lock));
+    const lockStatus = await lstatOrNull(anchoredLock);
     await assertRetainedReplayRegistryRoot(retainedRoot);
     if (lockStatus !== null) return deepFreeze({ state: "recovery", reasonCode: "mack_registry_readback_uncertain" });
-    const snapshot = await readReplayRecordSnapshot(paths.record);
+    const snapshot = await readReplayRecordSnapshot(anchoredRecord, paths.record);
     await assertRetainedReplayRegistryRoot(retainedRoot);
-    if (await lstatOrNull(paths.lock) !== null) return deepFreeze({ state: "recovery", reasonCode: "mack_registry_readback_uncertain" });
+    if (await lstatOrNull(anchoredLock) !== null) return deepFreeze({ state: "recovery", reasonCode: "mack_registry_readback_uncertain" });
     await assertRetainedReplayRegistryRoot(retainedRoot);
     if (snapshot === null) return deepFreeze({
       state: "waiting",

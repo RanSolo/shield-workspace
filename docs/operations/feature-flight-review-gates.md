@@ -51,10 +51,14 @@ Production Mack promotion remains private to the Mack runner. Slice 4 can read
 only the registry record canonically derived from the normalized
 `validationRequestId` and request digest. Missing exact evidence waits; unsafe,
 malformed, stale, conflicting, synthetic, or incomplete evidence cannot pass.
-The verifier retains the registry-root directory identity around lock and
-record reads and rechecks the opened/current record owner, mode, link count,
-device, inode, and size. Rename or replacement uncertainty maps to the dedicated
-seatless `mack_registry_recovery_required` stop.
+The verifier resolves lock and record children only beneath a kernel-provided
+identity anchor proven to identify the retained registry root: a traversable
+process descriptor on Linux or the volume/file-ID namespace on Darwin, with
+final-component no-follow semantics. A runtime without either proven mechanism
+fails closed before child access. It also rechecks retained-root
+timestamps and the opened/current record owner, mode, link count, device,
+inode, and size, so swap-and-restore uncertainty maps to the dedicated seatless
+`mack_registry_recovery_required` stop.
 
 ## Closed stop order
 
