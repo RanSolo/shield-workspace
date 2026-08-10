@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
+  evaluateSuccessfulFeatureFlightTerminalV2,
   FEATURE_FLIGHT_STEP_CONTRACT_VERSION,
   runFeatureFlightStepV1,
   validateFeatureFlightStepClaim,
@@ -421,6 +422,7 @@ test("one authorized active Daisy cycle writes claim, successor, result and retu
   const f = await fixture();
   const result = await runFeatureFlightStepV1(f.input, f.dependencies);
   assert.equal(FEATURE_FLIGHT_STEP_CONTRACT_VERSION, "2.0.0");
+  assert.equal(typeof evaluateSuccessfulFeatureFlightTerminalV2, "function");
   assert.equal(result.outcome, "completed");
   assert.equal(result.invocationCount, 1);
   assert.deepEqual(f.calls, { load: 1, authorize: 1, invoke: 1, validate: 1, observe: 2, remote: 2, clock: 2 });

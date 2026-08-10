@@ -272,12 +272,14 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "docs/operations/feature-flight-controller.md",
     "docs/operations/feature-flight-step.md",
     "docs/operations/feature-flight-recovery.md",
+    "docs/operations/feature-flight-review-gates.md",
     "docs/operations/persisted-artifact-contract-matrix.md",
     "scripts/operations/flight-contracts.mjs",
     "scripts/operations/feature-flight-controller.mjs",
     "scripts/operations/feature-flight-step-store.mjs",
     "scripts/operations/feature-flight-recovery.mjs",
     "scripts/operations/feature-flight-step.mjs",
+    "scripts/operations/feature-flight-review-gates.mjs",
     "INSTALLATION.md",
     "PUBLIC_API.md",
     "SUPERVISED_MISSION.md",
@@ -285,6 +287,16 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "PERMISSION_BOUNDARY.md",
   ]) {
     assert.ok(packedPaths.has(path), `packed artifact is missing ${path}`);
+  }
+  const packedMackRunner = await readFile(join(packageRoot, "scripts/model/mack-validation-runner.mjs"), "utf8");
+  assert.match(packedMackRunner, /export async function readMackProductionValidationRegistryV1/u);
+  assert.doesNotMatch(packedMackRunner, /export (?:async )?function promoteProductionEvidence/u);
+  for (const document of ["feature-flight-review-gates.md", "persisted-artifact-contract-matrix.md"]) {
+    assert.equal(
+      await readFile(join(packageRoot, "docs/operations", document), "utf8"),
+      await readFile(join(workspaceRoot, "docs/operations", document), "utf8"),
+      `${document} package mirror drifted`,
+    );
   }
 
   const tarball = join(fixture, packed.filename);

@@ -268,29 +268,46 @@ const runnerSnapshot = async (loaded) => {
   return { input, sha256: loaded.sha256 };
 };
 
-const prepareDeterministic = async (caller, dependencies) => {
-  const status = await computeFeatureFlightStatus(caller, { snapshot: dependencies.snapshotDependencies });
+const successfulStepHostInputs = (trusted) => {
+  exactDataObject(trusted, ["adapterDescriptor", "remoteObserverDescriptor", "claimStoreRoot"], [], "successfulStepHostInputs");
+  exactDataObject(trusted.adapterDescriptor, ADAPTER_FIELDS, [], "successfulStepHostInputs.adapterDescriptor");
+  if (!Object.isFrozen(trusted) || !Object.isFrozen(trusted.adapterDescriptor)) throw new Error("Successful-step host inputs and adapter descriptor must be independently frozen.");
+  if (!sameJson({ adapterId: trusted.adapterDescriptor.adapterId, adapterVersion: trusted.adapterDescriptor.adapterVersion, capabilityClass: trusted.adapterDescriptor.capabilityClass }, ADAPTER_POLICY) ||
+      ![trusted.adapterDescriptor.runtimeId, trusted.adapterDescriptor.executorId].every((entry) => typeof entry === "string" && HOST_IDENTITY_PATTERN.test(entry)) ||
+      trusted.adapterDescriptor.runtimeId === trusted.adapterDescriptor.executorId || typeof trusted.claimStoreRoot !== "string") {
+    throw new Error("Successful-step host inputs do not match the fixed policy.");
+  }
+  return Object.freeze({
+    adapterDescriptor: Object.freeze(deepCopy(trusted.adapterDescriptor)),
+    remoteObserverDescriptor: validateFeatureFlightRemoteObserverDescriptor(trusted.remoteObserverDescriptor),
+    claimStoreRoot: trusted.claimStoreRoot,
+  });
+};
+
+export const prepareSuccessfulFeatureFlightStepV2 = async (callerValue, structuralStatus, snapshots, loadedRunnerValue, trustedHostInputs) => {
+  const caller = validateCaller(callerValue);
+  exactDataObject(snapshots, ["plan", "state", "predecessor"], [], "successful-step snapshots");
+  const host = successfulStepHostInputs(trustedHostInputs);
+  const status = deepCopy(structuralStatus);
   if (status.globalStop?.code !== "authority-verification-required") throw new Error("Feature Flight requires the exact structural authority-verification-required boundary.");
-  const [planSnapshot, stateSnapshot, predecessorSnapshot] = await Promise.all([
-    readFlightJsonSnapshot(caller.planPath, dependencies.snapshotDependencies), readFlightJsonSnapshot(caller.statePath, dependencies.snapshotDependencies),
-    caller.predecessorStatePath === undefined ? null : readFlightJsonSnapshot(caller.predecessorStatePath, dependencies.snapshotDependencies),
-  ]);
+  const { plan: planSnapshot, state: stateSnapshot, predecessor: predecessorSnapshot } = snapshots;
   if (planSnapshot.sha256 !== caller.expectedPlanSha256 || stateSnapshot.sha256 !== caller.expectedStateSha256 ||
       (predecessorSnapshot !== null && predecessorSnapshot.sha256 !== caller.expectedPredecessorSha256)) throw new Error("Flight snapshots changed after structural replay.");
   const plan = assertResolvedPlan(planSnapshot.value); const planArtifact = artifactIdentity(planSnapshot);
   const state = assertFlightState(plan, planArtifact, stateSnapshot.value);
   const predecessor = predecessorSnapshot === null ? null : assertFlightState(plan, planArtifact, predecessorSnapshot.value, "predecessor");
-  const loadedRunner = await runnerSnapshot(await dependencies.loadRunnerCycleInput(Object.freeze({
-    flightId: caller.routing.flightId, missionId: caller.routing.missionId, plan: planArtifact, state: artifactIdentity(stateSnapshot),
-    predecessor: predecessorSnapshot === null ? null : artifactIdentity(predecessorSnapshot),
-  })));
+  if (state.sequence !== caller.expectedStateSequence || (predecessor === null ? state.sequence !== 0 :
+    predecessor.sequence !== state.sequence - 1 || state.predecessorSha256 !== predecessorSnapshot.sha256 || validateImmediateTransition(plan, predecessor, state).length !== 0)) {
+    throw new Error("Flight state does not contain the exact immediate active edge.");
+  }
+  const loadedRunner = await runnerSnapshot(loadedRunnerValue);
   const runner = loadedRunner.input; const mission = plan.missions.find((candidate) => candidate.id === caller.routing.missionId);
   if (caller.routing.flightId !== plan.flightId || mission === undefined || runner.plan.missionId !== mission.id || runner.projection.missionId !== mission.id ||
       runner.resolvedModeContext.seatId !== "daisy" || runner.plan.seatId !== "daisy" || runner.projection.journalSchemaVersion !== 9 ||
       runner.plan.subjectId !== runner.projection.subjectId || runner.plan.revisionId !== runner.projection.revisionId ||
       runner.plan.evaluatedThroughSequence !== runner.projection.evaluatedThroughSequence || runner.plan.actionId !== ACTION_ID ||
       runner.plan.effectClass !== "coordination" || runner.plan.validationId !== VALIDATION_ID || runner.plan.stopCondition !== "after_one_cycle" ||
-      !runner.actionAllowlist.includes(ACTION_ID) || !runner.projection.participantSeatIds.includes("daisy")) throw new Error("Trusted Runner replay does not bind the fixed active Daisy policy.");
+      !sameJson(runner.actionAllowlist, [ACTION_ID]) || !runner.projection.participantSeatIds.includes("daisy")) throw new Error("Trusted Runner replay does not bind the fixed active Daisy policy.");
   if (mission.dependsOn.length !== 0 || state.missions[mission.id].status !== "active" || state.lanes[mission.lane].activeMissionId !== mission.id ||
       !GIT_REVISION_PATTERN.test(state.missions[mission.id].revision ?? "") || plan.lanes.some((lane) => lane.id !== mission.lane && state.lanes[lane.id].activeMissionId !== null) ||
       plan.missions.some((candidate) => candidate.id !== mission.id && AUTHORITY_DERIVED_STATUSES.has(state.missions[candidate.id].status)) ||
@@ -305,12 +322,32 @@ const prepareDeterministic = async (caller, dependencies) => {
     actionId: runner.plan.actionId, effectClass: runner.plan.effectClass, effectKey: runner.plan.effectKey,
   });
   return {
-    caller, dependencies, plan, state, predecessor, mission, runner, effectClaimId, planArtifact,
+    plan, state, predecessor, mission, runner, effectClaimId, planArtifact,
     stateArtifact: artifactIdentity(stateSnapshot), predecessorArtifact: predecessorSnapshot === null ? null : artifactIdentity(predecessorSnapshot),
-    runnerInputSha256: loadedRunner.sha256, adapterDescriptor: dependencies.adapterDescriptor,
-    remoteObserverDescriptor: dependencies.remoteObserverDescriptor, claimStoreRoot: dependencies.claimStoreRoot,
-    excludedRoots: [plan.repository.root, ...plan.missions.map((candidate) => candidate.worktree)], invocationCount: 0,
+    runnerInputSha256: loadedRunner.sha256, adapterDescriptor: host.adapterDescriptor,
+    remoteObserverDescriptor: host.remoteObserverDescriptor, claimStoreRoot: host.claimStoreRoot,
+    excludedRoots: [plan.repository.root, ...plan.missions.map((candidate) => candidate.worktree)],
   };
+};
+
+const prepareDeterministic = async (caller, dependencies) => {
+  const status = await computeFeatureFlightStatus(caller, { snapshot: dependencies.snapshotDependencies });
+  const [planSnapshot, stateSnapshot, predecessorSnapshot] = await Promise.all([
+    readFlightJsonSnapshot(caller.planPath, dependencies.snapshotDependencies), readFlightJsonSnapshot(caller.statePath, dependencies.snapshotDependencies),
+    caller.predecessorStatePath === undefined ? null : readFlightJsonSnapshot(caller.predecessorStatePath, dependencies.snapshotDependencies),
+  ]);
+  const loadedRunner = await dependencies.loadRunnerCycleInput(Object.freeze({
+    flightId: caller.routing.flightId, missionId: caller.routing.missionId, plan: artifactIdentity(planSnapshot), state: artifactIdentity(stateSnapshot),
+    predecessor: predecessorSnapshot === null ? null : artifactIdentity(predecessorSnapshot),
+  }));
+  const prepared = await prepareSuccessfulFeatureFlightStepV2(caller, status, Object.freeze({
+    plan: planSnapshot, state: stateSnapshot, predecessor: predecessorSnapshot,
+  }), loadedRunner, Object.freeze({
+    adapterDescriptor: dependencies.adapterDescriptor,
+    remoteObserverDescriptor: dependencies.remoteObserverDescriptor,
+    claimStoreRoot: dependencies.claimStoreRoot,
+  }));
+  return { ...prepared, caller, dependencies, invocationCount: 0 };
 };
 
 const fullRefFor = (prepared) => `refs/heads/${prepared.mission.branch}`;
@@ -446,7 +483,7 @@ const validateV2Intent = (prepared, step) => {
   return { kind: "success", claimIdentity, successorIdentity, resultIdentity: payloadIdentityAt(step.paths.result, arbiter.result), result };
 };
 
-const validateV2Terminal = (prepared, step) => {
+const validateMaterializedV2Terminal = (prepared, step) => {
   if (!["success_terminal", "recovery_terminal"].includes(step?.status)) throw new Error("Feature Flight terminal winner is not fully materialized.");
   const intent = validateV2Intent(prepared, step);
   if (intent.kind === "recovery") {
@@ -457,6 +494,12 @@ const validateV2Terminal = (prepared, step) => {
     throw new Error("Materialized success receipts do not match terminal intent.");
   }
   return { ...intent, terminalIdentity: identity(step.terminal), successorIdentity: identity(step.successor), resultIdentity: identity(step.result) };
+};
+
+export const evaluateSuccessfulFeatureFlightTerminalV2 = (prepared, step) => {
+  const terminal = validateMaterializedV2Terminal(prepared, step);
+  if (terminal.kind !== "success") throw new Error("Feature Flight terminal winner is not successful.");
+  return deepCopy(terminal);
 };
 
 const validateLegacyClaim = (prepared, snapshot) => {
@@ -550,7 +593,9 @@ const followWinner = async (prepared, step) => {
     catch { return ephemeralRecovery(prepared, "final_readback_uncertain", current); }
   }
   try {
-    const terminal = validateV2Terminal(prepared, current);
+    const terminal = current.terminal?.value?.terminalKind === "success"
+      ? evaluateSuccessfulFeatureFlightTerminalV2(prepared, current)
+      : validateMaterializedV2Terminal(prepared, current);
     return terminal.kind === "success" ? replayProjection(prepared, terminal) : durableRecoveryProjection(prepared, terminal);
   } catch { return ephemeralRecovery(prepared, current?.status === "conflicting" ? "terminal_conflict" : "final_readback_uncertain", current); }
 };

@@ -27,6 +27,14 @@ terminal arbiter. Exact v1 success evidence replays read-only; every durable
 claim prohibits adapter reinvocation. All evidence remains non-authoritative,
 gate-ineligible, and externally uncertain. No run/resume CLI is exposed.
 
+The companion
+[`projectFeatureFlightReviewGatesV1`](./docs/operations/feature-flight-review-gates.md)
+replays only an exact successful Slice 3 terminal, protected production Mack
+readback, and descriptor-pinned schema-8 Fury/Fitz/conditional-Simmons history.
+It returns one deterministic in-memory checkpoint and always retains the final
+`coulson_final_acceptance_required` human stop. It adds no store, CLI, dispatch,
+state mutation, or proof flight.
+
 ## Public package surface
 
 The supported V0.3 consumer entry points are the package root plus `/mission`,
