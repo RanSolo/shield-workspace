@@ -1,58 +1,55 @@
 # Feature Flight one-cycle step
 
-`runFeatureFlightStepV1` is an internal packaged operations seam for one
-already-active, dependency-free Daisy coordination cycle. It is not a CLI or a
-public package export.
+`runFeatureFlightStepV1` remains the internal, non-CLI seam for one active,
+dependency-free Daisy coordination cycle. Persisted claim/result/recovery and
+terminal artifacts use contract `2.0.0`; exact `1.0.0` terminal triads are
+read-only legacy inputs.
 
-The caller provides exact Feature Flight plan/current/predecessor paths,
-digests, current sequence, `maxSteps:1`, and a closed flight/mission routing
-hint. Trusted host dependencies provide schema-9 Runner input replay,
-authorization, the fixed read-only Daisy adapter, pure result validation,
-repository observation, host-observed adapter/runtime/executor identity, an
-external mode-0700 claim-store root, and a canonical millisecond clock.
+The controller first validates and snapshots its closed caller and trusted
+dependencies. It then replays only deterministic plan, state, predecessor, and
+Runner-input evidence needed to derive the stable `effectClaimId`. Store
+classification follows before repository observation, remote observation,
+Runner authorization/claim, result validation, or adapter invocation. Exact
+v2 winners may materialize declared absent files; malformed, unsupported,
+conflicting, and incomplete-v1 stores are not changed.
 
-Before any claim or adapter call, the controller replays the existing
-`authority-verification-required` structural boundary, validates the trusted
-Runner projection and fixed Daisy policy, selects one sole active mission with
-no dependencies, and verifies its worktree, branch, revision, and clean state.
-May, Mack, Fury, human seats, non-coordination effects, and alternate adapter,
-action, or validation identities are rejected before effects.
+## Read-only remote gate
 
-## Execute-once store
+The host injects a separately frozen descriptor for
+`shield.feature-flight.remote-observer@1.0.0`. It binds distinct runtime and
+executor identities, the selected worktree, canonical common-Git directory and
+device/inode, fixed `origin`, configured origin URL, and normalized SSH remote
+identity. The controller derives `refs/heads/<mission.branch>` and a distinct
+challenge for `pre_claim` and `post_adapter`.
 
-The invariant `effectClaimId` names
-`<claimStoreRoot>/effects/<effectClaimId>`. The trusted root must already be a
-canonical non-symlink mode-0700 directory outside the repository and every plan
-worktree. The first caller exclusively creates the effect directory and a
-create-only mode-0600 `claim.json`; an existing directory can never invoke the
-adapter again.
+Only an absent remote branch or a head equal to local HEAD passes pre-claim.
+After one completed adapter call, local identity must remain exact and the
+second remote observation must preserve every identity, head, and monotonic
+timestamp. Any post-claim failure or drift elects recovery; neither the core
+nor its dependency surface contains Git/network mutation authority.
 
-Artifacts are canonical JSON with a trailing newline and are written in this
-order:
+## Execute-once terminal protocol
 
-1. `claim.json` — durable execute-once claim and exact attempt evidence;
-2. `successor.json` — legal Feature Flight `active -> complete` state;
-3. `result.json` — terminal receipt binding the claim, successor, validated
-   Runner advanced result, identical before/after repository observations, and
-   host-observed adapter identities.
+The external mode-0700 store retains
+`effects/<effectClaimId>` as a three-level inode-bound hierarchy. All artifacts
+are canonical mode-0600 JSON, create-only, synced, parent-synced, and read back.
 
-Each write is create-only, synced, parent-synced, and exactly read back. A
-claim-only or successor-only directory, malformed bytes, conflicting attempt,
-or durability/readback uncertainty returns `recovery_required`; this slice has
-no interruption-recovery or takeover behavior.
+1. `claim.json` records exact local evidence, the observer descriptor, and the
+   pre-claim observation.
+2. `terminal.json` is the sole `O_EXCL` arbiter. Its winner is `success` or
+   `recovery` and embeds complete canonical payloads plus byte lengths and
+   SHA-256 identities.
+3. A success winner may materialize only absent `successor.json` and
+   `result.json`; a recovery winner may materialize only absent
+   `recovery.json` and requires a null successor identity.
 
-## Result boundary
+A present partial, malformed, or wrong target is never deleted, truncated,
+replaced, or repaired. A retry after any durable claim never authorizes or
+invokes the adapter again. Recovery handoffs use only
+`inspect_claim_and_remote_non_destructively`; there is no takeover, automatic
+reconciliation, review gate, proving flight, or CLI surface.
 
-The closed projections are `completed`, `replayed`, `stopped`, and
-`recovery_required`. Only an exact final claim/successor/result readback returns
-`completed`. Exact terminal retry returns `replayed` with no authorization,
-adapter, or write call. Pre-claim Runner stops return `stopped`; every stop or
-uncertainty after the claim boundary returns `recovery_required` unless an
-exact terminal triad can be replayed.
-
-Terminal evidence records
-`effectContainment:"external_uncertain_repository_unchanged"`,
-`gateEligible:false`, and `authority:"none"`. It proves only that the selected
-repository readback did not change; it does not establish external-effect
-containment, human acceptance, implementation authority, review-gate passage,
-or proving-flight status.
+Every projection and artifact remains `authority:"none"` and
+`gateEligible:false`. Successful evidence retains
+`effectContainment:"external_uncertain_repository_unchanged"` and is not human
+acceptance or implementation authority.

@@ -20,11 +20,12 @@ and `gateEligible:false`; it performs no dispatch, mutation, or external effect.
 
 The internal [`runFeatureFlightStepV1`](./docs/operations/feature-flight-step.md)
 operations seam composes one already-active, dependency-free Daisy coordination
-cycle. It uses trusted schema-9 Runner replay and a host-owned atomic external
-claim store, persists a legal `active -> complete` successor, and writes the
-terminal result last. Its triad remains non-authoritative, gate-ineligible, and
-explicitly uncertain about effects outside the unchanged selected repository.
-No run/resume CLI is exposed.
+cycle. It classifies its external execute-once store before fresh effects, uses
+a frozen read-only remote observer around the adapter call, and selects success
+or [recovery](./docs/operations/feature-flight-recovery.md) through one atomic
+terminal arbiter. Exact v1 success evidence replays read-only; every durable
+claim prohibits adapter reinvocation. All evidence remains non-authoritative,
+gate-ineligible, and externally uncertain. No run/resume CLI is exposed.
 
 ## Public package surface
 

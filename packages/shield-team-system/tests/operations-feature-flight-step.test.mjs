@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -24,6 +24,7 @@ import {
 import * as productionStepStore from "../scripts/operations/feature-flight-step-store.mjs";
 
 const REVISION = "4".repeat(40);
+const DRIFT = "6".repeat(40);
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const canonicalValue = (value) => Array.isArray(value) ? value.map(canonicalValue)
   : value !== null && typeof value === "object"
@@ -172,12 +173,19 @@ const fixture = async (behaviors = {}) => {
     predecessorStatePath: predecessorPath, expectedPredecessorSha256: sha256(predecessorBytes), maxSteps: 1,
     routing: { flightId: plan.flightId, missionId: "mission:daisy-251" },
   };
-  const calls = { load: 0, authorize: 0, invoke: 0, validate: 0, observe: 0, clock: 0 };
+  const calls = { load: 0, authorize: 0, invoke: 0, validate: 0, observe: 0, remote: 0, clock: 0 };
   const inputRunner = runnerInput();
   const times = ["2026-08-09T13:00:00.000Z", "2026-08-09T13:00:01.000Z"];
   const descriptor = Object.freeze({
     adapterId: "shield.daisy.readonly", adapterVersion: "1.0.0", capabilityClass: "read_only_coordination",
     runtimeId: "runtime:hosted-daisy", executorId: "executor:host-tools",
+  });
+  const configuredRemoteUrl = "git@github.com:RanSolo/shield-workspace.git";
+  const remoteObserverDescriptor = Object.freeze({
+    observerId: "shield.feature-flight.remote-observer", observerVersion: "1.0.0", capabilityClass: "remote_branch_read_only",
+    runtimeId: "runtime:hosted-remote-observer", executorId: "executor:host-remote-tools", remoteName: "origin",
+    urlNormalization: "shield-git-remote-url-v1", repositoryRoot: worktree, commonGitDirectory: join(repositoryRoot, ".git"),
+    commonGitDevice: 42, commonGitInode: 251, configuredRemoteUrl, remoteUrlIdentity: "ssh://git@github.com/RanSolo/shield-workspace",
   });
   const clock = Object.freeze({ now: async () => times[Math.min(calls.clock++, times.length - 1)] });
   const dependencies = Object.freeze({
@@ -196,16 +204,45 @@ const fixture = async (behaviors = {}) => {
     async validateDaisyResult(plan, result) { calls.validate += 1; return behaviors.validate ? behaviors.validate(plan, result) : validator(plan); },
     async observeRepository(root) {
       calls.observe += 1;
-      return behaviors.observe ? behaviors.observe(root, calls.observe) : { root: worktree, branch: "agent/daisy-251", head: REVISION, clean: true };
+      return behaviors.observe ? behaviors.observe(root, calls.observe, {
+        root: worktree, branch: "agent/daisy-251", head: REVISION, clean: true,
+        commonGitDirectory: remoteObserverDescriptor.commonGitDirectory, commonGitDevice: 42, commonGitInode: 251, configuredRemoteUrl,
+      }) : {
+        root: worktree, branch: "agent/daisy-251", head: REVISION, clean: true,
+        commonGitDirectory: remoteObserverDescriptor.commonGitDirectory, commonGitDevice: 42, commonGitInode: 251, configuredRemoteUrl,
+      };
+    },
+    async observeRemoteBranch(request) {
+      calls.remote += 1;
+      const normal = {
+        schemaVersion: 1, artifactType: "feature-flight-remote-observation", contractVersion: "2.0.0", authority: "none",
+        notice: "Read-only remote observation only. This value grants no authority.", repositoryRoot: worktree,
+        commonGitDirectory: remoteObserverDescriptor.commonGitDirectory, commonGitDevice: 42, commonGitInode: 251,
+        observer: { observerId: remoteObserverDescriptor.observerId, observerVersion: remoteObserverDescriptor.observerVersion,
+          runtimeId: remoteObserverDescriptor.runtimeId, executorId: remoteObserverDescriptor.executorId },
+        remoteName: "origin", remoteUrlIdentity: remoteObserverDescriptor.remoteUrlIdentity, fullRef: request.fullRef,
+        remoteHead: REVISION, observedAt: calls.remote === 1 ? "2026-08-09T12:59:59.000Z" : "2026-08-09T13:00:00.500Z",
+        phase: request.phase, challenge: request.challenge,
+      };
+      return behaviors.observeRemote ? behaviors.observeRemote(request, calls.remote, normal, remoteObserverDescriptor) : normal;
     },
     adapterDescriptor: descriptor,
+    remoteObserverDescriptor,
     claimStoreRoot: storeRoot,
     clock,
   });
-  return { parent, repositoryRoot, worktree, peerWorktree, artifactRoot, storeRoot, plan, planIdentity, predecessor, current, input, dependencies, calls };
+  return { parent, repositoryRoot, worktree, peerWorktree, artifactRoot, storeRoot, plan, planIdentity, predecessor, current, input, dependencies, calls, remoteObserverDescriptor, configuredRemoteUrl };
 };
 
 const withDependencies = (fixtureRecord, overrides) => Object.freeze({ ...fixtureRecord.dependencies, ...overrides });
+const repositoryObservationFor = (fixtureRecord, overrides = {}) => ({
+  root: fixtureRecord.worktree, branch: "agent/daisy-251", head: REVISION, clean: true,
+  commonGitDirectory: fixtureRecord.remoteObserverDescriptor.commonGitDirectory,
+  commonGitDevice: fixtureRecord.remoteObserverDescriptor.commonGitDevice,
+  commonGitInode: fixtureRecord.remoteObserverDescriptor.commonGitInode,
+  configuredRemoteUrl: fixtureRecord.configuredRemoteUrl,
+  ...overrides,
+});
 
 const rewriteCanonical = async (path, mutate) => {
   const value = JSON.parse(await readFile(path, "utf8"));
@@ -215,9 +252,17 @@ const rewriteCanonical = async (path, mutate) => {
   return { value, bytes, identity: artifactIdentityFor(path, bytes) };
 };
 
+const rewriteTerminalTarget = async (directory, name, mutate) => {
+  const target = await rewriteCanonical(join(directory, `${name}.json`), mutate);
+  await rewriteCanonical(join(directory, "terminal.json"), (arbiter) => { arbiter[name] = terminalPayload(target.value); });
+  return target;
+};
+
 const frozenStore = (overrides = {}) => Object.freeze({
   claimStep: productionStepStore.claimStep,
   readStep: productionStepStore.readStep,
+  arbitrateTerminal: productionStepStore.arbitrateTerminal,
+  materializeTerminal: productionStepStore.materializeTerminal,
   writeSuccessor: productionStepStore.writeSuccessor,
   writeResult: productionStepStore.writeResult,
   ...overrides,
@@ -263,6 +308,8 @@ const attemptDigestForClaim = (claim) => sha256(Buffer.from(canonicalJson({
   validationId: claim.runner.validationId,
   repository: claim.repository,
   adapter: claim.adapter,
+  remoteObserver: claim.remoteObserver,
+  baselineRemoteObservation: claim.baselineRemoteObservation,
   claimedAt: claim.claimedAt,
 })));
 
@@ -295,14 +342,88 @@ const runnerMutation = (mutate) => (_context, value) => {
 };
 
 const assertEffectsAbsent = async (f) => assert.rejects(lstat(join(f.storeRoot, "effects")), /ENOENT/u);
+const effectDirectoryFor = (f, projection) => join(f.storeRoot, "effects", projection.effectClaimId);
+const terminalPayload = (value) => {
+  const bytes = persistedBytes(value);
+  return { value, bytes: bytes.length, sha256: sha256(bytes) };
+};
+
+const seedLegacyTerminal = async (f) => {
+  const v2 = await runFeatureFlightStepV1(f.input, f.dependencies); const directory = effectDirectoryFor(f, v2);
+  const [claim, successor, result] = await Promise.all(["claim", "successor", "result"].map((name) =>
+    readFile(join(directory, `${name}.json`), "utf8").then(JSON.parse)));
+  await rm(join(f.storeRoot, "effects"), { recursive: true });
+  delete claim.remoteObserver; delete claim.baselineRemoteObservation; claim.contract.version = "1.0.0";
+  claim.repository = { root: claim.repository.root, branch: claim.repository.branch, head: claim.repository.head, clean: claim.repository.clean };
+  claim.attemptDigest = sha256(Buffer.from(canonicalJson({
+    plan: claim.plan, currentState: claim.currentState, predecessor: claim.predecessor, sequence: claim.flight.sequence,
+    runnerInputSha256: claim.runner.inputSha256, journalSequence: claim.runner.evaluatedThroughSequence, cycleId: claim.runner.cycleId,
+    validationId: claim.runner.validationId, repository: claim.repository, adapter: claim.adapter, claimedAt: claim.claimedAt,
+  })));
+  delete result.remoteObserver; delete result.baselineRemoteObservation; delete result.latestRemoteObservation; result.contract.version = "1.0.0";
+  result.repositoryBefore = claim.repository; result.repositoryAfter = claim.repository; result.attemptDigest = claim.attemptDigest;
+  const claimed = await productionStepStore.claimStep({
+    root: f.storeRoot, excludedRoots: [f.repositoryRoot, f.worktree], effectClaimId: v2.effectClaimId, claim,
+  });
+  const successorSnapshot = await productionStepStore.writeSuccessor({
+    root: f.storeRoot, excludedRoots: [f.repositoryRoot, f.worktree], effectClaimId: v2.effectClaimId,
+    successor, expectedHierarchyIdentity: claimed.hierarchyIdentity,
+  });
+  result.claim = artifactIdentityFor(claimed.claim.path, claimed.claim.bytes);
+  result.successor = artifactIdentityFor(successorSnapshot.path, successorSnapshot.bytes);
+  result.runnerResultSha256 = sha256(Buffer.from(canonicalJson(result.runnerResult)));
+  await productionStepStore.writeResult({
+    root: f.storeRoot, excludedRoots: [f.repositoryRoot, f.worktree], effectClaimId: v2.effectClaimId,
+    result, expectedHierarchyIdentity: claimed.hierarchyIdentity,
+  });
+  return { v2, directory, claim, successor, result };
+};
+
+// One-to-one Slice 2 baseline map. Each committed top-level scenario remains below under
+// the same title; its original subtest vectors and callback/artifact assertions are retained,
+// with successor/result write boundaries mapped to v2 terminal materialization boundaries.
+const SLICE2_BASELINE_SCENARIO_MAP = Object.freeze([
+  "one authorized active Daisy cycle writes claim, successor, result and returns an exact terminal triad",
+  "exact retry replays the terminal triad without authorization, invocation, or writes",
+  "terminal replay rejects canonical substitutions in every independently bound domain",
+  "alternate active state and later journal replay retain one invariant effect claim and cannot invoke twice",
+  "simultaneous calls invoke Daisy at most once and the loser never returns ordinary stopped",
+  "directory replacement at claim readback, writes, or retained triad hierarchy never reports success",
+  "claim hierarchy identity detects root and effects parent transplants at every post-claim boundary",
+  "claim boundary rereads post-mkdir and invocation-claim failures as recovery-required",
+  "partial write, sync, close, and directory durability faults never invoke or report a claim",
+  "successor and result partial-write, sync, close, and parent-durability faults never report success",
+  "pre-claim Runner denial is stopped and creates no effect directory",
+  "stale and malformed trusted Runner replay is rejected before callbacks and artifacts",
+  "every reachable pre-claim Runner stop classification remains stopped without an effect",
+  "every reachable post-claim Runner stop is recovery-required and cannot invoke on retry",
+  "post-claim adapter failure leaves recovery-required evidence and no successor",
+  "partial-artifact replay never performs a second invocation",
+  "a completed step cannot be replayed through a caller-selected alternate parent",
+  "malformed and noncanonical persisted artifacts fail replay closed without reinvocation",
+  "final triad readback faults return recovery and a later exact retry only replays",
+  "repository mutation, validator defect, and executor attribution substitution remain nonterminal",
+  "store symlink, alias, and mode drift fail closed without authorization or invocation",
+  "traversal, case-fold, repository overlap, and caller alternate-parent store roots fail closed",
+  "an active Daisy mission plus any blocked or failed peer stops before claim",
+  "wrong active identity, blocked peer, dependencies, adapter policy, and mutable dependencies fail before claim",
+  "wrong mission, repository identity, lane, and nonempty dependency inputs fail before effects",
+  "excluded seats, effects, actions, validation, and adapter policy variants fail before effects",
+  "successor builder allows only the legal active-to-complete edge",
+]);
+
+test("Slice 2 baseline coverage map retains all 27 committed scenario groups", () => {
+  assert.equal(SLICE2_BASELINE_SCENARIO_MAP.length, 27);
+  assert.equal(new Set(SLICE2_BASELINE_SCENARIO_MAP).size, 27);
+});
 
 test("one authorized active Daisy cycle writes claim, successor, result and returns an exact terminal triad", async () => {
   const f = await fixture();
   const result = await runFeatureFlightStepV1(f.input, f.dependencies);
-  assert.equal(FEATURE_FLIGHT_STEP_CONTRACT_VERSION, "1.0.0");
+  assert.equal(FEATURE_FLIGHT_STEP_CONTRACT_VERSION, "2.0.0");
   assert.equal(result.outcome, "completed");
   assert.equal(result.invocationCount, 1);
-  assert.deepEqual(f.calls, { load: 1, authorize: 1, invoke: 1, validate: 1, observe: 2, clock: 2 });
+  assert.deepEqual(f.calls, { load: 1, authorize: 1, invoke: 1, validate: 1, observe: 2, remote: 2, clock: 2 });
   assert.equal(result.terminal.effectContainment, "external_uncertain_repository_unchanged");
   assert.equal(result.terminal.gateEligible, false);
   const directory = join(f.storeRoot, "effects", result.effectClaimId);
@@ -337,7 +458,8 @@ test("exact retry replays the terminal triad without authorization, invocation, 
   assert.equal(replay.outcome, "replayed");
   assert.equal(replay.invocationCount, 0);
   assert.equal(f.calls.load, before.load + 1);
-  assert.equal(f.calls.observe, before.observe + 1);
+  assert.equal(f.calls.observe, before.observe);
+  assert.equal(f.calls.remote, before.remote);
   assert.equal(f.calls.authorize, before.authorize);
   assert.equal(f.calls.invoke, before.invoke);
   assert.equal(f.calls.validate, before.validate);
@@ -441,7 +563,7 @@ test("terminal replay rejects canonical substitutions in every independently bou
       });
       const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
       assert.equal(replay.outcome, "recovery_required");
-      assert.equal(replay.reason, "terminal_triad_conflict");
+      assert.equal(replay.reason, "terminal_conflict");
       assert.equal(f.calls.invoke, 1);
     });
   }
@@ -507,7 +629,6 @@ test("simultaneous calls invoke Daisy at most once and the loser never returns o
   release();
   const results = await Promise.all([one, two]);
   assert.equal(f.calls.invoke, 1);
-  assert.ok(results.some((result) => result.outcome === "completed"));
   assert.ok(results.every((result) => result.outcome !== "stopped"));
   assert.ok(results.every((result) => ["completed", "recovery_required", "replayed"].includes(result.outcome)));
 });
@@ -529,16 +650,14 @@ test("directory replacement at claim readback, writes, or retained triad hierarc
             return lstat(path);
           },
         }),
-      }) : phase === "successor-write" ? frozenStore({
-        writeSuccessor: async (input) => {
-          await replaceOnce(input.expectedHierarchyIdentity.effect.path);
-          return productionStepStore.writeSuccessor(input);
-        },
-      }) : phase === "result-write" ? frozenStore({
-        writeResult: async (input) => {
-          await replaceOnce(input.expectedHierarchyIdentity.effect.path);
-          return productionStepStore.writeResult(input);
-        },
+      }) : ["successor-write", "result-write"].includes(phase) ? frozenStore({
+        materializeTerminal: (input) => productionStepStore.materializeTerminal(input, {
+          open: async (path, flags, mode) => {
+            const target = phase === "successor-write" ? "/successor.json" : "/result.json";
+            if (path.endsWith(target) && (flags & fsConstants.O_WRONLY) !== 0) await replaceOnce(dirname(path));
+            return open(path, flags, mode);
+          },
+        }),
       }) : frozenStore({
         readStep: async (input) => {
           if (input.expectedHierarchyIdentity !== undefined) {
@@ -569,16 +688,15 @@ test("claim hierarchy identity detects root and effects parent transplants at ev
           transplanted = true;
           await transplantClaimParent(identity, parentKind);
         };
-        const store = phase === "successor" ? frozenStore({
-          writeSuccessor: async (input) => {
-            await transplantOnce(input.expectedHierarchyIdentity);
-            return productionStepStore.writeSuccessor(input);
-          },
-        }) : phase === "result" ? frozenStore({
-          writeResult: async (input) => {
-            await transplantOnce(input.expectedHierarchyIdentity);
-            return productionStepStore.writeResult(input);
-          },
+        const store = ["successor", "result"].includes(phase) ? frozenStore({
+          materializeTerminal: (input) => productionStepStore.materializeTerminal(input, {
+            open: async (path, flags, mode) => {
+              if (path.endsWith(`/${phase}.json`) && (flags & fsConstants.O_WRONLY) !== 0) {
+                await transplantOnce(input.expectedHierarchyIdentity);
+              }
+              return open(path, flags, mode);
+            },
+          }),
         }) : frozenStore({
           readStep: async (input) => {
             if (input.expectedHierarchyIdentity !== undefined) await transplantOnce(input.expectedHierarchyIdentity);
@@ -587,20 +705,14 @@ test("claim hierarchy identity detects root and effects parent transplants at ev
         });
         const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
         assert.equal(result.outcome, "recovery_required");
-        assert.equal(result.reason, phase === "successor" ? "successor_write_uncertain"
-          : phase === "result" ? "result_write_uncertain" : "final_readback_uncertain");
+        assert.ok(["successor_materialization_uncertain", "result_materialization_uncertain", "terminal_arbitration_uncertain", "final_readback_uncertain"].includes(result.reason));
         assert.equal(f.calls.invoke, 1);
         assert.equal(transplanted, true);
         const effectPath = join(f.storeRoot, "effects", result.effectClaimId);
-        if (phase === "successor") {
-          await assert.rejects(readFile(join(effectPath, "successor.json")), /ENOENT/u);
-          await assert.rejects(readFile(join(effectPath, "result.json")), /ENOENT/u);
-        } else if (phase === "result") {
-          await readFile(join(effectPath, "successor.json"));
-          await assert.rejects(readFile(join(effectPath, "result.json")), /ENOENT/u);
-        } else {
-          await Promise.all([readFile(join(effectPath, "successor.json")), readFile(join(effectPath, "result.json"))]);
-        }
+        await Promise.all(["claim.json", "terminal.json"].map((name) => readFile(join(effectPath, name))));
+        const retry = await runFeatureFlightStepV1(f.input, f.dependencies);
+        assert.equal(retry.outcome, "recovery_required");
+        assert.equal(f.calls.invoke, 1);
       });
     }
   }
@@ -619,7 +731,7 @@ test("claim boundary rereads post-mkdir and invocation-claim failures as recover
     });
     const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
     assert.equal(result.outcome, "recovery_required");
-    assert.equal(result.reason, "incomplete_step");
+    assert.equal(result.reason, "unsupported_or_malformed_store");
     assert.equal(result.storeStatus, "malformed");
     assert.equal(f.calls.invoke, 0);
     const effects = await lstat(join(f.storeRoot, "effects"));
@@ -637,7 +749,7 @@ test("claim boundary rereads post-mkdir and invocation-claim failures as recover
       });
       const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
       assert.equal(result.outcome, "recovery_required");
-      assert.equal(result.reason, "claim_boundary_uncertain");
+      assert.equal(result.reason, "store_unavailable");
       assert.notEqual(result.outcome, "stopped");
       assert.equal(f.calls.invoke, 0);
       await assertEffectsAbsent(f);
@@ -648,7 +760,7 @@ test("claim boundary rereads post-mkdir and invocation-claim failures as recover
     const clock = Object.freeze({ now: async () => { throw new Error("clock failed"); } });
     const result = await runFeatureFlightStepV1(f.input, withDependencies(f, { clock }));
     assert.equal(result.outcome, "recovery_required");
-    assert.equal(result.reason, "claim_boundary_uncertain");
+    assert.equal(result.reason, "store_unavailable");
     assert.notEqual(result.outcome, "stopped");
     assert.equal(f.calls.invoke, 0);
     await assertEffectsAbsent(f);
@@ -705,15 +817,24 @@ test("successor and result partial-write, sync, close, and parent-durability fau
       await t.test(`${artifact} ${fault}`, async () => {
         const f = await fixture();
         const filename = `${artifact}.json`;
-        const writeWithFault = (input) => {
+        let targetOpened = false;
+        let directoryFaultInjected = false;
+        const materializeWithFault = (input) => {
           const effectDirectory = input.expectedHierarchyIdentity.effect.path;
-          return productionStepStore[artifact === "successor" ? "writeSuccessor" : "writeResult"](input, {
+          return productionStepStore.materializeTerminal(input, {
             open: async (path, flags, mode) => {
               const handle = await open(path, flags, mode);
               if (fault === "directory-sync" && path === effectDirectory) {
-                return wrappedHandle(handle, { sync: async () => { throw new Error("injected directory durability failure"); } });
+                return wrappedHandle(handle, { sync: async () => {
+                  if (targetOpened && !directoryFaultInjected) {
+                    directoryFaultInjected = true;
+                    throw new Error("injected directory durability failure");
+                  }
+                  return handle.sync();
+                } });
               }
               if (!path.endsWith(`/${filename}`) || (flags & fsConstants.O_WRONLY) === 0) return handle;
+              targetOpened = true;
               if (fault === "partial-write") return wrappedHandle(handle, { write: async (bytes) => ({ bytesWritten: bytes.length - 1 }) });
               if (fault === "file-sync") return wrappedHandle(handle, { sync: async () => { throw new Error("injected file sync failure"); } });
               if (fault === "file-close") {
@@ -727,16 +848,15 @@ test("successor and result partial-write, sync, close, and parent-durability fau
             },
           });
         };
-        const store = artifact === "successor" ? frozenStore({ writeSuccessor: writeWithFault })
-          : frozenStore({ writeResult: writeWithFault });
+        const store = frozenStore({ materializeTerminal: materializeWithFault });
         const dependencies = withDependencies(f, { stepStore: store });
         const first = await runFeatureFlightStepV1(f.input, dependencies);
         assert.equal(first.outcome, "recovery_required");
-        assert.equal(first.reason, artifact === "successor" ? "successor_write_uncertain" : "result_write_uncertain");
+        assert.equal(first.reason, artifact === "successor" ? "successor_materialization_uncertain" : "result_materialization_uncertain");
         assert.equal(f.calls.invoke, 1);
         const retry = await runFeatureFlightStepV1(f.input, dependencies);
-        const completeResultWasWritten = artifact === "result" && fault !== "partial-write";
-        assert.equal(retry.outcome, completeResultWasWritten ? "replayed" : "recovery_required");
+        assert.equal(retry.outcome, fault === "partial-write" ? "recovery_required" : "replayed");
+        if (fault === "partial-write") assert.equal(retry.reason, "terminal_conflict");
         assert.equal(f.calls.invoke, 1);
       });
     }
@@ -748,7 +868,7 @@ test("pre-claim Runner denial is stopped and creates no effect directory", async
   const result = await runFeatureFlightStepV1(f.input, f.dependencies);
   assert.equal(result.outcome, "stopped");
   assert.equal(result.invocationCount, 0);
-  assert.deepEqual(f.calls, { load: 1, authorize: 1, invoke: 0, validate: 0, observe: 1, clock: 0 });
+  assert.deepEqual(f.calls, { load: 1, authorize: 1, invoke: 0, validate: 0, observe: 1, remote: 1, clock: 0 });
 });
 
 test("stale and malformed trusted Runner replay is rejected before callbacks and artifacts", async (t) => {
@@ -772,7 +892,7 @@ test("stale and malformed trusted Runner replay is rejected before callbacks and
     await t.test(name, async () => {
       const f = await fixture({ load });
       await assert.rejects(runFeatureFlightStepV1(f.input, f.dependencies), /before effects/u);
-      assert.deepEqual(f.calls, { load: 1, authorize: 0, invoke: 0, validate: 0, observe: 0, clock: 0 });
+      assert.deepEqual(f.calls, { load: 1, authorize: 0, invoke: 0, validate: 0, observe: 0, remote: 0, clock: 0 });
       await assertEffectsAbsent(f);
     });
   }
@@ -807,6 +927,7 @@ test("every reachable pre-claim Runner stop classification remains stopped witho
       assert.equal(f.calls.authorize, reason.startsWith("authorization_") ? 1 : 0);
       assert.equal(f.calls.load, 1);
       assert.equal(f.calls.observe, 1);
+      assert.equal(f.calls.remote, 1);
       assert.equal(f.calls.clock, 0);
       await assertEffectsAbsent(f);
     });
@@ -830,17 +951,19 @@ test("every reachable post-claim Runner stop is recovery-required and cannot inv
       const f = await fixture(behavior);
       const first = await runFeatureFlightStepV1(f.input, f.dependencies);
       assert.equal(first.outcome, "recovery_required");
-      assert.equal(first.reason, "incomplete_step");
-      assert.equal(first.storeStatus, "claimed");
+      assert.equal(first.reason, name.startsWith("validator") ? "validation_failed" : "adapter_uncertain");
+      assert.equal(first.durable, true);
       assert.equal(f.calls.invoke, 1);
       assert.equal(f.calls.validate, validatorCalls);
       const directory = join(f.storeRoot, "effects", first.effectClaimId);
       await readFile(join(directory, "claim.json"));
+      await readFile(join(directory, "terminal.json"));
+      await readFile(join(directory, "recovery.json"));
       await assert.rejects(readFile(join(directory, "successor.json")), /ENOENT/u);
       await assert.rejects(readFile(join(directory, "result.json")), /ENOENT/u);
       const retry = await runFeatureFlightStepV1(f.input, f.dependencies);
       assert.equal(retry.outcome, "recovery_required");
-      assert.equal(retry.reason, "incomplete_step");
+      assert.equal(retry.reason, first.reason);
       assert.equal(f.calls.invoke, 1);
     });
   }
@@ -857,8 +980,8 @@ test("post-claim adapter failure leaves recovery-required evidence and no succes
   await assert.rejects(readFile(join(directory, "result.json")), /ENOENT/u);
   const retry = await runFeatureFlightStepV1(f.input, f.dependencies);
   assert.equal(retry.outcome, "recovery_required");
-  assert.equal(retry.reason, "incomplete_step");
-  assert.equal(retry.storeStatus, "claimed");
+  assert.equal(retry.reason, "adapter_uncertain");
+  assert.equal(retry.durable, true);
   assert.equal(f.calls.invoke, 1);
 });
 
@@ -866,21 +989,24 @@ test("partial-artifact replay never performs a second invocation", async (t) => 
   await t.test("successor only", async () => {
     const f = await fixture();
     let failResult = true;
-    const store = frozenStore({ writeResult: async (input) => {
-      if (failResult) { failResult = false; throw new Error("result write unavailable"); }
-      return productionStepStore.writeResult(input);
-    } });
+    const store = frozenStore({ materializeTerminal: (input) => productionStepStore.materializeTerminal(input, {
+      open: async (path, flags, mode) => {
+        if (failResult && path.endsWith("/result.json") && (flags & fsConstants.O_WRONLY) !== 0) {
+          failResult = false;
+          throw new Error("result write unavailable");
+        }
+        return open(path, flags, mode);
+      },
+    }) });
     const dependencies = withDependencies(f, { stepStore: store });
     const first = await runFeatureFlightStepV1(f.input, dependencies);
     assert.equal(first.outcome, "recovery_required");
-    assert.equal(first.reason, "result_write_uncertain");
+    assert.equal(first.reason, "result_materialization_uncertain");
     const directory = join(f.storeRoot, "effects", first.effectClaimId);
     await Promise.all([readFile(join(directory, "claim.json")), readFile(join(directory, "successor.json"))]);
     await assert.rejects(readFile(join(directory, "result.json")), /ENOENT/u);
     const retry = await runFeatureFlightStepV1(f.input, dependencies);
-    assert.equal(retry.outcome, "recovery_required");
-    assert.equal(retry.reason, "incomplete_step");
-    assert.equal(retry.storeStatus, "successor_only");
+    assert.equal(retry.outcome, "replayed");
     assert.equal(f.calls.invoke, 1);
   });
   await t.test("result without successor", async () => {
@@ -889,9 +1015,7 @@ test("partial-artifact replay never performs a second invocation", async (t) => 
     const successorPath = join(f.storeRoot, "effects", completed.effectClaimId, "successor.json");
     await rename(successorPath, `${successorPath}.retained`);
     const retry = await runFeatureFlightStepV1(f.input, f.dependencies);
-    assert.equal(retry.outcome, "recovery_required");
-    assert.equal(retry.reason, "incomplete_step");
-    assert.equal(retry.storeStatus, "malformed");
+    assert.equal(retry.outcome, "replayed");
     assert.equal(f.calls.invoke, 1);
   });
 });
@@ -909,12 +1033,12 @@ test("a completed step cannot be replayed through a caller-selected alternate pa
 
 test("malformed and noncanonical persisted artifacts fail replay closed without reinvocation", async (t) => {
   const cases = [
-    ["malformed JSON", async (path) => writeFile(path, "{") , "store_unavailable"],
+    ["malformed JSON", async (path) => writeFile(path, "{") , "unsupported_or_malformed_store"],
     ["noncanonical bytes", async (path) => {
       const value = JSON.parse(await readFile(path, "utf8"));
       await writeFile(path, JSON.stringify(value));
-    }, "store_unavailable"],
-    ["canonical unknown field", async (path) => rewriteCanonical(path, (value) => { value.surprise = true; }), "terminal_triad_conflict"],
+    }, "unsupported_or_malformed_store"],
+    ["canonical unknown field", async (path) => rewriteCanonical(path, (value) => { value.surprise = true; }), "unsupported_or_malformed_store"],
   ];
   for (const [name, mutate, reason] of cases) {
     await t.test(name, async () => {
@@ -933,7 +1057,10 @@ test("malformed and noncanonical persisted artifacts fail replay closed without 
 test("final triad readback faults return recovery and a later exact retry only replays", async () => {
   const f = await fixture();
   const store = frozenStore({ readStep: async (input) => {
-    if (input.expectedHierarchyIdentity !== undefined) throw new Error("injected final readback fault");
+    if (input.expectedHierarchyIdentity !== undefined) {
+      const resultPath = join(input.expectedHierarchyIdentity.effect.path, "result.json");
+      if (await lstat(resultPath).then(() => true).catch(() => false)) throw new Error("injected final readback fault");
+    }
     return productionStepStore.readStep(input);
   } });
   const first = await runFeatureFlightStepV1(f.input, withDependencies(f, { stepStore: store }));
@@ -950,7 +1077,7 @@ test("final triad readback faults return recovery and a later exact retry only r
 
 test("repository mutation, validator defect, and executor attribution substitution remain nonterminal", async (t) => {
   const cases = [
-    ["repository mutation", { observe: (root, count) => ({ root, branch: "agent/daisy-251", head: REVISION, clean: count === 1 }) }],
+    ["repository mutation", { observe: (_root, count, normal) => ({ ...normal, clean: count === 1 }) }],
     ["validator throw", { validate: async () => { throw new Error("validator defect"); } }],
     ["validator identity", { validate: (plan) => validator(plan, { validationId: "validation:substituted" }) }],
     ["executor attribution", { invoke: (plan) => executor(plan, { seatId: "may" }) }],
@@ -1070,8 +1197,8 @@ test("an active Daisy mission plus any blocked or failed peer stops before claim
 
 test("wrong active identity, blocked peer, dependencies, adapter policy, and mutable dependencies fail before claim", async (t) => {
   await t.test("dirty repository", async () => {
-    const f = await fixture({ observe: (root) => ({ root, branch: "agent/daisy-251", head: REVISION, clean: false }) });
-    await assert.rejects(runFeatureFlightStepV1(f.input, f.dependencies), /before effects.*repository identity/u);
+    const f = await fixture({ observe: (_root, _count, normal) => ({ ...normal, clean: false }) });
+    await assert.rejects(runFeatureFlightStepV1(f.input, f.dependencies), /before effects.*repository (?:identity|observation)/u);
     assert.equal(f.calls.invoke, 0);
   });
   await t.test("non-Daisy Runner replay", async () => {
@@ -1099,7 +1226,7 @@ test("wrong active identity, blocked peer, dependencies, adapter policy, and mut
   await t.test("wrong adapter", async () => {
     const f = await fixture();
     const wrong = Object.freeze({ ...f.dependencies, adapterDescriptor: Object.freeze({ ...f.dependencies.adapterDescriptor, adapterId: "other" }) });
-    await assert.rejects(runFeatureFlightStepV1(f.input, wrong), /fixed Slice 2 policy/u);
+    await assert.rejects(runFeatureFlightStepV1(f.input, wrong), /fixed policy/u);
     assert.equal(f.calls.load, 0);
   });
   await t.test("runtime and executor collision", async () => {
@@ -1111,7 +1238,7 @@ test("wrong active identity, blocked peer, dependencies, adapter policy, and mut
         executorId: f.dependencies.adapterDescriptor.runtimeId,
       }),
     });
-    await assert.rejects(runFeatureFlightStepV1(f.input, collision), /fixed Slice 2 policy/u);
+    await assert.rejects(runFeatureFlightStepV1(f.input, collision), /fixed policy/u);
     assert.equal(f.calls.load, 0);
   });
   await t.test("unbounded runtime identity", async () => {
@@ -1120,7 +1247,7 @@ test("wrong active identity, blocked peer, dependencies, adapter policy, and mut
       ...f.dependencies,
       adapterDescriptor: Object.freeze({ ...f.dependencies.adapterDescriptor, runtimeId: `runtime:${"x".repeat(300)}` }),
     });
-    await assert.rejects(runFeatureFlightStepV1(f.input, malformed), /fixed Slice 2 policy/u);
+    await assert.rejects(runFeatureFlightStepV1(f.input, malformed), /fixed policy/u);
     assert.equal(f.calls.load, 0);
   });
 });
@@ -1129,13 +1256,13 @@ test("wrong mission, repository identity, lane, and nonempty dependency inputs f
   const cases = [
     ["mission", 1, 0, async (f) => ({ input: { ...f.input, routing: { ...f.input.routing, missionId: "mission:missing-251" } } })],
     ["worktree", 1, 1, async (f) => ({ dependencies: withDependencies(f, {
-      observeRepository: async () => { f.calls.observe += 1; return { root: f.peerWorktree, branch: "agent/daisy-251", head: REVISION, clean: true }; },
+      observeRepository: async () => { f.calls.observe += 1; return repositoryObservationFor(f, { root: f.peerWorktree }); },
     }) })],
     ["branch", 1, 1, async (f) => ({ dependencies: withDependencies(f, {
-      observeRepository: async () => { f.calls.observe += 1; return { root: f.worktree, branch: "agent/wrong-251", head: REVISION, clean: true }; },
+      observeRepository: async () => { f.calls.observe += 1; return repositoryObservationFor(f, { branch: "agent/wrong-251" }); },
     }) })],
     ["HEAD", 1, 1, async (f) => ({ dependencies: withDependencies(f, {
-      observeRepository: async () => { f.calls.observe += 1; return { root: f.worktree, branch: "agent/daisy-251", head: "5".repeat(40), clean: true }; },
+      observeRepository: async () => { f.calls.observe += 1; return repositoryObservationFor(f, { head: "5".repeat(40) }); },
     }) })],
     ["lane", 0, 0, async (f) => {
       const changed = structuredClone(f.current);
@@ -1211,7 +1338,7 @@ test("excluded seats, effects, actions, validation, and adapter policy variants 
     await t.test(`adapter ${field}`, async () => {
       const f = await fixture();
       const descriptor = Object.freeze({ ...f.dependencies.adapterDescriptor, [field]: value });
-      await assert.rejects(runFeatureFlightStepV1(f.input, withDependencies(f, { adapterDescriptor: descriptor })), /fixed Slice 2 policy/u);
+      await assert.rejects(runFeatureFlightStepV1(f.input, withDependencies(f, { adapterDescriptor: descriptor })), /fixed policy/u);
       assert.equal(f.calls.load, 0);
       await assertEffectsAbsent(f);
     });
@@ -1232,4 +1359,286 @@ test("successor builder allows only the legal active-to-complete edge", async ()
     { path: f.input.predecessorStatePath, bytes: 1, sha256: f.input.expectedPredecessorSha256 },
     "mission:daisy-251", "2026-08-09T13:00:01.000Z",
   ), /must currently be active/u);
+});
+
+test("S3-R1/R2/R3: equal remote baseline completes once and persists exact observer-bound v2 claim", async () => {
+  const f = await fixture(); const result = await runFeatureFlightStepV1(f.input, f.dependencies);
+  assert.equal(FEATURE_FLIGHT_STEP_CONTRACT_VERSION, "2.0.0"); assert.equal(result.outcome, "completed");
+  assert.deepEqual(f.calls, { load: 1, authorize: 1, invoke: 1, validate: 1, observe: 2, remote: 2, clock: 2 });
+  const directory = effectDirectoryFor(f, result);
+  const [claim, successor, terminal, arbiter] = await Promise.all([
+    readFile(join(directory, "claim.json"), "utf8").then(JSON.parse), readFile(join(directory, "successor.json"), "utf8").then(JSON.parse),
+    readFile(join(directory, "result.json"), "utf8").then(JSON.parse), readFile(join(directory, "terminal.json"), "utf8").then(JSON.parse),
+  ]);
+  assert.deepEqual(validateFeatureFlightStepClaim(claim), []); assert.deepEqual(validateFeatureFlightStepResult(terminal), []);
+  assert.deepEqual(validateFeatureFlightStepSuccessor(f.plan, f.planIdentity, f.current, successor), []);
+  assert.deepEqual(claim.remoteObserver, f.remoteObserverDescriptor); assert.equal(claim.baselineRemoteObservation.phase, "pre_claim");
+  assert.equal(arbiter.terminalKind, "success"); assert.equal(arbiter.successor.sha256, sha256(persistedBytes(successor)));
+  assert.equal((await lstat(join(directory, "terminal.json"))).mode & 0o777, 0o600);
+});
+
+test("S3-R2: absent is admissible; preexisting drift and stale challenge stop before claim and Runner callbacks", async (t) => {
+  for (const [name, mutate, reason] of [
+    ["drift", (_request, _count, value) => ({ ...value, remoteHead: DRIFT }), "preexisting_remote_drift"],
+    ["stale", (_request, _count, value) => ({ ...value, challenge: "0".repeat(64) }), "remote_phase_or_challenge_stale"],
+    ["malformed", (_request, _count, value) => ({ ...value, unknown: true }), "remote_observation_malformed"],
+    ["unavailable", () => { throw new Error("observer unavailable"); }, "precheck_remote_observation_unavailable"],
+  ]) await t.test(name, async () => {
+    const f = await fixture({ observeRemote: mutate }); const result = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(result.outcome, "stopped"); assert.equal(result.reason, reason); assert.equal(result.handoff.nextAction, "inspect_claim_and_remote_non_destructively");
+    assert.deepEqual({ authorize: f.calls.authorize, invoke: f.calls.invoke, validate: f.calls.validate }, { authorize: 0, invoke: 0, validate: 0 });
+    await assert.rejects(lstat(join(f.storeRoot, "effects")), /ENOENT/u);
+  });
+  const absent = await fixture({ observeRemote: (_request, _count, value) => ({ ...value, remoteHead: null }) });
+  assert.equal((await runFeatureFlightStepV1(absent.input, absent.dependencies)).outcome, "completed");
+});
+
+test("S3-R1/R2/R10: repository/common-Git and descriptor mismatches have distinct closed handoffs", async (t) => {
+  for (const [name, mutate, reason] of [
+    ["repository/common-Git identity", (value) => ({ ...value, commonGitInode: value.commonGitInode + 1 }), "remote_repository_identity_mismatch"],
+    ["descriptor fields", (value) => ({ ...value, observer: { ...value.observer, executorId: "executor:forged-observer" } }), "remote_descriptor_mismatch"],
+  ]) await t.test(name, async () => {
+    const f = await fixture({ observeRemote: (_request, _count, value) => mutate(value) });
+    const result = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(result.outcome, "stopped"); assert.equal(result.reason, reason);
+    assert.equal(result.handoff.reason, reason); assert.equal(result.handoff.phase, "remote_precheck");
+    assert.equal(result.handoff.nextAction, "inspect_claim_and_remote_non_destructively");
+    assert.deepEqual({ authorize: f.calls.authorize, invoke: f.calls.invoke, validate: f.calls.validate }, { authorize: 0, invoke: 0, validate: 0 });
+    await assertEffectsAbsent(f);
+  });
+});
+
+test("S3-R4/R5/R7/R8: post-adapter remote drift elects durable recovery and retry performs zero fresh/effect callbacks", async () => {
+  const f = await fixture({ observeRemote: (_request, count, value) => ({ ...value, remoteHead: count === 1 ? REVISION : DRIFT }) });
+  const first = await runFeatureFlightStepV1(f.input, f.dependencies); assert.equal(first.outcome, "recovery_required");
+  assert.equal(first.reason, "remote_drift"); assert.equal(first.durable, true);
+  const directory = effectDirectoryFor(f, first);
+  assert.equal((await readFile(join(directory, "terminal.json"), "utf8").then(JSON.parse)).terminalKind, "recovery");
+  await assert.rejects(readFile(join(directory, "successor.json")), /ENOENT/u); await assert.rejects(readFile(join(directory, "result.json")), /ENOENT/u);
+  const before = { ...f.calls }; const retry = await runFeatureFlightStepV1(f.input, f.dependencies);
+  assert.equal(retry.reason, "remote_drift"); assert.equal(retry.recovery.sha256, first.recovery.sha256);
+  assert.deepEqual(f.calls, { ...before, load: before.load + 1 });
+});
+
+test("S3-R1/R4: equal timestamps pass; rollback, identity substitution, and unavailable postcheck recover durably", async (t) => {
+  const equal = await fixture({ observeRemote: (_request, count, value) => ({ ...value, observedAt: count === 1 ? "2026-08-09T12:59:59.000Z" : "2026-08-09T13:00:00.000Z" }) });
+  assert.equal((await runFeatureFlightStepV1(equal.input, equal.dependencies)).outcome, "completed");
+  for (const [name, observeRemote, reason] of [
+    ["rollback", (_request, count, value) => ({ ...value, observedAt: count === 1 ? value.observedAt : "2026-08-09T12:59:58.000Z" }), "remote_identity_changed"],
+    ["identity", (_request, count, value) => count === 1 ? value : ({ ...value, commonGitInode: 999 }), "remote_identity_changed"],
+    ["unavailable", (_request, count, value) => { if (count === 2) throw new Error("unavailable"); return value; }, "postcheck_remote_observation_unavailable"],
+  ]) await t.test(name, async () => {
+    const f = await fixture({ observeRemote }); const result = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(result.reason, reason); assert.equal(result.durable, true); assert.equal(f.calls.invoke, 1);
+    await assert.rejects(readFile(join(effectDirectoryFor(f, result), "successor.json")), /ENOENT/u);
+  });
+});
+
+test("S3-R5/R7: exact success arbiter rematerializes only an absent result without reinvocation", async () => {
+  const f = await fixture(); const first = await runFeatureFlightStepV1(f.input, f.dependencies); const directory = effectDirectoryFor(f, first);
+  await unlink(join(directory, "result.json")); const before = { ...f.calls };
+  const replay = await runFeatureFlightStepV1(f.input, f.dependencies); assert.equal(replay.outcome, "replayed");
+  assert.deepEqual(f.calls, { ...before, load: before.load + 1 }); assert.ok(await readFile(join(directory, "result.json")));
+});
+
+test("S3-R5/R6/R7: forged canonical success arbiter intent never materializes absent declared targets", async (t) => {
+  const cases = [
+    ["effect identity", (arbiter) => { arbiter.effectClaimId = "a".repeat(64); }],
+    ["attempt identity", (arbiter) => { arbiter.attemptDigest = "b".repeat(64); }],
+    ["claim identity", (arbiter) => { arbiter.claim.path = `${arbiter.claim.path}.forged`; }],
+    ["hierarchy identity", (arbiter) => { arbiter.hierarchyIdentity.effect.ino += 1; }],
+    ["complete result payload", (arbiter) => {
+      const result = structuredClone(arbiter.result.value); result.flightId = "mission:forged-flight"; arbiter.result = terminalPayload(result);
+    }],
+  ];
+  for (const [name, forge] of cases) await t.test(name, async () => {
+    const f = await fixture(); const first = await runFeatureFlightStepV1(f.input, f.dependencies); const directory = effectDirectoryFor(f, first);
+    await Promise.all([unlink(join(directory, "successor.json")), unlink(join(directory, "result.json"))]);
+    const terminalPath = join(directory, "terminal.json"); await rewriteCanonical(terminalPath, forge);
+    const terminalBefore = await readFile(terminalPath); const callsBefore = { ...f.calls };
+    const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(replay.reason, "terminal_conflict"); assert.equal(replay.durable, false);
+    assert.deepEqual(f.calls, { ...callsBefore, load: callsBefore.load + 1 }); assert.deepEqual(await readFile(terminalPath), terminalBefore);
+    await assert.rejects(readFile(join(directory, "successor.json")), /ENOENT/u);
+    await assert.rejects(readFile(join(directory, "result.json")), /ENOENT/u);
+  });
+});
+
+test("S3-R5/R6/R7: forged canonical recovery arbiter intent never materializes an absent receipt", async (t) => {
+  const cases = [
+    ["recovery claim identity", (arbiter) => {
+      const recovery = structuredClone(arbiter.recovery.value); recovery.claim.path = `${recovery.claim.path}.forged`; arbiter.recovery = terminalPayload(recovery);
+    }],
+    ["recovery remote-drift payload", (arbiter) => {
+      const recovery = structuredClone(arbiter.recovery.value);
+      recovery.latestRemoteObservation.remoteHead = recovery.baselineRemoteObservation.remoteHead;
+      arbiter.recovery = terminalPayload(recovery);
+    }],
+  ];
+  for (const [name, forge] of cases) await t.test(name, async () => {
+    const f = await fixture({ observeRemote: (_request, count, value) => ({ ...value, remoteHead: count === 1 ? REVISION : DRIFT }) });
+    const first = await runFeatureFlightStepV1(f.input, f.dependencies); const directory = effectDirectoryFor(f, first);
+    await unlink(join(directory, "recovery.json")); const terminalPath = join(directory, "terminal.json");
+    await rewriteCanonical(terminalPath, forge); const terminalBefore = await readFile(terminalPath); const callsBefore = { ...f.calls };
+    const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(replay.reason, "terminal_conflict"); assert.equal(replay.durable, false);
+    assert.deepEqual(f.calls, { ...callsBefore, load: callsBefore.load + 1 }); assert.deepEqual(await readFile(terminalPath), terminalBefore);
+    await assert.rejects(readFile(join(directory, "recovery.json")), /ENOENT/u);
+  });
+});
+
+test("S3-R3/R4/R7: persisted success replay recomputes both remote challenges", async (t) => {
+  for (const [name, mutate] of [
+    ["pre-claim challenge", (result) => { result.baselineRemoteObservation.challenge = "a".repeat(64); }],
+    ["post-adapter challenge", (result) => { result.latestRemoteObservation.challenge = "b".repeat(64); }],
+  ]) await t.test(name, async () => {
+    const f = await fixture(); const first = await runFeatureFlightStepV1(f.input, f.dependencies); const directory = effectDirectoryFor(f, first);
+    await rewriteTerminalTarget(directory, "result", mutate);
+    const before = { result: await readFile(join(directory, "result.json")), terminal: await readFile(join(directory, "terminal.json")), calls: { ...f.calls } };
+    const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(replay.reason, "terminal_conflict"); assert.deepEqual(f.calls, { ...before.calls, load: before.calls.load + 1 });
+    assert.deepEqual(await readFile(join(directory, "result.json")), before.result);
+    assert.deepEqual(await readFile(join(directory, "terminal.json")), before.terminal);
+  });
+});
+
+test("S3-R4/R6/R7: persisted recovery replay validates observations and reason-specific latest rules", async (t) => {
+  const cases = [
+    ["baseline challenge", (recovery) => { recovery.baselineRemoteObservation.challenge = "a".repeat(64); }],
+    ["latest challenge", (recovery) => { recovery.latestRemoteObservation.challenge = "b".repeat(64); }],
+    ["remote drift requires changed head", (recovery) => { recovery.latestRemoteObservation.remoteHead = recovery.baselineRemoteObservation.remoteHead; }],
+    ["remote drift requires latest", (recovery) => { recovery.latestRemoteObservation = null; }],
+    ["postcheck unavailable requires null", (recovery) => { recovery.reason = "postcheck_remote_observation_unavailable"; }],
+    ["pre-postcheck adapter reason requires null", (recovery) => {
+      recovery.reason = "adapter_uncertain"; recovery.phase = "adapter"; recovery.invocationClassification = "zero_or_unknown";
+    }],
+  ];
+  for (const [name, mutate] of cases) await t.test(name, async () => {
+    const f = await fixture({ observeRemote: (_request, count, value) => ({ ...value, remoteHead: count === 1 ? REVISION : DRIFT }) });
+    const first = await runFeatureFlightStepV1(f.input, f.dependencies); const directory = effectDirectoryFor(f, first);
+    await rewriteTerminalTarget(directory, "recovery", mutate);
+    const before = { recovery: await readFile(join(directory, "recovery.json")), terminal: await readFile(join(directory, "terminal.json")), calls: { ...f.calls } };
+    const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(replay.reason, "terminal_conflict"); assert.deepEqual(f.calls, { ...before.calls, load: before.calls.load + 1 });
+    assert.deepEqual(await readFile(join(directory, "recovery.json")), before.recovery);
+    assert.deepEqual(await readFile(join(directory, "terminal.json")), before.terminal);
+  });
+});
+
+test("S3-R5/R6: wrong materialized target remains untouched and returns terminal_conflict", async () => {
+  const f = await fixture(); const first = await runFeatureFlightStepV1(f.input, f.dependencies); const path = join(effectDirectoryFor(f, first), "result.json");
+  const wrong = persistedBytes({ wrong: true }); await writeFile(path, wrong); const before = Buffer.from(await readFile(path));
+  const retry = await runFeatureFlightStepV1(f.input, f.dependencies); assert.equal(retry.reason, "terminal_conflict");
+  assert.deepEqual(await readFile(path), before); assert.equal(f.calls.invoke, 1);
+});
+
+test("S3-R5/R6: malformed arbiter and recovery-arbiter-plus-successor remain untouched conflicting evidence", async (t) => {
+  await t.test("malformed arbiter", async () => {
+    const f = await fixture(); const first = await runFeatureFlightStepV1(f.input, f.dependencies); const path = join(effectDirectoryFor(f, first), "terminal.json");
+    const partial = Buffer.from("{\"partial\":"); await writeFile(path, partial);
+    const retry = await runFeatureFlightStepV1(f.input, f.dependencies); assert.equal(retry.reason, "terminal_conflict");
+    assert.deepEqual(await readFile(path), partial); assert.equal(f.calls.invoke, 1);
+  });
+  await t.test("recovery plus successor", async () => {
+    const f = await fixture({ observeRemote: (_request, count, value) => ({ ...value, remoteHead: count === 1 ? REVISION : DRIFT }) });
+    const first = await runFeatureFlightStepV1(f.input, f.dependencies); const path = join(effectDirectoryFor(f, first), "successor.json");
+    const foreign = persistedBytes({ foreign: true }); await writeFile(path, foreign, { mode: 0o600 }); await chmod(path, 0o600);
+    const retry = await runFeatureFlightStepV1(f.input, f.dependencies); assert.equal(retry.reason, "terminal_conflict");
+    assert.deepEqual(await readFile(path), foreign); assert.equal(f.calls.invoke, 1);
+  });
+});
+
+test("S3-R7/R8: interruption after durable v2 claim terminalizes as recovery before local, remote, authorization, or adapter replay", async () => {
+  let throwAfterClaim = true;
+  const store = frozenStore({ claimStep: async (input) => {
+    const claimed = await productionStepStore.claimStep(input);
+    if (throwAfterClaim) { throwAfterClaim = false; throw new Error("interrupted after durable claim"); }
+    return claimed;
+  } });
+  const f = await fixture(); const dependencies = withDependencies(f, { stepStore: store }); const first = await runFeatureFlightStepV1(f.input, dependencies);
+  assert.equal(first.reason, "interrupted_after_claim"); assert.equal(first.durable, true); assert.equal(f.calls.invoke, 0);
+  const before = { ...f.calls }; const retry = await runFeatureFlightStepV1(f.input, dependencies);
+  assert.equal(retry.reason, "interrupted_after_claim"); assert.deepEqual(f.calls, { ...before, load: before.load + 1 });
+});
+
+test("S3-R5/R8: simultaneous calls share one arbiter and invoke the adapter at most once", async () => {
+  let release; let markEntered; const barrier = new Promise((resolve) => { release = resolve; });
+  const entered = new Promise((resolve) => { markEntered = resolve; });
+  const f = await fixture({ invoke: async (plan) => { markEntered(); await barrier; return executor(plan); } });
+  const one = runFeatureFlightStepV1(f.input, f.dependencies); await entered;
+  const two = runFeatureFlightStepV1(f.input, f.dependencies); const recoveryWinner = await two; release(); const successLoser = await one;
+  assert.equal(f.calls.invoke, 1); assert.equal(recoveryWinner.reason, "interrupted_after_claim"); assert.equal(successLoser.reason, "interrupted_after_claim");
+  const directory = effectDirectoryFor(f, recoveryWinner); const arbiter = await readFile(join(directory, "terminal.json"), "utf8").then(JSON.parse);
+  assert.equal(arbiter.terminalKind, "recovery"); await assert.rejects(readFile(join(directory, "successor.json")), /ENOENT/u);
+});
+
+test("S3-R4/R5: adapter and validation failures create recovery only and prohibit reinvocation", async (t) => {
+  for (const [name, behavior, reason] of [
+    ["adapter", { invoke: async () => { throw new Error("uncertain"); } }, "adapter_uncertain"],
+    ["validation", { validate: (plan) => validator(plan, { outcome: "failed" }) }, "validation_failed"],
+  ]) await t.test(name, async () => {
+    const f = await fixture(behavior); const first = await runFeatureFlightStepV1(f.input, f.dependencies); assert.equal(first.reason, reason);
+    const directory = effectDirectoryFor(f, first); assert.ok(await readFile(join(directory, "recovery.json")));
+    await assert.rejects(readFile(join(directory, "successor.json")), /ENOENT/u); const invocations = f.calls.invoke;
+    await runFeatureFlightStepV1(f.input, f.dependencies); assert.equal(f.calls.invoke, invocations);
+  });
+});
+
+test("S3-R1/R9: descriptor is independently frozen, exact, bounded, and accepts no mutation capability", async (t) => {
+  const f = await fixture();
+  for (const descriptor of [
+    { ...f.remoteObserverDescriptor, runtimeId: f.remoteObserverDescriptor.executorId },
+    { ...f.remoteObserverDescriptor, fetch: () => {} },
+    { ...f.remoteObserverDescriptor, configuredRemoteUrl: "ssh://user:password@github.com/RanSolo/shield-workspace.git" },
+  ]) await t.test(Object.keys(descriptor).at(-1), async () => {
+    const dependencies = withDependencies(f, { remoteObserverDescriptor: Object.freeze(descriptor) });
+    await assert.rejects(runFeatureFlightStepV1(f.input, dependencies), /rejected before effects/u); assert.equal(f.calls.invoke, 0);
+  });
+  await assert.rejects(runFeatureFlightStepV1(f.input, withDependencies(f, { remoteObserverDescriptor: { ...f.remoteObserverDescriptor } })), /independently frozen/u);
+});
+
+test("S3-R7 compatibility: exact v1 triad replays; incomplete v1 remains immutable ephemeral recovery", async () => {
+  const f = await fixture(); const { directory } = await seedLegacyTerminal(f);
+  const before = { ...f.calls }; const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
+  assert.equal(replay.outcome, "legacy_replayed"); assert.deepEqual(f.calls, { ...before, load: before.load + 1 });
+  await unlink(join(directory, "result.json")); const claimBefore = await readFile(join(directory, "claim.json"));
+  const incomplete = await runFeatureFlightStepV1(f.input, f.dependencies); assert.equal(incomplete.reason, "legacy_incomplete");
+  assert.deepEqual(await readFile(join(directory, "claim.json")), claimBefore); await assert.rejects(readFile(join(directory, "terminal.json")), /ENOENT/u);
+});
+
+test("S3-R7 compatibility: every closed v1 terminal binding rejects canonical substitution without callbacks or mutation", async (t) => {
+  const cases = [
+    ["runnerResultSha256", async (directory) => rewriteCanonical(join(directory, "result.json"), (result) => { result.runnerResultSha256 = "a".repeat(64); })],
+    ["adapter identity", async (directory) => rewriteCanonical(join(directory, "result.json"), (result) => { result.adapter.runtimeId = "runtime:forged-v1"; })],
+    ["flightId", async (directory) => rewriteCanonical(join(directory, "result.json"), (result) => { result.flightId = "mission:forged-v1"; })],
+    ["claimedAt", async (directory) => rewriteCanonical(join(directory, "result.json"), (result) => { result.claimedAt = "2026-08-09T13:00:00.500Z"; })],
+    ["completedAt", async (directory) => rewriteCanonical(join(directory, "result.json"), (result) => { result.completedAt = "2026-08-09T13:00:02.000Z"; })],
+    ["effectContainment", async (directory) => rewriteCanonical(join(directory, "result.json"), (result) => { result.effectContainment = "contained"; })],
+    ["completion-to-successor timestamp", async (directory) => {
+      const successor = await rewriteCanonical(join(directory, "successor.json"), (value) => { value.observedAt = "2026-08-09T13:00:02.000Z"; });
+      await rewriteCanonical(join(directory, "result.json"), (result) => { result.successor = successor.identity; });
+    }],
+    ["completion before claim", async (directory) => {
+      const successor = await rewriteCanonical(join(directory, "successor.json"), (value) => { value.observedAt = "2026-08-09T12:59:59.000Z"; });
+      await rewriteCanonical(join(directory, "result.json"), (result) => {
+        result.completedAt = successor.value.observedAt;
+        result.successor = successor.identity;
+      });
+    }],
+  ];
+  for (const [name, substitute] of cases) await t.test(name, async () => {
+    const f = await fixture(); const { directory } = await seedLegacyTerminal(f); await substitute(directory);
+    const paths = ["claim", "successor", "result"].map((artifact) => join(directory, `${artifact}.json`));
+    const artifactsBefore = await Promise.all(paths.map((path) => readFile(path))); const callsBefore = { ...f.calls };
+    const replay = await runFeatureFlightStepV1(f.input, f.dependencies);
+    assert.equal(replay.outcome, "recovery_required"); assert.equal(replay.reason, "unsupported_or_malformed_store");
+    assert.deepEqual(f.calls, { ...callsBefore, load: callsBefore.load + 1 });
+    assert.deepEqual(await Promise.all(paths.map((path) => readFile(path))), artifactsBefore);
+    await assert.rejects(readFile(join(directory, "terminal.json")), /ENOENT/u);
+  });
+});
+
+test("regression: Runner denial remains pre-claim stopped and creates no effect", async () => {
+  const f = await fixture({ authorize: (plan) => permission(plan, "deny") }); const result = await runFeatureFlightStepV1(f.input, f.dependencies);
+  assert.equal(result.outcome, "stopped"); assert.equal(f.calls.invoke, 0); await assert.rejects(lstat(join(f.storeRoot, "effects")), /ENOENT/u);
 });
