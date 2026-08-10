@@ -7,20 +7,24 @@ default_subagent_reasoning_effort = "medium"
 [agents.hill]
 description = "S.H.I.E.L.D. orchestrator for mission scope, routing, operations, and evidence-bound handoffs."
 config_file = "agents/hill.toml"
+nickname_candidates = ["hill"]
 
 [agents.daisy]
 description = "S.H.I.E.L.D. read-only reconnaissance specialist for repository evidence and root-cause analysis."
 config_file = "agents/daisy.toml"
+nickname_candidates = ["daisy"]
 
 [agents.fury]
 description = "S.H.I.E.L.D. architecture and conformance reviewer using GPT-5.6 Sol."
 config_file = "agents/fury.toml"
+nickname_candidates = ["fury"]
 
 [agents.may]
 description = "S.H.I.E.L.D. implementation specialist for exact Fury-approved plans."
 config_file = "agents/may.toml"
+nickname_candidates = ["may"]
 
 [agents.mack]
 description = "S.H.I.E.L.D. independent validation specialist for exact-revision evidence."
 config_file = "agents/mack.toml"
-
+nickname_candidates = ["mack"]
