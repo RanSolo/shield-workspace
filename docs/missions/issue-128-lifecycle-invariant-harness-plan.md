@@ -24,9 +24,11 @@ A→B→A constructor and replay rejection, fabricated/replayed human-evidence
 rejection, and several conflicting lifecycle cases. Missing or incomplete direct
 coverage is limited to:
 
-1. an explicit valid A→B→C chain;
-2. a compact matrix that demonstrates reproducible short sequences;
-3. dedicated zero-current and fail-closed multiple-current assertions;
+1. explicit valid chains containing three, four, and five supersession transitions;
+2. a compact matrix that demonstrates reproducible short sequences and later
+   stale-identity reuse;
+3. exactly-one-current-revision assertions after every valid replay prefix,
+   zero-current-Fury routing, and fail-closed branching/duplicate-review attempts;
 4. a consolidated malformed-supersession matrix; and
 5. measured focused runtime and an explicit Adopt/Revise/No change disposition.
 
@@ -44,22 +46,36 @@ raw-entry injection only for replay-adversarial vectors that constructors correc
 refuse to create. Do not add dependencies, randomness, property-testing libraries,
 new fixture files, or shared production/test abstractions.
 
-Use fixed A/B/C revision identities and deterministic timestamps derived from the
-entry sequence. Each failure message must include the vector name and the complete
-ordered revision sequence so a failure is reproducible without a seed.
+Use fixed A/B/C/D/E/F revision identities and deterministic timestamps derived
+from the entry sequence. Include valid sequences with three, four, and five
+supersession transitions and reuse vectors for both the initial and a later stale
+identity. Each failure message must include the vector name and complete ordered
+revision sequence so a failure is reproducible without a seed.
+
+Replay derives revision lifecycle atomically; no public input surface accepts an
+already-projected lifecycle flag. Therefore the experiment does not claim to inject
+a valid projection containing zero or multiple lifecycle-current revisions. It
+proves the invariant by asserting exactly one current revision after every valid
+prefix, and by proving all reachable branching/reuse attempts fail before a
+multiple-current projection can exist. If direct projection injection is required,
+the experiment must stop and select **Revise** or **No change** rather than edit
+production code.
 
 ## Acceptance matrix
 
 | ID | Sequence/case | Required observation |
 | --- | --- | --- |
-| L128-01 | A→B | A remains historical/stale, B is current, and fresh B Fury evidence is required |
-| L128-02 | A→B→C | A and B remain stale, exactly C is current, and no A/B evidence satisfies C |
-| L128-03 | A→B→A | Constructor rejects reuse with `revision_mismatch`; equivalent raw replay is invalid |
-| L128-04 | stale A review after B/C | Stale evidence remains attributable history but cannot make Fitz routing ready |
-| L128-05 | duplicate/conflicting current Fury | Constructor or replay fails closed with the existing deterministic error class |
-| L128-06 | zero current Fury | Valid projection remains `waiting/current_head_fury_review_required` |
-| L128-07 | multiple-current attempt | Supported constructors cannot emit it; adversarial replay is invalid and never projects ready |
-| L128-08 | malformed/broken supersession | Wrong predecessor, malformed identity, missing requirement, and broken lineage each fail closed |
+| L128-01 | A→B→C→D (3 transitions) | After every prefix, revision IDs are unique and exactly the terminal revision is lifecycle-current |
+| L128-02 | A→B→C→D→E and →F (4/5 transitions) | Every superseded revision remains stale; earlier Fury/human evidence never satisfies the terminal revision |
+| L128-03 | A→B→A and A→B→C→B | Constructor and equivalent raw replay reject initial/later stale reuse with `invalid/revision_mismatch` |
+| L128-04a | preserved A history after B/C | Pre-supersession A evidence remains attributable history with lifecycle `stale` |
+| L128-04b | late A review after B/C | Constructor and raw replay reject it with `invalid/revision_mismatch`; Fitz never becomes ready |
+| L128-05a | duplicate Fury review ID | Constructor/replay rejects the duplicate with `invalid/duplicate_evidence` |
+| L128-05b | different Fury decision on reviewed revision | Constructor/replay rejects it with `invalid/decision_mismatch` |
+| L128-06 | zero current Fury reviews | Valid revision projection has exactly one current revision while routing remains `waiting/current_head_fury_review_required` |
+| L128-07 | second child of stale A | Constructor/raw replay rejects wrong predecessor with `invalid/revision_mismatch`; no multiple-current projection is emitted |
+| L128-08a | malformed identity/noncanonical raw requirements | Replay rejects with `invalid/malformed` |
+| L128-08b | constructor cannot derive one predecessor requirement | Constructor rejects with `invalid/missing_requirement` |
 
 Tests must assert both constructor behavior and replay behavior where those surfaces
 have distinct responsibilities. Existing tests remain intact unless a tiny local
@@ -67,14 +83,22 @@ helper extraction removes literal duplication without changing assertions.
 
 ## Experiment measurement and disposition
 
-Capture the targeted command's wall-clock duration and test count before and after
-the matrix using the same exact HEAD/environment. Record no benchmark claim from a
-cached or different-revision run. The implementation handoff must select exactly
-one disposition:
+Use plan commit `9fadc851f31555d871e9771ad328e892809a6bba` as the
+pre-change baseline and the eventual implementation commit as the post-change
+revision. Record Node and npm versions, dependency-lock digest, CPU architecture,
+command, test count, and exact revision. Run the focused command uncached five
+times at each revision in the same worktree/environment and compare median wall
+time. Record changed lines, helper count, vector count, altered existing
+assertions, added dependencies, and added fixture files.
 
-- **Adopt** — the local matrix catches all required cases, remains readable, adds
-  negligible focused runtime, and provides a clear reusable pattern; open separate
-  rollout issues rather than generalizing production code here.
+The implementation handoff must identify its exact SHA and contain exactly one
+`Disposition: Adopt|Revise|No change` label:
+
+- **Adopt** — every reachable acceptance row passes; the focused median increases
+  by no more than 25% and 500 ms absolute; the delta uses at most two local helpers
+  and twelve vectors, changes at most 250 lines, alters no existing assertion, and
+  adds no dependency or fixture file. Open separate rollout issues rather than
+  generalizing production code here.
 - **Revise** — the experiment is useful but at least one required invariant needs a
   second bounded test design or clearer failure evidence.
 - **No change** — the matrix duplicates mission-specific tests, obscures semantics,
@@ -84,14 +108,22 @@ one disposition:
 
 Run at the exact implementation HEAD:
 
-1. `node --test packages/shield-team-system/tests/revision-lifecycle-v7.test.mjs`
-2. `npx nx test @shield/team-system --skip-nx-cache`
-3. `git diff --check`
+1. `git rev-parse HEAD`
+2. `git status --porcelain` (must be empty)
+3. `node --test packages/shield-team-system/tests/revision-lifecycle-v7.test.mjs`
+4. `npx nx test @shield/team-system --skip-nx-cache`
+5. `git diff --check 9fadc851f31555d871e9771ad328e892809a6bba..HEAD`
+6. `git diff --name-only 9fadc851f31555d871e9771ad328e892809a6bba..HEAD`
+   (exactly the authorized test file)
+7. `git diff --check 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD`
+8. `git diff --name-only 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD`
+   (exactly the plan document and authorized test file)
 
-Mack independently reruns the focused and affected validation, verifies no changed
-path outside the allowlist, checks reproducibility of a deliberately failing local
-copy without committing it, and confirms the selected disposition follows the
-criteria. Fury then reviews exact-revision conformance.
+Mack independently reruns the focused and affected validation, verifies both exact
+diff ranges, checks that vector failure output includes the complete reproducible
+sequence, validates the measurements at their recorded revisions, and confirms the
+single disposition follows the numeric criteria. Fury then reviews exact-revision
+conformance.
 
 ## Authorized implementation paths
 
@@ -101,4 +133,3 @@ The planning document itself may be committed before implementation authority.
 Implementation stops on any source/schema/public-surface requirement, nondeterminism,
 unbounded sequence generation, path expansion, or inability to prove an acceptance
 row through the existing public test imports.
-
