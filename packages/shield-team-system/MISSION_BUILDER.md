@@ -2,8 +2,10 @@
 
 Mission Builder v1 is a non-authoritative composition layer for routine
 `debug`, `delivery`, `recon`, `planning`, and `review` missions. It accepts a
-blocker-free `MissionIntakeCandidateV1`, host-recorded mode activations, and a
-repair limit of zero through two. Its output is a closed, content-addressed
+blocker-free, canonically revalidated `MissionIntakeCandidateV1`, host-recorded
+mode activations, and a repair limit of zero through two. The work owner's
+pattern mode is mandatory, and runner compilation receives only that owner's
+canonical mode subset. Its output is a closed, content-addressed
 `MissionDefinitionV1`; it does not authorize, schedule, merge, publish, deploy,
 or release work.
 
@@ -15,8 +17,8 @@ they wait for separately recorded human evidence.
 
 Before `advanceMissionV1` can dispatch, the host observation must match the
 definition's repository, journal replay and digest, sequence, workspace,
-session, activated modes, allowlist, permission context, and runtime/executor
-observations. Provenance replay must contain the exact current definition,
+session, activated modes (including journal replay), allowlist, permission
+context, and runtime/executor observations. Provenance replay must contain the exact current definition,
 validation revision, and Hill proofreading digest. An edit invalidates prior
 validation, compiled manifests, and proofreading acceptance.
 
@@ -24,8 +26,10 @@ Advancement replays content-addressed step and dispatch receipts, performs at
 most one runner or Mack dispatch, appends one transition receipt with exact
 readback, and returns a replay-derived `MissionStatusProjectionV1`. Malformed,
 stale, conflicting, incomplete, mixed-scope, or uncertain evidence fails
-closed. Human evidence may advance a wait node but produces zero dispatch
-effects.
+closed. Human gates consume only signature- and binding-validated journal
+evidence for the exact requirement, seat, mission, subject-bound revision, and
+evidence kind; caller-supplied artifact references cannot advance a gate.
+Human advancement produces zero dispatch effects.
 
 `MissionProvenanceStoreV1` and `MissionStepReceiptStoreV1` leave locking,
 append, replay, exact readback, conflict handling, and recovery at the host

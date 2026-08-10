@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 
 import { evaluateMackValidationV0, type MackEvaluationV0, type MackExpectedBindingV0, type MackValidationReportV0 } from "./mack-validation-v0.mjs";
-import { type MissionIntakeCandidateV1 } from "./mission-intake-v1.mjs";
+import { missionIntakeV1, type MissionIntakeCandidateV1 } from "./mission-intake-v1.mjs";
 import {
   canonicalJson,
   type EvidenceTimestamp,
@@ -94,6 +94,7 @@ export interface MissionEvidenceContractV1 {
   readonly evidenceContractId: string;
   readonly nodeId: string;
   readonly kind: "runner_effect" | "mack_report" | "human_authority";
+  readonly evidenceKind: "runner_effect" | "mack_report" | "technical_review" | "product_domain_review" | "final_acceptance";
   readonly requiredSeatId: CanonicalRoleId;
   readonly requirementId: string | null;
   readonly authority: "non_authoritative" | "human_authority";
@@ -181,6 +182,13 @@ export interface MissionProvenanceProjectionV1 {
   readonly records: readonly MissionProvenanceRecordV1[];
   readonly missionId: string;
   readonly definitionRevision: string;
+  readonly parentDefinitionRevision: string | null;
+  readonly repositoryRevision: string;
+  readonly templateId: string;
+  readonly templateVersion: 1;
+  readonly intakeRevisionId: string;
+  readonly generatedDigest: string;
+  readonly editedDigest: string | null;
   readonly validationRevision: string | null;
   readonly proofreadAcceptanceDigest: string | null;
   readonly lastRecordDigest: string;
@@ -200,13 +208,6 @@ export type MissionProvenanceAppendResultV1 = Readonly<
   | { state: "blocked"; code: "lock_held" | "store_unavailable" | "conflict" | "lock_lost" | "readback_mismatch" }
   | { state: "uncertain"; code: "recovery_required" | "manual_recovery_required" }
 >;
-
-export interface MissionCompletedEvidenceV1 {
-  readonly evidenceContractId: string;
-  readonly nodeId: string;
-  readonly artifactRevision: string;
-  readonly source: "runner_receipt" | "mack_receipt" | "human_recorded";
-}
 
 export interface MissionStepReceiptV1 {
   readonly schemaVersion: 1;
@@ -263,7 +264,6 @@ export interface MissionAdvanceHostObservationV1 {
   readonly actionAllowlist: readonly string[];
   readonly permissionContext: PermissionInvocationContext;
   readonly runtimeBindings: readonly MissionHostRuntimeObservationV1[];
-  readonly completedEvidence: readonly MissionCompletedEvidenceV1[];
   readonly provenanceRecords: readonly MissionProvenanceRecordV1[];
   readonly stepReceipts: readonly MissionStepReceiptV1[];
   readonly dispatchReceiptEntries: readonly SeatDispatchReceiptEventV1[];
@@ -337,6 +337,69 @@ function dense(value: unknown, maximum = 128): value is readonly unknown[] {
   return value.every((_item, index) => Object.hasOwn(value, index));
 }
 
+function cloneClosedData(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return value;
+  if (typeof value !== "object" || isProxy(value) || seen.has(value)) throw new TypeError("non_closed_data");
+  const array = Array.isArray(value);
+  if (Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype)) throw new TypeError("non_plain_data");
+  seen.add(value);
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string")) throw new TypeError("symbol_key");
+  if (array) {
+    const allowed = new Set(["length", ...Array.from({ length: value.length }, (_unused, index) => String(index))]);
+    if (keys.some((key) => !allowed.has(key as string))) throw new TypeError("array_field");
+    const output: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("array_accessor");
+      output.push(cloneClosedData(descriptor.value, seen));
+    }
+    seen.delete(value);
+    return output;
+  }
+  const output: Plain = {};
+  for (const key of keys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("object_accessor");
+    output[key] = cloneClosedData(descriptor.value, seen);
+  }
+  seen.delete(value);
+  return output;
+}
+
+const INTAKE_CANDIDATE_FIELDS = ["state", "schemaVersion", "contractVersion", "authority", "persistence", "repositoryObservation", "issueObservation", "configObservation", "brief", "risk", "requirements", "recommendedModes", "modeActivationState", "participants", "seatGateEnforcement", "artifacts", "communication", "runtimeObservations", "blockers", "pendingHumanGates", "nextAction"] as const;
+
+function validateMissionIntakeCandidateV1(input: unknown): MissionIntakeCandidateV1 | null {
+  try {
+    const candidate = cloneClosedData(input);
+    if (!exact(candidate, INTAKE_CANDIDATE_FIELDS) || !plain(candidate.brief)) return null;
+    const brief = candidate.brief;
+    if (!dense(brief.participants, 16)) return null;
+    const rebuilt = missionIntakeV1({
+      schemaVersion: 1,
+      contractVersion: "mission.intake.v1",
+      configObservation: candidate.configObservation,
+      repositoryObservation: candidate.repositoryObservation,
+      issueObservation: candidate.issueObservation,
+      proposedBrief: {
+        missionId: brief.missionId,
+        objective: brief.objective,
+        subjectId: brief.subjectId,
+        riskFlags: brief.riskFlags,
+        participantSeatIds: brief.participants.map((participant) => plain(participant) ? participant.seatId : undefined),
+        requireSimmons: brief.requireSimmons,
+        createdAt: brief.createdAt,
+      },
+      recommendedModes: candidate.recommendedModes,
+      artifacts: candidate.artifacts,
+      runtimeObservations: candidate.runtimeObservations,
+    });
+    return rebuilt.state === "candidate" && canonicalJson(rebuilt) === canonicalJson(candidate) ? rebuilt : null;
+  } catch {
+    return null;
+  }
+}
+
 function digest(domain: string, value: unknown): string {
   return `sha256:${createHash("sha256").update(domain).update("\0").update(canonicalJson(value)).digest("base64url")}`;
 }
@@ -394,10 +457,6 @@ function participant(candidate: MissionIntakeCandidateV1, seatId: string): boole
   return candidate.participants.some((item) => item.seatId === seatId);
 }
 
-function requirementFor(candidate: MissionIntakeCandidateV1, seatId: HumanGateRoleId): string | null {
-  return candidate.requirements.find((requirement) => requirement.requiredSeatId === seatId)?.requirementId ?? null;
-}
-
 function buildPrompt(pattern: MissionPatternV1, seatId: CanonicalRoleId, objective: string): string {
   if (isHumanGateRoleId(seatId)) return `Wait for recorded ${seatId} evidence for ${objective}. Do not simulate or infer a human decision.`;
   if (seatId === "mack") return `Validate the exact artifact revision for the ${pattern} mission. Return one closed Mack report; do not authorize execution.`;
@@ -418,16 +477,16 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
     || !input.activatedModes.every(validMode) || !Number.isSafeInteger(input.maximumRepairs) || (input.maximumRepairs as number) < 0 || (input.maximumRepairs as number) > MISSION_BUILDER_MAX_REPAIRS) {
     return { state: "blocked", reasonCodes: ["invalid_builder_input"], definition: null, provenanceRecords: [] };
   }
-  const candidate = input.candidate as MissionIntakeCandidateV1;
+  const candidate = validateMissionIntakeCandidateV1(input.candidate);
   const pattern = input.pattern as MissionPatternV1;
   const spec = TEMPLATE[pattern];
-  if (!plain(candidate) || candidate.state !== "candidate" || candidate.authority !== "non_authoritative" || candidate.persistence !== "not_persisted"
-    || !dense(candidate.blockers, 16) || candidate.blockers.length !== 0 || !plain(candidate.brief) || !plain(candidate.repositoryObservation)
+  if (!candidate || candidate.state !== "candidate" || candidate.authority !== "non_authoritative" || candidate.persistence !== "not_persisted"
+    || candidate.blockers.length !== 0
     || !participant(candidate, spec.owner) || !participant(candidate, "hill") || !participant(candidate, "coulson") || !participant(candidate, "fitz")) {
     return { state: "blocked", reasonCodes: ["intake_not_eligible"], definition: null, provenanceRecords: [] };
   }
   const modes = canonicalModes(input.activatedModes as RunnerModeReference[]);
-  if (!modes.some((mode) => mode.modeId === spec.mode) || modes.some((mode, index) => canonicalJson(mode) === canonicalJson(modes[index - 1]))) {
+  if (!modes.some((mode) => mode.modeId === spec.mode && mode.seatId === spec.owner) || modes.some((mode, index) => canonicalJson(mode) === canonicalJson(modes[index - 1]))) {
     return { state: "blocked", reasonCodes: ["required_mode_not_activated"], definition: null, provenanceRecords: [] };
   }
 
@@ -444,9 +503,9 @@ export function buildMissionDefinitionV1(input: unknown): Readonly<{
     { nodeId: nodeId(pattern, "complete"), kind: "terminal", seatId: null, stepId: null, terminalReason: "complete" },
   ];
   const evidenceContracts: MissionEvidenceContractV1[] = [
-    { evidenceContractId: evidenceId(pattern, "work"), nodeId: nodeId(pattern, "work"), kind: "runner_effect", requiredSeatId: spec.owner, requirementId: null, authority: "non_authoritative" },
-    { evidenceContractId: evidenceId(pattern, "mack"), nodeId: nodeId(pattern, "mack"), kind: "mack_report", requiredSeatId: "mack", requirementId: null, authority: "non_authoritative" },
-    ...humanSeats.map((seatId): MissionEvidenceContractV1 => ({ evidenceContractId: evidenceId(pattern, seatId), nodeId: nodeId(pattern, seatId), kind: "human_authority", requiredSeatId: seatId, requirementId: requirementFor(candidate, seatId), authority: "human_authority" })),
+    { evidenceContractId: evidenceId(pattern, "work"), nodeId: nodeId(pattern, "work"), kind: "runner_effect", evidenceKind: "runner_effect", requiredSeatId: spec.owner, requirementId: null, authority: "non_authoritative" },
+    { evidenceContractId: evidenceId(pattern, "mack"), nodeId: nodeId(pattern, "mack"), kind: "mack_report", evidenceKind: "mack_report", requiredSeatId: "mack", requirementId: null, authority: "non_authoritative" },
+    ...humanSeats.map((seatId): MissionEvidenceContractV1 => ({ evidenceContractId: evidenceId(pattern, seatId), nodeId: nodeId(pattern, seatId), kind: "human_authority", evidenceKind: seatId === "fitz" ? "technical_review" : seatId === "simmons" ? "product_domain_review" : "final_acceptance", requiredSeatId: seatId, requirementId: null, authority: "human_authority" })),
   ];
   const edges: MissionGraphEdgeV1[] = ([
     { edgeId: `edge:${pattern}:work:mack`, fromNodeId: nodeId(pattern, "work"), toNodeId: nodeId(pattern, "mack"), condition: "success", evidenceContractId: evidenceId(pattern, "work"), maximumTraversals: 1, priority: 0 },
@@ -534,6 +593,10 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
     participantIds.add(String(item.seatId));
   }
   if (!participantIds.has("mack") || !participantIds.has("coulson") || !participantIds.has("fitz")) reasons.push("required_participant_missing");
+  const spec = TEMPLATE[value.pattern];
+  if (!spec || !participantIds.has(spec.owner) || !value.activatedModes.some((mode) => mode.modeId === spec.mode && mode.seatId === spec.owner)
+    || new Set(value.activatedModes.map((mode) => canonicalJson(mode))).size !== value.activatedModes.length
+    || canonicalJson(value.activatedModes) !== canonicalJson(canonicalModes(value.activatedModes))) reasons.push("pattern_mode_invalid");
   const nodeIds = new Set<string>(); const stepIds = new Set<string>(); const edgeIds = new Set<string>(); const evidenceIds = new Set<string>();
   const promptIds = new Set<string>(); const handoffIds = new Set<string>();
   for (const prompt of value.prompts ?? []) {
@@ -552,10 +615,14 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   }
   if (!nodeIds.has(value.graph?.startNodeId) || value.graph?.nodes.filter((node) => node.nodeId === value.graph.startNodeId).length !== 1) reasons.push("start_invalid");
   for (const evidence of value.evidenceContracts ?? []) {
-    if (!exact(evidence, ["evidenceContractId", "nodeId", "kind", "requiredSeatId", "requirementId", "authority"]) || !ID.test(String(evidence.evidenceContractId)) || evidenceIds.has(String(evidence.evidenceContractId)) || !nodeIds.has(String(evidence.nodeId))) reasons.push("evidence_contract_invalid");
+    if (!exact(evidence, ["evidenceContractId", "nodeId", "kind", "evidenceKind", "requiredSeatId", "requirementId", "authority"]) || !ID.test(String(evidence.evidenceContractId)) || evidenceIds.has(String(evidence.evidenceContractId)) || !nodeIds.has(String(evidence.nodeId))) reasons.push("evidence_contract_invalid");
     evidenceIds.add(String(evidence.evidenceContractId));
     if (evidence.requirementId !== null && !ID.test(String(evidence.requirementId))) reasons.push("evidence_requirement_invalid");
-    if (evidence.kind === "human_authority" ? !isHumanGateRoleId(evidence.requiredSeatId) || evidence.authority !== "human_authority" : !isDispatchableRoleId(evidence.requiredSeatId) || evidence.authority !== "non_authoritative") reasons.push("evidence_authority_invalid");
+    if (evidence.kind === "human_authority"
+      ? !isHumanGateRoleId(evidence.requiredSeatId) || evidence.authority !== "human_authority" || evidence.requirementId !== null
+        || evidence.evidenceKind !== (evidence.requiredSeatId === "fitz" ? "technical_review" : evidence.requiredSeatId === "simmons" ? "product_domain_review" : "final_acceptance")
+      : !isDispatchableRoleId(evidence.requiredSeatId) || evidence.authority !== "non_authoritative" || evidence.requirementId !== null
+        || evidence.evidenceKind !== evidence.kind) reasons.push("evidence_authority_invalid");
   }
   for (const handoff of value.handoffs ?? []) {
     if (!exact(handoff, ["handoffId", "fromSeatId", "toSeatId", "missionId", "subjectId", "repositoryRevision", "promptId", "evidenceContractIds", "source", "content", "contentDigest"])
@@ -564,6 +631,13 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
       || !dense(handoff.evidenceContractIds, 32) || handoff.evidenceContractIds.some((item) => !evidenceIds.has(String(item))) || !["generated", "hill_edited"].includes(String(handoff.source))
       || typeof handoff.content !== "string" || handoff.content.length === 0 || handoff.content.length > 4096 || handoff.contentDigest !== digest("shield.mission-handoff.v1", handoff.content)) reasons.push("handoff_invalid");
     handoffIds.add(String(handoff.handoffId));
+  }
+  for (const seatId of participantIds) {
+    const prompts = value.prompts.filter((item) => item.seatId === seatId);
+    const handoffs = value.handoffs.filter((item) => item.toSeatId === seatId);
+    const expectedEvidence = value.evidenceContracts.filter((item) => item.requiredSeatId === seatId).map((item) => item.evidenceContractId).sort();
+    if (prompts.length !== 1 || handoffs.length !== 1 || handoffs[0]?.promptId !== prompts[0]?.promptId
+      || canonicalJson(handoffs[0]?.evidenceContractIds) !== canonicalJson(expectedEvidence)) reasons.push("prompt_handoff_relation_invalid");
   }
   for (const step of value.steps ?? []) {
     if (!exact(step, ["stepId", "nodeId", "seatId", "adapter", "actionId", "effectClass", "validationId", "promptId", "handoffId", "maximumAttempts", "requiredCapabilities"])
@@ -577,6 +651,9 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
   for (const node of value.graph?.nodes ?? []) {
     if (node.kind === "runner_step") runnerSteps += 1;
     if (node.stepId !== null && !stepIds.has(node.stepId)) reasons.push("node_step_missing");
+    const step = node.stepId === null ? undefined : value.steps.find((item) => item.stepId === node.stepId);
+    if (step && (step.nodeId !== node.nodeId || step.seatId !== node.seatId
+      || (node.kind === "runner_step" && step.adapter !== "mission_cycle") || (node.kind === "mack_validation" && step.adapter !== "mack_host"))) reasons.push("node_step_relation_invalid");
   }
   if (runnerSteps !== 1) reasons.push("runner_step_count_invalid");
   for (const edge of value.graph?.edges ?? []) {
@@ -586,6 +663,29 @@ export function validateMissionDefinitionV1(input: unknown): Readonly<{ state: "
       || edge.maximumTraversals > (edge.condition === "repair" ? MISSION_BUILDER_MAX_REPAIRS : 1) || !Number.isSafeInteger(edge.priority) || edge.priority < 0) reasons.push("edge_invalid");
     edgeIds.add(String(edge.edgeId));
     if (edge.fromNodeId === edge.toNodeId && edge.condition !== "repair") reasons.push("unbounded_cycle");
+    const source = value.graph.nodes.find((node) => node.nodeId === edge.fromNodeId);
+    const evidence = value.evidenceContracts.find((contract) => contract.evidenceContractId === edge.evidenceContractId);
+    if (!source || !evidence || evidence.nodeId !== edge.fromNodeId || evidence.requiredSeatId !== source.seatId
+      || (edge.condition === "human_evidence" ? source.kind !== "human_gate" || evidence.kind !== "human_authority"
+        : source.kind === "runner_step" ? edge.condition !== "success" || evidence.kind !== "runner_effect"
+          : source.kind !== "mack_validation" || evidence.kind !== "mack_report" || !["success", "repair"].includes(edge.condition))) reasons.push("edge_evidence_relation_invalid");
+  }
+  for (const step of value.steps ?? []) {
+    const prompt = value.prompts.find((item) => item.promptId === step.promptId);
+    const handoff = value.handoffs.find((item) => item.handoffId === step.handoffId);
+    if (!prompt || !handoff || prompt.seatId !== step.seatId || handoff.toSeatId !== step.seatId || handoff.promptId !== prompt.promptId
+      || handoff.evidenceContractIds.length === 0 || handoff.evidenceContractIds.some((id) => {
+        const evidence = value.evidenceContracts.find((item) => item.evidenceContractId === id);
+        return !evidence || evidence.nodeId !== step.nodeId || evidence.requiredSeatId !== step.seatId;
+      })) reasons.push("step_handoff_relation_invalid");
+  }
+  for (const node of value.graph?.nodes ?? []) {
+    if (node.kind !== "human_gate") continue;
+    const prompt = value.prompts.find((item) => item.seatId === node.seatId);
+    const handoff = value.handoffs.find((item) => item.toSeatId === node.seatId);
+    const evidence = value.evidenceContracts.find((item) => item.nodeId === node.nodeId);
+    if (!prompt || !handoff || !evidence || handoff.promptId !== prompt.promptId || !handoff.evidenceContractIds.includes(evidence.evidenceContractId)
+      || evidence.requiredSeatId !== node.seatId) reasons.push("human_gate_relation_invalid");
   }
   const terminals = value.graph?.nodes.filter((node) => node.kind === "terminal") ?? [];
   if (terminals.length === 0 || value.graph?.nodes.some((node) => node.kind !== "terminal" && !value.graph.edges.some((edge) => edge.fromNodeId === node.nodeId && edge.maximumTraversals > 0))) reasons.push("dead_end_node");
@@ -610,7 +710,9 @@ const PROVENANCE_FIELDS = ["schemaVersion", "contractVersion", "sequence", "reco
 
 export function replayMissionProvenanceV1(input: unknown): Readonly<{ state: "valid"; value: MissionProvenanceProjectionV1 } | { state: "invalid"; code: string }> {
   if (!dense(input, 256) || input.length === 0) return { state: "invalid", code: "malformed_provenance" };
-  let definition = ""; let validation: string | null = null; let acceptance: string | null = null; let previous: string | null = null; let missionId = "";
+  let definition = ""; let parentDefinition: string | null = null; let validation: string | null = null; let acceptance: string | null = null;
+  let previous: string | null = null; let missionId = ""; let repositoryRevision = ""; let templateId = ""; let intakeRevisionId = "";
+  let generatedDigest = ""; let editedDigest: string | null = null;
   for (let index = 0; index < input.length; index += 1) {
     const record = input[index] as MissionProvenanceRecordV1;
     if (!exact(record, PROVENANCE_FIELDS) || record.schemaVersion !== 1 || record.contractVersion !== "mission.provenance.v1" || record.sequence !== index
@@ -623,27 +725,43 @@ export function replayMissionProvenanceV1(input: unknown): Readonly<{ state: "va
       || (record.proofreadAcceptanceDigest !== null && !DIGEST.test(record.proofreadAcceptanceDigest)) || !record.editRecord.every((edit) => exact(edit, ["target", "targetId", "replacementDigest"])
         && ["prompt", "handoff"].includes(String(edit.target)) && ID.test(String(edit.targetId)) && DIGEST.test(String(edit.replacementDigest)))) return { state: "invalid", code: "provenance_conflict" };
     if (index === 0) {
-      if (record.kind !== "definition.generated" || record.parentDefinitionRevision !== null) return { state: "invalid", code: "generated_record_missing" };
-      missionId = record.missionId; definition = record.definitionRevision;
-    } else if (record.missionId !== missionId) return { state: "invalid", code: "mixed_scope" };
+      if (record.kind !== "definition.generated" || record.actorSeatId !== "hill" || record.parentDefinitionRevision !== null || record.editedDigest !== null
+        || record.editRecord.length !== 0 || record.validationRevision !== null || record.proofreadAcceptanceDigest !== null) return { state: "invalid", code: "generated_record_missing" };
+      missionId = record.missionId; definition = record.definitionRevision; repositoryRevision = record.repositoryRevision; templateId = record.templateId;
+      intakeRevisionId = record.intakeRevisionId; generatedDigest = record.generatedDigest;
+    } else if (record.missionId !== missionId || record.repositoryRevision !== repositoryRevision || record.templateId !== templateId || record.templateVersion !== 1
+      || record.intakeRevisionId !== intakeRevisionId || record.generatedDigest !== generatedDigest) return { state: "invalid", code: "mixed_scope" };
+    if (index > 0 && record.kind === "definition.generated") return { state: "invalid", code: "generated_record_duplicate" };
     if (record.kind === "definition.edited") {
-      if (record.actorSeatId !== "hill" || record.parentDefinitionRevision !== definition || record.editedDigest === null || record.editRecord.length === 0 || record.validationRevision !== null || record.proofreadAcceptanceDigest !== null) return { state: "invalid", code: "edit_record_invalid" };
-      definition = record.definitionRevision; validation = null; acceptance = null;
-    }
-    if (record.definitionRevision !== definition) return { state: "invalid", code: "stale_definition" };
+      if (record.actorSeatId !== "hill" || record.parentDefinitionRevision !== definition || record.definitionRevision === definition || record.editedDigest === null
+        || record.editRecord.length === 0 || record.validationRevision !== null || record.proofreadAcceptanceDigest !== null
+        || canonicalJson(record.editRecord) !== canonicalJson([...record.editRecord].sort((left, right) => `${left.target}:${left.targetId}`.localeCompare(`${right.target}:${right.targetId}`)))
+        || new Set(record.editRecord.map((edit) => `${edit.target}:${edit.targetId}`)).size !== record.editRecord.length) return { state: "invalid", code: "edit_record_invalid" };
+      parentDefinition = definition; definition = record.definitionRevision; editedDigest = record.editedDigest; validation = null; acceptance = null;
+    } else if (record.definitionRevision !== definition || record.editedDigest !== editedDigest) return { state: "invalid", code: "stale_definition" };
     if (record.kind === "definition.validated") {
       const expectedValidation = digest("shield.mission-validation.v1", { definitionRevision: record.definitionRevision });
-      if (record.actorSeatId !== "may" || record.validationRevision !== expectedValidation || record.proofreadAcceptanceDigest !== null || record.editRecord.length !== 0) return { state: "invalid", code: "validation_missing" };
+      if (record.actorSeatId !== "may" || record.parentDefinitionRevision !== definition || record.validationRevision !== expectedValidation || record.proofreadAcceptanceDigest !== null || record.editRecord.length !== 0) return { state: "invalid", code: "validation_missing" };
       validation = record.validationRevision; acceptance = null;
     }
     if (record.kind === "proofreading.accepted") {
       const expectedAcceptance = validation === null ? null : digest("shield.mission-proofreading.v1", { definitionRevision: record.definitionRevision, validationRevision: validation, actorSeatId: "hill" });
-      if (validation === null || record.validationRevision !== validation || record.actorSeatId !== "hill" || record.proofreadAcceptanceDigest !== expectedAcceptance || record.editRecord.length !== 0) return { state: "invalid", code: "proofreading_stale" };
+      if (validation === null || record.parentDefinitionRevision !== definition || record.validationRevision !== validation || record.actorSeatId !== "hill" || record.proofreadAcceptanceDigest !== expectedAcceptance || record.editRecord.length !== 0) return { state: "invalid", code: "proofreading_stale" };
       acceptance = record.proofreadAcceptanceDigest;
     }
     previous = record.recordDigest;
   }
-  return { state: "valid", value: freeze({ state: "valid", records: [...input] as MissionProvenanceRecordV1[], missionId, definitionRevision: definition, validationRevision: validation, proofreadAcceptanceDigest: acceptance, lastRecordDigest: previous! }) };
+  return { state: "valid", value: freeze({ state: "valid", records: [...input] as MissionProvenanceRecordV1[], missionId, definitionRevision: definition,
+    parentDefinitionRevision: parentDefinition, repositoryRevision, templateId, templateVersion: 1, intakeRevisionId, generatedDigest, editedDigest,
+    validationRevision: validation, proofreadAcceptanceDigest: acceptance, lastRecordDigest: previous! }) };
+}
+
+function provenanceMatchesDefinition(projection: MissionProvenanceProjectionV1, definition: MissionDefinitionV1): boolean {
+  return projection.missionId === definition.missionId && projection.definitionRevision === definition.definitionRevision
+    && projection.parentDefinitionRevision === definition.provenance.parentDigest && projection.repositoryRevision === definition.repositoryRevision
+    && projection.templateId === definition.templateId && projection.templateVersion === definition.templateVersion
+    && projection.intakeRevisionId === definition.intakeRevisionId && projection.generatedDigest === definition.provenance.generatedDigest
+    && projection.editedDigest === definition.provenance.editedDigest;
 }
 
 export async function appendMissionProvenanceRecordV1(
@@ -655,6 +773,18 @@ export async function appendMissionProvenanceRecordV1(
   const acquired = await store.acquireLock({ missionId: record.missionId, lockOwnerId });
   if (acquired.state !== "acquired") return { state: "blocked", code: acquired.code };
   try {
+    const existing = await store.replay({ missionId: record.missionId });
+    let records: readonly MissionProvenanceRecordV1[];
+    if (dense(existing, 256) && existing.length === 0) {
+      if (record.sequence !== 0 || record.previousRecordDigest !== null) return { state: "blocked", code: "conflict" };
+      records = [];
+    } else {
+      const current = replayMissionProvenanceV1(existing);
+      if (current.state === "invalid" || record.sequence !== current.value.records.length || record.previousRecordDigest !== current.value.lastRecordDigest) return { state: "blocked", code: "conflict" };
+      records = current.value.records;
+    }
+    const proposed = replayMissionProvenanceV1([...records, record]);
+    if (proposed.state === "invalid") return { state: "blocked", code: "conflict" };
     const appended = await store.append({ missionId: record.missionId, lockToken: acquired.lockToken, expectedPreviousRecordDigest: record.previousRecordDigest, record });
     if (appended.state === "blocked") return { state: "blocked", code: appended.code };
     if (appended.state === "uncertain") {
@@ -665,7 +795,7 @@ export async function appendMissionProvenanceRecordV1(
     const exactRecord = await store.readExact({ missionId: record.missionId, recordDigest: record.recordDigest });
     if (canonicalJson(exactRecord) !== canonicalJson(record)) return { state: "blocked", code: "readback_mismatch" };
     const replay = replayMissionProvenanceV1(await store.replay({ missionId: record.missionId }));
-    if (replay.state === "invalid" || !replay.value.records.some((item) => item.recordDigest === record.recordDigest)) return { state: "blocked", code: "readback_mismatch" };
+    if (replay.state === "invalid" || canonicalJson(replay.value.records) !== canonicalJson([...records, record])) return { state: "blocked", code: "readback_mismatch" };
     return { state: "recorded", record };
   } catch {
     return { state: "blocked", code: "store_unavailable" };
@@ -678,7 +808,7 @@ export function createMissionProofreadingAcceptanceV1(input: unknown): MissionPr
   if (!exact(input, ["definition", "provenanceRecords"]) || validateMissionDefinitionV1(input.definition).state === "invalid") return null;
   const replay = replayMissionProvenanceV1(input.provenanceRecords);
   const definition = input.definition as unknown as MissionDefinitionV1;
-  if (replay.state === "invalid" || replay.value.definitionRevision !== definition.definitionRevision || replay.value.validationRevision === null) return null;
+  if (replay.state === "invalid" || !provenanceMatchesDefinition(replay.value, definition) || replay.value.validationRevision === null) return null;
   const acceptance = digest("shield.mission-proofreading.v1", { definitionRevision: definition.definitionRevision, validationRevision: replay.value.validationRevision, actorSeatId: "hill" });
   return makeProvenanceRecord({
     sequence: replay.value.records.length, kind: "proofreading.accepted", missionId: definition.missionId, definitionRevision: definition.definitionRevision,
@@ -691,7 +821,7 @@ export function createMissionProofreadingAcceptanceV1(input: unknown): MissionPr
 export function editMissionDefinitionTextV1(input: unknown): Readonly<{ state: "edited" | "blocked"; definition: MissionDefinitionV1 | null; record: MissionProvenanceRecordV1 | null }> {
   if (!exact(input, ["definition", "provenanceRecords", "edits"]) || !dense(input.edits, 64)) return { state: "blocked", definition: null, record: null };
   const checked = validateMissionDefinitionV1(input.definition); const replay = replayMissionProvenanceV1(input.provenanceRecords);
-  if (checked.state === "invalid" || replay.state === "invalid" || replay.value.definitionRevision !== checked.value.definitionRevision) return { state: "blocked", definition: null, record: null };
+  if (checked.state === "invalid" || replay.state === "invalid" || !provenanceMatchesDefinition(replay.value, checked.value)) return { state: "blocked", definition: null, record: null };
   const edits: { target: "prompt" | "handoff"; targetId: string; replacement: string }[] = [];
   for (const item of input.edits) {
     if (!exact(item, ["target", "targetId", "replacement"]) || !["prompt", "handoff"].includes(String(item.target)) || !ID.test(String(item.targetId)) || typeof item.replacement !== "string" || item.replacement.length === 0 || item.replacement.length > 4096) return { state: "blocked", definition: null, record: null };
@@ -720,7 +850,7 @@ export function editMissionDefinitionTextV1(input: unknown): Readonly<{ state: "
 export function createMissionValidationRecordV1(input: unknown): MissionProvenanceRecordV1 | null {
   if (!exact(input, ["definition", "provenanceRecords"])) return null;
   const checked = validateMissionDefinitionV1(input.definition); const replay = replayMissionProvenanceV1(input.provenanceRecords);
-  if (checked.state === "invalid" || replay.state === "invalid" || replay.value.definitionRevision !== checked.value.definitionRevision) return null;
+  if (checked.state === "invalid" || replay.state === "invalid" || !provenanceMatchesDefinition(replay.value, checked.value)) return null;
   const validationRevision = digest("shield.mission-validation.v1", { definitionRevision: checked.value.definitionRevision });
   return makeProvenanceRecord({
     sequence: replay.value.records.length, kind: "definition.validated", missionId: checked.value.missionId, definitionRevision: checked.value.definitionRevision,
@@ -745,7 +875,7 @@ function makeStepReceipt(input: Omit<MissionStepReceiptV1, "schemaVersion" | "co
 
 function replayStepReceipts(definition: MissionDefinitionV1, input: unknown): { state: "valid"; currentNodeId: string; receipts: readonly MissionStepReceiptV1[]; edgeCounts: Map<string, number>; evidence: string[] } | { state: "invalid" } {
   if (!dense(input, 256)) return { state: "invalid" };
-  let current = definition.graph.startNodeId; let previous: string | null = null; const edgeCounts = new Map<string, number>(); const evidence: string[] = [];
+  let current = definition.graph.startNodeId; let previous: string | null = null; const edgeCounts = new Map<string, number>(); const evidenceRefs: string[] = [];
   for (let index = 0; index < input.length; index += 1) {
     const receipt = input[index] as MissionStepReceiptV1;
     const fields = ["schemaVersion", "contractVersion", "sequence", "receiptId", "missionId", "definitionRevision", "graphRevision", "stepId", "attempt", "fromNodeId", "toNodeId", "edgeId", "outcome", "evidenceRefs", "previousReceiptDigest", "receiptDigest"];
@@ -754,22 +884,52 @@ function replayStepReceipts(definition: MissionDefinitionV1, input: unknown): { 
       || receipt.receiptId !== deriveMissionStepIdentityV1(receipt.graphRevision, receipt.stepId, receipt.attempt)) return { state: "invalid" };
     const edge = definition.graph.edges.find((item) => item.edgeId === receipt.edgeId);
     const node = definition.graph.nodes.find((item) => item.nodeId === current);
-    if (!edge || !node || edge.fromNodeId !== current || edge.toNodeId !== receipt.toNodeId || (node.stepId ?? `human:${node.nodeId}`) !== receipt.stepId) return { state: "invalid" };
+    const evidence = edge && definition.evidenceContracts.find((item) => item.evidenceContractId === edge.evidenceContractId);
+    if (!edge || !node || !evidence || edge.fromNodeId !== current || edge.toNodeId !== receipt.toNodeId || evidence.nodeId !== node.nodeId
+      || evidence.requiredSeatId !== node.seatId || receipt.evidenceRefs.length !== 1 || !receipt.evidenceRefs.every((item) => typeof item === "string" && ID.test(item))
+      || (node.stepId ?? `human:${node.nodeId}`) !== receipt.stepId
+      || (receipt.outcome === "human_evidence" ? evidence.kind !== "human_authority" : node.kind === "runner_step" ? evidence.kind !== "runner_effect" : evidence.kind !== "mack_report")) return { state: "invalid" };
     const count = (edgeCounts.get(edge.edgeId) ?? 0) + 1;
     if (count > edge.maximumTraversals || receipt.outcome !== edge.condition) return { state: "invalid" };
-    edgeCounts.set(edge.edgeId, count); current = receipt.toNodeId; previous = receipt.receiptDigest; evidence.push(...receipt.evidenceRefs);
+    edgeCounts.set(edge.edgeId, count); current = receipt.toNodeId; previous = receipt.receiptDigest; evidenceRefs.push(...receipt.evidenceRefs);
   }
-  return { state: "valid", currentNodeId: current, receipts: input as MissionStepReceiptV1[], edgeCounts, evidence };
+  return { state: "valid", currentNodeId: current, receipts: input as MissionStepReceiptV1[], edgeCounts, evidence: evidenceRefs };
 }
 
-export function projectMissionStatusV1(definitionInput: unknown, receiptsInput: unknown, completedEvidenceInput: unknown = []): MissionStatusProjectionV1 | null {
+function receiptEvidenceMatchesObservation(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, receipts: readonly MissionStepReceiptV1[]): boolean {
+  const dispatch = replaySeatDispatchReceiptsV1(observation.dispatchReceiptEntries);
+  if (dispatch.state === "invalid") return false;
+  return receipts.every((receipt) => {
+    const edge = definition.graph.edges.find((item) => item.edgeId === receipt.edgeId);
+    const contract = edge && definition.evidenceContracts.find((item) => item.evidenceContractId === edge.evidenceContractId);
+    const node = definition.graph.nodes.find((item) => item.nodeId === receipt.fromNodeId);
+    const reference = receipt.evidenceRefs[0];
+    if (!edge || !contract || !node || contract.nodeId !== node.nodeId || contract.requiredSeatId !== node.seatId || typeof reference !== "string") return false;
+    if (contract.kind === "runner_effect") {
+      const step = definition.steps.find((item) => item.stepId === receipt.stepId);
+      return !!step && observation.journalSnapshot.projection.effects.some((effect) => effect.effectKey === reference && effect.outcome === "completed"
+        && effect.seatId === step.seatId && effect.actionId === step.actionId && effect.effectClass === step.effectClass
+        && effect.subjectId === definition.subjectId && effect.revisionId === observation.journalSnapshot.projection.brief.revisionId);
+    }
+    if (contract.kind === "mack_report") return dispatch.projections.some((projection) => projection.state === "completed" && projection.accountableSeatId === "mack"
+      && projection.parentMissionId === definition.missionId && projection.parentMissionRevision === definition.definitionRevision
+      && projection.outputEvidenceRefs?.includes(reference));
+    const requirements = observation.journalSnapshot.projection.requirements.filter((requirement) => requirement.requiredRoleId === contract.requiredSeatId
+      && requirement.evidenceKind === contract.evidenceKind && requirement.revisionId === observation.journalSnapshot.projection.brief.revisionId);
+    return requirements.length === 1 && observation.journalSnapshot.projection.evidence.some((evidence) => evidence.evidenceId === reference
+      && evidence.requirementId === requirements[0].requirementId && evidence.missionId === definition.missionId && evidence.revisionId === requirements[0].revisionId
+      && evidence.seatId === contract.requiredSeatId && evidence.evidenceKind === contract.evidenceKind && evidence.decision === "approved");
+  });
+}
+
+export function projectMissionStatusV1(definitionInput: unknown, receiptsInput: unknown): MissionStatusProjectionV1 | null {
   const checked = validateMissionDefinitionV1(definitionInput);
-  if (checked.state === "invalid" || !dense(completedEvidenceInput, 256)) return null;
+  if (checked.state === "invalid") return null;
   const replay = replayStepReceipts(checked.value, receiptsInput);
   if (replay.state === "invalid") return freeze({ schemaVersion: 1, contractVersion: "mission.status.v1", missionId: checked.value.missionId, definitionRevision: checked.value.definitionRevision, currentState: "blocked", currentNodeId: checked.value.graph.startNodeId, activeSeatId: null, completedEvidence: [], nextTransition: null, stopReason: "invalid_replay" });
   const node = checked.value.graph.nodes.find((item) => item.nodeId === replay.currentNodeId)!;
   const outgoing = checked.value.graph.edges.filter((edge) => edge.fromNodeId === node.nodeId && (replay.edgeCounts.get(edge.edgeId) ?? 0) < edge.maximumTraversals).sort((a, b) => a.priority - b.priority || a.edgeId.localeCompare(b.edgeId));
-  const completed = [...new Set([...replay.evidence, ...(completedEvidenceInput as MissionCompletedEvidenceV1[]).map((item) => item.evidenceContractId)])].sort();
+  const completed = [...new Set(replay.evidence)].sort();
   return freeze({
     schemaVersion: 1, contractVersion: "mission.status.v1", missionId: checked.value.missionId, definitionRevision: checked.value.definitionRevision,
     currentState: node.kind === "terminal" ? "complete" : node.kind === "human_gate" ? "waiting" : "ready", currentNodeId: node.nodeId,
@@ -782,10 +942,6 @@ function blocked(reasonCode: MissionAdvanceReasonV1, status: MissionStatusProjec
   return { outcome, reasonCode, dispatchEffects: 0, receipt: null, runnerResult: null, mackEvaluation: null, status };
 }
 
-function validEvidence(value: unknown): value is MissionCompletedEvidenceV1 {
-  return exact(value, ["evidenceContractId", "nodeId", "artifactRevision", "source"]) && ID.test(String(value.evidenceContractId)) && ID.test(String(value.nodeId)) && REVISION.test(String(value.artifactRevision)) && ["runner_receipt", "mack_receipt", "human_recorded"].includes(String(value.source));
-}
-
 function validRuntime(value: unknown): value is MissionHostRuntimeObservationV1 {
   return exact(value, ["seatId", "configuredRuntime", "requestedRuntime", "runtimeHostObserved", "executorHostObserved"]) && isDispatchableRoleId(value.seatId)
     && plain(value.configuredRuntime) && value.configuredRuntime.kind === "runtime.configured" && ID.test(String(value.configuredRuntime.runtimeId)) && ID.test(String(value.configuredRuntime.model))
@@ -795,21 +951,23 @@ function validRuntime(value: unknown): value is MissionHostRuntimeObservationV1 
 }
 
 function validateObservation(definition: MissionDefinitionV1, value: unknown): MissionAdvanceHostObservationV1 | null {
-  const fields = ["schemaVersion", "contractVersion", "assuranceKind", "repositoryRoot", "repositoryId", "repositoryRevision", "configuredJournalPath", "journalSnapshot", "workspaceId", "sessionId", "activatedModes", "actionAllowlist", "permissionContext", "runtimeBindings", "completedEvidence", "provenanceRecords", "stepReceipts", "dispatchReceiptEntries"];
+  const fields = ["schemaVersion", "contractVersion", "assuranceKind", "repositoryRoot", "repositoryId", "repositoryRevision", "configuredJournalPath", "journalSnapshot", "workspaceId", "sessionId", "activatedModes", "actionAllowlist", "permissionContext", "runtimeBindings", "provenanceRecords", "stepReceipts", "dispatchReceiptEntries"];
   if (!exact(value, fields) || value.schemaVersion !== 1 || value.contractVersion !== "mission.advance.host-observation.v1" || value.assuranceKind !== "host_asserted"
     || typeof value.repositoryRoot !== "string" || value.repositoryRoot.length === 0 || value.repositoryId !== definition.repositoryId || value.repositoryRevision !== definition.repositoryRevision
     || typeof value.configuredJournalPath !== "string" || value.configuredJournalPath.length === 0 || !ID.test(String(value.workspaceId)) || !ID.test(String(value.sessionId))
     || !dense(value.activatedModes, 16) || !value.activatedModes.every(validMode) || canonicalJson(canonicalModes(value.activatedModes)) !== canonicalJson(definition.activatedModes)
     || !dense(value.actionAllowlist, 64) || !value.actionAllowlist.every((item) => typeof item === "string" && ID.test(item)) || !dense(value.runtimeBindings, 16) || !value.runtimeBindings.every(validRuntime)
-    || !dense(value.completedEvidence, 256) || !value.completedEvidence.every(validEvidence) || !dense(value.provenanceRecords, 256) || !dense(value.stepReceipts, 256) || !dense(value.dispatchReceiptEntries, 512)) return null;
+    || !dense(value.provenanceRecords, 256) || !dense(value.stepReceipts, 256) || !dense(value.dispatchReceiptEntries, 512)) return null;
   if (!exact(value.journalSnapshot, ["entries", "projection", "journalDigest"]) || !dense(value.journalSnapshot.entries, 4096) || typeof value.journalSnapshot.journalDigest !== "string") return null;
   const replay = replayProfileAwareMissionJournal(value.journalSnapshot.entries);
   const journalDigest = `sha256:${createHash("sha256").update(canonicalJson(value.journalSnapshot.entries)).digest("base64url")}`;
   if (replay.state === "invalid" || journalDigest !== value.journalSnapshot.journalDigest || canonicalJson(replay.value) !== canonicalJson(value.journalSnapshot.projection)
-    || replay.value.missionId !== definition.missionId || replay.value.brief.subjectId !== definition.subjectId || replay.value.brief.revisionId !== (value.permissionContext as PermissionInvocationContext)?.missionRevisionId) return null;
+    || replay.value.missionId !== definition.missionId || replay.value.brief.subjectId !== definition.subjectId || replay.value.brief.revisionId !== (value.permissionContext as PermissionInvocationContext)?.missionRevisionId
+    || canonicalJson(canonicalModes(replay.value.brief.activatedModes)) !== canonicalJson(definition.activatedModes)) return null;
   const permission = validatePermissionInvocationContext(value.permissionContext);
+  const permissionSequence = replay.value.execution === "not-started" ? replay.value.lastSequence + 1 : replay.value.lastSequence;
   if (permission.state === "invalid" || permission.value.repositoryId !== definition.repositoryId || permission.value.canonicalWritableRoot !== value.repositoryRoot
-    || permission.value.artifactRevisionId !== definition.repositoryRevision || permission.value.evaluatedThroughSequence !== replay.value.lastSequence) return null;
+    || permission.value.artifactRevisionId !== definition.repositoryRevision || permission.value.evaluatedThroughSequence !== permissionSequence) return null;
   const dispatchReplay = replaySeatDispatchReceiptsV1(value.dispatchReceiptEntries);
   if (dispatchReplay.state === "invalid" || dispatchReplay.projections.some((receipt) => receipt.parentMissionId !== definition.missionId
     || receipt.parentMissionRevision !== definition.definitionRevision || receipt.parentSessionId !== value.sessionId || receipt.repositoryId !== definition.repositoryId
@@ -903,7 +1061,11 @@ async function appendStepReceipt(receipt: MissionStepReceiptV1, store: MissionSt
 }
 
 export function compileMissionCycleInputV1(definition: MissionDefinitionV1, observation: MissionAdvanceHostObservationV1, step: MissionStepManifestV1): MissionCycleInputV1 {
-  if (step.adapter !== "mission_cycle" || step.seatId === "mack" || !definition.steps.some((item) => item.stepId === step.stepId)) throw new Error("step is not a runner-backed manifest");
+  const manifest = definition.steps.find((item) => item.stepId === step.stepId);
+  const spec = TEMPLATE[definition.pattern];
+  const modes = canonicalModes(definition.activatedModes.filter((mode) => mode.seatId === step.seatId));
+  if (step.adapter !== "mission_cycle" || step.seatId === "mack" || !manifest || canonicalJson(manifest) !== canonicalJson(step)
+    || step.seatId !== spec.owner || !modes.some((mode) => mode.modeId === spec.mode && mode.seatId === spec.owner)) throw new Error("step is not a runner-backed manifest");
   return freeze({
     repositoryRoot: observation.repositoryRoot,
     configuredJournalPath: observation.configuredJournalPath,
@@ -915,33 +1077,46 @@ export function compileMissionCycleInputV1(definition: MissionDefinitionV1, obse
     actionId: step.actionId,
     effectClass: step.effectClass,
     validationId: step.validationId,
-    activatedModes: definition.activatedModes.map((mode) => ({ ...mode })),
+    activatedModes: modes,
     actionAllowlist: [...observation.actionAllowlist],
   });
 }
 
 export async function advanceMissionV1(input: unknown, dependencies: MissionAdvanceDependenciesV1): Promise<MissionAdvanceResultV1> {
   if (!exact(input, ["schemaVersion", "contractVersion", "definition", "observation"]) || input.schemaVersion !== 1 || input.contractVersion !== "mission.advance.v1") return blocked("input_invalid");
-  const checked = validateMissionDefinitionV1(input.definition); if (checked.state === "invalid") return blocked("definition_invalid");
-  const definition = checked.value; const observation = validateObservation(definition, input.observation); if (!observation) return blocked("observation_mismatch");
+  let checked: ReturnType<typeof validateMissionDefinitionV1>;
+  try { checked = validateMissionDefinitionV1(input.definition); } catch { return blocked("definition_invalid"); }
+  if (checked.state === "invalid") return blocked("definition_invalid");
+  const definition = checked.value;
+  let observation: MissionAdvanceHostObservationV1 | null;
+  try { observation = validateObservation(definition, input.observation); } catch { observation = null; }
+  if (!observation) return blocked("observation_mismatch");
   const provenance = replayMissionProvenanceV1(observation.provenanceRecords);
-  if (provenance.state === "invalid" || provenance.value.definitionRevision !== definition.definitionRevision) return blocked("provenance_stale");
+  if (provenance.state === "invalid" || !provenanceMatchesDefinition(provenance.value, definition)) return blocked("provenance_stale");
   if (provenance.value.validationRevision === null || provenance.value.proofreadAcceptanceDigest === null) return blocked("proofreading_required");
   const receiptReplay = replayStepReceipts(definition, observation.stepReceipts); if (receiptReplay.state === "invalid") return blocked("receipt_invalid");
-  const status = projectMissionStatusV1(definition, observation.stepReceipts, observation.completedEvidence);
+  if (!receiptEvidenceMatchesObservation(definition, observation, receiptReplay.receipts)) return blocked("receipt_invalid");
+  const status = projectMissionStatusV1(definition, observation.stepReceipts);
   const node = definition.graph.nodes.find((item) => item.nodeId === receiptReplay.currentNodeId)!;
   if (node.kind === "terminal") return { outcome: "complete", reasonCode: "complete", dispatchEffects: 0, receipt: null, runnerResult: null, mackEvaluation: null, status };
   const outgoing = definition.graph.edges.filter((edge) => edge.fromNodeId === node.nodeId).sort((a, b) => a.priority - b.priority || a.edgeId.localeCompare(b.edgeId));
   const previousReceiptDigest = receiptReplay.receipts.at(-1)?.receiptDigest ?? null;
   if (node.kind === "human_gate") {
     const edge = outgoing.find((item) => item.condition === "human_evidence");
-    const evidence = edge && observation.completedEvidence.find((item) => item.evidenceContractId === edge.evidenceContractId && item.nodeId === node.nodeId && item.source === "human_recorded");
-    if (!edge || !evidence) return blocked("human_evidence_required", status, "waiting");
+    const contract = edge && definition.evidenceContracts.find((item) => item.evidenceContractId === edge.evidenceContractId && item.nodeId === node.nodeId
+      && item.kind === "human_authority" && item.requiredSeatId === node.seatId);
+    const requirements = contract ? observation.journalSnapshot.projection.requirements.filter((item) => item.requiredRoleId === contract.requiredSeatId
+      && item.evidenceKind === contract.evidenceKind && item.revisionId === observation.journalSnapshot.projection.brief.revisionId
+      && item.phase === (contract.requiredSeatId === "coulson" ? "final_acceptance" : "execution")) : [];
+    const evidence = requirements.length === 1 ? observation.journalSnapshot.projection.evidence.filter((item) => item.requirementId === requirements[0].requirementId
+      && item.seatId === contract!.requiredSeatId && item.evidenceKind === contract!.evidenceKind && item.missionId === definition.missionId
+      && item.revisionId === observation.journalSnapshot.projection.brief.revisionId && item.decision === "approved") : [];
+    if (!edge || !contract || evidence.length !== 1) return blocked("human_evidence_required", status, "waiting");
     const receipt = makeStepReceipt({ sequence: receiptReplay.receipts.length, missionId: definition.missionId, definitionRevision: definition.definitionRevision, graphRevision: definition.graph.graphRevision,
-      stepId: `human:${node.nodeId}`, attempt: 1, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: "human_evidence", evidenceRefs: [evidence.artifactRevision], previousReceiptDigest });
+      stepId: `human:${node.nodeId}`, attempt: 1, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: "human_evidence", evidenceRefs: [evidence[0].evidenceId], previousReceiptDigest });
     const appended = await appendStepReceipt(receipt, dependencies.stepReceiptStore);
     if (appended !== "appended") return blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked");
-    return { outcome: "advanced", reasonCode: "complete", dispatchEffects: 0, receipt, runnerResult: null, mackEvaluation: null, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt], observation.completedEvidence) };
+    return { outcome: "advanced", reasonCode: "complete", dispatchEffects: 0, receipt, runnerResult: null, mackEvaluation: null, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt]) };
   }
   const step = definition.steps.find((item) => item.stepId === node.stepId)!;
   const priorAttempts = receiptReplay.receipts.filter((receipt) => receipt.stepId === step.stepId).length;
@@ -961,7 +1136,7 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
       stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: "success", evidenceRefs: [evidenceRef], previousReceiptDigest });
     const appended = await appendStepReceipt(receipt, dependencies.stepReceiptStore);
     if (appended !== "appended") return { ...blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked"), runnerResult };
-    return { outcome: "advanced", reasonCode: "complete", dispatchEffects: runnerResult.outcome === "advanced" ? 1 : 0, receipt, runnerResult, mackEvaluation: null, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt], observation.completedEvidence) };
+    return { outcome: "advanced", reasonCode: "complete", dispatchEffects: runnerResult.outcome === "advanced" ? 1 : 0, receipt, runnerResult, mackEvaluation: null, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt]) };
   }
   const mack = await runMackAdapter(definition, observation, step, attempt, dependencies.mack);
   if (mack.state === "blocked" || mack.state === "uncertain") return { ...blocked(mack.state === "uncertain" ? "uncertain_execution" : "mack_blocked", status, mack.state), dispatchEffects: mack.dispatchEffects, mackEvaluation: mack.evaluation };
@@ -972,7 +1147,7 @@ export async function advanceMissionV1(input: unknown, dependencies: MissionAdva
     stepId: step.stepId, attempt, fromNodeId: node.nodeId, toNodeId: edge.toNodeId, edgeId: edge.edgeId, outcome: condition, evidenceRefs: mack.reportRef ? [mack.reportRef] : [], previousReceiptDigest });
   const appended = await appendStepReceipt(receipt, dependencies.stepReceiptStore);
   if (appended !== "appended") return { ...blocked(appended === "uncertain" ? "uncertain_execution" : "readback_mismatch", status, appended === "uncertain" ? "uncertain" : "blocked"), dispatchEffects: mack.dispatchEffects, mackEvaluation: mack.evaluation };
-  return { outcome: "advanced", reasonCode: "complete", dispatchEffects: mack.dispatchEffects, receipt, runnerResult: null, mackEvaluation: mack.evaluation, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt], observation.completedEvidence) };
+  return { outcome: "advanced", reasonCode: "complete", dispatchEffects: mack.dispatchEffects, receipt, runnerResult: null, mackEvaluation: mack.evaluation, status: projectMissionStatusV1(definition, [...observation.stepReceipts, receipt]) };
 }
 
 export function missionBuilderBenchmarkV1(before: unknown, after: unknown): Readonly<{ state: "valid" | "invalid"; deltas: Readonly<Record<"hillTokens" | "handoffs" | "elapsedMilliseconds" | "repeatedContextReads" | "humanInterventions", number>> | null }> {
