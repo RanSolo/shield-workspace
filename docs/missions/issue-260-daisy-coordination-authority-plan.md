@@ -132,17 +132,19 @@ unlock, and no passcode prompt.
 
 It follows the existing one-passcode display/sign/revalidate/append transaction:
 preflight every payload and repository observation, then perform a credential-free
-signer snapshot from `mission-signer` state (signer path + bytes + path identity:
-device, inode, mode + exact byte-digest) before manifest display.
-show exactly what the PIN authorizes, collect one Coulson passcode, re-read all
-bytes and observations, verify signatures, capture the second canonical
-no-follow signer snapshot (same exact fields as the first), require exact equality,
-and append signed authority plus initial runtime binding as one exact consecutive
-two-entry mission-store batch, read back, and emit a credential-free receipt.
-The existing batch append lock/write-sync/rename/directory-sync/readback algorithm
-is reused; no new journal writer is introduced. Empty PIN is a no-write preflight.
-Preconditions are active mission authorization, execution `not-started`, final
-acceptance waiting, and no prior Daisy authority or binding. Post-display input,
+signer snapshot from `mission-signer` state (one retained read-only `O_NOFOLLOW`
+descriptor, regular-file validation, path-identity check, and exact opaque record)
+before manifest display. Show exactly what the PIN authorizes, collect one Coulson
+passcode, re-read all prepared bytes and observations, verify signatures, revalidate
+the full preflight set (prepared input, fixed config, latest journal, repository
+snapshot, mission-state observations, and replay preconditions), capture signer
+snapshot 2 from the same no-follow descriptor semantics, require full opaque-record
+equality before any append, and then append signed authority plus initial runtime
+binding as one exact consecutive two-entry mission-store batch, read back, and emit a
+credential-free receipt. The existing batch append lock/write-sync/rename/directory-sync/readback
+algorithm is reused; no new journal writer is introduced. Empty PIN is a no-write
+preflight. Preconditions are active mission authorization, execution `not-started`,
+final acceptance waiting, and no prior Daisy authority or binding. Post-display input,
 journal, repository, or signer drift aborts without a partial batch. CLI does not
 duplicate signer-path derivation logic; it reuses signer helpers from
 `mission-signer` and does not inspect or interpret paths.
@@ -150,10 +152,16 @@ duplicate signer-path derivation logic; it reuses signer helpers from
 #### Fury correction #2 (closed)
 
 Transaction order is frozen as:
-`snapshot (no-follow, canonical) -> display -> passcode -> sign -> verify signatures
--> snapshot (no-follow, canonical) -> exact equality compare -> append`.
-Each snapshot records exact regular-file bytes, SHA-256 digest, `device`, `inode`,
-and `mode`; append requires full-record equality.
+`snapshot1 (no-follow) -> display -> passcode -> sign -> verify signatures ->
+revalidate prepared input/config/journal/repository/mission-state/replay
+preconditions -> snapshot2 (no-follow) -> full opaque-record equality compare
+-> atomic append`.
+Signer snapshot acquisition is a single retained read-only no-follow file descriptor per
+snapshot. Snapshot capture requires descriptor-backed regular-file validation, reads raw bytes from
+that descriptor, captures `device`, `inode`, and `mode` before and after the read, confirms
+the path identity still references the same descriptor target, and hashes the exact captured
+bytes with SHA-256. The returned opaque snapshot record includes all captured fields for complete
+equality comparison.
 
 `supervised-cli.test.mjs` adds authorized correction-path coverage for signer snapshot
 drift, whitespace/field-order/equivalent-record rewrites that preserve key semantics,
@@ -178,7 +186,7 @@ and post-signature aborts with no append.
 | D260-13 | no Daisy participation in fixed coordination tuple | no manifest, no passcode read, no signature, no append |
 | D260-14 | `coordination.authorized` with non-participant Daisy at replay/constructor | malformed/rejected; no projection readiness |
 | D260-15 | signer identity path and digest drift handling | manifest pass/fail unchanged for same-key; snapshot pre/post compare enforces exact bytes, sha256, device, inode, and mode |
-| D260-16 | semantic-equivalent CLI-authorized record rewrite (whitespace/field order/equivalent record forms) | signing/verification rejects; no append |
+| D260-16 | same-key CLI-authorized record rewrite (whitespace/field order/equivalent record forms) | signing and verification may succeed, but snapshot2 differs; full opaque-record equality rejects and prevents append |
 | D260-17 | attempted fixture/network/publication effect | absent from scope and rejected by permission |
 
 Tests must use hostile own-property/accessor/proxy, malformed-signature/digest,
