@@ -102,6 +102,10 @@
       "types": "./dist/implementation-authority-v1.d.mts",
       "import": "./dist/implementation-authority-v1.mjs"
     },
+    "./daisy-coordination-authority": {
+      "types": "./public/daisy-coordination-authority.d.mts",
+      "import": "./public/daisy-coordination-authority.mjs"
+    },
     "./mission-runtime": {
       "types": "./dist/mission-runtime-v1.d.mts",
       "import": "./dist/mission-runtime-v1.mjs"

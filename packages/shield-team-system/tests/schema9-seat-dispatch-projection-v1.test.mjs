@@ -8,6 +8,8 @@ import test from "node:test";
 import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 import {
   createProfileAwareGovernanceDecisionEntryV1,
+  createProfileAwareDaisyCoordinationAuthorityEntryV1,
+  createProfileAwareDaisyRuntimeBindingEntryV1,
   createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
@@ -20,6 +22,10 @@ import {
   computeRuntimeBindingDigest,
   computeSchema9RuntimeBindingDigest,
 } from "../dist/implementation-authority-v1.mjs";
+import {
+  computeDaisyCoordinationAuthorityDigest,
+  computeDaisyCoordinationRuntimeBindingDigest,
+} from "../dist/daisy-coordination-authority-v1.mjs";
 import { resolveSupervisedMissionPaths } from "../dist/mission-store.mjs";
 import { loadSchema9SeatDispatchProjectionV1 } from "../dist/schema9-seat-dispatch-projection-v1.mjs";
 
@@ -183,7 +189,7 @@ function runtimeBinding(brief, authority, coulson, sequence) {
   return { wrapper, authorization: signed(payload, coulson.privateKey) };
 }
 
-function fixture(repositoryRoot, { includeExecutionGate = true, profileId = "high_assurance" } = {}) {
+function fixture(repositoryRoot, { includeExecutionGate = true, profileId = "high_assurance", includeDaisy = false } = {}) {
   const coulson = signer("coulson");
   const fitz = signer("fitz");
   const requiredExecutionGateRoleIds = profileId === "standard" ? ["coulson"] : ["coulson", "fitz"];
@@ -193,7 +199,7 @@ function fixture(repositoryRoot, { includeExecutionGate = true, profileId = "hig
     objective: "Exercise the canonical schema-9 projection independently.",
     subjectId: `issue:test:projection:${profileId}`,
     riskFlags,
-    participants: [{ seatId: "hill" }, { seatId: "may" }, { seatId: "coulson" }, ...(profileId === "standard" ? [] : [{ seatId: "fitz" }])],
+    participants: [{ seatId: "hill" }, { seatId: "may" }, ...(includeDaisy ? [{ seatId: "daisy" }] : []), { seatId: "coulson" }, ...(profileId === "standard" ? [] : [{ seatId: "fitz" }])],
     activatedModes: [],
     requireSimmons: false,
     createdAt: { value: "2026-08-05T15:00:00Z", provenance: "humanRecorded" },
@@ -237,7 +243,60 @@ function fixture(repositoryRoot, { includeExecutionGate = true, profileId = "hig
     authorization: binding.authorization,
   }));
   projection = replay(entries);
-  return { brief, entries, projection };
+  return { brief, entries, projection, coulson, trustedBindings };
+}
+
+function daisyFixture(repositoryRoot) {
+  const current = fixture(repositoryRoot, { profileId: "standard", includeDaisy: true });
+  const authoritySequence = current.projection.lastSequence + 1;
+  const authorityPayload = {
+    schemaVersion: 1, contractVersion: "daisy-coordination-authority.v1", authorityKind: "daisy_feature_flight_coordination",
+    authorityRef: `authority:${current.brief.missionId}:daisy:${authoritySequence}`, missionId: current.brief.missionId,
+    subjectId: current.brief.subjectId, missionRevisionId: current.brief.revisionId,
+    evaluatedThroughSequence: current.projection.lastSequence, repositoryId: "repository:test:projection",
+    canonicalRepositoryRoot: repositoryRoot, branch: "main", headRevision: HEAD, seatId: "daisy",
+    actionId: "action:feature-flight.daisy.reconnaissance", effectClass: "coordination", effectKey: "effect:test:daisy-read",
+    capabilityClass: "read_only_coordination", approvedReadRoots: [repositoryRoot], durableArtifactRoot: "/daisy-artifacts",
+    issuedAt: { value: `2026-08-05T15:${String(authoritySequence).padStart(2, "0")}:00Z`, provenance: "humanRecorded" },
+    signingKeyRef: current.coulson.binding.signingKeyRef,
+  };
+  const authority = {
+    ...signed(authorityPayload, current.coulson.privateKey),
+    authorityDigest: computeDaisyCoordinationAuthorityDigest(authorityPayload),
+  };
+  current.entries.push(createProfileAwareDaisyCoordinationAuthorityEntryV1({
+    projection: current.projection, trustedBindings: current.trustedBindings, authority,
+  }));
+  current.projection = replay(current.entries);
+  const bindingSequence = current.projection.lastSequence + 1;
+  const authorizationId = `authorization:${current.brief.missionId}:daisy:${bindingSequence}`;
+  const binding = {
+    schemaVersion: 1, contractVersion: "daisy-coordination-runtime-binding.v1", bindingId: `binding:${current.brief.missionId}:daisy`,
+    bindingVersion: 1, priorBindingId: null, priorBindingVersion: null, missionId: current.brief.missionId,
+    subjectId: current.brief.subjectId, missionRevisionId: current.brief.revisionId, seatId: "daisy",
+    runtimeId: "runtime:test:daisy", modelId: "model:test:daisy", executorId: "executor:test:daisy",
+    actionId: authorityPayload.actionId, effectClass: authorityPayload.effectClass, effectKey: authorityPayload.effectKey,
+    capabilityClass: authorityPayload.capabilityClass, repositoryId: authorityPayload.repositoryId,
+    canonicalRepositoryRoot: repositoryRoot, branch: "main", headRevision: HEAD, durableArtifactRoot: authorityPayload.durableArtifactRoot,
+    authorityRef: authorityPayload.authorityRef, authorityDigest: authority.authorityDigest, authoritySequence,
+    effectiveSequence: bindingSequence, lifecycleState: "active", coulsonAuthorizationRef: authorizationId,
+  };
+  const authorizationPayload = {
+    schemaVersion: 1, contractVersion: "daisy-coordination-runtime-binding-authorization.v1", authorizationId,
+    missionId: current.brief.missionId, subjectId: current.brief.subjectId, seatId: "daisy", bindingId: binding.bindingId,
+    bindingVersion: 1, priorBindingId: null, priorBindingVersion: null,
+    bindingDigest: computeDaisyCoordinationRuntimeBindingDigest(binding), authorityRef: authorityPayload.authorityRef,
+    authorityDigest: authority.authorityDigest, authoritySequence, decision: "approved",
+    previousJournalSequence: bindingSequence - 1, journalSequence: bindingSequence,
+    signingKeyRef: current.coulson.binding.signingKeyRef, sourceRef: `source:test:daisy:${bindingSequence}`,
+    issuedAt: { value: `2026-08-05T15:${String(bindingSequence).padStart(2, "0")}:00Z`, provenance: "humanRecorded" },
+  };
+  current.entries.push(createProfileAwareDaisyRuntimeBindingEntryV1({
+    projection: current.projection, trustedBindings: current.trustedBindings, binding,
+    authorization: signed(authorizationPayload, current.coulson.privateKey),
+  }));
+  current.projection = replay(current.entries);
+  return current;
 }
 
 async function writeJournal(repositoryRoot, current) {
@@ -270,6 +329,21 @@ function input(repositoryRoot, current, overrides = {}) {
     expectedSubjectId: current.brief.subjectId,
     expectedMissionRevisionId: current.brief.revisionId,
     expectedEvaluatedThroughSequence: current.projection.lastSequence,
+    plan: {
+      runnerContractVersion: 1,
+      cycleId: "cycle:test:projection",
+      missionId: current.brief.missionId,
+      subjectId: current.brief.subjectId,
+      revisionId: current.brief.revisionId,
+      evaluatedThroughSequence: current.projection.lastSequence,
+      seatId: "may",
+      activatedModes: [],
+      actionId: "edit:implementation",
+      effectClass: "behavioral_implementation",
+      effectKey: "effect:test:implementation",
+      validationId: "validation:test",
+      stopCondition: "after_one_cycle",
+    },
     trustedHostOps: hostOps(repositoryRoot),
     ...overrides,
   };
@@ -293,6 +367,46 @@ test("ready projection derives high-assurance gate, explicit Wheels Up, immutabl
   const { projectionDigest, ...content } = result.projection;
   const expectedDigest = `sha256:${createHash("sha256").update(canonicalJson(content)).digest("base64url")}`;
   assert.equal(projectionDigest, expectedDigest);
+  const legacyInput = input(repositoryRoot, current);
+  delete legacyInput.plan;
+  const legacyResult = await loadSchema9SeatDispatchProjectionV1(legacyInput);
+  assert.equal(legacyResult.state, "ready");
+  assert.equal(canonicalJson(legacyResult.projection), canonicalJson(result.projection));
+});
+
+test("exact Daisy Runner tuple selects only the immutable Daisy coordination projection variant", async () => {
+  const repositoryRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-projection-daisy-")));
+  const current = daisyFixture(repositoryRoot);
+  await writeJournal(repositoryRoot, current);
+  const plan = {
+    runnerContractVersion: 1,
+    cycleId: "cycle:test:daisy-projection",
+    missionId: current.brief.missionId,
+    subjectId: current.brief.subjectId,
+    revisionId: current.brief.revisionId,
+    evaluatedThroughSequence: current.projection.lastSequence,
+    seatId: "daisy",
+    activatedModes: [],
+    actionId: "action:feature-flight.daisy.reconnaissance",
+    effectClass: "coordination",
+    effectKey: "effect:test:daisy-read",
+    validationId: "validation:feature-flight.daisy-result-v1",
+    stopCondition: "after_one_cycle",
+  };
+  const result = await loadSchema9SeatDispatchProjectionV1(input(repositoryRoot, current, { plan }));
+  assert.equal(result.state, "ready");
+  assert.equal(result.projection.authorityPath, "daisy_feature_flight_coordination");
+  assert.equal(Object.hasOwn(result.projection, "implementationAuthority"), false);
+  assert.equal(Object.hasOwn(result.projection, "mayRuntimeBinding"), false);
+  assert.equal(result.projection.daisyCoordinationAuthority.sequence, current.projection.daisyCoordinationAuthoritySequence);
+  assert.equal(result.projection.daisyRuntimeBinding.binding.seatId, "daisy");
+  assert.equal(Object.isFrozen(result.projection.daisyRuntimeBinding.binding), true);
+
+  const substituted = await loadSchema9SeatDispatchProjectionV1(input(repositoryRoot, current, {
+    plan: { ...plan, actionId: "action:feature-flight.daisy.fixture" },
+  }));
+  assert.equal(substituted.state, "blocked");
+  assert.equal(substituted.code, "input_invalid");
 });
 
 test("omitted high-assurance execution gate blocks without partial projection", async () => {
@@ -350,7 +464,9 @@ test("stale sequence and independently mutated root, branch, HEAD, and journal f
   const current = fixture(repositoryRoot, { profileId: "standard" });
   await writeJournal(repositoryRoot, current);
 
-  const stale = await loadSchema9SeatDispatchProjectionV1(input(repositoryRoot, current, { expectedEvaluatedThroughSequence: current.projection.lastSequence - 1 }));
+  const staleInput = input(repositoryRoot, current, { expectedEvaluatedThroughSequence: current.projection.lastSequence - 1 });
+  staleInput.plan.evaluatedThroughSequence = current.projection.lastSequence - 1;
+  const stale = await loadSchema9SeatDispatchProjectionV1(staleInput);
   assert.equal(stale.state, "blocked");
   assert.equal(stale.code, "sequence_mismatch");
 

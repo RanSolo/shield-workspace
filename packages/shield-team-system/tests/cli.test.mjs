@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdtemp, mkdir, open, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -11,6 +12,9 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
 const { migrateConfigFile } = await import("../dist/cli.mjs");
 const { createShieldConfig, formatShieldConfig } = await import("../dist/config.mjs");
+const { missionUsage, validateAuthorizeDaisyCoordinationInput } = await import("../dist/mission-cli.mjs");
+const { computeEd25519SigningKeyRef } = await import("../dist/mission-v2.mjs");
+const { createProfileAwareMissionBrief, MISSION_130_JOURNAL_DIGEST } = await import("../dist/profile-aware-mission-v1.mjs");
 const initArgs = [
   "init",
   "--repository-id", "RanSolo/fixture",
@@ -18,9 +22,202 @@ const initArgs = [
   "--fitz-binding-ref", "github:user:fitz",
 ];
 
-function run(args, cwd) {
-  return spawnSync(process.execPath, [cli, ...args], { cwd, encoding: "utf8" });
+function run(args, cwd, env = {}, input) {
+  return spawnSync(process.execPath, [cli, ...args], { cwd, encoding: "utf8", env: { ...process.env, ...env }, input });
 }
+
+test("authorize-daisy-coordination input is closed, immutable, and fixes caller-selectable fields", () => {
+  const intent = validateAuthorizeDaisyCoordinationInput({
+    effectKey: "effect:test:daisy-read",
+    approvedReadRoots: ["/workspace/repository"],
+    durableArtifactRoot: "/workspace/daisy-artifacts",
+    runtimeId: "runtime:test:daisy",
+    modelId: "model:test:daisy",
+    executorId: "executor:test:daisy",
+  });
+  assert.equal(Object.isFrozen(intent), true);
+  assert.equal(Object.isFrozen(intent.approvedReadRoots), true);
+  assert.equal(Object.hasOwn(intent, "validationId"), false);
+  assert.match(missionUsage(), /authorize-daisy-coordination/);
+  assert.throws(() => validateAuthorizeDaisyCoordinationInput({ ...intent, validationId: "validation:caller" }), /only enumerable data fields/);
+  assert.throws(() => validateAuthorizeDaisyCoordinationInput(new Proxy(intent, {})), /plain closed data object/);
+  const accessor = { ...intent };
+  Object.defineProperty(accessor, "effectKey", { enumerable: true, get: () => intent.effectKey });
+  assert.throws(() => validateAuthorizeDaisyCoordinationInput(accessor), /only enumerable data fields/);
+});
+
+function cliAuthority(seatId) {
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  return {
+    schemaVersion: 1,
+    bindingId: `binding:test:${seatId}`,
+    humanPrincipalId: `human:test:${seatId}`,
+    seatId,
+    missionScope: "*",
+    signingKeyRef: computeEd25519SigningKeyRef(publicKeySpkiBase64),
+    publicKeySpkiBase64,
+    validFromSequence: 0,
+    validThroughSequence: null,
+    attestedBy: "repository-policy:test",
+    provenanceRef: `repository-config:test:${seatId}`,
+  };
+}
+
+function profileJournalPath(root, missionId) {
+  return join(root, ".shield", "journals", `${Buffer.from(missionId).toString("base64url")}.jsonl`);
+}
+
+async function daisyCliFixture() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-daisy-cli-")));
+  const artifactRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-daisy-artifacts-")));
+  const coulson = cliAuthority("coulson");
+  const fitz = cliAuthority("fitz");
+  const config = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: coulson.signingKeyRef,
+    fitzBindingRef: fitz.signingKeyRef,
+  });
+  await mkdir(join(root, ".shield", "tmp"), { recursive: true });
+  await writeFile(join(root, "package.json"), "{\"private\":true}\n");
+  await writeFile(join(root, ".shield", "config.json"), formatShieldConfig(config));
+  await writeFile(join(root, ".shield", ".gitignore"), "/journals/\n/reports/\n/tmp/\n");
+  await writeFile(join(root, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({ schemaVersion: 1, bindings: [coulson, fitz] }, null, 2)}\n`);
+  const homeRoot = join(root, ".shield", "tmp", "home");
+  await mkdir(homeRoot, { recursive: true });
+  const passcode = "daisy-cli-passcode";
+  const setup = run(
+    ["mission", "signer", "setup", "--seat", "coulson", "--passcode-stdin", "--json"],
+    root,
+    { HOME: homeRoot },
+    `${passcode}\n`,
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "shield@example.invalid"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "SHIELD Fixture"], { cwd: root });
+  execFileSync("git", ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"], { cwd: root });
+  execFileSync("git", ["add", "package.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"], { cwd: root });
+  execFileSync("git", ["commit", "--quiet", "-m", "Daisy CLI fixture"], { cwd: root });
+
+  const missionId = "mission:test:daisy-cli";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Authorize one bounded Daisy coordination lane.",
+    subjectId: "issue:test:daisy-cli",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: true,
+      externalCommunication: false, hillHighRisk: true, merge: false, deploy: false, release: false,
+    },
+    participants: ["hill", "daisy", "coulson"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-10T12:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...briefContent } = brief;
+  const briefPath = join(root, ".shield", "tmp", "daisy-brief.json");
+  const inputPath = join(root, ".shield", "tmp", "daisy-input.json");
+  const intent = {
+    effectKey: "effect:test:daisy-read",
+    approvedReadRoots: [root],
+    durableArtifactRoot: artifactRoot,
+    runtimeId: "runtime:test:daisy-cli",
+    modelId: "model:test:daisy-cli",
+    executorId: "executor:test:daisy-cli",
+  };
+  await writeFile(briefPath, `${JSON.stringify(briefContent, null, 2)}\n`);
+  await writeFile(inputPath, `${JSON.stringify(intent, null, 2)}\n`);
+  const begun = run(["mission", "begin", "--profile-aware", "--brief", briefPath, "--json"], root);
+  assert.equal(begun.status, 0, begun.stderr);
+  const authorized = run(
+    ["mission", "authorize", "--mission-id", missionId, "--passcode-stdin", "--json"],
+    root,
+    { HOME: homeRoot },
+    `${passcode}\n`,
+  );
+  assert.equal(authorized.status, 0, authorized.stderr);
+  return { root, homeRoot, passcode, missionId, inputPath, intent, journalPath: profileJournalPath(root, missionId) };
+}
+
+function runDaisyAuthorization(current, stdin) {
+  return run(
+    ["mission", "authorize-daisy-coordination", "--mission-id", current.missionId, "--input", current.inputPath, "--passcode-stdin", "--json"],
+    current.root,
+    { HOME: current.homeRoot },
+    stdin,
+  );
+}
+
+async function runDaisyAuthorizationWithInputDrift(current) {
+  const child = spawn(process.execPath, [cli,
+    "mission", "authorize-daisy-coordination", "--mission-id", current.missionId,
+    "--input", current.inputPath, "--passcode-stdin", "--json",
+  ], { cwd: current.root, env: { ...process.env, HOME: current.homeRoot }, stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let drifted = false;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", async (chunk) => {
+    stderr += chunk;
+    if (!drifted && stderr.includes("SHIELD_DAISY_COORDINATION_MANIFEST_END")) {
+      drifted = true;
+      await writeFile(current.inputPath, `${JSON.stringify({ ...current.intent, effectKey: "effect:test:drifted" }, null, 2)}\n`);
+      child.stdin.end(`${current.passcode}\n`);
+    }
+  });
+  const status = await new Promise((resolveStatus, reject) => {
+    child.once("error", reject);
+    child.once("close", resolveStatus);
+  });
+  return { status, stdout, stderr, drifted };
+}
+
+test("authorize-daisy-coordination is one-passcode, drift-closed, and atomically appends N+1/N+2", async () => {
+  const current = await daisyCliFixture();
+  const baseline = await readFile(current.journalPath, "utf8");
+
+  const empty = runDaisyAuthorization(current, "\n");
+  assert.notEqual(empty.status, 0, empty.stderr);
+  assert.equal(empty.stderr.match(/SHIELD_DAISY_COORDINATION_MANIFEST_BEGIN/gu)?.length, 1);
+  assert.equal(empty.stderr.includes(current.passcode), false);
+  assert.equal(await readFile(current.journalPath, "utf8"), baseline);
+
+  const drifted = await runDaisyAuthorizationWithInputDrift(current);
+  assert.equal(drifted.drifted, true);
+  assert.equal(drifted.status, 1, drifted.stderr);
+  assert.match(drifted.stderr, /changed after display/u);
+  assert.equal(await readFile(current.journalPath, "utf8"), baseline);
+  await writeFile(current.inputPath, `${JSON.stringify(current.intent, null, 2)}\n`);
+
+  const completed = runDaisyAuthorization(current, `${current.passcode}\n`);
+  assert.equal(completed.status, 0, completed.stderr);
+  assert.equal(completed.stderr.match(/SHIELD_DAISY_COORDINATION_MANIFEST_BEGIN/gu)?.length, 1);
+  assert.equal(completed.stderr.includes(current.passcode), false);
+  const receipt = JSON.parse(completed.stdout);
+  assert.equal(receipt.schemaId, "shield.daisy-coordination-authorization-receipt.v1");
+  assert.equal(receipt.startingJournalSequence, 1);
+  assert.equal(receipt.endingJournalSequence, 3);
+  const entries = (await readFile(current.journalPath, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(entries.slice(-2).map(({ sequence, type }) => ({ sequence, type })), [
+    { sequence: 2, type: "coordination.authorized" },
+    { sequence: 3, type: "coordination.runtime_bound" },
+  ]);
+  assert.equal(Object.hasOwn(entries[2].payload.authority.payload, "authorityDigest"), false);
+  assert.equal(Object.hasOwn(entries[2].payload.authority.payload, "expiresAt"), false);
+  assert.equal(entries[3].payload.binding.authoritySequence, 2);
+  assert.equal(entries[3].payload.authorization.payload.previousJournalSequence, 2);
+  assert.equal(entries[3].payload.authorization.payload.journalSequence, 3);
+});
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "shield-init-"));

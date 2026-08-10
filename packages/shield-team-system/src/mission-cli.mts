@@ -43,6 +43,8 @@ import {
   createProfileAwareCommunicationResultEntryV1,
   createProfileAwareMissionBrief,
   createProfileAwareGovernanceDecisionEntryV1,
+  createProfileAwareDaisyCoordinationAuthorityEntryV1,
+  createProfileAwareDaisyRuntimeBindingEntryV1,
   createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareReviewPublicationAuthorizationEntryV1,
   createProfileAwareRuntimeBindingRecordedEntryV1,
@@ -85,6 +87,23 @@ import {
   type Schema9RuntimeBindingAuthorizationPayload,
   type Schema9RuntimeBindingV1,
 } from "./implementation-authority-v1.mjs";
+import {
+  DAISY_COORDINATION_ACTION_ID,
+  DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION,
+  DAISY_COORDINATION_AUTHORITY_KIND,
+  DAISY_COORDINATION_CAPABILITY_CLASS,
+  DAISY_COORDINATION_EFFECT_CLASS,
+  DAISY_COORDINATION_VALIDATION_ID,
+  computeDaisyCoordinationAuthorityDigest,
+  computeDaisyCoordinationRuntimeBindingDigest,
+  rootsOverlapV1,
+  validateDaisyCoordinationAuthorityV1,
+  validateDaisyCoordinationRuntimeBindingAuthorizationV1,
+  validateDaisyCoordinationRuntimeBindingV1,
+  type DaisyCoordinationAuthorityV1,
+  type DaisyCoordinationRuntimeBindingAuthorizationV1,
+  type DaisyCoordinationRuntimeBindingV1,
+} from "./daisy-coordination-authority-v1.mjs";
 import type { RuntimeBinding } from "./permission-v1.mjs";
 import {
   renderAuthorizeWheelsUpHumanV1,
@@ -257,6 +276,14 @@ type WheelsUpIntent = {
 };
 type BindIntent = { reasoningRuntimeId: string; toolExecutorId: string };
 type AuthorizeWheelsUpIntent = WheelsUpIntent & BindIntent & { publicationPaths: string[] };
+type AuthorizeDaisyCoordinationIntent = {
+  effectKey: string;
+  approvedReadRoots: string[];
+  durableArtifactRoot: string;
+  runtimeId: string;
+  modelId: string;
+  executorId: string;
+};
 type RepositoryObservation = { canonicalRoot: string; branch: string; head: string };
 type PublicationAuthorizationIntent = {
   baseRevision: string;
@@ -394,6 +421,26 @@ export function validateAuthorizeWheelsUpInput(value: unknown): Readonly<Authori
     publicationPaths: strictSortedStrings(input.publicationPaths, "publicationPaths", canonicalPublicationPathCompare),
   };
   return Object.freeze(result);
+}
+
+export function validateAuthorizeDaisyCoordinationInput(value: unknown): Readonly<AuthorizeDaisyCoordinationIntent> {
+  const fields = ["effectKey", "approvedReadRoots", "durableArtifactRoot", "runtimeId", "modelId", "executorId"] as const;
+  const input = strictClosedDataObject(value, fields, "Authorize Daisy coordination input");
+  for (const field of ["effectKey", "durableArtifactRoot", "runtimeId", "modelId", "executorId"] as const) {
+    const candidate = input[field];
+    if (typeof candidate !== "string" || candidate.trim() !== candidate || candidate.length === 0) {
+      throw new MissionCliError(`Authorize Daisy coordination ${field} is malformed.`, 1);
+    }
+  }
+  const intent: AuthorizeDaisyCoordinationIntent = {
+    effectKey: input.effectKey as string,
+    approvedReadRoots: strictSortedStrings(input.approvedReadRoots, "approvedReadRoots"),
+    durableArtifactRoot: input.durableArtifactRoot as string,
+    runtimeId: input.runtimeId as string,
+    modelId: input.modelId as string,
+    executorId: input.executorId as string,
+  };
+  return Object.freeze({ ...intent, approvedReadRoots: Object.freeze([...intent.approvedReadRoots]) }) as Readonly<AuthorizeDaisyCoordinationIntent>;
 }
 
 function bindIntent(value: unknown): BindIntent {
@@ -1713,6 +1760,311 @@ async function authorizeWheelsUp(args: string[]): Promise<number> {
   return 0;
 }
 
+type DaisyRepositoryObservation = RepositoryObservation & {
+  baseRevision: string;
+  originUrl: string;
+  remoteRepositoryId: string;
+  worktreeRoots: string[];
+};
+
+type PreparedAuthorizeDaisyCoordination = {
+  configurationIdentity: string;
+  configurationBytes: string;
+  configurationPathIdentity: string;
+  inputBytes: string;
+  intent: Readonly<AuthorizeDaisyCoordinationIntent>;
+  current: ProfileAwareJournal;
+  observation: DaisyRepositoryObservation;
+  journalBytes: string;
+  startingJournalSha256: string;
+  humanBinding: TrustedHumanBinding;
+  authority: DaisyCoordinationAuthorityV1;
+  authorityDigest: string;
+  runtimeBinding: DaisyCoordinationRuntimeBindingV1;
+  payloads: readonly [DaisyCoordinationAuthorityV1, DaisyCoordinationRuntimeBindingAuthorizationV1];
+  manifest: Readonly<Record<string, unknown>>;
+};
+
+async function observeDaisyCoordinationRepository(root: string, repositoryId: string): Promise<DaisyRepositoryObservation> {
+  const observation = await observeRepository(root);
+  try {
+    const originUrl = await gitValue(observation.canonicalRoot, ["remote", "get-url", "origin"]);
+    const remoteRepositoryId = repositoryIdFromOrigin(originUrl);
+    if (remoteRepositoryId !== repositoryId) throw new Error("repository origin does not match configured identity");
+    let baseRevision: string;
+    try {
+      baseRevision = await gitValue(observation.canonicalRoot, ["merge-base", "HEAD", "origin/main"]);
+    } catch {
+      baseRevision = await gitValue(observation.canonicalRoot, ["rev-list", "--max-parents=0", "HEAD"]);
+    }
+    const worktreeOutput = await gitOutput(observation.canonicalRoot, ["worktree", "list", "--porcelain"]);
+    const worktreePaths = worktreeOutput.split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
+    if (baseRevision.length === 0 || worktreePaths.length === 0) throw new Error("base revision or worktree inventory is missing");
+    const worktreeRoots = (await Promise.all(worktreePaths.map((path) => fsRealpath(path)))).sort(canonicalPublicationPathCompare);
+    return { ...observation, baseRevision, originUrl, remoteRepositoryId, worktreeRoots };
+  } catch (error) {
+    throw new MissionCliError(`Daisy coordination repository observation failed: ${error instanceof Error ? error.message : String(error)}.`, 1);
+  }
+}
+
+async function canonicalDaisyIntentRoots(
+  intent: Readonly<AuthorizeDaisyCoordinationIntent>,
+  observation: DaisyRepositoryObservation,
+): Promise<Readonly<AuthorizeDaisyCoordinationIntent>> {
+  const approvedReadRoots: string[] = [];
+  for (const root of intent.approvedReadRoots) {
+    const canonical = await fsRealpath(root);
+    if (canonical !== root) throw new MissionCliError("Daisy approved read roots must be supplied as canonical paths.", 1);
+    approvedReadRoots.push(canonical);
+  }
+  const durableArtifactRoot = await fsRealpath(intent.durableArtifactRoot);
+  if (durableArtifactRoot !== intent.durableArtifactRoot) throw new MissionCliError("Daisy durable artifact root must be supplied as a canonical path.", 1);
+  if (observation.worktreeRoots.some((worktreeRoot) => rootsOverlapV1(durableArtifactRoot, worktreeRoot)) ||
+      approvedReadRoots.some((readRoot) => rootsOverlapV1(durableArtifactRoot, readRoot))) {
+    throw new MissionCliError("Daisy durable artifact root must not overlap any worktree or approved read root.", 1);
+  }
+  return Object.freeze({ ...intent, approvedReadRoots: Object.freeze(approvedReadRoots) as unknown as string[], durableArtifactRoot });
+}
+
+async function prepareAuthorizeDaisyCoordination(
+  root: string,
+  config: ShieldConfig,
+  missionId: string,
+  inputPath: string,
+  issuedAt: { value: string; provenance: "hostTrusted" },
+): Promise<PreparedAuthorizeDaisyCoordination> {
+  const configurationSnapshot = await repositoryConfigSnapshot(root);
+  if (canonicalJson(configurationSnapshot.config) !== canonicalJson(config)) {
+    throw new MissionCliError("SHIELD configuration changed during Daisy coordination preparation.", 1);
+  }
+  const inputBytes = await regularTextFile(inputPath, "Authorize Daisy coordination input");
+  let parsed: unknown;
+  try { parsed = JSON.parse(inputBytes); }
+  catch { throw new MissionCliError(`Authorize Daisy coordination input contains malformed JSON: ${inputPath}.`, 1); }
+  const uncheckedIntent = validateAuthorizeDaisyCoordinationInput(parsed);
+  const current = await currentProfileAwareMission(root, config, missionId);
+  if (current.projection.authorization !== "authorized" || current.projection.execution !== "not-started" ||
+      current.projection.finalAcceptance !== "waiting" || Object.hasOwn(current.projection, "daisyCoordinationAuthority")) {
+    throw new MissionCliError("Authorize Daisy coordination requires an authorized not-started mission with no prior Daisy authority or binding.", 1);
+  }
+  const observation = await observeDaisyCoordinationRepository(root, config.repositoryId);
+  const intent = await canonicalDaisyIntentRoots(uncheckedIntent, observation);
+  const identities = ["daisy", intent.runtimeId, intent.modelId, intent.executorId];
+  if (new Set(identities).size !== identities.length || current.projection.brief.participants.some(({ seatId }) => identities.slice(1).includes(seatId))) {
+    throw new MissionCliError("Daisy seat, runtime, model, and executor must be pairwise distinct, and executor identities cannot be mission participants.", 1);
+  }
+  const humanBinding = coulsonBinding(current);
+  const start = current.projection.lastSequence;
+  const authority = unwrap(validateDaisyCoordinationAuthorityV1({
+    schemaVersion: 1,
+    contractVersion: DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION,
+    authorityKind: DAISY_COORDINATION_AUTHORITY_KIND,
+    authorityRef: `authority:${missionId}:daisy-coordination:${start + 1}`,
+    missionId,
+    subjectId: current.projection.brief.subjectId,
+    missionRevisionId: current.projection.brief.revisionId,
+    evaluatedThroughSequence: start,
+    repositoryId: config.repositoryId,
+    canonicalRepositoryRoot: observation.canonicalRoot,
+    branch: observation.branch,
+    headRevision: observation.head,
+    seatId: "daisy",
+    actionId: DAISY_COORDINATION_ACTION_ID,
+    effectClass: DAISY_COORDINATION_EFFECT_CLASS,
+    effectKey: intent.effectKey,
+    capabilityClass: DAISY_COORDINATION_CAPABILITY_CLASS,
+    approvedReadRoots: intent.approvedReadRoots,
+    durableArtifactRoot: intent.durableArtifactRoot,
+    issuedAt,
+    signingKeyRef: humanBinding.signingKeyRef,
+  }));
+  const authorityDigest = computeDaisyCoordinationAuthorityDigest(authority);
+  const authorizationId = `authorization:${missionId}:daisy-coordination-binding:${start + 2}`;
+  const runtimeBinding = unwrap(validateDaisyCoordinationRuntimeBindingV1({
+    schemaVersion: 1,
+    contractVersion: "daisy-coordination-runtime-binding.v1",
+    bindingId: `binding:${missionId}:daisy:1`,
+    bindingVersion: 1,
+    priorBindingId: null,
+    priorBindingVersion: null,
+    missionId,
+    subjectId: current.projection.brief.subjectId,
+    missionRevisionId: current.projection.brief.revisionId,
+    seatId: "daisy",
+    runtimeId: intent.runtimeId,
+    modelId: intent.modelId,
+    executorId: intent.executorId,
+    actionId: DAISY_COORDINATION_ACTION_ID,
+    effectClass: DAISY_COORDINATION_EFFECT_CLASS,
+    effectKey: intent.effectKey,
+    capabilityClass: DAISY_COORDINATION_CAPABILITY_CLASS,
+    repositoryId: config.repositoryId,
+    canonicalRepositoryRoot: observation.canonicalRoot,
+    branch: observation.branch,
+    headRevision: observation.head,
+    durableArtifactRoot: intent.durableArtifactRoot,
+    authorityRef: authority.authorityRef,
+    authorityDigest,
+    authoritySequence: start + 1,
+    effectiveSequence: start + 2,
+    lifecycleState: "active",
+    coulsonAuthorizationRef: authorizationId,
+  }));
+  const runtimeAuthorization = unwrap(validateDaisyCoordinationRuntimeBindingAuthorizationV1({
+    schemaVersion: 1,
+    contractVersion: "daisy-coordination-runtime-binding-authorization.v1",
+    authorizationId,
+    missionId,
+    subjectId: current.projection.brief.subjectId,
+    seatId: "daisy",
+    bindingId: runtimeBinding.bindingId,
+    bindingVersion: runtimeBinding.bindingVersion,
+    priorBindingId: null,
+    priorBindingVersion: null,
+    bindingDigest: computeDaisyCoordinationRuntimeBindingDigest(runtimeBinding),
+    authorityRef: authority.authorityRef,
+    authorityDigest,
+    authoritySequence: start + 1,
+    decision: "approved",
+    previousJournalSequence: start + 1,
+    journalSequence: start + 2,
+    signingKeyRef: humanBinding.signingKeyRef,
+    sourceRef: `cli:authorize-daisy-coordination:${start + 2}`,
+    issuedAt,
+  }));
+  const payloads = canonicalSnapshot([authority, runtimeAuthorization]) as unknown as readonly [DaisyCoordinationAuthorityV1, DaisyCoordinationRuntimeBindingAuthorizationV1];
+  const journalPaths = unwrap(resolveSupervisedMissionPaths(root, config.paths.journals, missionId));
+  const journalBytes = await regularTextFile(journalPaths.journalPath, "Mission journal");
+  const startingJournalSha256 = journalByteSha256(journalBytes);
+  const manifestWithoutDigest = {
+    schemaVersion: 1,
+    schemaId: "shield.daisy-coordination-authorization-manifest.v1",
+    missionId,
+    subjectId: current.projection.brief.subjectId,
+    missionRevisionId: current.projection.brief.revisionId,
+    repository: {
+      repositoryId: config.repositoryId,
+      canonicalRoot: observation.canonicalRoot,
+      branch: observation.branch,
+      baseRevision: observation.baseRevision,
+      headRevision: observation.head,
+      worktreeRoots: observation.worktreeRoots,
+    },
+    journal: { startingSequence: start, authoritySequence: start + 1, bindingSequence: start + 2, startingJournalSha256 },
+    humanBinding: { seatId: "coulson", bindingId: humanBinding.bindingId, humanPrincipalId: humanBinding.humanPrincipalId, signingKeyRef: humanBinding.signingKeyRef },
+    daisyCoordinationAuthority: authority,
+    daisyRuntimeBinding: runtimeBinding,
+    validationId: DAISY_COORDINATION_VALIDATION_ID,
+    constituentPayloads: [
+      { eventType: "coordination.authorized", payload: payloads[0], authorityDigest },
+      { eventType: "coordination.runtime_bound", payload: payloads[1] },
+    ],
+    exclusions: ["fixture_invocation", "model_invocation", "network_write", "publication", "merge", "deployment", "release", "human_review"],
+    remainingHumanGates: remainingOnePasscodeHumanGates(current),
+  };
+  const manifest = canonicalSnapshot({ ...manifestWithoutDigest, manifestDigest: canonicalDigest(manifestWithoutDigest) });
+  return {
+    configurationIdentity: canonicalJson(config),
+    configurationBytes: configurationSnapshot.bytes,
+    configurationPathIdentity: configurationSnapshot.identity,
+    inputBytes, intent, current, observation, journalBytes,
+    startingJournalSha256, humanBinding, authority, authorityDigest, runtimeBinding, payloads, manifest,
+  };
+}
+
+function assertPreparedAuthorizeDaisyFresh(initial: PreparedAuthorizeDaisyCoordination, fresh: PreparedAuthorizeDaisyCoordination): void {
+  if (initial.configurationIdentity !== fresh.configurationIdentity || initial.configurationBytes !== fresh.configurationBytes ||
+      initial.configurationPathIdentity !== fresh.configurationPathIdentity || initial.inputBytes !== fresh.inputBytes ||
+      initial.journalBytes !== fresh.journalBytes || initial.startingJournalSha256 !== fresh.startingJournalSha256 ||
+      canonicalJson(initial.observation) !== canonicalJson(fresh.observation) || canonicalJson(initial.current.entries) !== canonicalJson(fresh.current.entries) ||
+      canonicalJson(initial.payloads) !== canonicalJson(fresh.payloads) || canonicalJson(initial.manifest) !== canonicalJson(fresh.manifest)) {
+    throw new MissionCliError("Authorize Daisy coordination input, signer binding, repository, or journal changed after display.", 1);
+  }
+}
+
+async function authorizeDaisyCoordination(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--passcode-stdin"]);
+  const root = await exactRoot(options.values.get("--root"), true);
+  const missionId = required(options, "--mission-id");
+  const inputPath = resolve(root, required(options, "--input"));
+  const config = await repositoryConfig(root);
+  const issuedAt = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
+  const prepared = await prepareAuthorizeDaisyCoordination(root, config, missionId, inputPath, issuedAt);
+  process.stderr.write(`SHIELD_DAISY_COORDINATION_MANIFEST_BEGIN\n${canonicalJson(prepared.manifest)}\nSHIELD_DAISY_COORDINATION_MANIFEST_END\n`);
+  const passcode = await passcodeFromOptions(options, options.flags.has("--json") ? process.stderr : outputStream);
+  let signatures: readonly string[];
+  try {
+    signatures = await signPayloadBatchWithSigner(prepared.humanBinding.signingKeyRef, prepared.humanBinding.publicKeySpkiBase64, passcode, prepared.payloads);
+  } catch (error) {
+    throw new MissionCliError(error instanceof Error ? error.message : "Coulson Daisy coordination batch signing failed.", 1);
+  }
+  if (signatures.length !== 2) throw new MissionCliError("Coulson Daisy coordination signer did not return exactly two signatures.", 1);
+  const publicKey = createPublicKey({ key: Buffer.from(prepared.humanBinding.publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
+  for (let index = 0; index < signatures.length; index += 1) {
+    if (!verify(null, Buffer.from(canonicalJson(prepared.payloads[index])), publicKey, Buffer.from(signatures[index], "base64"))) {
+      throw new MissionCliError(`Independent Daisy coordination signature verification failed for constituent ${index + 1}.`, 1);
+    }
+  }
+  const afterSigning = await prepareAuthorizeDaisyCoordination(root, await repositoryConfig(root), missionId, inputPath, issuedAt);
+  assertPreparedAuthorizeDaisyFresh(prepared, afterSigning);
+  const trustedBindings = profileAwareBindings(prepared.current);
+  const stagedEntries = [...prepared.current.entries];
+  let stagedProjection = prepared.current.projection;
+  const authorityEntry = produce(() => createProfileAwareDaisyCoordinationAuthorityEntryV1({
+    projection: stagedProjection,
+    trustedBindings,
+    authority: { payload: prepared.authority, authorityDigest: prepared.authorityDigest, signatureBase64: signatures[0] },
+  }));
+  stagedEntries.push(authorityEntry);
+  stagedProjection = unwrap(replayProfileAwareMissionJournal(stagedEntries));
+  const runtimeEntry = produce(() => createProfileAwareDaisyRuntimeBindingEntryV1({
+    projection: stagedProjection,
+    trustedBindings,
+    binding: prepared.runtimeBinding,
+    authorization: { payload: prepared.payloads[1], signatureBase64: signatures[1] },
+  }));
+  stagedEntries.push(runtimeEntry);
+  stagedProjection = unwrap(replayProfileAwareMissionJournal(stagedEntries));
+  const batchEntries = [authorityEntry, runtimeEntry];
+  if (canonicalJson(batchEntries.map(({ type, sequence }) => ({ type, sequence }))) !== canonicalJson([
+    { type: "coordination.authorized", sequence: prepared.current.projection.lastSequence + 1 },
+    { type: "coordination.runtime_bound", sequence: prepared.current.projection.lastSequence + 2 },
+  ])) throw new MissionCliError("Constructed Daisy coordination batch is not the frozen consecutive two-entry transition.", 1);
+  const beforeStoreConfig = await repositoryConfig(root);
+  const beforeStore = await prepareAuthorizeDaisyCoordination(root, beforeStoreConfig, missionId, inputPath, issuedAt);
+  assertPreparedAuthorizeDaisyFresh(prepared, beforeStore);
+  const stored = unwrap(await appendProfileAwareMissionEntriesAtomicV1({
+    ...missionPaths(root, beforeStoreConfig, missionId), entries: batchEntries,
+    expectedStartingJournalSha256: prepared.startingJournalSha256,
+  }));
+  if (canonicalJson(stored.projection) !== canonicalJson(stagedProjection)) throw new MissionCliError("Durable Daisy coordination projection differs from staged replay.", 1);
+  const receiptWithoutDigest = {
+    schemaVersion: 1,
+    schemaId: "shield.daisy-coordination-authorization-receipt.v1",
+    missionId,
+    subjectId: prepared.current.projection.brief.subjectId,
+    missionRevisionId: prepared.current.projection.brief.revisionId,
+    repositoryId: config.repositoryId,
+    canonicalRoot: prepared.observation.canonicalRoot,
+    branch: prepared.observation.branch,
+    baseRevision: prepared.observation.baseRevision,
+    headRevision: prepared.observation.head,
+    startingJournalSequence: stored.startingSequence,
+    endingJournalSequence: stored.endingSequence,
+    finalJournalSha256: stored.finalJournalSha256,
+    manifestDigest: prepared.manifest.manifestDigest,
+    authorityRef: prepared.authority.authorityRef,
+    authorityDigest: prepared.authorityDigest,
+    bindingId: prepared.runtimeBinding.bindingId,
+    bindingVersion: prepared.runtimeBinding.bindingVersion,
+    validationId: DAISY_COORDINATION_VALIDATION_ID,
+    constituents: [authorityEntry, runtimeEntry].map((entry) => ({ eventType: entry.type, entryId: entry.entryId, sequence: entry.sequence })),
+  };
+  const receipt = canonicalSnapshot({ ...receiptWithoutDigest, receiptDigest: canonicalDigest(receiptWithoutDigest) });
+  output(receipt, options.flags.has("--json"), `Authorize Daisy coordination completed.\n${JSON.stringify(receipt, null, 2)}`);
+  return 0;
+}
+
 async function wheelsUp(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--passcode-stdin"]);
   const root = await exactRoot(options.values.get("--root"), true);
@@ -1950,6 +2302,7 @@ export function missionUsage(): string {
     "  shield mission signer setup [--seat coulson] [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",
     "  shield mission publication-result --mission-id <id> --input <file> [--root <path>] [--json]",
@@ -1970,6 +2323,7 @@ export async function runMissionCli(args: string[]): Promise<number> {
     if (action === "begin") return begin(rest);
     if (action === "authorize") return authorize(rest);
     if (action === "authorize-wheels-up") return authorizeWheelsUp(rest);
+    if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
     if (action === "publication-authorize") return publicationAuthorize(rest);
     if (action === "publication-request") return publicationRequest(rest);
     if (action === "publication-result") return publicationResult(rest);

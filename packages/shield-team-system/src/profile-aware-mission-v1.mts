@@ -53,6 +53,21 @@ import {
   verifySignedImplementationAuthorityV1,
   verifySignedSchema9RuntimeBindingAuthorizationV1,
 } from "./implementation-authority-v1.mjs";
+import {
+  computeDaisyCoordinationAuthorityDigest,
+  copyDaisyCoordinationAuthorityV1,
+  copyDaisyCoordinationRuntimeBindingV1,
+  validateDaisyCoordinationRuntimeBindingV1,
+  validateSignedDaisyCoordinationRuntimeBindingAuthorizationV1,
+  verifySignedDaisyCoordinationAuthorityRevocationV1,
+  verifySignedDaisyCoordinationAuthorityV1,
+  verifySignedDaisyCoordinationRuntimeBindingAuthorizationV1,
+  type DaisyCoordinationAuthorityV1,
+  type DaisyCoordinationRuntimeBindingV1,
+  type SignedDaisyCoordinationAuthorityRevocationV1,
+  type SignedDaisyCoordinationAuthorityV1,
+  type SignedDaisyCoordinationRuntimeBindingAuthorizationV1,
+} from "./daisy-coordination-authority-v1.mjs";
 
 export const PROFILE_AWARE_BRIEF_SCHEMA_VERSION = 2 as const;
 export const PROFILE_AWARE_JOURNAL_SCHEMA_VERSION = 9 as const;
@@ -120,12 +135,16 @@ export type ProfileAwareMissionEntryV1 =
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "evidence.recorded"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "runtime.binding_recorded"; timestamp: EvidenceTimestamp; payload: { binding: Schema9RuntimeBindingV1; authorization: SignedSchema9RuntimeBindingAuthorization } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "runtime.binding_superseded"; timestamp: EvidenceTimestamp; payload: { priorBindingId: string; priorBindingVersion: number; binding: Schema9RuntimeBindingV1; authorization: SignedSchema9RuntimeBindingAuthorization } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "coordination.authorized"; timestamp: EvidenceTimestamp; payload: { authority: SignedDaisyCoordinationAuthorityV1 } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "coordination.authority_revoked"; timestamp: EvidenceTimestamp; payload: { revocation: SignedDaisyCoordinationAuthorityRevocationV1 } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "coordination.runtime_bound"; timestamp: EvidenceTimestamp; payload: { binding: DaisyCoordinationRuntimeBindingV1; authorization: SignedDaisyCoordinationRuntimeBindingAuthorizationV1 } }
+  | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "coordination.runtime_binding_superseded"; timestamp: EvidenceTimestamp; payload: { priorBindingId: string; priorBindingVersion: number; binding: DaisyCoordinationRuntimeBindingV1; authorization: SignedDaisyCoordinationRuntimeBindingAuthorizationV1 } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "review.publication_authorized"; timestamp: EvidenceTimestamp; payload: { authority: ReviewPublicationAuthorityV1; authorization: SignedReviewPublicationAuthorization } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "communication.requested"; timestamp: EvidenceTimestamp; payload: { request: ReviewPublicationCommunicationRequestPayload } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "communication.result_recorded"; timestamp: EvidenceTimestamp; payload: { candidate: ReviewPublicationCommunicationResultAdapterCandidate } }
   | { schemaVersion: 9; entryId: string; missionId: string; sequence: number; type: "final_acceptance.recorded"; timestamp: EvidenceTimestamp; payload: { evidence: SignedProfileEvidenceV1 } };
 
-export interface ProfileAwareProjectionV1 {
+interface ProfileAwareProjectionCoreV1 {
   schemaVersion: 9;
   missionId: string;
   brief: ProfileAwareMissionBriefV1;
@@ -148,6 +167,28 @@ export interface ProfileAwareProjectionV1 {
   finalAcceptance: "waiting" | "accepted";
   lastSequence: number;
 }
+
+export interface ProfileAwareProjectionWithoutDaisyCoordinationV1 extends ProfileAwareProjectionCoreV1 {
+  daisyCoordinationAuthority?: never;
+  daisyCoordinationAuthorityDigest?: never;
+  daisyCoordinationAuthoritySequence?: never;
+  daisyCoordinationAuthorityState?: never;
+  daisyRuntimeBindings?: never;
+  activeDaisyRuntimeBindings?: never;
+}
+
+export interface ProfileAwareProjectionWithDaisyCoordinationV1 extends ProfileAwareProjectionCoreV1 {
+  daisyCoordinationAuthority: DaisyCoordinationAuthorityV1;
+  daisyCoordinationAuthorityDigest: string;
+  daisyCoordinationAuthoritySequence: number;
+  daisyCoordinationAuthorityState: "authorized" | "revoked";
+  daisyRuntimeBindings: DaisyCoordinationRuntimeBindingV1[];
+  activeDaisyRuntimeBindings: DaisyCoordinationRuntimeBindingV1[];
+}
+
+export type ProfileAwareProjectionV1 =
+  | ProfileAwareProjectionWithoutDaisyCoordinationV1
+  | ProfileAwareProjectionWithDaisyCoordinationV1;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/;
 const DIGEST = /^sha256:(?:[a-f0-9]{64}|[A-Za-z0-9_-]{43})$/;
@@ -598,6 +639,178 @@ export function createProfileAwareRuntimeBindingSupersessionEntryV1(input: {
   };
 }
 
+function hasDaisyCoordinationProjection(
+  projection: ProfileAwareProjectionV1,
+): projection is ProfileAwareProjectionWithDaisyCoordinationV1 {
+  return Object.hasOwn(projection, "daisyCoordinationAuthority");
+}
+
+export function createProfileAwareDaisyCoordinationAuthorityEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  authority: SignedDaisyCoordinationAuthorityV1;
+}): Extract<ProfileAwareMissionEntryV1, { type: "coordination.authorized" }> {
+  if (input.projection.schemaVersion !== 9 || input.projection.authorization !== "authorized" ||
+      input.projection.execution !== "not-started" || input.projection.finalAcceptance !== "waiting" ||
+      hasDaisyCoordinationProjection(input.projection)) {
+    throw new Error("Daisy coordination authority requires an authorized not-started mission with no prior Daisy authority.");
+  }
+  const sequenceValue = input.projection.lastSequence + 1;
+  const checked = verifySignedDaisyCoordinationAuthorityV1(input.authority, input.trustedBindings, {
+    missionId: input.projection.missionId,
+    subjectId: input.projection.brief.subjectId,
+    missionRevisionId: input.projection.brief.revisionId,
+    evaluatedThroughSequence: input.projection.lastSequence,
+    authoritySequence: sequenceValue,
+  });
+  if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
+  if (canonicalJson(checked.value.payload.issuedAt) !== canonicalJson(input.authority.payload.issuedAt)) {
+    throw new Error("Daisy coordination authority timestamp is malformed.");
+  }
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${sequenceValue}`,
+    missionId: input.projection.missionId,
+    sequence: sequenceValue,
+    type: "coordination.authorized",
+    timestamp: { ...checked.value.payload.issuedAt },
+    payload: {
+      authority: {
+        payload: copyDaisyCoordinationAuthorityV1(checked.value.payload),
+        authorityDigest: checked.value.authorityDigest,
+        signatureBase64: checked.value.signatureBase64,
+      },
+    },
+  };
+}
+
+export function createProfileAwareDaisyCoordinationAuthorityRevocationEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  revocation: SignedDaisyCoordinationAuthorityRevocationV1;
+}): Extract<ProfileAwareMissionEntryV1, { type: "coordination.authority_revoked" }> {
+  if (!hasDaisyCoordinationProjection(input.projection) || input.projection.daisyCoordinationAuthorityState !== "authorized" ||
+      input.projection.execution === "completed" || input.projection.finalAcceptance === "accepted") {
+    throw new Error("Daisy coordination revocation requires one active nonterminal authority.");
+  }
+  const sequenceValue = input.projection.lastSequence + 1;
+  const checked = verifySignedDaisyCoordinationAuthorityRevocationV1(input.revocation, input.trustedBindings, {
+    authorityRef: input.projection.daisyCoordinationAuthority.authorityRef,
+    authorityDigest: input.projection.daisyCoordinationAuthorityDigest,
+    authoritySequence: input.projection.daisyCoordinationAuthoritySequence,
+    missionId: input.projection.missionId,
+    subjectId: input.projection.brief.subjectId,
+    missionRevisionId: input.projection.brief.revisionId,
+  }, sequenceValue);
+  if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${sequenceValue}`,
+    missionId: input.projection.missionId,
+    sequence: sequenceValue,
+    type: "coordination.authority_revoked",
+    timestamp: { ...checked.value.issuedAt },
+    payload: { revocation: { payload: { ...checked.value, issuedAt: { ...checked.value.issuedAt } }, signatureBase64: input.revocation.signatureBase64 } },
+  };
+}
+
+export function createProfileAwareDaisyRuntimeBindingEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  binding: DaisyCoordinationRuntimeBindingV1;
+  authorization: SignedDaisyCoordinationRuntimeBindingAuthorizationV1;
+}): Extract<ProfileAwareMissionEntryV1, { type: "coordination.runtime_bound" }> {
+  if (!hasDaisyCoordinationProjection(input.projection) || input.projection.daisyCoordinationAuthorityState !== "authorized" ||
+      input.projection.execution !== "not-started" || input.projection.finalAcceptance !== "waiting" ||
+      input.projection.daisyRuntimeBindings.length !== 0 || input.projection.activeDaisyRuntimeBindings.length !== 0) {
+    throw new Error("Initial Daisy runtime binding requires one active authority and no prior Daisy binding.");
+  }
+  const checkedBinding = validateDaisyCoordinationRuntimeBindingV1(input.binding);
+  if (checkedBinding.state === "invalid") throw new Error(checkedBinding.errors.join(" "));
+  const binding = checkedBinding.value;
+  if (binding.bindingVersion !== 1 || binding.priorBindingId !== null || binding.priorBindingVersion !== null) {
+    throw new Error("Initial Daisy runtime binding must be version 1 with no prior identity.");
+  }
+  const checked = verifySignedDaisyCoordinationRuntimeBindingAuthorizationV1(input.authorization, binding, {
+    missionId: input.projection.missionId,
+    subjectId: input.projection.brief.subjectId,
+    missionRevisionId: input.projection.brief.revisionId,
+    trustedBindings: input.trustedBindings,
+    authority: input.projection.daisyCoordinationAuthority,
+    authorityDigest: input.projection.daisyCoordinationAuthorityDigest,
+    authoritySequence: input.projection.daisyCoordinationAuthoritySequence,
+    authorityActive: true,
+    lastSequence: input.projection.lastSequence,
+    participantSeatIds: input.projection.brief.participants.map(({ seatId }) => seatId),
+  });
+  if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
+  const sequenceValue = input.projection.lastSequence + 1;
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${sequenceValue}`,
+    missionId: input.projection.missionId,
+    sequence: sequenceValue,
+    type: "coordination.runtime_bound",
+    timestamp: { ...checked.value.issuedAt },
+    payload: {
+      binding: copyDaisyCoordinationRuntimeBindingV1(binding),
+      authorization: { payload: { ...checked.value, issuedAt: { ...checked.value.issuedAt } }, signatureBase64: input.authorization.signatureBase64 },
+    },
+  };
+}
+
+export function createProfileAwareDaisyRuntimeBindingSupersessionEntryV1(input: {
+  projection: ProfileAwareProjectionV1;
+  trustedBindings: TrustedHumanBinding[];
+  priorBindingId: string;
+  priorBindingVersion: number;
+  binding: DaisyCoordinationRuntimeBindingV1;
+  authorization: SignedDaisyCoordinationRuntimeBindingAuthorizationV1;
+}): Extract<ProfileAwareMissionEntryV1, { type: "coordination.runtime_binding_superseded" }> {
+  if (!hasDaisyCoordinationProjection(input.projection) || input.projection.daisyCoordinationAuthorityState !== "authorized" ||
+      input.projection.execution === "completed" || input.projection.finalAcceptance === "accepted") {
+    throw new Error("Daisy runtime binding supersession requires one active nonterminal authority.");
+  }
+  const prior = input.projection.activeDaisyRuntimeBindings.filter((candidate) =>
+    candidate.bindingId === input.priorBindingId && candidate.bindingVersion === input.priorBindingVersion);
+  if (prior.length !== 1) throw new Error("Daisy runtime binding supersession requires exactly one active prior binding.");
+  const checkedBinding = validateDaisyCoordinationRuntimeBindingV1(input.binding);
+  if (checkedBinding.state === "invalid") throw new Error(checkedBinding.errors.join(" "));
+  const binding = checkedBinding.value;
+  if (binding.bindingId !== prior[0].bindingId || binding.bindingVersion !== prior[0].bindingVersion + 1 ||
+      binding.priorBindingId !== prior[0].bindingId || binding.priorBindingVersion !== prior[0].bindingVersion) {
+    throw new Error("Daisy runtime binding supersession must increment and exact-link the active binding.");
+  }
+  const checked = verifySignedDaisyCoordinationRuntimeBindingAuthorizationV1(input.authorization, binding, {
+    missionId: input.projection.missionId,
+    subjectId: input.projection.brief.subjectId,
+    missionRevisionId: input.projection.brief.revisionId,
+    trustedBindings: input.trustedBindings,
+    authority: input.projection.daisyCoordinationAuthority,
+    authorityDigest: input.projection.daisyCoordinationAuthorityDigest,
+    authoritySequence: input.projection.daisyCoordinationAuthoritySequence,
+    authorityActive: true,
+    lastSequence: input.projection.lastSequence,
+    participantSeatIds: input.projection.brief.participants.map(({ seatId }) => seatId),
+  });
+  if (checked.state === "invalid") throw new Error(checked.errors.join(" "));
+  const sequenceValue = input.projection.lastSequence + 1;
+  return {
+    schemaVersion: 9,
+    entryId: `entry:${input.projection.missionId}:${sequenceValue}`,
+    missionId: input.projection.missionId,
+    sequence: sequenceValue,
+    type: "coordination.runtime_binding_superseded",
+    timestamp: { ...checked.value.issuedAt },
+    payload: {
+      priorBindingId: input.priorBindingId,
+      priorBindingVersion: input.priorBindingVersion,
+      binding: copyDaisyCoordinationRuntimeBindingV1(binding),
+      authorization: { payload: { ...checked.value, issuedAt: { ...checked.value.issuedAt } }, signatureBase64: input.authorization.signatureBase64 },
+    },
+  };
+}
+
 function copyPublicationAuthorization(record: ReviewPublicationAuthorizationRecord): ReviewPublicationAuthorizationRecord {
   return {
     authority: {
@@ -863,6 +1076,12 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
   let implementationAuthorityState: "waiting" | "authorized" | "revoked" = "waiting";
   let runtimeBindings: Schema9RuntimeBindingV1[] = [];
   let activeRuntimeBindings: Schema9RuntimeBindingV1[] = [];
+  let daisyCoordinationAuthority: DaisyCoordinationAuthorityV1 | null = null;
+  let daisyCoordinationAuthorityDigest: string | null = null;
+  let daisyCoordinationAuthoritySequence: number | null = null;
+  let daisyCoordinationAuthorityState: "waiting" | "authorized" | "revoked" = "waiting";
+  const daisyRuntimeBindings: DaisyCoordinationRuntimeBindingV1[] = [];
+  let activeDaisyRuntimeBindings: DaisyCoordinationRuntimeBindingV1[] = [];
   let authorization: "waiting" | "authorized" = "waiting";
   let execution: "not-started" | "running" | "completed" = "not-started";
   let finalAcceptance: "waiting" | "accepted" = "waiting";
@@ -1013,6 +1232,99 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
         runtimeBindings.push(copySchema9RuntimeBinding(wrapper));
         activeRuntimeBindings.push(copySchema9RuntimeBinding(wrapper));
       }
+    } else if (entry.type === "coordination.authorized") {
+      if (!exact(entry.payload, ["authority"])) return invalid("malformed", `Entry ${index} Daisy coordination authority payload is not closed.`);
+      if (authorization !== "authorized" || execution !== "not-started" || finalAcceptance !== "waiting" ||
+          daisyCoordinationAuthorityState !== "waiting" || daisyCoordinationAuthority !== null) {
+        return invalid("ordering_invalid", "Daisy coordination authority is duplicated, reauthorized, or late.");
+      }
+      const checked = verifySignedDaisyCoordinationAuthorityV1(entry.payload.authority, bindingRegistry.value.bindings, {
+        missionId: brief.missionId,
+        subjectId: brief.subjectId,
+        missionRevisionId: brief.revisionId,
+        evaluatedThroughSequence: index - 1,
+        authoritySequence: index,
+      });
+      if (checked.state === "invalid") return checked;
+      if (canonicalJson(entry.timestamp) !== canonicalJson(checked.value.payload.issuedAt)) {
+        return invalid("malformed", "Daisy coordination authority timestamp is malformed.");
+      }
+      daisyCoordinationAuthority = copyDaisyCoordinationAuthorityV1(checked.value.payload);
+      daisyCoordinationAuthorityDigest = checked.value.authorityDigest;
+      daisyCoordinationAuthoritySequence = index;
+      daisyCoordinationAuthorityState = "authorized";
+    } else if (entry.type === "coordination.authority_revoked") {
+      if (!exact(entry.payload, ["revocation"])) return invalid("malformed", `Entry ${index} Daisy coordination revocation payload is not closed.`);
+      if (daisyCoordinationAuthority === null || daisyCoordinationAuthorityDigest === null || daisyCoordinationAuthoritySequence === null ||
+          daisyCoordinationAuthorityState !== "authorized" || execution === "completed" || finalAcceptance === "accepted") {
+        return invalid("ordering_invalid", "Daisy coordination revocation requires exactly one active nonterminal authority.");
+      }
+      const checked = verifySignedDaisyCoordinationAuthorityRevocationV1(entry.payload.revocation, bindingRegistry.value.bindings, {
+        authorityRef: daisyCoordinationAuthority.authorityRef,
+        authorityDigest: daisyCoordinationAuthorityDigest,
+        authoritySequence: daisyCoordinationAuthoritySequence,
+        missionId: brief.missionId,
+        subjectId: brief.subjectId,
+        missionRevisionId: brief.revisionId,
+      }, index);
+      if (checked.state === "invalid") return checked;
+      if (canonicalJson(entry.timestamp) !== canonicalJson(checked.value.issuedAt)) return invalid("malformed", "Daisy coordination revocation timestamp is malformed.");
+      daisyCoordinationAuthorityState = "revoked";
+      activeDaisyRuntimeBindings = [];
+    } else if (entry.type === "coordination.runtime_bound" || entry.type === "coordination.runtime_binding_superseded") {
+      const isInitial = entry.type === "coordination.runtime_bound";
+      if (!exact(entry.payload, isInitial ? ["binding", "authorization"] : ["priorBindingId", "priorBindingVersion", "binding", "authorization"])) {
+        return invalid("malformed", `Entry ${index} Daisy coordination runtime binding payload is not closed.`);
+      }
+      if (daisyCoordinationAuthority === null || daisyCoordinationAuthorityDigest === null || daisyCoordinationAuthoritySequence === null ||
+          daisyCoordinationAuthorityState !== "authorized" || execution === "completed" || finalAcceptance === "accepted") {
+        return invalid("authority_invalid", "Daisy coordination runtime binding requires one active nonterminal authority.");
+      }
+      const checkedBinding = validateDaisyCoordinationRuntimeBindingV1(entry.payload.binding);
+      if (checkedBinding.state === "invalid") return checkedBinding;
+      const binding = checkedBinding.value;
+      const checkedEnvelope = validateSignedDaisyCoordinationRuntimeBindingAuthorizationV1(entry.payload.authorization);
+      if (checkedEnvelope.state === "invalid") return checkedEnvelope;
+      const checked = verifySignedDaisyCoordinationRuntimeBindingAuthorizationV1(entry.payload.authorization, binding, {
+        missionId: brief.missionId,
+        subjectId: brief.subjectId,
+        missionRevisionId: brief.revisionId,
+        trustedBindings: bindingRegistry.value.bindings,
+        authority: daisyCoordinationAuthority,
+        authorityDigest: daisyCoordinationAuthorityDigest,
+        authoritySequence: daisyCoordinationAuthoritySequence,
+        authorityActive: true,
+        lastSequence: index - 1,
+        participantSeatIds: brief.participants.map(({ seatId }) => seatId),
+      });
+      if (checked.state === "invalid") return checked;
+      if (canonicalJson(entry.timestamp) !== canonicalJson(checked.value.issuedAt)) return invalid("malformed", "Daisy coordination binding timestamp is malformed.");
+      if (daisyRuntimeBindings.some((candidate) => candidate.coulsonAuthorizationRef === checked.value.authorizationId)) {
+        return invalid("binding_ambiguous", "Daisy coordination binding authorization identity is duplicated.");
+      }
+      if (isInitial) {
+        if (execution !== "not-started" || binding.bindingVersion !== 1 || binding.priorBindingId !== null || binding.priorBindingVersion !== null ||
+            daisyRuntimeBindings.length !== 0 || activeDaisyRuntimeBindings.length !== 0) {
+          return invalid("binding_invalid", "Initial Daisy coordination binding is duplicated, late, or not version 1.");
+        }
+      } else {
+        const priorBindingId = entry.payload.priorBindingId;
+        const priorBindingVersion = entry.payload.priorBindingVersion;
+        if (binding.priorBindingId !== priorBindingId || binding.priorBindingVersion !== priorBindingVersion) {
+          return invalid("binding_invalid", "Daisy coordination supersession payload does not match binding lineage.");
+        }
+        const prior = activeDaisyRuntimeBindings.filter((candidate) => candidate.bindingId === priorBindingId && candidate.bindingVersion === priorBindingVersion);
+        if (prior.length !== 1 || binding.bindingId !== prior[0].bindingId || binding.bindingVersion !== prior[0].bindingVersion + 1) {
+          return invalid("binding_invalid", "Daisy coordination binding must exact-link and increment one active prior binding.");
+        }
+        if (daisyRuntimeBindings.filter((candidate) => candidate.bindingId === priorBindingId && candidate.bindingVersion === priorBindingVersion).length !== 1) {
+          return invalid("binding_ambiguous", "Daisy coordination supersession prior history is absent or ambiguous.");
+        }
+        activeDaisyRuntimeBindings = activeDaisyRuntimeBindings.filter((candidate) =>
+          candidate.bindingId !== priorBindingId || candidate.bindingVersion !== priorBindingVersion);
+      }
+      daisyRuntimeBindings.push(copyDaisyCoordinationRuntimeBindingV1(binding));
+      activeDaisyRuntimeBindings.push(copyDaisyCoordinationRuntimeBindingV1(binding));
     } else if (entry.type === "review.publication_authorized") {
       if (!exact(entry.payload, ["authority", "authorization"])) return invalid("malformed", `Entry ${index} review publication authorization payload is not closed.`);
       if (authorization !== "authorized" || execution !== "not-started") return invalid("ordering_invalid", `Entry ${index} publication authorization requires an authorized not-started mission.`);
@@ -1169,6 +1481,16 @@ export function replayProfileAwareMissionJournal(entries: unknown): ProfileAware
     implementationAuthorityState,
     runtimeBindings: runtimeBindings.map((binding) => copySchema9RuntimeBinding(binding)),
     activeRuntimeBindings: activeRuntimeBindings.map((binding) => copySchema9RuntimeBinding(binding)),
+    ...(daisyCoordinationAuthority === null || daisyCoordinationAuthorityDigest === null || daisyCoordinationAuthoritySequence === null
+      ? {}
+      : {
+          daisyCoordinationAuthority: copyDaisyCoordinationAuthorityV1(daisyCoordinationAuthority),
+          daisyCoordinationAuthorityDigest,
+          daisyCoordinationAuthoritySequence,
+          daisyCoordinationAuthorityState: daisyCoordinationAuthorityState as "authorized" | "revoked",
+          daisyRuntimeBindings: daisyRuntimeBindings.map((binding) => copyDaisyCoordinationRuntimeBindingV1(binding)),
+          activeDaisyRuntimeBindings: activeDaisyRuntimeBindings.map((binding) => copyDaisyCoordinationRuntimeBindingV1(binding)),
+        }),
     publicationAuthorizations: publicationAuthorizations.map(copyPublicationAuthorization),
     communication: {
       state: communicationState,
