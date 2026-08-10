@@ -113,12 +113,17 @@ Run at the exact implementation HEAD:
 2. `git status --porcelain` (must be empty)
 3. `node --test packages/shield-team-system/tests/revision-lifecycle-v7.test.mjs`
 4. `npx nx test @shield/team-system --skip-nx-cache`
-5. `git diff --check 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD -- . ':(exclude)docs/missions/issue-128-lifecycle-invariant-harness-plan.md'`
-6. `git diff --name-only 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD -- . ':(exclude)docs/missions/issue-128-lifecycle-invariant-harness-plan.md'`
+5. Compute SHA-256 of
+   `docs/missions/issue-128-lifecycle-invariant-harness-plan.md` at
+   implementation HEAD and require exact equality with the reviewed-plan digest
+   recorded in the signed implementation-authority manifest; missing or changed
+   bytes fail closed before the pathname exclusion below.
+6. `git diff --check 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD -- . ':(exclude)docs/missions/issue-128-lifecycle-invariant-harness-plan.md'`
+7. `git diff --name-only 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD -- . ':(exclude)docs/missions/issue-128-lifecycle-invariant-harness-plan.md'`
    (exactly the authorized test file; the only excluded path is the exact
    content-addressed plan reviewed by Fury)
-7. `git diff --check 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD`
-8. `git diff --name-only 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD`
+8. `git diff --check 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD`
+9. `git diff --name-only 27d3fe7ab3051fd9b8a33032912dae65c389f4f2..HEAD`
    (exactly the plan document and authorized test file)
 
 Mack independently reruns the focused and affected validation, verifies both exact
