@@ -5,13 +5,22 @@ export {
   createFeatureIntegrationRefV1,
   deliverGitHubCommunication,
   observeFeatureIntegrationDraftPullRequestsV1,
+  observeFeatureIntegrationCommitV1,
+  observeFeatureIntegrationPullRequestV1,
   observeFeatureIntegrationRefV1,
+  integrateFeatureIntegrationPullRequestV1,
 } from "../github/adapter-v1.mjs";
 export {
+  acceptGovernedRollbackWorkspaceV1,
+  createRollbackMissionHandoffReadyV1,
   executeFeatureIntegrationWorkspaceStageV1,
   invokeFeatureIntegrationWorkspaceEffectV1,
+  invokeFeatureIntegrationTransitionEffectV1,
+  observeFeatureIntegrationTransitionV1,
   observeFeatureIntegrationWorkspaceEffectV1,
   prepareFeatureIntegrationWorkspaceEffectV1,
+  prepareFeatureIntegrationTransitionEffectV1,
+  reconcileFeatureIntegrationTransitionV1,
   reconcileFeatureIntegrationWorkspaceEffectV1,
 } from "../github/feature-integration-workspace-v1.mjs";
 export {

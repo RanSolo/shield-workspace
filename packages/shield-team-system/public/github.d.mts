@@ -57,12 +57,21 @@ export function createFeatureIntegrationRefV1(input: { repositoryId: string; ful
 export function observeFeatureIntegrationDraftPullRequestsV1(input: { repositoryId: string; headBranch: string; baseBranch: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }):
   { state: "observed"; observation: { repositoryId: string; headBranch: string; baseBranch: string; pullRequests: FeatureIntegrationGitHubPullRequestObservationV1[]; challengeId: string } } | { state: "blocked"; reason: string };
 export function createFeatureIntegrationDraftPullRequestV1(input: { repositoryId: string; headBranch: string; baseBranch: string; title: string; body: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationPullRequestV1(input: { repositoryId: string; pullRequestId: number; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: Record<string, unknown> } | { state: "blocked"; reason: string };
+export function observeFeatureIntegrationCommitV1(input: { repositoryId: string; headRevision: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: { repositoryId: string; headRevision: string; treeDigest: string; gitTreeRevision: string; challengeId: string } } | { state: "blocked"; reason: string };
+export function integrateFeatureIntegrationPullRequestV1(input: { repositoryId: string; pullRequestId: number; expectedHeadRevision: string; targetFeatureBranch: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
 
 export function prepareFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "prepared"; entry: Record<string, unknown>; candidate: Record<string, unknown> } | { state: "blocked"; reason: string };
 export function invokeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
 export function observeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: unknown } | { state: "blocked"; reason: string };
 export function reconcileFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "accepted" | "not_applied"; entryKind: string; payload: Record<string, unknown> } | { state: "blocked"; reason: string };
 export function executeFeatureIntegrationWorkspaceStageV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): Promise<Record<string, unknown>>;
+export function createRollbackMissionHandoffReadyV1(input: Record<string, unknown>): Record<string, unknown>;
+export function acceptGovernedRollbackWorkspaceV1(input: Record<string, unknown>): Record<string, unknown>;
+export function prepareFeatureIntegrationTransitionEffectV1(input: Record<string, unknown>): Record<string, unknown>;
+export function invokeFeatureIntegrationTransitionEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationTransitionV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): Record<string, unknown>;
+export function reconcileFeatureIntegrationTransitionV1(input: Record<string, unknown>): Record<string, unknown>;
 
 export type CommandRunner = (
   executable: string,

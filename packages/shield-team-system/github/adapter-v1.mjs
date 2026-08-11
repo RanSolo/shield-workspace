@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
 import { validateAdapterCandidate } from "../dist/adapter-v1.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
@@ -537,4 +539,45 @@ export function createFeatureIntegrationDraftPullRequestV1(input, options = {}) 
   if (result.exitCode !== 0) return { state: "effect_result", outcome: /already exists/i.test(`${result.stdout}\n${result.stderr}`) ? "uncertain" : "not_applied", reason: failureReason(result), challengeId: value.challengeId };
   const url = result.stdout.trim();
   return /^https:\/\/github\.com\//u.test(url) ? { state: "effect_result", outcome: "applied", receiptRef: url, challengeId: value.challengeId } : { state: "effect_result", outcome: "uncertain", reason: "ambiguous_response", challengeId: value.challengeId };
+}
+
+/** Observes one exact PR including target, draft state, mergeability and checks. */
+export function observeFeatureIntegrationPullRequestV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "pullRequestId", "challengeId"]);
+  if (!value || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1) return { state: "blocked", reason: "invalid_pr_observation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["pr", "view", String(value.pullRequestId), "--repo", value.repositoryId, "--json", "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,mergedAt,mergeCommit"], { cwd: options.cwd });
+  const parsed = parseFeatureIntegrationJson(result); if (parsed.state !== "observed") return parsed;
+  const item = parsed.value;
+  if (item?.number !== value.pullRequestId || typeof item.url !== "string" || typeof item.state !== "string" || typeof item.isDraft !== "boolean" || typeof item.headRefName !== "string" || !FEATURE_INTEGRATION_REVISION.test(item.headRefOid) || typeof item.baseRefName !== "string" || !Array.isArray(item.statusCheckRollup)) return { state: "blocked", reason: "malformed_response" };
+  const checks = item.statusCheckRollup.map((check) => ({ id: check.context ?? check.name, status: check.conclusion ?? check.state ?? check.status }));
+  if (checks.some((check) => typeof check.id !== "string" || typeof check.status !== "string")) return { state: "blocked", reason: "malformed_response" };
+  return { state: "observed", observation: { repositoryId: value.repositoryId, pullRequestId: String(value.pullRequestId), url: item.url, state: item.state, draft: item.isDraft, headBranch: item.headRefName, headRevision: item.headRefOid, baseBranch: item.baseRefName, mergeable: item.mergeable, mergeStateStatus: item.mergeStateStatus, checks, mergedAt: item.mergedAt ?? null, mergeCommitRevision: item.mergeCommit?.oid ?? null, challengeId: value.challengeId } };
+}
+
+/** Observes the exact tree of one commit. */
+export function observeFeatureIntegrationCommitV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "headRevision", "challengeId"]);
+  if (!value || !FEATURE_INTEGRATION_REVISION.test(value.headRevision)) return { state: "blocked", reason: "invalid_commit_observation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["api", `repos/${value.repositoryId}/git/commits/${value.headRevision}`], { cwd: options.cwd });
+  const parsed = parseFeatureIntegrationJson(result); if (parsed.state !== "observed" || parsed.value?.sha !== value.headRevision || !FEATURE_INTEGRATION_REVISION.test(parsed.value?.tree?.sha)) return { state: "blocked", reason: parsed.reason ?? "malformed_response" };
+  return { state: "observed", observation: { repositoryId: value.repositoryId, headRevision: value.headRevision, treeDigest: `sha256:${createHash("sha256").update(parsed.value.tree.sha, "ascii").digest("hex")}`, gitTreeRevision: parsed.value.tree.sha, challengeId: value.challengeId } };
+}
+
+/** Integrates one already-observed child or rollback PR into a non-main feature branch. */
+export function integrateFeatureIntegrationPullRequestV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "pullRequestId", "expectedHeadRevision", "targetFeatureBranch", "integrationMethod", "challengeId"]);
+  if (!value || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1 || !FEATURE_INTEGRATION_REVISION.test(value.expectedHeadRevision) || typeof value.targetFeatureBranch !== "string" || value.targetFeatureBranch === "main" || !["merge_commit", "rebase_merge", "squash"].includes(value.integrationMethod)) return { state: "blocked", reason: "invalid_integration_request" };
+  const method = { merge_commit: "merge", rebase_merge: "rebase", squash: "squash" }[value.integrationMethod];
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["api", "--method", "PUT", `repos/${value.repositoryId}/pulls/${value.pullRequestId}/merge`, "-f", `merge_method=${method}`, "-f", `sha=${value.expectedHeadRevision}`], { cwd: options.cwd });
+  if (result.exitCode !== 0) {
+    const combined = `${result.stdout}\n${result.stderr}`;
+    const notApplied = /conflict|not mergeable|required check|head branch was modified|405|409/i.test(combined);
+    return { state: "effect_result", outcome: notApplied ? "not_applied" : "uncertain", reason: failureReason(result), challengeId: value.challengeId };
+  }
+  const parsed = parseFeatureIntegrationJson(result);
+  if (parsed.state !== "observed" || parsed.value?.merged !== true || !FEATURE_INTEGRATION_REVISION.test(parsed.value?.sha)) return { state: "effect_result", outcome: "uncertain", reason: "ambiguous_response", challengeId: value.challengeId };
+  return { state: "effect_result", outcome: "applied", resultingHeadRevision: parsed.value.sha, challengeId: value.challengeId };
 }
