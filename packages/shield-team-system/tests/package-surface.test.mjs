@@ -400,6 +400,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       FEATURE_OPERATION_CONTRACT_VERSION,
       FEATURE_OPERATION_SCHEMA_VERSION,
       evaluateFeatureOperationDerivedCandidateV1,
+      type FeatureOperationActiveLeaseV1,
       type FeatureOperationDerivedCandidateV1,
       type FeatureOperationPlanV1,
       type FeatureOperationReplayContextV1,
@@ -538,6 +539,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const featureOperationPlan = null as unknown as FeatureOperationPlanV1;
     const featureOperationAuthority = null as unknown as SignedFeatureOperationAuthorityV1;
     const featureOperationReplay = null as unknown as FeatureOperationReplayContextV1;
+    const featureOperationActiveLease = null as unknown as FeatureOperationActiveLeaseV1;
     const featureOperationCandidate = null as unknown as FeatureOperationDerivedCandidateV1;
     const evaluateFeatureOperation = evaluateFeatureOperationDerivedCandidateV1;
     const daisyAuthorityContract: "daisy-coordination-authority.v1" = DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION;

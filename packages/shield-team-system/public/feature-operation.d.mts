@@ -25,6 +25,7 @@ export {
   type FeatureBranchCreateCandidateV1,
   type FeatureOperationAcceptedIntegrationV1,
   type FeatureOperationAcceptedRollbackV1,
+  type FeatureOperationActiveLeaseV1,
   type FeatureOperationAmendmentComparisonV1,
   type FeatureOperationAuthorityV1,
   type FeatureOperationAuthorityVerificationInputV1,

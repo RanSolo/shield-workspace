@@ -90,14 +90,25 @@ function signAuthority(authority) {
   return { payload: copy(authority), signatureBase64: sign(null, bytes, privateKey).toString("base64") };
 }
 
+const effectKey = (derivation, character) => `effect:${derivation}:${character.repeat(64)}`;
+const effects = {
+  childPublication: effectKey("child_draft_pr_create", "1"),
+  childImplementation: effectKey("child_implementation", "2"),
+  childInitiation: effectKey("child_initiation", "3"),
+  childIntegration: effectKey("child_merge_to_feature", "4"),
+  childRollback: effectKey("child_revert_on_feature", "5"),
+  featureBranch: effectKey("feature_branch_create", "6"),
+  workspacePublication: effectKey("feature_workspace_draft_pr_create", "7"),
+  betaInitiation: effectKey("child_initiation", "8"),
+};
 const effectKeys = [
-  "effect:child:implement",
-  "effect:child:initiate",
-  "effect:child:integrate",
-  "effect:child:publish",
-  "effect:child:rollback",
-  "effect:feature:create",
-  "effect:workspace:publish",
+  effects.childPublication,
+  effects.childImplementation,
+  effects.childInitiation,
+  effects.childIntegration,
+  effects.childRollback,
+  effects.featureBranch,
+  effects.workspacePublication,
 ];
 const childDerivations = FEATURE_OPERATION_DERIVATION_KINDS.filter((item) => item.startsWith("child_"));
 
@@ -113,11 +124,11 @@ function child(childId, order, dependsOn, path) {
     acceptanceCriterionIds: [order === 0 ? "criterion:alpha" : "criterion:beta"],
     permittedDerivations: childDerivations,
     allowedRelativePaths: [path],
-    allowedActionIds: ["action:edit"],
+    allowedActionIds: ["branch_create", "draft_pr_create", "integrate", "repository_edit", "revert"],
     allowedEffectKeys: effectKeys,
-    allowedCapabilityIds: ["capability:write"],
-    allowedValidationIds: ["validation:test"],
-    allowedPublicationOperations: ["publication:draft_pr"],
+    allowedCapabilityIds: ["child_branch_write", "child_pr_write", "feature_branch_write", "feature_workspace_pr_write", "repository_write"],
+    allowedValidationIds: ["build", "test"],
+    allowedPublicationOperations: ["draft_pr_create"],
     requiredGates: { mack: true, fury: true, humanGateIds: ["fitz"] },
     exclusions: FEATURE_OPERATION_FIXED_EXCLUSIONS,
     maxImplementationAttempts: 3,
@@ -262,6 +273,7 @@ function replayContext(overrides = {}) {
       { childId: "child:alpha", initiationAttempts: 0, implementationAttempts: 0, publicationAttempts: 0, integrationAttempts: 0, rollbackAttempts: 0, retryAttempts: 0 },
       { childId: "child:beta", initiationAttempts: 0, implementationAttempts: 0, publicationAttempts: 0, integrationAttempts: 0, rollbackAttempts: 0, retryAttempts: 0 },
     ],
+    activeLeases: [],
     operationCounters: {
       featureBranchCreateAttempts: 0,
       featureWorkspaceDraftPrAttempts: 0,
@@ -277,16 +289,28 @@ function replayContext(overrides = {}) {
 }
 
 function requestedScope(effectKey, path = "packages/alpha") {
+  const derivation = effectKey.split(":")[1];
+  const policies = {
+    feature_branch_create: { actionIds: ["branch_create"], capabilityIds: ["feature_branch_write"], validationIds: [], publicationOperations: [] },
+    feature_workspace_draft_pr_create: { actionIds: ["draft_pr_create"], capabilityIds: ["feature_workspace_pr_write"], validationIds: [], publicationOperations: ["draft_pr_create"] },
+    child_initiation: { actionIds: ["branch_create"], capabilityIds: ["child_branch_write"], validationIds: [], publicationOperations: [] },
+    child_implementation: { actionIds: ["repository_edit"], capabilityIds: ["repository_write"], validationIds: ["build", "test"], publicationOperations: [] },
+    child_draft_pr_create: { actionIds: ["draft_pr_create"], capabilityIds: ["child_pr_write"], validationIds: [], publicationOperations: ["draft_pr_create"] },
+    child_merge_to_feature: { actionIds: ["integrate"], capabilityIds: ["feature_branch_write"], validationIds: ["test"], publicationOperations: [] },
+    child_revert_on_feature: { actionIds: ["revert"], capabilityIds: ["feature_branch_write"], validationIds: ["test"], publicationOperations: [] },
+  };
+  const policy = policies[derivation];
   return {
     relativePaths: [path],
-    actionIds: ["action:edit"],
+    actionIds: policy?.actionIds ?? [],
     effectKeys: [effectKey],
-    capabilityIds: ["capability:write"],
-    validationIds: ["validation:test"],
-    publicationOperations: ["publication:draft_pr"],
+    capabilityIds: policy?.capabilityIds ?? [],
+    validationIds: policy?.validationIds ?? [],
+    publicationOperations: policy?.publicationOperations ?? [],
     requiredGates: { mack: true, fury: true, humanGateIds: ["fitz"] },
     exclusions: FEATURE_OPERATION_FIXED_EXCLUSIONS,
     requestedAttempts: 1,
+    requestedRetries: 0,
   };
 }
 
@@ -316,11 +340,11 @@ function candidate(derivationKind, extra, effectKey) {
 }
 
 const candidates = {
-  featureBranch: candidate("feature_branch_create", { sourceRevision: plan.baseRevision, targetBranch: plan.featureBranch }, "effect:feature:create"),
-  workspacePr: candidate("feature_workspace_draft_pr_create", { sourceBranch: plan.featureBranch, targetBranch: plan.baseBranch, draftOnly: true }, "effect:workspace:publish"),
-  initiation: candidate("child_initiation", { childId: "child:alpha", sourceFeatureHead: plan.baseRevision, childBranch: "agent/child-alpha" }, "effect:child:initiate"),
-  implementation: candidate("child_implementation", { childId: "child:alpha", childBaseRevision: plan.baseRevision, childBranch: "agent/child-alpha" }, "effect:child:implement"),
-  publication: candidate("child_draft_pr_create", { childId: "child:alpha", childBranch: "agent/child-alpha", childHeadRevision: revision("b"), targetBranch: plan.featureBranch, draftOnly: true }, "effect:child:publish"),
+  featureBranch: candidate("feature_branch_create", { sourceRevision: plan.baseRevision, targetBranch: plan.featureBranch }, effects.featureBranch),
+  workspacePr: candidate("feature_workspace_draft_pr_create", { sourceBranch: plan.featureBranch, targetBranch: plan.baseBranch, draftOnly: true }, effects.workspacePublication),
+  initiation: candidate("child_initiation", { childId: "child:alpha", sourceFeatureHead: plan.baseRevision, childBranch: "agent/child-alpha" }, effects.childInitiation),
+  implementation: candidate("child_implementation", { childId: "child:alpha", childBaseRevision: plan.baseRevision, childBranch: "agent/child-alpha" }, effects.childImplementation),
+  publication: candidate("child_draft_pr_create", { childId: "child:alpha", childBranch: "agent/child-alpha", childHeadRevision: revision("b"), targetBranch: plan.featureBranch, draftOnly: true }, effects.childPublication),
   integration: candidate("child_merge_to_feature", {
     childId: "child:alpha",
     childBranch: "agent/child-alpha",
@@ -330,7 +354,7 @@ const candidates = {
     integrationMethod: "merge_commit",
     predecessorIntegrationReceiptDigest: null,
     reviewEvidenceRefs: ["evidence:fitz", "evidence:fury", "evidence:mack"],
-  }, "effect:child:integrate"),
+  }, effects.childIntegration),
 };
 
 function integrationReplay() {
@@ -338,7 +362,7 @@ function integrationReplay() {
   replay.transitions.push({
     kind: "integration",
     operationSequence: 1,
-    effectKey: "effect:child:integrate",
+    effectKey: effects.childIntegration,
     priorHeadRevision: plan.baseRevision,
     priorTreeDigest: plan.baseTreeDigest,
     resultingHeadRevision: revision("c"),
@@ -351,7 +375,7 @@ function integrationReplay() {
   replay.acceptedIntegrations = [{
     childId: "child:alpha",
     operationSequence: 1,
-    effectKey: "effect:child:integrate",
+    effectKey: effects.childIntegration,
     priorHeadRevision: plan.baseRevision,
     priorTreeDigest: plan.baseTreeDigest,
     resultingHeadRevision: revision("c"),
@@ -359,7 +383,7 @@ function integrationReplay() {
     receiptDigest: digest("4"),
     reverted: false,
   }];
-  replay.consumedEffectKeys = ["effect:child:integrate", "effect:genesis"];
+  replay.consumedEffectKeys = [effects.childIntegration, "effect:genesis"].sort();
   replay.childCounters[0].integrationAttempts = 1;
   replay.operationCounters.totalIntegrationAttempts = 1;
   return replay;
@@ -373,7 +397,7 @@ const rollbackCandidate = candidate("child_revert_on_feature", {
   expectedRestoredTreeDigest: plan.baseTreeDigest,
   targetBranch: plan.featureBranch,
   rollbackMethod: "revert_commit",
-}, "effect:child:rollback");
+}, effects.childRollback);
 
 function evaluate(candidateInput, replayInput = replayContext(), planInput = plan, envelopeInput = envelope, verification = verificationInput) {
   return evaluateFeatureOperationDerivedCandidateV1(planInput, envelopeInput, verification, replayInput, candidateInput);
@@ -405,9 +429,9 @@ test("validates frozen defensive copies and fixed independent digest/signature v
   assert.equal(plan.planDigest, independentlyDigest("plan", plan, "planDigest"));
   assert.equal(authority.authorityDigest, independentlyDigest("authority", authority, "authorityDigest"));
   assert.equal(candidates.integration.candidateDigest, independentlyDigest("candidate", candidates.integration, "candidateDigest"));
-  assert.equal(plan.planDigest, "sha256:72d520921f663da6fe0aa5df72777f3bbf6a2d24297e1013334f4122ceff3fb9");
-  assert.equal(authority.authorityDigest, "sha256:888fcb9a9139fc976d2ee8a3bf3209eea1fb59e0408447ba1fa8346d6eb71fd8");
-  assert.equal(envelope.signatureBase64, "+l+QlANUOsy41ztCNT7MoJnZ5mhQTTu7U5BVET3VSWkzlDJvOVBIVT0O27Xg2nzcevPxpElgZxDJv8HFiwJYAA==");
+  assert.equal(plan.planDigest, "sha256:1d1b791bff0684cd4d3a224bc3c69b58060de4d7d6397a413c2c393a4662807b");
+  assert.equal(authority.authorityDigest, "sha256:c9c99465d3a629e93cfb4aff4dda4452f92ad0c9d7590a982c4ebbd3b3e0a406");
+  assert.equal(envelope.signatureBase64, "8HF0cHaDKS8u3n6dSfCnwgnpxQnTOPlQboL2J0D4Nr2+Jj2bXTaRzUn0lChRZGV+z0zh3ydk0m98t46XqAjXDQ==");
   const signatureBytes = Buffer.concat([
     Buffer.from("shield.feature-operation.authority.signature.v1\0", "ascii"),
     Buffer.from(JSON.stringify(canonical(authority)), "utf8"),
@@ -470,7 +494,7 @@ test("validates contiguous genesis, integration, and rollback replay without rew
   rolledBack.transitions.push({
     kind: "rollback",
     operationSequence: 2,
-    effectKey: "effect:child:rollback",
+    effectKey: effects.childRollback,
     priorHeadRevision: revision("c"),
     priorTreeDigest: digest("3"),
     resultingHeadRevision: revision("d"),
@@ -483,7 +507,7 @@ test("validates contiguous genesis, integration, and rollback replay without rew
   rolledBack.acceptedRollbacks = [{
     childId: "child:alpha",
     operationSequence: 2,
-    effectKey: "effect:child:rollback",
+    effectKey: effects.childRollback,
     revertedIntegrationReceiptDigest: digest("4"),
     priorHeadRevision: revision("c"),
     priorTreeDigest: digest("3"),
@@ -491,7 +515,7 @@ test("validates contiguous genesis, integration, and rollback replay without rew
     resultingTreeDigest: plan.baseTreeDigest,
     receiptDigest: digest("9"),
   }];
-  rolledBack.consumedEffectKeys = ["effect:child:integrate", "effect:child:rollback", "effect:genesis", "effect:workspace:publish"];
+  rolledBack.consumedEffectKeys = [effects.childIntegration, effects.childRollback, effects.workspacePublication, "effect:genesis"].sort();
   rolledBack.childCounters[0].rollbackAttempts = 1;
   rolledBack.operationCounters.totalRollbackAttempts = 1;
   rolledBack.lifecycle.atOperationSequence = 2;
@@ -529,7 +553,7 @@ test("validates contiguous genesis, integration, and rollback replay without rew
   nonterminal.transitions.push({
     ...nonterminal.transitions[2],
     operationSequence: 3,
-    effectKey: "effect:child:rollback:again",
+    effectKey: effectKey("child_revert_on_feature", "9"),
     priorHeadRevision: revision("d"),
     priorTreeDigest: plan.baseTreeDigest,
     resultingHeadRevision: revision("e"),
@@ -553,6 +577,38 @@ test("keeps stage fields closed and review evidence integration-only", () => {
   duplicateReplay.acceptedReviewEvidence.push({ ...duplicateReplay.acceptedReviewEvidence[2], evidenceRef: "evidence:mack:duplicate" });
   duplicateReplay.operationCounters.capturedEvidenceCount += 1;
   assert.deepEqual(evaluate(candidates.integration, duplicateReplay), { state: "blocked", reasonCode: "INTEGRATION_EVIDENCE_INVALID" });
+});
+
+test("rejects semantic effect aliases, case drift, dangerous operations, and cross-stage reinterpretation", () => {
+  const invalidPlanMutations = [
+    (value) => { value.children[0].allowedActionIds = ["action:release"]; },
+    (value) => { value.children[0].allowedEffectKeys = ["effect:release"]; },
+    (value) => { value.children[0].allowedEffectKeys = ["effect:child_implementation:Release"]; },
+    (value) => { value.children[0].allowedCapabilityIds = ["capability:deploy"]; },
+    (value) => { value.children[0].allowedPublicationOperations = ["merge-to-main"]; },
+    (value) => { value.children[0].allowedValidationIds = ["Release"]; },
+    (value) => { value.integrationPolicy.allowedMethods = ["deploy"]; },
+    (value) => { value.integrationPolicy.allowedMethods = ["Deploy"]; },
+    (value) => { value.integrationPolicy.allowedMethods = ["deployment"]; },
+  ];
+  for (const mutate of invalidPlanMutations) {
+    const value = copy(plan);
+    mutate(value);
+    value.planDigest = ZERO_DIGEST;
+    assert.throws(() => computeFeatureOperationPlanDigestV1(value), TypeError);
+  }
+
+  const invalidCandidates = [
+    { ...candidates.implementation, effectKey: "effect:release", requestedScope: { ...candidates.implementation.requestedScope, effectKeys: ["effect:release"] } },
+    { ...candidates.implementation, effectKey: "effect:child_implementation:Release", requestedScope: { ...candidates.implementation.requestedScope, effectKeys: ["effect:child_implementation:Release"] } },
+    { ...candidates.implementation, effectKey: effects.childInitiation, requestedScope: { ...candidates.implementation.requestedScope, effectKeys: [effects.childInitiation] } },
+    { ...candidates.implementation, requestedScope: { ...candidates.implementation.requestedScope, actionIds: ["action:repository_edit"] } },
+    { ...candidates.implementation, requestedScope: { ...candidates.implementation.requestedScope, capabilityIds: ["Repository_Write"] } },
+    { ...candidates.integration, integrationMethod: "deploy" },
+  ];
+  for (const value of invalidCandidates) {
+    assert.throws(() => computeFeatureOperationDerivedCandidateDigestV1({ ...copy(value), candidateDigest: ZERO_DIGEST }), TypeError);
+  }
 });
 
 test("enforces segment paths, canonical sets, exact branches, gates, exclusions, numeric bounds, and strict derivation subsets", () => {
@@ -594,6 +650,152 @@ test("enforces segment paths, canonical sets, exact branches, gates, exclusions,
   }), TypeError);
 });
 
+test("enforces signed attempt, retry, evidence, concurrency, and deterministic eligibility-order bounds", () => {
+  const boundary = replayContext();
+  boundary.childCounters[0].implementationAttempts = 3;
+  boundary.childCounters[0].retryAttempts = 2;
+  boundary.operationCounters.totalChildAttempts = 3;
+  boundary.activeLeases = [{
+    leaseId: "lease:alpha",
+    childId: "child:alpha",
+    derivationKind: "child_implementation",
+    effectKey: effects.childImplementation,
+    attemptNumber: 3,
+    retryNumber: 2,
+    acquiredAtOperationSequence: 0,
+  }];
+  assert.equal(validateFeatureOperationReplayContextV1(boundary).state, "valid");
+
+  const overLimitMutations = [
+    (value) => { value.childCounters[0].implementationAttempts = 4; value.operationCounters.totalChildAttempts = 4; },
+    (value) => { value.childCounters[0].integrationAttempts = 3; value.operationCounters.totalIntegrationAttempts = 3; },
+    (value) => { value.childCounters[0].rollbackAttempts = 2; value.operationCounters.totalRollbackAttempts = 2; },
+    (value) => { value.childCounters[0].retryAttempts = 3; },
+    (value) => { value.operationCounters.featureBranchCreateAttempts = 2; },
+    (value) => { value.operationCounters.featureWorkspaceDraftPrAttempts = 2; },
+  ];
+  for (const mutate of overLimitMutations) {
+    const value = replayContext();
+    mutate(value);
+    assert.equal(validateFeatureOperationReplayContextV1(value).state, "invalid");
+  }
+
+  const retryExhausted = replayContext();
+  retryExhausted.childCounters[0].implementationAttempts = 2;
+  retryExhausted.childCounters[0].retryAttempts = 2;
+  retryExhausted.operationCounters.totalChildAttempts = 2;
+  const retryCandidate = withCandidateDigest({
+    ...candidates.implementation,
+    requestedScope: { ...candidates.implementation.requestedScope, requestedAttempts: 1, requestedRetries: 1 },
+  });
+  assert.deepEqual(evaluate(retryCandidate, retryExhausted), { state: "blocked", reasonCode: "BOUNDS_EXHAUSTED" });
+
+  const evidenceBoundary = replayContext();
+  for (let index = evidenceBoundary.acceptedReviewEvidence.length; index < plan.limits.maxCapturedEvidence; index += 1) {
+    evidenceBoundary.acceptedReviewEvidence.push({
+      evidenceRef: `evidence:extra:${index}`,
+      gateType: "human",
+      gateId: "fitz",
+      childId: "child:alpha",
+      repositoryId: plan.repositoryId,
+      headRevision: revision("b"),
+      sourceRecordDigest: `sha256:${index.toString(16).padStart(64, "0")}`,
+    });
+  }
+  evidenceBoundary.operationCounters.capturedEvidenceCount = plan.limits.maxCapturedEvidence;
+  assert.equal(validateFeatureOperationReplayContextV1(evidenceBoundary).state, "valid");
+  const evidenceOver = copy(evidenceBoundary);
+  evidenceOver.acceptedReviewEvidence.push({ ...evidenceOver.acceptedReviewEvidence.at(-1), evidenceRef: "evidence:extra:overflow", sourceRecordDigest: digest("f") });
+  evidenceOver.operationCounters.capturedEvidenceCount += 1;
+  assert.equal(validateFeatureOperationReplayContextV1(evidenceOver).state, "invalid");
+
+  const concurrentOver = replayContext();
+  concurrentOver.childCounters[0].initiationAttempts = 1;
+  concurrentOver.childCounters[1].initiationAttempts = 1;
+  concurrentOver.operationCounters.totalChildAttempts = 2;
+  concurrentOver.activeLeases = [
+    { leaseId: "lease:alpha", childId: "child:alpha", derivationKind: "child_initiation", effectKey: effects.childInitiation, attemptNumber: 1, retryNumber: 0, acquiredAtOperationSequence: 0 },
+    { leaseId: "lease:beta", childId: "child:beta", derivationKind: "child_initiation", effectKey: effects.betaInitiation, attemptNumber: 1, retryNumber: 0, acquiredAtOperationSequence: 0 },
+  ];
+  assert.equal(validateFeatureOperationReplayContextV1(concurrentOver).state, "invalid");
+
+  const independentPlanValue = copy(plan);
+  independentPlanValue.children[1].dependsOn = [];
+  independentPlanValue.children[1].allowedEffectKeys = [...independentPlanValue.children[1].allowedEffectKeys, effects.betaInitiation].sort();
+  independentPlanValue.limits.maxConcurrency = 2;
+  const independentPlan = withPlanDigest(independentPlanValue);
+  const independentAuthority = withAuthorityDigest({
+    ...copy(authority),
+    plan: independentPlan,
+    planDigest: independentPlan.planDigest,
+    limits: independentPlan.limits,
+  });
+  const independentEnvelope = signAuthority(independentAuthority);
+  const independentVerification = { ...verificationInput, trustedBindings: [binding] };
+  const independentReplay = replayContext();
+  independentReplay.activePlan = independentPlan;
+  independentReplay.activePlanDigest = independentPlan.planDigest;
+  independentReplay.verifiedAuthorityDigest = independentAuthority.authorityDigest;
+  independentReplay.acceptedPlanLineage[0].planDigest = independentPlan.planDigest;
+  independentReplay.acceptedPlanLineage[0].authorityDigest = independentAuthority.authorityDigest;
+  const independentCandidate = (childId, branchName, path, effectKey) => withCandidateDigest({
+    ...copy(candidates.initiation),
+    planDigest: independentPlan.planDigest,
+    authorityDigest: independentAuthority.authorityDigest,
+    childId,
+    childBranch: branchName,
+    effectKey,
+    requestedScope: requestedScope(effectKey, path),
+  });
+  const alpha = independentCandidate("child:alpha", "agent/child-alpha", "packages/alpha", effects.childInitiation);
+  const beta = independentCandidate("child:beta", "agent/child-beta", "packages/beta", effects.betaInitiation);
+  assert.equal(evaluateFeatureOperationDerivedCandidateV1(independentPlan, independentEnvelope, independentVerification, independentReplay, alpha).state, "eligible");
+  assert.deepEqual(
+    evaluateFeatureOperationDerivedCandidateV1(independentPlan, independentEnvelope, independentVerification, independentReplay, beta),
+    { state: "blocked", reasonCode: "CHILD_OR_DEPENDENCY_INELIGIBLE" },
+  );
+  independentReplay.childCounters[0].initiationAttempts = 1;
+  independentReplay.operationCounters.totalChildAttempts = 1;
+  independentReplay.activeLeases = [{
+    leaseId: "lease:alpha",
+    childId: "child:alpha",
+    derivationKind: "child_initiation",
+    effectKey: effects.childInitiation,
+    attemptNumber: 1,
+    retryNumber: 0,
+    acquiredAtOperationSequence: 0,
+  }];
+  assert.equal(validateFeatureOperationReplayContextV1(independentReplay).state, "valid");
+  assert.equal(evaluateFeatureOperationDerivedCandidateV1(independentPlan, independentEnvelope, independentVerification, independentReplay, beta).state, "eligible");
+  independentReplay.childCounters[1].initiationAttempts = 1;
+  independentReplay.operationCounters.totalChildAttempts = 2;
+  independentReplay.activeLeases.push({
+    leaseId: "lease:beta",
+    childId: "child:beta",
+    derivationKind: "child_initiation",
+    effectKey: effects.betaInitiation,
+    attemptNumber: 1,
+    retryNumber: 0,
+    acquiredAtOperationSequence: 0,
+  });
+  assert.equal(validateFeatureOperationReplayContextV1(independentReplay).state, "valid");
+
+  const lowTotalPlanValue = copy(plan);
+  lowTotalPlanValue.limits.maxTotalChildAttempts = 2;
+  const lowTotalPlan = withPlanDigest(lowTotalPlanValue);
+  const totalBoundary = replayContext();
+  totalBoundary.activePlan = lowTotalPlan;
+  totalBoundary.activePlanDigest = lowTotalPlan.planDigest;
+  totalBoundary.acceptedPlanLineage[0].planDigest = lowTotalPlan.planDigest;
+  totalBoundary.childCounters[0].implementationAttempts = 2;
+  totalBoundary.childCounters[0].retryAttempts = 2;
+  totalBoundary.operationCounters.totalChildAttempts = 2;
+  assert.equal(validateFeatureOperationReplayContextV1(totalBoundary).state, "valid");
+  totalBoundary.childCounters[0].implementationAttempts = 3;
+  totalBoundary.operationCounters.totalChildAttempts = 3;
+  assert.equal(validateFeatureOperationReplayContextV1(totalBoundary).state, "invalid");
+});
+
 test("allows only contiguous amendment edges and classifies narrowing versus material changes", () => {
   const successor = (mutate) => {
     const value = copy(plan);
@@ -620,7 +822,7 @@ test("allows only contiguous amendment edges and classifies narrowing versus mat
     (value) => { value.children[0].maxImplementationAttempts = 4; },
     (value) => { value.children[1].dependsOn = []; },
     (value) => { value.baseBranch = "trunk"; },
-    (value) => { value.children[0].allowedActionIds = ["action:edit", "action:format"]; },
+    (value) => { value.children[0].allowedEffectKeys = [...value.children[0].allowedEffectKeys, effectKey("child_implementation", "a")].sort(); },
   ];
   for (const mutate of mutations) {
     assert.deepEqual(compareFeatureOperationAmendmentV1(plan, successor(mutate)), { state: "valid", classification: "material" });
@@ -651,13 +853,13 @@ test("returns stable blocked reasons in approved precedence", () => {
   assert.deepEqual(evaluate(candidates.initiation, replayContext({ acceptedAuthorityOperationSequence: 8 })), { state: "blocked", reasonCode: "SEQUENCE_MISMATCH" });
   assert.deepEqual(evaluate(candidates.initiation, replayContext({ observedAt: { value: authority.expiresAt, provenance: "hostTrusted" } })), { state: "blocked", reasonCode: "AUTHORITY_EXPIRED" });
   assert.deepEqual(evaluate({ ...candidates.initiation, candidateDigest: ZERO_DIGEST }), { state: "blocked", reasonCode: "CANDIDATE_INVALID" });
-  const beta = candidate("child_initiation", { childId: "child:beta", sourceFeatureHead: plan.baseRevision, childBranch: "agent/child-beta" }, "effect:child:initiate");
-  beta.requestedScope = requestedScope("effect:child:initiate", "packages/beta");
+  const beta = candidate("child_initiation", { childId: "child:beta", sourceFeatureHead: plan.baseRevision, childBranch: "agent/child-beta" }, effects.childInitiation);
+  beta.requestedScope = requestedScope(effects.childInitiation, "packages/beta");
   beta.candidateDigest = computeFeatureOperationDerivedCandidateDigestV1({ ...beta, candidateDigest: ZERO_DIGEST });
   assert.deepEqual(evaluate(beta), { state: "blocked", reasonCode: "CHILD_OR_DEPENDENCY_INELIGIBLE" });
   const stale = withCandidateDigest({ ...candidates.initiation, sourceFeatureHead: revision("f") });
   assert.deepEqual(evaluate(stale), { state: "blocked", reasonCode: "FEATURE_OR_CHILD_REVISION_STALE" });
-  const reusedReplay = replayContext({ consumedEffectKeys: ["effect:child:initiate", "effect:genesis"] });
+  const reusedReplay = replayContext({ consumedEffectKeys: [effects.childInitiation, "effect:genesis"].sort() });
   assert.deepEqual(evaluate(candidates.initiation, reusedReplay), { state: "blocked", reasonCode: "EFFECT_KEY_REUSED" });
 
   const multiFault = copy(candidates.integration);

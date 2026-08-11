@@ -278,6 +278,16 @@ export interface FeatureOperationChildCountersV1 {
   retryAttempts: number;
 }
 
+export interface FeatureOperationActiveLeaseV1 {
+  leaseId: string;
+  childId: string;
+  derivationKind: Exclude<FeatureOperationDerivationKindV1, "feature_branch_create" | "feature_workspace_draft_pr_create">;
+  effectKey: string;
+  attemptNumber: number;
+  retryNumber: number;
+  acquiredAtOperationSequence: number;
+}
+
 export interface FeatureOperationReviewEvidenceV1 {
   evidenceRef: string;
   gateType: "mack" | "fury" | "human";
@@ -310,6 +320,7 @@ export interface FeatureOperationReplayContextV1 {
   acceptedRollbacks: readonly FeatureOperationAcceptedRollbackV1[];
   consumedEffectKeys: readonly string[];
   childCounters: readonly FeatureOperationChildCountersV1[];
+  activeLeases: readonly FeatureOperationActiveLeaseV1[];
   operationCounters: {
     featureBranchCreateAttempts: number;
     featureWorkspaceDraftPrAttempts: number;
@@ -332,6 +343,7 @@ export interface FeatureOperationRequestedScopeV1 {
   requiredGates: FeatureOperationRequestedGatesV1;
   exclusions: readonly string[];
   requestedAttempts: number;
+  requestedRetries: number;
 }
 
 interface FeatureOperationCandidateCommonV1 {
@@ -456,6 +468,7 @@ const LIMIT_FIELDS = [
 const SCOPE_FIELDS = [
   "relativePaths", "actionIds", "effectKeys", "capabilityIds", "validationIds",
   "publicationOperations", "requiredGates", "exclusions", "requestedAttempts",
+  "requestedRetries",
 ] as const;
 const AUTHORITY_FIELDS = [
   "schemaVersion", "contractVersion", "authorityKind", "authorityId", "missionId", "operationId",
@@ -469,7 +482,7 @@ const REPLAY_FIELDS = [
   "verifiedAuthorityId", "verifiedAuthorityDigest", "acceptedAuthorityOperationSequence",
   "currentJournalSequence", "acceptedPlanLineage", "acceptedAmendmentDigests", "lifecycle",
   "transitions", "acceptedIntegrations", "acceptedRollbacks", "consumedEffectKeys", "childCounters",
-  "operationCounters", "observedAt", "acceptedReviewEvidence",
+  "activeLeases", "operationCounters", "observedAt", "acceptedReviewEvidence",
 ] as const;
 const COMMON_CANDIDATE_FIELDS = [
   "schemaVersion", "contractVersion", "repositoryId", "operationId", "planDigest", "authorityDigest", "stage",
@@ -485,6 +498,26 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const DERIVATIONS = new Set<string>(FEATURE_OPERATION_DERIVATION_KINDS);
 const LIFECYCLES = new Set<string>(["active", "paused", "cancelled", "expired", "integrated", "rollback_pending", "superseded"]);
+const CHILD_DERIVATIONS = new Set<string>(FEATURE_OPERATION_DERIVATION_KINDS.filter((item) => item.startsWith("child_")));
+const INTEGRATION_METHODS = Object.freeze(["merge_commit", "rebase_merge", "squash"] as const);
+const STAGE_SCOPE_POLICY = Object.freeze({
+  feature_branch_create: Object.freeze({ actions: Object.freeze(["branch_create"]), capabilities: Object.freeze(["feature_branch_write"]), publications: Object.freeze([]), validations: Object.freeze([]) }),
+  feature_workspace_draft_pr_create: Object.freeze({ actions: Object.freeze(["draft_pr_create"]), capabilities: Object.freeze(["feature_workspace_pr_write"]), publications: Object.freeze(["draft_pr_create"]), validations: Object.freeze([]) }),
+  child_initiation: Object.freeze({ actions: Object.freeze(["branch_create"]), capabilities: Object.freeze(["child_branch_write"]), publications: Object.freeze([]), validations: Object.freeze([]) }),
+  child_implementation: Object.freeze({ actions: Object.freeze(["repository_edit"]), capabilities: Object.freeze(["repository_write"]), publications: Object.freeze([]), validations: Object.freeze(["build", "test"]) }),
+  child_draft_pr_create: Object.freeze({ actions: Object.freeze(["draft_pr_create"]), capabilities: Object.freeze(["child_pr_write"]), publications: Object.freeze(["draft_pr_create"]), validations: Object.freeze([]) }),
+  child_merge_to_feature: Object.freeze({ actions: Object.freeze(["integrate"]), capabilities: Object.freeze(["feature_branch_write"]), publications: Object.freeze([]), validations: Object.freeze(["test"]) }),
+  child_revert_on_feature: Object.freeze({ actions: Object.freeze(["revert"]), capabilities: Object.freeze(["feature_branch_write"]), publications: Object.freeze([]), validations: Object.freeze(["test"]) }),
+} satisfies Record<FeatureOperationDerivationKindV1, {
+  actions: readonly string[];
+  capabilities: readonly string[];
+  publications: readonly string[];
+  validations: readonly string[];
+}>);
+const ALL_STAGE_ACTIONS = new Set<string>(Object.values(STAGE_SCOPE_POLICY).flatMap((policy) => policy.actions as readonly string[]));
+const ALL_STAGE_CAPABILITIES = new Set<string>(Object.values(STAGE_SCOPE_POLICY).flatMap((policy) => policy.capabilities as readonly string[]));
+const ALL_STAGE_PUBLICATIONS = new Set<string>(Object.values(STAGE_SCOPE_POLICY).flatMap((policy) => policy.publications as readonly string[]));
+const ALL_STAGE_VALIDATIONS = new Set<string>(Object.values(STAGE_SCOPE_POLICY).flatMap((policy) => policy.validations as readonly string[]));
 const PROHIBITED_SCOPE_TOKENS = new Set<string>([
   ...FEATURE_OPERATION_FIXED_EXCLUSIONS,
   ...FEATURE_OPERATION_PROHIBITED_EFFECTS,
@@ -623,6 +656,15 @@ function containsProhibitedScopeToken(value: string): boolean {
   return PROHIBITED_SCOPE_TOKENS.has(normalized);
 }
 
+function effectKeyDerivation(value: string): FeatureOperationDerivationKindV1 | null {
+  const match = /^effect:([a-z_]+):[a-f0-9]{64}$/u.exec(value);
+  return match && DERIVATIONS.has(match[1]) ? match[1] as FeatureOperationDerivationKindV1 : null;
+}
+
+function effectKeyMatchesDerivation(value: string, derivation: FeatureOperationDerivationKindV1): boolean {
+  return effectKeyDerivation(value) === derivation;
+}
+
 function exactStrings(value: unknown, expected: readonly string[]): boolean {
   const checked = sortedStrings(value, expected.length === 0);
   return checked !== null && checked.length === expected.length && checked.every((item, index) => item === expected[index]);
@@ -655,8 +697,11 @@ function checkedScope(value: unknown): FeatureOperationRequestedScopeV1 | null {
   const requiredGates = checkedGates(record.requiredGates, false);
   const exclusions = sortedStrings(record.exclusions, true);
   if (!relativePaths || !actionIds || !effectKeys || !capabilityIds || !validationIds || !publicationOperations || !requiredGates || !exclusions ||
-      !sequence(record.requestedAttempts) || [...actionIds, ...effectKeys, ...capabilityIds, ...publicationOperations].some(containsProhibitedScopeToken)) return null;
-  return { relativePaths, actionIds, effectKeys, capabilityIds, validationIds, publicationOperations, requiredGates, exclusions, requestedAttempts: record.requestedAttempts as number };
+      !sequence(record.requestedAttempts) || !sequence(record.requestedRetries) ||
+      (record.requestedRetries as number) > (record.requestedAttempts as number) ||
+      [...actionIds, ...effectKeys, ...capabilityIds, ...publicationOperations].some(containsProhibitedScopeToken)) return null;
+  return { relativePaths, actionIds, effectKeys, capabilityIds, validationIds, publicationOperations, requiredGates, exclusions,
+    requestedAttempts: record.requestedAttempts as number, requestedRetries: record.requestedRetries as number };
 }
 
 function checkedChild(value: unknown, criteria: Set<string>): FeatureOperationChildV1 | null {
@@ -680,6 +725,10 @@ function checkedChild(value: unknown, criteria: Set<string>): FeatureOperationCh
       !allowedRelativePaths || !allowedActionIds || !allowedEffectKeys || !allowedCapabilityIds ||
       !allowedValidationIds || !allowedPublicationOperations || !requiredGates || !exclusions ||
       [...allowedActionIds, ...allowedEffectKeys, ...allowedCapabilityIds, ...allowedPublicationOperations].some(containsProhibitedScopeToken) ||
+      allowedActionIds.some((item) => !ALL_STAGE_ACTIONS.has(item)) || allowedEffectKeys.some((item) => effectKeyDerivation(item) === null) ||
+      allowedCapabilityIds.some((item) => !ALL_STAGE_CAPABILITIES.has(item)) ||
+      allowedValidationIds.some((item) => !ALL_STAGE_VALIDATIONS.has(item)) ||
+      allowedPublicationOperations.some((item) => !ALL_STAGE_PUBLICATIONS.has(item)) ||
       !positive(record.maxImplementationAttempts) || !positive(record.maxPublicationAttempts) ||
       !positive(record.maxIntegrationAttempts) || !positive(record.maxRollbackAttempts) || !sequence(record.maxRetries)) return null;
   return {
@@ -739,7 +788,8 @@ function checkPlanShape(input: unknown, verifyOwnDigest: boolean): FeatureOperat
     (eligibilityPositions.get(dependency) as number) >= (eligibilityPositions.get(child.childId) as number)))) return null;
   const integrationPolicy = closed(record.integrationPolicy, ["targetBranch", "allowedMethods"]);
   const methods = integrationPolicy && sortedStrings(integrationPolicy.allowedMethods);
-  if (!integrationPolicy || integrationPolicy.targetBranch !== record.featureBranch || !methods) return null;
+  if (!integrationPolicy || integrationPolicy.targetBranch !== record.featureBranch || !methods ||
+      methods.some((method) => !INTEGRATION_METHODS.includes(method as (typeof INTEGRATION_METHODS)[number]))) return null;
   const lifecycle = closed(record.lifecyclePolicy, ["amendmentsRequireFreshAuthority", "pauseSupported", "cancellationSupported", "rollbackMethod", "expiryEnforced", "escalationOnAmbiguity"]);
   if (!lifecycle || lifecycle.amendmentsRequireFreshAuthority !== true || lifecycle.pauseSupported !== true ||
       lifecycle.cancellationSupported !== true || lifecycle.rollbackMethod !== "revert_commit" ||
@@ -1024,16 +1074,21 @@ function checkReplayShape(input: unknown): FeatureOperationReplayContextV1 | nul
     if (!transition || transition.operationSequence !== index || effects.has(transition.effectKey) || receipts.has(transition.receiptDigest)) return null;
     if (index === 0) {
       if (transition.kind !== "genesis" || transition.priorHeadRevision !== activePlan.baseRevision || transition.resultingHeadRevision !== activePlan.baseRevision ||
-          transition.priorTreeDigest !== activePlan.baseTreeDigest || transition.resultingTreeDigest !== activePlan.baseTreeDigest) return null;
+          transition.priorTreeDigest !== activePlan.baseTreeDigest || transition.resultingTreeDigest !== activePlan.baseTreeDigest ||
+          transition.effectKey !== "effect:genesis") return null;
     } else {
       const prior = transitions[index - 1];
       if (transition.kind === "genesis" || transition.priorHeadRevision !== prior.resultingHeadRevision || transition.priorTreeDigest !== prior.resultingTreeDigest) return null;
       if (transition.kind === "integration") {
-        if (!activePlan.children.some((child) => child.childId === transition.childId)) return null;
+        const child = activePlan.children.find((item) => item.childId === transition.childId);
+        if (!child || !effectKeyMatchesDerivation(transition.effectKey, "child_merge_to_feature") ||
+            !child.allowedEffectKeys.includes(transition.effectKey)) return null;
         integrationsByReceipt.set(transition.receiptDigest, transition);
       } else {
         const latest = [...integrationsByReceipt.values()].filter((item) => !revertedReceipts.has(item.receiptDigest)).at(-1);
         if (!latest || latest.receiptDigest !== transition.revertedIntegrationReceiptDigest || latest.childId !== transition.childId ||
+            !effectKeyMatchesDerivation(transition.effectKey, "child_revert_on_feature") ||
+            !activePlan.children.find((child) => child.childId === transition.childId)?.allowedEffectKeys.includes(transition.effectKey) ||
             transition.priorHeadRevision !== latest.resultingHeadRevision || transition.priorTreeDigest !== latest.resultingTreeDigest ||
             transition.resultingHeadRevision === transition.priorHeadRevision || transition.resultingTreeDigest !== latest.priorTreeDigest) return null;
         revertedReceipts.add(latest.receiptDigest);
@@ -1076,11 +1131,63 @@ function checkReplayShape(input: unknown): FeatureOperationReplayContextV1 | nul
   if (childCounters.some((counter) =>
     acceptedIntegrations.filter((item) => item.childId === counter.childId).length > counter.integrationAttempts ||
     acceptedRollbacks.filter((item) => item.childId === counter.childId).length > counter.rollbackAttempts)) return null;
+  for (let index = 0; index < activePlan.children.length; index += 1) {
+    const child = activePlan.children[index];
+    const counter = childCounters[index];
+    if (counter.initiationAttempts > 1 || counter.implementationAttempts > child.maxImplementationAttempts ||
+        counter.publicationAttempts > child.maxPublicationAttempts || counter.integrationAttempts > child.maxIntegrationAttempts ||
+        counter.rollbackAttempts > child.maxRollbackAttempts || counter.retryAttempts > child.maxRetries ||
+        counter.retryAttempts > counter.initiationAttempts + counter.implementationAttempts + counter.publicationAttempts +
+          counter.integrationAttempts + counter.rollbackAttempts) return null;
+  }
   const operationCounters = closed(record.operationCounters, ["featureBranchCreateAttempts", "featureWorkspaceDraftPrAttempts", "totalChildAttempts", "totalIntegrationAttempts", "totalRollbackAttempts", "capturedEvidenceCount"]);
   if (!operationCounters || Object.values(operationCounters).some((value) => !sequence(value)) ||
       operationCounters.totalIntegrationAttempts !== childCounters.reduce((total, item) => total + item.integrationAttempts, 0) ||
       operationCounters.totalRollbackAttempts !== childCounters.reduce((total, item) => total + item.rollbackAttempts, 0) ||
-      operationCounters.totalChildAttempts !== childCounters.reduce((total, item) => total + item.initiationAttempts + item.implementationAttempts + item.publicationAttempts + item.retryAttempts, 0)) return null;
+      operationCounters.totalChildAttempts !== childCounters.reduce((total, item) => total + item.initiationAttempts + item.implementationAttempts + item.publicationAttempts, 0) ||
+      (operationCounters.featureBranchCreateAttempts as number) > activePlan.limits.maxFeatureBranchCreateAttempts ||
+      (operationCounters.featureWorkspaceDraftPrAttempts as number) > activePlan.limits.maxFeatureWorkspaceDraftPrAttempts ||
+      (operationCounters.totalChildAttempts as number) > activePlan.limits.maxTotalChildAttempts ||
+      (operationCounters.totalIntegrationAttempts as number) > activePlan.limits.maxTotalIntegrationAttempts ||
+      (operationCounters.totalRollbackAttempts as number) > activePlan.limits.maxTotalRollbackAttempts) return null;
+  const activeLeaseItems = dense(record.activeLeases, true);
+  if (!activeLeaseItems || activeLeaseItems.length > activePlan.limits.maxConcurrency) return null;
+  const activeLeases: FeatureOperationActiveLeaseV1[] = [];
+  const activeLeaseIds = new Set<string>();
+  const activeLeaseChildren = new Set<string>();
+  const activeLeaseEffects = new Set<string>();
+  const counterField = (derivation: string): keyof Omit<FeatureOperationChildCountersV1, "childId"> | null => ({
+    child_initiation: "initiationAttempts",
+    child_implementation: "implementationAttempts",
+    child_draft_pr_create: "publicationAttempts",
+    child_merge_to_feature: "integrationAttempts",
+    child_revert_on_feature: "rollbackAttempts",
+  } as Record<string, keyof Omit<FeatureOperationChildCountersV1, "childId"> | undefined>)[derivation] ?? null;
+  for (const raw of activeLeaseItems) {
+    const lease = closed(raw, ["leaseId", "childId", "derivationKind", "effectKey", "attemptNumber", "retryNumber", "acquiredAtOperationSequence"]);
+    const child = lease && activePlan.children.find((item) => item.childId === lease.childId);
+    const field = lease && counterField(lease.derivationKind as string);
+    const counter = child && childCounters.find((item) => item.childId === child.childId);
+    if (!lease || !child || !field || !counter || !identifier(lease.leaseId) || !CHILD_DERIVATIONS.has(lease.derivationKind as string) ||
+        !identifier(lease.effectKey) || !effectKeyMatchesDerivation(lease.effectKey as string, lease.derivationKind as FeatureOperationDerivationKindV1) ||
+        !child.allowedEffectKeys.includes(lease.effectKey as string) || !positive(lease.attemptNumber) || !sequence(lease.retryNumber) ||
+        !sequence(lease.acquiredAtOperationSequence) || (lease.acquiredAtOperationSequence as number) > transitions.at(-1)!.operationSequence ||
+        lease.attemptNumber !== counter[field] || (lease.retryNumber as number) > counter.retryAttempts ||
+        activeLeaseIds.has(lease.leaseId as string) || activeLeaseChildren.has(child.childId) || activeLeaseEffects.has(lease.effectKey as string) ||
+        consumedEffectKeys.includes(lease.effectKey as string)) return null;
+    activeLeaseIds.add(lease.leaseId as string);
+    activeLeaseChildren.add(child.childId);
+    activeLeaseEffects.add(lease.effectKey as string);
+    activeLeases.push(lease as unknown as FeatureOperationActiveLeaseV1);
+  }
+  const integratedChildren = new Set(acceptedIntegrations.filter((item) => !item.reverted).map((item) => item.childId));
+  const firstIncomplete = activePlan.eligibilityOrder.findIndex((childId) => !integratedChildren.has(childId));
+  if (firstIncomplete >= 0 && activePlan.eligibilityOrder.slice(firstIncomplete + 1).some((childId) => integratedChildren.has(childId))) return null;
+  const availableChildren = activePlan.eligibilityOrder.filter((childId) => {
+    const child = activePlan.children.find((item) => item.childId === childId)!;
+    return !integratedChildren.has(childId) && child.dependsOn.every((dependency) => integratedChildren.has(dependency));
+  });
+  if (activeLeases.some((lease, index) => lease.childId !== availableChildren[index])) return null;
   const observedAt = closed(record.observedAt, ["value", "provenance"]);
   if (!observedAt || !timestamp(observedAt.value) || observedAt.provenance !== "hostTrusted") return null;
   const evidenceItems = dense(record.acceptedReviewEvidence, true);
@@ -1097,9 +1204,10 @@ function checkReplayShape(input: unknown): FeatureOperationReplayContextV1 | nul
     evidenceRefs.add(item.evidenceRef);
     acceptedReviewEvidence.push(item as unknown as FeatureOperationReviewEvidenceV1);
   }
-  if (operationCounters.capturedEvidenceCount !== acceptedReviewEvidence.length) return null;
+  if (operationCounters.capturedEvidenceCount !== acceptedReviewEvidence.length ||
+      (operationCounters.capturedEvidenceCount as number) > activePlan.limits.maxCapturedEvidence) return null;
   return clone({ ...record, activePlan, acceptedPlanLineage: lineage, acceptedAmendmentDigests: amendments, transitions,
-    acceptedIntegrations, acceptedRollbacks, consumedEffectKeys, childCounters, acceptedReviewEvidence } as unknown as FeatureOperationReplayContextV1);
+    acceptedIntegrations, acceptedRollbacks, consumedEffectKeys, childCounters, activeLeases, acceptedReviewEvidence } as unknown as FeatureOperationReplayContextV1);
 }
 
 export function validateFeatureOperationReplayContextV1(input: unknown): FeatureOperationContractResult<FeatureOperationReplayContextV1> {
@@ -1148,6 +1256,15 @@ function checkCandidateShape(input: unknown, verifyOwnDigest: boolean): FeatureO
   if (derivation === "child_revert_on_feature" && (!identifier(record.childId) || !digestString(record.integrationReceiptDigest) ||
       !revision(record.integrationHeadRevision) || !digestString(record.integrationTreeDigest) || !digestString(record.expectedRestoredTreeDigest) ||
       !branch(record.targetBranch) || record.rollbackMethod !== "revert_commit")) return null;
+  const policy = STAGE_SCOPE_POLICY[derivation as FeatureOperationDerivationKindV1];
+  if (!policy || !effectKeyMatchesDerivation(record.effectKey as string, derivation as FeatureOperationDerivationKindV1) ||
+      requestedScope.effectKeys.some((item) => !effectKeyMatchesDerivation(item, derivation as FeatureOperationDerivationKindV1)) ||
+      requestedScope.actionIds.some((item) => !(policy.actions as readonly string[]).includes(item)) ||
+      requestedScope.capabilityIds.some((item) => !(policy.capabilities as readonly string[]).includes(item)) ||
+      requestedScope.publicationOperations.some((item) => !(policy.publications as readonly string[]).includes(item)) ||
+      requestedScope.validationIds.some((item) => !(policy.validations as readonly string[]).includes(item)) ||
+      (!CHILD_DERIVATIONS.has(derivation) && requestedScope.requestedRetries !== 0) ||
+      (derivation === "child_merge_to_feature" && !INTEGRATION_METHODS.includes(record.integrationMethod as (typeof INTEGRATION_METHODS)[number]))) return null;
   const candidate = clone({ ...record, requestedScope } as unknown as FeatureOperationDerivedCandidateV1);
   if (verifyOwnDigest && computeCandidateDigestUnchecked(candidate) !== candidate.candidateDigest) return null;
   return candidate;
@@ -1302,9 +1419,18 @@ function stageEvidenceApplicable(candidate: FeatureOperationDerivedCandidateV1):
   return true;
 }
 
-function dependenciesEligible(child: Readonly<FeatureOperationChildV1> | null, replay: Readonly<FeatureOperationReplayContextV1>): boolean {
+function dependenciesEligible(candidate: FeatureOperationDerivedCandidateV1, child: Readonly<FeatureOperationChildV1> | null, replay: Readonly<FeatureOperationReplayContextV1>): boolean {
   if (!child) return true;
-  return child.dependsOn.every((dependency) => replay.acceptedIntegrations.some((item) => item.childId === dependency && !item.reverted));
+  const integratedChildren = new Set(replay.acceptedIntegrations.filter((item) => !item.reverted).map((item) => item.childId));
+  if (!child.dependsOn.every((dependency) => integratedChildren.has(dependency))) return false;
+  if (candidate.derivationKind === "child_revert_on_feature") return true;
+  const activeChildren = new Set(replay.activeLeases.map((lease) => lease.childId));
+  const next = replay.activePlan.eligibilityOrder.find((childId) => {
+    const planned = replay.activePlan.children.find((item) => item.childId === childId)!;
+    return !integratedChildren.has(childId) && !activeChildren.has(childId) &&
+      planned.dependsOn.every((dependency) => integratedChildren.has(dependency));
+  });
+  return next === child.childId;
 }
 
 function integrationEvidenceValid(candidate: FeatureOperationDerivedCandidateV1, child: Readonly<FeatureOperationChildV1> | null, replay: Readonly<FeatureOperationReplayContextV1>): boolean {
@@ -1353,7 +1479,9 @@ function boundsAvailable(candidate: FeatureOperationDerivedCandidateV1, child: R
     case "child_merge_to_feature": remaining = child && counters ? Math.min(child.maxIntegrationAttempts - counters.integrationAttempts, plan.limits.maxTotalIntegrationAttempts - replay.operationCounters.totalIntegrationAttempts) : 0; break;
     case "child_revert_on_feature": remaining = child && counters ? Math.min(child.maxRollbackAttempts - counters.rollbackAttempts, plan.limits.maxTotalRollbackAttempts - replay.operationCounters.totalRollbackAttempts) : 0; break;
   }
-  return candidate.requestedScope.requestedAttempts <= remaining;
+  const retriesRemaining = child && counters ? child.maxRetries - counters.retryAttempts : 0;
+  return candidate.requestedScope.requestedAttempts <= remaining &&
+    (child === null || (candidate.requestedScope.requestedRetries <= retriesRemaining && replay.activeLeases.length < plan.limits.maxConcurrency));
 }
 
 export function evaluateFeatureOperationDerivedCandidateV1(
@@ -1394,7 +1522,7 @@ export function evaluateFeatureOperationDerivedCandidateV1(
   const candidate = candidateResult.value;
   if (!stageEvidenceApplicable(candidate)) return blocked("STAGE_OR_EVIDENCE_INAPPLICABLE");
   const child = candidateChild(candidate, plan);
-  if (("childId" in candidate && !child) || !dependenciesEligible(child, replay)) return blocked("CHILD_OR_DEPENDENCY_INELIGIBLE");
+  if (("childId" in candidate && !child) || !dependenciesEligible(candidate, child, replay)) return blocked("CHILD_OR_DEPENDENCY_INELIGIBLE");
   if (!revisionFresh(candidate, replay)) return blocked("FEATURE_OR_CHILD_REVISION_STALE");
   if (!requestedScopeIsSubset(candidate, child, plan) || !authority.permittedDerivations.includes(candidate.derivationKind) ||
       (child !== null && !child.allowedEffectKeys.includes(candidate.effectKey))) return blocked("SCOPE_NOT_STRICT_SUBSET");

@@ -58,7 +58,12 @@ Repository revisions are exact lowercase 40-hex Git object IDs. Tree and
 record identities use `sha256:` digests; those digest forms are never accepted
 as deferred Git revisions. Plan exclusions must include the fixed exclusions
 and may only grow on a narrowing amendment. Child and candidate scopes reject
-the fixed prohibited effect tokens.
+the fixed prohibited effect tokens. Authority-bearing action, capability,
+validation, publication-operation, and integration-method identifiers come
+from closed, case-sensitive, stage-specific allowlists. Effect keys have the
+opaque form `effect:<exact-derivation>:<64-lowercase-hex>` and cannot be
+reinterpreted at another stage. Integration methods are exactly
+`merge_commit`, `rebase_merge`, or `squash`.
 
 The authority embeds the exact plan and binds its digest, operation/repository
 identity, base and feature branches, operation and journal sequence, issuance
@@ -80,8 +85,8 @@ Ed25519 over the framed canonical payload.
 Replay context is a closed projection from the future trusted host boundary. It
 contains the exact active plan and authority identities, contiguous plan
 lineage, accepted amendment digests, lifecycle, host-trusted time, counters,
-consumed effects, accepted exact-head review evidence, and an ordered feature
-transition chain.
+active child attempt leases, consumed effects, accepted exact-head review
+evidence, and an ordered feature transition chain.
 
 The chain starts with exactly one genesis transition at operation sequence zero.
 Every later transition increments by one, uses globally unique effect and
@@ -95,7 +100,11 @@ rollback marks history reverted but never deletes it.
 The authoritative current feature state is only the terminal transition's
 resulting head/tree. Candidates cannot assert lifecycle, time, sequence,
 counters, history, consumed effects, accepted evidence, or current feature
-state.
+state. Replay validates every signed per-child and operation-wide attempt and
+retry limit, evidence inventory limit, duration and expiry, and concurrent
+lease limit. Active leases must occupy the dependency-ready prefix of signed
+`eligibilityOrder`; completed integrations and newly eligible independent
+children must follow that same deterministic order.
 
 ## Derived candidates
 
@@ -113,7 +122,9 @@ The closed stage union represents only:
 
 Every candidate binds repository and operation identity, plan and authority
 digests, one unique effect key present in its requested bounded scope,
-stage-specific fields, and its own digest. Only
+stage-specific fields, requested attempt and retry counts, and its own digest.
+Eligibility checks the corresponding remaining signed limit and available
+concurrency before admitting the candidate. Only
 integration carries review-evidence references. Those references must resolve
 exactly once to Mack, Fury, and every configured human gate for the exact child
 head and repository.
