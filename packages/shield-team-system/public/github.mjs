@@ -1,8 +1,19 @@
 export {
   createGitHubFollowUpCandidate,
   createGitHubHumanEvidenceCandidate,
+  createFeatureIntegrationDraftPullRequestV1,
+  createFeatureIntegrationRefV1,
   deliverGitHubCommunication,
+  observeFeatureIntegrationDraftPullRequestsV1,
+  observeFeatureIntegrationRefV1,
 } from "../github/adapter-v1.mjs";
+export {
+  executeFeatureIntegrationWorkspaceStageV1,
+  invokeFeatureIntegrationWorkspaceEffectV1,
+  observeFeatureIntegrationWorkspaceEffectV1,
+  prepareFeatureIntegrationWorkspaceEffectV1,
+  reconcileFeatureIntegrationWorkspaceEffectV1,
+} from "../github/feature-integration-workspace-v1.mjs";
 export {
   prepareGovernedDeliveryWorkspaceForDispatch,
   prepareDeliveryWorkspaceForDispatch,

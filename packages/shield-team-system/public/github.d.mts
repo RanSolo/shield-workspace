@@ -29,6 +29,41 @@ export interface CommandResult {
   stderr: string;
 }
 
+export interface FeatureIntegrationGitHubRefObservationV1 {
+  repositoryId: string;
+  fullRef: string;
+  exists: boolean;
+  headRevision: string | null;
+  challengeId: string;
+}
+
+export interface FeatureIntegrationGitHubPullRequestObservationV1 {
+  pullRequestId: string;
+  url: string;
+  draft: boolean;
+  headBranch: string;
+  headRevision: string;
+  baseBranch: string;
+}
+
+export type FeatureIntegrationGitHubEffectResultV1 =
+  | { state: "effect_result"; outcome: "applied"; challengeId: string; receiptRef?: string }
+  | { state: "effect_result"; outcome: "not_applied" | "uncertain"; challengeId: string; reason: string }
+  | { state: "blocked"; reason: string };
+
+export function observeFeatureIntegrationRefV1(input: { repositoryId: string; fullRef: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }):
+  { state: "observed"; observation: FeatureIntegrationGitHubRefObservationV1 } | { state: "blocked"; reason: string };
+export function createFeatureIntegrationRefV1(input: { repositoryId: string; fullRef: string; sourceRevision: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationDraftPullRequestsV1(input: { repositoryId: string; headBranch: string; baseBranch: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }):
+  { state: "observed"; observation: { repositoryId: string; headBranch: string; baseBranch: string; pullRequests: FeatureIntegrationGitHubPullRequestObservationV1[]; challengeId: string } } | { state: "blocked"; reason: string };
+export function createFeatureIntegrationDraftPullRequestV1(input: { repositoryId: string; headBranch: string; baseBranch: string; title: string; body: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+
+export function prepareFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "prepared"; entry: Record<string, unknown>; candidate: Record<string, unknown> } | { state: "blocked"; reason: string };
+export function invokeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: unknown } | { state: "blocked"; reason: string };
+export function reconcileFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "accepted" | "not_applied"; entryKind: string; payload: Record<string, unknown> } | { state: "blocked"; reason: string };
+export function executeFeatureIntegrationWorkspaceStageV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): Promise<Record<string, unknown>>;
+
 export type CommandRunner = (
   executable: string,
   args: string[],

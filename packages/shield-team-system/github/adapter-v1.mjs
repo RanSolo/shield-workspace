@@ -465,3 +465,76 @@ export function createGitHubFollowUpCandidate(input) {
     ? { state: "candidate", candidate: checked.value }
     : { state: "blocked", reason: checked.code, errors: checked.errors };
 }
+
+const FEATURE_INTEGRATION_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const FEATURE_INTEGRATION_REF = /^refs\/heads\/(?!main$)(?!.*(?:^|\/)\.\.?$)[A-Za-z0-9._/-]{1,255}$/u;
+const FEATURE_INTEGRATION_REVISION = /^[0-9a-f]{40}$/u;
+
+function featureIntegrationInput(input, fields) {
+  const value = dataValues(input, fields, true);
+  return value && FEATURE_INTEGRATION_REPOSITORY.test(value.repositoryId) &&
+    typeof value.challengeId === "string" && value.challengeId.length > 0 ? value : null;
+}
+
+function featureIntegrationCall(run, executable, args, options) {
+  try {
+    const result = run(executable, args, options);
+    return result && Number.isInteger(result.exitCode) && typeof result.stdout === "string" && typeof result.stderr === "string"
+      ? result : { exitCode: -1, stdout: "", stderr: "invalid runner result" };
+  } catch (error) { return { exitCode: -1, stdout: "", stderr: String(error?.message ?? error) }; }
+}
+
+function parseFeatureIntegrationJson(result) {
+  if (result.exitCode !== 0) return { state: "blocked", reason: failureReason(result) };
+  try { return { state: "observed", value: JSON.parse(result.stdout) }; }
+  catch { return { state: "blocked", reason: "malformed_response" }; }
+}
+
+/** Observes one exact non-main branch ref for the feature-integration workflow. */
+export function observeFeatureIntegrationRefV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "fullRef", "challengeId"]);
+  if (!value || !FEATURE_INTEGRATION_REF.test(value.fullRef)) return { state: "blocked", reason: "invalid_ref_observation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["api", `repos/${value.repositoryId}/git/ref/${value.fullRef.slice("refs/".length)}`], { cwd: options.cwd });
+  if (result.exitCode !== 0 && /not found|404/i.test(`${result.stdout}\n${result.stderr}`)) return { state: "observed", observation: { repositoryId: value.repositoryId, fullRef: value.fullRef, exists: false, headRevision: null, challengeId: value.challengeId } };
+  const parsed = parseFeatureIntegrationJson(result); if (parsed.state !== "observed") return parsed;
+  const record = parsed.value;
+  if (!record || record.ref !== value.fullRef || !record.object || record.object.type !== "commit" || !FEATURE_INTEGRATION_REVISION.test(record.object.sha)) return { state: "blocked", reason: "malformed_response" };
+  return { state: "observed", observation: { repositoryId: value.repositoryId, fullRef: value.fullRef, exists: true, headRevision: record.object.sha, challengeId: value.challengeId } };
+}
+
+/** Creates one exact feature or child branch; main and force updates are unrepresentable. */
+export function createFeatureIntegrationRefV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "fullRef", "sourceRevision", "challengeId"]);
+  if (!value || !FEATURE_INTEGRATION_REF.test(value.fullRef) || !FEATURE_INTEGRATION_REVISION.test(value.sourceRevision)) return { state: "blocked", reason: "invalid_ref_creation" };
+  const run = options.run ?? defaultRun;
+  const body = JSON.stringify({ ref: value.fullRef, sha: value.sourceRevision });
+  const result = featureIntegrationCall(run, "gh", ["api", "--method", "POST", `repos/${value.repositoryId}/git/refs`, "--input", "-"], { cwd: options.cwd, input: body });
+  if (result.exitCode !== 0) return { state: "effect_result", outcome: /already exists|422/i.test(`${result.stdout}\n${result.stderr}`) ? "uncertain" : "not_applied", reason: failureReason(result), challengeId: value.challengeId };
+  const parsed = parseFeatureIntegrationJson(result);
+  if (parsed.state !== "observed" || parsed.value?.ref !== value.fullRef || parsed.value?.object?.sha !== value.sourceRevision) return { state: "effect_result", outcome: "uncertain", reason: "ambiguous_response", challengeId: value.challengeId };
+  return { state: "effect_result", outcome: "applied", challengeId: value.challengeId };
+}
+
+/** Observes all open PRs for an exact head/base pair without selecting among ambiguous results. */
+export function observeFeatureIntegrationDraftPullRequestsV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "headBranch", "baseBranch", "challengeId"]);
+  if (!value || typeof value.headBranch !== "string" || typeof value.baseBranch !== "string" || value.headBranch === "main") return { state: "blocked", reason: "invalid_pr_observation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["pr", "list", "--repo", value.repositoryId, "--state", "open", "--head", value.headBranch, "--base", value.baseBranch, "--json", "number,url,isDraft,headRefName,headRefOid,baseRefName"], { cwd: options.cwd });
+  const parsed = parseFeatureIntegrationJson(result); if (parsed.state !== "observed" || !Array.isArray(parsed.value)) return { state: "blocked", reason: parsed.reason ?? "malformed_response" };
+  const observations = parsed.value.map((item) => ({ pullRequestId: Number.isInteger(item?.number) ? String(item.number) : null, url: item?.url, draft: item?.isDraft, headBranch: item?.headRefName, headRevision: item?.headRefOid, baseBranch: item?.baseRefName }));
+  if (observations.some((item) => item.pullRequestId === null || typeof item.url !== "string" || typeof item.draft !== "boolean" || item.headBranch !== value.headBranch || item.baseBranch !== value.baseBranch || !FEATURE_INTEGRATION_REVISION.test(item.headRevision))) return { state: "blocked", reason: "malformed_response" };
+  return { state: "observed", observation: { repositoryId: value.repositoryId, headBranch: value.headBranch, baseBranch: value.baseBranch, pullRequests: observations, challengeId: value.challengeId } };
+}
+
+/** Creates only a draft PR for an exact non-main source branch and exact target. */
+export function createFeatureIntegrationDraftPullRequestV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "headBranch", "baseBranch", "title", "body", "challengeId"]);
+  if (!value || typeof value.headBranch !== "string" || value.headBranch === "main" || typeof value.baseBranch !== "string" || typeof value.title !== "string" || typeof value.body !== "string" || !isSafeGitHubContent([value.title, value.body]).safe) return { state: "blocked", reason: "invalid_draft_pr_creation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["pr", "create", "--repo", value.repositoryId, "--head", value.headBranch, "--base", value.baseBranch, "--draft", "--title", value.title, "--body-file", "-"], { cwd: options.cwd, input: value.body });
+  if (result.exitCode !== 0) return { state: "effect_result", outcome: /already exists/i.test(`${result.stdout}\n${result.stderr}`) ? "uncertain" : "not_applied", reason: failureReason(result), challengeId: value.challengeId };
+  const url = result.stdout.trim();
+  return /^https:\/\/github\.com\//u.test(url) ? { state: "effect_result", outcome: "applied", receiptRef: url, challengeId: value.challengeId } : { state: "effect_result", outcome: "uncertain", reason: "ambiguous_response", challengeId: value.challengeId };
+}
