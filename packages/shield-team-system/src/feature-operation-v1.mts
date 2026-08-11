@@ -1507,6 +1507,7 @@ export function evaluateFeatureOperationDerivedCandidateV1(
   const plan = planResult.value;
   const authority = envelopeResult.value.payload;
   const replay = replayResult.value;
+  if (timestampBefore(replay.observedAt.value, authority.issuedAt)) return blocked("REPLAY_CONTEXT_INVALID");
   const candidateResult = validateFeatureOperationDerivedCandidateV1(candidateInput);
   if (authority.missionId !== verification.expectedMissionId || authority.operationId !== verification.expectedOperationId ||
       authority.operationSequence !== verification.expectedOperationSequence || authority.journalSequence !== verification.expectedJournalSequence ||
@@ -1518,7 +1519,6 @@ export function evaluateFeatureOperationDerivedCandidateV1(
   if (!activeLineage?.active || activeLineage.planDigest !== plan.planDigest || activeLineage.authorityDigest !== authority.authorityDigest) return blocked("AUTHORITY_OR_LINEAGE_INACTIVE");
   if (replay.lifecycle.state !== "active") return blocked("LIFECYCLE_BLOCKED");
   if (authority.operationSequence !== replay.acceptedAuthorityOperationSequence || authority.journalSequence !== replay.currentJournalSequence) return blocked("SEQUENCE_MISMATCH");
-  if (timestampBefore(replay.observedAt.value, authority.issuedAt)) return blocked("REPLAY_CONTEXT_INVALID");
   if (!timestampBefore(replay.observedAt.value, authority.expiresAt)) return blocked("AUTHORITY_EXPIRED");
   if (candidateResult.state === "invalid") return blocked("CANDIDATE_INVALID");
   const candidate = candidateResult.value;

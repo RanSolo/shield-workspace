@@ -538,6 +538,22 @@ test("binds host-trusted replay time to the verified authority issuance and expi
   assert.equal(validateFeatureOperationReplayContextV1(at("2029-05-01T00:30:00Z", "callerSupplied")).state, "invalid");
   assert.deepEqual(evaluate(candidates.initiation, at("2029-05-01T00:30:00Z", "callerSupplied")),
     { state: "blocked", reasonCode: "REPLAY_CONTEXT_INVALID" });
+
+  const preIssuance = at("2029-04-30T23:59:59.999999999Z");
+  const identityDrift = withCandidateDigest({ ...candidates.initiation, operationId: "operation:other" });
+  assert.deepEqual(evaluate(identityDrift, preIssuance), { state: "blocked", reasonCode: "REPLAY_CONTEXT_INVALID" });
+
+  const lineageDrift = copy(preIssuance);
+  lineageDrift.acceptedPlanLineage[0].active = false;
+  assert.deepEqual(evaluate(candidates.initiation, lineageDrift), { state: "blocked", reasonCode: "REPLAY_CONTEXT_INVALID" });
+
+  const lifecycleDrift = copy(preIssuance);
+  lifecycleDrift.lifecycle.state = "paused";
+  assert.deepEqual(evaluate(candidates.initiation, lifecycleDrift), { state: "blocked", reasonCode: "REPLAY_CONTEXT_INVALID" });
+
+  const sequenceDrift = copy(preIssuance);
+  sequenceDrift.acceptedAuthorityOperationSequence += 1;
+  assert.deepEqual(evaluate(candidates.initiation, sequenceDrift), { state: "blocked", reasonCode: "REPLAY_CONTEXT_INVALID" });
 });
 
 test("fails closed for unsigned, malformed, untrusted, stale, duplicate, conflicting, and bad signatures", () => {
