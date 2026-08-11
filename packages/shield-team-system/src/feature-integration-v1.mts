@@ -474,4 +474,3 @@ export function createFeatureOperationGenesisEntryV1(input: { operationId: strin
   if (replay.state !== "valid" || replay.value.operationId !== input.operationId || replay.value.activePlan.baseBranch !== "main") throw new TypeError("Genesis replay context is invalid.");
   return createFeatureIntegrationEntryV1({ operationId: input.operationId, entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null, payload: { replayContext: replay.value } });
 }
-
