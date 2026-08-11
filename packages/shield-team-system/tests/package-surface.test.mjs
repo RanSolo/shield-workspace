@@ -36,6 +36,7 @@ test("exports only the documented public package specifiers", async () => {
     "./mission-profile",
     "./profile-aware-mission",
     "./implementation-authority",
+    "./feature-operation",
     "./daisy-coordination-authority",
     "./mission-runtime",
     "./mission-builder",
@@ -77,6 +78,7 @@ test("loads every supported runtime specifier", async () => {
   const missionRuntime = await import("@shield/team-system/mission-runtime");
   const missionBuilder = await import("@shield/team-system/mission-builder");
   const implementationAuthority = await import("@shield/team-system/implementation-authority");
+  const featureOperation = await import("@shield/team-system/feature-operation");
   const daisyCoordinationAuthority = await import("@shield/team-system/daisy-coordination-authority");
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
@@ -107,6 +109,11 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION, "implementation-authority.v1");
   assert.equal(typeof implementationAuthority.validateImplementationAuthorityV1, "function");
   assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_KIND, "wheels_up");
+  assert.equal(featureOperation.FEATURE_OPERATION_SCHEMA_VERSION, 1);
+  assert.equal(featureOperation.FEATURE_OPERATION_CONTRACT_VERSION, "feature.operation.v1");
+  assert.equal(featureOperation.FEATURE_OPERATION_AUTHORITY_KIND, "epic_wheels_up");
+  assert.equal(typeof featureOperation.evaluateFeatureOperationDerivedCandidateV1, "function");
+  assert.equal(typeof featureOperation.verifySignedFeatureOperationAuthorityV1, "function");
   assert.equal(daisyCoordinationAuthority.DAISY_COORDINATION_AUTHORITY_KIND, "daisy_feature_flight_coordination");
   assert.equal(typeof daisyCoordinationAuthority.validateDaisyCoordinationAuthorityV1, "function");
   assert.equal(daisyCoordinationAuthority.verifySignedImplementationAuthorityV1, undefined);
@@ -243,6 +250,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "public/daisy-coordination-authority.mjs",
     "public/daisy-coordination-authority.d.mts",
     "dist/implementation-authority-v1.d.mts",
+    "dist/feature-operation-v1.mjs",
+    "dist/feature-operation-v1.d.mts",
+    "public/feature-operation.mjs",
+    "public/feature-operation.d.mts",
     "dist/runner-v1.mjs",
     "dist/runner-v1.d.mts",
     "dist/permission-v1.mjs",
@@ -289,6 +300,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "docs/operations/feature-flight-step.md",
     "docs/operations/feature-flight-recovery.md",
     "docs/operations/feature-flight-review-gates.md",
+    "docs/operations/feature-operation-plan.md",
     "docs/operations/persisted-artifact-contract-matrix.md",
     "scripts/operations/flight-contracts.mjs",
     "scripts/operations/feature-flight-controller.mjs",
@@ -308,7 +320,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const packedMackRunner = await readFile(join(packageRoot, "scripts/model/mack-validation-runner.mjs"), "utf8");
   assert.match(packedMackRunner, /export async function readMackProductionValidationRegistryV1/u);
   assert.doesNotMatch(packedMackRunner, /export (?:async )?function promoteProductionEvidence/u);
-  for (const document of ["feature-flight-review-gates.md", "persisted-artifact-contract-matrix.md"]) {
+  for (const document of ["feature-flight-review-gates.md", "feature-operation-plan.md", "persisted-artifact-contract-matrix.md"]) {
     assert.equal(
       await readFile(join(packageRoot, "docs/operations", document), "utf8"),
       await readFile(join(workspaceRoot, "docs/operations", document), "utf8"),
@@ -384,6 +396,15 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       IMPLEMENTATION_AUTHORITY_KIND,
       type ImplementationAuthorityV1,
     } from "@shield/team-system/implementation-authority";
+    import {
+      FEATURE_OPERATION_CONTRACT_VERSION,
+      FEATURE_OPERATION_SCHEMA_VERSION,
+      evaluateFeatureOperationDerivedCandidateV1,
+      type FeatureOperationDerivedCandidateV1,
+      type FeatureOperationPlanV1,
+      type FeatureOperationReplayContextV1,
+      type SignedFeatureOperationAuthorityV1,
+    } from "@shield/team-system/feature-operation";
     import {
       DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION,
       validateDaisyCoordinationAuthorityV1,
@@ -512,6 +533,13 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const implementationAuthorityContract: "implementation-authority.v1" = IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION;
     const implementationAuthorityKind: "wheels_up" = IMPLEMENTATION_AUTHORITY_KIND;
     const authority: ImplementationAuthorityV1 = null as unknown as ImplementationAuthorityV1;
+    const featureOperationSchema: 1 = FEATURE_OPERATION_SCHEMA_VERSION;
+    const featureOperationContract: "feature.operation.v1" = FEATURE_OPERATION_CONTRACT_VERSION;
+    const featureOperationPlan = null as unknown as FeatureOperationPlanV1;
+    const featureOperationAuthority = null as unknown as SignedFeatureOperationAuthorityV1;
+    const featureOperationReplay = null as unknown as FeatureOperationReplayContextV1;
+    const featureOperationCandidate = null as unknown as FeatureOperationDerivedCandidateV1;
+    const evaluateFeatureOperation = evaluateFeatureOperationDerivedCandidateV1;
     const daisyAuthorityContract: "daisy-coordination-authority.v1" = DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION;
     const daisyAuthority: DaisyCoordinationAuthorityV1 = null as unknown as DaisyCoordinationAuthorityV1;
     const validateDaisyAuthority = validateDaisyCoordinationAuthorityV1;
