@@ -61,9 +61,11 @@ Every host mutation uses one operation-specific effect lifecycle in the same jou
 2. Append an immutable `effect_prepared` entry binding the candidate digest, effect key, expected journal sequence, expected remote identities, and exact prior head/tree.
 3. Invoke the single permitted host effect once.
 4. Observe the host independently.
-5. Append either an accepted exact observation/transition receipt or `effect_uncertain`.
+5. Append either a terminal accepted exact observation/transition receipt, terminal `effect_not_applied`, or a nonterminal `effect_uncertain` observation marker.
 
-Replay of `effect_prepared` without a terminal receipt, or any `effect_uncertain`, prohibits re-execution. Only observation-based reconciliation may append the terminal receipt. Absent, ambiguous, conflicting, or unverifiable observations remain blocked. A materially changed request receives a new effect key and newly reviewed flow; it cannot reuse or overwrite a claim.
+Every terminal outcome references exactly one existing `effect_prepared`; replay rejects an orphan terminal, a second terminal for one preparation, or any terminal whose request/effect identity differs. `effect_not_applied` is permitted only when a trusted independent observation proves that the invocation was rejected or did not apply. `effect_uncertain` is not terminal and may be followed only by observation-based reconciliation to one terminal accepted or not-applied outcome. Replay of `effect_prepared` without a terminal outcome, including any uncertain observation, prohibits re-execution. Absent, ambiguous, conflicting, or unverifiable observations remain blocked.
+
+A retry is never an overwrite. It requires a distinct unused effect key already enumerated by the active #225 plan, must remain within that plan's attempt bound, and must pass a newly derived candidate against the replayed terminal `effect_not_applied`. A caller cannot create an effect key because a request changed. A changed request without a separately authorized key is a material amendment and waits for a valid successor plan plus fresh Coulson-signed authority.
 
 ## Closed production model
 
@@ -79,24 +81,38 @@ Replay of `effect_prepared` without a terminal receipt, or any `effect_uncertain
 - canonical entry payload;
 - genesis digest and latest accepted entry digest.
 
-Canonical digest framing must reuse the repository's established SHA-256 framing rules: digest field excluded, UTF-8 JSON bytes, recursively lexicographically ordered object keys, arrays preserved in contract order, no insignificant whitespace, lowercase hexadecimal output. Validators reject unknown keys, proxies/accessors, duplicate semantic identities, non-canonical set order, malformed digests, noncontiguous sequence, and broken digest lineage.
+Journal and entry digests use this exact framing:
+
+- ASCII domain separator: `shield.feature-integration.journal.v1`;
+- framed bytes: `UTF8(domain) || 0x00 || UTF8(entryKind) || 0x00 || UTF8(canonicalJson(recordWithoutOwnDigest))`;
+- the literal entry kind is mandatory; the journal envelope uses `journal`;
+- only the record's own digest field is omitted; nested and predecessor digests remain;
+- canonical JSON recursively orders object keys by ascending UTF-16 code-unit sequence, with no locale collation; contract-declared semantic sets are arrays sorted by their canonical identity using the same comparator, while sequence/history arrays preserve order;
+- numbers are finite safe integers where admitted, strings are emitted as JSON UTF-8, and no insignificant whitespace is emitted;
+- output is `sha256:` followed by exactly 64 lowercase hexadecimal characters.
+
+Validators reject unknown keys, proxies/accessors, duplicate semantic identities, non-canonical set order, malformed digests, noncontiguous sequence, and broken digest lineage. Fixed tests must prove cross-process stability and that identical payload bytes under different entry kinds produce different digests.
 
 ### Closed entry union
 
 The journal entry union is stage-discriminated and exhaustive:
 
-- `genesis_accepted`: verified signed authority plus exact authorized base and feature-branch genesis head/tree;
+- `operation_genesis_accepted`: verified initial signed authority plus trusted exact authorized-base head/tree observation; this pre-effect record establishes the #225 genesis anchor, authority, and sequence but does not claim that the feature branch exists;
+- `authority_successor_accepted`: a contiguous plan successor and fresh verified Coulson-signed authority, accepted only after #225 lineage/amendment validation and never implicitly activated;
 - `effect_prepared`: one validated derived candidate and its execute-once effect identity;
+- `effect_not_applied`: trusted terminal proof that exactly one prepared effect was rejected or did not apply;
 - `effect_uncertain`: a prepared effect whose host result cannot yet be proven;
-- `feature_branch_accepted`: exact feature ref/head/tree observation after creation or reconciliation;
+- `feature_branch_creation_accepted`: exact feature ref/head/tree observation and branch-creation terminal receipt after creation or reconciliation; its head/tree must equal the operation genesis anchor;
 - `feature_workspace_accepted`: one draft feature PR with exact source feature branch and target base branch;
-- `child_workspace_accepted`: exact child branch/head/tree and one draft child PR targeting only the feature branch;
+- `child_initiation_accepted`: exact child branch genesis head/tree created from the replay-derived terminal feature head/tree;
+- `child_implementation_accepted`: exact governed child mission completion head/tree and source-authority/effect receipt identities;
+- `child_publication_accepted`: one observed draft child PR from the exact child branch/head to the feature branch;
 - `child_evidence_accepted`: exact-head Mack, Fury, and configured-human evidence digests required by the active plan;
 - `integration_accepted`: immutable integration transition and receipt;
 - `rollback_workspace_accepted`: latest-integration rollback branch/PR and evidence identity;
 - `rollback_accepted`: immutable rollback transition and receipt;
 - `cumulative_validation_accepted`: exact terminal feature head/tree and configured validation evidence;
-- `operation_paused`, `operation_cancelled`, and `operation_split`: non-authoritative control dispositions constrained by the active plan.
+- `operation_paused`, `operation_resumed`, `operation_cancelled`, `operation_split`, `operation_completed`, and `operation_superseded`: non-authoritative lifecycle dispositions constrained by the active plan and verified authority.
 
 Entries may contain trusted observations and verified evidence only. A candidate cannot assert host state, evidence acceptance, resulting heads/trees, timestamps, attempt counts, or receipt acceptance.
 
@@ -118,6 +134,17 @@ Pure replay returns either a closed invalid result with deterministic reason pre
 
 No successor stage is eligible while a prepared/uncertain effect lacks an accepted reconciled receipt, while cumulative validation is missing for the terminal transition, or while a rollback receipt is pending. Replay preserves history; rollback never erases an integration.
 
+The mapping into #225 is exact:
+
+- `operation_genesis_accepted` plus the latest valid `authority_successor_accepted` derive active plan/authority lineage, accepted amendments, lifecycle sequence, expected operation/journal sequence, and the authoritative genesis head/tree;
+- `operation_genesis_accepted`, `integration_accepted`, and `rollback_accepted` alone form the ordered accepted head-transition chain and derive genesis/latest accepted resulting head/tree; `feature_branch_creation_accepted` proves the feature ref exists at that genesis without inventing another transition;
+- child initiation, implementation, publication, and evidence records derive their corresponding stage inventory; no later stage can stand in for a missing earlier stage;
+- accepted integration and rollback records derive separate integrated and reverted histories plus effect-key inventory;
+- every `effect_prepared` derives the attempt counter for its plan-authorized effect identity, while exactly one terminal record derives its disposition;
+- only trusted accepted observation records derive host-observed time and observation provenance;
+- lifecycle records derive active, paused, cancelled, split, completed, or superseded state; resume requires the same active lineage or an explicitly accepted successor authority;
+- the next-stage projection is a closed union of initiation, implementation, child publication, integration, rollback, cumulative validation, lifecycle-only, completed, or blocked, selected solely from contiguous replay.
+
 ### Integration receipt
 
 `FeatureIntegrationReceiptV1` binds:
@@ -129,7 +156,9 @@ No successor stage is eligible while a prepared/uncertain effect lacks an accept
 - exact Mack, Fury, configured-human, check, and CI evidence digests required by the active plan;
 - host-observed integration result;
 - resulting feature head/tree and receipt digest;
-- actual runtime, model, executor, and host-observed timestamp, with nullable metrics where unavailable.
+- the SHIELD seat identity, reasoning runtime/model identity, host-tool executor identity, trusted observation provenance, and host-observed timestamp.
+
+Seat, reasoning runtime/model, and host-tool executor are separate closed identity fields. Their IDs must be pairwise distinct; a runtime or executor ID cannot equal or use a seat ID. Observation provenance identifies the trusted adapter/host response and challenge used to establish the result. A genuinely unavailable runtime/model or executor uses an explicit closed `unavailable` variant with a reason code; it is never represented by omission, conflation, or a seat identity. Context size, elapsed time, and similar measurement fields remain nullable when not observed.
 
 Acceptance requires a host-observed resulting feature ref whose head/tree exactly matches the receipt, whose transition is permitted by the reviewed integration method, and whose child/effect identity is not already accepted or reverted inconsistently.
 
@@ -175,8 +204,9 @@ Deliver:
 - safe canonical read, initialize, append, and replay APIs for the Lane 1 contract;
 - one writer lock, regular-file/no-follow checks, exact expected sequence/digest compare, atomic same-directory replacement, mode preservation, fsync/close ordering, and deterministic fault classification;
 - idempotent identical append and conflict rejection;
-- no mutation when validation, lock acquisition, staging, replacement, or durability proof fails;
-- recovery classification that distinguishes unchanged baseline, complete accepted candidate, and uncertain state.
+- validation, lock-acquisition, and pre-replacement staging failures preserve the baseline;
+- after replacement may have occurred, readback, file-fsync, directory-fsync, close, or durability-proof failure returns `recovery_required`/uncertain and never claims no mutation;
+- recovery classification observes bytes and distinguishes unchanged baseline, complete accepted candidate, and unverifiable state without blind retry.
 
 Exact paths:
 
@@ -267,8 +297,8 @@ Focused proof:
 
 Deliver:
 
-- configured cumulative validation request/projection and accepted receipt append;
-- a controller that replays trusted state, verifies current repository/authority freshness, selects at most one next stage, evaluates the #225 candidate, and delegates to exactly one bounded Lane 2-5 API;
+- a bounded production API for configured cumulative-validation request, execution observation, execute-once reconciliation, projection, and accepted receipt append;
+- a controller that replays trusted state, verifies current repository/authority freshness, selects at most one next stage, evaluates the #225 candidate, and delegates to exactly one bounded stage-owner API from Lanes 2-6, including cumulative validation;
 - deterministic `blocked`, `ready`, `completed`, `paused`, `cancelled`, `split`, and `recovery_required` outcomes;
 - no loops that execute multiple stages or children in one invocation;
 - package surface and operations documentation.
@@ -277,16 +307,22 @@ Exact paths:
 
 - `packages/shield-team-system/scripts/operations/feature-integration-controller-v1.mjs` (new)
 - `packages/shield-team-system/tests/operations-feature-integration-controller-v1.test.mjs` (new)
+- `packages/shield-team-system/src/feature-integration-validation-v1.mts` (new)
+- `packages/shield-team-system/tests/feature-integration-validation-v1.test.mjs` (new)
 - `packages/shield-team-system/public/feature-integration.mjs` (new)
 - `packages/shield-team-system/public/feature-integration.d.mts` (new)
 - `packages/shield-team-system/tests/package-surface.test.mjs`
 - `packages/shield-team-system/package.json`
+- `packages/shield-team-system/PUBLIC_API.md`
 - `packages/shield-team-system/docs/operations/feature-integration.md` (new)
+- `docs/operations/feature-integration.md` (new canonical mirror)
 
 Focused proof:
 
 - `npm run build --workspace @shield/team-system`
-- `node --test packages/shield-team-system/tests/feature-integration-v1.test.mjs packages/shield-team-system/tests/feature-integration-store-v1.test.mjs packages/shield-team-system/tests/feature-integration-evidence-v1.test.mjs packages/shield-team-system/tests/github-feature-integration-workspace-v1.test.mjs packages/shield-team-system/tests/operations-feature-integration-controller-v1.test.mjs packages/shield-team-system/tests/package-surface.test.mjs`
+- `node --test packages/shield-team-system/tests/feature-integration-v1.test.mjs packages/shield-team-system/tests/feature-integration-store-v1.test.mjs packages/shield-team-system/tests/feature-integration-evidence-v1.test.mjs packages/shield-team-system/tests/github-feature-integration-workspace-v1.test.mjs packages/shield-team-system/tests/feature-integration-validation-v1.test.mjs packages/shield-team-system/tests/operations-feature-integration-controller-v1.test.mjs packages/shield-team-system/tests/package-surface.test.mjs`
+
+Package-surface and pack tests must assert the new `./feature-integration` runtime export, declarations, controller distribution, `PUBLIC_API.md`, and both synchronized operation documents.
 
 ## Nx-boundary decision and affected validation
 
@@ -338,8 +374,8 @@ No old worktree or stale generated surface may be treated as containing a newly 
 - Daisy elapsed time: `null`
 - Hill interventions before plan freeze: one carrier correction after an unavailable Spark launch; Mission Control dispatched the registered Sol Daisy
 - Rediscovery: one failed direct carrier inspection was rejected as non-Daisy evidence and not used as authoritative recon
-- Corrections before exact-plan review: removed the proposed separate intake huddle per Feature Hill/Coulson process simplification
+- Corrections: removed the proposed separate intake huddle per Feature Hill/Coulson process simplification; first Fury review required closed authority/lifecycle/stage transitions, terminal not-applied effects, truthful post-replacement recovery, exact digest framing, separated seat/runtime/executor identities, and an explicit cumulative-validation API plus complete public/documentation paths
 - Mack findings: `null` (planning only)
-- Fury findings: pending exact-plan review
+- Fury findings: first exact-plan review `REVISE`; all six required corrections are incorporated in this successor plan revision
 - Accepted output so far: exact-base Daisy reconnaissance summarized above
 - Next legal action: exact committed-plan Fury review only
