@@ -76,7 +76,8 @@ A retry is never an overwrite. It requires a distinct unused effect key already 
 - schema and operation IDs;
 - active plan digest and verified signed-authority digest;
 - repository identity, feature branch, target base branch, and authorized base head/tree;
-- monotonically contiguous journal sequence;
+- monotonically contiguous append-entry sequence;
+- separately named active-authority journal sequence, active-authority operation sequence, and terminal head-transition operation sequence;
 - previous-entry digest and current entry digest;
 - canonical entry payload;
 - genesis digest and latest accepted entry digest.
@@ -92,6 +93,15 @@ Journal and entry digests use this exact framing:
 - output is `sha256:` followed by exactly 64 lowercase hexadecimal characters.
 
 Validators reject unknown keys, proxies/accessors, duplicate semantic identities, non-canonical set order, malformed digests, noncontiguous sequence, and broken digest lineage. Fixed tests must prove cross-process stability and that identical payload bytes under different entry kinds produce different digests.
+
+The four sequence domains never alias:
+
+- `entrySequence` is the zero-based append position and increments for every journal entry.
+- `activeAuthorityJournalSequence` equals the active signed authority's `journalSequence`; it remains stable across all ordinary entries under that authority and is projected as #225 `currentJournalSequence`.
+- `activeAuthorityOperationSequence` equals the active signed authority's `operationSequence`; it remains stable across ordinary entries and is projected as #225 `acceptedAuthorityOperationSequence`.
+- `headTransitionOperationSequence` is the zero-based sequence of accepted genesis/integration/rollback transitions and equals the terminal transition's `operationSequence`.
+
+`authority_successor_accepted` is legal only at a safe boundary with no prepared/uncertain effect. Before append, the successor plan must have `planSequence = prior.planSequence + 1` and `predecessorPlanDigest = prior.planDigest`; its freshly verified authority must have `journalSequence = activeAuthorityJournalSequence + 1` and `operationSequence = activeAuthorityOperationSequence + 1`. The successor entry itself consumes only the next `entrySequence`. After acceptance, replay replaces both active-authority sequences with the signed successor values; it does not renumber entries or head transitions. Candidate verification always receives the two active-authority values, never the append tip.
 
 ### Closed entry union
 
@@ -112,7 +122,8 @@ The journal entry union is stage-discriminated and exhaustive:
 - `rollback_workspace_accepted`: latest-integration rollback branch/PR and evidence identity;
 - `rollback_accepted`: immutable rollback transition and receipt;
 - `cumulative_validation_accepted`: exact terminal feature head/tree and configured validation evidence;
-- `operation_paused`, `operation_resumed`, `operation_cancelled`, `operation_split`, `operation_completed`, and `operation_superseded`: non-authoritative lifecycle dispositions constrained by the active plan and verified authority.
+- `operation_paused`, `operation_resumed`, `operation_cancelled`, `operation_split`, `operation_completed`, and `operation_superseded`: non-authoritative lifecycle dispositions constrained by the active plan and verified authority;
+- `final_gate_evidence_accepted`: independently verified final Fitz, conditional Simmons, or Coulson evidence bound to the operation, active plan/authority, terminal head/tree, and source-record digest.
 
 Entries may contain trusted observations and verified evidence only. A candidate cannot assert host state, evidence acceptance, resulting heads/trees, timestamps, attempt counts, or receipt acceptance.
 
@@ -121,7 +132,7 @@ Entries may contain trusted observations and verified evidence only. A candidate
 Pure replay returns either a closed invalid result with deterministic reason precedence or an immutable `FeatureOperationReplayContextV1` accepted by #225. It derives, rather than accepts from callers:
 
 - active plan/authority lineage and accepted amendments;
-- lifecycle and next journal sequence;
+- lifecycle, next append-entry sequence, stable active-authority sequence pair, and terminal head-transition sequence;
 - genesis and terminal accepted feature head/tree;
 - ordered accepted genesis/integration/rollback transition chain;
 - separate integrated-child and reverted-integration histories;
@@ -132,18 +143,41 @@ Pure replay returns either a closed invalid result with deterministic reason pre
 - cumulative-validation status for the terminal head/tree;
 - the single next stage that can legally be considered.
 
-No successor stage is eligible while a prepared/uncertain effect lacks an accepted reconciled receipt, while cumulative validation is missing for the terminal transition, or while a rollback receipt is pending. Replay preserves history; rollback never erases an integration.
+No successor stage is eligible while a prepared/uncertain effect lacks an accepted reconciled receipt or while a rollback receipt is pending. Cumulative validation is required after every accepted integration or rollback and before another child, completion, or another transition; operation genesis, feature-branch creation, initial feature workspace, and first-child initiation are explicitly exempt unless a future separately authorized baseline-validation contract is reviewed. Replay preserves history; rollback never erases an integration.
 
 The mapping into #225 is exact:
 
-- `operation_genesis_accepted` plus the latest valid `authority_successor_accepted` derive active plan/authority lineage, accepted amendments, lifecycle sequence, expected operation/journal sequence, and the authoritative genesis head/tree;
+- `operation_genesis_accepted` plus the latest valid `authority_successor_accepted` derive active plan/authority lineage, accepted amendments, lifecycle sequence, the two stable active-authority sequences, and the authoritative genesis head/tree;
 - `operation_genesis_accepted`, `integration_accepted`, and `rollback_accepted` alone form the ordered accepted head-transition chain and derive genesis/latest accepted resulting head/tree; `feature_branch_creation_accepted` proves the feature ref exists at that genesis without inventing another transition;
 - child initiation, implementation, publication, and evidence records derive their corresponding stage inventory; no later stage can stand in for a missing earlier stage;
-- accepted integration and rollback records derive separate integrated and reverted histories plus effect-key inventory;
-- every `effect_prepared` derives the attempt counter for its plan-authorized effect identity, while exactly one terminal record derives its disposition;
+- accepted integration and rollback records derive separate integrated and reverted histories;
+- every accepted `effect_prepared` immediately and permanently adds its plan-authorized key to #225 `consumedEffectKeys` and increments exactly one applicable child or operation attempt counter; terminal and reconciliation records never release the key or increment the attempt;
+- a child lease may exist only before preparation while its effect key is unconsumed; preparation closes/removes that lease because #225 forbids an active lease for a consumed key, while #226's own pending-effect projection remains until a terminal outcome;
 - only trusted accepted observation records derive host-observed time and observation provenance;
-- lifecycle records derive active, paused, cancelled, split, completed, or superseded state; resume requires the same active lineage or an explicitly accepted successor authority;
+- lifecycle and trusted-time records derive only #225 lifecycle values according to the closed table below;
 - the next-stage projection is a closed union of initiation, implementation, child publication, integration, rollback, cumulative validation, lifecycle-only, completed, or blocked, selected solely from contiguous replay.
+
+Replay fixtures must cover multiple prepare/terminal entries under one stable authority sequence pair, successor-authority activation, and prepared-only, uncertain, not-applied, accepted, and retry-with-a-new-preauthorized-key histories.
+
+### Closed lifecycle transition table
+
+Replay emits only #225 lifecycle states. `operation_split` is an audit entry that maps to `superseded`; `operation_completed` maps to `integrated` only after its predicate succeeds.
+
+| Current state | Accepted trigger | Next state | Conditions |
+|---|---|---|---|
+| `active` | `operation_paused` | `paused` | no prepared/uncertain effect |
+| `paused` | `operation_resumed` | `active` | same unexpired active authority, no pending effect, and no terminal/successor disposition |
+| `active` or `paused` | trusted time reaches authority expiry | `expired` | derived from trusted observed time; no caller timestamp |
+| `active` or `paused` | `operation_cancelled` | `cancelled` | no pending effect; preserves all history |
+| `active` | accepted rollback preparation | `rollback_pending` | exactly the latest unreverted integration and its authorized rollback key |
+| `rollback_pending` | terminal accepted rollback plus required cumulative validation | `active` | exact restored tree and no pending effect |
+| `rollback_pending` | trusted time reaches authority expiry | `expired` | preserves unresolved recovery evidence |
+| `rollback_pending` | `operation_cancelled` | `cancelled` | explicit disposition preserves unresolved recovery evidence |
+| `rollback_pending` | `operation_split` or `operation_superseded` | `superseded` | independently valid successor binds and preserves unresolved recovery evidence |
+| `active` or `paused` | `operation_split` or `operation_superseded` | `superseded` | binds an independently valid successor operation/plan/authority; no implicit activation here |
+| `active` | `operation_completed` | `integrated` | all children accepted and not reverted, cumulative validation current for the terminal head/tree, no pending effect/rollback, and verified configured final Fitz, conditional Simmons when invoked, and Coulson evidence |
+
+`cancelled`, `expired`, `integrated`, and `superseded` are terminal in this journal. They cannot resume or reactivate. `rollback_pending` cannot resume; it can return to `active` only through the accepted rollback path above, or reach `expired`, `cancelled`, or `superseded` through an explicit valid entry that preserves the unresolved effect for recovery. Any other source/trigger pair is contract-invalid.
 
 ### Integration receipt
 
@@ -168,7 +202,11 @@ Rollback is restricted to the latest non-reverted accepted integration. Its expe
 
 ### Cumulative validation
 
-`FeatureCumulativeValidationReceiptV1` binds the terminal feature head/tree, active plan/authority, transition receipt, configured target IDs and commands, exact Mack evidence digest, CI/check observations, runtime attribution, host-observed time, and receipt digest. The evidence bridge accepts only repository-defined Mack evidence whose revision equals the terminal feature head and whose configured validation identities equal the active plan. Evidence from a child head, prior feature head, cache-only claim without an accepted task result, or synthetic/untrusted source is rejected.
+`SignedFeatureCumulativeValidationAuthorityV1` is a separate closed Coulson-signed source authority because #225 does not authorize cumulative command execution. Its payload binds schema/kind, mission and operation IDs, active plan and feature-authority digests, repository and terminal feature head/tree, triggering integration/rollback receipt digest, exact Mack request/configuration digest, ordered command IDs, canonical target IDs, validation IDs, one effect key, maximum attempts/retries, the active-authority sequence pair, issue/expiry times, human binding/signing-key references, and its own digest. Validation, digest, signature verification against exactly one trusted Coulson binding, and candidate evaluation APIs are pure. The request must be an exact subset of both this authority and the later schema-9 implementation authority; neither authority can widen the other.
+
+Its dedicated candidate/evaluator verifies current replay, terminal head/tree, transition receipt, permanent effect consumption, attempt bounds, exact Mack request/configuration, commands/targets, and expiry. This stage does not call `evaluateFeatureOperationDerivedCandidateV1`, whose seven derivations remain the only #225 candidate variants.
+
+`FeatureCumulativeValidationReceiptV1` binds the terminal feature head/tree, active plan/authority, signed cumulative authority/request digests, transition receipt, configured target IDs and commands, exact Mack evidence digest, CI/check observations, effect/reconciliation state, runtime attribution, host-observed time, and receipt digest. The evidence bridge accepts only repository-defined Mack evidence whose revision equals the terminal feature head and whose configured validation identities equal the signed cumulative authority. Evidence from a child head, prior feature head, cache-only claim without an accepted task result, or synthetic/untrusted source is rejected.
 
 The controller may select another child only after cumulative validation for the current terminal transition is accepted.
 
@@ -181,6 +219,7 @@ Each lane is a separate implementation packet, exact commit, Mack validation, an
 Deliver:
 
 - closed journal entry, effect lifecycle, integration/rollback receipt, cumulative-validation receipt, replay result, and blocked-reason contracts;
+- closed signed cumulative-validation authority/request/candidate contracts plus validate, digest, verify, and evaluate APIs;
 - canonical validators and digest functions;
 - pure replay that derives the #225 `FeatureOperationReplayContextV1`;
 - deterministic reason precedence and fixtures for malformed lineage, duplicate effects, stale heads, missing evidence, uncertain effects, latest-only rollback, and preserved integrated/reverted histories.
@@ -298,7 +337,7 @@ Focused proof:
 Deliver:
 
 - a bounded production API for configured cumulative-validation request, execution observation, execute-once reconciliation, projection, and accepted receipt append;
-- a controller that replays trusted state, verifies current repository/authority freshness, selects at most one next stage, evaluates the #225 candidate, and delegates to exactly one bounded stage-owner API from Lanes 2-6, including cumulative validation;
+- a controller that replays trusted state, verifies current repository/authority freshness, selects at most one next stage, uses #225 evaluation only for its seven derivations, uses the dedicated signed cumulative-validation evaluator for that stage, and delegates to exactly one bounded stage-owner API from Lanes 2-6;
 - deterministic `blocked`, `ready`, `completed`, `paused`, `cancelled`, `split`, and `recovery_required` outcomes;
 - no loops that execute multiple stages or children in one invocation;
 - package surface and operations documentation.
@@ -374,8 +413,8 @@ No old worktree or stale generated surface may be treated as containing a newly 
 - Daisy elapsed time: `null`
 - Hill interventions before plan freeze: one carrier correction after an unavailable Spark launch; Mission Control dispatched the registered Sol Daisy
 - Rediscovery: one failed direct carrier inspection was rejected as non-Daisy evidence and not used as authoritative recon
-- Corrections: removed the proposed separate intake huddle per Feature Hill/Coulson process simplification; first Fury review required closed authority/lifecycle/stage transitions, terminal not-applied effects, truthful post-replacement recovery, exact digest framing, separated seat/runtime/executor identities, and an explicit cumulative-validation API plus complete public/documentation paths
+- Corrections: removed the proposed separate intake huddle per Feature Hill/Coulson process simplification; first Fury review required closed authority/lifecycle/stage transitions, terminal not-applied effects, truthful post-replacement recovery, exact digest framing, separated seat/runtime/executor identities, and an explicit cumulative-validation API plus complete public/documentation paths; second Fury review required separated sequence domains, a #225-compatible lifecycle table, permanent effect consumption at preparation, and separately signed cumulative-validation authority without genesis deadlock
 - Mack findings: `null` (planning only)
-- Fury findings: first exact-plan review `REVISE`; all six required corrections are incorporated in this successor plan revision
+- Fury findings: first and second exact-plan reviews returned `REVISE`; all ten required corrections are incorporated in this successor plan revision
 - Accepted output so far: exact-base Daisy reconnaissance summarized above
 - Next legal action: exact committed-plan Fury review only
