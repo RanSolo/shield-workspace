@@ -697,7 +697,7 @@ function checkedScope(value: unknown): FeatureOperationRequestedScopeV1 | null {
   const requiredGates = checkedGates(record.requiredGates, false);
   const exclusions = sortedStrings(record.exclusions, true);
   if (!relativePaths || !actionIds || !effectKeys || !capabilityIds || !validationIds || !publicationOperations || !requiredGates || !exclusions ||
-      !sequence(record.requestedAttempts) || !sequence(record.requestedRetries) ||
+      !positive(record.requestedAttempts) || !sequence(record.requestedRetries) ||
       (record.requestedRetries as number) > (record.requestedAttempts as number) ||
       [...actionIds, ...effectKeys, ...capabilityIds, ...publicationOperations].some(containsProhibitedScopeToken)) return null;
   return { relativePaths, actionIds, effectKeys, capabilityIds, validationIds, publicationOperations, requiredGates, exclusions,
@@ -1518,6 +1518,7 @@ export function evaluateFeatureOperationDerivedCandidateV1(
   if (!activeLineage?.active || activeLineage.planDigest !== plan.planDigest || activeLineage.authorityDigest !== authority.authorityDigest) return blocked("AUTHORITY_OR_LINEAGE_INACTIVE");
   if (replay.lifecycle.state !== "active") return blocked("LIFECYCLE_BLOCKED");
   if (authority.operationSequence !== replay.acceptedAuthorityOperationSequence || authority.journalSequence !== replay.currentJournalSequence) return blocked("SEQUENCE_MISMATCH");
+  if (timestampBefore(replay.observedAt.value, authority.issuedAt)) return blocked("REPLAY_CONTEXT_INVALID");
   if (!timestampBefore(replay.observedAt.value, authority.expiresAt)) return blocked("AUTHORITY_EXPIRED");
   if (candidateResult.state === "invalid") return blocked("CANDIDATE_INVALID");
   const candidate = candidateResult.value;

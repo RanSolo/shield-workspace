@@ -454,6 +454,92 @@ test("accepts every separately bounded candidate stage and never performs an eff
   assert.equal(rollback.currentFeatureTreeDigest, digest("3"));
 });
 
+test("requires positive effect attempts and blocks each stage at its exact signed boundary", () => {
+  const stageCases = [
+    {
+      name: "branch creation",
+      candidate: candidates.featureBranch,
+      boundaryReplay: replayContext(),
+      exhaustedReplay: (() => {
+        const value = replayContext();
+        value.operationCounters.featureBranchCreateAttempts = plan.limits.maxFeatureBranchCreateAttempts;
+        return value;
+      })(),
+    },
+    {
+      name: "implementation",
+      candidate: candidates.implementation,
+      boundaryReplay: replayContext(),
+      exhaustedReplay: (() => {
+        const value = replayContext();
+        value.childCounters[0].implementationAttempts = plan.children[0].maxImplementationAttempts;
+        value.operationCounters.totalChildAttempts = plan.children[0].maxImplementationAttempts;
+        return value;
+      })(),
+    },
+    {
+      name: "publication",
+      candidate: candidates.publication,
+      boundaryReplay: replayContext(),
+      exhaustedReplay: (() => {
+        const value = replayContext();
+        value.childCounters[0].publicationAttempts = plan.children[0].maxPublicationAttempts;
+        value.operationCounters.totalChildAttempts = plan.children[0].maxPublicationAttempts;
+        return value;
+      })(),
+    },
+    {
+      name: "integration",
+      candidate: candidates.integration,
+      boundaryReplay: replayContext(),
+      exhaustedReplay: (() => {
+        const value = replayContext();
+        value.childCounters[0].integrationAttempts = plan.children[0].maxIntegrationAttempts;
+        value.operationCounters.totalIntegrationAttempts = plan.children[0].maxIntegrationAttempts;
+        return value;
+      })(),
+    },
+    {
+      name: "rollback",
+      candidate: rollbackCandidate,
+      boundaryReplay: integrationReplay(),
+      exhaustedReplay: (() => {
+        const value = integrationReplay();
+        value.childCounters[0].rollbackAttempts = plan.children[0].maxRollbackAttempts;
+        value.operationCounters.totalRollbackAttempts = plan.children[0].maxRollbackAttempts;
+        return value;
+      })(),
+    },
+  ];
+
+  for (const stageCase of stageCases) {
+    assert.equal(stageCase.candidate.requestedScope.requestedAttempts, 1, `${stageCase.name} boundary request`);
+    assert.equal(evaluate(stageCase.candidate, stageCase.boundaryReplay).state, "eligible", `${stageCase.name} boundary`);
+    assert.deepEqual(evaluate(stageCase.candidate, stageCase.exhaustedReplay),
+      { state: "blocked", reasonCode: "BOUNDS_EXHAUSTED" }, `${stageCase.name} exhausted`);
+    const zero = copy(stageCase.candidate);
+    zero.requestedScope.requestedAttempts = 0;
+    assert.equal(validateFeatureOperationDerivedCandidateV1(zero).state, "invalid", `${stageCase.name} zero`);
+    assert.throws(() => computeFeatureOperationDerivedCandidateDigestV1({ ...zero, candidateDigest: ZERO_DIGEST }), TypeError,
+      `${stageCase.name} zero digest`);
+  }
+});
+
+test("binds host-trusted replay time to the verified authority issuance and expiry window", () => {
+  const at = (value, provenance = "hostTrusted") => replayContext({ observedAt: { value, provenance } });
+  assert.deepEqual(evaluate(candidates.initiation, at("2029-04-30T23:59:59.999999999Z")),
+    { state: "blocked", reasonCode: "REPLAY_CONTEXT_INVALID" });
+  assert.equal(evaluate(candidates.initiation, at(authority.issuedAt)).state, "eligible");
+  assert.equal(evaluate(candidates.initiation, at("2029-05-01T00:59:59.999999999Z")).state, "eligible");
+  assert.deepEqual(evaluate(candidates.initiation, at(authority.expiresAt)),
+    { state: "blocked", reasonCode: "AUTHORITY_EXPIRED" });
+  assert.deepEqual(evaluate(candidates.initiation, at("2029-05-01T01:00:00.000000001Z")),
+    { state: "blocked", reasonCode: "AUTHORITY_EXPIRED" });
+  assert.equal(validateFeatureOperationReplayContextV1(at("2029-05-01T00:30:00Z", "callerSupplied")).state, "invalid");
+  assert.deepEqual(evaluate(candidates.initiation, at("2029-05-01T00:30:00Z", "callerSupplied")),
+    { state: "blocked", reasonCode: "REPLAY_CONTEXT_INVALID" });
+});
+
 test("fails closed for unsigned, malformed, untrusted, stale, duplicate, conflicting, and bad signatures", () => {
   assert.equal(validateSignedFeatureOperationAuthorityV1(authority).state, "invalid");
   assert.equal(verifySignedFeatureOperationAuthorityV1(authority, verificationInput).state, "invalid");
@@ -639,11 +725,6 @@ test("enforces segment paths, canonical sets, exact branches, gates, exclusions,
     requestedScope: { ...candidates.implementation.requestedScope, requestedAttempts: 4 },
   });
   assert.deepEqual(evaluate(exhausted), { state: "blocked", reasonCode: "BOUNDS_EXHAUSTED" });
-  const zero = withCandidateDigest({
-    ...candidates.implementation,
-    requestedScope: { ...candidates.implementation.requestedScope, requestedAttempts: 0 },
-  });
-  assert.equal(evaluate(zero).state, "eligible");
   assert.throws(() => computeFeatureOperationDerivedCandidateDigestV1({
     ...candidates.implementation,
     requestedScope: { ...candidates.implementation.requestedScope, effectKeys: ["effect:z", "effect:a"] },
