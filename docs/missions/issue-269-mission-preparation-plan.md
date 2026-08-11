@@ -36,7 +36,9 @@ It neither accepts nor emits a `productionEligible` field or value. It does not
 verify raw Fury attribution. In A1, Team System alone captures raw receipt bytes,
 strictly parses them, calls `evaluateSeatDispatchAttributionV1` with the parsed
 objects, and decides whether the preparation may be used in production.
-`synthetic_test` evidence is useful only in A0 tests and A1 always rejects it.
+The review-evidence validator accepts `synthetic_test` as structurally valid for
+A0 test fixtures, but every selection/preparation call returns
+`parent_plan_review_ineligible` for it. A1 always rejects it.
 
 ## Normative encoding and grammar
 
@@ -53,6 +55,8 @@ take precedence. No Unicode normalization is performed anywhere.
 | Name | Exact grammar |
 | --- | --- |
 | Team System identifier | `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$` |
+| repository ID | exactly `owner/name`; each component matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` |
+| approved relative path | satisfies both Team System identifier and repository-relative-path grammars; therefore ASCII, starts alphanumeric, and is at most 256 characters |
 | Git revision used here | `^[0-9a-f]{40}$` |
 | parent-plan raw hash | bare `^[0-9a-f]{64}$` |
 | raw receipt sequence hash | `^sha256:[0-9a-f]{64}$` |
@@ -63,8 +67,9 @@ take precedence. No Unicode normalization is performed anywhere.
 | repository-relative path | 1–1024 UTF-8 bytes; `/` separators; no leading `/`, empty/`.`/`..` segment, backslash, NUL, or trailing `/` |
 | canonical absolute root | absolute normalized path, 1–4096 UTF-8 bytes, no NUL; A0 compares it as opaque validated data |
 
-Mission, subject, repository, action, effect, capability, validation, runtime,
-model, executor, binding, and gate IDs use the Team System identifier grammar.
+Mission, subject, action, effect, capability, validation, runtime, model,
+executor, binding, and gate IDs use the Team System identifier grammar.
+`repositoryId` uses the exact two-component repository grammar above.
 Planning base, plan commit, base revision, and HEAD use the exact 40-character
 Git grammar. These intentionally form a strict subset of the accepting Team
 System grammars in `mission-v2`, `mission-builder-v1`, and
@@ -130,14 +135,17 @@ Every table lists the exact own enumerable keys. `id`, `digest`, `schemaId`, and
 | `schemaId` | literal `mission.transition-plan.v1` |
 | `authority` | literal `none` |
 | `id`, `digest` | recomputed transition-plan ID/digest |
-| `missionId`, `subjectId`, `repositoryId` | Team System identifiers |
+| `missionId`, `subjectId` | Team System identifiers |
+| `repositoryId` | exact repository ID |
 | `planningBaseRevision`, `parentPlanCommit` | Git revisions |
 | `parentPlanPath` | repository-relative path |
 | `parentPlanRawSha256` | bare lowercase hex hash |
 | `transitionKind` | literal `fresh_authorize_wheels_up` |
 | `boundedOutcome` | non-empty string, max 1024 UTF-8 bytes |
-| `approvedRelativePaths`, `publicationPaths` | non-empty unique relative-path arrays, max 256 each |
-| `approvedActionIds`, `approvedEffectClasses`, `approvedEffectKeys`, `approvedCapabilities`, `validationCommandIds` | non-empty unique Team System identifier arrays, max 256 each |
+| `approvedRelativePaths` | non-empty unique approved-relative-path array, max 256 |
+| `publicationPaths` | non-empty unique relative-path array, max 256 |
+| `approvedActionIds`, `approvedEffectKeys`, `approvedCapabilities`, `validationCommandIds` | non-empty unique Team System identifier arrays, max 256 each |
+| `approvedEffectClasses` | non-empty unique array, max 3; items are exactly `behavioral_implementation`, `verification`, or `coordination` |
 | `modelId`, `reasoningRuntimeId`, `toolExecutorId` | Team System identifiers |
 | `exclusions` | exact fixed exclusion array below |
 
@@ -150,30 +158,32 @@ contains no event-kind or publication-effect selectors; those are adapter-fixed.
 | Key | Exact type / value / maximum |
 | --- | --- |
 | `schemaId`, `authority`, `id`, `digest` | common fields for this schema |
-| `repositoryId` | Team System identifier |
+| `repositoryId` | exact repository ID |
 | `planningBaseRevision`, `parentPlanCommit` | Git revisions |
 | `parentPlanPath` | repository-relative path |
 | `parentPlanRawSha256` | bare lowercase hex hash |
 | `transitionPlanId`, `transitionPlanDigest` | exact referenced ID/digest |
-| `verdict` | literal `PASS` |
+| `verdict` | existing Fury enum: `PASS`, `PASS_WITH_REQUIRED_CHANGES`, or `FAIL` |
 | `reviewerSeatId` | literal `fury` |
-| `reviewerRuntimeId`, `reviewerModelId`, `reviewerExecutorId` | pairwise-distinct Team System identifiers |
+| `reviewerRuntimeId`, `reviewerModelId`, `reviewerExecutorId` | exact host-observed Team System identifiers |
 | `rawReceiptSetSha256` | exact framed receipt sequence hash |
 | `attributionClass` | `team_system_projection` or `synthetic_test` |
 | `preparationEligibility` | literal `preparationEligible` |
 
-There is no `productionEligible` field. Reviewer runtime/model/executor are
-pairwise distinct, cannot equal a canonical participant seat, and cannot equal
-the transition plan's May/runtime/model/executor identities. A0 validates this
-closed projection and digest graph but does not accept raw receipts or assert
-their provenance.
+There is no `productionEligible` field. Existing Fury attribution requires
+`reviewerRuntimeId !== reviewerExecutorId` and neither value may equal `fury`.
+`reviewerModelId` need not differ from either value and none of the three is
+required to be disjoint from May-stage identities. The fields remain separate
+and preserve exact host-observed values. A0 validates this closed projection and
+digest graph but does not accept raw receipts or assert their provenance.
 
 ### 3. `mission.transition-intent.v1`
 
 | Key | Exact type / value / maximum |
 | --- | --- |
 | `schemaId`, `authority`, `id`, `digest` | common fields for this schema |
-| `missionId`, `subjectId`, `repositoryId` | exact plan-bound identifiers |
+| `missionId`, `subjectId` | exact plan-bound identifiers |
+| `repositoryId` | exact plan-bound repository ID |
 | `planningBaseRevision` | exact plan-bound Git revision |
 | `transitionPlanId`, `transitionPlanDigest` | exact plan reference |
 | `parentReviewEvidenceId`, `parentReviewEvidenceDigest` | exact review reference |
@@ -189,27 +199,35 @@ the digest-bound transition plan.
 | Key | Exact type / value / maximum |
 | --- | --- |
 | `schemaId`, `authority`, `id`, `digest` | common fields for this schema |
-| `missionId`, `subjectId`, `repositoryId` | exact intent-bound identifiers |
+| `missionId`, `subjectId` | exact intent-bound identifiers |
+| `repositoryId` | exact intent-bound repository ID |
 | `canonicalRoot` | canonical absolute root |
 | `branch` | branch grammar |
 | `planningBaseRevision`, `baseRevision`, `headRevision` | Git revisions |
-| `baseAncestor`, `workspaceClean` | literal `true` |
+| `baseAncestor`, `workspaceClean` | booleans |
 | `changedPaths` | unique UTF-16-ordered relative paths, max 256 |
 | `symlinkPaths`, `gitlinkPaths` | unique UTF-16-ordered relative paths, max 256; both must be empty for ready |
-| `missionSchemaVersion` | integer literal `9` |
-| `authorizationState`, `implementationAuthorityState`, `finalAcceptanceState` | literal `waiting` |
-| `executionState` | literal `not-started` |
-| `implementationAuthorityCount`, `runtimeBindingCount`, `activeRuntimeBindingCount`, `publicationAuthorizationCount` | integer literal `0` |
-| `pendingCoulsonMissionAuthorizationCount` | integer literal `1` |
+| `missionSchemaVersion` | safe integer 1–9 |
+| `authorizationState` | `waiting` or `authorized` |
+| `implementationAuthorityState` | `waiting`, `authorized`, or `revoked` |
+| `finalAcceptanceState` | `waiting` or `accepted` |
+| `executionState` | `not-started`, `running`, or `completed` |
+| `implementationAuthorityCount`, `runtimeBindingCount`, `activeRuntimeBindingCount`, `publicationAuthorizationCount` | nonnegative safe integers, max 256 |
+| `pendingCoulsonMissionAuthorizationCount` | nonnegative safe integer, max 256 |
 | `journalSequence` | safe integer 0–9,007,199,254,740,991 |
 | `journalSha256` | raw receipt sequence hash grammar (`sha256:` plus 64 hex) |
-| `signerBindingId` | Team System identifier |
-| `signingKeyRef` | signing-key grammar |
+| `signerBindingId` | Team System identifier or `null` |
+| `signingKeyRef` | signing-key grammar or `null` |
+| `signerBindingMatchCount` | nonnegative safe integer, max 256 |
 | `remainingHumanGates` | unique Team System identifier array, max 16; array order preserved |
 | `preparationEligibility` | literal `preparationEligible` |
 
-A0 accepts this as authority-none host projection. It performs no repository,
-journal, signer, or clock I/O and cannot establish production freshness.
+Exactly one signer match requires non-null `signerBindingId` and `signingKeyRef`.
+Zero or more than one match requires both fields to be `null`; these are valid
+missing/ambiguous observations that reach row 6. Other ineligible booleans,
+states, and counts remain structurally valid and reach rows 4–6. A0 accepts this
+as authority-none host projection. It performs no repository, journal, signer,
+or clock I/O and cannot establish production freshness.
 
 ### 5. `mission.next-transition-selection.v1`
 
@@ -231,7 +249,8 @@ before a selection contract is emitted.
 | Key | Exact type / value / maximum |
 | --- | --- |
 | `schemaId`, `authority`, `id`, `digest` | common fields for this schema |
-| `missionId`, `subjectId`, `repositoryId` | exact bound identifiers |
+| `missionId`, `subjectId` | exact bound identifiers |
+| `repositoryId` | exact bound repository ID |
 | `transitionPlanId`, `transitionPlanDigest`, `parentReviewEvidenceId`, `parentReviewEvidenceDigest`, `transitionIntentId`, `transitionIntentDigest`, `observationId`, `observationDigest`, `selectionId`, `selectionDigest` | exact graph references |
 | `preparationEligibility` | literal `preparationEligible` |
 | `transitionKind` | literal `authorize-wheels-up` |
@@ -256,17 +275,18 @@ bound plan/observation with the two frozen ordering rules.
 `publicationEffects`, `exclusions`, and `remainingHumanGates`. It is concise
 display data, not a human decision or authority claim.
 
-May (`may`), `reasoningRuntimeId`, `modelId`, and `toolExecutorId` are mutually
-distinct. The latter three cannot alias any mission participant. Reviewer
-runtime/model/executor are separately pairwise distinct and cannot alias these
-four implementation identities.
+May (`may`), `reasoningRuntimeId`, `modelId`, and `toolExecutorId` retain the
+existing four-way distinctness rule. The latter three cannot alias any mission
+participant. Reviewer fields obey only the separate existing Fury rule above;
+no cross-stage inequality is imposed.
 
 ### 7. `mission.preparation-receipt.v1`
 
 | Key | Exact type / value / maximum |
 | --- | --- |
 | `schemaId`, `authority`, `id`, `digest` | common fields for this schema |
-| `missionId`, `repositoryId` | exact bound identifiers |
+| `missionId` | exact bound identifier |
+| `repositoryId` | exact bound repository ID |
 | `transitionPlanId`, `transitionPlanDigest`, `parentReviewEvidenceId`, `parentReviewEvidenceDigest`, `transitionIntentId`, `transitionIntentDigest`, `observationId`, `observationDigest`, `selectionId`, `selectionDigest`, `candidateId`, `candidateDigest` | exact graph references |
 | `rawReceiptSetSha256` | exact review-evidence value |
 | `preparationEligibility` | literal `preparationEligible` |
@@ -306,52 +326,189 @@ Evaluate in this exact order. Unknown variants fail as row 1; there is no
 
 | Order | Condition | Result |
 | --- | --- | --- |
-| 1 | contract shape/grammar/bound/canonicalization/digest/ID/variant/identity-separation failure | `invalid_preparation_input` |
+| 1 | malformed contract shape/grammar/bound/canonicalization/digest/ID/variant or impossible signer representation | `invalid_preparation_input` |
 | 2 | repository, mission, parent-plan, transition-plan, review, or graph identity mismatch | `reviewed_plan_mismatch` |
-| 3 | verdict not PASS, attribution projection not closed, or synthetic evidence presented outside A0 synthetic-test mode | `parent_plan_review_ineligible` |
+| 3 | structurally valid verdict is not PASS or `attributionClass` is `synthetic_test` | `parent_plan_review_ineligible` |
 | 4 | repository, branch, HEAD, base ancestry, cleanliness, changed paths, symlink, or gitlink observation mismatch | `repository_observation_stale` |
 | 5 | schema/state/count/pending-Coulson conditions are not the exact fresh schema-9 state | `fresh_wheels_up_state_ineligible` |
 | 6 | signer binding, journal, remaining-gate, or required host projection is missing, ambiguous, or mismatched | `freshness_evidence_incomplete` |
 | 7 | all checks pass | ready `authorize-wheels-up` selection, candidate, and receipt |
 
-Blocked results return only the blocked selection and no candidate/receipt or
-effectful instruction.
+Malformed input returns the non-content-addressed invalid result defined below;
+it never emits a selection. Only structurally valid rows 2–6 return a
+content-addressed blocked selection, with no candidate/receipt or effectful
+instruction. Every preparation call supplied `synthetic_test` returns row 3;
+there is no synthetic-test mode, option, override, or production path.
 
 ## Exact public surface
 
-The one `"."` export exposes only these runtime functions:
+The one `"."` export exposes exactly these 14 runtime signatures:
 
-- `canonicalJsonV1`
-- `computeCanonicalContractDigestV1`
-- `computeContentIdV1`
-- `computeRawReceiptSetSha256V1`
-- `validateTransitionPlanV1`
-- `validateParentPlanReviewEvidenceV1`
-- `validateTransitionIntentV1`
-- `validateFreshAuthorizeWheelsUpObservationV1`
-- `validateNextTransitionSelectionV1`
-- `validateFreshAuthorizeWheelsUpCandidateV1`
-- `validatePreparationReceiptV1`
-- `selectNextTransitionV1`
-- `compileFreshAuthorizeWheelsUpCandidateV1`
-- `prepareMissionTransitionV1`
+```ts
+export function canonicalJsonV1(
+  input: Readonly<{ value: unknown }>,
+): PreparationValidationResultV1<string>;
 
-It exports declarations named `TransitionPlanV1`,
+export function computeCanonicalContractDigestV1(
+  input: Readonly<{ schemaId: ContractSchemaIdV1; body: unknown }>,
+): PreparationValidationResultV1<CanonicalContractDigestV1>;
+
+export function computeContentIdV1(
+  input: Readonly<{
+    schemaId: ContractSchemaIdV1;
+    digest: CanonicalContractDigestV1;
+  }>,
+): PreparationValidationResultV1<ContractContentIdV1>;
+
+export function computeRawReceiptSetSha256V1(
+  input: Readonly<{ rawReceipts: readonly Uint8Array[] }>,
+): PreparationValidationResultV1<RawReceiptSetSha256V1>;
+
+export function validateTransitionPlanV1(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<TransitionPlanV1>;
+
+export function validateParentPlanReviewEvidenceV1(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<ParentPlanReviewEvidenceV1>;
+
+export function validateTransitionIntentV1(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<TransitionIntentV1>;
+
+export function validateFreshAuthorizeWheelsUpObservationV1(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<FreshAuthorizeWheelsUpObservationV1>;
+
+export function validateNextTransitionSelectionV1(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<NextTransitionSelectionV1>;
+
+export function validateFreshAuthorizeWheelsUpCandidateV1(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<FreshAuthorizeWheelsUpCandidateV1>;
+
+export function validatePreparationReceiptV1(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<PreparationReceiptV1>;
+
+export function selectNextTransitionV1(
+  input: SelectNextTransitionInputV1,
+): SelectNextTransitionResultV1;
+
+export function compileFreshAuthorizeWheelsUpCandidateV1(
+  input: CompileFreshAuthorizeWheelsUpCandidateInputV1,
+): PreparationValidationResultV1<FreshAuthorizeWheelsUpCandidateV1>;
+
+export function prepareMissionTransitionV1(
+  input: PrepareMissionTransitionInputV1,
+): PrepareMissionTransitionResultV1;
+```
+
+Every function argument is one exact closed own-data-property object; extra,
+missing, accessor, proxy, symbolic, or non-enumerable argument fields are
+invalid. `canonicalJsonV1.value` is a canonicalizable body under the shared
+bounds. `computeCanonicalContractDigestV1.body` is the complete contract body
+with no own `id` or `digest`; `schemaId` must equal the body's own `schemaId`.
+`computeContentIdV1` accepts only a syntactically valid canonical digest for the
+supplied schema. Validators expect complete artifacts including their own exact `id` and
+`digest` and recompute both.
+
+`computeRawReceiptSetSha256V1` accepts a dense ordinary array whose members are
+exact `Uint8Array` instances; it clones every byte array before framing and
+hashing. `SelectNextTransitionInputV1` and `PrepareMissionTransitionInputV1`
+each have exactly `plan`, `reviewEvidence`, `intent`, and `observation` artifact
+fields. `CompileFreshAuthorizeWheelsUpCandidateInputV1` has those same four plus
+exactly `selection`. The compiler accepts only a validated ready selection bound
+to those four artifacts. It derives the candidate body internally; the top-level
+preparation function derives the receipt. Callers cannot supply IDs, fixed
+adapter facts, projections, or output bodies.
+
+All functions validate from property descriptors without invoking caller code,
+clone accepted bodies/arrays before use, never mutate or retain inputs, and
+recursively freeze every returned object, nested object, array, and error array.
+Returned valid artifacts share no mutable object or byte-array reference with
+inputs. Primitive strings are returned directly. Invalid inputs never throw and
+return the exact invalid variant. Programmer/runtime failures may throw and are
+not converted into contract results. No default export, subpath export, mutable
+singleton, I/O, or effectful callback is public.
+
+The declarations export exactly these supporting names:
+`ContractSchemaIdV1`, `CanonicalContractDigestV1`, `ContractContentIdV1`,
+`RawReceiptSetSha256V1`, `TransitionPlanV1`,
 `ParentPlanReviewEvidenceV1`, `TransitionIntentV1`,
 `FreshAuthorizeWheelsUpObservationV1`, `NextTransitionSelectionV1`,
 `FreshAuthorizeWheelsUpCandidateV1`, `PreparationReceiptV1`,
-`PreparationReasonCodeV1`, `PreparationValidationResultV1<T>`, and
-`PrepareMissionTransitionResultV1`.
+`PreparationReasonCodeV1`, `PreparationValidationResultV1<T>`,
+`SelectNextTransitionInputV1`, `SelectNextTransitionResultV1`,
+`CompileFreshAuthorizeWheelsUpCandidateInputV1`,
+`PrepareMissionTransitionInputV1`, and `PrepareMissionTransitionResultV1`.
 
-`PreparationValidationResultV1<T>` is exactly
-`{state:"valid", value:T}` or
-`{state:"invalid", reasonCode:"invalid_preparation_input", errors:readonly string[]}`.
-`PrepareMissionTransitionResultV1` is exactly
-`{state:"blocked", selection:NextTransitionSelectionV1}` or
-`{state:"ready", selection:NextTransitionSelectionV1,
-candidate:FreshAuthorizeWheelsUpCandidateV1,
-receipt:PreparationReceiptV1}`. No thrown validation branch, default export,
-subpath export, mutable singleton, or effectful callback is public.
+```ts
+export type PreparationReasonCodeV1 =
+  | "invalid_preparation_input"
+  | "reviewed_plan_mismatch"
+  | "parent_plan_review_ineligible"
+  | "repository_observation_stale"
+  | "fresh_wheels_up_state_ineligible"
+  | "freshness_evidence_incomplete";
+
+export type SelectNextTransitionInputV1 = Readonly<{
+  plan: unknown;
+  reviewEvidence: unknown;
+  intent: unknown;
+  observation: unknown;
+}>;
+
+export type CompileFreshAuthorizeWheelsUpCandidateInputV1 = Readonly<{
+  plan: unknown;
+  reviewEvidence: unknown;
+  intent: unknown;
+  observation: unknown;
+  selection: unknown;
+}>;
+
+export type PrepareMissionTransitionInputV1 = Readonly<{
+  plan: unknown;
+  reviewEvidence: unknown;
+  intent: unknown;
+  observation: unknown;
+}>;
+
+export type PreparationValidationResultV1<T> =
+  | Readonly<{ state: "valid"; value: T }>
+  | Readonly<{
+      state: "invalid";
+      reasonCode: "invalid_preparation_input";
+      errors: readonly string[];
+    }>;
+
+export type SelectNextTransitionResultV1 =
+  | Readonly<{
+      state: "invalid";
+      reasonCode: "invalid_preparation_input";
+      errors: readonly string[];
+    }>
+  | Readonly<{ state: "selected"; selection: NextTransitionSelectionV1 }>;
+
+export type PrepareMissionTransitionResultV1 =
+  | Readonly<{
+      state: "invalid";
+      reasonCode: "invalid_preparation_input";
+      errors: readonly string[];
+    }>
+  | Readonly<{ state: "blocked"; selection: NextTransitionSelectionV1 }>
+  | Readonly<{
+      state: "ready";
+      selection: NextTransitionSelectionV1;
+      candidate: FreshAuthorizeWheelsUpCandidateV1;
+      receipt: PreparationReceiptV1;
+    }>;
+```
+
+Malformed inputs return `state: "invalid"` without constructing any content ID,
+digest, or selection. Structurally valid business ineligibility alone may return
+a content-addressed blocked selection.
 
 ## Exact writable paths
 
@@ -385,7 +542,7 @@ May and Mack use these exact IDs and commands from repository root:
 | `validation:mission-preparation.compiler-v1` | `node --test packages/mission-preparation/tests/preparation-compiler-v1.test.mjs` |
 | `validation:mission-preparation.package-boundary-v1` | `node --test packages/mission-preparation/tests/package-boundary.test.mjs` |
 | `validation:mission-preparation.nx-test-v1` | `npx nx test @shield/mission-preparation --skip-nx-cache` |
-| `validation:mission-preparation.pack-install-v1` | `shield269_tmp="$(mktemp -d /private/tmp/shield-269-package.XXXXXX)" && trap 'rm -rf -- "$shield269_tmp"' EXIT && npm pack --workspace @shield/mission-preparation --pack-destination "$shield269_tmp" && mkdir "$shield269_tmp/install" && shield269_tgz_count="$(find "$shield269_tmp" -maxdepth 1 -type f -name 'shield-mission-preparation-*.tgz' -print | wc -l | tr -d ' ')" && test "$shield269_tgz_count" = 1 && shield269_tgz="$(find "$shield269_tmp" -maxdepth 1 -type f -name 'shield-mission-preparation-*.tgz' -print)" && (cd "$shield269_tmp/install" && npm install --offline --ignore-scripts --no-audit --no-fund "$shield269_tgz" && node --input-type=module -e 'import("@shield/mission-preparation").then(m=>{if(typeof m.prepareMissionTransitionV1!=="function"||m.canonicalJsonV1({b:1,a:2})!=="{\\"a\\":2,\\"b\\":1}")process.exit(1)})')` |
+| `validation:mission-preparation.pack-install-v1` | `shield269_tmp="$(mktemp -d /private/tmp/shield-269-package.XXXXXX)" && trap 'rm -rf -- "$shield269_tmp"' EXIT && npm pack --workspace @shield/mission-preparation --pack-destination "$shield269_tmp" && mkdir "$shield269_tmp/install" && shield269_tgz_count="$(find "$shield269_tmp" -maxdepth 1 -type f -name 'shield-mission-preparation-*.tgz' -print | wc -l | tr -d ' ')" && test "$shield269_tgz_count" = 1 && shield269_tgz="$(find "$shield269_tmp" -maxdepth 1 -type f -name 'shield-mission-preparation-*.tgz' -print)" && (cd "$shield269_tmp/install" && npm install --offline --ignore-scripts --no-audit --no-fund "$shield269_tgz" && node --input-type=module -e 'import("@shield/mission-preparation").then(m=>{const r=m.canonicalJsonV1({value:{b:1,a:2}});if(typeof m.prepareMissionTransitionV1!=="function"||r.state!=="valid"||r.value!=="{\\"a\\":2,\\"b\\":1}")process.exit(1)})')` |
 | `validation:mission-preparation.clean-v1` | `rm -rf -- packages/mission-preparation/dist && test -z "$(git status --porcelain=v1 --untracked-files=all)"` |
 
 Failure to resolve exactly one tarball fails. The trap removes only the
@@ -396,10 +553,14 @@ tarball members/bytes, and installed tree for `@shield/team-system` and
 bin or install hook, and prove a fixed candidate through the installed package.
 
 Acceptance also requires hostile object/canonical digest vectors; all raw
-receipt framing attacks listed above; all seven reason/ready rows; exact digest
-edge substitution; mixed-case/non-ASCII ordering; fixed event/effect/exclusion
-override rejection; identity-alias rejection; and clean fresh-process digest
-vectors. After every validation flight, remove `packages/mission-preparation/dist`
+receipt framing attacks listed above; malformed-input invalid results plus
+structurally valid rows 2–7; pairwise and three-or-more simultaneous negative
+facts proving first-match precedence across rows 2–6; exact digest edge
+substitution; mixed-case/non-ASCII ordering; fixed event/effect/exclusion
+override rejection; May four-way alias rejection; permitted reviewer-model and
+cross-stage equality vectors; Fury runtime/executor inequality vectors; and
+clean fresh-process digest vectors. After every validation flight, remove
+`packages/mission-preparation/dist`
 and any other generated package output, then require empty
 `git status --porcelain=v1 --untracked-files=all` at the exact implementation
 HEAD. Mack independently reruns the registry and exact changed-path comparison.
