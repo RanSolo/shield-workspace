@@ -107,21 +107,22 @@ The four sequence domains never alias:
 
 The journal entry union is stage-discriminated and exhaustive:
 
-- `operation_genesis_accepted`: verified initial signed authority plus trusted exact authorized-base head/tree observation; this pre-effect record establishes the #225 genesis anchor, authority, and sequence but does not claim that the feature branch exists;
+- `operation_genesis_accepted`: verified initial signed authority plus trusted exact authorized-base head/tree observation; acceptance additionally requires `activePlan.baseBranch === "main"`; this pre-effect record establishes the #225 genesis anchor, authority, and sequence but does not claim that the feature branch exists;
 - `authority_successor_accepted`: a contiguous plan successor and fresh verified Coulson-signed authority, accepted only after #225 lineage/amendment validation and never implicitly activated;
 - `effect_prepared`: one validated derived candidate and its execute-once effect identity;
 - `effect_not_applied`: trusted terminal proof that exactly one prepared effect was rejected or did not apply;
 - `effect_uncertain`: a prepared effect whose host result cannot yet be proven;
 - `feature_branch_creation_accepted`: exact feature ref/head/tree observation and branch-creation terminal receipt after creation or reconciliation; its head/tree must equal the operation genesis anchor;
-- `feature_workspace_accepted`: one draft feature PR with exact source feature branch and target base branch;
+- `feature_workspace_accepted`: one draft feature PR with exact source feature branch and target exactly `main`;
 - `child_initiation_accepted`: exact child branch genesis head/tree created from the replay-derived terminal feature head/tree;
 - `child_implementation_accepted`: observation-only acceptance of an independently governed child mission's exact completion head/tree and source-authority/effect receipt identities; no local preparation or child effect occurs;
 - `child_publication_accepted`: one observed draft child PR from the exact child branch/head to the feature branch;
 - `child_evidence_accepted`: exact-head Mack, Fury, and configured-human evidence digests required by the active plan;
 - `integration_accepted`: immutable integration transition and receipt;
-- `rollback_workspace_accepted`: latest-integration rollback branch/PR and evidence identity;
+- `rollback_workspace_accepted`: observation-only acceptance of an independently schema-9-authorized rollback mission's exact completion receipt, branch, restored tree, draft PR, review evidence, and distinct source-effect identities;
 - `rollback_accepted`: immutable rollback transition and receipt;
-- `cumulative_validation_accepted`: exact terminal feature head/tree and configured validation evidence;
+- `cumulative_validation_accepted`: trusted terminal passing result for the exact terminal feature head/tree and configured validation evidence;
+- `cumulative_validation_failed`: trusted terminal non-passing result for the exact terminal feature head/tree and configured validation evidence;
 - `operation_paused`, `operation_resumed`, `operation_cancelled`, `operation_split`, `operation_completed`, and `operation_superseded`: non-authoritative lifecycle dispositions constrained by the active plan and verified authority;
 - `final_gate_evidence_accepted`: independently verified final Fitz, conditional Simmons, or Coulson evidence bound to the operation, active plan/authority, terminal head/tree, and source-record digest.
 
@@ -140,10 +141,10 @@ Pure replay returns either a closed invalid result with deterministic reason pre
 - accepted review and configured-human evidence inventory;
 - pending/uncertain effect state;
 - latest host-observed time;
-- cumulative-validation status for the terminal head/tree;
+- cumulative-validation projection `pending | passed | failed` for the terminal head/tree;
 - the single next stage that can legally be considered.
 
-No successor stage is eligible while a prepared/uncertain effect lacks an accepted reconciled receipt or while a rollback receipt is pending. Cumulative validation is required after every accepted integration or rollback and before another child, completion, or another transition; operation genesis, feature-branch creation, initial feature workspace, and first-child initiation are explicitly exempt unless a future separately authorized baseline-validation contract is reviewed. Replay preserves history; rollback never erases an integration.
+No successor stage is eligible while a prepared/uncertain effect lacks an accepted reconciled receipt or while a rollback receipt is pending. After every accepted integration or rollback, cumulative projection is `pending` until one trusted terminal result is accepted. Another child or completion requires `passed`. From `failed` after an integration, only a latest-integration rollback handoff, a freshly authorized cumulative rerun, or lifecycle disposition is eligible; after a failed rollback validation, only a freshly authorized cumulative rerun or lifecycle disposition is eligible. Operation genesis, feature-branch creation, initial feature workspace, and first-child initiation are explicitly exempt unless a future separately authorized baseline-validation contract is reviewed. Replay preserves history; rollback never erases an integration.
 
 The mapping into #225 is exact:
 
@@ -206,7 +207,11 @@ Acceptance requires a host-observed resulting feature ref whose head/tree exactl
 
 ### Rollback receipt
 
-Rollback is restricted to the latest non-reverted accepted integration. Its expected prior state is the current terminal feature head/tree and its expected restored tree is exactly that integration receipt's prior tree. Rollback uses a separately governed rollback child branch and draft PR targeting the feature branch, with the same exact-head review and execute-once reconciliation rules. The accepted rollback receipt appends a transition; it never deletes or rewrites integration history. A nonterminal, conflicting, or tree-mismatched rollback is ineligible and requires a newly reviewed integration flow.
+Rollback is restricted to the latest non-reverted accepted integration. Its expected prior state is the current terminal feature head/tree and its expected restored tree is exactly that integration receipt's prior tree.
+
+The controller's rollback selection is an observation-only `rollback_mission_handoff_ready` outcome. It binds the latest integration receipt, current feature head/tree, expected restored tree, rollback branch and draft-PR target requirements, exact review policy, and the reserved #225 `child_revert_on_feature` key, but performs no append, dispatch, branch creation, revert production, publication, or other child effect. A separate rollback mission must obtain its own schema-9 source authority and use source-mission effect keys that are distinct from every #225 and #226 key.
+
+Lane 5 validates that independent mission's immutable completion receipt and trusted journal: exact source authority, latest integration, current feature base, rollback branch, produced restored tree, draft PR targeting only the feature branch, exact-head review evidence, runtime/executor provenance, and distinct consumed source keys. Only then may `rollback_workspace_accepted` append. The reserved #225 rollback key remains unused until #226 prepares the single final effect that merges the verified rollback PR into the feature branch. Its accepted rollback receipt appends the rollback transition; it never deletes or rewrites history. A nonterminal, conflicting, stale, duplicated, source-key-colliding, or tree-mismatched rollback completion is rejected.
 
 ### Cumulative validation
 
@@ -214,9 +219,9 @@ Rollback is restricted to the latest non-reverted accepted integration. Its expe
 
 Its dedicated candidate/evaluator verifies current replay, terminal head/tree, transition receipt, the separate #226 consumed-key/attempt inventory, exact Mack request/configuration, commands/targets, one-attempt/zero-retry bounds, and expiry. This stage does not call `evaluateFeatureOperationDerivedCandidateV1`, whose seven derivations remain the only #225 candidate variants. Tests cover prepared, uncertain, not-applied, accepted, duplicate, and fresh-authority-after-not-applied histories.
 
-`FeatureCumulativeValidationReceiptV1` binds the terminal feature head/tree, active plan/authority, signed cumulative authority/request digests, transition receipt, configured target IDs and commands, exact Mack evidence digest, CI/check observations, effect/reconciliation state, runtime attribution, host-observed time, and receipt digest. The evidence bridge accepts only repository-defined Mack evidence whose revision equals the terminal feature head and whose configured validation identities equal the signed cumulative authority. Evidence from a child head, prior feature head, cache-only claim without an accepted task result, or synthetic/untrusted source is rejected.
+`FeatureCumulativeValidationReceiptV1` binds the terminal feature head/tree, active plan/authority, signed cumulative authority/request digests, transition receipt, configured target IDs and commands, exact Mack evidence digest, CI/check observations, terminal outcome `passed | failed`, effect/reconciliation state, runtime attribution, host-observed time, and receipt digest. Both outcomes require trusted complete execution evidence; infrastructure uncertainty remains `effect_uncertain`, not `failed`. The evidence bridge accepts only repository-defined Mack evidence whose revision equals the terminal feature head and whose configured validation identities equal the signed cumulative authority. Evidence from a child head, prior feature head, cache-only claim without an accepted task result, or synthetic/untrusted source is rejected.
 
-The controller may select another child only after cumulative validation for the current terminal transition is accepted.
+Each preparation permanently consumes its #226 cumulative key and increments its attempt inventory regardless of terminal outcome. `failed` never releases either. A rerun requires a fresh signed cumulative authority for the same terminal head/tree and transition receipt with a distinct unused key; it replaces the projection only after its own trusted terminal result. The controller may select another child or complete only when the current projection is `passed`.
 
 ## Sequential implementation lanes
 
@@ -230,7 +235,7 @@ Deliver:
 - closed signed cumulative-validation authority/request/candidate contracts plus validate, digest, verify, and evaluate APIs;
 - canonical validators and digest functions;
 - pure replay that derives the #225 `FeatureOperationReplayContextV1`;
-- deterministic reason precedence and fixtures for malformed lineage, duplicate effects, stale heads, missing evidence, uncertain effects, latest-only rollback, and preserved integrated/reverted histories.
+- deterministic reason precedence and fixtures for malformed lineage, duplicate effects, stale heads, missing evidence, uncertain effects, latest-only rollback, preserved integrated/reverted histories, cumulative `pending | passed | failed`, and substituted genesis/feature-workspace targets.
 
 Exact paths:
 
@@ -272,12 +277,12 @@ This lane performs only test-fixture filesystem effects. It performs no reposito
 Deliver:
 
 - challenge-bound observations of repository identity, full refs, heads, trees, branch protection, and draft PR inventory;
-- feature branch creation only from the exact authorized genesis head;
+- feature branch creation only from the exact authorized genesis head after genesis proves `baseBranch === "main"`;
 - child branch creation only from the replay-derived terminal feature head;
-- one draft feature PR from feature branch to the exact target base branch;
+- one draft feature PR from feature branch to target exactly `main`;
 - one draft child PR from child branch to the feature branch;
 - execute-once prepare/invoke/observe/reconcile behavior backed by Lane 2;
-- fail-closed handling for stale base, wrong target, non-draft state, ambiguous PRs, branch drift, uncertain creation, or policy mismatch.
+- fail-closed handling for stale base, substituted/non-`main` genesis or feature-workspace target, wrong child target, non-draft state, ambiguous PRs, branch drift, uncertain creation, or policy mismatch.
 
 Exact paths:
 
@@ -323,7 +328,7 @@ Deliver:
 - exact policy/method observation and one bounded child-PR integration adapter targeting only the feature branch;
 - prepare/invoke/observe/reconcile behavior with no blind retry;
 - host-observed exact-head/tree integration receipt append;
-- latest-only rollback workspace, exact restored-tree verification, and rollback receipt append;
+- observation-only latest-integration rollback mission handoff, exact independent schema-9 completion-receipt validation, `rollback_workspace_accepted` append, and final verified rollback-PR merge/receipt using only the reserved #225 key;
 - deterministic stops for failed checks, branch drift, merge conflict, wrong target, method mismatch, ambiguous/unknown result, receipt mismatch, nonterminal rollback, or changed policy.
 
 Exact paths:
@@ -334,7 +339,7 @@ Exact paths:
 - `packages/shield-team-system/public/github.d.mts`
 - `packages/shield-team-system/tests/github-feature-integration-workspace-v1.test.mjs`
 
-The rollback implementation must use a separately reviewed rollback branch and draft PR into the feature branch. It must not write directly to the protected feature ref or synthesize a tree through low-level Git object APIs.
+The independently governed rollback mission must use a separately reviewed rollback branch and draft PR into the feature branch. #226 never performs those source-mission effects, writes directly to the protected feature ref, or synthesizes a tree through low-level Git object APIs. Source-mission keys, #226 cumulative keys, and the reserved #225 final rollback key are pairwise distinct.
 
 Focused proof:
 
@@ -347,7 +352,7 @@ Deliver:
 
 - a bounded production API for configured cumulative-validation request, execution observation, execute-once reconciliation, projection, and accepted receipt append;
 - a controller that replays trusted state, verifies current repository/authority freshness, selects at most one next stage, uses #225 evaluation only for its seven derivations, uses the dedicated signed cumulative-validation evaluator for that stage, and delegates to exactly one bounded stage-owner API from Lanes 2-6;
-- deterministic `blocked`, `ready`, `implementation_handoff_ready`, `completed`, `paused`, `cancelled`, `split`, and `recovery_required` outcomes;
+- deterministic `blocked`, `ready`, `implementation_handoff_ready`, `rollback_mission_handoff_ready`, `completed`, `paused`, `cancelled`, `split`, and `recovery_required` outcomes;
 - no loops that execute multiple stages or children in one invocation;
 - package surface and operations documentation.
 
@@ -422,8 +427,8 @@ No old worktree or stale generated surface may be treated as containing a newly 
 - Daisy elapsed time: `null`
 - Hill interventions before plan freeze: one carrier correction after an unavailable Spark launch; Mission Control dispatched the registered Sol Daisy
 - Rediscovery: one failed direct carrier inspection was rejected as non-Daisy evidence and not used as authoritative recon
-- Corrections: removed the proposed separate intake huddle per Feature Hill/Coulson process simplification; first Fury review required closed authority/lifecycle/stage transitions, terminal not-applied effects, truthful post-replacement recovery, exact digest framing, separated seat/runtime/executor identities, and an explicit cumulative-validation API plus complete public/documentation paths; second Fury review required separated sequence domains, a #225-compatible lifecycle table, permanent effect consumption at preparation, and separately signed cumulative-validation authority without genesis deadlock; third Fury review required rollback not-applied recovery to active, a separate one-attempt cumulative key inventory, and an observation-only independently governed child-implementation handoff/acceptance boundary
+- Corrections: removed the proposed separate intake huddle per Feature Hill/Coulson process simplification; first Fury review required closed authority/lifecycle/stage transitions, terminal not-applied effects, truthful post-replacement recovery, exact digest framing, separated seat/runtime/executor identities, and an explicit cumulative-validation API plus complete public/documentation paths; second Fury review required separated sequence domains, a #225-compatible lifecycle table, permanent effect consumption at preparation, and separately signed cumulative-validation authority without genesis deadlock; third Fury review required rollback not-applied recovery to active, a separate one-attempt cumulative key inventory, and an observation-only independently governed child-implementation handoff/acceptance boundary; final review of `fad7950` required observation-only independently authorized rollback workspace preparation, terminal non-passing cumulative projection, and exact `main` genesis/workspace targeting
 - Mack findings: `null` (planning only)
-- Fury findings: first, second, and third exact-plan reviews returned `REVISE`; all thirteen required corrections are incorporated in this successor plan revision
+- Fury findings: four exact-plan reviews returned `REVISE`; all sixteen required corrections are incorporated in this successor plan revision
 - Accepted output so far: exact-base Daisy reconnaissance summarized above
 - Next legal action: exact committed-plan Fury review only
