@@ -876,7 +876,7 @@ function trustedBindingForAuthority(
   if (matches.length !== 1) return invalid("trusted_binding_invalid", "Exactly one active Coulson binding is required.");
   const trusted = matches[0];
   if (trusted.humanPrincipalId !== authority.humanPrincipalId || trusted.signingKeyRef !== authority.signingKeyRef ||
-      !(trusted.missionScope === "*" || trusted.missionScope === authority.missionId)) {
+      trusted.missionScope !== authority.missionId) {
     return invalid("trusted_binding_invalid", "Trusted Coulson binding does not match the authority.");
   }
   try {
@@ -1043,6 +1043,7 @@ function checkReplayShape(input: unknown): FeatureOperationReplayContextV1 | nul
     receipts.add(transition.receiptDigest);
     transitions.push(transition);
   }
+  if ((lifecycle.atOperationSequence as number) > transitions[transitions.length - 1].operationSequence) return null;
   const acceptedIntegrations = checkedIntegrations(record.acceptedIntegrations);
   const acceptedRollbacks = checkedRollbacks(record.acceptedRollbacks);
   if (!acceptedIntegrations || !acceptedRollbacks) return null;

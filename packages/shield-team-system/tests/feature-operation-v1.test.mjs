@@ -443,6 +443,10 @@ test("fails closed for unsigned, malformed, untrusted, stale, duplicate, conflic
     ...verificationInput,
     trustedBindings: [{ ...binding, humanPrincipalId: "human:other" }],
   }).state, "invalid");
+  assert.equal(verifySignedFeatureOperationAuthorityV1(envelope, {
+    ...verificationInput,
+    trustedBindings: [{ ...binding, missionScope: "*" }],
+  }).state, "invalid");
   assert.equal(verifySignedFeatureOperationAuthorityV1(envelope, { ...verificationInput, expectedOperationSequence: 8 }).state, "invalid");
   assert.equal(verifySignedFeatureOperationAuthorityV1(envelope, { ...verificationInput, expectedJournalSequence: 13 }).state, "invalid");
   const badSignature = { ...envelope, signatureBase64: Buffer.alloc(64).toString("base64") };
@@ -455,6 +459,12 @@ test("validates contiguous genesis, integration, and rollback replay without rew
   const integratedResult = validateFeatureOperationReplayContextV1(integrated);
   assert.equal(integratedResult.state, "valid");
   assert.notEqual(integrated.transitions[1].childHeadRevision, integrated.transitions[1].resultingHeadRevision);
+  const integratedAtCurrentSequence = integrationReplay();
+  integratedAtCurrentSequence.lifecycle.atOperationSequence = 1;
+  assert.equal(validateFeatureOperationReplayContextV1(integratedAtCurrentSequence).state, "valid");
+  const futureLifecycle = replayContext();
+  futureLifecycle.lifecycle.atOperationSequence = 999;
+  assert.equal(validateFeatureOperationReplayContextV1(futureLifecycle).state, "invalid");
 
   const rolledBack = integrationReplay();
   rolledBack.transitions.push({
@@ -484,6 +494,7 @@ test("validates contiguous genesis, integration, and rollback replay without rew
   rolledBack.consumedEffectKeys = ["effect:child:integrate", "effect:child:rollback", "effect:genesis", "effect:workspace:publish"];
   rolledBack.childCounters[0].rollbackAttempts = 1;
   rolledBack.operationCounters.totalRollbackAttempts = 1;
+  rolledBack.lifecycle.atOperationSequence = 2;
   const result = validateFeatureOperationReplayContextV1(rolledBack);
   assert.equal(result.state, "valid");
   assert.equal(result.value.acceptedIntegrations[0].reverted, true);
@@ -507,11 +518,11 @@ test("validates contiguous genesis, integration, and rollback replay without rew
   assert.equal(validateFeatureOperationReplayContextV1(wrongTree).state, "invalid");
 
   const pending = integrationReplay();
-  pending.lifecycle = { state: "rollback_pending", atOperationSequence: 2 };
+  pending.lifecycle = { state: "rollback_pending", atOperationSequence: 1 };
   assert.deepEqual(evaluate(candidates.initiation, pending), { state: "blocked", reasonCode: "LIFECYCLE_BLOCKED" });
   for (const state of ["rollback_failed", "rollback_uncertain"]) {
     const uncertain = integrationReplay();
-    uncertain.lifecycle = { state, atOperationSequence: 2 };
+    uncertain.lifecycle = { state, atOperationSequence: 1 };
     assert.equal(validateFeatureOperationReplayContextV1(uncertain).state, "invalid");
   }
   const nonterminal = copy(rolledBack);
@@ -636,7 +647,7 @@ test("returns stable blocked reasons in approved precedence", () => {
   assert.deepEqual(evaluate(candidates.initiation, { ...replayContext(), unexpected: true }), { state: "blocked", reasonCode: "REPLAY_CONTEXT_INVALID" });
   const wrongIdentity = withCandidateDigest({ ...candidates.initiation, operationId: "operation:other" });
   assert.deepEqual(evaluate(wrongIdentity), { state: "blocked", reasonCode: "IDENTITY_OR_DIGEST_MISMATCH" });
-  assert.deepEqual(evaluate(candidates.initiation, replayContext({ lifecycle: { state: "paused", atOperationSequence: 1 } })), { state: "blocked", reasonCode: "LIFECYCLE_BLOCKED" });
+  assert.deepEqual(evaluate(candidates.initiation, replayContext({ lifecycle: { state: "paused", atOperationSequence: 0 } })), { state: "blocked", reasonCode: "LIFECYCLE_BLOCKED" });
   assert.deepEqual(evaluate(candidates.initiation, replayContext({ acceptedAuthorityOperationSequence: 8 })), { state: "blocked", reasonCode: "SEQUENCE_MISMATCH" });
   assert.deepEqual(evaluate(candidates.initiation, replayContext({ observedAt: { value: authority.expiresAt, provenance: "hostTrusted" } })), { state: "blocked", reasonCode: "AUTHORITY_EXPIRED" });
   assert.deepEqual(evaluate({ ...candidates.initiation, candidateDigest: ZERO_DIGEST }), { state: "blocked", reasonCode: "CANDIDATE_INVALID" });
