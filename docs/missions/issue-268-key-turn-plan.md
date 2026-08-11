@@ -76,7 +76,8 @@ capability. `@shield/team-system` remains the effectful host/CLI adapter and
 invokes existing signing and atomic-append behavior.
 
 The dependency direction is from the host adapter to the preparation library;
-the preparation library does not import CLI or effectful host code. Focused
+the preparation library has no dependency on any `@shield/team-system` subpath
+and does not import CLI, receipt replay, or effectful host code. Focused
 library tests are the fast iteration loop. Nx affected validation still runs
 downstream consumers before exact-revision acceptance, so the boundary reduces
 development churn without hiding impact.
@@ -106,6 +107,16 @@ plan commit/path/raw digest, transition-plan digest, PASS verdict, Fury seat,
 actual review runtime/model/executor, and exact Fury dispatch-receipt identity.
 The parent review evidence is authority-none and cannot substitute for Coulson
 authorization.
+
+The preparation library validates the closed review envelope, identities, and
+digests but does not claim that raw Fury receipts establish production
+attribution. Synthetic projections are useful for pure tests and are always
+production-ineligible. In A1, the Team System host remains the sole raw-receipt
+verifier and uses the existing `evaluateSeatDispatchAttributionV1` path to
+derive the closed attribution projection. Mission Builder compilation and host
+materialization require that verified projection, bound to the raw receipt-set
+digest, exact plan/transition-plan identities, and reviewer
+runtime/model/executor.
 
 The intent is a closed discriminated union by transition kind and contains only
 the decisions that cannot be observed:
@@ -145,6 +156,9 @@ using no-follow identity-checked bounded I/O, and records the mission-to-intent
 reference. `prepare-next` resolves that exact reference itself. Materialization
 is authority-none, requires no Hill-authored mechanical field, and fails on
 forged, stale, cross-plan, replaced, ambiguous, or conflicting evidence.
+Intent resolution replays or revalidates the protected raw-receipt attribution
+before use; injected or caller-asserted projections cannot become
+production-eligible.
 
 This is a host facade over the preparation library, not the primary product or
 a replacement command language. Interactive mode prepares, preflights, and
@@ -222,14 +236,17 @@ pure next-transition selector, fresh schema-9 `authorize-wheels-up` candidate
 compiler, `mission.transition-plan.v1`, parent-plan review evidence validation,
 concise decision projection, and authority-none preparation receipt.
 This slice proves the library boundary with no signer, journal mutation, CLI
-prompt, GitHub operation, or model invocation.
+prompt, GitHub operation, model invocation, Team System import, raw-receipt
+replay, or production-attribution assertion.
 
 ### Lane A1 — existing CLI/effect-path integration
 
 Connect the accepted Lane A0 candidate to the canonical `prepare-next` facade
 and the existing `authorize-wheels-up` effect path. Add the bounded protected
 intent materialization/resolution host operation so Hill supplies only mission
-ID and root. Reuse:
+ID and root. The Team System host verifies raw Fury receipts with the existing
+attribution evaluator before Mission Builder compilation and revalidates them
+on intent resolution. Reuse:
 
 - `validateAuthorizeWheelsUpInput` semantics;
 - `prepareAuthorizeWheelsUp`;
@@ -246,6 +263,9 @@ hand-authored action JSON, intent-file transport, or a mechanical repair loop,
 and with exactly one human decision prompt. Forged, stale, replaced,
 cross-plan, missing, duplicate, and conflicting parent-review/materialization
 evidence must fail before PIN or mutation.
+Tests must also prove an acyclic Nx graph, absence of a duplicate attribution
+evaluator, forged projection rejection, raw-receipt substitution rejection,
+and reviewer runtime/model/executor mismatch rejection.
 
 Minimally extend human rendering only where needed to show the exact mission, revision,
 repository, branch, HEAD, paths, action/effect/capability/validation IDs,
