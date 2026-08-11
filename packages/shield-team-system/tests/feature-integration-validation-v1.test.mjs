@@ -37,7 +37,7 @@ function executionFixture(overrides = {}) {
   const governancePayload = { schemaVersion: 1, evidenceId: "evidence:coulson:1", requirementId: requirement.requirementId, missionId: brief.missionId, revisionId: brief.revisionId, seatId: "coulson", evidenceKind: "mission_authorization", decision: "approved", humanPrincipalId: binding.humanPrincipalId, bindingId: binding.bindingId, signingKeyRef: binding.signingKeyRef, sourceRef: "manual:governance", timestamp: { value: "2026-08-11T10:01:00Z", provenance: "humanRecorded" }, journalSequence: 1 };
   implementationJournal.push(createProfileAwareGovernanceDecisionEntryV1({ projection, trustedBindings: [binding], evidence: { payload: governancePayload, signatureBase64: sign(null, Buffer.from(canonicalJson(governancePayload)), privateKey).toString("base64") } }));
   projection = replayProfileAwareMissionJournal(implementationJournal).value;
-  const implementationPayload = { schemaVersion: 1, contractVersion: "implementation-authority.v1", authorityKind: "wheels_up", authorityRef: "authority:cumulative:1", missionId: brief.missionId, subjectId: brief.subjectId, seatId: "may", missionRevisionId: brief.revisionId, artifactRevisionId: digest("b"), repositoryId: overrides.repositoryId ?? request.repositoryId, canonicalWritableRoot: "/workspace/shield-workspace", branch: "feature/226", baseRevision: "b".repeat(40), headRevision: overrides.headRevision ?? request.terminalHeadRevision, modelId: "model:may", approvedRelativePaths: ["packages/shield-team-system"], approvedActionIds: ["validation:run"], approvedEffectClasses: ["verification"], approvedEffectKeys: ["effect:cumulative:one"], approvedCapabilities: ["command_execution"], validationCommandIds: overrides.validationCommandIds ?? ["test"], journalSequence: 2, humanPrincipalId: binding.humanPrincipalId, humanBindingId: binding.bindingId, signingKeyRef: binding.signingKeyRef, sourceRef: "manual:implementation-authority", evidenceRef: "evidence:implementation-authority", timestamp: { value: "2026-08-11T10:02:00Z", provenance: "humanRecorded" } };
+  const implementationPayload = { schemaVersion: 1, contractVersion: "implementation-authority.v1", authorityKind: "wheels_up", authorityRef: "authority:cumulative:1", missionId: brief.missionId, subjectId: brief.subjectId, seatId: "may", missionRevisionId: brief.revisionId, artifactRevisionId: digest("b"), repositoryId: overrides.repositoryId ?? request.repositoryId, canonicalWritableRoot: "/workspace/shield-workspace", branch: "feature/226", baseRevision: "b".repeat(40), headRevision: overrides.headRevision ?? request.terminalHeadRevision, modelId: "model:may", approvedRelativePaths: ["packages/shield-team-system"], approvedActionIds: overrides.approvedActionIds ?? ["validation:run"], approvedEffectClasses: overrides.approvedEffectClasses ?? ["verification"], approvedEffectKeys: overrides.approvedEffectKeys ?? ["effect:cumulative:one"], approvedCapabilities: overrides.approvedCapabilities ?? ["command_execution"], validationCommandIds: overrides.validationCommandIds ?? ["test"], journalSequence: 2, humanPrincipalId: binding.humanPrincipalId, humanBindingId: binding.bindingId, signingKeyRef: binding.signingKeyRef, sourceRef: "manual:implementation-authority", evidenceRef: "evidence:implementation-authority", timestamp: { value: "2026-08-11T10:02:00Z", provenance: "humanRecorded" } };
   const signedImplementationAuthority = { payload: implementationPayload, signatureBase64: sign(null, Buffer.from(canonicalJson(implementationPayload)), privateKey).toString("base64") };
   implementationJournal.push(createProfileAwareImplementationAuthorityEntryV1({ projection, trustedBindings: [binding], authority: signedImplementationAuthority }));
   let cumulativePayload = { schemaVersion: 1, authorityKind: "feature_cumulative_validation", missionId: brief.missionId, operationId: request.operationId, repositoryId: request.repositoryId, planDigest: digest("c"), featureAuthorityDigest: digest("d"), terminalHeadRevision: request.terminalHeadRevision, terminalTreeDigest: request.terminalTreeDigest, transitionReceiptDigest: digest("e"), requestDigest: request.requestDigest, commandIds: [...request.commandIds], targetIds: [...request.targetIds], validationIds: [...request.validationIds], effectKey: "effect:cumulative:one", maxAttempts: 1, maxRetries: 0, activeAuthorityJournalSequence: 0, activeAuthorityOperationSequence: 0, issuedAt: "2026-08-11T10:00:00Z", expiresAt: "2029-08-11T10:00:00Z", humanPrincipalId: binding.humanPrincipalId, humanBindingId: binding.bindingId, signingKeyRef: binding.signingKeyRef, authorityDigest: digest("0") };
@@ -88,6 +88,23 @@ test("schema-9 authority and signed executable or argument drift fail before com
   const requestAndExecutableDrift = executeFeatureCumulativeValidationCommandsV1({ ...fixture, request: { ...fixture.request, commands: [substitutedCommand] }, commands: [substitutedCommand], run() { calls += 1; return { exitCode: 0, stdout: "", stderr: "" }; } });
   assert.equal(requestAndExecutableDrift.state, "blocked");
   assert.equal(calls, 0);
+});
+
+test("every schema-9 authority dimension must authorize the exact cumulative operation before effects", () => {
+  const adversarialOverrides = [
+    { approvedActionIds: ["different_action"] },
+    { approvedEffectClasses: ["coordination"] },
+    { approvedEffectKeys: ["effect:cumulative:other"] },
+    { approvedCapabilities: ["different_capability"] },
+  ];
+  for (const overrides of adversarialOverrides) {
+    const fixture = executionFixture(overrides);
+    let calls = 0;
+    const result = executeFeatureCumulativeValidationCommandsV1({ ...fixture, commands: [fixture.command], run() { calls += 1; return { exitCode: 0, stdout: "", stderr: "" }; } });
+    assert.equal(result.state, "blocked");
+    assert.equal(result.reason, "implementation_authority_mismatch");
+    assert.equal(calls, 0);
+  }
 });
 
 test("preparation and acceptance reject caller assertions without signed exact authority and Mack evidence", () => {
