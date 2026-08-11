@@ -1169,6 +1169,7 @@ function checkReplayShape(input: unknown): FeatureOperationReplayContextV1 | nul
     const field = lease && counterField(lease.derivationKind as string);
     const counter = child && childCounters.find((item) => item.childId === child.childId);
     if (!lease || !child || !field || !counter || !identifier(lease.leaseId) || !CHILD_DERIVATIONS.has(lease.derivationKind as string) ||
+        !child.permittedDerivations.includes(lease.derivationKind as FeatureOperationDerivationKindV1) ||
         !identifier(lease.effectKey) || !effectKeyMatchesDerivation(lease.effectKey as string, lease.derivationKind as FeatureOperationDerivationKindV1) ||
         !child.allowedEffectKeys.includes(lease.effectKey as string) || !positive(lease.attemptNumber) || !sequence(lease.retryNumber) ||
         !sequence(lease.acquiredAtOperationSequence) || (lease.acquiredAtOperationSequence as number) > transitions.at(-1)!.operationSequence ||

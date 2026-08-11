@@ -796,6 +796,45 @@ test("enforces signed attempt, retry, evidence, concurrency, and deterministic e
   assert.equal(validateFeatureOperationReplayContextV1(totalBoundary).state, "invalid");
 });
 
+test("binds active leases to globally valid, child-permitted derivations and exact effect classes", () => {
+  const leased = replayContext();
+  leased.childCounters[0].implementationAttempts = 1;
+  leased.operationCounters.totalChildAttempts = 1;
+  leased.activeLeases = [{
+    leaseId: "lease:alpha",
+    childId: "child:alpha",
+    derivationKind: "child_implementation",
+    effectKey: effects.childImplementation,
+    attemptNumber: 1,
+    retryNumber: 0,
+    acquiredAtOperationSequence: 0,
+  }];
+  assert.equal(validateFeatureOperationReplayContextV1(leased).state, "valid");
+
+  const omittedDerivationValue = copy(plan);
+  omittedDerivationValue.children[0].permittedDerivations = omittedDerivationValue.children[0].permittedDerivations
+    .filter((item) => item !== "child_implementation");
+  const omittedDerivationPlan = withPlanDigest(omittedDerivationValue);
+  assert.equal(validateFeatureOperationPlanV1(omittedDerivationPlan).state, "valid");
+  const omittedDerivationReplay = copy(leased);
+  omittedDerivationReplay.activePlan = omittedDerivationPlan;
+  omittedDerivationReplay.activePlanDigest = omittedDerivationPlan.planDigest;
+  omittedDerivationReplay.acceptedPlanLineage[0].planDigest = omittedDerivationPlan.planDigest;
+  assert.equal(validateFeatureOperationReplayContextV1(omittedDerivationReplay).state, "invalid");
+
+  const invalidLeaseMutations = [
+    (value) => { value.activeLeases[0].derivationKind = "child_deploy"; },
+    (value) => { value.activeLeases[0].derivationKind = "feature_branch_create"; },
+    (value) => { value.activeLeases[0].effectKey = effects.childInitiation; },
+    (value) => { value.activeLeases[0].effectKey = effectKey("child_implementation", "a"); },
+  ];
+  for (const mutate of invalidLeaseMutations) {
+    const value = copy(leased);
+    mutate(value);
+    assert.equal(validateFeatureOperationReplayContextV1(value).state, "invalid");
+  }
+});
+
 test("allows only contiguous amendment edges and classifies narrowing versus material changes", () => {
   const successor = (mutate) => {
     const value = copy(plan);
