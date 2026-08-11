@@ -67,7 +67,9 @@ Add `feature.operation.v1` as a host-neutral public Team System contract.
 - fixed exclusions for `main`, `merge_to_main`, deployment, release,
   destructive cleanup, wildcard children, wildcard revisions, and dynamic
   command selection;
-- predecessor plan digest for amendments and a deterministic plan digest.
+- plan sequence, predecessor plan digest for amendments, and a deterministic
+  plan digest. Genesis is sequence zero with no predecessor; every successor is
+  exactly prior sequence plus one and names the exact prior plan digest.
 
 Child identities and bounds are fully known at operation authorization. Future
 Git revisions are represented only by the closed current-feature-head predicate,
@@ -117,24 +119,49 @@ the trusted #226 replay boundary. It contains:
   sequence;
 - ordered accepted plan lineage and accepted amendment digests, with exactly
   one active terminal plan and authority;
-- lifecycle state (`active`, `paused`, `cancelled`, `expired`, `integrated`, or
-  `superseded`) and the sequence at which that state became current;
-- integrated-child inventory and consumed effect-key inventory, each with
-  immutable receipt/digest references;
+- lifecycle state (`active`, `paused`, `cancelled`, `expired`, `integrated`,
+  `rollback_pending`, or `superseded`) and the sequence at which that state
+  became current;
+- one ordered accepted feature-head transition chain covering genesis,
+  integrations, and rollbacks. Every closed transition binds transition kind,
+  operation sequence, effect key, prior head/tree, resulting head/tree, and
+  immutable accepted receipt digest;
+- separate append-only accepted integration history and accepted rollback
+  history derived from that chain, plus consumed effect-key inventory. A
+  rollback marks its integration reverted but never removes either history;
 - per-child initiation, implementation, publication, integration, rollback,
   and retry attempt counters plus operation-wide counters;
 - host-observed time with `hostTrusted` provenance;
-- genesis base head/tree and the latest accepted integration result head/tree,
-  where latest equals genesis until the first accepted integration;
 - accepted exact-head review evidence inventory, including Mack, Fury, and each
   configured human gate, bound to child, head, repository, and source record.
 
-The context validator requires contiguous lineage, unique sequences/digests,
-one genesis, at most one accepted integration successor per prior result, and
-latest head/tree equal to the terminal accepted result. No candidate field may
-repeat, override, or assert lifecycle, sequence, counters, time, accepted
-amendments, consumed effects, integrated children, current feature head/tree,
-or accepted evidence observations. Those facts come only from replay context.
+The transition validator requires exactly one genesis first; strictly increasing
+contiguous operation sequences; globally unique effect keys and receipt
+digests; and each transition's prior head/tree exactly equal to the preceding
+transition's resulting head/tree. Genesis binds the exact authorized base
+head/tree as both prior and initial feature result. An integration transition
+must reference one eligible child and accepted integration receipt. A rollback
+transition must reference the latest unreverted integration, start at the
+terminal current head/tree, and have a resulting tree exactly equal to that
+integration transition's prior tree. The rollback's resulting head is the exact
+host-observed revert commit from its accepted receipt; history is not rewritten.
+The context's authoritative current feature head/tree is only the resulting
+head/tree of the terminal accepted transition, whether genesis, integration, or
+rollback.
+
+A rollback of a nonterminal integration, a rollback with another restored tree,
+or competing/conflicting rollback requires a newly reviewed integration flow
+and is not eligible as `child_revert_on_feature`. Once rollback execution is
+pending, lifecycle is `rollback_pending`; no future initiation,
+implementation, publication, integration, or additional rollback candidate is
+eligible until #226 replay supplies the accepted rollback receipt and appends
+the corresponding terminal transition. Failed or uncertain rollback cannot be
+treated as accepted state.
+
+No candidate field may repeat, override, or assert lifecycle, sequence,
+counters, time, accepted amendments, consumed effects, integrated/reverted
+history, transition-chain state, current feature head/tree, or accepted evidence
+observations. Those facts come only from replay context.
 
 ### Bounded derivations
 
@@ -153,8 +180,9 @@ reinterpreted as another:
   exact feature branch, with draft creation only;
 - `child_merge_to_feature`: allowed integration method with target exactly the
   feature branch; and
-- `child_revert_on_feature`: exact accepted integration receipt to revert, with
-  target exactly the feature branch and no history rewrite.
+- `child_revert_on_feature`: only the latest unreverted accepted integration
+  receipt, with target exactly the feature branch, expected restored tree
+  exactly that integration's prior tree, and no history rewrite.
 
 Merge-to-main, child publication to base/main, feature-PR ready or merge,
 deployment, release, arbitrary ref updates, and destructive rollback have no
@@ -178,9 +206,10 @@ scope, and candidate digest. The variants are:
   allowed method, predecessor integration receipt reference, and references to
   the exact-head Mack, Fury, and configured human evidence held in replay
   context; and
-- `rollback`: one integrated child, exact accepted integration receipt and
-  resulting head/tree to revert, target feature branch, and non-destructive
-  revert method.
+- `rollback`: the child and receipt of the latest unreverted integration,
+  terminal integration head/tree to revert, expected restored tree equal to
+  that integration's prior tree, target feature branch, and non-destructive
+  revert method. It cannot predict or assert the future revert commit head.
 
 Only `integration` contains review-evidence references. Its references must
 resolve to replay-context evidence for the exact candidate child head and all
@@ -222,20 +251,31 @@ Candidate scope comparison is dimension-by-dimension and never JSON-shape-only:
    authority-bearing dimension to be strictly narrower than the operation-wide
    authority; identity metadata and digest fields do not count as narrowing.
 
-`compareFeatureOperationAmendmentV1` returns exactly `identical`,
-`pure_narrowing`, or `material`. It compares canonical semantic fields with
-digest fields omitted and treats predecessor digest/sequence as lineage rather
-than scope. `identical` requires every authority-bearing semantic dimension to
-match. `pure_narrowing` requires unchanged repository/operation identity,
-child manifest and dependency graph, branch destinations, risk classification,
-lineage predecessor, acceptance criteria, derivation kinds, and integration
-methods, while at least one existing set/path/numeric/expiry dimension narrows,
-no gate or exclusion weakens, and no dimension widens. All other changes are
-`material`, including child add/remove/reorder, any dependency-graph change,
-base/feature/target destination change, risk or acceptance change, predecessor
-or A-B-A lineage change, integration-method change, new derivation/effect/
-capability/validation, weaker gate/exclusion, expiry extension, or increased
-numeric bound. Material amendments require a fresh Coulson signature.
+`compareFeatureOperationAmendmentV1` first validates both plans and their
+digests. Byte-equivalent canonical plans, including the same sequence,
+predecessor, and digest, return `identical`. Distinct plans are comparable only
+as a successor edge: `successor.predecessorPlanDigest` must exactly equal
+`prior.planDigest`, and `successor.planSequence` must exactly equal
+`prior.planSequence + 1`. A missing, stale, self-referential, A-B-A,
+noncontiguous, or otherwise malformed edge is contract-invalid and returns no
+scope classification.
+
+For a valid successor edge, the comparator omits only sequence, predecessor,
+and own digest fields from semantic scope comparison. It returns
+`pure_narrowing` only when repository/operation identity, child manifest and
+dependency graph, branch destinations, risk classification, acceptance
+criteria, derivation kinds, and integration methods remain unchanged; at least
+one existing set/path/numeric/expiry dimension attenuates; no gate or exclusion
+weakens; and no dimension widens. It returns `material` for every other valid
+successor, including a semantic no-op successor, child add/remove/reorder, any
+dependency-graph change, base/feature/target change, risk or acceptance change,
+integration-method change, new derivation/effect/capability/validation, weaker
+gate/exclusion, expiry extension, or increased numeric bound.
+
+Every successor, including `pure_narrowing`, requires a fresh verified
+Coulson-signed `FeatureOperationAuthorityV1` bound to the successor plan digest
+and sequence. Comparison, accepted amendment recording, or prior authority
+never implicitly activates a successor.
 
 ### Canonical digests and signatures
 
@@ -305,10 +345,13 @@ fields, unsafe integers, and non-canonical identities.
 
 ## Amendment semantics
 
-An amendment creates a successor plan linked to the immediately active prior
-digest and never rewrites prior evidence. The comparison algorithm above is the
-sole classifier. Pure narrowing still requires accepted lineage recording and
-cannot reactivate cancelled, expired, integrated, or superseded authority.
+An amendment creates a contiguous successor linked to the immediately active
+prior digest and never rewrites prior evidence. The comparison algorithm above
+is the sole classifier; malformed lineage is contract-invalid, not material.
+Every valid successor requires separate accepted amendment recording and fresh
+Coulson-signed authority. No successor can reactivate cancelled, expired,
+integrated, or superseded authority without an independently valid lifecycle
+transition defined by #226.
 
 ## Exact implementation scope
 
@@ -342,9 +385,11 @@ Prove:
    stage, canonical digest, and independent Ed25519 signature vectors;
 2. zero/duplicate/stale/conflicting Coulson bindings, wrong operation/journal
    sequence, unsigned authority, and bad signature fail before eligibility;
-3. trusted replay context proves active lineage, exact genesis/latest accepted
-   head/tree, counters, lifecycle, time, integrated children, effect inventory,
-   and accepted review evidence without accepting candidate assertions;
+3. trusted replay context proves an ordered contiguous accepted genesis,
+   integration, and rollback transition chain; unique sequence/effect/receipt
+   identities; exact prior/result head/tree linkage; terminal current state;
+   separate integrated/reverted histories; counters, lifecycle, time, and
+   accepted review evidence without accepting candidate assertions;
 4. feature branch, feature workspace draft PR, child initiation,
    implementation, child draft PR, merge-to-feature, and revert-on-feature are
    separate derivations with exact sources and targets;
@@ -353,20 +398,27 @@ Prove:
 6. canonical set inclusion, segment-delimited path containment, exact branches,
    no-weaker gates/exclusions, safe numeric bounds, and a genuinely strict
    dimension are proven independently;
-7. identical, pure-narrowing, and material amendment vectors cover child and
-   graph changes, destination/method/risk/acceptance/lineage changes, scope and
-   effect widening, weaker gates, expiry extension, and increased bounds;
-8. digest framing has fixed cross-process vectors and excludes exactly the own
+7. latest-integration rollback restores exactly its prior tree, preserves both
+   histories, and blocks future candidates until an accepted rollback receipt;
+   nonterminal, conflicting, wrong-tree, failed, and uncertain rollback cases
+   fail closed;
+8. identical exact plans, contiguous pure narrowing, and contiguous material
+   amendment vectors cover exact predecessor digest/sequence checks, child and
+   graph changes, destination/method/risk/acceptance changes, scope/effect
+   widening, weaker gates, expiry extension, and increased bounds; malformed or
+   noncontiguous lineage is contract-invalid and every successor requires fresh
+   verified Coulson authority;
+9. digest framing has fixed cross-process vectors and excludes exactly the own
    digest field; candidate validation/digest and blocked-reason precedence are
    stable under multi-fault and insertion-order cases;
-9. stale base/head, wrong tree, missing/duplicate predecessor, exceeded limits,
+10. stale base/head, wrong tree, missing/duplicate predecessor, exceeded limits,
    expiry, pause/cancellation/supersession/integration, A-B-A plan reuse, and
    effect-key reuse fail closed;
-10. wildcard/deferred revision placeholders, dynamic commands, child/main
+11. wildcard/deferred revision placeholders, dynamic commands, child/main
     target substitution, feature PR ready/merge, deploy/release, and blanket
     repository authority are unrepresentable;
-11. hostile object/array/JSON-equivalent structures fail closed; and
-12. existing Flight, schema-9, publication, package, and installation vectors
+12. hostile object/array/JSON-equivalent structures fail closed; and
+13. existing Flight, schema-9, publication, package, and installation vectors
     remain unchanged.
 
 ## Validation
