@@ -74,6 +74,22 @@ async function regularOrMissing(path: string): Promise<"regular" | "missing" | "
   try { const stat = await lstat(path); return stat.isFile() && !stat.isSymbolicLink() ? "regular" : "unsafe"; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unsafe"; }
 }
+async function directoryOrMissing(path: string): Promise<"directory" | "missing" | "unsafe"> {
+  try { const stat = await lstat(path); return stat.isDirectory() && !stat.isSymbolicLink() ? "directory" : "unsafe"; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unsafe"; }
+}
+async function safeStoreParents(paths: FeatureIntegrationStorePathsV1, create: boolean): Promise<boolean> {
+  const shieldDirectory = dirname(paths.directoryPath);
+  for (const directory of [shieldDirectory, paths.directoryPath]) {
+    let kind = await directoryOrMissing(directory);
+    if (kind === "missing" && create) {
+      try { await mkdir(directory, { mode: 0o700 }); kind = await directoryOrMissing(directory); }
+      catch { return false; }
+    }
+    if (kind !== "directory") return false;
+  }
+  return true;
+}
 
 function parseJournal(bytes: string, operationId: string): FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1; bytes: string }> {
   try {
@@ -90,6 +106,11 @@ function parseJournal(bytes: string, operationId: string): FeatureIntegrationSto
 export async function readFeatureOperationJournalStoreV1(input: unknown): Promise<FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1 | null; bytes: string; journalPath: string }>> {
   const scope = strictScope(input); if (!scope) return blocked("malformed_input", "Feature integration store scope is invalid.");
   const paths = await resolveFeatureIntegrationStorePathsV1(scope); if (paths.state !== "accepted") return paths;
+  if (!(await safeStoreParents(paths.value, false))) {
+    const parentKinds = await Promise.all([dirname(paths.value.directoryPath), paths.value.directoryPath].map(directoryOrMissing));
+    if (parentKinds.includes("missing") && !parentKinds.includes("unsafe")) return accepted({ journal: null, bytes: "", journalPath: paths.value.journalPath });
+    return blocked("unsafe_file", "Journal parent directories are unavailable or unsafe.");
+  }
   const kind = await regularOrMissing(paths.value.journalPath);
   if (kind === "missing") return accepted({ journal: null, bytes: "", journalPath: paths.value.journalPath });
   if (kind !== "regular") return blocked("unsafe_file", "Journal must be a regular non-symlink file.");
@@ -102,9 +123,7 @@ export async function readFeatureOperationJournalStoreV1(input: unknown): Promis
 
 async function withLock<T>(scope: FeatureIntegrationStoreScopeV1, run: (paths: FeatureIntegrationStorePathsV1) => Promise<FeatureIntegrationStoreResultV1<T>>): Promise<FeatureIntegrationStoreResultV1<T>> {
   const paths = await resolveFeatureIntegrationStorePathsV1(scope); if (paths.state !== "accepted") return paths;
-  try { await mkdir(paths.value.directoryPath, { recursive: true, mode: 0o700 }); }
-  catch { return blocked("staging_failed", "Journal directory could not be created."); }
-  if (await regularOrMissing(paths.value.directoryPath) !== "unsafe") return blocked("unsafe_file", "Journal directory is not a directory.");
+  if (!(await safeStoreParents(paths.value, true))) return blocked("unsafe_file", "Journal parent directories are unavailable or unsafe.");
   let handle;
   try {
     handle = await open(paths.value.lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
@@ -113,8 +132,10 @@ async function withLock<T>(scope: FeatureIntegrationStoreScopeV1, run: (paths: F
     try { await handle?.close(); } catch {}
     return blocked((error as NodeJS.ErrnoException).code === "EEXIST" ? "lock_conflict" : "lock_failed", "Feature integration journal lock was not acquired.");
   }
-  try { return await run(paths.value); }
-  finally { try { await unlink(paths.value.lockPath); } catch {} }
+  const result = await run(paths.value);
+  try { await unlink(paths.value.lockPath); }
+  catch { return { state: "recovery_required", code: "durability_uncertain", journalPath: paths.value.journalPath, expectedJournalDigest: result.state === "accepted" && typeof result.value === "object" && result.value !== null && "journal" in result.value ? (result.value as { journal?: FeatureOperationJournalV1 }).journal?.journalDigest ?? null : null }; }
+  return result;
 }
 
 async function replaceJournal(paths: FeatureIntegrationStorePathsV1, journal: FeatureOperationJournalV1, mode: number): Promise<FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1; bytes: string; journalPath: string }>> {

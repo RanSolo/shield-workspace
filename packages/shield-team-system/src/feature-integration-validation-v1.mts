@@ -4,6 +4,7 @@ import {
   computeFeatureCumulativeValidationReceiptDigestV1,
   createFeatureIntegrationEntryV1,
   evaluateFeatureCumulativeValidationCandidateV1,
+  replayFeatureOperationJournalV1,
   type FeatureCumulativeValidationCandidateV1,
   type FeatureCumulativeValidationReceiptV1,
   type FeatureCumulativeValidationRequestV1,
@@ -11,6 +12,7 @@ import {
   type FeatureOperationJournalEntryV1,
   type SignedFeatureCumulativeValidationAuthorityV1,
 } from "./feature-integration-v1.mjs";
+import { appendFeatureOperationJournalStoreV1, readFeatureOperationJournalStoreV1, type FeatureIntegrationStoreScopeV1 } from "./feature-integration-store-v1.mjs";
 import type { TrustedHumanBinding } from "./mission-v2.mjs";
 
 export const FEATURE_INTEGRATION_VALIDATION_CONTRACT_VERSION = "feature.integration.validation.v1" as const;
@@ -52,9 +54,30 @@ export function acceptFeatureCumulativeValidationV1(input: { replay: FeatureInte
   if (!evidence || !DIGEST.test(evidence.evidenceDigest) || evidence.repositoryId !== authority.repositoryId || evidence.headRevision !== authority.terminalHeadRevision || evidence.accepted !== true || evidence.synthetic !== false || JSON.stringify(evidence.targetIds) !== JSON.stringify(authority.targetIds) || JSON.stringify(evidence.validationIds) !== JSON.stringify(authority.validationIds)) return block("mack_evidence_invalid");
   if (!input.execution || input.execution.receipts.length !== authority.commandIds.length || input.execution.receipts.some((receipt, index) => receipt.commandId !== authority.commandIds[index])) return block("validation_execution_incomplete");
   if (new Set(Object.values(input.identity)).size !== 4 || !input.observationProvenance) return block("runtime_identity_invalid");
-  const receipt: FeatureCumulativeValidationReceiptV1 = { schemaVersion: 1, contractVersion: "feature.integration.v1", operationId: authority.operationId, repositoryId: authority.repositoryId, planDigest: authority.planDigest, featureAuthorityDigest: authority.featureAuthorityDigest, cumulativeAuthorityDigest: authority.authorityDigest, requestDigest: authority.requestDigest, transitionReceiptDigest: authority.transitionReceiptDigest, terminalHeadRevision: authority.terminalHeadRevision, terminalTreeDigest: authority.terminalTreeDigest, commandIds: [...authority.commandIds], targetIds: [...authority.targetIds], validationIds: [...authority.validationIds], mackEvidenceDigest: evidence.evidenceDigest, checkObservationDigests: input.execution.receipts.map((receipt) => hash(JSON.stringify(receipt))), outcome: input.execution.outcome, reconciliationState: "applied", observationProvenance: input.observationProvenance, observedAt: input.observedAt, ...input.identity, receiptDigest: `sha256:${"0".repeat(64)}` };
+  const receipt: FeatureCumulativeValidationReceiptV1 = { schemaVersion: 1, contractVersion: "feature.integration.v1", operationId: authority.operationId, repositoryId: authority.repositoryId, planDigest: authority.planDigest, featureAuthorityDigest: authority.featureAuthorityDigest, cumulativeAuthorityDigest: authority.authorityDigest, requestDigest: authority.requestDigest, transitionReceiptDigest: authority.transitionReceiptDigest, terminalHeadRevision: authority.terminalHeadRevision, terminalTreeDigest: authority.terminalTreeDigest, commandIds: [...authority.commandIds], targetIds: [...authority.targetIds], validationIds: [...authority.validationIds], mackEvidenceDigest: evidence.evidenceDigest, checkObservationDigests: input.execution.receipts.map((receipt) => hash(JSON.stringify(receipt))).sort(), outcome: input.execution.outcome, reconciliationState: "applied", observationProvenance: input.observationProvenance, observedAt: input.observedAt, ...input.identity, receiptDigest: `sha256:${"0".repeat(64)}` };
   receipt.receiptDigest = computeFeatureCumulativeValidationReceiptDigestV1(receipt);
   const entryKind = receipt.outcome === "passed" ? "cumulative_validation_accepted" : "cumulative_validation_failed";
   const entry = createFeatureIntegrationEntryV1({ operationId: authority.operationId, entrySequence: input.preparedEntry.entrySequence + 1, entryKind, previousEntryDigest: input.preparedEntry.entryDigest, payload: { preparationEntryDigest: input.preparedEntry.entryDigest, receipt } });
   return accepted({ receipt, entry });
+}
+
+export async function executeFeatureCumulativeValidationStageV1(input: { storeScope: FeatureIntegrationStoreScopeV1; signedAuthority: SignedFeatureCumulativeValidationAuthorityV1; request: FeatureCumulativeValidationRequestV1; candidate: FeatureCumulativeValidationCandidateV1; trustedBindings: readonly TrustedHumanBinding[]; commands: readonly FeatureCumulativeCommandV1[]; run: FeatureValidationRunnerV1; mackEvidence: FeatureCumulativeMackEvidenceV1; identity: { seatId: string; reasoningRuntimeId: string; modelId: string; toolExecutorId: string }; observedAt: { value: string; provenance: "hostTrusted" }; observationProvenance: string }): Promise<Result<{ receipt: FeatureCumulativeValidationReceiptV1; journalDigest: string }>> {
+  const current = await readFeatureOperationJournalStoreV1(input.storeScope);
+  if (current.state !== "accepted" || !current.value.journal) return block(current.state === "blocked" ? current.code : "journal_unavailable");
+  const replayed = replayFeatureOperationJournalV1(current.value.journal); if (replayed.state !== "valid") return block("replay_invalid");
+  const prepared = prepareFeatureCumulativeValidationV1({ replay: replayed.value, signedAuthority: input.signedAuthority, request: input.request, candidate: input.candidate, trustedBindings: input.trustedBindings, observedAt: replayed.value.latestObservedAt.value, previousEntryDigest: current.value.journal.latestAcceptedEntryDigest });
+  if (prepared.state !== "accepted") return prepared;
+  const preparedAppend = await appendFeatureOperationJournalStoreV1({ ...input.storeScope, expectedEntrySequence: replayed.value.nextEntrySequence, expectedLatestEntryDigest: current.value.journal.latestAcceptedEntryDigest, entry: prepared.value.entry });
+  if (preparedAppend.state !== "accepted") return block(preparedAppend.state === "blocked" ? preparedAppend.code : "durability_uncertain");
+  const execution = executeFeatureCumulativeValidationCommandsV1({ preparedEntry: prepared.value.entry, request: input.request, commands: input.commands, run: input.run });
+  if (execution.state === "effect_uncertain") {
+    const uncertain = createFeatureIntegrationEntryV1({ operationId: prepared.value.entry.operationId, entrySequence: prepared.value.entry.entrySequence + 1, entryKind: "effect_uncertain", previousEntryDigest: prepared.value.entry.entryDigest, payload: { preparationEntryDigest: prepared.value.entry.entryDigest, observationProvenance: input.observationProvenance, observedAt: input.observedAt } });
+    await appendFeatureOperationJournalStoreV1({ ...input.storeScope, expectedEntrySequence: uncertain.entrySequence, expectedLatestEntryDigest: prepared.value.entry.entryDigest, entry: uncertain });
+    return execution;
+  }
+  if (execution.state !== "accepted") return execution;
+  const terminal = acceptFeatureCumulativeValidationV1({ replay: replayed.value, preparedEntry: prepared.value.entry, signedAuthority: input.signedAuthority, request: input.request, execution: execution.value, mackEvidence: input.mackEvidence, identity: input.identity, observedAt: input.observedAt, observationProvenance: input.observationProvenance });
+  if (terminal.state !== "accepted") return terminal;
+  const appended = await appendFeatureOperationJournalStoreV1({ ...input.storeScope, expectedEntrySequence: terminal.value.entry.entrySequence, expectedLatestEntryDigest: prepared.value.entry.entryDigest, entry: terminal.value.entry });
+  return appended.state === "accepted" ? accepted({ receipt: terminal.value.receipt, journalDigest: appended.value.journal.journalDigest }) : block(appended.state === "blocked" ? appended.code : "durability_uncertain");
 }

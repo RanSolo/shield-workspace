@@ -492,6 +492,26 @@ function parseFeatureIntegrationJson(result) {
   catch { return { state: "blocked", reason: "malformed_response" }; }
 }
 
+/** Observes exact repository identity, main default, merge methods and branch protection. */
+export function observeFeatureIntegrationRepositoryV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "featureBranch", "challengeId"]);
+  if (!value || typeof value.featureBranch !== "string" || value.featureBranch === "main") return { state: "blocked", reason: "invalid_repository_observation" };
+  const run = options.run ?? defaultRun;
+  const repository = parseFeatureIntegrationJson(featureIntegrationCall(run, "gh", ["api", `repos/${value.repositoryId}`], { cwd: options.cwd }));
+  if (repository.state !== "observed" || repository.value?.full_name !== value.repositoryId || repository.value?.default_branch !== "main") return { state: "blocked", reason: repository.reason ?? "repository_identity_mismatch" };
+  const protectionResult = featureIntegrationCall(run, "gh", ["api", `repos/${value.repositoryId}/branches/${encodeURIComponent(value.featureBranch)}/protection`], { cwd: options.cwd });
+  let protection;
+  if (protectionResult.exitCode !== 0 && /404|not found/i.test(`${protectionResult.stdout}\n${protectionResult.stderr}`)) protection = { protected: false, requiredChecks: [], enforceAdmins: false, forcePushesAllowed: null };
+  else {
+    const parsed = parseFeatureIntegrationJson(protectionResult); if (parsed.state !== "observed") return parsed;
+    const checks = parsed.value?.required_status_checks?.contexts ?? [];
+    if (!Array.isArray(checks) || checks.some((item) => typeof item !== "string")) return { state: "blocked", reason: "malformed_response" };
+    protection = { protected: true, requiredChecks: [...checks].sort(), enforceAdmins: parsed.value?.enforce_admins?.enabled === true, forcePushesAllowed: parsed.value?.allow_force_pushes?.enabled === true };
+  }
+  const methods = [repository.value.allow_merge_commit === true ? "merge_commit" : null, repository.value.allow_rebase_merge === true ? "rebase_merge" : null, repository.value.allow_squash_merge === true ? "squash" : null].filter(Boolean);
+  return { state: "observed", observation: { repositoryId: value.repositoryId, defaultBranch: "main", featureBranch: value.featureBranch, allowedIntegrationMethods: methods, protection, challengeId: value.challengeId } };
+}
+
 /** Observes one exact non-main branch ref for the feature-integration workflow. */
 export function observeFeatureIntegrationRefV1(input, options = {}) {
   const value = featureIntegrationInput(input, ["repositoryId", "fullRef", "challengeId"]);

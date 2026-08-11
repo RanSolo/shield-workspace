@@ -7,6 +7,8 @@ import {
   replayFeatureOperationJournalV1,
 } from "../dist/feature-integration-v1.mjs";
 import { validateFeatureOperationDerivedCandidateV1 } from "../dist/feature-operation-v1.mjs";
+import { computeProfileAwareMissionJournalDigestV1 } from "../dist/feature-integration-evidence-v1.mjs";
+import { replayProfileAwareMissionJournal } from "../dist/profile-aware-mission-v1.mjs";
 import {
   appendFeatureOperationJournalStoreV1,
   readFeatureOperationJournalStoreV1,
@@ -98,7 +100,7 @@ export function reconcileFeatureIntegrationWorkspaceEffectV1(input) {
     const fullRef = `refs/heads/${candidate.derivationKind === "feature_branch_create" ? candidate.targetBranch : candidate.childBranch}`;
     const expectedHead = candidate.derivationKind === "feature_branch_create" ? candidate.sourceRevision : candidate.sourceFeatureHead;
     if (observation.fullRef !== fullRef) return block("observation_mismatch");
-    if (!observation.exists) return { state: "not_applied", entryKind: "effect_not_applied", payload: { preparationEntryDigest: prepared.entryDigest, observationProvenance: input.challengeId } };
+    if (!observation.exists) return { state: "not_applied", entryKind: "effect_not_applied", payload: { preparationEntryDigest: prepared.entryDigest, observationProvenance: input.challengeId, observedAt: input.observedAt } };
     if (observation.headRevision !== expectedHead || input.observedTreeDigest === undefined || !DIGEST.test(input.observedTreeDigest)) return block("branch_drift");
     entryKind = candidate.derivationKind === "feature_branch_create" ? "feature_branch_creation_accepted" : "child_initiation_accepted";
     payload = candidate.derivationKind === "feature_branch_create"
@@ -106,7 +108,7 @@ export function reconcileFeatureIntegrationWorkspaceEffectV1(input) {
       : { preparationEntryDigest: prepared.entryDigest, childId: candidate.childId, branch: candidate.childBranch, baseHeadRevision: expectedHead, baseTreeDigest: input.observedTreeDigest, observedAt: input.observedAt, observationProvenance: input.challengeId };
   } else {
     if (observation.headBranch !== (candidate.sourceBranch ?? candidate.childBranch) || observation.baseBranch !== candidate.targetBranch) return block("observation_mismatch");
-    if (observation.pullRequests.length === 0) return { state: "not_applied", entryKind: "effect_not_applied", payload: { preparationEntryDigest: prepared.entryDigest, observationProvenance: input.challengeId } };
+    if (observation.pullRequests.length === 0) return { state: "not_applied", entryKind: "effect_not_applied", payload: { preparationEntryDigest: prepared.entryDigest, observationProvenance: input.challengeId, observedAt: input.observedAt } };
     if (observation.pullRequests.length !== 1) return block("ambiguous_pull_requests");
     const pull = observation.pullRequests[0];
     if (!pull.draft || (candidate.childHeadRevision && pull.headRevision !== candidate.childHeadRevision)) return block("pull_request_mismatch");
@@ -128,7 +130,11 @@ export async function executeFeatureIntegrationWorkspaceStageV1(input, adapterOp
   const invocation = invokeFeatureIntegrationWorkspaceEffectV1({ prepared, challengeId: input.challengeId, publication: input.publication }, adapterOptions);
   const observation = observeFeatureIntegrationWorkspaceEffectV1({ prepared, challengeId: input.challengeId }, adapterOptions);
   const reconciled = reconcileFeatureIntegrationWorkspaceEffectV1({ prepared, observation, challengeId: input.challengeId, observedTreeDigest: input.observedTreeDigest, observedAt: input.observedAt });
-  if (reconciled.state === "blocked") return { state: "recovery_required", reason: reconciled.reason, invocation };
+  if (reconciled.state === "blocked") {
+    const uncertain = createFeatureIntegrationEntryV1({ operationId: prepared.entry.operationId, entrySequence: prepared.entry.entrySequence + 1, entryKind: "effect_uncertain", previousEntryDigest: prepared.entry.entryDigest, payload: { preparationEntryDigest: prepared.entry.entryDigest, observationProvenance: input.challengeId, observedAt: input.observedAt } });
+    const marked = await appendFeatureOperationJournalStoreV1({ ...input.storeScope, expectedEntrySequence: uncertain.entrySequence, expectedLatestEntryDigest: prepared.entry.entryDigest, entry: uncertain });
+    return marked.state === "accepted" ? { state: "recovery_required", reason: reconciled.reason, invocation, journal: marked.value.journal } : marked;
+  }
   const terminal = createFeatureIntegrationEntryV1({ operationId: prepared.entry.operationId, entrySequence: prepared.entry.entrySequence + 1, entryKind: reconciled.entryKind, previousEntryDigest: prepared.entry.entryDigest, payload: reconciled.payload });
   const terminalResult = await appendFeatureOperationJournalStoreV1({ ...input.storeScope, expectedEntrySequence: terminal.entrySequence, expectedLatestEntryDigest: prepared.entry.entryDigest, entry: terminal });
   return terminalResult.state === "accepted" ? { state: reconciled.state, journal: terminalResult.value.journal, invocation } : terminalResult;
@@ -152,6 +158,11 @@ export function acceptGovernedRollbackWorkspaceV1(input) {
   if (Reflect.ownKeys(receipt).length !== required.length || required.some((field) => !Object.hasOwn(receipt, field))) return block("rollback_workspace_receipt_invalid");
   if (receipt.sourceMissionId !== handoff.requiredSourceMissionId || receipt.repositoryId !== handoff.repositoryId || receipt.baseHeadRevision !== handoff.currentHeadRevision || receipt.rollbackBranch !== handoff.rollbackBranchRequirement || receipt.restoredTreeDigest !== handoff.expectedRestoredTreeDigest || receipt.pullRequestTargetBranch !== handoff.draftTargetRequirement || receipt.draft !== true || !Array.isArray(receipt.sourceEffectKeys) || !Array.isArray(receipt.evidenceDigests) || receipt.sourceEffectKeys.length === 0 || receipt.evidenceDigests.length < 2 || receipt.sourceEffectKeys.includes(handoff.reservedFinalEffectKey)) return block("rollback_workspace_binding_mismatch");
   if ([receipt.sourceAuthorityDigest, receipt.sourceJournalDigest, receipt.completionReceiptDigest, receipt.restoredTreeDigest, ...receipt.evidenceDigests].some((item) => !DIGEST.test(item))) return block("rollback_workspace_receipt_invalid");
+  const source = replayProfileAwareMissionJournal(input.sourceJournal);
+  const authority = source.state === "valid" ? source.value.implementationAuthority : null;
+  const effects = source.state === "valid" ? source.value.effects.filter((effect) => effect.outcome === "completed" && receipt.sourceEffectKeys.includes(effect.effectKey)) : [];
+  const exactEvidence = [`feature-integration:restored-tree:${receipt.restoredTreeDigest}`, `feature-integration:rollback-head:${receipt.pullRequestHeadRevision}`, `feature-integration:rollback-pr:${receipt.pullRequestId}`];
+  if (source.state !== "valid" || source.value.missionId !== receipt.sourceMissionId || source.value.execution !== "completed" || source.value.implementationAuthorityState !== "authorized" || source.value.implementationAuthorityDigest !== receipt.sourceAuthorityDigest || computeProfileAwareMissionJournalDigestV1(input.sourceJournal) !== receipt.sourceJournalDigest || !authority || authority.repositoryId !== receipt.repositoryId || authority.branch !== receipt.rollbackBranch || authority.headRevision !== receipt.baseHeadRevision || effects.length !== receipt.sourceEffectKeys.length || exactEvidence.some((reference) => !effects.some((effect) => effect.evidenceRefs.includes(reference)))) return block("rollback_source_journal_invalid");
   const entry = createFeatureIntegrationEntryV1({ operationId: handoff.operationId, entrySequence: input.replay.nextEntrySequence, entryKind: "rollback_workspace_accepted", previousEntryDigest: input.previousEntryDigest, payload: { childId: handoff.childId, sourceMissionId: receipt.sourceMissionId, completionReceiptDigest: receipt.completionReceiptDigest, sourceAuthorityDigest: receipt.sourceAuthorityDigest, sourceJournalDigest: receipt.sourceJournalDigest, rollbackBranch: receipt.rollbackBranch, pullRequestId: receipt.pullRequestId, pullRequestHeadRevision: receipt.pullRequestHeadRevision, targetBranch: receipt.pullRequestTargetBranch, restoredTreeDigest: receipt.restoredTreeDigest, sourceEffectKeys: [...receipt.sourceEffectKeys].sort(), evidenceDigests: [...receipt.evidenceDigests].sort() } });
   return { state: "accepted", entry };
 }

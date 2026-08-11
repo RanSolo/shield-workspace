@@ -8,6 +8,7 @@ export {
   observeFeatureIntegrationCommitV1,
   observeFeatureIntegrationPullRequestV1,
   observeFeatureIntegrationRefV1,
+  observeFeatureIntegrationRepositoryV1,
   integrateFeatureIntegrationPullRequestV1,
 } from "../github/adapter-v1.mjs";
 export {

@@ -54,6 +54,7 @@ export type FeatureIntegrationGitHubEffectResultV1 =
 export function observeFeatureIntegrationRefV1(input: { repositoryId: string; fullRef: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }):
   { state: "observed"; observation: FeatureIntegrationGitHubRefObservationV1 } | { state: "blocked"; reason: string };
 export function createFeatureIntegrationRefV1(input: { repositoryId: string; fullRef: string; sourceRevision: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationRepositoryV1(input: { repositoryId: string; featureBranch: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: Record<string, unknown> } | { state: "blocked"; reason: string };
 export function observeFeatureIntegrationDraftPullRequestsV1(input: { repositoryId: string; headBranch: string; baseBranch: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }):
   { state: "observed"; observation: { repositoryId: string; headBranch: string; baseBranch: string; pullRequests: FeatureIntegrationGitHubPullRequestObservationV1[]; challengeId: string } } | { state: "blocked"; reason: string };
 export function createFeatureIntegrationDraftPullRequestV1(input: { repositoryId: string; headBranch: string; baseBranch: string; title: string; body: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
