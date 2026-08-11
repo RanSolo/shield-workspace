@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -100,4 +100,26 @@ test("store rejects malformed scope and invalid replay without touching disk", a
   const genesis = createFeatureIntegrationEntryV1({ operationId: "operation:invalid", entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null, payload: {} });
   const result = await initializeFeatureOperationJournalStoreV1({ repositoryRoot: root, operationId: "operation:invalid", lockOwnerId: "may:test", journal: createFeatureOperationJournalV1([genesis]) });
   assert.equal(result.state, "blocked");
+});
+
+test("store rejects journal inode replacement with a symlink after the no-follow open", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "feature-integration-inode-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const journal = fixture(); const scope = { repositoryRoot: root, operationId: journal.operationId, lockOwnerId: "may:test" };
+  const initialized = await initializeFeatureOperationJournalStoreV1({ ...scope, journal });
+  assert.equal(initialized.state, "accepted", JSON.stringify(initialized));
+  const retainedPath = `${initialized.value.journalPath}.retained`;
+  let replaced = false;
+  const result = await readFeatureOperationJournalStoreV1(scope, {
+    async openFile(path, flags) {
+      const handle = await open(path, flags);
+      if (!replaced) {
+        replaced = true;
+        await rename(path, retainedPath);
+        await symlink(retainedPath, path);
+      }
+      return handle;
+    },
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.code, "unsafe_file");
 });

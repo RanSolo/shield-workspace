@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -25,6 +25,11 @@ export interface FeatureIntegrationStorePathsV1 {
   directoryPath: string;
   journalPath: string;
   lockPath: string;
+}
+
+interface FeatureIntegrationStoreReadDependenciesV1 {
+  openFile: typeof open;
+  lstatPath: typeof lstat;
 }
 
 export type FeatureIntegrationStoreResultV1<T> =
@@ -91,6 +96,37 @@ async function safeStoreParents(paths: FeatureIntegrationStorePathsV1, create: b
   return true;
 }
 
+type RetainedReadResult =
+  | { state: "accepted"; bytes: string; mode: number }
+  | { state: "missing" }
+  | { state: "unsafe" }
+  | { state: "failed" };
+
+function sameIdentity(left: { dev: number | bigint; ino: number | bigint }, right: { dev: number | bigint; ino: number | bigint }): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function readRetainedRegularFile(path: string, dependencies: FeatureIntegrationStoreReadDependenciesV1): Promise<RetainedReadResult> {
+  let handle;
+  try {
+    handle = await dependencies.openFile(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const descriptorBefore = await handle.stat();
+    const pathBefore = await dependencies.lstatPath(path);
+    if (!descriptorBefore.isFile() || descriptorBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.isSymbolicLink() || !sameIdentity(descriptorBefore, pathBefore)) return { state: "unsafe" };
+    const bytes = await handle.readFile("utf8");
+    const descriptorAfter = await handle.stat();
+    const pathAfter = await dependencies.lstatPath(path);
+    if (!descriptorAfter.isFile() || descriptorAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.isSymbolicLink() || !sameIdentity(descriptorBefore, descriptorAfter) || !sameIdentity(descriptorBefore, pathAfter) || descriptorBefore.mode !== descriptorAfter.mode || descriptorBefore.mode !== pathAfter.mode) return { state: "unsafe" };
+    return { state: "accepted", bytes, mode: descriptorBefore.mode & 0o777 };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" && !handle) return { state: "missing" };
+    return code === "ELOOP" || code === "ENOENT" ? { state: "unsafe" } : { state: "failed" };
+  } finally {
+    try { await handle?.close(); } catch {}
+  }
+}
+
 function parseJournal(bytes: string, operationId: string): FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1; bytes: string }> {
   try {
     if (!bytes.endsWith("\n") || bytes.slice(0, -1).includes("\n")) return blocked("journal_invalid", "Journal bytes are not one canonical record.");
@@ -103,22 +139,21 @@ function parseJournal(bytes: string, operationId: string): FeatureIntegrationSto
   } catch { return blocked("journal_invalid", "Journal parsing failed."); }
 }
 
-export async function readFeatureOperationJournalStoreV1(input: unknown): Promise<FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1 | null; bytes: string; journalPath: string }>> {
+export async function readFeatureOperationJournalStoreV1(input: unknown, dependencies: Record<string, unknown> = {}): Promise<FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1 | null; bytes: string; journalPath: string }>> {
   const scope = strictScope(input); if (!scope) return blocked("malformed_input", "Feature integration store scope is invalid.");
   const paths = await resolveFeatureIntegrationStorePathsV1(scope); if (paths.state !== "accepted") return paths;
+  const fileOps: FeatureIntegrationStoreReadDependenciesV1 = { openFile: typeof dependencies.openFile === "function" ? dependencies.openFile as typeof open : open, lstatPath: typeof dependencies.lstatPath === "function" ? dependencies.lstatPath as typeof lstat : lstat };
   if (!(await safeStoreParents(paths.value, false))) {
     const parentKinds = await Promise.all([dirname(paths.value.directoryPath), paths.value.directoryPath].map(directoryOrMissing));
     if (parentKinds.includes("missing") && !parentKinds.includes("unsafe")) return accepted({ journal: null, bytes: "", journalPath: paths.value.journalPath });
     return blocked("unsafe_file", "Journal parent directories are unavailable or unsafe.");
   }
-  const kind = await regularOrMissing(paths.value.journalPath);
-  if (kind === "missing") return accepted({ journal: null, bytes: "", journalPath: paths.value.journalPath });
-  if (kind !== "regular") return blocked("unsafe_file", "Journal must be a regular non-symlink file.");
-  try {
-    const bytes = await readFile(paths.value.journalPath, "utf8");
-    const parsed = parseJournal(bytes, scope.operationId); if (parsed.state !== "accepted") return parsed;
-    return accepted({ ...parsed.value, journalPath: paths.value.journalPath });
-  } catch { return blocked("read_failed", "Journal read failed."); }
+  const retained = await readRetainedRegularFile(paths.value.journalPath, fileOps);
+  if (retained.state === "missing") return accepted({ journal: null, bytes: "", journalPath: paths.value.journalPath });
+  if (retained.state === "unsafe") return blocked("unsafe_file", "Journal must remain one regular non-symlink inode throughout the read.");
+  if (retained.state === "failed") return blocked("read_failed", "Journal read failed.");
+  const parsed = parseJournal(retained.bytes, scope.operationId); if (parsed.state !== "accepted") return parsed;
+  return accepted({ ...parsed.value, journalPath: paths.value.journalPath });
 }
 
 async function withLock<T>(scope: FeatureIntegrationStoreScopeV1, run: (paths: FeatureIntegrationStorePathsV1) => Promise<FeatureIntegrationStoreResultV1<T>>): Promise<FeatureIntegrationStoreResultV1<T>> {
@@ -148,8 +183,8 @@ async function replaceJournal(paths: FeatureIntegrationStorePathsV1, journal: Fe
     await rename(temporary, paths.journalPath); replaced = true;
     const file = await open(paths.journalPath, constants.O_RDONLY | constants.O_NOFOLLOW); await file.sync(); await file.close();
     const directory = await open(paths.directoryPath, constants.O_RDONLY | constants.O_DIRECTORY); await directory.sync(); await directory.close();
-    const observed = await readFile(paths.journalPath, "utf8");
-    if (observed !== bytes) return { state: "recovery_required", code: "durability_uncertain", journalPath: paths.journalPath, expectedJournalDigest: journal.journalDigest };
+    const observed = await readRetainedRegularFile(paths.journalPath, { openFile: open, lstatPath: lstat });
+    if (observed.state !== "accepted" || observed.bytes !== bytes) return { state: "recovery_required", code: "durability_uncertain", journalPath: paths.journalPath, expectedJournalDigest: journal.journalDigest };
     return accepted({ journal, bytes, journalPath: paths.journalPath });
   } catch {
     try { await handle?.close(); } catch {}

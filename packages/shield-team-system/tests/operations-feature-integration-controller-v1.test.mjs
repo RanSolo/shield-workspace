@@ -14,10 +14,13 @@ function replay(overrides = {}) {
   };
 }
 function input(overrides = {}) {
-  return { storeScope: {}, challengeId: "challenge:controller", repositoryObservation: { repositoryId: "RanSolo/shield-workspace", featureBranch: "feature/226", headRevision: head, treeDigest: tree, challengeId: "challenge:controller", observedAt: "2029-01-01T00:00:00Z" }, ...overrides };
+  return { storeScope: {}, challengeId: "challenge:controller", ...overrides };
 }
-function deps(projection, stageOwners = {}) {
-  return { readJournal: async () => ({ state: "accepted", value: { journal: {} } }), replayJournal: () => ({ state: "valid", value: projection }), stageOwners };
+function observation(overrides = {}) {
+  return { state: "observed", observation: { repositoryId: "RanSolo/shield-workspace", featureBranch: "feature/226", headRevision: head, treeDigest: tree, challengeId: "challenge:controller", observationProvenance: "github.feature-integration.v1:challenge:controller", observedAt: "2029-01-01T00:00:00Z", ...overrides } };
+}
+function deps(projection, stageOwners = {}, repositoryObservation = observation()) {
+  return { readJournal: async () => ({ state: "accepted", value: { journal: {} } }), replayJournal: () => ({ state: "valid", value: projection }), observeRepository: async () => repositoryObservation, stageOwners };
 }
 
 test("controller selects one stage without effects until explicit execution", async () => {
@@ -29,12 +32,20 @@ test("controller selects one stage without effects until explicit execution", as
 });
 
 test("controller fails closed on repository drift and pending or uncertain effects", async () => {
-  const drift = await runFeatureIntegrationControllerV1(input({ repositoryObservation: { ...input().repositoryObservation, headRevision: "c".repeat(40) } }), deps(replay()));
+  const drift = await runFeatureIntegrationControllerV1(input(), deps(replay(), {}, observation({ headRevision: "c".repeat(40) })));
   assert.equal(drift.state, "blocked"); assert.equal(drift.reason, "repository_drift");
   const pending = await runFeatureIntegrationControllerV1(input(), deps(replay({ pendingEffect: { effectKey: "effect:one" } })));
   assert.equal(pending.state, "recovery_required"); assert.equal(pending.reason, "effect_prepared");
   const uncertain = await runFeatureIntegrationControllerV1(input(), deps(replay({ pendingEffect: { effectKey: "effect:one" }, uncertainEffect: true })));
   assert.equal(uncertain.reason, "effect_uncertain");
+});
+
+test("controller rejects caller-fabricated observations and requires trusted adapter provenance before effects", async () => {
+  let effects = 0;
+  const fabricated = await runFeatureIntegrationControllerV1(input({ executeStage: true, repositoryObservation: { repositoryId: "RanSolo/shield-workspace", featureBranch: "feature/226", headRevision: head, treeDigest: tree, challengeId: "challenge:controller", observedAt: "2029-01-01T00:00:00Z" } }), deps(replay(), { feature_branch_creation: async () => { effects += 1; return { state: "accepted" }; } }, observation({ observationProvenance: "caller:asserted" })));
+  assert.equal(fabricated.state, "blocked");
+  assert.equal(fabricated.reason, "repository_observation_untrusted");
+  assert.equal(effects, 0);
 });
 
 test("controller maps closed lifecycle outcomes and refuses missing stage owners", async () => {

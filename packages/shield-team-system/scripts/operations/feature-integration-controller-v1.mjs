@@ -3,11 +3,30 @@ import { pathToFileURL } from "node:url";
 import { createChildImplementationHandoffReadyV1 } from "../../dist/feature-integration-evidence-v1.mjs";
 import { replayFeatureOperationJournalV1 } from "../../dist/feature-integration-v1.mjs";
 import { readFeatureOperationJournalStoreV1 } from "../../dist/feature-integration-store-v1.mjs";
+import { observeFeatureIntegrationCommitV1, observeFeatureIntegrationRefV1 } from "../../github/adapter-v1.mjs";
 import { createRollbackMissionHandoffReadyV1 } from "../../github/feature-integration-workspace-v1.mjs";
 
 export const FEATURE_INTEGRATION_CONTROLLER_CONTRACT_VERSION = "feature.integration.controller.v1";
 
 function blocked(reason, replay = null) { return { state: "blocked", reason, replay }; }
+
+async function observeRepositoryFromAdapter(request, dependencies) {
+  const adapterOptions = dependencies.adapterOptions ?? {};
+  const ref = await observeFeatureIntegrationRefV1({ repositoryId: request.repositoryId, fullRef: `refs/heads/${request.featureBranch}`, challengeId: request.challengeId }, adapterOptions);
+  if (ref.state !== "observed" || !ref.observation.exists) return blocked(ref.reason ?? "repository_observation_unavailable");
+  const commit = await observeFeatureIntegrationCommitV1({ repositoryId: request.repositoryId, headRevision: ref.observation.headRevision, challengeId: request.challengeId }, adapterOptions);
+  if (commit.state !== "observed") return blocked(commit.reason ?? "repository_observation_unavailable");
+  const observedAt = (dependencies.now ?? (() => new Date().toISOString()))();
+  return { state: "observed", observation: { repositoryId: request.repositoryId, featureBranch: request.featureBranch, headRevision: ref.observation.headRevision, treeDigest: commit.observation.treeDigest, challengeId: request.challengeId, observationProvenance: `github.feature-integration.v1:${request.challengeId}`, observedAt } };
+}
+
+function trustedRepositoryObservation(result, request) {
+  if (!result || result.state !== "observed" || !result.observation || typeof result.observation !== "object" || Array.isArray(result.observation) || Object.getPrototypeOf(result.observation) !== Object.prototype) return null;
+  const observation = result.observation;
+  const fields = ["repositoryId", "featureBranch", "headRevision", "treeDigest", "challengeId", "observationProvenance", "observedAt"];
+  if (Reflect.ownKeys(observation).length !== fields.length || fields.some((field) => !Object.hasOwn(observation, field)) || observation.repositoryId !== request.repositoryId || observation.featureBranch !== request.featureBranch || observation.challengeId !== request.challengeId || observation.observationProvenance !== `github.feature-integration.v1:${request.challengeId}` || !Number.isFinite(Date.parse(observation.observedAt))) return null;
+  return structuredClone(observation);
+}
 
 /**
  * Replays trusted state and selects at most one stage. Effects remain delegated
@@ -15,14 +34,17 @@ function blocked(reason, replay = null) { return { state: "blocked", reason, rep
  * executeStage with an exact stage request.
  */
 export async function runFeatureIntegrationControllerV1(input, dependencies = {}) {
-  if (!input || typeof input !== "object" || !input.storeScope || !input.repositoryObservation) return blocked("invalid_input");
+  if (!input || typeof input !== "object" || !input.storeScope || typeof input.challengeId !== "string" || input.challengeId.length === 0) return blocked("invalid_input");
   const read = await (dependencies.readJournal ?? readFeatureOperationJournalStoreV1)(input.storeScope);
   if (read.state === "recovery_required") return { state: "recovery_required", reason: read.code };
   if (read.state !== "accepted" || !read.value.journal) return blocked(read.code ?? "journal_unavailable");
   const replayed = (dependencies.replayJournal ?? replayFeatureOperationJournalV1)(read.value.journal);
   if (replayed.state !== "valid") return blocked(`replay_${replayed.reason.toLowerCase()}`);
-  const replay = replayed.value, observation = input.repositoryObservation;
-  if (observation.repositoryId !== replay.replayContext.repositoryId || observation.featureBranch !== replay.replayContext.activePlan.featureBranch || observation.headRevision !== replay.terminalHeadRevision || observation.treeDigest !== replay.terminalTreeDigest || observation.challengeId !== input.challengeId) return blocked("repository_drift", replay);
+  const replay = replayed.value;
+  const observationResult = await (dependencies.observeRepository ?? ((request) => observeRepositoryFromAdapter(request, dependencies)))({ repositoryId: replay.replayContext.repositoryId, featureBranch: replay.replayContext.activePlan.featureBranch, challengeId: input.challengeId });
+  const observation = trustedRepositoryObservation(observationResult, { repositoryId: replay.replayContext.repositoryId, featureBranch: replay.replayContext.activePlan.featureBranch, challengeId: input.challengeId });
+  if (!observation) return blocked("repository_observation_untrusted", replay);
+  if (observation.headRevision !== replay.terminalHeadRevision || observation.treeDigest !== replay.terminalTreeDigest) return blocked("repository_drift", replay);
   if (Date.parse(observation.observedAt) >= Date.parse(replay.replayContext.activePlan.expiresAt)) return { state: "blocked", reason: "authority_expired", replay };
   if (replay.pendingEffect) return { state: "recovery_required", reason: replay.uncertainEffect ? "effect_uncertain" : "effect_prepared", replay };
   const lifecycle = replay.replayContext.lifecycle.state;

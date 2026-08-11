@@ -68,6 +68,7 @@ export interface FeatureIntegrationReceiptV1 extends FeatureIntegrationIdentityV
   childId: string;
   childMissionId: string;
   effectKey: string;
+  requestDigest: string;
   attemptNumber: number;
   integrationMethod: string;
   reconciliationState: "applied" | "reconciled_applied";
@@ -147,10 +148,18 @@ export interface FeatureCumulativeValidationRequestV1 {
   repositoryId: string;
   terminalHeadRevision: string;
   terminalTreeDigest: string;
+  commands: readonly FeatureCumulativeValidationCommandV1[];
   commandIds: readonly string[];
   targetIds: readonly string[];
   validationIds: readonly string[];
   requestDigest: string;
+}
+
+export interface FeatureCumulativeValidationCommandV1 {
+  commandId: string;
+  executable: string;
+  args: readonly string[];
+  targetIds: readonly string[];
 }
 
 export interface FeatureCumulativeValidationCandidateV1 {
@@ -173,6 +182,7 @@ export interface FeatureCumulativeValidationReceiptV1 extends FeatureIntegration
   planDigest: string;
   featureAuthorityDigest: string;
   cumulativeAuthorityDigest: string;
+  effectKey: string;
   requestDigest: string;
   transitionReceiptDigest: string;
   terminalHeadRevision: string;
@@ -361,11 +371,11 @@ function receiptIdentity(value: FeatureIntegrationIdentityV1): boolean {
 
 export function validateFeatureIntegrationReceiptV1(input: unknown): ContractResult<FeatureIntegrationReceiptV1> {
   try {
-    const fields = ["schemaVersion", "contractVersion", "operationId", "repositoryId", "planDigest", "authorityDigest", "childId", "childMissionId", "effectKey", "attemptNumber", "integrationMethod", "reconciliationState", "priorHeadRevision", "priorTreeDigest", "childBranch", "childHeadRevision", "childTreeDigest", "childPullRequestId", "targetFeatureBranch", "evidenceDigests", "resultingHeadRevision", "resultingTreeDigest", "observationProvenance", "observedAt", "seatId", "reasoningRuntimeId", "modelId", "toolExecutorId", "receiptDigest"];
+    const fields = ["schemaVersion", "contractVersion", "operationId", "repositoryId", "planDigest", "authorityDigest", "childId", "childMissionId", "effectKey", "requestDigest", "attemptNumber", "integrationMethod", "reconciliationState", "priorHeadRevision", "priorTreeDigest", "childBranch", "childHeadRevision", "childTreeDigest", "childPullRequestId", "targetFeatureBranch", "evidenceDigests", "resultingHeadRevision", "resultingTreeDigest", "observationProvenance", "observedAt", "seatId", "reasoningRuntimeId", "modelId", "toolExecutorId", "receiptDigest"];
     if (!exactRecord(input, fields)) return invalid("integration_receipt_invalid", "Integration receipt is not closed.");
     const value = input as unknown as FeatureIntegrationReceiptV1;
     const evidence = stringArray(value.evidenceDigests, true);
-    if (value.schemaVersion !== 1 || value.contractVersion !== FEATURE_INTEGRATION_CONTRACT_VERSION || ![value.operationId, value.repositoryId, value.childId, value.childMissionId, value.effectKey, value.childBranch, value.childPullRequestId, value.targetFeatureBranch, value.observationProvenance].every(text) || value.childId !== value.childMissionId || !safeInteger(value.attemptNumber) || value.attemptNumber < 1 || !["merge_commit", "rebase_merge", "squash"].includes(value.integrationMethod) || !["applied", "reconciled_applied"].includes(value.reconciliationState) || ![value.planDigest, value.authorityDigest, value.priorTreeDigest, value.childTreeDigest, value.resultingTreeDigest, value.receiptDigest].every(digestValue) || ![value.priorHeadRevision, value.childHeadRevision, value.resultingHeadRevision].every((item) => typeof item === "string" && /^[0-9a-f]{40}$/.test(item)) || !evidence || evidence.length < 2 || !plain(value.observedAt) || value.observedAt.provenance !== "hostTrusted" || !timestamp(value.observedAt.value) || !receiptIdentity(value) || computeFeatureIntegrationReceiptDigestV1(value) !== value.receiptDigest) return invalid("integration_receipt_invalid", "Integration receipt validation failed.");
+    if (value.schemaVersion !== 1 || value.contractVersion !== FEATURE_INTEGRATION_CONTRACT_VERSION || ![value.operationId, value.repositoryId, value.childId, value.childMissionId, value.effectKey, value.childBranch, value.childPullRequestId, value.targetFeatureBranch, value.observationProvenance].every(text) || value.childId !== value.childMissionId || !safeInteger(value.attemptNumber) || value.attemptNumber < 1 || !["merge_commit", "rebase_merge", "squash"].includes(value.integrationMethod) || !["applied", "reconciled_applied"].includes(value.reconciliationState) || ![value.planDigest, value.authorityDigest, value.requestDigest, value.priorTreeDigest, value.childTreeDigest, value.resultingTreeDigest, value.receiptDigest].every(digestValue) || ![value.priorHeadRevision, value.childHeadRevision, value.resultingHeadRevision].every((item) => typeof item === "string" && /^[0-9a-f]{40}$/.test(item)) || !evidence || evidence.length < 2 || !plain(value.observedAt) || value.observedAt.provenance !== "hostTrusted" || !timestamp(value.observedAt.value) || !receiptIdentity(value) || computeFeatureIntegrationReceiptDigestV1(value) !== value.receiptDigest) return invalid("integration_receipt_invalid", "Integration receipt validation failed.");
     return valid(value);
   } catch { return invalid("integration_receipt_invalid", "Integration receipt validation failed."); }
 }
@@ -382,24 +392,32 @@ export function validateFeatureRollbackReceiptV1(input: unknown): ContractResult
 
 export function validateFeatureCumulativeValidationReceiptV1(input: unknown): ContractResult<FeatureCumulativeValidationReceiptV1> {
   try {
-    const fields = ["schemaVersion", "contractVersion", "operationId", "repositoryId", "planDigest", "featureAuthorityDigest", "cumulativeAuthorityDigest", "requestDigest", "transitionReceiptDigest", "terminalHeadRevision", "terminalTreeDigest", "commandIds", "targetIds", "validationIds", "mackEvidenceDigest", "checkObservationDigests", "outcome", "reconciliationState", "observationProvenance", "observedAt", "seatId", "reasoningRuntimeId", "modelId", "toolExecutorId", "receiptDigest"];
+    const fields = ["schemaVersion", "contractVersion", "operationId", "repositoryId", "planDigest", "featureAuthorityDigest", "cumulativeAuthorityDigest", "effectKey", "requestDigest", "transitionReceiptDigest", "terminalHeadRevision", "terminalTreeDigest", "commandIds", "targetIds", "validationIds", "mackEvidenceDigest", "checkObservationDigests", "outcome", "reconciliationState", "observationProvenance", "observedAt", "seatId", "reasoningRuntimeId", "modelId", "toolExecutorId", "receiptDigest"];
     if (!exactRecord(input, fields)) return invalid("cumulative_receipt_invalid", "Cumulative validation receipt is not closed.");
     const value = input as unknown as FeatureCumulativeValidationReceiptV1;
     const commands = stringArray(value.commandIds), targets = stringArray(value.targetIds, true), validations = stringArray(value.validationIds, true), checks = stringArray(value.checkObservationDigests, true);
-    if (value.schemaVersion !== 1 || value.contractVersion !== FEATURE_INTEGRATION_CONTRACT_VERSION || ![value.operationId, value.repositoryId, value.observationProvenance].every(text) || ![value.planDigest, value.featureAuthorityDigest, value.cumulativeAuthorityDigest, value.requestDigest, value.transitionReceiptDigest, value.terminalTreeDigest, value.mackEvidenceDigest, value.receiptDigest].every(digestValue) || !/^[0-9a-f]{40}$/.test(value.terminalHeadRevision) || !commands || !targets || !validations || !checks || checks.some((item) => !digestValue(item)) || !["passed", "failed"].includes(value.outcome) || !["applied", "reconciled_applied"].includes(value.reconciliationState) || !plain(value.observedAt) || value.observedAt.provenance !== "hostTrusted" || !timestamp(value.observedAt.value) || !receiptIdentity(value) || computeFeatureCumulativeValidationReceiptDigestV1(value) !== value.receiptDigest) return invalid("cumulative_receipt_invalid", "Cumulative validation receipt validation failed.");
+    if (value.schemaVersion !== 1 || value.contractVersion !== FEATURE_INTEGRATION_CONTRACT_VERSION || ![value.operationId, value.repositoryId, value.effectKey, value.observationProvenance].every(text) || ![value.planDigest, value.featureAuthorityDigest, value.cumulativeAuthorityDigest, value.requestDigest, value.transitionReceiptDigest, value.terminalTreeDigest, value.mackEvidenceDigest, value.receiptDigest].every(digestValue) || !/^[0-9a-f]{40}$/.test(value.terminalHeadRevision) || !commands || !targets || !validations || !checks || checks.some((item) => !digestValue(item)) || !["passed", "failed"].includes(value.outcome) || !["applied", "reconciled_applied"].includes(value.reconciliationState) || !plain(value.observedAt) || value.observedAt.provenance !== "hostTrusted" || !timestamp(value.observedAt.value) || !receiptIdentity(value) || computeFeatureCumulativeValidationReceiptDigestV1(value) !== value.receiptDigest) return invalid("cumulative_receipt_invalid", "Cumulative validation receipt validation failed.");
     return valid(value);
   } catch { return invalid("cumulative_receipt_invalid", "Cumulative validation receipt validation failed."); }
 }
 
 function cumulativeRequest(input: unknown, ownDigest = true): FeatureCumulativeValidationRequestV1 | null {
   if (!plain(input)) return null;
-  const fields = ["schemaVersion", "operationId", "repositoryId", "terminalHeadRevision", "terminalTreeDigest", "commandIds", "targetIds", "validationIds", "requestDigest"];
+  const fields = ["schemaVersion", "operationId", "repositoryId", "terminalHeadRevision", "terminalTreeDigest", "commands", "commandIds", "targetIds", "validationIds", "requestDigest"];
   if (Reflect.ownKeys(input).length !== fields.length || fields.some((field) => !Object.hasOwn(input, field))) return null;
   const value = input as unknown as FeatureCumulativeValidationRequestV1;
-  const commands = stringArray(value.commandIds), targets = stringArray(value.targetIds, true), validations = stringArray(value.validationIds, true);
-  if (value.schemaVersion !== 1 || !text(value.operationId) || !text(value.repositoryId) || !text(value.terminalHeadRevision) || !digestValue(value.terminalTreeDigest) || !commands || !targets || !validations || !digestValue(value.requestDigest)) return null;
+  const commandIds = stringArray(value.commandIds), targets = stringArray(value.targetIds, true), validations = stringArray(value.validationIds, true);
+  if (value.schemaVersion !== 1 || !text(value.operationId) || !text(value.repositoryId) || !text(value.terminalHeadRevision) || !digestValue(value.terminalTreeDigest) || !commandIds || !targets || !validations || !Array.isArray(value.commands) || value.commands.length !== commandIds.length || !digestValue(value.requestDigest)) return null;
+  const commands: FeatureCumulativeValidationCommandV1[] = [];
+  for (let index = 0; index < value.commands.length; index += 1) {
+    const command = value.commands[index];
+    if (!exactRecord(command, ["commandId", "executable", "args", "targetIds"]) || command.commandId !== commandIds[index] || !text(command.executable)) return null;
+    const args = stringArray(command.args), commandTargets = stringArray(command.targetIds, true);
+    if (!args || !commandTargets || commandTargets.some((target) => !targets.includes(target))) return null;
+    commands.push({ commandId: command.commandId as string, executable: command.executable as string, args, targetIds: commandTargets });
+  }
   if (ownDigest && computeFeatureCumulativeValidationRequestDigestV1(value) !== value.requestDigest) return null;
-  return structuredClone(value);
+  return structuredClone({ ...value, commands });
 }
 function cumulativeAuthority(input: unknown, ownDigest = true): FeatureCumulativeValidationAuthorityV1 | null {
   if (!plain(input)) return null;
@@ -508,6 +526,15 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
       pending = { preparationEntryDigest: entry.entryDigest, candidateDigest: payload.candidateDigest as string, effectKey: payload.effectKey as string, requestDigest: payload.requestDigest as string }; uncertain = false;
       pendingCandidate = (checkedCumulative ?? (checkedDerived?.state === "valid" ? checkedDerived.value : null)) as FeatureOperationDerivedCandidateV1 | FeatureCumulativeValidationCandidateV1 | null;
       if (pendingCandidate?.candidateDigest !== pending.candidateDigest || pendingCandidate?.effectKey !== pending.effectKey) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
+      if (payload.expectedHeadRevision !== terminalHead || payload.expectedTreeDigest !== terminalTree || pendingCandidate.operationId !== context.operationId) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
+      if (isCumulative) {
+        const cumulativeCandidate = pendingCandidate as FeatureCumulativeValidationCandidateV1;
+        const transitionReceiptDigest = context.transitions.at(-1)?.receiptDigest;
+        if (pending.requestDigest !== cumulativeCandidate.requestDigest || cumulativeCandidate.terminalHeadRevision !== terminalHead || cumulativeCandidate.terminalTreeDigest !== terminalTree || cumulativeCandidate.transitionReceiptDigest !== transitionReceiptDigest) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
+      } else {
+        const derivedCandidate = pendingCandidate as FeatureOperationDerivedCandidateV1;
+        if (payload.effectClass !== "feature_operation" || derivedCandidate.repositoryId !== context.repositoryId || derivedCandidate.planDigest !== context.activePlanDigest || derivedCandidate.authorityDigest !== context.verifiedAuthorityDigest) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
+      }
       if (isCumulative) { if (cumulativeKeys.includes(pending.effectKey)) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index); cumulativeKeys.push(pending.effectKey); cumulativeKeys.sort(compareUtf16); cumulativeAttempts += 1; }
       else {
         if (context.consumedEffectKeys.includes(pending.effectKey)) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
@@ -566,9 +593,15 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
       if (Date.parse(receipt.observedAt.value) < Date.parse(context.observedAt.value)) return replayInvalid("HEAD_TRANSITION_INVALID", index);
       context = { ...context, observedAt: receipt.observedAt };
       if (entry.entryKind === "integration_accepted") {
-        if ((pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "child_merge_to_feature" || !evidenced.has((receipt as FeatureIntegrationReceiptV1).childId)) return replayInvalid("EVIDENCE_INVALID", index);
+        const integrationCandidate = pendingCandidate as FeatureOperationDerivedCandidateV1 | null;
+        const integrationReceipt = receipt as FeatureIntegrationReceiptV1;
+        if (integrationCandidate?.derivationKind !== "child_merge_to_feature" || !evidenced.has(integrationReceipt.childId) ||
+            integrationReceipt.operationId !== integrationCandidate.operationId || integrationReceipt.repositoryId !== integrationCandidate.repositoryId || integrationReceipt.planDigest !== integrationCandidate.planDigest || integrationReceipt.authorityDigest !== integrationCandidate.authorityDigest ||
+            integrationReceipt.requestDigest !== pending.requestDigest || integrationReceipt.effectKey !== integrationCandidate.effectKey || integrationReceipt.childId !== integrationCandidate.childId || integrationReceipt.childMissionId !== integrationCandidate.childId ||
+            integrationReceipt.childBranch !== integrationCandidate.childBranch || integrationReceipt.childHeadRevision !== integrationCandidate.childHeadRevision || integrationReceipt.childTreeDigest !== integrationCandidate.childTreeDigest ||
+            integrationReceipt.targetFeatureBranch !== integrationCandidate.targetBranch || integrationReceipt.integrationMethod !== integrationCandidate.integrationMethod) return replayInvalid("EVIDENCE_INVALID", index);
         headSequence += 1;
-        const integration = receipt as FeatureIntegrationReceiptV1;
+        const integration = integrationReceipt;
         const transition = { kind: "integration" as const, operationSequence: headSequence, effectKey: integration.effectKey, priorHeadRevision: integration.priorHeadRevision, priorTreeDigest: integration.priorTreeDigest, resultingHeadRevision: integration.resultingHeadRevision, resultingTreeDigest: integration.resultingTreeDigest, receiptDigest: integration.receiptDigest, childId: integration.childId, childHeadRevision: integration.childHeadRevision, childTreeDigest: integration.childTreeDigest };
         context = { ...context, transitions: [...context.transitions, transition], acceptedIntegrations: [...context.acceptedIntegrations, { childId: transition.childId, operationSequence: transition.operationSequence, effectKey: transition.effectKey, priorHeadRevision: transition.priorHeadRevision, priorTreeDigest: transition.priorTreeDigest, resultingHeadRevision: transition.resultingHeadRevision, resultingTreeDigest: transition.resultingTreeDigest, receiptDigest: transition.receiptDigest, reverted: false }] };
       } else {
@@ -587,8 +620,10 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
     } else if (entry.entryKind === "cumulative_validation_accepted" || entry.entryKind === "cumulative_validation_failed") {
       if (!pending || !(pendingCandidate && "authorityDigest" in pendingCandidate && !("derivationKind" in pendingCandidate)) || payload.preparationEntryDigest !== pending.preparationEntryDigest || !plain(payload.receipt)) return replayInvalid("CUMULATIVE_VALIDATION_INVALID", index);
       const checkedReceipt = validateFeatureCumulativeValidationReceiptV1(payload.receipt); if (checkedReceipt.state !== "valid") return replayInvalid("CUMULATIVE_VALIDATION_INVALID", index);
-      const receipt = checkedReceipt.value;
-      if (receipt.terminalHeadRevision !== terminalHead || receipt.terminalTreeDigest !== terminalTree || receipt.outcome !== (entry.entryKind === "cumulative_validation_accepted" ? "passed" : "failed")) return replayInvalid("CUMULATIVE_VALIDATION_INVALID", index);
+      const receipt = checkedReceipt.value, cumulativeCandidate = pendingCandidate as FeatureCumulativeValidationCandidateV1;
+      if (receipt.operationId !== cumulativeCandidate.operationId || receipt.repositoryId !== context.repositoryId || receipt.planDigest !== context.activePlanDigest || receipt.featureAuthorityDigest !== context.verifiedAuthorityDigest ||
+          receipt.cumulativeAuthorityDigest !== cumulativeCandidate.authorityDigest || receipt.effectKey !== cumulativeCandidate.effectKey || receipt.requestDigest !== cumulativeCandidate.requestDigest || receipt.transitionReceiptDigest !== cumulativeCandidate.transitionReceiptDigest ||
+          receipt.terminalHeadRevision !== cumulativeCandidate.terminalHeadRevision || receipt.terminalTreeDigest !== cumulativeCandidate.terminalTreeDigest || receipt.terminalHeadRevision !== terminalHead || receipt.terminalTreeDigest !== terminalTree || receipt.outcome !== (entry.entryKind === "cumulative_validation_accepted" ? "passed" : "failed")) return replayInvalid("CUMULATIVE_VALIDATION_INVALID", index);
       if (Date.parse(receipt.observedAt.value) < Date.parse(context.observedAt.value)) return replayInvalid("CUMULATIVE_VALIDATION_INVALID", index);
       context = { ...context, observedAt: receipt.observedAt }; cumulative = receipt.outcome; pending = null; pendingCandidate = null; uncertain = false;
     } else if (entry.entryKind === "final_gate_evidence_accepted") {
