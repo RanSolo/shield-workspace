@@ -71,11 +71,13 @@ mission, exact-plan Fury PASS, fresh Coulson Wheels Up, and current May binding.
 ## Contract boundaries shared by all packets
 
 - Keep `tdd.mission.v1` pure, host-neutral, deterministic, side-effect-free,
-  non-authoritative, and backwards compatible for valid existing fixtures.
+  and non-authoritative. Preserve valid generation-zero behavior through the
+  explicit compatibility rule below rather than accepting both old and new
+  closed shapes ambiguously.
 - Preserve closed shapes, stable reason codes, frozen outputs, seat ownership,
   one-to-three criterion packet policy, and original amendment/Fitz gates.
-- Use the repository's existing canonical JSON and SHA-256 conventions. The
-  acceptance digest excludes evidence IDs, outcomes, and repository revisions.
+- Use the exact acceptance-identity algorithm frozen in Packet A; no caller,
+  evidence receipt, or repository observation selects contract identity.
 - A test change may add the reviewed regression contract; it may not weaken or
   remove an expectation. Any changed/removed expectation stops for Fitz.
 - Each packet receives complete Fury review after focused Mack validation. Fury
@@ -92,8 +94,12 @@ mission, exact-plan Fury PASS, fresh Coulson Wheels Up, and current May binding.
   - `packages/shield-team-system/src/tdd-mission-v1.mts`
   - `packages/shield-team-system/tests/tdd-mission-v1.test.mjs`
 - Required behavior:
-  - compute a framed canonical SHA-256 digest from normalized criterion and
-    packet material;
+  - add required `contractGeneration` to the contract and every strategy,
+    Red/declined-strategy, authority, Green, Refactor, focused Mack, terminal
+    Mack, Fury, amendment, and disposition record;
+  - define generation as a nonnegative JavaScript safe integer, with initial
+    generation `0` and amendments only on an exact contiguous `N -> N+1` edge;
+  - compute the exact content-derived digest defined below;
   - reject a supplied/reviewed digest that does not match;
   - bind strategy, Red/declined strategy, authority, Green, Refactor, Mack,
     Fury, and disposition evidence to one nonnegative generation;
@@ -109,6 +115,63 @@ F6 and F3 are coupled because generation freshness is defined by the same
 content-derived acceptance identity; splitting them would create a temporary
 caller-selected generation boundary.
 
+#### Exact acceptance-identity contract
+
+The normalized digest projection contains exactly:
+
+- top level: `schemaVersion`, `contractVersion`, `contractGeneration`,
+  normalized `criteria`, and normalized `packets`;
+- each criterion: `criterionId`, `strategy`, `rationale`, `riskFactors`,
+  `laterValidation`, `disposition`, the executable contract's `contractId`,
+  `kind`, `checkpointId`, and `expectedBehavior` or explicit `null`, and
+  traceability `planRequirementId`, `mackCheckpointId`, `mayPacketId`, and
+  `humanReviewId`;
+- each packet: `packetId`, `criterionIds`, `couplingRationale`, `minimalPaths`,
+  `requiredInterfaces`, `allowedEffects`, `focusedValidation` as closed
+  `{checkpointId, commandId, command}` entries, `expectedOutput`,
+  `stopConditions`, and scalar `successor`.
+
+It excludes the supplied/reviewed digest itself, all evidence/receipt IDs,
+evidence outcomes, amendments and their human evidence, implementation and
+review revisions/trees, runtime identities, repository observations, and every
+other downstream receipt. `contractGeneration` is digest material: reverting
+content at a later generation intentionally produces a different digest.
+
+Normalize to ordinary null-free JSON except the declared executable-contract
+and human-review nullable fields. Sort criteria by `criterionId` and packets by
+`packetId` using JavaScript code-unit order. Treat `riskFactors`, packet
+`criterionIds`, `minimalPaths`, `requiredInterfaces`, `allowedEffects`,
+`focusedValidation`, and `stopConditions` as duplicate-free sets sorted by the
+code-unit ordering of each item's complete canonical JSON. Preserve no other
+caller array order; packet dependency order is represented by `packetId` plus
+the scalar `successor`. Duplicate set members are invalid, not collapsed.
+
+Serialize with the repository `canonicalJson(...)`: recursively sort ordinary
+object keys by JavaScript code-unit order, preserve normalized arrays, UTF-8
+encode `JSON.stringify` with no whitespace, then form these exact bytes:
+
+```text
+UTF8("tdd.mission.v1\u0000acceptance-contract\u0000")
+|| UTF8(decimal(payload.byteLength)) || UTF8(":") || payload
+```
+
+SHA-256 those bytes and return `sha256:` plus RFC 4648 base64url without
+padding. The algorithm golden uses payload
+`{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[],"packets":[],"schemaVersion":1}`
+(104 UTF-8 bytes), preimage
+`tdd.mission.v1\u0000acceptance-contract\u0000104:{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[],"packets":[],"schemaVersion":1}`,
+and digest `sha256:cmUeaevhL6GckHGcclInnDdHUnXPSabx14PBwSSOAik`.
+
+The closed V1 input now requires generation explicitly. Existing retained
+no-amendment fixtures are mechanically migrated to `contractGeneration: 0` in
+the same test packet; no dual-shape runtime compatibility is admitted. A
+complete amendment remains represented as an exact old/new snapshot and edge,
+but no longer blocks once the active contract is the new digest/generation and
+all fresh evidence matches it. Selected TDD re-enters reviewed Red; declined
+TDD re-enters a freshly justified strategy without manufacturing Red. Both then
+require fresh Coulson authority, Green, optional Refactor, terminal Mack/Fury,
+and disposition evidence at `N+1`.
+
 ### Packet B — bounded execution and distinct transition proof (F4 + F7)
 
 - Acceptance criteria: AC-162-2 and AC-162-5.
@@ -116,7 +179,8 @@ caller-selected generation boundary.
   observed scope and validation are enforced by the packet contract.
 - Paths: Packet A source and focused-test paths only.
 - Required behavior:
-  - represent focused validation as closed checkpoint/command entries;
+  - represent focused validation as closed `{checkpointId, commandId, command}`
+    entries;
   - require unique observed paths/effects to remain within packet bounds;
   - require executed checkpoint and command identity to match the packet;
   - require distinct Green and Refactor authority plus focused Mack proof;
@@ -130,6 +194,19 @@ caller-selected generation boundary.
 F4 and F7 are coupled because the packet contract is the authority and proof
 boundary for both transitions.
 
+Green and Refactor use closed transition records containing mission ID, plan
+digest, `contractGeneration`, criterion ID, packet ID, acceptance digest,
+repository ID, branch, predecessor revision/tree, result revision/tree,
+`green` or `refactor` transition kind, unique nonempty observed paths and
+effects, authority reference, checkpoint ID, command ID, literal command,
+outcome, and evidence identity. Observed paths/effects must be unique nonempty
+subsets of packet `minimalPaths`/`allowedEffects`; checkpoint, command ID, and
+literal command must equal one packet validation entry. Green and Refactor
+have separate Coulson authority identities and separate Mack proof identities;
+neither may be replayed across transition kinds. Refactor follows Green at a
+different revision, retains the same digest/generation, and explicitly
+preserves behavior, failure, authority, persistence, and risk semantics.
+
 ### Packet C — exact terminal closure and truthful outcomes (F2 + F8)
 
 - Acceptance criterion: AC-162-6.
@@ -137,8 +214,8 @@ boundary for both transitions.
   exact final HEAD and tree.
 - Paths: Packet A source and focused-test paths only.
 - Required behavior:
-  - require cumulative Mack and Fury receipts at `headRevisionId` and
-    `headTreeDigest`;
+  - require one mission-scoped cumulative Mack bundle and one Fury terminal
+    receipt at `headRevisionId` and `headTreeDigest`;
   - retain packet Green/Refactor revisions as traceability rather than treating
     them as final mission HEAD;
   - for PASS require exit `0`, no failed/cancelled tests, nonnegative counts,
@@ -152,6 +229,21 @@ boundary for both transitions.
 
 F2 and F8 are coupled because both close the eligibility semantics of the same
 terminal validation receipts.
+
+The Mack bundle contains exactly the three terminal command receipts in the
+validation table plus repository observations for canonical root, repository,
+branch, HEAD, tree, changed paths, and tracked-clean state. It references all
+packet Mack reviews and criterion dispositions. The single Fury receipt is
+non-executable, matches the same HEAD/tree, and references that whole bundle,
+all four complete packet Fury reviews, and every criterion disposition. Any
+later HEAD/tree stales both.
+
+Executable evidence semantics are closed: test PASS requires exit `0`, safe
+nonnegative `total/passed/failed/skipped/cancelled/todo`, zero failed/cancelled,
+and an exact sum to total; build PASS requires exit `0` and may omit counts;
+failed executable evidence requires nonzero exit and classification-consistent
+evidence. Fury and other non-executable receipts carry no command, exit, counts,
+or cache record. Cache evidence is optional and present only when emitted.
 
 ### Packet D — public contract documentation (F11)
 
@@ -170,22 +262,25 @@ terminal validation receipts.
 
 ## Validation contract
 
-For Packets A-C, use:
+Every checkpoint maps collision-free to one literal command:
 
-1. `npm exec nx run @shield/team-system:build`
-2. `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs`
+| Packet/stage | Checkpoint ID | Command ID | Literal command |
+| --- | --- | --- | --- |
+| A build | `checkpoint:issue-162:A:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
+| A focused | `checkpoint:issue-162:A:focused` | `validation:issue-162:focused-node-test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
+| B build | `checkpoint:issue-162:B:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
+| B focused | `checkpoint:issue-162:B:focused` | `validation:issue-162:focused-node-test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
+| C build | `checkpoint:issue-162:C:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
+| C focused | `checkpoint:issue-162:C:focused` | `validation:issue-162:focused-node-test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
+| D build | `checkpoint:issue-162:D:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
+| D focused | `checkpoint:issue-162:D:package-surface` | `validation:issue-162:package-surface-test` | `node --test packages/shield-team-system/tests/package-surface.test.mjs` |
+| terminal focused | `checkpoint:issue-162:terminal:focused` | `validation:issue-162:focused-node-test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
+| terminal build | `checkpoint:issue-162:terminal:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
+| terminal suite | `checkpoint:issue-162:terminal:test` | `validation:issue-162:nx-test` | `npm exec nx run @shield/team-system:test` |
 
-For Packet D, use:
-
-1. `npm exec nx run @shield/team-system:build`
-2. `node --test packages/shield-team-system/tests/package-surface.test.mjs`
-
-At the exact final implementation HEAD, Mack independently runs:
-
-1. `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs`
-2. `npm exec nx run @shield/team-system:build`
-3. `npm exec nx run @shield/team-system:test`
-4. exact branch/HEAD/tree, changed-path, and tracked-clean checks.
+The packet-qualified checkpoint plus command ID is the unique mapping key.
+Mack also performs exact root/repository/branch/HEAD/tree, changed-path, and
+tracked-clean observations in the terminal bundle.
 
 Record commands, cwd, exact start/end HEAD and tree, exit codes, available test
 counts, cache disposition only when emitted, runtime/model/executor identity,
@@ -213,19 +308,74 @@ smallest affected packet and fresh evidence.
   `runtime:codex-hosted-may-sol`,
   `executor:codex-hosted-workspace-tools`.
 - Validation IDs: `validation:issue-162:focused-node-test`,
-  `validation:issue-162:nx-build`, `validation:issue-162:nx-test`.
+  `validation:issue-162:nx-build`, `validation:issue-162:nx-test`,
+  `validation:issue-162:package-surface-test`.
 
-The one-passcode preparation may include only the exact two corrective planning
-artifacts as initial draft-review publication paths because the supported
-command derives that authority. No publication request or external effect is
-part of this mission, and that dormant authority does not permit implementation
-HEAD publication, PR updates, ready-for-review, merge, deployment, or release.
+## Exact schema-9 preparation
+
+After this corrected plan is committed and receives exact-revision Fury PASS,
+Hill prepares `.shield/tmp/issue-162-correction-2-authorize-wheels-up.json` with
+exactly this closed, sorted content:
+
+```json
+{
+  "baseRevision": "87c889769093fe000d4bb0ef45c1da80bdb6f321",
+  "modelId": "gpt-5.6-sol",
+  "approvedRelativePaths": [
+    "packages/shield-team-system/PUBLIC_API.md",
+    "packages/shield-team-system/src/tdd-mission-v1.mts",
+    "packages/shield-team-system/tests/package-surface.test.mjs",
+    "packages/shield-team-system/tests/tdd-mission-v1.test.mjs"
+  ],
+  "approvedActionIds": ["repository.git_commit", "repository.run_validation", "repository.write_file"],
+  "approvedEffectClasses": ["behavioral_implementation", "coordination", "verification"],
+  "approvedEffectKeys": ["effect:issue-162:implementation", "effect:issue-162:packet-commits", "effect:issue-162:validation"],
+  "approvedCapabilities": ["filesystem_write", "git_write", "process_execute"],
+  "validationCommandIds": [
+    "validation:issue-162:focused-node-test",
+    "validation:issue-162:nx-build",
+    "validation:issue-162:nx-test",
+    "validation:issue-162:package-surface-test"
+  ],
+  "reasoningRuntimeId": "runtime:codex-hosted-may-sol",
+  "toolExecutorId": "executor:codex-hosted-workspace-tools",
+  "publicationPaths": [
+    "docs/missions/issue-162-tdd-intent-corrective-brief.json",
+    "docs/missions/issue-162-tdd-intent-corrective-plan.md"
+  ]
+}
+```
+
+Run `node packages/shield-team-system/dist/cli.mjs mission begin
+--profile-aware --brief docs/missions/issue-162-tdd-intent-corrective-brief.json
+--root /private/tmp/shield-162-bravo.yMZTJ7 --json`, then verify the one-entry
+schema-9 journal and waiting state. Before the PIN gate verify exact root,
+configured and origin repository `RanSolo/shield-workspace`, attached branch,
+reviewed HEAD/tree and plan digest, base ancestry, two-path base-to-HEAD diff,
+ordinary non-symlink/non-gitlink publication paths, closed sorted authority
+input, and completely empty `git status --porcelain`.
+
+The current untracked `node_modules/` must remain uncommitted and preserved.
+Because the supported one-passcode preflight requires a fully clean worktree,
+the human-gate command temporarily renames that exact directory to the verified
+absent sibling `/private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold`,
+installs a trap that restores it on success, failure, or interruption, invokes
+the already-built repository CLI directly, and verifies restoration afterward.
+No deletion or cleaning is permitted. Hill preflights the manifest without a
+passcode and confirms journal bytes are unchanged before surfacing the gate.
+
+The one-passcode command creates dormant initial draft authority for exactly
+the two planning artifacts. It performs no publication request or execution
+and does not permit implementation-HEAD publication, PR updates,
+ready-for-review, merge, deployment, or release. Any later publication requires
+fresh exact authority.
 
 ## Stop conditions
 
 Stop before implementation for a non-PASS exact-plan Fury verdict, missing or
-stale Coulson authority, wrong root/branch/HEAD, plan digest drift, unexpected
-tracked changes, runtime substitution, scope widening, or any need to enter the
+stale Coulson authority, wrong root/branch/HEAD, plan digest drift, any status
+entry during authority preflight, failed exact node_modules restoration,
+runtime substitution, scope widening, or any need to enter the
 excluded F5/F9/F10 work. Stop after implementation for failed validation,
 stale exact-head evidence, incomplete Fury review, or a material scope/risk/
 authority change. Never rewrite, squash, reset, publish, merge, deploy, release,
