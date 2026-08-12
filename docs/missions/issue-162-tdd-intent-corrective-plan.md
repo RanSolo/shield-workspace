@@ -21,6 +21,13 @@ The preserved eight commits remain historical inputs and are not
 retrospectively authorized. May may edit only after fresh exact-plan Fury PASS
 and fresh Coulson Wheels Up for this corrective mission.
 
+Plan review history:
+
+- Revision `28a5a7b8b5910a8f498db41bafd30c0ac3035d5e` received complete
+  Fury `PLAN REVISE` at `gpt-5.6-sol`. This revision closes its four findings:
+  literal authority scope, the absent hosted-Mack durability prerequisite,
+  canonical digest bytes/order, and executable packet Red/Green validation.
+
 ## Preserved gate evidence
 
 - Complete Fury conformance review: `REVISE`, reviewed revision `87c8897...`,
@@ -53,8 +60,10 @@ Explicitly excluded:
 - retroactive authorization or rewriting of historical evidence;
 - a runner, journal store, CLI, UI, new test framework, network effect, model
   invocation, Guided QA #238, lifecycle issue #247 or unrelated cleanup;
-- publication, PR creation/update, merge, deployment, release or final
-  acceptance;
+- publication execution, PR creation/update, merge, deployment, release or
+  final acceptance. The repository's one-passcode command may create dormant
+  review-publication authority for the two exact corrective planning artifacts;
+  no push, PR or other communication request/result is permitted;
 - changing/removing existing expectations merely to obtain Green. Any such
   change requires the existing Fitz and amendment-generation gates.
 
@@ -100,9 +109,32 @@ field and packet field: IDs, strategies, rationales, risk factors, executable
 contracts, traceability contract IDs, dispositions, criterion membership,
 minimal paths, required interfaces, allowed effects, focused validation,
 expected output, stop conditions and successors. Use framed canonical JSON,
-stable criterion/packet ordering and SHA-256 base64url output. Reject a supplied
-or reviewed digest that differs from the computed digest. Evidence IDs,
-repository revisions and review outcomes are not hash inputs.
+stable criterion/packet ordering and SHA-256 base64url output.
+
+The exact digest algorithm is:
+
+1. Normalize the evidence-independent material into ordinary null-free JSON
+   values. Sort criteria by `criterionId` and packets by `packetId` using
+   JavaScript code-unit order. Treat `riskFactors`, packet `criterionIds`,
+   `minimalPaths`, `requiredInterfaces`, `allowedEffects`, `focusedValidation`
+   entries and `stopConditions` as duplicate-free sets sorted by their complete
+   canonical JSON strings using code-unit order. Preserve no caller array order
+   outside these declared sets; dependency order is represented by packet IDs
+   and the scalar `successor` edge.
+2. Produce payload bytes as UTF-8 of the repository's existing
+   `canonicalJson(...)`: recursively sort ordinary-object keys by JavaScript
+   code-unit order, preserve normalized arrays, and serialize with
+   `JSON.stringify` without whitespace.
+3. Produce the exact preimage as
+   `UTF8("tdd.mission.v1\u0000acceptance-contract\u0000") ||
+   UTF8(decimal(payload.byteLength)) || UTF8(":") || payload`.
+4. SHA-256 the preimage and encode the 32 bytes with RFC 4648 base64url without
+   padding, prefixed by `sha256:`.
+
+Reject a supplied or reviewed digest that differs from the computed digest.
+Evidence IDs, repository revisions and review outcomes are not hash inputs.
+Tests freeze exact golden bytes/digest, equivalent permitted reordering and
+every behavior-bearing mutation.
 
 ### Exact transition evidence
 
@@ -122,7 +154,19 @@ fresh cumulative receipts returns `STALE_EXACT_REVISION_EVIDENCE`.
 ### Packet enforcement
 
 Each implementation/validation receipt records observed paths, observed
-effects and the executed command/checkpoint ID. Observed paths and effects must
+effects and the executed command/checkpoint ID. `focusedValidation` is a closed
+array of `{ checkpointId, commandId, command }` objects. For C1-C7 it contains
+the exact build entry `{ checkpointId: "checkpoint:issue-162:build-current",
+commandId: "validation:issue-162:nx-build", command: "npm exec nx run
+@shield/team-system:build" }` and focused entry `{ checkpointId:
+"checkpoint:issue-162:tdd-focused", commandId:
+"validation:issue-162:focused-node-test", command: "node --test
+packages/shield-team-system/tests/tdd-mission-v1.test.mjs" }`. C8 instead uses
+the same build entry plus `{ checkpointId:
+"checkpoint:issue-162:package-surface", commandId:
+"validation:issue-162:focused-node-test", command: "node --test
+packages/shield-team-system/tests/package-surface.test.mjs" }`.
+Observed paths and effects must
 be unique subsets of `minimalPaths` and `allowedEffects`. Focused Mack commands
 and checkpoint IDs must exactly match an entry in `focusedValidation`.
 Substitution, omission, duplicate evidence or replay blocks deterministically.
@@ -150,19 +194,60 @@ append, dispatch, test execution, publication or human decision. Extend the
 existing package-surface test so package exports and documented public
 specifiers agree.
 
+## Hosted-Mack durability prerequisite for F5
+
+Repository evidence exposes no compatible governed durable producer/store for
+the selected hosted Mack runtime `gpt-5.3-codex-spark`. The only protected
+production registry is `mack.local-validation.v1`, produced by
+`scripts/model/mack-validation-runner.mjs`, persisted beneath the absolute
+private `SHIELD_MACK_REPLAY_REGISTRY_ROOT`, keyed by normalized
+`validationRequestId`, and read back through
+`readMackProductionValidationRegistryV1(...)` with exact `requestDigest`.
+Create-only records are canonical, digest-verified and idempotent for an exact
+request; conflicting same-ID evidence is invalid; lock/root/identity
+uncertainty returns recovery; missing records wait. That route requires an
+explicit LM Studio model/runtime, `executor:local-mack-validation-v1`, a frozen
+command registry and model invocation. It cannot truthfully persist evidence
+from hosted Mack or `executor:codex-hosted-workspace-tools`.
+
+Therefore F5 is an explicit pre-implementation prerequisite, not a promised
+artifact: before any Coulson implementation authority or C0 packet, a separately
+reviewed and authorized capability must either (a) add a protected hosted-Mack
+producer/store/readback contract with equivalent request/digest/replay/conflict/
+recovery semantics, or (b) explicitly select and authorize the existing local
+Mack runtime topology and its complete request/registry configuration. This
+corrective mission does neither and does not enter #247. A chat transcript,
+`/private/tmp` file, caller assertion or unsigned journal field cannot satisfy
+F5. Until the prerequisite is supplied, the mission remains planning-complete
+but implementation-blocked and no Wheels Up PIN is legal.
+
 ## Dependency-ordered implementation packets
 
 Each packet contains one acceptance outcome and one Fury finding by default.
 No packet contains more than two tightly coupled criteria. May receives only
 the listed paths and the immediately required interfaces.
 
+### C0 — F6 content-addressed acceptance digest (AC-162-4, AC-162-6)
+
+- Paths: source and focused test only.
+- Coupling rationale: amendment invalidation and replay closure depend on the
+  same canonical digest generation.
+- Invariant: every behavior/packet mutation changes the computed digest.
+- Red: golden canonical-byte and retained-receipt mutation fixtures fail at the
+  preserved revision.
+- Green proof: exact golden digest passes; permitted set reordering is
+  byte-identical; every hash-material mutation with retained receipts blocks.
+- Successor: C1. No digest-bound receipt from later packets is produced before C0.
+
 ### C1 — F2 cumulative exact-HEAD closure (AC-162-6)
 
 - Paths: `src/tdd-mission-v1.mts`, `tests/tdd-mission-v1.test.mjs`.
 - Invariant: terminal cumulative Mack and Fury evidence equals mission HEAD/tree.
-- Red: later mission HEAD with prior terminal receipts currently remains eligible.
+- Red: after building predecessor source, a scaffolded later-HEAD test fails
+  because prior terminal receipts currently remain eligible.
 - Green proof: later-HEAD and tree-substitution fixtures return
-  `STALE_EXACT_REVISION_EVIDENCE`; packet revisions remain traceable.
+  `STALE_EXACT_REVISION_EVIDENCE`; packet revisions remain traceable. Build the
+  packet revision before the focused passing run.
 - Successor: C2.
 
 ### C2 — F3 amendment generations (AC-162-4)
@@ -185,84 +270,89 @@ the listed paths and the immediately required interfaces.
 - Green proof: effect, path, command and checkpoint substitution all block.
 - Successor: C4.
 
-### C4 — F6 content-addressed acceptance digest (AC-162-4, AC-162-6)
-
-- Paths: source and focused test only.
-- Coupling rationale: amendment invalidation and replay closure depend on the
-  same canonical digest generation.
-- Invariant: every behavior/packet mutation changes the computed digest.
-- Green proof: retained old digest/receipts fail for every hash-material field;
-  stable reordered input normalizes deterministically where ordering is not semantic.
-- Successor: C5.
-
-### C5 — F7 exact Green/Refactor evidence (AC-162-5)
+### C4 — F7 exact Green/Refactor evidence (AC-162-5)
 
 - Paths: source and focused test only.
 - Invariant: Green and Refactor have distinct exact Coulson authority and Mack
   focused receipts; cumulative Mack remains separate.
 - Green proof: missing, duplicate, substituted and replayed authority/proofs block.
-- Successor: C6.
+- Successor: C5.
 
-### C6 — F8 truthful count semantics (AC-162-6)
+### C5 — F8 truthful count semantics (AC-162-6)
 
 - Paths: source and focused test only.
 - Invariant: PASS counts and exit code cannot contradict outcome.
 - Green proof: failed/cancelled PASS, bad sums, negative counts and failed exit
   inconsistencies block.
-- Successor: C7.
+- Successor: C6.
 
-### C7 — F9 identity separation (AC-162-6)
+### C6 — F9 identity separation (AC-162-6)
 
 - Paths: source and focused test only.
 - Invariant: seat, runtime, model and executor remain typed and distinct.
 - Green proof: collapsed and substituted identities block.
-- Successor: C8.
+- Successor: C7.
 
-### C8 — F10 proxy-array closure (AC-162-6)
+### C7 — F10 proxy-array closure (AC-162-6)
 
 - Paths: source and focused test only.
 - Invariant: no proxy array is observed or normalized.
 - Green proof: live, trapping and revoked proxies at every nested array boundary
   return deterministic invalid/blocked results without escaping.
-- Successor: C9.
+- Successor: C8.
 
-### C9 — F11 public API documentation (AC-162-6)
+### C8 — F11 public API documentation (AC-162-6)
 
 - Paths: `packages/shield-team-system/PUBLIC_API.md`,
   `packages/shield-team-system/tests/package-surface.test.mjs`.
 - Invariant: the exported `/tdd-mission` specifier is documented with its pure,
   non-authoritative boundary and surface agreement is executable.
-- Green proof: package-surface test verifies export/document agreement.
+- Red: the package-surface documentation-agreement assertion fails against the
+  predecessor documentation.
+- Green proof: after the documentation edit and current build, run
+  `node --test packages/shield-team-system/tests/package-surface.test.mjs` and
+  verify export/document agreement.
 - Successor: exact-head validation and review.
 
-F1 is discharged only by fresh Coulson authority before C1. F5 is discharged
-only after C9 by a fresh durable Mack receipt at the exact successor HEAD; it
-is not an implementation packet. Every packet gets complete Fury conformance
-review; there is no finding cutoff.
+F1 is discharged only by fresh Coulson authority after the F5 prerequisite and
+before C0. F5 is discharged only by the separately supplied compatible durable
+Mack route and a fresh receipt at the exact successor HEAD; it is not an
+implementation packet. For each packet, Mack owns the modeled focused
+checkpoint intent and exact-revision receipt. May first materializes the
+reviewed failing scaffold checkpoint without production change, Mack confirms
+the expected Red classification, then May implements Green. The current source
+revision is built before every focused Green run. Exact focused Mack evidence
+precedes each complete Fury packet review; there is no finding cutoff.
 
 ## Fresh authority envelope
 
-The maximum implementation envelope is deliberately broader than each packet:
+After the F5 prerequisite, the maximum implementation envelope is:
 
 - Paths:
-  - `packages/shield-team-system/package.json`
   - `packages/shield-team-system/PUBLIC_API.md`
-  - `packages/shield-team-system/public/tdd-mission.d.mts`
-  - `packages/shield-team-system/public/tdd-mission.mjs`
   - `packages/shield-team-system/src/tdd-mission-v1.mts`
   - `packages/shield-team-system/tests/package-surface.test.mjs`
   - `packages/shield-team-system/tests/tdd-mission-v1.test.mjs`
 - Actions: `repository.write_file`, `repository.git_commit`,
   `repository.run_validation`.
-- Effects: behavioral implementation, bounded packet commits and verification
-  under issue-162-specific effect keys only.
+- Effect classes: `behavioral_implementation`, `coordination`, `verification`.
+- Effect keys: `effect:issue-162:implementation`,
+  `effect:issue-162:packet-commits`, `effect:issue-162:validation`.
 - Capabilities: `filesystem_write`, `git_write`, `process_execute`.
-- Runtime: May hosted `gpt-5.6-sol` through
+- Model/runtime/executor: `gpt-5.6-sol`,
+  `runtime:codex-hosted-may-sol`,
   `executor:codex-hosted-workspace-tools`.
-- Validation IDs: focused TDD node test, Team System Nx build and Team System Nx test.
+- Validation IDs: `validation:issue-162:focused-node-test`,
+  `validation:issue-162:nx-build`, `validation:issue-162:nx-test`.
+- Authority base: `87c889769093fe000d4bb0ef45c1da80bdb6f321`.
+- Authority head: the exact future Fury-approved corrective-plan commit.
+- One-passcode review-publication paths, authority only and no effect:
+  `docs/missions/issue-162-tdd-intent-corrective-brief.json` and
+  `docs/missions/issue-162-tdd-intent-corrective-plan.md`.
 
-The envelope permits no write before fresh authority and no publication,
-external communication, merge, deployment or release afterward.
+The envelope permits no write before fresh authority. The one-passcode flow's
+review-publication authority remains dormant: it permits no publication
+request/result, external communication, merge, deployment or release.
 
 ## Validation and terminal routing
 
