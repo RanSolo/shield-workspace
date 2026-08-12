@@ -55,21 +55,59 @@ npm install @shield/mission-preparation --workspace @shield/team-system
 No `tsconfig` path alias, copied compiler, duplicate attribution evaluator, or
 reverse dependency is permitted.
 
-`mission-builder-v1.mts` is the sole production invocation point for the
-authority-none transition compiler. `mission-cli.mts` owns host resolution,
-live observations, the PIN interaction, and delegation to the existing
-`prepareAuthorizeWheelsUp` / signing / append implementation. Do not put this
-pre-PIN preparation logic into `governed-may-dispatch-v1.mts`; no model is
-invoked in this transition.
+`mission-preparation-host-v1.mts` is the sole Team System integration seam. It
+is an internal module (not re-exported by `public/index.*` and not added to the
+package `exports` map) that owns two closed operations:
+
+1. `materializeReviewedMissionTransitionV1`, invoked by the host after Fury's
+   exact-plan dispatch has durably completed, accepts typed Mission Builder
+   output plus the exact Fury plan-review artifact and dispatch identity,
+   rereads the raw dispatch ledger, derives attribution, calls
+   `prepareMissionTransitionV1`, and create-once stores the reviewed graph;
+2. `resolvePreparedMissionTransitionV1`, invoked only from `prepare-next`,
+   resolves that graph by mission ID, rereads the dispatch ledger, rederives
+   attribution, observes the live repository and journal, calls the compiler,
+   and returns either a closed candidate or a stable blocked reason.
+
+The compiler call is not added to `mission-builder-v1.mts`, whose exports are
+public through the existing wildcard facade. Mission Builder remains the
+typed producer of the transition plan; the internal host is the sole
+production consumer of the authority-none compiler. `mission-cli.mts` owns
+only option parsing, rendering, the PIN interaction, and delegation to the
+existing `prepareAuthorizeWheelsUp` / signing / append implementation. Do not
+put this pre-PIN preparation logic into `governed-may-dispatch-v1.mts`; no model
+is invoked in this transition.
 
 ## Durable evidence and preparation rules
 
 The host resolves the current mission and its protected transition-plan/Fury
 review evidence by mission ID and configured repository paths. Hill supplies
-neither action JSON nor an intent path. Raw Fury receipt entries are replayed
-through the existing `evaluateSeatDispatchAttributionV1` path used by
-`deriveFuryPlanReviewEvidenceV1`; the resulting Team System projection—not raw
-receipt prose and not a caller assertion—feeds the authority-none compiler.
+neither action JSON nor an intent path. The existing seat-dispatch store ledger
+reader is extended additively to return the exact readback `bytes` already held
+by its private log result and an ordered array of copied UTF-8 bytes for each
+canonical JSON line, excluding its newline delimiter. The host hashes the
+selected raw receipt set with `computeRawReceiptSetSha256V1`, selects the one
+exact terminal Fury receipt named by the typed review input, and replays its
+entries through `evaluateSeatDispatchAttributionV1`. It derives
+`mission.parent-plan-review-evidence.v1` from that attributed review artifact
+and rejects zero, duplicate, or conflicting candidates. Existing
+implementation-blueprint Fury evidence is not reused or represented as
+parent-plan evidence. The resulting Team System projection—not raw receipt
+prose and not a caller assertion—feeds the authority-none compiler.
+
+No new operator command materializes the intent. The orchestration host calls
+`materializeReviewedMissionTransitionV1` as the deterministic successor to a
+durable Fury PASS. Its closed input contains the transition plan, exact Fury
+plan-review artifact, expected binding, and exact dispatch identity; it does
+not accept an attribution verdict, reviewed projection, signer input, action
+JSON, or intent path. The review artifact is the exact artifact attributed by
+the receipt and contains the closed PASS verdict and reviewer declarations;
+Team System compares those declarations with host-observed runtime/model/
+executor history before deriving the parent-review contract. The operation
+derives the review and intent itself, writes one
+create-only artifact beneath
+`.shield/audit/mission-preparation/<sha256(mission-id)>/reviewed-transition.json`,
+syncs parent directories, rereads exact bytes, and records no authority.
 
 The materialized reviewed intent and preparation receipt are closed,
 content-addressed artifacts. Their identities bind:
@@ -82,32 +120,53 @@ content-addressed artifacts. Their identities bind:
 - live canonical root, branch, base, HEAD, changed paths, path kinds, journal
   sequence/digest, signer binding, and remaining gates.
 
-Resolution rereads the protected evidence and recomputes all identities before
-the PIN. Missing, non-regular, symlinked, replaced, forged, stale, ambiguous,
+Resolution rereads the protected artifact and exact dispatch-log bytes and
+recomputes all identities immediately before candidate-to-
+legacy-intent conversion. Missing, non-regular, symlinked, replaced, forged, stale, ambiguous,
 duplicate, conflicting, cross-plan, cross-mission, cross-repository, or
 runtime/model/executor-mismatched evidence returns one stable pre-PIN failure
 and performs no signer, journal, Git, GitHub, or model effect.
 
-The existing post-display/post-PIN freshness check remains separate and
-unchanged; preparation must not collapse pre-PIN derivation and post-PIN
-freshness into one snapshot.
+Before display, the CLI requires byte-for-byte equality between the compiler
+candidate action input and the manifest produced by
+`prepareAuthorizeWheelsUp`; this closes the candidate/legacy-adapter gap. The
+existing post-display/post-PIN freshness check remains separate and unchanged;
+preparation must not collapse pre-PIN derivation and post-PIN freshness into
+one snapshot.
+
+Retry behavior is host-owned rather than added to the fresh-only preparation
+compiler. Before invoking that compiler, authoritative schema-9 replay chooses
+exactly one of two states:
+
+- fresh pending: continue through preparation and the one-PIN transition;
+- already authorized: if the active implementation authority, runtime binding,
+  publication authority, repository observation, and all four semantic scopes
+  exactly equal the stored reviewed graph, return `already_authorized` without
+  prompting or appending; otherwise fail closed as `authority_conflict`.
+
+Every other replay state is blocked. The compiler therefore remains a fresh
+transition compiler and no duplicate authority is created.
 
 ## Rapid-strike lanes and acceptance mapping
 
-### Lane A — resolve and compile (AC 1, 4, 5)
+### Lane A — protected store and resolve (AC 1, 4, 5)
 
 - Link `@shield/mission-preparation` into `@shield/team-system` with the npm
   workspace command above.
-- Add the private Mission Builder composition seam that accepts only normalized
-  Team System projections and calls `prepareMissionTransitionV1`.
+- Add the internal host/store seam described above; do not expose it through
+  the public facade or package export map.
+- Extend the internal seat-dispatch ledger result with exact readback bytes and
+  per-entry raw bytes, then bind the selected receipt-set SHA-256 into the
+  stored graph.
 - Add the `mission prepare-next --mission-id --root` command surface with
   `--human`, `--json`, and `--passcode-stdin` output/input modes matching the
   existing command conventions; it accepts no `--input` or intent path.
 - Resolve and revalidate the protected reviewed intent by mission ID and root.
 
-Tests prove no caller-authored action payload/path is accepted, exact intent
-and raw-receipt-set bindings survive materialization/readback, and replaced,
-stale, or cross-plan artifacts fail before a PIN prompt.
+Tests prove no caller-authored action payload/path or attribution verdict is
+accepted, exact intent and raw-receipt-set bindings survive create-sync-
+readback materialization, and replaced, stale, or cross-plan artifacts fail
+before a PIN prompt.
 
 ### Lane B — attribution and fail closure (AC 2, 3, 6)
 
@@ -131,6 +190,8 @@ substitution. Each case asserts no passcode prompt and unchanged journal bytes.
   `appendProfileAwareMissionEntriesAtomicV1` without changing authority
   semantics.
 - Preserve the legacy direct command and JSON output vectors.
+- Compare the compiler candidate to the prepared legacy manifest before
+  rendering; any mismatch returns before output or passcode input.
 
 Tests prove exactly one decision/PIN, one atomic append, and the unchanged
 ordered event set:
@@ -140,9 +201,12 @@ ordered event set:
 3. `runtime.binding_recorded`
 4. `review.publication_authorized`
 
-Cancellation or failed preflight appends zero entries. A successful retry
-against already-current semantic authority returns a stable existing/current
-result rather than duplicating authority.
+Cancellation or failed preflight appends zero entries. An exact retry against
+already-current semantic authority returns `already_authorized`, emits no PIN,
+and invokes the atomic append zero times. Tests instrument the shared CLI
+execution seam to prove exactly one passcode request and exactly one atomic
+append invocation on success, and byte-for-byte unchanged journal/store files
+for every blocked, cancelled, and retry path.
 
 ## Writable paths
 
@@ -150,18 +214,24 @@ Implementation is limited to:
 
 - `package-lock.json`
 - `packages/shield-team-system/package.json`
-- `packages/shield-team-system/src/mission-builder-v1.mts`
+- `packages/shield-team-system/src/mission-preparation-host-v1.mts`
+- `packages/shield-team-system/src/mission-preparation-store-v1.mts`
+- `packages/shield-team-system/src/seat-dispatch-store.mts`
 - `packages/shield-team-system/src/mission-cli.mts`
 - `packages/shield-team-system/src/mission-human-output-v1.mts` only if the
   existing renderer cannot represent a required additive preparation field;
-- `packages/shield-team-system/tests/mission-builder-v1.test.mjs`
+- `packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs`
+- `packages/shield-team-system/tests/mission-preparation-store-v1.test.mjs`
+- `packages/shield-team-system/tests/seat-dispatch-store.test.mjs`
 - `packages/shield-team-system/tests/supervised-cli.test.mjs`
 - `packages/shield-team-system/tests/mission-human-output.test.mjs` only if the
   renderer path above changes.
+- `packages/shield-team-system/tests/package-surface.test.mjs`
 
 No `@shield/mission-preparation` source changes, governed May dispatch changes,
 public package export changes, new authority class, or new generic command
-interpreter are authorized by this plan.
+interpreter are authorized by this plan. The new host/store modules are package
+internal and their direct imports are limited to Team System source and tests.
 
 ## Validation
 
@@ -178,8 +248,13 @@ git diff --check
 ```
 
 Mack additionally proves the packed Team System artifact can resolve the packed
-Mission Preparation dependency through a clean offline install, and verifies
-the exact legacy/new CLI compatibility matrix at the reviewed HEAD.
+Mission Preparation dependency through a clean offline install. The validation
+packs both workspace packages, installs the Mission Preparation tarball first
+and the Team System tarball second into an empty temporary consumer with
+network disabled, then imports the supported Team System surface and executes
+the CLI help vector. Mack also verifies the exact legacy/new CLI compatibility
+matrix, one-prompt/one-append counters, and unchanged-byte failure matrix at
+the reviewed HEAD.
 
 ## Explicit exclusions
 
