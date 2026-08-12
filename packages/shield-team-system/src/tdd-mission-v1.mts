@@ -40,6 +40,13 @@ export const TDD_MISSION_STRATEGY_REASON_CODES = Object.freeze([
   "WRONG_FAILURE_REASON",
   "SCAFFOLD_TREATED_AS_PASS",
   "EXPECTATION_AMENDMENT_INCOMPLETE",
+  "IMPLEMENTATION_AUTHORITY_MISSING",
+  "SEAT_OWNERSHIP_MISMATCH",
+  "GREEN_EVIDENCE_MISSING",
+  "GREEN_NOT_SMALLEST",
+  "PACKET_SCOPE_EXCEEDED",
+  "MACK_EVIDENCE_MISSING",
+  "REFACTOR_NOT_BEHAVIOR_PRESERVING",
 ] as const);
 
 export type TddMissionStrategyV1 = (typeof TDD_MISSION_STRATEGIES)[number];
@@ -185,6 +192,65 @@ export interface TddExpectationAmendmentEffectV1 {
   readonly coulsonAuthorityContractDigest: string;
 }
 
+export interface TddImplementationAuthorityEvidenceV1 {
+  readonly evidenceId: string;
+  readonly authorityKind: "implementation";
+  readonly grantorSeatId: "coulson";
+  readonly authorizedSeatId: "may";
+  readonly criterionId: string;
+  readonly packetId: string;
+  readonly contractDigest: string;
+  readonly transition: "green" | "refactor";
+  readonly authorizedPaths: readonly string[];
+}
+
+export interface TddFocusedMackEvidenceV1 {
+  readonly evidenceId: string;
+  readonly ownerSeatId: "mack";
+  readonly criterionId: string;
+  readonly packetId: string;
+  readonly contractDigest: string;
+  readonly revisionId: string;
+  readonly command: string;
+  readonly outcome: "passed";
+  readonly exitCode: 0;
+  readonly focus: "packet";
+}
+
+export interface TddGreenEvidenceV1 {
+  readonly state: "green_proven";
+  readonly evidenceId: string;
+  readonly ownerSeatId: "may";
+  readonly criterionId: string;
+  readonly packetId: string;
+  readonly contractDigest: string;
+  readonly revisionId: string;
+  readonly changedPaths: readonly string[];
+  readonly implementationKind: "smallest_correct_green";
+  readonly cleanupBundled: false;
+  readonly mackEvidence: Readonly<TddFocusedMackEvidenceV1>;
+}
+
+export interface TddRefactorEvidenceV1 {
+  readonly state: "refactor_proven";
+  readonly evidenceId: string;
+  readonly ownerSeatId: "may";
+  readonly criterionId: string;
+  readonly packetId: string;
+  readonly contractDigest: string;
+  readonly greenRevisionId: string;
+  readonly revisionId: string;
+  readonly changedPaths: readonly string[];
+  readonly implementationKind: "behavior_preserving_refactor";
+  readonly behaviorPreserved: true;
+  readonly failureSemanticsPreserved: true;
+  readonly authoritySemanticsPreserved: true;
+  readonly persistenceSemanticsPreserved: true;
+  readonly riskPreserved: true;
+  readonly implementationAuthorityEvidence: Readonly<TddImplementationAuthorityEvidenceV1>;
+  readonly mackEvidence: Readonly<TddFocusedMackEvidenceV1>;
+}
+
 interface TddCriterionStrategyCommonV1 {
   readonly criterionId: string;
   readonly rationale: string;
@@ -193,6 +259,10 @@ interface TddCriterionStrategyCommonV1 {
   readonly disposition: TddMissionCriterionDispositionV1;
   readonly traceability: Readonly<TddCriterionTraceabilityV1>;
   readonly expectationAmendment: Readonly<TddExpectationAmendmentV1> | null;
+  readonly implementationAuthorityEvidence:
+    Readonly<TddImplementationAuthorityEvidenceV1> | null;
+  readonly greenEvidence: Readonly<TddGreenEvidenceV1> | null;
+  readonly refactorEvidence: Readonly<TddRefactorEvidenceV1> | null;
 }
 
 export interface TddSelectedCriterionStrategyV1 extends TddCriterionStrategyCommonV1 {
@@ -215,6 +285,7 @@ export interface TddImplementationPacketV1 {
   readonly packetId: string;
   readonly criterionIds: readonly string[];
   readonly couplingRationale: string | null;
+  readonly minimalPaths: readonly string[];
 }
 
 export interface TddMissionStrategyContractV1 {
@@ -255,6 +326,9 @@ const CRITERION_FIELDS = [
   "disposition",
   "traceability",
   "expectationAmendment",
+  "implementationAuthorityEvidence",
+  "greenEvidence",
+  "refactorEvidence",
 ] as const;
 const PRE_IMPLEMENTATION_CONTRACT_FIELDS = [
   "contractId",
@@ -271,7 +345,7 @@ const TRACEABILITY_FIELDS = [
   "furyReviewId",
   "humanReviewId",
 ] as const;
-const PACKET_FIELDS = ["packetId", "criterionIds", "couplingRationale"] as const;
+const PACKET_FIELDS = ["packetId", "criterionIds", "couplingRationale", "minimalPaths"] as const;
 const PRE_IMPLEMENTATION_STATE_FIELDS = [
   "state",
   "evidenceId",
@@ -349,6 +423,61 @@ const INVALIDATED_AMENDMENT_EVIDENCE_REF_FIELDS = [
   "refactorReceiptRef",
   "mackValidationReceiptRef",
   "conformanceReceiptRef",
+] as const;
+const IMPLEMENTATION_AUTHORITY_FIELDS = [
+  "evidenceId",
+  "authorityKind",
+  "grantorSeatId",
+  "authorizedSeatId",
+  "criterionId",
+  "packetId",
+  "contractDigest",
+  "transition",
+  "authorizedPaths",
+] as const;
+const FOCUSED_MACK_EVIDENCE_FIELDS = [
+  "evidenceId",
+  "ownerSeatId",
+  "criterionId",
+  "packetId",
+  "contractDigest",
+  "revisionId",
+  "command",
+  "outcome",
+  "exitCode",
+  "focus",
+] as const;
+const GREEN_EVIDENCE_FIELDS = [
+  "state",
+  "evidenceId",
+  "ownerSeatId",
+  "criterionId",
+  "packetId",
+  "contractDigest",
+  "revisionId",
+  "changedPaths",
+  "implementationKind",
+  "cleanupBundled",
+  "mackEvidence",
+] as const;
+const REFACTOR_EVIDENCE_FIELDS = [
+  "state",
+  "evidenceId",
+  "ownerSeatId",
+  "criterionId",
+  "packetId",
+  "contractDigest",
+  "greenRevisionId",
+  "revisionId",
+  "changedPaths",
+  "implementationKind",
+  "behaviorPreserved",
+  "failureSemanticsPreserved",
+  "authoritySemanticsPreserved",
+  "persistenceSemanticsPreserved",
+  "riskPreserved",
+  "implementationAuthorityEvidence",
+  "mackEvidence",
 ] as const;
 
 function record(value: unknown, fields: readonly string[]): Record<string, unknown> | null {
@@ -657,6 +786,238 @@ function riskFactors(value: unknown): value is readonly string[] {
     new Set(value).size === value.length;
 }
 
+function relativePaths(value: unknown): readonly string[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+        value.length === 0 || value.length > 64) return null;
+    const paths: string[] = [];
+    for (const candidate of value) {
+      if (typeof candidate !== "string" || candidate.length === 0 || candidate.length > 512 ||
+          candidate.startsWith("/") || candidate.includes("\\") || candidate.includes("\0")) {
+        return null;
+      }
+      const segments = candidate.split("/");
+      if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+        return null;
+      }
+      paths.push(candidate);
+    }
+    if (new Set(paths).size !== paths.length) return null;
+    return Object.freeze(paths);
+  } catch {
+    return null;
+  }
+}
+
+function implementationAuthorityEvidence(
+  value: unknown,
+  criterionId: string,
+  packetId: string,
+  transition: "green" | "refactor",
+): TddImplementationAuthorityEvidenceV1 | TddMissionStrategyReasonCodeV1 {
+  const authority = record(value, IMPLEMENTATION_AUTHORITY_FIELDS);
+  if (authority === null) return "IMPLEMENTATION_AUTHORITY_MISSING";
+  if (authority.authorizedSeatId !== "may") return "SEAT_OWNERSHIP_MISMATCH";
+  const authorizedPaths = relativePaths(authority.authorizedPaths);
+  if (!identifier(authority.evidenceId) || authority.authorityKind !== "implementation" ||
+      authority.grantorSeatId !== "coulson" || authority.criterionId !== criterionId ||
+      authority.packetId !== packetId || typeof authority.contractDigest !== "string" ||
+      !DIGEST.test(authority.contractDigest) || authority.transition !== transition ||
+      authorizedPaths === null) return "IMPLEMENTATION_AUTHORITY_MISSING";
+  return Object.freeze({
+    evidenceId: authority.evidenceId,
+    authorityKind: "implementation" as const,
+    grantorSeatId: "coulson" as const,
+    authorizedSeatId: "may" as const,
+    criterionId,
+    packetId,
+    contractDigest: authority.contractDigest,
+    transition,
+    authorizedPaths,
+  });
+}
+
+function focusedMackEvidence(
+  value: unknown,
+  criterionId: string,
+  packetId: string,
+  contractDigest: string,
+  revisionId: string,
+): TddFocusedMackEvidenceV1 | null {
+  const evidence = record(value, FOCUSED_MACK_EVIDENCE_FIELDS);
+  if (evidence === null || !identifier(evidence.evidenceId) || evidence.ownerSeatId !== "mack" ||
+      evidence.criterionId !== criterionId || evidence.packetId !== packetId ||
+      evidence.contractDigest !== contractDigest || evidence.revisionId !== revisionId ||
+      !nonemptyText(evidence.command) || evidence.outcome !== "passed" || evidence.exitCode !== 0 ||
+      evidence.focus !== "packet") return null;
+  return Object.freeze({
+    evidenceId: evidence.evidenceId,
+    ownerSeatId: "mack" as const,
+    criterionId,
+    packetId,
+    contractDigest,
+    revisionId,
+    command: evidence.command,
+    outcome: "passed" as const,
+    exitCode: 0 as const,
+    focus: "packet" as const,
+  });
+}
+
+interface TddImplementationTransitionEvidenceV1 {
+  readonly implementationAuthorityEvidence:
+    Readonly<TddImplementationAuthorityEvidenceV1> | null;
+  readonly greenEvidence: Readonly<TddGreenEvidenceV1> | null;
+  readonly refactorEvidence: Readonly<TddRefactorEvidenceV1> | null;
+}
+
+function implementationTransitionEvidence(
+  criterion: Record<string, unknown>,
+  strategy: TddMissionStrategyV1,
+  stateEvidence: TddPreImplementationStateEvidenceV1 | null,
+  expectationAmendmentValue: TddExpectationAmendmentV1 | null,
+  criterionId: string,
+  packetId: string,
+): TddImplementationTransitionEvidenceV1 | TddMissionStrategyReasonCodeV1 {
+  if (expectationAmendmentValue !== null &&
+      (criterion.implementationAuthorityEvidence !== null || criterion.greenEvidence !== null ||
+        criterion.refactorEvidence !== null)) return "EXPECTATION_AMENDMENT_INCOMPLETE";
+
+  let authority: TddImplementationAuthorityEvidenceV1 | null = null;
+  if (criterion.implementationAuthorityEvidence !== null) {
+    const authorityResult = implementationAuthorityEvidence(
+      criterion.implementationAuthorityEvidence,
+      criterionId,
+      packetId,
+      "green",
+    );
+    if (typeof authorityResult === "string") return authorityResult;
+    authority = authorityResult;
+    if (strategy === "tdd_selected" && stateEvidence?.state !== "red_established") {
+      return "RED_NOT_ESTABLISHED";
+    }
+  }
+
+  if (criterion.greenEvidence === null) {
+    if (criterion.refactorEvidence !== null) return "GREEN_EVIDENCE_MISSING";
+    return Object.freeze({
+      implementationAuthorityEvidence: authority,
+      greenEvidence: null,
+      refactorEvidence: null,
+    });
+  }
+  if (authority === null) return "IMPLEMENTATION_AUTHORITY_MISSING";
+  if (strategy === "tdd_selected" && stateEvidence?.state !== "red_established") {
+    return "RED_NOT_ESTABLISHED";
+  }
+
+  const green = record(criterion.greenEvidence, GREEN_EVIDENCE_FIELDS);
+  if (green === null) return "GREEN_EVIDENCE_MISSING";
+  if (green.ownerSeatId !== "may") return "SEAT_OWNERSHIP_MISMATCH";
+  const greenPaths = relativePaths(green.changedPaths);
+  if (green.state !== "green_proven" || !identifier(green.evidenceId) ||
+      green.criterionId !== criterionId || green.packetId !== packetId ||
+      green.contractDigest !== authority.contractDigest || typeof green.revisionId !== "string" ||
+      !REVISION.test(green.revisionId) || greenPaths === null) return "GREEN_EVIDENCE_MISSING";
+  if (green.implementationKind !== "smallest_correct_green" || green.cleanupBundled !== false) {
+    return "GREEN_NOT_SMALLEST";
+  }
+  if (greenPaths.some((path) => !authority.authorizedPaths.includes(path))) {
+    return "PACKET_SCOPE_EXCEEDED";
+  }
+  const greenMackEvidence = focusedMackEvidence(
+    green.mackEvidence,
+    criterionId,
+    packetId,
+    authority.contractDigest,
+    green.revisionId,
+  );
+  if (greenMackEvidence === null) return "MACK_EVIDENCE_MISSING";
+  const normalizedGreen = Object.freeze({
+    state: "green_proven" as const,
+    evidenceId: green.evidenceId,
+    ownerSeatId: "may" as const,
+    criterionId,
+    packetId,
+    contractDigest: authority.contractDigest,
+    revisionId: green.revisionId,
+    changedPaths: greenPaths,
+    implementationKind: "smallest_correct_green" as const,
+    cleanupBundled: false as const,
+    mackEvidence: greenMackEvidence,
+  });
+
+  if (criterion.refactorEvidence === null) {
+    return Object.freeze({
+      implementationAuthorityEvidence: authority,
+      greenEvidence: normalizedGreen,
+      refactorEvidence: null,
+    });
+  }
+  const refactor = record(criterion.refactorEvidence, REFACTOR_EVIDENCE_FIELDS);
+  if (refactor === null) return "REFACTOR_NOT_BEHAVIOR_PRESERVING";
+  if (refactor.ownerSeatId !== "may") return "SEAT_OWNERSHIP_MISMATCH";
+  const refactorAuthorityResult = implementationAuthorityEvidence(
+    refactor.implementationAuthorityEvidence,
+    criterionId,
+    packetId,
+    "refactor",
+  );
+  if (typeof refactorAuthorityResult === "string") return refactorAuthorityResult;
+  const refactorPaths = relativePaths(refactor.changedPaths);
+  if (refactor.state !== "refactor_proven" || !identifier(refactor.evidenceId) ||
+      refactor.evidenceId === normalizedGreen.evidenceId || refactor.criterionId !== criterionId ||
+      refactor.packetId !== packetId || refactor.contractDigest !== normalizedGreen.contractDigest ||
+      refactor.contractDigest !== refactorAuthorityResult.contractDigest ||
+      refactorAuthorityResult.evidenceId === authority.evidenceId ||
+      refactor.greenRevisionId !== normalizedGreen.revisionId ||
+      typeof refactor.revisionId !== "string" || !REVISION.test(refactor.revisionId) ||
+      refactor.revisionId === normalizedGreen.revisionId || refactorPaths === null ||
+      refactor.implementationKind !== "behavior_preserving_refactor" ||
+      refactor.behaviorPreserved !== true || refactor.failureSemanticsPreserved !== true ||
+      refactor.authoritySemanticsPreserved !== true ||
+      refactor.persistenceSemanticsPreserved !== true || refactor.riskPreserved !== true) {
+    return "REFACTOR_NOT_BEHAVIOR_PRESERVING";
+  }
+  if (refactorPaths.some((path) => !refactorAuthorityResult.authorizedPaths.includes(path))) {
+    return "PACKET_SCOPE_EXCEEDED";
+  }
+  const refactorMackEvidence = focusedMackEvidence(
+    refactor.mackEvidence,
+    criterionId,
+    packetId,
+    refactor.contractDigest,
+    refactor.revisionId,
+  );
+  if (refactorMackEvidence === null ||
+      refactorMackEvidence.evidenceId === normalizedGreen.mackEvidence.evidenceId) {
+    return "MACK_EVIDENCE_MISSING";
+  }
+  return Object.freeze({
+    implementationAuthorityEvidence: authority,
+    greenEvidence: normalizedGreen,
+    refactorEvidence: Object.freeze({
+      state: "refactor_proven" as const,
+      evidenceId: refactor.evidenceId,
+      ownerSeatId: "may" as const,
+      criterionId,
+      packetId,
+      contractDigest: refactor.contractDigest,
+      greenRevisionId: normalizedGreen.revisionId,
+      revisionId: refactor.revisionId,
+      changedPaths: refactorPaths,
+      implementationKind: "behavior_preserving_refactor" as const,
+      behaviorPreserved: true as const,
+      failureSemanticsPreserved: true as const,
+      authoritySemanticsPreserved: true as const,
+      persistenceSemanticsPreserved: true as const,
+      riskPreserved: true as const,
+      implementationAuthorityEvidence: refactorAuthorityResult,
+      mackEvidence: refactorMackEvidence,
+    }),
+  });
+}
+
 function executableContract(value: unknown): TddExecutablePreImplementationContractV1 | null {
   const contract = record(value, PRE_IMPLEMENTATION_CONTRACT_FIELDS);
   if (contract === null || !identifier(contract.contractId) || contract.kind !== "executable" ||
@@ -763,12 +1124,22 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
         return invalid("EXPECTATION_AMENDMENT_INCOMPLETE");
       }
       if (amendmentResult !== null) amendmentEffects.push(amendmentResult.effect);
+      const transitionEvidence = implementationTransitionEvidence(
+        criterion,
+        "tdd_selected",
+        stateEvidence,
+        amendmentResult?.amendment ?? null,
+        criterion.criterionId,
+        criterionTraceability.mayPacketId,
+      );
+      if (typeof transitionEvidence === "string") return invalid(transitionEvidence);
       normalized.push(Object.freeze({
         ...common,
         strategy: "tdd_selected" as const,
         preImplementationContract,
         preImplementationStateEvidence: stateEvidence,
         expectationAmendment: amendmentResult?.amendment ?? null,
+        ...transitionEvidence,
       }));
       continue;
     }
@@ -786,12 +1157,22 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
       return invalid("EXPECTATION_AMENDMENT_INCOMPLETE");
     }
     if (amendmentResult !== null) amendmentEffects.push(amendmentResult.effect);
+    const transitionEvidence = implementationTransitionEvidence(
+      criterion,
+      "tdd_declined",
+      null,
+      amendmentResult?.amendment ?? null,
+      criterion.criterionId,
+      criterionTraceability.mayPacketId,
+    );
+    if (typeof transitionEvidence === "string") return invalid(transitionEvidence);
     normalized.push(Object.freeze({
       ...common,
       strategy: "tdd_declined" as const,
       preImplementationContract: null,
       preImplementationStateEvidence: null,
       expectationAmendment: amendmentResult?.amendment ?? null,
+      ...transitionEvidence,
     }));
   }
 
@@ -799,15 +1180,18 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
     readonly packetId: string;
     readonly criterionIds: readonly unknown[];
     readonly couplingRationale: unknown;
+    readonly minimalPaths: readonly string[];
   }> = [];
   const packetIds = new Set<string>();
   for (const candidate of contract.packets) {
     const packet = record(candidate, PACKET_FIELDS);
+    const minimalPaths = packet === null ? null : relativePaths(packet.minimalPaths);
     if (packet === null || !identifier(packet.packetId) || packetIds.has(packet.packetId) ||
         !Array.isArray(packet.criterionIds) ||
         Object.getPrototypeOf(packet.criterionIds) !== Array.prototype ||
         packet.criterionIds.length === 0 || packet.criterionIds.length > 128 ||
-        (packet.couplingRationale !== null && typeof packet.couplingRationale !== "string")) {
+        (packet.couplingRationale !== null && typeof packet.couplingRationale !== "string") ||
+        minimalPaths === null) {
       return invalid("MALFORMED_INPUT");
     }
     packetIds.add(packet.packetId);
@@ -815,6 +1199,7 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
       packetId: packet.packetId,
       criterionIds: packet.criterionIds,
       couplingRationale: packet.couplingRationale,
+      minimalPaths,
     });
   }
 
@@ -839,15 +1224,28 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
       packetId: packet.packetId,
       criterionIds: Object.freeze([...(packet.criterionIds as readonly string[])]),
       couplingRationale: packet.couplingRationale as string | null,
+      minimalPaths: packet.minimalPaths,
     }));
   }
 
   if (ownedCriterionIds.size !== criterionIds.size) return invalid("PACKET_CRITERION_MISSING");
   for (const criterion of normalized) {
-    if (!packetIds.has(criterion.traceability.mayPacketId) ||
-        !normalizedPackets.some((packet) => packet.packetId === criterion.traceability.mayPacketId &&
-          packet.criterionIds.includes(criterion.criterionId))) {
+    const criterionPacket = normalizedPackets.find(
+      (packet) => packet.packetId === criterion.traceability.mayPacketId &&
+        packet.criterionIds.includes(criterion.criterionId),
+    );
+    if (!packetIds.has(criterion.traceability.mayPacketId) || criterionPacket === undefined) {
       return invalid("TRACEABILITY_BINDING_MISMATCH");
+    }
+    const transitionPaths = [
+      criterion.implementationAuthorityEvidence?.authorizedPaths,
+      criterion.greenEvidence?.changedPaths,
+      criterion.refactorEvidence?.implementationAuthorityEvidence.authorizedPaths,
+      criterion.refactorEvidence?.changedPaths,
+    ].filter((paths): paths is readonly string[] => paths !== undefined);
+    if (transitionPaths.some((paths) =>
+      paths.some((path) => !criterionPacket.minimalPaths.includes(path)))) {
+      return invalid("PACKET_SCOPE_EXCEEDED");
     }
   }
 

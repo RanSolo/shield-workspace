@@ -8,8 +8,15 @@ import {
 } from "../dist/tdd-mission-v1.mjs";
 
 const REVISION = "fb2d9c7ba6c0d312d93a5debc0f105de1805563d";
+const GREEN_REVISION = "50e818f1a624016c6a850334e0574353b54c2324";
+const REFACTOR_REVISION = "7ac35df137c6f12559429cfea693f089b1df8d1e";
+const CONTRACT_DIGEST = "sha256:acceptance_contract_digest";
 const OLD_CONTRACT_DIGEST = "sha256:old_contract_digest";
 const AMENDED_CONTRACT_DIGEST = "sha256:amended_contract_digest";
+const PACKET_PATHS = [
+  "packages/shield-team-system/src/tdd-mission-v1.mts",
+  "packages/shield-team-system/tests/tdd-mission-v1.test.mjs",
+];
 
 const executableContract = {
   contractId: "contract:ac-162-1",
@@ -153,6 +160,9 @@ function criterion(overrides = {}) {
     },
     preImplementationStateEvidence: preparedState(criterionId),
     expectationAmendment: null,
+    implementationAuthorityEvidence: null,
+    greenEvidence: null,
+    refactorEvidence: null,
     laterValidation: "required",
     disposition: "implemented_and_proven",
     ...overrides,
@@ -169,8 +179,102 @@ function criterion(overrides = {}) {
   };
 }
 
-function packet(packetId, criterionIds, couplingRationale = null) {
-  return { packetId, criterionIds, couplingRationale };
+function packet(packetId, criterionIds, couplingRationale = null, minimalPaths = PACKET_PATHS) {
+  return { packetId, criterionIds, couplingRationale, minimalPaths };
+}
+
+function implementationAuthority(
+  criterionId = "AC-162-1",
+  transition = "green",
+  overrides = {},
+) {
+  return {
+    evidenceId: `authority:${criterionId.toLowerCase()}:${transition}`,
+    authorityKind: "implementation",
+    grantorSeatId: "coulson",
+    authorizedSeatId: "may",
+    criterionId,
+    packetId: `packet:${criterionId.toLowerCase()}`,
+    contractDigest: CONTRACT_DIGEST,
+    transition,
+    authorizedPaths: PACKET_PATHS,
+    ...overrides,
+  };
+}
+
+function mackEvidence(
+  criterionId = "AC-162-1",
+  revisionId = GREEN_REVISION,
+  overrides = {},
+) {
+  return {
+    evidenceId: `validation:mack:${criterionId.toLowerCase()}:${revisionId.slice(0, 7)}`,
+    ownerSeatId: "mack",
+    criterionId,
+    packetId: `packet:${criterionId.toLowerCase()}`,
+    contractDigest: CONTRACT_DIGEST,
+    revisionId,
+    command: `node --test checkpoint:${criterionId.toLowerCase()}:focused`,
+    outcome: "passed",
+    exitCode: 0,
+    focus: "packet",
+    ...overrides,
+  };
+}
+
+function greenEvidence(criterionId = "AC-162-1", overrides = {}) {
+  const base = {
+    state: "green_proven",
+    evidenceId: `green:${criterionId.toLowerCase()}`,
+    ownerSeatId: "may",
+    criterionId,
+    packetId: `packet:${criterionId.toLowerCase()}`,
+    contractDigest: CONTRACT_DIGEST,
+    revisionId: GREEN_REVISION,
+    changedPaths: PACKET_PATHS,
+    implementationKind: "smallest_correct_green",
+    cleanupBundled: false,
+    mackEvidence: mackEvidence(criterionId),
+  };
+  return {
+    ...base,
+    ...overrides,
+    mackEvidence: overrides.mackEvidence === undefined ? base.mackEvidence : overrides.mackEvidence,
+  };
+}
+
+function refactorEvidence(criterionId = "AC-162-1", overrides = {}) {
+  const base = {
+    state: "refactor_proven",
+    evidenceId: `refactor:${criterionId.toLowerCase()}`,
+    ownerSeatId: "may",
+    criterionId,
+    packetId: `packet:${criterionId.toLowerCase()}`,
+    contractDigest: CONTRACT_DIGEST,
+    greenRevisionId: GREEN_REVISION,
+    revisionId: REFACTOR_REVISION,
+    changedPaths: [PACKET_PATHS[0]],
+    implementationKind: "behavior_preserving_refactor",
+    behaviorPreserved: true,
+    failureSemanticsPreserved: true,
+    authoritySemanticsPreserved: true,
+    persistenceSemanticsPreserved: true,
+    riskPreserved: true,
+    implementationAuthorityEvidence: implementationAuthority(
+      criterionId,
+      "refactor",
+      { authorizedPaths: [PACKET_PATHS[0]] },
+    ),
+    mackEvidence: mackEvidence(criterionId, REFACTOR_REVISION),
+  };
+  return {
+    ...base,
+    ...overrides,
+    implementationAuthorityEvidence: overrides.implementationAuthorityEvidence === undefined
+      ? base.implementationAuthorityEvidence
+      : overrides.implementationAuthorityEvidence,
+    mackEvidence: overrides.mackEvidence === undefined ? base.mackEvidence : overrides.mackEvidence,
+  };
 }
 
 function strategyContract(
@@ -617,6 +721,175 @@ test("declined TDD amendments return to a freshly justified strategy", () => {
   assert.deepEqual(missingFreshRationale.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
 });
 
+test("reviewed Red never grants Green without explicit implementation authority", () => {
+  const reviewedRed = criterion({ preImplementationStateEvidence: redState() });
+  const redOnly = validateTddMissionStrategyContractV1(strategyContract([reviewedRed]));
+  assert.equal(redOnly.state, "valid");
+  assert.equal(redOnly.contract.criteria[0].implementationAuthorityEvidence, null);
+  assert.equal(redOnly.contract.criteria[0].greenEvidence, null);
+
+  const unauthorizedGreen = validateTddMissionStrategyContractV1(strategyContract([{
+    ...reviewedRed,
+    greenEvidence: greenEvidence(),
+  }]));
+  assert.equal(unauthorizedGreen.state, "invalid");
+  assert.deepEqual(unauthorizedGreen.reasonCodes, ["IMPLEMENTATION_AUTHORITY_MISSING"]);
+});
+
+test("selected and declined strategies require authority before May Green", () => {
+  const selected = criterion({
+    preImplementationStateEvidence: redState(),
+    implementationAuthorityEvidence: implementationAuthority(),
+    greenEvidence: greenEvidence(),
+  });
+  const selectedResult = validateTddMissionStrategyContractV1(strategyContract([selected]));
+  assert.equal(selectedResult.state, "valid");
+  assert.equal(selectedResult.contract.criteria[0].greenEvidence.ownerSeatId, "may");
+  assert.equal(selectedResult.contract.criteria[0].greenEvidence.mackEvidence.focus, "packet");
+
+  const authorityBeforeRed = validateTddMissionStrategyContractV1(strategyContract([criterion({
+    implementationAuthorityEvidence: implementationAuthority(),
+  })]));
+  assert.equal(authorityBeforeRed.state, "invalid");
+  assert.deepEqual(authorityBeforeRed.reasonCodes, ["RED_NOT_ESTABLISHED"]);
+
+  const declined = criterion({
+    strategy: "tdd_declined",
+    rationale: "The criterion is documentation-only and has no executable pre-implementation seam.",
+    preImplementationContract: null,
+    preImplementationStateEvidence: null,
+    implementationAuthorityEvidence: implementationAuthority(),
+    greenEvidence: greenEvidence(),
+  });
+  const declinedResult = validateTddMissionStrategyContractV1(strategyContract([declined]));
+  assert.equal(declinedResult.state, "valid");
+});
+
+test("Green rejects non-May ownership, bundled cleanup, excess scope, and missing Mack proof", () => {
+  const reviewedRed = redState();
+  const authority = implementationAuthority();
+  const cases = [
+    [
+      criterion({
+        preImplementationStateEvidence: reviewedRed,
+        implementationAuthorityEvidence: authority,
+        greenEvidence: greenEvidence("AC-162-1", { ownerSeatId: "daisy" }),
+      }),
+      "SEAT_OWNERSHIP_MISMATCH",
+    ],
+    [
+      criterion({
+        preImplementationStateEvidence: reviewedRed,
+        implementationAuthorityEvidence: { ...authority, authorizedSeatId: "daisy" },
+        greenEvidence: greenEvidence(),
+      }),
+      "SEAT_OWNERSHIP_MISMATCH",
+    ],
+    [
+      criterion({
+        preImplementationStateEvidence: reviewedRed,
+        implementationAuthorityEvidence: authority,
+        greenEvidence: greenEvidence("AC-162-1", { cleanupBundled: true }),
+      }),
+      "GREEN_NOT_SMALLEST",
+    ],
+    [
+      criterion({
+        preImplementationStateEvidence: reviewedRed,
+        implementationAuthorityEvidence: {
+          ...authority,
+          authorizedPaths: [...PACKET_PATHS, "packages/shield-team-system/src/unrelated.mts"],
+        },
+        greenEvidence: greenEvidence("AC-162-1", {
+          changedPaths: [...PACKET_PATHS, "packages/shield-team-system/src/unrelated.mts"],
+        }),
+      }),
+      "PACKET_SCOPE_EXCEEDED",
+    ],
+    [
+      criterion({
+        preImplementationStateEvidence: reviewedRed,
+        implementationAuthorityEvidence: authority,
+        greenEvidence: greenEvidence("AC-162-1", { mackEvidence: null }),
+      }),
+      "MACK_EVIDENCE_MISSING",
+    ],
+  ];
+
+  for (const [candidate, reasonCode] of cases) {
+    const result = validateTddMissionStrategyContractV1(strategyContract([candidate]));
+    assert.equal(result.state, "invalid");
+    assert.deepEqual(result.reasonCodes, [reasonCode]);
+  }
+});
+
+test("Refactor is optional, separately authorized, exact, and behavior-preserving", () => {
+  const green = greenEvidence();
+  const base = criterion({
+    preImplementationStateEvidence: redState(),
+    implementationAuthorityEvidence: implementationAuthority(),
+    greenEvidence: green,
+  });
+  const withoutRefactor = validateTddMissionStrategyContractV1(strategyContract([base]));
+  assert.equal(withoutRefactor.state, "valid");
+  assert.equal(withoutRefactor.contract.criteria[0].refactorEvidence, null);
+
+  const withRefactor = validateTddMissionStrategyContractV1(strategyContract([{
+    ...base,
+    refactorEvidence: refactorEvidence(),
+  }]));
+  assert.equal(withRefactor.state, "valid");
+  assert.equal(withRefactor.contract.criteria[0].refactorEvidence.ownerSeatId, "may");
+  assert.notEqual(
+    withRefactor.contract.criteria[0].refactorEvidence.revisionId,
+    withRefactor.contract.criteria[0].greenEvidence.revisionId,
+  );
+
+  const invalidRefactors = [
+    refactorEvidence("AC-162-1", { contractDigest: "sha256:changed_contract_digest" }),
+    refactorEvidence("AC-162-1", { revisionId: GREEN_REVISION }),
+    refactorEvidence("AC-162-1", { behaviorPreserved: false }),
+    refactorEvidence("AC-162-1", { failureSemanticsPreserved: false }),
+    refactorEvidence("AC-162-1", { authoritySemanticsPreserved: false }),
+    refactorEvidence("AC-162-1", { persistenceSemanticsPreserved: false }),
+    refactorEvidence("AC-162-1", { riskPreserved: false }),
+    refactorEvidence("AC-162-1", {
+      implementationAuthorityEvidence: implementationAuthority("AC-162-1", "refactor", {
+        evidenceId: implementationAuthority().evidenceId,
+        authorizedPaths: [PACKET_PATHS[0]],
+      }),
+    }),
+  ];
+  for (const refactor of invalidRefactors) {
+    const result = validateTddMissionStrategyContractV1(strategyContract([{
+      ...base,
+      refactorEvidence: refactor,
+    }]));
+    assert.equal(result.state, "invalid");
+    assert.deepEqual(result.reasonCodes, ["REFACTOR_NOT_BEHAVIOR_PRESERVING"]);
+  }
+});
+
+test("Refactor cannot precede proven Green and amendment invalidation blocks stale transitions", () => {
+  const beforeGreen = validateTddMissionStrategyContractV1(strategyContract([criterion({
+    preImplementationStateEvidence: redState(),
+    implementationAuthorityEvidence: implementationAuthority(),
+    refactorEvidence: refactorEvidence(),
+  })]));
+  assert.equal(beforeGreen.state, "invalid");
+  assert.deepEqual(beforeGreen.reasonCodes, ["GREEN_EVIDENCE_MISSING"]);
+
+  const amended = validateTddMissionStrategyContractV1(strategyContract([criterion({
+    expectationAmendment: expectationAmendment(),
+    implementationAuthorityEvidence: implementationAuthority("AC-162-1", "green", {
+      contractDigest: AMENDED_CONTRACT_DIGEST,
+    }),
+    greenEvidence: greenEvidence("AC-162-1", { contractDigest: AMENDED_CONTRACT_DIGEST }),
+  })]));
+  assert.equal(amended.state, "invalid");
+  assert.deepEqual(amended.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+});
+
 test("validated strategy contracts are immutable copies", () => {
   const input = strategyContract();
   const result = validateTddMissionStrategyContractV1(input);
@@ -632,6 +905,7 @@ test("validated strategy contracts are immutable copies", () => {
   assert.ok(Object.isFrozen(result.contract.packets));
   assert.ok(Object.isFrozen(result.contract.packets[0]));
   assert.ok(Object.isFrozen(result.contract.packets[0].criterionIds));
+  assert.ok(Object.isFrozen(result.contract.packets[0].minimalPaths));
   assert.notEqual(result.contract.criteria, input.criteria);
   assert.notEqual(result.contract.packets, input.packets);
 });
