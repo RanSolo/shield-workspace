@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createPrivateKey, createPublicKey, sign } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -22,10 +23,22 @@ import {
   computeFeatureOperationDerivedCandidateDigestV1,
   computeFeatureOperationPlanDigestV1,
 } from "../dist/feature-operation-v1.mjs";
+import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const revision = (character) => character.repeat(40);
 const effect = (kind, character) => `effect:${kind}:${character.repeat(64)}`;
+const privateKey = createPrivateKey({ key: Buffer.from(`302e020100300506032b657004220420${"42".repeat(32)}`, "hex"), format: "der", type: "pkcs8" });
+const publicKeySpkiBase64 = createPublicKey(privateKey).export({ format: "der", type: "spki" }).toString("base64");
+const signingKeyRef = computeEd25519SigningKeyRef(publicKeySpkiBase64);
+
+function signAuthority(authority) {
+  const bytes = Buffer.concat([
+    Buffer.from("shield.feature-operation.authority.signature.v1\0", "ascii"),
+    Buffer.from(canonicalFeatureIntegrationJsonV1(authority), "utf8"),
+  ]);
+  return { payload: structuredClone(authority), signatureBase64: sign(null, bytes, privateKey).toString("base64") };
+}
 
 function replayFixture() {
   const effects = Object.fromEntries(FEATURE_OPERATION_DERIVATION_KINDS.map((kind, index) => [kind, effect(kind, String(index + 1))]));
@@ -36,10 +49,12 @@ function replayFixture() {
     eligibilityOrder: ["mission:child-one"], integrationPolicy: { targetBranch: "feature/replay", allowedMethods: ["squash"] }, lifecyclePolicy: { amendmentsRequireFreshAuthority: true, pauseSupported: true, cancellationSupported: true, rollbackMethod: "revert_commit", expiryEnforced: true, escalationOnAmbiguity: true }, limits: { maxDurationSeconds: 3600, maxChildren: 1, maxConcurrency: 1, maxFeatureBranchCreateAttempts: 1, maxFeatureWorkspaceDraftPrAttempts: 1, maxTotalChildAttempts: 4, maxTotalIntegrationAttempts: 1, maxTotalRollbackAttempts: 1, maxCapturedEvidence: 10 }, finalGates: { fitzRequired: true, simmons: "conditional", coulsonRequired: true }, exclusions: FEATURE_OPERATION_FIXED_EXCLUSIONS, expiresAt: "2029-05-01T01:00:00Z", planSequence: 0, predecessorPlanDigest: null, planDigest: digest("0"),
   };
   plan.planDigest = computeFeatureOperationPlanDigestV1(plan);
-  let authority = { schemaVersion: 1, contractVersion: "feature.operation.v1", authorityKind: "epic_wheels_up", authorityId: "authority:replay", missionId: "mission:replay", operationId: plan.operationId, plan, planDigest: plan.planDigest, repositoryId: plan.repositoryId, baseBranch: plan.baseBranch, baseRevision: plan.baseRevision, featureBranch: plan.featureBranch, operationSequence: 0, journalSequence: 0, issuedAt: "2029-05-01T00:00:00Z", expiresAt: plan.expiresAt, limits: plan.limits, permittedDerivations: FEATURE_OPERATION_DERIVATION_KINDS, prohibitedEffects: FEATURE_OPERATION_PROHIBITED_EFFECTS, humanPrincipalId: "human:coulson", humanBindingId: "binding:coulson", signingKeyRef: `ed25519:sha256:${"A".repeat(43)}`, authorityDigest: digest("0") };
+  let authority = { schemaVersion: 1, contractVersion: "feature.operation.v1", authorityKind: "epic_wheels_up", authorityId: "authority:replay", missionId: "mission:replay", operationId: plan.operationId, plan, planDigest: plan.planDigest, repositoryId: plan.repositoryId, baseBranch: plan.baseBranch, baseRevision: plan.baseRevision, featureBranch: plan.featureBranch, operationSequence: 0, journalSequence: 0, issuedAt: "2029-05-01T00:00:00Z", expiresAt: plan.expiresAt, limits: plan.limits, permittedDerivations: FEATURE_OPERATION_DERIVATION_KINDS, prohibitedEffects: FEATURE_OPERATION_PROHIBITED_EFFECTS, humanPrincipalId: "human:coulson", humanBindingId: "binding:coulson", signingKeyRef, authorityDigest: digest("0") };
   authority.authorityDigest = computeFeatureOperationAuthorityDigestV1(authority);
+  const signedAuthority = signAuthority(authority);
+  const trustedBindings = [{ schemaVersion: 1, bindingId: authority.humanBindingId, humanPrincipalId: authority.humanPrincipalId, seatId: "coulson", missionScope: authority.missionId, signingKeyRef, publicKeySpkiBase64, validFromSequence: 0, validThroughSequence: null, attestedBy: "human:hill", provenanceRef: "registry:fixture" }];
   const replayContext = { schemaVersion: 1, contractVersion: "feature.operation.v1", repositoryId: plan.repositoryId, operationId: plan.operationId, activePlan: plan, activePlanDigest: plan.planDigest, verifiedAuthorityId: authority.authorityId, verifiedAuthorityDigest: authority.authorityDigest, acceptedAuthorityOperationSequence: 0, currentJournalSequence: 0, acceptedPlanLineage: [{ planSequence: 0, planDigest: plan.planDigest, predecessorPlanDigest: null, authorityDigest: authority.authorityDigest, active: true }], acceptedAmendmentDigests: [], lifecycle: { state: "active", atOperationSequence: 0 }, transitions: [{ kind: "genesis", operationSequence: 0, effectKey: "effect:genesis", priorHeadRevision: plan.baseRevision, priorTreeDigest: plan.baseTreeDigest, resultingHeadRevision: plan.baseRevision, resultingTreeDigest: plan.baseTreeDigest, receiptDigest: digest("b") }], acceptedIntegrations: [], acceptedRollbacks: [], consumedEffectKeys: ["effect:genesis"], childCounters: [{ childId: "mission:child-one", initiationAttempts: 0, implementationAttempts: 0, publicationAttempts: 0, integrationAttempts: 0, rollbackAttempts: 0, retryAttempts: 0 }], activeLeases: [], operationCounters: { featureBranchCreateAttempts: 0, featureWorkspaceDraftPrAttempts: 0, totalChildAttempts: 0, totalIntegrationAttempts: 0, totalRollbackAttempts: 0, capturedEvidenceCount: 0 }, observedAt: { value: "2029-05-01T00:10:00Z", provenance: "hostTrusted" }, acceptedReviewEvidence: [] };
-  const entries = [createFeatureOperationGenesisEntryV1({ operationId: plan.operationId, replayContext })];
+  const entries = [createFeatureOperationGenesisEntryV1({ operationId: plan.operationId, replayContext, signedAuthority, trustedBindings })];
   const scope = { relativePaths: [], actionIds: [], effectKeys: [], capabilityIds: [], validationIds: [], publicationOperations: [], requiredGates: { mack: false, fury: false, humanGateIds: [] }, exclusions: [], requestedAttempts: 1, requestedRetries: 0 };
   const add = (entryKind, payload) => { const previous = entries.at(-1); entries.push(createFeatureIntegrationEntryV1({ operationId: plan.operationId, entrySequence: entries.length, entryKind, previousEntryDigest: previous.entryDigest, payload })); return entries.at(-1); };
   const candidate = (stage, derivationKind, extra) => { const value = { schemaVersion: 1, contractVersion: "feature.operation.v1", stage, derivationKind, repositoryId: plan.repositoryId, operationId: plan.operationId, planDigest: plan.planDigest, authorityDigest: authority.authorityDigest, effectKey: effects[derivationKind], requestedScope: scope, ...extra, candidateDigest: digest("0") }; value.candidateDigest = computeFeatureOperationDerivedCandidateDigestV1(value); return value; };
@@ -66,7 +81,49 @@ function replayFixture() {
   const cumulativeReceipt = { schemaVersion: 1, contractVersion: "feature.integration.v1", operationId: plan.operationId, repositoryId: plan.repositoryId, planDigest: plan.planDigest, featureAuthorityDigest: authority.authorityDigest, cumulativeAuthorityDigest: cumulativeCandidate.authorityDigest, effectKey: cumulativeCandidate.effectKey, requestDigest: cumulativeCandidate.requestDigest, transitionReceiptDigest: cumulativeCandidate.transitionReceiptDigest, terminalHeadRevision: cumulativeCandidate.terminalHeadRevision, terminalTreeDigest: cumulativeCandidate.terminalTreeDigest, commandIds: ["test"], targetIds: ["team"], validationIds: ["test"], mackEvidenceDigest: digest("c"), checkObservationDigests: [digest("d")], outcome: "passed", reconciliationState: "applied", observationProvenance: "runner:test", observedAt: { value: "2029-05-01T00:16:00Z", provenance: "hostTrusted" }, seatId: "mack", reasoningRuntimeId: "runtime:mack", modelId: "model:mack", toolExecutorId: "executor:runner", receiptDigest: digest("0") };
   cumulativeReceipt.receiptDigest = computeFeatureCumulativeValidationReceiptDigestV1(cumulativeReceipt);
   const cumulativeEntry = add("cumulative_validation_accepted", { preparationEntryDigest: prepared.entryDigest, receipt: cumulativeReceipt });
-  return { entries, integrationEntry, integrationReceipt, cumulativeEntry, cumulativeReceipt };
+  return { entries, integrationEntry, integrationReceipt, cumulativeEntry, cumulativeReceipt, plan, authority, signedAuthority, trustedBindings, replayContext };
+}
+
+function withPlanDigest(plan, changes) {
+  const value = { ...structuredClone(plan), ...structuredClone(changes), planDigest: digest("0") };
+  value.planDigest = computeFeatureOperationPlanDigestV1(value);
+  return value;
+}
+
+function authorityForPlan(fixture, plan, changes = {}) {
+  const value = {
+    ...structuredClone(fixture.authority),
+    authorityId: "authority:replay:successor",
+    plan,
+    planDigest: plan.planDigest,
+    repositoryId: plan.repositoryId,
+    baseBranch: plan.baseBranch,
+    baseRevision: plan.baseRevision,
+    featureBranch: plan.featureBranch,
+    operationSequence: 1,
+    journalSequence: 1,
+    issuedAt: "2029-05-01T00:05:00Z",
+    expiresAt: plan.expiresAt,
+    limits: plan.limits,
+    ...structuredClone(changes),
+    authorityDigest: digest("0"),
+  };
+  value.authorityDigest = computeFeatureOperationAuthorityDigestV1(value);
+  return value;
+}
+
+function successorFor(fixture, authorityChanges = {}, planChanges = {}) {
+  const plan = withPlanDigest(fixture.plan, { planSequence: 1, predecessorPlanDigest: fixture.plan.planDigest, ...planChanges });
+  const authority = authorityForPlan(fixture, plan, authorityChanges);
+  const signedAuthority = signAuthority(authority);
+  const entry = createFeatureIntegrationEntryV1({
+    operationId: fixture.plan.operationId,
+    entrySequence: 1,
+    entryKind: "authority_successor_accepted",
+    previousEntryDigest: fixture.entries[0].entryDigest,
+    payload: { plan, signedAuthority },
+  });
+  return { plan, authority, signedAuthority, entry };
 }
 
 test("canonical JSON orders by UTF-16 and rejects non-data", () => {
@@ -94,6 +151,62 @@ test("journal validation rejects broken contiguous lineage", () => {
 test("replay rejects genesis without a verified #225 replay projection", () => {
   const genesis = createFeatureIntegrationEntryV1({ operationId: "operation:test", entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null, payload: {} });
   assert.deepEqual(replayFeatureOperationJournalV1(createFeatureOperationJournalV1([genesis])), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+});
+
+test("genesis activation requires one exact, current signed Coulson authority", () => {
+  const fixture = replayFixture();
+  assert.equal(replayFeatureOperationJournalV1(createFeatureOperationJournalV1(fixture.entries)).state, "valid");
+
+  const genesis = (signedAuthority, trustedBindings = fixture.trustedBindings) => createFeatureIntegrationEntryV1({
+    operationId: fixture.plan.operationId,
+    entrySequence: 0,
+    entryKind: "operation_genesis_accepted",
+    previousEntryDigest: null,
+    payload: { replayContext: fixture.replayContext, signedAuthority, trustedBindings },
+  });
+  const replay = (entry) => replayFeatureOperationJournalV1(createFeatureOperationJournalV1([entry]));
+
+  const staleAuthority = authorityForPlan(fixture, fixture.plan, { authorityId: fixture.authority.authorityId, operationSequence: 0, journalSequence: 0, issuedAt: fixture.authority.issuedAt, expiresAt: "2029-05-01T00:05:00Z" });
+  assert.deepEqual(replay(genesis(signAuthority(staleAuthority))), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+
+  const substitutedPlan = withPlanDigest(fixture.plan, { objective: "Substituted signed plan" });
+  const substitutedAuthority = authorityForPlan(fixture, substitutedPlan, { authorityId: fixture.authority.authorityId, operationSequence: 0, journalSequence: 0, issuedAt: fixture.authority.issuedAt });
+  assert.deepEqual(replay(genesis(signAuthority(substitutedAuthority))), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+
+  const repositoryPlan = withPlanDigest(fixture.plan, { repositoryId: "repo:substituted", children: fixture.plan.children.map((child) => ({ ...child, repositoryId: "repo:substituted" })) });
+  const repositoryAuthority = authorityForPlan(fixture, repositoryPlan, { authorityId: fixture.authority.authorityId, operationSequence: 0, journalSequence: 0, issuedAt: fixture.authority.issuedAt });
+  assert.deepEqual(replay(genesis(signAuthority(repositoryAuthority))), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+
+  assert.deepEqual(replay(genesis(fixture.signedAuthority, [])), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+  assert.deepEqual(replay(genesis(fixture.signedAuthority, [...fixture.trustedBindings, structuredClone(fixture.trustedBindings[0])])), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+  const badSignature = { ...fixture.signedAuthority, signatureBase64: `${fixture.signedAuthority.signatureBase64[0] === "A" ? "B" : "A"}${fixture.signedAuthority.signatureBase64.slice(1)}` };
+  assert.deepEqual(replay(genesis(badSignature)), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+});
+
+test("successor activation requires an exact signed amendment and contiguous authority sequences", () => {
+  const fixture = replayFixture();
+  const successor = successorFor(fixture);
+  const replay = (entries) => replayFeatureOperationJournalV1(createFeatureOperationJournalV1(entries));
+  const accepted = replay([fixture.entries[0], successor.entry]);
+  assert.equal(accepted.state, "valid");
+  assert.equal(accepted.value.activeAuthorityJournalSequence, 1);
+  assert.equal(accepted.value.activeAuthorityOperationSequence, 1);
+  assert.equal(accepted.value.replayContext.activePlanDigest, successor.plan.planDigest);
+
+  const substitutedPlanEntry = createFeatureIntegrationEntryV1({ ...successor.entry, payload: { plan: fixture.plan, signedAuthority: successor.signedAuthority } });
+  assert.deepEqual(replay([fixture.entries[0], substitutedPlanEntry]), { state: "invalid", reason: "AUTHORITY_SUCCESSOR_INVALID", entrySequence: 1 });
+
+  const stale = successorFor(fixture, { expiresAt: "2029-05-01T00:09:00Z" });
+  assert.deepEqual(replay([fixture.entries[0], stale.entry]), { state: "invalid", reason: "AUTHORITY_SUCCESSOR_INVALID", entrySequence: 1 });
+
+  const noncontiguous = successorFor(fixture, { operationSequence: 2, journalSequence: 2 });
+  assert.deepEqual(replay([fixture.entries[0], noncontiguous.entry]), { state: "invalid", reason: "AUTHORITY_SUCCESSOR_INVALID", entrySequence: 1 });
+
+  const unsigned = createFeatureIntegrationEntryV1({ ...successor.entry, payload: { plan: successor.plan, signedAuthority: successor.authority } });
+  assert.deepEqual(replay([fixture.entries[0], unsigned]), { state: "invalid", reason: "AUTHORITY_SUCCESSOR_INVALID", entrySequence: 1 });
+
+  const replayed = createFeatureIntegrationEntryV1({ operationId: fixture.plan.operationId, entrySequence: 2, entryKind: "authority_successor_accepted", previousEntryDigest: successor.entry.entryDigest, payload: successor.entry.payload });
+  assert.deepEqual(replay([fixture.entries[0], successor.entry, replayed]), { state: "invalid", reason: "AUTHORITY_SUCCESSOR_INVALID", entrySequence: 2 });
 });
 
 test("integration receipts are closed, exact-head bound, and keep seat/runtime/model/executor distinct", () => {

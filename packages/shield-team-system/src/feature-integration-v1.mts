@@ -4,10 +4,10 @@ import { types as utilTypes } from "node:util";
 import {
   FEATURE_OPERATION_CONTRACT_VERSION,
   compareFeatureOperationAmendmentV1,
-  validateFeatureOperationAuthorityV1,
   validateFeatureOperationDerivedCandidateV1,
   validateFeatureOperationPlanV1,
   validateFeatureOperationReplayContextV1,
+  verifySignedFeatureOperationAuthorityV1,
   type FeatureOperationAuthorityV1,
   type FeatureOperationDerivedCandidateV1,
   type FeatureOperationReplayContextV1,
@@ -474,8 +474,8 @@ export function evaluateFeatureCumulativeValidationCandidateV1(input: { replay: 
 function replayInvalid(reason: FeatureIntegrationReplayReasonV1, entrySequence: number | null): FeatureIntegrationReplayResultV1 { return { state: "invalid", reason, entrySequence }; }
 
 const ENTRY_PAYLOAD_FIELDS: Readonly<Record<FeatureIntegrationEntryKindV1, readonly string[]>> = Object.freeze({
-  operation_genesis_accepted: ["replayContext"],
-  authority_successor_accepted: ["plan", "authority"],
+  operation_genesis_accepted: ["replayContext", "signedAuthority", "trustedBindings"],
+  authority_successor_accepted: ["plan", "signedAuthority"],
   effect_prepared: ["effectClass", "candidate", "candidateDigest", "effectKey", "requestDigest", "expectedHeadRevision", "expectedTreeDigest"],
   effect_not_applied: ["preparationEntryDigest", "observationProvenance", "observedAt"],
   effect_uncertain: ["preparationEntryDigest", "observationProvenance", "observedAt"],
@@ -494,13 +494,58 @@ const ENTRY_PAYLOAD_FIELDS: Readonly<Record<FeatureIntegrationEntryKindV1, reado
   final_gate_evidence_accepted: ["gateId", "sourceRecordDigest", "terminalHeadRevision", "terminalTreeDigest", "observedAt"],
 });
 
+function verifyJournalFeatureAuthority(
+  input: unknown,
+  trustedBindings: readonly TrustedHumanBinding[],
+  expectedOperationId: string,
+  expectedOperationSequence: number,
+  expectedJournalSequence: number,
+  expectedMissionId?: string,
+): FeatureOperationAuthorityV1 | null {
+  const payload = plain(input) ? ownData(input, "payload") : null;
+  const missionId = expectedMissionId ?? (plain(payload) && text(ownData(payload, "missionId")) ? ownData(payload, "missionId") as string : "");
+  const verified = verifySignedFeatureOperationAuthorityV1(input, {
+    expectedMissionId: missionId,
+    expectedOperationId,
+    expectedOperationSequence,
+    expectedJournalSequence,
+    trustedBindings,
+  });
+  return verified.state === "verified" ? structuredClone(verified.value) : null;
+}
+
+function authorityExactlyActivatesReplay(
+  authority: FeatureOperationAuthorityV1,
+  replay: FeatureOperationReplayContextV1,
+): boolean {
+  const lineage = replay.acceptedPlanLineage;
+  return authority.repositoryId === replay.repositoryId &&
+    authority.operationId === replay.operationId &&
+    authority.planDigest === replay.activePlanDigest &&
+    canonicalFeatureIntegrationJsonV1(authority.plan) === canonicalFeatureIntegrationJsonV1(replay.activePlan) &&
+    authority.authorityId === replay.verifiedAuthorityId &&
+    authority.authorityDigest === replay.verifiedAuthorityDigest &&
+    authority.operationSequence === replay.acceptedAuthorityOperationSequence &&
+    authority.journalSequence === replay.currentJournalSequence &&
+    replay.activePlan.planSequence === 0 && replay.acceptedAmendmentDigests.length === 0 &&
+    lineage.length === 1 && lineage[0].planSequence === 0 && lineage[0].planDigest === authority.planDigest &&
+    lineage[0].predecessorPlanDigest === null && lineage[0].authorityDigest === authority.authorityDigest && lineage[0].active === true &&
+    Date.parse(replay.observedAt.value) >= Date.parse(authority.issuedAt) && Date.parse(replay.observedAt.value) < Date.parse(authority.expiresAt);
+}
+
 export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrationReplayResultV1 {
   const journal = validateFeatureOperationJournalV1(input); if (journal.state !== "valid") return replayInvalid("JOURNAL_INVALID", null);
   const entries = journal.value.entries; const genesis = entries[0];
   if (genesis.entryKind !== "operation_genesis_accepted") return replayInvalid("GENESIS_INVALID", 0);
+  if (!exactRecord(genesis.payload, ENTRY_PAYLOAD_FIELDS.operation_genesis_accepted) || !Array.isArray(genesis.payload.trustedBindings)) return replayInvalid("GENESIS_INVALID", 0);
   const seed = genesis.payload.replayContext; const checkedSeed = validateFeatureOperationReplayContextV1(seed);
   if (checkedSeed.state !== "valid" || checkedSeed.value.activePlan.baseBranch !== "main" || checkedSeed.value.operationId !== journal.value.operationId) return replayInvalid("GENESIS_INVALID", 0);
+  const trustedBindings = structuredClone(genesis.payload.trustedBindings) as TrustedHumanBinding[];
+  const genesisAuthority = verifyJournalFeatureAuthority(genesis.payload.signedAuthority, trustedBindings, journal.value.operationId, 0, 0);
+  if (!genesisAuthority || !authorityExactlyActivatesReplay(genesisAuthority, checkedSeed.value)) return replayInvalid("GENESIS_INVALID", 0);
   let context = structuredClone(checkedSeed.value); let activeJournal = context.currentJournalSequence; let activeOperation = context.acceptedAuthorityOperationSequence;
+  const activeMissionId = genesisAuthority.missionId;
+  let activeAuthorityIssuedAt = genesisAuthority.issuedAt;
   let headSequence = context.transitions.at(-1)?.operationSequence ?? 0; let terminalHead = context.transitions.at(-1)?.resultingHeadRevision ?? context.activePlan.baseRevision;
   let terminalTree = context.transitions.at(-1)?.resultingTreeDigest ?? context.activePlan.baseTreeDigest; let pending: FeatureIntegrationEffectReferenceV1 | null = null;
   let pendingCandidate: FeatureOperationDerivedCandidateV1 | FeatureCumulativeValidationCandidateV1 | null = null;
@@ -512,11 +557,17 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
     const entry = entries[index], payload = entry.payload;
     if (Reflect.ownKeys(payload).some((key) => typeof key !== "string" || !ENTRY_PAYLOAD_FIELDS[entry.entryKind].includes(key))) return replayInvalid("ENTRY_INVALID", index);
     if (entry.entryKind === "authority_successor_accepted") {
-      if (pending) return replayInvalid("AUTHORITY_SUCCESSOR_INVALID", index);
-      const plan = validateFeatureOperationPlanV1(payload.plan), authority = validateFeatureOperationAuthorityV1(payload.authority);
-      if (plan.state !== "valid" || authority.state !== "valid" || compareFeatureOperationAmendmentV1(context.activePlan, plan.value).state !== "valid" || authority.value.planDigest !== plan.value.planDigest || authority.value.journalSequence !== activeJournal + 1 || authority.value.operationSequence !== activeOperation + 1) return replayInvalid("AUTHORITY_SUCCESSOR_INVALID", index);
-      context = { ...context, activePlan: plan.value, activePlanDigest: plan.value.planDigest, verifiedAuthorityId: authority.value.authorityId, verifiedAuthorityDigest: authority.value.authorityDigest, currentJournalSequence: authority.value.journalSequence, acceptedAuthorityOperationSequence: authority.value.operationSequence, acceptedPlanLineage: [...context.acceptedPlanLineage.map((item) => ({ ...item, active: false })), { planSequence: plan.value.planSequence, planDigest: plan.value.planDigest, predecessorPlanDigest: plan.value.predecessorPlanDigest, authorityDigest: authority.value.authorityDigest, active: true }], acceptedAmendmentDigests: [...context.acceptedAmendmentDigests, plan.value.planDigest] };
-      activeJournal = authority.value.journalSequence; activeOperation = authority.value.operationSequence;
+      if (pending || !exactRecord(payload, ENTRY_PAYLOAD_FIELDS.authority_successor_accepted)) return replayInvalid("AUTHORITY_SUCCESSOR_INVALID", index);
+      const plan = validateFeatureOperationPlanV1(payload.plan);
+      const authority = verifyJournalFeatureAuthority(payload.signedAuthority, trustedBindings, context.operationId, activeOperation + 1, activeJournal + 1, activeMissionId);
+      const amendment = plan.state === "valid" ? compareFeatureOperationAmendmentV1(context.activePlan, plan.value) : null;
+      if (plan.state !== "valid" || !authority || amendment?.state !== "valid" || amendment.classification === "identical" ||
+          authority.repositoryId !== context.repositoryId || authority.planDigest !== plan.value.planDigest ||
+          canonicalFeatureIntegrationJsonV1(authority.plan) !== canonicalFeatureIntegrationJsonV1(plan.value) ||
+          Date.parse(authority.issuedAt) < Date.parse(activeAuthorityIssuedAt) || Date.parse(context.observedAt.value) < Date.parse(authority.issuedAt) ||
+          Date.parse(context.observedAt.value) >= Date.parse(authority.expiresAt)) return replayInvalid("AUTHORITY_SUCCESSOR_INVALID", index);
+      context = { ...context, activePlan: plan.value, activePlanDigest: plan.value.planDigest, verifiedAuthorityId: authority.authorityId, verifiedAuthorityDigest: authority.authorityDigest, currentJournalSequence: authority.journalSequence, acceptedAuthorityOperationSequence: authority.operationSequence, acceptedPlanLineage: [...context.acceptedPlanLineage.map((item) => ({ ...item, active: false })), { planSequence: plan.value.planSequence, planDigest: plan.value.planDigest, predecessorPlanDigest: plan.value.predecessorPlanDigest, authorityDigest: authority.authorityDigest, active: true }], acceptedAmendmentDigests: [...context.acceptedAmendmentDigests, plan.value.planDigest] };
+      activeJournal = authority.journalSequence; activeOperation = authority.operationSequence; activeAuthorityIssuedAt = authority.issuedAt;
     } else if (entry.entryKind === "effect_prepared") {
       if (pending || !digestValue(payload.candidateDigest) || !text(payload.effectKey) || !digestValue(payload.requestDigest)) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
       const isCumulative = payload.effectClass === "cumulative_validation";
@@ -653,8 +704,9 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
   return { state: "valid", value: clone({ replayContext: context, nextEntrySequence: entries.length, activeAuthorityJournalSequence: activeJournal, activeAuthorityOperationSequence: activeOperation, headTransitionOperationSequence: headSequence, terminalHeadRevision: terminalHead, terminalTreeDigest: terminalTree, pendingEffect: pending, uncertainEffect: uncertain, consumedCumulativeValidationEffectKeys: cumulativeKeys, cumulativeValidationAttempts: cumulativeAttempts, cumulativeValidation: cumulative, nextStage, latestObservedAt: context.observedAt }) };
 }
 
-export function createFeatureOperationGenesisEntryV1(input: { operationId: string; replayContext: FeatureOperationReplayContextV1 }): FeatureOperationJournalEntryV1 {
+export function createFeatureOperationGenesisEntryV1(input: { operationId: string; replayContext: FeatureOperationReplayContextV1; signedAuthority: SignedFeatureOperationAuthorityV1; trustedBindings: readonly TrustedHumanBinding[] }): FeatureOperationJournalEntryV1 {
   const replay = validateFeatureOperationReplayContextV1(input.replayContext);
-  if (replay.state !== "valid" || replay.value.operationId !== input.operationId || replay.value.activePlan.baseBranch !== "main") throw new TypeError("Genesis replay context is invalid.");
-  return createFeatureIntegrationEntryV1({ operationId: input.operationId, entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null, payload: { replayContext: replay.value } });
+  const authority = replay.state === "valid" ? verifyJournalFeatureAuthority(input.signedAuthority, input.trustedBindings, input.operationId, 0, 0) : null;
+  if (replay.state !== "valid" || replay.value.operationId !== input.operationId || replay.value.activePlan.baseBranch !== "main" || !authority || !authorityExactlyActivatesReplay(authority, replay.value)) throw new TypeError("Genesis replay context or signed authority is invalid.");
+  return createFeatureIntegrationEntryV1({ operationId: input.operationId, entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null, payload: { replayContext: replay.value, signedAuthority: structuredClone(input.signedAuthority), trustedBindings: structuredClone(input.trustedBindings) } });
 }
