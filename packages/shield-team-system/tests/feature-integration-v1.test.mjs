@@ -8,6 +8,7 @@ import {
   computeFeatureCumulativeValidationReceiptDigestV1,
   computeFeatureIntegrationEntryDigestV1,
   computeFeatureIntegrationReceiptDigestV1,
+  computeFeatureIntegrationWorkspaceEffectObservationDigestV1,
   createFeatureIntegrationEntryV1,
   createFeatureOperationGenesisEntryV1,
   createFeatureOperationJournalV1,
@@ -40,6 +41,36 @@ function signAuthority(authority) {
   return { payload: structuredClone(authority), signatureBase64: sign(null, bytes, privateKey).toString("base64") };
 }
 
+function workspaceObservation(prepared, candidate, { challengeId, observedAt, status = "applied", observedHeadRevision, observedTreeDigest, pullRequests = [] }) {
+  const branchEffect = candidate.derivationKind === "feature_branch_create" || candidate.derivationKind === "child_initiation";
+  const targetRef = `refs/heads/${candidate.derivationKind === "feature_branch_create" ? candidate.targetBranch : candidate.derivationKind === "feature_workspace_draft_pr_create" ? candidate.sourceBranch : candidate.childBranch}`;
+  const observation = {
+    schemaVersion: 1,
+    contractVersion: "feature.integration.v1",
+    observationKind: "workspace_effect",
+    preparationEntryDigest: prepared.entryDigest,
+    candidateDigest: prepared.payload.candidateDigest,
+    effectKey: prepared.payload.effectKey,
+    requestDigest: prepared.payload.requestDigest,
+    repositoryId: candidate.repositoryId,
+    derivationKind: candidate.derivationKind,
+    challengeId,
+    targetRef,
+    targetBaseBranch: branchEffect ? null : candidate.targetBranch,
+    expectedHeadRevision: candidate.derivationKind === "feature_branch_create" ? candidate.sourceRevision : candidate.derivationKind === "feature_workspace_draft_pr_create" ? prepared.payload.expectedHeadRevision : candidate.derivationKind === "child_initiation" ? candidate.sourceFeatureHead : candidate.childHeadRevision,
+    expectedTreeDigest: candidate.derivationKind === "child_draft_pr_create" ? null : prepared.payload.expectedTreeDigest,
+    status,
+    observedHeadRevision,
+    observedTreeDigest,
+    pullRequests,
+    observationProvenance: `github:workspace:${challengeId}`,
+    observedAt,
+    observationDigest: digest("0"),
+  };
+  observation.observationDigest = computeFeatureIntegrationWorkspaceEffectObservationDigestV1(observation);
+  return observation;
+}
+
 function replayFixture() {
   const effects = Object.fromEntries(FEATURE_OPERATION_DERIVATION_KINDS.map((kind, index) => [kind, effect(kind, String(index + 1))]));
   let plan = {
@@ -59,15 +90,27 @@ function replayFixture() {
   const add = (entryKind, payload) => { const previous = entries.at(-1); entries.push(createFeatureIntegrationEntryV1({ operationId: plan.operationId, entrySequence: entries.length, entryKind, previousEntryDigest: previous.entryDigest, payload })); return entries.at(-1); };
   const candidate = (stage, derivationKind, extra) => { const value = { schemaVersion: 1, contractVersion: "feature.operation.v1", stage, derivationKind, repositoryId: plan.repositoryId, operationId: plan.operationId, planDigest: plan.planDigest, authorityDigest: authority.authorityDigest, effectKey: effects[derivationKind], requestedScope: scope, ...extra, candidateDigest: digest("0") }; value.candidateDigest = computeFeatureOperationDerivedCandidateDigestV1(value); return value; };
   const prepare = (value, requestDigest, head = plan.baseRevision, tree = plan.baseTreeDigest) => add("effect_prepared", { effectClass: "feature_operation", candidate: value, candidateDigest: value.candidateDigest, effectKey: value.effectKey, requestDigest, expectedHeadRevision: head, expectedTreeDigest: tree });
-  let prepared = prepare(candidate("initiation", "feature_branch_create", { sourceRevision: plan.baseRevision, targetBranch: plan.featureBranch }), digest("c"));
-  add("feature_branch_creation_accepted", { preparationEntryDigest: prepared.entryDigest, headRevision: plan.baseRevision, treeDigest: plan.baseTreeDigest, observedAt: { value: "2029-05-01T00:11:00Z", provenance: "hostTrusted" }, observationProvenance: "github:branch" });
-  prepared = prepare(candidate("initiation", "feature_workspace_draft_pr_create", { sourceBranch: plan.featureBranch, targetBranch: "main", draftOnly: true }), digest("d"));
-  add("feature_workspace_accepted", { preparationEntryDigest: prepared.entryDigest, pullRequestId: "1", sourceBranch: plan.featureBranch, targetBranch: "main", headRevision: plan.baseRevision, draft: true, observedAt: { value: "2029-05-01T00:12:00Z", provenance: "hostTrusted" }, observationProvenance: "github:workspace" });
-  prepared = prepare(candidate("initiation", "child_initiation", { childId: "mission:child-one", sourceFeatureHead: plan.baseRevision, childBranch: "agent/child-one" }), digest("e"));
-  add("child_initiation_accepted", { preparationEntryDigest: prepared.entryDigest, childId: "mission:child-one", branch: "agent/child-one", baseHeadRevision: plan.baseRevision, baseTreeDigest: plan.baseTreeDigest, observedAt: { value: "2029-05-01T00:13:00Z", provenance: "hostTrusted" }, observationProvenance: "github:init" });
+  let workspaceCandidate = candidate("initiation", "feature_branch_create", { sourceRevision: plan.baseRevision, targetBranch: plan.featureBranch });
+  let prepared = prepare(workspaceCandidate, digest("c"));
+  let observedAt = { value: "2029-05-01T00:11:00Z", provenance: "hostTrusted" };
+  let effectObservation = workspaceObservation(prepared, workspaceCandidate, { challengeId: "challenge:branch", observedAt, observedHeadRevision: plan.baseRevision, observedTreeDigest: plan.baseTreeDigest });
+  add("feature_branch_creation_accepted", { preparationEntryDigest: prepared.entryDigest, headRevision: plan.baseRevision, treeDigest: plan.baseTreeDigest, observedAt, observationProvenance: effectObservation.observationProvenance, effectObservation });
+  workspaceCandidate = candidate("initiation", "feature_workspace_draft_pr_create", { sourceBranch: plan.featureBranch, targetBranch: "main", draftOnly: true });
+  prepared = prepare(workspaceCandidate, digest("d"));
+  observedAt = { value: "2029-05-01T00:12:00Z", provenance: "hostTrusted" };
+  effectObservation = workspaceObservation(prepared, workspaceCandidate, { challengeId: "challenge:workspace", observedAt, observedHeadRevision: plan.baseRevision, observedTreeDigest: plan.baseTreeDigest, pullRequests: [{ pullRequestId: "1", url: "https://github.com/repo/shield/pull/1", draft: true, headBranch: plan.featureBranch, headRevision: plan.baseRevision, baseBranch: "main" }] });
+  add("feature_workspace_accepted", { preparationEntryDigest: prepared.entryDigest, pullRequestId: "1", sourceBranch: plan.featureBranch, targetBranch: "main", headRevision: plan.baseRevision, draft: true, observedAt, observationProvenance: effectObservation.observationProvenance, effectObservation });
+  workspaceCandidate = candidate("initiation", "child_initiation", { childId: "mission:child-one", sourceFeatureHead: plan.baseRevision, childBranch: "agent/child-one" });
+  prepared = prepare(workspaceCandidate, digest("e"));
+  observedAt = { value: "2029-05-01T00:13:00Z", provenance: "hostTrusted" };
+  effectObservation = workspaceObservation(prepared, workspaceCandidate, { challengeId: "challenge:init", observedAt, observedHeadRevision: plan.baseRevision, observedTreeDigest: plan.baseTreeDigest });
+  add("child_initiation_accepted", { preparationEntryDigest: prepared.entryDigest, childId: "mission:child-one", branch: "agent/child-one", baseHeadRevision: plan.baseRevision, baseTreeDigest: plan.baseTreeDigest, observedAt, observationProvenance: effectObservation.observationProvenance, effectObservation });
   add("child_implementation_accepted", { childId: "mission:child-one", sourceMissionId: "mission:child-one", effectKey: effects.child_implementation, sourceAuthorityDigest: digest("f"), sourceJournalDigest: digest("1"), completionReceiptDigest: digest("2"), headRevision: revision("b"), treeDigest: digest("3") });
-  prepared = prepare(candidate("child_publication", "child_draft_pr_create", { childId: "mission:child-one", childBranch: "agent/child-one", childHeadRevision: revision("b"), targetBranch: plan.featureBranch, draftOnly: true }), digest("4"));
-  add("child_publication_accepted", { preparationEntryDigest: prepared.entryDigest, childId: "mission:child-one", pullRequestId: "2", sourceBranch: "agent/child-one", targetBranch: plan.featureBranch, headRevision: revision("b"), draft: true, observedAt: { value: "2029-05-01T00:14:00Z", provenance: "hostTrusted" }, observationProvenance: "github:publication" });
+  workspaceCandidate = candidate("child_publication", "child_draft_pr_create", { childId: "mission:child-one", childBranch: "agent/child-one", childHeadRevision: revision("b"), targetBranch: plan.featureBranch, draftOnly: true });
+  prepared = prepare(workspaceCandidate, digest("4"));
+  observedAt = { value: "2029-05-01T00:14:00Z", provenance: "hostTrusted" };
+  effectObservation = workspaceObservation(prepared, workspaceCandidate, { challengeId: "challenge:publication", observedAt, observedHeadRevision: revision("b"), observedTreeDigest: digest("3"), pullRequests: [{ pullRequestId: "2", url: "https://github.com/repo/shield/pull/2", draft: true, headBranch: "agent/child-one", headRevision: revision("b"), baseBranch: plan.featureBranch }] });
+  add("child_publication_accepted", { preparationEntryDigest: prepared.entryDigest, childId: "mission:child-one", pullRequestId: "2", sourceBranch: "agent/child-one", targetBranch: plan.featureBranch, headRevision: revision("b"), draft: true, observedAt, observationProvenance: effectObservation.observationProvenance, effectObservation });
   const evidenceRecords = [{ evidenceRef: "evidence:fitz", gateType: "human", gateId: "fitz", childId: "mission:child-one", repositoryId: plan.repositoryId, headRevision: revision("b"), sourceRecordDigest: digest("5") }, { evidenceRef: "evidence:fury", gateType: "fury", gateId: "fury", childId: "mission:child-one", repositoryId: plan.repositoryId, headRevision: revision("b"), sourceRecordDigest: digest("6") }, { evidenceRef: "evidence:mack", gateType: "mack", gateId: "mack", childId: "mission:child-one", repositoryId: plan.repositoryId, headRevision: revision("b"), sourceRecordDigest: digest("7") }];
   add("child_evidence_accepted", { childId: "mission:child-one", headRevision: revision("b"), evidenceIds: evidenceRecords.map(({ evidenceRef }) => evidenceRef), evidenceDigests: evidenceRecords.map(({ sourceRecordDigest }) => sourceRecordDigest), evidenceRecords });
   const integrationCandidate = candidate("integration", "child_merge_to_feature", { childId: "mission:child-one", childBranch: "agent/child-one", childHeadRevision: revision("b"), childTreeDigest: digest("3"), targetBranch: plan.featureBranch, integrationMethod: "squash", predecessorIntegrationReceiptDigest: null, reviewEvidenceRefs: evidenceRecords.map(({ evidenceRef }) => evidenceRef) });
@@ -151,6 +194,37 @@ test("journal validation rejects broken contiguous lineage", () => {
 test("replay rejects genesis without a verified #225 replay projection", () => {
   const genesis = createFeatureIntegrationEntryV1({ operationId: "operation:test", entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null, payload: {} });
   assert.deepEqual(replayFeatureOperationJournalV1(createFeatureOperationJournalV1([genesis])), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+});
+
+test("workspace not-applied and uncertain outcomes remain bound to one exact prepared observation", () => {
+  const fixture = replayFixture();
+  const prepared = fixture.entries[1];
+  const candidate = prepared.payload.candidate;
+  const observedAt = { value: "2029-05-01T00:11:00Z", provenance: "hostTrusted" };
+  const terminal = (entryKind, effectObservation, changes = {}) => createFeatureIntegrationEntryV1({
+    operationId: prepared.operationId,
+    entrySequence: 2,
+    entryKind,
+    previousEntryDigest: prepared.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, observationProvenance: effectObservation.observationProvenance, observedAt, effectObservation, ...changes },
+  });
+  const replay = (entry) => replayFeatureOperationJournalV1(createFeatureOperationJournalV1([fixture.entries[0], prepared, entry]));
+
+  const notAppliedObservation = workspaceObservation(prepared, candidate, { challengeId: "challenge:not-applied", observedAt, status: "not_applied", observedHeadRevision: null, observedTreeDigest: null });
+  const notApplied = replay(terminal("effect_not_applied", notAppliedObservation));
+  assert.equal(notApplied.state, "valid");
+  assert.equal(notApplied.value.pendingEffect, null);
+
+  const uncertainObservation = workspaceObservation(prepared, candidate, { challengeId: "challenge:uncertain", observedAt, status: "uncertain", observedHeadRevision: revision("f"), observedTreeDigest: digest("f") });
+  const uncertain = replay(terminal("effect_uncertain", uncertainObservation));
+  assert.equal(uncertain.state, "valid");
+  assert.equal(uncertain.value.uncertainEffect, true);
+  assert.equal(uncertain.value.pendingEffect.preparationEntryDigest, prepared.entryDigest);
+
+  const substituted = { ...notAppliedObservation, requestDigest: digest("9"), observationDigest: digest("0") };
+  substituted.observationDigest = computeFeatureIntegrationWorkspaceEffectObservationDigestV1(substituted);
+  assert.deepEqual(replay(terminal("effect_not_applied", substituted)), { state: "invalid", reason: "EFFECT_LIFECYCLE_INVALID", entrySequence: 2 });
+  assert.deepEqual(replay(terminal("effect_not_applied", notAppliedObservation, { observedAt: { value: "2040-01-01T00:00:00Z", provenance: "hostTrusted" } })), { state: "invalid", reason: "EFFECT_LIFECYCLE_INVALID", entrySequence: 2 });
 });
 
 test("genesis activation requires one exact, current signed Coulson authority", () => {

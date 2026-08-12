@@ -9,13 +9,16 @@ import {
   observeFeatureIntegrationPullRequestV1,
   observeFeatureIntegrationRefV1,
 } from "../github/adapter-v1.mjs";
-import { createRollbackMissionHandoffReadyV1, reconcileFeatureIntegrationWorkspaceEffectV1 } from "../github/feature-integration-workspace-v1.mjs";
+import { createRollbackMissionHandoffReadyV1, observeFeatureIntegrationWorkspaceEffectV1, reconcileFeatureIntegrationWorkspaceEffectV1 } from "../github/feature-integration-workspace-v1.mjs";
 
 const revision = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
 
 function runner(result, calls = []) {
   return (executable, args, options) => { calls.push({ executable, args, options }); return result; };
+}
+function queuedRunner(results) {
+  return () => results.shift() ?? { exitCode: 1, stdout: "", stderr: "unexpected call" };
 }
 
 test("branch adapter observes and creates only exact non-main refs", () => {
@@ -52,11 +55,24 @@ test("draft PR adapter binds exact head/base and always requests draft", () => {
 });
 
 test("workspace reconciliation fails closed on ambiguous PRs and accepts one exact draft", () => {
-  const prepared = { state: "prepared", entry: { entryDigest: digest }, candidate: { derivationKind: "child_draft_pr_create", repositoryId: "RanSolo/shield-workspace", childId: "mission:child", childBranch: "agent/child", childHeadRevision: revision, targetBranch: "feature/226" } };
-  const base = { state: "observed", observation: { repositoryId: "RanSolo/shield-workspace", headBranch: "agent/child", baseBranch: "feature/226", challengeId: "challenge:6" } };
-  assert.equal(reconcileFeatureIntegrationWorkspaceEffectV1({ prepared, observation: { ...base, observation: { ...base.observation, pullRequests: [{}, {}] } }, challengeId: "challenge:6" }).reason, "ambiguous_pull_requests");
-  const accepted = reconcileFeatureIntegrationWorkspaceEffectV1({ prepared, observation: { ...base, observation: { ...base.observation, pullRequests: [{ pullRequestId: "7", url: "https://github.com/x/y/pull/7", draft: true, headBranch: "agent/child", headRevision: revision, baseBranch: "feature/226" }] } }, challengeId: "challenge:6", observedAt: { value: "2029-01-01T00:00:00Z", provenance: "hostTrusted" } });
+  const prepared = { state: "prepared", entry: { entryDigest: digest, payload: { candidateDigest: `sha256:${"c".repeat(64)}`, effectKey: "effect:child_draft_pr_create:one", requestDigest: `sha256:${"d".repeat(64)}`, expectedHeadRevision: "e".repeat(40), expectedTreeDigest: `sha256:${"f".repeat(64)}` } }, candidate: { derivationKind: "child_draft_pr_create", repositoryId: "RanSolo/shield-workspace", childId: "mission:child", childBranch: "agent/child", childHeadRevision: revision, targetBranch: "feature/226" } };
+  const refResult = { exitCode: 0, stdout: JSON.stringify({ ref: "refs/heads/agent/child", object: { type: "commit", sha: revision } }), stderr: "" };
+  const commitResult = { exitCode: 0, stdout: JSON.stringify({ sha: revision, tree: { sha: "f".repeat(40) } }), stderr: "" };
+  const pull = { number: 7, url: "https://github.com/x/y/pull/7", isDraft: true, headRefName: "agent/child", headRefOid: revision, baseRefName: "feature/226" };
+  const observe = (pulls) => observeFeatureIntegrationWorkspaceEffectV1(
+    { prepared, challengeId: "challenge:6" },
+    { run: queuedRunner([refResult, { exitCode: 0, stdout: JSON.stringify(pulls), stderr: "" }, commitResult]), now: () => "2029-01-01T00:00:00Z" },
+  );
+  const ambiguous = observe([pull, { ...pull, number: 8, url: "https://github.com/x/y/pull/8" }]);
+  assert.equal(reconcileFeatureIntegrationWorkspaceEffectV1({ prepared, observation: ambiguous }).reason, "ambiguous_pull_requests");
+  const observation = observe([pull]);
+  const accepted = reconcileFeatureIntegrationWorkspaceEffectV1({ prepared, observation, challengeId: "challenge:substituted", observedTreeDigest: `sha256:${"0".repeat(64)}`, observedAt: { value: "2040-01-01T00:00:00Z", provenance: "hostTrusted" } });
   assert.equal(accepted.state, "accepted"); assert.equal(accepted.entryKind, "child_publication_accepted");
+  assert.deepEqual(accepted.payload.observedAt, { value: "2029-01-01T00:00:00Z", provenance: "hostTrusted" });
+  assert.equal(accepted.payload.observationProvenance, "github:workspace:challenge:6");
+  assert.notEqual(accepted.payload.effectObservation.observedTreeDigest, `sha256:${"0".repeat(64)}`);
+  const substitutedPrepared = { ...prepared, entry: { ...prepared.entry, entryDigest: `sha256:${"9".repeat(64)}` } };
+  assert.equal(reconcileFeatureIntegrationWorkspaceEffectV1({ prepared: substitutedPrepared, observation }).reason, "observation_untrusted");
 });
 
 test("integration adapter binds the exact PR head and cannot target main", () => {

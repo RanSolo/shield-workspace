@@ -58,6 +58,39 @@ export interface FeatureIntegrationEffectReferenceV1 {
   requestDigest: string;
 }
 
+interface FeatureIntegrationWorkspacePullRequestObservationV1 {
+  pullRequestId: string;
+  url: string;
+  draft: boolean;
+  headBranch: string;
+  headRevision: string;
+  baseBranch: string;
+}
+
+interface FeatureIntegrationWorkspaceEffectObservationV1 {
+  schemaVersion: 1;
+  contractVersion: "feature.integration.v1";
+  observationKind: "workspace_effect";
+  preparationEntryDigest: string;
+  candidateDigest: string;
+  effectKey: string;
+  requestDigest: string;
+  repositoryId: string;
+  derivationKind: "feature_branch_create" | "feature_workspace_draft_pr_create" | "child_initiation" | "child_draft_pr_create";
+  challengeId: string;
+  targetRef: string;
+  targetBaseBranch: string | null;
+  expectedHeadRevision: string;
+  expectedTreeDigest: string | null;
+  status: "applied" | "not_applied" | "uncertain";
+  observedHeadRevision: string | null;
+  observedTreeDigest: string | null;
+  pullRequests: readonly FeatureIntegrationWorkspacePullRequestObservationV1[];
+  observationProvenance: string;
+  observedAt: { value: string; provenance: "hostTrusted" };
+  observationDigest: string;
+}
+
 export interface FeatureIntegrationReceiptV1 extends FeatureIntegrationIdentityV1 {
   schemaVersion: 1;
   contractVersion: "feature.integration.v1";
@@ -309,6 +342,7 @@ export function computeFeatureIntegrationEntryDigestV1(input: unknown): string {
 export function computeFeatureIntegrationJournalDigestV1(input: unknown): string { return digest("journal", withoutOwnDigest(input, "journalDigest")); }
 export function computeFeatureIntegrationReceiptDigestV1(input: unknown): string { return digest("integration_receipt", withoutOwnDigest(input, "receiptDigest")); }
 export function computeFeatureRollbackReceiptDigestV1(input: unknown): string { return digest("rollback_receipt", withoutOwnDigest(input, "receiptDigest")); }
+export function computeFeatureIntegrationWorkspaceEffectObservationDigestV1(input: unknown): string { return digest("workspace_effect_observation", withoutOwnDigest(input, "observationDigest")); }
 export function computeFeatureCumulativeValidationRequestDigestV1(input: unknown): string { return digest("cumulative_validation_request", withoutOwnDigest(input, "requestDigest")); }
 export function computeFeatureCumulativeValidationAuthorityDigestV1(input: unknown): string { return digest("cumulative_validation_authority", withoutOwnDigest(input, "authorityDigest")); }
 export function computeFeatureCumulativeValidationCandidateDigestV1(input: unknown): string { return digest("cumulative_validation_candidate", withoutOwnDigest(input, "candidateDigest")); }
@@ -364,6 +398,37 @@ function stringArray(value: unknown, sorted = false): string[] | null {
 
 function exactRecord(input: unknown, fields: readonly string[]): input is Record<string, unknown> {
   return plain(input) && Reflect.ownKeys(input).length === fields.length && fields.every((field) => Object.hasOwn(input, field));
+}
+
+const WORKSPACE_DERIVATIONS = ["feature_branch_create", "feature_workspace_draft_pr_create", "child_initiation", "child_draft_pr_create"] as const;
+const WORKSPACE_OBSERVATION_FIELDS = ["schemaVersion", "contractVersion", "observationKind", "preparationEntryDigest", "candidateDigest", "effectKey", "requestDigest", "repositoryId", "derivationKind", "challengeId", "targetRef", "targetBaseBranch", "expectedHeadRevision", "expectedTreeDigest", "status", "observedHeadRevision", "observedTreeDigest", "pullRequests", "observationProvenance", "observedAt", "observationDigest"] as const;
+
+function workspaceEffectObservation(input: unknown): FeatureIntegrationWorkspaceEffectObservationV1 | null {
+  try {
+    if (!exactRecord(input, WORKSPACE_OBSERVATION_FIELDS)) return null;
+    const value = input as unknown as FeatureIntegrationWorkspaceEffectObservationV1;
+    if (value.schemaVersion !== 1 || value.contractVersion !== FEATURE_INTEGRATION_CONTRACT_VERSION || value.observationKind !== "workspace_effect" ||
+        ![value.preparationEntryDigest, value.candidateDigest, value.requestDigest, value.observationDigest].every(digestValue) ||
+        ![value.effectKey, value.repositoryId, value.challengeId, value.targetRef, value.expectedHeadRevision, value.observationProvenance].every(text) ||
+        !WORKSPACE_DERIVATIONS.includes(value.derivationKind) || !(value.targetBaseBranch === null || text(value.targetBaseBranch)) ||
+        !(value.expectedTreeDigest === null || digestValue(value.expectedTreeDigest)) || !["applied", "not_applied", "uncertain"].includes(value.status) ||
+        !(value.observedHeadRevision === null || /^[0-9a-f]{40}$/.test(value.observedHeadRevision)) ||
+        !(value.observedTreeDigest === null || digestValue(value.observedTreeDigest)) ||
+        (value.status !== "uncertain" && (value.observedHeadRevision === null) !== (value.observedTreeDigest === null)) ||
+        !plain(value.observedAt) || value.observedAt.provenance !== "hostTrusted" || !timestamp(value.observedAt.value) ||
+        value.observationProvenance !== `github:workspace:${value.challengeId}` || !Array.isArray(value.pullRequests) || utilTypes.isProxy(value.pullRequests) || Object.getPrototypeOf(value.pullRequests) !== Array.prototype || Reflect.ownKeys(value.pullRequests).length !== value.pullRequests.length + 1) return null;
+    let previousPullRequestId: string | null = null;
+    const pullRequests: FeatureIntegrationWorkspacePullRequestObservationV1[] = [];
+    for (const item of value.pullRequests) {
+      const fields = ["pullRequestId", "url", "draft", "headBranch", "headRevision", "baseBranch"];
+      if (!exactRecord(item, fields)) return null;
+      const pull = item as Record<string, unknown>;
+      if (![pull.pullRequestId, pull.url, pull.headBranch, pull.baseBranch].every(text) || typeof pull.draft !== "boolean" || typeof pull.headRevision !== "string" || !/^[0-9a-f]{40}$/.test(pull.headRevision) || (previousPullRequestId !== null && compareUtf16(previousPullRequestId, pull.pullRequestId as string) >= 0)) return null;
+      previousPullRequestId = pull.pullRequestId as string; pullRequests.push(structuredClone(pull) as unknown as FeatureIntegrationWorkspacePullRequestObservationV1);
+    }
+    if (computeFeatureIntegrationWorkspaceEffectObservationDigestV1(value) !== value.observationDigest) return null;
+    return { ...structuredClone(value), pullRequests };
+  } catch { return null; }
 }
 function receiptIdentity(value: FeatureIntegrationIdentityV1): boolean {
   return [value.seatId, value.reasoningRuntimeId, value.modelId, value.toolExecutorId].every(text) && new Set([value.seatId, value.reasoningRuntimeId, value.modelId, value.toolExecutorId]).size === 4;
@@ -477,13 +542,13 @@ const ENTRY_PAYLOAD_FIELDS: Readonly<Record<FeatureIntegrationEntryKindV1, reado
   operation_genesis_accepted: ["replayContext", "signedAuthority", "trustedBindings"],
   authority_successor_accepted: ["plan", "signedAuthority"],
   effect_prepared: ["effectClass", "candidate", "candidateDigest", "effectKey", "requestDigest", "expectedHeadRevision", "expectedTreeDigest"],
-  effect_not_applied: ["preparationEntryDigest", "observationProvenance", "observedAt"],
-  effect_uncertain: ["preparationEntryDigest", "observationProvenance", "observedAt"],
-  feature_branch_creation_accepted: ["preparationEntryDigest", "headRevision", "treeDigest", "observedAt", "observationProvenance"],
-  feature_workspace_accepted: ["preparationEntryDigest", "pullRequestId", "sourceBranch", "targetBranch", "headRevision", "draft", "observedAt", "observationProvenance"],
-  child_initiation_accepted: ["preparationEntryDigest", "childId", "branch", "baseHeadRevision", "baseTreeDigest", "observedAt", "observationProvenance"],
+  effect_not_applied: ["preparationEntryDigest", "observationProvenance", "observedAt", "effectObservation"],
+  effect_uncertain: ["preparationEntryDigest", "observationProvenance", "observedAt", "effectObservation"],
+  feature_branch_creation_accepted: ["preparationEntryDigest", "headRevision", "treeDigest", "observedAt", "observationProvenance", "effectObservation"],
+  feature_workspace_accepted: ["preparationEntryDigest", "pullRequestId", "sourceBranch", "targetBranch", "headRevision", "draft", "observedAt", "observationProvenance", "effectObservation"],
+  child_initiation_accepted: ["preparationEntryDigest", "childId", "branch", "baseHeadRevision", "baseTreeDigest", "observedAt", "observationProvenance", "effectObservation"],
   child_implementation_accepted: ["childId", "sourceMissionId", "effectKey", "sourceAuthorityDigest", "sourceJournalDigest", "completionReceiptDigest", "headRevision", "treeDigest"],
-  child_publication_accepted: ["preparationEntryDigest", "childId", "pullRequestId", "sourceBranch", "targetBranch", "headRevision", "draft", "observedAt", "observationProvenance"],
+  child_publication_accepted: ["preparationEntryDigest", "childId", "pullRequestId", "sourceBranch", "targetBranch", "headRevision", "draft", "observedAt", "observationProvenance", "effectObservation"],
   child_evidence_accepted: ["childId", "headRevision", "evidenceIds", "evidenceDigests", "evidenceRecords"],
   integration_accepted: ["preparationEntryDigest", "receipt"],
   rollback_workspace_accepted: ["childId", "sourceMissionId", "completionReceiptDigest", "sourceAuthorityDigest", "sourceJournalDigest", "rollbackBranch", "pullRequestId", "pullRequestHeadRevision", "targetBranch", "restoredTreeDigest", "sourceEffectKeys", "evidenceDigests"],
@@ -493,6 +558,43 @@ const ENTRY_PAYLOAD_FIELDS: Readonly<Record<FeatureIntegrationEntryKindV1, reado
   operation_paused: ["observedAt", "reason"], operation_resumed: ["observedAt", "reason"], operation_cancelled: ["observedAt", "reason"], operation_split: ["observedAt", "successorOperationId", "successorPlanDigest", "successorAuthorityDigest"], operation_completed: ["observedAt"], operation_superseded: ["observedAt", "successorOperationId", "successorPlanDigest", "successorAuthorityDigest"],
   final_gate_evidence_accepted: ["gateId", "sourceRecordDigest", "terminalHeadRevision", "terminalTreeDigest", "observedAt"],
 });
+
+function workspaceObservationMatchesPending(
+  observation: FeatureIntegrationWorkspaceEffectObservationV1 | null,
+  pending: FeatureIntegrationEffectReferenceV1 | null,
+  candidateValue: FeatureOperationDerivedCandidateV1 | FeatureCumulativeValidationCandidateV1 | null,
+  expectedFeatureHead: string | null,
+  expectedFeatureTree: string | null,
+): observation is FeatureIntegrationWorkspaceEffectObservationV1 {
+  if (!observation || !pending || !candidateValue || !("derivationKind" in candidateValue) || !WORKSPACE_DERIVATIONS.includes(candidateValue.derivationKind as typeof WORKSPACE_DERIVATIONS[number]) || expectedFeatureHead === null || expectedFeatureTree === null) return false;
+  const candidate = candidateValue as FeatureOperationDerivedCandidateV1;
+  let targetRef: string, targetBaseBranch: string | null, expectedHead: string, expectedTree: string | null, branchEffect: boolean;
+  switch (candidate.derivationKind) {
+    case "feature_branch_create": targetRef = `refs/heads/${candidate.targetBranch}`; targetBaseBranch = null; expectedHead = candidate.sourceRevision; expectedTree = expectedFeatureTree; branchEffect = true; break;
+    case "feature_workspace_draft_pr_create": targetRef = `refs/heads/${candidate.sourceBranch}`; targetBaseBranch = candidate.targetBranch; expectedHead = expectedFeatureHead; expectedTree = expectedFeatureTree; branchEffect = false; break;
+    case "child_initiation": targetRef = `refs/heads/${candidate.childBranch}`; targetBaseBranch = null; expectedHead = candidate.sourceFeatureHead; expectedTree = expectedFeatureTree; branchEffect = true; break;
+    case "child_draft_pr_create": targetRef = `refs/heads/${candidate.childBranch}`; targetBaseBranch = candidate.targetBranch; expectedHead = candidate.childHeadRevision; expectedTree = null; branchEffect = false; break;
+    default: return false;
+  }
+  if (observation.preparationEntryDigest !== pending.preparationEntryDigest || observation.candidateDigest !== pending.candidateDigest || observation.effectKey !== pending.effectKey || observation.requestDigest !== pending.requestDigest ||
+      observation.repositoryId !== candidate.repositoryId || observation.derivationKind !== candidate.derivationKind || observation.targetRef !== targetRef || observation.targetBaseBranch !== targetBaseBranch ||
+      observation.expectedHeadRevision !== expectedHead || observation.expectedTreeDigest !== expectedTree) return false;
+  if (branchEffect) {
+    if (observation.pullRequests.length !== 0) return false;
+    if (observation.status === "applied" && (observation.observedHeadRevision !== expectedHead || observation.observedTreeDigest !== expectedTree)) return false;
+    if (observation.status === "not_applied" && (observation.observedHeadRevision !== null || observation.observedTreeDigest !== null)) return false;
+    return true;
+  }
+  if (observation.observedHeadRevision !== null && observation.observedHeadRevision !== expectedHead) return observation.status === "uncertain";
+  if (observation.status !== "uncertain" && (observation.observedHeadRevision !== expectedHead || observation.observedTreeDigest === null || (expectedTree !== null && observation.observedTreeDigest !== expectedTree))) return false;
+  if (observation.pullRequests.some((pull) => pull.headBranch !== targetRef.slice("refs/heads/".length) || pull.baseBranch !== targetBaseBranch)) return false;
+  if (observation.status === "not_applied") return observation.pullRequests.length === 0;
+  if (observation.status === "applied") {
+    const pull = observation.pullRequests[0];
+    return observation.pullRequests.length === 1 && pull.draft === true && pull.headRevision === expectedHead;
+  }
+  return true;
+}
 
 function verifyJournalFeatureAuthority(
   input: unknown,
@@ -549,6 +651,7 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
   let headSequence = context.transitions.at(-1)?.operationSequence ?? 0; let terminalHead = context.transitions.at(-1)?.resultingHeadRevision ?? context.activePlan.baseRevision;
   let terminalTree = context.transitions.at(-1)?.resultingTreeDigest ?? context.activePlan.baseTreeDigest; let pending: FeatureIntegrationEffectReferenceV1 | null = null;
   let pendingCandidate: FeatureOperationDerivedCandidateV1 | FeatureCumulativeValidationCandidateV1 | null = null;
+  let pendingExpectedHead: string | null = null; let pendingExpectedTree: string | null = null;
   let uncertain = false; const cumulativeKeys: string[] = []; let cumulativeAttempts = 0; let cumulative: "pending" | "passed" | "failed" = context.acceptedIntegrations.length > 0 || context.acceptedRollbacks.length > 0 ? "pending" : "passed";
   let featureBranchExists = false, featureWorkspaceExists = false; const initiated = new Set<string>(), implemented = new Set<string>(), published = new Set<string>(), evidenced = new Set<string>();
   const rollbackWorkspaces = new Map<string, string>();
@@ -578,6 +681,7 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
       pendingCandidate = (checkedCumulative ?? (checkedDerived?.state === "valid" ? checkedDerived.value : null)) as FeatureOperationDerivedCandidateV1 | FeatureCumulativeValidationCandidateV1 | null;
       if (pendingCandidate?.candidateDigest !== pending.candidateDigest || pendingCandidate?.effectKey !== pending.effectKey) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
       if (payload.expectedHeadRevision !== terminalHead || payload.expectedTreeDigest !== terminalTree || pendingCandidate.operationId !== context.operationId) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
+      pendingExpectedHead = payload.expectedHeadRevision as string; pendingExpectedTree = payload.expectedTreeDigest as string;
       if (isCumulative) {
         const cumulativeCandidate = pendingCandidate as FeatureCumulativeValidationCandidateV1;
         const transitionReceiptDigest = context.transitions.at(-1)?.receiptDigest;
@@ -607,17 +711,24 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
         context = { ...context, consumedEffectKeys: [...context.consumedEffectKeys, pending.effectKey].sort(compareUtf16), childCounters, operationCounters, activeLeases: context.activeLeases.filter((lease) => lease.effectKey !== pending!.effectKey) };
       }
     } else if (entry.entryKind === "effect_uncertain") {
-      if (!pending || payload.preparationEntryDigest !== pending.preparationEntryDigest) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index); uncertain = true;
+      const isWorkspace = pendingCandidate && "derivationKind" in pendingCandidate && WORKSPACE_DERIVATIONS.includes(pendingCandidate.derivationKind as typeof WORKSPACE_DERIVATIONS[number]);
+      const observation = isWorkspace ? workspaceEffectObservation(payload.effectObservation) : null;
+      if (!pending || payload.preparationEntryDigest !== pending.preparationEntryDigest || (isWorkspace && (!workspaceObservationMatchesPending(observation, pending, pendingCandidate, pendingExpectedHead, pendingExpectedTree) || observation.status !== "uncertain" || payload.observationProvenance !== observation.observationProvenance || canonicalFeatureIntegrationJsonV1(payload.observedAt) !== canonicalFeatureIntegrationJsonV1(observation.observedAt)))) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index); uncertain = true;
     } else if (entry.entryKind === "effect_not_applied") {
-      if (!pending || payload.preparationEntryDigest !== pending.preparationEntryDigest || !text(payload.observationProvenance)) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
+      const isWorkspace = pendingCandidate && "derivationKind" in pendingCandidate && WORKSPACE_DERIVATIONS.includes(pendingCandidate.derivationKind as typeof WORKSPACE_DERIVATIONS[number]);
+      const observation = isWorkspace ? workspaceEffectObservation(payload.effectObservation) : null;
+      if (!pending || payload.preparationEntryDigest !== pending.preparationEntryDigest || !text(payload.observationProvenance) || (isWorkspace && (!workspaceObservationMatchesPending(observation, pending, pendingCandidate, pendingExpectedHead, pendingExpectedTree) || observation.status !== "not_applied" || payload.observationProvenance !== observation.observationProvenance || canonicalFeatureIntegrationJsonV1(payload.observedAt) !== canonicalFeatureIntegrationJsonV1(observation.observedAt)))) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
       if ((pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind === "child_revert_on_feature" && context.lifecycle.state === "rollback_pending") context = { ...context, lifecycle: { state: "active", atOperationSequence: headSequence } };
-      pending = null; pendingCandidate = null; uncertain = false;
+      pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "feature_branch_creation_accepted") {
-      if (!pending || (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "feature_branch_create" || payload.preparationEntryDigest !== pending.preparationEntryDigest || payload.headRevision !== terminalHead || payload.treeDigest !== terminalTree) return replayInvalid("STAGE_ORDER_INVALID", index); featureBranchExists = true; pending = null; pendingCandidate = null; uncertain = false;
+      const observation = workspaceEffectObservation(payload.effectObservation);
+      if (!pending || (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "feature_branch_create" || !workspaceObservationMatchesPending(observation, pending, pendingCandidate, pendingExpectedHead, pendingExpectedTree) || observation.status !== "applied" || payload.preparationEntryDigest !== pending.preparationEntryDigest || payload.headRevision !== observation.observedHeadRevision || payload.treeDigest !== observation.observedTreeDigest || payload.observationProvenance !== observation.observationProvenance || canonicalFeatureIntegrationJsonV1(payload.observedAt) !== canonicalFeatureIntegrationJsonV1(observation.observedAt) || payload.headRevision !== terminalHead || payload.treeDigest !== terminalTree) return replayInvalid("STAGE_ORDER_INVALID", index); featureBranchExists = true; pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "feature_workspace_accepted") {
-      if (!pending || (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "feature_workspace_draft_pr_create" || !featureBranchExists || payload.preparationEntryDigest !== pending.preparationEntryDigest || payload.targetBranch !== "main" || payload.sourceBranch !== context.activePlan.featureBranch || payload.draft !== true) return replayInvalid("STAGE_ORDER_INVALID", index); featureWorkspaceExists = true; pending = null; pendingCandidate = null; uncertain = false;
+      const observation = workspaceEffectObservation(payload.effectObservation), pull = observation?.pullRequests[0];
+      if (!pending || (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "feature_workspace_draft_pr_create" || !workspaceObservationMatchesPending(observation, pending, pendingCandidate, pendingExpectedHead, pendingExpectedTree) || observation.status !== "applied" || !pull || !featureBranchExists || payload.preparationEntryDigest !== pending.preparationEntryDigest || payload.pullRequestId !== pull.pullRequestId || payload.headRevision !== pull.headRevision || payload.observationProvenance !== observation.observationProvenance || canonicalFeatureIntegrationJsonV1(payload.observedAt) !== canonicalFeatureIntegrationJsonV1(observation.observedAt) || payload.targetBranch !== "main" || payload.sourceBranch !== context.activePlan.featureBranch || payload.draft !== true) return replayInvalid("STAGE_ORDER_INVALID", index); featureWorkspaceExists = true; pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "child_initiation_accepted") {
-      if (!pending || (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "child_initiation" || !featureWorkspaceExists || !text(payload.childId) || payload.preparationEntryDigest !== pending.preparationEntryDigest || payload.baseHeadRevision !== terminalHead || payload.baseTreeDigest !== terminalTree || initiated.has(payload.childId as string)) return replayInvalid("STAGE_ORDER_INVALID", index); initiated.add(payload.childId as string); pending = null; pendingCandidate = null; uncertain = false;
+      const observation = workspaceEffectObservation(payload.effectObservation);
+      if (!pending || (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "child_initiation" || !workspaceObservationMatchesPending(observation, pending, pendingCandidate, pendingExpectedHead, pendingExpectedTree) || observation.status !== "applied" || payload.baseHeadRevision !== observation.observedHeadRevision || payload.baseTreeDigest !== observation.observedTreeDigest || payload.observationProvenance !== observation.observationProvenance || canonicalFeatureIntegrationJsonV1(payload.observedAt) !== canonicalFeatureIntegrationJsonV1(observation.observedAt) || !featureWorkspaceExists || !text(payload.childId) || payload.preparationEntryDigest !== pending.preparationEntryDigest || payload.baseHeadRevision !== terminalHead || payload.baseTreeDigest !== terminalTree || initiated.has(payload.childId as string)) return replayInvalid("STAGE_ORDER_INVALID", index); initiated.add(payload.childId as string); pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "child_implementation_accepted") {
       const childId = payload.childId as string, effectKey = payload.effectKey as string;
       const child = context.activePlan.children.find((item) => item.childId === childId), counter = context.childCounters.find((item) => item.childId === childId);
@@ -626,7 +737,8 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
       const childCounters = context.childCounters.map((item) => item.childId === childId ? { ...item, implementationAttempts: item.implementationAttempts + 1 } : { ...item });
       context = { ...context, consumedEffectKeys: [...context.consumedEffectKeys, effectKey].sort(compareUtf16), childCounters, operationCounters: { ...context.operationCounters, totalChildAttempts: context.operationCounters.totalChildAttempts + 1 } };
     } else if (entry.entryKind === "child_publication_accepted") {
-      if (!pending || (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "child_draft_pr_create" || !implemented.has(payload.childId as string) || payload.preparationEntryDigest !== pending.preparationEntryDigest || payload.targetBranch !== context.activePlan.featureBranch || payload.draft !== true) return replayInvalid("STAGE_ORDER_INVALID", index); published.add(payload.childId as string); pending = null; pendingCandidate = null; uncertain = false;
+      const observation = workspaceEffectObservation(payload.effectObservation), pull = observation?.pullRequests[0];
+      if (!pending || (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind !== "child_draft_pr_create" || !workspaceObservationMatchesPending(observation, pending, pendingCandidate, pendingExpectedHead, pendingExpectedTree) || observation.status !== "applied" || !pull || payload.pullRequestId !== pull.pullRequestId || payload.headRevision !== pull.headRevision || payload.observationProvenance !== observation.observationProvenance || canonicalFeatureIntegrationJsonV1(payload.observedAt) !== canonicalFeatureIntegrationJsonV1(observation.observedAt) || !implemented.has(payload.childId as string) || payload.preparationEntryDigest !== pending.preparationEntryDigest || payload.targetBranch !== context.activePlan.featureBranch || payload.draft !== true) return replayInvalid("STAGE_ORDER_INVALID", index); published.add(payload.childId as string); pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "child_evidence_accepted") {
       if (!published.has(payload.childId as string) || !Array.isArray(payload.evidenceDigests) || payload.evidenceDigests.length < 2 || !Array.isArray(payload.evidenceRecords)) return replayInvalid("EVIDENCE_INVALID", index);
       const records = payload.evidenceRecords as FeatureOperationReplayContextV1["acceptedReviewEvidence"];
@@ -664,7 +776,7 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
         const transition = { kind: "rollback" as const, operationSequence: headSequence, effectKey: rollback.effectKey, priorHeadRevision: rollback.priorHeadRevision, priorTreeDigest: rollback.priorTreeDigest, resultingHeadRevision: rollback.resultingHeadRevision, resultingTreeDigest: rollback.resultingTreeDigest, receiptDigest: rollback.receiptDigest, childId: rollback.childId, revertedIntegrationReceiptDigest: rollback.revertedIntegrationReceiptDigest };
         context = { ...context, transitions: [...context.transitions, transition], acceptedIntegrations: context.acceptedIntegrations.map((item) => item.receiptDigest === latest.receiptDigest ? { ...item, reverted: true } : item), acceptedRollbacks: [...context.acceptedRollbacks, { childId: transition.childId, operationSequence: transition.operationSequence, effectKey: transition.effectKey, revertedIntegrationReceiptDigest: transition.revertedIntegrationReceiptDigest, priorHeadRevision: transition.priorHeadRevision, priorTreeDigest: transition.priorTreeDigest, resultingHeadRevision: transition.resultingHeadRevision, resultingTreeDigest: transition.resultingTreeDigest, receiptDigest: transition.receiptDigest }], lifecycle: { state: "active", atOperationSequence: headSequence } };
       }
-      terminalHead = receipt.resultingHeadRevision; terminalTree = receipt.resultingTreeDigest; cumulative = "pending"; pending = null; pendingCandidate = null; uncertain = false;
+      terminalHead = receipt.resultingHeadRevision; terminalTree = receipt.resultingTreeDigest; cumulative = "pending"; pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "rollback_workspace_accepted") {
       if (!text(payload.childId) || !text(payload.sourceMissionId) || !digestValue(payload.completionReceiptDigest) || !digestValue(payload.restoredTreeDigest) || payload.targetBranch !== context.activePlan.featureBranch || rollbackWorkspaces.has(payload.childId as string)) return replayInvalid("EVIDENCE_INVALID", index);
       rollbackWorkspaces.set(payload.childId as string, payload.completionReceiptDigest as string);
@@ -676,7 +788,7 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
           receipt.cumulativeAuthorityDigest !== cumulativeCandidate.authorityDigest || receipt.effectKey !== cumulativeCandidate.effectKey || receipt.requestDigest !== cumulativeCandidate.requestDigest || receipt.transitionReceiptDigest !== cumulativeCandidate.transitionReceiptDigest ||
           receipt.terminalHeadRevision !== cumulativeCandidate.terminalHeadRevision || receipt.terminalTreeDigest !== cumulativeCandidate.terminalTreeDigest || receipt.terminalHeadRevision !== terminalHead || receipt.terminalTreeDigest !== terminalTree || receipt.outcome !== (entry.entryKind === "cumulative_validation_accepted" ? "passed" : "failed")) return replayInvalid("CUMULATIVE_VALIDATION_INVALID", index);
       if (Date.parse(receipt.observedAt.value) < Date.parse(context.observedAt.value)) return replayInvalid("CUMULATIVE_VALIDATION_INVALID", index);
-      context = { ...context, observedAt: receipt.observedAt }; cumulative = receipt.outcome; pending = null; pendingCandidate = null; uncertain = false;
+      context = { ...context, observedAt: receipt.observedAt }; cumulative = receipt.outcome; pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "final_gate_evidence_accepted") {
       if (!text(payload.gateId) || !["fitz", "simmons", "coulson"].includes(payload.gateId as string) || !digestValue(payload.sourceRecordDigest) || payload.terminalHeadRevision !== terminalHead || payload.terminalTreeDigest !== terminalTree || finalGates.has(payload.gateId as string)) return replayInvalid("EVIDENCE_INVALID", index);
       finalGates.set(payload.gateId as string, payload.sourceRecordDigest as string);
