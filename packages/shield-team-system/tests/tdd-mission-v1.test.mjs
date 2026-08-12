@@ -1361,43 +1361,32 @@ test("changed and removed expectations require complete amendment evidence", () 
 });
 
 test("incomplete amendment evidence blocks changed or removed expectations", () => {
-  const complete = expectationAmendment();
-  const incompleteAmendments = [
-    { ...complete, originalExpectationEvidenceRef: "" },
-    { ...complete, failureClassification: "missing_behavior" },
-    { ...complete, intentPreservationRationale: "  " },
-    { ...complete, furyDisposition: null },
-    { ...complete, fitzVerification: null },
-    { ...complete, freshRerun: null },
-    {
-      ...complete,
-      freshRerun: {
-        ...complete.freshRerun,
-        observedFailureClassification: "missing_behavior",
+  for (const amendmentKind of ["changed", "removed"]) {
+    const { contract } = amendedStrategyContract({ amendmentKind });
+    assert.equal(validateTddMissionStrategyContractV1(contract).state, "valid");
+    const mutations = [
+      (amendment) => { amendment.originalExpectationEvidenceRef = ""; },
+      (amendment) => { amendment.failureClassification = "missing_behavior"; },
+      (amendment) => { amendment.intentPreservationRationale = "  "; },
+      (amendment) => { amendment.furyDisposition = null; },
+      (amendment) => { amendment.fitzVerification = null; },
+      (amendment) => { amendment.freshRerun = null; },
+      (amendment) => {
+        amendment.freshRerun.observedFailureClassification = "missing_behavior";
       },
-    },
-    {
-      ...complete,
-      freshRerun: {
-        ...complete.freshRerun,
-        oldContractDigest: "sha256:different_old",
+      (amendment) => {
+        amendment.freshRerun.oldContractDigest = "sha256:different_old";
       },
-    },
-    {
-      ...complete,
-      freshRerun: { ...complete.freshRerun, revisionId: "revision:not-exact" },
-    },
-    {
-      ...complete,
-      freshRerun: { ...complete.freshRerun, exitCode: 0 },
-    },
-  ];
-  for (const amendment of incompleteAmendments) {
-    const result = validateTddMissionStrategyContractV1(strategyContract([
-      criterion({ expectationAmendment: amendment }),
-    ]));
-    assert.equal(result.state, "invalid");
-    assert.deepEqual(result.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+      (amendment) => { amendment.freshRerun.revisionId = "revision:not-exact"; },
+      (amendment) => { amendment.freshRerun.exitCode = 0; },
+    ];
+    for (const mutate of mutations) {
+      const candidate = structuredClone(contract);
+      mutate(candidate.criteria[0].expectationAmendment);
+      const result = validateTddMissionStrategyContractV1(candidate);
+      assert.equal(result.state, "invalid", amendmentKind);
+      assert.deepEqual(result.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+    }
   }
 });
 
@@ -1581,6 +1570,29 @@ test("amendment edges reject skips, stale generations, unreviewed snapshots, and
   }
 });
 
+test("supplied amendment snapshots reject unknown top-level, criterion, and traceability fields", () => {
+  for (const amendmentKind of ["changed", "removed"]) {
+    const { contract } = amendedStrategyContract({ amendmentKind });
+    assert.equal(validateTddMissionStrategyContractV1(contract).state, "valid");
+    const mutations = [
+      (snapshot) => { snapshot.unknownTopLevel = "not digest material"; },
+      (snapshot) => { snapshot.criteria[0].unknownCriterion = "not digest material"; },
+      (snapshot) => {
+        snapshot.criteria[0].traceability.unknownTraceability = "not digest material";
+      },
+    ];
+    for (const snapshotName of ["oldContractSnapshot", "amendedContractSnapshot"]) {
+      for (const mutate of mutations) {
+        const candidate = structuredClone(contract);
+        mutate(candidate.criteria[0].expectationAmendment[snapshotName]);
+        const result = validateTddMissionStrategyContractV1(candidate);
+        assert.equal(result.state, "invalid", `${amendmentKind} ${snapshotName}`);
+        assert.deepEqual(result.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+      }
+    }
+  }
+});
+
 test("selected and declined amendments complete only with fresh generation-one evidence", () => {
   for (const oldStrategy of ["tdd_selected", "tdd_declined"]) {
     for (const amendmentKind of ["changed", "removed"]) {
@@ -1614,6 +1626,32 @@ test("amended missions reject stale receipts, stale scaffold substitution, and p
   assert.deepEqual(evaluateTddMissionV1(substitutedPredecessor).reasonCodes, [
     "EXPECTATION_AMENDMENT_INCOMPLETE",
   ]);
+});
+
+test("predecessor Fury evidence identity is unique across active contract and exact evidence", () => {
+  const input = amendedFlowMission();
+  const amendment = input.strategyContract.criteria[0].expectationAmendment;
+  const collidingIds = [
+    amendment.furyDisposition.evidenceId,
+    amendment.fitzVerification.evidenceId,
+    amendment.freshRerun.evidenceId,
+    input.strategyContract.criteria[0].preImplementationStateEvidence.evidenceId,
+    input.strategyContract.criteria[0].preImplementationStateEvidence
+      .furyContractDisposition.evidenceId,
+    input.strategyContract.criteria[0].implementationAuthorityEvidence.evidenceId,
+    input.strategyContract.criteria[0].greenEvidence.evidenceId,
+    input.strategyContract.criteria[0].greenEvidence.mackEvidence.evidenceId,
+    input.evidence[0].evidenceId,
+  ];
+  for (const evidenceId of collidingIds) {
+    const candidate = structuredClone(input);
+    candidate.reviewedPredecessorContract.furyReview.evidenceId = evidenceId;
+    candidate.strategyContract.criteria[0].expectationAmendment
+      .predecessorFuryReviewEvidenceId = evidenceId;
+    const result = evaluateTddMissionV1(candidate);
+    assert.equal(result.state, "blocked");
+    assert.deepEqual(result.reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
+  }
 });
 
 test("reviewed Red never grants Green without explicit implementation authority", () => {

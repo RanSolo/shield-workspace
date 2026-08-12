@@ -1031,10 +1031,13 @@ function expectationAmendment(
   const amendmentKind = amendment.amendmentKind as TddMissionExpectationAmendmentKindV1;
   const oldContractGeneration = amendment.oldContractGeneration;
   const oldContractDigest = amendment.oldContractDigest;
-  const oldContractSnapshot = acceptanceContractSnapshot(amendment.oldContractSnapshot);
+  const oldContractSnapshot = acceptanceContractSnapshot(amendment.oldContractSnapshot, true);
   const amendedContractGeneration = activeGeneration;
   const amendedContractDigest = amendment.amendedContractDigest;
-  const amendedContractSnapshot = acceptanceContractSnapshot(amendment.amendedContractSnapshot);
+  const amendedContractSnapshot = acceptanceContractSnapshot(
+    amendment.amendedContractSnapshot,
+    true,
+  );
   if (oldContractSnapshot === null || amendedContractSnapshot === null ||
       oldContractSnapshot.contractGeneration !== oldContractGeneration ||
       amendedContractSnapshot.contractGeneration !== amendedContractGeneration ||
@@ -1273,8 +1276,11 @@ function acceptanceExpectation(value: unknown): Readonly<TddAcceptanceExpectatio
 
 function acceptanceContractSnapshot(
   value: unknown,
+  closed = false,
 ): Readonly<TddAcceptanceContractSnapshotV1> | null {
-  const contract = projectedRecord(value, ACCEPTANCE_SNAPSHOT_FIELDS);
+  const contract = closed
+    ? record(value, ACCEPTANCE_SNAPSHOT_FIELDS)
+    : projectedRecord(value, ACCEPTANCE_SNAPSHOT_FIELDS);
   if (contract === null || contract.schemaVersion !== TDD_MISSION_SCHEMA_VERSION ||
       contract.contractVersion !== TDD_MISSION_CONTRACT_VERSION ||
       !contractGeneration(contract.contractGeneration) || !Array.isArray(contract.criteria) ||
@@ -1286,7 +1292,7 @@ function acceptanceContractSnapshot(
   const criteria: Readonly<TddAcceptanceCriterionProjectionV1>[] = [];
   const criterionIds = new Set<string>();
   for (const candidate of contract.criteria) {
-    const criterion = projectedRecord(candidate, [
+    const criterionFields = [
       "criterionId",
       "strategy",
       "rationale",
@@ -1296,7 +1302,10 @@ function acceptanceContractSnapshot(
       "acceptanceExpectation",
       "preImplementationContract",
       "traceability",
-    ]);
+    ] as const;
+    const criterion = closed
+      ? record(candidate, criterionFields)
+      : projectedRecord(candidate, criterionFields);
     if (criterion === null || !identifier(criterion.criterionId) ||
         criterionIds.has(criterion.criterionId) ||
         !TDD_MISSION_STRATEGIES.includes(criterion.strategy as TddMissionStrategyV1) ||
@@ -1306,12 +1315,15 @@ function acceptanceContractSnapshot(
           criterion.disposition as TddMissionCriterionDispositionV1,
         )) return null;
     const expectation = acceptanceExpectation(criterion.acceptanceExpectation);
-    const spine = projectedRecord(criterion.traceability, [
+    const traceabilityFields = [
       "planRequirementId",
       "mackCheckpointId",
       "mayPacketId",
       "humanReviewId",
-    ]);
+    ] as const;
+    const spine = closed
+      ? record(criterion.traceability, traceabilityFields)
+      : projectedRecord(criterion.traceability, traceabilityFields);
     if (expectation === null || spine === null || !identifier(spine.planRequirementId) ||
         !identifier(spine.mackCheckpointId) || !identifier(spine.mayPacketId) ||
         (spine.humanReviewId !== null && !identifier(spine.humanReviewId))) return null;
@@ -2116,7 +2128,7 @@ function reviewedPredecessorContract(
       predecessor.contractGeneration + 1 !== activeGeneration ||
       typeof predecessor.acceptanceContractDigest !== "string" ||
       !DIGEST.test(predecessor.acceptanceContractDigest)) return null;
-  const snapshot = acceptanceContractSnapshot(predecessor.snapshot);
+  const snapshot = acceptanceContractSnapshot(predecessor.snapshot, true);
   if (snapshot === null || snapshot.contractGeneration !== predecessor.contractGeneration ||
       acceptanceContractDigest(snapshot) !== predecessor.acceptanceContractDigest) return null;
   const review = record(predecessor.furyReview, PREDECESSOR_FURY_REVIEW_FIELDS);
@@ -2146,6 +2158,36 @@ function reviewedPredecessorContract(
       sourceRefs,
     }),
   });
+}
+
+function activeContractEvidenceIds(
+  criteria: readonly Readonly<TddCriterionStrategyV1>[],
+): ReadonlySet<string> {
+  const evidenceIds = new Set<string>();
+  const add = (evidenceId: string | undefined): void => {
+    if (evidenceId !== undefined) evidenceIds.add(evidenceId);
+  };
+  for (const criterion of criteria) {
+    if (criterion.strategy === "tdd_selected") {
+      add(criterion.preImplementationStateEvidence.evidenceId);
+      if (criterion.preImplementationStateEvidence.state === "red_established") {
+        add(criterion.preImplementationStateEvidence.furyContractDisposition.evidenceId);
+      }
+    }
+    const amendment = criterion.expectationAmendment;
+    if (amendment !== null) {
+      add(amendment.furyDisposition?.evidenceId);
+      add(amendment.fitzVerification.evidenceId);
+      add(amendment.freshRerun.evidenceId);
+    }
+    add(criterion.implementationAuthorityEvidence?.evidenceId);
+    add(criterion.greenEvidence?.evidenceId);
+    add(criterion.greenEvidence?.mackEvidence.evidenceId);
+    add(criterion.refactorEvidence?.evidenceId);
+    add(criterion.refactorEvidence?.implementationAuthorityEvidence.evidenceId);
+    add(criterion.refactorEvidence?.mackEvidence.evidenceId);
+  }
+  return evidenceIds;
 }
 
 function evidenceTestCounts(
@@ -2421,7 +2463,11 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
     evidenceIds.add(evidence.evidenceId);
     normalizedEvidence.push(evidence);
   }
-  if (predecessor !== null && evidenceIds.has(predecessor.furyReview.evidenceId)) {
+  if (predecessor !== null &&
+      (evidenceIds.has(predecessor.furyReview.evidenceId) ||
+        activeContractEvidenceIds(strategy.contract.criteria).has(
+          predecessor.furyReview.evidenceId,
+        ))) {
     return blockedMission("EVIDENCE_SCHEMA_INVALID");
   }
 
