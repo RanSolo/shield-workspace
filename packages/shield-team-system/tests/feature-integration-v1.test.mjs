@@ -128,13 +128,18 @@ function replayFixture() {
   return { entries, integrationEntry, integrationReceipt, cumulativeEntry, cumulativeReceipt, plan, authority, signedAuthority, trustedBindings, replayContext, add, candidate };
 }
 
-function appendRollbackTransition(fixture) {
+function prepareRollbackTransition(fixture, observedAt = { value: "2029-05-01T00:17:00Z", provenance: "hostTrusted" }) {
   const completionReceiptDigest = digest("e");
   fixture.add("rollback_workspace_accepted", { childId: "mission:child-one", sourceMissionId: "mission:rollback-one", completionReceiptDigest, sourceAuthorityDigest: digest("f"), sourceJournalDigest: digest("1"), rollbackBranch: "agent/rollback-one", pullRequestId: "3", pullRequestHeadRevision: revision("d"), targetBranch: fixture.plan.featureBranch, restoredTreeDigest: fixture.plan.baseTreeDigest, sourceEffectKeys: ["effect:rollback-source:one"], evidenceDigests: [digest("2")] });
   const rollbackCandidate = fixture.candidate("rollback", "child_revert_on_feature", { childId: "mission:child-one", integrationReceiptDigest: fixture.integrationReceipt.receiptDigest, integrationHeadRevision: fixture.integrationReceipt.resultingHeadRevision, integrationTreeDigest: fixture.integrationReceipt.resultingTreeDigest, expectedRestoredTreeDigest: fixture.integrationReceipt.priorTreeDigest, targetBranch: fixture.plan.featureBranch, rollbackMethod: "revert_commit" });
   const prepared = fixture.add("effect_prepared", { effectClass: "feature_operation", candidate: rollbackCandidate, candidateDigest: rollbackCandidate.candidateDigest, effectKey: rollbackCandidate.effectKey, requestDigest: digest("3"), expectedHeadRevision: fixture.integrationReceipt.resultingHeadRevision, expectedTreeDigest: fixture.integrationReceipt.resultingTreeDigest });
-  const receipt = { schemaVersion: 1, contractVersion: "feature.integration.v1", operationId: fixture.plan.operationId, repositoryId: fixture.plan.repositoryId, planDigest: fixture.plan.planDigest, authorityDigest: fixture.authority.authorityDigest, childId: "mission:child-one", effectKey: rollbackCandidate.effectKey, attemptNumber: 1, reconciliationState: "applied", revertedIntegrationReceiptDigest: fixture.integrationReceipt.receiptDigest, rollbackWorkspaceReceiptDigest: completionReceiptDigest, priorHeadRevision: fixture.integrationReceipt.resultingHeadRevision, priorTreeDigest: fixture.integrationReceipt.resultingTreeDigest, resultingHeadRevision: revision("d"), resultingTreeDigest: fixture.integrationReceipt.priorTreeDigest, observationProvenance: "github:rollback", observedAt: { value: "2029-05-01T00:17:00Z", provenance: "hostTrusted" }, seatId: "may", reasoningRuntimeId: "runtime:may", modelId: "model:may", toolExecutorId: "executor:github", receiptDigest: digest("0") };
+  const receipt = { schemaVersion: 1, contractVersion: "feature.integration.v1", operationId: fixture.plan.operationId, repositoryId: fixture.plan.repositoryId, planDigest: fixture.plan.planDigest, authorityDigest: fixture.authority.authorityDigest, childId: "mission:child-one", effectKey: rollbackCandidate.effectKey, attemptNumber: 1, reconciliationState: "applied", revertedIntegrationReceiptDigest: fixture.integrationReceipt.receiptDigest, rollbackWorkspaceReceiptDigest: completionReceiptDigest, priorHeadRevision: fixture.integrationReceipt.resultingHeadRevision, priorTreeDigest: fixture.integrationReceipt.resultingTreeDigest, resultingHeadRevision: revision("d"), resultingTreeDigest: fixture.integrationReceipt.priorTreeDigest, observationProvenance: "github:rollback", observedAt, seatId: "may", reasoningRuntimeId: "runtime:may", modelId: "model:may", toolExecutorId: "executor:github", receiptDigest: digest("0") };
   receipt.receiptDigest = computeFeatureRollbackReceiptDigestV1(receipt);
+  return { prepared, receipt };
+}
+
+function appendRollbackTransition(fixture) {
+  const { prepared, receipt } = prepareRollbackTransition(fixture);
   fixture.add("rollback_accepted", { preparationEntryDigest: prepared.entryDigest, receipt });
   return receipt;
 }
@@ -383,5 +388,59 @@ test("replay rejects historical keys and cross-transition cumulative receipts af
     candidate.candidateDigest = computeFeatureCumulativeValidationCandidateDigestV1(candidate);
     fixture.add("effect_prepared", { effectClass: "cumulative_validation", candidate, candidateDigest: candidate.candidateDigest, effectKey: candidate.effectKey, requestDigest: candidate.requestDigest, expectedHeadRevision: candidate.terminalHeadRevision, expectedTreeDigest: candidate.terminalTreeDigest });
     assert.deepEqual(replayFeatureOperationJournalV1(createFeatureOperationJournalV1(fixture.entries)), { state: "invalid", reason: "EFFECT_LIFECYCLE_INVALID", entrySequence: fixture.entries.length - 1 });
+  }
+});
+
+test("terminal rollback reconciliation preserves disposition and exposes only fresh cumulative validation after application", () => {
+  const dispositions = [
+    { name: "cancellation", lifecycle: "cancelled", entryKind: "operation_cancelled", dispositionAt: "2029-05-01T00:17:00Z", outcomeAt: "2029-05-01T00:18:00Z", payload: { reason: "operator_cancelled" } },
+    { name: "expiry", lifecycle: "expired", entryKind: null, dispositionAt: "2029-05-01T01:00:00Z", outcomeAt: "2029-05-01T01:01:00Z", payload: {} },
+    { name: "supersession", lifecycle: "superseded", entryKind: "operation_superseded", dispositionAt: "2029-05-01T00:17:00Z", outcomeAt: "2029-05-01T00:18:00Z", payload: { successorOperationId: "operation:successor", successorPlanDigest: digest("6"), successorAuthorityDigest: digest("7") } },
+  ];
+  const outcomes = ["applied", "not_applied", "uncertain"];
+
+  for (const disposition of dispositions) {
+    for (const outcome of outcomes) {
+      const fixture = replayFixture();
+      const outcomeObservedAt = { value: disposition.outcomeAt, provenance: "hostTrusted" };
+      const { prepared, receipt } = prepareRollbackTransition(fixture, outcomeObservedAt);
+      const dispositionObservedAt = { value: disposition.dispositionAt, provenance: "hostTrusted" };
+      if (disposition.entryKind) fixture.add(disposition.entryKind, { observedAt: dispositionObservedAt, ...disposition.payload });
+      else fixture.add("effect_uncertain", { preparationEntryDigest: prepared.entryDigest, observationProvenance: "github:rollback:expiry", observedAt: dispositionObservedAt });
+
+      if (outcome === "applied") fixture.add("rollback_accepted", { preparationEntryDigest: prepared.entryDigest, receipt });
+      else if (outcome === "not_applied") fixture.add("effect_not_applied", { preparationEntryDigest: prepared.entryDigest, observationProvenance: `github:rollback:${disposition.name}:not-applied`, observedAt: outcomeObservedAt });
+      else if (disposition.entryKind) fixture.add("effect_uncertain", { preparationEntryDigest: prepared.entryDigest, observationProvenance: `github:rollback:${disposition.name}:uncertain`, observedAt: outcomeObservedAt });
+
+      const replayed = replayFeatureOperationJournalV1(createFeatureOperationJournalV1(fixture.entries));
+      assert.equal(replayed.state, "valid", `${disposition.name}:${outcome}`);
+      assert.equal(replayed.value.replayContext.lifecycle.state, disposition.lifecycle, `${disposition.name}:${outcome}:lifecycle`);
+      assert.equal(replayed.value.replayContext.lifecycle.atOperationSequence, 1, `${disposition.name}:${outcome}:terminal-sequence`);
+      assert.equal(replayed.value.replayContext.operationCounters.totalRollbackAttempts, 1, `${disposition.name}:${outcome}:attempts`);
+      assert.equal(replayed.value.replayContext.consumedEffectKeys.includes(prepared.payload.effectKey), true, `${disposition.name}:${outcome}:effect-key`);
+
+      if (outcome === "applied") {
+        assert.equal(replayed.value.terminalHeadRevision, receipt.resultingHeadRevision, `${disposition.name}:applied:head`);
+        assert.equal(replayed.value.terminalTreeDigest, receipt.resultingTreeDigest, `${disposition.name}:applied:tree`);
+        assert.equal(replayed.value.headTransitionOperationSequence, 2, `${disposition.name}:applied:transition-sequence`);
+        assert.equal(replayed.value.cumulativeValidation, "pending", `${disposition.name}:applied:cumulative`);
+        assert.equal(replayed.value.nextStage, "cumulative_validation", `${disposition.name}:applied:stage`);
+
+        const cumulativeCandidate = { schemaVersion: 1, operationId: fixture.plan.operationId, authorityDigest: digest("4"), requestDigest: digest("5"), effectKey: `effect:cumulative:terminal-${disposition.name}`, terminalHeadRevision: receipt.resultingHeadRevision, terminalTreeDigest: receipt.resultingTreeDigest, transitionReceiptDigest: receipt.receiptDigest, candidateDigest: digest("0") };
+        cumulativeCandidate.candidateDigest = computeFeatureCumulativeValidationCandidateDigestV1(cumulativeCandidate);
+        fixture.add("effect_prepared", { effectClass: "cumulative_validation", candidate: cumulativeCandidate, candidateDigest: cumulativeCandidate.candidateDigest, effectKey: cumulativeCandidate.effectKey, requestDigest: cumulativeCandidate.requestDigest, expectedHeadRevision: cumulativeCandidate.terminalHeadRevision, expectedTreeDigest: cumulativeCandidate.terminalTreeDigest });
+        const validationPrepared = replayFeatureOperationJournalV1(createFeatureOperationJournalV1(fixture.entries));
+        assert.equal(validationPrepared.state, "valid", `${disposition.name}:cumulative-prepared`);
+        assert.equal(validationPrepared.value.replayContext.lifecycle.state, disposition.lifecycle, `${disposition.name}:cumulative-preserves-lifecycle`);
+        assert.equal(validationPrepared.value.nextStage, "blocked", `${disposition.name}:cumulative-prepared-stage`);
+      } else {
+        assert.equal(replayed.value.terminalHeadRevision, fixture.integrationReceipt.resultingHeadRevision, `${disposition.name}:${outcome}:head`);
+        assert.equal(replayed.value.terminalTreeDigest, fixture.integrationReceipt.resultingTreeDigest, `${disposition.name}:${outcome}:tree`);
+        assert.equal(replayed.value.headTransitionOperationSequence, 1, `${disposition.name}:${outcome}:transition-sequence`);
+        assert.equal(replayed.value.nextStage, outcome === "uncertain" ? "blocked" : "lifecycle_only", `${disposition.name}:${outcome}:stage`);
+        assert.equal(replayed.value.uncertainEffect, outcome === "uncertain", `${disposition.name}:${outcome}:uncertain`);
+        assert.equal(replayed.value.pendingEffect === null, outcome === "not_applied", `${disposition.name}:${outcome}:pending`);
+      }
+    }
   }
 });

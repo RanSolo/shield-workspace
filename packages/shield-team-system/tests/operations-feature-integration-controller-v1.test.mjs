@@ -54,3 +54,39 @@ test("controller maps closed lifecycle outcomes and refuses missing stage owners
   const missing = await runFeatureIntegrationControllerV1(input({ executeStage: true }), deps(replay()));
   assert.equal(missing.state, "blocked"); assert.equal(missing.reason, "stage_owner_unavailable");
 });
+
+test("controller keeps terminal rollback dispositions closed while routing applied validation and uncertain recovery", async () => {
+  const cases = [
+    { lifecycle: "cancelled", closedState: "cancelled", observedAt: "2029-01-01T00:00:00Z" },
+    { lifecycle: "expired", closedState: "blocked", observedAt: "2029-01-01T01:00:00Z" },
+    { lifecycle: "superseded", closedState: "split", observedAt: "2029-01-01T00:00:00Z" },
+  ];
+
+  for (const item of cases) {
+    const replayContext = { ...replay().replayContext, lifecycle: { state: item.lifecycle } };
+    let cumulativeCalls = 0;
+    let ordinaryCalls = 0;
+    const owners = {
+      cumulative_validation: async () => { cumulativeCalls += 1; return { state: "accepted" }; },
+      feature_branch_creation: async () => { ordinaryCalls += 1; return { state: "accepted" }; },
+    };
+    const repositoryObservation = observation({ observedAt: item.observedAt });
+
+    const appliedProjection = replay({ replayContext, nextStage: "cumulative_validation" });
+    const ready = await runFeatureIntegrationControllerV1(input(), deps(appliedProjection, owners, repositoryObservation));
+    assert.equal(ready.state, "ready", `${item.lifecycle}:applied:ready`);
+    assert.equal(ready.stage, "cumulative_validation", `${item.lifecycle}:applied:stage`);
+    const executed = await runFeatureIntegrationControllerV1(input({ executeStage: true }), deps(appliedProjection, owners, repositoryObservation));
+    assert.equal(executed.state, "accepted", `${item.lifecycle}:applied:executed`);
+    assert.equal(cumulativeCalls, 1, `${item.lifecycle}:applied:cumulative-calls`);
+    assert.equal(ordinaryCalls, 0, `${item.lifecycle}:applied:ordinary-calls`);
+
+    const notApplied = await runFeatureIntegrationControllerV1(input({ executeStage: true }), deps(replay({ replayContext, nextStage: "lifecycle_only" }), owners, repositoryObservation));
+    assert.equal(notApplied.state, item.closedState, `${item.lifecycle}:not-applied`);
+    const uncertain = await runFeatureIntegrationControllerV1(input({ executeStage: true }), deps(replay({ replayContext, nextStage: "blocked", pendingEffect: { effectKey: "effect:rollback" }, uncertainEffect: true }), owners, repositoryObservation));
+    assert.equal(uncertain.state, "recovery_required", `${item.lifecycle}:uncertain:state`);
+    assert.equal(uncertain.reason, "effect_uncertain", `${item.lifecycle}:uncertain:reason`);
+    assert.equal(cumulativeCalls, 1, `${item.lifecycle}:uncertain:no-cumulative-call`);
+    assert.equal(ordinaryCalls, 0, `${item.lifecycle}:uncertain:no-ordinary-call`);
+  }
+});

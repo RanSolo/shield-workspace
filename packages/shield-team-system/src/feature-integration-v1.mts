@@ -678,6 +678,9 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
     } else if (entry.entryKind === "effect_prepared") {
       if (pending || !digestValue(payload.candidateDigest) || !text(payload.effectKey) || !digestValue(payload.requestDigest)) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
       const isCumulative = payload.effectClass === "cumulative_validation";
+      const latestTransition = context.transitions.at(-1);
+      const terminalRollbackRequiresValidation = ["cancelled", "expired", "superseded"].includes(context.lifecycle.state) && latestTransition?.kind === "rollback" && latestTransition.operationSequence > context.lifecycle.atOperationSequence && cumulative === "pending";
+      if (["cancelled", "expired", "superseded"].includes(context.lifecycle.state) && (!isCumulative || !terminalRollbackRequiresValidation)) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
       const checkedDerived = isCumulative ? null : validateFeatureOperationDerivedCandidateV1(payload.candidate);
       const checkedCumulative = isCumulative ? candidate(payload.candidate) : null;
       if ((!isCumulative && checkedDerived?.state !== "valid") || (isCumulative && !checkedCumulative)) return replayInvalid("EFFECT_LIFECYCLE_INVALID", index);
@@ -778,7 +781,8 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
         if (!latest || latest.receiptDigest !== rollback.revertedIntegrationReceiptDigest || latest.priorTreeDigest !== rollback.resultingTreeDigest || rollbackWorkspaces.get(rollback.childId) !== rollback.rollbackWorkspaceReceiptDigest) return replayInvalid("HEAD_TRANSITION_INVALID", index);
         headSequence += 1;
         const transition = { kind: "rollback" as const, operationSequence: headSequence, effectKey: rollback.effectKey, priorHeadRevision: rollback.priorHeadRevision, priorTreeDigest: rollback.priorTreeDigest, resultingHeadRevision: rollback.resultingHeadRevision, resultingTreeDigest: rollback.resultingTreeDigest, receiptDigest: rollback.receiptDigest, childId: rollback.childId, revertedIntegrationReceiptDigest: rollback.revertedIntegrationReceiptDigest };
-        context = { ...context, transitions: [...context.transitions, transition], acceptedIntegrations: context.acceptedIntegrations.map((item) => item.receiptDigest === latest.receiptDigest ? { ...item, reverted: true } : item), acceptedRollbacks: [...context.acceptedRollbacks, { childId: transition.childId, operationSequence: transition.operationSequence, effectKey: transition.effectKey, revertedIntegrationReceiptDigest: transition.revertedIntegrationReceiptDigest, priorHeadRevision: transition.priorHeadRevision, priorTreeDigest: transition.priorTreeDigest, resultingHeadRevision: transition.resultingHeadRevision, resultingTreeDigest: transition.resultingTreeDigest, receiptDigest: transition.receiptDigest }], lifecycle: { state: "active", atOperationSequence: headSequence } };
+        const lifecycle = ["cancelled", "expired", "superseded"].includes(context.lifecycle.state) ? context.lifecycle : { state: "active" as const, atOperationSequence: headSequence };
+        context = { ...context, transitions: [...context.transitions, transition], acceptedIntegrations: context.acceptedIntegrations.map((item) => item.receiptDigest === latest.receiptDigest ? { ...item, reverted: true } : item), acceptedRollbacks: [...context.acceptedRollbacks, { childId: transition.childId, operationSequence: transition.operationSequence, effectKey: transition.effectKey, revertedIntegrationReceiptDigest: transition.revertedIntegrationReceiptDigest, priorHeadRevision: transition.priorHeadRevision, priorTreeDigest: transition.priorTreeDigest, resultingHeadRevision: transition.resultingHeadRevision, resultingTreeDigest: transition.resultingTreeDigest, receiptDigest: transition.receiptDigest }], lifecycle };
       }
       terminalHead = receipt.resultingHeadRevision; terminalTree = receipt.resultingTreeDigest; cumulative = "pending"; cumulativeAttempts = 0; pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "rollback_workspace_accepted") {
@@ -801,7 +805,8 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
     else if (["operation_cancelled", "operation_split", "operation_superseded", "operation_completed"].includes(entry.entryKind)) {
       const allIntegrated = context.activePlan.children.every((child) => context.acceptedIntegrations.some((item) => item.childId === child.childId && !item.reverted));
       const finalSatisfied = finalGates.has("fitz") && finalGates.has("coulson");
-      if (pending || (entry.entryKind === "operation_completed" && (!allIntegrated || cumulative !== "passed" || !finalSatisfied))) return replayInvalid("LIFECYCLE_INVALID", index);
+      const terminalRollbackDisposition = entry.entryKind !== "operation_completed" && context.lifecycle.state === "rollback_pending" && (pendingCandidate as FeatureOperationDerivedCandidateV1 | null)?.derivationKind === "child_revert_on_feature";
+      if ((pending && !terminalRollbackDisposition) || (entry.entryKind === "operation_completed" && (!allIntegrated || cumulative !== "passed" || !finalSatisfied))) return replayInvalid("LIFECYCLE_INVALID", index);
       const state = entry.entryKind === "operation_cancelled" ? "cancelled" : entry.entryKind === "operation_completed" ? "integrated" : "superseded";
       context = { ...context, lifecycle: { state, atOperationSequence: headSequence } };
     }
@@ -815,7 +820,9 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
   if (["active", "paused", "rollback_pending"].includes(context.lifecycle.state) && Date.parse(context.observedAt.value) >= Date.parse(context.activePlan.expiresAt)) context = { ...context, lifecycle: { state: "expired", atOperationSequence: headSequence } };
   const child = context.activePlan.children.find((item) => !context.acceptedIntegrations.some((accepted) => accepted.childId === item.childId && !accepted.reverted));
   let nextStage: FeatureIntegrationNextStageV1 = pending ? "blocked" : !featureBranchExists ? "feature_branch_creation" : !featureWorkspaceExists ? "feature_workspace" : headSequence > 0 && cumulative === "failed" ? "rollback_mission_handoff" : headSequence > 0 && cumulative === "pending" ? "cumulative_validation" : !child ? (cumulative === "passed" ? "completed" : "cumulative_validation") : !initiated.has(child.childId) ? "child_initiation" : !implemented.has(child.childId) ? "implementation_handoff" : !published.has(child.childId) ? "child_publication" : !evidenced.has(child.childId) ? "child_evidence" : "integration";
-  if (["paused", "cancelled", "expired", "superseded"].includes(context.lifecycle.state)) nextStage = "lifecycle_only";
+  const latestTransition = context.transitions.at(-1);
+  const terminalRollbackRequiresValidation = ["cancelled", "expired", "superseded"].includes(context.lifecycle.state) && latestTransition?.kind === "rollback" && latestTransition.operationSequence > context.lifecycle.atOperationSequence && cumulative === "pending";
+  if (["paused", "cancelled", "expired", "superseded"].includes(context.lifecycle.state)) nextStage = pending ? "blocked" : terminalRollbackRequiresValidation ? "cumulative_validation" : "lifecycle_only";
   if (validateFeatureOperationReplayContextV1(context).state !== "valid") return replayInvalid("JOURNAL_INVALID", entries.length - 1);
   return { state: "valid", value: clone({ replayContext: context, nextEntrySequence: entries.length, activeAuthorityJournalSequence: activeJournal, activeAuthorityOperationSequence: activeOperation, headTransitionOperationSequence: headSequence, terminalHeadRevision: terminalHead, terminalTreeDigest: terminalTree, pendingEffect: pending, uncertainEffect: uncertain, consumedCumulativeValidationEffectKeys: cumulativeKeys, cumulativeValidationAttempts: cumulativeAttempts, cumulativeValidation: cumulative, nextStage, latestObservedAt: context.observedAt }) };
 }

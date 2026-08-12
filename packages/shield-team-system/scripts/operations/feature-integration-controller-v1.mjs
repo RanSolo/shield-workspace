@@ -45,13 +45,16 @@ export async function runFeatureIntegrationControllerV1(input, dependencies = {}
   const observation = trustedRepositoryObservation(observationResult, { repositoryId: replay.replayContext.repositoryId, featureBranch: replay.replayContext.activePlan.featureBranch, challengeId: input.challengeId });
   if (!observation) return blocked("repository_observation_untrusted", replay);
   if (observation.headRevision !== replay.terminalHeadRevision || observation.treeDigest !== replay.terminalTreeDigest) return blocked("repository_drift", replay);
-  if (Date.parse(observation.observedAt) >= Date.parse(replay.replayContext.activePlan.expiresAt)) return { state: "blocked", reason: "authority_expired", replay };
   if (replay.pendingEffect) return { state: "recovery_required", reason: replay.uncertainEffect ? "effect_uncertain" : "effect_prepared", replay };
   const lifecycle = replay.replayContext.lifecycle.state;
-  if (lifecycle === "paused") return { state: "paused", replay };
-  if (lifecycle === "cancelled") return { state: "cancelled", replay };
-  if (lifecycle === "superseded") return { state: "split", replay };
-  if (["expired", "integrated"].includes(lifecycle)) return lifecycle === "integrated" ? { state: "completed", replay } : blocked("authority_expired", replay);
+  const terminalRollbackRequiresValidation = ["cancelled", "expired", "superseded"].includes(lifecycle) && replay.nextStage === "cumulative_validation";
+  if (!terminalRollbackRequiresValidation) {
+    if (Date.parse(observation.observedAt) >= Date.parse(replay.replayContext.activePlan.expiresAt)) return { state: "blocked", reason: "authority_expired", replay };
+    if (lifecycle === "paused") return { state: "paused", replay };
+    if (lifecycle === "cancelled") return { state: "cancelled", replay };
+    if (lifecycle === "superseded") return { state: "split", replay };
+    if (["expired", "integrated"].includes(lifecycle)) return lifecycle === "integrated" ? { state: "completed", replay } : blocked("authority_expired", replay);
+  }
 
   const nextStage = replay.nextStage;
   if (nextStage === "implementation_handoff") {
