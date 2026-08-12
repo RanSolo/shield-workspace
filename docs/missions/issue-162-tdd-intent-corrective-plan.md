@@ -123,7 +123,8 @@ The normalized digest projection contains exactly:
 - top level: `schemaVersion`, `contractVersion`, `contractGeneration`,
   normalized `criteria`, and normalized `packets`;
 - each criterion: `criterionId`, `strategy`, `rationale`, `riskFactors`,
-  `laterValidation`, `disposition`, the executable contract's `contractId`,
+  `laterValidation`, `disposition`, a closed `acceptanceExpectation` containing
+  `state` and `expectedBehavior`, the executable contract's `contractId`,
   `kind`, `checkpointId`, and `expectedBehavior` or explicit `null`, and
   traceability `planRequirementId`, `mackCheckpointId`, `mayPacketId`, and
   `humanReviewId`;
@@ -146,8 +147,13 @@ Normalize to ordinary JSON. Exactly three projected fields admit `null`:
 criterion `preImplementationContract` for `tdd_declined`, traceability
 `humanReviewId` when no human checkpoint is required, and packet
 `couplingRationale` for a one-criterion packet. All other projected values are
-null-free. Sort criteria by `criterionId` and packets by `packetId` using
-JavaScript code-unit order. Treat `riskFactors`, packet
+null-free. `acceptanceExpectation.state` is exactly `active` or `removed`, and
+its `expectedBehavior` is always nonempty. A selected criterion requires state
+`active` and byte-equality between this shared expected behavior and
+`preImplementationContract.expectedBehavior`; a declined criterion may carry
+either state and therefore retains digest-bearing acceptance meaning without
+manufacturing an executable contract. Sort criteria by `criterionId` and
+packets by `packetId` using JavaScript code-unit order. Treat `riskFactors`, packet
 `criterionIds`, `minimalPaths`, `requiredInterfaces`, `allowedEffects`,
 `focusedValidation`, and `stopConditions` as duplicate-free sets sorted by the
 code-unit ordering of each item's complete canonical JSON. Preserve no other
@@ -169,17 +175,19 @@ padding. The algorithm golden uses payload
 (104 UTF-8 bytes), preimage
 `tdd.mission.v1\u0000acceptance-contract\u0000104:{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[],"packets":[],"schemaVersion":1}`,
 and digest `sha256:cmUeaevhL6GckHGcclInnDdHUnXPSabx14PBwSSOAik`.
+The new criterion field does not alter this empty projection, so this remains
+the exact post-correction empty golden rather than a legacy exception.
 
 A nonempty golden covers selected and declined criteria, retained and null
 `humanReviewId`, and one-criterion packets with null coupling rationale. Its
 canonical payload is exactly:
 
 ```json
-{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[{"criterionId":"AC-A","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":{"checkpointId":"checkpoint:A","contractId":"contract:A","expectedBehavior":"A holds","kind":"executable"},"rationale":"closed behavior","riskFactors":["regression"],"strategy":"tdd_selected","traceability":{"humanReviewId":null,"mackCheckpointId":"checkpoint:A","mayPacketId":"packet:A","planRequirementId":"requirement:A"}},{"criterionId":"AC-B","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":null,"rationale":"documentation only","riskFactors":["documentation"],"strategy":"tdd_declined","traceability":{"humanReviewId":"review:human:B","mackCheckpointId":"checkpoint:B","mayPacketId":"packet:B","planRequirementId":"requirement:B"}}],"packets":[{"allowedEffects":["effect:a"],"couplingRationale":null,"criterionIds":["AC-A"],"expectedOutput":"A passes","focusedValidation":[{"checkpointId":"checkpoint:A","command":"node --test a.test.mjs","commandId":"validation:A","executableKind":"test"}],"minimalPaths":["src/a.mts"],"packetId":"packet:A","requiredInterfaces":["interface:a"],"stopConditions":["scope changes"],"successor":"packet:B"},{"allowedEffects":["effect:b"],"couplingRationale":null,"criterionIds":["AC-B"],"expectedOutput":"B passes","focusedValidation":[{"checkpointId":"checkpoint:B","command":"node --test b.test.mjs","commandId":"validation:B","executableKind":"test"}],"minimalPaths":["docs/b.md"],"packetId":"packet:B","requiredInterfaces":["interface:b"],"stopConditions":["scope changes"],"successor":"mission_complete"}],"schemaVersion":1}
+{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[{"acceptanceExpectation":{"expectedBehavior":"A holds","state":"active"},"criterionId":"AC-A","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":{"checkpointId":"checkpoint:A","contractId":"contract:A","expectedBehavior":"A holds","kind":"executable"},"rationale":"closed behavior","riskFactors":["regression"],"strategy":"tdd_selected","traceability":{"humanReviewId":null,"mackCheckpointId":"checkpoint:A","mayPacketId":"packet:A","planRequirementId":"requirement:A"}},{"acceptanceExpectation":{"expectedBehavior":"B remains documented","state":"active"},"criterionId":"AC-B","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":null,"rationale":"documentation only","riskFactors":["documentation"],"strategy":"tdd_declined","traceability":{"humanReviewId":"review:human:B","mackCheckpointId":"checkpoint:B","mayPacketId":"packet:B","planRequirementId":"requirement:B"}}],"packets":[{"allowedEffects":["effect:a"],"couplingRationale":null,"criterionIds":["AC-A"],"expectedOutput":"A passes","focusedValidation":[{"checkpointId":"checkpoint:A","command":"node --test a.test.mjs","commandId":"validation:A","executableKind":"test"}],"minimalPaths":["src/a.mts"],"packetId":"packet:A","requiredInterfaces":["interface:a"],"stopConditions":["scope changes"],"successor":"packet:B"},{"allowedEffects":["effect:b"],"couplingRationale":null,"criterionIds":["AC-B"],"expectedOutput":"B passes","focusedValidation":[{"checkpointId":"checkpoint:B","command":"node --test b.test.mjs","commandId":"validation:B","executableKind":"test"}],"minimalPaths":["docs/b.md"],"packetId":"packet:B","requiredInterfaces":["interface:b"],"stopConditions":["scope changes"],"successor":"mission_complete"}],"schemaVersion":1}
 ```
 
-It is 1704 UTF-8 bytes and produces
-`sha256:MiT1bN3hYDmYWkHLdQJ-NO_ZFdspbVGqOfZ3acZ5TPo` under the same frame.
+It is 1861 UTF-8 bytes and produces
+`sha256:Bl22e_4j7ILiD1lrj7UHMqBzjqHtOdSl7bWMgyhNasM` under the same frame.
 
 The closed V1 input now requires generation explicitly. Existing retained
 no-amendment fixtures are mechanically migrated to `contractGeneration: 0` in
@@ -220,13 +228,24 @@ its `N -> N+1` edge; every amendment on that edge must carry the same unique
 Fury anchor and may not be reused by another edge.
 After removing only `contractGeneration`, the old and amended normalized
 projections must still differ. The permitted delta is exactly one or more named
-amended criteria's `preImplementationContract.expectedBehavior`; each changed
-value must be unequal, nonempty, and paired one-to-one with that criterion's
-`changed` or `removed` amendment record. Every other projected field, including
-all packet material and all other criteria, must be canonically equal. Thus a
-generation-only edge, an amendment naming an unchanged criterion, an unrecorded
-behavior delta, or collateral strategy/packet/traceability drift blocks.
-Focused negatives prove each case.
+amended criteria's `acceptanceExpectation`. `changed` requires old and new
+states both `active` and unequal nonempty `expectedBehavior` values. `removed`
+requires old state `active`, new state `removed`, and byte-identical nonempty
+`expectedBehavior`, so the new snapshot names exactly the behavior removed.
+Each delta is paired one-to-one with that criterion's matching amendment record.
+For a selected `changed` criterion, its executable contract's expected behavior
+must change to the same new text; contract ID, kind, and checkpoint stay equal.
+For a selected `removed` criterion, its strategy changes to `tdd_declined` and
+its executable contract becomes null. These equality-preserving linked fields
+are the only derived exceptions to projection equality for a named amendment;
+a declined amendment changes no strategy or executable-contract field. Every
+other projected field, including rationale, risk, disposition, traceability,
+all packet material, and all other criteria, must be canonically equal. Thus a
+generation-only edge, an amendment naming an unchanged criterion, changed text
+under `removed`, an unrecorded expectation delta, selected/shared expectation
+disagreement, or collateral drift blocks. Focused proof covers selected and
+declined `changed` completion, selected-to-declined and declined `removed`
+completion, and every listed negative.
 After an amendment, selected TDD requires a fresh prepared-scaffold record at
 `N+1`, bound to the amended digest, before fresh reviewed Red.
 
