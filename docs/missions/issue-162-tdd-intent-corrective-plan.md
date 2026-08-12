@@ -27,6 +27,10 @@ Plan review history:
   Fury `PLAN REVISE` at `gpt-5.6-sol`. This revision closes its four findings:
   literal authority scope, the absent hosted-Mack durability prerequisite,
   canonical digest bytes/order, and executable packet Red/Green validation.
+- Revision `3ab76800d941a021c6e3b96ddbb6b723dca47e1d` received complete
+  Fury `PLAN REVISE`. This revision removes the overbroad one-passcode
+  publication authority, closes C0-C8 Red/build/Green mappings, and freezes the
+  literal cumulative commands.
 
 ## Preserved gate evidence
 
@@ -60,10 +64,8 @@ Explicitly excluded:
 - retroactive authorization or rewriting of historical evidence;
 - a runner, journal store, CLI, UI, new test framework, network effect, model
   invocation, Guided QA #238, lifecycle issue #247 or unrelated cleanup;
-- publication execution, PR creation/update, merge, deployment, release or
-  final acceptance. The repository's one-passcode command may create dormant
-  review-publication authority for the two exact corrective planning artifacts;
-  no push, PR or other communication request/result is permitted;
+- review-publication authority or execution, PR creation/update, external
+  communication, merge, deployment, release or final acceptance;
 - changing/removing existing expectations merely to obtain Green. Any such
   change requires the existing Fitz and amendment-generation gates.
 
@@ -155,7 +157,7 @@ fresh cumulative receipts returns `STALE_EXACT_REVISION_EVIDENCE`.
 
 Each implementation/validation receipt records observed paths, observed
 effects and the executed command/checkpoint ID. `focusedValidation` is a closed
-array of `{ checkpointId, commandId, command }` objects. For C1-C7 it contains
+array of `{ checkpointId, commandId, command }` objects. For C0-C7 it contains
 the exact build entry `{ checkpointId: "checkpoint:issue-162:build-current",
 commandId: "validation:issue-162:nx-build", command: "npm exec nx run
 @shield/team-system:build" }` and focused entry `{ checkpointId:
@@ -227,14 +229,48 @@ Each packet contains one acceptance outcome and one Fury finding by default.
 No packet contains more than two tightly coupled criteria. May receives only
 the listed paths and the immediately required interfaces.
 
+After the hosted/local Mack durability prerequisite is satisfied, every packet
+uses this exact TDD sequence:
+
+1. Mack freezes the named fixture and expected `product_defect` failure
+   classification. May materializes only that reviewed test scaffold at a
+   scaffold revision; production source remains byte-identical to the packet
+   predecessor.
+2. Run `npm exec nx run @shield/team-system:build` at the exact scaffold
+   revision, then run the packet's focused test command. Mack records exact
+   scaffold HEAD/tree, both command/checkpoint IDs, exits/counts and the expected
+   failing fixture as durable Red evidence.
+3. May implements the smallest production Green at a separate revision.
+4. Run the same exact build and focused command at the Green revision. Mack
+   records exact Green HEAD/tree, commands, exits/counts and PASS as durable
+   focused evidence.
+5. Complete Fury review of that packet begins only after durable focused Mack
+   readback verifies both Red and Green receipts. A stale, absent, conflicting,
+   environment-failed or wrong-reason receipt blocks the successor.
+
+The named failing fixtures are:
+
+| Packet | Fixture name at scaffold Red | Focused command |
+| --- | --- | --- |
+| C0 | `retained receipts reject every canonical digest material mutation` | TDD focused command |
+| C1 | `advanced mission HEAD invalidates cumulative Mack and Fury receipts` | TDD focused command |
+| C2 | `selected and declined amendments complete only through generation N+1` | TDD focused command |
+| C3 | `packet effect and focused-command substitution block` | TDD focused command |
+| C4 | `Green and Refactor require separate exact authority and Mack receipts` | TDD focused command |
+| C5 | `contradictory PASS exit and test counts block` | TDD focused command |
+| C6 | `runtime model and executor identities cannot collapse or substitute` | TDD focused command |
+| C7 | `live trapping and revoked proxy arrays fail closed before observation` | TDD focused command |
+| C8 | `documented public specifiers exactly match package exports` | package-surface focused command |
+
 ### C0 — F6 content-addressed acceptance digest (AC-162-4, AC-162-6)
 
 - Paths: source and focused test only.
 - Coupling rationale: amendment invalidation and replay closure depend on the
   same canonical digest generation.
 - Invariant: every behavior/packet mutation changes the computed digest.
-- Red: golden canonical-byte and retained-receipt mutation fixtures fail at the
-  preserved revision.
+- Red fixture: `retained receipts reject every canonical digest material
+  mutation`; after the exact scaffold build it fails at the predecessor source
+  for `product_defect` because caller-selected digests remain accepted.
 - Green proof: exact golden digest passes; permitted set reordering is
   byte-identical; every hash-material mutation with retained receipts blocks.
 - Successor: C1. No digest-bound receipt from later packets is produced before C0.
@@ -255,7 +291,9 @@ the listed paths and the immediately required interfaces.
 - Paths: source and focused test only.
 - Invariant: complete selected/declined amendments can re-enter and finish only
   at `N+1`; every `N` receipt is stale.
-- Red: terminal selected and declined amendment fixtures cannot complete.
+- Red fixture: `selected and declined amendments complete only through
+  generation N+1`; after the exact scaffold build it fails for `product_defect`
+  because complete amendment flows cannot re-enter.
 - Green proof: both complete through fresh generation-bound evidence; old
   authority, Green, Refactor, Mack and Fury substitutions block.
 - Stop: any need to weaken Fitz verification or manufacture human evidence.
@@ -267,6 +305,9 @@ the listed paths and the immediately required interfaces.
 - Coupling rationale: the same packet contract is the authority source for May
   effects and Mack focused commands; separating would admit an unenforced state.
 - Invariant: observed paths/effects and focused commands are exact bounded subsets.
+- Red fixture: `packet effect and focused-command substitution block`; after
+  the exact scaffold build it fails for `product_defect` because substitutions
+  remain descriptive-only.
 - Green proof: effect, path, command and checkpoint substitution all block.
 - Successor: C4.
 
@@ -275,6 +316,8 @@ the listed paths and the immediately required interfaces.
 - Paths: source and focused test only.
 - Invariant: Green and Refactor have distinct exact Coulson authority and Mack
   focused receipts; cumulative Mack remains separate.
+- Red fixture: `Green and Refactor require separate exact authority and Mack
+  receipts`; after the exact scaffold build it fails for `product_defect`.
 - Green proof: missing, duplicate, substituted and replayed authority/proofs block.
 - Successor: C5.
 
@@ -282,6 +325,8 @@ the listed paths and the immediately required interfaces.
 
 - Paths: source and focused test only.
 - Invariant: PASS counts and exit code cannot contradict outcome.
+- Red fixture: `contradictory PASS exit and test counts block`; after the exact
+  scaffold build it fails for `product_defect` because contradictory PASS is admitted.
 - Green proof: failed/cancelled PASS, bad sums, negative counts and failed exit
   inconsistencies block.
 - Successor: C6.
@@ -290,6 +335,8 @@ the listed paths and the immediately required interfaces.
 
 - Paths: source and focused test only.
 - Invariant: seat, runtime, model and executor remain typed and distinct.
+- Red fixture: `runtime model and executor identities cannot collapse or
+  substitute`; after the exact scaffold build it fails for `product_defect`.
 - Green proof: collapsed and substituted identities block.
 - Successor: C7.
 
@@ -297,6 +344,9 @@ the listed paths and the immediately required interfaces.
 
 - Paths: source and focused test only.
 - Invariant: no proxy array is observed or normalized.
+- Red fixture: `live trapping and revoked proxy arrays fail closed before
+  observation`; after the exact scaffold build it fails for `product_defect`
+  or escapes, which is the expected defect classification.
 - Green proof: live, trapping and revoked proxies at every nested array boundary
   return deterministic invalid/blocked results without escaping.
 - Successor: C8.
@@ -307,8 +357,9 @@ the listed paths and the immediately required interfaces.
   `packages/shield-team-system/tests/package-surface.test.mjs`.
 - Invariant: the exported `/tdd-mission` specifier is documented with its pure,
   non-authoritative boundary and surface agreement is executable.
-- Red: the package-surface documentation-agreement assertion fails against the
-  predecessor documentation.
+- Red fixture: `documented public specifiers exactly match package exports`;
+  after the exact scaffold build the package-surface command fails for
+  `product_defect` against predecessor documentation.
 - Green proof: after the documentation edit and current build, run
   `node --test packages/shield-team-system/tests/package-surface.test.mjs` and
   verify export/document agreement.
@@ -346,23 +397,44 @@ After the F5 prerequisite, the maximum implementation envelope is:
   `validation:issue-162:nx-build`, `validation:issue-162:nx-test`.
 - Authority base: `87c889769093fe000d4bb0ef45c1da80bdb6f321`.
 - Authority head: the exact future Fury-approved corrective-plan commit.
-- One-passcode review-publication paths, authority only and no effect:
-  `docs/missions/issue-162-tdd-intent-corrective-brief.json` and
-  `docs/missions/issue-162-tdd-intent-corrective-plan.md`.
+- Publication paths/effects: none.
 
-The envelope permits no write before fresh authority. The one-passcode flow's
-review-publication authority remains dormant: it permits no publication
-request/result, external communication, merge, deployment or release.
+The envelope permits no write before fresh authority and no publication,
+external communication, merge, deployment or release afterward. Because
+`authorize-wheels-up` unconditionally creates `review.branch.push` and
+`review.pull_request.create_draft` authority, that one-passcode command is
+prohibited for this mission. After the Mack durability prerequisite and exact
+plan PASS, Coulson gates remain separately scoped and sequenced:
+
+1. `shield mission authorize --mission-id
+   mission:issue-162-bravo-correction-1 --root
+   /private/tmp/shield-162-bravo.yMZTJ7`
+2. `shield mission wheels-up --mission-id
+   mission:issue-162-bravo-correction-1 --input <exact-reviewed-wheels-up.json>
+   --root /private/tmp/shield-162-bravo.yMZTJ7`
+3. `shield mission bind --mission-id
+   mission:issue-162-bravo-correction-1 --input <exact-reviewed-binding.json>
+   --root /private/tmp/shield-162-bravo.yMZTJ7`
+
+Each command is preflighted and surfaced only at its legal human gate; no
+publication authority is created.
 
 ## Validation and terminal routing
 
-At every packet checkpoint, run the focused `node:test` file and preserve the
-packet revision. At the exact final implementation HEAD, Mack independently
-runs:
+At every packet checkpoint, run the exact scaffold-build/Red and
+Green-build/focused sequences above and preserve both revisions. At the exact
+final implementation HEAD, Mack independently runs and durably binds these
+literal commands:
 
-1. `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs`;
-2. package-manager-prefixed Nx `@shield/team-system:build`;
-3. package-manager-prefixed Nx `@shield/team-system:test`;
+1. command ID `validation:issue-162:focused-node-test`, checkpoint
+   `checkpoint:issue-162:cumulative-focused`:
+   `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs`;
+2. command ID `validation:issue-162:nx-build`, checkpoint
+   `checkpoint:issue-162:cumulative-build`:
+   `npm exec nx run @shield/team-system:build`;
+3. command ID `validation:issue-162:nx-test`, checkpoint
+   `checkpoint:issue-162:cumulative-test`:
+   `npm exec nx run @shield/team-system:test`;
 4. exact branch/HEAD/tree, changed-path and tracked-clean checks.
 
 Nx workspace-data/cache directories may be disposable writable host paths;
