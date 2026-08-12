@@ -144,10 +144,19 @@ export function canonicalCloneV1(value: unknown): PreparationValidationResultV1<
 }
 
 export function readExactArgumentV1(value: unknown, keys: readonly string[]): PreparationValidationResultV1<Record<string, unknown>> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return invalidResult("Argument must be a closed plain-data object.");
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return invalidResult("Argument must be a closed plain-data object.");
+    }
+  } catch {
+    return invalidResult("Argument has unexpected fields.");
   }
-  const entries = ownDataEntries(value, false);
+  let entries: readonly [string, unknown][] | null;
+  try {
+    entries = ownDataEntries(value, false);
+  } catch {
+    return invalidResult("Argument has unexpected fields.");
+  }
   if (entries === null || entries.length !== keys.length || keys.some((key) => !entries.some(([actual]) => actual === key))) return invalidResult("Argument has unexpected fields.");
   const output: Record<string, unknown> = {};
   for (const [key, child] of entries) {
@@ -229,7 +238,12 @@ export function computeRawReceiptSetSha256V1(
     if (receipt === null || typeof receipt !== "object" || isProxy(receipt) || !isUint8Array(receipt) || Object.getPrototypeOf(receipt) !== Uint8Array.prototype) {
       return invalidResult("Each raw receipt must be an exact Uint8Array.");
     }
-    const copy = Buffer.from(new Uint8Array(receipt));
+    let copy: Buffer;
+    try {
+      copy = Buffer.from(new Uint8Array(receipt));
+    } catch {
+      return invalidResult("Each raw receipt must be an exact Uint8Array.");
+    }
     if (copy.length < 1 || copy.length > MAX_RECEIPT_BYTES) return invalidResult("Raw receipt length is invalid.");
     total += copy.length;
     if (total > MAX_RECEIPT_SET_BYTES) return invalidResult("Raw receipt set exceeds 16 MiB.");

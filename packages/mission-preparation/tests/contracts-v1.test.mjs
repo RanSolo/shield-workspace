@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
+import { MessageChannel } from "node:worker_threads";
 
 import * as api from "../dist/index.mjs";
 
@@ -168,6 +169,14 @@ test("hostile and non-canonical data is rejected without invoking caller code", 
   assert.equal(api.canonicalJsonV1({ value: {}, extra: true }).state, "invalid");
 });
 
+test("revoked proxy arguments are rejected", () => {
+  const { proxy, revoke } = Proxy.revocable({ value: { z: 1 } }, {});
+  revoke();
+  const result = api.canonicalJsonV1(proxy);
+  assert.equal(result.state, "invalid");
+  assert.equal(result.reasonCode, "invalid_preparation_input");
+});
+
 test("canonical contract digest and ID are stable in a fresh process", () => {
   const body = { schemaId: "mission.transition-intent.v1", authority: "none", value: { z: 1, A: 2 } };
   const local = unwrap(api.computeCanonicalContractDigestV1({ schemaId: body.schemaId, body }));
@@ -196,6 +205,17 @@ test("raw receipt framing binds count, lengths, order, and bytes", () => {
   assert.equal(api.computeRawReceiptSetSha256V1({ rawReceipts: Array.from({ length: 129 }, () => new Uint8Array([1])) }).state, "invalid");
   assert.equal(api.computeRawReceiptSetSha256V1({ rawReceipts: [new Uint8Array()] }).state, "invalid");
   assert.equal(api.computeRawReceiptSetSha256V1({ rawReceipts: [new Uint8Array(1_048_577)] }).state, "invalid");
+});
+
+test("detached receipt bytes are rejected without throwing", () => {
+  const receipt = new Uint8Array([1, 2, 3, 4]);
+  const detached = new MessageChannel();
+  detached.port1.postMessage(receipt, [receipt.buffer]);
+  detached.port1.close();
+  detached.port2.close();
+  const result = api.computeRawReceiptSetSha256V1({ rawReceipts: [receipt] });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.reasonCode, "invalid_preparation_input");
 });
 
 test("all seven validators recompute IDs and recursively freeze clones", () => {
