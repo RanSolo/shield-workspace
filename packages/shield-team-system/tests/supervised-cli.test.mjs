@@ -174,10 +174,12 @@ function profileBriefContent(missionId, profileId, requireSimmons) {
 }
 
 function run(root, args, options = {}) {
+  const env = { ...process.env, ...(options.env ?? {}) };
+  for (const key of options.unsetEnv ?? []) delete env[key];
   return spawnSync(process.execPath, [...(options.nodeArgs ?? []), cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, ...(options.env ?? {}) },
+    env,
     input: options.input,
   });
 }
@@ -210,6 +212,7 @@ const BOOTSTRAP_ARGS = [
   "--passcode-stdin",
   "--json",
 ];
+const BOOTSTRAP_COLOR_ENVIRONMENT = ["NO_COLOR", "FORCE_COLOR"];
 
 const CREATION_FAILED = "creation_failed: Signer creation failed.";
 const RECOVERY_REQUIRED = "recovery_required: Signer creation state is uncertain; inspect protected host signer storage before retrying.";
@@ -1866,7 +1869,9 @@ test("pre-init signer bootstrap emits only a credential-free packet and creates 
   const homeRoot = await mkdtemp(join(tmpdir(), "shield-bootstrap-home-"));
   await writeFile(join(root, "before.txt"), "repository-free working directory\n");
 
-  const first = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+  const first = run(root, BOOTSTRAP_ARGS, {
+    env: { HOME: homeRoot }, unsetEnv: BOOTSTRAP_COLOR_ENVIRONMENT, input: "bootstrap-passcode\n",
+  });
   assert.equal(first.status, 0, first.stderr);
   const firstPacket = JSON.parse(first.stdout);
   assert.deepEqual(Object.keys(firstPacket), [
@@ -1905,7 +1910,9 @@ test("pre-init signer bootstrap emits only a credential-free packet and creates 
   assert.doesNotMatch(firstBytes.toString("utf8"), /BEGIN PRIVATE KEY/u);
   assert.equal(fileMode(await lstat(firstPath)), 0o600);
 
-  const second = run(root, BOOTSTRAP_ARGS, { env: { HOME: homeRoot }, input: "bootstrap-passcode\n" });
+  const second = run(root, BOOTSTRAP_ARGS, {
+    env: { HOME: homeRoot }, unsetEnv: BOOTSTRAP_COLOR_ENVIRONMENT, input: "bootstrap-passcode\n",
+  });
   assert.equal(second.status, 0, second.stderr);
   const secondPacket = JSON.parse(second.stdout);
   assert.notEqual(secondPacket.signingKeyRef, firstPacket.signingKeyRef);
@@ -1914,7 +1921,7 @@ test("pre-init signer bootstrap emits only a credential-free packet and creates 
   assert.equal(fileMode(await lstat(firstPath)), 0o600);
 
   const human = run(root, BOOTSTRAP_ARGS.filter((argument) => argument !== "--json"), {
-    env: { HOME: homeRoot }, input: "bootstrap-passcode\n",
+    env: { HOME: homeRoot }, unsetEnv: BOOTSTRAP_COLOR_ENVIRONMENT, input: "bootstrap-passcode\n",
   });
   assert.equal(human.status, 0, human.stderr);
   assert.match(human.stdout, /created in protected host storage/u);

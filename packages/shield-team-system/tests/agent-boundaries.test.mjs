@@ -97,7 +97,7 @@ test("May profiles preserve blueprint boundaries across local and hosted runtime
     hostedMay,
     /implement the exact[\s\S]* after the existing Coulson Wheels Up and exact-revision plan\s+gate[\s\S]* are satisfied/i,
   );
-  assert.match(hostedMay, /model = "gpt-5\.3-codex-spark"/);
+  assert.match(hostedMay, /model = "gpt-5\.6-sol"/);
   assert.match(localMay, /model: Claude Sonnet 4\.5 \(copilot\)/);
 
   assert.match(
