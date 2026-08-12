@@ -828,7 +828,7 @@ test("requires exact V2 genesis activation across issuance, expiry, lifecycle, s
   assert.deepEqual(replayWithPayload(amended), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
 });
 
-test("freezes all thirty empty-object framing vectors and the RFC-8032 authority signature", () => {
+test("freezes all thirty empty-object preimages and digests plus all RFC-8032 signatures", () => {
   const vectors = {
     "shield.feature-integration.journal.v2": "22b30838c497d3d5137dabf277896c7c245e77fd93de5a1cf86f2947aa4f3d29",
     "shield.feature-integration.entry.v2": "55a50894916f6106ad49aeb56768d288df91069183b68ceca6a2d9d08333fc1f",
@@ -861,12 +861,73 @@ test("freezes all thirty empty-object framing vectors and the RFC-8032 authority
     "shield.feature-operation.authority-signature.v2": "1366c4af82430a495ad396225568b0e34a262ecd3ce366da97ef36ae7d4e571f",
     "shield.feature-integration.cumulative-authority-signature.v2": "d0cddcfe2d36925f26716bd9d233729b5bed77553349d394b0412efbf4538fe2",
   };
+  const preimages = {
+    "shield.feature-integration.journal.v2": "736869656c642e666561747572652d696e746567726174696f6e2e6a6f75726e616c2e7632007b7d",
+    "shield.feature-integration.entry.v2": "736869656c642e666561747572652d696e746567726174696f6e2e656e7472792e7632007b7d",
+    "shield.feature-integration.cumulative-ledger.v2": "736869656c642e666561747572652d696e746567726174696f6e2e63756d756c61746976652d6c65646765722e7632007b7d",
+    "shield.feature-integration.idempotency-key.v2": "736869656c642e666561747572652d696e746567726174696f6e2e6964656d706f74656e63792d6b65792e7632007b7d",
+    "shield.feature-integration.observation-bindings.v2": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2d62696e64696e67732e7632007b7d",
+    "shield.feature-integration.human-bindings.v2": "736869656c642e666561747572652d696e746567726174696f6e2e68756d616e2d62696e64696e67732e7632007b7d",
+    "shield.feature-operation.plan.v2": "736869656c642e666561747572652d6f7065726174696f6e2e706c616e2e7632007b7d",
+    "shield.feature-operation.authority.v2": "736869656c642e666561747572652d6f7065726174696f6e2e617574686f726974792e7632007b7d",
+    "shield.feature-operation.candidate.v2": "736869656c642e666561747572652d6f7065726174696f6e2e63616e6469646174652e7632007b7d",
+    "shield.feature-integration.cumulative-authority.v2": "736869656c642e666561747572652d696e746567726174696f6e2e63756d756c61746976652d617574686f726974792e7632007b7d",
+    "shield.feature-integration.cumulative-candidate.v2": "736869656c642e666561747572652d696e746567726174696f6e2e63756d756c61746976652d63616e6469646174652e7632007b7d",
+    "shield.feature-integration.executable-args.v2": "736869656c642e666561747572652d696e746567726174696f6e2e65786563757461626c652d617267732e7632007b7d",
+    "shield.feature-integration.request-core.v2": "736869656c642e666561747572652d696e746567726174696f6e2e726571756573742d636f72652e7632007b7d",
+    "shield.feature-integration.request.v2": "736869656c642e666561747572652d696e746567726174696f6e2e726571756573742e7632007b7d",
+    "shield.feature-integration.challenge.v2:workspace": "736869656c642e666561747572652d696e746567726174696f6e2e6368616c6c656e67652e76323a776f726b7370616365007b7d",
+    "shield.feature-integration.challenge.v2:transition": "736869656c642e666561747572652d696e746567726174696f6e2e6368616c6c656e67652e76323a7472616e736974696f6e007b7d",
+    "shield.feature-integration.challenge.v2:cumulative": "736869656c642e666561747572652d696e746567726174696f6e2e6368616c6c656e67652e76323a63756d756c6174697665007b7d",
+    "shield.feature-integration.challenge.v2:admission": "736869656c642e666561747572652d696e746567726174696f6e2e6368616c6c656e67652e76323a61646d697373696f6e007b7d",
+    "shield.feature-integration.challenge.v2:expiry": "736869656c642e666561747572652d696e746567726174696f6e2e6368616c6c656e67652e76323a657870697279007b7d",
+    "shield.feature-integration.observation.v2:workspace": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2e76323a776f726b7370616365007b7d",
+    "shield.feature-integration.observation.v2:transition": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2e76323a7472616e736974696f6e007b7d",
+    "shield.feature-integration.observation.v2:cumulative_registration": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2e76323a63756d756c61746976655f726567697374726174696f6e007b7d",
+    "shield.feature-integration.observation.v2:cumulative_start": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2e76323a63756d756c61746976655f7374617274007b7d",
+    "shield.feature-integration.observation.v2:cumulative_result": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2e76323a63756d756c61746976655f726573756c74007b7d",
+    "shield.feature-integration.observation.v2:cumulative_receipt": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2e76323a63756d756c61746976655f72656365697074007b7d",
+    "shield.feature-integration.observation.v2:admission": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2e76323a61646d697373696f6e007b7d",
+    "shield.feature-integration.observation.v2:expiry": "736869656c642e666561747572652d696e746567726174696f6e2e6f62736572766174696f6e2e76323a657870697279007b7d",
+    "shield.feature-integration.final-gate.v2": "736869656c642e666561747572652d696e746567726174696f6e2e66696e616c2d676174652e7632007b7d",
+    "shield.feature-operation.authority-signature.v2": "736869656c642e666561747572652d6f7065726174696f6e2e617574686f726974792d7369676e61747572652e7632007b7d",
+    "shield.feature-integration.cumulative-authority-signature.v2": "736869656c642e666561747572652d696e746567726174696f6e2e63756d756c61746976652d617574686f726974792d7369676e61747572652e7632007b7d",
+  };
   assert.equal(Object.keys(vectors).length, 30);
-  for (const [domain, expected] of Object.entries(vectors)) assert.equal(framedV2(domain, {}), `sha256:${expected}`, domain);
+  assert.deepEqual(Object.keys(preimages), Object.keys(vectors));
+  for (const [domain, expected] of Object.entries(vectors)) {
+    const preimage = Buffer.concat([Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from("{}", "utf8")]);
+    assert.equal(preimage.toString("hex"), preimages[domain], `${domain}:preimage`);
+    assert.equal(framedV2(domain, {}), `sha256:${expected}`, `${domain}:digest`);
+  }
+
+  const signatures = {
+    "shield.feature-operation.authority-signature.v2": "eg5wfuv6k6wn8AY5XC6mv9xZtpNN/nBJEuMfS3rqq7bgojdbvxYrSa7KGsq2fuFw5Cx+cerr/UdejjmQtxC1DQ==",
+    "shield.feature-integration.cumulative-authority-signature.v2": "jhUDo03PvpLka35KRvGrlVi/Yh+lZbJsRS3yN70bDDiqJafJiW9lOsOyswT6E7gjf/zkvcMGq9STup6q5XlxBw==",
+    "shield.feature-integration.challenge.v2:workspace": "0/v2RnPHHAypPCwuVgBn2YgJR28GG69AiqK6IpBvuiDS5xf5jUtM0xpNDLWLR6C0RYhH43LU0yCGZt5aNqVbAw==",
+    "shield.feature-integration.challenge.v2:transition": "JSqslIz4UIunITCIXMFw24AQQ4vv+DIag0F4wxwE0NXZBhrTiXnVcg/eu8SVQG6sRZYmXo36XS79KjrEAFylAA==",
+    "shield.feature-integration.challenge.v2:cumulative": "fhrKyyD4sYMsMyXZA/a28xGhpC4hb1/36aAiGRRiG7g6Qv3cBvbtn5nQXsNBPtYTvukfXk1MTco4LfBpztD2Cg==",
+    "shield.feature-integration.challenge.v2:admission": "5k2NkReZPvkjnl5G8JHB0la0eT9jJUhyX2xegkG9nmcwRGNsEcLU68GeWHgRwtATOptEN/He+s0YFvLfDSTeBQ==",
+    "shield.feature-integration.challenge.v2:expiry": "t4YsP5EURNCjyK6AlRj2sFxaR4ViK/XqPDkTLICV2PubOwavblZWCK12q7IQI3PStJe+tk/LNGahAmjnzU6BAg==",
+    "shield.feature-integration.observation.v2:workspace": "wmTvli7SfckAFq/xcXlUOSB+DvRA78ZJ5Su12UhEBz1RKALtrFprU3S8Tpq0IuX14894W7veQ+Xoef1JE6ZeAQ==",
+    "shield.feature-integration.observation.v2:transition": "Cqgqt6U2n7gkXxOZf/gaw65I+o9wJnDYXahmequM0H2ervCafgVAACE9R01SR2kHp+xGG5WY7mLhhbnL+rZsDA==",
+    "shield.feature-integration.observation.v2:cumulative_registration": "fDHuZPcXKKp2e/9l7MNuyN8/++ASMSF5c9ZJbP2CHantmvLuwH9Vuo6CUqfOZoqriS81mEh3qJ8bLQwGCn1WAw==",
+    "shield.feature-integration.observation.v2:cumulative_start": "7i7U+y4xbFdRqBVUBA0zJ4RnbBcIn+Ngsk0zhFHgDTSYAGIqsofk361GlC3eeAQTyA9VqQtdJXLYdO1Ic1kRDA==",
+    "shield.feature-integration.observation.v2:cumulative_result": "u6l0/YLvG+aRW+zIWXeenRdL7r9b4daLgy7Wg8FV0DDrUEBAZfLPOb985i4cKfVaerGAtA8GHALsU3u/s0gSBA==",
+    "shield.feature-integration.observation.v2:cumulative_receipt": "OVZKGiMVCHheGxpYHSmQD5MijafYHBDJDc7Wtab+YaD3002mzEhdv9gxdnWfGqYpF95xMT53TFr4dAYktj0/Bg==",
+    "shield.feature-integration.observation.v2:admission": "laBOb/54mAtsmgXjdha8+LfGltlvx5432vCcCNI0NmaKZUe6kJZvpBcXP+U7aZ9ymYg1lMOjd6w3RdNKizzECA==",
+    "shield.feature-integration.observation.v2:expiry": "3xOh+1ujmOL5BcY6FLsLnP9eqjhq6y2YQrSLqU22caha+x6EaD8OzbCfLXtx/TGLzECz3Lu/rmmVe55BJTITCw==",
+    "shield.feature-integration.final-gate.v2": "n3jRm6UU7hwtZJx2fmWiTX9C+bUc2E9Ogm7tKf5mQAgQXs/Cl7hGze3F0+068S/5OFTJ9zSnk0+bdz09DhQuDg==",
+  };
+  assert.equal(Object.keys(signatures).length, 16);
   const rfcKey = createPublicKey({ key: Buffer.from("MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=", "base64"), format: "der", type: "spki" });
-  const message = Buffer.concat([Buffer.from("shield.feature-operation.authority-signature.v2", "ascii"), Buffer.from([0]), Buffer.from("{}")]);
-  const signature = Buffer.from("eg5wfuv6k6wn8AY5XC6mv9xZtpNN/nBJEuMfS3rqq7bgojdbvxYrSa7KGsq2fuFw5Cx+cerr/UdejjmQtxC1DQ==", "base64");
-  assert.equal(verify(null, message, rfcKey, signature), true);
-  signature[0] ^= 1;
-  assert.equal(verify(null, message, rfcKey, signature), false);
+  for (const [domain, signatureBase64] of Object.entries(signatures)) {
+    const message = Buffer.from(preimages[domain], "hex");
+    const signature = Buffer.from(signatureBase64, "base64");
+    assert.equal(signature.byteLength, 64, `${domain}:signature-length`);
+    assert.equal(verify(null, message, rfcKey, signature), true, `${domain}:valid-signature`);
+    const mutatedSignature = Buffer.from(signature);
+    mutatedSignature[0] ^= 1;
+    assert.equal(verify(null, message, rfcKey, mutatedSignature), false, `${domain}:mutated-signature`);
+  }
 });
