@@ -95,8 +95,9 @@ mission, exact-plan Fury PASS, fresh Coulson Wheels Up, and current May binding.
   - `packages/shield-team-system/tests/tdd-mission-v1.test.mjs`
 - Required behavior:
   - add required `contractGeneration` to the contract and every strategy,
-    Red/declined-strategy, authority, Green, Refactor, focused Mack, terminal
-    Mack, Fury, amendment, and disposition record;
+    selected-TDD `contract_prepared`, Red/declined-strategy, authority, Green,
+    Refactor, focused Mack, terminal Mack, Fury, amendment, and disposition
+    record;
   - define generation as a nonnegative JavaScript safe integer, with initial
     generation `0` and amendments only on an exact contiguous `N -> N+1` edge;
   - compute the exact content-derived digest defined below;
@@ -106,8 +107,8 @@ mission, exact-plan Fury PASS, fresh Coulson Wheels Up, and current May binding.
   - invalidate generation `N` receipts after amendment and allow both selected
     and declined strategies to complete through valid fresh `N+1` evidence.
 - Focused proof: golden digest, permitted set reordering, behavior-bearing
-  mutation, selected amendment re-entry, declined amendment re-entry, and stale
-  generation substitution.
+  mutation, selected amendment re-entry, declined amendment re-entry, stale
+  generation substitution, and stale prepared-scaffold substitution.
 - Stop: changing the original Fitz gate or hashing evidence outcomes/IDs.
 - Successor: complete focused Mack evidence, complete Fury packet review, then B.
 
@@ -189,14 +190,27 @@ TDD re-enters a freshly justified strategy without manufacturing Red. Both then
 require fresh Coulson authority, Green, optional Refactor, terminal Mack/Fury,
 and disposition evidence at `N+1`.
 
+The evaluation input adds a closed `reviewedPredecessorContract` field. It is
+`null` exactly at generation zero. At generation `N+1` it contains exactly
+`contractGeneration`, `acceptanceContractDigest`, and `snapshot`, where
+`snapshot` is the complete normalized digest projection defined above. The
+snapshot's generation must be `N`, its digest must recompute, and the top-level
+field is the Fury-reviewed predecessor anchor independent of the criterion's
+amendment record.
+
 The amendment closed shape contains `oldContractGeneration`,
 `oldContractDigest`, `oldContractSnapshot`, `amendedContractGeneration`,
-`amendedContractDigest`, and `amendedContractSnapshot`. The old generation is
-the active predecessor `N`; the amended generation must equal exactly `N+1`
-without safe-integer overflow. Each digest must recompute from its paired
-snapshot and generation. The old pair must equal the active predecessor
-contract; the amended pair must equal the active contract supplied to the
-evaluation. Reordered, skipped, reused, mismatched, or unanchored edges block.
+`amendedContractDigest`, and `amendedContractSnapshot`. Each snapshot is the
+complete normalized digest projection defined above, with no evidence or
+amendment fields. The old generation is the active predecessor `N`; the amended
+generation must equal exactly `N+1` without safe-integer overflow. Each digest
+must recompute from its paired snapshot and generation. The old triple must
+equal the independent top-level `reviewedPredecessorContract`; the amended
+triple must equal the active normalized strategy contract supplied to the
+evaluation. Generation zero forbids an amendment. Reordered, skipped, reused,
+mismatched, self-consistent-but-invented, or otherwise unanchored edges block.
+After an amendment, selected TDD requires a fresh prepared-scaffold record at
+`N+1`, bound to the amended digest, before fresh reviewed Red.
 
 ### Packet B — bounded execution and distinct transition proof (F4 + F7)
 
@@ -233,6 +247,13 @@ neither may be replayed across transition kinds. Refactor follows Green at a
 different revision, retains the same digest/generation, and explicitly
 preserves behavior, failure, authority, persistence, and risk semantics.
 
+Each packet also has one closed Mack packet-validation bundle bound to the
+transition's result revision/tree and containing exactly one executable receipt
+for every checkpoint declared for that packet in the validation table. Receipt
+checkpoint ID, command ID, and literal command must match collision-free; no
+declared checkpoint may be omitted or duplicated. The transition's focused
+proof identity must reference the focused receipt in that complete bundle.
+
 ### Packet C — exact terminal closure and truthful outcomes (F2 + F8)
 
 - Acceptance criterion: AC-162-6.
@@ -267,9 +288,20 @@ later HEAD/tree stales both.
 Executable evidence semantics are closed: test PASS requires exit `0`, safe
 nonnegative `total/passed/failed/skipped/cancelled/todo`, zero failed/cancelled,
 and an exact sum to total; build PASS requires exit `0` and may omit counts;
-failed executable evidence requires nonzero exit and classification-consistent
-evidence. Fury and other non-executable receipts carry no command, exit, counts,
-or cache record. Cache evidence is optional and present only when emitted.
+failed executable evidence requires outcome `failed`, a nonzero exit, and
+`failureClassification` equal to exactly `product_defect`,
+`environment_failure`, or `harness_defect`. For a failed test,
+`product_defect` requires nonnull internally consistent counts with `failed > 0`;
+`environment_failure` and `harness_defect` require null counts and respectively
+an `environment:` or `harness:` source reference. A failed build requires null
+counts; `product_defect` requires a `diagnostic:` source reference and the other
+two classifications require their corresponding source-reference prefix.
+`missing_behavior`, `stale_expectation`, `authority_failure`, and
+`insufficient_evidence` are never valid post-implementation command-receipt
+classifications. Focused negatives cover each class/command/count/source
+mismatch. Fury and other non-executable receipts carry no command, exit,
+counts, classification, or cache record. Cache evidence is optional and present
+only when emitted.
 
 ### Packet D — public contract documentation (F11)
 
@@ -372,10 +404,36 @@ exactly this closed, sorted content:
 }
 ```
 
-Use this exact begin and verification sequence:
+Hill also prepares
+`.shield/tmp/issue-162-correction-2-fury-pass-binding.json`. It is a closed JSON
+object containing exactly `seatId: "fury"`, `verdict: "PLAN PASS"`, the
+40-lowercase-hex `headRevision` and `headTree` from that terminal review, the
+64-lowercase-hex `planSha256`, the absolute `reviewArtifactPath`, and its
+64-lowercase-hex `reviewArtifactSha256`. The artifact is the complete output of
+the Fury process that reviewed that same HEAD/tree, not a Hill-authored verdict.
+
+Use this exact begin and verification sequence. The repository-supported Nx
+build is deliberately rerun after the review binding checks; the ignored
+`dist` CLI is therefore generated from the exact reviewed source before use,
+not trusted as a pre-existing artifact.
 
 ```sh
 cd /private/tmp/shield-162-bravo.yMZTJ7
+set -eu
+review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1)' "$review_binding"
+reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")"
+reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")"
+reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")"
+review_artifact="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).reviewArtifactPath)' "$review_binding")"
+review_artifact_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).reviewArtifactSha256)' "$review_binding")"
+test "$(git rev-parse HEAD^{commit})" = "$reviewed_head"
+test "$(git rev-parse HEAD^{tree})" = "$reviewed_tree"
+test "$(shasum -a 256 docs/missions/issue-162-tdd-intent-corrective-plan.md | awk '{print $1}')" = "$reviewed_plan_sha"
+test "$(shasum -a 256 "$review_artifact" | awk '{print $1}')" = "$review_artifact_sha"
+test "$(git diff --name-only --no-renames 87c889769093fe000d4bb0ef45c1da80bdb6f321 HEAD --)" = "$(printf '%s\n' docs/missions/issue-162-tdd-intent-corrective-brief.json docs/missions/issue-162-tdd-intent-corrective-plan.md)"
+NX_SKIP_NX_CACHE=true npm exec nx run @shield/team-system:build
+test -f packages/shield-team-system/dist/cli.mjs
 node packages/shield-team-system/dist/cli.mjs mission begin --profile-aware --brief docs/missions/issue-162-tdd-intent-corrective-brief.json --root /private/tmp/shield-162-bravo.yMZTJ7 --json
 node packages/shield-team-system/dist/cli.mjs mission status --mission-id mission:issue-162-bravo-correction-2 --root /private/tmp/shield-162-bravo.yMZTJ7 --json
 test "$(wc -l < .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl)" -eq 1
@@ -402,17 +460,31 @@ same-invocation live manifest is the only manifest Coulson may sign.
 
 ```sh
 cd /private/tmp/shield-162-bravo.yMZTJ7
+set -eu
+review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1)' "$review_binding"
+reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")"
+reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")"
+reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")"
+review_artifact="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).reviewArtifactPath)' "$review_binding")"
+review_artifact_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).reviewArtifactSha256)' "$review_binding")"
+test "$(git rev-parse HEAD^{commit})" = "$reviewed_head"
+test "$(git rev-parse HEAD^{tree})" = "$reviewed_tree"
+test "$(shasum -a 256 docs/missions/issue-162-tdd-intent-corrective-plan.md | awk '{print $1}')" = "$reviewed_plan_sha"
+test "$(shasum -a 256 "$review_artifact" | awk '{print $1}')" = "$review_artifact_sha"
+NX_SKIP_NX_CACHE=true npm exec nx run @shield/team-system:build
+test -f packages/shield-team-system/dist/cli.mjs
 test -L node_modules
 test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules"
 test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
 test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
 before="$(shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl | awk '{print $1}')"
+restore_issue162_preview_node_modules() { if test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold; then trap - EXIT HUP INT TERM; return 0; fi; test -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test "$(readlink /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e node_modules && test ! -L node_modules && mv /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold node_modules && test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" || return 1; trap - EXIT HUP INT TERM; }
 mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
-restore_issue162_preview_node_modules() { trap - EXIT HUP INT TERM; test -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test "$(readlink /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e node_modules && test ! -L node_modules && mv /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold node_modules; }
-trap 'restore_issue162_preview_node_modules' EXIT
-trap 'restore_issue162_preview_node_modules; exit 130' HUP INT TERM
+trap 'restore_issue162_preview_node_modules || exit 125' EXIT
+trap 'restore_issue162_preview_node_modules || exit 125; exit 130' HUP INT TERM
 test -z "$(git status --porcelain=v1 --untracked-files=all)"
-if node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --human </dev/null; then exit 1; fi
+if node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --json </dev/null; then exit 1; fi
 after="$(shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl | awk '{print $1}')"
 test "$before" = "$after"
 restore_issue162_preview_node_modules
@@ -422,25 +494,39 @@ test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_mod
 
 The exact interactive gate command uses a restoration trap and invokes the
 repository CLI directly. Coulson must inspect the complete live manifest
-emitted by this invocation before deciding whether to enter the passcode:
+emitted to stderr by this invocation before deciding whether to enter the
+passcode; `--json` retains the interactive TTY prompt while exposing the framed
+canonical manifest instead of the abbreviated `--human` rendering:
 
 ```sh
 cd /private/tmp/shield-162-bravo.yMZTJ7 && \
+review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json && \
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1)' "$review_binding" && \
+reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")" && \
+reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")" && \
+reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")" && \
+review_artifact="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).reviewArtifactPath)' "$review_binding")" && \
+review_artifact_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).reviewArtifactSha256)' "$review_binding")" && \
+test "$(git rev-parse HEAD^{commit})" = "$reviewed_head" && \
+test "$(git rev-parse HEAD^{tree})" = "$reviewed_tree" && \
+test "$(shasum -a 256 docs/missions/issue-162-tdd-intent-corrective-plan.md | awk '{print $1}')" = "$reviewed_plan_sha" && \
+test "$(shasum -a 256 "$review_artifact" | awk '{print $1}')" = "$review_artifact_sha" && \
+NX_SKIP_NX_CACHE=true npm exec nx run @shield/team-system:build && \
+test -f packages/shield-team-system/dist/cli.mjs && \
 test -L node_modules && \
 test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" && \
 test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
 test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
+restore_issue162_node_modules() { if test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold; then trap - EXIT HUP INT TERM; return 0; fi; test -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test "$(readlink /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e node_modules && test ! -L node_modules && mv /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold node_modules && test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" || return 1; trap - EXIT HUP INT TERM; } && \
 mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
-restore_issue162_node_modules() { trap - EXIT HUP INT TERM; test -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test "$(readlink /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e node_modules && test ! -L node_modules && mv /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold node_modules; } && \
-trap 'restore_issue162_node_modules' EXIT && \
-trap 'restore_issue162_node_modules; exit 130' HUP INT TERM && \
+trap 'restore_issue162_node_modules || exit 125' EXIT && \
+trap 'restore_issue162_node_modules || exit 125; exit 130' HUP INT TERM && \
 test -z "$(git status --porcelain=v1 --untracked-files=all)" && \
-node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --human; \
-authority_status=$?; restore_issue162_node_modules; \
-test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" && \
+node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --json; \
+authority_status=$?; restore_issue162_node_modules || exit 125; \
+if test "$authority_status" -ne 0; then exit "$authority_status"; fi; \
 node packages/shield-team-system/dist/cli.mjs mission status --mission-id mission:issue-162-bravo-correction-2 --root /private/tmp/shield-162-bravo.yMZTJ7 --json && \
-shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl; \
-exit "$authority_status"
+shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl
 ```
 
 The one-passcode command creates dormant initial draft authority for exactly
