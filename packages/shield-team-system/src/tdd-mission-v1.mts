@@ -25,6 +25,32 @@ export const TDD_MISSION_EXPECTATION_AMENDMENT_KINDS = Object.freeze([
   "changed",
   "removed",
 ] as const);
+export const TDD_MISSION_DECISIONS = Object.freeze([
+  "eligible",
+  "blocked",
+  "packet_size_exception_required",
+] as const);
+export const TDD_MISSION_EVIDENCE_STAGES = Object.freeze([
+  "strategy_recorded",
+  "contract_prepared",
+  "red_established",
+  "implementation_authorized",
+  "green_proven",
+  "refactor_proven",
+  "mack_validation_complete",
+  "fury_conformance_complete",
+  "disposition_recorded",
+] as const);
+export const TDD_MISSION_EVIDENCE_OUTCOMES = Object.freeze([
+  "recorded",
+  "prepared",
+  "failed",
+  "authorized",
+  "passed",
+  "deferred",
+  "not_applicable",
+  "pending_decision",
+] as const);
 export const TDD_MISSION_STRATEGY_REASON_CODES = Object.freeze([
   "MALFORMED_INPUT",
   "STRATEGY_RATIONALE_MISSING",
@@ -47,6 +73,13 @@ export const TDD_MISSION_STRATEGY_REASON_CODES = Object.freeze([
   "PACKET_SCOPE_EXCEEDED",
   "MACK_EVIDENCE_MISSING",
   "REFACTOR_NOT_BEHAVIOR_PRESERVING",
+  "EVIDENCE_SCHEMA_INVALID",
+  "BINDING_DIGEST_MISMATCH",
+  "EVIDENCE_MISSING",
+  "STALE_EXACT_REVISION_EVIDENCE",
+  "DISPOSITION_EVIDENCE_MISSING",
+  "REVIEW_EVIDENCE_MISSING",
+  "BLOCKED_PENDING_EXPLICIT_DECISION",
 ] as const);
 
 export type TddMissionStrategyV1 = (typeof TDD_MISSION_STRATEGIES)[number];
@@ -56,8 +89,80 @@ export type TddMissionFailureClassificationV1 =
   (typeof TDD_MISSION_FAILURE_CLASSIFICATIONS)[number];
 export type TddMissionExpectationAmendmentKindV1 =
   (typeof TDD_MISSION_EXPECTATION_AMENDMENT_KINDS)[number];
+export type TddMissionDecisionV1 = (typeof TDD_MISSION_DECISIONS)[number];
+export type TddMissionEvidenceStageV1 = (typeof TDD_MISSION_EVIDENCE_STAGES)[number];
+export type TddMissionEvidenceOutcomeV1 = (typeof TDD_MISSION_EVIDENCE_OUTCOMES)[number];
 export type TddMissionStrategyReasonCodeV1 =
   (typeof TDD_MISSION_STRATEGY_REASON_CODES)[number];
+
+export type TddMissionEvidenceSeatV1 = "hill" | "mack" | "fury" | "coulson" | "may";
+export type TddMissionEvidenceSuccessorV1 =
+  | TddMissionEvidenceStageV1
+  | "mission_complete";
+
+export interface TddMissionExactEvidenceV1 {
+  readonly evidenceId: string;
+  readonly missionId: string;
+  readonly planDigest: string;
+  readonly criterionId: string;
+  readonly packetId: string;
+  readonly stage: TddMissionEvidenceStageV1;
+  readonly seatId: TddMissionEvidenceSeatV1;
+  readonly runtimeId: string;
+  readonly executorId: string;
+  readonly repositoryId: string;
+  readonly branch: string;
+  readonly revisionId: string;
+  readonly treeDigest: string;
+  readonly command: string | null;
+  readonly checkpointId: string;
+  readonly outcome: TddMissionEvidenceOutcomeV1;
+  readonly failureClassification: TddMissionFailureClassificationV1 | null;
+  readonly sourceRefs: readonly string[];
+  readonly successor: TddMissionEvidenceSuccessorV1 | null;
+  readonly stopCondition: string | null;
+  readonly decisionOwnerSeatId: string | null;
+}
+
+export interface TddMissionEvaluationInputV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: "tdd.mission.v1";
+  readonly missionId: string;
+  readonly planDigest: string;
+  readonly repositoryId: string;
+  readonly branch: string;
+  readonly planningRevisionId: string;
+  readonly planningTreeDigest: string;
+  readonly headRevisionId: string;
+  readonly headTreeDigest: string;
+  readonly strategyContract: Readonly<TddMissionStrategyContractV1>;
+  readonly evidence: readonly Readonly<TddMissionExactEvidenceV1>[];
+}
+
+export type TddMissionEvaluationV1 =
+  | {
+      readonly state: "eligible";
+      readonly reasonCodes: readonly [];
+      readonly criterionIds: readonly string[];
+      readonly successor: "mission_complete";
+      readonly stopCondition: null;
+      readonly input: Readonly<TddMissionEvaluationInputV1>;
+    }
+  | {
+      readonly state: "blocked";
+      readonly reasonCodes: readonly TddMissionStrategyReasonCodeV1[];
+      readonly criterionIds: readonly string[];
+      readonly successor: null;
+      readonly stopCondition: string;
+      readonly decisionOwnerSeatId: string | null;
+    }
+  | {
+      readonly state: "packet_size_exception_required";
+      readonly reasonCodes: readonly ["PACKET_SIZE_LIMIT_EXCEEDED"];
+      readonly packetIds: readonly string[];
+      readonly successor: null;
+      readonly stopCondition: "feature_hill_packet_size_exception";
+    };
 
 export interface TddExecutablePreImplementationContractV1 {
   readonly contractId: string;
@@ -478,6 +583,43 @@ const REFACTOR_EVIDENCE_FIELDS = [
   "riskPreserved",
   "implementationAuthorityEvidence",
   "mackEvidence",
+] as const;
+const MISSION_EVALUATION_FIELDS = [
+  "schemaVersion",
+  "contractVersion",
+  "missionId",
+  "planDigest",
+  "repositoryId",
+  "branch",
+  "planningRevisionId",
+  "planningTreeDigest",
+  "headRevisionId",
+  "headTreeDigest",
+  "strategyContract",
+  "evidence",
+] as const;
+const EXACT_EVIDENCE_FIELDS = [
+  "evidenceId",
+  "missionId",
+  "planDigest",
+  "criterionId",
+  "packetId",
+  "stage",
+  "seatId",
+  "runtimeId",
+  "executorId",
+  "repositoryId",
+  "branch",
+  "revisionId",
+  "treeDigest",
+  "command",
+  "checkpointId",
+  "outcome",
+  "failureClassification",
+  "sourceRefs",
+  "successor",
+  "stopCondition",
+  "decisionOwnerSeatId",
 ] as const;
 
 function record(value: unknown, fields: readonly string[]): Record<string, unknown> | null {
@@ -1258,5 +1400,438 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
       packets: Object.freeze(normalizedPackets),
     }),
     amendmentEffects: Object.freeze(amendmentEffects),
+  });
+}
+
+function evidenceStringArray(value: unknown): readonly string[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+        value.length === 0 || value.length > 64 || !value.every(identifier) ||
+        new Set(value).size !== value.length) return null;
+    return Object.freeze([...value] as string[]);
+  } catch {
+    return null;
+  }
+}
+
+function validEvidenceStageOwnership(
+  stage: TddMissionEvidenceStageV1,
+  seatId: unknown,
+  outcome: TddMissionEvidenceOutcomeV1,
+): boolean {
+  switch (stage) {
+    case "strategy_recorded": return seatId === "hill" && outcome === "recorded";
+    case "contract_prepared": return seatId === "mack" && outcome === "prepared";
+    case "red_established": return seatId === "mack" && outcome === "failed";
+    case "implementation_authorized": return seatId === "coulson" && outcome === "authorized";
+    case "green_proven": return seatId === "may" && outcome === "passed";
+    case "refactor_proven": return seatId === "may" && outcome === "passed";
+    case "mack_validation_complete": return seatId === "mack" && outcome === "passed";
+    case "fury_conformance_complete": return seatId === "fury" && outcome === "passed";
+    case "disposition_recorded":
+      return seatId === "hill" && ["deferred", "not_applicable", "pending_decision"]
+        .includes(outcome);
+  }
+}
+
+function exactEvidence(value: unknown): Readonly<TddMissionExactEvidenceV1> | null {
+  const evidence = record(value, EXACT_EVIDENCE_FIELDS);
+  if (evidence === null || !identifier(evidence.evidenceId) || !identifier(evidence.missionId) ||
+      typeof evidence.planDigest !== "string" || !DIGEST.test(evidence.planDigest) ||
+      !identifier(evidence.criterionId) || !identifier(evidence.packetId) ||
+      !TDD_MISSION_EVIDENCE_STAGES.includes(evidence.stage as TddMissionEvidenceStageV1) ||
+      !identifier(evidence.runtimeId) || !identifier(evidence.executorId) ||
+      !identifier(evidence.repositoryId) || !identifier(evidence.branch) ||
+      typeof evidence.revisionId !== "string" || !REVISION.test(evidence.revisionId) ||
+      typeof evidence.treeDigest !== "string" || !REVISION.test(evidence.treeDigest) ||
+      (evidence.command !== null && !nonemptyText(evidence.command)) ||
+      !identifier(evidence.checkpointId) ||
+      !TDD_MISSION_EVIDENCE_OUTCOMES.includes(evidence.outcome as TddMissionEvidenceOutcomeV1) ||
+      (evidence.failureClassification !== null &&
+        !failureClassification(evidence.failureClassification)) ||
+      (evidence.successor !== null && evidence.successor !== "mission_complete" &&
+        !TDD_MISSION_EVIDENCE_STAGES.includes(
+          evidence.successor as TddMissionEvidenceStageV1,
+        )) ||
+      (evidence.stopCondition !== null && !nonemptyText(evidence.stopCondition)) ||
+      (evidence.decisionOwnerSeatId !== null && !identifier(evidence.decisionOwnerSeatId))) {
+    return null;
+  }
+  const stage = evidence.stage as TddMissionEvidenceStageV1;
+  const outcome = evidence.outcome as TddMissionEvidenceOutcomeV1;
+  if (!validEvidenceStageOwnership(stage, evidence.seatId, outcome)) return null;
+  const isPendingDecision = stage === "disposition_recorded" && outcome === "pending_decision";
+  if (isPendingDecision
+    ? evidence.successor !== null || evidence.stopCondition === null ||
+      evidence.decisionOwnerSeatId === null
+    : evidence.successor === null || evidence.stopCondition !== null ||
+      evidence.decisionOwnerSeatId !== null) return null;
+  if ((stage === "red_established") !== (evidence.failureClassification !== null) ||
+      (["red_established", "mack_validation_complete"].includes(stage) &&
+        evidence.command === null)) return null;
+  const sourceRefs = evidenceStringArray(evidence.sourceRefs);
+  if (sourceRefs === null) return null;
+  return Object.freeze({
+    evidenceId: evidence.evidenceId,
+    missionId: evidence.missionId,
+    planDigest: evidence.planDigest,
+    criterionId: evidence.criterionId,
+    packetId: evidence.packetId,
+    stage,
+    seatId: evidence.seatId as TddMissionEvidenceSeatV1,
+    runtimeId: evidence.runtimeId,
+    executorId: evidence.executorId,
+    repositoryId: evidence.repositoryId,
+    branch: evidence.branch,
+    revisionId: evidence.revisionId,
+    treeDigest: evidence.treeDigest,
+    command: evidence.command as string | null,
+    checkpointId: evidence.checkpointId,
+    outcome,
+    failureClassification:
+      evidence.failureClassification as TddMissionFailureClassificationV1 | null,
+    sourceRefs,
+    successor: evidence.successor as TddMissionEvidenceSuccessorV1 | null,
+    stopCondition: evidence.stopCondition as string | null,
+    decisionOwnerSeatId: evidence.decisionOwnerSeatId as string | null,
+  });
+}
+
+function blockedMission(
+  reasonCode: TddMissionStrategyReasonCodeV1,
+  criterionIds: readonly string[] = [],
+  stopCondition = "mission_completion_blocked",
+  decisionOwnerSeatId: string | null = null,
+): TddMissionEvaluationV1 {
+  return Object.freeze({
+    state: "blocked" as const,
+    reasonCodes: Object.freeze([reasonCode]),
+    criterionIds: Object.freeze([...criterionIds]),
+    successor: null,
+    stopCondition,
+    decisionOwnerSeatId,
+  });
+}
+
+function stageEvidence(
+  evidence: readonly Readonly<TddMissionExactEvidenceV1>[],
+  stage: TddMissionEvidenceStageV1,
+): Readonly<TddMissionExactEvidenceV1> | null | "duplicate" {
+  const matches = evidence.filter((item) => item.stage === stage);
+  return matches.length === 0 ? null : matches.length === 1 ? matches[0] : "duplicate";
+}
+
+function exactPoint(
+  evidence: Readonly<TddMissionExactEvidenceV1>,
+  revisionId: string,
+  treeDigest: string | null,
+): boolean {
+  return evidence.revisionId === revisionId &&
+    (treeDigest === null || evidence.treeDigest === treeDigest);
+}
+
+function containsRefs(
+  evidence: Readonly<TddMissionExactEvidenceV1>,
+  ...refs: readonly string[]
+): boolean {
+  return refs.every((ref) => evidence.sourceRefs.includes(ref));
+}
+
+function evidenceTransitionMatches(
+  evidence: Readonly<TddMissionExactEvidenceV1>,
+  checkpointId: string,
+  successor: TddMissionEvidenceSuccessorV1,
+): boolean {
+  return evidence.checkpointId === checkpointId && evidence.successor === successor;
+}
+
+export function evaluateTddMissionV1(input: unknown): TddMissionEvaluationV1 {
+  const mission = record(input, MISSION_EVALUATION_FIELDS);
+  if (mission === null || mission.schemaVersion !== TDD_MISSION_SCHEMA_VERSION ||
+      mission.contractVersion !== TDD_MISSION_CONTRACT_VERSION ||
+      !identifier(mission.missionId) || typeof mission.planDigest !== "string" ||
+      !DIGEST.test(mission.planDigest) || !identifier(mission.repositoryId) ||
+      !identifier(mission.branch) || typeof mission.planningRevisionId !== "string" ||
+      !REVISION.test(mission.planningRevisionId) ||
+      typeof mission.planningTreeDigest !== "string" ||
+      !REVISION.test(mission.planningTreeDigest) ||
+      typeof mission.headRevisionId !== "string" || !REVISION.test(mission.headRevisionId) ||
+      typeof mission.headTreeDigest !== "string" || !REVISION.test(mission.headTreeDigest) ||
+      !Array.isArray(mission.evidence) ||
+      Object.getPrototypeOf(mission.evidence) !== Array.prototype) {
+    return blockedMission("MALFORMED_INPUT");
+  }
+
+  const strategy = validateTddMissionStrategyContractV1(mission.strategyContract);
+  if (strategy.state === "packet_size_exception_required") {
+    return Object.freeze({
+      state: "packet_size_exception_required" as const,
+      reasonCodes: Object.freeze(["PACKET_SIZE_LIMIT_EXCEEDED"] as const),
+      packetIds: strategy.packetIds,
+      successor: null,
+      stopCondition: "feature_hill_packet_size_exception" as const,
+    });
+  }
+  if (strategy.state === "invalid") return blockedMission(strategy.reasonCodes[0]);
+
+  const normalizedEvidence: Readonly<TddMissionExactEvidenceV1>[] = [];
+  const evidenceIds = new Set<string>();
+  const revisionTrees = new Map<string, string>();
+  for (const candidate of mission.evidence) {
+    const evidence = exactEvidence(candidate);
+    if (evidence === null || evidenceIds.has(evidence.evidenceId)) {
+      return blockedMission("EVIDENCE_SCHEMA_INVALID");
+    }
+    if (evidence.missionId !== mission.missionId || evidence.planDigest !== mission.planDigest ||
+        evidence.repositoryId !== mission.repositoryId || evidence.branch !== mission.branch) {
+      return blockedMission("BINDING_DIGEST_MISMATCH", [evidence.criterionId]);
+    }
+    const packet = strategy.contract.packets.find((item) =>
+      item.packetId === evidence.packetId && item.criterionIds.includes(evidence.criterionId));
+    if (packet === undefined) {
+      return blockedMission("TRACEABILITY_BINDING_MISMATCH", [evidence.criterionId]);
+    }
+    const knownTree = revisionTrees.get(evidence.revisionId);
+    if (knownTree !== undefined && knownTree !== evidence.treeDigest) {
+      return blockedMission("STALE_EXACT_REVISION_EVIDENCE", [evidence.criterionId]);
+    }
+    revisionTrees.set(evidence.revisionId, evidence.treeDigest);
+    evidenceIds.add(evidence.evidenceId);
+    normalizedEvidence.push(evidence);
+  }
+
+  const completedCriterionIds: string[] = [];
+  for (const criterion of strategy.contract.criteria) {
+    const criterionIds = [criterion.criterionId] as const;
+    const evidence = normalizedEvidence.filter((item) =>
+      item.criterionId === criterion.criterionId &&
+      item.packetId === criterion.traceability.mayPacketId);
+    const strategyRecord = stageEvidence(evidence, "strategy_recorded");
+    if (strategyRecord === "duplicate") return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
+    if (strategyRecord === null) return blockedMission("EVIDENCE_MISSING", criterionIds);
+    const strategySuccessor = criterion.disposition !== "implemented_and_proven"
+      ? "disposition_recorded" as const
+      : criterion.strategy === "tdd_selected"
+        ? "contract_prepared" as const
+        : "implementation_authorized" as const;
+    if (!exactPoint(
+      strategyRecord,
+      mission.planningRevisionId as string,
+      mission.planningTreeDigest as string,
+    ) || !evidenceTransitionMatches(
+      strategyRecord,
+      criterion.traceability.planRequirementId,
+      strategySuccessor,
+    ) || !containsRefs(strategyRecord, criterion.traceability.planRequirementId)) {
+      return blockedMission("STALE_EXACT_REVISION_EVIDENCE", criterionIds);
+    }
+
+    if (criterion.disposition !== "implemented_and_proven") {
+      if (evidence.some((item) =>
+        item.stage !== "strategy_recorded" && item.stage !== "disposition_recorded") ||
+          criterion.implementationAuthorityEvidence !== null || criterion.greenEvidence !== null ||
+          criterion.refactorEvidence !== null) {
+        return blockedMission("DISPOSITION_EVIDENCE_MISSING", criterionIds);
+      }
+      const disposition = stageEvidence(evidence, "disposition_recorded");
+      if (disposition === "duplicate") {
+        return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
+      }
+      if (disposition === null) {
+        return blockedMission("DISPOSITION_EVIDENCE_MISSING", criterionIds);
+      }
+      if (!exactPoint(
+        disposition,
+        mission.headRevisionId as string,
+        mission.headTreeDigest as string,
+      )) return blockedMission("STALE_EXACT_REVISION_EVIDENCE", criterionIds);
+      if (criterion.disposition === "blocked_pending_explicit_decision") {
+        if (disposition.outcome !== "pending_decision" ||
+            disposition.decisionOwnerSeatId === null) {
+          return blockedMission("DISPOSITION_EVIDENCE_MISSING", criterionIds);
+        }
+        return blockedMission(
+          "BLOCKED_PENDING_EXPLICIT_DECISION",
+          criterionIds,
+          disposition.stopCondition ?? "explicit_decision_required",
+          disposition.decisionOwnerSeatId,
+        );
+      }
+      const expectedOutcome = criterion.disposition === "deferred_with_linked_issue"
+        ? "deferred" as const
+        : "not_applicable" as const;
+      if (disposition.outcome !== expectedOutcome ||
+          disposition.successor !== "mission_complete" ||
+          (expectedOutcome === "deferred" &&
+            !disposition.sourceRefs.some((ref) => ref.startsWith("issue:")))) {
+        return blockedMission("DISPOSITION_EVIDENCE_MISSING", criterionIds);
+      }
+      completedCriterionIds.push(criterion.criterionId);
+      continue;
+    }
+
+    const allowedStages = new Set<TddMissionEvidenceStageV1>([
+      "strategy_recorded",
+      ...(criterion.strategy === "tdd_selected"
+        ? ["contract_prepared" as const, "red_established" as const]
+        : []),
+      "implementation_authorized",
+      "green_proven",
+      ...(criterion.refactorEvidence === null ? [] : ["refactor_proven" as const]),
+      "mack_validation_complete",
+      "fury_conformance_complete",
+    ]);
+    if (evidence.some((item) => !allowedStages.has(item.stage))) {
+      return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
+    }
+
+    let redEvidenceId: string | null = null;
+    if (criterion.strategy === "tdd_selected") {
+      const prepared = stageEvidence(evidence, "contract_prepared");
+      const red = stageEvidence(evidence, "red_established");
+      if (prepared === "duplicate" || red === "duplicate") {
+        return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
+      }
+      if (prepared === null || red === null ||
+          criterion.preImplementationStateEvidence.state !== "red_established") {
+        return blockedMission("RED_NOT_ESTABLISHED", criterionIds);
+      }
+      const state = criterion.preImplementationStateEvidence;
+      if (!exactPoint(
+        prepared,
+        mission.planningRevisionId as string,
+        mission.planningTreeDigest as string,
+      ) || !evidenceTransitionMatches(
+        prepared,
+        criterion.preImplementationContract.checkpointId,
+        "red_established",
+      ) || !containsRefs(prepared, criterion.preImplementationContract.contractId) ||
+          !exactPoint(red, state.revisionId, mission.planningTreeDigest as string) ||
+          red.evidenceId !== state.evidenceId ||
+          !evidenceTransitionMatches(
+            red,
+            criterion.preImplementationContract.checkpointId,
+            "implementation_authorized",
+          ) || red.command !== state.failureEvidence.command ||
+          red.failureClassification !== state.expectedFailureClassification ||
+          !containsRefs(
+            red,
+            prepared.evidenceId,
+            state.furyContractDisposition.evidenceId,
+          )) return blockedMission("STALE_EXACT_REVISION_EVIDENCE", criterionIds);
+      redEvidenceId = red.evidenceId;
+    }
+
+    if (criterion.expectationAmendment !== null) {
+      return blockedMission("EXPECTATION_AMENDMENT_INCOMPLETE", criterionIds);
+    }
+    const authority = stageEvidence(evidence, "implementation_authorized");
+    const green = stageEvidence(evidence, "green_proven");
+    if (authority === "duplicate" || green === "duplicate") {
+      return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
+    }
+    if (criterion.implementationAuthorityEvidence === null || authority === null) {
+      return blockedMission("IMPLEMENTATION_AUTHORITY_MISSING", criterionIds);
+    }
+    if (criterion.greenEvidence === null || green === null) {
+      return blockedMission("GREEN_EVIDENCE_MISSING", criterionIds);
+    }
+    const authorityReceipt = criterion.implementationAuthorityEvidence;
+    const greenReceipt = criterion.greenEvidence;
+    const authorityRevision = criterion.strategy === "tdd_selected"
+      ? criterion.preImplementationStateEvidence.revisionId
+      : mission.planningRevisionId as string;
+    const authorityRefs = criterion.strategy === "tdd_selected"
+      ? [redEvidenceId as string]
+      : [strategyRecord.evidenceId];
+    if (!exactPoint(authority, authorityRevision, mission.planningTreeDigest as string) ||
+        authority.evidenceId !== authorityReceipt.evidenceId ||
+        !evidenceTransitionMatches(authority, authorityReceipt.evidenceId, "green_proven") ||
+        !containsRefs(authority, ...authorityRefs) ||
+        green.evidenceId !== greenReceipt.evidenceId ||
+        green.revisionId !== greenReceipt.revisionId ||
+        !containsRefs(green, authority.evidenceId)) {
+      return blockedMission("STALE_EXACT_REVISION_EVIDENCE", criterionIds);
+    }
+
+    let finalImplementationEvidence = green;
+    let finalImplementationReceipt: TddGreenEvidenceV1 | TddRefactorEvidenceV1 = greenReceipt;
+    if (criterion.refactorEvidence !== null) {
+      const refactor = stageEvidence(evidence, "refactor_proven");
+      if (refactor === "duplicate") return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
+      if (refactor === null || green.successor !== "refactor_proven" ||
+          refactor.evidenceId !== criterion.refactorEvidence.evidenceId ||
+          refactor.revisionId !== criterion.refactorEvidence.revisionId ||
+          !containsRefs(
+            refactor,
+            green.evidenceId,
+            criterion.refactorEvidence.implementationAuthorityEvidence.evidenceId,
+          ) || refactor.successor !== "mack_validation_complete") {
+        return blockedMission("REFACTOR_NOT_BEHAVIOR_PRESERVING", criterionIds);
+      }
+      finalImplementationEvidence = refactor;
+      finalImplementationReceipt = criterion.refactorEvidence;
+    } else if (green.successor !== "mack_validation_complete") {
+      return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
+    }
+
+    if (criterion.traceability.revisionId !== finalImplementationReceipt.revisionId ||
+        mission.headRevisionId !== finalImplementationReceipt.revisionId ||
+        finalImplementationEvidence.treeDigest !== mission.headTreeDigest) {
+      return blockedMission("STALE_EXACT_REVISION_EVIDENCE", criterionIds);
+    }
+    const mack = stageEvidence(evidence, "mack_validation_complete");
+    const fury = stageEvidence(evidence, "fury_conformance_complete");
+    if (mack === "duplicate" || fury === "duplicate") {
+      return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
+    }
+    if (mack === null) return blockedMission("MACK_EVIDENCE_MISSING", criterionIds);
+    if (fury === null) return blockedMission("REVIEW_EVIDENCE_MISSING", criterionIds);
+    const focusedMack = finalImplementationReceipt.mackEvidence;
+    if (!exactPoint(mack, mission.headRevisionId as string, mission.headTreeDigest as string) ||
+        !exactPoint(fury, mission.headRevisionId as string, mission.headTreeDigest as string)) {
+      return blockedMission("STALE_EXACT_REVISION_EVIDENCE", criterionIds);
+    }
+    if (mack.evidenceId !== criterion.traceability.validationEvidenceId ||
+        mack.command !== focusedMack.command ||
+        !evidenceTransitionMatches(
+          mack,
+          criterion.traceability.mackCheckpointId,
+          "fury_conformance_complete",
+        ) || !containsRefs(mack, finalImplementationEvidence.evidenceId) ||
+        fury.evidenceId !== criterion.traceability.furyReviewId ||
+        !evidenceTransitionMatches(
+          fury,
+          criterion.traceability.furyReviewId,
+          "mission_complete",
+        ) || !containsRefs(fury, mack.evidenceId) ||
+        (criterion.traceability.humanReviewId !== null &&
+          !containsRefs(fury, criterion.traceability.humanReviewId))) {
+      return blockedMission("REVIEW_EVIDENCE_MISSING", criterionIds);
+    }
+    completedCriterionIds.push(criterion.criterionId);
+  }
+
+  const normalizedInput = Object.freeze({
+    schemaVersion: TDD_MISSION_SCHEMA_VERSION,
+    contractVersion: TDD_MISSION_CONTRACT_VERSION,
+    missionId: mission.missionId as string,
+    planDigest: mission.planDigest as string,
+    repositoryId: mission.repositoryId as string,
+    branch: mission.branch as string,
+    planningRevisionId: mission.planningRevisionId as string,
+    planningTreeDigest: mission.planningTreeDigest as string,
+    headRevisionId: mission.headRevisionId as string,
+    headTreeDigest: mission.headTreeDigest as string,
+    strategyContract: strategy.contract,
+    evidence: Object.freeze(normalizedEvidence),
+  });
+  return Object.freeze({
+    state: "eligible" as const,
+    reasonCodes: Object.freeze([]) as readonly [],
+    criterionIds: Object.freeze(completedCriterionIds),
+    successor: "mission_complete" as const,
+    stopCondition: null,
+    input: normalizedInput,
   });
 }

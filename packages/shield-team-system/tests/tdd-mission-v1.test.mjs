@@ -2,14 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  TDD_MISSION_DECISIONS,
+  TDD_MISSION_EVIDENCE_STAGES,
   TDD_MISSION_EXPECTATION_AMENDMENT_KINDS,
   TDD_MISSION_FAILURE_CLASSIFICATIONS,
+  evaluateTddMissionV1,
   validateTddMissionStrategyContractV1,
 } from "../dist/tdd-mission-v1.mjs";
 
 const REVISION = "fb2d9c7ba6c0d312d93a5debc0f105de1805563d";
 const GREEN_REVISION = "50e818f1a624016c6a850334e0574353b54c2324";
 const REFACTOR_REVISION = "7ac35df137c6f12559429cfea693f089b1df8d1e";
+const PLANNING_TREE = "8a756afae0b0586fe1f9911a4b2d18f7650c24a1";
+const GREEN_TREE = "650bca49fd1f33bf7da5d637f9f196712a75ea7f";
+const REFACTOR_TREE = "4625506e302d60c00d2390266624133a384ca68b";
 const CONTRACT_DIGEST = "sha256:acceptance_contract_digest";
 const OLD_CONTRACT_DIGEST = "sha256:old_contract_digest";
 const AMENDED_CONTRACT_DIGEST = "sha256:amended_contract_digest";
@@ -286,6 +292,176 @@ function strategyContract(
     contractVersion: "tdd.mission.v1",
     criteria,
     packets,
+  };
+}
+
+function exactEvidence({
+  evidenceId,
+  stage,
+  seatId,
+  revisionId,
+  treeDigest,
+  command = null,
+  checkpointId,
+  outcome,
+  failureClassification = null,
+  sourceRefs,
+  successor,
+  stopCondition = null,
+  decisionOwnerSeatId = null,
+  criterionId = "AC-162-1",
+  packetId = "packet:ac-162-1",
+}) {
+  return {
+    evidenceId,
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    criterionId,
+    packetId,
+    stage,
+    seatId,
+    runtimeId: `runtime:${seatId}:hosted`,
+    executorId: `executor:${seatId}:codex`,
+    repositoryId: "RanSolo/shield-workspace",
+    branch: "agent/issue-162-tdd-intent",
+    revisionId,
+    treeDigest,
+    command,
+    checkpointId,
+    outcome,
+    failureClassification,
+    sourceRefs,
+    successor,
+    stopCondition,
+    decisionOwnerSeatId,
+  };
+}
+
+function fullFlowMission({ includeRefactor = true, disposition, evidence } = {}) {
+  const finalRevision = includeRefactor ? REFACTOR_REVISION : GREEN_REVISION;
+  const finalTree = includeRefactor ? REFACTOR_TREE : GREEN_TREE;
+  const implemented = criterion({
+    preImplementationStateEvidence: redState(),
+    implementationAuthorityEvidence: implementationAuthority(),
+    greenEvidence: greenEvidence(),
+    refactorEvidence: includeRefactor ? refactorEvidence() : null,
+    disposition: disposition ?? "implemented_and_proven",
+    traceability: {
+      revisionId: finalRevision,
+      validationEvidenceId: "validation:ac-162-1",
+      furyReviewId: "review:fury:ac-162-1",
+      humanReviewId: "review:human:ac-162-1",
+    },
+  });
+  const records = evidence ?? [
+    exactEvidence({
+      evidenceId: "evidence:ac-162-1:strategy",
+      stage: "strategy_recorded",
+      seatId: "hill",
+      revisionId: REVISION,
+      treeDigest: PLANNING_TREE,
+      checkpointId: "requirement:ac-162-1",
+      outcome: "recorded",
+      sourceRefs: ["requirement:ac-162-1"],
+      successor: "contract_prepared",
+    }),
+    exactEvidence({
+      evidenceId: "evidence:ac-162-1:prepared",
+      stage: "contract_prepared",
+      seatId: "mack",
+      revisionId: REVISION,
+      treeDigest: PLANNING_TREE,
+      checkpointId: "checkpoint:ac-162-1:red",
+      outcome: "prepared",
+      sourceRefs: ["contract:ac-162-1"],
+      successor: "red_established",
+    }),
+    exactEvidence({
+      evidenceId: "evidence:ac-162-1:red",
+      stage: "red_established",
+      seatId: "mack",
+      revisionId: REVISION,
+      treeDigest: PLANNING_TREE,
+      command: "node --test checkpoint:ac-162-1:red",
+      checkpointId: "checkpoint:ac-162-1:red",
+      outcome: "failed",
+      failureClassification: "missing_behavior",
+      sourceRefs: [
+        "evidence:ac-162-1:prepared",
+        "review:fury:ac-162-1:contract",
+      ],
+      successor: "implementation_authorized",
+    }),
+    exactEvidence({
+      evidenceId: "authority:ac-162-1:green",
+      stage: "implementation_authorized",
+      seatId: "coulson",
+      revisionId: REVISION,
+      treeDigest: PLANNING_TREE,
+      checkpointId: "authority:ac-162-1:green",
+      outcome: "authorized",
+      sourceRefs: ["evidence:ac-162-1:red"],
+      successor: "green_proven",
+    }),
+    exactEvidence({
+      evidenceId: "green:ac-162-1",
+      stage: "green_proven",
+      seatId: "may",
+      revisionId: GREEN_REVISION,
+      treeDigest: GREEN_TREE,
+      checkpointId: "green:ac-162-1",
+      outcome: "passed",
+      sourceRefs: ["authority:ac-162-1:green"],
+      successor: includeRefactor ? "refactor_proven" : "mack_validation_complete",
+    }),
+    ...(includeRefactor ? [exactEvidence({
+      evidenceId: "refactor:ac-162-1",
+      stage: "refactor_proven",
+      seatId: "may",
+      revisionId: REFACTOR_REVISION,
+      treeDigest: REFACTOR_TREE,
+      checkpointId: "refactor:ac-162-1",
+      outcome: "passed",
+      sourceRefs: ["green:ac-162-1", "authority:ac-162-1:refactor"],
+      successor: "mack_validation_complete",
+    })] : []),
+    exactEvidence({
+      evidenceId: "validation:ac-162-1",
+      stage: "mack_validation_complete",
+      seatId: "mack",
+      revisionId: finalRevision,
+      treeDigest: finalTree,
+      command: "node --test checkpoint:ac-162-1:focused",
+      checkpointId: "checkpoint:ac-162-1:red",
+      outcome: "passed",
+      sourceRefs: [includeRefactor ? "refactor:ac-162-1" : "green:ac-162-1"],
+      successor: "fury_conformance_complete",
+    }),
+    exactEvidence({
+      evidenceId: "review:fury:ac-162-1",
+      stage: "fury_conformance_complete",
+      seatId: "fury",
+      revisionId: finalRevision,
+      treeDigest: finalTree,
+      checkpointId: "review:fury:ac-162-1",
+      outcome: "passed",
+      sourceRefs: ["validation:ac-162-1", "review:human:ac-162-1"],
+      successor: "mission_complete",
+    }),
+  ];
+  return {
+    schemaVersion: 1,
+    contractVersion: "tdd.mission.v1",
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    repositoryId: "RanSolo/shield-workspace",
+    branch: "agent/issue-162-tdd-intent",
+    planningRevisionId: REVISION,
+    planningTreeDigest: PLANNING_TREE,
+    headRevisionId: finalRevision,
+    headTreeDigest: finalTree,
+    strategyContract: strategyContract([implemented]),
+    evidence: records,
   };
 }
 
@@ -908,4 +1084,192 @@ test("validated strategy contracts are immutable copies", () => {
   assert.ok(Object.isFrozen(result.contract.packets[0].minimalPaths));
   assert.notEqual(result.contract.criteria, input.criteria);
   assert.notEqual(result.contract.packets, input.packets);
+});
+
+test("terminal decisions and exact evidence stages are closed", () => {
+  assert.deepEqual(TDD_MISSION_DECISIONS, [
+    "eligible",
+    "blocked",
+    "packet_size_exception_required",
+  ]);
+  assert.deepEqual(TDD_MISSION_EVIDENCE_STAGES, [
+    "strategy_recorded",
+    "contract_prepared",
+    "red_established",
+    "implementation_authorized",
+    "green_proven",
+    "refactor_proven",
+    "mack_validation_complete",
+    "fury_conformance_complete",
+    "disposition_recorded",
+  ]);
+});
+
+test("bounded mission traverses reviewed Red, authorized May Green, optional Refactor, Mack, and Fury", () => {
+  for (const includeRefactor of [false, true]) {
+    const result = evaluateTddMissionV1(fullFlowMission({ includeRefactor }));
+    assert.equal(result.state, "eligible");
+    assert.deepEqual(result.reasonCodes, []);
+    assert.deepEqual(result.criterionIds, ["AC-162-1"]);
+    assert.equal(result.successor, "mission_complete");
+    assert.equal(result.stopCondition, null);
+    assert.ok(Object.isFrozen(result));
+    assert.ok(Object.isFrozen(result.input));
+    assert.ok(Object.isFrozen(result.input.evidence));
+    assert.ok(Object.isFrozen(result.input.evidence[0].sourceRefs));
+  }
+});
+
+test("stale exact-revision evidence blocks mission completion", () => {
+  const input = fullFlowMission();
+  const evidence = input.evidence.map((item) => item.stage === "fury_conformance_complete"
+    ? { ...item, revisionId: GREEN_REVISION, treeDigest: GREEN_TREE }
+    : item);
+  const result = evaluateTddMissionV1({ ...input, evidence });
+  assert.equal(result.state, "blocked");
+  assert.deepEqual(result.reasonCodes, ["STALE_EXACT_REVISION_EVIDENCE"]);
+  assert.deepEqual(result.criterionIds, ["AC-162-1"]);
+});
+
+test("incomplete deferred and not-applicable dispositions cannot complete", () => {
+  for (const disposition of [
+    "deferred_with_linked_issue",
+    "not_applicable_with_evidence",
+  ]) {
+    const declined = criterion({
+      strategy: "tdd_declined",
+      rationale: "This documentation-only criterion has no executable pre-implementation seam.",
+      preImplementationContract: null,
+      preImplementationStateEvidence: null,
+      disposition,
+      traceability: { revisionId: GREEN_REVISION },
+    });
+    const input = {
+      ...fullFlowMission({ includeRefactor: false }),
+      strategyContract: strategyContract([declined]),
+      evidence: [exactEvidence({
+        evidenceId: "evidence:ac-162-1:strategy",
+        stage: "strategy_recorded",
+        seatId: "hill",
+        revisionId: REVISION,
+        treeDigest: PLANNING_TREE,
+        checkpointId: "requirement:ac-162-1",
+        outcome: "recorded",
+        sourceRefs: ["requirement:ac-162-1"],
+        successor: "disposition_recorded",
+      })],
+    };
+    const result = evaluateTddMissionV1(input);
+    assert.equal(result.state, "blocked");
+    assert.deepEqual(result.reasonCodes, ["DISPOSITION_EVIDENCE_MISSING"]);
+  }
+});
+
+test("deferred needs a linked issue and not-applicable needs exact disposition evidence", () => {
+  for (const [criterionDisposition, outcome, sourceRefs] of [
+    ["deferred_with_linked_issue", "deferred", ["issue:#163"]],
+    ["not_applicable_with_evidence", "not_applicable", ["evidence:analysis:ac-162-1"]],
+  ]) {
+    const declined = criterion({
+      strategy: "tdd_declined",
+      rationale: "This documentation-only criterion has no executable pre-implementation seam.",
+      preImplementationContract: null,
+      preImplementationStateEvidence: null,
+      disposition: criterionDisposition,
+      traceability: { revisionId: GREEN_REVISION },
+    });
+    const input = {
+      ...fullFlowMission({ includeRefactor: false }),
+      strategyContract: strategyContract([declined]),
+      evidence: [
+        exactEvidence({
+          evidenceId: "evidence:ac-162-1:strategy",
+          stage: "strategy_recorded",
+          seatId: "hill",
+          revisionId: REVISION,
+          treeDigest: PLANNING_TREE,
+          checkpointId: "requirement:ac-162-1",
+          outcome: "recorded",
+          sourceRefs: ["requirement:ac-162-1"],
+          successor: "disposition_recorded",
+        }),
+        exactEvidence({
+          evidenceId: `evidence:ac-162-1:${outcome}`,
+          stage: "disposition_recorded",
+          seatId: "hill",
+          revisionId: GREEN_REVISION,
+          treeDigest: GREEN_TREE,
+          checkpointId: `disposition:ac-162-1:${outcome}`,
+          outcome,
+          sourceRefs,
+          successor: "mission_complete",
+        }),
+      ],
+    };
+    assert.equal(evaluateTddMissionV1(input).state, "eligible");
+  }
+});
+
+test("blocked_pending_explicit_decision remains blocked with its named owner", () => {
+  const declined = criterion({
+    strategy: "tdd_declined",
+    rationale: "An explicit product decision is required before implementation.",
+    preImplementationContract: null,
+    preImplementationStateEvidence: null,
+    disposition: "blocked_pending_explicit_decision",
+    traceability: { revisionId: GREEN_REVISION },
+  });
+  const input = {
+    ...fullFlowMission({ includeRefactor: false }),
+    strategyContract: strategyContract([declined]),
+    evidence: [
+      exactEvidence({
+        evidenceId: "evidence:ac-162-1:strategy",
+        stage: "strategy_recorded",
+        seatId: "hill",
+        revisionId: REVISION,
+        treeDigest: PLANNING_TREE,
+        checkpointId: "requirement:ac-162-1",
+        outcome: "recorded",
+        sourceRefs: ["requirement:ac-162-1"],
+        successor: "disposition_recorded",
+      }),
+      exactEvidence({
+        evidenceId: "evidence:ac-162-1:decision-pending",
+        stage: "disposition_recorded",
+        seatId: "hill",
+        revisionId: GREEN_REVISION,
+        treeDigest: GREEN_TREE,
+        checkpointId: "decision:ac-162-1:pending",
+        outcome: "pending_decision",
+        sourceRefs: ["decision-request:ac-162-1"],
+        successor: null,
+        stopCondition: "await_product_owner_decision",
+        decisionOwnerSeatId: "coulson",
+      }),
+    ],
+  };
+  const result = evaluateTddMissionV1(input);
+  assert.equal(result.state, "blocked");
+  assert.deepEqual(result.reasonCodes, ["BLOCKED_PENDING_EXPLICIT_DECISION"]);
+  assert.equal(result.stopCondition, "await_product_owner_decision");
+  assert.equal(result.decisionOwnerSeatId, "coulson");
+});
+
+test("mission evaluator preserves the packet-size exception decision", () => {
+  const criteria = Array.from({ length: 4 }, (_, index) => criterion({
+    criterionId: `AC-162-${index + 1}`,
+    traceability: { mayPacketId: "packet:oversized" },
+  }));
+  const input = fullFlowMission();
+  const result = evaluateTddMissionV1({
+    ...input,
+    strategyContract: strategyContract(criteria, [
+      packet("packet:oversized", criteria.map((item) => item.criterionId)),
+    ]),
+    evidence: [],
+  });
+  assert.equal(result.state, "packet_size_exception_required");
+  assert.deepEqual(result.reasonCodes, ["PACKET_SIZE_LIMIT_EXCEEDED"]);
+  assert.equal(result.stopCondition, "feature_hill_packet_size_exception");
 });
