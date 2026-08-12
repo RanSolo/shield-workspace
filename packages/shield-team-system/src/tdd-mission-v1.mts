@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
+
+import { canonicalJson } from "./mission-v2.mjs";
 
 export const TDD_MISSION_SCHEMA_VERSION = 1 as const;
 export const TDD_MISSION_CONTRACT_VERSION = "tdd.mission.v1" as const;
@@ -114,6 +117,7 @@ export interface TddMissionExactEvidenceV1 {
   readonly missionId: string;
   readonly planDigest: string;
   readonly acceptanceContractDigest: string;
+  readonly contractGeneration: number;
   readonly criterionId: string;
   readonly packetId: string;
   readonly stage: TddMissionEvidenceStageV1;
@@ -149,6 +153,7 @@ export interface TddMissionEvaluationInputV1 {
   readonly missionId: string;
   readonly planDigest: string;
   readonly reviewedAcceptanceContractDigest: string;
+  readonly reviewedPredecessorContract: Readonly<TddReviewedPredecessorContractV1> | null;
   readonly repositoryId: string;
   readonly branch: string;
   readonly planningRevisionId: string;
@@ -191,6 +196,11 @@ export interface TddExecutablePreImplementationContractV1 {
   readonly expectedBehavior: string;
 }
 
+export interface TddAcceptanceExpectationV1 {
+  readonly state: "active" | "removed";
+  readonly expectedBehavior: string;
+}
+
 export interface TddCriterionTraceabilityV1 {
   readonly planRequirementId: string;
   readonly mackCheckpointId: string;
@@ -211,6 +221,7 @@ export interface TddExecutableFailureEvidenceV1 {
 }
 
 export interface TddFuryContractDispositionV1 {
+  readonly contractGeneration: number;
   readonly evidenceId: string;
   readonly reviewerSeatId: "fury";
   readonly contractId: string;
@@ -219,6 +230,7 @@ export interface TddFuryContractDispositionV1 {
 }
 
 interface TddPreImplementationStateEvidenceCommonV1 {
+  readonly contractGeneration: number;
   readonly evidenceId: string;
   readonly ownerSeatId: "mack";
   readonly contractId: string;
@@ -249,6 +261,7 @@ export type TddPreImplementationStateEvidenceV1 =
   | TddRedEstablishedEvidenceV1;
 
 export interface TddExpectationAmendmentReviewV1 {
+  readonly contractGeneration: number;
   readonly evidenceId: string;
   readonly reviewerSeatId: "fury";
   readonly criterionId: string;
@@ -259,6 +272,7 @@ export interface TddExpectationAmendmentReviewV1 {
 }
 
 export interface TddExpectationAmendmentVerificationV1 {
+  readonly contractGeneration: number;
   readonly evidenceId: string;
   readonly verifierSeatId: "fitz";
   readonly criterionId: string;
@@ -269,6 +283,7 @@ export interface TddExpectationAmendmentVerificationV1 {
 }
 
 export interface TddExpectationAmendmentRerunV1 {
+  readonly contractGeneration: number;
   readonly evidenceId: string;
   readonly ownerSeatId: "mack";
   readonly criterionId: string;
@@ -289,10 +304,16 @@ export interface TddInvalidatedAmendmentEvidenceRefsV1 {
 }
 
 export interface TddExpectationAmendmentV1 {
+  readonly edgeId: string;
   readonly criterionId: string;
   readonly amendmentKind: TddMissionExpectationAmendmentKindV1;
+  readonly oldContractGeneration: number;
   readonly oldContractDigest: string;
+  readonly oldContractSnapshot: Readonly<TddAcceptanceContractSnapshotV1>;
+  readonly amendedContractGeneration: number;
   readonly amendedContractDigest: string;
+  readonly amendedContractSnapshot: Readonly<TddAcceptanceContractSnapshotV1>;
+  readonly predecessorFuryReviewEvidenceId: string;
   readonly originalExpectationEvidenceRef: string;
   readonly failureClassification: "stale_expectation";
   readonly intentPreservationRationale: string;
@@ -307,7 +328,9 @@ export interface TddExpectationAmendmentV1 {
 export interface TddExpectationAmendmentEffectV1 {
   readonly criterionId: string;
   readonly amendmentKind: TddMissionExpectationAmendmentKindV1;
+  readonly oldContractGeneration: number;
   readonly oldContractDigest: string;
+  readonly amendedContractGeneration: number;
   readonly amendedContractDigest: string;
   readonly invalidatedEvidenceRefs: Readonly<TddInvalidatedAmendmentEvidenceRefsV1>;
   readonly successorState: "contract_prepared" | "strategy_recorded";
@@ -319,6 +342,7 @@ export interface TddExpectationAmendmentEffectV1 {
 }
 
 export interface TddImplementationAuthorityEvidenceV1 {
+  readonly contractGeneration: number;
   readonly evidenceId: string;
   readonly authorityKind: "implementation";
   readonly grantorSeatId: "coulson";
@@ -331,6 +355,7 @@ export interface TddImplementationAuthorityEvidenceV1 {
 }
 
 export interface TddFocusedMackEvidenceV1 {
+  readonly contractGeneration: number;
   readonly evidenceId: string;
   readonly ownerSeatId: "mack";
   readonly criterionId: string;
@@ -344,6 +369,7 @@ export interface TddFocusedMackEvidenceV1 {
 }
 
 export interface TddGreenEvidenceV1 {
+  readonly contractGeneration: number;
   readonly state: "green_proven";
   readonly evidenceId: string;
   readonly ownerSeatId: "may";
@@ -358,6 +384,7 @@ export interface TddGreenEvidenceV1 {
 }
 
 export interface TddRefactorEvidenceV1 {
+  readonly contractGeneration: number;
   readonly state: "refactor_proven";
   readonly evidenceId: string;
   readonly ownerSeatId: "may";
@@ -378,11 +405,13 @@ export interface TddRefactorEvidenceV1 {
 }
 
 interface TddCriterionStrategyCommonV1 {
+  readonly contractGeneration: number;
   readonly criterionId: string;
   readonly rationale: string;
   readonly riskFactors: readonly string[];
   readonly laterValidation: "required";
   readonly disposition: TddMissionCriterionDispositionV1;
+  readonly acceptanceExpectation: Readonly<TddAcceptanceExpectationV1>;
   readonly traceability: Readonly<TddCriterionTraceabilityV1>;
   readonly expectationAmendment: Readonly<TddExpectationAmendmentV1> | null;
   readonly implementationAuthorityEvidence:
@@ -414,15 +443,67 @@ export interface TddImplementationPacketV1 {
   readonly minimalPaths: readonly string[];
   readonly requiredInterfaces: readonly string[];
   readonly allowedEffects: readonly string[];
-  readonly focusedValidation: readonly string[];
+  readonly focusedValidation: readonly Readonly<TddFocusedValidationEntryV1>[];
   readonly expectedOutput: string;
   readonly stopConditions: readonly string[];
   readonly successor: string;
 }
 
+export interface TddFocusedValidationEntryV1 {
+  readonly checkpointId: string;
+  readonly commandId: string;
+  readonly command: string;
+  readonly executableKind: "build" | "test";
+}
+
+export interface TddAcceptanceCriterionProjectionV1 {
+  readonly criterionId: string;
+  readonly strategy: TddMissionStrategyV1;
+  readonly rationale: string;
+  readonly riskFactors: readonly string[];
+  readonly laterValidation: "required";
+  readonly disposition: TddMissionCriterionDispositionV1;
+  readonly acceptanceExpectation: Readonly<TddAcceptanceExpectationV1>;
+  readonly preImplementationContract:
+    Readonly<TddExecutablePreImplementationContractV1> | null;
+  readonly traceability: Readonly<Pick<
+    TddCriterionTraceabilityV1,
+    "planRequirementId" | "mackCheckpointId" | "mayPacketId" | "humanReviewId"
+  >>;
+}
+
+export interface TddAcceptanceContractSnapshotV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: "tdd.mission.v1";
+  readonly contractGeneration: number;
+  readonly criteria: readonly Readonly<TddAcceptanceCriterionProjectionV1>[];
+  readonly packets: readonly Readonly<TddImplementationPacketV1>[];
+}
+
+export interface TddPredecessorFuryReviewV1 {
+  readonly evidenceId: string;
+  readonly reviewerSeatId: "fury";
+  readonly missionId: string;
+  readonly planDigest: string;
+  readonly contractGeneration: number;
+  readonly acceptanceContractDigest: string;
+  readonly reviewedRevisionId: string;
+  readonly reviewedTreeDigest: string;
+  readonly disposition: "approved";
+  readonly sourceRefs: readonly string[];
+}
+
+export interface TddReviewedPredecessorContractV1 {
+  readonly contractGeneration: number;
+  readonly acceptanceContractDigest: string;
+  readonly snapshot: Readonly<TddAcceptanceContractSnapshotV1>;
+  readonly furyReview: Readonly<TddPredecessorFuryReviewV1>;
+}
+
 export interface TddMissionStrategyContractV1 {
   readonly schemaVersion: 1;
   readonly contractVersion: "tdd.mission.v1";
+  readonly contractGeneration: number;
   readonly acceptanceContractDigest: string;
   readonly criteria: readonly Readonly<TddCriterionStrategyV1>[];
   readonly packets: readonly Readonly<TddImplementationPacketV1>[];
@@ -450,11 +531,13 @@ const DIGEST = /^sha256:[A-Za-z0-9_-]{6,}$/u;
 const CONTRACT_FIELDS = [
   "schemaVersion",
   "contractVersion",
+  "contractGeneration",
   "acceptanceContractDigest",
   "criteria",
   "packets",
 ] as const;
 const CRITERION_FIELDS = [
+  "contractGeneration",
   "criterionId",
   "strategy",
   "rationale",
@@ -463,12 +546,14 @@ const CRITERION_FIELDS = [
   "preImplementationStateEvidence",
   "laterValidation",
   "disposition",
+  "acceptanceExpectation",
   "traceability",
   "expectationAmendment",
   "implementationAuthorityEvidence",
   "greenEvidence",
   "refactorEvidence",
 ] as const;
+const ACCEPTANCE_EXPECTATION_FIELDS = ["state", "expectedBehavior"] as const;
 const PRE_IMPLEMENTATION_CONTRACT_FIELDS = [
   "contractId",
   "kind",
@@ -496,7 +581,14 @@ const PACKET_FIELDS = [
   "stopConditions",
   "successor",
 ] as const;
+const FOCUSED_VALIDATION_FIELDS = [
+  "checkpointId",
+  "commandId",
+  "command",
+  "executableKind",
+] as const;
 const PRE_IMPLEMENTATION_STATE_FIELDS = [
+  "contractGeneration",
   "state",
   "evidenceId",
   "ownerSeatId",
@@ -518,6 +610,7 @@ const FAILURE_EVIDENCE_FIELDS = [
   "observedFailureClassification",
 ] as const;
 const FURY_CONTRACT_DISPOSITION_FIELDS = [
+  "contractGeneration",
   "evidenceId",
   "reviewerSeatId",
   "contractId",
@@ -525,10 +618,16 @@ const FURY_CONTRACT_DISPOSITION_FIELDS = [
   "disposition",
 ] as const;
 const EXPECTATION_AMENDMENT_FIELDS = [
+  "edgeId",
   "criterionId",
   "amendmentKind",
+  "oldContractGeneration",
   "oldContractDigest",
+  "oldContractSnapshot",
+  "amendedContractGeneration",
   "amendedContractDigest",
+  "amendedContractSnapshot",
+  "predecessorFuryReviewEvidenceId",
   "originalExpectationEvidenceRef",
   "failureClassification",
   "intentPreservationRationale",
@@ -540,6 +639,7 @@ const EXPECTATION_AMENDMENT_FIELDS = [
   "invalidatedEvidenceRefs",
 ] as const;
 const EXPECTATION_AMENDMENT_REVIEW_FIELDS = [
+  "contractGeneration",
   "evidenceId",
   "reviewerSeatId",
   "criterionId",
@@ -549,6 +649,7 @@ const EXPECTATION_AMENDMENT_REVIEW_FIELDS = [
   "disposition",
 ] as const;
 const EXPECTATION_AMENDMENT_VERIFICATION_FIELDS = [
+  "contractGeneration",
   "evidenceId",
   "verifierSeatId",
   "criterionId",
@@ -558,6 +659,7 @@ const EXPECTATION_AMENDMENT_VERIFICATION_FIELDS = [
   "disposition",
 ] as const;
 const EXPECTATION_AMENDMENT_RERUN_FIELDS = [
+  "contractGeneration",
   "evidenceId",
   "ownerSeatId",
   "criterionId",
@@ -576,6 +678,7 @@ const INVALIDATED_AMENDMENT_EVIDENCE_REF_FIELDS = [
   "conformanceReceiptRef",
 ] as const;
 const IMPLEMENTATION_AUTHORITY_FIELDS = [
+  "contractGeneration",
   "evidenceId",
   "authorityKind",
   "grantorSeatId",
@@ -587,6 +690,7 @@ const IMPLEMENTATION_AUTHORITY_FIELDS = [
   "authorizedPaths",
 ] as const;
 const FOCUSED_MACK_EVIDENCE_FIELDS = [
+  "contractGeneration",
   "evidenceId",
   "ownerSeatId",
   "criterionId",
@@ -599,6 +703,7 @@ const FOCUSED_MACK_EVIDENCE_FIELDS = [
   "focus",
 ] as const;
 const GREEN_EVIDENCE_FIELDS = [
+  "contractGeneration",
   "state",
   "evidenceId",
   "ownerSeatId",
@@ -612,6 +717,7 @@ const GREEN_EVIDENCE_FIELDS = [
   "mackEvidence",
 ] as const;
 const REFACTOR_EVIDENCE_FIELDS = [
+  "contractGeneration",
   "state",
   "evidenceId",
   "ownerSeatId",
@@ -636,6 +742,7 @@ const MISSION_EVALUATION_FIELDS = [
   "missionId",
   "planDigest",
   "reviewedAcceptanceContractDigest",
+  "reviewedPredecessorContract",
   "repositoryId",
   "branch",
   "planningRevisionId",
@@ -650,6 +757,7 @@ const EXACT_EVIDENCE_FIELDS = [
   "missionId",
   "planDigest",
   "acceptanceContractDigest",
+  "contractGeneration",
   "criterionId",
   "packetId",
   "stage",
@@ -677,6 +785,31 @@ const EXACT_EVIDENCE_FIELDS = [
   "successor",
   "stopCondition",
   "decisionOwnerSeatId",
+] as const;
+const ACCEPTANCE_SNAPSHOT_FIELDS = [
+  "schemaVersion",
+  "contractVersion",
+  "contractGeneration",
+  "criteria",
+  "packets",
+] as const;
+const REVIEWED_PREDECESSOR_FIELDS = [
+  "contractGeneration",
+  "acceptanceContractDigest",
+  "snapshot",
+  "furyReview",
+] as const;
+const PREDECESSOR_FURY_REVIEW_FIELDS = [
+  "evidenceId",
+  "reviewerSeatId",
+  "missionId",
+  "planDigest",
+  "contractGeneration",
+  "acceptanceContractDigest",
+  "reviewedRevisionId",
+  "reviewedTreeDigest",
+  "disposition",
+  "sourceRefs",
 ] as const;
 const EVIDENCE_TEST_COUNT_FIELDS = [
   "total",
@@ -726,6 +859,10 @@ function nonemptyText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= 2_000;
 }
 
+function contractGeneration(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
 function failureClassification(value: unknown): value is TddMissionFailureClassificationV1 {
   return TDD_MISSION_FAILURE_CLASSIFICATIONS.includes(
     value as TddMissionFailureClassificationV1,
@@ -750,10 +887,12 @@ function preImplementationStateEvidence(
   value: unknown,
   contract: TddExecutablePreImplementationContractV1,
   acceptanceContractDigest: string,
+  activeGeneration: number,
 ): TddPreImplementationStateEvidenceV1 | TddMissionStrategyReasonCodeV1 {
   if (scaffoldClaimsPass(value)) return "SCAFFOLD_TREATED_AS_PASS";
   const state = record(value, PRE_IMPLEMENTATION_STATE_FIELDS);
-  if (state === null || (state.state !== "contract_prepared" && state.state !== "red_established") ||
+  if (state === null || state.contractGeneration !== activeGeneration ||
+      (state.state !== "contract_prepared" && state.state !== "red_established") ||
       !identifier(state.evidenceId) || state.ownerSeatId !== "mack" ||
       state.contractId !== contract.contractId || state.checkpointId !== contract.checkpointId ||
       typeof state.revisionId !== "string" || !REVISION.test(state.revisionId) ||
@@ -761,6 +900,7 @@ function preImplementationStateEvidence(
       state.implementationAuthority !== false) return "RED_NOT_ESTABLISHED";
 
   const common = {
+    contractGeneration: activeGeneration,
     evidenceId: state.evidenceId,
     ownerSeatId: "mack" as const,
     contractId: state.contractId,
@@ -800,7 +940,8 @@ function preImplementationStateEvidence(
     state.furyContractDisposition,
     FURY_CONTRACT_DISPOSITION_FIELDS,
   );
-  if (disposition === null || !identifier(disposition.evidenceId) ||
+  if (disposition === null || disposition.contractGeneration !== activeGeneration ||
+      !identifier(disposition.evidenceId) ||
       disposition.reviewerSeatId !== "fury" || disposition.contractId !== contract.contractId ||
       disposition.acceptanceContractDigest !== acceptanceContractDigest ||
       disposition.disposition !== "approved") return "RED_NOT_ESTABLISHED";
@@ -818,6 +959,7 @@ function preImplementationStateEvidence(
       observedFailureClassification: failure.observedFailureClassification,
     }),
     furyContractDisposition: Object.freeze({
+      contractGeneration: activeGeneration,
       evidenceId: disposition.evidenceId,
       reviewerSeatId: "fury" as const,
       contractId: disposition.contractId,
@@ -859,31 +1001,50 @@ function expectationAmendment(
   criterionId: string,
   strategy: TddMissionStrategyV1,
   stateEvidence: TddPreImplementationStateEvidenceV1 | null,
+  activeGeneration: number,
+  activeDigest: string,
 ): {
   readonly amendment: Readonly<TddExpectationAmendmentV1>;
   readonly effect: Readonly<TddExpectationAmendmentEffectV1>;
 } | null {
   const amendment = record(value, EXPECTATION_AMENDMENT_FIELDS);
-  if (amendment === null || amendment.criterionId !== criterionId ||
+  if (amendment === null || !identifier(amendment.edgeId) ||
+      amendment.criterionId !== criterionId ||
       !TDD_MISSION_EXPECTATION_AMENDMENT_KINDS.includes(
         amendment.amendmentKind as TddMissionExpectationAmendmentKindV1,
-      ) || typeof amendment.oldContractDigest !== "string" ||
+      ) || !contractGeneration(amendment.oldContractGeneration) ||
+      amendment.oldContractGeneration === Number.MAX_SAFE_INTEGER ||
+      amendment.amendedContractGeneration !== activeGeneration ||
+      amendment.oldContractGeneration + 1 !== activeGeneration ||
+      typeof amendment.oldContractDigest !== "string" ||
       !DIGEST.test(amendment.oldContractDigest) ||
       typeof amendment.amendedContractDigest !== "string" ||
       !DIGEST.test(amendment.amendedContractDigest) ||
+      amendment.amendedContractDigest !== activeDigest ||
       amendment.oldContractDigest === amendment.amendedContractDigest ||
+      !identifier(amendment.predecessorFuryReviewEvidenceId) ||
       !identifier(amendment.originalExpectationEvidenceRef) ||
       amendment.failureClassification !== "stale_expectation" ||
       !nonemptyText(amendment.intentPreservationRationale) ||
       typeof amendment.contractRelevant !== "boolean") return null;
 
   const amendmentKind = amendment.amendmentKind as TddMissionExpectationAmendmentKindV1;
+  const oldContractGeneration = amendment.oldContractGeneration;
   const oldContractDigest = amendment.oldContractDigest;
+  const oldContractSnapshot = acceptanceContractSnapshot(amendment.oldContractSnapshot);
+  const amendedContractGeneration = activeGeneration;
   const amendedContractDigest = amendment.amendedContractDigest;
+  const amendedContractSnapshot = acceptanceContractSnapshot(amendment.amendedContractSnapshot);
+  if (oldContractSnapshot === null || amendedContractSnapshot === null ||
+      oldContractSnapshot.contractGeneration !== oldContractGeneration ||
+      amendedContractSnapshot.contractGeneration !== amendedContractGeneration ||
+      acceptanceContractDigest(oldContractSnapshot) !== oldContractDigest ||
+      acceptanceContractDigest(amendedContractSnapshot) !== amendedContractDigest) return null;
   let furyDisposition: Readonly<TddExpectationAmendmentReviewV1> | null = null;
   if (amendment.furyDisposition !== null) {
     const review = record(amendment.furyDisposition, EXPECTATION_AMENDMENT_REVIEW_FIELDS);
-    if (review === null || !identifier(review.evidenceId) || review.reviewerSeatId !== "fury" ||
+    if (review === null || review.contractGeneration !== activeGeneration ||
+        !identifier(review.evidenceId) || review.reviewerSeatId !== "fury" ||
         !amendmentBindingMatches(
           review,
           criterionId,
@@ -892,6 +1053,7 @@ function expectationAmendment(
           amendedContractDigest,
         ) || review.disposition !== "approved") return null;
     furyDisposition = Object.freeze({
+      contractGeneration: activeGeneration,
       evidenceId: review.evidenceId,
       reviewerSeatId: "fury" as const,
       criterionId,
@@ -908,7 +1070,8 @@ function expectationAmendment(
     amendment.fitzVerification,
     EXPECTATION_AMENDMENT_VERIFICATION_FIELDS,
   );
-  if (verification === null || !identifier(verification.evidenceId) ||
+  if (verification === null || verification.contractGeneration !== activeGeneration ||
+      !identifier(verification.evidenceId) ||
       verification.verifierSeatId !== "fitz" || !amendmentBindingMatches(
         verification,
         criterionId,
@@ -918,7 +1081,8 @@ function expectationAmendment(
       ) || verification.disposition !== "verified") return null;
 
   const rerun = record(amendment.freshRerun, EXPECTATION_AMENDMENT_RERUN_FIELDS);
-  if (rerun === null || !identifier(rerun.evidenceId) || rerun.ownerSeatId !== "mack" ||
+  if (rerun === null || rerun.contractGeneration !== activeGeneration ||
+      !identifier(rerun.evidenceId) || rerun.ownerSeatId !== "mack" ||
       rerun.criterionId !== criterionId || rerun.oldContractDigest !== oldContractDigest ||
       typeof rerun.revisionId !== "string" || !REVISION.test(rerun.revisionId) ||
       !nonemptyText(rerun.command) || rerun.outcome !== "failed" ||
@@ -926,7 +1090,7 @@ function expectationAmendment(
       rerun.observedFailureClassification !== "stale_expectation") return null;
 
   if ((strategy === "tdd_selected" &&
-      (amendment.freshStrategyRationale !== null || stateEvidence?.state !== "contract_prepared")) ||
+      (amendment.freshStrategyRationale !== null || stateEvidence === null)) ||
       (strategy === "tdd_declined" && !nonemptyText(amendment.freshStrategyRationale))) return null;
 
   const invalidatedEvidenceRefs = invalidatedAmendmentEvidenceRefs(
@@ -935,16 +1099,23 @@ function expectationAmendment(
   if (invalidatedEvidenceRefs === null) return null;
 
   const normalizedAmendment = Object.freeze({
+    edgeId: amendment.edgeId,
     criterionId,
     amendmentKind,
+    oldContractGeneration,
     oldContractDigest,
+    oldContractSnapshot,
+    amendedContractGeneration,
     amendedContractDigest,
+    amendedContractSnapshot,
+    predecessorFuryReviewEvidenceId: amendment.predecessorFuryReviewEvidenceId,
     originalExpectationEvidenceRef: amendment.originalExpectationEvidenceRef,
     failureClassification: "stale_expectation" as const,
     intentPreservationRationale: amendment.intentPreservationRationale,
     contractRelevant: amendment.contractRelevant,
     furyDisposition,
     fitzVerification: Object.freeze({
+      contractGeneration: activeGeneration,
       evidenceId: verification.evidenceId,
       verifierSeatId: "fitz" as const,
       criterionId,
@@ -954,6 +1125,7 @@ function expectationAmendment(
       disposition: "verified" as const,
     }),
     freshRerun: Object.freeze({
+      contractGeneration: activeGeneration,
       evidenceId: rerun.evidenceId,
       ownerSeatId: "mack" as const,
       criterionId,
@@ -978,7 +1150,9 @@ function expectationAmendment(
     effect: Object.freeze({
       criterionId,
       amendmentKind,
+      oldContractGeneration,
       oldContractDigest,
+      amendedContractGeneration,
       amendedContractDigest,
       invalidatedEvidenceRefs,
       successorState: strategy === "tdd_selected"
@@ -1034,22 +1208,342 @@ function relativePaths(value: unknown): readonly string[] | null {
   }
 }
 
+function projectedRecord(
+  value: unknown,
+  fields: readonly string[],
+): Record<string, unknown> | null {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value) || isProxy(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const output: Record<string, unknown> = {};
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || descriptor.get || descriptor.set ||
+          !descriptor.enumerable) return null;
+      output[field] = descriptor.value;
+    }
+    return output;
+  } catch {
+    return null;
+  }
+}
+
+function canonicalSet<T>(values: readonly T[]): readonly T[] | null {
+  const keyed = values.map((value) => ({ key: canonicalJson(value), value }));
+  if (new Set(keyed.map(({ key }) => key)).size !== keyed.length) return null;
+  keyed.sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0);
+  return Object.freeze(keyed.map(({ value }) => value));
+}
+
+function focusedValidationEntries(
+  value: unknown,
+): readonly Readonly<TddFocusedValidationEntryV1>[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+        value.length === 0 || value.length > 64) return null;
+    const normalized: Readonly<TddFocusedValidationEntryV1>[] = [];
+    for (const candidate of value) {
+      const entry = record(candidate, FOCUSED_VALIDATION_FIELDS);
+      if (entry === null || !identifier(entry.checkpointId) || !identifier(entry.commandId) ||
+          !nonemptyText(entry.command) ||
+          (entry.executableKind !== "build" && entry.executableKind !== "test")) return null;
+      normalized.push(Object.freeze({
+        checkpointId: entry.checkpointId,
+        commandId: entry.commandId,
+        command: entry.command,
+        executableKind: entry.executableKind,
+      }));
+    }
+    return canonicalSet(normalized);
+  } catch {
+    return null;
+  }
+}
+
+function acceptanceExpectation(value: unknown): Readonly<TddAcceptanceExpectationV1> | null {
+  const expectation = record(value, ACCEPTANCE_EXPECTATION_FIELDS);
+  if (expectation === null ||
+      (expectation.state !== "active" && expectation.state !== "removed") ||
+      !nonemptyText(expectation.expectedBehavior)) return null;
+  return Object.freeze({
+    state: expectation.state,
+    expectedBehavior: expectation.expectedBehavior,
+  });
+}
+
+function acceptanceContractSnapshot(
+  value: unknown,
+): Readonly<TddAcceptanceContractSnapshotV1> | null {
+  const contract = projectedRecord(value, ACCEPTANCE_SNAPSHOT_FIELDS);
+  if (contract === null || contract.schemaVersion !== TDD_MISSION_SCHEMA_VERSION ||
+      contract.contractVersion !== TDD_MISSION_CONTRACT_VERSION ||
+      !contractGeneration(contract.contractGeneration) || !Array.isArray(contract.criteria) ||
+      Object.getPrototypeOf(contract.criteria) !== Array.prototype ||
+      !Array.isArray(contract.packets) ||
+      Object.getPrototypeOf(contract.packets) !== Array.prototype ||
+      contract.criteria.length > 128 || contract.packets.length > 128) return null;
+
+  const criteria: Readonly<TddAcceptanceCriterionProjectionV1>[] = [];
+  const criterionIds = new Set<string>();
+  for (const candidate of contract.criteria) {
+    const criterion = projectedRecord(candidate, [
+      "criterionId",
+      "strategy",
+      "rationale",
+      "riskFactors",
+      "laterValidation",
+      "disposition",
+      "acceptanceExpectation",
+      "preImplementationContract",
+      "traceability",
+    ]);
+    if (criterion === null || !identifier(criterion.criterionId) ||
+        criterionIds.has(criterion.criterionId) ||
+        !TDD_MISSION_STRATEGIES.includes(criterion.strategy as TddMissionStrategyV1) ||
+        !nonemptyText(criterion.rationale) || !riskFactors(criterion.riskFactors) ||
+        criterion.laterValidation !== "required" ||
+        !TDD_MISSION_CRITERION_DISPOSITIONS.includes(
+          criterion.disposition as TddMissionCriterionDispositionV1,
+        )) return null;
+    const expectation = acceptanceExpectation(criterion.acceptanceExpectation);
+    const spine = projectedRecord(criterion.traceability, [
+      "planRequirementId",
+      "mackCheckpointId",
+      "mayPacketId",
+      "humanReviewId",
+    ]);
+    if (expectation === null || spine === null || !identifier(spine.planRequirementId) ||
+        !identifier(spine.mackCheckpointId) || !identifier(spine.mayPacketId) ||
+        (spine.humanReviewId !== null && !identifier(spine.humanReviewId))) return null;
+    const executable = criterion.preImplementationContract === null
+      ? null
+      : executableContract(criterion.preImplementationContract);
+    if (criterion.strategy === "tdd_selected"
+      ? executable === null || expectation.state !== "active" ||
+        executable.expectedBehavior !== expectation.expectedBehavior
+      : executable !== null) return null;
+    criterionIds.add(criterion.criterionId);
+    const risks = canonicalSet([...(criterion.riskFactors as readonly string[])]);
+    if (risks === null) return null;
+    criteria.push(Object.freeze({
+      criterionId: criterion.criterionId,
+      strategy: criterion.strategy as TddMissionStrategyV1,
+      rationale: criterion.rationale,
+      riskFactors: risks,
+      laterValidation: "required" as const,
+      disposition: criterion.disposition as TddMissionCriterionDispositionV1,
+      acceptanceExpectation: expectation,
+      preImplementationContract: executable,
+      traceability: Object.freeze({
+        planRequirementId: spine.planRequirementId,
+        mackCheckpointId: spine.mackCheckpointId,
+        mayPacketId: spine.mayPacketId,
+        humanReviewId: spine.humanReviewId as string | null,
+      }),
+    }));
+  }
+  criteria.sort((left, right) => left.criterionId < right.criterionId
+    ? -1
+    : left.criterionId > right.criterionId ? 1 : 0);
+
+  const packets: Readonly<TddImplementationPacketV1>[] = [];
+  const packetIds = new Set<string>();
+  for (const candidate of contract.packets) {
+    const packet = record(candidate, PACKET_FIELDS);
+    if (packet === null || !identifier(packet.packetId) || packetIds.has(packet.packetId) ||
+        !Array.isArray(packet.criterionIds) ||
+        Object.getPrototypeOf(packet.criterionIds) !== Array.prototype ||
+        packet.criterionIds.length === 0 || packet.criterionIds.length > 128 ||
+        !packet.criterionIds.every(identifier) ||
+        (packet.couplingRationale !== null && !nonemptyText(packet.couplingRationale)) ||
+        !nonemptyText(packet.expectedOutput) || !identifier(packet.successor)) return null;
+    const criterionIdSet = canonicalSet(packet.criterionIds as readonly string[]);
+    const paths = relativePaths(packet.minimalPaths);
+    const minimalPaths = paths === null ? null : canonicalSet(paths);
+    const interfaces = textArray(packet.requiredInterfaces);
+    const requiredInterfaces = interfaces === null ? null : canonicalSet(interfaces);
+    const effects = textArray(packet.allowedEffects);
+    const allowedEffects = effects === null ? null : canonicalSet(effects);
+    const validation = focusedValidationEntries(packet.focusedValidation);
+    const stops = textArray(packet.stopConditions);
+    const stopConditions = stops === null ? null : canonicalSet(stops);
+    if (criterionIdSet === null || minimalPaths === null || requiredInterfaces === null ||
+        allowedEffects === null || validation === null || stopConditions === null) return null;
+    packetIds.add(packet.packetId);
+    packets.push(Object.freeze({
+      packetId: packet.packetId,
+      criterionIds: criterionIdSet,
+      couplingRationale: packet.couplingRationale as string | null,
+      minimalPaths,
+      requiredInterfaces,
+      allowedEffects,
+      focusedValidation: validation,
+      expectedOutput: packet.expectedOutput,
+      stopConditions,
+      successor: packet.successor,
+    }));
+  }
+  packets.sort((left, right) => left.packetId < right.packetId
+    ? -1
+    : left.packetId > right.packetId ? 1 : 0);
+  return Object.freeze({
+    schemaVersion: TDD_MISSION_SCHEMA_VERSION,
+    contractVersion: TDD_MISSION_CONTRACT_VERSION,
+    contractGeneration: contract.contractGeneration,
+    criteria: Object.freeze(criteria),
+    packets: Object.freeze(packets),
+  });
+}
+
+function acceptanceContractDigest(snapshot: Readonly<TddAcceptanceContractSnapshotV1>): string {
+  const payload = Buffer.from(canonicalJson(snapshot), "utf8");
+  const frame = Buffer.concat([
+    Buffer.from("tdd.mission.v1\0acceptance-contract\0", "utf8"),
+    Buffer.from(String(payload.byteLength), "utf8"),
+    Buffer.from(":", "utf8"),
+    payload,
+  ]);
+  return `sha256:${createHash("sha256").update(frame).digest("base64url")}`;
+}
+
+export function deriveTddMissionAcceptanceContractDigestV1(input: unknown): string | null {
+  try {
+    const snapshot = acceptanceContractSnapshot(input);
+    return snapshot === null ? null : acceptanceContractDigest(snapshot);
+  } catch {
+    return null;
+  }
+}
+
+function executableContractIdentityWithoutBehavior(
+  value: Readonly<TddExecutablePreImplementationContractV1>,
+): string {
+  return canonicalJson({
+    checkpointId: value.checkpointId,
+    contractId: value.contractId,
+    kind: value.kind,
+  });
+}
+
+function validAmendmentDelta(
+  oldCriterion: Readonly<TddAcceptanceCriterionProjectionV1>,
+  amendedCriterion: Readonly<TddAcceptanceCriterionProjectionV1>,
+  amendment: Readonly<TddExpectationAmendmentV1>,
+): boolean {
+  const {
+    acceptanceExpectation: oldExpectation,
+    strategy: oldStrategy,
+    preImplementationContract: oldExecutable,
+    ...oldFixed
+  } = oldCriterion;
+  const {
+    acceptanceExpectation: amendedExpectation,
+    strategy: amendedStrategy,
+    preImplementationContract: amendedExecutable,
+    ...amendedFixed
+  } = amendedCriterion;
+  if (canonicalJson(oldFixed) !== canonicalJson(amendedFixed)) return false;
+  if (amendment.amendmentKind === "changed") {
+    if (oldExpectation.state !== "active" || amendedExpectation.state !== "active" ||
+        oldExpectation.expectedBehavior === amendedExpectation.expectedBehavior) return false;
+  } else if (oldExpectation.state !== "active" || amendedExpectation.state !== "removed" ||
+      oldExpectation.expectedBehavior !== amendedExpectation.expectedBehavior) return false;
+
+  if (oldStrategy === "tdd_selected") {
+    if (oldExecutable === null ||
+        oldExecutable.expectedBehavior !== oldExpectation.expectedBehavior) return false;
+    if (amendment.amendmentKind === "removed") {
+      return amendedStrategy === "tdd_declined" && amendedExecutable === null;
+    }
+    return amendedStrategy === "tdd_selected" && amendedExecutable !== null &&
+      amendedExecutable.expectedBehavior === amendedExpectation.expectedBehavior &&
+      executableContractIdentityWithoutBehavior(oldExecutable) ===
+        executableContractIdentityWithoutBehavior(amendedExecutable);
+  }
+  return oldExecutable === null && amendedStrategy === "tdd_declined" &&
+    amendedExecutable === null;
+}
+
+function validAmendmentEdge(
+  criteria: readonly Readonly<TddCriterionStrategyV1>[],
+  activeSnapshot: Readonly<TddAcceptanceContractSnapshotV1>,
+): boolean {
+  const amendments = criteria.flatMap((criterion) =>
+    criterion.expectationAmendment === null ? [] : [criterion.expectationAmendment]);
+  if (activeSnapshot.contractGeneration === 0) return amendments.length === 0;
+  if (amendments.length === 0) return false;
+  const anchor = amendments[0];
+  if (amendments.some((amendment) => amendment.edgeId !== anchor.edgeId ||
+      amendment.oldContractGeneration !== anchor.oldContractGeneration ||
+      amendment.oldContractDigest !== anchor.oldContractDigest ||
+      canonicalJson(amendment.oldContractSnapshot) !==
+        canonicalJson(anchor.oldContractSnapshot) ||
+      amendment.amendedContractGeneration !== anchor.amendedContractGeneration ||
+      amendment.amendedContractDigest !== anchor.amendedContractDigest ||
+      canonicalJson(amendment.amendedContractSnapshot) !==
+        canonicalJson(anchor.amendedContractSnapshot) ||
+      amendment.predecessorFuryReviewEvidenceId !==
+        anchor.predecessorFuryReviewEvidenceId)) return false;
+  if (canonicalJson(anchor.amendedContractSnapshot) !== canonicalJson(activeSnapshot) ||
+      anchor.oldContractGeneration + 1 !== activeSnapshot.contractGeneration ||
+      anchor.amendedContractGeneration !== activeSnapshot.contractGeneration) return false;
+  const oldWithoutGeneration = {
+    ...anchor.oldContractSnapshot,
+    contractGeneration: undefined,
+  };
+  const amendedWithoutGeneration = {
+    ...anchor.amendedContractSnapshot,
+    contractGeneration: undefined,
+  };
+  delete (oldWithoutGeneration as { contractGeneration?: unknown }).contractGeneration;
+  delete (amendedWithoutGeneration as { contractGeneration?: unknown }).contractGeneration;
+  if (canonicalJson(oldWithoutGeneration) === canonicalJson(amendedWithoutGeneration) ||
+      canonicalJson(anchor.oldContractSnapshot.packets) !==
+        canonicalJson(anchor.amendedContractSnapshot.packets) ||
+      anchor.oldContractSnapshot.criteria.length !==
+        anchor.amendedContractSnapshot.criteria.length) return false;
+
+  const amendmentsByCriterion = new Map(amendments.map((amendment) => [
+    amendment.criterionId,
+    amendment,
+  ]));
+  if (amendmentsByCriterion.size !== amendments.length) return false;
+  for (const oldCriterion of anchor.oldContractSnapshot.criteria) {
+    const amendedCriterion = anchor.amendedContractSnapshot.criteria.find(
+      (candidate) => candidate.criterionId === oldCriterion.criterionId,
+    );
+    if (amendedCriterion === undefined) return false;
+    const amendment = amendmentsByCriterion.get(oldCriterion.criterionId);
+    if (amendment === undefined) {
+      if (canonicalJson(oldCriterion) !== canonicalJson(amendedCriterion)) return false;
+    } else if (!validAmendmentDelta(oldCriterion, amendedCriterion, amendment)) {
+      return false;
+    }
+  }
+  return [...amendmentsByCriterion.keys()].every((criterionId) =>
+    anchor.oldContractSnapshot.criteria.some((criterion) =>
+      criterion.criterionId === criterionId));
+}
+
 function implementationAuthorityEvidence(
   value: unknown,
   criterionId: string,
   packetId: string,
   transition: "green" | "refactor",
+  activeGeneration: number,
 ): TddImplementationAuthorityEvidenceV1 | TddMissionStrategyReasonCodeV1 {
   const authority = record(value, IMPLEMENTATION_AUTHORITY_FIELDS);
   if (authority === null) return "IMPLEMENTATION_AUTHORITY_MISSING";
   if (authority.authorizedSeatId !== "may") return "SEAT_OWNERSHIP_MISMATCH";
   const authorizedPaths = relativePaths(authority.authorizedPaths);
-  if (!identifier(authority.evidenceId) || authority.authorityKind !== "implementation" ||
+  if (authority.contractGeneration !== activeGeneration || !identifier(authority.evidenceId) ||
+      authority.authorityKind !== "implementation" ||
       authority.grantorSeatId !== "coulson" || authority.criterionId !== criterionId ||
       authority.packetId !== packetId || typeof authority.contractDigest !== "string" ||
       !DIGEST.test(authority.contractDigest) || authority.transition !== transition ||
       authorizedPaths === null) return "IMPLEMENTATION_AUTHORITY_MISSING";
   return Object.freeze({
+    contractGeneration: activeGeneration,
     evidenceId: authority.evidenceId,
     authorityKind: "implementation" as const,
     grantorSeatId: "coulson" as const,
@@ -1068,14 +1562,17 @@ function focusedMackEvidence(
   packetId: string,
   contractDigest: string,
   revisionId: string,
+  activeGeneration: number,
 ): TddFocusedMackEvidenceV1 | null {
   const evidence = record(value, FOCUSED_MACK_EVIDENCE_FIELDS);
-  if (evidence === null || !identifier(evidence.evidenceId) || evidence.ownerSeatId !== "mack" ||
+  if (evidence === null || evidence.contractGeneration !== activeGeneration ||
+      !identifier(evidence.evidenceId) || evidence.ownerSeatId !== "mack" ||
       evidence.criterionId !== criterionId || evidence.packetId !== packetId ||
       evidence.contractDigest !== contractDigest || evidence.revisionId !== revisionId ||
       !nonemptyText(evidence.command) || evidence.outcome !== "passed" || evidence.exitCode !== 0 ||
       evidence.focus !== "packet") return null;
   return Object.freeze({
+    contractGeneration: activeGeneration,
     evidenceId: evidence.evidenceId,
     ownerSeatId: "mack" as const,
     criterionId,
@@ -1100,15 +1597,11 @@ function implementationTransitionEvidence(
   criterion: Record<string, unknown>,
   strategy: TddMissionStrategyV1,
   stateEvidence: TddPreImplementationStateEvidenceV1 | null,
-  expectationAmendmentValue: TddExpectationAmendmentV1 | null,
   criterionId: string,
   packetId: string,
   acceptanceContractDigest: string,
+  activeGeneration: number,
 ): TddImplementationTransitionEvidenceV1 | TddMissionStrategyReasonCodeV1 {
-  if (expectationAmendmentValue !== null &&
-      (criterion.implementationAuthorityEvidence !== null || criterion.greenEvidence !== null ||
-        criterion.refactorEvidence !== null)) return "EXPECTATION_AMENDMENT_INCOMPLETE";
-
   let authority: TddImplementationAuthorityEvidenceV1 | null = null;
   if (criterion.implementationAuthorityEvidence !== null) {
     const authorityResult = implementationAuthorityEvidence(
@@ -1116,6 +1609,7 @@ function implementationTransitionEvidence(
       criterionId,
       packetId,
       "green",
+      activeGeneration,
     );
     if (typeof authorityResult === "string") return authorityResult;
     authority = authorityResult;
@@ -1141,7 +1635,9 @@ function implementationTransitionEvidence(
   }
 
   const green = record(criterion.greenEvidence, GREEN_EVIDENCE_FIELDS);
-  if (green === null) return "GREEN_EVIDENCE_MISSING";
+  if (green === null || green.contractGeneration !== activeGeneration) {
+    return "GREEN_EVIDENCE_MISSING";
+  }
   if (green.ownerSeatId !== "may") return "SEAT_OWNERSHIP_MISMATCH";
   const greenPaths = relativePaths(green.changedPaths);
   if (green.state !== "green_proven" || !identifier(green.evidenceId) ||
@@ -1160,9 +1656,11 @@ function implementationTransitionEvidence(
     packetId,
     authority.contractDigest,
     green.revisionId,
+    activeGeneration,
   );
   if (greenMackEvidence === null) return "MACK_EVIDENCE_MISSING";
   const normalizedGreen = Object.freeze({
+    contractGeneration: activeGeneration,
     state: "green_proven" as const,
     evidenceId: green.evidenceId,
     ownerSeatId: "may" as const,
@@ -1191,13 +1689,15 @@ function implementationTransitionEvidence(
     criterionId,
     packetId,
     "refactor",
+    activeGeneration,
   );
   if (typeof refactorAuthorityResult === "string") return refactorAuthorityResult;
   if (refactorAuthorityResult.contractDigest !== acceptanceContractDigest) {
     return "BINDING_DIGEST_MISMATCH";
   }
   const refactorPaths = relativePaths(refactor.changedPaths);
-  if (refactor.state !== "refactor_proven" || !identifier(refactor.evidenceId) ||
+  if (refactor.contractGeneration !== activeGeneration ||
+      refactor.state !== "refactor_proven" || !identifier(refactor.evidenceId) ||
       refactor.evidenceId === normalizedGreen.evidenceId || refactor.criterionId !== criterionId ||
       refactor.packetId !== packetId || refactor.contractDigest !== normalizedGreen.contractDigest ||
       refactor.contractDigest !== refactorAuthorityResult.contractDigest ||
@@ -1220,6 +1720,7 @@ function implementationTransitionEvidence(
     packetId,
     refactor.contractDigest,
     refactor.revisionId,
+    activeGeneration,
   );
   if (refactorMackEvidence === null ||
       refactorMackEvidence.evidenceId === normalizedGreen.mackEvidence.evidenceId) {
@@ -1229,6 +1730,7 @@ function implementationTransitionEvidence(
     implementationAuthorityEvidence: authority,
     greenEvidence: normalizedGreen,
     refactorEvidence: Object.freeze({
+      contractGeneration: activeGeneration,
       state: "refactor_proven" as const,
       evidenceId: refactor.evidenceId,
       ownerSeatId: "may" as const,
@@ -1298,6 +1800,7 @@ function validateTddMissionStrategyContractInputV1(
   const contract = record(input, CONTRACT_FIELDS);
   if (contract === null || contract.schemaVersion !== TDD_MISSION_SCHEMA_VERSION ||
       contract.contractVersion !== TDD_MISSION_CONTRACT_VERSION ||
+      !contractGeneration(contract.contractGeneration) ||
       typeof contract.acceptanceContractDigest !== "string" ||
       !DIGEST.test(contract.acceptanceContractDigest) ||
       !Array.isArray(contract.criteria) || Object.getPrototypeOf(contract.criteria) !== Array.prototype ||
@@ -1305,6 +1808,25 @@ function validateTddMissionStrategyContractInputV1(
       !Array.isArray(contract.packets) || Object.getPrototypeOf(contract.packets) !== Array.prototype ||
       contract.packets.length === 0 || contract.packets.length > 128) {
     return invalid("MALFORMED_INPUT");
+  }
+  const activeGeneration = contract.contractGeneration;
+  for (const candidate of contract.criteria) {
+    if (plainRecordMissingField(candidate, "disposition")) {
+      return invalid("CRITERION_DISPOSITION_MISSING");
+    }
+    const criterion = record(candidate, CRITERION_FIELDS);
+    if (criterion !== null && !nonemptyText(criterion.rationale)) {
+      return invalid("STRATEGY_RATIONALE_MISSING");
+    }
+    if (criterion !== null && criterion.strategy === "tdd_selected" &&
+        executableContract(criterion.preImplementationContract) === null) {
+      return invalid("VALIDATION_CONTRACT_MISSING");
+    }
+  }
+  const activeSnapshot = acceptanceContractSnapshot(contract);
+  if (activeSnapshot === null) return invalid("MALFORMED_INPUT");
+  if (acceptanceContractDigest(activeSnapshot) !== contract.acceptanceContractDigest) {
+    return invalid("BINDING_DIGEST_MISMATCH");
   }
 
   const normalized: TddCriterionStrategyV1[] = [];
@@ -1315,7 +1837,8 @@ function validateTddMissionStrategyContractInputV1(
       return invalid("CRITERION_DISPOSITION_MISSING");
     }
     const criterion = record(candidate, CRITERION_FIELDS);
-    if (criterion === null || !identifier(criterion.criterionId) ||
+    if (criterion === null || criterion.contractGeneration !== activeGeneration ||
+        !identifier(criterion.criterionId) ||
         criterionIds.has(criterion.criterionId) ||
         !TDD_MISSION_STRATEGIES.includes(criterion.strategy as TddMissionStrategyV1) ||
         !riskFactors(criterion.riskFactors) || criterion.laterValidation !== "required") {
@@ -1327,14 +1850,18 @@ function validateTddMissionStrategyContractInputV1(
     )) return invalid("CRITERION_DISPOSITION_MISSING");
     const criterionTraceability = traceability(criterion.traceability);
     if (criterionTraceability === null) return invalid("TRACEABILITY_BINDING_MISMATCH");
+    const criterionExpectation = acceptanceExpectation(criterion.acceptanceExpectation);
+    if (criterionExpectation === null) return invalid("MALFORMED_INPUT");
 
     criterionIds.add(criterion.criterionId);
     const common = {
+      contractGeneration: activeGeneration,
       criterionId: criterion.criterionId,
       rationale: criterion.rationale,
-      riskFactors: Object.freeze([...(criterion.riskFactors as readonly string[])]),
+      riskFactors: canonicalSet([...(criterion.riskFactors as readonly string[])]) as readonly string[],
       laterValidation: "required" as const,
       disposition: criterion.disposition as TddMissionCriterionDispositionV1,
+      acceptanceExpectation: criterionExpectation,
       traceability: criterionTraceability,
     };
     if (criterion.strategy === "tdd_selected") {
@@ -1343,26 +1870,23 @@ function validateTddMissionStrategyContractInputV1(
       if (preImplementationContract.checkpointId !== criterionTraceability.mackCheckpointId) {
         return invalid("TRACEABILITY_BINDING_MISMATCH");
       }
-      const rawState = record(
-        criterion.preImplementationStateEvidence,
-        PRE_IMPLEMENTATION_STATE_FIELDS,
-      );
-      if (criterion.expectationAmendment !== null && rawState?.state === "red_established") {
-        return invalid("EXPECTATION_AMENDMENT_INCOMPLETE");
-      }
       const stateEvidence = preImplementationStateEvidence(
         criterion.preImplementationStateEvidence,
         preImplementationContract,
         contract.acceptanceContractDigest,
+        activeGeneration,
       );
       if (typeof stateEvidence === "string") return invalid(stateEvidence);
-      const amendmentResult = criterion.expectationAmendment === null
+      const amendmentResult: ReturnType<typeof expectationAmendment> =
+        criterion.expectationAmendment === null
         ? null
         : expectationAmendment(
             criterion.expectationAmendment,
             criterion.criterionId,
             "tdd_selected",
             stateEvidence,
+            activeGeneration,
+            contract.acceptanceContractDigest,
           );
       if (criterion.expectationAmendment !== null && amendmentResult === null) {
         return invalid("EXPECTATION_AMENDMENT_INCOMPLETE");
@@ -1375,10 +1899,10 @@ function validateTddMissionStrategyContractInputV1(
         criterion,
         "tdd_selected",
         stateEvidence,
-        amendmentResult?.amendment ?? null,
         criterion.criterionId,
         criterionTraceability.mayPacketId,
         contract.acceptanceContractDigest,
+        activeGeneration,
       );
       if (typeof transitionEvidence === "string") return invalid(transitionEvidence);
       normalized.push(Object.freeze({
@@ -1393,13 +1917,16 @@ function validateTddMissionStrategyContractInputV1(
     }
     if (criterion.preImplementationContract !== null ||
         criterion.preImplementationStateEvidence !== null) return invalid("MALFORMED_INPUT");
-    const amendmentResult = criterion.expectationAmendment === null
+    const amendmentResult: ReturnType<typeof expectationAmendment> =
+      criterion.expectationAmendment === null
       ? null
       : expectationAmendment(
           criterion.expectationAmendment,
           criterion.criterionId,
           "tdd_declined",
           null,
+          activeGeneration,
+          contract.acceptanceContractDigest,
         );
     if (criterion.expectationAmendment !== null && amendmentResult === null) {
       return invalid("EXPECTATION_AMENDMENT_INCOMPLETE");
@@ -1412,10 +1939,10 @@ function validateTddMissionStrategyContractInputV1(
       criterion,
       "tdd_declined",
       null,
-      amendmentResult?.amendment ?? null,
       criterion.criterionId,
       criterionTraceability.mayPacketId,
       contract.acceptanceContractDigest,
+      activeGeneration,
     );
     if (typeof transitionEvidence === "string") return invalid(transitionEvidence);
     normalized.push(Object.freeze({
@@ -1435,7 +1962,7 @@ function validateTddMissionStrategyContractInputV1(
     readonly minimalPaths: readonly string[];
     readonly requiredInterfaces: readonly string[];
     readonly allowedEffects: readonly string[];
-    readonly focusedValidation: readonly string[];
+    readonly focusedValidation: readonly Readonly<TddFocusedValidationEntryV1>[];
     readonly expectedOutput: string;
     readonly stopConditions: readonly string[];
     readonly successor: string;
@@ -1443,11 +1970,19 @@ function validateTddMissionStrategyContractInputV1(
   const packetIds = new Set<string>();
   for (const candidate of contract.packets) {
     const packet = record(candidate, PACKET_FIELDS);
-    const minimalPaths = packet === null ? null : relativePaths(packet.minimalPaths);
-    const requiredInterfaces = packet === null ? null : textArray(packet.requiredInterfaces);
-    const allowedEffects = packet === null ? null : textArray(packet.allowedEffects);
-    const focusedValidation = packet === null ? null : textArray(packet.focusedValidation);
-    const stopConditions = packet === null ? null : textArray(packet.stopConditions);
+    const rawMinimalPaths = packet === null ? null : relativePaths(packet.minimalPaths);
+    const minimalPaths = rawMinimalPaths === null ? null : canonicalSet(rawMinimalPaths);
+    const rawRequiredInterfaces = packet === null ? null : textArray(packet.requiredInterfaces);
+    const requiredInterfaces = rawRequiredInterfaces === null
+      ? null
+      : canonicalSet(rawRequiredInterfaces);
+    const rawAllowedEffects = packet === null ? null : textArray(packet.allowedEffects);
+    const allowedEffects = rawAllowedEffects === null ? null : canonicalSet(rawAllowedEffects);
+    const focusedValidation = packet === null
+      ? null
+      : focusedValidationEntries(packet.focusedValidation);
+    const rawStopConditions = packet === null ? null : textArray(packet.stopConditions);
+    const stopConditions = rawStopConditions === null ? null : canonicalSet(rawStopConditions);
     if (packet === null || !identifier(packet.packetId) || packetIds.has(packet.packetId) ||
         !Array.isArray(packet.criterionIds) ||
         Object.getPrototypeOf(packet.criterionIds) !== Array.prototype ||
@@ -1492,7 +2027,7 @@ function validateTddMissionStrategyContractInputV1(
     }
     normalizedPackets.push(Object.freeze({
       packetId: packet.packetId,
-      criterionIds: Object.freeze([...(packet.criterionIds as readonly string[])]),
+      criterionIds: canonicalSet([...(packet.criterionIds as readonly string[])]) as readonly string[],
       couplingRationale: packet.couplingRationale as string | null,
       minimalPaths: packet.minimalPaths,
       requiredInterfaces: packet.requiredInterfaces,
@@ -1524,12 +2059,22 @@ function validateTddMissionStrategyContractInputV1(
       return invalid("PACKET_SCOPE_EXCEEDED");
     }
   }
+  if (!validAmendmentEdge(normalized, activeSnapshot)) {
+    return invalid("EXPECTATION_AMENDMENT_INCOMPLETE");
+  }
+  normalized.sort((left, right) => left.criterionId < right.criterionId
+    ? -1
+    : left.criterionId > right.criterionId ? 1 : 0);
+  normalizedPackets.sort((left, right) => left.packetId < right.packetId
+    ? -1
+    : left.packetId > right.packetId ? 1 : 0);
 
   return Object.freeze({
     state: "valid" as const,
-    contract: Object.freeze({
+      contract: Object.freeze({
       schemaVersion: TDD_MISSION_SCHEMA_VERSION,
       contractVersion: TDD_MISSION_CONTRACT_VERSION,
+      contractGeneration: activeGeneration,
       acceptanceContractDigest: contract.acceptanceContractDigest,
       criteria: Object.freeze(normalized),
       packets: Object.freeze(normalizedPackets),
@@ -1557,6 +2102,50 @@ function evidenceStringArray(value: unknown): readonly string[] | null {
   } catch {
     return null;
   }
+}
+
+function reviewedPredecessorContract(
+  value: unknown,
+  missionId: string,
+  planDigest: string,
+  activeGeneration: number,
+): Readonly<TddReviewedPredecessorContractV1> | null {
+  const predecessor = record(value, REVIEWED_PREDECESSOR_FIELDS);
+  if (predecessor === null || !contractGeneration(predecessor.contractGeneration) ||
+      predecessor.contractGeneration === Number.MAX_SAFE_INTEGER ||
+      predecessor.contractGeneration + 1 !== activeGeneration ||
+      typeof predecessor.acceptanceContractDigest !== "string" ||
+      !DIGEST.test(predecessor.acceptanceContractDigest)) return null;
+  const snapshot = acceptanceContractSnapshot(predecessor.snapshot);
+  if (snapshot === null || snapshot.contractGeneration !== predecessor.contractGeneration ||
+      acceptanceContractDigest(snapshot) !== predecessor.acceptanceContractDigest) return null;
+  const review = record(predecessor.furyReview, PREDECESSOR_FURY_REVIEW_FIELDS);
+  if (review === null || !identifier(review.evidenceId) || review.reviewerSeatId !== "fury" ||
+      review.missionId !== missionId || review.planDigest !== planDigest ||
+      review.contractGeneration !== predecessor.contractGeneration ||
+      review.acceptanceContractDigest !== predecessor.acceptanceContractDigest ||
+      typeof review.reviewedRevisionId !== "string" || !REVISION.test(review.reviewedRevisionId) ||
+      typeof review.reviewedTreeDigest !== "string" ||
+      !REVISION.test(review.reviewedTreeDigest) || review.disposition !== "approved") return null;
+  const sourceRefs = evidenceStringArray(review.sourceRefs);
+  if (sourceRefs === null) return null;
+  return Object.freeze({
+    contractGeneration: predecessor.contractGeneration,
+    acceptanceContractDigest: predecessor.acceptanceContractDigest,
+    snapshot,
+    furyReview: Object.freeze({
+      evidenceId: review.evidenceId,
+      reviewerSeatId: "fury" as const,
+      missionId,
+      planDigest,
+      contractGeneration: predecessor.contractGeneration,
+      acceptanceContractDigest: predecessor.acceptanceContractDigest,
+      reviewedRevisionId: review.reviewedRevisionId,
+      reviewedTreeDigest: review.reviewedTreeDigest,
+      disposition: "approved" as const,
+      sourceRefs,
+    }),
+  });
 }
 
 function evidenceTestCounts(
@@ -1601,6 +2190,7 @@ function exactEvidence(value: unknown): Readonly<TddMissionExactEvidenceV1> | nu
       typeof evidence.planDigest !== "string" || !DIGEST.test(evidence.planDigest) ||
       typeof evidence.acceptanceContractDigest !== "string" ||
       !DIGEST.test(evidence.acceptanceContractDigest) ||
+      !contractGeneration(evidence.contractGeneration) ||
       !identifier(evidence.criterionId) || !identifier(evidence.packetId) ||
       !TDD_MISSION_EVIDENCE_STAGES.includes(evidence.stage as TddMissionEvidenceStageV1) ||
       !identifier(evidence.runtimeId) || !identifier(evidence.modelId) ||
@@ -1657,6 +2247,7 @@ function exactEvidence(value: unknown): Readonly<TddMissionExactEvidenceV1> | nu
     missionId: evidence.missionId,
     planDigest: evidence.planDigest,
     acceptanceContractDigest: evidence.acceptanceContractDigest,
+    contractGeneration: evidence.contractGeneration,
     criterionId: evidence.criterionId,
     packetId: evidence.packetId,
     stage,
@@ -1779,6 +2370,29 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
       mission.reviewedAcceptanceContractDigest) {
     return blockedMission("BINDING_DIGEST_MISMATCH");
   }
+  let predecessor: Readonly<TddReviewedPredecessorContractV1> | null = null;
+  if (strategy.contract.contractGeneration === 0) {
+    if (mission.reviewedPredecessorContract !== null) {
+      return blockedMission("EXPECTATION_AMENDMENT_INCOMPLETE");
+    }
+  } else {
+    predecessor = reviewedPredecessorContract(
+      mission.reviewedPredecessorContract,
+      mission.missionId as string,
+      mission.planDigest as string,
+      strategy.contract.contractGeneration,
+    );
+    const amendment = strategy.contract.criteria.find(
+      (criterion) => criterion.expectationAmendment !== null,
+    )?.expectationAmendment;
+    if (predecessor === null || amendment === null || amendment === undefined ||
+        predecessor.contractGeneration !== amendment.oldContractGeneration ||
+        predecessor.acceptanceContractDigest !== amendment.oldContractDigest ||
+        canonicalJson(predecessor.snapshot) !== canonicalJson(amendment.oldContractSnapshot) ||
+        predecessor.furyReview.evidenceId !== amendment.predecessorFuryReviewEvidenceId) {
+      return blockedMission("EXPECTATION_AMENDMENT_INCOMPLETE");
+    }
+  }
 
   const normalizedEvidence: Readonly<TddMissionExactEvidenceV1>[] = [];
   const evidenceIds = new Set<string>();
@@ -1790,6 +2404,7 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
     }
     if (evidence.missionId !== mission.missionId || evidence.planDigest !== mission.planDigest ||
         evidence.acceptanceContractDigest !== mission.reviewedAcceptanceContractDigest ||
+        evidence.contractGeneration !== strategy.contract.contractGeneration ||
         evidence.repositoryId !== mission.repositoryId || evidence.branch !== mission.branch) {
       return blockedMission("BINDING_DIGEST_MISMATCH", [evidence.criterionId]);
     }
@@ -1805,6 +2420,9 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
     revisionTrees.set(evidence.revisionId, evidence.treeDigest);
     evidenceIds.add(evidence.evidenceId);
     normalizedEvidence.push(evidence);
+  }
+  if (predecessor !== null && evidenceIds.has(predecessor.furyReview.evidenceId)) {
+    return blockedMission("EVIDENCE_SCHEMA_INVALID");
   }
 
   const completedCriterionIds: string[] = [];
@@ -1929,9 +2547,6 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
       redEvidenceId = red.evidenceId;
     }
 
-    if (criterion.expectationAmendment !== null) {
-      return blockedMission("EXPECTATION_AMENDMENT_INCOMPLETE", criterionIds);
-    }
     const authority = stageEvidence(evidence, "implementation_authorized");
     const green = stageEvidence(evidence, "green_proven");
     if (authority === "duplicate" || green === "duplicate") {
@@ -2041,6 +2656,7 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
     missionId: mission.missionId as string,
     planDigest: mission.planDigest as string,
     reviewedAcceptanceContractDigest: mission.reviewedAcceptanceContractDigest as string,
+    reviewedPredecessorContract: predecessor,
     repositoryId: mission.repositoryId as string,
     branch: mission.branch as string,
     planningRevisionId: mission.planningRevisionId as string,

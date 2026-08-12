@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as tddMissionV1 from "../dist/tdd-mission-v1.mjs";
 
 import {
   TDD_MISSION_DECISIONS,
@@ -35,6 +36,7 @@ const executableContract = {
 
 function preparedState(criterionId = "AC-162-1", overrides = {}) {
   return {
+    contractGeneration: 0,
     state: "contract_prepared",
     evidenceId: `evidence:${criterionId.toLowerCase()}:prepared`,
     ownerSeatId: "mack",
@@ -64,6 +66,7 @@ function redState(criterionId = "AC-162-1", overrides = {}) {
       observedFailureClassification: "missing_behavior",
     },
     furyContractDisposition: {
+      contractGeneration: 0,
       evidenceId: `review:fury:${criterionId.toLowerCase()}:contract`,
       reviewerSeatId: "fury",
       contractId: `contract:${criterionId.toLowerCase()}`,
@@ -89,16 +92,23 @@ function expectationAmendment(
   overrides = {},
 ) {
   const base = {
+    edgeId: `edge:${criterionId.toLowerCase()}:0:1`,
     criterionId,
     amendmentKind,
+    oldContractGeneration: 0,
     oldContractDigest: OLD_CONTRACT_DIGEST,
+    oldContractSnapshot: null,
+    amendedContractGeneration: 1,
     amendedContractDigest: AMENDED_CONTRACT_DIGEST,
+    amendedContractSnapshot: null,
+    predecessorFuryReviewEvidenceId: `review:fury:${criterionId.toLowerCase()}:predecessor`,
     originalExpectationEvidenceRef: `expectation:${criterionId.toLowerCase()}:original`,
     failureClassification: "stale_expectation",
     intentPreservationRationale:
       "The expectation changes syntax while preserving the accepted behavior boundary.",
     contractRelevant: true,
     furyDisposition: {
+      contractGeneration: 1,
       evidenceId: `review:fury:${criterionId.toLowerCase()}:amendment`,
       reviewerSeatId: "fury",
       criterionId,
@@ -108,6 +118,7 @@ function expectationAmendment(
       disposition: "approved",
     },
     fitzVerification: {
+      contractGeneration: 1,
       evidenceId: `verification:fitz:${criterionId.toLowerCase()}:amendment`,
       verifierSeatId: "fitz",
       criterionId,
@@ -117,6 +128,7 @@ function expectationAmendment(
       disposition: "verified",
     },
     freshRerun: {
+      contractGeneration: 1,
       evidenceId: `evidence:${criterionId.toLowerCase()}:amendment-rerun`,
       ownerSeatId: "mack",
       criterionId,
@@ -158,6 +170,7 @@ function criterion(overrides = {}) {
   const criterionId = overrides.criterionId ?? "AC-162-1";
   const packetId = overrides.traceability?.mayPacketId ?? `packet:${criterionId.toLowerCase()}`;
   return {
+    contractGeneration: 0,
     criterionId,
     strategy: "tdd_selected",
     rationale: "The acceptance boundary is deterministic and regression-prone.",
@@ -166,6 +179,10 @@ function criterion(overrides = {}) {
       ...executableContract,
       contractId: `contract:${criterionId.toLowerCase()}`,
       checkpointId: `checkpoint:${criterionId.toLowerCase()}:red`,
+    },
+    acceptanceExpectation: {
+      state: "active",
+      expectedBehavior: executableContract.expectedBehavior,
     },
     preImplementationStateEvidence: preparedState(criterionId),
     expectationAmendment: null,
@@ -196,7 +213,12 @@ function packet(packetId, criterionIds, couplingRationale = null, minimalPaths =
     minimalPaths,
     requiredInterfaces: ["interface:tdd-mission-v1"],
     allowedEffects: ["effect:behavioral-implementation", "effect:verification"],
-    focusedValidation: ["node --test tests/tdd-mission-v1.test.mjs"],
+    focusedValidation: [{
+      checkpointId: `checkpoint:${packetId}:focused`,
+      commandId: "validation:issue-162:focused-node-test",
+      command: "node --test tests/tdd-mission-v1.test.mjs",
+      executableKind: "test",
+    }],
     expectedOutput: "The packet criterion is proven with exact evidence.",
     stopConditions: ["The reviewed contract or authorized scope changes."],
     successor: "exact_head_mack_validation",
@@ -209,6 +231,7 @@ function implementationAuthority(
   overrides = {},
 ) {
   return {
+    contractGeneration: 0,
     evidenceId: `authority:${criterionId.toLowerCase()}:${transition}`,
     authorityKind: "implementation",
     grantorSeatId: "coulson",
@@ -228,6 +251,7 @@ function mackEvidence(
   overrides = {},
 ) {
   return {
+    contractGeneration: 0,
     evidenceId: `validation:mack:${criterionId.toLowerCase()}:${revisionId.slice(0, 7)}`,
     ownerSeatId: "mack",
     criterionId,
@@ -244,6 +268,7 @@ function mackEvidence(
 
 function greenEvidence(criterionId = "AC-162-1", overrides = {}) {
   const base = {
+    contractGeneration: 0,
     state: "green_proven",
     evidenceId: `green:${criterionId.toLowerCase()}`,
     ownerSeatId: "may",
@@ -265,6 +290,7 @@ function greenEvidence(criterionId = "AC-162-1", overrides = {}) {
 
 function refactorEvidence(criterionId = "AC-162-1", overrides = {}) {
   const base = {
+    contractGeneration: 0,
     state: "refactor_proven",
     evidenceId: `refactor:${criterionId.toLowerCase()}`,
     ownerSeatId: "may",
@@ -301,14 +327,190 @@ function strategyContract(
   criteria = [criterion()],
   packets = criteria.map((item) => packet(item.traceability.mayPacketId, [item.criterionId])),
 ) {
-  const amendedDigest = criteria.find((item) => item.expectationAmendment !== null)
-    ?.expectationAmendment?.amendedContractDigest;
+  const contractGeneration = criteria[0]?.contractGeneration ?? 0;
+  const candidate = {
+    schemaVersion: 1,
+    contractVersion: "tdd.mission.v1",
+    contractGeneration,
+    acceptanceContractDigest: CONTRACT_DIGEST,
+    criteria,
+    packets,
+  };
+  const acceptanceContractDigest = tddMissionV1
+    .deriveTddMissionAcceptanceContractDigestV1(candidate) ?? CONTRACT_DIGEST;
+  const bindDigest = (value) => {
+    try {
+      if (Array.isArray(value)) return value.map(bindDigest);
+      if (value === null || typeof value !== "object") return value;
+      return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+        key,
+        (key === "acceptanceContractDigest" || key === "contractDigest") &&
+          nested === CONTRACT_DIGEST
+          ? acceptanceContractDigest
+          : bindDigest(nested),
+      ]));
+    } catch {
+      return value;
+    }
+  };
+  return {
+    ...candidate,
+    acceptanceContractDigest,
+    criteria: bindDigest(criteria),
+  };
+}
+
+function canonicalSort(values) {
+  return [...values].sort((left, right) => {
+    const leftKey = JSON.stringify(left, Object.keys(left ?? {}).sort());
+    const rightKey = JSON.stringify(right, Object.keys(right ?? {}).sort());
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+}
+
+function contractSnapshot(contractGeneration, criteria, packets) {
   return {
     schemaVersion: 1,
     contractVersion: "tdd.mission.v1",
-    acceptanceContractDigest: amendedDigest ?? CONTRACT_DIGEST,
-    criteria,
-    packets,
+    contractGeneration,
+    criteria: criteria.map((item) => ({
+      criterionId: item.criterionId,
+      strategy: item.strategy,
+      rationale: item.rationale,
+      riskFactors: canonicalSort(item.riskFactors),
+      laterValidation: item.laterValidation,
+      disposition: item.disposition,
+      acceptanceExpectation: item.acceptanceExpectation,
+      preImplementationContract: item.preImplementationContract,
+      traceability: {
+        planRequirementId: item.traceability.planRequirementId,
+        mackCheckpointId: item.traceability.mackCheckpointId,
+        mayPacketId: item.traceability.mayPacketId,
+        humanReviewId: item.traceability.humanReviewId,
+      },
+    })).sort((left, right) => left.criterionId.localeCompare(right.criterionId)),
+    packets: packets.map((item) => ({
+      ...item,
+      criterionIds: canonicalSort(item.criterionIds),
+      minimalPaths: canonicalSort(item.minimalPaths),
+      requiredInterfaces: canonicalSort(item.requiredInterfaces),
+      allowedEffects: canonicalSort(item.allowedEffects),
+      focusedValidation: canonicalSort(item.focusedValidation),
+      stopConditions: canonicalSort(item.stopConditions),
+    })).sort((left, right) => left.packetId.localeCompare(right.packetId)),
+  };
+}
+
+function generationOne(value) {
+  if (Array.isArray(value)) return value.map(generationOne);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+    key,
+    key === "contractGeneration" ? 1 : generationOne(nested),
+  ]));
+}
+
+function amendedStrategyContract({ oldStrategy = "tdd_selected", amendmentKind = "changed" } = {}) {
+  const criterionId = "AC-162-1";
+  const oldBehavior = executableContract.expectedBehavior;
+  const amendedBehavior = amendmentKind === "changed"
+    ? "The amended criterion strategy is accepted before implementation."
+    : oldBehavior;
+  const oldCriterion = criterion(oldStrategy === "tdd_declined" ? {
+    strategy: "tdd_declined",
+    rationale: "The original criterion has no executable pre-implementation seam.",
+    preImplementationContract: null,
+    preImplementationStateEvidence: null,
+  } : {});
+  const packets = [packet("packet:ac-162-1", [criterionId])];
+  const oldSnapshot = contractSnapshot(0, [oldCriterion], packets);
+  const oldDigest = tddMissionV1.deriveTddMissionAcceptanceContractDigestV1(oldSnapshot);
+  assert.match(oldDigest, /^sha256:[A-Za-z0-9_-]+$/u);
+
+  const becomesDeclined = amendmentKind === "removed" || oldStrategy === "tdd_declined";
+  const activeBase = generationOne(criterion({
+    strategy: becomesDeclined ? "tdd_declined" : "tdd_selected",
+    rationale: oldCriterion.rationale,
+    acceptanceExpectation: {
+      state: amendmentKind === "removed" ? "removed" : "active",
+      expectedBehavior: amendedBehavior,
+    },
+    preImplementationContract: becomesDeclined ? null : {
+      ...executableContract,
+      expectedBehavior: amendedBehavior,
+    },
+    preImplementationStateEvidence: becomesDeclined ? null : redState(criterionId, {
+      contractGeneration: 1,
+      furyContractDisposition: {
+        ...redState().furyContractDisposition,
+        contractGeneration: 1,
+      },
+    }),
+    expectationAmendment: null,
+  }));
+  const activeSnapshot = contractSnapshot(1, [activeBase], packets);
+  const activeDigest = tddMissionV1.deriveTddMissionAcceptanceContractDigestV1(activeSnapshot);
+  assert.match(activeDigest, /^sha256:[A-Za-z0-9_-]+$/u);
+  const amendment = expectationAmendment(criterionId, amendmentKind, {
+    edgeId: "edge:ac-162-1:0:1",
+    oldContractGeneration: 0,
+    oldContractDigest: oldDigest,
+    oldContractSnapshot: oldSnapshot,
+    amendedContractGeneration: 1,
+    amendedContractDigest: activeDigest,
+    amendedContractSnapshot: activeSnapshot,
+    predecessorFuryReviewEvidenceId: "review:fury:ac-162-1:predecessor",
+    freshStrategyRationale: becomesDeclined
+      ? "The fresh amended strategy remains declined without manufacturing Red evidence."
+      : null,
+    furyDisposition: {
+      ...expectationAmendment().furyDisposition,
+      contractGeneration: 1,
+      amendmentKind,
+      oldContractDigest: oldDigest,
+      amendedContractDigest: activeDigest,
+    },
+    fitzVerification: {
+      ...expectationAmendment().fitzVerification,
+      contractGeneration: 1,
+      amendmentKind,
+      oldContractDigest: oldDigest,
+      amendedContractDigest: activeDigest,
+    },
+    freshRerun: {
+      ...expectationAmendment().freshRerun,
+      contractGeneration: 1,
+      oldContractDigest: oldDigest,
+    },
+  });
+  const activeCriterion = {
+    ...activeBase,
+    expectationAmendment: amendment,
+  };
+  const bindDigest = (value) => {
+    if (Array.isArray(value)) return value.map(bindDigest);
+    if (value === null || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
+      key,
+      (key === "acceptanceContractDigest" || key === "contractDigest") &&
+        nested === CONTRACT_DIGEST
+        ? activeDigest
+        : bindDigest(nested),
+    ]));
+  };
+  return {
+    contract: {
+      schemaVersion: 1,
+      contractVersion: "tdd.mission.v1",
+      contractGeneration: 1,
+      acceptanceContractDigest: activeDigest,
+      criteria: [bindDigest(activeCriterion)],
+      packets,
+    },
+    oldSnapshot,
+    oldDigest,
+    activeSnapshot,
+    activeDigest,
   };
 }
 
@@ -341,6 +543,7 @@ function exactEvidence({
   exitCode,
   testCounts,
   cacheEvidence,
+  contractGeneration = 0,
 }) {
   const commandExitCode = exitCode ?? (command === null ? null : outcome === "failed" ? 1 : 0);
   const commandTestCounts = testCounts ?? (command === null ? null : {
@@ -352,6 +555,7 @@ function exactEvidence({
     todo: 0,
   });
   return {
+    contractGeneration,
     evidenceId,
     missionId: "mission:issue-162:p6",
     planDigest: "sha256:issue_162_tdd_intent_plan",
@@ -402,6 +606,7 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
       humanReviewId: "review:human:ac-162-1",
     },
   });
+  const contract = strategyContract([implemented]);
   const records = evidence ?? [
     exactEvidence({
       evidenceId: "evidence:ac-162-1:strategy",
@@ -502,22 +707,346 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
       successor: "mission_complete",
     }),
   ];
+  const boundRecords = records.map((item) => item.acceptanceContractDigest === CONTRACT_DIGEST
+    ? { ...item, acceptanceContractDigest: contract.acceptanceContractDigest }
+    : item);
   return {
     schemaVersion: 1,
     contractVersion: "tdd.mission.v1",
     missionId: "mission:issue-162:p6",
     planDigest: "sha256:issue_162_tdd_intent_plan",
-    reviewedAcceptanceContractDigest: CONTRACT_DIGEST,
+    reviewedAcceptanceContractDigest: contract.acceptanceContractDigest,
     repositoryId: "RanSolo/shield-workspace",
     branch: "agent/issue-162-tdd-intent",
     planningRevisionId: REVISION,
     planningTreeDigest: PLANNING_TREE,
     headRevisionId: finalRevision,
     headTreeDigest: finalTree,
-    strategyContract: strategyContract([implemented]),
+    reviewedPredecessorContract: null,
+    strategyContract: contract,
+    evidence: boundRecords,
+  };
+}
+
+function rebindMissionStrategy(base, contract, evidence = base.evidence) {
+  return {
+    ...base,
+    reviewedAcceptanceContractDigest: contract.acceptanceContractDigest,
+    reviewedPredecessorContract: null,
+    strategyContract: contract,
+    evidence: evidence.map((item) => ({
+      ...item,
+      contractGeneration: contract.contractGeneration,
+      acceptanceContractDigest: contract.acceptanceContractDigest,
+    })),
+  };
+}
+
+function amendedFlowMission({ oldStrategy = "tdd_selected", amendmentKind = "changed" } = {}) {
+  const amendment = amendedStrategyContract({ oldStrategy, amendmentKind });
+  const activeCriterion = amendment.contract.criteria[0];
+  const activeDigest = amendment.activeDigest;
+  const activeSelected = activeCriterion.strategy === "tdd_selected";
+  const completedCriterion = {
+    ...activeCriterion,
+    implementationAuthorityEvidence: {
+      ...implementationAuthority("AC-162-1", "green", { contractDigest: activeDigest }),
+      contractGeneration: 1,
+    },
+    greenEvidence: {
+      ...greenEvidence("AC-162-1", { contractDigest: activeDigest }),
+      contractGeneration: 1,
+      mackEvidence: {
+        ...mackEvidence("AC-162-1", GREEN_REVISION, { contractDigest: activeDigest }),
+        contractGeneration: 1,
+      },
+    },
+    traceability: {
+      ...activeCriterion.traceability,
+      revisionId: GREEN_REVISION,
+      validationEvidenceId: "validation:ac-162-1",
+      furyReviewId: "review:fury:ac-162-1",
+    },
+  };
+  const contract = {
+    ...amendment.contract,
+    criteria: [completedCriterion],
+  };
+  const records = [
+    exactEvidence({
+      evidenceId: "evidence:ac-162-1:strategy:g1",
+      stage: "strategy_recorded",
+      seatId: "hill",
+      revisionId: REVISION,
+      treeDigest: PLANNING_TREE,
+      checkpointId: "requirement:ac-162-1",
+      outcome: "recorded",
+      sourceRefs: ["requirement:ac-162-1"],
+      successor: activeSelected ? "contract_prepared" : "implementation_authorized",
+      contractGeneration: 1,
+    }),
+    ...(activeSelected ? [
+      exactEvidence({
+        evidenceId: "evidence:ac-162-1:prepared:g1",
+        stage: "contract_prepared",
+        seatId: "mack",
+        revisionId: REVISION,
+        treeDigest: PLANNING_TREE,
+        checkpointId: "checkpoint:ac-162-1:red",
+        outcome: "prepared",
+        sourceRefs: ["contract:ac-162-1"],
+        successor: "red_established",
+        contractGeneration: 1,
+      }),
+      exactEvidence({
+        evidenceId: "evidence:ac-162-1:red",
+        stage: "red_established",
+        seatId: "mack",
+        revisionId: REVISION,
+        treeDigest: PLANNING_TREE,
+        command: "node --test checkpoint:ac-162-1:red",
+        checkpointId: "checkpoint:ac-162-1:red",
+        outcome: "failed",
+        failureClassification: "missing_behavior",
+        sourceRefs: [
+          "evidence:ac-162-1:prepared:g1",
+          "review:fury:ac-162-1:contract",
+        ],
+        successor: "implementation_authorized",
+        contractGeneration: 1,
+      }),
+    ] : []),
+    exactEvidence({
+      evidenceId: "authority:ac-162-1:green",
+      stage: "implementation_authorized",
+      seatId: "coulson",
+      revisionId: REVISION,
+      treeDigest: PLANNING_TREE,
+      checkpointId: "authority:ac-162-1:green",
+      outcome: "authorized",
+      sourceRefs: [activeSelected
+        ? "evidence:ac-162-1:red"
+        : "evidence:ac-162-1:strategy:g1"],
+      successor: "green_proven",
+      contractGeneration: 1,
+    }),
+    exactEvidence({
+      evidenceId: "green:ac-162-1",
+      stage: "green_proven",
+      seatId: "may",
+      revisionId: GREEN_REVISION,
+      treeDigest: GREEN_TREE,
+      startRevisionId: REVISION,
+      startTreeDigest: PLANNING_TREE,
+      checkpointId: "green:ac-162-1",
+      outcome: "passed",
+      sourceRefs: ["authority:ac-162-1:green"],
+      successor: "mack_validation_complete",
+      contractGeneration: 1,
+    }),
+    exactEvidence({
+      evidenceId: "validation:ac-162-1",
+      stage: "mack_validation_complete",
+      seatId: "mack",
+      revisionId: GREEN_REVISION,
+      treeDigest: GREEN_TREE,
+      command: "node --test checkpoint:ac-162-1:focused",
+      checkpointId: "checkpoint:ac-162-1:red",
+      outcome: "passed",
+      sourceRefs: ["green:ac-162-1"],
+      successor: "fury_conformance_complete",
+      contractGeneration: 1,
+    }),
+    exactEvidence({
+      evidenceId: "review:fury:ac-162-1",
+      stage: "fury_conformance_complete",
+      seatId: "fury",
+      revisionId: GREEN_REVISION,
+      treeDigest: GREEN_TREE,
+      checkpointId: "review:fury:ac-162-1",
+      outcome: "passed",
+      sourceRefs: ["validation:ac-162-1", "review:human:ac-162-1"],
+      successor: "mission_complete",
+      contractGeneration: 1,
+    }),
+  ].map((item) => ({
+    ...item,
+    acceptanceContractDigest: activeDigest,
+  }));
+  return {
+    schemaVersion: 1,
+    contractVersion: "tdd.mission.v1",
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    reviewedAcceptanceContractDigest: activeDigest,
+    reviewedPredecessorContract: {
+      contractGeneration: 0,
+      acceptanceContractDigest: amendment.oldDigest,
+      snapshot: amendment.oldSnapshot,
+      furyReview: {
+        evidenceId: "review:fury:ac-162-1:predecessor",
+        reviewerSeatId: "fury",
+        missionId: "mission:issue-162:p6",
+        planDigest: "sha256:issue_162_tdd_intent_plan",
+        contractGeneration: 0,
+        acceptanceContractDigest: amendment.oldDigest,
+        reviewedRevisionId: REVISION,
+        reviewedTreeDigest: PLANNING_TREE,
+        disposition: "approved",
+        sourceRefs: ["source:fury:predecessor"],
+      },
+    },
+    repositoryId: "RanSolo/shield-workspace",
+    branch: "agent/issue-162-tdd-intent",
+    planningRevisionId: REVISION,
+    planningTreeDigest: PLANNING_TREE,
+    headRevisionId: GREEN_REVISION,
+    headTreeDigest: GREEN_TREE,
+    strategyContract: contract,
     evidence: records,
   };
 }
+
+test("acceptance identity matches the empty and nonempty golden vectors", () => {
+  assert.equal(tddMissionV1.deriveTddMissionAcceptanceContractDigestV1({
+    schemaVersion: 1,
+    contractVersion: "tdd.mission.v1",
+    contractGeneration: 0,
+    criteria: [],
+    packets: [],
+  }), "sha256:cmUeaevhL6GckHGcclInnDdHUnXPSabx14PBwSSOAik");
+
+  const golden = {
+    schemaVersion: 1,
+    contractVersion: "tdd.mission.v1",
+    contractGeneration: 0,
+    criteria: [{
+      criterionId: "AC-A",
+      strategy: "tdd_selected",
+      rationale: "closed behavior",
+      riskFactors: ["regression"],
+      laterValidation: "required",
+      disposition: "implemented_and_proven",
+      acceptanceExpectation: { state: "active", expectedBehavior: "A holds" },
+      preImplementationContract: {
+        contractId: "contract:A",
+        kind: "executable",
+        checkpointId: "checkpoint:A",
+        expectedBehavior: "A holds",
+      },
+      traceability: {
+        planRequirementId: "requirement:A",
+        mackCheckpointId: "checkpoint:A",
+        mayPacketId: "packet:A",
+        humanReviewId: null,
+      },
+    }, {
+      criterionId: "AC-B",
+      strategy: "tdd_declined",
+      rationale: "documentation only",
+      riskFactors: ["documentation"],
+      laterValidation: "required",
+      disposition: "implemented_and_proven",
+      acceptanceExpectation: {
+        state: "active",
+        expectedBehavior: "B remains documented",
+      },
+      preImplementationContract: null,
+      traceability: {
+        planRequirementId: "requirement:B",
+        mackCheckpointId: "checkpoint:B",
+        mayPacketId: "packet:B",
+        humanReviewId: "review:human:B",
+      },
+    }],
+    packets: [{
+      packetId: "packet:A",
+      criterionIds: ["AC-A"],
+      couplingRationale: null,
+      minimalPaths: ["src/a.mts"],
+      requiredInterfaces: ["interface:a"],
+      allowedEffects: ["effect:a"],
+      focusedValidation: [{
+        checkpointId: "checkpoint:A",
+        commandId: "validation:A",
+        command: "node --test a.test.mjs",
+        executableKind: "test",
+      }],
+      expectedOutput: "A passes",
+      stopConditions: ["scope changes"],
+      successor: "packet:B",
+    }, {
+      packetId: "packet:B",
+      criterionIds: ["AC-B"],
+      couplingRationale: null,
+      minimalPaths: ["docs/b.md"],
+      requiredInterfaces: ["interface:b"],
+      allowedEffects: ["effect:b"],
+      focusedValidation: [{
+        checkpointId: "checkpoint:B",
+        commandId: "validation:B",
+        command: "node --test b.test.mjs",
+        executableKind: "test",
+      }],
+      expectedOutput: "B passes",
+      stopConditions: ["scope changes"],
+      successor: "mission_complete",
+    }],
+  };
+  assert.equal(
+    tddMissionV1.deriveTddMissionAcceptanceContractDigestV1(golden),
+    "sha256:Bl22e_4j7ILiD1lrj7UHMqBzjqHtOdSl7bWMgyhNasM",
+  );
+});
+
+test("acceptance identity sorts permitted sets and changes with behavior-bearing content", () => {
+  const firstCriterion = criterion();
+  const firstPacket = packet("packet:ac-162-1", ["AC-162-1"]);
+  const first = strategyContract([firstCriterion], [firstPacket]);
+  const reordered = strategyContract([{
+    ...firstCriterion,
+    riskFactors: [...firstCriterion.riskFactors].reverse(),
+  }], [{
+    ...firstPacket,
+    minimalPaths: [...firstPacket.minimalPaths].reverse(),
+    allowedEffects: [...firstPacket.allowedEffects].reverse(),
+  }]);
+  assert.equal(first.acceptanceContractDigest, reordered.acceptanceContractDigest);
+
+  const changedBehavior = strategyContract([criterion({
+    acceptanceExpectation: {
+      state: "active",
+      expectedBehavior: "The criterion now has materially different accepted behavior.",
+    },
+    preImplementationContract: {
+      ...executableContract,
+      expectedBehavior: "The criterion now has materially different accepted behavior.",
+    },
+  })]);
+  assert.notEqual(first.acceptanceContractDigest, changedBehavior.acceptanceContractDigest);
+});
+
+test("contract generation is explicit, safe, and caller digest substitution is rejected", () => {
+  const validContract = strategyContract();
+  assert.equal(validateTddMissionStrategyContractV1(validContract).state, "valid");
+
+  const { contractGeneration: _generation, ...missingGeneration } = validContract;
+  for (const candidate of [
+    missingGeneration,
+    { ...validContract, contractGeneration: -1 },
+    { ...validContract, contractGeneration: Number.MAX_SAFE_INTEGER + 1 },
+    { ...validContract, acceptanceContractDigest: "sha256:caller_substitution" },
+  ]) {
+    const result = validateTddMissionStrategyContractV1(candidate);
+    assert.equal(result.state, "invalid");
+  }
+  const missingCriterionGeneration = structuredClone(validContract);
+  delete missingCriterionGeneration.criteria[0].contractGeneration;
+  assert.equal(
+    validateTddMissionStrategyContractV1(missingCriterionGeneration).state,
+    "invalid",
+  );
+});
 
 test("selected TDD requires an executable pre-implementation contract", () => {
   const valid = validateTddMissionStrategyContractV1(strategyContract());
@@ -602,7 +1131,12 @@ test("packet contracts close every required operational boundary", () => {
     minimalPaths: PACKET_PATHS,
     requiredInterfaces: ["interface:tdd-mission-v1"],
     allowedEffects: ["effect:behavioral-implementation", "effect:verification"],
-    focusedValidation: ["node --test tests/tdd-mission-v1.test.mjs"],
+    focusedValidation: [{
+      checkpointId: "checkpoint:packet:ac-162-1:focused",
+      commandId: "validation:issue-162:focused-node-test",
+      command: "node --test tests/tdd-mission-v1.test.mjs",
+      executableKind: "test",
+    }],
     expectedOutput: "The packet criterion is proven with exact evidence.",
     stopConditions: ["The reviewed contract or authorized scope changes."],
     successor: "exact_head_mack_validation",
@@ -814,9 +1348,8 @@ test("Red requires Fury disposition of the intended contract", () => {
 test("changed and removed expectations require complete amendment evidence", () => {
   assert.deepEqual(TDD_MISSION_EXPECTATION_AMENDMENT_KINDS, ["changed", "removed"]);
   for (const amendmentKind of TDD_MISSION_EXPECTATION_AMENDMENT_KINDS) {
-    const result = validateTddMissionStrategyContractV1(strategyContract([
-      criterion({ expectationAmendment: expectationAmendment("AC-162-1", amendmentKind) }),
-    ]));
+    const { contract } = amendedStrategyContract({ amendmentKind });
+    const result = validateTddMissionStrategyContractV1(contract);
     assert.equal(result.state, "valid");
     assert.equal(result.contract.criteria[0].expectationAmendment.amendmentKind, amendmentKind);
     assert.equal(
@@ -869,7 +1402,8 @@ test("incomplete amendment evidence blocks changed or removed expectations", () 
 });
 
 test("Fury and Fitz amendment evidence bind criterion, kind, and both digests", () => {
-  const complete = expectationAmendment();
+  const { contract } = amendedStrategyContract();
+  const complete = contract.criteria[0].expectationAmendment;
   const mismatchedEvidence = [
     { furyDisposition: { ...complete.furyDisposition, criterionId: "AC-162-other" } },
     { furyDisposition: { ...complete.furyDisposition, amendmentKind: "removed" } },
@@ -896,38 +1430,46 @@ test("Fury and Fitz amendment evidence bind criterion, kind, and both digests", 
     },
   ];
   for (const override of mismatchedEvidence) {
-    const result = validateTddMissionStrategyContractV1(strategyContract([
-      criterion({ expectationAmendment: expectationAmendment("AC-162-1", "changed", override) }),
-    ]));
+    const result = validateTddMissionStrategyContractV1({
+      ...contract,
+      criteria: [{
+        ...contract.criteria[0],
+        expectationAmendment: { ...complete, ...override },
+      }],
+    });
     assert.equal(result.state, "invalid");
     assert.deepEqual(result.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
   }
 
-  const notContractRelevant = validateTddMissionStrategyContractV1(strategyContract([
-    criterion({
-      expectationAmendment: expectationAmendment("AC-162-1", "changed", {
+  const notContractRelevant = validateTddMissionStrategyContractV1({
+    ...contract,
+    criteria: [{
+      ...contract.criteria[0],
+      expectationAmendment: {
+        ...complete,
         contractRelevant: false,
         furyDisposition: null,
-      }),
-    }),
-  ]));
+      },
+    }],
+  });
   assert.equal(notContractRelevant.state, "valid");
 });
 
 test("fresh stale-expectation rerun does not establish Red and invalidates downstream refs", () => {
-  const result = validateTddMissionStrategyContractV1(strategyContract([
-    criterion({ expectationAmendment: expectationAmendment() }),
-  ]));
+  const { contract, oldDigest, activeDigest } = amendedStrategyContract();
+  const result = validateTddMissionStrategyContractV1(contract);
   assert.equal(result.state, "valid");
   assert.equal(
     result.contract.criteria[0].preImplementationStateEvidence.state,
-    "contract_prepared",
+    "red_established",
   );
   assert.deepEqual(result.amendmentEffects[0], {
     criterionId: "AC-162-1",
     amendmentKind: "changed",
-    oldContractDigest: OLD_CONTRACT_DIGEST,
-    amendedContractDigest: AMENDED_CONTRACT_DIGEST,
+    oldContractGeneration: 0,
+    oldContractDigest: oldDigest,
+    amendedContractGeneration: 1,
+    amendedContractDigest: activeDigest,
     invalidatedEvidenceRefs: {
       implementationAuthorityReceiptRef: "authority:ac-162-1:old",
       greenReceiptRef: "green:ac-162-1:old",
@@ -940,31 +1482,22 @@ test("fresh stale-expectation rerun does not establish Red and invalidates downs
       "fresh_reviewed_red",
       "fresh_amended_digest_coulson_authority",
     ],
-    coulsonAuthorityContractDigest: AMENDED_CONTRACT_DIGEST,
+    coulsonAuthorityContractDigest: activeDigest,
   });
 
-  const staleRed = validateTddMissionStrategyContractV1(strategyContract([
-    criterion({
-      preImplementationStateEvidence: redState(),
-      expectationAmendment: expectationAmendment(),
-    }),
-  ]));
-  assert.equal(staleRed.state, "invalid");
-  assert.deepEqual(staleRed.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+  const staleRed = structuredClone(contract);
+  staleRed.criteria[0].preImplementationStateEvidence.contractGeneration = 0;
+  const staleRedResult = validateTddMissionStrategyContractV1(staleRed);
+  assert.equal(staleRedResult.state, "invalid");
+  assert.deepEqual(staleRedResult.reasonCodes, ["RED_NOT_ESTABLISHED"]);
 });
 
 test("declined TDD amendments return to a freshly justified strategy", () => {
-  const declined = criterion({
-    strategy: "tdd_declined",
-    rationale: "The criterion remains unsuitable for a pre-implementation executable test.",
-    preImplementationContract: null,
-    preImplementationStateEvidence: null,
-    expectationAmendment: expectationAmendment("AC-162-1", "removed", {
-      freshStrategyRationale:
-        "The amended behavior remains documentation-only and still has no executable seam.",
-    }),
+  const { contract, activeDigest } = amendedStrategyContract({
+    oldStrategy: "tdd_declined",
+    amendmentKind: "changed",
   });
-  const result = validateTddMissionStrategyContractV1(strategyContract([declined]));
+  const result = validateTddMissionStrategyContractV1(contract);
   assert.equal(result.state, "valid");
   assert.equal(result.amendmentEffects[0].successorState, "strategy_recorded");
   assert.deepEqual(result.amendmentEffects[0].requiredBeforeImplementation, [
@@ -972,18 +1505,113 @@ test("declined TDD amendments return to a freshly justified strategy", () => {
   ]);
   assert.equal(
     result.amendmentEffects[0].coulsonAuthorityContractDigest,
-    AMENDED_CONTRACT_DIGEST,
+    activeDigest,
   );
 
-  const missingFreshRationale = validateTddMissionStrategyContractV1(strategyContract([{
-    ...declined,
-    expectationAmendment: {
-      ...declined.expectationAmendment,
-      freshStrategyRationale: " ",
-    },
-  }]));
+  const missingFreshRationale = validateTddMissionStrategyContractV1({
+    ...contract,
+    criteria: [{
+      ...contract.criteria[0],
+      expectationAmendment: {
+        ...contract.criteria[0].expectationAmendment,
+        freshStrategyRationale: " ",
+      },
+    }],
+  });
   assert.equal(missingFreshRationale.state, "invalid");
   assert.deepEqual(missingFreshRationale.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+});
+
+test("selected and declined changed and removed amendments form exact contiguous edges", () => {
+  for (const oldStrategy of ["tdd_selected", "tdd_declined"]) {
+    for (const amendmentKind of ["changed", "removed"]) {
+      const { contract } = amendedStrategyContract({ oldStrategy, amendmentKind });
+      const result = validateTddMissionStrategyContractV1(contract);
+      assert.equal(result.state, "valid", `${oldStrategy} ${amendmentKind}`);
+      assert.equal(result.contract.contractGeneration, 1);
+      assert.equal(result.contract.criteria[0].expectationAmendment.oldContractGeneration, 0);
+      assert.equal(result.contract.criteria[0].expectationAmendment.amendedContractGeneration, 1);
+      assert.equal(
+        result.contract.criteria[0].acceptanceExpectation.state,
+        amendmentKind === "removed" ? "removed" : "active",
+      );
+    }
+  }
+});
+
+test("amendment edges reject skips, stale generations, unreviewed snapshots, and collateral drift", () => {
+  const { contract } = amendedStrategyContract();
+  const cases = [];
+
+  const skipped = structuredClone(contract);
+  skipped.contractGeneration = 2;
+  skipped.criteria[0].contractGeneration = 2;
+  skipped.criteria[0].expectationAmendment.amendedContractGeneration = 2;
+  cases.push(skipped);
+
+  const staleEvidence = structuredClone(contract);
+  staleEvidence.criteria[0].preImplementationStateEvidence.contractGeneration = 0;
+  cases.push(staleEvidence);
+
+  const unreviewedOldSnapshot = structuredClone(contract);
+  unreviewedOldSnapshot.criteria[0].expectationAmendment.oldContractSnapshot.criteria[0]
+    .rationale = "collateral unreviewed predecessor drift";
+  cases.push(unreviewedOldSnapshot);
+
+  const mismatchedActiveSnapshot = structuredClone(contract);
+  mismatchedActiveSnapshot.criteria[0].expectationAmendment.amendedContractSnapshot.criteria[0]
+    .riskFactors.push("collateral drift");
+  cases.push(mismatchedActiveSnapshot);
+
+  const generationOnly = structuredClone(contract);
+  generationOnly.criteria[0].expectationAmendment.oldContractSnapshot.criteria[0]
+    .acceptanceExpectation = structuredClone(
+      generationOnly.criteria[0].expectationAmendment.amendedContractSnapshot.criteria[0]
+        .acceptanceExpectation,
+    );
+  cases.push(generationOnly);
+
+  const missingAmendment = structuredClone(contract);
+  missingAmendment.criteria[0].expectationAmendment = null;
+  cases.push(missingAmendment);
+
+  for (const candidate of cases) {
+    const result = validateTddMissionStrategyContractV1(candidate);
+    assert.equal(result.state, "invalid");
+  }
+});
+
+test("selected and declined amendments complete only with fresh generation-one evidence", () => {
+  for (const oldStrategy of ["tdd_selected", "tdd_declined"]) {
+    const input = amendedFlowMission({ oldStrategy, amendmentKind: "changed" });
+    const result = evaluateTddMissionV1(input);
+    assert.equal(result.state, "eligible", oldStrategy);
+    assert.equal(result.input.strategyContract.contractGeneration, 1);
+    assert.ok(result.input.evidence.every((item) => item.contractGeneration === 1));
+  }
+});
+
+test("amended missions reject stale receipts, stale scaffold substitution, and predecessor substitution", () => {
+  const input = amendedFlowMission();
+  const staleReceipt = structuredClone(input);
+  staleReceipt.evidence.at(-1).contractGeneration = 0;
+  assert.deepEqual(evaluateTddMissionV1(staleReceipt).reasonCodes, [
+    "BINDING_DIGEST_MISMATCH",
+  ]);
+
+  const staleScaffold = structuredClone(input);
+  staleScaffold.evidence.find((item) => item.stage === "contract_prepared")
+    .contractGeneration = 0;
+  assert.deepEqual(evaluateTddMissionV1(staleScaffold).reasonCodes, [
+    "BINDING_DIGEST_MISMATCH",
+  ]);
+
+  const substitutedPredecessor = structuredClone(input);
+  substitutedPredecessor.reviewedPredecessorContract.furyReview.evidenceId =
+    "review:fury:substituted-predecessor";
+  assert.deepEqual(evaluateTddMissionV1(substitutedPredecessor).reasonCodes, [
+    "EXPECTATION_AMENDMENT_INCOMPLETE",
+  ]);
 });
 
 test("reviewed Red never grants Green without explicit implementation authority", () => {
@@ -1252,7 +1880,10 @@ test("bounded mission traverses reviewed Red, authorized May Green, optional Ref
 
 test("reviewed acceptance-contract digest is anchored and propagated through every receipt", () => {
   const input = fullFlowMission();
-  assert.equal(input.strategyContract.acceptanceContractDigest, CONTRACT_DIGEST);
+  assert.equal(
+    input.strategyContract.acceptanceContractDigest,
+    tddMissionV1.deriveTddMissionAcceptanceContractDigestV1(input.strategyContract),
+  );
   assert.ok(input.evidence.every((item) =>
     item.acceptanceContractDigest === input.reviewedAcceptanceContractDigest));
 
@@ -1377,10 +2008,11 @@ test("incomplete deferred and not-applicable dispositions cannot complete", () =
       disposition,
       traceability: { revisionId: GREEN_REVISION },
     });
-    const input = {
-      ...fullFlowMission({ includeRefactor: false }),
-      strategyContract: strategyContract([declined]),
-      evidence: [exactEvidence({
+    const contract = strategyContract([declined]);
+    const input = rebindMissionStrategy(
+      fullFlowMission({ includeRefactor: false }),
+      contract,
+      [exactEvidence({
         evidenceId: "evidence:ac-162-1:strategy",
         stage: "strategy_recorded",
         seatId: "hill",
@@ -1391,7 +2023,7 @@ test("incomplete deferred and not-applicable dispositions cannot complete", () =
         sourceRefs: ["requirement:ac-162-1"],
         successor: "disposition_recorded",
       })],
-    };
+    );
     const result = evaluateTddMissionV1(input);
     assert.equal(result.state, "blocked");
     assert.deepEqual(result.reasonCodes, ["DISPOSITION_EVIDENCE_MISSING"]);
@@ -1411,10 +2043,11 @@ test("deferred needs a linked issue and not-applicable needs exact disposition e
       disposition: criterionDisposition,
       traceability: { revisionId: GREEN_REVISION },
     });
-    const input = {
-      ...fullFlowMission({ includeRefactor: false }),
-      strategyContract: strategyContract([declined]),
-      evidence: [
+    const contract = strategyContract([declined]);
+    const input = rebindMissionStrategy(
+      fullFlowMission({ includeRefactor: false }),
+      contract,
+      [
         exactEvidence({
           evidenceId: "evidence:ac-162-1:strategy",
           stage: "strategy_recorded",
@@ -1438,7 +2071,7 @@ test("deferred needs a linked issue and not-applicable needs exact disposition e
           successor: "mission_complete",
         }),
       ],
-    };
+    );
     assert.equal(evaluateTddMissionV1(input).state, "eligible");
   }
 });
@@ -1452,10 +2085,11 @@ test("blocked_pending_explicit_decision remains blocked with its named owner", (
     disposition: "blocked_pending_explicit_decision",
     traceability: { revisionId: GREEN_REVISION },
   });
-  const input = {
-    ...fullFlowMission({ includeRefactor: false }),
-    strategyContract: strategyContract([declined]),
-    evidence: [
+  const contract = strategyContract([declined]);
+  const input = rebindMissionStrategy(
+    fullFlowMission({ includeRefactor: false }),
+    contract,
+    [
       exactEvidence({
         evidenceId: "evidence:ac-162-1:strategy",
         stage: "strategy_recorded",
@@ -1481,7 +2115,7 @@ test("blocked_pending_explicit_decision remains blocked with its named owner", (
         decisionOwnerSeatId: "coulson",
       }),
     ],
-  };
+  );
   const result = evaluateTddMissionV1(input);
   assert.equal(result.state, "blocked");
   assert.deepEqual(result.reasonCodes, ["BLOCKED_PENDING_EXPLICIT_DECISION"]);
