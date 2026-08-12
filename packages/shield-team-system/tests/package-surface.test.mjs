@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
+const missionPreparationPackageRoot = resolve(packageRoot, "../mission-preparation");
 const npmCache = join(tmpdir(), "shield-v0.3-2-npm-cache");
 
 test("exports only the documented public package specifiers", async () => {
@@ -233,12 +234,18 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const fixture = await mkdtemp(join(tmpdir(), "shield-package-consumer-"));
   execFileSync("git", ["init", "--quiet"], { cwd: fixture });
   await writeFile(join(fixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
+  const missionPreparationPackOutput = JSON.parse(execFileSync(
+    "npm",
+    ["pack", missionPreparationPackageRoot, "--json", "--ignore-scripts", "--pack-destination", fixture, "--cache", npmCache],
+    { encoding: "utf8" },
+  ));
   const packOutput = JSON.parse(execFileSync(
     "npm",
     ["pack", packageRoot, "--json", "--ignore-scripts", "--pack-destination", fixture, "--cache", npmCache],
     { encoding: "utf8" },
   ));
   const packed = packOutput[0];
+  const missionPreparationTarball = join(fixture, missionPreparationPackOutput[0].filename);
   const packedPaths = new Set(packed.files.map(({ path }) => path));
   for (const path of [
     "public/index.mjs",
@@ -359,7 +366,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const tarball = join(fixture, packed.filename);
   execFileSync(
     "npm",
-    ["install", "--save-dev", "--save-exact", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    ["install", "--save-dev", "--save-exact", missionPreparationTarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    { cwd: fixture, stdio: "pipe" },
+  );
+  execFileSync(
+    "npm",
+    ["install", "--save-dev", "--save-exact", tarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
     { cwd: fixture, stdio: "pipe" },
   );
   await writeFile(join(fixture, "tsconfig.json"), JSON.stringify({
@@ -456,6 +468,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       validateDaisyCoordinationAuthorityV1,
       type DaisyCoordinationAuthorityV1,
     } from "@shield/team-system/daisy-coordination-authority";
+    import { canonicalJsonV1 } from "@shield/mission-preparation";
     import {
       claimSeatDispatchPacketV1,
       type SeatDispatchPacketClaimContractResultV1,
@@ -472,6 +485,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type SeatDispatchReceiptStoreScopeInput,
     } from "@shield/team-system/dispatch-receipts";
 
+    const missionPreparationCanonical = canonicalJsonV1({ value: { schema: "proof" } });
+    if (missionPreparationCanonical.state !== "valid") {
+      throw new Error("mission-preparation import did not execute correctly");
+    }
     const schema: 2 = MISSION_SCHEMA_VERSION;
     const state: MissionState = "approved";
     const flags: RiskFlags = {
@@ -745,12 +762,18 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   await writeFile(join(javascriptFixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
   execFileSync(
     "npm",
-    ["install", "--save-dev", "--save-exact", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    ["install", "--save-dev", "--save-exact", missionPreparationTarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    { cwd: javascriptFixture, stdio: "pipe" },
+  );
+  execFileSync(
+    "npm",
+    ["install", "--save-dev", "--save-exact", tarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
     { cwd: javascriptFixture, stdio: "pipe" },
   );
   await writeFile(join(javascriptFixture, "consumer.mjs"), `
     import { appendSeatDispatchReceiptEntryV1, claimSeatDispatchPacketV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
     import { CONFIG_SCHEMA_VERSION, configuredAdapterIds, createShieldConfig, migrateShieldConfig } from "@shield/team-system/config";
+    import { canonicalJsonV1 } from "@shield/mission-preparation";
     const packageBase = new URL("./node_modules/@shield/team-system/", import.meta.url);
     await import(new URL("dist/dispatch-receipts.mjs", packageBase).href);
     await import(new URL("dist/seat-dispatch-store.mjs", packageBase).href);
@@ -784,6 +807,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       throw new Error("dispatch-receipts exports missing");
     }
     if (CONFIG_SCHEMA_VERSION !== 3) throw new Error("unexpected config schema");
+    const missionPreparationCanonical = canonicalJsonV1({ value: { schema: "proof" } });
+    if (missionPreparationCanonical.state !== "valid") {
+      throw new Error("mission-preparation import did not execute correctly");
+    }
     const config = createShieldConfig({
       repositoryId: "fixture/javascript-consumer",
       coulsonBindingRef: "github:user:coulson",
