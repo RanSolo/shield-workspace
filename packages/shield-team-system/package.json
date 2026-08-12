@@ -106,6 +106,10 @@
       "types": "./public/feature-operation.d.mts",
       "import": "./public/feature-operation.mjs"
     },
+    "./feature-integration": {
+      "types": "./public/feature-integration.d.mts",
+      "import": "./public/feature-integration.mjs"
+    },
     "./daisy-coordination-authority": {
       "types": "./public/daisy-coordination-authority.d.mts",
       "import": "./public/daisy-coordination-authority.mjs"

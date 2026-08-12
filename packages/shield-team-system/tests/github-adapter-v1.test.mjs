@@ -5,6 +5,10 @@ import {
   createGitHubFollowUpCandidate,
   createGitHubHumanEvidenceCandidate,
   deliverGitHubCommunication,
+  integrateFeatureIntegrationPullRequestV2,
+  observeFeatureIntegrationCommitMethodProofV2,
+  observeFeatureIntegrationPullRequestProofV2,
+  observeFeatureIntegrationTargetProofV2,
 } from "../public/github.mjs";
 import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 import { resolveJournaledPublicationRequest } from "../github/publication-gate.mjs";
@@ -71,6 +75,80 @@ const scopeChecks = () => [
   ok(branchSlug), ok(head), ok(base), ok(), ok(`${missionBriefPath}\0`), ok(), ok(),
 ];
 const prScopeChecks = () => [...scopeChecks(), ok(base)];
+
+function v2Runner(responses) {
+  const calls = [];
+  const run = (command, args, options) => {
+    calls.push({ command, args, options });
+    return responses.shift() ?? { status: 1, stdout: "", stderr: "unexpected", errorCode: null };
+  };
+  run.calls = calls;
+  return run;
+}
+const v2ok = (value) => ({ status: 0, stdout: JSON.stringify(value), stderr: "", errorCode: null });
+
+test("V2 GitHub proof adapters return closed PR, target, and squash ancestry observations", async () => {
+  const firstSource = "a".repeat(40), source = "b".repeat(40), merged = "c".repeat(40), tree = "d".repeat(40);
+  const run = v2Runner([
+    v2ok({ number: 7, url: "https://github.com/x/y/pull/7", state: "MERGED", isDraft: true, headRefName: "agent/child", headRefOid: source,
+      baseRefName: "feature/226", mergedAt: "2029-01-01T00:00:00Z", mergeCommit: { oid: merged }, statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], commits: [{ oid: firstSource }, { oid: source }] }),
+    v2ok([{ number: 7 }]),
+    v2ok({ ref: "refs/heads/feature/226", object: { type: "commit", sha: merged } }),
+    v2ok({ sha: merged, tree: { sha: tree } }),
+    v2ok({ sha: merged, tree: { sha: tree }, parents: [{ sha: head }] }),
+    v2ok({ sha: source, tree: { sha: tree }, parents: [{ sha: firstSource }] }),
+  ]);
+  const options = { run, cwd: "/workspace" };
+  const pull = await observeFeatureIntegrationPullRequestProofV2({ repositoryId: "RanSolo/shield-workspace", pullRequestId: 7, challengeId: "challenge:proof" }, options);
+  assert.equal(pull.state, "observed"); assert.equal(pull.observation.checkState, "successful");
+  assert.equal(Object.hasOwn(pull.observation, "mergeMethod"), false);
+  assert.equal(run.calls[0].args[run.calls[0].args.indexOf("--json") + 1].split(",").includes("mergeMethod"), false);
+  const target = await observeFeatureIntegrationTargetProofV2({ repositoryId: "RanSolo/shield-workspace", targetRef: "refs/heads/feature/226", challengeId: "challenge:proof" }, options);
+  assert.equal(target.state, "observed"); assert.equal(target.observation.headRevision, merged); assert.match(target.observation.treeDigest, /^sha256:[0-9a-f]{64}$/u);
+  const method = await observeFeatureIntegrationCommitMethodProofV2({ repositoryId: "RanSolo/shield-workspace", headRevision: merged, priorHeadRevision: head, integrationMethod: "squash", pullRequestCommitHeads: [firstSource, source], challengeId: "challenge:proof" }, options);
+  assert.equal(method.observation.integrationMethodEvidence, "verified");
+  assert.deepEqual(method.observation.resultingCommitParents, [head]); assert.deepEqual(method.observation.rebasedCommits, []);
+  assert.equal(run.calls.every((call) => call.command === "gh" && call.options.cwd === "/workspace" && call.options.input === null), true);
+});
+
+test("V2 method adapter returns authenticated ambiguity for structurally indistinguishable one-commit squash", async () => {
+  const source = "b".repeat(40), merged = "c".repeat(40), tree = "d".repeat(40);
+  const run = v2Runner([
+    v2ok({ sha: merged, tree: { sha: tree }, parents: [{ sha: head }] }),
+    v2ok({ sha: source, tree: { sha: tree }, parents: [{ sha: head }] }),
+  ]);
+  const result = await observeFeatureIntegrationCommitMethodProofV2({ repositoryId: "RanSolo/shield-workspace", headRevision: merged,
+    priorHeadRevision: head, integrationMethod: "squash", pullRequestCommitHeads: [source], challengeId: "challenge:ambiguous" }, { run, cwd: "/workspace" });
+  assert.equal(result.state, "observed");
+  assert.equal(result.observation.integrationMethodEvidence, "ambiguous");
+});
+
+test("V2 integration adapter uses the supported merge REST endpoint exactly once and preserves uncertainty", async () => {
+  const calls = [];
+  const run = (command, args, options) => { calls.push({ command, args, options }); return v2ok({ merged: true, sha: head }); };
+  const input = { repositoryId: "RanSolo/shield-workspace", pullRequestId: 7, expectedHeadRevision: base,
+    targetFeatureBranch: "feature/226", integrationMethod: "squash", challengeId: "challenge:execute" };
+  const applied = await integrateFeatureIntegrationPullRequestV2(input, { run, cwd: "/workspace" });
+  assert.deepEqual(applied, { state: "effect_result", outcome: "applied", resultingHeadRevision: head });
+  assert.equal(calls.length, 1); assert.deepEqual(calls[0].args, ["api", "--method", "PUT", "repos/RanSolo/shield-workspace/pulls/7/merge", "-f", "merge_method=squash", "-f", `sha=${base}`]);
+  assert.deepEqual(await integrateFeatureIntegrationPullRequestV2({ ...input, targetFeatureBranch: "main" }, { run, cwd: "/workspace" }),
+    { state: "blocked", reason: "adapter_unavailable" });
+  assert.equal(calls.length, 1);
+  const uncertain = await integrateFeatureIntegrationPullRequestV2(input, { cwd: "/workspace",
+    run: () => ({ status: 1, stdout: "", stderr: "connection reset", errorCode: "ECONNRESET" }) });
+  assert.deepEqual(uncertain, { state: "effect_result", outcome: "uncertain", reason: "network_failed" });
+});
+
+test("V2 adapter failure precedence is stable and malformed I/O fails closed", async () => {
+  const input = { repositoryId: "RanSolo/shield-workspace", pullRequestId: 7, challengeId: "challenge:proof" };
+  const auth = await observeFeatureIntegrationPullRequestProofV2(input, { cwd: "/workspace", run: () => ({ status: 1, stdout: "rate limit", stderr: "authentication required", errorCode: null }) });
+  assert.deepEqual(auth, { state: "blocked", reason: "authentication_failed" });
+  const malformed = await observeFeatureIntegrationPullRequestProofV2(input, { cwd: "/workspace", run: () => ({ exitCode: 0, stdout: "{}", stderr: "" }) });
+  assert.deepEqual(malformed, { state: "blocked", reason: "malformed_response" });
+  let calls = 0;
+  const extra = await observeFeatureIntegrationPullRequestProofV2({ ...input, extra: true }, { cwd: "/workspace", run: () => { calls += 1; return v2ok({}); } });
+  assert.deepEqual(extra, { state: "blocked", reason: "adapter_unavailable" }); assert.equal(calls, 0);
+});
 
 test("GitHub performs no effect without an exact journaled request", () => {
   const run = runner([]);
