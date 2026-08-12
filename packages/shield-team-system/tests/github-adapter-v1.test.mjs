@@ -90,7 +90,7 @@ test("V2 GitHub proof adapters return closed PR, target, and squash ancestry obs
   const source = "b".repeat(40), merged = "c".repeat(40), tree = "d".repeat(40);
   const run = v2Runner([
     v2ok({ number: 7, url: "https://github.com/x/y/pull/7", state: "MERGED", isDraft: true, headRefName: "agent/child", headRefOid: source,
-      baseRefName: "feature/226", mergedAt: "2029-01-01T00:00:00Z", mergeCommit: { oid: merged }, statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], commits: [{ oid: source }], mergeMethod: "squash" }),
+      baseRefName: "feature/226", mergedAt: "2029-01-01T00:00:00Z", mergeCommit: { oid: merged }, statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], commits: [{ oid: source }], mergeMethod: "SQUASH" }),
     v2ok([{ number: 7 }]),
     v2ok({ ref: "refs/heads/feature/226", object: { type: "commit", sha: merged } }),
     v2ok({ sha: merged, tree: { sha: tree } }),
@@ -99,6 +99,7 @@ test("V2 GitHub proof adapters return closed PR, target, and squash ancestry obs
   const options = { run, cwd: "/workspace" };
   const pull = await observeFeatureIntegrationPullRequestProofV2({ repositoryId: "RanSolo/shield-workspace", pullRequestId: 7, challengeId: "challenge:proof" }, options);
   assert.equal(pull.state, "observed"); assert.equal(pull.observation.mergeMethod, "squash"); assert.equal(pull.observation.checkState, "successful");
+  assert.equal(run.calls[0].args[run.calls[0].args.indexOf("--json") + 1].split(",").includes("mergeMethod"), true);
   const target = await observeFeatureIntegrationTargetProofV2({ repositoryId: "RanSolo/shield-workspace", targetRef: "refs/heads/feature/226", challengeId: "challenge:proof" }, options);
   assert.equal(target.state, "observed"); assert.equal(target.observation.headRevision, merged); assert.match(target.observation.treeDigest, /^sha256:[0-9a-f]{64}$/u);
   const method = await observeFeatureIntegrationCommitMethodProofV2({ repositoryId: "RanSolo/shield-workspace", headRevision: merged, integrationMethod: "squash", pullRequestCommitHeads: [source], challengeId: "challenge:proof" }, options);

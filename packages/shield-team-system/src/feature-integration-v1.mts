@@ -1695,16 +1695,20 @@ function challengeMatchesObservationV2(
   latestObservedAt: string,
 ): boolean {
   const challenges = pending.signedChallenges;
-  const prior = challenges.at(-1)?.payload;
-  if (!prior || challenge.challengeKind !== "transition" || challenge.operationId !== observation.operationId || challenge.repositoryId !== observation.repositoryId ||
+  const latest = challenges.at(-1)?.payload;
+  const previous = challenges.at(-2)?.payload;
+  if (!latest || challenge.challengeDigest !== latest.challengeDigest || challenge.challengeKind !== "transition" ||
+      challenge.operationId !== observation.operationId || challenge.repositoryId !== observation.repositoryId ||
       challenge.requestId !== observation.requestId || challenge.requestCoreDigest !== observation.requestCoreDigest || challenge.candidateDigest !== pending.candidateDigest ||
       challenge.effectKey !== pending.effectKey || challenge.producerKind !== "github_repository" || challenge.producerId !== observation.producerId ||
       challenge.expectedHeadRevision !== pending.request.priorHeadRevision || challenge.expectedTreeDigest !== pending.request.priorTreeDigest ||
-      challenge.previousJournalDigest !== prior.previousJournalDigest || challenge.intendedEntrySequence !== prior.intendedEntrySequence ||
       Date.parse(observation.observedAt) < Date.parse(challenge.issuedAt) || Date.parse(observation.observedAt) >= Date.parse(challenge.expiresAt) ||
       Date.parse(observation.observedAt) < Date.parse(latestObservedAt)) return false;
-  if (challenge.generation === 0) return challenges.length === 1 && challenge.challengeDigest === prior.challengeDigest && challenge.preparationEntryDigest === null;
-  return challenges.length > 1 && challenge.preparationEntryDigest === pending.preparationEntryDigest;
+  if (challenge.generation === 0) return pending.latestObservationDigest === null && challenges.length === 1 &&
+    challenge.preparationEntryDigest === null && challenge.priorChallengeDigest === null && challenge.priorObservationDigest === null;
+  return challenges.length > 1 && previous !== undefined && challenge.generation === previous.generation + 1 &&
+    challenge.preparationEntryDigest === pending.preparationEntryDigest && challenge.priorChallengeDigest === previous.challengeDigest &&
+    challenge.priorObservationDigest === pending.latestObservationDigest;
 }
 
 function transitionObservationIdentityV2(observation: FeatureTransitionObservationV2, pending: FeatureIntegrationPendingEffectV2): boolean {
@@ -1714,12 +1718,12 @@ function transitionObservationIdentityV2(observation: FeatureTransitionObservati
     observation.preparationEntryDigest === pending.preparationEntryDigest && observation.candidateDigest === pending.candidateDigest && observation.effectKey === pending.effectKey &&
     observation.pullRequestId === request.pullRequestId && observation.expectedPullRequestHead === request.expectedPullRequestHead &&
     observation.targetFeatureRef === request.targetFeatureRef && observation.integrationMethod === request.integrationMethod &&
-    observation.priorHeadRevision === request.priorHeadRevision && observation.priorTreeDigest === request.priorTreeDigest &&
-    observation.observedPullRequestHead === request.expectedPullRequestHead && observation.observedPullRequestBaseBranch === request.targetFeatureBranch;
+    observation.priorHeadRevision === request.priorHeadRevision && observation.priorTreeDigest === request.priorTreeDigest;
 }
 
 function transitionAppliedV2(observation: FeatureTransitionObservationV2, request: FeatureTransitionRequestV2): boolean {
-  const common = observation.pullRequestMerged === true && observation.observedIntegrationMethod === request.integrationMethod &&
+  const common = observation.pullRequestMerged === true && observation.observedPullRequestHead === request.expectedPullRequestHead &&
+    observation.observedPullRequestBaseBranch === request.targetFeatureBranch && observation.observedIntegrationMethod === request.integrationMethod &&
     observation.pullRequestMergeRevision !== null && observation.pullRequestMergeRevision === observation.observedTargetHeadRevision &&
     observation.checkState === "successful" && observation.conflictingPullRequestCount === 0 && observation.pullRequestCommitHeads.length > 0 &&
     observation.pullRequestCommitHeads.at(-1) === request.expectedPullRequestHead;
@@ -1732,6 +1736,7 @@ function transitionAppliedV2(observation: FeatureTransitionObservationV2, reques
   if (records.length === 0 || records.length !== observation.pullRequestCommitHeads.length || observation.resultingCommitParents.length !== 1 ||
       records.map((record) => record.sourceCommit).some((source, index) => source !== observation.pullRequestCommitHeads[index]) ||
       new Set(records.map((record) => record.sourceCommit)).size !== records.length || new Set(records.map((record) => record.resultCommit)).size !== records.length ||
+      new Set(records.flatMap((record) => [record.sourceCommit, record.resultCommit])).size !== records.length * 2 ||
       records[0].parentCommit !== request.priorHeadRevision) return false;
   for (let index = 1; index < records.length; index += 1) if (records[index].parentCommit !== records[index - 1].resultCommit) return false;
   return records.at(-1)!.resultCommit === observation.observedTargetHeadRevision && observation.resultingCommitParents[0] === records.at(-1)!.parentCommit;
@@ -1739,6 +1744,7 @@ function transitionAppliedV2(observation: FeatureTransitionObservationV2, reques
 
 function transitionNotAppliedV2(observation: FeatureTransitionObservationV2, request: FeatureTransitionRequestV2): boolean {
   return observation.pullRequestMerged === false && observation.pullRequestMergeRevision === null &&
+    observation.observedPullRequestHead === request.expectedPullRequestHead && observation.observedPullRequestBaseBranch === request.targetFeatureBranch &&
     observation.observedIntegrationMethod === null && observation.resultingCommitParents.length === 0 && observation.rebasedCommits.length === 0 &&
     observation.observedTargetHeadRevision === request.priorHeadRevision && observation.observedTargetTreeDigest === request.priorTreeDigest;
 }
@@ -1804,11 +1810,33 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
     let cumulativeValidation: "pending" | "passed" | "failed" = context.acceptedIntegrations.length > 0 || context.acceptedRollbacks.length > 0 ? "pending" : "passed";
     let latestObservedAt = context.observedAt;
     const githubBinding = producerBindings.find((binding) => binding.producerKind === "github_repository")!;
+    const rollbackWorkspaces = new Map<string, {
+      completionReceiptDigest: string;
+      pullRequestId: string;
+      pullRequestHeadRevision: string;
+      restoredTreeDigest: string;
+    }>();
 
     for (let index = 1; index < entries.length; index += 1) {
       const entry = entries[index];
       const p = entry.payload as unknown as Record<string, unknown>;
       if (entry.entryKind === "authority_successor_accepted") return replayInvalidV2("AUTHORITY_SUCCESSOR_INVALID", index);
+      if (entry.entryKind === "rollback_workspace_accepted") {
+        if (pendingEffect) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
+        const latest = [...context.acceptedIntegrations].reverse().find((item) => !item.reverted);
+        if (lifecycle !== "active" || String(cumulativeValidation) !== "failed" || !latest ||
+            p.childId !== latest.childId || rollbackWorkspaces.has(p.childId as string)) {
+          return replayInvalidV2("STAGE_ORDER_INVALID", index);
+        }
+        if (p.targetBranch !== context.activePlan.featureBranch || p.restoredTreeDigest !== latest.priorTreeDigest) return replayInvalidV2("EVIDENCE_INVALID", index);
+        rollbackWorkspaces.set(p.childId as string, {
+          completionReceiptDigest: p.completionReceiptDigest as string,
+          pullRequestId: p.pullRequestId as string,
+          pullRequestHeadRevision: p.pullRequestHeadRevision as string,
+          restoredTreeDigest: p.restoredTreeDigest as string,
+        });
+        continue;
+      }
       if (entry.entryKind === "effect_prepared") {
         if (pendingEffect) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
         if (p.effectClass !== "transition" || !transitionRequestV2(p.request) || !exactTransitionRequestV2(p.request) ||
@@ -1834,8 +1862,12 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
               request.expectedPullRequestHead !== candidate.childHeadRevision || request.rollbackWorkspaceReceiptDigest !== null) return replayInvalidV2("STAGE_ORDER_INVALID", index);
         } else {
           const latest = [...context.acceptedIntegrations].reverse().find((item) => !item.reverted);
-          if (lifecycle !== "rollback_pending" || !latest || candidate.integrationReceiptDigest !== latest.receiptDigest ||
-              request.rollbackWorkspaceReceiptDigest === null) return replayInvalidV2("STAGE_ORDER_INVALID", index);
+          const workspace = rollbackWorkspaces.get(candidate.childId);
+          if (lifecycle !== "rollback_pending" || !latest || !workspace) return replayInvalidV2("STAGE_ORDER_INVALID", index);
+          if (candidate.integrationReceiptDigest !== latest.receiptDigest || candidate.integrationHeadRevision !== latest.resultingHeadRevision ||
+              candidate.integrationTreeDigest !== latest.resultingTreeDigest || candidate.expectedRestoredTreeDigest !== workspace.restoredTreeDigest ||
+              request.pullRequestId !== workspace.pullRequestId || request.expectedPullRequestHead !== workspace.pullRequestHeadRevision ||
+              request.rollbackWorkspaceReceiptDigest !== workspace.completionReceiptDigest) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
         }
         const childCounters = context.childCounters.map((counter) => counter.childId !== candidate.childId ? { ...counter } : candidate.derivationKind === "child_merge_to_feature"
           ? { ...counter, integrationAttempts: counter.integrationAttempts + 1 } : { ...counter, rollbackAttempts: counter.rollbackAttempts + 1 });
@@ -1851,17 +1883,19 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
         continue;
       }
       if (entry.entryKind === "effect_challenge_refreshed") {
-        if (!pendingEffect || p.preparationEntryDigest !== pendingEffect.preparationEntryDigest) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
         const challenge = verifyChallengeEnvelopeV2(p.signedChallenge, githubBinding);
         if (!challenge || challenge.producerId !== githubBinding.producerId) return replayInvalidV2("OBSERVATION_AUTHORITY_INVALID", index);
+        if (!pendingEffect || p.preparationEntryDigest !== pendingEffect.preparationEntryDigest) return replayInvalidV2("OBSERVATION_CHALLENGE_INVALID", index);
         const prior = pendingEffect.signedChallenges.at(-1)!.payload;
+        const request = pendingEffect.request as unknown as FeatureTransitionRequestV2;
         const previousJournalDigest = createFeatureOperationJournalV2(entries.slice(0, index)).journalDigest;
         if (challenge.challengeKind !== "transition" || challenge.operationId !== context.operationId || challenge.repositoryId !== context.repositoryId ||
-            challenge.requestId !== (pendingEffect.request as unknown as FeatureTransitionRequestV2).requestId || challenge.requestCoreDigest !== (pendingEffect.request as unknown as FeatureTransitionRequestV2).requestCoreDigest ||
+            challenge.requestId !== request.requestId || challenge.requestCoreDigest !== request.requestCoreDigest ||
             challenge.candidateDigest !== pendingEffect.candidateDigest || challenge.effectKey !== pendingEffect.effectKey || challenge.generation !== prior.generation + 1 ||
             challenge.preparationEntryDigest !== pendingEffect.preparationEntryDigest || challenge.priorChallengeDigest !== prior.challengeDigest ||
             challenge.priorObservationDigest !== pendingEffect.latestObservationDigest || challenge.previousJournalDigest !== previousJournalDigest ||
-            challenge.intendedEntrySequence !== entry.entrySequence || (pendingEffect.latestObservationDigest === null && Date.parse(challenge.issuedAt) < Date.parse(prior.expiresAt)) ||
+            challenge.intendedEntrySequence !== entry.entrySequence || challenge.expectedHeadRevision !== request.priorHeadRevision ||
+            challenge.expectedTreeDigest !== request.priorTreeDigest || (pendingEffect.latestObservationDigest === null && Date.parse(challenge.issuedAt) < Date.parse(prior.expiresAt)) ||
             Date.parse(challenge.issuedAt) < Date.parse(latestObservedAt.value) || Date.parse(challenge.expiresAt) >= Math.min(Date.parse(authority.expiresAt), Date.parse(authority.plan.expiresAt))) {
           return replayInvalidV2("OBSERVATION_CHALLENGE_INVALID", index);
         }
@@ -1869,16 +1903,16 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
         continue;
       }
       if (["effect_not_applied", "effect_uncertain", "integration_accepted", "rollback_accepted"].includes(entry.entryKind)) {
-        if (!pendingEffect || !pendingCandidate || p.preparationEntryDigest !== pendingEffect.preparationEntryDigest) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
         const signed = (entry.entryKind === "integration_accepted" || entry.entryKind === "rollback_accepted") ? p.signedTransitionObservation : p.signedObservation;
         const observation = verifyTransitionEnvelopeV2(signed, githubBinding);
         if (!observation || observation.producerId !== githubBinding.producerId) return replayInvalidV2("OBSERVATION_AUTHORITY_INVALID", index);
         const challenge = verifyChallengeEnvelopeV2(observation.signedChallenge, githubBinding);
         if (!challenge || challenge.producerId !== githubBinding.producerId) return replayInvalidV2("OBSERVATION_AUTHORITY_INVALID", index);
+        if (!pendingEffect || !pendingCandidate) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
         const latestChallenge = pendingEffect.signedChallenges.at(-1);
         if (canonicalFeatureIntegrationJsonV1(observation.signedChallenge) !== canonicalFeatureIntegrationJsonV1(latestChallenge) ||
             !challengeMatchesObservationV2(challenge, pendingEffect, observation, latestObservedAt.value)) return replayInvalidV2("OBSERVATION_CHALLENGE_INVALID", index);
-        if (!transitionObservationIdentityV2(observation, pendingEffect)) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
+        if (p.preparationEntryDigest !== pendingEffect.preparationEntryDigest || !transitionObservationIdentityV2(observation, pendingEffect)) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
         const request = pendingEffect.request as unknown as FeatureTransitionRequestV2;
         const applied = transitionAppliedV2(observation, request);
         const notApplied = transitionNotAppliedV2(observation, request);
@@ -1917,7 +1951,11 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
         } else {
           const candidate = pendingCandidate;
           const latest = [...context.acceptedIntegrations].reverse().find((item) => !item.reverted)!;
-          if (request.rollbackWorkspaceReceiptDigest === null || observation.observedTargetTreeDigest !== candidate.expectedRestoredTreeDigest) return replayInvalidV2("HEAD_TRANSITION_INVALID", index);
+          const workspace = rollbackWorkspaces.get(candidate.childId);
+          if (!workspace || request.rollbackWorkspaceReceiptDigest !== workspace.completionReceiptDigest ||
+              observation.observedTargetTreeDigest !== workspace.restoredTreeDigest || observation.observedTargetTreeDigest !== candidate.expectedRestoredTreeDigest) {
+            return replayInvalidV2("HEAD_TRANSITION_INVALID", index);
+          }
           const transition = { kind: "rollback" as const, operationSequence: headTransitionOperationSequence, effectKey: candidate.effectKey,
             priorHeadRevision: terminalHeadRevision, priorTreeDigest: terminalTreeDigest, resultingHeadRevision: observation.observedTargetHeadRevision,
             resultingTreeDigest: observation.observedTargetTreeDigest, receiptDigest: observation.observationDigest, childId: candidate.childId,

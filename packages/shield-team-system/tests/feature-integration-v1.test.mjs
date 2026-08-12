@@ -672,14 +672,20 @@ test("V2 replay authenticates exact transition non-application and retains uncer
   const prepared = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 1, entryKind: "effect_prepared", previousEntryDigest: genesis.entryDigest,
     payload: { effectClass: "transition", candidate, candidateDigest: candidate.candidateDigest, effectKey, request, requestDigest: request.requestDigest,
       expectedHeadRevision: core.priorHeadRevision, expectedTreeDigest: core.priorTreeDigest, signedCumulativeAuthority: null } });
-  const observationFor = (status, head = core.priorHeadRevision, tree = core.priorTreeDigest) => {
+  const observationFor = (status, head = core.priorHeadRevision, tree = core.priorTreeDigest, overrides = {}) => {
+    const challengeEnvelope = overrides.signedChallenge ?? signedChallenge;
     const payload = { schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "transition", operationId: context.operationId,
       repositoryId: context.repositoryId, requestId: core.requestId, requestCoreDigest, requestDigest: request.requestDigest, preparationEntryDigest: prepared.entryDigest,
       candidateDigest: candidate.candidateDigest, effectKey, pullRequestId: "7", expectedPullRequestHead: candidate.childHeadRevision, targetFeatureRef: core.targetFeatureRef,
-      integrationMethod: "squash", priorHeadRevision: core.priorHeadRevision, priorTreeDigest: core.priorTreeDigest, observedPullRequestHead: candidate.childHeadRevision,
-      observedPullRequestBaseBranch: core.targetFeatureBranch, observedIntegrationMethod: null, pullRequestMerged: false, pullRequestMergeRevision: null,
-      pullRequestCommitHeads: [candidate.childHeadRevision], conflictingPullRequestCount: 0, resultingCommitParents: [], rebasedCommits: [], checkState: "unknown",
-      observedTargetHeadRevision: head, observedTargetTreeDigest: tree, status, signedChallenge, producerId: "producer:github", observedAt: "2029-05-01T00:12:00Z", observationDigest: digest("0") };
+      integrationMethod: "squash", priorHeadRevision: core.priorHeadRevision, priorTreeDigest: core.priorTreeDigest,
+      observedPullRequestHead: overrides.observedPullRequestHead ?? candidate.childHeadRevision,
+      observedPullRequestBaseBranch: overrides.observedPullRequestBaseBranch ?? core.targetFeatureBranch,
+      observedIntegrationMethod: overrides.observedIntegrationMethod ?? null, pullRequestMerged: overrides.pullRequestMerged ?? false,
+      pullRequestMergeRevision: overrides.pullRequestMergeRevision ?? null, pullRequestCommitHeads: overrides.pullRequestCommitHeads ?? [candidate.childHeadRevision],
+      conflictingPullRequestCount: overrides.conflictingPullRequestCount ?? 0, resultingCommitParents: overrides.resultingCommitParents ?? [],
+      rebasedCommits: overrides.rebasedCommits ?? [], checkState: overrides.checkState ?? "unknown",
+      observedTargetHeadRevision: head, observedTargetTreeDigest: tree, status, signedChallenge: challengeEnvelope,
+      producerId: "producer:github", observedAt: overrides.observedAt ?? "2029-05-01T00:12:00Z", observationDigest: digest("0") };
     payload.observationDigest = computeFeatureTransitionObservationDigestV2(payload);
     return signProducerV2("shield.feature-integration.observation.v2:transition", payload);
   };
@@ -694,7 +700,92 @@ test("V2 replay authenticates exact transition non-application and retains uncer
   const uncertainReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, uncertain]), fixture.trustAnchor);
   assert.equal(uncertainReplay.state, "valid"); assert.equal(uncertainReplay.value.uncertainEffect, true); assert.equal(uncertainReplay.value.pendingEffect.preparationEntryDigest, prepared.entryDigest);
 
+  const preparedJournal = createFeatureOperationJournalV2([genesis, prepared]);
+  const noObservationRefreshChallenge = { ...structuredClone(challenge), generation: 1, challengeId: "challenge:transition:no-observation-refresh",
+    previousJournalDigest: preparedJournal.journalDigest, intendedEntrySequence: 2, preparationEntryDigest: prepared.entryDigest,
+    priorChallengeDigest: challenge.challengeDigest, priorObservationDigest: null, issuedAt: "2029-05-01T00:20:00Z",
+    expiresAt: "2029-05-01T00:25:00Z", challengeDigest: digest("0") };
+  noObservationRefreshChallenge.challengeDigest = computeFeatureObservationChallengeDigestV2(noObservationRefreshChallenge);
+  const signedNoObservationRefresh = signProducerV2("shield.feature-integration.challenge.v2:transition", noObservationRefreshChallenge);
+  const noObservationRefresh = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "effect_challenge_refreshed", previousEntryDigest: prepared.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedChallenge: signedNoObservationRefresh } });
+  const noObservationRefreshReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, noObservationRefresh]), fixture.trustAnchor);
+  assert.equal(noObservationRefreshReplay.state, "valid"); assert.equal(noObservationRefreshReplay.value.pendingEffect.signedChallenges.length, 2);
+  const afterNoObservationRefresh = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 3, entryKind: "effect_not_applied", previousEntryDigest: noObservationRefresh.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedObservation: observationFor("not_applied", core.priorHeadRevision, core.priorTreeDigest,
+      { signedChallenge: signedNoObservationRefresh, observedAt: "2029-05-01T00:21:00Z" }) } });
+  assert.equal(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, noObservationRefresh, afterNoObservationRefresh]), fixture.trustAnchor).state, "valid");
+
+  const drifted = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "effect_uncertain", previousEntryDigest: prepared.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedObservation: observationFor("uncertain", revision("c"), digest("9"), {
+      observedPullRequestHead: revision("d"), observedPullRequestBaseBranch: "feature/drifted",
+    }) } });
+  const driftedReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, drifted]), fixture.trustAnchor);
+  assert.equal(driftedReplay.state, "valid"); assert.equal(driftedReplay.value.uncertainEffect, true);
+
+  const reused = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 3, entryKind: "effect_uncertain", previousEntryDigest: uncertain.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedObservation: observationFor("uncertain", revision("c"), digest("9"), { observedAt: "2029-05-01T00:13:00Z" }) } });
+  const uncertainJournal = createFeatureOperationJournalV2([genesis, prepared, uncertain]);
+  assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, uncertain, reused]), fixture.trustAnchor),
+    { state: "invalid", reason: "OBSERVATION_CHALLENGE_INVALID", entrySequence: 3 });
+  assert.equal(canonicalFeatureIntegrationJsonV1(replayFeatureOperationJournalV2(uncertainJournal, fixture.trustAnchor).value),
+    canonicalFeatureIntegrationJsonV1(uncertainReplay.value));
+
+  const refreshChallenge = { ...structuredClone(challenge), generation: 1, challengeId: "challenge:transition:2",
+    previousJournalDigest: uncertainJournal.journalDigest, intendedEntrySequence: 3, preparationEntryDigest: prepared.entryDigest,
+    priorChallengeDigest: challenge.challengeDigest, priorObservationDigest: uncertain.payload.signedObservation.payload.observationDigest,
+    issuedAt: "2029-05-01T00:13:00Z", expiresAt: "2029-05-01T00:19:00Z", challengeDigest: digest("0") };
+  refreshChallenge.challengeDigest = computeFeatureObservationChallengeDigestV2(refreshChallenge);
+  const signedRefreshChallenge = signProducerV2("shield.feature-integration.challenge.v2:transition", refreshChallenge);
+  const refreshed = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 3, entryKind: "effect_challenge_refreshed", previousEntryDigest: uncertain.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedChallenge: signedRefreshChallenge } });
+  const reconciled = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 4, entryKind: "effect_not_applied", previousEntryDigest: refreshed.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedObservation: observationFor("not_applied", core.priorHeadRevision, core.priorTreeDigest,
+      { signedChallenge: signedRefreshChallenge, observedAt: "2029-05-01T00:14:00Z" }) } });
+  const reconciledReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, uncertain, refreshed, reconciled]), fixture.trustAnchor);
+  assert.equal(reconciledReplay.state, "valid"); assert.equal(reconciledReplay.value.pendingEffect, null); assert.equal(reconciledReplay.value.uncertainEffect, false);
+
+  const refreshMutations = [
+    ["expectedHeadRevision", revision("e")], ["expectedTreeDigest", digest("e")], ["priorObservationDigest", digest("e")],
+    ["priorChallengeDigest", digest("e")], ["previousJournalDigest", digest("e")], ["generation", 2],
+  ];
+  for (const [field, value] of refreshMutations) {
+    const mutatedChallenge = { ...structuredClone(refreshChallenge), [field]: value, challengeDigest: digest("0") };
+    mutatedChallenge.challengeDigest = computeFeatureObservationChallengeDigestV2(mutatedChallenge);
+    const mutatedRefresh = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 3, entryKind: "effect_challenge_refreshed", previousEntryDigest: uncertain.entryDigest,
+      payload: { preparationEntryDigest: prepared.entryDigest, signedChallenge: signProducerV2("shield.feature-integration.challenge.v2:transition", mutatedChallenge) } });
+    assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, uncertain, mutatedRefresh]), fixture.trustAnchor),
+      { state: "invalid", reason: "OBSERVATION_CHALLENGE_INVALID", entrySequence: 3 }, field);
+    assert.equal(canonicalFeatureIntegrationJsonV1(replayFeatureOperationJournalV2(uncertainJournal, fixture.trustAnchor).value),
+      canonicalFeatureIntegrationJsonV1(uncertainReplay.value), field);
+  }
+
+  const wrongIdentityPayload = structuredClone(observationFor("not_applied").payload);
+  wrongIdentityPayload.requestDigest = digest("e");
+  wrongIdentityPayload.observationDigest = computeFeatureTransitionObservationDigestV2(wrongIdentityPayload);
+  const wrongIdentity = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "effect_not_applied", previousEntryDigest: prepared.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedObservation: signProducerV2("shield.feature-integration.observation.v2:transition", wrongIdentityPayload) } });
+  assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, wrongIdentity]), fixture.trustAnchor),
+    { state: "invalid", reason: "EFFECT_LIFECYCLE_INVALID", entrySequence: 2 });
+  const preparedProjection = replayFeatureOperationJournalV2(preparedJournal, fixture.trustAnchor);
+  assert.equal(preparedProjection.state, "valid"); assert.equal(preparedProjection.value.pendingEffect.preparationEntryDigest, prepared.entryDigest);
+
+  const appliedHead = revision("c"), appliedTree = digest("9");
+  const appliedEntry = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "integration_accepted", previousEntryDigest: prepared.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedTransitionObservation: observationFor("applied", appliedHead, appliedTree, {
+      observedIntegrationMethod: "squash", pullRequestMerged: true, pullRequestMergeRevision: appliedHead,
+      resultingCommitParents: [core.priorHeadRevision], checkState: "successful",
+    }) } });
+  const appliedReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, appliedEntry]), fixture.trustAnchor);
+  assert.equal(appliedReplay.state, "valid"); assert.equal(appliedReplay.value.terminalHeadRevision, appliedHead); assert.equal(appliedReplay.value.cumulativeValidation, "pending");
+
+  const secondTerminal = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 3, entryKind: "effect_not_applied", previousEntryDigest: appliedEntry.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedObservation: observationFor("not_applied", core.priorHeadRevision, core.priorTreeDigest) } });
+  assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, appliedEntry, secondTerminal]), fixture.trustAnchor),
+    { state: "invalid", reason: "EFFECT_LIFECYCLE_INVALID", entrySequence: 3 });
+
   const badSignature = structuredClone(notApplied); badSignature.payload.signedObservation.signatureBase64 = `${badSignature.payload.signedObservation.signatureBase64[0] === "A" ? "B" : "A"}${badSignature.payload.signedObservation.signatureBase64.slice(1)}`;
+  badSignature.payload.preparationEntryDigest = digest("f");
   badSignature.entryDigest = computeFeatureIntegrationEntryDigestV2(badSignature);
   assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, badSignature]), fixture.trustAnchor), { state: "invalid", reason: "OBSERVATION_AUTHORITY_INVALID", entrySequence: 2 });
 });

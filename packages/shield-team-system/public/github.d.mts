@@ -11,6 +11,9 @@ import type {
 } from "../dist/fury-plan-review-evidence-v1.mjs";
 import type {
   FeatureObservationChallengeV2,
+  FeatureIntegrationReplayProjectionV2,
+  FeatureIntegrationTrustAnchorV2,
+  FeatureOperationJournalV2,
   FeatureTransitionRequestV2,
   SignedFeatureAdmissionObservationV2,
   SignedFeatureExpiryObservationV2,
@@ -98,11 +101,24 @@ export interface FeatureGitHubObservationProducerConfigV2 {
 export interface FeatureGitHubObservationProducerV2 {
   signChallenge(input: FeatureObservationChallengeV2): Promise<SignedFeatureObservationChallengeV2>;
   observeAndSignWorkspace(input: unknown): Promise<SignedFeatureWorkspaceObservationV2>;
-  observeAndSignTransition(input: { request: FeatureTransitionRequestV2; preparationEntryDigest: string; signedChallenge?: SignedFeatureObservationChallengeV2 }): Promise<SignedFeatureTransitionObservationV2>;
+  observeAndSignTransition(input: { request: FeatureTransitionRequestV2; preparationEntryDigest: string; signedChallenge?: SignedFeatureObservationChallengeV2; expectedRestoredTreeDigest?: string }): Promise<SignedFeatureTransitionObservationV2>;
   observeAndSignAdmission(input: unknown): Promise<SignedFeatureAdmissionObservationV2>;
   observeAndSignExpiry(input: unknown): Promise<SignedFeatureExpiryObservationV2>;
 }
 export function createGitHubFeatureObservationProducerV2(config: FeatureGitHubObservationProducerConfigV2): { state: "ready"; producer: FeatureGitHubObservationProducerV2 } | { state: "unavailable"; reason: "producer_unavailable" };
+export function executeFeatureIntegrationWorkspaceStageV2(input: {
+  stage: "feature_branch_creation" | "feature_workspace" | "child_initiation" | "child_publication" | "integration" | "rollback";
+  replay: FeatureIntegrationReplayProjectionV2;
+  journal: FeatureOperationJournalV2;
+  stageInput: Readonly<Record<string, unknown>>;
+  storeScope: Readonly<Record<string, unknown>>;
+  trustAnchor: FeatureIntegrationTrustAnchorV2;
+  repositoryProducer: FeatureGitHubObservationProducerV2;
+  cumulativeProducer: unknown;
+}): Promise<
+  | { state: "accepted"; appendedEntryDigest: string | null }
+  | { state: "blocked" | "recovery_required"; reason: "invalid_input" | "authorization_invalid" | "replay_invalid" | "compare_conflict" | "producer_unavailable" | "authentication_unavailable" | "durability_uncertain" | "execution_receipt_unavailable" | "effect_uncertain" | "stage_blocked"; appendedEntryDigest: null }
+>;
 
 export function prepareFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "prepared"; entry: Record<string, unknown>; candidate: Record<string, unknown> } | { state: "blocked"; reason: string };
 export function invokeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;

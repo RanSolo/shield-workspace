@@ -670,7 +670,7 @@ function checkStateV2(checks) {
 export async function observeFeatureIntegrationPullRequestProofV2(input, options) {
   const value = adapterInputV2(input, ["repositoryId", "pullRequestId", "challengeId"]), configured = adapterOptionsV2(options);
   if (!value || !configured || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1) return { state: "blocked", reason: "adapter_unavailable" };
-  const viewed = callV2(configured, ["pr", "view", String(value.pullRequestId), "--repo", value.repositoryId, "--json", "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,mergeCommit,statusCheckRollup,commits"]);
+  const viewed = callV2(configured, ["pr", "view", String(value.pullRequestId), "--repo", value.repositoryId, "--json", "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,mergeCommit,mergeMethod,statusCheckRollup,commits"]);
   if (viewed.state !== "observed") return viewed;
   const item = viewed.value;
   const checkState = checkStateV2(item?.statusCheckRollup);
@@ -684,7 +684,8 @@ export async function observeFeatureIntegrationPullRequestProofV2(input, options
   const merged = item.state === "MERGED" || item.mergedAt !== null && item.mergedAt !== undefined;
   const mergeRevision = item.mergeCommit?.oid ?? null;
   if (merged !== (mergeRevision !== null) || (mergeRevision !== null && !FEATURE_INTEGRATION_REVISION.test(mergeRevision))) return { state: "blocked", reason: "ambiguous_response" };
-  const mergeMethod = V2_METHODS.includes(item.mergeMethod) ? item.mergeMethod : null;
+  const mergeMethod = ({ MERGE: "merge_commit", REBASE: "rebase_merge", SQUASH: "squash" })[item.mergeMethod] ??
+    (V2_METHODS.includes(item.mergeMethod) ? item.mergeMethod : null);
   return { state: "observed", observation: { pullRequestId: value.pullRequestId, url: item.url, state: item.state.toLowerCase(), draft: item.isDraft,
     headBranch: item.headRefName, headRevision: item.headRefOid, baseBranch: item.baseRefName, merged, mergeRevision, mergeMethod, checkState,
     conflictingPullRequestCount: inventory.value.filter((pull) => pull.number !== value.pullRequestId).length, pullRequestCommitHeads: commits } };

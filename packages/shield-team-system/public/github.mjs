@@ -19,6 +19,7 @@ export {
   acceptGovernedRollbackWorkspaceV1,
   createRollbackMissionHandoffReadyV1,
   executeFeatureIntegrationWorkspaceStageV1,
+  executeFeatureIntegrationWorkspaceStageV2,
   invokeFeatureIntegrationWorkspaceEffectV1,
   invokeFeatureIntegrationTransitionEffectV1,
   observeFeatureIntegrationTransitionV1,

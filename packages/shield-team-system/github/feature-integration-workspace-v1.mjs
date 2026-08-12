@@ -120,17 +120,34 @@ function producerConfigV2(input) {
 }
 
 function transitionInvocationV2(input) {
-  const wrapped = exactDataRecord(input, ["request", "preparationEntryDigest"]) ?? exactDataRecord(input, ["request", "preparationEntryDigest", "signedChallenge"]);
+  const wrapped = exactDataRecord(input, ["request", "preparationEntryDigest"]) ??
+    exactDataRecord(input, ["request", "preparationEntryDigest", "signedChallenge"]) ??
+    exactDataRecord(input, ["request", "preparationEntryDigest", "expectedRestoredTreeDigest"]) ??
+    exactDataRecord(input, ["request", "preparationEntryDigest", "signedChallenge", "expectedRestoredTreeDigest"]);
   if (!wrapped || !DIGEST.test(wrapped.preparationEntryDigest) || !wrapped.request || typeof wrapped.request !== "object") return null;
-  return { request: wrapped.request, preparationEntryDigest: wrapped.preparationEntryDigest, signedChallenge: wrapped.signedChallenge ?? wrapped.request.signedChallenge };
+  if (!(wrapped.expectedRestoredTreeDigest === undefined || DIGEST.test(wrapped.expectedRestoredTreeDigest))) return null;
+  return { request: wrapped.request, preparationEntryDigest: wrapped.preparationEntryDigest, signedChallenge: wrapped.signedChallenge ?? wrapped.request.signedChallenge,
+    expectedRestoredTreeDigest: wrapped.expectedRestoredTreeDigest ?? null };
 }
 
-function appliedTransitionProofV2(request, pull, target, method) {
+function appliedTransitionProofV2(request, pull, target, method, expectedRestoredTreeDigest) {
   if (!method || pull.merged !== true || pull.headRevision !== request.expectedPullRequestHead || pull.baseBranch !== request.targetFeatureBranch ||
-      pull.mergeRevision === null || pull.mergeRevision !== target.headRevision || pull.checkState !== "successful" || pull.conflictingPullRequestCount !== 0) return false;
+      pull.mergeMethod !== request.integrationMethod || pull.mergeRevision === null || pull.mergeRevision !== target.headRevision ||
+      pull.pullRequestCommitHeads.length === 0 || pull.pullRequestCommitHeads.at(-1) !== request.expectedPullRequestHead ||
+      pull.checkState !== "successful" || pull.conflictingPullRequestCount !== 0 ||
+      (request.derivationKind === "child_revert_on_feature" &&
+        (!DIGEST.test(request.rollbackWorkspaceReceiptDigest) || !DIGEST.test(expectedRestoredTreeDigest) || target.treeDigest !== expectedRestoredTreeDigest))) return false;
   if (request.integrationMethod === "merge_commit") return method.resultingCommitParents.length === 2 && method.resultingCommitParents[0] === request.priorHeadRevision && method.resultingCommitParents[1] === request.expectedPullRequestHead && method.rebasedCommits.length === 0;
   if (request.integrationMethod === "squash") return method.resultingCommitParents.length === 1 && method.resultingCommitParents[0] === request.priorHeadRevision && method.rebasedCommits.length === 0 && target.headRevision !== request.priorHeadRevision && target.headRevision !== request.expectedPullRequestHead;
-  return method.rebasedCommits.length === pull.pullRequestCommitHeads.length && method.rebasedCommits.length > 0 && method.rebasedCommits.every((item, index) => item.sourceCommit === pull.pullRequestCommitHeads[index] && item.parentCommit === (index === 0 ? request.priorHeadRevision : method.rebasedCommits[index - 1].resultCommit)) && method.rebasedCommits.at(-1).resultCommit === target.headRevision && method.resultingCommitParents.length === 1 && method.resultingCommitParents[0] === method.rebasedCommits.at(-1).parentCommit;
+  const sourceCommits = method.rebasedCommits.map((item) => item.sourceCommit);
+  const resultCommits = method.rebasedCommits.map((item) => item.resultCommit);
+  return method.rebasedCommits.length === pull.pullRequestCommitHeads.length && method.rebasedCommits.length > 0 &&
+    new Set(sourceCommits).size === sourceCommits.length && new Set(resultCommits).size === resultCommits.length &&
+    new Set([...sourceCommits, ...resultCommits]).size === sourceCommits.length + resultCommits.length &&
+    method.rebasedCommits.every((item, index) => item.sourceCommit === pull.pullRequestCommitHeads[index] &&
+      item.parentCommit === (index === 0 ? request.priorHeadRevision : method.rebasedCommits[index - 1].resultCommit)) &&
+    method.rebasedCommits.at(-1).resultCommit === target.headRevision && method.resultingCommitParents.length === 1 &&
+    method.resultingCommitParents[0] === method.rebasedCommits.at(-1).parentCommit;
 }
 
 /** Constructs the sole GitHub-backed producer for hardened repository observations. */
@@ -169,7 +186,7 @@ export function createGitHubFeatureObservationProducerV2(input) {
         if (proof.state !== "observed") throw new Error("producer_unavailable");
         method = proof.observation;
       }
-      const applied = appliedTransitionProofV2(request, pull, target, method);
+      const applied = appliedTransitionProofV2(request, pull, target, method, invocation.expectedRestoredTreeDigest);
       const notApplied = pull.merged === false && pull.mergeRevision === null && pull.headRevision === request.expectedPullRequestHead && pull.baseBranch === request.targetFeatureBranch && target.headRevision === request.priorHeadRevision && target.treeDigest === request.priorTreeDigest;
       const payload = {
         schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "transition",
@@ -177,7 +194,7 @@ export function createGitHubFeatureObservationProducerV2(input) {
         requestDigest: request.requestDigest, preparationEntryDigest: invocation.preparationEntryDigest, candidateDigest: request.candidateDigest, effectKey: request.effectKey,
         pullRequestId: request.pullRequestId, expectedPullRequestHead: request.expectedPullRequestHead, targetFeatureRef: request.targetFeatureRef,
         integrationMethod: request.integrationMethod, priorHeadRevision: request.priorHeadRevision, priorTreeDigest: request.priorTreeDigest,
-        observedPullRequestHead: pull.headRevision, observedPullRequestBaseBranch: pull.baseBranch, observedIntegrationMethod: method ? request.integrationMethod : pull.mergeMethod,
+        observedPullRequestHead: pull.headRevision, observedPullRequestBaseBranch: pull.baseBranch, observedIntegrationMethod: pull.mergeMethod,
         pullRequestMerged: pull.merged, pullRequestMergeRevision: pull.mergeRevision, pullRequestCommitHeads: pull.pullRequestCommitHeads,
         conflictingPullRequestCount: pull.conflictingPullRequestCount, resultingCommitParents: method?.resultingCommitParents ?? [], rebasedCommits: method?.rebasedCommits ?? [],
         checkState: pull.checkState, observedTargetHeadRevision: target.headRevision, observedTargetTreeDigest: target.treeDigest,
@@ -402,6 +419,18 @@ export async function executeFeatureIntegrationWorkspaceStageV1(input, adapterOp
   const terminal = createFeatureIntegrationEntryV1({ operationId: prepared.entry.operationId, entrySequence: prepared.entry.entrySequence + 1, entryKind: reconciled.entryKind, previousEntryDigest: prepared.entry.entryDigest, payload: reconciled.payload });
   const terminalResult = await appendFeatureOperationJournalStoreV1({ ...input.storeScope, expectedEntrySequence: terminal.entrySequence, expectedLatestEntryDigest: prepared.entry.entryDigest, entry: terminal });
   return terminalResult.state === "accepted" ? { state: reconciled.state, journal: terminalResult.value.journal, invocation } : terminalResult;
+}
+
+/** P1-owned hardened workspace/transition stage boundary; P2B supplies durable dispatch. */
+export async function executeFeatureIntegrationWorkspaceStageV2(input) {
+  const value = exactDataRecord(input, ["stage", "replay", "journal", "stageInput", "storeScope", "trustAnchor", "repositoryProducer", "cumulativeProducer"]);
+  if (!value || !["feature_branch_creation", "feature_workspace", "child_initiation", "child_publication", "integration", "rollback"].includes(value.stage) ||
+      !value.replay || typeof value.replay !== "object" || value.replay.nextStage !== value.stage || !value.journal || typeof value.journal !== "object" ||
+      !value.stageInput || typeof value.stageInput !== "object" || value.stageInput.stage !== value.stage || !value.storeScope || typeof value.storeScope !== "object" ||
+      !value.trustAnchor || typeof value.trustAnchor !== "object" || !value.repositoryProducer || typeof value.repositoryProducer !== "object") {
+    return { state: "blocked", reason: "invalid_input", appendedEntryDigest: null };
+  }
+  return { state: "blocked", reason: "stage_blocked", appendedEntryDigest: null };
 }
 
 export function createRollbackMissionHandoffReadyV1(input) {
