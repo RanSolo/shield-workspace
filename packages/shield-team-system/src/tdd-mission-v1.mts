@@ -147,6 +147,68 @@ export interface TddMissionExactEvidenceV1 {
   readonly decisionOwnerSeatId: string | null;
 }
 
+export interface TddMissionTerminalCommandReceiptV1 {
+  readonly evidenceId: string;
+  readonly checkpointId: string;
+  readonly commandId: string;
+  readonly command: string;
+  readonly executableKind: "build" | "test";
+  readonly outcome: "passed" | "failed";
+  readonly exitCode: number;
+  readonly testCounts: Readonly<TddMissionEvidenceTestCountsV1> | null;
+  readonly cacheEvidence: string | null;
+  readonly failureClassification:
+    "product_defect" | "environment_failure" | "harness_defect" | null;
+  readonly sourceRefs: readonly string[];
+}
+
+export interface TddMissionCumulativeMackBundleV1 {
+  readonly bundleId: string;
+  readonly missionId: string;
+  readonly planDigest: string;
+  readonly acceptanceContractDigest: string;
+  readonly contractGeneration: number;
+  readonly ownerSeatId: "mack";
+  readonly runtimeId: string;
+  readonly modelId: string;
+  readonly executorId: string;
+  readonly canonicalRoot: string;
+  readonly repositoryId: string;
+  readonly branch: string;
+  readonly headRevisionId: string;
+  readonly headTreeDigest: string;
+  readonly changedPaths: readonly string[];
+  readonly trackedClean: true;
+  readonly transitionBundleRefs: readonly string[];
+  readonly dispositionRefs: readonly string[];
+  readonly receipts: readonly Readonly<TddMissionTerminalCommandReceiptV1>[];
+}
+
+export interface TddMissionFuryTerminalReceiptV1 {
+  readonly evidenceId: string;
+  readonly missionId: string;
+  readonly planDigest: string;
+  readonly acceptanceContractDigest: string;
+  readonly contractGeneration: number;
+  readonly reviewerSeatId: "fury";
+  readonly runtimeId: string;
+  readonly modelId: string;
+  readonly executorId: string;
+  readonly repositoryId: string;
+  readonly branch: string;
+  readonly headRevisionId: string;
+  readonly headTreeDigest: string;
+  readonly mackBundleRef: string;
+  readonly transitionReviewRefs: readonly string[];
+  readonly dispositionRefs: readonly string[];
+  readonly verdict: "PASS";
+  readonly command: null;
+  readonly exitCode: null;
+  readonly testCounts: null;
+  readonly cacheEvidence: null;
+  readonly failureClassification: null;
+}
+
 export interface TddMissionEvaluationInputV1 {
   readonly schemaVersion: 1;
   readonly contractVersion: "tdd.mission.v1";
@@ -162,6 +224,8 @@ export interface TddMissionEvaluationInputV1 {
   readonly headTreeDigest: string;
   readonly strategyContract: Readonly<TddMissionStrategyContractV1>;
   readonly evidence: readonly Readonly<TddMissionExactEvidenceV1>[];
+  readonly cumulativeMackValidationBundle: Readonly<TddMissionCumulativeMackBundleV1>;
+  readonly furyTerminalReceipt: Readonly<TddMissionFuryTerminalReceiptV1>;
 }
 
 export type TddMissionEvaluationV1 =
@@ -889,6 +953,25 @@ const MISSION_EVALUATION_FIELDS = [
   "headTreeDigest",
   "strategyContract",
   "evidence",
+  "cumulativeMackValidationBundle",
+  "furyTerminalReceipt",
+] as const;
+const TERMINAL_COMMAND_RECEIPT_FIELDS = [
+  "evidenceId", "checkpointId", "commandId", "command", "executableKind", "outcome",
+  "exitCode", "testCounts", "cacheEvidence", "failureClassification", "sourceRefs",
+] as const;
+const CUMULATIVE_MACK_BUNDLE_FIELDS = [
+  "bundleId", "missionId", "planDigest", "acceptanceContractDigest", "contractGeneration",
+  "ownerSeatId", "runtimeId", "modelId", "executorId", "canonicalRoot", "repositoryId",
+  "branch", "headRevisionId", "headTreeDigest", "changedPaths", "trackedClean",
+  "transitionBundleRefs", "dispositionRefs", "receipts",
+] as const;
+const FURY_TERMINAL_RECEIPT_FIELDS = [
+  "evidenceId", "missionId", "planDigest", "acceptanceContractDigest", "contractGeneration",
+  "reviewerSeatId", "runtimeId", "modelId", "executorId", "repositoryId", "branch",
+  "headRevisionId", "headTreeDigest", "mackBundleRef", "transitionReviewRefs",
+  "dispositionRefs", "verdict", "command", "exitCode", "testCounts", "cacheEvidence",
+  "failureClassification",
 ] as const;
 const EXACT_EVIDENCE_FIELDS = [
   "evidenceId",
@@ -2506,6 +2589,17 @@ function evidenceStringArray(value: unknown): readonly string[] | null {
   }
 }
 
+function evidenceStringArrayAllowEmpty(value: unknown): readonly string[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+        value.length > 64 || !value.every(identifier) ||
+        new Set(value).size !== value.length) return null;
+    return Object.freeze([...value] as string[]);
+  } catch {
+    return null;
+  }
+}
+
 function reviewedPredecessorContract(
   value: unknown,
   missionId: string,
@@ -2602,6 +2696,185 @@ function evidenceTestCounts(
   const todo = counts.todo as number;
   if (passed + failed + skipped + cancelled + todo !== total) return null;
   return Object.freeze({ total, passed, failed, skipped, cancelled, todo });
+}
+
+const TERMINAL_VALIDATION_TABLE = Object.freeze([
+  Object.freeze({
+    checkpointId: "checkpoint:issue-162:terminal:focused",
+    commandId: "validation:issue-162:focused-node-test",
+    command: "node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs",
+    executableKind: "test" as const,
+  }),
+  Object.freeze({
+    checkpointId: "checkpoint:issue-162:terminal:build",
+    commandId: "validation:issue-162:nx-build",
+    command: "npm exec nx run @shield/team-system:build",
+    executableKind: "build" as const,
+  }),
+  Object.freeze({
+    checkpointId: "checkpoint:issue-162:terminal:test",
+    commandId: "validation:issue-162:nx-test",
+    command: "npm exec nx run @shield/team-system:test",
+    executableKind: "test" as const,
+  }),
+]);
+
+function terminalCommandReceipt(
+  value: unknown,
+): Readonly<TddMissionTerminalCommandReceiptV1> | null {
+  const receipt = record(value, TERMINAL_COMMAND_RECEIPT_FIELDS);
+  if (receipt === null || !identifier(receipt.evidenceId) ||
+      !identifier(receipt.checkpointId) || !identifier(receipt.commandId) ||
+      !nonemptyText(receipt.command) ||
+      (receipt.executableKind !== "build" && receipt.executableKind !== "test") ||
+      (receipt.outcome !== "passed" && receipt.outcome !== "failed") ||
+      !Number.isSafeInteger(receipt.exitCode) || (receipt.exitCode as number) < 0 ||
+      (receipt.exitCode as number) > 255 ||
+      (receipt.cacheEvidence !== null && !nonemptyText(receipt.cacheEvidence))) return null;
+  const sourceRefs = evidenceStringArray(receipt.sourceRefs);
+  const counts = receipt.testCounts === null ? null : evidenceTestCounts(receipt.testCounts);
+  if (sourceRefs === null || (receipt.testCounts !== null && counts === null)) return null;
+  const executableKind = receipt.executableKind as "build" | "test";
+  const outcome = receipt.outcome as "passed" | "failed";
+  let classification: "product_defect" | "environment_failure" | "harness_defect" | null = null;
+  if (outcome === "passed") {
+    if (receipt.exitCode !== 0 || receipt.failureClassification !== null ||
+        (executableKind === "build"
+          ? counts !== null
+          : counts === null || counts.failed !== 0 || counts.cancelled !== 0)) return null;
+  } else {
+    if (receipt.exitCode === 0 ||
+        !["product_defect", "environment_failure", "harness_defect"]
+          .includes(receipt.failureClassification as string)) return null;
+    classification = receipt.failureClassification as typeof classification;
+    const requiredPrefix = classification === "product_defect"
+      ? "diagnostic:"
+      : classification === "environment_failure" ? "environment:" : "harness:";
+    if (executableKind === "test") {
+      if (classification === "product_defect"
+        ? counts === null || counts.failed === 0
+        : counts !== null || !sourceRefs.some((ref) => ref.startsWith(requiredPrefix))) return null;
+    } else if (counts !== null || !sourceRefs.some((ref) => ref.startsWith(requiredPrefix))) {
+      return null;
+    }
+  }
+  return Object.freeze({
+    evidenceId: receipt.evidenceId,
+    checkpointId: receipt.checkpointId,
+    commandId: receipt.commandId,
+    command: receipt.command,
+    executableKind,
+    outcome,
+    exitCode: receipt.exitCode as number,
+    testCounts: counts,
+    cacheEvidence: receipt.cacheEvidence as string | null,
+    failureClassification: classification,
+    sourceRefs,
+  });
+}
+
+function cumulativeMackValidationBundle(
+  value: unknown,
+): Readonly<TddMissionCumulativeMackBundleV1> | null {
+  const bundle = record(value, CUMULATIVE_MACK_BUNDLE_FIELDS);
+  if (bundle === null || !identifier(bundle.bundleId) || !identifier(bundle.missionId) ||
+      typeof bundle.planDigest !== "string" || !DIGEST.test(bundle.planDigest) ||
+      typeof bundle.acceptanceContractDigest !== "string" ||
+      !DIGEST.test(bundle.acceptanceContractDigest) ||
+      !contractGeneration(bundle.contractGeneration) || bundle.ownerSeatId !== "mack" ||
+      !identifier(bundle.runtimeId) || !identifier(bundle.modelId) ||
+      !identifier(bundle.executorId) || !nonemptyText(bundle.canonicalRoot) ||
+      !(bundle.canonicalRoot as string).startsWith("/") || !identifier(bundle.repositoryId) ||
+      !identifier(bundle.branch) || typeof bundle.headRevisionId !== "string" ||
+      !REVISION.test(bundle.headRevisionId) || typeof bundle.headTreeDigest !== "string" ||
+      !REVISION.test(bundle.headTreeDigest) || bundle.trackedClean !== true ||
+      !Array.isArray(bundle.receipts) || Object.getPrototypeOf(bundle.receipts) !== Array.prototype ||
+      bundle.receipts.length !== TERMINAL_VALIDATION_TABLE.length) return null;
+  const changedPaths = Array.isArray(bundle.changedPaths) && bundle.changedPaths.length === 0
+    ? Object.freeze([]) as readonly string[]
+    : relativePaths(bundle.changedPaths);
+  const transitionBundleRefs = evidenceStringArrayAllowEmpty(bundle.transitionBundleRefs);
+  const dispositionRefs = evidenceStringArrayAllowEmpty(bundle.dispositionRefs);
+  if (changedPaths === null || transitionBundleRefs === null || dispositionRefs === null) return null;
+  const receipts: Readonly<TddMissionTerminalCommandReceiptV1>[] = [];
+  const receiptIds = new Set<string>();
+  for (const configured of TERMINAL_VALIDATION_TABLE) {
+    const matches = (bundle.receipts as readonly unknown[]).map(terminalCommandReceipt).filter(
+      (receipt): receipt is Readonly<TddMissionTerminalCommandReceiptV1> => receipt !== null &&
+        receipt.checkpointId === configured.checkpointId && receipt.commandId === configured.commandId &&
+        receipt.command === configured.command && receipt.executableKind === configured.executableKind,
+    );
+    if (matches.length !== 1 || receiptIds.has(matches[0].evidenceId)) return null;
+    receiptIds.add(matches[0].evidenceId);
+    receipts.push(matches[0]);
+  }
+  return Object.freeze({
+    bundleId: bundle.bundleId,
+    missionId: bundle.missionId,
+    planDigest: bundle.planDigest,
+    acceptanceContractDigest: bundle.acceptanceContractDigest,
+    contractGeneration: bundle.contractGeneration,
+    ownerSeatId: "mack" as const,
+    runtimeId: bundle.runtimeId,
+    modelId: bundle.modelId,
+    executorId: bundle.executorId,
+    canonicalRoot: bundle.canonicalRoot,
+    repositoryId: bundle.repositoryId,
+    branch: bundle.branch,
+    headRevisionId: bundle.headRevisionId,
+    headTreeDigest: bundle.headTreeDigest,
+    changedPaths,
+    trackedClean: true as const,
+    transitionBundleRefs,
+    dispositionRefs,
+    receipts: Object.freeze(receipts),
+  });
+}
+
+function furyTerminalReceipt(
+  value: unknown,
+): Readonly<TddMissionFuryTerminalReceiptV1> | null {
+  const receipt = record(value, FURY_TERMINAL_RECEIPT_FIELDS);
+  if (receipt === null || !identifier(receipt.evidenceId) || !identifier(receipt.missionId) ||
+      typeof receipt.planDigest !== "string" || !DIGEST.test(receipt.planDigest) ||
+      typeof receipt.acceptanceContractDigest !== "string" ||
+      !DIGEST.test(receipt.acceptanceContractDigest) ||
+      !contractGeneration(receipt.contractGeneration) || receipt.reviewerSeatId !== "fury" ||
+      !identifier(receipt.runtimeId) || !identifier(receipt.modelId) ||
+      !identifier(receipt.executorId) || !identifier(receipt.repositoryId) ||
+      !identifier(receipt.branch) || typeof receipt.headRevisionId !== "string" ||
+      !REVISION.test(receipt.headRevisionId) || typeof receipt.headTreeDigest !== "string" ||
+      !REVISION.test(receipt.headTreeDigest) || !identifier(receipt.mackBundleRef) ||
+      receipt.verdict !== "PASS" || receipt.command !== null || receipt.exitCode !== null ||
+      receipt.testCounts !== null || receipt.cacheEvidence !== null ||
+      receipt.failureClassification !== null) return null;
+  const transitionReviewRefs = evidenceStringArrayAllowEmpty(receipt.transitionReviewRefs);
+  const dispositionRefs = evidenceStringArrayAllowEmpty(receipt.dispositionRefs);
+  if (transitionReviewRefs === null || dispositionRefs === null) return null;
+  return Object.freeze({
+    evidenceId: receipt.evidenceId,
+    missionId: receipt.missionId,
+    planDigest: receipt.planDigest,
+    acceptanceContractDigest: receipt.acceptanceContractDigest,
+    contractGeneration: receipt.contractGeneration,
+    reviewerSeatId: "fury" as const,
+    runtimeId: receipt.runtimeId,
+    modelId: receipt.modelId,
+    executorId: receipt.executorId,
+    repositoryId: receipt.repositoryId,
+    branch: receipt.branch,
+    headRevisionId: receipt.headRevisionId,
+    headTreeDigest: receipt.headTreeDigest,
+    mackBundleRef: receipt.mackBundleRef,
+    transitionReviewRefs,
+    dispositionRefs,
+    verdict: "PASS" as const,
+    command: null,
+    exitCode: null,
+    testCounts: null,
+    cacheEvidence: null,
+    failureClassification: null,
+  });
 }
 
 function validEvidenceStageOwnership(
@@ -2810,6 +3083,21 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
       mission.reviewedAcceptanceContractDigest) {
     return blockedMission("BINDING_DIGEST_MISMATCH");
   }
+  const terminalMack = cumulativeMackValidationBundle(mission.cumulativeMackValidationBundle);
+  const terminalFury = furyTerminalReceipt(mission.furyTerminalReceipt);
+  if (terminalMack === null || terminalFury === null) {
+    return blockedMission("EVIDENCE_SCHEMA_INVALID");
+  }
+  if (terminalMack.missionId !== mission.missionId || terminalFury.missionId !== mission.missionId ||
+      terminalMack.planDigest !== mission.planDigest || terminalFury.planDigest !== mission.planDigest ||
+      terminalMack.acceptanceContractDigest !== mission.reviewedAcceptanceContractDigest ||
+      terminalFury.acceptanceContractDigest !== mission.reviewedAcceptanceContractDigest ||
+      terminalMack.contractGeneration !== strategy.contract.contractGeneration ||
+      terminalFury.contractGeneration !== strategy.contract.contractGeneration ||
+      terminalMack.repositoryId !== mission.repositoryId || terminalFury.repositoryId !== mission.repositoryId ||
+      terminalMack.branch !== mission.branch || terminalFury.branch !== mission.branch) {
+    return blockedMission("BINDING_DIGEST_MISMATCH");
+  }
   let predecessor: Readonly<TddReviewedPredecessorContractV1> | null = null;
   if (strategy.contract.contractGeneration === 0) {
     if (mission.reviewedPredecessorContract !== null) {
@@ -2868,8 +3156,22 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
         ))) {
     return blockedMission("EVIDENCE_SCHEMA_INVALID");
   }
+  const terminalIds = [
+    terminalMack.bundleId,
+    ...terminalMack.receipts.map((receipt) => receipt.evidenceId),
+    terminalFury.evidenceId,
+  ];
+  if (new Set(terminalIds).size !== terminalIds.length ||
+      terminalIds.some((id) => evidenceIds.has(id) ||
+        activeContractEvidenceIds(strategy.contract.criteria).has(id))) {
+    return blockedMission("EVIDENCE_SCHEMA_INVALID");
+  }
 
   const completedCriterionIds: string[] = [];
+  const realizedTransitionBundleRefs: string[] = [];
+  const realizedTransitionReviewRefs: string[] = [];
+  const realizedDispositionRefs: string[] = [];
+  const realizedChangedPaths: string[] = [];
   for (const criterion of strategy.contract.criteria) {
     const criterionIds = [criterion.criterionId] as const;
     const evidence = normalizedEvidence.filter((item) =>
@@ -2935,6 +3237,7 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
             !disposition.sourceRefs.some((ref) => ref.startsWith("issue:")))) {
         return blockedMission("DISPOSITION_EVIDENCE_MISSING", criterionIds);
       }
+      realizedDispositionRefs.push(disposition.evidenceId);
       completedCriterionIds.push(criterion.criterionId);
       continue;
     }
@@ -2947,8 +3250,6 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
       "implementation_authorized",
       "green_proven",
       ...(criterion.refactorEvidence === null ? [] : ["refactor_proven" as const]),
-      "mack_validation_complete",
-      "fury_conformance_complete",
     ]);
     if (evidence.some((item) => !allowedStages.has(item.stage))) {
       return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
@@ -3062,69 +3363,43 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
         finalImplementationEvidence.revisionId !== finalImplementationReceipt.resultRevisionId) {
       return blockedMission("STALE_EXACT_REVISION_EVIDENCE", criterionIds);
     }
-    const mack = stageEvidence(evidence, "mack_validation_complete");
-    const fury = stageEvidence(evidence, "fury_conformance_complete");
-    if (mack === "duplicate" || fury === "duplicate") {
-      return blockedMission("EVIDENCE_SCHEMA_INVALID", criterionIds);
-    }
-    if (mack === null) return blockedMission("MACK_EVIDENCE_MISSING", criterionIds);
-    if (fury === null) return blockedMission("REVIEW_EVIDENCE_MISSING", criterionIds);
-    const focusedBundle = finalImplementationReceipt.mackValidationBundle;
-    const focusedMack = focusedBundle.receipts.find((receipt) =>
-      receipt.evidenceId === finalImplementationReceipt.focusedMackEvidenceRef);
-    if (focusedMack === undefined) {
-      return blockedMission("MACK_EVIDENCE_MISSING", criterionIds);
-    }
-    const realizedPacketReviewIds = [
-      greenReceipt.packetFuryReview.reviewId,
-      ...(criterion.refactorEvidence === null
-        ? []
-        : [criterion.refactorEvidence.packetFuryReview.reviewId]),
-    ];
-    if (!exactPoint(
-      mack,
-      finalImplementationEvidence.endRevisionId,
-      finalImplementationEvidence.endTreeDigest,
-    ) || !exactStartPoint(
-      mack,
-      finalImplementationEvidence.endRevisionId,
-      finalImplementationEvidence.endTreeDigest,
-    ) || !exactPoint(
-      fury,
-      finalImplementationEvidence.endRevisionId,
-      finalImplementationEvidence.endTreeDigest,
-    ) || !exactStartPoint(
-      fury,
-      finalImplementationEvidence.endRevisionId,
-      finalImplementationEvidence.endTreeDigest,
-    )) {
-      return blockedMission("STALE_EXACT_REVISION_EVIDENCE", criterionIds);
-    }
-    if (mack.evidenceId !== criterion.traceability.validationEvidenceId ||
-        !evidenceTransitionMatches(
-          mack,
-          criterion.traceability.mackCheckpointId,
-          "fury_conformance_complete",
-        ) || !containsRefs(
-          mack,
-          finalImplementationEvidence.evidenceId,
-          focusedBundle.bundleId,
-        ) ||
-        fury.evidenceId !== criterion.traceability.furyReviewId ||
-        !evidenceTransitionMatches(
-          fury,
-          criterion.traceability.furyReviewId,
-          "mission_complete",
-        ) || !containsRefs(
-          fury,
-          mack.evidenceId,
-          ...realizedPacketReviewIds,
-        ) ||
-        (criterion.traceability.humanReviewId !== null &&
-          !containsRefs(fury, criterion.traceability.humanReviewId))) {
+    if (criterion.traceability.validationEvidenceId !== terminalMack.bundleId ||
+        criterion.traceability.furyReviewId !== terminalFury.evidenceId) {
       return blockedMission("REVIEW_EVIDENCE_MISSING", criterionIds);
     }
+    realizedTransitionBundleRefs.push(greenReceipt.mackValidationBundle.bundleId);
+    realizedTransitionReviewRefs.push(greenReceipt.packetFuryReview.reviewId);
+    realizedChangedPaths.push(...greenReceipt.observedPaths);
+    if (criterion.refactorEvidence !== null) {
+      realizedTransitionBundleRefs.push(criterion.refactorEvidence.mackValidationBundle.bundleId);
+      realizedTransitionReviewRefs.push(criterion.refactorEvidence.packetFuryReview.reviewId);
+      realizedChangedPaths.push(...criterion.refactorEvidence.observedPaths);
+    }
+    realizedDispositionRefs.push(`disposition:${criterion.criterionId.toLowerCase()}:implemented`);
     completedCriterionIds.push(criterion.criterionId);
+  }
+
+  const exactSet = (actual: readonly string[], expected: readonly string[]): boolean => {
+    const normalizedExpected = canonicalSet([...new Set(expected)]);
+    return normalizedExpected !== null && canonicalJson(canonicalSet(actual)) ===
+      canonicalJson(normalizedExpected);
+  };
+  if (terminalMack.headRevisionId !== mission.headRevisionId ||
+      terminalMack.headTreeDigest !== mission.headTreeDigest ||
+      terminalFury.headRevisionId !== mission.headRevisionId ||
+      terminalFury.headTreeDigest !== mission.headTreeDigest) {
+    return blockedMission("STALE_EXACT_REVISION_EVIDENCE", completedCriterionIds);
+  }
+  if (!exactSet(terminalMack.transitionBundleRefs, realizedTransitionBundleRefs) ||
+      !exactSet(terminalMack.dispositionRefs, realizedDispositionRefs) ||
+      !exactSet(terminalMack.changedPaths, realizedChangedPaths) ||
+      terminalMack.receipts.some((receipt) => receipt.outcome !== "passed")) {
+    return blockedMission("MACK_EVIDENCE_MISSING", completedCriterionIds);
+  }
+  if (terminalFury.mackBundleRef !== terminalMack.bundleId ||
+      !exactSet(terminalFury.transitionReviewRefs, realizedTransitionReviewRefs) ||
+      !exactSet(terminalFury.dispositionRefs, realizedDispositionRefs)) {
+    return blockedMission("REVIEW_EVIDENCE_MISSING", completedCriterionIds);
   }
 
   const normalizedInput = Object.freeze({
@@ -3142,6 +3417,8 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
     headTreeDigest: mission.headTreeDigest as string,
     strategyContract: strategy.contract,
     evidence: Object.freeze(normalizedEvidence),
+    cumulativeMackValidationBundle: terminalMack,
+    furyTerminalReceipt: terminalFury,
   });
   return Object.freeze({
     state: "eligible" as const,

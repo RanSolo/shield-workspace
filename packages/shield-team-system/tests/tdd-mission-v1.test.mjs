@@ -19,6 +19,7 @@ const PLANNING_TREE = "8a756afae0b0586fe1f9911a4b2d18f7650c24a1";
 const GREEN_TREE = "650bca49fd1f33bf7da5d637f9f196712a75ea7f";
 const REFACTOR_TREE = "4625506e302d60c00d2390266624133a384ca68b";
 const MISSION_HEAD_TREE = "9ea6d7469326d87db9b23063c54c983486944bd4";
+const CANONICAL_ROOT = "/workspace/shield-workspace";
 const CONTRACT_DIGEST = "sha256:acceptance_contract_digest";
 const OLD_CONTRACT_DIGEST = "sha256:old_contract_digest";
 const AMENDED_CONTRACT_DIGEST = "sha256:amended_contract_digest";
@@ -709,6 +710,106 @@ function exactEvidence({
   };
 }
 
+function terminalCommandReceipt(checkpointId, overrides = {}) {
+  const table = {
+    "checkpoint:issue-162:terminal:focused": {
+      commandId: "validation:issue-162:focused-node-test",
+      command: "node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs",
+      executableKind: "test",
+    },
+    "checkpoint:issue-162:terminal:build": {
+      commandId: "validation:issue-162:nx-build",
+      command: "npm exec nx run @shield/team-system:build",
+      executableKind: "build",
+    },
+    "checkpoint:issue-162:terminal:test": {
+      commandId: "validation:issue-162:nx-test",
+      command: "npm exec nx run @shield/team-system:test",
+      executableKind: "test",
+    },
+  };
+  const configured = table[checkpointId];
+  const testCounts = configured.executableKind === "test" ? {
+    total: 1, passed: 1, failed: 0, skipped: 0, cancelled: 0, todo: 0,
+  } : null;
+  return {
+    evidenceId: `receipt:mack:${checkpointId.split(":").at(-1)}`,
+    checkpointId,
+    ...configured,
+    outcome: "passed",
+    exitCode: 0,
+    testCounts,
+    cacheEvidence: "cache:not_applicable",
+    failureClassification: null,
+    sourceRefs: [`command:${configured.commandId}`],
+    ...overrides,
+  };
+}
+
+function cumulativeMackBundle(contract, includeRefactor, overrides = {}) {
+  const transitionBundleRefs = [
+    "bundle:mack:ac-162-1:green",
+    ...(includeRefactor ? ["bundle:mack:ac-162-1:refactor"] : []),
+  ];
+  const base = {
+    bundleId: "bundle:mack:mission:terminal",
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    acceptanceContractDigest: contract.acceptanceContractDigest,
+    contractGeneration: contract.contractGeneration,
+    ownerSeatId: "mack",
+    runtimeId: "runtime:mack:hosted",
+    modelId: "model:mack:gpt-5",
+    executorId: "executor:mack:codex",
+    canonicalRoot: CANONICAL_ROOT,
+    repositoryId: "RanSolo/shield-workspace",
+    branch: "agent/issue-162-tdd-intent",
+    headRevisionId: MISSION_HEAD_REVISION,
+    headTreeDigest: MISSION_HEAD_TREE,
+    changedPaths: PACKET_PATHS,
+    trackedClean: true,
+    transitionBundleRefs,
+    dispositionRefs: ["disposition:ac-162-1:implemented"],
+    receipts: [
+      terminalCommandReceipt("checkpoint:issue-162:terminal:focused"),
+      terminalCommandReceipt("checkpoint:issue-162:terminal:build"),
+      terminalCommandReceipt("checkpoint:issue-162:terminal:test"),
+    ],
+  };
+  return { ...base, ...overrides };
+}
+
+function furyTerminalReceipt(contract, includeRefactor, overrides = {}) {
+  return {
+    evidenceId: "receipt:fury:mission:terminal",
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    acceptanceContractDigest: contract.acceptanceContractDigest,
+    contractGeneration: contract.contractGeneration,
+    reviewerSeatId: "fury",
+    runtimeId: "runtime:fury:hosted",
+    modelId: "model:fury:gpt-5",
+    executorId: "executor:fury:codex",
+    repositoryId: "RanSolo/shield-workspace",
+    branch: "agent/issue-162-tdd-intent",
+    headRevisionId: MISSION_HEAD_REVISION,
+    headTreeDigest: MISSION_HEAD_TREE,
+    mackBundleRef: "bundle:mack:mission:terminal",
+    transitionReviewRefs: [
+      "review:fury:packet:ac-162-1:green",
+      ...(includeRefactor ? ["review:fury:packet:ac-162-1:refactor"] : []),
+    ],
+    dispositionRefs: ["disposition:ac-162-1:implemented"],
+    verdict: "PASS",
+    command: null,
+    exitCode: null,
+    testCounts: null,
+    cacheEvidence: null,
+    failureClassification: null,
+    ...overrides,
+  };
+}
+
 function fullFlowMission({ includeRefactor = true, disposition, evidence } = {}) {
   const finalRevision = includeRefactor ? REFACTOR_REVISION : GREEN_REVISION;
   const finalTree = includeRefactor ? REFACTOR_TREE : GREEN_TREE;
@@ -720,8 +821,8 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
     disposition: disposition ?? "implemented_and_proven",
     traceability: {
       revisionId: finalRevision,
-      validationEvidenceId: "validation:ac-162-1",
-      furyReviewId: "review:fury:ac-162-1",
+      validationEvidenceId: "bundle:mack:mission:terminal",
+      furyReviewId: "receipt:fury:mission:terminal",
       humanReviewId: "review:human:ac-162-1",
     },
   });
@@ -802,37 +903,6 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
       sourceRefs: ["green:ac-162-1", "authority:ac-162-1:refactor"],
       successor: "mack_validation_complete",
     })] : []),
-    exactEvidence({
-      evidenceId: "validation:ac-162-1",
-      stage: "mack_validation_complete",
-      seatId: "mack",
-      revisionId: finalRevision,
-      treeDigest: finalTree,
-      command: "node --test checkpoint:ac-162-1:focused",
-      checkpointId: "checkpoint:ac-162-1:red",
-      outcome: "passed",
-      sourceRefs: [
-        includeRefactor ? "refactor:ac-162-1" : "green:ac-162-1",
-        includeRefactor ? "bundle:mack:ac-162-1:refactor" : "bundle:mack:ac-162-1:green",
-      ],
-      successor: "fury_conformance_complete",
-    }),
-    exactEvidence({
-      evidenceId: "review:fury:ac-162-1",
-      stage: "fury_conformance_complete",
-      seatId: "fury",
-      revisionId: finalRevision,
-      treeDigest: finalTree,
-      checkpointId: "review:fury:ac-162-1",
-      outcome: "passed",
-      sourceRefs: [
-        "validation:ac-162-1",
-        "review:fury:packet:ac-162-1:green",
-        ...(includeRefactor ? ["review:fury:packet:ac-162-1:refactor"] : []),
-        "review:human:ac-162-1",
-      ],
-      successor: "mission_complete",
-    }),
   ];
   const boundRecords = records.map((item) => item.acceptanceContractDigest === CONTRACT_DIGEST
     ? { ...item, acceptanceContractDigest: contract.acceptanceContractDigest }
@@ -847,15 +917,39 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
     branch: "agent/issue-162-tdd-intent",
     planningRevisionId: REVISION,
     planningTreeDigest: PLANNING_TREE,
-    headRevisionId: finalRevision,
-    headTreeDigest: finalTree,
+    headRevisionId: MISSION_HEAD_REVISION,
+    headTreeDigest: MISSION_HEAD_TREE,
     reviewedPredecessorContract: null,
     strategyContract: contract,
     evidence: boundRecords,
+    cumulativeMackValidationBundle: cumulativeMackBundle(contract, includeRefactor),
+    furyTerminalReceipt: furyTerminalReceipt(contract, includeRefactor),
   };
 }
 
 function rebindMissionStrategy(base, contract, evidence = base.evidence) {
+  const dispositionRefs = evidence
+    .filter((item) => item.stage === "disposition_recorded")
+    .map((item) => item.evidenceId);
+  const implemented = contract.criteria.filter(
+    (item) => item.disposition === "implemented_and_proven",
+  );
+  const terminalDispositionRefs = [
+    ...implemented.map((item) => `disposition:${item.criterionId.toLowerCase()}:implemented`),
+    ...dispositionRefs,
+  ];
+  const transitionBundleRefs = implemented.flatMap((item) => [
+    item.greenEvidence?.mackValidationBundle.bundleId,
+    item.refactorEvidence?.mackValidationBundle.bundleId,
+  ]).filter(Boolean);
+  const transitionReviewRefs = implemented.flatMap((item) => [
+    item.greenEvidence?.packetFuryReview.reviewId,
+    item.refactorEvidence?.packetFuryReview.reviewId,
+  ]).filter(Boolean);
+  const changedPaths = implemented.flatMap((item) => [
+    ...(item.greenEvidence?.observedPaths ?? []),
+    ...(item.refactorEvidence?.observedPaths ?? []),
+  ]).filter((path, index, paths) => paths.indexOf(path) === index);
   return {
     ...base,
     reviewedAcceptanceContractDigest: contract.acceptanceContractDigest,
@@ -866,6 +960,21 @@ function rebindMissionStrategy(base, contract, evidence = base.evidence) {
       contractGeneration: contract.contractGeneration,
       acceptanceContractDigest: contract.acceptanceContractDigest,
     })),
+    cumulativeMackValidationBundle: {
+      ...base.cumulativeMackValidationBundle,
+      contractGeneration: contract.contractGeneration,
+      acceptanceContractDigest: contract.acceptanceContractDigest,
+      transitionBundleRefs,
+      dispositionRefs: terminalDispositionRefs,
+      changedPaths,
+    },
+    furyTerminalReceipt: {
+      ...base.furyTerminalReceipt,
+      contractGeneration: contract.contractGeneration,
+      acceptanceContractDigest: contract.acceptanceContractDigest,
+      transitionReviewRefs,
+      dispositionRefs: terminalDispositionRefs,
+    },
   };
 }
 
@@ -898,8 +1007,8 @@ function amendedFlowMission({ oldStrategy = "tdd_selected", amendmentKind = "cha
     traceability: {
       ...activeCriterion.traceability,
       revisionId: GREEN_REVISION,
-      validationEvidenceId: "validation:ac-162-1",
-      furyReviewId: "review:fury:ac-162-1",
+      validationEvidenceId: "bundle:mack:mission:terminal",
+      furyReviewId: "receipt:fury:mission:terminal",
     },
   };
   const contract = {
@@ -978,35 +1087,6 @@ function amendedFlowMission({ oldStrategy = "tdd_selected", amendmentKind = "cha
       successor: "mack_validation_complete",
       contractGeneration: 1,
     }),
-    exactEvidence({
-      evidenceId: "validation:ac-162-1",
-      stage: "mack_validation_complete",
-      seatId: "mack",
-      revisionId: GREEN_REVISION,
-      treeDigest: GREEN_TREE,
-      command: "node --test checkpoint:ac-162-1:focused",
-      checkpointId: "checkpoint:ac-162-1:red",
-      outcome: "passed",
-      sourceRefs: ["green:ac-162-1", "bundle:mack:ac-162-1:green"],
-      successor: "fury_conformance_complete",
-      contractGeneration: 1,
-    }),
-    exactEvidence({
-      evidenceId: "review:fury:ac-162-1",
-      stage: "fury_conformance_complete",
-      seatId: "fury",
-      revisionId: GREEN_REVISION,
-      treeDigest: GREEN_TREE,
-      checkpointId: "review:fury:ac-162-1",
-      outcome: "passed",
-      sourceRefs: [
-        "validation:ac-162-1",
-        "review:fury:packet:ac-162-1:green",
-        "review:human:ac-162-1",
-      ],
-      successor: "mission_complete",
-      contractGeneration: 1,
-    }),
   ].map((item) => ({
     ...item,
     acceptanceContractDigest: activeDigest,
@@ -1038,10 +1118,12 @@ function amendedFlowMission({ oldStrategy = "tdd_selected", amendmentKind = "cha
     branch: "agent/issue-162-tdd-intent",
     planningRevisionId: REVISION,
     planningTreeDigest: PLANNING_TREE,
-    headRevisionId: GREEN_REVISION,
-    headTreeDigest: GREEN_TREE,
+    headRevisionId: MISSION_HEAD_REVISION,
+    headTreeDigest: MISSION_HEAD_TREE,
     strategyContract: contract,
     evidence: records,
+    cumulativeMackValidationBundle: cumulativeMackBundle(contract, false),
+    furyTerminalReceipt: furyTerminalReceipt(contract, false),
   };
 }
 
@@ -2215,16 +2297,14 @@ test("bounded mission traverses reviewed Red, authorized May Green, optional Ref
 
 test("terminal Fury references every realized packet review while cumulative Mack remains separate", () => {
   const input = fullFlowMission({ includeRefactor: true });
-  const terminalMack = input.evidence.find((item) => item.stage === "mack_validation_complete");
+  const terminalMack = input.cumulativeMackValidationBundle;
   const focusedReceipt = input.strategyContract.criteria[0].refactorEvidence
     .mackValidationBundle.receipts[0];
-  assert.notEqual(terminalMack.command, focusedReceipt.command);
+  assert.ok(terminalMack.receipts.every((receipt) => receipt.command !== focusedReceipt.command));
 
   const missingGreenReview = structuredClone(input);
-  const terminalFury = missingGreenReview.evidence.find(
-    (item) => item.stage === "fury_conformance_complete",
-  );
-  terminalFury.sourceRefs = terminalFury.sourceRefs.filter(
+  const terminalFury = missingGreenReview.furyTerminalReceipt;
+  terminalFury.transitionReviewRefs = terminalFury.transitionReviewRefs.filter(
     (sourceRef) => sourceRef !== "review:fury:packet:ac-162-1:green",
   );
   const result = evaluateTddMissionV1(missingGreenReview);
@@ -2273,9 +2353,10 @@ test("reviewed acceptance-contract digest is anchored and propagated through eve
   assert.deepEqual(substitutedTransition.reasonCodes, ["BINDING_DIGEST_MISMATCH"]);
 });
 
-test("exact evidence requires execution metadata and retains truthful test/cache records", () => {
+test("Packet C terminal bundle closes repository observations and three command receipts", () => {
   const input = fullFlowMission();
-  const validation = input.evidence.find((item) => item.stage === "mack_validation_complete");
+  const bundle = input.cumulativeMackValidationBundle;
+  const validation = bundle.receipts[0];
   assert.deepEqual(validation.testCounts, {
     total: 1,
     passed: 1,
@@ -2286,29 +2367,161 @@ test("exact evidence requires execution metadata and retains truthful test/cache
   });
   assert.equal(validation.exitCode, 0);
   assert.equal(validation.cacheEvidence, "cache:not_applicable");
-  assert.equal(validation.cwd, "/workspace/shield-workspace/packages/shield-team-system");
-  assert.equal(validation.modelId, "model:mack:gpt-5");
+  assert.equal(bundle.canonicalRoot, CANONICAL_ROOT);
+  assert.equal(bundle.modelId, "model:mack:gpt-5");
+  assert.equal(bundle.receipts.length, 3);
 
   for (const field of [
-    "cwd",
-    "startRevisionId",
-    "startTreeDigest",
-    "endRevisionId",
-    "endTreeDigest",
-    "exitCode",
-    "testCounts",
-    "cacheEvidence",
-    "modelId",
+    "canonicalRoot", "repositoryId", "branch", "headRevisionId", "headTreeDigest",
+    "changedPaths", "trackedClean", "modelId",
   ]) {
-    const malformedValidation = { ...validation };
-    delete malformedValidation[field];
-    const malformed = evaluateTddMissionV1({
-      ...input,
-      evidence: input.evidence.map((item) =>
-        item.stage === "mack_validation_complete" ? malformedValidation : item),
-    });
-    assert.equal(malformed.state, "blocked");
-    assert.deepEqual(malformed.reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
+    const malformed = structuredClone(input);
+    delete malformed.cumulativeMackValidationBundle[field];
+    const result = evaluateTddMissionV1(malformed);
+    assert.equal(result.state, "blocked");
+    assert.deepEqual(result.reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
+  }
+
+  const receiptMutations = [
+    (receipts) => { receipts.pop(); },
+    (receipts) => { receipts.push({ ...receipts[0], evidenceId: "receipt:extra" }); },
+    (receipts) => { receipts[1] = { ...receipts[0] }; },
+    (receipts) => { receipts[0].checkpointId = "checkpoint:substituted"; },
+    (receipts) => { receipts[0].commandId = "validation:substituted"; },
+    (receipts) => { receipts[0].command = "node --test substituted.mjs"; },
+    (receipts) => { receipts[0].executableKind = "build"; },
+    (receipts) => { receipts[0].unexpected = true; },
+  ];
+  for (const mutate of receiptMutations) {
+    const candidate = structuredClone(input);
+    mutate(candidate.cumulativeMackValidationBundle.receipts);
+    const result = evaluateTddMissionV1(candidate);
+    assert.equal(result.state, "blocked");
+    assert.deepEqual(result.reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
+  }
+  for (const target of ["cumulativeMackValidationBundle", "furyTerminalReceipt"]) {
+    const candidate = structuredClone(input);
+    candidate[target].unexpected = true;
+    assert.deepEqual(evaluateTddMissionV1(candidate).reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
+  }
+});
+
+test("Packet C rejects stale terminal points and inexact transition/disposition references", () => {
+  const input = fullFlowMission({ includeRefactor: true });
+  const mutations = [
+    (item) => { item.headRevisionId = GREEN_REVISION; },
+    (item) => { item.headTreeDigest = GREEN_TREE; },
+    (item) => { item.cumulativeMackValidationBundle.headRevisionId = GREEN_REVISION; },
+    (item) => { item.cumulativeMackValidationBundle.headTreeDigest = GREEN_TREE; },
+    (item) => { item.furyTerminalReceipt.headRevisionId = GREEN_REVISION; },
+    (item) => { item.furyTerminalReceipt.headTreeDigest = GREEN_TREE; },
+    (item) => { item.cumulativeMackValidationBundle.transitionBundleRefs.pop(); },
+    (item) => { item.cumulativeMackValidationBundle.transitionBundleRefs.push("bundle:extra"); },
+    (item) => { item.cumulativeMackValidationBundle.transitionBundleRefs.push(
+      item.cumulativeMackValidationBundle.transitionBundleRefs[0],
+    ); },
+    (item) => { item.cumulativeMackValidationBundle.dispositionRefs = []; },
+    (item) => { item.furyTerminalReceipt.transitionReviewRefs.pop(); },
+    (item) => { item.furyTerminalReceipt.transitionReviewRefs.push("review:fury:extra"); },
+    (item) => { item.furyTerminalReceipt.dispositionRefs = []; },
+    (item) => { item.furyTerminalReceipt.mackBundleRef = "bundle:substituted"; },
+  ];
+  for (const mutate of mutations) {
+    const candidate = structuredClone(input);
+    mutate(candidate);
+    assert.equal(evaluateTddMissionV1(candidate).state, "blocked");
+  }
+});
+
+test("Packet C enforces truthful PASS receipt semantics", () => {
+  const input = fullFlowMission();
+  const mutations = [
+    (receipt) => { receipt.exitCode = 1; },
+    (receipt) => { receipt.testCounts.total = 2; },
+    (receipt) => { receipt.testCounts.failed = 1; receipt.testCounts.passed = 0; },
+    (receipt) => { receipt.testCounts.cancelled = 1; receipt.testCounts.passed = 0; },
+    (receipt) => { receipt.testCounts.total = -1; },
+    (receipt) => { receipt.outcome = "failed"; receipt.exitCode = 0; },
+  ];
+  for (const mutate of mutations) {
+    const candidate = structuredClone(input);
+    mutate(candidate.cumulativeMackValidationBundle.receipts[0]);
+    assert.equal(evaluateTddMissionV1(candidate).state, "blocked");
+  }
+  const buildWithCounts = structuredClone(input);
+  buildWithCounts.cumulativeMackValidationBundle.receipts[1].testCounts = {
+    total: 1, passed: 1, failed: 0, skipped: 0, cancelled: 0, todo: 0,
+  };
+  assert.equal(evaluateTddMissionV1(buildWithCounts).state, "blocked");
+});
+
+test("Packet C closes failed executable classifications and source/count rules", () => {
+  const input = fullFlowMission();
+  const productTest = terminalCommandReceipt("checkpoint:issue-162:terminal:focused", {
+    outcome: "failed", exitCode: 1, failureClassification: "product_defect",
+    testCounts: { total: 1, passed: 0, failed: 1, skipped: 0, cancelled: 0, todo: 0 },
+  });
+  const environmentTest = terminalCommandReceipt("checkpoint:issue-162:terminal:focused", {
+    outcome: "failed", exitCode: 1, failureClassification: "environment_failure",
+    testCounts: null, sourceRefs: ["environment:node"],
+  });
+  const harnessTest = terminalCommandReceipt("checkpoint:issue-162:terminal:focused", {
+    outcome: "failed", exitCode: 1, failureClassification: "harness_defect",
+    testCounts: null, sourceRefs: ["harness:test-runner"],
+  });
+  const productBuild = terminalCommandReceipt("checkpoint:issue-162:terminal:build", {
+    outcome: "failed", exitCode: 1, failureClassification: "product_defect",
+    sourceRefs: ["diagnostic:tsc"],
+  });
+  const environmentBuild = terminalCommandReceipt("checkpoint:issue-162:terminal:build", {
+    outcome: "failed", exitCode: 1, failureClassification: "environment_failure",
+    sourceRefs: ["environment:nx"],
+  });
+  const harnessBuild = terminalCommandReceipt("checkpoint:issue-162:terminal:build", {
+    outcome: "failed", exitCode: 1, failureClassification: "harness_defect",
+    sourceRefs: ["harness:nx-runner"],
+  });
+  for (const [receipt, index] of [
+    [productTest, 0], [environmentTest, 0], [harnessTest, 0], [productBuild, 1],
+    [environmentBuild, 1], [harnessBuild, 1],
+  ]) {
+    const candidate = structuredClone(input);
+    candidate.cumulativeMackValidationBundle.receipts[index] = receipt;
+    const result = evaluateTddMissionV1(candidate);
+    assert.equal(result.state, "blocked");
+    assert.deepEqual(result.reasonCodes, ["MACK_EVIDENCE_MISSING"]);
+  }
+  const invalids = [
+    [{ ...productTest, exitCode: 0 }, 0],
+    [{ ...productTest, failureClassification: "missing_behavior" }, 0],
+    [{ ...productTest, testCounts: null }, 0],
+    [{ ...productTest, testCounts: { ...productTest.testCounts, total: 2 } }, 0],
+    [{ ...productTest, testCounts: { ...productTest.testCounts, failed: -1 } }, 0],
+    [{ ...productTest, testCounts: {
+      total: 1, passed: 0, failed: 0, skipped: 0, cancelled: 0, todo: 1,
+    } }, 0],
+    [{ ...environmentTest, testCounts: productTest.testCounts }, 0],
+    [{ ...environmentTest, sourceRefs: ["harness:wrong"] }, 0],
+    [{ ...harnessTest, sourceRefs: ["environment:wrong"] }, 0],
+    [{ ...productBuild, sourceRefs: ["environment:wrong"] }, 1],
+    [{ ...productBuild, testCounts: productTest.testCounts }, 1],
+    [{ ...environmentBuild, sourceRefs: ["diagnostic:wrong"] }, 1],
+    [{ ...harnessBuild, sourceRefs: ["environment:wrong"] }, 1],
+  ];
+  for (const [receipt, index] of invalids) {
+    const candidate = structuredClone(input);
+    candidate.cumulativeMackValidationBundle.receipts[index] = receipt;
+    const result = evaluateTddMissionV1(candidate);
+    assert.equal(result.state, "blocked");
+    assert.deepEqual(result.reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
+  }
+
+  for (const field of ["command", "exitCode", "testCounts", "failureClassification", "cacheEvidence"]) {
+    const malformed = structuredClone(input);
+    malformed.furyTerminalReceipt[field] = field === "command" ? "node --test x" : 1;
+    const result = evaluateTddMissionV1(malformed);
+    assert.equal(result.state, "blocked");
+    assert.deepEqual(result.reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
   }
 });
 
@@ -2331,16 +2544,10 @@ test("Green and Refactor remain traceable to packet revisions before mission HEA
 
 test("stale exact-revision evidence blocks mission completion", () => {
   const input = fullFlowMission();
-  const evidence = input.evidence.map((item) => item.stage === "fury_conformance_complete"
-    ? {
-        ...item,
-        endRevisionId: GREEN_REVISION,
-        endTreeDigest: GREEN_TREE,
-        revisionId: GREEN_REVISION,
-        treeDigest: GREEN_TREE,
-      }
-    : item);
-  const result = evaluateTddMissionV1({ ...input, evidence });
+  const result = evaluateTddMissionV1({
+    ...input,
+    furyTerminalReceipt: { ...input.furyTerminalReceipt, headTreeDigest: GREEN_TREE },
+  });
   assert.equal(result.state, "blocked");
   assert.deepEqual(result.reasonCodes, ["STALE_EXACT_REVISION_EVIDENCE"]);
   assert.deepEqual(result.criterionIds, ["AC-162-1"]);
@@ -2414,8 +2621,8 @@ test("deferred needs a linked issue and not-applicable needs exact disposition e
           evidenceId: `evidence:ac-162-1:${outcome}`,
           stage: "disposition_recorded",
           seatId: "hill",
-          revisionId: GREEN_REVISION,
-          treeDigest: GREEN_TREE,
+          revisionId: MISSION_HEAD_REVISION,
+          treeDigest: MISSION_HEAD_TREE,
           checkpointId: `disposition:ac-162-1:${outcome}`,
           outcome,
           sourceRefs,
@@ -2456,8 +2663,8 @@ test("blocked_pending_explicit_decision remains blocked with its named owner", (
         evidenceId: "evidence:ac-162-1:decision-pending",
         stage: "disposition_recorded",
         seatId: "hill",
-        revisionId: GREEN_REVISION,
-        treeDigest: GREEN_TREE,
+        revisionId: MISSION_HEAD_REVISION,
+        treeDigest: MISSION_HEAD_TREE,
         checkpointId: "decision:ac-162-1:pending",
         outcome: "pending_decision",
         sourceRefs: ["decision-request:ac-162-1"],
