@@ -113,12 +113,19 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(implementationAuthority.IMPLEMENTATION_AUTHORITY_KIND, "wheels_up");
   assert.equal(featureOperation.FEATURE_OPERATION_SCHEMA_VERSION, 1);
   assert.equal(featureOperation.FEATURE_OPERATION_CONTRACT_VERSION, "feature.operation.v1");
+  assert.equal(featureOperation.FEATURE_OPERATION_SCHEMA_VERSION_V2, 2);
+  assert.equal(featureOperation.FEATURE_OPERATION_CONTRACT_VERSION_V2, "feature.operation.v2");
   assert.equal(featureOperation.FEATURE_OPERATION_AUTHORITY_KIND, "epic_wheels_up");
   assert.equal(typeof featureOperation.evaluateFeatureOperationDerivedCandidateV1, "function");
   assert.equal(typeof featureOperation.verifySignedFeatureOperationAuthorityV1, "function");
+  assert.equal(typeof featureOperation.evaluateFeatureOperationDerivedCandidateV2, "function");
+  assert.equal(typeof featureOperation.verifySignedFeatureOperationAuthorityV2, "function");
   assert.equal(featureIntegration.FEATURE_INTEGRATION_CONTRACT_VERSION, "feature.integration.v1");
   assert.equal(featureIntegration.FEATURE_INTEGRATION_CONTROLLER_CONTRACT_VERSION, "feature.integration.controller.v1");
   assert.equal(typeof featureIntegration.replayFeatureOperationJournalV1, "function");
+  assert.equal(featureIntegration.FEATURE_INTEGRATION_CONTRACT_VERSION_V2, "feature.integration.v2");
+  assert.equal(typeof featureIntegration.replayFeatureOperationJournalV2, "function");
+  assert.equal(typeof featureIntegration.secureReplayFeatureOperationJournalV2, "function");
   assert.equal(typeof featureIntegration.readFeatureOperationJournalStoreV1, "function");
   assert.equal(typeof featureIntegration.acceptGovernedChildCompletionV1, "function");
   assert.equal(typeof featureIntegration.runFeatureIntegrationControllerV1, "function");
@@ -419,20 +426,30 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     } from "@shield/team-system/implementation-authority";
     import {
       FEATURE_OPERATION_CONTRACT_VERSION,
+      FEATURE_OPERATION_CONTRACT_VERSION_V2,
       FEATURE_OPERATION_SCHEMA_VERSION,
+      FEATURE_OPERATION_SCHEMA_VERSION_V2,
       evaluateFeatureOperationDerivedCandidateV1,
+      evaluateFeatureOperationDerivedCandidateV2,
       type FeatureOperationActiveLeaseV1,
       type FeatureOperationDerivedCandidateV1,
       type FeatureOperationPlanV1,
+      type FeatureOperationPlanV2,
       type FeatureOperationReplayContextV1,
+      type FeatureOperationReplayContextV2,
       type SignedFeatureOperationAuthorityV1,
+      type SignedFeatureOperationAuthorityV2,
     } from "@shield/team-system/feature-operation";
     import {
       FEATURE_INTEGRATION_CONTRACT_VERSION,
+      FEATURE_INTEGRATION_CONTRACT_VERSION_V2,
       FEATURE_INTEGRATION_CONTROLLER_CONTRACT_VERSION,
       replayFeatureOperationJournalV1,
+      secureReplayFeatureOperationJournalV2,
       runFeatureIntegrationControllerV1,
       type FeatureOperationJournalV1,
+      type FeatureOperationJournalV2,
+      type FeatureIntegrationTrustAnchorV2,
     } from "@shield/team-system/feature-integration";
     import {
       DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION,
@@ -570,6 +587,27 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const featureOperationActiveLease = null as unknown as FeatureOperationActiveLeaseV1;
     const featureOperationCandidate = null as unknown as FeatureOperationDerivedCandidateV1;
     const evaluateFeatureOperation = evaluateFeatureOperationDerivedCandidateV1;
+    const featureOperationSchemaV2: 2 = FEATURE_OPERATION_SCHEMA_VERSION_V2;
+    const featureOperationContractV2: "feature.operation.v2" = FEATURE_OPERATION_CONTRACT_VERSION_V2;
+    const featureOperationPlanV2: FeatureOperationPlanV2 = {
+      ...featureOperationPlan,
+      schemaVersion: 2,
+      contractVersion: "feature.operation.v2",
+      protocol: {
+        version: 2,
+        observationProducerBindingsDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        humanBindingsDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      },
+      finalGates: { policyVersion: 2, fitzRequired: true, simmonsRequired: false, coulsonRequired: true },
+    };
+    const featureOperationAuthorityV2 = null as unknown as SignedFeatureOperationAuthorityV2;
+    const featureOperationReplayV2 = null as unknown as FeatureOperationReplayContextV2;
+    const evaluateFeatureOperationV2 = evaluateFeatureOperationDerivedCandidateV2;
+    const featureIntegrationContractV2: "feature.integration.v2" = FEATURE_INTEGRATION_CONTRACT_VERSION_V2;
+    const featureJournalV1 = null as unknown as FeatureOperationJournalV1;
+    const featureJournalV2 = null as unknown as FeatureOperationJournalV2;
+    const featureTrustAnchorV2 = null as unknown as FeatureIntegrationTrustAnchorV2;
+    const secureReplayV2 = secureReplayFeatureOperationJournalV2;
     const daisyAuthorityContract: "daisy-coordination-authority.v1" = DAISY_COORDINATION_AUTHORITY_CONTRACT_VERSION;
     const daisyAuthority: DaisyCoordinationAuthorityV1 = null as unknown as DaisyCoordinationAuthorityV1;
     const validateDaisyAuthority = validateDaisyCoordinationAuthorityV1;

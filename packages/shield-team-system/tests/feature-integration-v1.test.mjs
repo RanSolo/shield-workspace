@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -7,15 +7,24 @@ import {
   computeFeatureCumulativeValidationCandidateDigestV1,
   computeFeatureCumulativeValidationReceiptDigestV1,
   computeFeatureIntegrationEntryDigestV1,
+  computeFeatureIntegrationEntryDigestV2,
+  computeFeatureIntegrationJournalDigestV2,
+  computeFeatureObservationProducerBindingsDigestV2,
+  computeFeatureHumanBindingsDigestV2,
   computeFeatureIntegrationReceiptDigestV1,
   computeFeatureRollbackReceiptDigestV1,
   computeFeatureIntegrationWorkspaceEffectObservationDigestV1,
   createFeatureIntegrationEntryV1,
+  createFeatureIntegrationEntryV2,
   createFeatureOperationGenesisEntryV1,
   createFeatureOperationJournalV1,
+  createFeatureOperationJournalV2,
   replayFeatureOperationJournalV1,
+  replayFeatureOperationJournalV2,
+  secureReplayFeatureOperationJournalV2,
   validateFeatureIntegrationReceiptV1,
   validateFeatureOperationJournalV1,
+  validateFeatureOperationJournalV2,
 } from "../dist/feature-integration-v1.mjs";
 import {
   FEATURE_OPERATION_DERIVATION_KINDS,
@@ -24,8 +33,14 @@ import {
   computeFeatureOperationAuthorityDigestV1,
   computeFeatureOperationDerivedCandidateDigestV1,
   computeFeatureOperationPlanDigestV1,
+  computeFeatureOperationAuthorityDigestV2,
+  computeFeatureOperationPlanDigestV2,
 } from "../dist/feature-operation-v1.mjs";
 import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import {
+  computeImplementationAuthorityDigest,
+  computeSchema9RuntimeBindingDigest,
+} from "../dist/implementation-authority-v1.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const revision = (character) => character.repeat(40);
@@ -443,4 +458,195 @@ test("terminal rollback reconciliation preserves disposition and exposes only fr
       }
     }
   }
+});
+
+function hardenedGenesisFixture() {
+  const legacy = replayFixture();
+  const fitzBinding = {
+    ...structuredClone(legacy.trustedBindings[0]),
+    bindingId: "binding:fitz",
+    humanPrincipalId: "human:fitz",
+    seatId: "fitz",
+    validFromSequence: 3,
+  };
+  const humanBindings = [{ ...structuredClone(legacy.trustedBindings[0]), validFromSequence: 3 }, fitzBinding];
+  const producerBindings = [
+    { schemaVersion: 2, producerId: "producer:github", producerKind: "github_repository", publicKeySpkiBase64, signingKeyRef },
+    { schemaVersion: 2, producerId: "producer:cumulative", producerKind: "cumulative_execution", publicKeySpkiBase64, signingKeyRef },
+  ];
+  const hardenedPlan = {
+    ...structuredClone(legacy.plan),
+    schemaVersion: 2,
+    contractVersion: "feature.operation.v2",
+    protocol: {
+      version: 2,
+      observationProducerBindingsDigest: computeFeatureObservationProducerBindingsDigestV2(producerBindings),
+      humanBindingsDigest: computeFeatureHumanBindingsDigestV2(humanBindings),
+    },
+    finalGates: { policyVersion: 2, fitzRequired: true, simmonsRequired: false, coulsonRequired: true },
+    planDigest: digest("0"),
+  };
+  hardenedPlan.planDigest = computeFeatureOperationPlanDigestV2(hardenedPlan);
+  const hardenedAuthority = {
+    ...structuredClone(legacy.authority),
+    schemaVersion: 2,
+    contractVersion: "feature.operation.v2",
+    plan: hardenedPlan,
+    planDigest: hardenedPlan.planDigest,
+    authorityDigest: digest("0"),
+  };
+  hardenedAuthority.authorityDigest = computeFeatureOperationAuthorityDigestV2(hardenedAuthority);
+  const signedAuthority = {
+    payload: structuredClone(hardenedAuthority),
+    signatureBase64: sign(null, Buffer.concat([
+      Buffer.from("shield.feature-operation.authority-signature.v2", "ascii"), Buffer.from([0]),
+      Buffer.from(canonicalFeatureIntegrationJsonV1(hardenedAuthority), "utf8"),
+    ]), privateKey).toString("base64"),
+  };
+  const replayContext = {
+    ...structuredClone(legacy.replayContext),
+    schemaVersion: 2,
+    contractVersion: "feature.operation.v2",
+    activePlan: hardenedPlan,
+    activePlanDigest: hardenedPlan.planDigest,
+    verifiedAuthorityDigest: hardenedAuthority.authorityDigest,
+    acceptedPlanLineage: [{ planSequence: 0, planDigest: hardenedPlan.planDigest, predecessorPlanDigest: null, authorityDigest: hardenedAuthority.authorityDigest, active: true }],
+  };
+  const sourceImplementationAuthority = {
+    schemaVersion: 1,
+    contractVersion: "implementation-authority.v1",
+    authorityKind: "wheels_up",
+    authorityRef: "authority:implementation:226",
+    missionId: hardenedAuthority.missionId,
+    subjectId: "issue:226",
+    seatId: "may",
+    missionRevisionId: "sha256:mission_revision",
+    artifactRevisionId: "sha256:artifact_revision",
+    repositoryId: hardenedAuthority.repositoryId,
+    canonicalWritableRoot: "/workspace/shield",
+    branch: "main",
+    baseRevision: "sha256:base_revision",
+    headRevision: "sha256:head_revision",
+    modelId: "model:gpt-5.6-sol",
+    approvedRelativePaths: ["packages/shield-team-system"],
+    approvedActionIds: ["edit:implementation"],
+    approvedEffectClasses: ["verification"],
+    approvedEffectKeys: ["effect:verify"],
+    approvedCapabilities: ["filesystem_write"],
+    validationCommandIds: ["validation:test"],
+    journalSequence: 1,
+    humanPrincipalId: "human:coulson",
+    humanBindingId: "binding:coulson",
+    signingKeyRef,
+    sourceRef: "source:authority:226",
+    evidenceRef: "evidence:authority:226",
+    timestamp: { value: "2026-08-12T00:00:00Z", provenance: "humanRecorded" },
+  };
+  const runtimeBinding = {
+    bindingSchemaVersion: 1,
+    bindingId: "binding:may:runtime",
+    bindingVersion: 1,
+    missionId: hardenedAuthority.missionId,
+    subjectId: sourceImplementationAuthority.subjectId,
+    missionRevisionId: sourceImplementationAuthority.missionRevisionId,
+    seatId: "may",
+    reasoningRuntimeId: "runtime:codex-hosted-may-sol-high",
+    toolExecutorId: "executor:codex-hosted-workspace-tools",
+    repositoryId: hardenedAuthority.repositoryId,
+    canonicalWritableRoot: sourceImplementationAuthority.canonicalWritableRoot,
+    branch: "main",
+    artifactRevisionId: sourceImplementationAuthority.artifactRevisionId,
+    recordedAtSequence: 3,
+    activeThroughSequence: null,
+    lifecycleState: "active",
+    approvedScope: { actionIds: ["edit:implementation"], effectClasses: ["verification"], effectKeys: ["effect:verify"], capabilities: ["filesystem_write"] },
+    coulsonAuthorizationRef: "authorization:runtime-binding:recorded",
+  };
+  const sourceRuntimeBinding = {
+    schemaVersion: 1,
+    binding: runtimeBinding,
+    implementationAuthorityRef: sourceImplementationAuthority.authorityRef,
+    implementationAuthorityDigest: computeImplementationAuthorityDigest(sourceImplementationAuthority),
+    implementationAuthoritySequence: sourceImplementationAuthority.journalSequence,
+    approvedRelativePaths: sourceImplementationAuthority.approvedRelativePaths,
+    validationCommandIds: sourceImplementationAuthority.validationCommandIds,
+    modelId: sourceImplementationAuthority.modelId,
+    baseRevision: sourceImplementationAuthority.baseRevision,
+    headRevision: sourceImplementationAuthority.headRevision,
+  };
+  assert.match(computeSchema9RuntimeBindingDigest(sourceRuntimeBinding), /^sha256:/);
+  const trustAnchor = {
+    missionId: hardenedAuthority.missionId,
+    repositoryId: hardenedAuthority.repositoryId,
+    humanBindingsDigest: hardenedPlan.protocol.humanBindingsDigest,
+    trustedHumanBindings: humanBindings,
+    sourceBindingSequence: 3,
+    sourceImplementationAuthority,
+    sourceImplementationAuthorityDigest: computeImplementationAuthorityDigest(sourceImplementationAuthority),
+    sourceRuntimeBinding,
+    sourceJournalDigest: digest("d"),
+  };
+  const genesis = createFeatureIntegrationEntryV2({
+    operationId: hardenedPlan.operationId,
+    entrySequence: 0,
+    entryKind: "operation_genesis_accepted",
+    previousEntryDigest: null,
+    payload: { replayContext, signedAuthority, trustedObservationProducerBindings: producerBindings, trustedHumanBindings: humanBindings },
+  });
+  const journal = createFeatureOperationJournalV2([genesis]);
+  return { ...legacy, producerBindings, humanBindings, hardenedPlan, hardenedAuthority, signedAuthority, replayContext, trustAnchor, genesis, journal };
+}
+
+test("normalizes immutable V2 producer and human trust roots with exact digest framing", () => {
+  const fixture = hardenedGenesisFixture();
+  const producerDigest = computeFeatureObservationProducerBindingsDigestV2(fixture.producerBindings);
+  const humanDigest = computeFeatureHumanBindingsDigestV2(fixture.humanBindings);
+  assert.equal(producerDigest, "sha256:138b43b00ad7d2da3bc6653347f8d92c9f49f83d9e188d921166d9e294747885");
+  assert.equal(humanDigest, "sha256:11a63feaa628c2522048d0b0118c8ac3c04a980d089eed68707a3bddeb93a0c3");
+  assert.equal(producerDigest, computeFeatureObservationProducerBindingsDigestV2([...fixture.producerBindings].reverse()));
+  assert.equal(humanDigest, computeFeatureHumanBindingsDigestV2([...fixture.humanBindings].reverse()));
+  const independent = (domain, value) => `sha256:${createHash("sha256").update(Buffer.concat([
+    Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(canonicalFeatureIntegrationJsonV1(value), "utf8"),
+  ])).digest("hex")}`;
+  const sortedProducers = [...fixture.producerBindings].sort((left, right) => left.producerKind < right.producerKind ? -1 : left.producerKind > right.producerKind ? 1 : left.producerId < right.producerId ? -1 : 1);
+  const sortedHumans = [...fixture.humanBindings].sort((left, right) => left.seatId < right.seatId ? -1 : left.seatId > right.seatId ? 1 : left.humanPrincipalId < right.humanPrincipalId ? -1 : 1);
+  assert.equal(producerDigest, independent("shield.feature-integration.observation-bindings.v2", sortedProducers));
+  assert.equal(humanDigest, independent("shield.feature-integration.human-bindings.v2", sortedHumans));
+  assert.throws(() => computeFeatureObservationProducerBindingsDigestV2([fixture.producerBindings[0], fixture.producerBindings[0]]));
+  assert.throws(() => computeFeatureObservationProducerBindingsDigestV2([fixture.producerBindings[0], { ...fixture.producerBindings[1], producerKind: "github_repository" }]));
+  assert.throws(() => computeFeatureObservationProducerBindingsDigestV2([{ ...fixture.producerBindings[0], signingKeyRef: "ed25519:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }, fixture.producerBindings[1]]));
+  assert.throws(() => computeFeatureHumanBindingsDigestV2([...fixture.humanBindings, { ...fixture.humanBindings[0], bindingId: "binding:coulson:duplicate" }]));
+});
+
+test("admits only exact hardened genesis and blocks legacy journals without V1 replay", () => {
+  const fixture = hardenedGenesisFixture();
+  assert.equal(validateFeatureOperationJournalV2(fixture.journal).state, "valid");
+  assert.equal(Object.isFrozen(fixture.journal.entries[0].payload.trustedObservationProducerBindings[0]), true);
+  assert.equal(fixture.genesis.entryDigest, computeFeatureIntegrationEntryDigestV2(fixture.genesis));
+  assert.equal(fixture.journal.journalDigest, computeFeatureIntegrationJournalDigestV2(fixture.journal));
+  const replay = replayFeatureOperationJournalV2(fixture.journal, fixture.trustAnchor);
+  assert.equal(replay.state, "valid", JSON.stringify(replay));
+  assert.equal(replay.value.lifecycle, "active");
+  assert.deepEqual(secureReplayFeatureOperationJournalV2(fixture.journal, fixture.trustAnchor), replay);
+  assert.deepEqual(secureReplayFeatureOperationJournalV2(createFeatureOperationJournalV1([fixture.entries[0]]), fixture.trustAnchor), {
+    state: "blocked", reason: "LEGACY_JOURNAL_UNTRUSTED", entrySequence: null,
+  });
+  assert.deepEqual(secureReplayFeatureOperationJournalV2({ ...fixture.journal, schemaVersion: 1 }, fixture.trustAnchor), {
+    state: "invalid", reason: "JOURNAL_INVALID", entrySequence: null,
+  });
+  const extraPayload = structuredClone(fixture.journal);
+  extraPayload.entries[0].payload.extra = true;
+  extraPayload.journalDigest = computeFeatureIntegrationJournalDigestV2(extraPayload);
+  assert.deepEqual(replayFeatureOperationJournalV2(extraPayload, fixture.trustAnchor), { state: "invalid", reason: "ENTRY_INVALID", entrySequence: 0 });
+  const accessor = structuredClone(fixture.journal);
+  Object.defineProperty(accessor, "entries", { enumerable: true, get: () => fixture.journal.entries });
+  assert.deepEqual(secureReplayFeatureOperationJournalV2(accessor, fixture.trustAnchor), { state: "invalid", reason: "JOURNAL_INVALID", entrySequence: null });
+  assert.deepEqual(secureReplayFeatureOperationJournalV2(new Proxy(fixture.journal, {}), fixture.trustAnchor), { state: "invalid", reason: "JOURNAL_INVALID", entrySequence: null });
+  const substituted = structuredClone(fixture.journal);
+  substituted.entries[0].payload.trustedObservationProducerBindings[0].producerId = "producer:substituted";
+  substituted.entries[0].entryDigest = computeFeatureIntegrationEntryDigestV2(substituted.entries[0]);
+  substituted.genesisDigest = substituted.entries[0].entryDigest;
+  substituted.latestAcceptedEntryDigest = substituted.entries[0].entryDigest;
+  substituted.journalDigest = computeFeatureIntegrationJournalDigestV2(substituted);
+  assert.deepEqual(replayFeatureOperationJournalV2(substituted, fixture.trustAnchor), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
 });

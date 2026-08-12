@@ -12,21 +12,32 @@ import {
   FEATURE_OPERATION_AUTHORITY_KIND,
   FEATURE_OPERATION_BLOCKED_REASONS,
   FEATURE_OPERATION_CONTRACT_VERSION,
+  FEATURE_OPERATION_CONTRACT_VERSION_V2,
   FEATURE_OPERATION_DERIVATION_KINDS,
   FEATURE_OPERATION_FIXED_EXCLUSIONS,
   FEATURE_OPERATION_PROHIBITED_EFFECTS,
   FEATURE_OPERATION_SCHEMA_VERSION,
+  FEATURE_OPERATION_SCHEMA_VERSION_V2,
   compareFeatureOperationAmendmentV1,
   computeFeatureOperationAuthorityDigestV1,
   computeFeatureOperationDerivedCandidateDigestV1,
   computeFeatureOperationPlanDigestV1,
+  computeFeatureOperationAuthorityDigestV2,
+  computeFeatureOperationDerivedCandidateDigestV2,
+  computeFeatureOperationPlanDigestV2,
   evaluateFeatureOperationDerivedCandidateV1,
+  evaluateFeatureOperationDerivedCandidateV2,
   validateFeatureOperationAuthorityV1,
   validateFeatureOperationDerivedCandidateV1,
   validateFeatureOperationPlanV1,
   validateFeatureOperationReplayContextV1,
+  validateFeatureOperationAuthorityV2,
+  validateFeatureOperationDerivedCandidateV2,
+  validateFeatureOperationPlanV2,
+  validateFeatureOperationReplayContextV2,
   validateSignedFeatureOperationAuthorityV1,
   verifySignedFeatureOperationAuthorityV1,
+  verifySignedFeatureOperationAuthorityV2,
 } from "@shield/team-system/feature-operation";
 import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 
@@ -1036,4 +1047,91 @@ test("rejects wildcard, dangerous, deferred, aliasing, and hostile JSON-equivale
   const extraArrayProperty = copy(plan);
   extraArrayProperty.children.extra = true;
   assert.equal(validateFeatureOperationPlanV1(extraArrayProperty).state, "invalid");
+});
+
+function independentlyDigestV2(domain, value, ownDigestField) {
+  const content = copy(value);
+  delete content[ownDigestField];
+  return `sha256:${createHash("sha256").update(Buffer.concat([
+    Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(JSON.stringify(canonical(content)), "utf8"),
+  ])).digest("hex")}`;
+}
+
+function hardenedFixture() {
+  const hardenedPlan = {
+    ...copy(plan),
+    schemaVersion: 2,
+    contractVersion: "feature.operation.v2",
+    protocol: { version: 2, observationProducerBindingsDigest: digest("a"), humanBindingsDigest: digest("b") },
+    finalGates: { policyVersion: 2, fitzRequired: true, simmonsRequired: false, coulsonRequired: true },
+    planDigest: ZERO_DIGEST,
+  };
+  hardenedPlan.planDigest = computeFeatureOperationPlanDigestV2(hardenedPlan);
+  const hardenedAuthority = {
+    ...copy(authority),
+    schemaVersion: 2,
+    contractVersion: "feature.operation.v2",
+    plan: hardenedPlan,
+    planDigest: hardenedPlan.planDigest,
+    authorityDigest: ZERO_DIGEST,
+  };
+  hardenedAuthority.authorityDigest = computeFeatureOperationAuthorityDigestV2(hardenedAuthority);
+  const bytes = Buffer.concat([
+    Buffer.from("shield.feature-operation.authority-signature.v2", "ascii"), Buffer.from([0]),
+    Buffer.from(JSON.stringify(canonical(hardenedAuthority)), "utf8"),
+  ]);
+  const signedAuthority = { payload: copy(hardenedAuthority), signatureBase64: sign(null, bytes, privateKey).toString("base64") };
+  const hardenedReplay = {
+    ...replayContext(),
+    schemaVersion: 2,
+    contractVersion: "feature.operation.v2",
+    activePlan: copy(hardenedPlan),
+    activePlanDigest: hardenedPlan.planDigest,
+    verifiedAuthorityDigest: hardenedAuthority.authorityDigest,
+    acceptedPlanLineage: [{ planSequence: 0, planDigest: hardenedPlan.planDigest, predecessorPlanDigest: null, authorityDigest: hardenedAuthority.authorityDigest, active: true }],
+  };
+  const hardenedCandidate = {
+    ...copy(candidates.initiation),
+    schemaVersion: 2,
+    contractVersion: "feature.operation.v2",
+    planDigest: hardenedPlan.planDigest,
+    authorityDigest: hardenedAuthority.authorityDigest,
+    candidateDigest: ZERO_DIGEST,
+  };
+  hardenedCandidate.candidateDigest = computeFeatureOperationDerivedCandidateDigestV2(hardenedCandidate);
+  const verification = { ...verificationInput, trustedBindings: [binding] };
+  return { hardenedPlan, hardenedAuthority, signedAuthority, hardenedReplay, hardenedCandidate, verification };
+}
+
+test("keeps hardened feature-operation contracts additive and protocol-separated", () => {
+  const fixture = hardenedFixture();
+  assert.equal(FEATURE_OPERATION_SCHEMA_VERSION_V2, 2);
+  assert.equal(FEATURE_OPERATION_CONTRACT_VERSION_V2, "feature.operation.v2");
+  assert.equal(validateFeatureOperationPlanV1(fixture.hardenedPlan).state, "invalid");
+  assert.equal(validateFeatureOperationPlanV2(plan).state, "invalid");
+  assert.equal(validateFeatureOperationPlanV2(fixture.hardenedPlan).state, "valid");
+  assert.equal(validateFeatureOperationAuthorityV2(fixture.hardenedAuthority).state, "valid");
+  assert.equal(validateFeatureOperationReplayContextV2(fixture.hardenedReplay).state, "valid");
+  assert.equal(validateFeatureOperationDerivedCandidateV2(fixture.hardenedCandidate).state, "valid");
+  assert.equal(verifySignedFeatureOperationAuthorityV2(fixture.signedAuthority, fixture.verification).state, "verified");
+  assert.equal(fixture.hardenedPlan.planDigest, independentlyDigestV2("shield.feature-operation.plan.v2", fixture.hardenedPlan, "planDigest"));
+  assert.equal(fixture.hardenedAuthority.authorityDigest, independentlyDigestV2("shield.feature-operation.authority.v2", fixture.hardenedAuthority, "authorityDigest"));
+  assert.equal(fixture.hardenedCandidate.candidateDigest, independentlyDigestV2("shield.feature-operation.candidate.v2", fixture.hardenedCandidate, "candidateDigest"));
+  assert.equal(evaluateFeatureOperationDerivedCandidateV2(fixture.hardenedPlan, fixture.signedAuthority, fixture.verification, fixture.hardenedReplay, fixture.hardenedCandidate).state, "eligible");
+});
+
+test("hardened feature-operation parsers reject mixed, extra, accessor, and substituted values", () => {
+  const fixture = hardenedFixture();
+  assert.equal(validateFeatureOperationPlanV2({ ...fixture.hardenedPlan, contractVersion: "feature.operation.v1" }).state, "invalid");
+  assert.equal(validateFeatureOperationPlanV2({ ...fixture.hardenedPlan, extra: true }).state, "invalid");
+  assert.equal(validateFeatureOperationPlanV2({ ...fixture.hardenedPlan, protocol: { ...fixture.hardenedPlan.protocol, version: 3 } }).state, "invalid");
+  assert.equal(validateFeatureOperationPlanV2({ ...fixture.hardenedPlan, finalGates: { fitzRequired: true, simmons: "conditional", coulsonRequired: true } }).state, "invalid");
+  assert.equal(validateFeatureOperationPlanV2({ ...fixture.hardenedPlan, planDigest: digest("f") }).code, "digest_mismatch");
+  const accessor = copy(fixture.hardenedPlan);
+  Object.defineProperty(accessor, "objective", { enumerable: true, get: () => fixture.hardenedPlan.objective });
+  assert.equal(validateFeatureOperationPlanV2(accessor).state, "invalid");
+  assert.equal(validateFeatureOperationPlanV2(new Proxy(fixture.hardenedPlan, {})).state, "invalid");
+  const substitutedSignature = copy(fixture.signedAuthority);
+  substitutedSignature.signatureBase64 = Buffer.from(substitutedSignature.signatureBase64, "base64").map((byte, index) => index === 0 ? byte ^ 1 : byte).toString("base64");
+  assert.equal(verifySignedFeatureOperationAuthorityV2(substitutedSignature, fixture.verification).code, "signature_invalid");
 });

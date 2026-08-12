@@ -9,6 +9,9 @@ import {
 export const FEATURE_OPERATION_SCHEMA_VERSION = 1 as const;
 export const FEATURE_OPERATION_CONTRACT_VERSION = "feature.operation.v1" as const;
 export const FEATURE_OPERATION_AUTHORITY_KIND = "epic_wheels_up" as const;
+export const FEATURE_OPERATION_SCHEMA_VERSION_V2 = 2 as const;
+export const FEATURE_OPERATION_CONTRACT_VERSION_V2 = "feature.operation.v2" as const;
+export const FEATURE_OPERATION_AUTHORITY_SIGNATURE_DOMAIN_V2 = "shield.feature-operation.authority-signature.v2" as const;
 export const FEATURE_OPERATION_DERIVATION_KINDS = Object.freeze([
   "child_draft_pr_create",
   "child_implementation",
@@ -1533,5 +1536,463 @@ export function evaluateFeatureOperationDerivedCandidateV1(
   if (!boundsAvailable(candidate, child, replay, plan)) return blocked("BOUNDS_EXHAUSTED");
   if (replay.consumedEffectKeys.includes(candidate.effectKey)) return blocked("EFFECT_KEY_REUSED");
   const current = terminalFeatureState(replay);
+  return { state: "eligible", candidate, currentFeatureHead: current.head, currentFeatureTreeDigest: current.tree };
+}
+
+// V2 is deliberately additive.  The legacy parsers above remain the sole V1
+// implementation and therefore cannot accidentally admit hardened values.
+export interface FeatureOperationProtocolV2 {
+  version: 2;
+  observationProducerBindingsDigest: string;
+  humanBindingsDigest: string;
+}
+
+export interface FeatureOperationFinalGatesV2 {
+  policyVersion: 2;
+  fitzRequired: true;
+  simmonsRequired: boolean;
+  coulsonRequired: true;
+}
+
+export interface FeatureOperationPlanV2 extends Omit<FeatureOperationPlanV1,
+  "schemaVersion" | "contractVersion" | "finalGates"> {
+  schemaVersion: 2;
+  contractVersion: "feature.operation.v2";
+  protocol: FeatureOperationProtocolV2;
+  finalGates: FeatureOperationFinalGatesV2;
+}
+
+export interface FeatureOperationAuthorityV2 extends Omit<FeatureOperationAuthorityV1,
+  "schemaVersion" | "contractVersion" | "plan"> {
+  schemaVersion: 2;
+  contractVersion: "feature.operation.v2";
+  plan: FeatureOperationPlanV2;
+}
+
+export interface SignedFeatureOperationAuthorityV2 {
+  payload: FeatureOperationAuthorityV2;
+  signatureBase64: string;
+}
+
+export interface FeatureOperationAuthorityVerificationInputV2 {
+  expectedMissionId: string;
+  expectedOperationId: string;
+  expectedOperationSequence: number;
+  expectedJournalSequence: number;
+  trustedBindings: readonly TrustedHumanBinding[];
+}
+
+export type FeatureOperationLifecycleStateV2 = FeatureOperationLifecycleStateV1 | "rollback_validation_pending";
+export interface FeatureOperationReplayContextV2 extends Omit<FeatureOperationReplayContextV1,
+  "schemaVersion" | "contractVersion" | "activePlan" | "lifecycle"> {
+  schemaVersion: 2;
+  contractVersion: "feature.operation.v2";
+  activePlan: FeatureOperationPlanV2;
+  lifecycle: { state: FeatureOperationLifecycleStateV2; atOperationSequence: number };
+}
+
+interface FeatureOperationCandidateCommonV2 {
+  schemaVersion: 2;
+  contractVersion: "feature.operation.v2";
+  repositoryId: string;
+  operationId: string;
+  planDigest: string;
+  authorityDigest: string;
+  effectKey: string;
+  requestedScope: FeatureOperationRequestedScopeV1;
+  candidateDigest: string;
+}
+
+export interface FeatureBranchCreateCandidateV2 extends FeatureOperationCandidateCommonV2 {
+  stage: "initiation";
+  derivationKind: "feature_branch_create";
+  sourceRevision: string;
+  targetBranch: string;
+}
+export interface FeatureWorkspaceDraftPrCandidateV2 extends FeatureOperationCandidateCommonV2 {
+  stage: "initiation";
+  derivationKind: "feature_workspace_draft_pr_create";
+  sourceBranch: string;
+  targetBranch: string;
+  draftOnly: true;
+}
+export interface ChildInitiationCandidateV2 extends FeatureOperationCandidateCommonV2 {
+  stage: "initiation";
+  derivationKind: "child_initiation";
+  childId: string;
+  sourceFeatureHead: string;
+  childBranch: string;
+}
+export interface ChildImplementationCandidateV2 extends FeatureOperationCandidateCommonV2 {
+  stage: "implementation";
+  derivationKind: "child_implementation";
+  childId: string;
+  childBaseRevision: string;
+  childBranch: string;
+}
+export interface ChildPublicationCandidateV2 extends FeatureOperationCandidateCommonV2 {
+  stage: "child_publication";
+  derivationKind: "child_draft_pr_create";
+  childId: string;
+  childBranch: string;
+  childHeadRevision: string;
+  targetBranch: string;
+  draftOnly: true;
+}
+export interface ChildIntegrationCandidateV2 extends FeatureOperationCandidateCommonV2 {
+  stage: "integration";
+  derivationKind: "child_merge_to_feature";
+  childId: string;
+  childBranch: string;
+  childHeadRevision: string;
+  childTreeDigest: string;
+  targetBranch: string;
+  integrationMethod: string;
+  predecessorIntegrationReceiptDigest: string | null;
+  reviewEvidenceRefs: readonly string[];
+}
+export interface ChildRollbackCandidateV2 extends FeatureOperationCandidateCommonV2 {
+  stage: "rollback";
+  derivationKind: "child_revert_on_feature";
+  childId: string;
+  integrationReceiptDigest: string;
+  integrationHeadRevision: string;
+  integrationTreeDigest: string;
+  expectedRestoredTreeDigest: string;
+  targetBranch: string;
+  rollbackMethod: "revert_commit";
+}
+
+export type FeatureOperationDerivedCandidateV2 =
+  | FeatureBranchCreateCandidateV2
+  | FeatureWorkspaceDraftPrCandidateV2
+  | ChildInitiationCandidateV2
+  | ChildImplementationCandidateV2
+  | ChildPublicationCandidateV2
+  | ChildIntegrationCandidateV2
+  | ChildRollbackCandidateV2;
+
+export type FeatureOperationContractCodeV2 =
+  | "malformed" | "digest_mismatch" | "signature_invalid" | "binding_invalid"
+  | "identity_mismatch" | "sequence_invalid" | "authority_inactive" | "authority_expired"
+  | "candidate_invalid" | "replay_context_invalid";
+export type FeatureOperationContractResultV2<T> =
+  | { state: "valid"; value: Readonly<T> }
+  | { state: "invalid"; code: FeatureOperationContractCodeV2; errors: string[] };
+export type FeatureOperationAuthorityVerificationResultV2 =
+  | { state: "verified"; value: Readonly<FeatureOperationAuthorityV2>; authorityDigest: string; bindingId: string }
+  | { state: "invalid"; code: FeatureOperationContractCodeV2; errors: string[] };
+export type FeatureOperationEvaluationV2 =
+  | { state: "eligible"; candidate: Readonly<FeatureOperationDerivedCandidateV2>; currentFeatureHead: string; currentFeatureTreeDigest: string }
+  | { state: "blocked"; reasonCode: FeatureOperationBlockedReasonV1 };
+
+const PLAN_FIELDS_V2 = [...PLAN_FIELDS.slice(0, 15), "protocol", ...PLAN_FIELDS.slice(15)] as const;
+const SHA256_ZERO = `sha256:${"0".repeat(64)}`;
+
+function invalidV2<T>(code: FeatureOperationContractCodeV2, message: string): FeatureOperationContractResultV2<T> {
+  return { state: "invalid", code, errors: [message] };
+}
+
+function invalidAuthorityVerificationV2(code: FeatureOperationContractCodeV2, message: string): FeatureOperationAuthorityVerificationResultV2 {
+  return { state: "invalid", code, errors: [message] };
+}
+
+function safeDataCloneV2<T>(value: T): T {
+  const visit = (input: unknown): unknown => {
+    if (input === null || typeof input === "string" || typeof input === "boolean" ||
+        (typeof input === "number" && Number.isSafeInteger(input))) return input;
+    if (Array.isArray(input)) {
+      const items = dense(input, true);
+      if (!items) throw new TypeError("V2 arrays must be dense plain data.");
+      return items.map(visit);
+    }
+    if (!plain(input)) throw new TypeError("V2 values must be plain data.");
+    const result: Record<string, unknown> = {};
+    for (const key of Reflect.ownKeys(input)) {
+      if (typeof key !== "string") throw new TypeError("V2 values cannot contain symbol keys.");
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor) || descriptor.value === undefined) throw new TypeError("V2 values require enumerable data properties.");
+      result[key] = visit(descriptor.value);
+    }
+    return result;
+  };
+  return visit(value) as T;
+}
+
+function digestV2(domain: string, value: unknown, ownDigest?: string): string {
+  if (!plain(value)) throw new TypeError("V2 digest input must be a plain record.");
+  const copy = clone(value) as Record<string, unknown>;
+  if (ownDigest !== undefined) delete copy[ownDigest];
+  const bytes = Buffer.concat([
+    Buffer.from(domain, "ascii"),
+    Buffer.from([0]),
+    Buffer.from(canonicalJson(copy), "utf8"),
+  ]);
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function v1PlanProjection(plan: FeatureOperationPlanV2): FeatureOperationPlanV1 | null {
+  const projected = clone(plan) as unknown as Record<string, unknown>;
+  delete projected.protocol;
+  projected.schemaVersion = 1;
+  projected.contractVersion = FEATURE_OPERATION_CONTRACT_VERSION;
+  projected.finalGates = { fitzRequired: true, simmons: "conditional", coulsonRequired: true };
+  projected.planDigest = SHA256_ZERO;
+  return checkPlanShape(projected, false);
+}
+
+function checkPlanShapeV2(input: unknown, verifyOwnDigest: boolean): FeatureOperationPlanV2 | null {
+  const record = closed(input, PLAN_FIELDS_V2);
+  if (!record || record.schemaVersion !== 2 || record.contractVersion !== FEATURE_OPERATION_CONTRACT_VERSION_V2 ||
+      !digestString(record.planDigest)) return null;
+  const protocol = closed(record.protocol, ["version", "observationProducerBindingsDigest", "humanBindingsDigest"]);
+  const finalGates = closed(record.finalGates, ["policyVersion", "fitzRequired", "simmonsRequired", "coulsonRequired"]);
+  if (!protocol || protocol.version !== 2 || !digestString(protocol.observationProducerBindingsDigest) ||
+      !digestString(protocol.humanBindingsDigest) || !finalGates || finalGates.policyVersion !== 2 ||
+      finalGates.fitzRequired !== true || typeof finalGates.simmonsRequired !== "boolean" || finalGates.coulsonRequired !== true) return null;
+  const plan = safeDataCloneV2(record as unknown as FeatureOperationPlanV2);
+  if (!v1PlanProjection(plan)) return null;
+  if (verifyOwnDigest && digestV2("shield.feature-operation.plan.v2", plan, "planDigest") !== plan.planDigest) return null;
+  return plan;
+}
+
+export function computeFeatureOperationPlanDigestV2(input: unknown): string {
+  const plan = checkPlanShapeV2(input, false);
+  if (!plan) throw new TypeError("Feature operation V2 plan is invalid.");
+  return digestV2("shield.feature-operation.plan.v2", plan, "planDigest");
+}
+
+export function validateFeatureOperationPlanV2(input: unknown): FeatureOperationContractResultV2<FeatureOperationPlanV2> {
+  try {
+    const shape = checkPlanShapeV2(input, false);
+    if (!shape) return invalidV2("malformed", "Feature operation V2 plan is malformed.");
+    if (computeFeatureOperationPlanDigestV2(shape) !== shape.planDigest) return invalidV2("digest_mismatch", "Feature operation V2 plan digest does not match.");
+    return valid(shape);
+  } catch { return invalidV2("malformed", "Feature operation V2 plan is malformed."); }
+}
+
+function checkAuthorityShapeV2(input: unknown, verifyOwnDigest: boolean): FeatureOperationAuthorityV2 | null {
+  const record = closed(input, AUTHORITY_FIELDS);
+  if (!record || record.schemaVersion !== 2 || record.contractVersion !== FEATURE_OPERATION_CONTRACT_VERSION_V2 ||
+      record.authorityKind !== FEATURE_OPERATION_AUTHORITY_KIND || !digestString(record.authorityDigest)) return null;
+  const plan = checkPlanShapeV2(record.plan, true);
+  if (!plan || record.planDigest !== plan.planDigest) return null;
+  const projectedPlan = v1PlanProjection(plan);
+  if (!projectedPlan) return null;
+  projectedPlan.planDigest = computePlanDigestUnchecked(projectedPlan);
+  const projected = safeDataCloneV2(record) as Record<string, unknown>;
+  projected.schemaVersion = 1;
+  projected.contractVersion = FEATURE_OPERATION_CONTRACT_VERSION;
+  projected.plan = projectedPlan;
+  projected.planDigest = projectedPlan.planDigest;
+  projected.authorityDigest = SHA256_ZERO;
+  if (!checkAuthorityShape(projected, false)) return null;
+  const authority = safeDataCloneV2({ ...record, plan } as unknown as FeatureOperationAuthorityV2);
+  if (verifyOwnDigest && digestV2("shield.feature-operation.authority.v2", authority, "authorityDigest") !== authority.authorityDigest) return null;
+  return authority;
+}
+
+export function computeFeatureOperationAuthorityDigestV2(input: unknown): string {
+  const authority = checkAuthorityShapeV2(input, false);
+  if (!authority) throw new TypeError("Feature operation V2 authority is invalid.");
+  return digestV2("shield.feature-operation.authority.v2", authority, "authorityDigest");
+}
+
+export function validateFeatureOperationAuthorityV2(input: unknown): FeatureOperationContractResultV2<FeatureOperationAuthorityV2> {
+  try {
+    const shape = checkAuthorityShapeV2(input, false);
+    if (!shape) return invalidV2("malformed", "Feature operation V2 authority is malformed.");
+    if (computeFeatureOperationAuthorityDigestV2(shape) !== shape.authorityDigest) return invalidV2("digest_mismatch", "Feature operation V2 authority digest does not match.");
+    return valid(shape);
+  } catch { return invalidV2("malformed", "Feature operation V2 authority is malformed."); }
+}
+
+function checkVerificationInputV2(input: unknown): FeatureOperationAuthorityVerificationInputV2 | null {
+  const record = closed(input, ["expectedMissionId", "expectedOperationId", "expectedOperationSequence", "expectedJournalSequence", "trustedBindings"]);
+  const bindings = record && dense(record.trustedBindings, true, 128);
+  if (!record || !identifier(record.expectedMissionId) || !identifier(record.expectedOperationId) ||
+      !sequence(record.expectedOperationSequence) || !sequence(record.expectedJournalSequence) || !bindings) return null;
+  return { ...record, trustedBindings: bindings } as unknown as FeatureOperationAuthorityVerificationInputV2;
+}
+
+function trustedBindingForAuthorityV2(authority: FeatureOperationAuthorityV2, context: FeatureOperationAuthorityVerificationInputV2): TrustedHumanBinding | null {
+  const matches: TrustedHumanBinding[] = [];
+  for (const raw of context.trustedBindings) {
+    const binding = closed(raw, ["schemaVersion", "bindingId", "humanPrincipalId", "seatId", "missionScope", "signingKeyRef", "publicKeySpkiBase64", "validFromSequence", "validThroughSequence", "attestedBy", "provenanceRef"]);
+    if (!binding || binding.schemaVersion !== 1 || !identifier(binding.bindingId) || !identifier(binding.humanPrincipalId) ||
+        binding.seatId !== "coulson" && !identifier(binding.seatId) || !(binding.missionScope === "*" || identifier(binding.missionScope)) ||
+        typeof binding.signingKeyRef !== "string" || !KEY_REF.test(binding.signingKeyRef) || !canonicalBase64(binding.publicKeySpkiBase64) ||
+        !sequence(binding.validFromSequence) || !(binding.validThroughSequence === null || sequence(binding.validThroughSequence)) ||
+        (typeof binding.validThroughSequence === "number" && binding.validThroughSequence < (binding.validFromSequence as number)) ||
+        !identifier(binding.attestedBy) || !identifier(binding.provenanceRef)) return null;
+    if (binding.seatId === "coulson" && binding.bindingId === authority.humanBindingId &&
+        (binding.missionScope === "*" || binding.missionScope === authority.missionId) &&
+        (binding.validFromSequence as number) <= authority.journalSequence &&
+        (binding.validThroughSequence === null || authority.journalSequence <= (binding.validThroughSequence as number))) {
+      matches.push(binding as unknown as TrustedHumanBinding);
+    }
+  }
+  if (matches.length !== 1) return null;
+  const binding = matches[0];
+  if (binding.humanPrincipalId !== authority.humanPrincipalId || binding.signingKeyRef !== authority.signingKeyRef) return null;
+  try { return computeEd25519SigningKeyRef(binding.publicKeySpkiBase64) === authority.signingKeyRef ? binding : null; }
+  catch { return null; }
+}
+
+function signedAuthorityEnvelopeV2(input: unknown): SignedFeatureOperationAuthorityV2 | null {
+  const envelope = closed(input, ["payload", "signatureBase64"]);
+  if (!envelope || !canonicalBase64(envelope.signatureBase64) || Buffer.from(envelope.signatureBase64 as string, "base64").length !== 64) return null;
+  const authority = checkAuthorityShapeV2(envelope.payload, true);
+  return authority ? { payload: authority, signatureBase64: envelope.signatureBase64 as string } : null;
+}
+
+export function verifySignedFeatureOperationAuthorityV2(envelopeInput: unknown, verificationInput: unknown): FeatureOperationAuthorityVerificationResultV2 {
+  try {
+    const rawEnvelope = closed(envelopeInput, ["payload", "signatureBase64"]);
+    if (!rawEnvelope || !canonicalBase64(rawEnvelope.signatureBase64) || Buffer.from(rawEnvelope.signatureBase64 as string, "base64").length !== 64) {
+      return invalidAuthorityVerificationV2("malformed", "Signed feature operation V2 authority is malformed.");
+    }
+    const authorityShape = checkAuthorityShapeV2(rawEnvelope.payload, false);
+    if (!authorityShape) return invalidAuthorityVerificationV2("malformed", "Signed feature operation V2 authority is malformed.");
+    if (computeFeatureOperationAuthorityDigestV2(authorityShape) !== authorityShape.authorityDigest) {
+      return invalidAuthorityVerificationV2("digest_mismatch", "Feature operation V2 authority digest does not match.");
+    }
+    const envelope: SignedFeatureOperationAuthorityV2 = { payload: authorityShape, signatureBase64: rawEnvelope.signatureBase64 as string };
+    const context = checkVerificationInputV2(verificationInput);
+    if (!context) return invalidAuthorityVerificationV2("binding_invalid", "Feature operation V2 verification input is invalid.");
+    const authority = envelope.payload;
+    if (authority.missionId !== context.expectedMissionId || authority.operationId !== context.expectedOperationId) return invalidAuthorityVerificationV2("identity_mismatch", "Expected mission or operation identity does not match.");
+    if (authority.operationSequence !== context.expectedOperationSequence || authority.journalSequence !== context.expectedJournalSequence) return invalidAuthorityVerificationV2("sequence_invalid", "Expected operation or journal sequence does not match.");
+    const binding = trustedBindingForAuthorityV2(authority, context);
+    if (!binding) return invalidAuthorityVerificationV2("binding_invalid", "Exactly one active Coulson binding is required.");
+    const key = createPublicKey({ key: Buffer.from(binding.publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
+    const bytes = Buffer.concat([Buffer.from(FEATURE_OPERATION_AUTHORITY_SIGNATURE_DOMAIN_V2, "ascii"), Buffer.from([0]), Buffer.from(canonicalJson(authority), "utf8")]);
+    if (!verify(null, bytes, key, Buffer.from(envelope.signatureBase64, "base64"))) return invalidAuthorityVerificationV2("signature_invalid", "Feature operation V2 authority signature is invalid.");
+    return { state: "verified", value: deepFreeze(clone(authority)), authorityDigest: authority.authorityDigest, bindingId: binding.bindingId };
+  } catch { return invalidAuthorityVerificationV2("malformed", "Signed feature operation V2 authority is malformed."); }
+}
+
+function checkCandidateShapeV2(input: unknown, verifyOwnDigest: boolean): FeatureOperationDerivedCandidateV2 | null {
+  if (!plain(input)) return null;
+  const stage = Object.getOwnPropertyDescriptor(input, "stage")?.value;
+  const derivation = Object.getOwnPropertyDescriptor(input, "derivationKind")?.value;
+  const fields = candidateFields(stage, derivation);
+  const record = fields && closed(input, fields);
+  if (!record || record.schemaVersion !== 2 || record.contractVersion !== FEATURE_OPERATION_CONTRACT_VERSION_V2 || !digestString(record.candidateDigest)) return null;
+  const projected = safeDataCloneV2(record);
+  projected.schemaVersion = 1;
+  projected.contractVersion = FEATURE_OPERATION_CONTRACT_VERSION;
+  projected.candidateDigest = SHA256_ZERO;
+  if (!checkCandidateShape(projected, false)) return null;
+  const candidate = safeDataCloneV2(record as unknown as FeatureOperationDerivedCandidateV2);
+  if (verifyOwnDigest && digestV2("shield.feature-operation.candidate.v2", candidate, "candidateDigest") !== candidate.candidateDigest) return null;
+  return candidate;
+}
+
+export function computeFeatureOperationDerivedCandidateDigestV2(input: unknown): string {
+  const candidate = checkCandidateShapeV2(input, false);
+  if (!candidate) throw new TypeError("Feature operation V2 candidate is invalid.");
+  return digestV2("shield.feature-operation.candidate.v2", candidate, "candidateDigest");
+}
+
+export function validateFeatureOperationDerivedCandidateV2(input: unknown): FeatureOperationContractResultV2<FeatureOperationDerivedCandidateV2> {
+  try {
+    const shape = checkCandidateShapeV2(input, false);
+    if (!shape) return invalidV2("candidate_invalid", "Feature operation V2 candidate is malformed.");
+    if (computeFeatureOperationDerivedCandidateDigestV2(shape) !== shape.candidateDigest) return invalidV2("digest_mismatch", "Feature operation V2 candidate digest does not match.");
+    return valid(shape);
+  } catch { return invalidV2("candidate_invalid", "Feature operation V2 candidate is malformed."); }
+}
+
+function mappedReplayDigest(seed: string): string {
+  return `sha256:${createHash("sha256").update(seed, "utf8").digest("hex")}`;
+}
+
+function checkReplayShapeV2(input: unknown): FeatureOperationReplayContextV2 | null {
+  const record = closed(input, REPLAY_FIELDS);
+  if (!record || record.schemaVersion !== 2 || record.contractVersion !== FEATURE_OPERATION_CONTRACT_VERSION_V2 || !plain(record.lifecycle)) return null;
+  const activePlan = checkPlanShapeV2(record.activePlan, true);
+  if (!activePlan || record.activePlanDigest !== activePlan.planDigest || ![...LIFECYCLES, "rollback_validation_pending"].includes(ownDataV2(record.lifecycle, "state") as string)) return null;
+  const projectedPlan = v1PlanProjection(activePlan);
+  if (!projectedPlan) return null;
+  const lineageItems = dense(record.acceptedPlanLineage, false);
+  if (!lineageItems || lineageItems.length !== activePlan.planSequence + 1) return null;
+  const safeLineageItems = lineageItems.map((item) => safeDataCloneV2(item) as Record<string, unknown>);
+  const mappedLineage = safeLineageItems.map((item, index) => ({ ...item,
+    planDigest: mappedReplayDigest(`feature-operation-v2-plan:${index}:${String(item.planDigest ?? "")}`),
+    predecessorPlanDigest: index === 0 ? null : mappedReplayDigest(`feature-operation-v2-plan:${index - 1}:${String(safeLineageItems[index - 1].planDigest ?? "")}`),
+  }));
+  const projectedActivePlan = clone(projectedPlan) as FeatureOperationPlanV1;
+  projectedActivePlan.predecessorPlanDigest = activePlan.planSequence === 0 ? null : mappedLineage.at(-2)!.planDigest as string;
+  projectedActivePlan.planDigest = computePlanDigestUnchecked(projectedActivePlan);
+  mappedLineage.at(-1)!.planDigest = projectedActivePlan.planDigest;
+  const projected = safeDataCloneV2(record) as Record<string, unknown>;
+  projected.schemaVersion = 1;
+  projected.contractVersion = FEATURE_OPERATION_CONTRACT_VERSION;
+  projected.activePlan = projectedActivePlan;
+  projected.activePlanDigest = projectedActivePlan.planDigest;
+  projected.acceptedPlanLineage = mappedLineage;
+  projected.acceptedAmendmentDigests = mappedLineage.slice(1).map((item) => item.planDigest);
+  projected.lifecycle = { ...(clone(record.lifecycle) as Record<string, unknown>), state: ownDataV2(record.lifecycle, "state") === "rollback_validation_pending" ? "rollback_pending" : ownDataV2(record.lifecycle, "state") };
+  if (!checkReplayShape(projected)) return null;
+  return safeDataCloneV2({ ...record, activePlan } as unknown as FeatureOperationReplayContextV2);
+}
+
+function ownDataV2(record: Record<string, unknown>, name: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, name);
+  return descriptor && descriptor.enumerable && "value" in descriptor ? descriptor.value : undefined;
+}
+
+export function validateFeatureOperationReplayContextV2(input: unknown): FeatureOperationContractResultV2<FeatureOperationReplayContextV2> {
+  try {
+    const replay = checkReplayShapeV2(input);
+    return replay ? valid(replay) : invalidV2("replay_context_invalid", "Feature operation V2 replay context is invalid.");
+  } catch { return invalidV2("replay_context_invalid", "Feature operation V2 replay context is invalid."); }
+}
+
+export function evaluateFeatureOperationDerivedCandidateV2(
+  planInput: unknown,
+  signedAuthorityInput: unknown,
+  verificationInput: unknown,
+  replayInput: unknown,
+  candidateInput: unknown,
+): FeatureOperationEvaluationV2 {
+  const blocked = (reasonCode: FeatureOperationBlockedReasonV1): FeatureOperationEvaluationV2 => ({ state: "blocked", reasonCode });
+  const planResult = validateFeatureOperationPlanV2(planInput);
+  if (planResult.state === "invalid") return blocked("PLAN_INVALID");
+  if (!signedAuthorityEnvelopeV2(signedAuthorityInput)) return blocked("SIGNED_AUTHORITY_INVALID");
+  const verification = checkVerificationInputV2(verificationInput);
+  if (!verification) return blocked("TRUSTED_COULSON_BINDING_INVALID");
+  const verified = verifySignedFeatureOperationAuthorityV2(signedAuthorityInput, verification);
+  if (verified.state === "invalid") return blocked(verified.code === "signature_invalid" ? "AUTHORITY_SIGNATURE_INVALID" : "TRUSTED_COULSON_BINDING_INVALID");
+  const replayResult = validateFeatureOperationReplayContextV2(replayInput);
+  if (replayResult.state === "invalid") return blocked("REPLAY_CONTEXT_INVALID");
+  const plan = planResult.value, authority = verified.value, replay = replayResult.value;
+  if (timestampBefore(replay.observedAt.value, authority.issuedAt)) return blocked("REPLAY_CONTEXT_INVALID");
+  const candidateResult = validateFeatureOperationDerivedCandidateV2(candidateInput);
+  if (authority.missionId !== verification.expectedMissionId || authority.operationId !== verification.expectedOperationId ||
+      authority.operationSequence !== verification.expectedOperationSequence || authority.journalSequence !== verification.expectedJournalSequence ||
+      authority.planDigest !== plan.planDigest || authority.authorityDigest !== replay.verifiedAuthorityDigest || replay.activePlanDigest !== plan.planDigest ||
+      replay.operationId !== plan.operationId || replay.repositoryId !== plan.repositoryId || replay.verifiedAuthorityId !== authority.authorityId ||
+      (candidateResult.state === "valid" && (candidateResult.value.repositoryId !== plan.repositoryId || candidateResult.value.operationId !== plan.operationId ||
+        candidateResult.value.planDigest !== plan.planDigest || candidateResult.value.authorityDigest !== authority.authorityDigest))) return blocked("IDENTITY_OR_DIGEST_MISMATCH");
+  const activeLineage = replay.acceptedPlanLineage.at(-1);
+  if (!activeLineage?.active || activeLineage.planDigest !== plan.planDigest || activeLineage.authorityDigest !== authority.authorityDigest) return blocked("AUTHORITY_OR_LINEAGE_INACTIVE");
+  if (replay.lifecycle.state !== "active") return blocked("LIFECYCLE_BLOCKED");
+  if (authority.operationSequence !== replay.acceptedAuthorityOperationSequence || authority.journalSequence !== replay.currentJournalSequence) return blocked("SEQUENCE_MISMATCH");
+  if (!timestampBefore(replay.observedAt.value, authority.expiresAt)) return blocked("AUTHORITY_EXPIRED");
+  if (candidateResult.state === "invalid") return blocked("CANDIDATE_INVALID");
+  const candidate = candidateResult.value;
+  if (!stageEvidenceApplicable(candidate as unknown as FeatureOperationDerivedCandidateV1)) return blocked("STAGE_OR_EVIDENCE_INAPPLICABLE");
+  const child = candidateChild(candidate as unknown as FeatureOperationDerivedCandidateV1, plan as unknown as FeatureOperationPlanV1);
+  if (("childId" in candidate && !child) || !dependenciesEligible(candidate as unknown as FeatureOperationDerivedCandidateV1, child, replay as unknown as FeatureOperationReplayContextV1)) return blocked("CHILD_OR_DEPENDENCY_INELIGIBLE");
+  if (!revisionFresh(candidate as unknown as FeatureOperationDerivedCandidateV1, replay as unknown as FeatureOperationReplayContextV1)) return blocked("FEATURE_OR_CHILD_REVISION_STALE");
+  if (!requestedScopeIsSubset(candidate as unknown as FeatureOperationDerivedCandidateV1, child, plan as unknown as FeatureOperationPlanV1) ||
+      !authority.permittedDerivations.includes(candidate.derivationKind) || (child !== null && !child.allowedEffectKeys.includes(candidate.effectKey))) return blocked("SCOPE_NOT_STRICT_SUBSET");
+  if (!branchAndRevisionValid(candidate as unknown as FeatureOperationDerivedCandidateV1, child, plan as unknown as FeatureOperationPlanV1, replay as unknown as FeatureOperationReplayContextV1)) return blocked("BRANCH_TARGET_OR_METHOD_INVALID");
+  if (!integrationEvidenceValid(candidate as unknown as FeatureOperationDerivedCandidateV1, child, replay as unknown as FeatureOperationReplayContextV1)) return blocked("INTEGRATION_EVIDENCE_INVALID");
+  if (!boundsAvailable(candidate as unknown as FeatureOperationDerivedCandidateV1, child, replay as unknown as FeatureOperationReplayContextV1, plan as unknown as FeatureOperationPlanV1)) return blocked("BOUNDS_EXHAUSTED");
+  if (replay.consumedEffectKeys.includes(candidate.effectKey)) return blocked("EFFECT_KEY_REUSED");
+  const current = terminalFeatureState(replay as unknown as FeatureOperationReplayContextV1);
   return { state: "eligible", candidate, currentFeatureHead: current.head, currentFeatureTreeDigest: current.tree };
 }
