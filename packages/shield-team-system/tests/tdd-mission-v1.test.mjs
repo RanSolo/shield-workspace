@@ -1583,11 +1583,13 @@ test("amendment edges reject skips, stale generations, unreviewed snapshots, and
 
 test("selected and declined amendments complete only with fresh generation-one evidence", () => {
   for (const oldStrategy of ["tdd_selected", "tdd_declined"]) {
-    const input = amendedFlowMission({ oldStrategy, amendmentKind: "changed" });
-    const result = evaluateTddMissionV1(input);
-    assert.equal(result.state, "eligible", oldStrategy);
-    assert.equal(result.input.strategyContract.contractGeneration, 1);
-    assert.ok(result.input.evidence.every((item) => item.contractGeneration === 1));
+    for (const amendmentKind of ["changed", "removed"]) {
+      const input = amendedFlowMission({ oldStrategy, amendmentKind });
+      const result = evaluateTddMissionV1(input);
+      assert.equal(result.state, "eligible", `${oldStrategy} ${amendmentKind}`);
+      assert.equal(result.input.strategyContract.contractGeneration, 1);
+      assert.ok(result.input.evidence.every((item) => item.contractGeneration === 1));
+    }
   }
 });
 
