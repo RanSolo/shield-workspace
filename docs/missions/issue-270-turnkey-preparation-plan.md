@@ -46,34 +46,55 @@ raw-attribution verifier. Dependency direction is exactly:
 @shield/team-system → @shield/mission-preparation
 ```
 
-The dependency must be established with npm workspace linking:
+The dependency must be established as the exact accepted A0 version with npm
+workspace linking:
 
 ```bash
-npm install @shield/mission-preparation --workspace @shield/team-system
+npm install @shield/mission-preparation@0.1.0 --save-exact --workspace @shield/team-system
 ```
+
+The lockfile must retain the local workspace link while the packed Team System
+manifest must declare exactly `"@shield/mission-preparation": "0.1.0"`.
 
 No `tsconfig` path alias, copied compiler, duplicate attribution evaluator, or
 reverse dependency is permitted.
 
+Mission Builder intentionally adds one public typed producer,
+`buildMissionTransitionPlanV1`. It accepts a closed planning input containing
+the non-observable scope/runtime decisions required by `TransitionPlanV1`,
+derives its identity with the A0 contract helpers, and returns authority-none
+data. The additive symbol is covered by package-surface tests; it is not a
+signing, dispatch, or effect API.
+
 `mission-preparation-host-v1.mts` is the sole Team System integration seam. It
-is an internal module (not re-exported by `public/index.*` and not added to the
-package `exports` map) that owns two closed operations:
+is otherwise internal (not separately re-exported and not added to the package
+`exports` map) and owns two closed operations:
 
 1. `materializeReviewedMissionTransitionV1`, invoked by the host after Fury's
    exact-plan dispatch has durably completed, accepts typed Mission Builder
    output plus the exact Fury plan-review artifact and dispatch identity,
-   rereads the raw dispatch ledger, derives attribution, calls
-   `prepareMissionTransitionV1`, and create-once stores the reviewed graph;
+   rereads the raw dispatch ledger, derives attribution, validates the
+   transition plan, derives the parent review and intent, and create-once
+   stores that reviewed graph; it does not create a live observation,
+   candidate, or preparation receipt;
 2. `resolvePreparedMissionTransitionV1`, invoked only from `prepare-next`,
    resolves that graph by mission ID, rereads the dispatch ledger, rederives
    attribution, observes the live repository and journal, calls the compiler,
    and returns either a closed candidate or a stable blocked reason.
 
-The compiler call is not added to `mission-builder-v1.mts`, whose exports are
-public through the existing wildcard facade. Mission Builder remains the
-typed producer of the transition plan; the internal host is the sole
-production consumer of the authority-none compiler. `mission-cli.mts` owns
-only option parsing, rendering, the PIN interaction, and delegation to the
+`mission-cli.mts` exposes a host-facing, non-interactive
+`mission record-reviewed-transition --transition-plan <file>
+--review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> --root .`
+command. This is the production call site used by orchestration immediately
+after the named Fury receipt becomes terminal; it invokes the materializer and
+returns the content-addressed store identity. It never prompts, signs, appends
+mission authority, or accepts an attribution verdict. It is not part of the
+operator key turn and does not weaken the rule that Hill's `prepare-next`
+command supplies only mission ID and root.
+
+The internal host is the sole production consumer of the authority-none
+compiler. `mission-cli.mts` also owns option parsing, rendering, the PIN
+interaction, and delegation to the
 existing `prepareAuthorizeWheelsUp` / signing / append implementation. Do not
 put this pre-PIN preparation logic into `governed-may-dispatch-v1.mts`; no model
 is invoked in this transition.
@@ -82,20 +103,23 @@ is invoked in this transition.
 
 The host resolves the current mission and its protected transition-plan/Fury
 review evidence by mission ID and configured repository paths. Hill supplies
-neither action JSON nor an intent path. The existing seat-dispatch store ledger
-reader is extended additively to return the exact readback `bytes` already held
-by its private log result and an ordered array of copied UTF-8 bytes for each
-canonical JSON line, excluding its newline delimiter. The host hashes the
+neither action JSON nor an intent path. The existing seat-dispatch store gains
+a distinct package-internal `readSeatDispatchReceiptLedgerSnapshotV1`; the
+existing public ledger reader and result shape remain unchanged. The internal
+snapshot returns exact readback `bytes` and an ordered array of copied UTF-8
+bytes for each canonical JSON line, excluding its newline delimiter. The host hashes the
 selected raw receipt set with `computeRawReceiptSetSha256V1`, selects the one
 exact terminal Fury receipt named by the typed review input, and replays its
-entries through `evaluateSeatDispatchAttributionV1`. It derives
+complete parsed ledger through `evaluateSeatDispatchAttributionV1` so global
+sequence and interleaved lifecycle validation remain intact. It derives
 `mission.parent-plan-review-evidence.v1` from that attributed review artifact
 and rejects zero, duplicate, or conflicting candidates. Existing
 implementation-blueprint Fury evidence is not reused or represented as
 parent-plan evidence. The resulting Team System projection—not raw receipt
 prose and not a caller assertion—feeds the authority-none compiler.
 
-No new operator command materializes the intent. The orchestration host calls
+No human-facing command or decision materializes the intent. The orchestration
+host calls the record command above, which invokes
 `materializeReviewedMissionTransitionV1` as the deterministic successor to a
 durable Fury PASS. Its closed input contains the transition plan, exact Fury
 plan-review artifact, expected binding, and exact dispatch identity; it does
@@ -109,8 +133,8 @@ create-only artifact beneath
 `.shield/audit/mission-preparation/<sha256(mission-id)>/reviewed-transition.json`,
 syncs parent directories, rereads exact bytes, and records no authority.
 
-The materialized reviewed intent and preparation receipt are closed,
-content-addressed artifacts. Their identities bind:
+The materialized reviewed plan, parent review, and intent are one closed,
+content-addressed graph. Its identities bind:
 
 - mission, subject, repository, transition-plan ID/digest, and parent-plan
   identity;
@@ -127,9 +151,12 @@ duplicate, conflicting, cross-plan, cross-mission, cross-repository, or
 runtime/model/executor-mismatched evidence returns one stable pre-PIN failure
 and performs no signer, journal, Git, GitHub, or model effect.
 
-Before display, the CLI requires byte-for-byte equality between the compiler
-candidate action input and the manifest produced by
-`prepareAuthorizeWheelsUp`; this closes the candidate/legacy-adapter gap. The
+Before display, the CLI derives a closed legacy projection from
+`PreparedAuthorizeWheelsUp`. Its action fields are canonically equal to
+`candidate.actionInput`; its decision fields are canonically equal to
+`candidate.decisionProjection`; and its repository, journal, signer, and
+remaining-gate fields are canonically equal to the compiler observation. This
+closes the candidate/legacy-adapter gap without comparing unlike object shapes. The
 existing post-display/post-PIN freshness check remains separate and unchanged;
 preparation must not collapse pre-PIN derivation and post-PIN freshness into
 one snapshot.
@@ -139,13 +166,25 @@ compiler. Before invoking that compiler, authoritative schema-9 replay chooses
 exactly one of two states:
 
 - fresh pending: continue through preparation and the one-PIN transition;
-- already authorized: if the active implementation authority, runtime binding,
-  publication authority, repository observation, and all four semantic scopes
-  exactly equal the stored reviewed graph, return `already_authorized` without
-  prompting or appending; otherwise fail closed as `authority_conflict`.
+- already authorized: require exactly one contiguous ordered four-entry key
+  turn (`governance.decided`, `implementation.authorized`,
+  `runtime.binding_recorded`, `review.publication_authorized`), exact previous
+  sequence links and constituent payload identities/digests, exactly one
+  approved Coulson authorization, a non-revoked implementation authority, one
+  matching active runtime binding, one matching publication authority, and
+  semantic equality with the stored reviewed graph and live observation. Then
+  return `already_authorized` without prompting or appending; any partial,
+  replaced, duplicate, revoked, or mismatched provenance fails as
+  `authority_conflict`.
 
-Every other replay state is blocked. The compiler therefore remains a fresh
-transition compiler and no duplicate authority is created.
+Every other replay state is blocked. The `already_authorized` machine result is
+the exact closed object `{schemaVersion:1, state:"already_authorized",
+missionId, missionRevisionId, headRevision, endingJournalSequence,
+authorizationManifestDigest}`; human mode renders the same six values in fixed
+order and never prints `Passcode:`. Conflict precedence is malformed/replay
+failure, protected-evidence mismatch, repository/config/signer mismatch,
+partial key turn, then semantic authority conflict. The compiler therefore
+remains a fresh transition compiler and no duplicate authority is created.
 
 ## Rapid-strike lanes and acceptance mapping
 
@@ -153,20 +192,23 @@ transition compiler and no duplicate authority is created.
 
 - Link `@shield/mission-preparation` into `@shield/team-system` with the npm
   workspace command above.
-- Add the internal host/store seam described above; do not expose it through
-  the public facade or package export map.
-- Extend the internal seat-dispatch ledger result with exact readback bytes and
-  per-entry raw bytes, then bind the selected receipt-set SHA-256 into the
-  stored graph.
+- Add the intentional public Mission Builder transition-plan producer and the
+  internal host/store seam described above; add no new package subpath.
+- Add the separate internal seat-dispatch snapshot reader with exact readback
+  bytes and per-entry raw bytes, then bind the selected receipt-set SHA-256
+  into the stored graph without changing the public ledger reader.
+- Add the host-facing record command as the sole production materialization
+  call site; tests invoke the real CLI after a terminal Fury receipt.
 - Add the `mission prepare-next --mission-id --root` command surface with
   `--human`, `--json`, and `--passcode-stdin` output/input modes matching the
   existing command conventions; it accepts no `--input` or intent path.
 - Resolve and revalidate the protected reviewed intent by mission ID and root.
 
 Tests prove no caller-authored action payload/path or attribution verdict is
-accepted, exact intent and raw-receipt-set bindings survive create-sync-
-readback materialization, and replaced, stale, or cross-plan artifacts fail
-before a PIN prompt.
+accepted by `prepare-next`, exact intent and raw-receipt-set bindings survive
+create-sync-readback materialization, materialization never requires a live
+observation or calls the compiler, and replaced, stale, or cross-plan artifacts
+fail before a PIN prompt.
 
 ### Lane B — attribution and fail closure (AC 2, 3, 6)
 
@@ -177,9 +219,10 @@ before a PIN prompt.
 - Prove the Nx graph contains Team System → Mission Preparation and no reverse
   path or duplicate evaluator.
 
-Tests cover missing/duplicate/conflicting receipts, wrong mission/plan/artifact,
-stale repository revision, wrong Fury seat, and runtime/model/executor
-substitution. Each case asserts no passcode prompt and unchanged journal bytes.
+Tests cover missing/duplicate/conflicting receipts, interleaved valid receipt
+lifecycles, wrong mission/plan/artifact, stale repository revision, wrong Fury
+seat, and runtime/model/executor substitution. Each case asserts no passcode
+prompt and unchanged protected state.
 
 ### Lane C — unchanged key turn (AC 7, 8)
 
@@ -190,8 +233,9 @@ substitution. Each case asserts no passcode prompt and unchanged journal bytes.
   `appendProfileAwareMissionEntriesAtomicV1` without changing authority
   semantics.
 - Preserve the legacy direct command and JSON output vectors.
-- Compare the compiler candidate to the prepared legacy manifest before
-  rendering; any mismatch returns before output or passcode input.
+- Compare the compiler candidate and observation to their explicit closed
+  projections from the prepared legacy result before rendering; any mismatch
+  returns before output or passcode input.
 
 Tests prove exactly one decision/PIN, one atomic append, and the unchanged
 ordered event set:
@@ -203,10 +247,13 @@ ordered event set:
 
 Cancellation or failed preflight appends zero entries. An exact retry against
 already-current semantic authority returns `already_authorized`, emits no PIN,
-and invokes the atomic append zero times. Tests instrument the shared CLI
-execution seam to prove exactly one passcode request and exactly one atomic
-append invocation on success, and byte-for-byte unchanged journal/store files
-for every blocked, cancelled, and retry path.
+and invokes the atomic append zero times. Tests instrument decision rendering,
+passcode acquisition, signing, and the atomic append. Success records exactly
+one call to each. A blocked path records zero calls after its stopping point;
+cancellation records one render and one passcode read but zero signing and
+append calls. Every failure test snapshots and proves unchanged configuration,
+mission journal, preparation store, dispatch log, signer bytes, Git HEAD, and
+Git status, and proves the exact renderer invocation count.
 
 ## Writable paths
 
@@ -214,12 +261,14 @@ Implementation is limited to:
 
 - `package-lock.json`
 - `packages/shield-team-system/package.json`
+- `packages/shield-team-system/src/mission-builder-v1.mts`
 - `packages/shield-team-system/src/mission-preparation-host-v1.mts`
 - `packages/shield-team-system/src/mission-preparation-store-v1.mts`
 - `packages/shield-team-system/src/seat-dispatch-store.mts`
 - `packages/shield-team-system/src/mission-cli.mts`
 - `packages/shield-team-system/src/mission-human-output-v1.mts` only if the
   existing renderer cannot represent a required additive preparation field;
+- `packages/shield-team-system/tests/mission-builder-v1.test.mjs`
 - `packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs`
 - `packages/shield-team-system/tests/mission-preparation-store-v1.test.mjs`
 - `packages/shield-team-system/tests/seat-dispatch-store.test.mjs`
@@ -229,9 +278,11 @@ Implementation is limited to:
 - `packages/shield-team-system/tests/package-surface.test.mjs`
 
 No `@shield/mission-preparation` source changes, governed May dispatch changes,
-public package export changes, new authority class, or new generic command
-interpreter are authorized by this plan. The new host/store modules are package
-internal and their direct imports are limited to Team System source and tests.
+new package subpath, new authority class, or new generic command interpreter
+are authorized by this plan. The only additive public symbol is the typed,
+authority-none Mission Builder producer named above. The new host/store modules
+remain package-internal and their direct imports are limited to Team System
+source and tests.
 
 ## Validation
 
