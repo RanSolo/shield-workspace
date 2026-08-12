@@ -10,6 +10,22 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
 const npmCache = join(tmpdir(), "shield-v0.3-2-npm-cache");
 
+test("documents the exported TDD mission evaluator and its exact effect boundary", async () => {
+  const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  const publicApi = await readFile(join(packageRoot, "PUBLIC_API.md"), "utf8");
+  const tddMission = await import("@shield/team-system/tdd-mission");
+
+  assert.deepEqual(manifest.exports["./tdd-mission"], {
+    types: "./public/tdd-mission.d.mts",
+    import: "./public/tdd-mission.mjs",
+  });
+  assert.equal(typeof tddMission.evaluateTddMissionV1, "function");
+  assert.match(
+    publicApi,
+    /\| `@shield\/team-system\/tdd-mission` \| Pure host-neutral, non-authoritative `tdd\.mission\.v1` evaluator; it performs no signing, journal append, dispatch, test execution, publication, or human-decision effect \|/u,
+  );
+});
+
 test("exports only the documented public package specifiers", async () => {
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   assert.deepEqual(Object.keys(manifest.exports), [
