@@ -33,15 +33,16 @@ test("V2 GitHub producer signs challenge-bound applied and exact not-applied tra
   const signEnvelope = async (domain, payload) => ({ payload: structuredClone(payload), signatureBase64: sign(null, Buffer.concat([
     Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(canonicalFeatureIntegrationJsonV1(payload), "utf8"),
   ]), key).toString("base64") });
-  const prior = "a".repeat(40), child = "b".repeat(40), merged = "c".repeat(40), gitTree = "d".repeat(40);
+  const prior = "a".repeat(40), child = "b".repeat(40), merged = "c".repeat(40), gitTree = "d".repeat(40), firstChildCommit = "e".repeat(40);
   const responses = [
-    { number: 7, url: "https://github.com/x/y/pull/7", state: "MERGED", isDraft: true, headRefName: "agent/child", headRefOid: child, baseRefName: "feature/226", mergedAt: "2029-01-01T00:00:00Z", mergeCommit: { oid: merged }, statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], commits: [{ oid: child }], mergeMethod: "squash" },
+    { number: 7, url: "https://github.com/x/y/pull/7", state: "MERGED", isDraft: true, headRefName: "agent/child", headRefOid: child, baseRefName: "feature/226", mergedAt: "2029-01-01T00:00:00Z", mergeCommit: { oid: merged }, statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], commits: [{ oid: firstChildCommit }, { oid: child }] },
     [{ number: 7 }], { ref: "refs/heads/feature/226", object: { type: "commit", sha: merged } }, { sha: merged, tree: { sha: gitTree } },
     { sha: merged, tree: { sha: gitTree }, parents: [{ sha: prior }] },
+    { sha: child, tree: { sha: gitTree }, parents: [{ sha: firstChildCommit }] },
   ].map((value) => ({ status: 0, stdout: JSON.stringify(value), stderr: "", errorCode: null }));
   const run = () => responses.shift() ?? { status: 1, stdout: "", stderr: "unexpected", errorCode: null };
   const created = createGitHubFeatureObservationProducerV2({ adapterOptions: { run, cwd: "/workspace" }, producerId: "producer:github", signEnvelope, clock: () => "2029-01-01T00:01:00Z" });
-  assert.equal(created.state, "ready"); assert.deepEqual(Object.keys(created.producer), ["signChallenge", "observeAndSignWorkspace", "observeAndSignTransition", "observeAndSignAdmission", "observeAndSignExpiry"]);
+  assert.equal(created.state, "ready"); assert.deepEqual(Object.keys(created.producer), ["signChallenge", "executeTransition", "observeAndSignWorkspace", "observeAndSignTransition", "observeAndSignAdmission", "observeAndSignExpiry"]);
   const core = { schemaVersion: 2, contractVersion: "feature.integration.transition-request.v2", requestId: "request:one", operationId: "operation:226", repositoryId: "RanSolo/shield-workspace", derivationKind: "child_merge_to_feature", candidateDigest: `sha256:${"1".repeat(64)}`, effectKey: "effect:child_merge_to_feature:one", pullRequestId: "7", expectedPullRequestHead: child, targetFeatureBranch: "feature/226", targetFeatureRef: "refs/heads/feature/226", integrationMethod: "squash", priorHeadRevision: prior, priorTreeDigest: `sha256:${"2".repeat(64)}`, rollbackWorkspaceReceiptDigest: null };
   const requestCoreDigest = computeFeatureTransitionRequestCoreDigestV2(core);
   const signedChallenge = await created.producer.signChallenge({ schemaVersion: 2, contractVersion: "feature.integration.challenge.v2", challengeKind: "transition", operationId: core.operationId, repositoryId: core.repositoryId, requestId: core.requestId, requestCoreDigest, preparationEntryDigest: null, candidateDigest: core.candidateDigest, effectKey: core.effectKey, producerId: "producer:github", producerKind: "github_repository", generation: 0, challengeId: "challenge:one", previousJournalDigest: `sha256:${"3".repeat(64)}`, intendedEntrySequence: 1, expectedHeadRevision: prior, expectedTreeDigest: core.priorTreeDigest, priorChallengeDigest: null, priorObservationDigest: null, issuedAt: "2029-01-01T00:00:00Z", expiresAt: "2029-01-01T00:05:00Z", challengeDigest: `sha256:${"0".repeat(64)}` });
@@ -58,18 +59,19 @@ test("V2 GitHub producer closes rollback applied, not-applied, and restored-tree
   const signEnvelope = async (domain, payload) => ({ payload: structuredClone(payload), signatureBase64: sign(null, Buffer.concat([
     Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(canonicalFeatureIntegrationJsonV1(payload), "utf8"),
   ]), key).toString("base64") });
-  const prior = "a".repeat(40), rollbackHead = "b".repeat(40), merged = "c".repeat(40), restoredGitTree = "d".repeat(40);
+  const prior = "a".repeat(40), rollbackHead = "b".repeat(40), merged = "c".repeat(40), restoredGitTree = "d".repeat(40), currentGitTree = "e".repeat(40);
   const restoredTreeDigest = `sha256:${createHash("sha256").update(restoredGitTree, "ascii").digest("hex")}`;
+  const currentTreeDigest = `sha256:${createHash("sha256").update(currentGitTree, "ascii").digest("hex")}`;
   const core = { schemaVersion: 2, contractVersion: "feature.integration.transition-request.v2", requestId: "request:rollback", operationId: "operation:226",
     repositoryId: "RanSolo/shield-workspace", derivationKind: "child_revert_on_feature", candidateDigest: `sha256:${"1".repeat(64)}`,
     effectKey: "effect:child_revert_on_feature:one", pullRequestId: "8", expectedPullRequestHead: rollbackHead, targetFeatureBranch: "feature/226",
-    targetFeatureRef: "refs/heads/feature/226", integrationMethod: "squash", priorHeadRevision: prior,
-    priorTreeDigest: restoredTreeDigest, rollbackWorkspaceReceiptDigest: `sha256:${"2".repeat(64)}` };
+    targetFeatureRef: "refs/heads/feature/226", integrationMethod: "merge_commit", priorHeadRevision: prior,
+    priorTreeDigest: currentTreeDigest, rollbackWorkspaceReceiptDigest: `sha256:${"2".repeat(64)}` };
   const requestCoreDigest = computeFeatureTransitionRequestCoreDigestV2(core);
   const challengePayload = { schemaVersion: 2, contractVersion: "feature.integration.challenge.v2", challengeKind: "transition", operationId: core.operationId,
     repositoryId: core.repositoryId, requestId: core.requestId, requestCoreDigest, preparationEntryDigest: null, candidateDigest: core.candidateDigest,
     effectKey: core.effectKey, producerId: "producer:github", producerKind: "github_repository", generation: 0, challengeId: "challenge:rollback",
-    previousJournalDigest: `sha256:${"3".repeat(64)}`, intendedEntrySequence: 1, expectedHeadRevision: prior, expectedTreeDigest: restoredTreeDigest,
+    previousJournalDigest: `sha256:${"3".repeat(64)}`, intendedEntrySequence: 1, expectedHeadRevision: prior, expectedTreeDigest: currentTreeDigest,
     priorChallengeDigest: null, priorObservationDigest: null, issuedAt: "2029-01-01T00:00:00Z", expiresAt: "2029-01-01T00:05:00Z",
     challengeDigest: `sha256:${"0".repeat(64)}` };
   const produce = async (responses, expectedRestoredTreeDigest = restoredTreeDigest) => {
@@ -83,10 +85,10 @@ test("V2 GitHub producer closes rollback applied, not-applied, and restored-tree
   };
   const mergedResponses = (finalPullCommit = rollbackHead) => [
     { number: 8, url: "https://github.com/x/y/pull/8", state: "MERGED", isDraft: true, headRefName: "rollback/child", headRefOid: rollbackHead,
-      baseRefName: "feature/226", mergedAt: "2029-01-01T00:00:00Z", mergeCommit: { oid: merged }, mergeMethod: "squash",
+      baseRefName: "feature/226", mergedAt: "2029-01-01T00:00:00Z", mergeCommit: { oid: merged },
       statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], commits: [{ oid: finalPullCommit }] },
     [{ number: 8 }], { ref: "refs/heads/feature/226", object: { type: "commit", sha: merged } },
-    { sha: merged, tree: { sha: restoredGitTree } }, { sha: merged, tree: { sha: restoredGitTree }, parents: [{ sha: prior }] },
+    { sha: merged, tree: { sha: restoredGitTree } }, { sha: merged, tree: { sha: restoredGitTree }, parents: [{ sha: prior }, { sha: rollbackHead }] },
   ].map((value) => ({ status: 0, stdout: JSON.stringify(value), stderr: "", errorCode: null }));
   assert.equal((await produce(mergedResponses())).payload.status, "applied");
   assert.equal((await produce(mergedResponses(), `sha256:${"f".repeat(64)}`)).payload.status, "uncertain");
@@ -94,8 +96,8 @@ test("V2 GitHub producer closes rollback applied, not-applied, and restored-tree
 
   const unmerged = [
     { number: 8, url: "https://github.com/x/y/pull/8", state: "OPEN", isDraft: true, headRefName: "rollback/child", headRefOid: rollbackHead,
-      baseRefName: "feature/226", mergedAt: null, mergeCommit: null, mergeMethod: null, statusCheckRollup: [], commits: [{ oid: rollbackHead }] },
-    [{ number: 8 }], { ref: "refs/heads/feature/226", object: { type: "commit", sha: prior } }, { sha: prior, tree: { sha: restoredGitTree } },
+      baseRefName: "feature/226", mergedAt: null, mergeCommit: null, statusCheckRollup: [], commits: [{ oid: rollbackHead }] },
+    [{ number: 8 }], { ref: "refs/heads/feature/226", object: { type: "commit", sha: prior } }, { sha: prior, tree: { sha: currentGitTree } },
   ].map((value) => ({ status: 0, stdout: JSON.stringify(value), stderr: "", errorCode: null }));
   assert.equal((await produce(unmerged)).payload.status, "not_applied");
 });
@@ -104,10 +106,18 @@ test("P1 exports a fail-closed hardened stage owner boundary", async () => {
   let producerCalls = 0;
   const repositoryProducer = { observeAndSignTransition() { producerCalls += 1; } };
   assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(null), { state: "blocked", reason: "invalid_input", appendedEntryDigest: null });
-  const input = { stage: "integration", replay: { nextStage: "integration" }, journal: {}, stageInput: { stage: "integration" }, storeScope: {},
+  const input = { stage: "feature_branch_creation", replay: { nextStage: "feature_branch_creation" }, journal: {}, stageInput: { stage: "feature_branch_creation" }, storeScope: {},
     trustAnchor: {}, repositoryProducer, cumulativeProducer: null };
   assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(input), { state: "blocked", reason: "stage_blocked", appendedEntryDigest: null });
   assert.equal(producerCalls, 0);
+  const transitionProducer = { executeTransition() {}, observeAndSignTransition() {} };
+  const request = { signedChallenge: {} }, candidate = {};
+  const integration = (storeScope) => ({ stage: "integration", replay: { nextStage: "integration" }, journal: {},
+    stageInput: { stage: "integration", candidate, request }, storeScope, trustAnchor: {}, repositoryProducer: transitionProducer, cumulativeProducer: null });
+  assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(integration({ readJournal: async () => { throw new Error("read uncertain"); }, appendEntry: async () => null })),
+    { state: "recovery_required", reason: "durability_uncertain", appendedEntryDigest: null });
+  assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(integration({ readJournal: async () => ({ state: "accepted", value: { journal: { changed: true } } }), appendEntry: async () => null })),
+    { state: "blocked", reason: "compare_conflict", appendedEntryDigest: null });
 });
 
 test("branch adapter observes and creates only exact non-main refs", () => {

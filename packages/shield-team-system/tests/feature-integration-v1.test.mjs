@@ -15,6 +15,11 @@ import {
   computeFeatureTransitionObservationDigestV2,
   computeFeatureTransitionRequestCoreDigestV2,
   computeFeatureTransitionRequestDigestV2,
+  computeFeatureCumulativeAuthorityDigestV2,
+  computeFeatureCumulativeCandidateDigestV2,
+  computeFeatureCumulativeRequestCoreDigestV2,
+  computeFeatureCumulativeRequestDigestV2,
+  computeFeatureCumulativeReceiptObservationDigestV2,
   computeFeatureIntegrationReceiptDigestV1,
   computeFeatureRollbackReceiptDigestV1,
   computeFeatureIntegrationWorkspaceEffectObservationDigestV1,
@@ -46,6 +51,7 @@ import {
   computeImplementationAuthorityDigest,
   computeSchema9RuntimeBindingDigest,
 } from "../dist/implementation-authority-v1.mjs";
+import { executeFeatureIntegrationWorkspaceStageV2 } from "../github/feature-integration-workspace-v1.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const revision = (character) => character.repeat(40);
@@ -788,6 +794,205 @@ test("V2 replay authenticates exact transition non-application and retains uncer
   badSignature.payload.preparationEntryDigest = digest("f");
   badSignature.entryDigest = computeFeatureIntegrationEntryDigestV2(badSignature);
   assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, badSignature]), fixture.trustAnchor), { state: "invalid", reason: "OBSERVATION_AUTHORITY_INVALID", entrySequence: 2 });
+});
+
+test("V2 cumulative failure replay reaches rollback_pending and accepts an exact restored workspace receipt", async () => {
+  const fixture = hardenedGenesisFixture();
+  const context = structuredClone(fixture.replayContext);
+  context.operationCounters.featureBranchCreateAttempts = 1;
+  context.operationCounters.featureWorkspaceDraftPrAttempts = 1;
+  context.childCounters[0] = { ...context.childCounters[0], initiationAttempts: 1, implementationAttempts: 1, publicationAttempts: 1 };
+  context.operationCounters.totalChildAttempts = 3;
+  context.operationCounters.capturedEvidenceCount = 1;
+  context.acceptedReviewEvidence = [{ evidenceRef: "evidence:review", gateType: "fury", gateId: "fury", childId: "mission:child-one",
+    repositoryId: context.repositoryId, headRevision: revision("b"), sourceRecordDigest: digest("8") }];
+  const priorTree = fixture.hardenedPlan.baseTreeDigest, integratedTree = digest("9");
+  const genesis = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null,
+    payload: { replayContext: context, signedAuthority: fixture.signedAuthority, trustedObservationProducerBindings: fixture.producerBindings, trustedHumanBindings: fixture.humanBindings } });
+  const baseline = createFeatureOperationJournalV2([genesis]);
+  const integrationEffectKey = fixture.hardenedPlan.children[0].allowedEffectKeys.find((key) => key.startsWith("effect:child_merge_to_feature:"));
+  const requestedScope = { relativePaths: [], actionIds: [], effectKeys: [], capabilityIds: [], validationIds: [], publicationOperations: [],
+    requiredGates: { mack: false, fury: false, humanGateIds: [] }, exclusions: [], requestedAttempts: 1, requestedRetries: 0 };
+  const integrationCandidate = { schemaVersion: 2, contractVersion: "feature.operation.v2", repositoryId: context.repositoryId, operationId: context.operationId,
+    planDigest: context.activePlanDigest, authorityDigest: context.verifiedAuthorityDigest, effectKey: integrationEffectKey, requestedScope,
+    candidateDigest: digest("0"), stage: "integration", derivationKind: "child_merge_to_feature", childId: "mission:child-one", childBranch: "agent/child-one",
+    childHeadRevision: revision("b"), childTreeDigest: digest("3"), targetBranch: fixture.hardenedPlan.featureBranch, integrationMethod: "squash",
+    predecessorIntegrationReceiptDigest: null, reviewEvidenceRefs: ["evidence:review"] };
+  integrationCandidate.candidateDigest = computeFeatureOperationDerivedCandidateDigestV2(integrationCandidate);
+  const integrationCore = { schemaVersion: 2, contractVersion: "feature.integration.transition-request.v2", requestId: "request:integration:one",
+    operationId: context.operationId, repositoryId: context.repositoryId, derivationKind: "child_merge_to_feature", candidateDigest: integrationCandidate.candidateDigest,
+    effectKey: integrationEffectKey, pullRequestId: "7", expectedPullRequestHead: revision("b"), targetFeatureBranch: fixture.hardenedPlan.featureBranch,
+    targetFeatureRef: `refs/heads/${fixture.hardenedPlan.featureBranch}`, integrationMethod: "squash", priorHeadRevision: fixture.hardenedPlan.baseRevision,
+    priorTreeDigest: priorTree, rollbackWorkspaceReceiptDigest: null };
+  const integrationCoreDigest = computeFeatureTransitionRequestCoreDigestV2(integrationCore);
+  const integrationChallenge = { schemaVersion: 2, contractVersion: "feature.integration.challenge.v2", challengeKind: "transition", operationId: context.operationId,
+    repositoryId: context.repositoryId, requestId: integrationCore.requestId, requestCoreDigest: integrationCoreDigest, preparationEntryDigest: null,
+    candidateDigest: integrationCandidate.candidateDigest, effectKey: integrationEffectKey, producerId: "producer:github", producerKind: "github_repository", generation: 0,
+    challengeId: "challenge:integration:one", previousJournalDigest: baseline.journalDigest, intendedEntrySequence: 1,
+    expectedHeadRevision: integrationCore.priorHeadRevision, expectedTreeDigest: priorTree, priorChallengeDigest: null, priorObservationDigest: null,
+    issuedAt: "2029-05-01T00:11:00Z", expiresAt: "2029-05-01T00:20:00Z", challengeDigest: digest("0") };
+  integrationChallenge.challengeDigest = computeFeatureObservationChallengeDigestV2(integrationChallenge);
+  const signedIntegrationChallenge = signProducerV2("shield.feature-integration.challenge.v2:transition", integrationChallenge);
+  const integrationRequest = { ...integrationCore, requestCoreDigest: integrationCoreDigest, signedChallenge: signedIntegrationChallenge, requestDigest: digest("0") };
+  integrationRequest.requestDigest = computeFeatureTransitionRequestDigestV2(integrationRequest);
+  const integrationPrepared = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 1, entryKind: "effect_prepared",
+    previousEntryDigest: genesis.entryDigest, payload: { effectClass: "transition", candidate: integrationCandidate,
+      candidateDigest: integrationCandidate.candidateDigest, effectKey: integrationEffectKey, request: integrationRequest,
+      requestDigest: integrationRequest.requestDigest, expectedHeadRevision: integrationCore.priorHeadRevision, expectedTreeDigest: priorTree, signedCumulativeAuthority: null } });
+  const integrationObservation = { schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "transition", operationId: context.operationId,
+    repositoryId: context.repositoryId, requestId: integrationCore.requestId, requestCoreDigest: integrationCoreDigest, requestDigest: integrationRequest.requestDigest,
+    preparationEntryDigest: integrationPrepared.entryDigest, candidateDigest: integrationCandidate.candidateDigest, effectKey: integrationEffectKey, pullRequestId: "7",
+    expectedPullRequestHead: revision("b"), targetFeatureRef: integrationCore.targetFeatureRef, integrationMethod: "squash", priorHeadRevision: integrationCore.priorHeadRevision,
+    priorTreeDigest: priorTree, observedPullRequestHead: revision("b"), observedPullRequestBaseBranch: integrationCore.targetFeatureBranch,
+    observedIntegrationMethod: "squash", pullRequestMerged: true, pullRequestMergeRevision: revision("c"), pullRequestCommitHeads: [revision("b")],
+    conflictingPullRequestCount: 0, resultingCommitParents: [integrationCore.priorHeadRevision], rebasedCommits: [], checkState: "successful",
+    observedTargetHeadRevision: revision("c"), observedTargetTreeDigest: integratedTree, status: "applied", signedChallenge: signedIntegrationChallenge,
+    producerId: "producer:github", observedAt: "2029-05-01T00:12:00Z", observationDigest: digest("0") };
+  integrationObservation.observationDigest = computeFeatureTransitionObservationDigestV2(integrationObservation);
+  const integrationAccepted = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "integration_accepted",
+    previousEntryDigest: integrationPrepared.entryDigest, payload: { preparationEntryDigest: integrationPrepared.entryDigest,
+      signedTransitionObservation: signProducerV2("shield.feature-integration.observation.v2:transition", integrationObservation) } });
+  const integratedJournal = createFeatureOperationJournalV2([genesis, integrationPrepared, integrationAccepted]);
+  const integrationReceipt = integrationObservation.observationDigest;
+  const baselineReplay = replayFeatureOperationJournalV2(baseline, fixture.trustAnchor);
+  assert.equal(baselineReplay.state, "valid");
+  let integrationJournalFromOwner = baseline; let integrationExecuteCalls = 0; let integrationObserveCalls = 0;
+  const integrationStageResult = await executeFeatureIntegrationWorkspaceStageV2({ stage: "integration", replay: baselineReplay.value, journal: baseline,
+    stageInput: { stage: "integration", candidate: integrationCandidate, request: integrationRequest },
+    storeScope: { readJournal: async () => ({ state: "accepted", value: { journal: integrationJournalFromOwner } }), appendEntry: async ({ entry }) => {
+      integrationJournalFromOwner = createFeatureOperationJournalV2([...integrationJournalFromOwner.entries, entry]);
+      return { state: "accepted", value: { journal: integrationJournalFromOwner } };
+    } }, trustAnchor: fixture.trustAnchor,
+    repositoryProducer: { executeTransition: async () => { integrationExecuteCalls += 1; return { state: "effect_result", outcome: "applied" }; },
+      observeAndSignTransition: async () => { integrationObserveCalls += 1; return integrationAccepted.payload.signedTransitionObservation; } },
+    cumulativeProducer: null });
+  assert.equal(integrationStageResult.state, "accepted"); assert.equal(integrationExecuteCalls, 1); assert.equal(integrationObserveCalls, 1);
+  assert.equal(canonicalFeatureIntegrationJsonV1(integrationJournalFromOwner), canonicalFeatureIntegrationJsonV1(integratedJournal));
+  const command = { commandId: "command:test", executable: "npm", args: ["test"], targetIds: ["target:team"], executableArgsDigest: digest("1"), idempotencyKey: digest("2") };
+  const cumulativeEffectKey = "effect:cumulative:one";
+  let authority = { schemaVersion: 2, authorityKind: "feature_cumulative_validation.v2", authorityId: "authority:cumulative:one", missionId: fixture.hardenedAuthority.missionId,
+    operationId: context.operationId, repositoryId: context.repositoryId, planDigest: context.activePlanDigest, featureAuthorityDigest: context.verifiedAuthorityDigest,
+    terminalHeadRevision: revision("c"), terminalTreeDigest: integratedTree, transitionReceiptDigest: integrationReceipt, requestCoreDigest: digest("0"),
+    commandIds: [command.commandId], targetIds: command.targetIds, validationIds: ["validation:test"], effectKey: cumulativeEffectKey, maxAttempts: 1, maxRetries: 0,
+    activeAuthorityJournalSequence: context.currentJournalSequence, activeAuthorityOperationSequence: context.acceptedAuthorityOperationSequence,
+    issuedAt: "2029-05-01T00:11:00Z", expiresAt: "2029-05-01T00:30:00Z", humanPrincipalId: fixture.humanBindings[0].humanPrincipalId,
+    humanBindingId: fixture.humanBindings[0].bindingId, signingKeyRef, authorityDigest: digest("0") };
+  const core = { schemaVersion: 2, contractVersion: "feature.integration.cumulative-request.v2", requestId: "request:cumulative:one", operationId: context.operationId,
+    repositoryId: context.repositoryId, planDigest: context.activePlanDigest, featureAuthorityDigest: context.verifiedAuthorityDigest, terminalHeadRevision: revision("c"),
+    terminalTreeDigest: integratedTree, transitionReceiptDigest: integrationReceipt, effectKey: cumulativeEffectKey, attemptId: "attempt:one", commands: [command],
+    targetIds: command.targetIds, validationIds: ["validation:test"] };
+  const requestCoreDigest = computeFeatureCumulativeRequestCoreDigestV2(core);
+  authority = { ...authority, requestCoreDigest }; authority.authorityDigest = computeFeatureCumulativeAuthorityDigestV2(authority);
+  const signedAuthority = signProducerV2("shield.feature-integration.cumulative-authority-signature.v2", authority);
+  const candidate = { schemaVersion: 2, contractVersion: "feature.integration.v2", operationId: context.operationId, repositoryId: context.repositoryId,
+    planDigest: context.activePlanDigest, featureAuthorityDigest: context.verifiedAuthorityDigest, cumulativeAuthorityDigest: authority.authorityDigest,
+    requestCoreDigest, effectKey: cumulativeEffectKey, attemptId: "attempt:one", terminalHeadRevision: revision("c"), terminalTreeDigest: integratedTree,
+    transitionReceiptDigest: integrationReceipt, activeAuthorityJournalSequence: context.currentJournalSequence,
+    activeAuthorityOperationSequence: context.acceptedAuthorityOperationSequence, candidateDigest: digest("0") };
+  candidate.candidateDigest = computeFeatureCumulativeCandidateDigestV2(candidate);
+  const challenge = { schemaVersion: 2, contractVersion: "feature.integration.challenge.v2", challengeKind: "cumulative", operationId: context.operationId,
+    repositoryId: context.repositoryId, requestId: core.requestId, requestCoreDigest, preparationEntryDigest: null, candidateDigest: candidate.candidateDigest,
+    effectKey: cumulativeEffectKey, producerId: "producer:cumulative", producerKind: "cumulative_execution", generation: 0, challengeId: "challenge:cumulative:one",
+    previousJournalDigest: integratedJournal.journalDigest, intendedEntrySequence: 3, expectedHeadRevision: revision("c"), expectedTreeDigest: integratedTree,
+    priorChallengeDigest: null, priorObservationDigest: null, issuedAt: "2029-05-01T00:12:00Z", expiresAt: "2029-05-01T00:20:00Z", challengeDigest: digest("0") };
+  challenge.challengeDigest = computeFeatureObservationChallengeDigestV2(challenge);
+  const signedChallenge = signProducerV2("shield.feature-integration.challenge.v2:cumulative", challenge);
+  const request = { ...core, requestCoreDigest, cumulativeAuthorityDigest: authority.authorityDigest, signedChallenge, requestDigest: digest("0") };
+  request.requestDigest = computeFeatureCumulativeRequestDigestV2(request);
+  const prepared = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 3, entryKind: "effect_prepared", previousEntryDigest: integrationAccepted.entryDigest,
+    payload: { effectClass: "cumulative", candidate, candidateDigest: candidate.candidateDigest, effectKey: cumulativeEffectKey, request,
+      requestDigest: request.requestDigest, expectedHeadRevision: revision("c"), expectedTreeDigest: integratedTree, signedCumulativeAuthority: signedAuthority } });
+  const receipt = { schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "cumulative_receipt", operationId: context.operationId,
+    preparationEntryDigest: prepared.entryDigest, attemptId: "attempt:one", requestDigest: request.requestDigest, registrationDigest: digest("3"),
+    startDigests: [digest("4")], resultDigests: [digest("5")], idempotencyKeys: [command.idempotencyKey], completedPrefixLength: 1,
+    invocationBounds: { minimum: 1, maximum: 1 }, terminalStatus: "failed", notAppliedReason: null,
+    commands: [{ commandIndex: 0, commandId: command.commandId, executableArgsDigest: command.executableArgsDigest, idempotencyKey: command.idempotencyKey }],
+    results: [{ commandIndex: 0, commandId: command.commandId, startDigest: digest("4"), resultDigest: digest("5"), status: "completed", exitCode: 1,
+      stdoutDigest: digest("6"), stderrDigest: digest("7"), cacheDisposition: "executed" }], signedChallenge, producerId: "producer:cumulative",
+    observedAt: "2029-05-01T00:13:00Z", observationDigest: digest("0") };
+  receipt.observationDigest = computeFeatureCumulativeReceiptObservationDigestV2(receipt);
+  const failed = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 4, entryKind: "cumulative_validation_failed",
+    previousEntryDigest: prepared.entryDigest, payload: { preparationEntryDigest: prepared.entryDigest,
+      signedCumulativeReceipt: signProducerV2("shield.feature-integration.observation.v2:cumulative_receipt", receipt) } });
+  const failedJournal = createFeatureOperationJournalV2([genesis, integrationPrepared, integrationAccepted, prepared, failed]);
+  const replayed = replayFeatureOperationJournalV2(failedJournal, fixture.trustAnchor);
+  assert.equal(replayed.state, "valid"); assert.equal(replayed.value.cumulativeValidation, "failed");
+  assert.equal(replayed.value.lifecycle, "rollback_pending"); assert.equal(replayed.value.nextStage, "rollback_mission_handoff");
+  assert.deepEqual(replayed.value.consumedCumulativeValidationEffectKeys, [cumulativeEffectKey]); assert.equal(replayed.value.cumulativeValidationAttempts, 1);
+  const completionReceiptDigest = digest("a");
+  const workspace = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 5, entryKind: "rollback_workspace_accepted",
+    previousEntryDigest: failed.entryDigest, payload: { childId: "mission:child-one", sourceMissionId: "mission:rollback-one", completionReceiptDigest,
+      sourceAuthorityDigest: digest("b"), sourceJournalDigest: digest("c"), rollbackBranch: "rollback/child-one", pullRequestId: "8",
+      pullRequestHeadRevision: revision("d"), targetBranch: fixture.hardenedPlan.featureBranch, restoredTreeDigest: priorTree,
+      sourceEffectKeys: ["effect:rollback-source:one"], evidenceDigests: [digest("d"), digest("e")] } });
+  const workspaceReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, integrationPrepared, integrationAccepted, prepared, failed, workspace]), fixture.trustAnchor);
+  assert.equal(workspaceReplay.state, "valid"); assert.equal(workspaceReplay.value.lifecycle, "rollback_pending"); assert.equal(workspaceReplay.value.nextStage, "rollback");
+  const workspaceJournal = createFeatureOperationJournalV2([genesis, integrationPrepared, integrationAccepted, prepared, failed, workspace]);
+  const rollbackEffectKey = fixture.hardenedPlan.children[0].allowedEffectKeys.find((key) => key.startsWith("effect:child_revert_on_feature:"));
+  const rollbackCandidate = { schemaVersion: 2, contractVersion: "feature.operation.v2", repositoryId: context.repositoryId, operationId: context.operationId,
+    planDigest: context.activePlanDigest, authorityDigest: context.verifiedAuthorityDigest, effectKey: rollbackEffectKey, requestedScope,
+    candidateDigest: digest("0"), stage: "rollback", derivationKind: "child_revert_on_feature", childId: "mission:child-one",
+    integrationReceiptDigest: integrationReceipt, integrationHeadRevision: revision("c"), integrationTreeDigest: integratedTree,
+    expectedRestoredTreeDigest: priorTree, targetBranch: fixture.hardenedPlan.featureBranch, rollbackMethod: "revert_commit" };
+  rollbackCandidate.candidateDigest = computeFeatureOperationDerivedCandidateDigestV2(rollbackCandidate);
+  const rollbackPreparedFor = (rollbackWorkspaceReceiptDigest) => {
+    const rollbackCore = { schemaVersion: 2, contractVersion: "feature.integration.transition-request.v2", requestId: `request:rollback:${rollbackWorkspaceReceiptDigest.slice(-1)}`,
+      operationId: context.operationId, repositoryId: context.repositoryId, derivationKind: "child_revert_on_feature", candidateDigest: rollbackCandidate.candidateDigest,
+      effectKey: rollbackEffectKey, pullRequestId: "8", expectedPullRequestHead: revision("d"), targetFeatureBranch: fixture.hardenedPlan.featureBranch,
+      targetFeatureRef: `refs/heads/${fixture.hardenedPlan.featureBranch}`, integrationMethod: "squash", priorHeadRevision: revision("c"),
+      priorTreeDigest: integratedTree, rollbackWorkspaceReceiptDigest };
+    const rollbackCoreDigest = computeFeatureTransitionRequestCoreDigestV2(rollbackCore);
+    const rollbackChallenge = { schemaVersion: 2, contractVersion: "feature.integration.challenge.v2", challengeKind: "transition", operationId: context.operationId,
+      repositoryId: context.repositoryId, requestId: rollbackCore.requestId, requestCoreDigest: rollbackCoreDigest, preparationEntryDigest: null,
+      candidateDigest: rollbackCandidate.candidateDigest, effectKey: rollbackEffectKey, producerId: "producer:github", producerKind: "github_repository", generation: 0,
+      challengeId: `challenge:rollback:${rollbackWorkspaceReceiptDigest.slice(-1)}`, previousJournalDigest: workspaceJournal.journalDigest, intendedEntrySequence: 6,
+      expectedHeadRevision: revision("c"), expectedTreeDigest: integratedTree, priorChallengeDigest: null, priorObservationDigest: null,
+      issuedAt: "2029-05-01T00:14:00Z", expiresAt: "2029-05-01T00:20:00Z", challengeDigest: digest("0") };
+    rollbackChallenge.challengeDigest = computeFeatureObservationChallengeDigestV2(rollbackChallenge);
+    const rollbackRequest = { ...rollbackCore, requestCoreDigest: rollbackCoreDigest,
+      signedChallenge: signProducerV2("shield.feature-integration.challenge.v2:transition", rollbackChallenge), requestDigest: digest("0") };
+    rollbackRequest.requestDigest = computeFeatureTransitionRequestDigestV2(rollbackRequest);
+    return createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 6, entryKind: "effect_prepared", previousEntryDigest: workspace.entryDigest,
+      payload: { effectClass: "transition", candidate: rollbackCandidate, candidateDigest: rollbackCandidate.candidateDigest, effectKey: rollbackEffectKey,
+        request: rollbackRequest, requestDigest: rollbackRequest.requestDigest, expectedHeadRevision: revision("c"), expectedTreeDigest: integratedTree,
+        signedCumulativeAuthority: null } });
+  };
+  const rollbackPrepared = rollbackPreparedFor(completionReceiptDigest);
+  const rollbackJournal = createFeatureOperationJournalV2([...workspaceJournal.entries, rollbackPrepared]);
+  const rollbackReplay = replayFeatureOperationJournalV2(rollbackJournal, fixture.trustAnchor);
+  assert.equal(rollbackReplay.state, "valid"); assert.equal(rollbackReplay.value.pendingEffect.request.rollbackWorkspaceReceiptDigest, completionReceiptDigest);
+  const wrongRollbackPrepared = rollbackPreparedFor(digest("f"));
+  assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([...workspaceJournal.entries, wrongRollbackPrepared]), fixture.trustAnchor),
+    { state: "invalid", reason: "EFFECT_LIFECYCLE_INVALID", entrySequence: 6 });
+
+  const rollbackRequest = rollbackPrepared.payload.request;
+  const rollbackObservation = { schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "transition", operationId: context.operationId,
+    repositoryId: context.repositoryId, requestId: rollbackRequest.requestId, requestCoreDigest: rollbackRequest.requestCoreDigest,
+    requestDigest: rollbackRequest.requestDigest, preparationEntryDigest: rollbackPrepared.entryDigest, candidateDigest: rollbackCandidate.candidateDigest,
+    effectKey: rollbackEffectKey, pullRequestId: "8", expectedPullRequestHead: revision("d"), targetFeatureRef: rollbackRequest.targetFeatureRef,
+    integrationMethod: "squash", priorHeadRevision: revision("c"), priorTreeDigest: integratedTree, observedPullRequestHead: revision("d"),
+    observedPullRequestBaseBranch: fixture.hardenedPlan.featureBranch, observedIntegrationMethod: "squash", pullRequestMerged: true,
+    pullRequestMergeRevision: revision("e"), pullRequestCommitHeads: [revision("d")], conflictingPullRequestCount: 0,
+    resultingCommitParents: [revision("c")], rebasedCommits: [], checkState: "successful", observedTargetHeadRevision: revision("e"),
+    observedTargetTreeDigest: priorTree, status: "applied", signedChallenge: rollbackRequest.signedChallenge, producerId: "producer:github",
+    observedAt: "2029-05-01T00:15:00Z", observationDigest: digest("0") };
+  rollbackObservation.observationDigest = computeFeatureTransitionObservationDigestV2(rollbackObservation);
+  const signedRollbackObservation = signProducerV2("shield.feature-integration.observation.v2:transition", rollbackObservation);
+  let durableJournal = rollbackJournal; let executeCalls = 0; let observeCalls = 0;
+  const stageResult = await executeFeatureIntegrationWorkspaceStageV2({ stage: "rollback", replay: rollbackReplay.value, journal: rollbackJournal,
+    stageInput: { stage: "rollback", signedChallenge: rollbackRequest.signedChallenge },
+    storeScope: { readJournal: async () => ({ state: "accepted", value: { journal: durableJournal } }), appendEntry: async ({ entry }) => {
+      durableJournal = createFeatureOperationJournalV2([...durableJournal.entries, entry]);
+      return { state: "accepted", value: { journal: durableJournal } };
+    } }, trustAnchor: fixture.trustAnchor,
+    repositoryProducer: { executeTransition: async () => { executeCalls += 1; }, observeAndSignTransition: async () => { observeCalls += 1; return signedRollbackObservation; } },
+    cumulativeProducer: null });
+  assert.equal(stageResult.state, "accepted"); assert.equal(stageResult.appendedEntryDigest, durableJournal.latestAcceptedEntryDigest);
+  assert.equal(executeCalls, 0); assert.equal(observeCalls, 1);
+  const finalReplay = replayFeatureOperationJournalV2(durableJournal, fixture.trustAnchor);
+  assert.equal(finalReplay.state, "valid"); assert.equal(finalReplay.value.terminalHeadRevision, revision("e"));
+  assert.equal(finalReplay.value.terminalTreeDigest, priorTree); assert.notEqual(finalReplay.value.terminalTreeDigest, integratedTree);
+  assert.equal(finalReplay.value.lifecycle, "rollback_validation_pending"); assert.equal(finalReplay.value.nextStage, "cumulative_validation");
 });
 
 test("normalizes immutable V2 producer and human trust roots with exact digest framing", () => {

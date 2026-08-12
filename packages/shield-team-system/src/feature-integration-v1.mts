@@ -44,6 +44,10 @@ export const FEATURE_INTEGRATION_REQUEST_CORE_DOMAIN_V2 = "shield.feature-integr
 export const FEATURE_INTEGRATION_REQUEST_DOMAIN_V2 = "shield.feature-integration.request.v2" as const;
 export const FEATURE_TRANSITION_CHALLENGE_DOMAIN_V2 = "shield.feature-integration.challenge.v2:transition" as const;
 export const FEATURE_TRANSITION_OBSERVATION_DOMAIN_V2 = "shield.feature-integration.observation.v2:transition" as const;
+export const FEATURE_CUMULATIVE_AUTHORITY_DOMAIN_V2 = "shield.feature-integration.cumulative-authority.v2" as const;
+export const FEATURE_CUMULATIVE_AUTHORITY_SIGNATURE_DOMAIN_V2 = "shield.feature-integration.cumulative-authority-signature.v2" as const;
+export const FEATURE_CUMULATIVE_CANDIDATE_DOMAIN_V2 = "shield.feature-integration.cumulative-candidate.v2" as const;
+export const FEATURE_CUMULATIVE_RECEIPT_OBSERVATION_DOMAIN_V2 = "shield.feature-integration.observation.v2:cumulative_receipt" as const;
 export const FEATURE_CUMULATIVE_VALIDATION_SIGNATURE_DOMAIN = "shield.feature-integration.cumulative-authority.signature.v1" as const;
 export const FEATURE_INTEGRATION_ENTRY_KINDS = Object.freeze([
   "operation_genesis_accepted", "authority_successor_accepted", "effect_prepared",
@@ -1259,6 +1263,34 @@ export function computeFeatureTransitionObservationDigestV2(input: unknown): str
   if (!observationPayloadV2(input, ["transition"])) throw new TypeError("Feature transition V2 observation is invalid.");
   return framedDigestV2(FEATURE_TRANSITION_OBSERVATION_DOMAIN_V2, input, "observationDigest");
 }
+
+export function computeFeatureCumulativeAuthorityDigestV2(input: unknown): string {
+  if (!cumulativeAuthorityV2(input)) throw new TypeError("Feature cumulative V2 authority is invalid.");
+  return framedDigestV2(FEATURE_CUMULATIVE_AUTHORITY_DOMAIN_V2, input, "authorityDigest");
+}
+
+export function computeFeatureCumulativeCandidateDigestV2(input: unknown): string {
+  if (!cumulativeCandidateV2(input)) throw new TypeError("Feature cumulative V2 candidate is invalid.");
+  return framedDigestV2(FEATURE_CUMULATIVE_CANDIDATE_DOMAIN_V2, input, "candidateDigest");
+}
+
+export function computeFeatureCumulativeRequestCoreDigestV2(input: unknown): string {
+  if (!plain(input)) throw new TypeError("Feature cumulative V2 request core is invalid.");
+  const value = structuredClone(input) as Record<string, unknown>;
+  delete value.requestCoreDigest; delete value.cumulativeAuthorityDigest; delete value.signedChallenge; delete value.requestDigest;
+  if (!exactDataRecordV2(value, CUMULATIVE_REQUEST_FIELDS.slice(0, -4))) throw new TypeError("Feature cumulative V2 request core is invalid.");
+  return framedDigestV2(FEATURE_INTEGRATION_REQUEST_CORE_DOMAIN_V2, value);
+}
+
+export function computeFeatureCumulativeRequestDigestV2(input: unknown): string {
+  if (!cumulativeRequestV2(input)) throw new TypeError("Feature cumulative V2 request is invalid.");
+  return framedDigestV2(FEATURE_INTEGRATION_REQUEST_DOMAIN_V2, input, "requestDigest");
+}
+
+export function computeFeatureCumulativeReceiptObservationDigestV2(input: unknown): string {
+  if (!observationPayloadV2(input, ["cumulative_receipt"])) throw new TypeError("Feature cumulative V2 receipt observation is invalid.");
+  return framedDigestV2(FEATURE_CUMULATIVE_RECEIPT_OBSERVATION_DOMAIN_V2, input, "observationDigest");
+}
 function cumulativeCommandV2(input: unknown): boolean {
   return exactDataRecordV2(input, ["commandId", "executable", "args", "targetIds", "executableArgsDigest", "idempotencyKey"]) &&
     identifierV2(input.commandId) && identifierV2(input.executable) && stringArrayV2(input.args, text) && stringArrayV2(input.targetIds, identifierV2, false) &&
@@ -1665,11 +1697,45 @@ function verifyTransitionEnvelopeV2(envelope: unknown, binding: FeatureObservati
   return payload ? payload as unknown as FeatureTransitionObservationV2 : null;
 }
 
+function verifyCumulativeReceiptEnvelopeV2(envelope: unknown, binding: FeatureObservationProducerBindingV2): FeatureCumulativeReceiptObservationV2 | null {
+  if (!signedObservationV2(envelope, ["cumulative_receipt"])) return null;
+  const payload = verifyProducerEnvelopeV2(envelope, binding, FEATURE_CUMULATIVE_RECEIPT_OBSERVATION_DOMAIN_V2, computeFeatureCumulativeReceiptObservationDigestV2);
+  return payload ? payload as unknown as FeatureCumulativeReceiptObservationV2 : null;
+}
+
+function verifyCumulativeAuthorityEnvelopeV2(envelope: unknown, bindings: readonly TrustedHumanBinding[]): FeatureCumulativeValidationAuthorityV2 | null {
+  if (!exactDataRecordV2(envelope, ["payload", "signatureBase64"]) || !cumulativeAuthorityV2(envelope.payload) ||
+      !canonicalBase64V2(envelope.signatureBase64) || Buffer.from(envelope.signatureBase64, "base64").length !== 64) return null;
+  const authority = envelope.payload as unknown as FeatureCumulativeValidationAuthorityV2;
+  if (computeFeatureCumulativeAuthorityDigestV2(authority) !== authority.authorityDigest) return null;
+  const binding = bindings.find((item) => item.bindingId === authority.humanBindingId && item.humanPrincipalId === authority.humanPrincipalId &&
+    item.signingKeyRef === authority.signingKeyRef && item.seatId === "coulson");
+  if (!binding) return null;
+  try {
+    const key = createPublicKey({ key: Buffer.from(binding.publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
+    const bytes = Buffer.concat([Buffer.from(FEATURE_CUMULATIVE_AUTHORITY_SIGNATURE_DOMAIN_V2, "ascii"), Buffer.from([0]),
+      Buffer.from(canonicalFeatureIntegrationJsonV1(authority), "utf8")]);
+    return verify(null, bytes, key, Buffer.from(envelope.signatureBase64, "base64")) ? structuredClone(authority) : null;
+  } catch { return null; }
+}
+
 function exactTransitionRequestV2(request: FeatureTransitionRequestV2): boolean {
   try {
     return computeFeatureTransitionRequestCoreDigestV2(request) === request.requestCoreDigest &&
       computeFeatureTransitionRequestDigestV2(request) === request.requestDigest;
   } catch { return false; }
+}
+
+function exactCumulativeRequestV2(request: FeatureCumulativeRequestV2): boolean {
+  try {
+    return computeFeatureCumulativeRequestCoreDigestV2(request) === request.requestCoreDigest &&
+      computeFeatureCumulativeRequestDigestV2(request) === request.requestDigest;
+  } catch { return false; }
+}
+
+function exactCumulativeCandidateV2(candidate: FeatureCumulativeValidationCandidateV2): boolean {
+  try { return computeFeatureCumulativeCandidateDigestV2(candidate) === candidate.candidateDigest; }
+  catch { return false; }
 }
 
 function challengeMatchesPreparationV2(
@@ -1711,6 +1777,52 @@ function challengeMatchesObservationV2(
     challenge.priorObservationDigest === pending.latestObservationDigest;
 }
 
+function cumulativeChallengeMatchesPreparationV2(
+  challenge: FeatureObservationChallengeV2,
+  request: FeatureCumulativeRequestV2,
+  candidate: FeatureCumulativeValidationCandidateV2,
+  entry: FeatureOperationJournalEntryV2,
+  previousJournalDigest: string,
+): boolean {
+  return challenge.challengeKind === "cumulative" && challenge.operationId === request.operationId && challenge.repositoryId === request.repositoryId &&
+    challenge.requestId === request.requestId && challenge.requestCoreDigest === request.requestCoreDigest && challenge.candidateDigest === candidate.candidateDigest &&
+    challenge.effectKey === candidate.effectKey && challenge.producerKind === "cumulative_execution" && challenge.generation === 0 &&
+    challenge.previousJournalDigest === previousJournalDigest && challenge.intendedEntrySequence === entry.entrySequence &&
+    challenge.preparationEntryDigest === null && challenge.priorChallengeDigest === null && challenge.priorObservationDigest === null &&
+    challenge.expectedHeadRevision === (entry.payload as FeatureIntegrationEntryPayloadMapV2["effect_prepared"]).expectedHeadRevision &&
+    challenge.expectedTreeDigest === (entry.payload as FeatureIntegrationEntryPayloadMapV2["effect_prepared"]).expectedTreeDigest;
+}
+
+function cumulativeReceiptIdentityV2(
+  observation: FeatureCumulativeReceiptObservationV2,
+  pending: FeatureIntegrationPendingEffectV2,
+  latestObservedAt: string,
+): boolean {
+  const request = pending.request as unknown as FeatureCumulativeRequestV2;
+  const challenge = observation.signedChallenge.payload;
+  if (observation.operationId !== request.operationId || observation.preparationEntryDigest !== pending.preparationEntryDigest ||
+      observation.attemptId !== request.attemptId || observation.requestDigest !== request.requestDigest || observation.producerId !== challenge.producerId ||
+      challenge.challengeKind !== "cumulative" || challenge.challengeDigest !== pending.signedChallenges.at(-1)?.payload.challengeDigest ||
+      challenge.requestId !== request.requestId || challenge.requestCoreDigest !== request.requestCoreDigest || challenge.candidateDigest !== pending.candidateDigest ||
+      challenge.effectKey !== pending.effectKey || challenge.expectedHeadRevision !== request.terminalHeadRevision || challenge.expectedTreeDigest !== request.terminalTreeDigest ||
+      Date.parse(observation.observedAt) < Date.parse(challenge.issuedAt) || Date.parse(observation.observedAt) >= Date.parse(challenge.expiresAt) ||
+      Date.parse(observation.observedAt) < Date.parse(latestObservedAt) || observation.commands.length !== request.commands.length ||
+      observation.results.length !== request.commands.length || observation.completedPrefixLength !== request.commands.length ||
+      observation.startDigests.length !== request.commands.length || observation.resultDigests.length !== request.commands.length ||
+      observation.idempotencyKeys.length !== request.commands.length || observation.invocationBounds.minimum !== request.commands.length ||
+      observation.invocationBounds.maximum !== request.commands.length) return false;
+  for (let index = 0; index < request.commands.length; index += 1) {
+    const command = request.commands[index], observedCommand = observation.commands[index], result = observation.results[index];
+    if (observedCommand.commandIndex !== index || observedCommand.commandId !== command.commandId ||
+        observedCommand.executableArgsDigest !== command.executableArgsDigest || observedCommand.idempotencyKey !== command.idempotencyKey ||
+        result.commandIndex !== index || result.commandId !== command.commandId || result.startDigest !== observation.startDigests[index] ||
+        result.resultDigest !== observation.resultDigests[index] || observedCommand.idempotencyKey !== observation.idempotencyKeys[index]) return false;
+  }
+  const completed = observation.results.every((result) => result.status === "completed" && result.exitCode !== null);
+  return completed && (observation.terminalStatus !== "passed" || observation.results.every((result) => result.exitCode === 0)) &&
+    (observation.terminalStatus !== "failed" || observation.results.some((result) => result.exitCode !== 0));
+}
+
 function transitionObservationIdentityV2(observation: FeatureTransitionObservationV2, pending: FeatureIntegrationPendingEffectV2): boolean {
   const request = pending.request as unknown as FeatureTransitionRequestV2;
   return observation.operationId === request.operationId && observation.repositoryId === request.repositoryId && observation.requestId === request.requestId &&
@@ -1750,7 +1862,10 @@ function transitionNotAppliedV2(observation: FeatureTransitionObservationV2, req
 }
 
 function nextStageFromContextV2(context: FeatureOperationReplayContextV2, cumulative: "pending" | "passed" | "failed"): FeatureIntegrationNextStageV2 {
-  if (context.lifecycle.state === "rollback_pending") return "rollback";
+  if ((context.lifecycle.state as string) === "rollback_validation_pending") return "cumulative_validation";
+  if (context.lifecycle.state === "rollback_pending") {
+    return context.transitions.at(-1)?.kind === "integration" ? "rollback_mission_handoff" : "cumulative_validation";
+  }
   if (context.lifecycle.state !== "active") return "lifecycle_only";
   if (cumulative === "pending") return "cumulative_validation";
   if (context.operationCounters.featureBranchCreateAttempts === 0) return "feature_branch_creation";
@@ -1805,11 +1920,15 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
     let headTransitionOperationSequence = terminal.operationSequence;
     let lifecycle = context.lifecycle.state as FeatureIntegrationReplayProjectionV2["lifecycle"];
     let pendingEffect: FeatureIntegrationPendingEffectV2 | null = null;
-    let pendingCandidate: FeatureOperationDerivedCandidateV2 | null = null;
+    let pendingCandidate: FeatureOperationDerivedCandidateV2 | FeatureCumulativeValidationCandidateV2 | null = null;
     let uncertainEffect = false;
     let cumulativeValidation: "pending" | "passed" | "failed" = context.acceptedIntegrations.length > 0 || context.acceptedRollbacks.length > 0 ? "pending" : "passed";
+    let consumedCumulativeValidationEffectKeys: string[] = [];
+    let cumulativeValidationAttempts = 0;
+    let cumulativeExecutionProjection: FeatureIntegrationReplayProjectionV2["cumulativeExecutionProjection"] = null;
     let latestObservedAt = context.observedAt;
     const githubBinding = producerBindings.find((binding) => binding.producerKind === "github_repository")!;
+    const cumulativeBinding = producerBindings.find((binding) => binding.producerKind === "cumulative_execution")!;
     const rollbackWorkspaces = new Map<string, {
       completionReceiptDigest: string;
       pullRequestId: string;
@@ -1824,7 +1943,7 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
       if (entry.entryKind === "rollback_workspace_accepted") {
         if (pendingEffect) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
         const latest = [...context.acceptedIntegrations].reverse().find((item) => !item.reverted);
-        if (lifecycle !== "active" || String(cumulativeValidation) !== "failed" || !latest ||
+        if (lifecycle !== "rollback_pending" || cumulativeValidation !== "failed" || context.transitions.at(-1)?.kind !== "integration" || !latest ||
             p.childId !== latest.childId || rollbackWorkspaces.has(p.childId as string)) {
           return replayInvalidV2("STAGE_ORDER_INVALID", index);
         }
@@ -1839,6 +1958,57 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
       }
       if (entry.entryKind === "effect_prepared") {
         if (pendingEffect) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
+        if (p.effectClass === "cumulative") {
+          if (!cumulativeRequestV2(p.request) || !exactCumulativeRequestV2(p.request) || !cumulativeCandidateV2(p.candidate) ||
+              !exactCumulativeCandidateV2(p.candidate) || !plain(p.signedCumulativeAuthority)) return replayInvalidV2("CUMULATIVE_VALIDATION_INVALID", index);
+          const request = p.request as unknown as FeatureCumulativeRequestV2;
+          const candidate = p.candidate as unknown as FeatureCumulativeValidationCandidateV2;
+          const cumulativeAuthority = verifyCumulativeAuthorityEnvelopeV2(p.signedCumulativeAuthority, genesisHumans);
+          const challenge = verifyChallengeEnvelopeV2(request.signedChallenge, cumulativeBinding);
+          const previousJournalDigest = createFeatureOperationJournalV2(entries.slice(0, index)).journalDigest;
+          const latestTransition = context.transitions.at(-1)!;
+          if (!cumulativeAuthority || !challenge || challenge.producerId !== cumulativeBinding.producerId) return replayInvalidV2("OBSERVATION_AUTHORITY_INVALID", index);
+          if (!cumulativeChallengeMatchesPreparationV2(challenge, request, candidate, entry, previousJournalDigest)) return replayInvalidV2("OBSERVATION_CHALLENGE_INVALID", index);
+          if (Date.parse(challenge.issuedAt) < Date.parse(latestObservedAt.value) ||
+              Date.parse(challenge.expiresAt) > Math.min(Date.parse(cumulativeAuthority.expiresAt), Date.parse(authority.expiresAt), Date.parse(authority.plan.expiresAt))) {
+            return replayInvalidV2("OBSERVATION_CHALLENGE_INVALID", index);
+          }
+          const commandIds = request.commands.map((command) => command.commandId);
+          if (nextStageFromContextV2(context, cumulativeValidation) !== "cumulative_validation" || latestTransition.kind === "genesis" ||
+              candidate.operationId !== context.operationId || candidate.repositoryId !== context.repositoryId || candidate.planDigest !== context.activePlanDigest ||
+              candidate.featureAuthorityDigest !== context.verifiedAuthorityDigest || candidate.cumulativeAuthorityDigest !== cumulativeAuthority.authorityDigest ||
+              candidate.requestCoreDigest !== request.requestCoreDigest || candidate.effectKey !== request.effectKey || candidate.attemptId !== request.attemptId ||
+              candidate.terminalHeadRevision !== terminalHeadRevision || candidate.terminalTreeDigest !== terminalTreeDigest ||
+              candidate.transitionReceiptDigest !== latestTransition.receiptDigest || candidate.activeAuthorityJournalSequence !== context.currentJournalSequence ||
+              candidate.activeAuthorityOperationSequence !== context.acceptedAuthorityOperationSequence || request.operationId !== context.operationId ||
+              request.repositoryId !== context.repositoryId || request.planDigest !== context.activePlanDigest || request.featureAuthorityDigest !== context.verifiedAuthorityDigest ||
+              request.terminalHeadRevision !== terminalHeadRevision || request.terminalTreeDigest !== terminalTreeDigest ||
+              request.transitionReceiptDigest !== latestTransition.receiptDigest || request.cumulativeAuthorityDigest !== cumulativeAuthority.authorityDigest ||
+              cumulativeAuthority.missionId !== anchor.missionId || cumulativeAuthority.operationId !== context.operationId ||
+              cumulativeAuthority.repositoryId !== context.repositoryId || cumulativeAuthority.planDigest !== context.activePlanDigest ||
+              cumulativeAuthority.featureAuthorityDigest !== context.verifiedAuthorityDigest || cumulativeAuthority.terminalHeadRevision !== terminalHeadRevision ||
+              cumulativeAuthority.terminalTreeDigest !== terminalTreeDigest || cumulativeAuthority.transitionReceiptDigest !== latestTransition.receiptDigest ||
+              cumulativeAuthority.requestCoreDigest !== request.requestCoreDigest || cumulativeAuthority.effectKey !== request.effectKey ||
+              cumulativeAuthority.activeAuthorityJournalSequence !== context.currentJournalSequence ||
+              cumulativeAuthority.activeAuthorityOperationSequence !== context.acceptedAuthorityOperationSequence ||
+              canonicalFeatureIntegrationJsonV1(cumulativeAuthority.commandIds) !== canonicalFeatureIntegrationJsonV1(commandIds) ||
+              canonicalFeatureIntegrationJsonV1(cumulativeAuthority.targetIds) !== canonicalFeatureIntegrationJsonV1(request.targetIds) ||
+              canonicalFeatureIntegrationJsonV1(cumulativeAuthority.validationIds) !== canonicalFeatureIntegrationJsonV1(request.validationIds) ||
+              p.candidateDigest !== candidate.candidateDigest || p.effectKey !== candidate.effectKey || p.requestDigest !== request.requestDigest ||
+              p.expectedHeadRevision !== terminalHeadRevision || p.expectedTreeDigest !== terminalTreeDigest ||
+              context.consumedEffectKeys.includes(candidate.effectKey) || consumedCumulativeValidationEffectKeys.includes(candidate.effectKey)) {
+            return replayInvalidV2("CUMULATIVE_VALIDATION_INVALID", index);
+          }
+          consumedCumulativeValidationEffectKeys = [...consumedCumulativeValidationEffectKeys, candidate.effectKey].sort(compareUtf16);
+          cumulativeValidationAttempts += 1;
+          pendingCandidate = structuredClone(candidate);
+          pendingEffect = { effectClass: "cumulative", candidateDigest: candidate.candidateDigest, effectKey: candidate.effectKey,
+            request: structuredClone(request) as unknown as Readonly<Record<string, unknown>>, requestDigest: request.requestDigest,
+            preparationEntryDigest: entry.entryDigest, signedCumulativeAuthority: structuredClone(p.signedCumulativeAuthority) as Readonly<Record<string, unknown>>,
+            signedChallenges: [structuredClone(request.signedChallenge)], latestObservationDigest: null };
+          uncertainEffect = false;
+          continue;
+        }
         if (p.effectClass !== "transition" || !transitionRequestV2(p.request) || !exactTransitionRequestV2(p.request) ||
             validateFeatureOperationDerivedCandidateV2(p.candidate).state !== "valid") return replayInvalidV2("STAGE_ORDER_INVALID", index);
         const request = p.request as FeatureTransitionRequestV2;
@@ -1860,7 +2030,7 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
         if (candidate.derivationKind === "child_merge_to_feature") {
           if (lifecycle !== "active" || nextStageFromContextV2(context, cumulativeValidation) !== "integration" || request.integrationMethod !== candidate.integrationMethod ||
               request.expectedPullRequestHead !== candidate.childHeadRevision || request.rollbackWorkspaceReceiptDigest !== null) return replayInvalidV2("STAGE_ORDER_INVALID", index);
-        } else {
+        } else if (candidate.derivationKind === "child_revert_on_feature") {
           const latest = [...context.acceptedIntegrations].reverse().find((item) => !item.reverted);
           const workspace = rollbackWorkspaces.get(candidate.childId);
           if (lifecycle !== "rollback_pending" || !latest || !workspace) return replayInvalidV2("STAGE_ORDER_INVALID", index);
@@ -1902,13 +2072,60 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
         pendingEffect = { ...pendingEffect, signedChallenges: [...pendingEffect.signedChallenges, structuredClone(p.signedChallenge) as SignedFeatureObservationChallengeV2] };
         continue;
       }
+      if (["cumulative_validation_accepted", "cumulative_validation_failed"].includes(entry.entryKind) ||
+          (["effect_not_applied", "effect_uncertain"].includes(entry.entryKind) && pendingEffect?.effectClass === "cumulative")) {
+        if (!pendingEffect || pendingEffect.effectClass !== "cumulative" || !pendingCandidate || !cumulativeCandidateV2(pendingCandidate)) {
+          return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
+        }
+        const signed = entry.entryKind === "cumulative_validation_accepted" || entry.entryKind === "cumulative_validation_failed"
+          ? p.signedCumulativeReceipt : p.signedObservation;
+        const observation = verifyCumulativeReceiptEnvelopeV2(signed, cumulativeBinding);
+        if (!observation || observation.producerId !== cumulativeBinding.producerId) return replayInvalidV2("OBSERVATION_AUTHORITY_INVALID", index);
+        const challenge = verifyChallengeEnvelopeV2(observation.signedChallenge, cumulativeBinding);
+        if (!challenge || challenge.producerId !== cumulativeBinding.producerId) return replayInvalidV2("OBSERVATION_AUTHORITY_INVALID", index);
+        if (p.preparationEntryDigest !== pendingEffect.preparationEntryDigest ||
+            canonicalFeatureIntegrationJsonV1(observation.signedChallenge) !== canonicalFeatureIntegrationJsonV1(pendingEffect.signedChallenges.at(-1)) ||
+            !cumulativeReceiptIdentityV2(observation, pendingEffect, latestObservedAt.value)) return replayInvalidV2("CUMULATIVE_VALIDATION_INVALID", index);
+        const expectedKind = observation.terminalStatus === "passed" ? "cumulative_validation_accepted"
+          : observation.terminalStatus === "failed" ? "cumulative_validation_failed"
+          : observation.terminalStatus === "not_applied" ? "effect_not_applied" : "effect_uncertain";
+        if (entry.entryKind !== expectedKind) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
+        latestObservedAt = { value: observation.observedAt, provenance: "hostTrusted" };
+        context = { ...context, observedAt: latestObservedAt };
+        cumulativeExecutionProjection = { preparationEntryDigest: pendingEffect.preparationEntryDigest, attemptId: observation.attemptId,
+          ledgerDigest: observation.observationDigest, completedPrefixLength: observation.completedPrefixLength,
+          invocationBounds: structuredClone(observation.invocationBounds), terminalStatus: observation.terminalStatus,
+          terminalReceiptDigest: observation.observationDigest };
+        if (observation.terminalStatus === "uncertain") {
+          pendingEffect = { ...pendingEffect, latestObservationDigest: observation.observationDigest };
+          uncertainEffect = true;
+          continue;
+        }
+        if (observation.terminalStatus === "not_applied") {
+          pendingEffect = null; pendingCandidate = null; uncertainEffect = false;
+          continue;
+        }
+        cumulativeValidation = observation.terminalStatus;
+        const latestTransition = context.transitions.at(-1)!;
+        if (observation.terminalStatus === "failed" && latestTransition.kind === "integration") {
+          lifecycle = "rollback_pending";
+          context = { ...context, lifecycle: { state: "rollback_pending", atOperationSequence: headTransitionOperationSequence } };
+        } else if (observation.terminalStatus === "passed" && latestTransition.kind === "rollback") {
+          lifecycle = "active";
+          context = { ...context, lifecycle: { state: "active", atOperationSequence: headTransitionOperationSequence } };
+        }
+        pendingEffect = null; pendingCandidate = null; uncertainEffect = false;
+        continue;
+      }
       if (["effect_not_applied", "effect_uncertain", "integration_accepted", "rollback_accepted"].includes(entry.entryKind)) {
         const signed = (entry.entryKind === "integration_accepted" || entry.entryKind === "rollback_accepted") ? p.signedTransitionObservation : p.signedObservation;
         const observation = verifyTransitionEnvelopeV2(signed, githubBinding);
         if (!observation || observation.producerId !== githubBinding.producerId) return replayInvalidV2("OBSERVATION_AUTHORITY_INVALID", index);
         const challenge = verifyChallengeEnvelopeV2(observation.signedChallenge, githubBinding);
         if (!challenge || challenge.producerId !== githubBinding.producerId) return replayInvalidV2("OBSERVATION_AUTHORITY_INVALID", index);
-        if (!pendingEffect || !pendingCandidate) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
+        if (!pendingEffect || pendingEffect.effectClass !== "transition" || !pendingCandidate ||
+            validateFeatureOperationDerivedCandidateV2(pendingCandidate).state !== "valid") return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
+        const transitionCandidate = pendingCandidate as FeatureOperationDerivedCandidateV2;
         const latestChallenge = pendingEffect.signedChallenges.at(-1);
         if (canonicalFeatureIntegrationJsonV1(observation.signedChallenge) !== canonicalFeatureIntegrationJsonV1(latestChallenge) ||
             !challengeMatchesObservationV2(challenge, pendingEffect, observation, latestObservedAt.value)) return replayInvalidV2("OBSERVATION_CHALLENGE_INVALID", index);
@@ -1919,7 +2136,7 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
         if (observation.status === "applied" && !applied) return replayInvalidV2("HEAD_TRANSITION_INVALID", index);
         if (observation.status === "not_applied" && !notApplied) return replayInvalidV2("HEAD_TRANSITION_INVALID", index);
         if (observation.status === "uncertain" && (applied || notApplied)) return replayInvalidV2("HEAD_TRANSITION_INVALID", index);
-        const expectedKind = observation.status === "applied" ? (pendingCandidate.derivationKind === "child_merge_to_feature" ? "integration_accepted" : "rollback_accepted")
+        const expectedKind = observation.status === "applied" ? (transitionCandidate.derivationKind === "child_merge_to_feature" ? "integration_accepted" : "rollback_accepted")
           : observation.status === "not_applied" ? "effect_not_applied" : "effect_uncertain";
         if (entry.entryKind !== expectedKind) return replayInvalidV2("EFFECT_LIFECYCLE_INVALID", index);
         latestObservedAt = { value: observation.observedAt, provenance: "hostTrusted" };
@@ -1930,7 +2147,7 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
           continue;
         }
         if (observation.status === "not_applied") {
-          if (pendingCandidate.derivationKind === "child_revert_on_feature" && lifecycle === "rollback_pending") {
+          if (transitionCandidate.derivationKind === "child_revert_on_feature" && lifecycle === "rollback_pending") {
             lifecycle = "active";
             context = { ...context, lifecycle: { state: "active", atOperationSequence: headTransitionOperationSequence } };
           }
@@ -1938,8 +2155,8 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
           continue;
         }
         headTransitionOperationSequence += 1;
-        if (pendingCandidate.derivationKind === "child_merge_to_feature") {
-          const candidate = pendingCandidate;
+        if (transitionCandidate.derivationKind === "child_merge_to_feature") {
+          const candidate = transitionCandidate;
           const transition = { kind: "integration" as const, operationSequence: headTransitionOperationSequence, effectKey: candidate.effectKey,
             priorHeadRevision: terminalHeadRevision, priorTreeDigest: terminalTreeDigest, resultingHeadRevision: observation.observedTargetHeadRevision,
             resultingTreeDigest: observation.observedTargetTreeDigest, receiptDigest: observation.observationDigest, childId: candidate.childId,
@@ -1948,8 +2165,8 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
             { childId: transition.childId, operationSequence: transition.operationSequence, effectKey: transition.effectKey,
               priorHeadRevision: transition.priorHeadRevision, priorTreeDigest: transition.priorTreeDigest, resultingHeadRevision: transition.resultingHeadRevision,
               resultingTreeDigest: transition.resultingTreeDigest, receiptDigest: transition.receiptDigest, reverted: false }] };
-        } else {
-          const candidate = pendingCandidate;
+        } else if (transitionCandidate.derivationKind === "child_revert_on_feature") {
+          const candidate = transitionCandidate;
           const latest = [...context.acceptedIntegrations].reverse().find((item) => !item.reverted)!;
           const workspace = rollbackWorkspaces.get(candidate.childId);
           if (!workspace || request.rollbackWorkspaceReceiptDigest !== workspace.completionReceiptDigest ||
@@ -1967,7 +2184,7 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
               revertedIntegrationReceiptDigest: transition.revertedIntegrationReceiptDigest, priorHeadRevision: transition.priorHeadRevision,
               priorTreeDigest: transition.priorTreeDigest, resultingHeadRevision: transition.resultingHeadRevision,
               resultingTreeDigest: transition.resultingTreeDigest, receiptDigest: transition.receiptDigest }] };
-        }
+        } else return replayInvalidV2("STAGE_ORDER_INVALID", index);
         terminalHeadRevision = observation.observedTargetHeadRevision;
         terminalTreeDigest = observation.observedTargetTreeDigest;
         cumulativeValidation = "pending";
@@ -1988,14 +2205,18 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
       lifecycle,
       pendingEffect,
       uncertainEffect,
-      consumedCumulativeValidationEffectKeys: [],
-      cumulativeValidationAttempts: 0,
+      consumedCumulativeValidationEffectKeys,
+      cumulativeValidationAttempts,
       cumulativeValidation,
-      cumulativeExecutionProjection: null,
+      cumulativeExecutionProjection,
       acceptedFinalGates: [],
       terminalDisposition: null,
       activeRecoveryAuthorityDigest: null,
-      nextStage: pendingEffect ? (pendingCandidate?.derivationKind === "child_revert_on_feature" ? "rollback" : "integration") : nextStageFromContextV2(context, cumulativeValidation),
+      nextStage: pendingEffect ? (pendingEffect.effectClass === "cumulative" ? "cumulative_validation"
+        : (pendingCandidate as FeatureOperationDerivedCandidateV2 | null)?.derivationKind === "child_revert_on_feature" ? "rollback" : "integration")
+        : lifecycle === "rollback_pending" && context.transitions.at(-1)?.kind === "integration" &&
+          rollbackWorkspaces.has([...context.acceptedIntegrations].reverse().find((item) => !item.reverted)?.childId ?? "")
+          ? "rollback" : nextStageFromContextV2(context, cumulativeValidation),
       latestObservedAt,
     };
     return { state: "valid", value: immutableCloneV2(projection) };

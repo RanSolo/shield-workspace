@@ -83,14 +83,15 @@ export interface FeatureIntegrationAdapterOptionsV2 {
 export type FeatureIntegrationAdapterResultV2<T> = { state: "observed"; observation: T } | { state: "blocked"; reason: FeatureIntegrationAdapterReasonV2 };
 export interface FeatureIntegrationPullRequestProofV2 {
   pullRequestId: number; url: string; state: "open" | "closed" | "merged"; draft: boolean; headBranch: string; headRevision: string; baseBranch: string;
-  merged: boolean; mergeRevision: string | null; mergeMethod: "merge_commit" | "rebase_merge" | "squash" | null;
+  merged: boolean; mergeRevision: string | null;
   checkState: "successful" | "not_successful" | "unknown"; conflictingPullRequestCount: number; pullRequestCommitHeads: readonly string[];
 }
 export interface FeatureIntegrationTargetProofV2 { targetRef: string; headRevision: string; treeDigest: string }
-export interface FeatureIntegrationCommitMethodProofV2 { headRevision: string; resultingCommitParents: readonly string[]; rebasedCommits: readonly { sourceCommit: string; resultCommit: string; parentCommit: string; treeDigest: string }[] }
+export interface FeatureIntegrationCommitMethodProofV2 { headRevision: string; integrationMethodEvidence: "verified" | "ambiguous"; resultingCommitParents: readonly string[]; rebasedCommits: readonly { sourceCommit: string; resultCommit: string; parentCommit: string; treeDigest: string }[] }
 export function observeFeatureIntegrationPullRequestProofV2(input: { repositoryId: string; pullRequestId: number; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationPullRequestProofV2>>;
 export function observeFeatureIntegrationTargetProofV2(input: { repositoryId: string; targetRef: string; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationTargetProofV2>>;
-export function observeFeatureIntegrationCommitMethodProofV2(input: { repositoryId: string; headRevision: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; pullRequestCommitHeads: readonly string[]; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationCommitMethodProofV2>>;
+export function observeFeatureIntegrationCommitMethodProofV2(input: { repositoryId: string; headRevision: string; priorHeadRevision: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; pullRequestCommitHeads: readonly string[]; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationCommitMethodProofV2>>;
+export function integrateFeatureIntegrationPullRequestV2(input: { repositoryId: string; pullRequestId: number; expectedHeadRevision: string; targetFeatureBranch: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<{ state: "effect_result"; outcome: "applied" | "not_applied" | "uncertain"; resultingHeadRevision?: string; reason?: FeatureIntegrationAdapterReasonV2 } | { state: "blocked"; reason: FeatureIntegrationAdapterReasonV2 }>;
 
 export interface FeatureGitHubObservationProducerConfigV2 {
   adapterOptions: FeatureIntegrationAdapterOptionsV2;
@@ -100,6 +101,7 @@ export interface FeatureGitHubObservationProducerConfigV2 {
 }
 export interface FeatureGitHubObservationProducerV2 {
   signChallenge(input: FeatureObservationChallengeV2): Promise<SignedFeatureObservationChallengeV2>;
+  executeTransition(input: { request: FeatureTransitionRequestV2; preparationEntryDigest: string; signedChallenge?: SignedFeatureObservationChallengeV2 }): Promise<unknown>;
   observeAndSignWorkspace(input: unknown): Promise<SignedFeatureWorkspaceObservationV2>;
   observeAndSignTransition(input: { request: FeatureTransitionRequestV2; preparationEntryDigest: string; signedChallenge?: SignedFeatureObservationChallengeV2; expectedRestoredTreeDigest?: string }): Promise<SignedFeatureTransitionObservationV2>;
   observeAndSignAdmission(input: unknown): Promise<SignedFeatureAdmissionObservationV2>;
@@ -111,13 +113,16 @@ export function executeFeatureIntegrationWorkspaceStageV2(input: {
   replay: FeatureIntegrationReplayProjectionV2;
   journal: FeatureOperationJournalV2;
   stageInput: Readonly<Record<string, unknown>>;
-  storeScope: Readonly<Record<string, unknown>>;
+  storeScope: {
+    readJournal(): Promise<{ state: "accepted"; value: { journal: FeatureOperationJournalV2 } } | { state: "blocked" | "recovery_required" }>;
+    appendEntry(input: Readonly<Record<string, unknown>>): Promise<{ state: "accepted"; value: { journal: FeatureOperationJournalV2 } } | { state: "blocked" | "recovery_required" }>;
+  };
   trustAnchor: FeatureIntegrationTrustAnchorV2;
   repositoryProducer: FeatureGitHubObservationProducerV2;
   cumulativeProducer: unknown;
 }): Promise<
-  | { state: "accepted"; appendedEntryDigest: string | null }
-  | { state: "blocked" | "recovery_required"; reason: "invalid_input" | "authorization_invalid" | "replay_invalid" | "compare_conflict" | "producer_unavailable" | "authentication_unavailable" | "durability_uncertain" | "execution_receipt_unavailable" | "effect_uncertain" | "stage_blocked"; appendedEntryDigest: null }
+  | { state: "accepted"; appendedEntryDigest: string }
+  | { state: "blocked" | "recovery_required"; reason: "invalid_input" | "authorization_invalid" | "replay_invalid" | "compare_conflict" | "producer_unavailable" | "authentication_unavailable" | "durability_uncertain" | "execution_receipt_unavailable" | "effect_uncertain" | "stage_blocked"; appendedEntryDigest: string | null }
 >;
 
 export function prepareFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "prepared"; entry: Record<string, unknown>; candidate: Record<string, unknown> } | { state: "blocked"; reason: string };

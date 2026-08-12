@@ -670,7 +670,7 @@ function checkStateV2(checks) {
 export async function observeFeatureIntegrationPullRequestProofV2(input, options) {
   const value = adapterInputV2(input, ["repositoryId", "pullRequestId", "challengeId"]), configured = adapterOptionsV2(options);
   if (!value || !configured || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1) return { state: "blocked", reason: "adapter_unavailable" };
-  const viewed = callV2(configured, ["pr", "view", String(value.pullRequestId), "--repo", value.repositoryId, "--json", "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,mergeCommit,mergeMethod,statusCheckRollup,commits"]);
+  const viewed = callV2(configured, ["pr", "view", String(value.pullRequestId), "--repo", value.repositoryId, "--json", "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,mergeCommit,statusCheckRollup,commits"]);
   if (viewed.state !== "observed") return viewed;
   const item = viewed.value;
   const checkState = checkStateV2(item?.statusCheckRollup);
@@ -684,10 +684,8 @@ export async function observeFeatureIntegrationPullRequestProofV2(input, options
   const merged = item.state === "MERGED" || item.mergedAt !== null && item.mergedAt !== undefined;
   const mergeRevision = item.mergeCommit?.oid ?? null;
   if (merged !== (mergeRevision !== null) || (mergeRevision !== null && !FEATURE_INTEGRATION_REVISION.test(mergeRevision))) return { state: "blocked", reason: "ambiguous_response" };
-  const mergeMethod = ({ MERGE: "merge_commit", REBASE: "rebase_merge", SQUASH: "squash" })[item.mergeMethod] ??
-    (V2_METHODS.includes(item.mergeMethod) ? item.mergeMethod : null);
   return { state: "observed", observation: { pullRequestId: value.pullRequestId, url: item.url, state: item.state.toLowerCase(), draft: item.isDraft,
-    headBranch: item.headRefName, headRevision: item.headRefOid, baseBranch: item.baseRefName, merged, mergeRevision, mergeMethod, checkState,
+    headBranch: item.headRefName, headRevision: item.headRefOid, baseBranch: item.baseRefName, merged, mergeRevision, checkState,
     conflictingPullRequestCount: inventory.value.filter((pull) => pull.number !== value.pullRequestId).length, pullRequestCommitHeads: commits } };
 }
 
@@ -715,11 +713,25 @@ function commitProofV2(repositoryId, revision, options) {
 
 /** Proves method-specific commit ancestry independently from the merge response. */
 export async function observeFeatureIntegrationCommitMethodProofV2(input, options) {
-  const value = adapterInputV2(input, ["repositoryId", "headRevision", "integrationMethod", "pullRequestCommitHeads", "challengeId"]), configured = adapterOptionsV2(options);
-  if (!value || !configured || !FEATURE_INTEGRATION_REVISION.test(value.headRevision) || !V2_METHODS.includes(value.integrationMethod) || !Array.isArray(value.pullRequestCommitHeads) || value.pullRequestCommitHeads.some((revision) => !FEATURE_INTEGRATION_REVISION.test(revision))) return { state: "blocked", reason: "adapter_unavailable" };
+  const value = adapterInputV2(input, ["repositoryId", "headRevision", "priorHeadRevision", "integrationMethod", "pullRequestCommitHeads", "challengeId"]), configured = adapterOptionsV2(options);
+  if (!value || !configured || !FEATURE_INTEGRATION_REVISION.test(value.headRevision) || !FEATURE_INTEGRATION_REVISION.test(value.priorHeadRevision) ||
+      !V2_METHODS.includes(value.integrationMethod) || !Array.isArray(value.pullRequestCommitHeads) || value.pullRequestCommitHeads.length === 0 ||
+      value.pullRequestCommitHeads.some((revision) => !FEATURE_INTEGRATION_REVISION.test(revision))) return { state: "blocked", reason: "adapter_unavailable" };
   const head = commitProofV2(value.repositoryId, value.headRevision, configured);
   if (head.state !== "observed") return head;
   const rebasedCommits = [];
+  let integrationMethodEvidence = "ambiguous";
+  if (value.integrationMethod === "merge_commit") {
+    integrationMethodEvidence = head.value.parents.length === 2 && head.value.parents[0] === value.priorHeadRevision &&
+      head.value.parents[1] === value.pullRequestCommitHeads.at(-1) ? "verified" : "ambiguous";
+  }
+  if (value.integrationMethod === "squash") {
+    const sourceHead = commitProofV2(value.repositoryId, value.pullRequestCommitHeads.at(-1), configured);
+    if (sourceHead.state !== "observed") return sourceHead;
+    integrationMethodEvidence = value.pullRequestCommitHeads.length > 1 && head.value.parents.length === 1 &&
+      head.value.parents[0] === value.priorHeadRevision && head.value.treeDigest === sourceHead.value.treeDigest &&
+      value.headRevision !== value.pullRequestCommitHeads.at(-1) ? "verified" : "ambiguous";
+  }
   if (value.integrationMethod === "rebase_merge") {
     const chain = [];
     let current = value.headRevision;
@@ -733,8 +745,28 @@ export async function observeFeatureIntegrationCommitMethodProofV2(input, option
       current = resultCommit.value.parents[0];
     }
     rebasedCommits.push(...chain.reverse());
+    integrationMethodEvidence = value.pullRequestCommitHeads.length > 1 && current === value.priorHeadRevision &&
+      new Set(rebasedCommits.flatMap((item) => [item.sourceCommit, item.resultCommit])).size === rebasedCommits.length * 2
+      ? "verified" : "ambiguous";
   }
-  return { state: "observed", observation: { headRevision: value.headRevision, resultingCommitParents: head.value.parents, rebasedCommits } };
+  return { state: "observed", observation: { headRevision: value.headRevision, integrationMethodEvidence, resultingCommitParents: head.value.parents, rebasedCommits } };
+}
+
+/** Performs one bounded integration attempt; later observation remains authoritative. */
+export async function integrateFeatureIntegrationPullRequestV2(input, options) {
+  const value = adapterInputV2(input, ["repositoryId", "pullRequestId", "expectedHeadRevision", "targetFeatureBranch", "integrationMethod", "challengeId"]);
+  const configured = adapterOptionsV2(options);
+  if (!value || !configured || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1 ||
+      !FEATURE_INTEGRATION_REVISION.test(value.expectedHeadRevision) || typeof value.targetFeatureBranch !== "string" ||
+      value.targetFeatureBranch === "main" || !V2_METHODS.includes(value.integrationMethod)) return { state: "blocked", reason: "adapter_unavailable" };
+  const method = { merge_commit: "merge", rebase_merge: "rebase", squash: "squash" }[value.integrationMethod];
+  const result = callV2(configured, ["api", "--method", "PUT", `repos/${value.repositoryId}/pulls/${value.pullRequestId}/merge`,
+    "-f", `merge_method=${method}`, "-f", `sha=${value.expectedHeadRevision}`]);
+  if (result.state !== "observed") return { state: "effect_result", outcome: "uncertain", reason: result.reason };
+  if (result.value?.merged !== true || !FEATURE_INTEGRATION_REVISION.test(result.value?.sha)) {
+    return { state: "effect_result", outcome: result.value?.merged === false ? "not_applied" : "uncertain", reason: "ambiguous_response" };
+  }
+  return { state: "effect_result", outcome: "applied", resultingHeadRevision: result.value.sha };
 }
 
 export { FEATURE_INTEGRATION_ADAPTER_REASONS_V2 };

@@ -10,6 +10,9 @@ import {
   canonicalFeatureIntegrationJsonV1,
   computeFeatureObservationChallengeDigestV2,
   computeFeatureTransitionObservationDigestV2,
+  createFeatureIntegrationEntryV2,
+  createFeatureOperationJournalV2,
+  secureReplayFeatureOperationJournalV2,
 } from "../dist/feature-integration-v1.mjs";
 import { validateFeatureOperationDerivedCandidateV1 } from "../dist/feature-operation-v1.mjs";
 import { computeProfileAwareMissionJournalDigestV1 } from "../dist/feature-integration-evidence-v1.mjs";
@@ -29,6 +32,7 @@ import {
   observeFeatureIntegrationPullRequestProofV2,
   observeFeatureIntegrationTargetProofV2,
   observeFeatureIntegrationCommitMethodProofV2,
+  integrateFeatureIntegrationPullRequestV2,
 } from "./adapter-v1.mjs";
 
 const STAGES = Object.freeze({
@@ -44,7 +48,7 @@ const WORKSPACE_OBSERVATION_FIELDS = Object.freeze(["schemaVersion", "contractVe
 const WORKSPACE_PULL_REQUEST_FIELDS = Object.freeze(["pullRequestId", "url", "draft", "headBranch", "headRevision", "baseBranch"]);
 const OBSERVED_AT_FIELDS = Object.freeze(["value", "provenance"]);
 const PRODUCER_CONFIG_FIELDS_V2 = Object.freeze(["adapterOptions", "producerId", "signEnvelope", "clock"]);
-const PRODUCER_METHODS_V2 = Object.freeze(["signChallenge", "observeAndSignWorkspace", "observeAndSignTransition", "observeAndSignAdmission", "observeAndSignExpiry"]);
+const PRODUCER_METHODS_V2 = Object.freeze(["signChallenge", "executeTransition", "observeAndSignWorkspace", "observeAndSignTransition", "observeAndSignAdmission", "observeAndSignExpiry"]);
 
 function block(reason) { return { state: "blocked", reason }; }
 function challenge(value) { return typeof value === "string" && value.length > 0; }
@@ -132,7 +136,7 @@ function transitionInvocationV2(input) {
 
 function appliedTransitionProofV2(request, pull, target, method, expectedRestoredTreeDigest) {
   if (!method || pull.merged !== true || pull.headRevision !== request.expectedPullRequestHead || pull.baseBranch !== request.targetFeatureBranch ||
-      pull.mergeMethod !== request.integrationMethod || pull.mergeRevision === null || pull.mergeRevision !== target.headRevision ||
+      method.integrationMethodEvidence !== "verified" || pull.mergeRevision === null || pull.mergeRevision !== target.headRevision ||
       pull.pullRequestCommitHeads.length === 0 || pull.pullRequestCommitHeads.at(-1) !== request.expectedPullRequestHead ||
       pull.checkState !== "successful" || pull.conflictingPullRequestCount !== 0 ||
       (request.derivationKind === "child_revert_on_feature" &&
@@ -162,6 +166,14 @@ export function createGitHubFeatureObservationProducerV2(input) {
       value.challengeDigest = computeFeatureObservationChallengeDigestV2(value);
       return signedEnvelopeFromProducerV2(config, `shield.feature-integration.challenge.v2:${value.challengeKind}`, value);
     },
+    async executeTransition(inputValue) {
+      const invocation = transitionInvocationV2(inputValue);
+      if (!invocation) throw new Error("producer_unavailable");
+      const request = invocation.request;
+      return integrateFeatureIntegrationPullRequestV2({ repositoryId: request.repositoryId, pullRequestId: Number(request.pullRequestId),
+        expectedHeadRevision: request.expectedPullRequestHead, targetFeatureBranch: request.targetFeatureBranch,
+        integrationMethod: request.integrationMethod, challengeId: invocation.signedChallenge?.payload?.challengeId }, config.adapterOptions);
+    },
     async observeAndSignWorkspace(inputValue) {
       const value = inputValue && typeof inputValue === "object" ? structuredClone(inputValue) : null;
       if (!value || value.observationKind !== "workspace" || value.producerId !== config.producerId) throw new Error("producer_unavailable");
@@ -182,7 +194,9 @@ export function createGitHubFeatureObservationProducerV2(input) {
       const pull = pullResult.observation, target = targetResult.observation;
       let method = null;
       if (pull.merged && pull.mergeRevision !== null) {
-        const proof = await observeFeatureIntegrationCommitMethodProofV2({ repositoryId: request.repositoryId, headRevision: target.headRevision, integrationMethod: request.integrationMethod, pullRequestCommitHeads: pull.pullRequestCommitHeads, challengeId }, config.adapterOptions);
+        const proof = await observeFeatureIntegrationCommitMethodProofV2({ repositoryId: request.repositoryId, headRevision: target.headRevision,
+          priorHeadRevision: request.priorHeadRevision, integrationMethod: request.integrationMethod,
+          pullRequestCommitHeads: pull.pullRequestCommitHeads, challengeId }, config.adapterOptions);
         if (proof.state !== "observed") throw new Error("producer_unavailable");
         method = proof.observation;
       }
@@ -194,7 +208,8 @@ export function createGitHubFeatureObservationProducerV2(input) {
         requestDigest: request.requestDigest, preparationEntryDigest: invocation.preparationEntryDigest, candidateDigest: request.candidateDigest, effectKey: request.effectKey,
         pullRequestId: request.pullRequestId, expectedPullRequestHead: request.expectedPullRequestHead, targetFeatureRef: request.targetFeatureRef,
         integrationMethod: request.integrationMethod, priorHeadRevision: request.priorHeadRevision, priorTreeDigest: request.priorTreeDigest,
-        observedPullRequestHead: pull.headRevision, observedPullRequestBaseBranch: pull.baseBranch, observedIntegrationMethod: pull.mergeMethod,
+        observedPullRequestHead: pull.headRevision, observedPullRequestBaseBranch: pull.baseBranch,
+        observedIntegrationMethod: method?.integrationMethodEvidence === "verified" ? request.integrationMethod : null,
         pullRequestMerged: pull.merged, pullRequestMergeRevision: pull.mergeRevision, pullRequestCommitHeads: pull.pullRequestCommitHeads,
         conflictingPullRequestCount: pull.conflictingPullRequestCount, resultingCommitParents: method?.resultingCommitParents ?? [], rebasedCommits: method?.rebasedCommits ?? [],
         checkState: pull.checkState, observedTargetHeadRevision: target.headRevision, observedTargetTreeDigest: target.treeDigest,
@@ -421,7 +436,46 @@ export async function executeFeatureIntegrationWorkspaceStageV1(input, adapterOp
   return terminalResult.state === "accepted" ? { state: reconciled.state, journal: terminalResult.value.journal, invocation } : terminalResult;
 }
 
-/** P1-owned hardened workspace/transition stage boundary; P2B supplies durable dispatch. */
+function stageResultV2(state, reason, appendedEntryDigest = null) {
+  return reason ? { state, reason, appendedEntryDigest } : { state, appendedEntryDigest };
+}
+
+function exactStageInputV2(input) {
+  return exactDataRecord(input, ["stage", "candidate", "request"]) ??
+    exactDataRecord(input, ["stage", "signedChallenge"]);
+}
+
+async function readStageJournalV2(store, expected, trustAnchor) {
+  let read;
+  try { read = await store.readJournal(); }
+  catch { return { state: "recovery_required", reason: "durability_uncertain" }; }
+  if (read?.state === "recovery_required") return { state: "recovery_required", reason: "durability_uncertain" };
+  if (read?.state !== "accepted" || !read.value?.journal) return { state: "blocked", reason: "compare_conflict" };
+  if (canonicalFeatureIntegrationJsonV1(read.value.journal) !== canonicalFeatureIntegrationJsonV1(expected)) return { state: "blocked", reason: "compare_conflict" };
+  const replayed = secureReplayFeatureOperationJournalV2(read.value.journal, trustAnchor);
+  return replayed.state === "valid" ? { state: "accepted", journal: read.value.journal, replay: replayed.value } : { state: "blocked", reason: "replay_invalid" };
+}
+
+async function appendStageEntryV2(store, journal, entry, trustAnchor) {
+  let expected;
+  try { expected = createFeatureOperationJournalV2([...journal.entries, entry]); }
+  catch { return { state: "blocked", reason: "replay_invalid" }; }
+  const replayed = secureReplayFeatureOperationJournalV2(expected, trustAnchor);
+  if (replayed.state !== "valid") return { state: "blocked", reason: replayed.reason === "GENESIS_INVALID" ? "authorization_invalid" : "replay_invalid" };
+  let appended;
+  try {
+    appended = await store.appendEntry({ expectedJournalDigest: journal.journalDigest, expectedEntrySequence: entry.entrySequence,
+      expectedLatestEntryDigest: journal.latestAcceptedEntryDigest, entry });
+  } catch { return { state: "recovery_required", reason: "durability_uncertain" }; }
+  if (appended?.state === "recovery_required") return { state: "recovery_required", reason: "durability_uncertain" };
+  if (appended?.state !== "accepted" || !appended.value?.journal) return { state: "blocked", reason: "compare_conflict" };
+  if (canonicalFeatureIntegrationJsonV1(appended.value.journal) !== canonicalFeatureIntegrationJsonV1(expected)) {
+    return { state: "recovery_required", reason: "durability_uncertain" };
+  }
+  return { state: "accepted", journal: expected, replay: replayed.value };
+}
+
+/** Owns one replay-bound transition stage from prepare through durable reconciliation. */
 export async function executeFeatureIntegrationWorkspaceStageV2(input) {
   const value = exactDataRecord(input, ["stage", "replay", "journal", "stageInput", "storeScope", "trustAnchor", "repositoryProducer", "cumulativeProducer"]);
   if (!value || !["feature_branch_creation", "feature_workspace", "child_initiation", "child_publication", "integration", "rollback"].includes(value.stage) ||
@@ -430,7 +484,78 @@ export async function executeFeatureIntegrationWorkspaceStageV2(input) {
       !value.trustAnchor || typeof value.trustAnchor !== "object" || !value.repositoryProducer || typeof value.repositoryProducer !== "object") {
     return { state: "blocked", reason: "invalid_input", appendedEntryDigest: null };
   }
-  return { state: "blocked", reason: "stage_blocked", appendedEntryDigest: null };
+  if (!["integration", "rollback"].includes(value.stage)) return stageResultV2("blocked", "stage_blocked");
+  const store = exactDataRecord(value.storeScope, ["readJournal", "appendEntry"]);
+  const stageInput = exactStageInputV2(value.stageInput);
+  if (!store || typeof store.readJournal !== "function" || typeof store.appendEntry !== "function" || !stageInput ||
+      typeof value.repositoryProducer.executeTransition !== "function" || typeof value.repositoryProducer.observeAndSignTransition !== "function") {
+    return stageResultV2("blocked", "invalid_input");
+  }
+  const current = await readStageJournalV2(store, value.journal, value.trustAnchor);
+  if (current.state !== "accepted") return stageResultV2(current.state, current.reason);
+  if (canonicalFeatureIntegrationJsonV1(current.replay) !== canonicalFeatureIntegrationJsonV1(value.replay) || current.replay.nextStage !== value.stage) {
+    return stageResultV2("blocked", "compare_conflict");
+  }
+
+  let journal = current.journal;
+  let replay = current.replay;
+  let preparedEntry;
+  let candidate;
+  let request;
+  if (replay.pendingEffect) {
+    preparedEntry = journal.entries.find((entry) => entry.entryDigest === replay.pendingEffect.preparationEntryDigest);
+    candidate = preparedEntry?.payload?.candidate;
+    request = replay.pendingEffect.request;
+    if (!preparedEntry || preparedEntry.entryKind !== "effect_prepared" || !candidate || !request) return stageResultV2("blocked", "replay_invalid");
+    if (replay.uncertainEffect) {
+      if (!stageInput.signedChallenge) return stageResultV2("blocked", "invalid_input");
+      const refresh = createFeatureIntegrationEntryV2({ operationId: journal.operationId, entrySequence: replay.nextEntrySequence,
+        entryKind: "effect_challenge_refreshed", previousEntryDigest: journal.latestAcceptedEntryDigest,
+        payload: { preparationEntryDigest: preparedEntry.entryDigest, signedChallenge: stageInput.signedChallenge } });
+      const refreshed = await appendStageEntryV2(store, journal, refresh, value.trustAnchor);
+      if (refreshed.state !== "accepted") return stageResultV2(refreshed.state, refreshed.reason);
+      journal = refreshed.journal; replay = refreshed.replay;
+    }
+  } else {
+    if (!stageInput.candidate || !stageInput.request || stageInput.request.signedChallenge === undefined) return stageResultV2("blocked", "invalid_input");
+    candidate = stageInput.candidate; request = stageInput.request;
+    let prepared;
+    try {
+      prepared = createFeatureIntegrationEntryV2({ operationId: replay.replayContext.operationId, entrySequence: replay.nextEntrySequence,
+        entryKind: "effect_prepared", previousEntryDigest: journal.latestAcceptedEntryDigest,
+        payload: { effectClass: "transition", candidate, candidateDigest: candidate.candidateDigest, effectKey: candidate.effectKey,
+          request, requestDigest: request.requestDigest, expectedHeadRevision: replay.terminalHeadRevision,
+          expectedTreeDigest: replay.terminalTreeDigest, signedCumulativeAuthority: null } });
+    } catch { return stageResultV2("blocked", "authorization_invalid"); }
+    const appended = await appendStageEntryV2(store, journal, prepared, value.trustAnchor);
+    if (appended.state !== "accepted") return stageResultV2(appended.state, appended.reason);
+    journal = appended.journal; replay = appended.replay; preparedEntry = prepared;
+    try { await value.repositoryProducer.executeTransition({ request, preparationEntryDigest: prepared.entryDigest }); }
+    catch { /* Independent observation determines whether the attempted effect applied. */ }
+  }
+
+  const signedChallenge = replay.pendingEffect.signedChallenges.at(-1);
+  let signedObservation;
+  try {
+    signedObservation = await value.repositoryProducer.observeAndSignTransition({ request, preparationEntryDigest: preparedEntry.entryDigest,
+      signedChallenge, ...(candidate.derivationKind === "child_revert_on_feature" ? { expectedRestoredTreeDigest: candidate.expectedRestoredTreeDigest } : {}) });
+  } catch { return stageResultV2("recovery_required", "effect_uncertain"); }
+  const status = signedObservation?.payload?.status;
+  const entryKind = status === "applied" ? (candidate.derivationKind === "child_revert_on_feature" ? "rollback_accepted" : "integration_accepted")
+    : status === "not_applied" ? "effect_not_applied" : status === "uncertain" ? "effect_uncertain" : null;
+  if (!entryKind) return stageResultV2("recovery_required", "authentication_unavailable");
+  let terminal;
+  try {
+    terminal = createFeatureIntegrationEntryV2({ operationId: journal.operationId, entrySequence: replay.nextEntrySequence,
+      entryKind, previousEntryDigest: journal.latestAcceptedEntryDigest,
+      payload: entryKind === "integration_accepted" || entryKind === "rollback_accepted"
+        ? { preparationEntryDigest: preparedEntry.entryDigest, signedTransitionObservation: signedObservation }
+        : { preparationEntryDigest: preparedEntry.entryDigest, signedObservation } });
+  } catch { return stageResultV2("recovery_required", "authentication_unavailable"); }
+  const appended = await appendStageEntryV2(store, journal, terminal, value.trustAnchor);
+  if (appended.state !== "accepted") return stageResultV2(appended.state, appended.reason);
+  return entryKind === "effect_uncertain" ? stageResultV2("recovery_required", "effect_uncertain", terminal.entryDigest)
+    : stageResultV2("accepted", null, terminal.entryDigest);
 }
 
 export function createRollbackMissionHandoffReadyV1(input) {

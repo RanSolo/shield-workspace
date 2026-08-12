@@ -14,6 +14,7 @@ export {
   observeFeatureIntegrationPullRequestProofV2,
   observeFeatureIntegrationTargetProofV2,
   observeFeatureIntegrationCommitMethodProofV2,
+  integrateFeatureIntegrationPullRequestV2,
 } from "../github/adapter-v1.mjs";
 export {
   acceptGovernedRollbackWorkspaceV1,
