@@ -131,15 +131,21 @@ The normalized digest projection contains exactly:
   `{checkpointId, commandId, command}` entries, `expectedOutput`,
   `stopConditions`, and scalar `successor`.
 
-It excludes the supplied/reviewed digest itself, all evidence/receipt IDs,
+It excludes the supplied/reviewed digest itself, all downstream evidence and
+receipt IDs except the criterion's explicitly retained `humanReviewId`,
 evidence outcomes, amendments and their human evidence, implementation and
 review revisions/trees, runtime identities, repository observations, and every
-other downstream receipt. `contractGeneration` is digest material: reverting
-content at a later generation intentionally produces a different digest.
+other downstream receipt. `humanReviewId` is retained because it is the frozen
+acceptance requirement for a human checkpoint, not proof that the checkpoint
+occurred. `contractGeneration` is digest material: reverting content at a later
+generation intentionally produces a different digest.
 
-Normalize to ordinary null-free JSON except the declared executable-contract
-and human-review nullable fields. Sort criteria by `criterionId` and packets by
-`packetId` using JavaScript code-unit order. Treat `riskFactors`, packet
+Normalize to ordinary JSON. Exactly three projected fields admit `null`:
+criterion `preImplementationContract` for `tdd_declined`, traceability
+`humanReviewId` when no human checkpoint is required, and packet
+`couplingRationale` for a one-criterion packet. All other projected values are
+null-free. Sort criteria by `criterionId` and packets by `packetId` using
+JavaScript code-unit order. Treat `riskFactors`, packet
 `criterionIds`, `minimalPaths`, `requiredInterfaces`, `allowedEffects`,
 `focusedValidation`, and `stopConditions` as duplicate-free sets sorted by the
 code-unit ordering of each item's complete canonical JSON. Preserve no other
@@ -162,6 +168,17 @@ padding. The algorithm golden uses payload
 `tdd.mission.v1\u0000acceptance-contract\u0000104:{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[],"packets":[],"schemaVersion":1}`,
 and digest `sha256:cmUeaevhL6GckHGcclInnDdHUnXPSabx14PBwSSOAik`.
 
+A nonempty golden covers selected and declined criteria, retained and null
+`humanReviewId`, and one-criterion packets with null coupling rationale. Its
+canonical payload is exactly:
+
+```json
+{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[{"criterionId":"AC-A","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":{"checkpointId":"checkpoint:A","contractId":"contract:A","expectedBehavior":"A holds","kind":"executable"},"rationale":"closed behavior","riskFactors":["regression"],"strategy":"tdd_selected","traceability":{"humanReviewId":null,"mackCheckpointId":"checkpoint:A","mayPacketId":"packet:A","planRequirementId":"requirement:A"}},{"criterionId":"AC-B","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":null,"rationale":"documentation only","riskFactors":["documentation"],"strategy":"tdd_declined","traceability":{"humanReviewId":"review:human:B","mackCheckpointId":"checkpoint:B","mayPacketId":"packet:B","planRequirementId":"requirement:B"}}],"packets":[{"allowedEffects":["effect:a"],"couplingRationale":null,"criterionIds":["AC-A"],"expectedOutput":"A passes","focusedValidation":[{"checkpointId":"checkpoint:A","command":"node --test a.test.mjs","commandId":"validation:A"}],"minimalPaths":["src/a.mts"],"packetId":"packet:A","requiredInterfaces":["interface:a"],"stopConditions":["scope changes"],"successor":"packet:B"},{"allowedEffects":["effect:b"],"couplingRationale":null,"criterionIds":["AC-B"],"expectedOutput":"B passes","focusedValidation":[{"checkpointId":"checkpoint:B","command":"node --test b.test.mjs","commandId":"validation:B"}],"minimalPaths":["docs/b.md"],"packetId":"packet:B","requiredInterfaces":["interface:b"],"stopConditions":["scope changes"],"successor":"mission_complete"}],"schemaVersion":1}
+```
+
+It is 1656 UTF-8 bytes and produces
+`sha256:ha-_Q59ERQAp5JT-VEpjLKC5zyVZLlFYoQ2tOzE98ss` under the same frame.
+
 The closed V1 input now requires generation explicitly. Existing retained
 no-amendment fixtures are mechanically migrated to `contractGeneration: 0` in
 the same test packet; no dual-shape runtime compatibility is admitted. A
@@ -171,6 +188,15 @@ all fresh evidence matches it. Selected TDD re-enters reviewed Red; declined
 TDD re-enters a freshly justified strategy without manufacturing Red. Both then
 require fresh Coulson authority, Green, optional Refactor, terminal Mack/Fury,
 and disposition evidence at `N+1`.
+
+The amendment closed shape contains `oldContractGeneration`,
+`oldContractDigest`, `oldContractSnapshot`, `amendedContractGeneration`,
+`amendedContractDigest`, and `amendedContractSnapshot`. The old generation is
+the active predecessor `N`; the amended generation must equal exactly `N+1`
+without safe-integer overflow. Each digest must recompute from its paired
+snapshot and generation. The old pair must equal the active predecessor
+contract; the amended pair must equal the active contract supplied to the
+evaluation. Reordered, skipped, reused, mismatched, or unanchored edges block.
 
 ### Packet B — bounded execution and distinct transition proof (F4 + F7)
 
@@ -346,23 +372,76 @@ exactly this closed, sorted content:
 }
 ```
 
-Run `node packages/shield-team-system/dist/cli.mjs mission begin
---profile-aware --brief docs/missions/issue-162-tdd-intent-corrective-brief.json
---root /private/tmp/shield-162-bravo.yMZTJ7 --json`, then verify the one-entry
-schema-9 journal and waiting state. Before the PIN gate verify exact root,
+Use this exact begin and verification sequence:
+
+```sh
+cd /private/tmp/shield-162-bravo.yMZTJ7
+node packages/shield-team-system/dist/cli.mjs mission begin --profile-aware --brief docs/missions/issue-162-tdd-intent-corrective-brief.json --root /private/tmp/shield-162-bravo.yMZTJ7 --json
+node packages/shield-team-system/dist/cli.mjs mission status --mission-id mission:issue-162-bravo-correction-2 --root /private/tmp/shield-162-bravo.yMZTJ7 --json
+test "$(wc -l < .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl)" -eq 1
+shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl
+```
+
+The status must be schema 9 with authorization waiting, implementation not
+started, no implementation/runtime/publication authority, and final acceptance
+waiting. Before the PIN gate verify exact root,
 configured and origin repository `RanSolo/shield-workspace`, attached branch,
 reviewed HEAD/tree and plan digest, base ancestry, two-path base-to-HEAD diff,
 ordinary non-symlink/non-gitlink publication paths, closed sorted authority
 input, and completely empty `git status --porcelain`.
 
-The current untracked `node_modules/` must remain uncommitted and preserved.
-Because the supported one-passcode preflight requires a fully clean worktree,
-the human-gate command temporarily renames that exact directory to the verified
-absent sibling `/private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold`,
-installs a trap that restores it on success, failure, or interruption, invokes
-the already-built repository CLI directly, and verifies restoration afterward.
-No deletion or cleaning is permitted. Hill preflights the manifest without a
-passcode and confirms journal bytes are unchanged before surfacing the gate.
+The current untracked `node_modules` is exactly a symbolic link to
+`/Users/ransolo/Code/shield-workspace/node_modules`; it must remain uncommitted
+and be restored byte-for-byte as that link. The hold path is exactly
+`/private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold` and must be
+absent as both an entry and symlink before use. No trailing slash may be used.
+
+Hill performs this exact nonmutating preview before surfacing the gate. It is
+informational only because the live invocation creates a fresh timestamp; the
+same-invocation live manifest is the only manifest Coulson may sign.
+
+```sh
+cd /private/tmp/shield-162-bravo.yMZTJ7
+test -L node_modules
+test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules"
+test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
+test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
+before="$(shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl | awk '{print $1}')"
+mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
+restore_issue162_preview_node_modules() { trap - EXIT HUP INT TERM; test -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test "$(readlink /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e node_modules && test ! -L node_modules && mv /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold node_modules; }
+trap 'restore_issue162_preview_node_modules' EXIT
+trap 'restore_issue162_preview_node_modules; exit 130' HUP INT TERM
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+if node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --human </dev/null; then exit 1; fi
+after="$(shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl | awk '{print $1}')"
+test "$before" = "$after"
+restore_issue162_preview_node_modules
+test -L node_modules
+test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules"
+```
+
+The exact interactive gate command uses a restoration trap and invokes the
+repository CLI directly. Coulson must inspect the complete live manifest
+emitted by this invocation before deciding whether to enter the passcode:
+
+```sh
+cd /private/tmp/shield-162-bravo.yMZTJ7 && \
+test -L node_modules && \
+test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" && \
+test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
+test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
+mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
+restore_issue162_node_modules() { trap - EXIT HUP INT TERM; test -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test "$(readlink /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e node_modules && test ! -L node_modules && mv /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold node_modules; } && \
+trap 'restore_issue162_node_modules' EXIT && \
+trap 'restore_issue162_node_modules; exit 130' HUP INT TERM && \
+test -z "$(git status --porcelain=v1 --untracked-files=all)" && \
+node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --human; \
+authority_status=$?; restore_issue162_node_modules; \
+test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" && \
+node packages/shield-team-system/dist/cli.mjs mission status --mission-id mission:issue-162-bravo-correction-2 --root /private/tmp/shield-162-bravo.yMZTJ7 --json && \
+shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl; \
+exit "$authority_status"
+```
 
 The one-passcode command creates dormant initial draft authority for exactly
 the two planning artifacts. It performs no publication request or execution
