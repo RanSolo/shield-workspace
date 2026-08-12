@@ -1934,6 +1934,54 @@ test("Packet B accepts complete Green-only and Green-plus-Refactor transition pr
   }
 });
 
+test("Packet B focused proof identity selects the transition validation tuple", () => {
+  const packetContract = packet("packet:ac-162-1", ["AC-162-1"]);
+  const buildValidation = {
+    checkpointId: "checkpoint:packet:ac-162-1:build",
+    commandId: "validation:issue-162:nx-build",
+    command: "npm exec nx run @shield/team-system:build",
+    executableKind: "build",
+  };
+  packetContract.focusedValidation.push(buildValidation);
+
+  const green = greenEvidence();
+  const greenBuildReceipt = validationReceipt("AC-162-1", GREEN_REVISION, {
+    evidenceId: "receipt:mack:ac-162-1:green-build",
+    ...buildValidation,
+  });
+  green.mackValidationBundle.receipts.push(greenBuildReceipt);
+  const refactor = refactorEvidence();
+  const refactorBuildReceipt = validationReceipt("AC-162-1", REFACTOR_REVISION, {
+    evidenceId: "receipt:mack:ac-162-1:refactor-build",
+    ...buildValidation,
+  });
+  refactor.mackValidationBundle.receipts.push(refactorBuildReceipt);
+
+  const baseline = criterion({
+    preImplementationStateEvidence: redState(),
+    implementationAuthorityEvidence: implementationAuthority(),
+    greenEvidence: green,
+    refactorEvidence: refactor,
+  });
+  assert.equal(validateTddMissionStrategyContractV1(
+    strategyContract([baseline], [packetContract]),
+  ).state, "valid");
+
+  for (const transition of ["green", "refactor"]) {
+    const substituted = structuredClone(baseline);
+    if (transition === "green") {
+      substituted.greenEvidence.focusedMackEvidenceRef = greenBuildReceipt.evidenceId;
+    } else {
+      substituted.refactorEvidence.focusedMackEvidenceRef = refactorBuildReceipt.evidenceId;
+    }
+    const result = validateTddMissionStrategyContractV1(
+      strategyContract([substituted], [packetContract]),
+    );
+    assert.equal(result.state, "invalid", transition);
+    assert.deepEqual(result.reasonCodes, ["MACK_EVIDENCE_MISSING"], transition);
+  }
+});
+
 test("Packet B rejects path, effect, command, and checkpoint substitution", () => {
   const substitutions = [
     { observedPaths: ["packages/shield-team-system/src/outside.mts"] },

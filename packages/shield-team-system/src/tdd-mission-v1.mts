@@ -2517,6 +2517,15 @@ function validateTddMissionStrategyContractInputV1(
         entry.commandId === transition.commandId && entry.command === transition.command);
       if (configuredTransition === undefined) return invalid("MACK_EVIDENCE_MISSING");
       const receipts = transition.mackValidationBundle.receipts;
+      const focusedReceipt = receipts.find((receipt) =>
+        receipt.evidenceId === transition.focusedMackEvidenceRef);
+      if (focusedReceipt === undefined ||
+          focusedReceipt.checkpointId !== transition.checkpointId ||
+          focusedReceipt.commandId !== transition.commandId ||
+          focusedReceipt.command !== transition.command ||
+          focusedReceipt.executableKind !== configuredTransition.executableKind) {
+        return invalid("MACK_EVIDENCE_MISSING");
+      }
       if (receipts.length !== criterionPacket.focusedValidation.length ||
           criterionPacket.focusedValidation.some((entry) => !receipts.some((receipt) =>
             receipt.checkpointId === entry.checkpointId && receipt.commandId === entry.commandId &&
