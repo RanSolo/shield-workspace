@@ -1,0 +1,298 @@
+# Issue #162 — complete Fury corrective plan
+
+## Exact mission identity
+
+- Lane: Bravo Lane Hill correction 1
+- Mission: `mission:issue-162-bravo-correction-1`
+- Subject: `github:RanSolo/shield-workspace/issue/162`
+- Repository: `RanSolo/shield-workspace`
+- Worktree: `/private/tmp/shield-162-bravo.yMZTJ7`
+- Branch: `agent/issue-162-tdd-intent`
+- Preserved implementation revision: `87c889769093fe000d4bb0ef45c1da80bdb6f321`
+- Preserved tree: `4053d95c87485d55c99e2c92ab1d27d229e25b74`
+- Fresh-main merge base: `58e7e7f767fd749bd7dc53f56d4a681aab35705f`
+- Original plan: `docs/missions/issue-162-tdd-intent-plan.md`
+- Original mission: `mission:issue-162-bravo`
+- Corrective brief: `docs/missions/issue-162-tdd-intent-corrective-brief.json`
+
+This plan is planning evidence only. It grants no implementation, test rewrite,
+publication, merge, deployment, release, final acceptance, or human authority.
+The preserved eight commits remain historical inputs and are not
+retrospectively authorized. May may edit only after fresh exact-plan Fury PASS
+and fresh Coulson Wheels Up for this corrective mission.
+
+## Preserved gate evidence
+
+- Complete Fury conformance review: `REVISE`, reviewed revision `87c8897...`,
+  runtime/model `gpt-5.6-sol`, eleven findings, local artifact SHA-256
+  `cd09f27ca39861f65ce73322881efd5a85ca194f0547839f30c6533cfc65f7b0`.
+- Mack exact-revision execution: focused `35/35`, Nx build PASS, Nx test
+  `1224/1224`, both Nx tasks `0/1` cache hits, combined exit `0`, local final
+  packet SHA-256
+  `f4f32be37c2dbe522cc9b4bd6dcee66443593db32c1f7c00bf5782365288aa1c`.
+- Original mission journal remains unchanged at
+  `.shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8.jsonl`. Its obsolete
+  `a825167...` authority is evidence only and cannot authorize corrective work.
+- PR #280 is present at exact base `58e7e7f...`. Its test corrections were
+  exercised by the unrestricted exact-head Nx PASS; they do not renew May
+  authority.
+
+## Objective and exclusions
+
+Correct all eleven Fury findings while preserving `tdd.mission.v1` as a pure,
+host-neutral, deterministic and non-authoritative contract. Keep packet-level
+Green/Refactor traceability while requiring cumulative exact-mission-HEAD
+validation and review. Make amended acceptance contracts able to complete only
+through a fresh generation. Enforce packet paths, effects and focused
+validation. Make acceptance digests content-addressed. Model separate exact
+Green and Refactor authority/proof. Reject contradictory PASS evidence,
+collapsed identities and proxy arrays. Document the public subpath.
+
+Explicitly excluded:
+
+- retroactive authorization or rewriting of historical evidence;
+- a runner, journal store, CLI, UI, new test framework, network effect, model
+  invocation, Guided QA #238, lifecycle issue #247 or unrelated cleanup;
+- publication, PR creation/update, merge, deployment, release or final
+  acceptance;
+- changing/removing existing expectations merely to obtain Green. Any such
+  change requires the existing Fitz and amendment-generation gates.
+
+## Acceptance-criterion dispositions required
+
+The corrective mission retains AC-162-1 through AC-162-6. AC-162-1, AC-162-2
+and AC-162-3 receive regression proof but no product expansion. AC-162-4,
+AC-162-5 and AC-162-6 are incomplete at the preserved revision and must reach
+`implemented_and_proven` at the fresh successor revision. No criterion may be
+silently deferred, and lane completion requires fresh exact-head Mack and Fury
+evidence.
+
+## Complete Fury finding map
+
+| Finding | Severity | AC | Required disposition |
+| --- | --- | --- | --- |
+| F1 stale/non-ancestral May authority | Critical | Gate | Fresh mission, exact plan PASS, fresh Coulson authority and runtime binding; never retroactive |
+| F2 terminal evidence does not bind mission HEAD | High | AC-162-6 | Cumulative Mack/Fury receipts equal mission HEAD/tree |
+| F3 amendment cannot re-enter and complete | High | AC-162-4 | Explicit generations with fresh reviewed Red/declined strategy, authority and downstream evidence |
+| F4 effects and focused validation are descriptive | High | AC-162-2, AC-162-5, AC-162-6 | Enforce observed effects and commands/checkpoints against packet contracts |
+| F5 Mack PASS is not durable governed evidence | High | Gate, AC-162-6 | Fresh successor receives durable full Mack receipt before Fury conformance |
+| F6 acceptance digest is caller-selected | High | AC-162-4, AC-162-6 | Canonical content-addressed SHA-256 over normalized behavior and packet material |
+| F7 Refactor authority/proofs are reduced and inexact | High | AC-162-5, AC-162-6 | Separate exact Green/Refactor authority and focused/cumulative Mack stages |
+| F8 contradictory counts can PASS | Medium | AC-162-6 | Closed outcome/count semantics |
+| F9 runtime/model/executor identity can collapse | Medium | AC-162-6 | Typed domains and pairwise separation |
+| F10 live array proxies are admitted | Medium | AC-162-6 | Reject proxies at every array boundary before observation |
+| F11 public subpath is undocumented | Low | AC-162-6 | Add `/tdd-mission` boundary to `PUBLIC_API.md` and test agreement |
+
+## Contract corrections
+
+### Exact generation and digest model
+
+Add a closed non-negative `contractGeneration` to the acceptance-contract
+snapshot and every strategy, Red, authority, Green, Refactor, Mack, Fury and
+disposition receipt. Generation zero is the initial reviewed contract. A
+changed or removed expectation requires generation `N+1`, exact old/new
+snapshots, complete amendment evidence and a newly computed digest. No receipt
+from an earlier generation is eligible in a later generation.
+
+Define one exported canonical digest function over a normalized,
+evidence-independent projection containing every behavior-bearing criterion
+field and packet field: IDs, strategies, rationales, risk factors, executable
+contracts, traceability contract IDs, dispositions, criterion membership,
+minimal paths, required interfaces, allowed effects, focused validation,
+expected output, stop conditions and successors. Use framed canonical JSON,
+stable criterion/packet ordering and SHA-256 base64url output. Reject a supplied
+or reviewed digest that differs from the computed digest. Evidence IDs,
+repository revisions and review outcomes are not hash inputs.
+
+### Exact transition evidence
+
+Use a closed transition kind or distinct stages for `green_authorized`,
+`refactor_authorized`, `green_focused_validation`,
+`refactor_focused_validation`, `cumulative_mack_validation` and
+`fury_conformance`. Each exact receipt retains mission, plan, generation,
+criterion, packet, seat, typed runtime/model/executor identity, repository,
+branch, cwd, start/end revision and tree, command/checkpoint, outcome, truthful
+counts/cache record, source references and successor/stop condition.
+
+Green and optional Refactor remain tied to their packet revisions. The single
+cumulative Mack receipt and Fury conformance receipt must match
+`headRevisionId` and `headTreeDigest` exactly. Advancing mission HEAD without
+fresh cumulative receipts returns `STALE_EXACT_REVISION_EVIDENCE`.
+
+### Packet enforcement
+
+Each implementation/validation receipt records observed paths, observed
+effects and the executed command/checkpoint ID. Observed paths and effects must
+be unique subsets of `minimalPaths` and `allowedEffects`. Focused Mack commands
+and checkpoint IDs must exactly match an entry in `focusedValidation`.
+Substitution, omission, duplicate evidence or replay blocks deterministically.
+
+### Truthful evidence and identity
+
+For `outcome: passed`, require exit code zero, zero failed and cancelled tests,
+and explicit nonnegative total/passed/skipped/todo counts whose sum is total.
+Failed executable evidence requires nonzero exit and classification-consistent
+counts. Runtime, model and executor identifiers use closed prefixes/domains and
+must be pairwise distinct. Seat ownership remains independently checked.
+
+### Closed immutable input
+
+Reject `isProxy(...)` at every object and array boundary before prototype,
+length, iteration, trap or element access. Then require dense ordinary arrays,
+bounded lengths and recursively normalized frozen copies. Cover live, trapping
+and revoked proxies for every nested array family.
+
+### Public API
+
+Add `@shield/team-system/tdd-mission` to `PUBLIC_API.md` as a pure,
+host-neutral, non-authoritative evaluator. It performs no signing, journal
+append, dispatch, test execution, publication or human decision. Extend the
+existing package-surface test so package exports and documented public
+specifiers agree.
+
+## Dependency-ordered implementation packets
+
+Each packet contains one acceptance outcome and one Fury finding by default.
+No packet contains more than two tightly coupled criteria. May receives only
+the listed paths and the immediately required interfaces.
+
+### C1 — F2 cumulative exact-HEAD closure (AC-162-6)
+
+- Paths: `src/tdd-mission-v1.mts`, `tests/tdd-mission-v1.test.mjs`.
+- Invariant: terminal cumulative Mack and Fury evidence equals mission HEAD/tree.
+- Red: later mission HEAD with prior terminal receipts currently remains eligible.
+- Green proof: later-HEAD and tree-substitution fixtures return
+  `STALE_EXACT_REVISION_EVIDENCE`; packet revisions remain traceable.
+- Successor: C2.
+
+### C2 — F3 amendment generations (AC-162-4)
+
+- Paths: source and focused test only.
+- Invariant: complete selected/declined amendments can re-enter and finish only
+  at `N+1`; every `N` receipt is stale.
+- Red: terminal selected and declined amendment fixtures cannot complete.
+- Green proof: both complete through fresh generation-bound evidence; old
+  authority, Green, Refactor, Mack and Fury substitutions block.
+- Stop: any need to weaken Fitz verification or manufacture human evidence.
+- Successor: C3.
+
+### C3 — F4 packet effect and validation enforcement (AC-162-2, AC-162-5)
+
+- Paths: source and focused test only.
+- Coupling rationale: the same packet contract is the authority source for May
+  effects and Mack focused commands; separating would admit an unenforced state.
+- Invariant: observed paths/effects and focused commands are exact bounded subsets.
+- Green proof: effect, path, command and checkpoint substitution all block.
+- Successor: C4.
+
+### C4 — F6 content-addressed acceptance digest (AC-162-4, AC-162-6)
+
+- Paths: source and focused test only.
+- Coupling rationale: amendment invalidation and replay closure depend on the
+  same canonical digest generation.
+- Invariant: every behavior/packet mutation changes the computed digest.
+- Green proof: retained old digest/receipts fail for every hash-material field;
+  stable reordered input normalizes deterministically where ordering is not semantic.
+- Successor: C5.
+
+### C5 — F7 exact Green/Refactor evidence (AC-162-5)
+
+- Paths: source and focused test only.
+- Invariant: Green and Refactor have distinct exact Coulson authority and Mack
+  focused receipts; cumulative Mack remains separate.
+- Green proof: missing, duplicate, substituted and replayed authority/proofs block.
+- Successor: C6.
+
+### C6 — F8 truthful count semantics (AC-162-6)
+
+- Paths: source and focused test only.
+- Invariant: PASS counts and exit code cannot contradict outcome.
+- Green proof: failed/cancelled PASS, bad sums, negative counts and failed exit
+  inconsistencies block.
+- Successor: C7.
+
+### C7 — F9 identity separation (AC-162-6)
+
+- Paths: source and focused test only.
+- Invariant: seat, runtime, model and executor remain typed and distinct.
+- Green proof: collapsed and substituted identities block.
+- Successor: C8.
+
+### C8 — F10 proxy-array closure (AC-162-6)
+
+- Paths: source and focused test only.
+- Invariant: no proxy array is observed or normalized.
+- Green proof: live, trapping and revoked proxies at every nested array boundary
+  return deterministic invalid/blocked results without escaping.
+- Successor: C9.
+
+### C9 — F11 public API documentation (AC-162-6)
+
+- Paths: `packages/shield-team-system/PUBLIC_API.md`,
+  `packages/shield-team-system/tests/package-surface.test.mjs`.
+- Invariant: the exported `/tdd-mission` specifier is documented with its pure,
+  non-authoritative boundary and surface agreement is executable.
+- Green proof: package-surface test verifies export/document agreement.
+- Successor: exact-head validation and review.
+
+F1 is discharged only by fresh Coulson authority before C1. F5 is discharged
+only after C9 by a fresh durable Mack receipt at the exact successor HEAD; it
+is not an implementation packet. Every packet gets complete Fury conformance
+review; there is no finding cutoff.
+
+## Fresh authority envelope
+
+The maximum implementation envelope is deliberately broader than each packet:
+
+- Paths:
+  - `packages/shield-team-system/package.json`
+  - `packages/shield-team-system/PUBLIC_API.md`
+  - `packages/shield-team-system/public/tdd-mission.d.mts`
+  - `packages/shield-team-system/public/tdd-mission.mjs`
+  - `packages/shield-team-system/src/tdd-mission-v1.mts`
+  - `packages/shield-team-system/tests/package-surface.test.mjs`
+  - `packages/shield-team-system/tests/tdd-mission-v1.test.mjs`
+- Actions: `repository.write_file`, `repository.git_commit`,
+  `repository.run_validation`.
+- Effects: behavioral implementation, bounded packet commits and verification
+  under issue-162-specific effect keys only.
+- Capabilities: `filesystem_write`, `git_write`, `process_execute`.
+- Runtime: May hosted `gpt-5.6-sol` through
+  `executor:codex-hosted-workspace-tools`.
+- Validation IDs: focused TDD node test, Team System Nx build and Team System Nx test.
+
+The envelope permits no write before fresh authority and no publication,
+external communication, merge, deployment or release afterward.
+
+## Validation and terminal routing
+
+At every packet checkpoint, run the focused `node:test` file and preserve the
+packet revision. At the exact final implementation HEAD, Mack independently
+runs:
+
+1. `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs`;
+2. package-manager-prefixed Nx `@shield/team-system:build`;
+3. package-manager-prefixed Nx `@shield/team-system:test`;
+4. exact branch/HEAD/tree, changed-path and tracked-clean checks.
+
+Nx workspace-data/cache directories may be disposable writable host paths;
+cache disposition is reported only from emitted output. Mack records actual
+runtime/model and distinct host executor identities, exact commands, cwd,
+start/end HEAD and tree, exit codes, counts, cache evidence, packet/criterion
+references and source refs through the governed durable evidence path.
+
+Mack exact-head PASS routes automatically to a complete Fury review of every
+bounded packet and the cumulative revision. Fury `REVISE` routes unchanged-scope
+corrections back through new small packets and fresh Mack/Fury evidence. A new
+human gate is required for scope, path, effect, capability, runtime or risk
+change. Fury PASS leads to publication preparation only if separate exact
+publication authority is current; it grants no human acceptance.
+
+## Stop conditions
+
+Stop before editing for missing/stale/malformed authority, plan-digest drift,
+wrong root/branch/HEAD, unexpected tracked changes, runtime substitution,
+path/effect/capability widening, inability to preserve an expectation, or need
+to enter #238/#247. Stop after implementation for any focused/Nx failure,
+undurable Mack evidence, stale review, or new complete Fury finding. Never
+rewrite, squash, reset or claim authorization of the preserved eight commits.

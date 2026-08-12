@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "missionId": "mission:issue-162-bravo-correction-1",
+  "objective": "Correct issue #162 at the exact preserved revision 87c889769093fe000d4bb0ef45c1da80bdb6f321 by resolving all eleven complete Fury conformance findings in small acceptance-criteria-driven packets, including the public API documentation boundary, then obtain fresh exact-head Mack and Fury evidence without retroactively authorizing prior commits or entering Guided QA #238, lifecycle issue #247, publication, merge, deployment, or release.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/162",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": false,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-12T04:37:47Z",
+    "provenance": "hostTrusted"
+  },
+  "profileId": "standard",
+  "profileVersion": 1,
+  "requiredExecutionGateRoleIds": ["coulson"],
+  "requiredFinalAcceptanceGateRoleIds": ["coulson"],
+  "predecessorMissionId": "mission:issue-130",
+  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9"
+}
