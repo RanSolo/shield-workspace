@@ -11,6 +11,10 @@ import {
   computeFeatureIntegrationJournalDigestV2,
   computeFeatureObservationProducerBindingsDigestV2,
   computeFeatureHumanBindingsDigestV2,
+  computeFeatureObservationChallengeDigestV2,
+  computeFeatureTransitionObservationDigestV2,
+  computeFeatureTransitionRequestCoreDigestV2,
+  computeFeatureTransitionRequestDigestV2,
   computeFeatureIntegrationReceiptDigestV1,
   computeFeatureRollbackReceiptDigestV1,
   computeFeatureIntegrationWorkspaceEffectObservationDigestV1,
@@ -32,6 +36,7 @@ import {
   FEATURE_OPERATION_PROHIBITED_EFFECTS,
   computeFeatureOperationAuthorityDigestV1,
   computeFeatureOperationDerivedCandidateDigestV1,
+  computeFeatureOperationDerivedCandidateDigestV2,
   computeFeatureOperationPlanDigestV1,
   computeFeatureOperationAuthorityDigestV2,
   computeFeatureOperationPlanDigestV2,
@@ -622,6 +627,77 @@ function hardenedGenesisFixture() {
   const journal = createFeatureOperationJournalV2([genesis]);
   return { ...legacy, producerBindings, humanBindings, hardenedPlan, hardenedAuthority, signedAuthority, replayContext, trustAnchor, genesis, journal };
 }
+
+function signProducerV2(domain, payload) {
+  return { payload: structuredClone(payload), signatureBase64: sign(null, Buffer.concat([
+    Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(canonicalFeatureIntegrationJsonV1(payload), "utf8"),
+  ]), privateKey).toString("base64") };
+}
+
+test("V2 replay authenticates exact transition non-application and retains uncertainty", () => {
+  const fixture = hardenedGenesisFixture();
+  const context = structuredClone(fixture.replayContext);
+  context.operationCounters.featureBranchCreateAttempts = 1;
+  context.operationCounters.featureWorkspaceDraftPrAttempts = 1;
+  context.childCounters[0].initiationAttempts = 1;
+  context.childCounters[0].implementationAttempts = 1;
+  context.childCounters[0].publicationAttempts = 1;
+  context.operationCounters.totalChildAttempts = 3;
+  context.operationCounters.capturedEvidenceCount = 1;
+  context.acceptedReviewEvidence = [{ evidenceRef: "evidence:review", gateType: "fury", gateId: "fury", childId: "mission:child-one", repositoryId: context.repositoryId, headRevision: revision("b"), sourceRecordDigest: digest("8") }];
+  const genesis = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null,
+    payload: { replayContext: context, signedAuthority: fixture.signedAuthority, trustedObservationProducerBindings: fixture.producerBindings, trustedHumanBindings: fixture.humanBindings } });
+  const baseline = createFeatureOperationJournalV2([genesis]);
+  const effectKey = fixture.hardenedPlan.children[0].allowedEffectKeys.find((key) => key.startsWith("effect:child_merge_to_feature:"));
+  const requestedScope = { relativePaths: [], actionIds: [], effectKeys: [], capabilityIds: [], validationIds: [], publicationOperations: [], requiredGates: { mack: false, fury: false, humanGateIds: [] }, exclusions: [], requestedAttempts: 1, requestedRetries: 0 };
+  const candidate = { schemaVersion: 2, contractVersion: "feature.operation.v2", repositoryId: context.repositoryId, operationId: context.operationId,
+    planDigest: context.activePlanDigest, authorityDigest: context.verifiedAuthorityDigest, effectKey, requestedScope, candidateDigest: digest("0"), stage: "integration", derivationKind: "child_merge_to_feature",
+    childId: "mission:child-one", childBranch: "agent/child-one", childHeadRevision: revision("b"), childTreeDigest: digest("3"), targetBranch: fixture.hardenedPlan.featureBranch,
+    integrationMethod: "squash", predecessorIntegrationReceiptDigest: null, reviewEvidenceRefs: ["evidence:review"] };
+  candidate.candidateDigest = computeFeatureOperationDerivedCandidateDigestV2(candidate);
+  const core = { schemaVersion: 2, contractVersion: "feature.integration.transition-request.v2", requestId: "request:transition:1", operationId: context.operationId,
+    repositoryId: context.repositoryId, derivationKind: candidate.derivationKind, candidateDigest: candidate.candidateDigest, effectKey, pullRequestId: "7",
+    expectedPullRequestHead: candidate.childHeadRevision, targetFeatureBranch: candidate.targetBranch, targetFeatureRef: `refs/heads/${candidate.targetBranch}`,
+    integrationMethod: candidate.integrationMethod, priorHeadRevision: fixture.hardenedPlan.baseRevision, priorTreeDigest: fixture.hardenedPlan.baseTreeDigest, rollbackWorkspaceReceiptDigest: null };
+  const requestCoreDigest = computeFeatureTransitionRequestCoreDigestV2(core);
+  const challenge = { schemaVersion: 2, contractVersion: "feature.integration.challenge.v2", challengeKind: "transition", operationId: context.operationId,
+    repositoryId: context.repositoryId, requestId: core.requestId, requestCoreDigest, preparationEntryDigest: null, candidateDigest: candidate.candidateDigest, effectKey,
+    producerId: "producer:github", producerKind: "github_repository", generation: 0, challengeId: "challenge:transition:1", previousJournalDigest: baseline.journalDigest,
+    intendedEntrySequence: 1, expectedHeadRevision: core.priorHeadRevision, expectedTreeDigest: core.priorTreeDigest, priorChallengeDigest: null, priorObservationDigest: null,
+    issuedAt: "2029-05-01T00:11:00Z", expiresAt: "2029-05-01T00:20:00Z", challengeDigest: digest("0") };
+  challenge.challengeDigest = computeFeatureObservationChallengeDigestV2(challenge);
+  const signedChallenge = signProducerV2("shield.feature-integration.challenge.v2:transition", challenge);
+  const request = { ...core, requestCoreDigest, signedChallenge, requestDigest: digest("0") };
+  request.requestDigest = computeFeatureTransitionRequestDigestV2(request);
+  const prepared = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 1, entryKind: "effect_prepared", previousEntryDigest: genesis.entryDigest,
+    payload: { effectClass: "transition", candidate, candidateDigest: candidate.candidateDigest, effectKey, request, requestDigest: request.requestDigest,
+      expectedHeadRevision: core.priorHeadRevision, expectedTreeDigest: core.priorTreeDigest, signedCumulativeAuthority: null } });
+  const observationFor = (status, head = core.priorHeadRevision, tree = core.priorTreeDigest) => {
+    const payload = { schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "transition", operationId: context.operationId,
+      repositoryId: context.repositoryId, requestId: core.requestId, requestCoreDigest, requestDigest: request.requestDigest, preparationEntryDigest: prepared.entryDigest,
+      candidateDigest: candidate.candidateDigest, effectKey, pullRequestId: "7", expectedPullRequestHead: candidate.childHeadRevision, targetFeatureRef: core.targetFeatureRef,
+      integrationMethod: "squash", priorHeadRevision: core.priorHeadRevision, priorTreeDigest: core.priorTreeDigest, observedPullRequestHead: candidate.childHeadRevision,
+      observedPullRequestBaseBranch: core.targetFeatureBranch, observedIntegrationMethod: null, pullRequestMerged: false, pullRequestMergeRevision: null,
+      pullRequestCommitHeads: [candidate.childHeadRevision], conflictingPullRequestCount: 0, resultingCommitParents: [], rebasedCommits: [], checkState: "unknown",
+      observedTargetHeadRevision: head, observedTargetTreeDigest: tree, status, signedChallenge, producerId: "producer:github", observedAt: "2029-05-01T00:12:00Z", observationDigest: digest("0") };
+    payload.observationDigest = computeFeatureTransitionObservationDigestV2(payload);
+    return signProducerV2("shield.feature-integration.observation.v2:transition", payload);
+  };
+  const notApplied = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "effect_not_applied", previousEntryDigest: prepared.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedObservation: observationFor("not_applied") } });
+  const replayed = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, notApplied]), fixture.trustAnchor);
+  assert.equal(replayed.state, "valid"); assert.equal(replayed.value.pendingEffect, null); assert.equal(replayed.value.uncertainEffect, false);
+  assert.equal(replayed.value.replayContext.consumedEffectKeys.includes(effectKey), true); assert.equal(replayed.value.replayContext.childCounters[0].integrationAttempts, 1);
+
+  const uncertain = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "effect_uncertain", previousEntryDigest: prepared.entryDigest,
+    payload: { preparationEntryDigest: prepared.entryDigest, signedObservation: observationFor("uncertain", revision("c"), digest("9")) } });
+  const uncertainReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, uncertain]), fixture.trustAnchor);
+  assert.equal(uncertainReplay.state, "valid"); assert.equal(uncertainReplay.value.uncertainEffect, true); assert.equal(uncertainReplay.value.pendingEffect.preparationEntryDigest, prepared.entryDigest);
+
+  const badSignature = structuredClone(notApplied); badSignature.payload.signedObservation.signatureBase64 = `${badSignature.payload.signedObservation.signatureBase64[0] === "A" ? "B" : "A"}${badSignature.payload.signedObservation.signatureBase64.slice(1)}`;
+  badSignature.entryDigest = computeFeatureIntegrationEntryDigestV2(badSignature);
+  assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, badSignature]), fixture.trustAnchor), { state: "invalid", reason: "OBSERVATION_AUTHORITY_INVALID", entrySequence: 2 });
+});
 
 test("normalizes immutable V2 producer and human trust roots with exact digest framing", () => {
   const fixture = hardenedGenesisFixture();

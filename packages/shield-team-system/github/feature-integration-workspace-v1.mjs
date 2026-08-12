@@ -7,6 +7,9 @@ import {
   computeFeatureIntegrationWorkspaceEffectObservationDigestV1,
   createFeatureIntegrationEntryV1,
   replayFeatureOperationJournalV1,
+  canonicalFeatureIntegrationJsonV1,
+  computeFeatureObservationChallengeDigestV2,
+  computeFeatureTransitionObservationDigestV2,
 } from "../dist/feature-integration-v1.mjs";
 import { validateFeatureOperationDerivedCandidateV1 } from "../dist/feature-operation-v1.mjs";
 import { computeProfileAwareMissionJournalDigestV1 } from "../dist/feature-integration-evidence-v1.mjs";
@@ -23,6 +26,9 @@ import {
   observeFeatureIntegrationDraftPullRequestsV1,
   observeFeatureIntegrationPullRequestV1,
   observeFeatureIntegrationRefV1,
+  observeFeatureIntegrationPullRequestProofV2,
+  observeFeatureIntegrationTargetProofV2,
+  observeFeatureIntegrationCommitMethodProofV2,
 } from "./adapter-v1.mjs";
 
 const STAGES = Object.freeze({
@@ -37,6 +43,8 @@ const WORKSPACE_DERIVATIONS = Object.freeze(["feature_branch_create", "feature_w
 const WORKSPACE_OBSERVATION_FIELDS = Object.freeze(["schemaVersion", "contractVersion", "observationKind", "preparationEntryDigest", "candidateDigest", "effectKey", "requestDigest", "repositoryId", "derivationKind", "challengeId", "targetRef", "targetBaseBranch", "expectedHeadRevision", "expectedTreeDigest", "status", "observedHeadRevision", "observedTreeDigest", "pullRequests", "observationProvenance", "observedAt", "observationDigest"]);
 const WORKSPACE_PULL_REQUEST_FIELDS = Object.freeze(["pullRequestId", "url", "draft", "headBranch", "headRevision", "baseBranch"]);
 const OBSERVED_AT_FIELDS = Object.freeze(["value", "provenance"]);
+const PRODUCER_CONFIG_FIELDS_V2 = Object.freeze(["adapterOptions", "producerId", "signEnvelope", "clock"]);
+const PRODUCER_METHODS_V2 = Object.freeze(["signChallenge", "observeAndSignWorkspace", "observeAndSignTransition", "observeAndSignAdmission", "observeAndSignExpiry"]);
 
 function block(reason) { return { state: "blocked", reason }; }
 function challenge(value) { return typeof value === "string" && value.length > 0; }
@@ -74,6 +82,126 @@ function denseDataArray(value) {
     }
     return items;
   } catch { return null; }
+}
+
+function canonicalBase64V2(value) {
+  return typeof value === "string" && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value) &&
+    Buffer.from(value, "base64").toString("base64") === value && Buffer.from(value, "base64").length === 64;
+}
+
+function digestV2(domain, value, omitted) {
+  const copy = structuredClone(value);
+  if (omitted) delete copy[omitted];
+  return `sha256:${createHash("sha256").update(Buffer.concat([Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(canonicalFeatureIntegrationJsonV1(copy), "utf8")])).digest("hex")}`;
+}
+
+async function signedEnvelopeFromProducerV2(config, domain, payload) {
+  let signed;
+  try { signed = await config.signEnvelope(domain, structuredClone(payload)); }
+  catch { throw new Error("producer_unavailable"); }
+  const envelope = exactDataRecord(signed, ["payload", "signatureBase64"]);
+  if (!envelope || !canonicalBase64V2(envelope.signatureBase64) || canonicalFeatureIntegrationJsonV1(envelope.payload) !== canonicalFeatureIntegrationJsonV1(payload)) throw new Error("authentication_unavailable");
+  return Object.freeze({ payload: structuredClone(payload), signatureBase64: envelope.signatureBase64 });
+}
+
+function producerClockV2(config) {
+  let value;
+  try { value = config.clock(); }
+  catch { throw new Error("producer_unavailable"); }
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(value) || !Number.isFinite(Date.parse(value))) throw new Error("producer_unavailable");
+  return value;
+}
+
+function producerConfigV2(input) {
+  const value = exactDataRecord(input, PRODUCER_CONFIG_FIELDS_V2);
+  const adapter = value ? exactDataRecord(value.adapterOptions, ["run", "cwd"]) : null;
+  return value && adapter && typeof adapter.run === "function" && text(adapter.cwd) && text(value.producerId) && typeof value.signEnvelope === "function" && typeof value.clock === "function"
+    ? { ...value, adapterOptions: adapter } : null;
+}
+
+function transitionInvocationV2(input) {
+  const wrapped = exactDataRecord(input, ["request", "preparationEntryDigest"]) ?? exactDataRecord(input, ["request", "preparationEntryDigest", "signedChallenge"]);
+  if (!wrapped || !DIGEST.test(wrapped.preparationEntryDigest) || !wrapped.request || typeof wrapped.request !== "object") return null;
+  return { request: wrapped.request, preparationEntryDigest: wrapped.preparationEntryDigest, signedChallenge: wrapped.signedChallenge ?? wrapped.request.signedChallenge };
+}
+
+function appliedTransitionProofV2(request, pull, target, method) {
+  if (!method || pull.merged !== true || pull.headRevision !== request.expectedPullRequestHead || pull.baseBranch !== request.targetFeatureBranch ||
+      pull.mergeRevision === null || pull.mergeRevision !== target.headRevision || pull.checkState !== "successful" || pull.conflictingPullRequestCount !== 0) return false;
+  if (request.integrationMethod === "merge_commit") return method.resultingCommitParents.length === 2 && method.resultingCommitParents[0] === request.priorHeadRevision && method.resultingCommitParents[1] === request.expectedPullRequestHead && method.rebasedCommits.length === 0;
+  if (request.integrationMethod === "squash") return method.resultingCommitParents.length === 1 && method.resultingCommitParents[0] === request.priorHeadRevision && method.rebasedCommits.length === 0 && target.headRevision !== request.priorHeadRevision && target.headRevision !== request.expectedPullRequestHead;
+  return method.rebasedCommits.length === pull.pullRequestCommitHeads.length && method.rebasedCommits.length > 0 && method.rebasedCommits.every((item, index) => item.sourceCommit === pull.pullRequestCommitHeads[index] && item.parentCommit === (index === 0 ? request.priorHeadRevision : method.rebasedCommits[index - 1].resultCommit)) && method.rebasedCommits.at(-1).resultCommit === target.headRevision && method.resultingCommitParents.length === 1 && method.resultingCommitParents[0] === method.rebasedCommits.at(-1).parentCommit;
+}
+
+/** Constructs the sole GitHub-backed producer for hardened repository observations. */
+export function createGitHubFeatureObservationProducerV2(input) {
+  const config = producerConfigV2(input);
+  if (!config) return { state: "unavailable", reason: "producer_unavailable" };
+  const producer = {
+    async signChallenge(payloadInput) {
+      const value = payloadInput && typeof payloadInput === "object" ? structuredClone(payloadInput) : null;
+      if (!value || value.producerId !== config.producerId || !["workspace", "transition", "cumulative", "admission", "expiry"].includes(value.challengeKind)) throw new Error("producer_unavailable");
+      value.challengeDigest = DIGEST.test(value.challengeDigest) ? value.challengeDigest : `sha256:${"0".repeat(64)}`;
+      value.challengeDigest = computeFeatureObservationChallengeDigestV2(value);
+      return signedEnvelopeFromProducerV2(config, `shield.feature-integration.challenge.v2:${value.challengeKind}`, value);
+    },
+    async observeAndSignWorkspace(inputValue) {
+      const value = inputValue && typeof inputValue === "object" ? structuredClone(inputValue) : null;
+      if (!value || value.observationKind !== "workspace" || value.producerId !== config.producerId) throw new Error("producer_unavailable");
+      value.observedAt = producerClockV2(config);
+      value.observationDigest = digestV2("shield.feature-integration.observation.v2:workspace", value, "observationDigest");
+      return signedEnvelopeFromProducerV2(config, "shield.feature-integration.observation.v2:workspace", value);
+    },
+    async observeAndSignTransition(inputValue) {
+      const invocation = transitionInvocationV2(inputValue);
+      if (!invocation) throw new Error("producer_unavailable");
+      const request = invocation.request;
+      const challenge = invocation.signedChallenge?.payload;
+      if (!challenge || challenge.challengeKind !== "transition" || challenge.producerId !== config.producerId || request.signedChallenge?.payload?.producerId !== config.producerId) throw new Error("producer_unavailable");
+      const challengeId = challenge.challengeId;
+      const pullResult = await observeFeatureIntegrationPullRequestProofV2({ repositoryId: request.repositoryId, pullRequestId: Number(request.pullRequestId), challengeId }, config.adapterOptions);
+      const targetResult = await observeFeatureIntegrationTargetProofV2({ repositoryId: request.repositoryId, targetRef: request.targetFeatureRef, challengeId }, config.adapterOptions);
+      if (pullResult.state !== "observed" || targetResult.state !== "observed") throw new Error("producer_unavailable");
+      const pull = pullResult.observation, target = targetResult.observation;
+      let method = null;
+      if (pull.merged && pull.mergeRevision !== null) {
+        const proof = await observeFeatureIntegrationCommitMethodProofV2({ repositoryId: request.repositoryId, headRevision: target.headRevision, integrationMethod: request.integrationMethod, pullRequestCommitHeads: pull.pullRequestCommitHeads, challengeId }, config.adapterOptions);
+        if (proof.state !== "observed") throw new Error("producer_unavailable");
+        method = proof.observation;
+      }
+      const applied = appliedTransitionProofV2(request, pull, target, method);
+      const notApplied = pull.merged === false && pull.mergeRevision === null && pull.headRevision === request.expectedPullRequestHead && pull.baseBranch === request.targetFeatureBranch && target.headRevision === request.priorHeadRevision && target.treeDigest === request.priorTreeDigest;
+      const payload = {
+        schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "transition",
+        operationId: request.operationId, repositoryId: request.repositoryId, requestId: request.requestId, requestCoreDigest: request.requestCoreDigest,
+        requestDigest: request.requestDigest, preparationEntryDigest: invocation.preparationEntryDigest, candidateDigest: request.candidateDigest, effectKey: request.effectKey,
+        pullRequestId: request.pullRequestId, expectedPullRequestHead: request.expectedPullRequestHead, targetFeatureRef: request.targetFeatureRef,
+        integrationMethod: request.integrationMethod, priorHeadRevision: request.priorHeadRevision, priorTreeDigest: request.priorTreeDigest,
+        observedPullRequestHead: pull.headRevision, observedPullRequestBaseBranch: pull.baseBranch, observedIntegrationMethod: method ? request.integrationMethod : pull.mergeMethod,
+        pullRequestMerged: pull.merged, pullRequestMergeRevision: pull.mergeRevision, pullRequestCommitHeads: pull.pullRequestCommitHeads,
+        conflictingPullRequestCount: pull.conflictingPullRequestCount, resultingCommitParents: method?.resultingCommitParents ?? [], rebasedCommits: method?.rebasedCommits ?? [],
+        checkState: pull.checkState, observedTargetHeadRevision: target.headRevision, observedTargetTreeDigest: target.treeDigest,
+        status: applied ? "applied" : notApplied ? "not_applied" : "uncertain", signedChallenge: structuredClone(invocation.signedChallenge),
+        producerId: config.producerId, observedAt: producerClockV2(config), observationDigest: `sha256:${"0".repeat(64)}`,
+      };
+      payload.observationDigest = computeFeatureTransitionObservationDigestV2(payload);
+      return signedEnvelopeFromProducerV2(config, "shield.feature-integration.observation.v2:transition", payload);
+    },
+    async observeAndSignAdmission(inputValue) {
+      const value = inputValue && typeof inputValue === "object" ? structuredClone(inputValue) : null;
+      if (!value || value.observationKind !== "admission" || value.producerId !== config.producerId) throw new Error("producer_unavailable");
+      value.observedAt = producerClockV2(config); value.observationDigest = digestV2("shield.feature-integration.observation.v2:admission", value, "observationDigest");
+      return signedEnvelopeFromProducerV2(config, "shield.feature-integration.observation.v2:admission", value);
+    },
+    async observeAndSignExpiry(inputValue) {
+      const value = inputValue && typeof inputValue === "object" ? structuredClone(inputValue) : null;
+      if (!value || value.observationKind !== "expiry" || value.producerId !== config.producerId) throw new Error("producer_unavailable");
+      value.observedAt = producerClockV2(config); value.observationDigest = digestV2("shield.feature-integration.observation.v2:expiry", value, "observationDigest");
+      return signedEnvelopeFromProducerV2(config, "shield.feature-integration.observation.v2:expiry", value);
+    },
+  };
+  if (Reflect.ownKeys(producer).length !== PRODUCER_METHODS_V2.length || PRODUCER_METHODS_V2.some((method) => typeof producer[method] !== "function")) return { state: "unavailable", reason: "producer_unavailable" };
+  return { state: "ready", producer: Object.freeze(producer) };
 }
 function requestDigest(value) {
   return `sha256:${createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")}`;

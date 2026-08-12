@@ -10,6 +10,10 @@ export {
   observeFeatureIntegrationRefV1,
   observeFeatureIntegrationRepositoryV1,
   integrateFeatureIntegrationPullRequestV1,
+  FEATURE_INTEGRATION_ADAPTER_REASONS_V2,
+  observeFeatureIntegrationPullRequestProofV2,
+  observeFeatureIntegrationTargetProofV2,
+  observeFeatureIntegrationCommitMethodProofV2,
 } from "../github/adapter-v1.mjs";
 export {
   acceptGovernedRollbackWorkspaceV1,
@@ -23,6 +27,7 @@ export {
   prepareFeatureIntegrationTransitionEffectV1,
   reconcileFeatureIntegrationTransitionV1,
   reconcileFeatureIntegrationWorkspaceEffectV1,
+  createGitHubFeatureObservationProducerV2,
 } from "../github/feature-integration-workspace-v1.mjs";
 export {
   prepareGovernedDeliveryWorkspaceForDispatch,

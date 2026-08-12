@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { createPrivateKey, sign } from "node:crypto";
 import test from "node:test";
 
 import {
   computeFeatureIntegrationWorkspaceEffectObservationDigestV1,
+  canonicalFeatureIntegrationJsonV1,
+  computeFeatureTransitionRequestCoreDigestV2,
+  computeFeatureTransitionRequestDigestV2,
 } from "../dist/feature-integration-v1.mjs";
 import {
   createFeatureIntegrationDraftPullRequestV1,
@@ -12,7 +16,7 @@ import {
   observeFeatureIntegrationPullRequestV1,
   observeFeatureIntegrationRefV1,
 } from "../github/adapter-v1.mjs";
-import { createRollbackMissionHandoffReadyV1, observeFeatureIntegrationWorkspaceEffectV1, reconcileFeatureIntegrationWorkspaceEffectV1 } from "../github/feature-integration-workspace-v1.mjs";
+import { createGitHubFeatureObservationProducerV2, createRollbackMissionHandoffReadyV1, observeFeatureIntegrationWorkspaceEffectV1, reconcileFeatureIntegrationWorkspaceEffectV1 } from "../github/feature-integration-workspace-v1.mjs";
 
 const revision = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
@@ -23,6 +27,31 @@ function runner(result, calls = []) {
 function queuedRunner(results) {
   return () => results.shift() ?? { exitCode: 1, stdout: "", stderr: "unexpected call" };
 }
+
+test("V2 GitHub producer signs challenge-bound applied and exact not-applied transition proofs", async () => {
+  const key = createPrivateKey({ key: Buffer.from(`302e020100300506032b657004220420${"42".repeat(32)}`, "hex"), format: "der", type: "pkcs8" });
+  const signEnvelope = async (domain, payload) => ({ payload: structuredClone(payload), signatureBase64: sign(null, Buffer.concat([
+    Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(canonicalFeatureIntegrationJsonV1(payload), "utf8"),
+  ]), key).toString("base64") });
+  const prior = "a".repeat(40), child = "b".repeat(40), merged = "c".repeat(40), gitTree = "d".repeat(40);
+  const responses = [
+    { number: 7, url: "https://github.com/x/y/pull/7", state: "MERGED", isDraft: true, headRefName: "agent/child", headRefOid: child, baseRefName: "feature/226", mergedAt: "2029-01-01T00:00:00Z", mergeCommit: { oid: merged }, statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], commits: [{ oid: child }], mergeMethod: "squash" },
+    [{ number: 7 }], { ref: "refs/heads/feature/226", object: { type: "commit", sha: merged } }, { sha: merged, tree: { sha: gitTree } },
+    { sha: merged, tree: { sha: gitTree }, parents: [{ sha: prior }] },
+  ].map((value) => ({ status: 0, stdout: JSON.stringify(value), stderr: "", errorCode: null }));
+  const run = () => responses.shift() ?? { status: 1, stdout: "", stderr: "unexpected", errorCode: null };
+  const created = createGitHubFeatureObservationProducerV2({ adapterOptions: { run, cwd: "/workspace" }, producerId: "producer:github", signEnvelope, clock: () => "2029-01-01T00:01:00Z" });
+  assert.equal(created.state, "ready"); assert.deepEqual(Object.keys(created.producer), ["signChallenge", "observeAndSignWorkspace", "observeAndSignTransition", "observeAndSignAdmission", "observeAndSignExpiry"]);
+  const core = { schemaVersion: 2, contractVersion: "feature.integration.transition-request.v2", requestId: "request:one", operationId: "operation:226", repositoryId: "RanSolo/shield-workspace", derivationKind: "child_merge_to_feature", candidateDigest: `sha256:${"1".repeat(64)}`, effectKey: "effect:child_merge_to_feature:one", pullRequestId: "7", expectedPullRequestHead: child, targetFeatureBranch: "feature/226", targetFeatureRef: "refs/heads/feature/226", integrationMethod: "squash", priorHeadRevision: prior, priorTreeDigest: `sha256:${"2".repeat(64)}`, rollbackWorkspaceReceiptDigest: null };
+  const requestCoreDigest = computeFeatureTransitionRequestCoreDigestV2(core);
+  const signedChallenge = await created.producer.signChallenge({ schemaVersion: 2, contractVersion: "feature.integration.challenge.v2", challengeKind: "transition", operationId: core.operationId, repositoryId: core.repositoryId, requestId: core.requestId, requestCoreDigest, preparationEntryDigest: null, candidateDigest: core.candidateDigest, effectKey: core.effectKey, producerId: "producer:github", producerKind: "github_repository", generation: 0, challengeId: "challenge:one", previousJournalDigest: `sha256:${"3".repeat(64)}`, intendedEntrySequence: 1, expectedHeadRevision: prior, expectedTreeDigest: core.priorTreeDigest, priorChallengeDigest: null, priorObservationDigest: null, issuedAt: "2029-01-01T00:00:00Z", expiresAt: "2029-01-01T00:05:00Z", challengeDigest: `sha256:${"0".repeat(64)}` });
+  const request = { ...core, requestCoreDigest, signedChallenge, requestDigest: `sha256:${"0".repeat(64)}` };
+  request.requestDigest = computeFeatureTransitionRequestDigestV2(request);
+  const observed = await created.producer.observeAndSignTransition({ request, preparationEntryDigest: `sha256:${"4".repeat(64)}` });
+  assert.equal(observed.payload.status, "applied"); assert.equal(observed.payload.pullRequestMergeRevision, merged); assert.deepEqual(observed.payload.resultingCommitParents, [prior]);
+  const unavailable = createGitHubFeatureObservationProducerV2({ adapterOptions: { run, cwd: "/workspace" }, producerId: "producer:github", signEnvelope, clock: () => "2029-01-01T00:01:00Z", extra: true });
+  assert.deepEqual(unavailable, { state: "unavailable", reason: "producer_unavailable" });
+});
 
 test("branch adapter observes and creates only exact non-main refs", () => {
   const calls = [];

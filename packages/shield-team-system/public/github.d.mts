@@ -9,6 +9,15 @@ import type {
   FuryPlanReviewEvidenceCandidateV1,
   FuryPlanReviewEvidenceEvaluationV1,
 } from "../dist/fury-plan-review-evidence-v1.mjs";
+import type {
+  FeatureObservationChallengeV2,
+  FeatureTransitionRequestV2,
+  SignedFeatureAdmissionObservationV2,
+  SignedFeatureExpiryObservationV2,
+  SignedFeatureObservationChallengeV2,
+  SignedFeatureTransitionObservationV2,
+  SignedFeatureWorkspaceObservationV2,
+} from "../dist/feature-integration-v1.mjs";
 
 export * from "../dist/review-publication-v1.mjs";
 export {
@@ -61,6 +70,39 @@ export function createFeatureIntegrationDraftPullRequestV1(input: { repositoryId
 export function observeFeatureIntegrationPullRequestV1(input: { repositoryId: string; pullRequestId: number; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: Record<string, unknown> } | { state: "blocked"; reason: string };
 export function observeFeatureIntegrationCommitV1(input: { repositoryId: string; headRevision: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: { repositoryId: string; headRevision: string; treeDigest: string; gitTreeRevision: string; challengeId: string } } | { state: "blocked"; reason: string };
 export function integrateFeatureIntegrationPullRequestV1(input: { repositoryId: string; pullRequestId: number; expectedHeadRevision: string; targetFeatureBranch: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+
+export type FeatureIntegrationAdapterReasonV2 = "adapter_unavailable" | "authentication_failed" | "authorization_failed" | "rate_limited" | "timeout" | "host_rejected" | "not_found" | "malformed_response" | "ambiguous_response" | "network_failed" | "unknown";
+export declare const FEATURE_INTEGRATION_ADAPTER_REASONS_V2: readonly FeatureIntegrationAdapterReasonV2[];
+export interface FeatureIntegrationAdapterOptionsV2 {
+  run: (command: string, args: readonly string[], options: { cwd: string; input: string | null }) => { status: number | null; stdout: string; stderr: string; errorCode: string | null };
+  cwd: string;
+}
+export type FeatureIntegrationAdapterResultV2<T> = { state: "observed"; observation: T } | { state: "blocked"; reason: FeatureIntegrationAdapterReasonV2 };
+export interface FeatureIntegrationPullRequestProofV2 {
+  pullRequestId: number; url: string; state: "open" | "closed" | "merged"; draft: boolean; headBranch: string; headRevision: string; baseBranch: string;
+  merged: boolean; mergeRevision: string | null; mergeMethod: "merge_commit" | "rebase_merge" | "squash" | null;
+  checkState: "successful" | "not_successful" | "unknown"; conflictingPullRequestCount: number; pullRequestCommitHeads: readonly string[];
+}
+export interface FeatureIntegrationTargetProofV2 { targetRef: string; headRevision: string; treeDigest: string }
+export interface FeatureIntegrationCommitMethodProofV2 { headRevision: string; resultingCommitParents: readonly string[]; rebasedCommits: readonly { sourceCommit: string; resultCommit: string; parentCommit: string; treeDigest: string }[] }
+export function observeFeatureIntegrationPullRequestProofV2(input: { repositoryId: string; pullRequestId: number; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationPullRequestProofV2>>;
+export function observeFeatureIntegrationTargetProofV2(input: { repositoryId: string; targetRef: string; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationTargetProofV2>>;
+export function observeFeatureIntegrationCommitMethodProofV2(input: { repositoryId: string; headRevision: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; pullRequestCommitHeads: readonly string[]; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationCommitMethodProofV2>>;
+
+export interface FeatureGitHubObservationProducerConfigV2 {
+  adapterOptions: FeatureIntegrationAdapterOptionsV2;
+  producerId: string;
+  signEnvelope: (domain: string, payload: unknown) => Promise<{ payload: unknown; signatureBase64: string }>;
+  clock: () => string;
+}
+export interface FeatureGitHubObservationProducerV2 {
+  signChallenge(input: FeatureObservationChallengeV2): Promise<SignedFeatureObservationChallengeV2>;
+  observeAndSignWorkspace(input: unknown): Promise<SignedFeatureWorkspaceObservationV2>;
+  observeAndSignTransition(input: { request: FeatureTransitionRequestV2; preparationEntryDigest: string; signedChallenge?: SignedFeatureObservationChallengeV2 }): Promise<SignedFeatureTransitionObservationV2>;
+  observeAndSignAdmission(input: unknown): Promise<SignedFeatureAdmissionObservationV2>;
+  observeAndSignExpiry(input: unknown): Promise<SignedFeatureExpiryObservationV2>;
+}
+export function createGitHubFeatureObservationProducerV2(config: FeatureGitHubObservationProducerConfigV2): { state: "ready"; producer: FeatureGitHubObservationProducerV2 } | { state: "unavailable"; reason: "producer_unavailable" };
 
 export function prepareFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "prepared"; entry: Record<string, unknown>; candidate: Record<string, unknown> } | { state: "blocked"; reason: string };
 export function invokeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
