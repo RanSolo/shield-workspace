@@ -13,9 +13,11 @@ import {
 const REVISION = "fb2d9c7ba6c0d312d93a5debc0f105de1805563d";
 const GREEN_REVISION = "50e818f1a624016c6a850334e0574353b54c2324";
 const REFACTOR_REVISION = "7ac35df137c6f12559429cfea693f089b1df8d1e";
+const MISSION_HEAD_REVISION = "635975c0abcb4e3ea22108660cfbc2947f17cb5c";
 const PLANNING_TREE = "8a756afae0b0586fe1f9911a4b2d18f7650c24a1";
 const GREEN_TREE = "650bca49fd1f33bf7da5d637f9f196712a75ea7f";
 const REFACTOR_TREE = "4625506e302d60c00d2390266624133a384ca68b";
+const MISSION_HEAD_TREE = "9ea6d7469326d87db9b23063c54c983486944bd4";
 const CONTRACT_DIGEST = "sha256:acceptance_contract_digest";
 const OLD_CONTRACT_DIGEST = "sha256:old_contract_digest";
 const AMENDED_CONTRACT_DIGEST = "sha256:amended_contract_digest";
@@ -65,6 +67,7 @@ function redState(criterionId = "AC-162-1", overrides = {}) {
       evidenceId: `review:fury:${criterionId.toLowerCase()}:contract`,
       reviewerSeatId: "fury",
       contractId: `contract:${criterionId.toLowerCase()}`,
+      acceptanceContractDigest: CONTRACT_DIGEST,
       disposition: "approved",
     },
   });
@@ -186,7 +189,18 @@ function criterion(overrides = {}) {
 }
 
 function packet(packetId, criterionIds, couplingRationale = null, minimalPaths = PACKET_PATHS) {
-  return { packetId, criterionIds, couplingRationale, minimalPaths };
+  return {
+    packetId,
+    criterionIds,
+    couplingRationale,
+    minimalPaths,
+    requiredInterfaces: ["interface:tdd-mission-v1"],
+    allowedEffects: ["effect:behavioral-implementation", "effect:verification"],
+    focusedValidation: ["node --test tests/tdd-mission-v1.test.mjs"],
+    expectedOutput: "The packet criterion is proven with exact evidence.",
+    stopConditions: ["The reviewed contract or authorized scope changes."],
+    successor: "exact_head_mack_validation",
+  };
 }
 
 function implementationAuthority(
@@ -287,12 +301,21 @@ function strategyContract(
   criteria = [criterion()],
   packets = criteria.map((item) => packet(item.traceability.mayPacketId, [item.criterionId])),
 ) {
+  const amendedDigest = criteria.find((item) => item.expectationAmendment !== null)
+    ?.expectationAmendment?.amendedContractDigest;
   return {
     schemaVersion: 1,
     contractVersion: "tdd.mission.v1",
+    acceptanceContractDigest: amendedDigest ?? CONTRACT_DIGEST,
     criteria,
     packets,
   };
+}
+
+function revokedArray() {
+  const { proxy, revoke } = Proxy.revocable([], {});
+  revoke();
+  return proxy;
 }
 
 function exactEvidence({
@@ -311,22 +334,48 @@ function exactEvidence({
   decisionOwnerSeatId = null,
   criterionId = "AC-162-1",
   packetId = "packet:ac-162-1",
+  startRevisionId = revisionId,
+  startTreeDigest = treeDigest,
+  endRevisionId = revisionId,
+  endTreeDigest = treeDigest,
+  exitCode,
+  testCounts,
+  cacheEvidence,
 }) {
+  const commandExitCode = exitCode ?? (command === null ? null : outcome === "failed" ? 1 : 0);
+  const commandTestCounts = testCounts ?? (command === null ? null : {
+    total: 1,
+    passed: outcome === "passed" ? 1 : 0,
+    failed: outcome === "failed" ? 1 : 0,
+    skipped: 0,
+    cancelled: 0,
+    todo: 0,
+  });
   return {
     evidenceId,
     missionId: "mission:issue-162:p6",
     planDigest: "sha256:issue_162_tdd_intent_plan",
+    acceptanceContractDigest: CONTRACT_DIGEST,
     criterionId,
     packetId,
     stage,
     seatId,
     runtimeId: `runtime:${seatId}:hosted`,
+    modelId: `model:${seatId}:gpt-5`,
     executorId: `executor:${seatId}:codex`,
     repositoryId: "RanSolo/shield-workspace",
     branch: "agent/issue-162-tdd-intent",
-    revisionId,
-    treeDigest,
+    cwd: "/workspace/shield-workspace/packages/shield-team-system",
+    startRevisionId,
+    startTreeDigest,
+    endRevisionId,
+    endTreeDigest,
+    revisionId: endRevisionId,
+    treeDigest: endTreeDigest,
     command,
+    exitCode: commandExitCode,
+    testCounts: commandTestCounts,
+    cacheEvidence: cacheEvidence ?? (command === null ? null : "cache:not_applicable"),
     checkpointId,
     outcome,
     failureClassification,
@@ -409,6 +458,8 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
       seatId: "may",
       revisionId: GREEN_REVISION,
       treeDigest: GREEN_TREE,
+      startRevisionId: REVISION,
+      startTreeDigest: PLANNING_TREE,
       checkpointId: "green:ac-162-1",
       outcome: "passed",
       sourceRefs: ["authority:ac-162-1:green"],
@@ -420,6 +471,8 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
       seatId: "may",
       revisionId: REFACTOR_REVISION,
       treeDigest: REFACTOR_TREE,
+      startRevisionId: GREEN_REVISION,
+      startTreeDigest: GREEN_TREE,
       checkpointId: "refactor:ac-162-1",
       outcome: "passed",
       sourceRefs: ["green:ac-162-1", "authority:ac-162-1:refactor"],
@@ -454,6 +507,7 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
     contractVersion: "tdd.mission.v1",
     missionId: "mission:issue-162:p6",
     planDigest: "sha256:issue_162_tdd_intent_plan",
+    reviewedAcceptanceContractDigest: CONTRACT_DIGEST,
     repositoryId: "RanSolo/shield-workspace",
     branch: "agent/issue-162-tdd-intent",
     planningRevisionId: REVISION,
@@ -536,6 +590,41 @@ test("one criterion per packet preserves the exact traceability spine and dispos
     humanReviewId: "review:human:ac-162-1",
   });
   assert.deepEqual(result.contract.packets[0].criterionIds, ["AC-162-1"]);
+});
+
+test("packet contracts close every required operational boundary", () => {
+  const result = validateTddMissionStrategyContractV1(strategyContract());
+  assert.equal(result.state, "valid");
+  assert.deepEqual(result.contract.packets[0], {
+    packetId: "packet:ac-162-1",
+    criterionIds: ["AC-162-1"],
+    couplingRationale: null,
+    minimalPaths: PACKET_PATHS,
+    requiredInterfaces: ["interface:tdd-mission-v1"],
+    allowedEffects: ["effect:behavioral-implementation", "effect:verification"],
+    focusedValidation: ["node --test tests/tdd-mission-v1.test.mjs"],
+    expectedOutput: "The packet criterion is proven with exact evidence.",
+    stopConditions: ["The reviewed contract or authorized scope changes."],
+    successor: "exact_head_mack_validation",
+  });
+
+  for (const field of [
+    "requiredInterfaces",
+    "allowedEffects",
+    "focusedValidation",
+    "expectedOutput",
+    "stopConditions",
+    "successor",
+  ]) {
+    const incompletePacket = packet("packet:ac-162-1", ["AC-162-1"]);
+    delete incompletePacket[field];
+    const incomplete = validateTddMissionStrategyContractV1(strategyContract(
+      [criterion()],
+      [incompletePacket],
+    ));
+    assert.equal(incomplete.state, "invalid");
+    assert.deepEqual(incomplete.reasonCodes, ["MALFORMED_INPUT"]);
+  }
 });
 
 test("two or three tightly coupled criteria require a rationale", () => {
@@ -1086,6 +1175,47 @@ test("validated strategy contracts are immutable copies", () => {
   assert.notEqual(result.contract.packets, input.packets);
 });
 
+test("revoked nested-array proxies fail closed without escaping the evaluator", () => {
+  const revokedCriteria = { ...strategyContract(), criteria: revokedArray() };
+  const revokedRisks = strategyContract([criterion({ riskFactors: revokedArray() })]);
+  const revokedCriterionIds = strategyContract(
+    [criterion()],
+    [packet("packet:ac-162-1", revokedArray())],
+  );
+  for (const candidate of [revokedCriteria, revokedRisks, revokedCriterionIds]) {
+    let result;
+    assert.doesNotThrow(() => {
+      result = validateTddMissionStrategyContractV1(candidate);
+    });
+    assert.equal(result.state, "invalid");
+    assert.deepEqual(result.reasonCodes, ["MALFORMED_INPUT"]);
+  }
+
+  const missionWithRevokedEvidence = {
+    ...fullFlowMission(),
+    evidence: revokedArray(),
+  };
+  let missionResult;
+  assert.doesNotThrow(() => {
+    missionResult = evaluateTddMissionV1(missionWithRevokedEvidence);
+  });
+  assert.equal(missionResult.state, "blocked");
+  assert.deepEqual(missionResult.reasonCodes, ["MALFORMED_INPUT"]);
+
+  const mission = fullFlowMission();
+  const missionWithRevokedSourceRefs = {
+    ...mission,
+    evidence: mission.evidence.map((item, index) => index === 0
+      ? { ...item, sourceRefs: revokedArray() }
+      : item),
+  };
+  assert.doesNotThrow(() => {
+    missionResult = evaluateTddMissionV1(missionWithRevokedSourceRefs);
+  });
+  assert.equal(missionResult.state, "blocked");
+  assert.deepEqual(missionResult.reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
+});
+
 test("terminal decisions and exact evidence stages are closed", () => {
   assert.deepEqual(TDD_MISSION_DECISIONS, [
     "eligible",
@@ -1120,10 +1250,113 @@ test("bounded mission traverses reviewed Red, authorized May Green, optional Ref
   }
 });
 
+test("reviewed acceptance-contract digest is anchored and propagated through every receipt", () => {
+  const input = fullFlowMission();
+  assert.equal(input.strategyContract.acceptanceContractDigest, CONTRACT_DIGEST);
+  assert.ok(input.evidence.every((item) =>
+    item.acceptanceContractDigest === input.reviewedAcceptanceContractDigest));
+
+  const wrongReviewAnchor = evaluateTddMissionV1({
+    ...input,
+    reviewedAcceptanceContractDigest: "sha256:different_reviewed_contract",
+  });
+  assert.equal(wrongReviewAnchor.state, "blocked");
+  assert.deepEqual(wrongReviewAnchor.reasonCodes, ["BINDING_DIGEST_MISMATCH"]);
+
+  const substitutedReceipt = evaluateTddMissionV1({
+    ...input,
+    evidence: input.evidence.map((item, index) => index === 0
+      ? { ...item, acceptanceContractDigest: "sha256:substituted_contract" }
+      : item),
+  });
+  assert.equal(substitutedReceipt.state, "blocked");
+  assert.deepEqual(substitutedReceipt.reasonCodes, ["BINDING_DIGEST_MISMATCH"]);
+
+  const selfConsistentTransition = criterion({
+    preImplementationStateEvidence: redState(),
+    implementationAuthorityEvidence: implementationAuthority("AC-162-1", "green", {
+      contractDigest: "sha256:substituted_contract",
+    }),
+    greenEvidence: greenEvidence("AC-162-1", {
+      contractDigest: "sha256:substituted_contract",
+      mackEvidence: mackEvidence("AC-162-1", GREEN_REVISION, {
+        contractDigest: "sha256:substituted_contract",
+      }),
+    }),
+  });
+  const substitutedTransition = validateTddMissionStrategyContractV1(
+    strategyContract([selfConsistentTransition]),
+  );
+  assert.equal(substitutedTransition.state, "invalid");
+  assert.deepEqual(substitutedTransition.reasonCodes, ["BINDING_DIGEST_MISMATCH"]);
+});
+
+test("exact evidence requires execution metadata and retains truthful test/cache records", () => {
+  const input = fullFlowMission();
+  const validation = input.evidence.find((item) => item.stage === "mack_validation_complete");
+  assert.deepEqual(validation.testCounts, {
+    total: 1,
+    passed: 1,
+    failed: 0,
+    skipped: 0,
+    cancelled: 0,
+    todo: 0,
+  });
+  assert.equal(validation.exitCode, 0);
+  assert.equal(validation.cacheEvidence, "cache:not_applicable");
+  assert.equal(validation.cwd, "/workspace/shield-workspace/packages/shield-team-system");
+  assert.equal(validation.modelId, "model:mack:gpt-5");
+
+  for (const field of [
+    "cwd",
+    "startRevisionId",
+    "startTreeDigest",
+    "endRevisionId",
+    "endTreeDigest",
+    "exitCode",
+    "testCounts",
+    "cacheEvidence",
+    "modelId",
+  ]) {
+    const malformedValidation = { ...validation };
+    delete malformedValidation[field];
+    const malformed = evaluateTddMissionV1({
+      ...input,
+      evidence: input.evidence.map((item) =>
+        item.stage === "mack_validation_complete" ? malformedValidation : item),
+    });
+    assert.equal(malformed.state, "blocked");
+    assert.deepEqual(malformed.reasonCodes, ["EVIDENCE_SCHEMA_INVALID"]);
+  }
+});
+
+test("Green and Refactor remain traceable to packet revisions before mission HEAD", () => {
+  for (const includeRefactor of [false, true]) {
+    const input = fullFlowMission({ includeRefactor });
+    const result = evaluateTddMissionV1({
+      ...input,
+      headRevisionId: MISSION_HEAD_REVISION,
+      headTreeDigest: MISSION_HEAD_TREE,
+    });
+    assert.equal(result.state, "eligible");
+    assert.equal(
+      result.input.strategyContract.criteria[0].traceability.revisionId,
+      includeRefactor ? REFACTOR_REVISION : GREEN_REVISION,
+    );
+    assert.equal(result.input.headRevisionId, MISSION_HEAD_REVISION);
+  }
+});
+
 test("stale exact-revision evidence blocks mission completion", () => {
   const input = fullFlowMission();
   const evidence = input.evidence.map((item) => item.stage === "fury_conformance_complete"
-    ? { ...item, revisionId: GREEN_REVISION, treeDigest: GREEN_TREE }
+    ? {
+        ...item,
+        endRevisionId: GREEN_REVISION,
+        endTreeDigest: GREEN_TREE,
+        revisionId: GREEN_REVISION,
+        treeDigest: GREEN_TREE,
+      }
     : item);
   const result = evaluateTddMissionV1({ ...input, evidence });
   assert.equal(result.state, "blocked");
