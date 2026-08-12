@@ -218,6 +218,15 @@ its `N -> N+1` edge; every amendment on that edge must carry the same unique
 `edgeId`, the same old/new triples, and the same
 `predecessorFuryReviewEvidenceId`. The referenced ID must equal the top-level
 Fury anchor and may not be reused by another edge.
+After removing only `contractGeneration`, the old and amended normalized
+projections must still differ. The permitted delta is exactly one or more named
+amended criteria's `preImplementationContract.expectedBehavior`; each changed
+value must be unequal, nonempty, and paired one-to-one with that criterion's
+`changed` or `removed` amendment record. Every other projected field, including
+all packet material and all other criteria, must be canonically equal. Thus a
+generation-only edge, an amendment naming an unchanged criterion, an unrecorded
+behavior delta, or collateral strategy/packet/traceability drift blocks.
+Focused negatives prove each case.
 After an amendment, selected TDD requires a fresh prepared-scaffold record at
 `N+1`, bound to the amended digest, before fresh reviewed Red.
 
@@ -300,11 +309,18 @@ terminal validation receipts.
 
 The Mack bundle contains exactly the three terminal command receipts in the
 validation table plus repository observations for canonical root, repository,
-branch, HEAD, tree, changed paths, and tracked-clean state. It references all
-packet Mack reviews and criterion dispositions. The single Fury receipt is
-non-executable, matches the same HEAD/tree, and references that whole bundle,
-all four complete packet Fury reviews, and every criterion disposition. Any
-later HEAD/tree stales both.
+branch, HEAD, tree, changed paths, and tracked-clean state. Its transition
+bundle references are the exact duplicate-free set derived from realized Green
+and optional Refactor transitions: one Mack bundle ID per realized transition,
+each exactly once, with no missing or extra ID. It separately references each
+criterion disposition exactly once. The single terminal Fury receipt is
+non-executable, matches the same HEAD/tree, and references that whole terminal
+Mack bundle. Its transition-review references are the exact duplicate-free set
+of one packet-Fury-review ID per realized transition, each exactly once, with no
+missing or extra ID; these are distinct from the four delivery-process Fury
+reviews of implementation packets A-D, which are orchestration artifacts and
+not evaluator input. It separately references every criterion disposition
+exactly once. Any later HEAD/tree stales both terminal records.
 
 Executable evidence semantics are closed, and every receipt's `executableKind`
 must exactly match its digest-bearing validation entry. Test PASS requires exit
@@ -450,7 +466,7 @@ not trusted as a pre-existing artifact.
 cd /private/tmp/shield-162-bravo.yMZTJ7
 set -eu
 review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json
-node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",lines=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u).filter(x=>x.startsWith(p));if(lines.length!==1)process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw);if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||JSON.stringify(m)!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding"
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",all=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u),nonempty=all.filter(x=>x.length>0),lines=nonempty.filter(x=>x.startsWith(p));if(lines.length!==1||nonempty.at(-1)!==lines[0])process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw),canonical=JSON.stringify(Object.fromEntries(mk.map(x=>[x,m[x]])));if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||canonical!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding"
 reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")"
 reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")"
 reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")"
@@ -491,7 +507,7 @@ same-invocation live manifest is the only manifest Coulson may sign.
 cd /private/tmp/shield-162-bravo.yMZTJ7
 set -eu
 review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json
-node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",lines=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u).filter(x=>x.startsWith(p));if(lines.length!==1)process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw);if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||JSON.stringify(m)!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding"
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",all=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u),nonempty=all.filter(x=>x.length>0),lines=nonempty.filter(x=>x.startsWith(p));if(lines.length!==1||nonempty.at(-1)!==lines[0])process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw),canonical=JSON.stringify(Object.fromEntries(mk.map(x=>[x,m[x]])));if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||canonical!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding"
 reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")"
 reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")"
 reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")"
@@ -532,7 +548,7 @@ canonical manifest instead of the abbreviated `--human` rendering:
 ```sh
 cd /private/tmp/shield-162-bravo.yMZTJ7 && \
 review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json && \
-node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",lines=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u).filter(x=>x.startsWith(p));if(lines.length!==1)process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw);if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||JSON.stringify(m)!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding" && \
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",all=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u),nonempty=all.filter(x=>x.length>0),lines=nonempty.filter(x=>x.startsWith(p));if(lines.length!==1||nonempty.at(-1)!==lines[0])process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw),canonical=JSON.stringify(Object.fromEntries(mk.map(x=>[x,m[x]])));if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||canonical!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding" && \
 reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")" && \
 reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")" && \
 reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")" && \
