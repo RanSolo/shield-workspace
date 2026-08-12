@@ -8,6 +8,7 @@ import {
   computeFeatureCumulativeValidationReceiptDigestV1,
   computeFeatureIntegrationEntryDigestV1,
   computeFeatureIntegrationReceiptDigestV1,
+  computeFeatureRollbackReceiptDigestV1,
   computeFeatureIntegrationWorkspaceEffectObservationDigestV1,
   createFeatureIntegrationEntryV1,
   createFeatureOperationGenesisEntryV1,
@@ -124,7 +125,18 @@ function replayFixture() {
   const cumulativeReceipt = { schemaVersion: 1, contractVersion: "feature.integration.v1", operationId: plan.operationId, repositoryId: plan.repositoryId, planDigest: plan.planDigest, featureAuthorityDigest: authority.authorityDigest, cumulativeAuthorityDigest: cumulativeCandidate.authorityDigest, effectKey: cumulativeCandidate.effectKey, requestDigest: cumulativeCandidate.requestDigest, transitionReceiptDigest: cumulativeCandidate.transitionReceiptDigest, terminalHeadRevision: cumulativeCandidate.terminalHeadRevision, terminalTreeDigest: cumulativeCandidate.terminalTreeDigest, commandIds: ["test"], targetIds: ["team"], validationIds: ["test"], mackEvidenceDigest: digest("c"), checkObservationDigests: [digest("d")], outcome: "passed", reconciliationState: "applied", observationProvenance: "runner:test", observedAt: { value: "2029-05-01T00:16:00Z", provenance: "hostTrusted" }, seatId: "mack", reasoningRuntimeId: "runtime:mack", modelId: "model:mack", toolExecutorId: "executor:runner", receiptDigest: digest("0") };
   cumulativeReceipt.receiptDigest = computeFeatureCumulativeValidationReceiptDigestV1(cumulativeReceipt);
   const cumulativeEntry = add("cumulative_validation_accepted", { preparationEntryDigest: prepared.entryDigest, receipt: cumulativeReceipt });
-  return { entries, integrationEntry, integrationReceipt, cumulativeEntry, cumulativeReceipt, plan, authority, signedAuthority, trustedBindings, replayContext };
+  return { entries, integrationEntry, integrationReceipt, cumulativeEntry, cumulativeReceipt, plan, authority, signedAuthority, trustedBindings, replayContext, add, candidate };
+}
+
+function appendRollbackTransition(fixture) {
+  const completionReceiptDigest = digest("e");
+  fixture.add("rollback_workspace_accepted", { childId: "mission:child-one", sourceMissionId: "mission:rollback-one", completionReceiptDigest, sourceAuthorityDigest: digest("f"), sourceJournalDigest: digest("1"), rollbackBranch: "agent/rollback-one", pullRequestId: "3", pullRequestHeadRevision: revision("d"), targetBranch: fixture.plan.featureBranch, restoredTreeDigest: fixture.plan.baseTreeDigest, sourceEffectKeys: ["effect:rollback-source:one"], evidenceDigests: [digest("2")] });
+  const rollbackCandidate = fixture.candidate("rollback", "child_revert_on_feature", { childId: "mission:child-one", integrationReceiptDigest: fixture.integrationReceipt.receiptDigest, integrationHeadRevision: fixture.integrationReceipt.resultingHeadRevision, integrationTreeDigest: fixture.integrationReceipt.resultingTreeDigest, expectedRestoredTreeDigest: fixture.integrationReceipt.priorTreeDigest, targetBranch: fixture.plan.featureBranch, rollbackMethod: "revert_commit" });
+  const prepared = fixture.add("effect_prepared", { effectClass: "feature_operation", candidate: rollbackCandidate, candidateDigest: rollbackCandidate.candidateDigest, effectKey: rollbackCandidate.effectKey, requestDigest: digest("3"), expectedHeadRevision: fixture.integrationReceipt.resultingHeadRevision, expectedTreeDigest: fixture.integrationReceipt.resultingTreeDigest });
+  const receipt = { schemaVersion: 1, contractVersion: "feature.integration.v1", operationId: fixture.plan.operationId, repositoryId: fixture.plan.repositoryId, planDigest: fixture.plan.planDigest, authorityDigest: fixture.authority.authorityDigest, childId: "mission:child-one", effectKey: rollbackCandidate.effectKey, attemptNumber: 1, reconciliationState: "applied", revertedIntegrationReceiptDigest: fixture.integrationReceipt.receiptDigest, rollbackWorkspaceReceiptDigest: completionReceiptDigest, priorHeadRevision: fixture.integrationReceipt.resultingHeadRevision, priorTreeDigest: fixture.integrationReceipt.resultingTreeDigest, resultingHeadRevision: revision("d"), resultingTreeDigest: fixture.integrationReceipt.priorTreeDigest, observationProvenance: "github:rollback", observedAt: { value: "2029-05-01T00:17:00Z", provenance: "hostTrusted" }, seatId: "may", reasoningRuntimeId: "runtime:may", modelId: "model:may", toolExecutorId: "executor:github", receiptDigest: digest("0") };
+  receipt.receiptDigest = computeFeatureRollbackReceiptDigestV1(receipt);
+  fixture.add("rollback_accepted", { preparationEntryDigest: prepared.entryDigest, receipt });
+  return receipt;
 }
 
 function withPlanDigest(plan, changes) {
@@ -339,5 +351,37 @@ test("replay rejects self-digested cumulative receipt substitutions against the 
     const terminal = createFeatureIntegrationEntryV1({ operationId: prepared.operationId, entrySequence: terminalIndex, entryKind: "cumulative_validation_accepted", previousEntryDigest: prepared.entryDigest, payload: { preparationEntryDigest: prepared.entryDigest, receipt } });
     const replayed = replayFeatureOperationJournalV1(createFeatureOperationJournalV1([...prefix, terminal]));
     assert.equal(replayed.state, "invalid", JSON.stringify(substitution));
+  }
+});
+
+test("a new head transition resets only cumulative attempt accounting and retains historical keys", () => {
+  const fixture = replayFixture();
+  const rollbackReceipt = appendRollbackTransition(fixture);
+  const afterTransition = replayFeatureOperationJournalV1(createFeatureOperationJournalV1(fixture.entries));
+  assert.equal(afterTransition.state, "valid");
+  assert.equal(afterTransition.value.cumulativeValidationAttempts, 0);
+  assert.deepEqual(afterTransition.value.consumedCumulativeValidationEffectKeys, ["effect:cumulative:one"]);
+  assert.equal(afterTransition.value.cumulativeValidation, "pending");
+
+  const freshCandidate = { schemaVersion: 1, operationId: fixture.plan.operationId, authorityDigest: digest("4"), requestDigest: digest("5"), effectKey: "effect:cumulative:two", terminalHeadRevision: rollbackReceipt.resultingHeadRevision, terminalTreeDigest: rollbackReceipt.resultingTreeDigest, transitionReceiptDigest: rollbackReceipt.receiptDigest, candidateDigest: digest("0") };
+  freshCandidate.candidateDigest = computeFeatureCumulativeValidationCandidateDigestV1(freshCandidate);
+  fixture.add("effect_prepared", { effectClass: "cumulative_validation", candidate: freshCandidate, candidateDigest: freshCandidate.candidateDigest, effectKey: freshCandidate.effectKey, requestDigest: freshCandidate.requestDigest, expectedHeadRevision: freshCandidate.terminalHeadRevision, expectedTreeDigest: freshCandidate.terminalTreeDigest });
+  const prepared = replayFeatureOperationJournalV1(createFeatureOperationJournalV1(fixture.entries));
+  assert.equal(prepared.state, "valid");
+  assert.equal(prepared.value.cumulativeValidationAttempts, 1);
+  assert.deepEqual(prepared.value.consumedCumulativeValidationEffectKeys, ["effect:cumulative:one", "effect:cumulative:two"]);
+});
+
+test("replay rejects historical keys and cross-transition cumulative receipts after a new transition", () => {
+  for (const substitution of [
+    { effectKey: "effect:cumulative:one" },
+    { transitionReceiptDigest: replayFixture().integrationReceipt.receiptDigest },
+  ]) {
+    const fixture = replayFixture();
+    const rollbackReceipt = appendRollbackTransition(fixture);
+    const candidate = { schemaVersion: 1, operationId: fixture.plan.operationId, authorityDigest: digest("4"), requestDigest: digest("5"), effectKey: "effect:cumulative:two", terminalHeadRevision: rollbackReceipt.resultingHeadRevision, terminalTreeDigest: rollbackReceipt.resultingTreeDigest, transitionReceiptDigest: rollbackReceipt.receiptDigest, ...substitution, candidateDigest: digest("0") };
+    candidate.candidateDigest = computeFeatureCumulativeValidationCandidateDigestV1(candidate);
+    fixture.add("effect_prepared", { effectClass: "cumulative_validation", candidate, candidateDigest: candidate.candidateDigest, effectKey: candidate.effectKey, requestDigest: candidate.requestDigest, expectedHeadRevision: candidate.terminalHeadRevision, expectedTreeDigest: candidate.terminalTreeDigest });
+    assert.deepEqual(replayFeatureOperationJournalV1(createFeatureOperationJournalV1(fixture.entries)), { state: "invalid", reason: "EFFECT_LIFECYCLE_INVALID", entrySequence: fixture.entries.length - 1 });
   }
 });

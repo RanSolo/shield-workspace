@@ -181,6 +181,7 @@ export interface FeatureCumulativeValidationRequestV1 {
   repositoryId: string;
   terminalHeadRevision: string;
   terminalTreeDigest: string;
+  transitionReceiptDigest: string;
   commands: readonly FeatureCumulativeValidationCommandV1[];
   commandIds: readonly string[];
   targetIds: readonly string[];
@@ -468,11 +469,11 @@ export function validateFeatureCumulativeValidationReceiptV1(input: unknown): Co
 
 function cumulativeRequest(input: unknown, ownDigest = true): FeatureCumulativeValidationRequestV1 | null {
   if (!plain(input)) return null;
-  const fields = ["schemaVersion", "operationId", "repositoryId", "terminalHeadRevision", "terminalTreeDigest", "commands", "commandIds", "targetIds", "validationIds", "requestDigest"];
+  const fields = ["schemaVersion", "operationId", "repositoryId", "terminalHeadRevision", "terminalTreeDigest", "transitionReceiptDigest", "commands", "commandIds", "targetIds", "validationIds", "requestDigest"];
   if (Reflect.ownKeys(input).length !== fields.length || fields.some((field) => !Object.hasOwn(input, field))) return null;
   const value = input as unknown as FeatureCumulativeValidationRequestV1;
   const commandIds = stringArray(value.commandIds), targets = stringArray(value.targetIds, true), validations = stringArray(value.validationIds, true);
-  if (value.schemaVersion !== 1 || !text(value.operationId) || !text(value.repositoryId) || !text(value.terminalHeadRevision) || !digestValue(value.terminalTreeDigest) || !commandIds || !targets || !validations || !Array.isArray(value.commands) || value.commands.length !== commandIds.length || !digestValue(value.requestDigest)) return null;
+  if (value.schemaVersion !== 1 || !text(value.operationId) || !text(value.repositoryId) || !text(value.terminalHeadRevision) || !digestValue(value.terminalTreeDigest) || !digestValue(value.transitionReceiptDigest) || !commandIds || !targets || !validations || !Array.isArray(value.commands) || value.commands.length !== commandIds.length || !digestValue(value.requestDigest)) return null;
   const commands: FeatureCumulativeValidationCommandV1[] = [];
   for (let index = 0; index < value.commands.length; index += 1) {
     const command = value.commands[index];
@@ -527,12 +528,15 @@ export function evaluateFeatureCumulativeValidationCandidateV1(input: { replay: 
   const replay = input.replay, verified = verifySignedFeatureCumulativeValidationAuthorityV1(input.signedAuthority, input.trustedBindings), request = cumulativeRequest(input.request), checkedCandidate = candidate(input.candidate);
   if (verified.state !== "valid" || !request || !checkedCandidate) return { state: "blocked", reason: "INVALID_INPUT" };
   const authority = verified.value;
+  const transition = replay?.replayContext?.transitions?.at(-1);
   if (!timestamp(input.observedAt) || input.observedAt !== replay.latestObservedAt.value) return { state: "blocked", reason: "REPLAY_MISMATCH" };
   if (Date.parse(input.observedAt) >= Date.parse(authority.expiresAt)) return { state: "blocked", reason: "AUTHORITY_EXPIRED" };
-  if (replay.pendingEffect || replay.terminalHeadRevision !== authority.terminalHeadRevision || replay.terminalTreeDigest !== authority.terminalTreeDigest || replay.activeAuthorityJournalSequence !== authority.activeAuthorityJournalSequence || replay.activeAuthorityOperationSequence !== authority.activeAuthorityOperationSequence) return { state: "blocked", reason: "REPLAY_MISMATCH" };
-  if (authority.requestDigest !== request.requestDigest || canonicalFeatureIntegrationJsonV1(authority.commandIds) !== canonicalFeatureIntegrationJsonV1(request.commandIds) || canonicalFeatureIntegrationJsonV1(authority.targetIds) !== canonicalFeatureIntegrationJsonV1(request.targetIds) || canonicalFeatureIntegrationJsonV1(authority.validationIds) !== canonicalFeatureIntegrationJsonV1(request.validationIds)) return { state: "blocked", reason: "REQUEST_MISMATCH" };
+  if (replay.nextStage !== "cumulative_validation" || replay.pendingEffect || !transition || transition.kind === "genesis" ||
+      replay.replayContext.operationId !== authority.operationId || replay.replayContext.repositoryId !== authority.repositoryId || replay.replayContext.activePlanDigest !== authority.planDigest || replay.replayContext.verifiedAuthorityDigest !== authority.featureAuthorityDigest ||
+      replay.terminalHeadRevision !== authority.terminalHeadRevision || replay.terminalTreeDigest !== authority.terminalTreeDigest || transition.receiptDigest !== authority.transitionReceiptDigest || replay.activeAuthorityJournalSequence !== authority.activeAuthorityJournalSequence || replay.activeAuthorityOperationSequence !== authority.activeAuthorityOperationSequence) return { state: "blocked", reason: "REPLAY_MISMATCH" };
+  if (authority.requestDigest !== request.requestDigest || request.operationId !== authority.operationId || request.repositoryId !== authority.repositoryId || request.terminalHeadRevision !== authority.terminalHeadRevision || request.terminalTreeDigest !== authority.terminalTreeDigest || request.transitionReceiptDigest !== authority.transitionReceiptDigest || canonicalFeatureIntegrationJsonV1(authority.commandIds) !== canonicalFeatureIntegrationJsonV1(request.commandIds) || canonicalFeatureIntegrationJsonV1(authority.targetIds) !== canonicalFeatureIntegrationJsonV1(request.targetIds) || canonicalFeatureIntegrationJsonV1(authority.validationIds) !== canonicalFeatureIntegrationJsonV1(request.validationIds)) return { state: "blocked", reason: "REQUEST_MISMATCH" };
   if (replay.consumedCumulativeValidationEffectKeys.includes(authority.effectKey) || replay.cumulativeValidationAttempts >= authority.maxAttempts) return { state: "blocked", reason: "BOUNDS_EXHAUSTED" };
-  if (checkedCandidate.authorityDigest !== authority.authorityDigest || checkedCandidate.requestDigest !== request.requestDigest || checkedCandidate.effectKey !== authority.effectKey || checkedCandidate.terminalHeadRevision !== authority.terminalHeadRevision || checkedCandidate.terminalTreeDigest !== authority.terminalTreeDigest || checkedCandidate.transitionReceiptDigest !== authority.transitionReceiptDigest) return { state: "blocked", reason: "CANDIDATE_MISMATCH" };
+  if (checkedCandidate.operationId !== authority.operationId || checkedCandidate.authorityDigest !== authority.authorityDigest || checkedCandidate.requestDigest !== request.requestDigest || checkedCandidate.effectKey !== authority.effectKey || checkedCandidate.terminalHeadRevision !== authority.terminalHeadRevision || checkedCandidate.terminalTreeDigest !== authority.terminalTreeDigest || checkedCandidate.transitionReceiptDigest !== authority.transitionReceiptDigest) return { state: "blocked", reason: "CANDIDATE_MISMATCH" };
   return { state: "eligible", candidate: clone(checkedCandidate) };
 }
 
@@ -776,7 +780,7 @@ export function replayFeatureOperationJournalV1(input: unknown): FeatureIntegrat
         const transition = { kind: "rollback" as const, operationSequence: headSequence, effectKey: rollback.effectKey, priorHeadRevision: rollback.priorHeadRevision, priorTreeDigest: rollback.priorTreeDigest, resultingHeadRevision: rollback.resultingHeadRevision, resultingTreeDigest: rollback.resultingTreeDigest, receiptDigest: rollback.receiptDigest, childId: rollback.childId, revertedIntegrationReceiptDigest: rollback.revertedIntegrationReceiptDigest };
         context = { ...context, transitions: [...context.transitions, transition], acceptedIntegrations: context.acceptedIntegrations.map((item) => item.receiptDigest === latest.receiptDigest ? { ...item, reverted: true } : item), acceptedRollbacks: [...context.acceptedRollbacks, { childId: transition.childId, operationSequence: transition.operationSequence, effectKey: transition.effectKey, revertedIntegrationReceiptDigest: transition.revertedIntegrationReceiptDigest, priorHeadRevision: transition.priorHeadRevision, priorTreeDigest: transition.priorTreeDigest, resultingHeadRevision: transition.resultingHeadRevision, resultingTreeDigest: transition.resultingTreeDigest, receiptDigest: transition.receiptDigest }], lifecycle: { state: "active", atOperationSequence: headSequence } };
       }
-      terminalHead = receipt.resultingHeadRevision; terminalTree = receipt.resultingTreeDigest; cumulative = "pending"; pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
+      terminalHead = receipt.resultingHeadRevision; terminalTree = receipt.resultingTreeDigest; cumulative = "pending"; cumulativeAttempts = 0; pending = null; pendingCandidate = null; pendingExpectedHead = null; pendingExpectedTree = null; uncertain = false;
     } else if (entry.entryKind === "rollback_workspace_accepted") {
       if (!text(payload.childId) || !text(payload.sourceMissionId) || !digestValue(payload.completionReceiptDigest) || !digestValue(payload.restoredTreeDigest) || payload.targetBranch !== context.activePlan.featureBranch || rollbackWorkspaces.has(payload.childId as string)) return replayInvalid("EVIDENCE_INVALID", index);
       rollbackWorkspaces.set(payload.childId as string, payload.completionReceiptDigest as string);
