@@ -18,7 +18,6 @@
     { "seatId": "hill" },
     { "seatId": "fury" },
     { "seatId": "may" },
-    { "seatId": "mack" },
     { "seatId": "coulson" },
     { "seatId": "fitz" }
   ],
@@ -39,6 +38,6 @@
   "profileVersion": 1,
   "requiredExecutionGateRoleIds": ["coulson"],
   "requiredFinalAcceptanceGateRoleIds": ["coulson"],
-  "predecessorMissionId": "mission:issue-162-bravo-correction-1",
-  "predecessorJournalDigest": "sha256:ef6ccb1bd98dc9e9c2e7bee2a0bdcbd76ec2c9ebd7a9b3e6db3578a915d8fb11"
+  "predecessorMissionId": "mission:issue-130",
+  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9"
 }

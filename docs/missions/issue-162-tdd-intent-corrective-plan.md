@@ -31,6 +31,11 @@ or human decision.
   exact-evidence foundations.
 
 Prior mission journals and correction-1 planning commits remain evidence only.
+The schema-9 brief uses the repository-frozen issue-130 predecessor required by
+the current profile-aware intake; correction-1 is not represented as its schema
+predecessor. Mack remains an orchestration/validation seat but is omitted from
+the schema-9 participant array because the current V0.3 profile does not admit
+Mack as a dispatchable participant. This does not add the excluded F5 platform.
 Correction-2 requires exact-plan Fury PASS and fresh Coulson authority before
 May may edit production code or tests.
 
@@ -495,6 +500,11 @@ test "$(git rev-parse HEAD^{commit})" = "$reviewed_head"
 test "$(git rev-parse HEAD^{tree})" = "$reviewed_tree"
 test "$(shasum -a 256 docs/missions/issue-162-tdd-intent-corrective-plan.md | awk '{print $1}')" = "$reviewed_plan_sha"
 test "$(shasum -a 256 "$review_artifact" | awk '{print $1}')" = "$review_artifact_sha"
+test "$(pwd -P)" = "/private/tmp/shield-162-bravo.yMZTJ7"
+test "$(git rev-parse --show-toplevel)" = "/private/tmp/shield-162-bravo.yMZTJ7"
+test "$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(".shield/config.json","utf8")).repositoryId)')" = "RanSolo/shield-workspace"
+test "$(git remote get-url origin | node -e 'let s="";process.stdin.on("data",x=>s+=x);process.stdin.on("end",()=>{const exact=s.trim().replace(/\.git$/u,"");const m=/^(?:git@github\.com:|https:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/u.exec(exact);if(!m)process.exit(1);process.stdout.write(m[1])})')" = "RanSolo/shield-workspace"
+test "$(git branch --show-current)" = "agent/issue-162-tdd-intent"
 test "$(git diff --name-only --no-renames 87c889769093fe000d4bb0ef45c1da80bdb6f321 HEAD --)" = "$(printf '%s\n' docs/missions/issue-162-tdd-intent-corrective-brief.json docs/missions/issue-162-tdd-intent-corrective-plan.md)"
 NX_SKIP_NX_CACHE=true npm exec nx run @shield/team-system:build
 test -f packages/shield-team-system/dist/cli.mjs
@@ -536,6 +546,11 @@ test "$(git rev-parse HEAD^{commit})" = "$reviewed_head"
 test "$(git rev-parse HEAD^{tree})" = "$reviewed_tree"
 test "$(shasum -a 256 docs/missions/issue-162-tdd-intent-corrective-plan.md | awk '{print $1}')" = "$reviewed_plan_sha"
 test "$(shasum -a 256 "$review_artifact" | awk '{print $1}')" = "$review_artifact_sha"
+test "$(pwd -P)" = "/private/tmp/shield-162-bravo.yMZTJ7"
+test "$(git rev-parse --show-toplevel)" = "/private/tmp/shield-162-bravo.yMZTJ7"
+test "$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(".shield/config.json","utf8")).repositoryId)')" = "RanSolo/shield-workspace"
+test "$(git remote get-url origin | node -e 'let s="";process.stdin.on("data",x=>s+=x);process.stdin.on("end",()=>{const exact=s.trim().replace(/\.git$/u,"");const m=/^(?:git@github\.com:|https:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/u.exec(exact);if(!m)process.exit(1);process.stdout.write(m[1])})')" = "RanSolo/shield-workspace"
+test "$(git branch --show-current)" = "agent/issue-162-tdd-intent"
 NX_SKIP_NX_CACHE=true npm exec nx run @shield/team-system:build
 test -f packages/shield-team-system/dist/cli.mjs
 test -L node_modules
@@ -548,9 +563,15 @@ trap 'restore_issue162_preview_node_modules || exit 125' EXIT
 trap 'restore_issue162_preview_node_modules || exit 125; exit 130' HUP INT TERM
 mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
 test -z "$(git status --porcelain=v1 --untracked-files=all)"
-if node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --json </dev/null; then exit 1; fi
+set +e
+preview_output="$(node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --json </dev/null 2>&1)"
+preview_status=$?
+set -e
+test "$preview_status" -eq 2
+printf '%s\n' "$preview_output" | node -e 'let s="";process.stdin.on("data",x=>s+=x);process.stdin.on("end",()=>{const lines=s.replace(/\n$/u,"").split("\n");if(lines.length!==4||lines[0]!=="SHIELD_WHEELS_UP_MANIFEST_BEGIN"||lines[2]!=="SHIELD_WHEELS_UP_MANIFEST_END"||lines[3]!=="SHIELD: Passcode prompt requires a TTY; use --passcode-stdin for automation.")process.exit(1);const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==="object"?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;const manifest=JSON.parse(lines[1]);if(JSON.stringify(sort(manifest))!==lines[1])process.exit(1)})'
 after="$(shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl | awk '{print $1}')"
 test "$before" = "$after"
+test "$(wc -l < .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl)" -eq 1
 restore_issue162_preview_node_modules
 test -L node_modules
 test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules"
@@ -577,6 +598,11 @@ test "$(git rev-parse HEAD^{commit})" = "$reviewed_head" && \
 test "$(git rev-parse HEAD^{tree})" = "$reviewed_tree" && \
 test "$(shasum -a 256 docs/missions/issue-162-tdd-intent-corrective-plan.md | awk '{print $1}')" = "$reviewed_plan_sha" && \
 test "$(shasum -a 256 "$review_artifact" | awk '{print $1}')" = "$review_artifact_sha" && \
+test "$(pwd -P)" = "/private/tmp/shield-162-bravo.yMZTJ7" && \
+test "$(git rev-parse --show-toplevel)" = "/private/tmp/shield-162-bravo.yMZTJ7" && \
+test "$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(".shield/config.json","utf8")).repositoryId)')" = "RanSolo/shield-workspace" && \
+test "$(git remote get-url origin | node -e 'let s="";process.stdin.on("data",x=>s+=x);process.stdin.on("end",()=>{const exact=s.trim().replace(/\.git$/u,"");const m=/^(?:git@github\.com:|https:\/\/github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/u.exec(exact);if(!m)process.exit(1);process.stdout.write(m[1])})')" = "RanSolo/shield-workspace" && \
+test "$(git branch --show-current)" = "agent/issue-162-tdd-intent" && \
 NX_SKIP_NX_CACHE=true npm exec nx run @shield/team-system:build && \
 test -f packages/shield-team-system/dist/cli.mjs && \
 test -L node_modules && \
