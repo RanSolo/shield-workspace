@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, unlink, type FileHandle } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -30,6 +30,12 @@ export interface FeatureIntegrationStorePathsV1 {
 interface FeatureIntegrationStoreReadDependenciesV1 {
   openFile: typeof open;
   lstatPath: typeof lstat;
+}
+
+interface FeatureIntegrationStoreLockDependenciesV1 {
+  openLock: typeof open;
+  lstatLock: typeof lstat;
+  unlinkLock: typeof unlink;
 }
 
 export type FeatureIntegrationStoreResultV1<T> =
@@ -106,6 +112,47 @@ function sameIdentity(left: { dev: number | bigint; ino: number | bigint }, righ
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+interface RetainedLockIdentityV1 {
+  dev: number | bigint;
+  ino: number | bigint;
+  mode: number;
+  uid: number;
+  gid: number;
+}
+
+function sameLockIdentity(left: RetainedLockIdentityV1, right: RetainedLockIdentityV1): boolean {
+  return sameIdentity(left, right) && left.mode === right.mode && left.uid === right.uid && left.gid === right.gid;
+}
+
+async function verifyRetainedLockOwner(
+  handle: FileHandle,
+  path: string,
+  ownerBytes: Buffer,
+  lstatPath: typeof lstat,
+  acquiredIdentity?: RetainedLockIdentityV1,
+): Promise<RetainedLockIdentityV1 | null> {
+  try {
+    const descriptorBefore = await handle.stat();
+    const pathBefore = await lstatPath(path);
+    const identity = { dev: descriptorBefore.dev, ino: descriptorBefore.ino, mode: descriptorBefore.mode, uid: descriptorBefore.uid, gid: descriptorBefore.gid };
+    const pathIdentity = { dev: pathBefore.dev, ino: pathBefore.ino, mode: pathBefore.mode, uid: pathBefore.uid, gid: pathBefore.gid };
+    if (!descriptorBefore.isFile() || descriptorBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.isSymbolicLink() ||
+        !sameLockIdentity(identity, pathIdentity) || (acquiredIdentity && !sameLockIdentity(acquiredIdentity, identity)) || descriptorBefore.size !== ownerBytes.length) return null;
+    const observedOwner = Buffer.alloc(ownerBytes.length);
+    const { bytesRead } = await handle.read(observedOwner, 0, observedOwner.length, 0);
+    const descriptorAfter = await handle.stat();
+    const pathAfter = await lstatPath(path);
+    const descriptorAfterIdentity = { dev: descriptorAfter.dev, ino: descriptorAfter.ino, mode: descriptorAfter.mode, uid: descriptorAfter.uid, gid: descriptorAfter.gid };
+    const pathAfterIdentity = { dev: pathAfter.dev, ino: pathAfter.ino, mode: pathAfter.mode, uid: pathAfter.uid, gid: pathAfter.gid };
+    if (bytesRead !== ownerBytes.length || !observedOwner.equals(ownerBytes) || descriptorAfter.size !== ownerBytes.length ||
+        !descriptorAfter.isFile() || descriptorAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.isSymbolicLink() ||
+        !sameLockIdentity(identity, descriptorAfterIdentity) || !sameLockIdentity(identity, pathAfterIdentity)) return null;
+    return identity;
+  } catch {
+    return null;
+  }
+}
+
 async function readRetainedRegularFile(path: string, dependencies: FeatureIntegrationStoreReadDependenciesV1): Promise<RetainedReadResult> {
   let handle;
   try {
@@ -156,20 +203,59 @@ export async function readFeatureOperationJournalStoreV1(input: unknown, depende
   return accepted({ ...parsed.value, journalPath: paths.value.journalPath });
 }
 
-async function withLock<T>(scope: FeatureIntegrationStoreScopeV1, run: (paths: FeatureIntegrationStorePathsV1) => Promise<FeatureIntegrationStoreResultV1<T>>): Promise<FeatureIntegrationStoreResultV1<T>> {
+function expectedJournalDigest<T>(result: FeatureIntegrationStoreResultV1<T>): string | null {
+  return result.state === "accepted" && typeof result.value === "object" && result.value !== null && "journal" in result.value
+    ? (result.value as { journal?: FeatureOperationJournalV1 }).journal?.journalDigest ?? null
+    : null;
+}
+
+async function withLock<T>(
+  scope: FeatureIntegrationStoreScopeV1,
+  run: (paths: FeatureIntegrationStorePathsV1) => Promise<FeatureIntegrationStoreResultV1<T>>,
+  dependencies: Record<string, unknown> = {},
+): Promise<FeatureIntegrationStoreResultV1<T>> {
   const paths = await resolveFeatureIntegrationStorePathsV1(scope); if (paths.state !== "accepted") return paths;
   if (!(await safeStoreParents(paths.value, true))) return blocked("unsafe_file", "Journal parent directories are unavailable or unsafe.");
-  let handle;
+  const lockOps: FeatureIntegrationStoreLockDependenciesV1 = {
+    openLock: typeof dependencies.openLock === "function" ? dependencies.openLock as typeof open : open,
+    lstatLock: typeof dependencies.lstatLock === "function" ? dependencies.lstatLock as typeof lstat : lstat,
+    unlinkLock: typeof dependencies.unlinkLock === "function" ? dependencies.unlinkLock as typeof unlink : unlink,
+  };
+  let handle: FileHandle | undefined;
+  const ownerBytes = Buffer.from(`${scope.lockOwnerId}\n`, "utf8");
+  let acquiredIdentity: RetainedLockIdentityV1 | null = null;
   try {
-    handle = await open(paths.value.lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    await handle.writeFile(`${scope.lockOwnerId}\n`, "utf8"); await handle.sync(); await handle.close(); handle = undefined;
+    handle = await lockOps.openLock(paths.value.lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+    await handle.writeFile(ownerBytes); await handle.sync();
+    acquiredIdentity = await verifyRetainedLockOwner(handle, paths.value.lockPath, ownerBytes, lockOps.lstatLock);
+    if (!acquiredIdentity) {
+      try { await handle.close(); } catch {}
+      return blocked("lock_failed", "Feature integration journal lock ownership could not be verified.");
+    }
   } catch (error) {
     try { await handle?.close(); } catch {}
     return blocked((error as NodeJS.ErrnoException).code === "EEXIST" ? "lock_conflict" : "lock_failed", "Feature integration journal lock was not acquired.");
   }
-  const result = await run(paths.value);
-  try { await unlink(paths.value.lockPath); }
-  catch { return { state: "recovery_required", code: "durability_uncertain", journalPath: paths.value.journalPath, expectedJournalDigest: result.state === "accepted" && typeof result.value === "object" && result.value !== null && "journal" in result.value ? (result.value as { journal?: FeatureOperationJournalV1 }).journal?.journalDigest ?? null : null }; }
+  let result: FeatureIntegrationStoreResultV1<T>;
+  try { result = await run(paths.value); }
+  catch (error) {
+    const retained = await verifyRetainedLockOwner(handle, paths.value.lockPath, ownerBytes, lockOps.lstatLock, acquiredIdentity);
+    if (retained) { try { await lockOps.unlinkLock(paths.value.lockPath); } catch {} }
+    try { await handle.close(); } catch {}
+    throw error;
+  }
+  const retained = await verifyRetainedLockOwner(handle, paths.value.lockPath, ownerBytes, lockOps.lstatLock, acquiredIdentity);
+  if (!retained) {
+    try { await handle.close(); } catch {}
+    return { state: "recovery_required", code: "durability_uncertain", journalPath: paths.value.journalPath, expectedJournalDigest: expectedJournalDigest(result) };
+  }
+  try { await lockOps.unlinkLock(paths.value.lockPath); }
+  catch {
+    try { await handle.close(); } catch {}
+    return { state: "recovery_required", code: "durability_uncertain", journalPath: paths.value.journalPath, expectedJournalDigest: expectedJournalDigest(result) };
+  }
+  try { await handle.close(); }
+  catch { return { state: "recovery_required", code: "durability_uncertain", journalPath: paths.value.journalPath, expectedJournalDigest: expectedJournalDigest(result) }; }
   return result;
 }
 
@@ -193,7 +279,7 @@ async function replaceJournal(paths: FeatureIntegrationStorePathsV1, journal: Fe
   }
 }
 
-export async function initializeFeatureOperationJournalStoreV1(input: FeatureIntegrationStoreScopeV1 & { journal: FeatureOperationJournalV1 }): Promise<FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1; bytes: string; journalPath: string }>> {
+export async function initializeFeatureOperationJournalStoreV1(input: FeatureIntegrationStoreScopeV1 & { journal: FeatureOperationJournalV1 }, dependencies: Record<string, unknown> = {}): Promise<FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1; bytes: string; journalPath: string }>> {
   const scope = strictScope({ repositoryRoot: input?.repositoryRoot, operationId: input?.operationId, lockOwnerId: input?.lockOwnerId });
   if (!scope) return blocked("malformed_input", "Initialize input is invalid.");
   const checked = validateFeatureOperationJournalV1(input.journal); if (checked.state !== "valid" || checked.value.operationId !== scope.operationId || replayFeatureOperationJournalV1(checked.value).state !== "valid") return blocked("journal_invalid", "Initial journal is invalid or not replayable.");
@@ -206,10 +292,10 @@ export async function initializeFeatureOperationJournalStoreV1(input: FeatureInt
       return current.value.journal.journalDigest === checked.value.journalDigest ? accepted({ journal: current.value.journal, bytes: current.value.bytes, journalPath: current.value.journalPath }) : blocked("initialize_conflict", "A different journal already exists.");
     }
     return replaceJournal(paths, checked.value, 0o600);
-  });
+  }, dependencies);
 }
 
-export async function appendFeatureOperationJournalStoreV1(input: FeatureIntegrationStoreScopeV1 & { expectedEntrySequence: number; expectedLatestEntryDigest: string; entry: FeatureOperationJournalEntryV1 }): Promise<FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1; bytes: string; journalPath: string }>> {
+export async function appendFeatureOperationJournalStoreV1(input: FeatureIntegrationStoreScopeV1 & { expectedEntrySequence: number; expectedLatestEntryDigest: string; entry: FeatureOperationJournalEntryV1 }, dependencies: Record<string, unknown> = {}): Promise<FeatureIntegrationStoreResultV1<{ journal: FeatureOperationJournalV1; bytes: string; journalPath: string }>> {
   const scope = strictScope({ repositoryRoot: input?.repositoryRoot, operationId: input?.operationId, lockOwnerId: input?.lockOwnerId });
   if (!scope || !Number.isSafeInteger(input?.expectedEntrySequence) || input.expectedEntrySequence < 1 || !DIGEST.test(input.expectedLatestEntryDigest)) return blocked("malformed_input", "Append input is invalid.");
   return withLock(scope, async (paths) => {
@@ -224,7 +310,7 @@ export async function appendFeatureOperationJournalStoreV1(input: FeatureIntegra
     catch { return blocked("entry_invalid", "Appended entry is invalid."); }
     if (replayFeatureOperationJournalV1(candidate).state !== "valid") return blocked("replay_invalid", "Appended journal does not replay.");
     const stat = await lstat(paths.journalPath); return replaceJournal(paths, candidate, stat.mode & 0o777);
-  });
+  }, dependencies);
 }
 
 export async function recoverFeatureOperationJournalStoreV1(input: FeatureIntegrationStoreScopeV1 & { baselineJournalDigest: string | null; candidateJournalDigest: string }): Promise<FeatureIntegrationStoreResultV1<{ classification: "unchanged_baseline" | "complete_candidate"; journal: FeatureOperationJournalV1 | null }>> {
