@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  TDD_MISSION_FAILURE_CLASSIFICATIONS,
   validateTddMissionStrategyContractV1,
 } from "../dist/tdd-mission-v1.mjs";
+
+const REVISION = "fb2d9c7ba6c0d312d93a5debc0f105de1805563d";
 
 const executableContract = {
   contractId: "contract:ac-162-1",
@@ -11,6 +14,55 @@ const executableContract = {
   checkpointId: "checkpoint:ac-162-1:red",
   expectedBehavior: "The criterion strategy is accepted before implementation.",
 };
+
+function preparedState(criterionId = "AC-162-1", overrides = {}) {
+  return {
+    state: "contract_prepared",
+    evidenceId: `evidence:${criterionId.toLowerCase()}:prepared`,
+    ownerSeatId: "mack",
+    contractId: `contract:${criterionId.toLowerCase()}`,
+    checkpointId: `checkpoint:${criterionId.toLowerCase()}:red`,
+    revisionId: REVISION,
+    expectedFailureClassification: "missing_behavior",
+    implementationAuthority: false,
+    outcome: "not_run",
+    failureEvidence: null,
+    furyContractDisposition: null,
+    ...overrides,
+  };
+}
+
+function redState(criterionId = "AC-162-1", overrides = {}) {
+  const state = preparedState(criterionId, {
+    state: "red_established",
+    evidenceId: `evidence:${criterionId.toLowerCase()}:red`,
+    outcome: "failed",
+    failureEvidence: {
+      kind: "executable_failure",
+      command: `node --test checkpoint:${criterionId.toLowerCase()}:red`,
+      checkpointId: `checkpoint:${criterionId.toLowerCase()}:red`,
+      revisionId: REVISION,
+      exitCode: 1,
+      observedFailureClassification: "missing_behavior",
+    },
+    furyContractDisposition: {
+      evidenceId: `review:fury:${criterionId.toLowerCase()}:contract`,
+      reviewerSeatId: "fury",
+      contractId: `contract:${criterionId.toLowerCase()}`,
+      disposition: "approved",
+    },
+  });
+  return {
+    ...state,
+    ...overrides,
+    failureEvidence: overrides.failureEvidence === undefined
+      ? state.failureEvidence
+      : overrides.failureEvidence,
+    furyContractDisposition: overrides.furyContractDisposition === undefined
+      ? state.furyContractDisposition
+      : overrides.furyContractDisposition,
+  };
+}
 
 function criterion(overrides = {}) {
   const criterionId = overrides.criterionId ?? "AC-162-1";
@@ -25,6 +77,7 @@ function criterion(overrides = {}) {
       contractId: `contract:${criterionId.toLowerCase()}`,
       checkpointId: `checkpoint:${criterionId.toLowerCase()}:red`,
     },
+    preImplementationStateEvidence: preparedState(criterionId),
     laterValidation: "required",
     disposition: "implemented_and_proven",
     ...overrides,
@@ -75,6 +128,7 @@ test("declined TDD remains valid only with rationale and required later validati
     rationale: "The criterion is documentation-only and has no executable pre-implementation seam.",
     riskFactors: ["manual interpretation"],
     preImplementationContract: null,
+    preImplementationStateEvidence: null,
   });
   const valid = validateTddMissionStrategyContractV1(strategyContract([declined]));
   assert.equal(valid.state, "valid");
@@ -203,6 +257,116 @@ test("missing dispositions and mismatched traceability block", () => {
   assert.deepEqual(result.reasonCodes, ["TRACEABILITY_BINDING_MISMATCH"]);
 });
 
+test("failure classifications are closed and a Mack scaffold is never PASS or authority", () => {
+  assert.deepEqual(TDD_MISSION_FAILURE_CLASSIFICATIONS, [
+    "missing_behavior",
+    "product_defect",
+    "stale_expectation",
+    "environment_failure",
+    "harness_defect",
+    "authority_failure",
+    "insufficient_evidence",
+  ]);
+
+  const prepared = validateTddMissionStrategyContractV1(strategyContract());
+  assert.equal(prepared.state, "valid");
+  assert.equal(
+    prepared.contract.criteria[0].preImplementationStateEvidence.state,
+    "contract_prepared",
+  );
+  assert.equal(prepared.contract.criteria[0].preImplementationStateEvidence.ownerSeatId, "mack");
+  assert.equal(prepared.contract.criteria[0].preImplementationStateEvidence.outcome, "not_run");
+  assert.equal(
+    prepared.contract.criteria[0].preImplementationStateEvidence.implementationAuthority,
+    false,
+  );
+
+  const claimedPass = validateTddMissionStrategyContractV1(strategyContract([
+    criterion({ preImplementationStateEvidence: preparedState("AC-162-1", { outcome: "passed" }) }),
+  ]));
+  assert.equal(claimedPass.state, "invalid");
+  assert.deepEqual(claimedPass.reasonCodes, ["SCAFFOLD_TREATED_AS_PASS"]);
+
+  for (const preImplementationStateEvidence of [
+    preparedState("AC-162-1", { ownerSeatId: "may" }),
+    preparedState("AC-162-1", { implementationAuthority: true }),
+  ]) {
+    const invalidScaffold = validateTddMissionStrategyContractV1(strategyContract([
+      criterion({ preImplementationStateEvidence }),
+    ]));
+    assert.equal(invalidScaffold.state, "invalid");
+    assert.deepEqual(invalidScaffold.reasonCodes, ["RED_NOT_ESTABLISHED"]);
+  }
+});
+
+test("Red establishes only from executable exact-run failure evidence reviewed by Fury", () => {
+  const result = validateTddMissionStrategyContractV1(strategyContract([
+    criterion({ preImplementationStateEvidence: redState() }),
+  ]));
+  assert.equal(result.state, "valid");
+  assert.equal(result.contract.criteria[0].preImplementationStateEvidence.state, "red_established");
+  assert.equal(result.contract.criteria[0].preImplementationStateEvidence.outcome, "failed");
+  assert.equal(
+    result.contract.criteria[0].preImplementationStateEvidence.failureEvidence
+      .observedFailureClassification,
+    "missing_behavior",
+  );
+  assert.equal(
+    result.contract.criteria[0].preImplementationStateEvidence.furyContractDisposition.disposition,
+    "approved",
+  );
+});
+
+test("wrong-reason and missing executable failure evidence block Red", () => {
+  const wrongReasonEvidence = redState().failureEvidence;
+  const wrongReason = validateTddMissionStrategyContractV1(strategyContract([
+    criterion({
+      preImplementationStateEvidence: redState("AC-162-1", {
+        failureEvidence: {
+          ...wrongReasonEvidence,
+          observedFailureClassification: "environment_failure",
+        },
+      }),
+    }),
+  ]));
+  assert.equal(wrongReason.state, "invalid");
+  assert.deepEqual(wrongReason.reasonCodes, ["WRONG_FAILURE_REASON"]);
+
+  for (const failureEvidence of [null, { ...redState().failureEvidence, exitCode: 0 }]) {
+    const missing = validateTddMissionStrategyContractV1(strategyContract([
+      criterion({ preImplementationStateEvidence: redState("AC-162-1", { failureEvidence }) }),
+    ]));
+    assert.equal(missing.state, "invalid");
+    assert.deepEqual(missing.reasonCodes, ["FAILURE_EVIDENCE_MISSING"]);
+  }
+
+  const inexactRevision = validateTddMissionStrategyContractV1(strategyContract([
+    criterion({
+      preImplementationStateEvidence: redState("AC-162-1", {
+        revisionId: "revision:not-exact",
+      }),
+    }),
+  ]));
+  assert.equal(inexactRevision.state, "invalid");
+  assert.deepEqual(inexactRevision.reasonCodes, ["RED_NOT_ESTABLISHED"]);
+});
+
+test("Red requires Fury disposition of the intended contract", () => {
+  for (const furyContractDisposition of [
+    null,
+    { ...redState().furyContractDisposition, contractId: "contract:different" },
+    { ...redState().furyContractDisposition, disposition: "changes_requested" },
+  ]) {
+    const result = validateTddMissionStrategyContractV1(strategyContract([
+      criterion({
+        preImplementationStateEvidence: redState("AC-162-1", { furyContractDisposition }),
+      }),
+    ]));
+    assert.equal(result.state, "invalid");
+    assert.deepEqual(result.reasonCodes, ["RED_NOT_ESTABLISHED"]);
+  }
+});
+
 test("validated strategy contracts are immutable copies", () => {
   const input = strategyContract();
   const result = validateTddMissionStrategyContractV1(input);
@@ -213,6 +377,7 @@ test("validated strategy contracts are immutable copies", () => {
   assert.ok(Object.isFrozen(result.contract.criteria[0]));
   assert.ok(Object.isFrozen(result.contract.criteria[0].riskFactors));
   assert.ok(Object.isFrozen(result.contract.criteria[0].traceability));
+  assert.ok(Object.isFrozen(result.contract.criteria[0].preImplementationStateEvidence));
   assert.ok(Object.isFrozen(result.contract.packets));
   assert.ok(Object.isFrozen(result.contract.packets[0]));
   assert.ok(Object.isFrozen(result.contract.packets[0].criterionIds));
