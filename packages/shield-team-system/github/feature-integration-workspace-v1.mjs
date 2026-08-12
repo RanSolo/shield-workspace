@@ -1,4 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { isProxy } from "node:util/types";
 
 import {
@@ -13,6 +16,7 @@ import {
   createFeatureIntegrationEntryV2,
   createFeatureOperationJournalV2,
   secureReplayFeatureOperationJournalV2,
+  validateFeatureOperationJournalV2,
 } from "../dist/feature-integration-v1.mjs";
 import { validateFeatureOperationDerivedCandidateV1 } from "../dist/feature-operation-v1.mjs";
 import { computeProfileAwareMissionJournalDigestV1 } from "../dist/feature-integration-evidence-v1.mjs";
@@ -42,6 +46,7 @@ const STAGES = Object.freeze({
   child_publication: "child_draft_pr_create",
 });
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const AUTHORITY_DIGEST_V2 = /^sha256:[A-Za-z0-9_-]{43}$/u;
 const REVISION = /^[0-9a-f]{40}$/u;
 const WORKSPACE_DERIVATIONS = Object.freeze(["feature_branch_create", "feature_workspace_draft_pr_create", "child_initiation", "child_draft_pr_create"]);
 const WORKSPACE_OBSERVATION_FIELDS = Object.freeze(["schemaVersion", "contractVersion", "observationKind", "preparationEntryDigest", "candidateDigest", "effectKey", "requestDigest", "repositoryId", "derivationKind", "challengeId", "targetRef", "targetBaseBranch", "expectedHeadRevision", "expectedTreeDigest", "status", "observedHeadRevision", "observedTreeDigest", "pullRequests", "observationProvenance", "observedAt", "observationDigest"]);
@@ -436,6 +441,223 @@ export async function executeFeatureIntegrationWorkspaceStageV1(input, adapterOp
   return terminalResult.state === "accepted" ? { state: reconciled.state, journal: terminalResult.value.journal, invocation } : terminalResult;
 }
 
+const STORE_IDENTIFIER_V2 = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/u;
+
+function storeAcceptedV2(value) { return { state: "accepted", value: Object.freeze(structuredClone(value)) }; }
+function storeBlockedV2(reason) { return { state: "blocked", reason }; }
+function storeSafeNameV2(operationId) { return createHash("sha256").update(operationId, "utf8").digest("hex"); }
+
+function strictStoreScopeV2(input) {
+  const value = exactDataRecord(input, ["repositoryRoot", "operationId", "lockOwnerId", "trustAnchor"]);
+  if (!value || !text(value.repositoryRoot) || !STORE_IDENTIFIER_V2.test(value.operationId) || !STORE_IDENTIFIER_V2.test(value.lockOwnerId) ||
+      !value.trustAnchor || typeof value.trustAnchor !== "object") return null;
+  try { return structuredClone(value); }
+  catch { return null; }
+}
+
+async function resolveStorePathsV2(scope) {
+  try {
+    const repositoryRoot = await realpath(scope.repositoryRoot);
+    const directoryPath = join(repositoryRoot, ".shield", "feature-integration-v2");
+    const journalPath = join(directoryPath, `${storeSafeNameV2(scope.operationId)}.json`);
+    const lockPath = `${journalPath}.lock`;
+    const rel = relative(repositoryRoot, journalPath);
+    if (rel === ".." || rel.startsWith(`..${sep}`) || resolve(journalPath) !== journalPath) return null;
+    return { repositoryRoot, directoryPath, journalPath, lockPath };
+  } catch { return null; }
+}
+
+async function pathKindV2(path, expected) {
+  try {
+    const stat = await lstat(path);
+    return !stat.isSymbolicLink() && (expected === "file" ? stat.isFile() : stat.isDirectory()) ? expected : "unsafe";
+  } catch (error) { return error?.code === "ENOENT" ? "missing" : "unsafe"; }
+}
+
+async function safeStoreParentsV2(paths, create) {
+  for (const directory of [dirname(paths.directoryPath), paths.directoryPath]) {
+    let kind = await pathKindV2(directory, "directory");
+    if (kind === "missing" && create) {
+      try { await mkdir(directory, { mode: 0o700 }); kind = await pathKindV2(directory, "directory"); }
+      catch { return false; }
+    }
+    if (kind !== "directory") return false;
+  }
+  return true;
+}
+
+function sameFileIdentityV2(left, right) { return left.dev === right.dev && left.ino === right.ino; }
+
+async function readRetainedJournalBytesV2(path) {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const descriptorBefore = await handle.stat();
+    const pathBefore = await lstat(path);
+    if (!descriptorBefore.isFile() || descriptorBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.isSymbolicLink() ||
+        !sameFileIdentityV2(descriptorBefore, pathBefore)) return { state: "unsafe" };
+    const bytes = await handle.readFile("utf8");
+    const descriptorAfter = await handle.stat();
+    const pathAfter = await lstat(path);
+    if (!descriptorAfter.isFile() || descriptorAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.isSymbolicLink() ||
+        !sameFileIdentityV2(descriptorBefore, descriptorAfter) || !sameFileIdentityV2(descriptorBefore, pathAfter) ||
+        descriptorBefore.mode !== descriptorAfter.mode || descriptorBefore.mode !== pathAfter.mode) return { state: "unsafe" };
+    return { state: "accepted", bytes, mode: descriptorBefore.mode & 0o777 };
+  } catch (error) {
+    if (error?.code === "ENOENT" && !handle) return { state: "missing" };
+    return { state: error?.code === "ELOOP" || error?.code === "ENOENT" ? "unsafe" : "failed" };
+  } finally { try { await handle?.close(); } catch {} }
+}
+
+function parseStoredJournalV2(bytes, scope) {
+  try {
+    if (!bytes.endsWith("\n") || bytes.slice(0, -1).includes("\n")) return storeBlockedV2("journal_invalid");
+    const parsed = JSON.parse(bytes.slice(0, -1));
+    const checked = validateFeatureOperationJournalV2(parsed);
+    if (checked.state !== "valid" || checked.value.operationId !== scope.operationId ||
+        `${canonicalFeatureIntegrationJsonV1(checked.value)}\n` !== bytes) return storeBlockedV2("journal_invalid");
+    const replayed = secureReplayFeatureOperationJournalV2(checked.value, scope.trustAnchor);
+    return replayed.state === "valid" ? storeAcceptedV2({ journal: checked.value, bytes }) : storeBlockedV2("replay_invalid");
+  } catch { return storeBlockedV2("journal_invalid"); }
+}
+
+async function readStoredJournalV2(scope) {
+  const paths = await resolveStorePathsV2(scope);
+  if (!paths) return storeBlockedV2("repository_unavailable");
+  if (!(await safeStoreParentsV2(paths, false))) {
+    const kinds = await Promise.all([dirname(paths.directoryPath), paths.directoryPath].map((path) => pathKindV2(path, "directory")));
+    return kinds.includes("missing") && !kinds.includes("unsafe")
+      ? storeAcceptedV2({ journal: null, bytes: "", journalPath: paths.journalPath }) : storeBlockedV2("unsafe_file");
+  }
+  const retained = await readRetainedJournalBytesV2(paths.journalPath);
+  if (retained.state === "missing") return storeAcceptedV2({ journal: null, bytes: "", journalPath: paths.journalPath });
+  if (retained.state !== "accepted") return storeBlockedV2(retained.state === "unsafe" ? "unsafe_file" : "read_failed");
+  const parsed = parseStoredJournalV2(retained.bytes, scope);
+  return parsed.state === "accepted" ? storeAcceptedV2({ ...parsed.value, journalPath: paths.journalPath }) : parsed;
+}
+
+async function retainedLockOwnedV2(handle, path, ownerBytes, acquiredIdentity = null) {
+  try {
+    const descriptor = await handle.stat();
+    const pathStat = await lstat(path);
+    if (!descriptor.isFile() || descriptor.isSymbolicLink() || !pathStat.isFile() || pathStat.isSymbolicLink() ||
+        !sameFileIdentityV2(descriptor, pathStat) || (acquiredIdentity && !sameFileIdentityV2(descriptor, acquiredIdentity)) || descriptor.size !== ownerBytes.length) return null;
+    const observed = Buffer.alloc(ownerBytes.length);
+    const { bytesRead } = await handle.read(observed, 0, observed.length, 0);
+    const after = await handle.stat();
+    const pathAfter = await lstat(path);
+    return bytesRead === ownerBytes.length && observed.equals(ownerBytes) && sameFileIdentityV2(descriptor, after) && sameFileIdentityV2(descriptor, pathAfter)
+      ? { dev: descriptor.dev, ino: descriptor.ino } : null;
+  } catch { return null; }
+}
+
+async function withStoreLockV2(scope, run) {
+  const paths = await resolveStorePathsV2(scope);
+  if (!paths) return storeBlockedV2("repository_unavailable");
+  if (!(await safeStoreParentsV2(paths, true))) return storeBlockedV2("unsafe_file");
+  let handle;
+  const ownerBytes = Buffer.from(`${scope.lockOwnerId}\n`, "utf8");
+  let acquiredIdentity;
+  try {
+    handle = await open(paths.lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+    await handle.writeFile(ownerBytes); await handle.sync();
+    acquiredIdentity = await retainedLockOwnedV2(handle, paths.lockPath, ownerBytes);
+    if (!acquiredIdentity) {
+      try { await unlink(paths.lockPath); } catch {}
+      return storeBlockedV2("lock_failed");
+    }
+    const result = await run(paths);
+    if (!await retainedLockOwnedV2(handle, paths.lockPath, ownerBytes, acquiredIdentity)) {
+      return { state: "recovery_required", reason: "durability_uncertain" };
+    }
+    try { await unlink(paths.lockPath); await handle.close(); handle = undefined; }
+    catch { return { state: "recovery_required", reason: "durability_uncertain" }; }
+    return result;
+  } catch (error) {
+    return storeBlockedV2(error?.code === "EEXIST" ? "compare_conflict" : "lock_failed");
+  } finally {
+    if (handle) {
+      if (acquiredIdentity && await retainedLockOwnedV2(handle, paths.lockPath, ownerBytes, acquiredIdentity)) {
+        try { await unlink(paths.lockPath); } catch {}
+      }
+      try { await handle.close(); } catch {}
+    }
+  }
+}
+
+async function replaceStoredJournalV2(paths, journal, mode) {
+  const bytes = `${canonicalFeatureIntegrationJsonV1(journal)}\n`;
+  const temporaryPath = join(paths.directoryPath, `.${storeSafeNameV2(journal.operationId)}.${randomUUID()}.tmp`);
+  let handle;
+  let renamed = false;
+  try {
+    handle = await open(temporaryPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, mode);
+    await handle.writeFile(bytes, "utf8"); await handle.sync(); await handle.close(); handle = undefined;
+    await rename(temporaryPath, paths.journalPath); renamed = true;
+    const file = await open(paths.journalPath, constants.O_RDONLY | constants.O_NOFOLLOW); await file.sync(); await file.close();
+    const directory = await open(paths.directoryPath, constants.O_RDONLY | constants.O_DIRECTORY); await directory.sync(); await directory.close();
+    const observed = await readRetainedJournalBytesV2(paths.journalPath);
+    if (observed.state !== "accepted" || observed.bytes !== bytes) return { state: "recovery_required", reason: "durability_uncertain" };
+    return storeAcceptedV2({ journal, bytes, journalPath: paths.journalPath });
+  } catch {
+    if (!renamed) { try { await unlink(temporaryPath); } catch {} return storeBlockedV2("write_failed"); }
+    return { state: "recovery_required", reason: "durability_uncertain" };
+  } finally { try { await handle?.close(); } catch {} }
+}
+
+/** Creates the V2-only durable journal store used by the hardened stage owner. */
+export async function createFeatureOperationJournalStoreV2(input) {
+  const scope = strictStoreScopeV2(input);
+  if (!scope || !await resolveStorePathsV2(scope)) return { state: "blocked", reason: "invalid_input" };
+  const store = {
+    async initializeJournal(inputValue) {
+      const value = exactDataRecord(inputValue, ["journal"]);
+      const checked = value ? validateFeatureOperationJournalV2(value.journal) : { state: "invalid" };
+      if (checked.state !== "valid" || checked.value.operationId !== scope.operationId ||
+          secureReplayFeatureOperationJournalV2(checked.value, scope.trustAnchor).state !== "valid") return storeBlockedV2("journal_invalid");
+      return withStoreLockV2(scope, async (paths) => {
+        const current = await readStoredJournalV2(scope);
+        if (current.state !== "accepted") return current;
+        if (current.value.journal) return current.value.journal.journalDigest === checked.value.journalDigest ? current : storeBlockedV2("compare_conflict");
+        return replaceStoredJournalV2(paths, checked.value, 0o600);
+      });
+    },
+    async readJournal() { return readStoredJournalV2(scope); },
+    async appendEntry(inputValue) {
+      const value = exactDataRecord(inputValue, ["expectedJournalDigest", "expectedEntrySequence", "expectedLatestEntryDigest", "entry"]);
+      if (!value || !DIGEST.test(value.expectedJournalDigest) || !Number.isSafeInteger(value.expectedEntrySequence) || value.expectedEntrySequence < 1 ||
+          !DIGEST.test(value.expectedLatestEntryDigest)) return storeBlockedV2("invalid_input");
+      return withStoreLockV2(scope, async (paths) => {
+        const current = await readStoredJournalV2(scope);
+        if (current.state !== "accepted" || !current.value.journal) return current.state === "accepted" ? storeBlockedV2("journal_missing") : current;
+        const journal = current.value.journal;
+        const existing = journal.entries[value.expectedEntrySequence];
+        if (existing) return existing.entryDigest === value.entry?.entryDigest ? current : storeBlockedV2("compare_conflict");
+        if (journal.journalDigest !== value.expectedJournalDigest || journal.entries.length !== value.expectedEntrySequence ||
+            journal.latestAcceptedEntryDigest !== value.expectedLatestEntryDigest || value.entry?.entrySequence !== value.expectedEntrySequence ||
+            value.entry?.previousEntryDigest !== value.expectedLatestEntryDigest) return storeBlockedV2("compare_conflict");
+        let candidate;
+        try { candidate = createFeatureOperationJournalV2([...journal.entries, value.entry]); }
+        catch { return storeBlockedV2("journal_invalid"); }
+        if (secureReplayFeatureOperationJournalV2(candidate, scope.trustAnchor).state !== "valid") return storeBlockedV2("replay_invalid");
+        const stat = await lstat(paths.journalPath);
+        return replaceStoredJournalV2(paths, candidate, stat.mode & 0o777);
+      });
+    },
+    async recoverJournal(inputValue) {
+      const value = exactDataRecord(inputValue, ["baselineJournalDigest", "candidateJournalDigest"]);
+      if (!value || !DIGEST.test(value.baselineJournalDigest) || !DIGEST.test(value.candidateJournalDigest)) return storeBlockedV2("invalid_input");
+      const current = await readStoredJournalV2(scope);
+      if (current.state !== "accepted" || !current.value.journal) return storeBlockedV2("recovery_unverifiable");
+      const digest = current.value.journal.journalDigest;
+      if (digest === value.candidateJournalDigest) return storeAcceptedV2({ classification: "complete_candidate", journal: current.value.journal });
+      if (digest === value.baselineJournalDigest) return storeAcceptedV2({ classification: "unchanged_baseline", journal: current.value.journal });
+      return storeBlockedV2("recovery_unverifiable");
+    },
+  };
+  return { state: "ready", store: Object.freeze(store) };
+}
+
 function stageResultV2(state, reason, appendedEntryDigest = null) {
   return reason ? { state, reason, appendedEntryDigest } : { state, appendedEntryDigest };
 }
@@ -466,28 +688,36 @@ async function appendStageEntryV2(store, journal, entry, trustAnchor) {
   try {
     appended = await store.appendEntry({ expectedJournalDigest: journal.journalDigest, expectedEntrySequence: entry.entrySequence,
       expectedLatestEntryDigest: journal.latestAcceptedEntryDigest, entry });
-  } catch { return { state: "recovery_required", reason: "durability_uncertain" }; }
-  if (appended?.state === "recovery_required") return { state: "recovery_required", reason: "durability_uncertain" };
-  if (appended?.state !== "accepted" || !appended.value?.journal) return { state: "blocked", reason: "compare_conflict" };
-  if (canonicalFeatureIntegrationJsonV1(appended.value.journal) !== canonicalFeatureIntegrationJsonV1(expected)) {
-    return { state: "recovery_required", reason: "durability_uncertain" };
+  } catch { appended = { state: "recovery_required" }; }
+  if (appended?.state === "recovery_required") {
+    let recovered;
+    try { recovered = await store.recoverJournal({ baselineJournalDigest: journal.journalDigest, candidateJournalDigest: expected.journalDigest }); }
+    catch { return { state: "recovery_required", reason: "durability_uncertain" }; }
+    if (recovered?.state !== "accepted" || recovered.value?.classification !== "complete_candidate" ||
+        canonicalFeatureIntegrationJsonV1(recovered.value.journal) !== canonicalFeatureIntegrationJsonV1(expected)) {
+      return { state: "recovery_required", reason: "durability_uncertain" };
+    }
+  } else if (appended?.state !== "accepted" || !appended.value?.journal) {
+    return { state: "blocked", reason: "compare_conflict" };
   }
-  return { state: "accepted", journal: expected, replay: replayed.value };
+  const readback = await readStageJournalV2(store, expected, trustAnchor);
+  return readback.state === "accepted" ? { state: "accepted", journal: readback.journal, replay: readback.replay }
+    : { state: "recovery_required", reason: "durability_uncertain" };
 }
 
 /** Owns one replay-bound transition stage from prepare through durable reconciliation. */
 export async function executeFeatureIntegrationWorkspaceStageV2(input) {
-  const value = exactDataRecord(input, ["stage", "replay", "journal", "stageInput", "storeScope", "trustAnchor", "repositoryProducer", "cumulativeProducer"]);
-  if (!value || !["feature_branch_creation", "feature_workspace", "child_initiation", "child_publication", "integration", "rollback"].includes(value.stage) ||
+  const value = exactDataRecord(input, ["stage", "replay", "journal", "stageInput", "storeScope", "trustAnchor", "repositoryProducer"]);
+  if (!value || !["integration", "rollback"].includes(value.stage) ||
       !value.replay || typeof value.replay !== "object" || value.replay.nextStage !== value.stage || !value.journal || typeof value.journal !== "object" ||
       !value.stageInput || typeof value.stageInput !== "object" || value.stageInput.stage !== value.stage || !value.storeScope || typeof value.storeScope !== "object" ||
       !value.trustAnchor || typeof value.trustAnchor !== "object" || !value.repositoryProducer || typeof value.repositoryProducer !== "object") {
     return { state: "blocked", reason: "invalid_input", appendedEntryDigest: null };
   }
-  if (!["integration", "rollback"].includes(value.stage)) return stageResultV2("blocked", "stage_blocked");
-  const store = exactDataRecord(value.storeScope, ["readJournal", "appendEntry"]);
+  const store = exactDataRecord(value.storeScope, ["initializeJournal", "readJournal", "appendEntry", "recoverJournal"]);
   const stageInput = exactStageInputV2(value.stageInput);
-  if (!store || typeof store.readJournal !== "function" || typeof store.appendEntry !== "function" || !stageInput ||
+  if (!store || typeof store.initializeJournal !== "function" || typeof store.readJournal !== "function" || typeof store.appendEntry !== "function" ||
+      typeof store.recoverJournal !== "function" || !stageInput ||
       typeof value.repositoryProducer.executeTransition !== "function" || typeof value.repositoryProducer.observeAndSignTransition !== "function") {
     return stageResultV2("blocked", "invalid_input");
   }
@@ -556,6 +786,95 @@ export async function executeFeatureIntegrationWorkspaceStageV2(input) {
   if (appended.state !== "accepted") return stageResultV2(appended.state, appended.reason);
   return entryKind === "effect_uncertain" ? stageResultV2("recovery_required", "effect_uncertain", terminal.entryDigest)
     : stageResultV2("accepted", null, terminal.entryDigest);
+}
+
+function sortedUniqueStringsV2(value, validate) {
+  const items = denseDataArray(value);
+  return items && items.length > 0 && items.every(validate) && new Set(items).size === items.length &&
+    items.every((item, index) => index === 0 || compareUtf16(items[index - 1], item) < 0) ? items : null;
+}
+
+export function computeGovernedRollbackWorkspaceReceiptDigestV2(input) {
+  const value = input && typeof input === "object" ? structuredClone(input) : null;
+  if (!value) throw new TypeError("Governed rollback workspace receipt is invalid.");
+  delete value.completionReceiptDigest;
+  return digestV2("shield.feature-integration.rollback-workspace-receipt.v2", value);
+}
+
+/** Produces the V2 rollback handoff only at the authenticated journal transition. */
+export function createRollbackMissionHandoffReadyV2(input) {
+  const value = exactDataRecord(input, ["replay"]);
+  if (!value || value.replay?.nextStage !== "rollback_mission_handoff") return block("rollback_handoff_ineligible");
+  return createRollbackMissionHandoffReadyV1(value);
+}
+
+/** Authenticates one governed rollback mission and durably accepts its V2 workspace receipt. */
+export async function acceptGovernedRollbackWorkspaceV2(input) {
+  const raw = exactDataRecord(input, ["replay", "journal", "handoff", "sourceJournal", "receipt", "storeScope", "trustAnchor"]);
+  if (!raw || !raw.replay || typeof raw.replay !== "object" || !raw.journal || typeof raw.journal !== "object" ||
+      !raw.trustAnchor || typeof raw.trustAnchor !== "object") return stageResultV2("blocked", "invalid_input");
+  let value;
+  try {
+    value = { ...structuredClone({ replay: raw.replay, journal: raw.journal, handoff: raw.handoff, sourceJournal: raw.sourceJournal,
+      receipt: raw.receipt, trustAnchor: raw.trustAnchor }), storeScope: raw.storeScope };
+  } catch { return stageResultV2("blocked", "invalid_input"); }
+  const store = exactDataRecord(raw.storeScope, ["initializeJournal", "readJournal", "appendEntry", "recoverJournal"]);
+  if (!store || [store.initializeJournal, store.readJournal, store.appendEntry, store.recoverJournal].some((method) => typeof method !== "function")) {
+    return stageResultV2("blocked", "invalid_input");
+  }
+  const current = await readStageJournalV2(store, value.journal, value.trustAnchor);
+  if (current.state !== "accepted") return stageResultV2(current.state, current.reason);
+  if (canonicalFeatureIntegrationJsonV1(current.replay) !== canonicalFeatureIntegrationJsonV1(value.replay)) return stageResultV2("blocked", "compare_conflict");
+  const expectedHandoff = createRollbackMissionHandoffReadyV2({ replay: current.replay });
+  if (expectedHandoff.state !== "rollback_mission_handoff_ready" ||
+      canonicalFeatureIntegrationJsonV1(expectedHandoff) !== canonicalFeatureIntegrationJsonV1(value.handoff)) {
+    return stageResultV2("blocked", "rollback_handoff_invalid");
+  }
+  const receiptFields = ["sourceMissionId", "repositoryId", "baseHeadRevision", "rollbackBranch", "restoredTreeDigest", "pullRequestId",
+    "pullRequestHeadRevision", "pullRequestTargetBranch", "draft", "sourceAuthorityDigest", "sourceJournalDigest", "completionReceiptDigest",
+    "sourceEffectKeys", "evidenceDigests"];
+  const receipt = exactDataRecord(value.receipt, receiptFields);
+  const sourceEffectKeys = receipt ? sortedUniqueStringsV2(receipt.sourceEffectKeys, (item) => text(item)) : null;
+  const evidenceDigests = receipt ? sortedUniqueStringsV2(receipt.evidenceDigests, (item) => DIGEST.test(item)) : null;
+  if (!receipt || !sourceEffectKeys || !evidenceDigests || evidenceDigests.length < 2 || !REVISION.test(receipt.baseHeadRevision) ||
+      !REVISION.test(receipt.pullRequestHeadRevision) || !DIGEST.test(receipt.restoredTreeDigest) || !AUTHORITY_DIGEST_V2.test(receipt.sourceAuthorityDigest) ||
+      !DIGEST.test(receipt.sourceJournalDigest) || !DIGEST.test(receipt.completionReceiptDigest) || !text(receipt.pullRequestId) ||
+      !text(receipt.rollbackBranch) || !text(receipt.pullRequestTargetBranch) || receipt.draft !== true ||
+      computeGovernedRollbackWorkspaceReceiptDigestV2(receipt) !== receipt.completionReceiptDigest) {
+    return stageResultV2("blocked", "rollback_workspace_receipt_invalid");
+  }
+  if (receipt.sourceMissionId !== expectedHandoff.requiredSourceMissionId || receipt.repositoryId !== expectedHandoff.repositoryId ||
+      receipt.baseHeadRevision !== expectedHandoff.currentHeadRevision || receipt.rollbackBranch !== expectedHandoff.rollbackBranchRequirement ||
+      receipt.restoredTreeDigest !== expectedHandoff.expectedRestoredTreeDigest || receipt.pullRequestTargetBranch !== expectedHandoff.draftTargetRequirement ||
+      sourceEffectKeys.includes(expectedHandoff.reservedFinalEffectKey)) return stageResultV2("blocked", "rollback_workspace_binding_mismatch");
+  const source = replayProfileAwareMissionJournal(value.sourceJournal);
+  const authority = source.state === "valid" ? source.value.implementationAuthority : null;
+  const effects = source.state === "valid" ? source.value.effects.filter((effect) => effect.outcome === "completed" && sourceEffectKeys.includes(effect.effectKey)) : [];
+  const evidenceRefs = [
+    `feature-integration:restored-tree:${receipt.restoredTreeDigest}`,
+    `feature-integration:rollback-head:${receipt.pullRequestHeadRevision}`,
+    `feature-integration:rollback-pr:${receipt.pullRequestId}`,
+    ...evidenceDigests.map((item) => `feature-integration:evidence:${item}`),
+  ];
+  if (source.state !== "valid" || source.value.missionId !== receipt.sourceMissionId || source.value.execution !== "completed" ||
+      source.value.implementationAuthorityState !== "authorized" || source.value.implementationAuthorityDigest !== receipt.sourceAuthorityDigest ||
+      computeProfileAwareMissionJournalDigestV1(value.sourceJournal) !== receipt.sourceJournalDigest || !authority || authority.seatId !== "may" ||
+      authority.repositoryId !== receipt.repositoryId || authority.branch !== receipt.rollbackBranch || authority.headRevision !== receipt.baseHeadRevision ||
+      !sourceEffectKeys.every((effectKey) => authority.approvedEffectKeys.includes(effectKey)) || effects.length !== sourceEffectKeys.length ||
+      effects.some((effect) => effect.seatId !== "may") || evidenceRefs.some((reference) => !effects.some((effect) => effect.evidenceRefs.includes(reference)))) {
+    return stageResultV2("blocked", "rollback_source_journal_invalid");
+  }
+  let entry;
+  try {
+    entry = createFeatureIntegrationEntryV2({ operationId: current.journal.operationId, entrySequence: current.replay.nextEntrySequence,
+      entryKind: "rollback_workspace_accepted", previousEntryDigest: current.journal.latestAcceptedEntryDigest,
+      payload: { childId: expectedHandoff.childId, sourceMissionId: receipt.sourceMissionId, completionReceiptDigest: receipt.completionReceiptDigest,
+        sourceAuthorityDigest: receipt.sourceAuthorityDigest, sourceJournalDigest: receipt.sourceJournalDigest, rollbackBranch: receipt.rollbackBranch,
+        pullRequestId: receipt.pullRequestId, pullRequestHeadRevision: receipt.pullRequestHeadRevision, targetBranch: receipt.pullRequestTargetBranch,
+        restoredTreeDigest: receipt.restoredTreeDigest, sourceEffectKeys: [...sourceEffectKeys], evidenceDigests: [...evidenceDigests] } });
+  } catch { return stageResultV2("blocked", "rollback_workspace_receipt_invalid"); }
+  const appended = await appendStageEntryV2(store, current.journal, entry, value.trustAnchor);
+  return appended.state === "accepted" ? stageResultV2("accepted", null, entry.entryDigest) : stageResultV2(appended.state, appended.reason);
 }
 
 export function createRollbackMissionHandoffReadyV1(input) {

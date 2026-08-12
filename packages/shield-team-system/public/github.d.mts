@@ -108,22 +108,53 @@ export interface FeatureGitHubObservationProducerV2 {
   observeAndSignExpiry(input: unknown): Promise<SignedFeatureExpiryObservationV2>;
 }
 export function createGitHubFeatureObservationProducerV2(config: FeatureGitHubObservationProducerConfigV2): { state: "ready"; producer: FeatureGitHubObservationProducerV2 } | { state: "unavailable"; reason: "producer_unavailable" };
+
+export type FeatureOperationJournalStoreResultV2<T> =
+  | { state: "accepted"; value: Readonly<T> }
+  | { state: "blocked"; reason: string }
+  | { state: "recovery_required"; reason: "durability_uncertain" };
+export interface FeatureOperationJournalStoreV2 {
+  initializeJournal(input: { journal: FeatureOperationJournalV2 }): Promise<FeatureOperationJournalStoreResultV2<{ journal: FeatureOperationJournalV2; bytes: string; journalPath: string }>>;
+  readJournal(): Promise<FeatureOperationJournalStoreResultV2<{ journal: FeatureOperationJournalV2 | null; bytes: string; journalPath: string }>>;
+  appendEntry(input: { expectedJournalDigest: string; expectedEntrySequence: number; expectedLatestEntryDigest: string; entry: FeatureOperationJournalV2["entries"][number] }): Promise<FeatureOperationJournalStoreResultV2<{ journal: FeatureOperationJournalV2; bytes: string; journalPath: string }>>;
+  recoverJournal(input: { baselineJournalDigest: string; candidateJournalDigest: string }): Promise<FeatureOperationJournalStoreResultV2<{ classification: "unchanged_baseline" | "complete_candidate"; journal: FeatureOperationJournalV2 }>>;
+}
+export function createFeatureOperationJournalStoreV2(input: {
+  repositoryRoot: string;
+  operationId: string;
+  lockOwnerId: string;
+  trustAnchor: FeatureIntegrationTrustAnchorV2;
+}): Promise<{ state: "ready"; store: FeatureOperationJournalStoreV2 } | { state: "blocked"; reason: "invalid_input" }>;
+
 export function executeFeatureIntegrationWorkspaceStageV2(input: {
-  stage: "feature_branch_creation" | "feature_workspace" | "child_initiation" | "child_publication" | "integration" | "rollback";
+  stage: "integration" | "rollback";
   replay: FeatureIntegrationReplayProjectionV2;
   journal: FeatureOperationJournalV2;
   stageInput: Readonly<Record<string, unknown>>;
-  storeScope: {
-    readJournal(): Promise<{ state: "accepted"; value: { journal: FeatureOperationJournalV2 } } | { state: "blocked" | "recovery_required" }>;
-    appendEntry(input: Readonly<Record<string, unknown>>): Promise<{ state: "accepted"; value: { journal: FeatureOperationJournalV2 } } | { state: "blocked" | "recovery_required" }>;
-  };
+  storeScope: FeatureOperationJournalStoreV2;
   trustAnchor: FeatureIntegrationTrustAnchorV2;
   repositoryProducer: FeatureGitHubObservationProducerV2;
-  cumulativeProducer: unknown;
 }): Promise<
   | { state: "accepted"; appendedEntryDigest: string }
-  | { state: "blocked" | "recovery_required"; reason: "invalid_input" | "authorization_invalid" | "replay_invalid" | "compare_conflict" | "producer_unavailable" | "authentication_unavailable" | "durability_uncertain" | "execution_receipt_unavailable" | "effect_uncertain" | "stage_blocked"; appendedEntryDigest: string | null }
+  | { state: "blocked" | "recovery_required"; reason: "invalid_input" | "authorization_invalid" | "replay_invalid" | "compare_conflict" | "producer_unavailable" | "authentication_unavailable" | "durability_uncertain" | "execution_receipt_unavailable" | "effect_uncertain"; appendedEntryDigest: string | null }
 >;
+
+export interface GovernedRollbackWorkspaceReceiptV2 {
+  sourceMissionId: string; repositoryId: string; baseHeadRevision: string; rollbackBranch: string; restoredTreeDigest: string;
+  pullRequestId: string; pullRequestHeadRevision: string; pullRequestTargetBranch: string; draft: true; sourceAuthorityDigest: string;
+  sourceJournalDigest: string; completionReceiptDigest: string; sourceEffectKeys: readonly string[]; evidenceDigests: readonly string[];
+}
+export function computeGovernedRollbackWorkspaceReceiptDigestV2(input: GovernedRollbackWorkspaceReceiptV2): string;
+export function createRollbackMissionHandoffReadyV2(input: { replay: FeatureIntegrationReplayProjectionV2 }): Record<string, unknown>;
+export function acceptGovernedRollbackWorkspaceV2(input: {
+  replay: FeatureIntegrationReplayProjectionV2;
+  journal: FeatureOperationJournalV2;
+  handoff: Readonly<Record<string, unknown>>;
+  sourceJournal: unknown;
+  receipt: GovernedRollbackWorkspaceReceiptV2;
+  storeScope: FeatureOperationJournalStoreV2;
+  trustAnchor: FeatureIntegrationTrustAnchorV2;
+}): Promise<{ state: "accepted"; appendedEntryDigest: string } | { state: "blocked" | "recovery_required"; reason: string; appendedEntryDigest: string | null }>;
 
 export function prepareFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "prepared"; entry: Record<string, unknown>; candidate: Record<string, unknown> } | { state: "blocked"; reason: string };
 export function invokeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;

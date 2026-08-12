@@ -18,7 +18,11 @@ export {
 } from "../github/adapter-v1.mjs";
 export {
   acceptGovernedRollbackWorkspaceV1,
+  acceptGovernedRollbackWorkspaceV2,
+  computeGovernedRollbackWorkspaceReceiptDigestV2,
+  createFeatureOperationJournalStoreV2,
   createRollbackMissionHandoffReadyV1,
+  createRollbackMissionHandoffReadyV2,
   executeFeatureIntegrationWorkspaceStageV1,
   executeFeatureIntegrationWorkspaceStageV2,
   invokeFeatureIntegrationWorkspaceEffectV1,

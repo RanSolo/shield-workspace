@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -46,12 +49,29 @@ import {
   computeFeatureOperationAuthorityDigestV2,
   computeFeatureOperationPlanDigestV2,
 } from "../dist/feature-operation-v1.mjs";
-import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 import {
   computeImplementationAuthorityDigest,
   computeSchema9RuntimeBindingDigest,
 } from "../dist/implementation-authority-v1.mjs";
-import { executeFeatureIntegrationWorkspaceStageV2 } from "../github/feature-integration-workspace-v1.mjs";
+import {
+  createProfileAwareExecutionEffectEntryV1,
+  createProfileAwareGovernanceDecisionEntryV1,
+  createProfileAwareImplementationAuthorityEntryV1,
+  createProfileAwareMissionBegunEntry,
+  createProfileAwareMissionBrief,
+  MISSION_130_JOURNAL_DIGEST,
+  replayProfileAwareMissionJournal,
+} from "../dist/profile-aware-mission-v1.mjs";
+import { computeProfileAwareMissionJournalDigestV1 } from "../dist/feature-integration-evidence-v1.mjs";
+import {
+  acceptGovernedRollbackWorkspaceV2,
+  computeGovernedRollbackWorkspaceReceiptDigestV2,
+  createFeatureOperationJournalStoreV2,
+  createGitHubFeatureObservationProducerV2,
+  createRollbackMissionHandoffReadyV2,
+  executeFeatureIntegrationWorkspaceStageV2,
+} from "../github/feature-integration-workspace-v1.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const revision = (character) => character.repeat(40);
@@ -497,7 +517,7 @@ test("terminal rollback reconciliation preserves disposition and exposes only fr
   }
 });
 
-function hardenedGenesisFixture() {
+function hardenedGenesisFixture(options = {}) {
   const legacy = replayFixture();
   const fitzBinding = {
     ...structuredClone(legacy.trustedBindings[0]),
@@ -513,6 +533,9 @@ function hardenedGenesisFixture() {
   ];
   const hardenedPlan = {
     ...structuredClone(legacy.plan),
+    repositoryId: options.repositoryId ?? legacy.plan.repositoryId,
+    baseTreeDigest: options.baseTreeDigest ?? legacy.plan.baseTreeDigest,
+    children: legacy.plan.children.map((child) => ({ ...structuredClone(child), repositoryId: options.repositoryId ?? child.repositoryId })),
     schemaVersion: 2,
     contractVersion: "feature.operation.v2",
     protocol: {
@@ -530,6 +553,7 @@ function hardenedGenesisFixture() {
     contractVersion: "feature.operation.v2",
     plan: hardenedPlan,
     planDigest: hardenedPlan.planDigest,
+    repositoryId: hardenedPlan.repositoryId,
     authorityDigest: digest("0"),
   };
   hardenedAuthority.authorityDigest = computeFeatureOperationAuthorityDigestV2(hardenedAuthority);
@@ -548,6 +572,10 @@ function hardenedGenesisFixture() {
     activePlanDigest: hardenedPlan.planDigest,
     verifiedAuthorityDigest: hardenedAuthority.authorityDigest,
     acceptedPlanLineage: [{ planSequence: 0, planDigest: hardenedPlan.planDigest, predecessorPlanDigest: null, authorityDigest: hardenedAuthority.authorityDigest, active: true }],
+    repositoryId: hardenedPlan.repositoryId,
+    transitions: legacy.replayContext.transitions.map((transition) => transition.kind === "genesis" ? {
+      ...structuredClone(transition), priorTreeDigest: hardenedPlan.baseTreeDigest, resultingTreeDigest: hardenedPlan.baseTreeDigest,
+    } : structuredClone(transition)),
   };
   const sourceImplementationAuthority = {
     schemaVersion: 1,
@@ -638,6 +666,52 @@ function signProducerV2(domain, payload) {
   return { payload: structuredClone(payload), signatureBase64: sign(null, Buffer.concat([
     Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(canonicalFeatureIntegrationJsonV1(payload), "utf8"),
   ]), privateKey).toString("base64") };
+}
+
+function governedRollbackMissionJournalV2({ missionId, repositoryId, branch, baseHeadRevision, effectKey, evidenceRefs }) {
+  const brief = createProfileAwareMissionBrief({ schemaVersion: 2, missionId, objective: "Prepare one exact rollback workspace.", subjectId: "issue:226",
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true },
+    participants: [{ seatId: "hill" }, { seatId: "may" }, { seatId: "coulson" }], activatedModes: [], requireSimmons: false,
+    createdAt: { value: "2029-05-01T00:00:00Z", provenance: "humanRecorded" }, profileId: "standard", profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130", predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST });
+  const binding = { schemaVersion: 1, bindingId: `binding:${missionId}:coulson`, humanPrincipalId: "human:coulson", seatId: "coulson",
+    missionScope: missionId, signingKeyRef, publicKeySpkiBase64, validFromSequence: 0, validThroughSequence: null,
+    attestedBy: "repository-policy:maintainer", provenanceRef: "repository-config:coulson" };
+  const entries = [createProfileAwareMissionBegunEntry(brief, [binding])];
+  let projection = replayProfileAwareMissionJournal(entries).value;
+  const requirement = projection.requirements.find((item) => item.evidenceKind === "mission_authorization");
+  const evidencePayload = { schemaVersion: 1, evidenceId: `evidence:${missionId}:coulson`, requirementId: requirement.requirementId, missionId,
+    revisionId: brief.revisionId, seatId: "coulson", evidenceKind: "mission_authorization", decision: "approved",
+    humanPrincipalId: binding.humanPrincipalId, bindingId: binding.bindingId, signingKeyRef, sourceRef: `authorization:${missionId}`,
+    timestamp: { value: "2029-05-01T00:01:00Z", provenance: "humanRecorded" }, journalSequence: 1 };
+  entries.push(createProfileAwareGovernanceDecisionEntryV1({ projection, trustedBindings: [binding],
+    evidence: { payload: evidencePayload, signatureBase64: sign(null, Buffer.from(canonicalJson(evidencePayload)), privateKey).toString("base64") } }));
+  projection = replayProfileAwareMissionJournal(entries).value;
+  const authority = { schemaVersion: 1, contractVersion: "implementation-authority.v1", authorityKind: "wheels_up", authorityRef: `authority:${missionId}:1`,
+    missionId, subjectId: brief.subjectId, seatId: "may", missionRevisionId: brief.revisionId, artifactRevisionId: baseHeadRevision,
+    repositoryId, canonicalWritableRoot: "/workspace/shield", branch, baseRevision: revision("a"), headRevision: baseHeadRevision,
+    modelId: "model:gpt-5.6-sol", approvedRelativePaths: ["packages/shield-team-system"], approvedActionIds: ["edit:implementation"],
+    approvedEffectClasses: ["behavioral_implementation"], approvedEffectKeys: [effectKey], approvedCapabilities: ["filesystem_write"],
+    validationCommandIds: ["validation:test"], journalSequence: 2, humanPrincipalId: binding.humanPrincipalId, humanBindingId: binding.bindingId,
+    signingKeyRef, sourceRef: `source:${missionId}:authority`, evidenceRef: `evidence:${missionId}:authority`,
+    timestamp: { value: "2029-05-01T00:02:00Z", provenance: "humanRecorded" } };
+  const signedAuthority = { payload: authority, signatureBase64: sign(null, Buffer.from(canonicalJson(authority)), privateKey).toString("base64") };
+  entries.push(createProfileAwareImplementationAuthorityEntryV1({ projection, trustedBindings: [binding], authority: signedAuthority }));
+  entries.push({ schemaVersion: 9, entryId: `entry:${missionId}:3`, missionId, sequence: 3, type: "execution.transition",
+    timestamp: { value: "2029-05-01T00:03:00Z", provenance: "hostTrusted" }, payload: { from: "not-started", to: "running" } });
+  projection = replayProfileAwareMissionJournal(entries).value;
+  entries.push(createProfileAwareExecutionEffectEntryV1({ projection, candidate: { runnerContractVersion: 1,
+    candidateKind: "runner.supervised_effect_record", authority: "non_authoritative", journalSchemaVersion: 9, missionId,
+    subjectId: brief.subjectId, revisionId: brief.revisionId, expectedPreviousSequence: 3, intendedJournalSequence: 4,
+    payload: { runnerContractVersion: 1, cycleId: `cycle:${missionId}:workspace`, subjectId: brief.subjectId, revisionId: brief.revisionId,
+      evaluatedThroughSequence: 3, seatId: "may", actionId: "edit:implementation", effectClass: "behavioral_implementation", effectKey,
+      authorizationDecisionId: `decision:${missionId}:workspace`, outcome: "completed", reasonCode: "effect_completed",
+      summary: "Prepared the exact governed rollback workspace.", evidenceRefs } },
+    timestamp: { value: "2029-05-01T00:04:00Z", provenance: "hostTrusted" } }));
+  const replayed = replayProfileAwareMissionJournal(entries);
+  assert.equal(replayed.state, "valid"); assert.equal(replayed.value.execution, "completed");
+  return { entries: JSON.parse(canonicalJson(entries)), authorityDigest: computeImplementationAuthorityDigest(authority) };
 }
 
 test("V2 replay authenticates exact transition non-application and retains uncertainty", () => {
@@ -780,7 +854,7 @@ test("V2 replay authenticates exact transition non-application and retains uncer
   const appliedEntry = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "integration_accepted", previousEntryDigest: prepared.entryDigest,
     payload: { preparationEntryDigest: prepared.entryDigest, signedTransitionObservation: observationFor("applied", appliedHead, appliedTree, {
       observedIntegrationMethod: "squash", pullRequestMerged: true, pullRequestMergeRevision: appliedHead,
-      resultingCommitParents: [core.priorHeadRevision], checkState: "successful",
+      pullRequestCommitHeads: [revision("f"), candidate.childHeadRevision], resultingCommitParents: [core.priorHeadRevision], checkState: "successful",
     }) } });
   const appliedReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, appliedEntry]), fixture.trustAnchor);
   assert.equal(appliedReplay.state, "valid"); assert.equal(appliedReplay.value.terminalHeadRevision, appliedHead); assert.equal(appliedReplay.value.cumulativeValidation, "pending");
@@ -796,8 +870,11 @@ test("V2 replay authenticates exact transition non-application and retains uncer
   assert.deepEqual(replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, prepared, badSignature]), fixture.trustAnchor), { state: "invalid", reason: "OBSERVATION_AUTHORITY_INVALID", entrySequence: 2 });
 });
 
-test("V2 cumulative failure replay reaches rollback_pending and accepts an exact restored workspace receipt", async () => {
-  const fixture = hardenedGenesisFixture();
+test("V2 durably authenticates and recovers production transition and rollback workspace paths", async (t) => {
+  const restoredGitTree = revision("1"), integratedGitTree = revision("9");
+  const restoredTree = `sha256:${createHash("sha256").update(restoredGitTree, "ascii").digest("hex")}`;
+  const integratedTree = `sha256:${createHash("sha256").update(integratedGitTree, "ascii").digest("hex")}`;
+  const fixture = hardenedGenesisFixture({ repositoryId: "RanSolo/shield-workspace", baseTreeDigest: restoredTree });
   const context = structuredClone(fixture.replayContext);
   context.operationCounters.featureBranchCreateAttempts = 1;
   context.operationCounters.featureWorkspaceDraftPrAttempts = 1;
@@ -806,7 +883,7 @@ test("V2 cumulative failure replay reaches rollback_pending and accepts an exact
   context.operationCounters.capturedEvidenceCount = 1;
   context.acceptedReviewEvidence = [{ evidenceRef: "evidence:review", gateType: "fury", gateId: "fury", childId: "mission:child-one",
     repositoryId: context.repositoryId, headRevision: revision("b"), sourceRecordDigest: digest("8") }];
-  const priorTree = fixture.hardenedPlan.baseTreeDigest, integratedTree = digest("9");
+  const priorTree = fixture.hardenedPlan.baseTreeDigest;
   const genesis = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 0, entryKind: "operation_genesis_accepted", previousEntryDigest: null,
     payload: { replayContext: context, signedAuthority: fixture.signedAuthority, trustedObservationProducerBindings: fixture.producerBindings, trustedHumanBindings: fixture.humanBindings } });
   const baseline = createFeatureOperationJournalV2([genesis]);
@@ -839,35 +916,51 @@ test("V2 cumulative failure replay reaches rollback_pending and accepts an exact
     previousEntryDigest: genesis.entryDigest, payload: { effectClass: "transition", candidate: integrationCandidate,
       candidateDigest: integrationCandidate.candidateDigest, effectKey: integrationEffectKey, request: integrationRequest,
       requestDigest: integrationRequest.requestDigest, expectedHeadRevision: integrationCore.priorHeadRevision, expectedTreeDigest: priorTree, signedCumulativeAuthority: null } });
-  const integrationObservation = { schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "transition", operationId: context.operationId,
-    repositoryId: context.repositoryId, requestId: integrationCore.requestId, requestCoreDigest: integrationCoreDigest, requestDigest: integrationRequest.requestDigest,
-    preparationEntryDigest: integrationPrepared.entryDigest, candidateDigest: integrationCandidate.candidateDigest, effectKey: integrationEffectKey, pullRequestId: "7",
-    expectedPullRequestHead: revision("b"), targetFeatureRef: integrationCore.targetFeatureRef, integrationMethod: "squash", priorHeadRevision: integrationCore.priorHeadRevision,
-    priorTreeDigest: priorTree, observedPullRequestHead: revision("b"), observedPullRequestBaseBranch: integrationCore.targetFeatureBranch,
-    observedIntegrationMethod: "squash", pullRequestMerged: true, pullRequestMergeRevision: revision("c"), pullRequestCommitHeads: [revision("b")],
-    conflictingPullRequestCount: 0, resultingCommitParents: [integrationCore.priorHeadRevision], rebasedCommits: [], checkState: "successful",
-    observedTargetHeadRevision: revision("c"), observedTargetTreeDigest: integratedTree, status: "applied", signedChallenge: signedIntegrationChallenge,
-    producerId: "producer:github", observedAt: "2029-05-01T00:12:00Z", observationDigest: digest("0") };
-  integrationObservation.observationDigest = computeFeatureTransitionObservationDigestV2(integrationObservation);
-  const integrationAccepted = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 2, entryKind: "integration_accepted",
-    previousEntryDigest: integrationPrepared.entryDigest, payload: { preparationEntryDigest: integrationPrepared.entryDigest,
-      signedTransitionObservation: signProducerV2("shield.feature-integration.observation.v2:transition", integrationObservation) } });
-  const integratedJournal = createFeatureOperationJournalV2([genesis, integrationPrepared, integrationAccepted]);
-  const integrationReceipt = integrationObservation.observationDigest;
   const baselineReplay = replayFeatureOperationJournalV2(baseline, fixture.trustAnchor);
   assert.equal(baselineReplay.state, "valid");
-  let integrationJournalFromOwner = baseline; let integrationExecuteCalls = 0; let integrationObserveCalls = 0;
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-feature-v2-"));
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const createdStore = await createFeatureOperationJournalStoreV2({ repositoryRoot, operationId: context.operationId,
+    lockOwnerId: "lock:test:v2", trustAnchor: fixture.trustAnchor });
+  assert.equal(createdStore.state, "ready");
+  const store = createdStore.store;
+  assert.equal((await store.initializeJournal({ journal: baseline })).state, "accepted");
+  const githubCalls = [];
+  const githubResponses = [];
+  const run = (command, args, options) => {
+    githubCalls.push({ command, args, options });
+    return githubResponses.shift() ?? { status: 1, stdout: "", stderr: "unexpected GitHub call", errorCode: null };
+  };
+  let producerTime = "2029-05-01T00:12:00Z";
+  const createdProducer = createGitHubFeatureObservationProducerV2({ adapterOptions: { run, cwd: repositoryRoot }, producerId: "producer:github",
+    signEnvelope: async (domain, payload) => signProducerV2(domain, payload), clock: () => producerTime });
+  assert.equal(createdProducer.state, "ready");
+  const repositoryProducer = createdProducer.producer;
+  const ok = (value) => ({ status: 0, stdout: JSON.stringify(value), stderr: "", errorCode: null });
+  githubResponses.push(
+    ok({ merged: true, sha: revision("c") }),
+    ok({ number: 7, url: "https://github.com/RanSolo/shield-workspace/pull/7", state: "MERGED", isDraft: true,
+      headRefName: "agent/child-one", headRefOid: revision("b"), baseRefName: fixture.hardenedPlan.featureBranch,
+      mergedAt: "2029-05-01T00:11:30Z", mergeCommit: { oid: revision("c") }, statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }],
+      commits: [{ oid: revision("f") }, { oid: revision("b") }] }),
+    ok([{ number: 7 }]), ok({ ref: `refs/heads/${fixture.hardenedPlan.featureBranch}`, object: { type: "commit", sha: revision("c") } }),
+    ok({ sha: revision("c"), tree: { sha: integratedGitTree } }),
+    ok({ sha: revision("c"), tree: { sha: integratedGitTree }, parents: [{ sha: integrationCore.priorHeadRevision }] }),
+    ok({ sha: revision("b"), tree: { sha: integratedGitTree }, parents: [{ sha: revision("f") }] }),
+  );
   const integrationStageResult = await executeFeatureIntegrationWorkspaceStageV2({ stage: "integration", replay: baselineReplay.value, journal: baseline,
     stageInput: { stage: "integration", candidate: integrationCandidate, request: integrationRequest },
-    storeScope: { readJournal: async () => ({ state: "accepted", value: { journal: integrationJournalFromOwner } }), appendEntry: async ({ entry }) => {
-      integrationJournalFromOwner = createFeatureOperationJournalV2([...integrationJournalFromOwner.entries, entry]);
-      return { state: "accepted", value: { journal: integrationJournalFromOwner } };
-    } }, trustAnchor: fixture.trustAnchor,
-    repositoryProducer: { executeTransition: async () => { integrationExecuteCalls += 1; return { state: "effect_result", outcome: "applied" }; },
-      observeAndSignTransition: async () => { integrationObserveCalls += 1; return integrationAccepted.payload.signedTransitionObservation; } },
-    cumulativeProducer: null });
-  assert.equal(integrationStageResult.state, "accepted"); assert.equal(integrationExecuteCalls, 1); assert.equal(integrationObserveCalls, 1);
-  assert.equal(canonicalFeatureIntegrationJsonV1(integrationJournalFromOwner), canonicalFeatureIntegrationJsonV1(integratedJournal));
+    storeScope: store, trustAnchor: fixture.trustAnchor, repositoryProducer });
+  assert.equal(integrationStageResult.state, "accepted");
+  assert.equal(githubCalls.filter((call) => call.args.includes("--method") && call.args.includes("PUT")).length, 1);
+  let durableRead = await store.readJournal();
+  assert.equal(durableRead.state, "accepted");
+  const integratedJournal = durableRead.value.journal;
+  assert.equal(integratedJournal.entries[1].entryDigest, integrationPrepared.entryDigest);
+  const integrationAccepted = integratedJournal.entries[2];
+  assert.equal(integrationAccepted.entryKind, "integration_accepted");
+  assert.deepEqual(integrationAccepted.payload.signedTransitionObservation.payload.pullRequestCommitHeads, [revision("f"), revision("b")]);
+  const integrationReceipt = integrationAccepted.payload.signedTransitionObservation.payload.observationDigest;
   const command = { commandId: "command:test", executable: "npm", args: ["test"], targetIds: ["target:team"], executableArgsDigest: digest("1"), idempotencyKey: digest("2") };
   const cumulativeEffectKey = "effect:cumulative:one";
   let authority = { schemaVersion: 2, authorityKind: "feature_cumulative_validation.v2", authorityId: "authority:cumulative:one", missionId: fixture.hardenedAuthority.missionId,
@@ -914,20 +1007,63 @@ test("V2 cumulative failure replay reaches rollback_pending and accepts an exact
   const failed = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 4, entryKind: "cumulative_validation_failed",
     previousEntryDigest: prepared.entryDigest, payload: { preparationEntryDigest: prepared.entryDigest,
       signedCumulativeReceipt: signProducerV2("shield.feature-integration.observation.v2:cumulative_receipt", receipt) } });
-  const failedJournal = createFeatureOperationJournalV2([genesis, integrationPrepared, integrationAccepted, prepared, failed]);
+  assert.equal((await store.appendEntry({ expectedJournalDigest: integratedJournal.journalDigest, expectedEntrySequence: 3,
+    expectedLatestEntryDigest: integrationAccepted.entryDigest, entry: prepared })).state, "accepted");
+  const cumulativePreparedJournal = createFeatureOperationJournalV2([...integratedJournal.entries, prepared]);
+  assert.equal((await store.appendEntry({ expectedJournalDigest: cumulativePreparedJournal.journalDigest, expectedEntrySequence: 4,
+    expectedLatestEntryDigest: prepared.entryDigest, entry: failed })).state, "accepted");
+  durableRead = await store.readJournal();
+  assert.equal(durableRead.state, "accepted");
+  const failedJournal = durableRead.value.journal;
   const replayed = replayFeatureOperationJournalV2(failedJournal, fixture.trustAnchor);
   assert.equal(replayed.state, "valid"); assert.equal(replayed.value.cumulativeValidation, "failed");
   assert.equal(replayed.value.lifecycle, "rollback_pending"); assert.equal(replayed.value.nextStage, "rollback_mission_handoff");
   assert.deepEqual(replayed.value.consumedCumulativeValidationEffectKeys, [cumulativeEffectKey]); assert.equal(replayed.value.cumulativeValidationAttempts, 1);
-  const completionReceiptDigest = digest("a");
-  const workspace = createFeatureIntegrationEntryV2({ operationId: context.operationId, entrySequence: 5, entryKind: "rollback_workspace_accepted",
-    previousEntryDigest: failed.entryDigest, payload: { childId: "mission:child-one", sourceMissionId: "mission:rollback-one", completionReceiptDigest,
-      sourceAuthorityDigest: digest("b"), sourceJournalDigest: digest("c"), rollbackBranch: "rollback/child-one", pullRequestId: "8",
-      pullRequestHeadRevision: revision("d"), targetBranch: fixture.hardenedPlan.featureBranch, restoredTreeDigest: priorTree,
-      sourceEffectKeys: ["effect:rollback-source:one"], evidenceDigests: [digest("d"), digest("e")] } });
-  const workspaceReplay = replayFeatureOperationJournalV2(createFeatureOperationJournalV2([genesis, integrationPrepared, integrationAccepted, prepared, failed, workspace]), fixture.trustAnchor);
+  const handoff = createRollbackMissionHandoffReadyV2({ replay: replayed.value });
+  assert.equal(handoff.state, "rollback_mission_handoff_ready");
+  const sourceEffectKey = "effect:rollback-source:one";
+  const evidenceDigests = [digest("d"), digest("e")];
+  const rollbackReceipt = { sourceMissionId: handoff.requiredSourceMissionId, repositoryId: handoff.repositoryId,
+    baseHeadRevision: handoff.currentHeadRevision, rollbackBranch: handoff.rollbackBranchRequirement, restoredTreeDigest: handoff.expectedRestoredTreeDigest,
+    pullRequestId: "8", pullRequestHeadRevision: revision("d"), pullRequestTargetBranch: handoff.draftTargetRequirement, draft: true,
+    sourceAuthorityDigest: digest("0"), sourceJournalDigest: digest("0"), completionReceiptDigest: digest("0"),
+    sourceEffectKeys: [sourceEffectKey], evidenceDigests };
+  const sourceEvidenceRefs = [`feature-integration:restored-tree:${rollbackReceipt.restoredTreeDigest}`,
+    `feature-integration:rollback-head:${rollbackReceipt.pullRequestHeadRevision}`, `feature-integration:rollback-pr:${rollbackReceipt.pullRequestId}`,
+    ...evidenceDigests.map((item) => `feature-integration:evidence:${item}`)];
+  const sourceMission = governedRollbackMissionJournalV2({ missionId: rollbackReceipt.sourceMissionId, repositoryId: rollbackReceipt.repositoryId,
+    branch: rollbackReceipt.rollbackBranch, baseHeadRevision: rollbackReceipt.baseHeadRevision, effectKey: sourceEffectKey, evidenceRefs: sourceEvidenceRefs });
+  rollbackReceipt.sourceAuthorityDigest = sourceMission.authorityDigest;
+  rollbackReceipt.sourceJournalDigest = computeProfileAwareMissionJournalDigestV1(sourceMission.entries);
+  rollbackReceipt.completionReceiptDigest = computeGovernedRollbackWorkspaceReceiptDigestV2(rollbackReceipt);
+  assert.equal(computeGovernedRollbackWorkspaceReceiptDigestV2(rollbackReceipt), rollbackReceipt.completionReceiptDigest);
+  const unorderedReceipt = { ...structuredClone(rollbackReceipt), evidenceDigests: [...rollbackReceipt.evidenceDigests].reverse(), completionReceiptDigest: digest("0") };
+  unorderedReceipt.completionReceiptDigest = computeGovernedRollbackWorkspaceReceiptDigestV2(unorderedReceipt);
+  assert.equal((await acceptGovernedRollbackWorkspaceV2({ replay: replayed.value, journal: failedJournal, handoff,
+    sourceJournal: sourceMission.entries, receipt: unorderedReceipt, storeScope: store, trustAnchor: fixture.trustAnchor })).reason,
+  "rollback_workspace_receipt_invalid");
+  const driftedSourceJournal = structuredClone(sourceMission.entries);
+  driftedSourceJournal.at(-1).payload.effect.summary = "Drifted after receipt capture.";
+  assert.equal((await acceptGovernedRollbackWorkspaceV2({ replay: replayed.value, journal: failedJournal, handoff,
+    sourceJournal: driftedSourceJournal, receipt: rollbackReceipt, storeScope: store, trustAnchor: fixture.trustAnchor })).reason,
+  "rollback_source_journal_invalid");
+  assert.equal((await store.readJournal()).value.journal.journalDigest, failedJournal.journalDigest);
+  let recoveryObserved = false;
+  const recoveringStore = { initializeJournal: store.initializeJournal, readJournal: store.readJournal,
+    appendEntry: async (input) => { const result = await store.appendEntry(input); assert.equal(result.state, "accepted"); return { state: "recovery_required", reason: "durability_uncertain" }; },
+    recoverJournal: async (input) => { recoveryObserved = true; return store.recoverJournal(input); } };
+  const acceptedWorkspace = await acceptGovernedRollbackWorkspaceV2({ replay: replayed.value, journal: failedJournal, handoff,
+    sourceJournal: sourceMission.entries, receipt: rollbackReceipt, storeScope: recoveringStore, trustAnchor: fixture.trustAnchor });
+  assert.equal(acceptedWorkspace.state, "accepted"); assert.equal(recoveryObserved, true);
+  durableRead = await store.readJournal();
+  assert.equal(durableRead.state, "accepted");
+  const workspaceJournal = durableRead.value.journal;
+  const workspace = workspaceJournal.entries.at(-1);
+  assert.equal(workspace.entryKind, "rollback_workspace_accepted");
+  assert.equal(workspace.payload.completionReceiptDigest, rollbackReceipt.completionReceiptDigest);
+  const workspaceReplay = replayFeatureOperationJournalV2(workspaceJournal, fixture.trustAnchor);
   assert.equal(workspaceReplay.state, "valid"); assert.equal(workspaceReplay.value.lifecycle, "rollback_pending"); assert.equal(workspaceReplay.value.nextStage, "rollback");
-  const workspaceJournal = createFeatureOperationJournalV2([genesis, integrationPrepared, integrationAccepted, prepared, failed, workspace]);
+  const completionReceiptDigest = rollbackReceipt.completionReceiptDigest;
   const rollbackEffectKey = fixture.hardenedPlan.children[0].allowedEffectKeys.find((key) => key.startsWith("effect:child_revert_on_feature:"));
   const rollbackCandidate = { schemaVersion: 2, contractVersion: "feature.operation.v2", repositoryId: context.repositoryId, operationId: context.operationId,
     planDigest: context.activePlanDigest, authorityDigest: context.verifiedAuthorityDigest, effectKey: rollbackEffectKey, requestedScope,
@@ -939,7 +1075,7 @@ test("V2 cumulative failure replay reaches rollback_pending and accepts an exact
     const rollbackCore = { schemaVersion: 2, contractVersion: "feature.integration.transition-request.v2", requestId: `request:rollback:${rollbackWorkspaceReceiptDigest.slice(-1)}`,
       operationId: context.operationId, repositoryId: context.repositoryId, derivationKind: "child_revert_on_feature", candidateDigest: rollbackCandidate.candidateDigest,
       effectKey: rollbackEffectKey, pullRequestId: "8", expectedPullRequestHead: revision("d"), targetFeatureBranch: fixture.hardenedPlan.featureBranch,
-      targetFeatureRef: `refs/heads/${fixture.hardenedPlan.featureBranch}`, integrationMethod: "squash", priorHeadRevision: revision("c"),
+      targetFeatureRef: `refs/heads/${fixture.hardenedPlan.featureBranch}`, integrationMethod: "merge_commit", priorHeadRevision: revision("c"),
       priorTreeDigest: integratedTree, rollbackWorkspaceReceiptDigest };
     const rollbackCoreDigest = computeFeatureTransitionRequestCoreDigestV2(rollbackCore);
     const rollbackChallenge = { schemaVersion: 2, contractVersion: "feature.integration.challenge.v2", challengeKind: "transition", operationId: context.operationId,
@@ -966,30 +1102,49 @@ test("V2 cumulative failure replay reaches rollback_pending and accepts an exact
     { state: "invalid", reason: "EFFECT_LIFECYCLE_INVALID", entrySequence: 6 });
 
   const rollbackRequest = rollbackPrepared.payload.request;
-  const rollbackObservation = { schemaVersion: 2, contractVersion: "feature.integration.observation.v2", observationKind: "transition", operationId: context.operationId,
-    repositoryId: context.repositoryId, requestId: rollbackRequest.requestId, requestCoreDigest: rollbackRequest.requestCoreDigest,
-    requestDigest: rollbackRequest.requestDigest, preparationEntryDigest: rollbackPrepared.entryDigest, candidateDigest: rollbackCandidate.candidateDigest,
-    effectKey: rollbackEffectKey, pullRequestId: "8", expectedPullRequestHead: revision("d"), targetFeatureRef: rollbackRequest.targetFeatureRef,
-    integrationMethod: "squash", priorHeadRevision: revision("c"), priorTreeDigest: integratedTree, observedPullRequestHead: revision("d"),
-    observedPullRequestBaseBranch: fixture.hardenedPlan.featureBranch, observedIntegrationMethod: "squash", pullRequestMerged: true,
-    pullRequestMergeRevision: revision("e"), pullRequestCommitHeads: [revision("d")], conflictingPullRequestCount: 0,
-    resultingCommitParents: [revision("c")], rebasedCommits: [], checkState: "successful", observedTargetHeadRevision: revision("e"),
-    observedTargetTreeDigest: priorTree, status: "applied", signedChallenge: rollbackRequest.signedChallenge, producerId: "producer:github",
-    observedAt: "2029-05-01T00:15:00Z", observationDigest: digest("0") };
-  rollbackObservation.observationDigest = computeFeatureTransitionObservationDigestV2(rollbackObservation);
-  const signedRollbackObservation = signProducerV2("shield.feature-integration.observation.v2:transition", rollbackObservation);
-  let durableJournal = rollbackJournal; let executeCalls = 0; let observeCalls = 0;
+  const pushRollbackObservation = (includeExecution) => {
+    if (includeExecution) githubResponses.push(ok({ merged: true, sha: revision("e") }));
+    githubResponses.push(
+      ok({ number: 8, url: "https://github.com/RanSolo/shield-workspace/pull/8", state: "MERGED", isDraft: true,
+        headRefName: rollbackReceipt.rollbackBranch, headRefOid: revision("d"), baseRefName: fixture.hardenedPlan.featureBranch,
+        mergedAt: "2029-05-01T00:14:30Z", mergeCommit: { oid: revision("e") }, statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }],
+        commits: [{ oid: revision("d") }] }),
+      ok([{ number: 8 }]), ok({ ref: `refs/heads/${fixture.hardenedPlan.featureBranch}`, object: { type: "commit", sha: revision("e") } }),
+      ok({ sha: revision("e"), tree: { sha: restoredGitTree } }),
+      ok({ sha: revision("e"), tree: { sha: restoredGitTree }, parents: [{ sha: revision("c") }, { sha: revision("d") }] }),
+    );
+  };
+  producerTime = "2029-05-01T00:15:00Z";
+  const freshRollbackRoot = await mkdtemp(join(tmpdir(), "shield-feature-v2-fresh-rollback-"));
+  t.after(() => rm(freshRollbackRoot, { recursive: true, force: true }));
+  const freshStoreResult = await createFeatureOperationJournalStoreV2({ repositoryRoot: freshRollbackRoot, operationId: context.operationId,
+    lockOwnerId: "lock:test:v2:fresh", trustAnchor: fixture.trustAnchor });
+  assert.equal(freshStoreResult.state, "ready");
+  assert.equal((await freshStoreResult.store.initializeJournal({ journal: workspaceJournal })).state, "accepted");
+  const putsBeforeFreshRollback = githubCalls.filter((call) => call.args.includes("PUT")).length;
+  pushRollbackObservation(true);
+  const freshRollback = await executeFeatureIntegrationWorkspaceStageV2({ stage: "rollback", replay: workspaceReplay.value, journal: workspaceJournal,
+    stageInput: { stage: "rollback", candidate: rollbackCandidate, request: rollbackRequest }, storeScope: freshStoreResult.store,
+    trustAnchor: fixture.trustAnchor, repositoryProducer });
+  assert.equal(freshRollback.state, "accepted");
+  assert.equal(githubCalls.filter((call) => call.args.includes("PUT")).length, putsBeforeFreshRollback + 1);
+
+  assert.equal((await store.appendEntry({ expectedJournalDigest: workspaceJournal.journalDigest, expectedEntrySequence: 6,
+    expectedLatestEntryDigest: workspace.entryDigest, entry: rollbackPrepared })).state, "accepted");
+  durableRead = await store.readJournal();
+  assert.equal(durableRead.state, "accepted");
+  assert.equal(canonicalFeatureIntegrationJsonV1(durableRead.value.journal), canonicalFeatureIntegrationJsonV1(rollbackJournal));
+  const putsBeforeRecovery = githubCalls.filter((call) => call.args.includes("PUT")).length;
+  pushRollbackObservation(false);
   const stageResult = await executeFeatureIntegrationWorkspaceStageV2({ stage: "rollback", replay: rollbackReplay.value, journal: rollbackJournal,
     stageInput: { stage: "rollback", signedChallenge: rollbackRequest.signedChallenge },
-    storeScope: { readJournal: async () => ({ state: "accepted", value: { journal: durableJournal } }), appendEntry: async ({ entry }) => {
-      durableJournal = createFeatureOperationJournalV2([...durableJournal.entries, entry]);
-      return { state: "accepted", value: { journal: durableJournal } };
-    } }, trustAnchor: fixture.trustAnchor,
-    repositoryProducer: { executeTransition: async () => { executeCalls += 1; }, observeAndSignTransition: async () => { observeCalls += 1; return signedRollbackObservation; } },
-    cumulativeProducer: null });
-  assert.equal(stageResult.state, "accepted"); assert.equal(stageResult.appendedEntryDigest, durableJournal.latestAcceptedEntryDigest);
-  assert.equal(executeCalls, 0); assert.equal(observeCalls, 1);
-  const finalReplay = replayFeatureOperationJournalV2(durableJournal, fixture.trustAnchor);
+    storeScope: store, trustAnchor: fixture.trustAnchor, repositoryProducer });
+  assert.equal(stageResult.state, "accepted");
+  assert.equal(githubCalls.filter((call) => call.args.includes("PUT")).length, putsBeforeRecovery);
+  durableRead = await store.readJournal();
+  assert.equal(durableRead.state, "accepted");
+  assert.equal(stageResult.appendedEntryDigest, durableRead.value.journal.latestAcceptedEntryDigest);
+  const finalReplay = replayFeatureOperationJournalV2(durableRead.value.journal, fixture.trustAnchor);
   assert.equal(finalReplay.state, "valid"); assert.equal(finalReplay.value.terminalHeadRevision, revision("e"));
   assert.equal(finalReplay.value.terminalTreeDigest, priorTree); assert.notEqual(finalReplay.value.terminalTreeDigest, integratedTree);
   assert.equal(finalReplay.value.lifecycle, "rollback_validation_pending"); assert.equal(finalReplay.value.nextStage, "cumulative_validation");

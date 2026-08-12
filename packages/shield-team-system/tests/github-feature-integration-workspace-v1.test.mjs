@@ -102,21 +102,22 @@ test("V2 GitHub producer closes rollback applied, not-applied, and restored-tree
   assert.equal((await produce(unmerged)).payload.status, "not_applied");
 });
 
-test("P1 exports a fail-closed hardened stage owner boundary", async () => {
+test("P1 exports only the fail-closed hardened transition stage owner boundary", async () => {
   let producerCalls = 0;
   const repositoryProducer = { observeAndSignTransition() { producerCalls += 1; } };
   assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(null), { state: "blocked", reason: "invalid_input", appendedEntryDigest: null });
   const input = { stage: "feature_branch_creation", replay: { nextStage: "feature_branch_creation" }, journal: {}, stageInput: { stage: "feature_branch_creation" }, storeScope: {},
-    trustAnchor: {}, repositoryProducer, cumulativeProducer: null };
-  assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(input), { state: "blocked", reason: "stage_blocked", appendedEntryDigest: null });
+    trustAnchor: {}, repositoryProducer };
+  assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(input), { state: "blocked", reason: "invalid_input", appendedEntryDigest: null });
   assert.equal(producerCalls, 0);
   const transitionProducer = { executeTransition() {}, observeAndSignTransition() {} };
   const request = { signedChallenge: {} }, candidate = {};
   const integration = (storeScope) => ({ stage: "integration", replay: { nextStage: "integration" }, journal: {},
-    stageInput: { stage: "integration", candidate, request }, storeScope, trustAnchor: {}, repositoryProducer: transitionProducer, cumulativeProducer: null });
-  assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(integration({ readJournal: async () => { throw new Error("read uncertain"); }, appendEntry: async () => null })),
+    stageInput: { stage: "integration", candidate, request }, storeScope, trustAnchor: {}, repositoryProducer: transitionProducer });
+  const store = (readJournal) => ({ initializeJournal: async () => null, readJournal, appendEntry: async () => null, recoverJournal: async () => null });
+  assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(integration(store(async () => { throw new Error("read uncertain"); }))),
     { state: "recovery_required", reason: "durability_uncertain", appendedEntryDigest: null });
-  assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(integration({ readJournal: async () => ({ state: "accepted", value: { journal: { changed: true } } }), appendEntry: async () => null })),
+  assert.deepEqual(await executeFeatureIntegrationWorkspaceStageV2(integration(store(async () => ({ state: "accepted", value: { journal: { changed: true } } })))),
     { state: "blocked", reason: "compare_conflict", appendedEntryDigest: null });
 });
 
