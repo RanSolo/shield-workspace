@@ -2481,6 +2481,20 @@ test("Packet C rejects stale terminal points and inexact transition/disposition 
   }
 });
 
+test("Packet C rejects coordinated Green-only terminal tree substitution", () => {
+  const input = fullFlowMission({ includeRefactor: false });
+  input.headRevisionId = GREEN_REVISION;
+  input.headTreeDigest = MISSION_HEAD_TREE;
+  input.cumulativeMackValidationBundle.headRevisionId = GREEN_REVISION;
+  input.cumulativeMackValidationBundle.headTreeDigest = MISSION_HEAD_TREE;
+  input.furyTerminalReceipt.headRevisionId = GREEN_REVISION;
+  input.furyTerminalReceipt.headTreeDigest = MISSION_HEAD_TREE;
+
+  const result = evaluateTddMissionV1(input);
+  assert.equal(result.state, "blocked");
+  assert.deepEqual(result.reasonCodes, ["STALE_EXACT_REVISION_EVIDENCE"]);
+});
+
 test("Packet C enforces truthful PASS receipt semantics", () => {
   const input = fullFlowMission();
   const mutations = [

@@ -3393,6 +3393,10 @@ function evaluateTddMissionInputV1(input: unknown): TddMissionEvaluationV1 {
     return normalizedExpected !== null && canonicalJson(canonicalSet(actual)) ===
       canonicalJson(normalizedExpected);
   };
+  const recordedHeadTree = revisionTrees.get(mission.headRevisionId as string);
+  if (recordedHeadTree !== undefined && recordedHeadTree !== mission.headTreeDigest) {
+    return blockedMission("STALE_EXACT_REVISION_EVIDENCE", completedCriterionIds);
+  }
   if (terminalMack.headRevisionId !== mission.headRevisionId ||
       terminalMack.headTreeDigest !== mission.headTreeDigest ||
       terminalFury.headRevisionId !== mission.headRevisionId ||
