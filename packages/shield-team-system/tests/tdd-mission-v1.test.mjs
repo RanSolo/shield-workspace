@@ -241,27 +241,89 @@ function implementationAuthority(
     contractDigest: CONTRACT_DIGEST,
     transition,
     authorizedPaths: PACKET_PATHS,
+    authorizedEffects: ["effect:behavioral-implementation", "effect:verification"],
     ...overrides,
   };
 }
 
-function mackEvidence(
+function validationReceipt(
   criterionId = "AC-162-1",
   revisionId = GREEN_REVISION,
   overrides = {},
 ) {
   return {
-    contractGeneration: 0,
-    evidenceId: `validation:mack:${criterionId.toLowerCase()}:${revisionId.slice(0, 7)}`,
-    ownerSeatId: "mack",
-    criterionId,
-    packetId: `packet:${criterionId.toLowerCase()}`,
-    contractDigest: CONTRACT_DIGEST,
-    revisionId,
-    command: `node --test checkpoint:${criterionId.toLowerCase()}:focused`,
+    evidenceId: `receipt:mack:${criterionId.toLowerCase()}:${revisionId.slice(0, 7)}`,
+    checkpointId: `checkpoint:packet:${criterionId.toLowerCase()}:focused`,
+    commandId: "validation:issue-162:focused-node-test",
+    command: "node --test tests/tdd-mission-v1.test.mjs",
+    executableKind: "test",
     outcome: "passed",
     exitCode: 0,
-    focus: "packet",
+    ...overrides,
+  };
+}
+
+function mackBundle(
+  criterionId = "AC-162-1",
+  transitionKind = "green",
+  revisionId = GREEN_REVISION,
+  treeDigest = GREEN_TREE,
+  overrides = {},
+) {
+  const receipt = validationReceipt(criterionId, revisionId);
+  const base = {
+    bundleId: `bundle:mack:${criterionId.toLowerCase()}:${transitionKind}`,
+    transitionKind,
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    contractGeneration: 0,
+    acceptanceContractDigest: CONTRACT_DIGEST,
+    packetId: `packet:${criterionId.toLowerCase()}`,
+    transitionEvidenceId: `${transitionKind}:${criterionId.toLowerCase()}`,
+    resultRevisionId: revisionId,
+    resultTreeDigest: treeDigest,
+    ownerSeatId: "mack",
+    runtimeId: "runtime:mack:hosted",
+    modelId: "model:mack:gpt-5",
+    executorId: "executor:mack:codex",
+    receipts: [receipt],
+  };
+  return {
+    ...base,
+    ...overrides,
+    receipts: overrides.receipts === undefined ? base.receipts : overrides.receipts,
+  };
+}
+
+function packetFuryReview(
+  criterionId = "AC-162-1",
+  transitionKind = "green",
+  revisionId = GREEN_REVISION,
+  treeDigest = GREEN_TREE,
+  overrides = {},
+) {
+  return {
+    reviewId: `review:fury:packet:${criterionId.toLowerCase()}:${transitionKind}`,
+    reviewerSeatId: "fury",
+    runtimeId: "runtime:fury:hosted",
+    modelId: "model:fury:gpt-5",
+    executorId: "executor:fury:codex",
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    contractGeneration: 0,
+    acceptanceContractDigest: CONTRACT_DIGEST,
+    packetId: `packet:${criterionId.toLowerCase()}`,
+    transitionKind,
+    transitionEvidenceId: `${transitionKind}:${criterionId.toLowerCase()}`,
+    resultRevisionId: revisionId,
+    resultTreeDigest: treeDigest,
+    mackBundleId: `bundle:mack:${criterionId.toLowerCase()}:${transitionKind}`,
+    verdict: "PASS",
+    findings: [],
+    sourceRefs: [
+      `bundle:mack:${criterionId.toLowerCase()}:${transitionKind}`,
+      `source:fury:${criterionId.toLowerCase()}:${transitionKind}`,
+    ],
     ...overrides,
   };
 }
@@ -275,16 +337,38 @@ function greenEvidence(criterionId = "AC-162-1", overrides = {}) {
     criterionId,
     packetId: `packet:${criterionId.toLowerCase()}`,
     contractDigest: CONTRACT_DIGEST,
-    revisionId: GREEN_REVISION,
-    changedPaths: PACKET_PATHS,
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    acceptanceContractDigest: CONTRACT_DIGEST,
+    repositoryId: "RanSolo/shield-workspace",
+    branch: "agent/issue-162-tdd-intent",
+    predecessorRevisionId: REVISION,
+    predecessorTreeDigest: PLANNING_TREE,
+    resultRevisionId: GREEN_REVISION,
+    resultTreeDigest: GREEN_TREE,
+    transitionKind: "green",
+    observedPaths: PACKET_PATHS,
+    observedEffects: ["effect:behavioral-implementation", "effect:verification"],
+    authorityEvidenceRef: `authority:${criterionId.toLowerCase()}:green`,
+    checkpointId: `checkpoint:packet:${criterionId.toLowerCase()}:focused`,
+    commandId: "validation:issue-162:focused-node-test",
+    command: "node --test tests/tdd-mission-v1.test.mjs",
+    outcome: "passed",
+    focusedMackEvidenceRef: `receipt:mack:${criterionId.toLowerCase()}:${GREEN_REVISION.slice(0, 7)}`,
     implementationKind: "smallest_correct_green",
     cleanupBundled: false,
-    mackEvidence: mackEvidence(criterionId),
+    mackValidationBundle: mackBundle(criterionId),
+    packetFuryReview: packetFuryReview(criterionId),
   };
   return {
     ...base,
     ...overrides,
-    mackEvidence: overrides.mackEvidence === undefined ? base.mackEvidence : overrides.mackEvidence,
+    mackValidationBundle: overrides.mackValidationBundle === undefined
+      ? base.mackValidationBundle
+      : overrides.mackValidationBundle,
+    packetFuryReview: overrides.packetFuryReview === undefined
+      ? base.packetFuryReview
+      : overrides.packetFuryReview,
   };
 }
 
@@ -297,9 +381,25 @@ function refactorEvidence(criterionId = "AC-162-1", overrides = {}) {
     criterionId,
     packetId: `packet:${criterionId.toLowerCase()}`,
     contractDigest: CONTRACT_DIGEST,
+    missionId: "mission:issue-162:p6",
+    planDigest: "sha256:issue_162_tdd_intent_plan",
+    acceptanceContractDigest: CONTRACT_DIGEST,
+    repositoryId: "RanSolo/shield-workspace",
+    branch: "agent/issue-162-tdd-intent",
+    predecessorRevisionId: GREEN_REVISION,
+    predecessorTreeDigest: GREEN_TREE,
+    resultRevisionId: REFACTOR_REVISION,
+    resultTreeDigest: REFACTOR_TREE,
+    transitionKind: "refactor",
     greenRevisionId: GREEN_REVISION,
-    revisionId: REFACTOR_REVISION,
-    changedPaths: [PACKET_PATHS[0]],
+    observedPaths: [PACKET_PATHS[0]],
+    observedEffects: ["effect:behavioral-implementation"],
+    authorityEvidenceRef: `authority:${criterionId.toLowerCase()}:refactor`,
+    checkpointId: `checkpoint:packet:${criterionId.toLowerCase()}:focused`,
+    commandId: "validation:issue-162:focused-node-test",
+    command: "node --test tests/tdd-mission-v1.test.mjs",
+    outcome: "passed",
+    focusedMackEvidenceRef: `receipt:mack:${criterionId.toLowerCase()}:${REFACTOR_REVISION.slice(0, 7)}`,
     implementationKind: "behavior_preserving_refactor",
     behaviorPreserved: true,
     failureSemanticsPreserved: true,
@@ -309,9 +409,23 @@ function refactorEvidence(criterionId = "AC-162-1", overrides = {}) {
     implementationAuthorityEvidence: implementationAuthority(
       criterionId,
       "refactor",
-      { authorizedPaths: [PACKET_PATHS[0]] },
+      {
+        authorizedPaths: [PACKET_PATHS[0]],
+        authorizedEffects: ["effect:behavioral-implementation"],
+      },
     ),
-    mackEvidence: mackEvidence(criterionId, REFACTOR_REVISION),
+    mackValidationBundle: mackBundle(
+      criterionId,
+      "refactor",
+      REFACTOR_REVISION,
+      REFACTOR_TREE,
+    ),
+    packetFuryReview: packetFuryReview(
+      criterionId,
+      "refactor",
+      REFACTOR_REVISION,
+      REFACTOR_TREE,
+    ),
   };
   return {
     ...base,
@@ -319,7 +433,12 @@ function refactorEvidence(criterionId = "AC-162-1", overrides = {}) {
     implementationAuthorityEvidence: overrides.implementationAuthorityEvidence === undefined
       ? base.implementationAuthorityEvidence
       : overrides.implementationAuthorityEvidence,
-    mackEvidence: overrides.mackEvidence === undefined ? base.mackEvidence : overrides.mackEvidence,
+    mackValidationBundle: overrides.mackValidationBundle === undefined
+      ? base.mackValidationBundle
+      : overrides.mackValidationBundle,
+    packetFuryReview: overrides.packetFuryReview === undefined
+      ? base.packetFuryReview
+      : overrides.packetFuryReview,
   };
 }
 
@@ -692,7 +811,10 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
       command: "node --test checkpoint:ac-162-1:focused",
       checkpointId: "checkpoint:ac-162-1:red",
       outcome: "passed",
-      sourceRefs: [includeRefactor ? "refactor:ac-162-1" : "green:ac-162-1"],
+      sourceRefs: [
+        includeRefactor ? "refactor:ac-162-1" : "green:ac-162-1",
+        includeRefactor ? "bundle:mack:ac-162-1:refactor" : "bundle:mack:ac-162-1:green",
+      ],
       successor: "fury_conformance_complete",
     }),
     exactEvidence({
@@ -703,7 +825,12 @@ function fullFlowMission({ includeRefactor = true, disposition, evidence } = {})
       treeDigest: finalTree,
       checkpointId: "review:fury:ac-162-1",
       outcome: "passed",
-      sourceRefs: ["validation:ac-162-1", "review:human:ac-162-1"],
+      sourceRefs: [
+        "validation:ac-162-1",
+        "review:fury:packet:ac-162-1:green",
+        ...(includeRefactor ? ["review:fury:packet:ac-162-1:refactor"] : []),
+        "review:human:ac-162-1",
+      ],
       successor: "mission_complete",
     }),
   ];
@@ -756,9 +883,16 @@ function amendedFlowMission({ oldStrategy = "tdd_selected", amendmentKind = "cha
     greenEvidence: {
       ...greenEvidence("AC-162-1", { contractDigest: activeDigest }),
       contractGeneration: 1,
-      mackEvidence: {
-        ...mackEvidence("AC-162-1", GREEN_REVISION, { contractDigest: activeDigest }),
+      acceptanceContractDigest: activeDigest,
+      mackValidationBundle: {
+        ...mackBundle("AC-162-1"),
         contractGeneration: 1,
+        acceptanceContractDigest: activeDigest,
+      },
+      packetFuryReview: {
+        ...packetFuryReview("AC-162-1"),
+        contractGeneration: 1,
+        acceptanceContractDigest: activeDigest,
       },
     },
     traceability: {
@@ -853,7 +987,7 @@ function amendedFlowMission({ oldStrategy = "tdd_selected", amendmentKind = "cha
       command: "node --test checkpoint:ac-162-1:focused",
       checkpointId: "checkpoint:ac-162-1:red",
       outcome: "passed",
-      sourceRefs: ["green:ac-162-1"],
+      sourceRefs: ["green:ac-162-1", "bundle:mack:ac-162-1:green"],
       successor: "fury_conformance_complete",
       contractGeneration: 1,
     }),
@@ -865,7 +999,11 @@ function amendedFlowMission({ oldStrategy = "tdd_selected", amendmentKind = "cha
       treeDigest: GREEN_TREE,
       checkpointId: "review:fury:ac-162-1",
       outcome: "passed",
-      sourceRefs: ["validation:ac-162-1", "review:human:ac-162-1"],
+      sourceRefs: [
+        "validation:ac-162-1",
+        "review:fury:packet:ac-162-1:green",
+        "review:human:ac-162-1",
+      ],
       successor: "mission_complete",
       contractGeneration: 1,
     }),
@@ -1640,7 +1778,7 @@ test("predecessor Fury evidence identity is unique across active contract and ex
       .furyContractDisposition.evidenceId,
     input.strategyContract.criteria[0].implementationAuthorityEvidence.evidenceId,
     input.strategyContract.criteria[0].greenEvidence.evidenceId,
-    input.strategyContract.criteria[0].greenEvidence.mackEvidence.evidenceId,
+    input.strategyContract.criteria[0].greenEvidence.mackValidationBundle.bundleId,
     input.evidence[0].evidenceId,
   ];
   for (const evidenceId of collidingIds) {
@@ -1678,7 +1816,10 @@ test("selected and declined strategies require authority before May Green", () =
   const selectedResult = validateTddMissionStrategyContractV1(strategyContract([selected]));
   assert.equal(selectedResult.state, "valid");
   assert.equal(selectedResult.contract.criteria[0].greenEvidence.ownerSeatId, "may");
-  assert.equal(selectedResult.contract.criteria[0].greenEvidence.mackEvidence.focus, "packet");
+  assert.equal(
+    selectedResult.contract.criteria[0].greenEvidence.mackValidationBundle.ownerSeatId,
+    "mack",
+  );
 
   const authorityBeforeRed = validateTddMissionStrategyContractV1(strategyContract([criterion({
     implementationAuthorityEvidence: implementationAuthority(),
@@ -1696,6 +1837,160 @@ test("selected and declined strategies require authority before May Green", () =
   });
   const declinedResult = validateTddMissionStrategyContractV1(strategyContract([declined]));
   assert.equal(declinedResult.state, "valid");
+});
+
+test("Packet B accepts complete Green-only and Green-plus-Refactor transition proof", () => {
+  const greenOnly = criterion({
+    preImplementationStateEvidence: redState(),
+    implementationAuthorityEvidence: implementationAuthority(),
+    greenEvidence: greenEvidence(),
+  });
+  const greenAndRefactor = { ...greenOnly, refactorEvidence: refactorEvidence() };
+  for (const candidate of [greenOnly, greenAndRefactor]) {
+    const result = validateTddMissionStrategyContractV1(strategyContract([candidate]));
+    assert.equal(result.state, "valid");
+  }
+});
+
+test("Packet B rejects path, effect, command, and checkpoint substitution", () => {
+  const substitutions = [
+    { observedPaths: ["packages/shield-team-system/src/outside.mts"] },
+    { observedPaths: [PACKET_PATHS[0], PACKET_PATHS[0]] },
+    { observedEffects: ["effect:outside"] },
+    { observedEffects: ["effect:verification", "effect:verification"] },
+    { command: "node --test substituted.test.mjs" },
+    { commandId: "validation:substituted" },
+    { checkpointId: "checkpoint:substituted" },
+  ];
+  for (const override of substitutions) {
+    const candidate = criterion({
+      preImplementationStateEvidence: redState(),
+      implementationAuthorityEvidence: implementationAuthority(),
+      greenEvidence: greenEvidence("AC-162-1", override),
+    });
+    const result = validateTddMissionStrategyContractV1(strategyContract([candidate]));
+    assert.equal(result.state, "invalid");
+  }
+
+  const configuredPacket = packet("packet:ac-162-1", ["AC-162-1"]);
+  const mappingCollision = {
+    ...configuredPacket,
+    focusedValidation: [
+      ...configuredPacket.focusedValidation,
+      { ...configuredPacket.focusedValidation[0], command: "node --test substituted.test.mjs" },
+    ],
+  };
+  assert.equal(validateTddMissionStrategyContractV1(strategyContract(
+    [criterion()],
+    [mappingCollision],
+  )).state, "invalid");
+});
+
+test("Packet B rejects missing or replayed transition authority and Green proof reuse", () => {
+  const green = greenEvidence();
+  const base = criterion({
+    preImplementationStateEvidence: redState(),
+    implementationAuthorityEvidence: implementationAuthority(),
+    greenEvidence: green,
+  });
+  const cases = [
+    { ...base, implementationAuthorityEvidence: null },
+    {
+      ...base,
+      refactorEvidence: refactorEvidence("AC-162-1", {
+        implementationAuthorityEvidence: implementationAuthority("AC-162-1", "refactor", {
+          evidenceId: implementationAuthority().evidenceId,
+          authorizedPaths: [PACKET_PATHS[0]],
+          authorizedEffects: ["effect:behavioral-implementation"],
+        }),
+      }),
+    },
+    {
+      ...base,
+      refactorEvidence: refactorEvidence("AC-162-1", {
+        focusedMackEvidenceRef: green.focusedMackEvidenceRef,
+        mackValidationBundle: {
+          ...mackBundle("AC-162-1", "refactor", REFACTOR_REVISION, REFACTOR_TREE),
+          receipts: green.mackValidationBundle.receipts,
+        },
+      }),
+    },
+    {
+      ...base,
+      refactorEvidence: refactorEvidence("AC-162-1", {
+        mackValidationBundle: {
+          ...mackBundle("AC-162-1", "refactor", REFACTOR_REVISION, REFACTOR_TREE),
+          bundleId: green.mackValidationBundle.bundleId,
+        },
+      }),
+    },
+    {
+      ...base,
+      refactorEvidence: refactorEvidence("AC-162-1", {
+        packetFuryReview: {
+          ...packetFuryReview("AC-162-1", "refactor", REFACTOR_REVISION, REFACTOR_TREE),
+          reviewId: green.packetFuryReview.reviewId,
+        },
+      }),
+    },
+  ];
+  for (const candidate of cases) {
+    const result = validateTddMissionStrategyContractV1(strategyContract([candidate]));
+    assert.equal(result.state, "invalid");
+  }
+});
+
+test("Packet B closes Mack bundle and packet Fury review bindings", () => {
+  const bundle = mackBundle();
+  const review = packetFuryReview();
+  const mutations = [
+    { unexpected: true },
+    { mackValidationBundle: { ...bundle, unexpected: true } },
+    { mackValidationBundle: { ...bundle, missionId: "mission:substituted" } },
+    { mackValidationBundle: { ...bundle, planDigest: "sha256:substituted" } },
+    { mackValidationBundle: { ...bundle, contractGeneration: 1 } },
+    { mackValidationBundle: { ...bundle, acceptanceContractDigest: "sha256:substituted" } },
+    { mackValidationBundle: { ...bundle, packetId: "packet:substituted" } },
+    { mackValidationBundle: { ...bundle, transitionKind: "refactor" } },
+    { mackValidationBundle: { ...bundle, transitionEvidenceId: "green:other" } },
+    { mackValidationBundle: { ...bundle, resultRevisionId: REFACTOR_REVISION } },
+    { mackValidationBundle: { ...bundle, resultTreeDigest: REFACTOR_TREE } },
+    { mackValidationBundle: { ...bundle, ownerSeatId: "may" } },
+    { mackValidationBundle: { ...bundle, receipts: [] } },
+    { mackValidationBundle: { ...bundle, receipts: [...bundle.receipts, bundle.receipts[0]] } },
+    {
+      mackValidationBundle: {
+        ...bundle,
+        receipts: [{ ...bundle.receipts[0], commandId: "validation:substituted" }],
+      },
+    },
+    {
+      mackValidationBundle: {
+        ...bundle,
+        receipts: [{ ...bundle.receipts[0], executableKind: "build" }],
+      },
+    },
+    { packetFuryReview: { ...review, unexpected: true } },
+    { packetFuryReview: { ...review, reviewerSeatId: "mack" } },
+    { packetFuryReview: { ...review, missionId: "mission:substituted" } },
+    { packetFuryReview: { ...review, contractGeneration: 1 } },
+    { packetFuryReview: { ...review, packetId: "packet:substituted" } },
+    { packetFuryReview: { ...review, transitionKind: "refactor" } },
+    { packetFuryReview: { ...review, transitionEvidenceId: "green:other" } },
+    { packetFuryReview: { ...review, mackBundleId: "bundle:mack:other" } },
+    { packetFuryReview: { ...review, resultRevisionId: REFACTOR_REVISION } },
+    { packetFuryReview: { ...review, verdict: "REVISE" } },
+    { packetFuryReview: { ...review, sourceRefs: [] } },
+  ];
+  for (const override of mutations) {
+    const candidate = criterion({
+      preImplementationStateEvidence: redState(),
+      implementationAuthorityEvidence: implementationAuthority(),
+      greenEvidence: greenEvidence("AC-162-1", override),
+    });
+    const result = validateTddMissionStrategyContractV1(strategyContract([candidate]));
+    assert.equal(result.state, "invalid");
+  }
 });
 
 test("Green rejects non-May ownership, bundled cleanup, excess scope, and missing Mack proof", () => {
@@ -1734,7 +2029,7 @@ test("Green rejects non-May ownership, bundled cleanup, excess scope, and missin
           authorizedPaths: [...PACKET_PATHS, "packages/shield-team-system/src/unrelated.mts"],
         },
         greenEvidence: greenEvidence("AC-162-1", {
-          changedPaths: [...PACKET_PATHS, "packages/shield-team-system/src/unrelated.mts"],
+          observedPaths: [...PACKET_PATHS, "packages/shield-team-system/src/unrelated.mts"],
         }),
       }),
       "PACKET_SCOPE_EXCEEDED",
@@ -1743,7 +2038,7 @@ test("Green rejects non-May ownership, bundled cleanup, excess scope, and missin
       criterion({
         preImplementationStateEvidence: reviewedRed,
         implementationAuthorityEvidence: authority,
-        greenEvidence: greenEvidence("AC-162-1", { mackEvidence: null }),
+        greenEvidence: greenEvidence("AC-162-1", { mackValidationBundle: null }),
       }),
       "MACK_EVIDENCE_MISSING",
     ],
@@ -1774,13 +2069,13 @@ test("Refactor is optional, separately authorized, exact, and behavior-preservin
   assert.equal(withRefactor.state, "valid");
   assert.equal(withRefactor.contract.criteria[0].refactorEvidence.ownerSeatId, "may");
   assert.notEqual(
-    withRefactor.contract.criteria[0].refactorEvidence.revisionId,
-    withRefactor.contract.criteria[0].greenEvidence.revisionId,
+    withRefactor.contract.criteria[0].refactorEvidence.resultRevisionId,
+    withRefactor.contract.criteria[0].greenEvidence.resultRevisionId,
   );
 
   const invalidRefactors = [
     refactorEvidence("AC-162-1", { contractDigest: "sha256:changed_contract_digest" }),
-    refactorEvidence("AC-162-1", { revisionId: GREEN_REVISION }),
+    refactorEvidence("AC-162-1", { resultRevisionId: GREEN_REVISION }),
     refactorEvidence("AC-162-1", { behaviorPreserved: false }),
     refactorEvidence("AC-162-1", { failureSemanticsPreserved: false }),
     refactorEvidence("AC-162-1", { authoritySemanticsPreserved: false }),
@@ -1918,6 +2213,25 @@ test("bounded mission traverses reviewed Red, authorized May Green, optional Ref
   }
 });
 
+test("terminal Fury references every realized packet review while cumulative Mack remains separate", () => {
+  const input = fullFlowMission({ includeRefactor: true });
+  const terminalMack = input.evidence.find((item) => item.stage === "mack_validation_complete");
+  const focusedReceipt = input.strategyContract.criteria[0].refactorEvidence
+    .mackValidationBundle.receipts[0];
+  assert.notEqual(terminalMack.command, focusedReceipt.command);
+
+  const missingGreenReview = structuredClone(input);
+  const terminalFury = missingGreenReview.evidence.find(
+    (item) => item.stage === "fury_conformance_complete",
+  );
+  terminalFury.sourceRefs = terminalFury.sourceRefs.filter(
+    (sourceRef) => sourceRef !== "review:fury:packet:ac-162-1:green",
+  );
+  const result = evaluateTddMissionV1(missingGreenReview);
+  assert.equal(result.state, "blocked");
+  assert.deepEqual(result.reasonCodes, ["REVIEW_EVIDENCE_MISSING"]);
+});
+
 test("reviewed acceptance-contract digest is anchored and propagated through every receipt", () => {
   const input = fullFlowMission();
   assert.equal(
@@ -1950,9 +2264,6 @@ test("reviewed acceptance-contract digest is anchored and propagated through eve
     }),
     greenEvidence: greenEvidence("AC-162-1", {
       contractDigest: "sha256:substituted_contract",
-      mackEvidence: mackEvidence("AC-162-1", GREEN_REVISION, {
-        contractDigest: "sha256:substituted_contract",
-      }),
     }),
   });
   const substitutedTransition = validateTddMissionStrategyContractV1(
