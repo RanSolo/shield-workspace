@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -48,6 +48,32 @@ const effect = (kind, character) => `effect:${kind}:${character.repeat(64)}`;
 const privateKey = createPrivateKey({ key: Buffer.from(`302e020100300506032b657004220420${"42".repeat(32)}`, "hex"), format: "der", type: "pkcs8" });
 const publicKeySpkiBase64 = createPublicKey(privateKey).export({ format: "der", type: "spki" }).toString("base64");
 const signingKeyRef = computeEd25519SigningKeyRef(publicKeySpkiBase64);
+
+function framedV2(domain, value, omitted) {
+  const content = structuredClone(value);
+  if (omitted) delete content[omitted];
+  return `sha256:${createHash("sha256").update(Buffer.concat([
+    Buffer.from(domain, "ascii"), Buffer.from([0]), Buffer.from(canonicalFeatureIntegrationJsonV1(content), "utf8"),
+  ])).digest("hex")}`;
+}
+
+function rawJournalWithEntry(fixture, entryKind, payload) {
+  const journal = structuredClone(fixture.journal);
+  journal.entries[0].entryKind = entryKind;
+  journal.entries[0].payload = payload;
+  journal.entries[0].entryDigest = framedV2("shield.feature-integration.entry.v2", journal.entries[0], "entryDigest");
+  journal.genesisDigest = journal.entries[0].entryDigest;
+  journal.latestAcceptedEntryDigest = journal.entries[0].entryDigest;
+  journal.journalDigest = framedV2("shield.feature-integration.journal.v2", journal, "journalDigest");
+  return journal;
+}
+
+function signAuthorityV2(authority) {
+  return { payload: structuredClone(authority), signatureBase64: sign(null, Buffer.concat([
+    Buffer.from("shield.feature-operation.authority-signature.v2", "ascii"), Buffer.from([0]),
+    Buffer.from(canonicalFeatureIntegrationJsonV1(authority), "utf8"),
+  ]), privateKey).toString("base64") };
+}
 
 function signAuthority(authority) {
   const bytes = Buffer.concat([
@@ -649,4 +675,198 @@ test("admits only exact hardened genesis and blocks legacy journals without V1 r
   substituted.latestAcceptedEntryDigest = substituted.entries[0].entryDigest;
   substituted.journalDigest = computeFeatureIntegrationJournalDigestV2(substituted);
   assert.deepEqual(replayFeatureOperationJournalV2(substituted, fixture.trustAnchor), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+});
+
+test("rejects malformed nested payloads for every V2 entry kind before lineage or replay", () => {
+  const fixture = hardenedGenesisFixture();
+  const malformed = {
+    operation_genesis_accepted: { replayContext: 3, signedAuthority: 3, trustedObservationProducerBindings: 3, trustedHumanBindings: 3 },
+    authority_successor_accepted: { plan: 3, signedAuthority: 3 },
+    effect_prepared: { effectClass: "workspace", candidate: 3, candidateDigest: digest("1"), effectKey: "effect:x", request: 3, requestDigest: digest("2"), expectedHeadRevision: revision("a"), expectedTreeDigest: digest("3"), signedCumulativeAuthority: null },
+    effect_challenge_refreshed: { preparationEntryDigest: digest("1"), signedChallenge: 3 },
+    effect_not_applied: { preparationEntryDigest: digest("1"), signedObservation: 3 },
+    effect_uncertain: { preparationEntryDigest: digest("1"), signedObservation: 3 },
+    feature_branch_creation_accepted: { preparationEntryDigest: digest("1"), headRevision: revision("a"), treeDigest: digest("2"), signedWorkspaceObservation: 3 },
+    feature_workspace_accepted: { preparationEntryDigest: digest("1"), pullRequestId: "pr:1", sourceBranch: "feature/a", targetBranch: "main", headRevision: revision("a"), draft: true, signedWorkspaceObservation: 3 },
+    child_initiation_accepted: { preparationEntryDigest: digest("1"), childId: "child:1", branch: "child/a", baseHeadRevision: revision("a"), baseTreeDigest: digest("2"), signedWorkspaceObservation: 3 },
+    child_implementation_accepted: { childId: "child:1", sourceMissionId: "mission:1", effectKey: "effect:x", sourceAuthorityDigest: { malformed: true }, sourceJournalDigest: digest("2"), completionReceiptDigest: digest("3"), headRevision: revision("a"), treeDigest: digest("4") },
+    child_publication_accepted: { preparationEntryDigest: digest("1"), childId: "child:1", pullRequestId: "pr:1", sourceBranch: "child/a", targetBranch: "feature/a", headRevision: revision("a"), draft: true, signedWorkspaceObservation: 3 },
+    child_evidence_accepted: { childId: "child:1", headRevision: revision("a"), evidenceIds: ["evidence:1"], evidenceDigests: [digest("1")], evidenceRecords: [3] },
+    integration_accepted: { preparationEntryDigest: digest("1"), signedTransitionObservation: 3 },
+    rollback_workspace_accepted: { childId: "child:1", sourceMissionId: "mission:1", completionReceiptDigest: digest("1"), sourceAuthorityDigest: digest("2"), sourceJournalDigest: digest("3"), rollbackBranch: "rollback/a", pullRequestId: "pr:1", pullRequestHeadRevision: revision("a"), targetBranch: "feature/a", restoredTreeDigest: digest("4"), sourceEffectKeys: [3], evidenceDigests: [digest("5")] },
+    rollback_accepted: { preparationEntryDigest: digest("1"), signedTransitionObservation: 3 },
+    cumulative_validation_accepted: { preparationEntryDigest: digest("1"), signedCumulativeReceipt: 3 },
+    cumulative_validation_failed: { preparationEntryDigest: digest("1"), signedCumulativeReceipt: 3 },
+    operation_paused: { signedAdmissionObservation: 3, reason: "operator_requested" },
+    operation_resumed: { signedAdmissionObservation: 3, reason: "operator_requested" },
+    operation_cancelled: { signedAdmissionObservation: 3, reason: "operator_requested" },
+    operation_split: { signedAdmissionObservation: 3, successorOperationId: "operation:2", successorPlanDigest: digest("1"), successorAuthorityDigest: digest("2") },
+    operation_completed: { signedAdmissionObservation: 3 },
+    operation_superseded: { signedAdmissionObservation: 3, successorOperationId: "operation:2", successorPlanDigest: digest("1"), successorAuthorityDigest: digest("2") },
+    final_gate_evidence_accepted: { signedEvidence: 3, signedAdmissionObservation: 3 },
+    operation_expired: { signedExpiryObservation: 3 },
+  };
+  for (const [entryKind, payload] of Object.entries(malformed)) {
+    const journal = rawJournalWithEntry(fixture, entryKind, payload);
+    assert.deepEqual(replayFeatureOperationJournalV2(journal, fixture.trustAnchor), { state: "invalid", reason: "ENTRY_INVALID", entrySequence: 0 }, entryKind);
+  }
+});
+
+test("cross-binds immutable trust roots and rejects every independent producer or runtime substitution", () => {
+  const fixture = hardenedGenesisFixture();
+  const producerMutations = [
+    (journal) => { delete journal.entries[0].payload.trustedObservationProducerBindings[0].producerKind; },
+    (journal) => { journal.entries[0].payload.trustedObservationProducerBindings[0].producerId = "producer with spaces"; },
+    (journal) => { journal.entries[0].payload.trustedObservationProducerBindings[0].publicKeySpkiBase64 = "AAAA"; },
+    (journal) => { journal.entries[0].payload.trustedObservationProducerBindings[0].signingKeyRef = "key with spaces"; },
+  ];
+  for (const mutate of producerMutations) {
+    const journal = structuredClone(fixture.journal);
+    mutate(journal);
+    journal.entries[0].entryDigest = framedV2("shield.feature-integration.entry.v2", journal.entries[0], "entryDigest");
+    journal.genesisDigest = journal.latestAcceptedEntryDigest = journal.entries[0].entryDigest;
+    journal.journalDigest = framedV2("shield.feature-integration.journal.v2", journal, "journalDigest");
+    assert.deepEqual(replayFeatureOperationJournalV2(journal, fixture.trustAnchor), { state: "invalid", reason: "ENTRY_INVALID", entrySequence: 0 });
+  }
+  const alternatePublicKey = "MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=";
+  const producerKeySubstitution = structuredClone(fixture.journal);
+  producerKeySubstitution.entries[0].payload.trustedObservationProducerBindings[0].publicKeySpkiBase64 = alternatePublicKey;
+  producerKeySubstitution.entries[0].payload.trustedObservationProducerBindings[0].signingKeyRef = computeEd25519SigningKeyRef(alternatePublicKey);
+  producerKeySubstitution.entries[0].entryDigest = framedV2("shield.feature-integration.entry.v2", producerKeySubstitution.entries[0], "entryDigest");
+  producerKeySubstitution.genesisDigest = producerKeySubstitution.latestAcceptedEntryDigest = producerKeySubstitution.entries[0].entryDigest;
+  producerKeySubstitution.journalDigest = framedV2("shield.feature-integration.journal.v2", producerKeySubstitution, "journalDigest");
+  assert.deepEqual(replayFeatureOperationJournalV2(producerKeySubstitution, fixture.trustAnchor), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+  const anchorMutations = [
+    (anchor) => { anchor.missionId = "mission:other"; },
+    (anchor) => { anchor.repositoryId = "repo:other"; },
+    (anchor) => { anchor.humanBindingsDigest = digest("f"); },
+    (anchor) => { anchor.trustedHumanBindings[0].publicKeySpkiBase64 = alternatePublicKey; anchor.trustedHumanBindings[0].signingKeyRef = computeEd25519SigningKeyRef(alternatePublicKey); },
+    (anchor) => { anchor.trustedHumanBindings[0].bindingId = "binding with spaces"; },
+    (anchor) => { anchor.sourceBindingSequence = 2; },
+    (anchor) => { anchor.sourceImplementationAuthorityDigest = digest("f"); },
+    (anchor) => { anchor.sourceImplementationAuthority.subjectId = "issue:other"; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.subjectId = "issue:other"; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.missionRevisionId = "sha256:other_revision"; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.repositoryId = "other-repository"; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.canonicalWritableRoot = "/workspace/other"; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.branch = "other"; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.artifactRevisionId = "sha256:other_artifact"; },
+    (anchor) => { anchor.sourceRuntimeBinding.modelId = "model:other"; },
+    (anchor) => { anchor.sourceRuntimeBinding.baseRevision = "sha256:other_base"; },
+    (anchor) => { anchor.sourceRuntimeBinding.headRevision = "sha256:other_head"; },
+    (anchor) => { anchor.sourceRuntimeBinding.approvedRelativePaths = ["other/path"]; },
+    (anchor) => { anchor.sourceRuntimeBinding.validationCommandIds = ["validation:other"]; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.approvedScope.actionIds = ["edit:other"]; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.reasoningRuntimeId = anchor.sourceRuntimeBinding.modelId; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.lifecycleState = "revoked"; },
+    (anchor) => { anchor.sourceRuntimeBinding.binding.activeThroughSequence = 2; },
+  ];
+  for (const mutate of anchorMutations) {
+    const anchor = structuredClone(fixture.trustAnchor);
+    mutate(anchor);
+    assert.deepEqual(replayFeatureOperationJournalV2(fixture.journal, anchor), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+  }
+  assert.equal(Object.isFrozen(replayFeatureOperationJournalV2(fixture.journal, fixture.trustAnchor).value.replayContext.activePlan), true);
+});
+
+test("requires exact V2 genesis activation across issuance, expiry, lifecycle, sequence, and amendment boundaries", () => {
+  const fixture = hardenedGenesisFixture();
+  const replayWithPayload = (payload) => replayFeatureOperationJournalV2(rawJournalWithEntry(fixture, "operation_genesis_accepted", payload), fixture.trustAnchor);
+  const payloadAt = (value) => {
+    const payload = structuredClone(fixture.genesis.payload);
+    payload.replayContext.observedAt.value = value;
+    return payload;
+  };
+  assert.deepEqual(replayWithPayload(payloadAt("2029-04-30T23:59:59.999Z")), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+  assert.equal(replayWithPayload(payloadAt(fixture.hardenedAuthority.issuedAt)).state, "valid");
+
+  const authorityExpiry = structuredClone(fixture.genesis.payload);
+  authorityExpiry.signedAuthority.payload.expiresAt = "2029-05-01T00:30:00Z";
+  authorityExpiry.signedAuthority.payload.authorityDigest = digest("0");
+  authorityExpiry.signedAuthority.payload.authorityDigest = computeFeatureOperationAuthorityDigestV2(authorityExpiry.signedAuthority.payload);
+  authorityExpiry.signedAuthority = signAuthorityV2(authorityExpiry.signedAuthority.payload);
+  authorityExpiry.replayContext.verifiedAuthorityDigest = authorityExpiry.signedAuthority.payload.authorityDigest;
+  authorityExpiry.replayContext.acceptedPlanLineage[0].authorityDigest = authorityExpiry.signedAuthority.payload.authorityDigest;
+  authorityExpiry.replayContext.observedAt.value = authorityExpiry.signedAuthority.payload.expiresAt;
+  assert.deepEqual(replayWithPayload(authorityExpiry), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+  assert.deepEqual(replayWithPayload(payloadAt(fixture.hardenedPlan.expiresAt)), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+
+  const paused = structuredClone(fixture.genesis.payload);
+  paused.replayContext.lifecycle.state = "paused";
+  assert.deepEqual(replayWithPayload(paused), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+
+  const nonzeroAuthority = structuredClone(fixture.genesis.payload);
+  nonzeroAuthority.signedAuthority.payload.operationSequence = 1;
+  nonzeroAuthority.signedAuthority.payload.journalSequence = 1;
+  nonzeroAuthority.signedAuthority.payload.authorityDigest = digest("0");
+  nonzeroAuthority.signedAuthority.payload.authorityDigest = computeFeatureOperationAuthorityDigestV2(nonzeroAuthority.signedAuthority.payload);
+  nonzeroAuthority.signedAuthority = signAuthorityV2(nonzeroAuthority.signedAuthority.payload);
+  nonzeroAuthority.replayContext.acceptedAuthorityOperationSequence = 1;
+  nonzeroAuthority.replayContext.currentJournalSequence = 1;
+  nonzeroAuthority.replayContext.verifiedAuthorityDigest = nonzeroAuthority.signedAuthority.payload.authorityDigest;
+  nonzeroAuthority.replayContext.acceptedPlanLineage[0].authorityDigest = nonzeroAuthority.signedAuthority.payload.authorityDigest;
+  assert.deepEqual(replayWithPayload(nonzeroAuthority), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+
+  const amended = structuredClone(fixture.genesis.payload);
+  const predecessor = amended.replayContext.activePlan.planDigest;
+  amended.signedAuthority.payload.plan.planSequence = 1;
+  amended.signedAuthority.payload.plan.predecessorPlanDigest = predecessor;
+  amended.signedAuthority.payload.plan.planDigest = digest("0");
+  amended.signedAuthority.payload.plan.planDigest = computeFeatureOperationPlanDigestV2(amended.signedAuthority.payload.plan);
+  amended.signedAuthority.payload.planDigest = amended.signedAuthority.payload.plan.planDigest;
+  amended.signedAuthority.payload.authorityDigest = digest("0");
+  amended.signedAuthority.payload.authorityDigest = computeFeatureOperationAuthorityDigestV2(amended.signedAuthority.payload);
+  amended.signedAuthority = signAuthorityV2(amended.signedAuthority.payload);
+  amended.replayContext.activePlan = structuredClone(amended.signedAuthority.payload.plan);
+  amended.replayContext.activePlanDigest = amended.signedAuthority.payload.planDigest;
+  amended.replayContext.verifiedAuthorityDigest = amended.signedAuthority.payload.authorityDigest;
+  amended.replayContext.acceptedPlanLineage = [
+    { planSequence: 0, planDigest: predecessor, predecessorPlanDigest: null, authorityDigest: digest("e"), active: false },
+    { planSequence: 1, planDigest: amended.signedAuthority.payload.planDigest, predecessorPlanDigest: predecessor, authorityDigest: amended.signedAuthority.payload.authorityDigest, active: true },
+  ];
+  amended.replayContext.acceptedAmendmentDigests = [amended.signedAuthority.payload.planDigest];
+  assert.deepEqual(replayWithPayload(amended), { state: "invalid", reason: "GENESIS_INVALID", entrySequence: 0 });
+});
+
+test("freezes all thirty empty-object framing vectors and the RFC-8032 authority signature", () => {
+  const vectors = {
+    "shield.feature-integration.journal.v2": "22b30838c497d3d5137dabf277896c7c245e77fd93de5a1cf86f2947aa4f3d29",
+    "shield.feature-integration.entry.v2": "55a50894916f6106ad49aeb56768d288df91069183b68ceca6a2d9d08333fc1f",
+    "shield.feature-integration.cumulative-ledger.v2": "ff0f0d52c6b84c71ce53af449a3456dad78956beda9714b5cd74031d93605618",
+    "shield.feature-integration.idempotency-key.v2": "2df875dce0b016880f1a5a0496e5d7b611af58aaf4d5b684a867933a9168d415",
+    "shield.feature-integration.observation-bindings.v2": "898f7ebf6de7ad820a11d589d4797580c4a502ffeda3a880aad9d7ca44841d4d",
+    "shield.feature-integration.human-bindings.v2": "d599b454c48868e8f16e68dc9116a9ce39b6fd5cd25ddc7e42874a2ae2875d63",
+    "shield.feature-operation.plan.v2": "9c9abdacb941f737f61ae58b530db3ba88632150e287b5be8d76bf87dc94ef3f",
+    "shield.feature-operation.authority.v2": "aeca2de8133417cc276911b0dd5eac3a71000008ecddf10c9ba11b4ce6c7fb29",
+    "shield.feature-operation.candidate.v2": "29ccfeb1ed4edefb5c15a8ce1a520c53185b286fa0307adc845a1fc461fb5c00",
+    "shield.feature-integration.cumulative-authority.v2": "89844534a1c79530630ffa35887e6d016b905f5ad7d00b0a010e550e78713652",
+    "shield.feature-integration.cumulative-candidate.v2": "0513ee85aac1025ce21258f7ce1d8f847eb71cee3a0f6404da959305a13e8fd2",
+    "shield.feature-integration.executable-args.v2": "e9d2727b3975a2c08f865823a5152c05586910a942c38a5235b350ed2c6ab5cf",
+    "shield.feature-integration.request-core.v2": "5e09992af6280ddd29b34c24f0daa1a42ef38c1e87e665d75a95959f41ae868c",
+    "shield.feature-integration.request.v2": "f257ebe98c73ae5530e193c2f2fb114a00f15d92827aee6da764f8f7a134e9e9",
+    "shield.feature-integration.challenge.v2:workspace": "501973d9665f9bbb5acb9239c8073c3bc9c302a3d8d2bad37d8a5485e423b2cb",
+    "shield.feature-integration.challenge.v2:transition": "cf746a389fb5e4a8e1b57458882ad4b856a0dc316bd1b990b929cf745d74ca40",
+    "shield.feature-integration.challenge.v2:cumulative": "9fcb67e9a78d89ad485d64a34734e09a16bcf3e6c4b8ce9cc2e2169334ab0a90",
+    "shield.feature-integration.challenge.v2:admission": "64e9a6adfa0f343153bc31467a4c5c7f53f781fdc4d0278e94e21a71deff197f",
+    "shield.feature-integration.challenge.v2:expiry": "b69ef53893e66222db1941923322b8da017a12308c5131eade4be77b52b586ac",
+    "shield.feature-integration.observation.v2:workspace": "100b05306577a478742b2ed3fece4e74a464b1590230ed224a3d54b9eb088ebc",
+    "shield.feature-integration.observation.v2:transition": "898b1068bb5e2e7c5b10fe25326f6c858e026364110cf025032211964111dde3",
+    "shield.feature-integration.observation.v2:cumulative_registration": "98538d04f7814e10476990d96b8337b8d8a33c5c38789137ba2dab68d173c720",
+    "shield.feature-integration.observation.v2:cumulative_start": "a9f343fda0fcb3bbdf4950f85be26e3f057c0a596e2c2de861ef5a54fed19410",
+    "shield.feature-integration.observation.v2:cumulative_result": "06ea4f6c6afc38a88eae4f789dd0299ad5347b31aeeddddae240ac535d9d53f6",
+    "shield.feature-integration.observation.v2:cumulative_receipt": "897bb160c3d032ac175bdb351bd67d429333c042218b6feaa438bf0718682d00",
+    "shield.feature-integration.observation.v2:admission": "0c6a6d80747110c48413751710781c26d1ea4068488658578da990f70a84a6fd",
+    "shield.feature-integration.observation.v2:expiry": "ac48d6390f6663c2c3f85b2a1ffde09eeeca4b44daf0d04d4abc70a40bcae617",
+    "shield.feature-integration.final-gate.v2": "67e647b409b1cb19fd1bcddbb39b35adf315e337bbfa7d1bf25791374017cbe1",
+    "shield.feature-operation.authority-signature.v2": "1366c4af82430a495ad396225568b0e34a262ecd3ce366da97ef36ae7d4e571f",
+    "shield.feature-integration.cumulative-authority-signature.v2": "d0cddcfe2d36925f26716bd9d233729b5bed77553349d394b0412efbf4538fe2",
+  };
+  assert.equal(Object.keys(vectors).length, 30);
+  for (const [domain, expected] of Object.entries(vectors)) assert.equal(framedV2(domain, {}), `sha256:${expected}`, domain);
+  const rfcKey = createPublicKey({ key: Buffer.from("MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=", "base64"), format: "der", type: "spki" });
+  const message = Buffer.concat([Buffer.from("shield.feature-operation.authority-signature.v2", "ascii"), Buffer.from([0]), Buffer.from("{}")]);
+  const signature = Buffer.from("eg5wfuv6k6wn8AY5XC6mv9xZtpNN/nBJEuMfS3rqq7bgojdbvxYrSa7KGsq2fuFw5Cx+cerr/UdejjmQtxC1DQ==", "base64");
+  assert.equal(verify(null, message, rfcKey, signature), true);
+  signature[0] ^= 1;
+  assert.equal(verify(null, message, rfcKey, signature), false);
 });

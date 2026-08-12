@@ -1904,10 +1904,6 @@ export function validateFeatureOperationDerivedCandidateV2(input: unknown): Feat
   } catch { return invalidV2("candidate_invalid", "Feature operation V2 candidate is malformed."); }
 }
 
-function mappedReplayDigest(seed: string): string {
-  return `sha256:${createHash("sha256").update(seed, "utf8").digest("hex")}`;
-}
-
 function checkReplayShapeV2(input: unknown): FeatureOperationReplayContextV2 | null {
   const record = closed(input, REPLAY_FIELDS);
   if (!record || record.schemaVersion !== 2 || record.contractVersion !== FEATURE_OPERATION_CONTRACT_VERSION_V2 || !plain(record.lifecycle)) return null;
@@ -1918,21 +1914,33 @@ function checkReplayShapeV2(input: unknown): FeatureOperationReplayContextV2 | n
   const lineageItems = dense(record.acceptedPlanLineage, false);
   if (!lineageItems || lineageItems.length !== activePlan.planSequence + 1) return null;
   const safeLineageItems = lineageItems.map((item) => safeDataCloneV2(item) as Record<string, unknown>);
-  const mappedLineage = safeLineageItems.map((item, index) => ({ ...item,
-    planDigest: mappedReplayDigest(`feature-operation-v2-plan:${index}:${String(item.planDigest ?? "")}`),
-    predecessorPlanDigest: index === 0 ? null : mappedReplayDigest(`feature-operation-v2-plan:${index - 1}:${String(safeLineageItems[index - 1].planDigest ?? "")}`),
-  }));
+  for (let index = 0; index < safeLineageItems.length; index += 1) {
+    const item = closed(safeLineageItems[index], ["planSequence", "planDigest", "predecessorPlanDigest", "authorityDigest", "active"]);
+    if (!item || item.planSequence !== index || !digestString(item.planDigest) || !digestString(item.authorityDigest) || typeof item.active !== "boolean" ||
+        item.predecessorPlanDigest !== (index === 0 ? null : safeLineageItems[index - 1].planDigest)) return null;
+  }
+  if (safeLineageItems.filter((item) => item.active === true).length !== 1 || safeLineageItems.at(-1)?.active !== true ||
+      safeLineageItems.at(-1)?.planDigest !== activePlan.planDigest || safeLineageItems.at(-1)?.authorityDigest !== record.verifiedAuthorityDigest ||
+      new Set(safeLineageItems.map((item) => item.planDigest)).size !== safeLineageItems.length) return null;
+  const amendmentItems = dense(record.acceptedAmendmentDigests, true);
+  if (!amendmentItems || amendmentItems.length !== Math.max(0, safeLineageItems.length - 1) ||
+      amendmentItems.some((item, index) => !digestString(item) || item !== safeLineageItems[index + 1].planDigest)) return null;
+  // The original V2 lineage is authoritative and has already been validated
+  // above.  Flatten only the disposable V1 compatibility projection so its
+  // unchanged non-lineage invariants can be reused without synthesizing a V2
+  // lineage or changing any returned V2 digest.
   const projectedActivePlan = clone(projectedPlan) as FeatureOperationPlanV1;
-  projectedActivePlan.predecessorPlanDigest = activePlan.planSequence === 0 ? null : mappedLineage.at(-2)!.planDigest as string;
+  projectedActivePlan.planSequence = 0;
+  projectedActivePlan.predecessorPlanDigest = null;
   projectedActivePlan.planDigest = computePlanDigestUnchecked(projectedActivePlan);
-  mappedLineage.at(-1)!.planDigest = projectedActivePlan.planDigest;
   const projected = safeDataCloneV2(record) as Record<string, unknown>;
   projected.schemaVersion = 1;
   projected.contractVersion = FEATURE_OPERATION_CONTRACT_VERSION;
   projected.activePlan = projectedActivePlan;
   projected.activePlanDigest = projectedActivePlan.planDigest;
-  projected.acceptedPlanLineage = mappedLineage;
-  projected.acceptedAmendmentDigests = mappedLineage.slice(1).map((item) => item.planDigest);
+  projected.acceptedPlanLineage = [{ planSequence: 0, planDigest: projectedActivePlan.planDigest,
+    predecessorPlanDigest: null, authorityDigest: record.verifiedAuthorityDigest, active: true }];
+  projected.acceptedAmendmentDigests = [];
   projected.lifecycle = { ...(clone(record.lifecycle) as Record<string, unknown>), state: ownDataV2(record.lifecycle, "state") === "rollback_validation_pending" ? "rollback_pending" : ownDataV2(record.lifecycle, "state") };
   if (!checkReplayShape(projected)) return null;
   return safeDataCloneV2({ ...record, activePlan } as unknown as FeatureOperationReplayContextV2);

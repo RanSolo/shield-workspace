@@ -10,16 +10,19 @@ import {
   verifySignedFeatureOperationAuthorityV1,
   validateFeatureOperationReplayContextV2,
   validateFeatureOperationAuthorityV2,
+  validateFeatureOperationPlanV2,
+  validateFeatureOperationDerivedCandidateV2,
   type FeatureOperationAuthorityV1,
   type FeatureOperationAuthorityV2,
   type FeatureOperationDerivedCandidateV1,
+  type FeatureOperationDerivedCandidateV2,
   type FeatureOperationReplayContextV1,
   type FeatureOperationReplayContextV2,
   type FeatureOperationPlanV2,
   type SignedFeatureOperationAuthorityV1,
   type SignedFeatureOperationAuthorityV2,
 } from "./feature-operation-v1.mjs";
-import { computeEd25519SigningKeyRef, type TrustedHumanBinding } from "./mission-v2.mjs";
+import { computeEd25519SigningKeyRef, validateTrustedBindingRegistry, type TrustedHumanBinding } from "./mission-v2.mjs";
 import {
   computeImplementationAuthorityDigest,
   validateImplementationAuthorityV1,
@@ -902,33 +905,161 @@ export interface FeatureOperationGenesisPayloadV2 {
   trustedHumanBindings: readonly TrustedHumanBinding[];
 }
 
-type SignedRecordV2 = Readonly<{ payload: Readonly<Record<string, unknown>>; signatureBase64: string }>;
+export interface FeatureObservationChallengeV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.challenge.v2";
+  challengeKind: "workspace" | "transition" | "cumulative" | "admission" | "expiry";
+  operationId: string; repositoryId: string; requestId: string; requestCoreDigest: string;
+  preparationEntryDigest: string | null; candidateDigest: string | null; effectKey: string | null;
+  producerId: string; producerKind: "github_repository" | "cumulative_execution"; generation: number;
+  challengeId: string; previousJournalDigest: string; intendedEntrySequence: number;
+  expectedHeadRevision: string | null; expectedTreeDigest: string | null;
+  priorChallengeDigest: string | null; priorObservationDigest: string | null;
+  issuedAt: string; expiresAt: string; challengeDigest: string;
+}
+export interface SignedFeatureObservationChallengeV2 { payload: FeatureObservationChallengeV2; signatureBase64: string }
+export interface FeatureWorkspaceRequestV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.workspace-request.v2"; requestId: string;
+  operationId: string; repositoryId: string; derivationKind: "feature_branch_create" | "feature_workspace_draft_pr_create" | "child_initiation" | "child_draft_pr_create";
+  candidateDigest: string; effectKey: string; targetRef: string; targetBaseBranch: string | null;
+  expectedHeadRevision: string; expectedTreeDigest: string | null; childId: string | null; pullRequestId: string | null;
+  sourceBranch: string | null; draftOnly: true | null; requestCoreDigest: string;
+  signedChallenge: SignedFeatureObservationChallengeV2; requestDigest: string;
+}
+export interface FeatureTransitionRequestV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.transition-request.v2"; requestId: string;
+  operationId: string; repositoryId: string; derivationKind: "child_merge_to_feature" | "child_revert_on_feature";
+  candidateDigest: string; effectKey: string; pullRequestId: string; expectedPullRequestHead: string;
+  targetFeatureBranch: string; targetFeatureRef: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash";
+  priorHeadRevision: string; priorTreeDigest: string; rollbackWorkspaceReceiptDigest: string | null;
+  requestCoreDigest: string; signedChallenge: SignedFeatureObservationChallengeV2; requestDigest: string;
+}
+export interface FeatureCumulativeValidationCommandV2 { commandId: string; executable: string; args: readonly string[]; targetIds: readonly string[]; executableArgsDigest: string; idempotencyKey: string }
+export interface FeatureCumulativeRequestV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.cumulative-request.v2"; requestId: string;
+  operationId: string; repositoryId: string; planDigest: string; featureAuthorityDigest: string;
+  terminalHeadRevision: string; terminalTreeDigest: string; transitionReceiptDigest: string; effectKey: string;
+  attemptId: string; commands: readonly FeatureCumulativeValidationCommandV2[]; targetIds: readonly string[]; validationIds: readonly string[];
+  requestCoreDigest: string; cumulativeAuthorityDigest: string; signedChallenge: SignedFeatureObservationChallengeV2; requestDigest: string;
+}
+export type FeatureEffectRequestV2 = FeatureWorkspaceRequestV2 | FeatureTransitionRequestV2 | FeatureCumulativeRequestV2;
+export interface FeatureCumulativeValidationAuthorityV2 {
+  schemaVersion: 2; authorityKind: "feature_cumulative_validation.v2"; authorityId: string; missionId: string;
+  operationId: string; repositoryId: string; planDigest: string; featureAuthorityDigest: string;
+  terminalHeadRevision: string; terminalTreeDigest: string; transitionReceiptDigest: string; requestCoreDigest: string;
+  commandIds: readonly string[]; targetIds: readonly string[]; validationIds: readonly string[]; effectKey: string;
+  maxAttempts: 1; maxRetries: 0; activeAuthorityJournalSequence: number; activeAuthorityOperationSequence: number;
+  issuedAt: string; expiresAt: string; humanPrincipalId: string; humanBindingId: string; signingKeyRef: string; authorityDigest: string;
+}
+export interface SignedFeatureCumulativeValidationAuthorityV2 { payload: FeatureCumulativeValidationAuthorityV2; signatureBase64: string }
+export interface FeatureCumulativeValidationCandidateV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.v2"; operationId: string; repositoryId: string;
+  planDigest: string; featureAuthorityDigest: string; cumulativeAuthorityDigest: string; requestCoreDigest: string;
+  effectKey: string; attemptId: string; terminalHeadRevision: string; terminalTreeDigest: string; transitionReceiptDigest: string;
+  activeAuthorityJournalSequence: number; activeAuthorityOperationSequence: number; candidateDigest: string;
+}
+export interface FeatureWorkspaceObservationV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.observation.v2"; observationKind: "workspace";
+  operationId: string; repositoryId: string; requestId: string; requestCoreDigest: string; requestDigest: string;
+  preparationEntryDigest: string; candidateDigest: string; effectKey: string;
+  derivationKind: "feature_branch_create" | "feature_workspace_draft_pr_create" | "child_initiation" | "child_draft_pr_create";
+  targetRef: string; targetBaseBranch: string | null; expectedHeadRevision: string; expectedTreeDigest: string | null;
+  status: "applied" | "not_applied" | "uncertain"; observedHeadRevision: string | null; observedTreeDigest: string | null;
+  pullRequests: readonly { pullRequestId: string; url: string; draft: boolean; headBranch: string; headRevision: string; baseBranch: string }[];
+  signedChallenge: SignedFeatureObservationChallengeV2; producerId: string; observedAt: string; observationDigest: string;
+}
+export interface FeatureTransitionObservationV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.observation.v2"; observationKind: "transition";
+  operationId: string; repositoryId: string; requestId: string; requestCoreDigest: string; requestDigest: string;
+  preparationEntryDigest: string; candidateDigest: string; effectKey: string; pullRequestId: string; expectedPullRequestHead: string;
+  targetFeatureRef: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; priorHeadRevision: string; priorTreeDigest: string;
+  observedPullRequestHead: string; observedPullRequestBaseBranch: string; observedIntegrationMethod: string | null;
+  pullRequestMerged: boolean; pullRequestMergeRevision: string | null; pullRequestCommitHeads: readonly string[]; conflictingPullRequestCount: number;
+  resultingCommitParents: readonly string[]; rebasedCommits: readonly { sourceCommit: string; resultCommit: string; parentCommit: string; treeDigest: string }[];
+  checkState: "successful" | "not_successful" | "unknown"; observedTargetHeadRevision: string; observedTargetTreeDigest: string;
+  status: "applied" | "not_applied" | "uncertain"; signedChallenge: SignedFeatureObservationChallengeV2; producerId: string; observedAt: string; observationDigest: string;
+}
+export interface FeatureCumulativeRegistrationObservationV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.observation.v2"; observationKind: "cumulative_registration";
+  operationId: string; preparationEntryDigest: string; attemptId: string; requestDigest: string; commandCount: number;
+  sourceRuntimeBindingDigest: string; runtimeIdentity: { seatId: "may"; reasoningRuntimeId: string; modelId: string; toolExecutorId: string };
+  signedChallenge: SignedFeatureObservationChallengeV2; producerId: string; registeredAt: string; observationDigest: string;
+}
+export interface FeatureCumulativeStartObservationV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.observation.v2"; observationKind: "cumulative_start";
+  operationId: string; preparationEntryDigest: string; attemptId: string; requestDigest: string; commandIndex: number; commandId: string;
+  executableArgsDigest: string; idempotencyKey: string; registrationDigest: string; priorRecordDigest: string; producerId: string; startedAt: string; observationDigest: string;
+}
+export interface FeatureCumulativeResultObservationV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.observation.v2"; observationKind: "cumulative_result";
+  operationId: string; preparationEntryDigest: string; attemptId: string; requestDigest: string; commandIndex: number; commandId: string;
+  idempotencyKey: string; startDigest: string; status: "completed" | "threw" | "malformed"; exitCode: number | null;
+  stdoutDigest: string | null; stderrDigest: string | null; cacheDisposition: "executed" | "cache_hit" | "unknown"; producerId: string; finishedAt: string; observationDigest: string;
+}
+export interface FeatureCumulativeReceiptObservationV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.observation.v2"; observationKind: "cumulative_receipt";
+  operationId: string; preparationEntryDigest: string; attemptId: string; requestDigest: string; registrationDigest: string;
+  startDigests: readonly string[]; resultDigests: readonly string[]; idempotencyKeys: readonly string[]; completedPrefixLength: number;
+  invocationBounds: { minimum: number; maximum: number }; terminalStatus: "passed" | "failed" | "not_applied" | "uncertain";
+  notAppliedReason: "implementation_authority_inactive" | "implementation_authority_mismatch" | "execution_request_mismatch" | null;
+  commands: readonly { commandIndex: number; commandId: string; executableArgsDigest: string; idempotencyKey: string }[];
+  results: readonly { commandIndex: number; commandId: string; startDigest: string; resultDigest: string; status: "completed" | "threw" | "malformed"; exitCode: number | null; stdoutDigest: string | null; stderrDigest: string | null; cacheDisposition: "executed" | "cache_hit" | "unknown" }[];
+  signedChallenge: SignedFeatureObservationChallengeV2; producerId: string; observedAt: string; observationDigest: string;
+}
+export interface FeatureAdmissionObservationV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.observation.v2"; observationKind: "admission";
+  admissionKind: "controller_snapshot" | "final_gate" | "completion" | "pause" | "resume" | "cancel" | "split" | "supersede";
+  operationId: string; repositoryId: string; targetRef: string; activePlanDigest: string; activeAuthorityDigest: string;
+  terminalHeadRevision: string; terminalTreeDigest: string; sourceLifecycle: string; priorJournalDigest: string; intendedEntrySequence: number;
+  effectiveExpiry: string; observedAt: string; signedChallenge: SignedFeatureObservationChallengeV2; producerId: string; observationDigest: string;
+}
+export interface FeatureExpiryObservationV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.observation.v2"; observationKind: "expiry";
+  operationId: string; repositoryId: string; activePlanDigest: string; activeAuthorityDigest: string; sourceLifecycle: string;
+  priorJournalDigest: string; intendedEntrySequence: number; effectiveExpiry: string; observedAt: string;
+  signedChallenge: SignedFeatureObservationChallengeV2; producerId: string; observationDigest: string;
+}
+export interface FeatureFinalGateEvidenceV2 {
+  schemaVersion: 2; contractVersion: "feature.integration.final-gate.v2"; evidenceId: string; operationId: string; repositoryId: string;
+  activePlanDigest: string; activeAuthorityDigest: string; terminalHeadRevision: string; terminalTreeDigest: string; gateId: string;
+  seatId: "fitz" | "simmons" | "coulson"; decision: "approved"; humanPrincipalId: string; humanBindingId: string; signingKeyRef: string;
+  featureJournalEntrySequence: number; evidenceTime: string; evidenceDigest: string;
+}
+export interface FeatureChildEvidenceV2 {
+  schemaVersion: 2; evidenceId: string; gateType: "mack" | "fury" | "human" | "check" | "ci"; gateId: string;
+  childId: string; repositoryId: string; headRevision: string; sourceRecordDigest: string; accepted: boolean; synthetic: boolean;
+}
+export interface SignedFeatureWorkspaceObservationV2 { payload: FeatureWorkspaceObservationV2; signatureBase64: string }
+export interface SignedFeatureTransitionObservationV2 { payload: FeatureTransitionObservationV2; signatureBase64: string }
+export interface SignedFeatureCumulativeReceiptObservationV2 { payload: FeatureCumulativeReceiptObservationV2; signatureBase64: string }
+export interface SignedFeatureAdmissionObservationV2 { payload: FeatureAdmissionObservationV2; signatureBase64: string }
+export interface SignedFeatureExpiryObservationV2 { payload: FeatureExpiryObservationV2; signatureBase64: string }
+export interface SignedFeatureFinalGateEvidenceV2 { payload: FeatureFinalGateEvidenceV2; signatureBase64: string }
 export interface FeatureIntegrationEntryPayloadMapV2 {
   operation_genesis_accepted: FeatureOperationGenesisPayloadV2;
   authority_successor_accepted: { plan: FeatureOperationPlanV2; signedAuthority: SignedFeatureOperationAuthorityV2 };
-  effect_prepared: { effectClass: FeatureEffectClassV2; candidate: Readonly<Record<string, unknown>>; candidateDigest: string; effectKey: string; request: Readonly<Record<string, unknown>>; requestDigest: string; expectedHeadRevision: string; expectedTreeDigest: string; signedCumulativeAuthority: SignedRecordV2 | null };
-  effect_challenge_refreshed: { preparationEntryDigest: string; signedChallenge: SignedRecordV2 };
-  effect_not_applied: { preparationEntryDigest: string; signedObservation: SignedRecordV2 };
-  effect_uncertain: { preparationEntryDigest: string; signedObservation: SignedRecordV2 };
-  feature_branch_creation_accepted: { preparationEntryDigest: string; headRevision: string; treeDigest: string; signedWorkspaceObservation: SignedRecordV2 };
-  feature_workspace_accepted: { preparationEntryDigest: string; pullRequestId: string; sourceBranch: string; targetBranch: string; headRevision: string; draft: boolean; signedWorkspaceObservation: SignedRecordV2 };
-  child_initiation_accepted: { preparationEntryDigest: string; childId: string; branch: string; baseHeadRevision: string; baseTreeDigest: string; signedWorkspaceObservation: SignedRecordV2 };
+  effect_prepared: { effectClass: FeatureEffectClassV2; candidate: Readonly<FeatureOperationDerivedCandidateV2 | FeatureCumulativeValidationCandidateV2>; candidateDigest: string; effectKey: string; request: Readonly<FeatureEffectRequestV2>; requestDigest: string; expectedHeadRevision: string; expectedTreeDigest: string; signedCumulativeAuthority: SignedFeatureCumulativeValidationAuthorityV2 | null };
+  effect_challenge_refreshed: { preparationEntryDigest: string; signedChallenge: SignedFeatureObservationChallengeV2 };
+  effect_not_applied: { preparationEntryDigest: string; signedObservation: SignedFeatureWorkspaceObservationV2 | SignedFeatureTransitionObservationV2 | SignedFeatureCumulativeReceiptObservationV2 };
+  effect_uncertain: { preparationEntryDigest: string; signedObservation: SignedFeatureWorkspaceObservationV2 | SignedFeatureTransitionObservationV2 | SignedFeatureCumulativeReceiptObservationV2 };
+  feature_branch_creation_accepted: { preparationEntryDigest: string; headRevision: string; treeDigest: string; signedWorkspaceObservation: SignedFeatureWorkspaceObservationV2 };
+  feature_workspace_accepted: { preparationEntryDigest: string; pullRequestId: string; sourceBranch: string; targetBranch: string; headRevision: string; draft: boolean; signedWorkspaceObservation: SignedFeatureWorkspaceObservationV2 };
+  child_initiation_accepted: { preparationEntryDigest: string; childId: string; branch: string; baseHeadRevision: string; baseTreeDigest: string; signedWorkspaceObservation: SignedFeatureWorkspaceObservationV2 };
   child_implementation_accepted: { childId: string; sourceMissionId: string; effectKey: string; sourceAuthorityDigest: string; sourceJournalDigest: string; completionReceiptDigest: string; headRevision: string; treeDigest: string };
-  child_publication_accepted: { preparationEntryDigest: string; childId: string; pullRequestId: string; sourceBranch: string; targetBranch: string; headRevision: string; draft: boolean; signedWorkspaceObservation: SignedRecordV2 };
-  child_evidence_accepted: { childId: string; headRevision: string; evidenceIds: readonly string[]; evidenceDigests: readonly string[]; evidenceRecords: readonly Readonly<Record<string, unknown>>[] };
-  integration_accepted: { preparationEntryDigest: string; signedTransitionObservation: SignedRecordV2 };
+  child_publication_accepted: { preparationEntryDigest: string; childId: string; pullRequestId: string; sourceBranch: string; targetBranch: string; headRevision: string; draft: boolean; signedWorkspaceObservation: SignedFeatureWorkspaceObservationV2 };
+  child_evidence_accepted: { childId: string; headRevision: string; evidenceIds: readonly string[]; evidenceDigests: readonly string[]; evidenceRecords: readonly Readonly<FeatureChildEvidenceV2>[] };
+  integration_accepted: { preparationEntryDigest: string; signedTransitionObservation: SignedFeatureTransitionObservationV2 };
   rollback_workspace_accepted: { childId: string; sourceMissionId: string; completionReceiptDigest: string; sourceAuthorityDigest: string; sourceJournalDigest: string; rollbackBranch: string; pullRequestId: string; pullRequestHeadRevision: string; targetBranch: string; restoredTreeDigest: string; sourceEffectKeys: readonly string[]; evidenceDigests: readonly string[] };
-  rollback_accepted: { preparationEntryDigest: string; signedTransitionObservation: SignedRecordV2 };
-  cumulative_validation_accepted: { preparationEntryDigest: string; signedCumulativeReceipt: SignedRecordV2 };
-  cumulative_validation_failed: { preparationEntryDigest: string; signedCumulativeReceipt: SignedRecordV2 };
-  operation_paused: { signedAdmissionObservation: SignedRecordV2; reason: "operator_requested" | "dependency_blocked" | "scope_superseded" };
-  operation_resumed: { signedAdmissionObservation: SignedRecordV2; reason: "operator_requested" | "dependency_blocked" | "scope_superseded" };
-  operation_cancelled: { signedAdmissionObservation: SignedRecordV2; reason: "operator_requested" | "dependency_blocked" | "scope_superseded" };
-  operation_split: { signedAdmissionObservation: SignedRecordV2; successorOperationId: string; successorPlanDigest: string; successorAuthorityDigest: string };
-  operation_completed: { signedAdmissionObservation: SignedRecordV2 };
-  operation_superseded: { signedAdmissionObservation: SignedRecordV2; successorOperationId: string; successorPlanDigest: string; successorAuthorityDigest: string };
-  final_gate_evidence_accepted: { signedEvidence: SignedRecordV2; signedAdmissionObservation: SignedRecordV2 };
-  operation_expired: { signedExpiryObservation: SignedRecordV2 };
+  rollback_accepted: { preparationEntryDigest: string; signedTransitionObservation: SignedFeatureTransitionObservationV2 };
+  cumulative_validation_accepted: { preparationEntryDigest: string; signedCumulativeReceipt: SignedFeatureCumulativeReceiptObservationV2 };
+  cumulative_validation_failed: { preparationEntryDigest: string; signedCumulativeReceipt: SignedFeatureCumulativeReceiptObservationV2 };
+  operation_paused: { signedAdmissionObservation: SignedFeatureAdmissionObservationV2; reason: "operator_requested" | "dependency_blocked" | "scope_superseded" };
+  operation_resumed: { signedAdmissionObservation: SignedFeatureAdmissionObservationV2; reason: "operator_requested" | "dependency_blocked" | "scope_superseded" };
+  operation_cancelled: { signedAdmissionObservation: SignedFeatureAdmissionObservationV2; reason: "operator_requested" | "dependency_blocked" | "scope_superseded" };
+  operation_split: { signedAdmissionObservation: SignedFeatureAdmissionObservationV2; successorOperationId: string; successorPlanDigest: string; successorAuthorityDigest: string };
+  operation_completed: { signedAdmissionObservation: SignedFeatureAdmissionObservationV2 };
+  operation_superseded: { signedAdmissionObservation: SignedFeatureAdmissionObservationV2; successorOperationId: string; successorPlanDigest: string; successorAuthorityDigest: string };
+  final_gate_evidence_accepted: { signedEvidence: SignedFeatureFinalGateEvidenceV2; signedAdmissionObservation: SignedFeatureAdmissionObservationV2 };
+  operation_expired: { signedExpiryObservation: SignedFeatureExpiryObservationV2 };
 }
 export type FeatureIntegrationEntryPayloadV2 = FeatureIntegrationEntryPayloadMapV2[FeatureIntegrationEntryKindV2];
 type FeatureOperationJournalEntryCommonV2 = {
@@ -1027,6 +1158,207 @@ const V2_ENTRY_PAYLOAD_FIELDS: Readonly<Record<FeatureIntegrationEntryKindV2, re
   operation_expired: ["signedExpiryObservation"],
 });
 
+const IDENTIFIER_V2 = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,511}$/u;
+const KEY_REF_V2 = /^ed25519:sha256:[A-Za-z0-9_-]{43}$/u;
+const REVISION_V2 = /^[0-9a-f]{40}$/u;
+const BRANCH_V2 = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*\.\.)(?!.*[~^:?*\[\\\s])(?!.*\/$)[A-Za-z0-9._/-]{1,255}$/u;
+const UTC_V2 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u;
+
+function identifierV2(value: unknown): value is string { return typeof value === "string" && IDENTIFIER_V2.test(value); }
+function keyRefV2(value: unknown): value is string { return typeof value === "string" && KEY_REF_V2.test(value); }
+function revisionV2(value: unknown): value is string { return typeof value === "string" && REVISION_V2.test(value); }
+function branchV2(value: unknown): value is string { return typeof value === "string" && BRANCH_V2.test(value); }
+function utcV2(value: unknown): value is string { return typeof value === "string" && UTC_V2.test(value) && Number.isFinite(Date.parse(value)); }
+function nullable<T>(value: unknown, check: (candidate: unknown) => candidate is T): value is T | null { return value === null || check(value); }
+function stringArrayV2(value: unknown, check: (candidate: unknown) => boolean = identifierV2, allowEmpty = true): value is string[] {
+  const items = densePlainArrayV2(value, allowEmpty);
+  return !!items && items.every(check);
+}
+function signedEnvelopeV2(input: unknown, payloadCheck: (payload: unknown) => boolean): boolean {
+  return exactDataRecordV2(input, ["payload", "signatureBase64"]) && payloadCheck(input.payload) &&
+    canonicalBase64V2(input.signatureBase64) && Buffer.from(input.signatureBase64, "base64").length === 64;
+}
+function challengeV2(input: unknown, expectedKind?: FeatureObservationChallengeV2["challengeKind"]): input is FeatureObservationChallengeV2 {
+  const fields = ["schemaVersion", "contractVersion", "challengeKind", "operationId", "repositoryId", "requestId", "requestCoreDigest",
+    "preparationEntryDigest", "candidateDigest", "effectKey", "producerId", "producerKind", "generation", "challengeId", "previousJournalDigest",
+    "intendedEntrySequence", "expectedHeadRevision", "expectedTreeDigest", "priorChallengeDigest", "priorObservationDigest", "issuedAt", "expiresAt", "challengeDigest"];
+  if (!exactDataRecordV2(input, fields) || input.schemaVersion !== 2 || input.contractVersion !== "feature.integration.challenge.v2" ||
+      !["workspace", "transition", "cumulative", "admission", "expiry"].includes(input.challengeKind as string) ||
+      (expectedKind !== undefined && input.challengeKind !== expectedKind) || ![input.operationId, input.repositoryId, input.requestId, input.producerId, input.challengeId].every(identifierV2) ||
+      ![input.requestCoreDigest, input.previousJournalDigest, input.challengeDigest].every(digestValue) || !nullable(input.preparationEntryDigest, digestValue) ||
+      !nullable(input.candidateDigest, digestValue) || !nullable(input.effectKey, identifierV2) || !safeInteger(input.generation) || !safeInteger(input.intendedEntrySequence) ||
+      !nullable(input.expectedHeadRevision, revisionV2) || !nullable(input.expectedTreeDigest, digestValue) || !nullable(input.priorChallengeDigest, digestValue) ||
+      !nullable(input.priorObservationDigest, digestValue) || !utcV2(input.issuedAt) || !utcV2(input.expiresAt) || Date.parse(input.issuedAt) >= Date.parse(input.expiresAt)) return false;
+  const producerKind = input.challengeKind === "cumulative" ? "cumulative_execution" : "github_repository";
+  if (input.producerKind !== producerKind) return false;
+  const effectKind = ["workspace", "transition", "cumulative"].includes(input.challengeKind as string);
+  if (effectKind !== (input.candidateDigest !== null && input.effectKey !== null) ||
+      effectKind !== (input.expectedHeadRevision !== null && input.expectedTreeDigest !== null)) return false;
+  if (input.challengeKind === "admission" && (input.expectedHeadRevision === null || input.expectedTreeDigest === null)) return false;
+  if (input.challengeKind === "expiry" && (input.expectedHeadRevision !== null || input.expectedTreeDigest !== null)) return false;
+  if (input.generation === 0) return input.preparationEntryDigest === null && input.priorChallengeDigest === null && input.priorObservationDigest === null;
+  return effectKind && input.preparationEntryDigest !== null && input.priorChallengeDigest !== null;
+}
+function signedChallengeV2(input: unknown, kind?: FeatureObservationChallengeV2["challengeKind"]): boolean {
+  return signedEnvelopeV2(input, (payload) => challengeV2(payload, kind));
+}
+
+const WORKSPACE_REQUEST_FIELDS = ["schemaVersion", "contractVersion", "requestId", "operationId", "repositoryId", "derivationKind", "candidateDigest", "effectKey",
+  "targetRef", "targetBaseBranch", "expectedHeadRevision", "expectedTreeDigest", "childId", "pullRequestId", "sourceBranch", "draftOnly", "requestCoreDigest", "signedChallenge", "requestDigest"];
+const TRANSITION_REQUEST_FIELDS = ["schemaVersion", "contractVersion", "requestId", "operationId", "repositoryId", "derivationKind", "candidateDigest", "effectKey", "pullRequestId",
+  "expectedPullRequestHead", "targetFeatureBranch", "targetFeatureRef", "integrationMethod", "priorHeadRevision", "priorTreeDigest", "rollbackWorkspaceReceiptDigest", "requestCoreDigest", "signedChallenge", "requestDigest"];
+const CUMULATIVE_REQUEST_FIELDS = ["schemaVersion", "contractVersion", "requestId", "operationId", "repositoryId", "planDigest", "featureAuthorityDigest", "terminalHeadRevision", "terminalTreeDigest",
+  "transitionReceiptDigest", "effectKey", "attemptId", "commands", "targetIds", "validationIds", "requestCoreDigest", "cumulativeAuthorityDigest", "signedChallenge", "requestDigest"];
+
+function workspaceRequestV2(input: unknown): input is FeatureWorkspaceRequestV2 {
+  return exactDataRecordV2(input, WORKSPACE_REQUEST_FIELDS) && input.schemaVersion === 2 && input.contractVersion === "feature.integration.workspace-request.v2" &&
+    [input.requestId, input.operationId, input.repositoryId, input.effectKey].every(identifierV2) &&
+    ["feature_branch_create", "feature_workspace_draft_pr_create", "child_initiation", "child_draft_pr_create"].includes(input.derivationKind as string) &&
+    [input.candidateDigest, input.requestCoreDigest, input.requestDigest].every(digestValue) && identifierV2(input.targetRef) && nullable(input.targetBaseBranch, branchV2) &&
+    revisionV2(input.expectedHeadRevision) && nullable(input.expectedTreeDigest, digestValue) && nullable(input.childId, identifierV2) && nullable(input.pullRequestId, identifierV2) &&
+    nullable(input.sourceBranch, branchV2) && (input.draftOnly === true || input.draftOnly === null) && signedChallengeV2(input.signedChallenge, "workspace");
+}
+function transitionRequestV2(input: unknown): input is FeatureTransitionRequestV2 {
+  return exactDataRecordV2(input, TRANSITION_REQUEST_FIELDS) && input.schemaVersion === 2 && input.contractVersion === "feature.integration.transition-request.v2" &&
+    [input.requestId, input.operationId, input.repositoryId, input.effectKey, input.pullRequestId, input.targetFeatureRef].every(identifierV2) &&
+    ["child_merge_to_feature", "child_revert_on_feature"].includes(input.derivationKind as string) && [input.candidateDigest, input.priorTreeDigest, input.requestCoreDigest, input.requestDigest].every(digestValue) &&
+    [input.expectedPullRequestHead, input.priorHeadRevision].every(revisionV2) && branchV2(input.targetFeatureBranch) && ["merge_commit", "rebase_merge", "squash"].includes(input.integrationMethod as string) &&
+    nullable(input.rollbackWorkspaceReceiptDigest, digestValue) && signedChallengeV2(input.signedChallenge, "transition");
+}
+function cumulativeCommandV2(input: unknown): boolean {
+  return exactDataRecordV2(input, ["commandId", "executable", "args", "targetIds", "executableArgsDigest", "idempotencyKey"]) &&
+    identifierV2(input.commandId) && identifierV2(input.executable) && stringArrayV2(input.args, text) && stringArrayV2(input.targetIds, identifierV2, false) &&
+    digestValue(input.executableArgsDigest) && digestValue(input.idempotencyKey);
+}
+function cumulativeRequestV2(input: unknown): input is FeatureCumulativeRequestV2 {
+  const commands = exactDataRecordV2(input, CUMULATIVE_REQUEST_FIELDS) && densePlainArrayV2(input.commands, false);
+  return !!commands && input.schemaVersion === 2 && input.contractVersion === "feature.integration.cumulative-request.v2" &&
+    [input.requestId, input.operationId, input.repositoryId, input.effectKey, input.attemptId].every(identifierV2) && revisionV2(input.terminalHeadRevision) &&
+    [input.planDigest, input.featureAuthorityDigest, input.terminalTreeDigest, input.transitionReceiptDigest, input.requestCoreDigest, input.cumulativeAuthorityDigest, input.requestDigest].every(digestValue) &&
+    commands.every(cumulativeCommandV2) && stringArrayV2(input.targetIds, identifierV2, false) && stringArrayV2(input.validationIds, identifierV2, false) && signedChallengeV2(input.signedChallenge, "cumulative");
+}
+function effectRequestV2(input: unknown): input is FeatureEffectRequestV2 { return workspaceRequestV2(input) || transitionRequestV2(input) || cumulativeRequestV2(input); }
+
+const CUMULATIVE_AUTHORITY_FIELDS = ["schemaVersion", "authorityKind", "authorityId", "missionId", "operationId", "repositoryId", "planDigest", "featureAuthorityDigest", "terminalHeadRevision", "terminalTreeDigest",
+  "transitionReceiptDigest", "requestCoreDigest", "commandIds", "targetIds", "validationIds", "effectKey", "maxAttempts", "maxRetries", "activeAuthorityJournalSequence", "activeAuthorityOperationSequence",
+  "issuedAt", "expiresAt", "humanPrincipalId", "humanBindingId", "signingKeyRef", "authorityDigest"];
+function cumulativeAuthorityV2(input: unknown): input is FeatureCumulativeValidationAuthorityV2 {
+  return exactDataRecordV2(input, CUMULATIVE_AUTHORITY_FIELDS) && input.schemaVersion === 2 && input.authorityKind === "feature_cumulative_validation.v2" &&
+    [input.authorityId, input.missionId, input.operationId, input.repositoryId, input.effectKey, input.humanPrincipalId, input.humanBindingId].every(identifierV2) &&
+    [input.planDigest, input.featureAuthorityDigest, input.terminalTreeDigest, input.transitionReceiptDigest, input.requestCoreDigest, input.authorityDigest].every(digestValue) && revisionV2(input.terminalHeadRevision) &&
+    stringArrayV2(input.commandIds, identifierV2, false) && stringArrayV2(input.targetIds, identifierV2, false) && stringArrayV2(input.validationIds, identifierV2, false) && input.maxAttempts === 1 && input.maxRetries === 0 &&
+    safeInteger(input.activeAuthorityJournalSequence) && safeInteger(input.activeAuthorityOperationSequence) && utcV2(input.issuedAt) && utcV2(input.expiresAt) && Date.parse(input.issuedAt) < Date.parse(input.expiresAt) && keyRefV2(input.signingKeyRef);
+}
+function cumulativeCandidateV2(input: unknown): input is FeatureCumulativeValidationCandidateV2 {
+  const fields = ["schemaVersion", "contractVersion", "operationId", "repositoryId", "planDigest", "featureAuthorityDigest", "cumulativeAuthorityDigest", "requestCoreDigest", "effectKey", "attemptId", "terminalHeadRevision", "terminalTreeDigest", "transitionReceiptDigest", "activeAuthorityJournalSequence", "activeAuthorityOperationSequence", "candidateDigest"];
+  return exactDataRecordV2(input, fields) && input.schemaVersion === 2 && input.contractVersion === FEATURE_INTEGRATION_CONTRACT_VERSION_V2 &&
+    [input.operationId, input.repositoryId, input.effectKey, input.attemptId].every(identifierV2) && revisionV2(input.terminalHeadRevision) &&
+    [input.planDigest, input.featureAuthorityDigest, input.cumulativeAuthorityDigest, input.requestCoreDigest, input.terminalTreeDigest, input.transitionReceiptDigest, input.candidateDigest].every(digestValue) &&
+    safeInteger(input.activeAuthorityJournalSequence) && safeInteger(input.activeAuthorityOperationSequence);
+}
+
+function signedObservationV2(input: unknown, kinds: readonly string[]): boolean {
+  return signedEnvelopeV2(input, (payload) => observationPayloadV2(payload, kinds));
+}
+function observationPayloadV2(input: unknown, kinds: readonly string[]): boolean {
+  if (!plain(input)) return false;
+  const kind = ownData(input, "observationKind");
+  if (typeof kind !== "string" || !kinds.includes(kind)) return false;
+  const common = (fields: readonly string[], digestField = "observationDigest") => exactDataRecordV2(input, fields) && input.schemaVersion === 2 && input.contractVersion === "feature.integration.observation.v2" && digestValue(input[digestField]);
+  if (kind === "workspace") {
+    const fields = ["schemaVersion", "contractVersion", "observationKind", "operationId", "repositoryId", "requestId", "requestCoreDigest", "requestDigest", "preparationEntryDigest", "candidateDigest", "effectKey", "derivationKind", "targetRef", "targetBaseBranch", "expectedHeadRevision", "expectedTreeDigest", "status", "observedHeadRevision", "observedTreeDigest", "pullRequests", "signedChallenge", "producerId", "observedAt", "observationDigest"];
+    const pulls = common(fields) && densePlainArrayV2(input.pullRequests, true);
+    return !!pulls && [input.operationId, input.repositoryId, input.requestId, input.effectKey, input.targetRef, input.producerId].every(identifierV2) && [input.requestCoreDigest, input.requestDigest, input.preparationEntryDigest, input.candidateDigest].every(digestValue) &&
+      ["feature_branch_create", "feature_workspace_draft_pr_create", "child_initiation", "child_draft_pr_create"].includes(input.derivationKind as string) && nullable(input.targetBaseBranch, branchV2) && revisionV2(input.expectedHeadRevision) && nullable(input.expectedTreeDigest, digestValue) &&
+      ["applied", "not_applied", "uncertain"].includes(input.status as string) && nullable(input.observedHeadRevision, revisionV2) && nullable(input.observedTreeDigest, digestValue) &&
+      pulls.every((pull) => exactDataRecordV2(pull, ["pullRequestId", "url", "draft", "headBranch", "headRevision", "baseBranch"]) && identifierV2(pull.pullRequestId) && text(pull.url) && typeof pull.draft === "boolean" && branchV2(pull.headBranch) && revisionV2(pull.headRevision) && branchV2(pull.baseBranch)) &&
+      signedChallengeV2(input.signedChallenge, "workspace") && utcV2(input.observedAt);
+  }
+  if (kind === "transition") {
+    const fields = ["schemaVersion", "contractVersion", "observationKind", "operationId", "repositoryId", "requestId", "requestCoreDigest", "requestDigest", "preparationEntryDigest", "candidateDigest", "effectKey", "pullRequestId", "expectedPullRequestHead", "targetFeatureRef", "integrationMethod", "priorHeadRevision", "priorTreeDigest", "observedPullRequestHead", "observedPullRequestBaseBranch", "observedIntegrationMethod", "pullRequestMerged", "pullRequestMergeRevision", "pullRequestCommitHeads", "conflictingPullRequestCount", "resultingCommitParents", "rebasedCommits", "checkState", "observedTargetHeadRevision", "observedTargetTreeDigest", "status", "signedChallenge", "producerId", "observedAt", "observationDigest"];
+    const commits = common(fields) && densePlainArrayV2(input.rebasedCommits, true);
+    return !!commits && [input.operationId, input.repositoryId, input.requestId, input.effectKey, input.pullRequestId, input.targetFeatureRef, input.producerId].every(identifierV2) &&
+      [input.requestCoreDigest, input.requestDigest, input.preparationEntryDigest, input.candidateDigest, input.priorTreeDigest, input.observedTargetTreeDigest].every(digestValue) &&
+      [input.expectedPullRequestHead, input.priorHeadRevision, input.observedPullRequestHead, input.observedTargetHeadRevision].every(revisionV2) && branchV2(input.observedPullRequestBaseBranch) &&
+      ["merge_commit", "rebase_merge", "squash"].includes(input.integrationMethod as string) && nullable(input.observedIntegrationMethod, text) && typeof input.pullRequestMerged === "boolean" && nullable(input.pullRequestMergeRevision, revisionV2) &&
+      stringArrayV2(input.pullRequestCommitHeads, revisionV2) && safeInteger(input.conflictingPullRequestCount) && stringArrayV2(input.resultingCommitParents, revisionV2) &&
+      commits.every((item) => exactDataRecordV2(item, ["sourceCommit", "resultCommit", "parentCommit", "treeDigest"]) && [item.sourceCommit, item.resultCommit, item.parentCommit].every(revisionV2) && digestValue(item.treeDigest)) &&
+      ["successful", "not_successful", "unknown"].includes(input.checkState as string) && ["applied", "not_applied", "uncertain"].includes(input.status as string) && signedChallengeV2(input.signedChallenge, "transition") && utcV2(input.observedAt);
+  }
+  if (kind === "admission") {
+    const fields = ["schemaVersion", "contractVersion", "observationKind", "admissionKind", "operationId", "repositoryId", "targetRef", "activePlanDigest", "activeAuthorityDigest", "terminalHeadRevision", "terminalTreeDigest", "sourceLifecycle", "priorJournalDigest", "intendedEntrySequence", "effectiveExpiry", "observedAt", "signedChallenge", "producerId", "observationDigest"];
+    return common(fields) && ["controller_snapshot", "final_gate", "completion", "pause", "resume", "cancel", "split", "supersede"].includes(input.admissionKind as string) &&
+      [input.operationId, input.repositoryId, input.targetRef, input.sourceLifecycle, input.producerId].every(identifierV2) && [input.activePlanDigest, input.activeAuthorityDigest, input.terminalTreeDigest, input.priorJournalDigest].every(digestValue) &&
+      revisionV2(input.terminalHeadRevision) && safeInteger(input.intendedEntrySequence) && utcV2(input.effectiveExpiry) && utcV2(input.observedAt) && signedChallengeV2(input.signedChallenge, "admission");
+  }
+  if (kind === "expiry") {
+    const fields = ["schemaVersion", "contractVersion", "observationKind", "operationId", "repositoryId", "activePlanDigest", "activeAuthorityDigest", "sourceLifecycle", "priorJournalDigest", "intendedEntrySequence", "effectiveExpiry", "observedAt", "signedChallenge", "producerId", "observationDigest"];
+    return common(fields) && [input.operationId, input.repositoryId, input.sourceLifecycle, input.producerId].every(identifierV2) && [input.activePlanDigest, input.activeAuthorityDigest, input.priorJournalDigest].every(digestValue) &&
+      safeInteger(input.intendedEntrySequence) && utcV2(input.effectiveExpiry) && utcV2(input.observedAt) && signedChallengeV2(input.signedChallenge, "expiry");
+  }
+  const cumulativeFields: Record<string, readonly string[]> = {
+    cumulative_registration: ["schemaVersion", "contractVersion", "observationKind", "operationId", "preparationEntryDigest", "attemptId", "requestDigest", "commandCount", "sourceRuntimeBindingDigest", "runtimeIdentity", "signedChallenge", "producerId", "registeredAt", "observationDigest"],
+    cumulative_start: ["schemaVersion", "contractVersion", "observationKind", "operationId", "preparationEntryDigest", "attemptId", "requestDigest", "commandIndex", "commandId", "executableArgsDigest", "idempotencyKey", "registrationDigest", "priorRecordDigest", "producerId", "startedAt", "observationDigest"],
+    cumulative_result: ["schemaVersion", "contractVersion", "observationKind", "operationId", "preparationEntryDigest", "attemptId", "requestDigest", "commandIndex", "commandId", "idempotencyKey", "startDigest", "status", "exitCode", "stdoutDigest", "stderrDigest", "cacheDisposition", "producerId", "finishedAt", "observationDigest"],
+    cumulative_receipt: ["schemaVersion", "contractVersion", "observationKind", "operationId", "preparationEntryDigest", "attemptId", "requestDigest", "registrationDigest", "startDigests", "resultDigests", "idempotencyKeys", "completedPrefixLength", "invocationBounds", "terminalStatus", "notAppliedReason", "commands", "results", "signedChallenge", "producerId", "observedAt", "observationDigest"],
+  };
+  const fields = cumulativeFields[kind];
+  if (!fields || !common(fields) || ![input.operationId, input.attemptId, input.producerId].every(identifierV2) || ![input.preparationEntryDigest, input.requestDigest].every(digestValue)) return false;
+  if (kind === "cumulative_registration") return safeInteger(input.commandCount) && digestValue(input.sourceRuntimeBindingDigest) && exactDataRecordV2(input.runtimeIdentity, ["seatId", "reasoningRuntimeId", "modelId", "toolExecutorId"]) && input.runtimeIdentity.seatId === "may" && [input.runtimeIdentity.reasoningRuntimeId, input.runtimeIdentity.modelId, input.runtimeIdentity.toolExecutorId].every(identifierV2) && signedChallengeV2(input.signedChallenge, "cumulative") && utcV2(input.registeredAt);
+  if (kind === "cumulative_start") return safeInteger(input.commandIndex) && identifierV2(input.commandId) && [input.executableArgsDigest, input.idempotencyKey, input.registrationDigest, input.priorRecordDigest].every(digestValue) && utcV2(input.startedAt);
+  if (kind === "cumulative_result") return safeInteger(input.commandIndex) && identifierV2(input.commandId) && [input.idempotencyKey, input.startDigest].every(digestValue) && ["completed", "threw", "malformed"].includes(input.status as string) && (input.exitCode === null || Number.isSafeInteger(input.exitCode)) && nullable(input.stdoutDigest, digestValue) && nullable(input.stderrDigest, digestValue) && ["executed", "cache_hit", "unknown"].includes(input.cacheDisposition as string) && utcV2(input.finishedAt);
+  const commands = densePlainArrayV2(input.commands, true), results = densePlainArrayV2(input.results, true);
+  return !!commands && !!results && digestValue(input.registrationDigest) && stringArrayV2(input.startDigests, digestValue) && stringArrayV2(input.resultDigests, digestValue) && stringArrayV2(input.idempotencyKeys, digestValue) && safeInteger(input.completedPrefixLength) &&
+    exactDataRecordV2(input.invocationBounds, ["minimum", "maximum"]) && safeInteger(input.invocationBounds.minimum) && safeInteger(input.invocationBounds.maximum) &&
+    ["passed", "failed", "not_applied", "uncertain"].includes(input.terminalStatus as string) && (input.notAppliedReason === null || ["implementation_authority_inactive", "implementation_authority_mismatch", "execution_request_mismatch"].includes(input.notAppliedReason as string)) &&
+    commands.every((item) => exactDataRecordV2(item, ["commandIndex", "commandId", "executableArgsDigest", "idempotencyKey"]) && safeInteger(item.commandIndex) && identifierV2(item.commandId) && digestValue(item.executableArgsDigest) && digestValue(item.idempotencyKey)) &&
+    results.every((item) => exactDataRecordV2(item, ["commandIndex", "commandId", "startDigest", "resultDigest", "status", "exitCode", "stdoutDigest", "stderrDigest", "cacheDisposition"]) && safeInteger(item.commandIndex) && identifierV2(item.commandId) && [item.startDigest, item.resultDigest].every(digestValue) && ["completed", "threw", "malformed"].includes(item.status as string) && (item.exitCode === null || Number.isSafeInteger(item.exitCode)) && nullable(item.stdoutDigest, digestValue) && nullable(item.stderrDigest, digestValue) && ["executed", "cache_hit", "unknown"].includes(item.cacheDisposition as string)) &&
+    signedChallengeV2(input.signedChallenge, "cumulative") && utcV2(input.observedAt);
+}
+
+function finalGatePayloadV2(input: unknown): boolean {
+  const fields = ["schemaVersion", "contractVersion", "evidenceId", "operationId", "repositoryId", "activePlanDigest", "activeAuthorityDigest", "terminalHeadRevision", "terminalTreeDigest", "gateId", "seatId", "decision", "humanPrincipalId", "humanBindingId", "signingKeyRef", "featureJournalEntrySequence", "evidenceTime", "evidenceDigest"];
+  return exactDataRecordV2(input, fields) && input.schemaVersion === 2 && input.contractVersion === "feature.integration.final-gate.v2" &&
+    [input.evidenceId, input.operationId, input.repositoryId, input.gateId, input.humanPrincipalId, input.humanBindingId].every(identifierV2) && [input.activePlanDigest, input.activeAuthorityDigest, input.terminalTreeDigest, input.evidenceDigest].every(digestValue) &&
+    revisionV2(input.terminalHeadRevision) && ["fitz", "simmons", "coulson"].includes(input.seatId as string) && input.decision === "approved" && keyRefV2(input.signingKeyRef) && safeInteger(input.featureJournalEntrySequence) && utcV2(input.evidenceTime);
+}
+
+function childEvidenceV2(input: unknown): input is FeatureChildEvidenceV2 {
+  return exactDataRecordV2(input, ["schemaVersion", "evidenceId", "gateType", "gateId", "childId", "repositoryId", "headRevision", "sourceRecordDigest", "accepted", "synthetic"]) &&
+    input.schemaVersion === 2 && identifierV2(input.evidenceId) && ["mack", "fury", "human", "check", "ci"].includes(input.gateType as string) &&
+    [input.gateId, input.childId, input.repositoryId].every(identifierV2) && revisionV2(input.headRevision) && digestValue(input.sourceRecordDigest) &&
+    typeof input.accepted === "boolean" && typeof input.synthetic === "boolean";
+}
+
+function entryPayloadShapeV2(kind: FeatureIntegrationEntryKindV2, input: unknown): boolean {
+  if (!exactDataRecordV2(input, V2_ENTRY_PAYLOAD_FIELDS[kind])) return false;
+  const p = input;
+  const id = identifierV2, dig = digestValue, rev = revisionV2, br = branchV2;
+  if (kind === "operation_genesis_accepted") return validateFeatureOperationReplayContextV2(p.replayContext).state === "valid" && validateFeatureOperationAuthorityV2(exactDataRecordV2(p.signedAuthority, ["payload", "signatureBase64"]) ? p.signedAuthority.payload : null).state === "valid" && signedEnvelopeV2(p.signedAuthority, (value) => validateFeatureOperationAuthorityV2(value).state === "valid") && !!normalizedProducerBindingsV2(p.trustedObservationProducerBindings) && !!normalizedHumanBindingsV2(p.trustedHumanBindings);
+  if (kind === "authority_successor_accepted") return validateFeatureOperationPlanV2(p.plan).state === "valid" && signedEnvelopeV2(p.signedAuthority, (value) => validateFeatureOperationAuthorityV2(value).state === "valid");
+  if (kind === "effect_prepared") {
+    if (!plain(p.candidate) || !plain(p.request)) return false;
+    const candidate = validateFeatureOperationDerivedCandidateV2(p.candidate).state === "valid" || cumulativeCandidateV2(p.candidate);
+    const request = effectRequestV2(p.request);
+    return ["workspace", "transition", "cumulative"].includes(p.effectClass as string) && candidate && request && dig(p.candidateDigest) && p.candidateDigest === p.candidate.candidateDigest && id(p.effectKey) && p.effectKey === p.candidate.effectKey && dig(p.requestDigest) && p.requestDigest === p.request.requestDigest && rev(p.expectedHeadRevision) && dig(p.expectedTreeDigest) && (p.effectClass === "cumulative" ? signedEnvelopeV2(p.signedCumulativeAuthority, cumulativeAuthorityV2) : p.signedCumulativeAuthority === null);
+  }
+  if (kind === "effect_challenge_refreshed") return dig(p.preparationEntryDigest) && signedChallengeV2(p.signedChallenge);
+  if (kind === "effect_not_applied" || kind === "effect_uncertain") return dig(p.preparationEntryDigest) && signedObservationV2(p.signedObservation, ["workspace", "transition", "cumulative_receipt"]);
+  if (kind === "feature_branch_creation_accepted") return dig(p.preparationEntryDigest) && rev(p.headRevision) && dig(p.treeDigest) && signedObservationV2(p.signedWorkspaceObservation, ["workspace"]);
+  if (kind === "feature_workspace_accepted" || kind === "child_publication_accepted") return dig(p.preparationEntryDigest) && (kind !== "child_publication_accepted" || id(p.childId)) && id(p.pullRequestId) && br(p.sourceBranch) && br(p.targetBranch) && rev(p.headRevision) && p.draft === true && signedObservationV2(p.signedWorkspaceObservation, ["workspace"]);
+  if (kind === "child_initiation_accepted") return dig(p.preparationEntryDigest) && id(p.childId) && br(p.branch) && rev(p.baseHeadRevision) && dig(p.baseTreeDigest) && signedObservationV2(p.signedWorkspaceObservation, ["workspace"]);
+  if (kind === "child_implementation_accepted") return [p.childId, p.sourceMissionId, p.effectKey].every(id) && [p.sourceAuthorityDigest, p.sourceJournalDigest, p.completionReceiptDigest, p.treeDigest].every(dig) && rev(p.headRevision);
+  if (kind === "child_evidence_accepted") { const ids = densePlainArrayV2(p.evidenceIds, false), digs = densePlainArrayV2(p.evidenceDigests, false), records = densePlainArrayV2(p.evidenceRecords, false); return id(p.childId) && rev(p.headRevision) && !!ids && ids.every(id) && !!digs && digs.every(dig) && !!records && records.every(childEvidenceV2); }
+  if (kind === "integration_accepted" || kind === "rollback_accepted") return dig(p.preparationEntryDigest) && signedObservationV2(p.signedTransitionObservation, ["transition"]);
+  if (kind === "rollback_workspace_accepted") return [p.childId, p.sourceMissionId, p.pullRequestId].every(id) && [p.completionReceiptDigest, p.sourceAuthorityDigest, p.sourceJournalDigest, p.restoredTreeDigest].every(dig) && br(p.rollbackBranch) && rev(p.pullRequestHeadRevision) && br(p.targetBranch) && stringArrayV2(p.sourceEffectKeys, id, false) && stringArrayV2(p.evidenceDigests, dig, false);
+  if (kind === "cumulative_validation_accepted" || kind === "cumulative_validation_failed") return dig(p.preparationEntryDigest) && signedObservationV2(p.signedCumulativeReceipt, ["cumulative_receipt"]);
+  if (kind === "operation_paused" || kind === "operation_resumed" || kind === "operation_cancelled") return ["operator_requested", "dependency_blocked", "scope_superseded"].includes(p.reason as string) && signedObservationV2(p.signedAdmissionObservation, ["admission"]);
+  if (kind === "operation_split" || kind === "operation_superseded") return signedObservationV2(p.signedAdmissionObservation, ["admission"]) && id(p.successorOperationId) && dig(p.successorPlanDigest) && dig(p.successorAuthorityDigest);
+  if (kind === "operation_completed") return signedObservationV2(p.signedAdmissionObservation, ["admission"]);
+  if (kind === "final_gate_evidence_accepted") return signedEnvelopeV2(p.signedEvidence, finalGatePayloadV2) && signedObservationV2(p.signedAdmissionObservation, ["admission"]);
+  return kind === "operation_expired" && signedObservationV2(p.signedExpiryObservation, ["expiry"]);
+}
+
 function densePlainArrayV2(value: unknown, allowEmpty: boolean, maximum = 512): unknown[] | null {
   if (!Array.isArray(value) || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype ||
       !Number.isSafeInteger(value.length) || value.length < (allowEmpty ? 0 : 1) || value.length > maximum ||
@@ -1080,8 +1412,8 @@ function normalizedProducerBindingsV2(input: unknown): FeatureObservationProduce
   for (const raw of items) {
     if (!exactDataRecordV2(raw, ["schemaVersion", "producerId", "producerKind", "publicKeySpkiBase64", "signingKeyRef"])) return null;
     const binding = raw as unknown as FeatureObservationProducerBindingV2;
-    if (binding.schemaVersion !== 2 || !text(binding.producerId) || !["github_repository", "cumulative_execution"].includes(binding.producerKind) ||
-        !canonicalBase64V2(binding.publicKeySpkiBase64) || !text(binding.signingKeyRef)) return null;
+    if (binding.schemaVersion !== 2 || !identifierV2(binding.producerId) || !["github_repository", "cumulative_execution"].includes(binding.producerKind) ||
+        !canonicalBase64V2(binding.publicKeySpkiBase64) || !keyRefV2(binding.signingKeyRef)) return null;
     try { if (computeEd25519SigningKeyRef(binding.publicKeySpkiBase64) !== binding.signingKeyRef) return null; }
     catch { return null; }
     result.push(structuredClone(binding));
@@ -1093,12 +1425,14 @@ function normalizedProducerBindingsV2(input: unknown): FeatureObservationProduce
 function normalizedHumanBindingsV2(input: unknown, sourceSequence?: number, missionId?: string, simmonsRequired?: boolean): TrustedHumanBinding[] | null {
   const items = densePlainArrayV2(input, false, 3);
   if (!items || items.length < 2 || items.length > 3) return null;
+  const registry = validateTrustedBindingRegistry({ schemaVersion: 1, bindings: items });
+  if (registry.state !== "valid") return null;
   const result: TrustedHumanBinding[] = [];
   for (const raw of items) {
     if (!exactDataRecordV2(raw, ["schemaVersion", "bindingId", "humanPrincipalId", "seatId", "missionScope", "signingKeyRef", "publicKeySpkiBase64", "validFromSequence", "validThroughSequence", "attestedBy", "provenanceRef"])) return null;
     const binding = raw as unknown as TrustedHumanBinding;
-    if (binding.schemaVersion !== 1 || ![binding.bindingId, binding.humanPrincipalId, binding.signingKeyRef, binding.attestedBy, binding.provenanceRef].every(text) ||
-        !["coulson", "fitz", "simmons"].includes(binding.seatId) || !(binding.missionScope === "*" || text(binding.missionScope)) ||
+    if (binding.schemaVersion !== 1 || ![binding.bindingId, binding.humanPrincipalId, binding.attestedBy, binding.provenanceRef].every(identifierV2) ||
+        !keyRefV2(binding.signingKeyRef) || !["coulson", "fitz", "simmons"].includes(binding.seatId) || !(binding.missionScope === "*" || identifierV2(binding.missionScope)) ||
         !canonicalBase64V2(binding.publicKeySpkiBase64) || !safeInteger(binding.validFromSequence) ||
         !(binding.validThroughSequence === null || safeInteger(binding.validThroughSequence)) ||
         (typeof binding.validThroughSequence === "number" && binding.validThroughSequence < binding.validFromSequence)) return null;
@@ -1145,7 +1479,7 @@ function entryShapeV2(input: unknown, ownDigest = true): FeatureOperationJournal
   const entry = input as unknown as FeatureOperationJournalEntryV2;
   if (entry.schemaVersion !== 2 || entry.contractVersion !== FEATURE_INTEGRATION_CONTRACT_VERSION_V2 || !text(entry.operationId) || !safeInteger(entry.entrySequence) ||
       !FEATURE_INTEGRATION_ENTRY_KINDS_V2.includes(entry.entryKind) || !(entry.previousEntryDigest === null || digestValue(entry.previousEntryDigest)) ||
-      !exactDataRecordV2(entry.payload, V2_ENTRY_PAYLOAD_FIELDS[entry.entryKind]) || !digestValue(entry.entryDigest)) return null;
+      !entryPayloadShapeV2(entry.entryKind, entry.payload) || !digestValue(entry.entryDigest)) return null;
   if (ownDigest && framedDigestV2(FEATURE_INTEGRATION_ENTRY_DOMAIN_V2, entry, "entryDigest") !== entry.entryDigest) return null;
   return structuredClone(entry);
 }
@@ -1189,7 +1523,7 @@ export function validateFeatureOperationJournalV2(input: unknown): ContractResul
 function checkedTrustAnchorV2(input: unknown): FeatureIntegrationTrustAnchorV2 | null {
   if (!exactDataRecordV2(input, ["missionId", "repositoryId", "humanBindingsDigest", "trustedHumanBindings", "sourceBindingSequence", "sourceImplementationAuthority", "sourceImplementationAuthorityDigest", "sourceRuntimeBinding", "sourceJournalDigest"])) return null;
   const value = input as unknown as FeatureIntegrationTrustAnchorV2;
-  if (!text(value.missionId) || !text(value.repositoryId) || !digestValue(value.humanBindingsDigest) || !digestValue(value.sourceJournalDigest) ||
+  if (!identifierV2(value.missionId) || !identifierV2(value.repositoryId) || !digestValue(value.humanBindingsDigest) || !digestValue(value.sourceJournalDigest) ||
       typeof value.sourceImplementationAuthorityDigest !== "string" || !/^sha256:(?:[A-Za-z0-9_-]{43}|[a-f0-9]{64})$/u.test(value.sourceImplementationAuthorityDigest) ||
       !safeInteger(value.sourceBindingSequence)) return null;
   const humans = normalizedHumanBindingsV2(value.trustedHumanBindings, value.sourceBindingSequence, value.missionId);
@@ -1199,7 +1533,23 @@ function checkedTrustAnchorV2(input: unknown): FeatureIntegrationTrustAnchorV2 |
       computeImplementationAuthorityDigest(authority.value) !== value.sourceImplementationAuthorityDigest || authority.value.missionId !== value.missionId ||
       authority.value.repositoryId !== value.repositoryId || runtime.value.implementationAuthorityRef !== authority.value.authorityRef ||
       runtime.value.implementationAuthorityDigest !== value.sourceImplementationAuthorityDigest || runtime.value.implementationAuthoritySequence !== authority.value.journalSequence) return null;
-  return immutableCloneV2({ ...value, trustedHumanBindings: humans });
+  const binding = runtime.value.binding;
+  const exact = (left: unknown, right: unknown) => canonicalFeatureIntegrationJsonV1(left) === canonicalFeatureIntegrationJsonV1(right);
+  if (binding.lifecycleState !== "active" || binding.recordedAtSequence > value.sourceBindingSequence ||
+      (binding.activeThroughSequence !== null && value.sourceBindingSequence > binding.activeThroughSequence) ||
+      binding.missionId !== authority.value.missionId || binding.subjectId !== authority.value.subjectId ||
+      binding.missionRevisionId !== authority.value.missionRevisionId || binding.seatId !== authority.value.seatId ||
+      binding.repositoryId !== authority.value.repositoryId || binding.canonicalWritableRoot !== authority.value.canonicalWritableRoot ||
+      binding.branch !== authority.value.branch || binding.artifactRevisionId !== authority.value.artifactRevisionId ||
+      runtime.value.modelId !== authority.value.modelId || runtime.value.baseRevision !== authority.value.baseRevision ||
+      runtime.value.headRevision !== authority.value.headRevision || !exact(runtime.value.approvedRelativePaths, authority.value.approvedRelativePaths) ||
+      !exact(runtime.value.validationCommandIds, authority.value.validationCommandIds) ||
+      !exact(binding.approvedScope.actionIds, authority.value.approvedActionIds) ||
+      !exact(binding.approvedScope.effectClasses, authority.value.approvedEffectClasses) ||
+      !exact(binding.approvedScope.effectKeys, authority.value.approvedEffectKeys) ||
+      !exact(binding.approvedScope.capabilities, authority.value.approvedCapabilities) ||
+      new Set([binding.seatId, binding.reasoningRuntimeId, runtime.value.modelId, binding.toolExecutorId]).size !== 4) return null;
+  return immutableCloneV2({ ...value, sourceImplementationAuthority: authority.value, sourceRuntimeBinding: runtime.value, trustedHumanBindings: humans });
 }
 
 function replayInvalidV2(reason: FeatureIntegrationReplayReasonV2, entrySequence: number | null): FeatureIntegrationReplayResultV2 {
@@ -1236,6 +1586,22 @@ function verifyGenesisFeatureAuthorityV2(
   } catch { return null; }
 }
 
+function authorityExactlyActivatesReplayV2(authority: FeatureOperationAuthorityV2, replay: FeatureOperationReplayContextV2): boolean {
+  const lineage = replay.acceptedPlanLineage;
+  const genesisTransition = replay.transitions[0];
+  const observed = Date.parse(replay.observedAt.value);
+  return authority.repositoryId === replay.repositoryId && authority.operationId === replay.operationId &&
+    authority.planDigest === replay.activePlanDigest && canonicalFeatureIntegrationJsonV1(authority.plan) === canonicalFeatureIntegrationJsonV1(replay.activePlan) &&
+    authority.authorityId === replay.verifiedAuthorityId && authority.authorityDigest === replay.verifiedAuthorityDigest &&
+    authority.operationSequence === 0 && authority.journalSequence === 0 && replay.acceptedAuthorityOperationSequence === 0 && replay.currentJournalSequence === 0 &&
+    replay.activePlan.baseBranch === "main" && replay.activePlan.planSequence === 0 && replay.activePlan.predecessorPlanDigest === null &&
+    replay.acceptedAmendmentDigests.length === 0 && lineage.length === 1 && lineage[0].planSequence === 0 &&
+    lineage[0].planDigest === authority.planDigest && lineage[0].predecessorPlanDigest === null && lineage[0].authorityDigest === authority.authorityDigest && lineage[0].active === true &&
+    replay.lifecycle.state === "active" && replay.lifecycle.atOperationSequence === 0 && replay.transitions.length === 1 && genesisTransition?.kind === "genesis" && genesisTransition.operationSequence === 0 &&
+    replay.acceptedIntegrations.length === 0 && replay.acceptedRollbacks.length === 0 &&
+    observed >= Date.parse(authority.issuedAt) && observed < Date.parse(authority.expiresAt) && observed < Date.parse(authority.plan.expiresAt);
+}
+
 export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput: unknown): FeatureIntegrationReplayResultV2 {
   try {
     const envelope = journalEnvelopeV2(input);
@@ -1259,9 +1625,7 @@ export function replayFeatureOperationJournalV2(input: unknown, trustAnchorInput
     if (!authority || authority.repositoryId !== anchor.repositoryId) return replayInvalidV2("GENESIS_INVALID", 0);
     const replay = validateFeatureOperationReplayContextV2(payload.replayContext);
     if (replay.state !== "valid" || replay.value.operationId !== envelope.journal.operationId || replay.value.repositoryId !== anchor.repositoryId ||
-        replay.value.acceptedAuthorityOperationSequence !== 0 || replay.value.currentJournalSequence !== 0 || authority.planDigest !== replay.value.activePlanDigest ||
-        authority.authorityDigest !== replay.value.verifiedAuthorityDigest || authority.authorityId !== replay.value.verifiedAuthorityId ||
-        canonicalFeatureIntegrationJsonV1(authority.plan) !== canonicalFeatureIntegrationJsonV1(replay.value.activePlan)) return replayInvalidV2("GENESIS_INVALID", 0);
+        !authorityExactlyActivatesReplayV2(authority, replay.value)) return replayInvalidV2("GENESIS_INVALID", 0);
     const producerBindings = normalizedProducerBindingsV2(payload.trustedObservationProducerBindings);
     const requiredSimmons = authority.plan.finalGates.simmonsRequired;
     const genesisHumans = normalizedHumanBindingsV2(payload.trustedHumanBindings, anchor.sourceBindingSequence, anchor.missionId, requiredSimmons);

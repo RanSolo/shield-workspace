@@ -1135,3 +1135,29 @@ test("hardened feature-operation parsers reject mixed, extra, accessor, and subs
   substitutedSignature.signatureBase64 = Buffer.from(substitutedSignature.signatureBase64, "base64").map((byte, index) => index === 0 ? byte ^ 1 : byte).toString("base64");
   assert.equal(verifySignedFeatureOperationAuthorityV2(substitutedSignature, fixture.verification).code, "signature_invalid");
 });
+
+test("validates all seven exact V2 candidate variants without cross-variant reinterpretation", () => {
+  const fixture = hardenedFixture();
+  const variants = [...Object.values(candidates), rollbackCandidate].map((legacy) => {
+    const value = {
+      ...copy(legacy),
+      schemaVersion: 2,
+      contractVersion: "feature.operation.v2",
+      planDigest: fixture.hardenedPlan.planDigest,
+      authorityDigest: fixture.hardenedAuthority.authorityDigest,
+      candidateDigest: ZERO_DIGEST,
+    };
+    value.candidateDigest = computeFeatureOperationDerivedCandidateDigestV2(value);
+    return value;
+  });
+  assert.equal(variants.length, 7);
+  assert.deepEqual(variants.map((value) => value.derivationKind).sort(), [...FEATURE_OPERATION_DERIVATION_KINDS]);
+  for (const value of variants) {
+    assert.equal(validateFeatureOperationDerivedCandidateV2(value).state, "valid", value.derivationKind);
+    const substituted = copy(value);
+    substituted.derivationKind = value.derivationKind === "feature_branch_create" ? "child_initiation" : "feature_branch_create";
+    assert.equal(validateFeatureOperationDerivedCandidateV2(substituted).state, "invalid", value.derivationKind);
+    const extra = { ...value, unrelatedVariantField: true };
+    assert.equal(validateFeatureOperationDerivedCandidateV2(extra).state, "invalid", value.derivationKind);
+  }
+});
