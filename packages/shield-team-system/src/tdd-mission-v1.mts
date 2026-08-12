@@ -21,6 +21,10 @@ export const TDD_MISSION_FAILURE_CLASSIFICATIONS = Object.freeze([
   "authority_failure",
   "insufficient_evidence",
 ] as const);
+export const TDD_MISSION_EXPECTATION_AMENDMENT_KINDS = Object.freeze([
+  "changed",
+  "removed",
+] as const);
 export const TDD_MISSION_STRATEGY_REASON_CODES = Object.freeze([
   "MALFORMED_INPUT",
   "STRATEGY_RATIONALE_MISSING",
@@ -35,6 +39,7 @@ export const TDD_MISSION_STRATEGY_REASON_CODES = Object.freeze([
   "FAILURE_EVIDENCE_MISSING",
   "WRONG_FAILURE_REASON",
   "SCAFFOLD_TREATED_AS_PASS",
+  "EXPECTATION_AMENDMENT_INCOMPLETE",
 ] as const);
 
 export type TddMissionStrategyV1 = (typeof TDD_MISSION_STRATEGIES)[number];
@@ -42,6 +47,8 @@ export type TddMissionCriterionDispositionV1 =
   (typeof TDD_MISSION_CRITERION_DISPOSITIONS)[number];
 export type TddMissionFailureClassificationV1 =
   (typeof TDD_MISSION_FAILURE_CLASSIFICATIONS)[number];
+export type TddMissionExpectationAmendmentKindV1 =
+  (typeof TDD_MISSION_EXPECTATION_AMENDMENT_KINDS)[number];
 export type TddMissionStrategyReasonCodeV1 =
   (typeof TDD_MISSION_STRATEGY_REASON_CODES)[number];
 
@@ -108,6 +115,76 @@ export type TddPreImplementationStateEvidenceV1 =
   | TddContractPreparedEvidenceV1
   | TddRedEstablishedEvidenceV1;
 
+export interface TddExpectationAmendmentReviewV1 {
+  readonly evidenceId: string;
+  readonly reviewerSeatId: "fury";
+  readonly criterionId: string;
+  readonly amendmentKind: TddMissionExpectationAmendmentKindV1;
+  readonly oldContractDigest: string;
+  readonly amendedContractDigest: string;
+  readonly disposition: "approved";
+}
+
+export interface TddExpectationAmendmentVerificationV1 {
+  readonly evidenceId: string;
+  readonly verifierSeatId: "fitz";
+  readonly criterionId: string;
+  readonly amendmentKind: TddMissionExpectationAmendmentKindV1;
+  readonly oldContractDigest: string;
+  readonly amendedContractDigest: string;
+  readonly disposition: "verified";
+}
+
+export interface TddExpectationAmendmentRerunV1 {
+  readonly evidenceId: string;
+  readonly ownerSeatId: "mack";
+  readonly criterionId: string;
+  readonly oldContractDigest: string;
+  readonly revisionId: string;
+  readonly command: string;
+  readonly outcome: "failed";
+  readonly exitCode: number;
+  readonly observedFailureClassification: "stale_expectation";
+}
+
+export interface TddInvalidatedAmendmentEvidenceRefsV1 {
+  readonly implementationAuthorityReceiptRef: string | null;
+  readonly greenReceiptRef: string | null;
+  readonly refactorReceiptRef: string | null;
+  readonly mackValidationReceiptRef: string | null;
+  readonly conformanceReceiptRef: string | null;
+}
+
+export interface TddExpectationAmendmentV1 {
+  readonly criterionId: string;
+  readonly amendmentKind: TddMissionExpectationAmendmentKindV1;
+  readonly oldContractDigest: string;
+  readonly amendedContractDigest: string;
+  readonly originalExpectationEvidenceRef: string;
+  readonly failureClassification: "stale_expectation";
+  readonly intentPreservationRationale: string;
+  readonly contractRelevant: boolean;
+  readonly furyDisposition: Readonly<TddExpectationAmendmentReviewV1> | null;
+  readonly fitzVerification: Readonly<TddExpectationAmendmentVerificationV1>;
+  readonly freshRerun: Readonly<TddExpectationAmendmentRerunV1>;
+  readonly freshStrategyRationale: string | null;
+  readonly invalidatedEvidenceRefs: Readonly<TddInvalidatedAmendmentEvidenceRefsV1>;
+}
+
+export interface TddExpectationAmendmentEffectV1 {
+  readonly criterionId: string;
+  readonly amendmentKind: TddMissionExpectationAmendmentKindV1;
+  readonly oldContractDigest: string;
+  readonly amendedContractDigest: string;
+  readonly invalidatedEvidenceRefs: Readonly<TddInvalidatedAmendmentEvidenceRefsV1>;
+  readonly successorState: "contract_prepared" | "strategy_recorded";
+  readonly requiredBeforeImplementation: readonly (
+    | "fresh_reviewed_red"
+    | "fresh_amended_digest_coulson_authority"
+  )[];
+  readonly coulsonAuthorityContractDigest: string;
+}
+
 interface TddCriterionStrategyCommonV1 {
   readonly criterionId: string;
   readonly rationale: string;
@@ -115,6 +192,7 @@ interface TddCriterionStrategyCommonV1 {
   readonly laterValidation: "required";
   readonly disposition: TddMissionCriterionDispositionV1;
   readonly traceability: Readonly<TddCriterionTraceabilityV1>;
+  readonly expectationAmendment: Readonly<TddExpectationAmendmentV1> | null;
 }
 
 export interface TddSelectedCriterionStrategyV1 extends TddCriterionStrategyCommonV1 {
@@ -150,6 +228,7 @@ export type TddMissionStrategyValidationV1 =
   | {
       readonly state: "valid";
       readonly contract: Readonly<TddMissionStrategyContractV1>;
+      readonly amendmentEffects: readonly Readonly<TddExpectationAmendmentEffectV1>[];
     }
   | {
       readonly state: "invalid";
@@ -163,6 +242,7 @@ export type TddMissionStrategyValidationV1 =
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{40,64})$/u;
+const DIGEST = /^sha256:[A-Za-z0-9_-]{6,}$/u;
 const CONTRACT_FIELDS = ["schemaVersion", "contractVersion", "criteria", "packets"] as const;
 const CRITERION_FIELDS = [
   "criterionId",
@@ -174,6 +254,7 @@ const CRITERION_FIELDS = [
   "laterValidation",
   "disposition",
   "traceability",
+  "expectationAmendment",
 ] as const;
 const PRE_IMPLEMENTATION_CONTRACT_FIELDS = [
   "contractId",
@@ -217,6 +298,57 @@ const FURY_CONTRACT_DISPOSITION_FIELDS = [
   "reviewerSeatId",
   "contractId",
   "disposition",
+] as const;
+const EXPECTATION_AMENDMENT_FIELDS = [
+  "criterionId",
+  "amendmentKind",
+  "oldContractDigest",
+  "amendedContractDigest",
+  "originalExpectationEvidenceRef",
+  "failureClassification",
+  "intentPreservationRationale",
+  "contractRelevant",
+  "furyDisposition",
+  "fitzVerification",
+  "freshRerun",
+  "freshStrategyRationale",
+  "invalidatedEvidenceRefs",
+] as const;
+const EXPECTATION_AMENDMENT_REVIEW_FIELDS = [
+  "evidenceId",
+  "reviewerSeatId",
+  "criterionId",
+  "amendmentKind",
+  "oldContractDigest",
+  "amendedContractDigest",
+  "disposition",
+] as const;
+const EXPECTATION_AMENDMENT_VERIFICATION_FIELDS = [
+  "evidenceId",
+  "verifierSeatId",
+  "criterionId",
+  "amendmentKind",
+  "oldContractDigest",
+  "amendedContractDigest",
+  "disposition",
+] as const;
+const EXPECTATION_AMENDMENT_RERUN_FIELDS = [
+  "evidenceId",
+  "ownerSeatId",
+  "criterionId",
+  "oldContractDigest",
+  "revisionId",
+  "command",
+  "outcome",
+  "exitCode",
+  "observedFailureClassification",
+] as const;
+const INVALIDATED_AMENDMENT_EVIDENCE_REF_FIELDS = [
+  "implementationAuthorityReceiptRef",
+  "greenReceiptRef",
+  "refactorReceiptRef",
+  "mackValidationReceiptRef",
+  "conformanceReceiptRef",
 ] as const;
 
 function record(value: unknown, fields: readonly string[]): Record<string, unknown> | null {
@@ -356,6 +488,169 @@ function preImplementationStateEvidence(
   });
 }
 
+function amendmentBindingMatches(
+  evidence: Record<string, unknown>,
+  criterionId: string,
+  amendmentKind: TddMissionExpectationAmendmentKindV1,
+  oldContractDigest: string,
+  amendedContractDigest: string,
+): boolean {
+  return evidence.criterionId === criterionId && evidence.amendmentKind === amendmentKind &&
+    evidence.oldContractDigest === oldContractDigest &&
+    evidence.amendedContractDigest === amendedContractDigest;
+}
+
+function invalidatedAmendmentEvidenceRefs(
+  value: unknown,
+): Readonly<TddInvalidatedAmendmentEvidenceRefsV1> | null {
+  const refs = record(value, INVALIDATED_AMENDMENT_EVIDENCE_REF_FIELDS);
+  if (refs === null || INVALIDATED_AMENDMENT_EVIDENCE_REF_FIELDS.some((field) =>
+    refs[field] !== null && !identifier(refs[field]))) return null;
+  return Object.freeze({
+    implementationAuthorityReceiptRef: refs.implementationAuthorityReceiptRef as string | null,
+    greenReceiptRef: refs.greenReceiptRef as string | null,
+    refactorReceiptRef: refs.refactorReceiptRef as string | null,
+    mackValidationReceiptRef: refs.mackValidationReceiptRef as string | null,
+    conformanceReceiptRef: refs.conformanceReceiptRef as string | null,
+  });
+}
+
+function expectationAmendment(
+  value: unknown,
+  criterionId: string,
+  strategy: TddMissionStrategyV1,
+  stateEvidence: TddPreImplementationStateEvidenceV1 | null,
+): {
+  readonly amendment: Readonly<TddExpectationAmendmentV1>;
+  readonly effect: Readonly<TddExpectationAmendmentEffectV1>;
+} | null {
+  const amendment = record(value, EXPECTATION_AMENDMENT_FIELDS);
+  if (amendment === null || amendment.criterionId !== criterionId ||
+      !TDD_MISSION_EXPECTATION_AMENDMENT_KINDS.includes(
+        amendment.amendmentKind as TddMissionExpectationAmendmentKindV1,
+      ) || typeof amendment.oldContractDigest !== "string" ||
+      !DIGEST.test(amendment.oldContractDigest) ||
+      typeof amendment.amendedContractDigest !== "string" ||
+      !DIGEST.test(amendment.amendedContractDigest) ||
+      amendment.oldContractDigest === amendment.amendedContractDigest ||
+      !identifier(amendment.originalExpectationEvidenceRef) ||
+      amendment.failureClassification !== "stale_expectation" ||
+      !nonemptyText(amendment.intentPreservationRationale) ||
+      typeof amendment.contractRelevant !== "boolean") return null;
+
+  const amendmentKind = amendment.amendmentKind as TddMissionExpectationAmendmentKindV1;
+  const oldContractDigest = amendment.oldContractDigest;
+  const amendedContractDigest = amendment.amendedContractDigest;
+  let furyDisposition: Readonly<TddExpectationAmendmentReviewV1> | null = null;
+  if (amendment.furyDisposition !== null) {
+    const review = record(amendment.furyDisposition, EXPECTATION_AMENDMENT_REVIEW_FIELDS);
+    if (review === null || !identifier(review.evidenceId) || review.reviewerSeatId !== "fury" ||
+        !amendmentBindingMatches(
+          review,
+          criterionId,
+          amendmentKind,
+          oldContractDigest,
+          amendedContractDigest,
+        ) || review.disposition !== "approved") return null;
+    furyDisposition = Object.freeze({
+      evidenceId: review.evidenceId,
+      reviewerSeatId: "fury" as const,
+      criterionId,
+      amendmentKind,
+      oldContractDigest,
+      amendedContractDigest,
+      disposition: "approved" as const,
+    });
+  } else if (amendment.contractRelevant) {
+    return null;
+  }
+
+  const verification = record(
+    amendment.fitzVerification,
+    EXPECTATION_AMENDMENT_VERIFICATION_FIELDS,
+  );
+  if (verification === null || !identifier(verification.evidenceId) ||
+      verification.verifierSeatId !== "fitz" || !amendmentBindingMatches(
+        verification,
+        criterionId,
+        amendmentKind,
+        oldContractDigest,
+        amendedContractDigest,
+      ) || verification.disposition !== "verified") return null;
+
+  const rerun = record(amendment.freshRerun, EXPECTATION_AMENDMENT_RERUN_FIELDS);
+  if (rerun === null || !identifier(rerun.evidenceId) || rerun.ownerSeatId !== "mack" ||
+      rerun.criterionId !== criterionId || rerun.oldContractDigest !== oldContractDigest ||
+      typeof rerun.revisionId !== "string" || !REVISION.test(rerun.revisionId) ||
+      !nonemptyText(rerun.command) || rerun.outcome !== "failed" ||
+      !Number.isSafeInteger(rerun.exitCode) || (rerun.exitCode as number) === 0 ||
+      rerun.observedFailureClassification !== "stale_expectation") return null;
+
+  if ((strategy === "tdd_selected" &&
+      (amendment.freshStrategyRationale !== null || stateEvidence?.state !== "contract_prepared")) ||
+      (strategy === "tdd_declined" && !nonemptyText(amendment.freshStrategyRationale))) return null;
+
+  const invalidatedEvidenceRefs = invalidatedAmendmentEvidenceRefs(
+    amendment.invalidatedEvidenceRefs,
+  );
+  if (invalidatedEvidenceRefs === null) return null;
+
+  const normalizedAmendment = Object.freeze({
+    criterionId,
+    amendmentKind,
+    oldContractDigest,
+    amendedContractDigest,
+    originalExpectationEvidenceRef: amendment.originalExpectationEvidenceRef,
+    failureClassification: "stale_expectation" as const,
+    intentPreservationRationale: amendment.intentPreservationRationale,
+    contractRelevant: amendment.contractRelevant,
+    furyDisposition,
+    fitzVerification: Object.freeze({
+      evidenceId: verification.evidenceId,
+      verifierSeatId: "fitz" as const,
+      criterionId,
+      amendmentKind,
+      oldContractDigest,
+      amendedContractDigest,
+      disposition: "verified" as const,
+    }),
+    freshRerun: Object.freeze({
+      evidenceId: rerun.evidenceId,
+      ownerSeatId: "mack" as const,
+      criterionId,
+      oldContractDigest,
+      revisionId: rerun.revisionId,
+      command: rerun.command,
+      outcome: "failed" as const,
+      exitCode: rerun.exitCode as number,
+      observedFailureClassification: "stale_expectation" as const,
+    }),
+    freshStrategyRationale: amendment.freshStrategyRationale as string | null,
+    invalidatedEvidenceRefs,
+  });
+  const requiredBeforeImplementation = strategy === "tdd_selected"
+    ? Object.freeze([
+        "fresh_reviewed_red" as const,
+        "fresh_amended_digest_coulson_authority" as const,
+      ])
+    : Object.freeze(["fresh_amended_digest_coulson_authority" as const]);
+  return Object.freeze({
+    amendment: normalizedAmendment,
+    effect: Object.freeze({
+      criterionId,
+      amendmentKind,
+      oldContractDigest,
+      amendedContractDigest,
+      invalidatedEvidenceRefs,
+      successorState: strategy === "tdd_selected"
+        ? "contract_prepared" as const
+        : "strategy_recorded" as const,
+      requiredBeforeImplementation,
+      coulsonAuthorityContractDigest: amendedContractDigest,
+    }),
+  });
+}
+
 function riskFactors(value: unknown): value is readonly string[] {
   return Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype &&
     value.length > 0 && value.length <= 64 && value.every(nonemptyText) &&
@@ -416,6 +711,7 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
   }
 
   const normalized: TddCriterionStrategyV1[] = [];
+  const amendmentEffects: TddExpectationAmendmentEffectV1[] = [];
   const criterionIds = new Set<string>();
   for (const candidate of contract.criteria) {
     if (plainRecordMissingField(candidate, "disposition")) {
@@ -455,21 +751,47 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
         preImplementationContract,
       );
       if (typeof stateEvidence === "string") return invalid(stateEvidence);
+      const amendmentResult = criterion.expectationAmendment === null
+        ? null
+        : expectationAmendment(
+            criterion.expectationAmendment,
+            criterion.criterionId,
+            "tdd_selected",
+            stateEvidence,
+          );
+      if (criterion.expectationAmendment !== null && amendmentResult === null) {
+        return invalid("EXPECTATION_AMENDMENT_INCOMPLETE");
+      }
+      if (amendmentResult !== null) amendmentEffects.push(amendmentResult.effect);
       normalized.push(Object.freeze({
         ...common,
         strategy: "tdd_selected" as const,
         preImplementationContract,
         preImplementationStateEvidence: stateEvidence,
+        expectationAmendment: amendmentResult?.amendment ?? null,
       }));
       continue;
     }
     if (criterion.preImplementationContract !== null ||
         criterion.preImplementationStateEvidence !== null) return invalid("MALFORMED_INPUT");
+    const amendmentResult = criterion.expectationAmendment === null
+      ? null
+      : expectationAmendment(
+          criterion.expectationAmendment,
+          criterion.criterionId,
+          "tdd_declined",
+          null,
+        );
+    if (criterion.expectationAmendment !== null && amendmentResult === null) {
+      return invalid("EXPECTATION_AMENDMENT_INCOMPLETE");
+    }
+    if (amendmentResult !== null) amendmentEffects.push(amendmentResult.effect);
     normalized.push(Object.freeze({
       ...common,
       strategy: "tdd_declined" as const,
       preImplementationContract: null,
       preImplementationStateEvidence: null,
+      expectationAmendment: amendmentResult?.amendment ?? null,
     }));
   }
 
@@ -537,5 +859,6 @@ export function validateTddMissionStrategyContractV1(input: unknown): TddMission
       criteria: Object.freeze(normalized),
       packets: Object.freeze(normalizedPackets),
     }),
+    amendmentEffects: Object.freeze(amendmentEffects),
   });
 }

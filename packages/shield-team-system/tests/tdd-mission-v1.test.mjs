@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  TDD_MISSION_EXPECTATION_AMENDMENT_KINDS,
   TDD_MISSION_FAILURE_CLASSIFICATIONS,
   validateTddMissionStrategyContractV1,
 } from "../dist/tdd-mission-v1.mjs";
 
 const REVISION = "fb2d9c7ba6c0d312d93a5debc0f105de1805563d";
+const OLD_CONTRACT_DIGEST = "sha256:old_contract_digest";
+const AMENDED_CONTRACT_DIGEST = "sha256:amended_contract_digest";
 
 const executableContract = {
   contractId: "contract:ac-162-1",
@@ -64,6 +67,77 @@ function redState(criterionId = "AC-162-1", overrides = {}) {
   };
 }
 
+function expectationAmendment(
+  criterionId = "AC-162-1",
+  amendmentKind = "changed",
+  overrides = {},
+) {
+  const base = {
+    criterionId,
+    amendmentKind,
+    oldContractDigest: OLD_CONTRACT_DIGEST,
+    amendedContractDigest: AMENDED_CONTRACT_DIGEST,
+    originalExpectationEvidenceRef: `expectation:${criterionId.toLowerCase()}:original`,
+    failureClassification: "stale_expectation",
+    intentPreservationRationale:
+      "The expectation changes syntax while preserving the accepted behavior boundary.",
+    contractRelevant: true,
+    furyDisposition: {
+      evidenceId: `review:fury:${criterionId.toLowerCase()}:amendment`,
+      reviewerSeatId: "fury",
+      criterionId,
+      amendmentKind,
+      oldContractDigest: OLD_CONTRACT_DIGEST,
+      amendedContractDigest: AMENDED_CONTRACT_DIGEST,
+      disposition: "approved",
+    },
+    fitzVerification: {
+      evidenceId: `verification:fitz:${criterionId.toLowerCase()}:amendment`,
+      verifierSeatId: "fitz",
+      criterionId,
+      amendmentKind,
+      oldContractDigest: OLD_CONTRACT_DIGEST,
+      amendedContractDigest: AMENDED_CONTRACT_DIGEST,
+      disposition: "verified",
+    },
+    freshRerun: {
+      evidenceId: `evidence:${criterionId.toLowerCase()}:amendment-rerun`,
+      ownerSeatId: "mack",
+      criterionId,
+      oldContractDigest: OLD_CONTRACT_DIGEST,
+      revisionId: REVISION,
+      command: `node --test checkpoint:${criterionId.toLowerCase()}:amendment`,
+      outcome: "failed",
+      exitCode: 1,
+      observedFailureClassification: "stale_expectation",
+    },
+    freshStrategyRationale: null,
+    invalidatedEvidenceRefs: {
+      implementationAuthorityReceiptRef: `authority:${criterionId.toLowerCase()}:old`,
+      greenReceiptRef: `green:${criterionId.toLowerCase()}:old`,
+      refactorReceiptRef: `refactor:${criterionId.toLowerCase()}:old`,
+      mackValidationReceiptRef: `validation:${criterionId.toLowerCase()}:old`,
+      conformanceReceiptRef: `conformance:${criterionId.toLowerCase()}:old`,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    furyDisposition: overrides.furyDisposition === undefined
+      ? base.furyDisposition
+      : overrides.furyDisposition,
+    fitzVerification: overrides.fitzVerification === undefined
+      ? base.fitzVerification
+      : overrides.fitzVerification,
+    freshRerun: overrides.freshRerun === undefined
+      ? base.freshRerun
+      : overrides.freshRerun,
+    invalidatedEvidenceRefs: overrides.invalidatedEvidenceRefs === undefined
+      ? base.invalidatedEvidenceRefs
+      : overrides.invalidatedEvidenceRefs,
+  };
+}
+
 function criterion(overrides = {}) {
   const criterionId = overrides.criterionId ?? "AC-162-1";
   const packetId = overrides.traceability?.mayPacketId ?? `packet:${criterionId.toLowerCase()}`;
@@ -78,6 +152,7 @@ function criterion(overrides = {}) {
       checkpointId: `checkpoint:${criterionId.toLowerCase()}:red`,
     },
     preImplementationStateEvidence: preparedState(criterionId),
+    expectationAmendment: null,
     laterValidation: "required",
     disposition: "implemented_and_proven",
     ...overrides,
@@ -367,6 +442,181 @@ test("Red requires Fury disposition of the intended contract", () => {
   }
 });
 
+test("changed and removed expectations require complete amendment evidence", () => {
+  assert.deepEqual(TDD_MISSION_EXPECTATION_AMENDMENT_KINDS, ["changed", "removed"]);
+  for (const amendmentKind of TDD_MISSION_EXPECTATION_AMENDMENT_KINDS) {
+    const result = validateTddMissionStrategyContractV1(strategyContract([
+      criterion({ expectationAmendment: expectationAmendment("AC-162-1", amendmentKind) }),
+    ]));
+    assert.equal(result.state, "valid");
+    assert.equal(result.contract.criteria[0].expectationAmendment.amendmentKind, amendmentKind);
+    assert.equal(
+      result.contract.criteria[0].expectationAmendment.freshRerun
+        .observedFailureClassification,
+      "stale_expectation",
+    );
+  }
+});
+
+test("incomplete amendment evidence blocks changed or removed expectations", () => {
+  const complete = expectationAmendment();
+  const incompleteAmendments = [
+    { ...complete, originalExpectationEvidenceRef: "" },
+    { ...complete, failureClassification: "missing_behavior" },
+    { ...complete, intentPreservationRationale: "  " },
+    { ...complete, furyDisposition: null },
+    { ...complete, fitzVerification: null },
+    { ...complete, freshRerun: null },
+    {
+      ...complete,
+      freshRerun: {
+        ...complete.freshRerun,
+        observedFailureClassification: "missing_behavior",
+      },
+    },
+    {
+      ...complete,
+      freshRerun: {
+        ...complete.freshRerun,
+        oldContractDigest: "sha256:different_old",
+      },
+    },
+    {
+      ...complete,
+      freshRerun: { ...complete.freshRerun, revisionId: "revision:not-exact" },
+    },
+    {
+      ...complete,
+      freshRerun: { ...complete.freshRerun, exitCode: 0 },
+    },
+  ];
+  for (const amendment of incompleteAmendments) {
+    const result = validateTddMissionStrategyContractV1(strategyContract([
+      criterion({ expectationAmendment: amendment }),
+    ]));
+    assert.equal(result.state, "invalid");
+    assert.deepEqual(result.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+  }
+});
+
+test("Fury and Fitz amendment evidence bind criterion, kind, and both digests", () => {
+  const complete = expectationAmendment();
+  const mismatchedEvidence = [
+    { furyDisposition: { ...complete.furyDisposition, criterionId: "AC-162-other" } },
+    { furyDisposition: { ...complete.furyDisposition, amendmentKind: "removed" } },
+    { furyDisposition: { ...complete.furyDisposition, oldContractDigest: "sha256:different_old" } },
+    {
+      furyDisposition: {
+        ...complete.furyDisposition,
+        amendedContractDigest: "sha256:different_amended",
+      },
+    },
+    { fitzVerification: { ...complete.fitzVerification, criterionId: "AC-162-other" } },
+    { fitzVerification: { ...complete.fitzVerification, amendmentKind: "removed" } },
+    {
+      fitzVerification: {
+        ...complete.fitzVerification,
+        oldContractDigest: "sha256:different_old",
+      },
+    },
+    {
+      fitzVerification: {
+        ...complete.fitzVerification,
+        amendedContractDigest: "sha256:different_amended",
+      },
+    },
+  ];
+  for (const override of mismatchedEvidence) {
+    const result = validateTddMissionStrategyContractV1(strategyContract([
+      criterion({ expectationAmendment: expectationAmendment("AC-162-1", "changed", override) }),
+    ]));
+    assert.equal(result.state, "invalid");
+    assert.deepEqual(result.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+  }
+
+  const notContractRelevant = validateTddMissionStrategyContractV1(strategyContract([
+    criterion({
+      expectationAmendment: expectationAmendment("AC-162-1", "changed", {
+        contractRelevant: false,
+        furyDisposition: null,
+      }),
+    }),
+  ]));
+  assert.equal(notContractRelevant.state, "valid");
+});
+
+test("fresh stale-expectation rerun does not establish Red and invalidates downstream refs", () => {
+  const result = validateTddMissionStrategyContractV1(strategyContract([
+    criterion({ expectationAmendment: expectationAmendment() }),
+  ]));
+  assert.equal(result.state, "valid");
+  assert.equal(
+    result.contract.criteria[0].preImplementationStateEvidence.state,
+    "contract_prepared",
+  );
+  assert.deepEqual(result.amendmentEffects[0], {
+    criterionId: "AC-162-1",
+    amendmentKind: "changed",
+    oldContractDigest: OLD_CONTRACT_DIGEST,
+    amendedContractDigest: AMENDED_CONTRACT_DIGEST,
+    invalidatedEvidenceRefs: {
+      implementationAuthorityReceiptRef: "authority:ac-162-1:old",
+      greenReceiptRef: "green:ac-162-1:old",
+      refactorReceiptRef: "refactor:ac-162-1:old",
+      mackValidationReceiptRef: "validation:ac-162-1:old",
+      conformanceReceiptRef: "conformance:ac-162-1:old",
+    },
+    successorState: "contract_prepared",
+    requiredBeforeImplementation: [
+      "fresh_reviewed_red",
+      "fresh_amended_digest_coulson_authority",
+    ],
+    coulsonAuthorityContractDigest: AMENDED_CONTRACT_DIGEST,
+  });
+
+  const staleRed = validateTddMissionStrategyContractV1(strategyContract([
+    criterion({
+      preImplementationStateEvidence: redState(),
+      expectationAmendment: expectationAmendment(),
+    }),
+  ]));
+  assert.equal(staleRed.state, "invalid");
+  assert.deepEqual(staleRed.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+});
+
+test("declined TDD amendments return to a freshly justified strategy", () => {
+  const declined = criterion({
+    strategy: "tdd_declined",
+    rationale: "The criterion remains unsuitable for a pre-implementation executable test.",
+    preImplementationContract: null,
+    preImplementationStateEvidence: null,
+    expectationAmendment: expectationAmendment("AC-162-1", "removed", {
+      freshStrategyRationale:
+        "The amended behavior remains documentation-only and still has no executable seam.",
+    }),
+  });
+  const result = validateTddMissionStrategyContractV1(strategyContract([declined]));
+  assert.equal(result.state, "valid");
+  assert.equal(result.amendmentEffects[0].successorState, "strategy_recorded");
+  assert.deepEqual(result.amendmentEffects[0].requiredBeforeImplementation, [
+    "fresh_amended_digest_coulson_authority",
+  ]);
+  assert.equal(
+    result.amendmentEffects[0].coulsonAuthorityContractDigest,
+    AMENDED_CONTRACT_DIGEST,
+  );
+
+  const missingFreshRationale = validateTddMissionStrategyContractV1(strategyContract([{
+    ...declined,
+    expectationAmendment: {
+      ...declined.expectationAmendment,
+      freshStrategyRationale: " ",
+    },
+  }]));
+  assert.equal(missingFreshRationale.state, "invalid");
+  assert.deepEqual(missingFreshRationale.reasonCodes, ["EXPECTATION_AMENDMENT_INCOMPLETE"]);
+});
+
 test("validated strategy contracts are immutable copies", () => {
   const input = strategyContract();
   const result = validateTddMissionStrategyContractV1(input);
@@ -378,6 +628,7 @@ test("validated strategy contracts are immutable copies", () => {
   assert.ok(Object.isFrozen(result.contract.criteria[0].riskFactors));
   assert.ok(Object.isFrozen(result.contract.criteria[0].traceability));
   assert.ok(Object.isFrozen(result.contract.criteria[0].preImplementationStateEvidence));
+  assert.ok(Object.isFrozen(result.amendmentEffects));
   assert.ok(Object.isFrozen(result.contract.packets));
   assert.ok(Object.isFrozen(result.contract.packets[0]));
   assert.ok(Object.isFrozen(result.contract.packets[0].criterionIds));
