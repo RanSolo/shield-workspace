@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
 
 import {
   computeFeatureIntegrationReceiptDigestV1,
@@ -31,9 +32,49 @@ const STAGES = Object.freeze({
   child_publication: "child_draft_pr_create",
 });
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const REVISION = /^[0-9a-f]{40}$/u;
+const WORKSPACE_DERIVATIONS = Object.freeze(["feature_branch_create", "feature_workspace_draft_pr_create", "child_initiation", "child_draft_pr_create"]);
+const WORKSPACE_OBSERVATION_FIELDS = Object.freeze(["schemaVersion", "contractVersion", "observationKind", "preparationEntryDigest", "candidateDigest", "effectKey", "requestDigest", "repositoryId", "derivationKind", "challengeId", "targetRef", "targetBaseBranch", "expectedHeadRevision", "expectedTreeDigest", "status", "observedHeadRevision", "observedTreeDigest", "pullRequests", "observationProvenance", "observedAt", "observationDigest"]);
+const WORKSPACE_PULL_REQUEST_FIELDS = Object.freeze(["pullRequestId", "url", "draft", "headBranch", "headRevision", "baseBranch"]);
+const OBSERVED_AT_FIELDS = Object.freeze(["value", "provenance"]);
 
 function block(reason) { return { state: "blocked", reason }; }
 function challenge(value) { return typeof value === "string" && value.length > 0; }
+function text(value) { return typeof value === "string" && value.length > 0 && value.trim() === value; }
+function compareUtf16(left, right) {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = left.charCodeAt(index) - right.charCodeAt(index);
+    if (difference !== 0) return difference;
+  }
+  return left.length - right.length;
+}
+function exactDataRecord(value, fields) {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value) || isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== fields.length || keys.some((key) => typeof key !== "string") || fields.some((field) => !keys.includes(field))) return null;
+    const record = {};
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") || descriptor.value === undefined) return null;
+      record[field] = descriptor.value;
+    }
+    return record;
+  } catch { return null; }
+}
+function denseDataArray(value) {
+  try {
+    if (!Array.isArray(value) || isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1) return null;
+    const items = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) return null;
+      items.push(descriptor.value);
+    }
+    return items;
+  } catch { return null; }
+}
 function requestDigest(value) {
   return `sha256:${createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")}`;
 }
@@ -75,11 +116,39 @@ function createWorkspaceObservation(prepared, challengeId, target, status, obser
   observation.observationDigest = computeFeatureIntegrationWorkspaceEffectObservationDigestV1(observation);
   return observation;
 }
-function exactWorkspaceObservation(prepared, observation) {
-  const target = workspaceTarget(prepared);
-  if (!target || !observation || typeof observation !== "object") return null;
+function closedWorkspaceObservation(observation) {
   try {
-    if (computeFeatureIntegrationWorkspaceEffectObservationDigestV1(observation) !== observation.observationDigest || observation.preparationEntryDigest !== prepared.entry.entryDigest || observation.candidateDigest !== prepared.entry.payload.candidateDigest || observation.effectKey !== prepared.entry.payload.effectKey || observation.requestDigest !== prepared.entry.payload.requestDigest || observation.repositoryId !== prepared.candidate.repositoryId || observation.derivationKind !== prepared.candidate.derivationKind || observation.targetRef !== target.targetRef || observation.targetBaseBranch !== target.targetBaseBranch || observation.expectedHeadRevision !== target.expectedHeadRevision || observation.expectedTreeDigest !== target.expectedTreeDigest || !["applied", "not_applied", "uncertain"].includes(observation.status) || observation.observationProvenance !== `github:workspace:${observation.challengeId}` || observation.observedAt?.provenance !== "hostTrusted" || !Number.isFinite(Date.parse(observation.observedAt?.value)) || !Array.isArray(observation.pullRequests)) return null;
+    const value = exactDataRecord(observation, WORKSPACE_OBSERVATION_FIELDS);
+    if (!value || value.schemaVersion !== 1 || value.contractVersion !== "feature.integration.v1" || value.observationKind !== "workspace_effect" ||
+        ![value.preparationEntryDigest, value.candidateDigest, value.requestDigest, value.observationDigest].every((item) => DIGEST.test(item)) ||
+        ![value.effectKey, value.repositoryId, value.challengeId, value.targetRef, value.expectedHeadRevision, value.observationProvenance].every(text) ||
+        !WORKSPACE_DERIVATIONS.includes(value.derivationKind) || !(value.targetBaseBranch === null || text(value.targetBaseBranch)) ||
+        !(value.expectedTreeDigest === null || DIGEST.test(value.expectedTreeDigest)) || !["applied", "not_applied", "uncertain"].includes(value.status) ||
+        !(value.observedHeadRevision === null || REVISION.test(value.observedHeadRevision)) || !(value.observedTreeDigest === null || DIGEST.test(value.observedTreeDigest)) ||
+        (value.status !== "uncertain" && (value.observedHeadRevision === null) !== (value.observedTreeDigest === null))) return null;
+    const observedAt = exactDataRecord(value.observedAt, OBSERVED_AT_FIELDS);
+    const pullRequests = denseDataArray(value.pullRequests);
+    if (!observedAt || observedAt.provenance !== "hostTrusted" || !text(observedAt.value) || !Number.isFinite(Date.parse(observedAt.value)) ||
+        value.observationProvenance !== `github:workspace:${value.challengeId}` || !pullRequests) return null;
+    let previousPullRequestId = null;
+    const closedPullRequests = [];
+    for (const item of pullRequests) {
+      const pull = exactDataRecord(item, WORKSPACE_PULL_REQUEST_FIELDS);
+      if (!pull || ![pull.pullRequestId, pull.url, pull.headBranch, pull.baseBranch].every(text) || typeof pull.draft !== "boolean" || !REVISION.test(pull.headRevision) ||
+          (previousPullRequestId !== null && compareUtf16(previousPullRequestId, pull.pullRequestId) >= 0)) return null;
+      previousPullRequestId = pull.pullRequestId;
+      closedPullRequests.push(pull);
+    }
+    if (computeFeatureIntegrationWorkspaceEffectObservationDigestV1(observation) !== value.observationDigest) return null;
+    return { ...value, pullRequests: closedPullRequests, observedAt };
+  } catch { return null; }
+}
+function exactWorkspaceObservation(prepared, input) {
+  const target = workspaceTarget(prepared);
+  const observation = closedWorkspaceObservation(input);
+  if (!target || !observation) return null;
+  try {
+    if (observation.preparationEntryDigest !== prepared.entry.entryDigest || observation.candidateDigest !== prepared.entry.payload.candidateDigest || observation.effectKey !== prepared.entry.payload.effectKey || observation.requestDigest !== prepared.entry.payload.requestDigest || observation.repositoryId !== prepared.candidate.repositoryId || observation.derivationKind !== prepared.candidate.derivationKind || observation.targetRef !== target.targetRef || observation.targetBaseBranch !== target.targetBaseBranch || observation.expectedHeadRevision !== target.expectedHeadRevision || observation.expectedTreeDigest !== target.expectedTreeDigest) return null;
     const branchEffect = target.targetBaseBranch === null;
     if (branchEffect) {
       if (observation.pullRequests.length !== 0 || (observation.status === "applied" && (observation.observedHeadRevision !== target.expectedHeadRevision || observation.observedTreeDigest !== target.expectedTreeDigest)) || (observation.status === "not_applied" && (observation.observedHeadRevision !== null || observation.observedTreeDigest !== null))) return null;
@@ -159,9 +228,9 @@ export function observeFeatureIntegrationWorkspaceEffectV1(input, adapterOptions
 export function reconcileFeatureIntegrationWorkspaceEffectV1(input) {
   if (!input || input.prepared?.state !== "prepared" || !input.observation) return block("reconciliation_input_required");
   const { candidate, entry: prepared } = input.prepared;
-  const observation = input.observation.observation;
-  const checked = input.observation.state === "observed" ? exactWorkspaceObservation(input.prepared, observation) : null;
+  const checked = input.observation.state === "observed" ? exactWorkspaceObservation(input.prepared, input.observation.observation) : null;
   if (!checked) return block("observation_untrusted");
+  const observation = checked.observation;
   const common = { preparationEntryDigest: prepared.entryDigest, observationProvenance: observation.observationProvenance, observedAt: observation.observedAt, effectObservation: observation };
   if (observation.status === "uncertain") {
     if (observation.targetBaseBranch !== null && observation.pullRequests.length > 1) return block("ambiguous_pull_requests");

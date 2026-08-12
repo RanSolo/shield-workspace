@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  computeFeatureIntegrationWorkspaceEffectObservationDigestV1,
+} from "../dist/feature-integration-v1.mjs";
+import {
   createFeatureIntegrationDraftPullRequestV1,
   createFeatureIntegrationRefV1,
   integrateFeatureIntegrationPullRequestV1,
@@ -73,6 +76,30 @@ test("workspace reconciliation fails closed on ambiguous PRs and accepts one exa
   assert.notEqual(accepted.payload.effectObservation.observedTreeDigest, `sha256:${"0".repeat(64)}`);
   const substitutedPrepared = { ...prepared, entry: { ...prepared.entry, entryDigest: `sha256:${"9".repeat(64)}` } };
   assert.equal(reconcileFeatureIntegrationWorkspaceEffectV1({ prepared: substitutedPrepared, observation }).reason, "observation_untrusted");
+
+  const resign = (value) => {
+    value.observationDigest = computeFeatureIntegrationWorkspaceEffectObservationDigestV1(value);
+    return { state: "observed", observation: value };
+  };
+  const rejects = (value) => assert.equal(reconcileFeatureIntegrationWorkspaceEffectV1({ prepared, observation: value }).reason, "observation_untrusted");
+
+  const wrongSchema = structuredClone(observation.observation);
+  wrongSchema.schemaVersion = 2;
+  rejects(resign(wrongSchema));
+
+  const extraField = structuredClone(observation.observation);
+  extraField.unexpected = true;
+  rejects(resign(extraField));
+
+  const malformedPullRequest = structuredClone(observation.observation);
+  malformedPullRequest.pullRequests[0].draft = "true";
+  rejects(resign(malformedPullRequest));
+
+  const accessor = structuredClone(observation.observation);
+  Object.defineProperty(accessor, "status", { enumerable: true, get: () => "applied" });
+  rejects({ state: "observed", observation: accessor });
+
+  rejects({ state: "observed", observation: new Proxy(observation.observation, {}) });
 });
 
 test("integration adapter binds the exact PR head and cannot target main", () => {
