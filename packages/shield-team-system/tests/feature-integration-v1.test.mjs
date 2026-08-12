@@ -1039,9 +1039,21 @@ test("V2 durably authenticates and recovers production transition and rollback w
   assert.equal(computeGovernedRollbackWorkspaceReceiptDigestV2(rollbackReceipt), rollbackReceipt.completionReceiptDigest);
   const unorderedReceipt = { ...structuredClone(rollbackReceipt), evidenceDigests: [...rollbackReceipt.evidenceDigests].reverse(), completionReceiptDigest: digest("0") };
   unorderedReceipt.completionReceiptDigest = computeGovernedRollbackWorkspaceReceiptDigestV2(unorderedReceipt);
+  const duplicateEvidenceReceipt = { ...structuredClone(rollbackReceipt), evidenceDigests: [evidenceDigests[0], evidenceDigests[0]], completionReceiptDigest: digest("0") };
+  duplicateEvidenceReceipt.completionReceiptDigest = computeGovernedRollbackWorkspaceReceiptDigestV2(duplicateEvidenceReceipt);
   assert.equal((await acceptGovernedRollbackWorkspaceV2({ replay: replayed.value, journal: failedJournal, handoff,
-    sourceJournal: sourceMission.entries, receipt: unorderedReceipt, storeScope: store, trustAnchor: fixture.trustAnchor })).reason,
+    sourceJournal: sourceMission.entries, receipt: duplicateEvidenceReceipt, storeScope: store, trustAnchor: fixture.trustAnchor })).reason,
   "rollback_workspace_receipt_invalid");
+  const duplicateEffectReceipt = { ...structuredClone(rollbackReceipt), sourceEffectKeys: [sourceEffectKey, sourceEffectKey], completionReceiptDigest: digest("0") };
+  duplicateEffectReceipt.completionReceiptDigest = computeGovernedRollbackWorkspaceReceiptDigestV2(duplicateEffectReceipt);
+  assert.equal((await acceptGovernedRollbackWorkspaceV2({ replay: replayed.value, journal: failedJournal, handoff,
+    sourceJournal: sourceMission.entries, receipt: duplicateEffectReceipt, storeScope: store, trustAnchor: fixture.trustAnchor })).reason,
+  "rollback_workspace_receipt_invalid");
+  const mismatchedAuthorityReceipt = { ...structuredClone(rollbackReceipt), sourceAuthorityDigest: `sha256:${"A".repeat(43)}`, completionReceiptDigest: digest("0") };
+  mismatchedAuthorityReceipt.completionReceiptDigest = computeGovernedRollbackWorkspaceReceiptDigestV2(mismatchedAuthorityReceipt);
+  assert.equal((await acceptGovernedRollbackWorkspaceV2({ replay: replayed.value, journal: failedJournal, handoff,
+    sourceJournal: sourceMission.entries, receipt: mismatchedAuthorityReceipt, storeScope: store, trustAnchor: fixture.trustAnchor })).reason,
+  "rollback_source_journal_invalid");
   const driftedSourceJournal = structuredClone(sourceMission.entries);
   driftedSourceJournal.at(-1).payload.effect.summary = "Drifted after receipt capture.";
   assert.equal((await acceptGovernedRollbackWorkspaceV2({ replay: replayed.value, journal: failedJournal, handoff,
@@ -1053,17 +1065,24 @@ test("V2 durably authenticates and recovers production transition and rollback w
     appendEntry: async (input) => { const result = await store.appendEntry(input); assert.equal(result.state, "accepted"); return { state: "recovery_required", reason: "durability_uncertain" }; },
     recoverJournal: async (input) => { recoveryObserved = true; return store.recoverJournal(input); } };
   const acceptedWorkspace = await acceptGovernedRollbackWorkspaceV2({ replay: replayed.value, journal: failedJournal, handoff,
-    sourceJournal: sourceMission.entries, receipt: rollbackReceipt, storeScope: recoveringStore, trustAnchor: fixture.trustAnchor });
+    sourceJournal: sourceMission.entries, receipt: unorderedReceipt, storeScope: recoveringStore, trustAnchor: fixture.trustAnchor });
   assert.equal(acceptedWorkspace.state, "accepted"); assert.equal(recoveryObserved, true);
   durableRead = await store.readJournal();
   assert.equal(durableRead.state, "accepted");
   const workspaceJournal = durableRead.value.journal;
   const workspace = workspaceJournal.entries.at(-1);
   assert.equal(workspace.entryKind, "rollback_workspace_accepted");
-  assert.equal(workspace.payload.completionReceiptDigest, rollbackReceipt.completionReceiptDigest);
+  assert.equal(workspace.payload.completionReceiptDigest, unorderedReceipt.completionReceiptDigest);
+  assert.equal(workspace.payload.sourceAuthorityDigest, framedV2(
+    "shield.feature-integration.rollback-workspace-authority-evidence.v2",
+    { implementationAuthorityDigest: rollbackReceipt.sourceAuthorityDigest },
+  ));
+  assert.notEqual(workspace.payload.sourceAuthorityDigest, rollbackReceipt.sourceAuthorityDigest);
+  assert.deepEqual(workspace.payload.sourceEffectKeys, [...rollbackReceipt.sourceEffectKeys].sort());
+  assert.deepEqual(workspace.payload.evidenceDigests, [...rollbackReceipt.evidenceDigests].sort());
   const workspaceReplay = replayFeatureOperationJournalV2(workspaceJournal, fixture.trustAnchor);
   assert.equal(workspaceReplay.state, "valid"); assert.equal(workspaceReplay.value.lifecycle, "rollback_pending"); assert.equal(workspaceReplay.value.nextStage, "rollback");
-  const completionReceiptDigest = rollbackReceipt.completionReceiptDigest;
+  const completionReceiptDigest = unorderedReceipt.completionReceiptDigest;
   const rollbackEffectKey = fixture.hardenedPlan.children[0].allowedEffectKeys.find((key) => key.startsWith("effect:child_revert_on_feature:"));
   const rollbackCandidate = { schemaVersion: 2, contractVersion: "feature.operation.v2", repositoryId: context.repositoryId, operationId: context.operationId,
     planDigest: context.activePlanDigest, authorityDigest: context.verifiedAuthorityDigest, effectKey: rollbackEffectKey, requestedScope,

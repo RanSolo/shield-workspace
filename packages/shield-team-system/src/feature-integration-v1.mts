@@ -1182,11 +1182,6 @@ function stringArrayV2(value: unknown, check: (candidate: unknown) => boolean = 
   const items = densePlainArrayV2(value, allowEmpty);
   return !!items && items.every(check);
 }
-function sortedUniqueStringArrayV2(value: unknown, check: (candidate: unknown) => boolean): value is string[] {
-  const items = densePlainArrayV2(value, false);
-  return !!items && items.every(check) && new Set(items).size === items.length &&
-    items.every((item, index) => index === 0 || compareUtf16(items[index - 1] as string, item as string) < 0);
-}
 function signedEnvelopeV2(input: unknown, payloadCheck: (payload: unknown) => boolean): boolean {
   return exactDataRecordV2(input, ["payload", "signatureBase64"]) && payloadCheck(input.payload) &&
     canonicalBase64V2(input.signatureBase64) && Buffer.from(input.signatureBase64, "base64").length === 64;
@@ -1401,10 +1396,6 @@ function childEvidenceV2(input: unknown): input is FeatureChildEvidenceV2 {
     typeof input.accepted === "boolean" && typeof input.synthetic === "boolean";
 }
 
-function governedSourceAuthorityDigestV2(value: unknown): value is string {
-  return digestValue(value) || typeof value === "string" && /^sha256:[A-Za-z0-9_-]{43}$/u.test(value);
-}
-
 function entryPayloadShapeV2(kind: FeatureIntegrationEntryKindV2, input: unknown): boolean {
   if (!exactDataRecordV2(input, V2_ENTRY_PAYLOAD_FIELDS[kind])) return false;
   const p = input;
@@ -1422,10 +1413,10 @@ function entryPayloadShapeV2(kind: FeatureIntegrationEntryKindV2, input: unknown
   if (kind === "feature_branch_creation_accepted") return dig(p.preparationEntryDigest) && rev(p.headRevision) && dig(p.treeDigest) && signedObservationV2(p.signedWorkspaceObservation, ["workspace"]);
   if (kind === "feature_workspace_accepted" || kind === "child_publication_accepted") return dig(p.preparationEntryDigest) && (kind !== "child_publication_accepted" || id(p.childId)) && id(p.pullRequestId) && br(p.sourceBranch) && br(p.targetBranch) && rev(p.headRevision) && p.draft === true && signedObservationV2(p.signedWorkspaceObservation, ["workspace"]);
   if (kind === "child_initiation_accepted") return dig(p.preparationEntryDigest) && id(p.childId) && br(p.branch) && rev(p.baseHeadRevision) && dig(p.baseTreeDigest) && signedObservationV2(p.signedWorkspaceObservation, ["workspace"]);
-  if (kind === "child_implementation_accepted") return [p.childId, p.sourceMissionId, p.effectKey].every(id) && governedSourceAuthorityDigestV2(p.sourceAuthorityDigest) && [p.sourceJournalDigest, p.completionReceiptDigest, p.treeDigest].every(dig) && rev(p.headRevision);
+  if (kind === "child_implementation_accepted") return [p.childId, p.sourceMissionId, p.effectKey].every(id) && [p.sourceAuthorityDigest, p.sourceJournalDigest, p.completionReceiptDigest, p.treeDigest].every(dig) && rev(p.headRevision);
   if (kind === "child_evidence_accepted") { const ids = densePlainArrayV2(p.evidenceIds, false), digs = densePlainArrayV2(p.evidenceDigests, false), records = densePlainArrayV2(p.evidenceRecords, false); return id(p.childId) && rev(p.headRevision) && !!ids && ids.every(id) && !!digs && digs.every(dig) && !!records && records.every(childEvidenceV2); }
   if (kind === "integration_accepted" || kind === "rollback_accepted") return dig(p.preparationEntryDigest) && signedObservationV2(p.signedTransitionObservation, ["transition"]);
-  if (kind === "rollback_workspace_accepted") return [p.childId, p.sourceMissionId, p.pullRequestId].every(id) && governedSourceAuthorityDigestV2(p.sourceAuthorityDigest) && [p.completionReceiptDigest, p.sourceJournalDigest, p.restoredTreeDigest].every(dig) && br(p.rollbackBranch) && rev(p.pullRequestHeadRevision) && br(p.targetBranch) && sortedUniqueStringArrayV2(p.sourceEffectKeys, id) && sortedUniqueStringArrayV2(p.evidenceDigests, dig);
+  if (kind === "rollback_workspace_accepted") return [p.childId, p.sourceMissionId, p.pullRequestId].every(id) && [p.completionReceiptDigest, p.sourceAuthorityDigest, p.sourceJournalDigest, p.restoredTreeDigest].every(dig) && br(p.rollbackBranch) && rev(p.pullRequestHeadRevision) && br(p.targetBranch) && stringArrayV2(p.sourceEffectKeys, id, false) && stringArrayV2(p.evidenceDigests, dig, false);
   if (kind === "cumulative_validation_accepted" || kind === "cumulative_validation_failed") return dig(p.preparationEntryDigest) && signedObservationV2(p.signedCumulativeReceipt, ["cumulative_receipt"]);
   if (kind === "operation_paused" || kind === "operation_resumed" || kind === "operation_cancelled") return ["operator_requested", "dependency_blocked", "scope_superseded"].includes(p.reason as string) && signedObservationV2(p.signedAdmissionObservation, ["admission"]);
   if (kind === "operation_split" || kind === "operation_superseded") return signedObservationV2(p.signedAdmissionObservation, ["admission"]) && id(p.successorOperationId) && dig(p.successorPlanDigest) && dig(p.successorAuthorityDigest);

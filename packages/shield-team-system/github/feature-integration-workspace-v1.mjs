@@ -788,10 +788,14 @@ export async function executeFeatureIntegrationWorkspaceStageV2(input) {
     : stageResultV2("accepted", null, terminal.entryDigest);
 }
 
-function sortedUniqueStringsV2(value, validate) {
+function normalizedUniqueStringsV2(value, validate) {
   const items = denseDataArray(value);
-  return items && items.length > 0 && items.every(validate) && new Set(items).size === items.length &&
-    items.every((item, index) => index === 0 || compareUtf16(items[index - 1], item) < 0) ? items : null;
+  return items && items.length > 0 && items.every(validate) && new Set(items).size === items.length
+    ? items.sort(compareUtf16) : null;
+}
+
+function rollbackWorkspaceAuthorityEvidenceDigestV2(implementationAuthorityDigest) {
+  return digestV2("shield.feature-integration.rollback-workspace-authority-evidence.v2", { implementationAuthorityDigest });
 }
 
 export function computeGovernedRollbackWorkspaceReceiptDigestV2(input) {
@@ -834,8 +838,8 @@ export async function acceptGovernedRollbackWorkspaceV2(input) {
     "pullRequestHeadRevision", "pullRequestTargetBranch", "draft", "sourceAuthorityDigest", "sourceJournalDigest", "completionReceiptDigest",
     "sourceEffectKeys", "evidenceDigests"];
   const receipt = exactDataRecord(value.receipt, receiptFields);
-  const sourceEffectKeys = receipt ? sortedUniqueStringsV2(receipt.sourceEffectKeys, (item) => text(item)) : null;
-  const evidenceDigests = receipt ? sortedUniqueStringsV2(receipt.evidenceDigests, (item) => DIGEST.test(item)) : null;
+  const sourceEffectKeys = receipt ? normalizedUniqueStringsV2(receipt.sourceEffectKeys, (item) => text(item)) : null;
+  const evidenceDigests = receipt ? normalizedUniqueStringsV2(receipt.evidenceDigests, (item) => DIGEST.test(item)) : null;
   if (!receipt || !sourceEffectKeys || !evidenceDigests || evidenceDigests.length < 2 || !REVISION.test(receipt.baseHeadRevision) ||
       !REVISION.test(receipt.pullRequestHeadRevision) || !DIGEST.test(receipt.restoredTreeDigest) || !AUTHORITY_DIGEST_V2.test(receipt.sourceAuthorityDigest) ||
       !DIGEST.test(receipt.sourceJournalDigest) || !DIGEST.test(receipt.completionReceiptDigest) || !text(receipt.pullRequestId) ||
@@ -864,12 +868,13 @@ export async function acceptGovernedRollbackWorkspaceV2(input) {
       effects.some((effect) => effect.seatId !== "may") || evidenceRefs.some((reference) => !effects.some((effect) => effect.evidenceRefs.includes(reference)))) {
     return stageResultV2("blocked", "rollback_source_journal_invalid");
   }
+  const sourceAuthorityEvidenceDigest = rollbackWorkspaceAuthorityEvidenceDigestV2(source.value.implementationAuthorityDigest);
   let entry;
   try {
     entry = createFeatureIntegrationEntryV2({ operationId: current.journal.operationId, entrySequence: current.replay.nextEntrySequence,
       entryKind: "rollback_workspace_accepted", previousEntryDigest: current.journal.latestAcceptedEntryDigest,
       payload: { childId: expectedHandoff.childId, sourceMissionId: receipt.sourceMissionId, completionReceiptDigest: receipt.completionReceiptDigest,
-        sourceAuthorityDigest: receipt.sourceAuthorityDigest, sourceJournalDigest: receipt.sourceJournalDigest, rollbackBranch: receipt.rollbackBranch,
+        sourceAuthorityDigest: sourceAuthorityEvidenceDigest, sourceJournalDigest: receipt.sourceJournalDigest, rollbackBranch: receipt.rollbackBranch,
         pullRequestId: receipt.pullRequestId, pullRequestHeadRevision: receipt.pullRequestHeadRevision, targetBranch: receipt.pullRequestTargetBranch,
         restoredTreeDigest: receipt.restoredTreeDigest, sourceEffectKeys: [...sourceEffectKeys], evidenceDigests: [...evidenceDigests] } });
   } catch { return stageResultV2("blocked", "rollback_workspace_receipt_invalid"); }
