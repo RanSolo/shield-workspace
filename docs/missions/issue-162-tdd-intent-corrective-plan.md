@@ -129,7 +129,8 @@ The normalized digest projection contains exactly:
   `humanReviewId`;
 - each packet: `packetId`, `criterionIds`, `couplingRationale`, `minimalPaths`,
   `requiredInterfaces`, `allowedEffects`, `focusedValidation` as closed
-  `{checkpointId, commandId, command}` entries, `expectedOutput`,
+  `{checkpointId, commandId, command, executableKind}` entries where
+  `executableKind` is exactly `build` or `test`, `expectedOutput`,
   `stopConditions`, and scalar `successor`.
 
 It excludes the supplied/reviewed digest itself, all downstream evidence and
@@ -174,11 +175,11 @@ A nonempty golden covers selected and declined criteria, retained and null
 canonical payload is exactly:
 
 ```json
-{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[{"criterionId":"AC-A","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":{"checkpointId":"checkpoint:A","contractId":"contract:A","expectedBehavior":"A holds","kind":"executable"},"rationale":"closed behavior","riskFactors":["regression"],"strategy":"tdd_selected","traceability":{"humanReviewId":null,"mackCheckpointId":"checkpoint:A","mayPacketId":"packet:A","planRequirementId":"requirement:A"}},{"criterionId":"AC-B","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":null,"rationale":"documentation only","riskFactors":["documentation"],"strategy":"tdd_declined","traceability":{"humanReviewId":"review:human:B","mackCheckpointId":"checkpoint:B","mayPacketId":"packet:B","planRequirementId":"requirement:B"}}],"packets":[{"allowedEffects":["effect:a"],"couplingRationale":null,"criterionIds":["AC-A"],"expectedOutput":"A passes","focusedValidation":[{"checkpointId":"checkpoint:A","command":"node --test a.test.mjs","commandId":"validation:A"}],"minimalPaths":["src/a.mts"],"packetId":"packet:A","requiredInterfaces":["interface:a"],"stopConditions":["scope changes"],"successor":"packet:B"},{"allowedEffects":["effect:b"],"couplingRationale":null,"criterionIds":["AC-B"],"expectedOutput":"B passes","focusedValidation":[{"checkpointId":"checkpoint:B","command":"node --test b.test.mjs","commandId":"validation:B"}],"minimalPaths":["docs/b.md"],"packetId":"packet:B","requiredInterfaces":["interface:b"],"stopConditions":["scope changes"],"successor":"mission_complete"}],"schemaVersion":1}
+{"contractGeneration":0,"contractVersion":"tdd.mission.v1","criteria":[{"criterionId":"AC-A","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":{"checkpointId":"checkpoint:A","contractId":"contract:A","expectedBehavior":"A holds","kind":"executable"},"rationale":"closed behavior","riskFactors":["regression"],"strategy":"tdd_selected","traceability":{"humanReviewId":null,"mackCheckpointId":"checkpoint:A","mayPacketId":"packet:A","planRequirementId":"requirement:A"}},{"criterionId":"AC-B","disposition":"implemented_and_proven","laterValidation":"required","preImplementationContract":null,"rationale":"documentation only","riskFactors":["documentation"],"strategy":"tdd_declined","traceability":{"humanReviewId":"review:human:B","mackCheckpointId":"checkpoint:B","mayPacketId":"packet:B","planRequirementId":"requirement:B"}}],"packets":[{"allowedEffects":["effect:a"],"couplingRationale":null,"criterionIds":["AC-A"],"expectedOutput":"A passes","focusedValidation":[{"checkpointId":"checkpoint:A","command":"node --test a.test.mjs","commandId":"validation:A","executableKind":"test"}],"minimalPaths":["src/a.mts"],"packetId":"packet:A","requiredInterfaces":["interface:a"],"stopConditions":["scope changes"],"successor":"packet:B"},{"allowedEffects":["effect:b"],"couplingRationale":null,"criterionIds":["AC-B"],"expectedOutput":"B passes","focusedValidation":[{"checkpointId":"checkpoint:B","command":"node --test b.test.mjs","commandId":"validation:B","executableKind":"test"}],"minimalPaths":["docs/b.md"],"packetId":"packet:B","requiredInterfaces":["interface:b"],"stopConditions":["scope changes"],"successor":"mission_complete"}],"schemaVersion":1}
 ```
 
-It is 1656 UTF-8 bytes and produces
-`sha256:ha-_Q59ERQAp5JT-VEpjLKC5zyVZLlFYoQ2tOzE98ss` under the same frame.
+It is 1704 UTF-8 bytes and produces
+`sha256:MiT1bN3hYDmYWkHLdQJ-NO_ZFdspbVGqOfZ3acZ5TPo` under the same frame.
 
 The closed V1 input now requires generation explicitly. Existing retained
 no-amendment fixtures are mechanically migrated to `contractGeneration: 0` in
@@ -192,11 +193,14 @@ and disposition evidence at `N+1`.
 
 The evaluation input adds a closed `reviewedPredecessorContract` field. It is
 `null` exactly at generation zero. At generation `N+1` it contains exactly
-`contractGeneration`, `acceptanceContractDigest`, and `snapshot`, where
-`snapshot` is the complete normalized digest projection defined above. The
-snapshot's generation must be `N`, its digest must recompute, and the top-level
-field is the Fury-reviewed predecessor anchor independent of the criterion's
-amendment record.
+`contractGeneration`, `acceptanceContractDigest`, `snapshot`, and `furyReview`.
+The snapshot is the complete normalized digest projection defined above. Its
+generation must be `N` and its digest must recompute. `furyReview` contains
+exactly a globally unique evidence ID, reviewer seat `fury`, mission ID, plan
+digest, generation, acceptance digest, reviewed revision/tree, disposition
+`approved`, and nonempty source references. Those bindings must all match the
+predecessor triple, making this exact Fury record the predecessor anchor
+independent of every criterion amendment.
 
 The amendment closed shape contains `oldContractGeneration`,
 `oldContractDigest`, `oldContractSnapshot`, `amendedContractGeneration`,
@@ -208,7 +212,12 @@ must recompute from its paired snapshot and generation. The old triple must
 equal the independent top-level `reviewedPredecessorContract`; the amended
 triple must equal the active normalized strategy contract supplied to the
 evaluation. Generation zero forbids an amendment. Reordered, skipped, reused,
-mismatched, self-consistent-but-invented, or otherwise unanchored edges block.
+mismatched, self-consistent-but-unreviewed, or otherwise unanchored edges block.
+Every nonzero active generation requires at least one criterion amendment for
+its `N -> N+1` edge; every amendment on that edge must carry the same unique
+`edgeId`, the same old/new triples, and the same
+`predecessorFuryReviewEvidenceId`. The referenced ID must equal the top-level
+Fury anchor and may not be reused by another edge.
 After an amendment, selected TDD requires a fresh prepared-scaffold record at
 `N+1`, bound to the amended digest, before fresh reviewed Red.
 
@@ -219,8 +228,8 @@ After an amendment, selected TDD requires a fresh prepared-scaffold record at
   observed scope and validation are enforced by the packet contract.
 - Paths: Packet A source and focused-test paths only.
 - Required behavior:
-  - represent focused validation as closed `{checkpointId, commandId, command}`
-    entries;
+  - represent focused validation as closed
+    `{checkpointId, commandId, command, executableKind}` entries;
   - require unique observed paths/effects to remain within packet bounds;
   - require executed checkpoint and command identity to match the packet;
   - require distinct Green and Refactor authority plus focused Mack proof;
@@ -247,12 +256,24 @@ neither may be replayed across transition kinds. Refactor follows Green at a
 different revision, retains the same digest/generation, and explicitly
 preserves behavior, failure, authority, persistence, and risk semantics.
 
-Each packet also has one closed Mack packet-validation bundle bound to the
-transition's result revision/tree and containing exactly one executable receipt
-for every checkpoint declared for that packet in the validation table. Receipt
-checkpoint ID, command ID, and literal command must match collision-free; no
-declared checkpoint may be omitted or duplicated. The transition's focused
-proof identity must reference the focused receipt in that complete bundle.
+Each realized transition has its own closed Mack packet-validation bundle. It
+contains exactly `bundleId`, `transitionKind` (`green` or `refactor`), mission,
+plan, contract digest/generation, packet ID, transition evidence ID, exact
+result revision/tree, Mack seat/runtime/model/executor identity, and executable
+receipts. It contains exactly one receipt for every checkpoint declared for
+that packet in the validation table. Receipt checkpoint ID, command ID, literal
+command, and executable kind must match collision-free; no declared checkpoint
+may be omitted or duplicated. Green and Refactor bundles and all nested receipt
+IDs must be pairwise disjoint, and each bundle binds its own transition result
+revision/tree. The transition's focused proof identity references the focused
+receipt in that transition's complete bundle.
+
+Each realized transition also has one closed packet-Fury-review record with a
+unique review ID, Fury seat/runtime/model/executor identity, mission/plan,
+contract digest/generation, packet ID, transition kind/evidence ID, exact result
+revision/tree, referenced Mack bundle ID, verdict `PASS`, findings array, and
+source references. Green and Refactor review IDs are distinct. Terminal Fury
+evidence references every realized packet-Fury-review record exactly once.
 
 ### Packet C — exact terminal closure and truthful outcomes (F2 + F8)
 
@@ -285,9 +306,11 @@ non-executable, matches the same HEAD/tree, and references that whole bundle,
 all four complete packet Fury reviews, and every criterion disposition. Any
 later HEAD/tree stales both.
 
-Executable evidence semantics are closed: test PASS requires exit `0`, safe
-nonnegative `total/passed/failed/skipped/cancelled/todo`, zero failed/cancelled,
-and an exact sum to total; build PASS requires exit `0` and may omit counts;
+Executable evidence semantics are closed, and every receipt's `executableKind`
+must exactly match its digest-bearing validation entry. Test PASS requires exit
+`0`, safe nonnegative `total/passed/failed/skipped/cancelled/todo`, zero
+failed/cancelled, and an exact sum to total; build PASS requires exit `0` and
+null counts;
 failed executable evidence requires outcome `failed`, a nonzero exit, and
 `failureClassification` equal to exactly `product_defect`,
 `environment_failure`, or `harness_defect`. For a failed test,
@@ -322,19 +345,19 @@ only when emitted.
 
 Every checkpoint maps collision-free to one literal command:
 
-| Packet/stage | Checkpoint ID | Command ID | Literal command |
-| --- | --- | --- | --- |
-| A build | `checkpoint:issue-162:A:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
-| A focused | `checkpoint:issue-162:A:focused` | `validation:issue-162:focused-node-test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
-| B build | `checkpoint:issue-162:B:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
-| B focused | `checkpoint:issue-162:B:focused` | `validation:issue-162:focused-node-test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
-| C build | `checkpoint:issue-162:C:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
-| C focused | `checkpoint:issue-162:C:focused` | `validation:issue-162:focused-node-test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
-| D build | `checkpoint:issue-162:D:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
-| D focused | `checkpoint:issue-162:D:package-surface` | `validation:issue-162:package-surface-test` | `node --test packages/shield-team-system/tests/package-surface.test.mjs` |
-| terminal focused | `checkpoint:issue-162:terminal:focused` | `validation:issue-162:focused-node-test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
-| terminal build | `checkpoint:issue-162:terminal:build` | `validation:issue-162:nx-build` | `npm exec nx run @shield/team-system:build` |
-| terminal suite | `checkpoint:issue-162:terminal:test` | `validation:issue-162:nx-test` | `npm exec nx run @shield/team-system:test` |
+| Packet/stage | Checkpoint ID | Command ID | Kind | Literal command |
+| --- | --- | --- | --- | --- |
+| A build | `checkpoint:issue-162:A:build` | `validation:issue-162:nx-build` | `build` | `npm exec nx run @shield/team-system:build` |
+| A focused | `checkpoint:issue-162:A:focused` | `validation:issue-162:focused-node-test` | `test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
+| B build | `checkpoint:issue-162:B:build` | `validation:issue-162:nx-build` | `build` | `npm exec nx run @shield/team-system:build` |
+| B focused | `checkpoint:issue-162:B:focused` | `validation:issue-162:focused-node-test` | `test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
+| C build | `checkpoint:issue-162:C:build` | `validation:issue-162:nx-build` | `build` | `npm exec nx run @shield/team-system:build` |
+| C focused | `checkpoint:issue-162:C:focused` | `validation:issue-162:focused-node-test` | `test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
+| D build | `checkpoint:issue-162:D:build` | `validation:issue-162:nx-build` | `build` | `npm exec nx run @shield/team-system:build` |
+| D focused | `checkpoint:issue-162:D:package-surface` | `validation:issue-162:package-surface-test` | `test` | `node --test packages/shield-team-system/tests/package-surface.test.mjs` |
+| terminal focused | `checkpoint:issue-162:terminal:focused` | `validation:issue-162:focused-node-test` | `test` | `node --test packages/shield-team-system/tests/tdd-mission-v1.test.mjs` |
+| terminal build | `checkpoint:issue-162:terminal:build` | `validation:issue-162:nx-build` | `build` | `npm exec nx run @shield/team-system:build` |
+| terminal suite | `checkpoint:issue-162:terminal:test` | `validation:issue-162:nx-test` | `test` | `npm exec nx run @shield/team-system:test` |
 
 The packet-qualified checkpoint plus command ID is the unique mapping key.
 Mack also performs exact root/repository/branch/HEAD/tree, changed-path, and
@@ -411,6 +434,12 @@ object containing exactly `seatId: "fury"`, `verdict: "PLAN PASS"`, the
 64-lowercase-hex `planSha256`, the absolute `reviewArtifactPath`, and its
 64-lowercase-hex `reviewArtifactSha256`. The artifact is the complete output of
 the Fury process that reviewed that same HEAD/tree, not a Hill-authored verdict.
+The Fury prompt requires exactly one terminal line beginning
+`SHIELD_FURY_PLAN_REVIEW_V1 ` followed by canonical single-line JSON containing
+exactly `headRevision`, `headTree`, `planSha256`, `seatId`, and `verdict`.
+Preparation parses that marker from the complete raw artifact and requires all
+five values to equal the binding; duplicate, missing, malformed, noncanonical,
+or semantically mismatched markers block.
 
 Use this exact begin and verification sequence. The repository-supported Nx
 build is deliberately rerun after the review binding checks; the ignored
@@ -421,7 +450,7 @@ not trusted as a pre-existing artifact.
 cd /private/tmp/shield-162-bravo.yMZTJ7
 set -eu
 review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json
-node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1)' "$review_binding"
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",lines=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u).filter(x=>x.startsWith(p));if(lines.length!==1)process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw);if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||JSON.stringify(m)!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding"
 reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")"
 reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")"
 reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")"
@@ -462,7 +491,7 @@ same-invocation live manifest is the only manifest Coulson may sign.
 cd /private/tmp/shield-162-bravo.yMZTJ7
 set -eu
 review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json
-node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1)' "$review_binding"
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",lines=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u).filter(x=>x.startsWith(p));if(lines.length!==1)process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw);if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||JSON.stringify(m)!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding"
 reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")"
 reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")"
 reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")"
@@ -480,9 +509,9 @@ test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
 test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
 before="$(shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl | awk '{print $1}')"
 restore_issue162_preview_node_modules() { if test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold; then trap - EXIT HUP INT TERM; return 0; fi; test -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test "$(readlink /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e node_modules && test ! -L node_modules && mv /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold node_modules && test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" || return 1; trap - EXIT HUP INT TERM; }
-mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
 trap 'restore_issue162_preview_node_modules || exit 125' EXIT
 trap 'restore_issue162_preview_node_modules || exit 125; exit 130' HUP INT TERM
+mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
 test -z "$(git status --porcelain=v1 --untracked-files=all)"
 if node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --json </dev/null; then exit 1; fi
 after="$(shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl | awk '{print $1}')"
@@ -490,6 +519,8 @@ test "$before" = "$after"
 restore_issue162_preview_node_modules
 test -L node_modules
 test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules"
+test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
+test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold
 ```
 
 The exact interactive gate command uses a restoration trap and invokes the
@@ -501,7 +532,7 @@ canonical manifest instead of the abbreviated `--human` rendering:
 ```sh
 cd /private/tmp/shield-162-bravo.yMZTJ7 && \
 review_binding=.shield/tmp/issue-162-correction-2-fury-pass-binding.json && \
-node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1)' "$review_binding" && \
+node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const k=["headRevision","headTree","planSha256","reviewArtifactPath","reviewArtifactSha256","seatId","verdict"],mk=["headRevision","headTree","planSha256","seatId","verdict"];if(JSON.stringify(Object.keys(v).sort())!==JSON.stringify(k)||v.seatId!=="fury"||v.verdict!=="PLAN PASS"||!/^([0-9a-f]{40})$/.test(v.headRevision)||!/^([0-9a-f]{40})$/.test(v.headTree)||!/^([0-9a-f]{64})$/.test(v.planSha256)||!/^([0-9a-f]{64})$/.test(v.reviewArtifactSha256)||typeof v.reviewArtifactPath!=="string"||!v.reviewArtifactPath.startsWith("/"))process.exit(1);const p="SHIELD_FURY_PLAN_REVIEW_V1 ",lines=fs.readFileSync(v.reviewArtifactPath,"utf8").split(/\r?\n/u).filter(x=>x.startsWith(p));if(lines.length!==1)process.exit(1);const raw=lines[0].slice(p.length),m=JSON.parse(raw);if(JSON.stringify(Object.keys(m).sort())!==JSON.stringify(mk)||JSON.stringify(m)!==raw||mk.some(x=>m[x]!==v[x]))process.exit(1)' "$review_binding" && \
 reviewed_head="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headRevision)' "$review_binding")" && \
 reviewed_tree="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).headTree)' "$review_binding")" && \
 reviewed_plan_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).planSha256)' "$review_binding")" && \
@@ -518,13 +549,15 @@ test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_mod
 test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
 test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
 restore_issue162_node_modules() { if test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold; then trap - EXIT HUP INT TERM; return 0; fi; test -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && test "$(readlink /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold)" = "/Users/ransolo/Code/shield-workspace/node_modules" && test ! -e node_modules && test ! -L node_modules && mv /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold node_modules && test -L node_modules && test "$(readlink node_modules)" = "/Users/ransolo/Code/shield-workspace/node_modules" || return 1; trap - EXIT HUP INT TERM; } && \
-mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
 trap 'restore_issue162_node_modules || exit 125' EXIT && \
 trap 'restore_issue162_node_modules || exit 125; exit 130' HUP INT TERM && \
+mv node_modules /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
 test -z "$(git status --porcelain=v1 --untracked-files=all)" && \
 node packages/shield-team-system/dist/cli.mjs mission authorize-wheels-up --mission-id mission:issue-162-bravo-correction-2 --input .shield/tmp/issue-162-correction-2-authorize-wheels-up.json --root /private/tmp/shield-162-bravo.yMZTJ7 --json; \
 authority_status=$?; restore_issue162_node_modules || exit 125; \
 if test "$authority_status" -ne 0; then exit "$authority_status"; fi; \
+test ! -e /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
+test ! -L /private/tmp/shield-162-bravo.yMZTJ7.node_modules-authority-hold && \
 node packages/shield-team-system/dist/cli.mjs mission status --mission-id mission:issue-162-bravo-correction-2 --root /private/tmp/shield-162-bravo.yMZTJ7 --json && \
 shasum -a 256 .shield/journals/bWlzc2lvbjppc3N1ZS0xNjItYnJhdm8tY29ycmVjdGlvbi0y.jsonl
 ```
