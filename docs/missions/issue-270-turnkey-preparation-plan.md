@@ -60,11 +60,32 @@ No `tsconfig` path alias, copied compiler, duplicate attribution evaluator, or
 reverse dependency is permitted.
 
 Mission Builder intentionally adds one public typed producer,
-`buildMissionTransitionPlanV1`. It accepts a closed planning input containing
-the non-observable scope/runtime decisions required by `TransitionPlanV1`,
-derives its identity with the A0 contract helpers, and returns authority-none
-data. The additive symbol is covered by package-surface tests; it is not a
-signing, dispatch, or effect API.
+`buildMissionTransitionPlanV1(input: unknown)`. The exact closed input type is
+`BuildMissionTransitionPlanInputV1 = Omit<TransitionPlanV1, "schemaId" |
+"authority" | "id" | "digest">`; runtime validation requires exactly those
+body keys and ordinary enumerable data. The exact result type is
+`BuildMissionTransitionPlanResultV1 = {state:"built", plan:TransitionPlanV1} |
+{state:"invalid", code:"malformed_transition_plan_input" |
+"invalid_transition_plan", errors:readonly string[]}`. Those two types and the
+function are the only additive Mission Builder exports. The implementation
+derives identity with the A0 contract helpers and returns authority-none data.
+Package-surface and clean TypeScript declaration-consumer tests freeze all
+three exports; this is not a signing, dispatch, or effect API.
+
+The internal `MissionTransitionPlanReviewV1` is a closed ordinary-data
+contract with exactly: `schemaVersion:1`,
+`contractVersion:"mission.transition-plan-review.v1"`, `authority:"none"`,
+`reviewId`, `reviewDigest`, `missionId`, `subjectId`, `repositoryId`,
+`planningBaseRevision`, `parentPlanCommit`, `parentPlanPath`,
+`parentPlanRawSha256`, `transitionPlanId`, `transitionPlanDigest`,
+`verdict:"PASS"`, `reviewerSeatId:"fury"`, `reviewerRuntimeId`,
+`reviewerModelId`, `reviewerExecutorId`, `reviewedArtifactId`, and
+`reviewedArtifactRevision`. `validateMissionTransitionPlanReviewV1` rejects
+extra keys and recomputes deterministic `reviewId` and `reviewDigest` from the
+remaining fields. The dispatch identity must bind `artifactId` and
+`artifactRevision` to the transition plan ID/digest, and its one terminal
+receipt must contain both review ID and review digest in `outputEvidenceRefs`.
+This is how raw host-observed Fury attribution binds the review artifact.
 
 `mission-preparation-host-v1.mts` is the sole Team System integration seam. It
 is otherwise internal (not separately re-exported and not added to the package
@@ -95,7 +116,11 @@ command supplies only mission ID and root.
 The internal host is the sole production consumer of the authority-none
 compiler. `mission-cli.mts` also owns option parsing, rendering, the PIN
 interaction, and delegation to the
-existing `prepareAuthorizeWheelsUp` / signing / append implementation. Do not
+package-internal `executeAuthorizeWheelsUpV1` shared executor. Its closed
+`AuthorizeWheelsUpExecutionDependenciesV1` contains exactly `renderDecision`,
+`readPasscode`, `signBatch`, and `appendBatchAtomic`; production defaults are
+the existing renderer, passcode reader, batch signer, and atomic append. Both
+the legacy direct route and `prepare-next` call this one executor. Do not
 put this pre-PIN preparation logic into `governed-may-dispatch-v1.mts`; no model
 is invoked in this transition.
 
@@ -133,16 +158,36 @@ create-only artifact beneath
 `.shield/audit/mission-preparation/<sha256(mission-id)>/reviewed-transition.json`,
 syncs parent directories, rereads exact bytes, and records no authority.
 
+Materialization creates each directory at mode `0700` after no-follow,
+realpath-confinement checks. It writes canonical bytes to a same-directory
+mode-`0600` temporary regular file opened with `O_EXCL|O_NOFOLLOW`, fsyncs and
+closes it, atomically installs it without overwrite by hard-linking the
+verified temporary inode to the absent final name, fsyncs the directory,
+unlinks the temporary name, fsyncs the directory again, then opens the final
+name with `O_NOFOLLOW` and verifies inode, mode, bytes, graph ID, and digest.
+An exact existing graph returns `{state:"already_materialized", graphId,
+graphDigest}`. Different valid content returns `materialization_conflict`.
+Malformed existing content, partial files, uncertain link/sync/unlink, inode or
+directory replacement, or failed readback returns `recovery_required`. No path
+overwrites or repairs an existing final artifact.
+
 The materialized reviewed plan, parent review, and intent are one closed,
-content-addressed graph. Its identities bind:
+content-addressed `MissionReviewedTransitionGraphV1` with exactly
+`schemaVersion:1`, `schemaId:"mission.reviewed-transition-graph.v1"`,
+`authority:"none"`, `graphId`, `graphDigest`, `transitionPlan`,
+`parentPlanReviewEvidence`, and `transitionIntent`. The ID/digest are
+deterministically recomputed over the other fields. Its identities bind:
 
 - mission, subject, repository, transition-plan ID/digest, and parent-plan
   identity;
 - raw Fury receipt-set SHA-256 and the exact attributed reviewer
   runtime/model/executor;
-- selected action/effect/capability/path/validation/publication scopes;
-- live canonical root, branch, base, HEAD, changed paths, path kinds, journal
-  sequence/digest, signer binding, and remaining gates.
+- selected action/effect/capability/path/validation/publication scopes.
+
+Live canonical root, branch, base, HEAD, changed paths, path kinds, journal
+sequence/digest, signer binding, and remaining gates are never stored in this
+graph. They are bound only by the resolution-time observation, candidate, and
+in-memory/output-only preparation receipt.
 
 Resolution rereads the protected artifact and exact dispatch-log bytes and
 recomputes all identities immediately before candidate-to-
@@ -232,6 +277,9 @@ prompt and unchanged protected state.
   `assertPreparedAuthorizeWheelsUpFresh`, and
   `appendProfileAwareMissionEntriesAtomicV1` without changing authority
   semantics.
+- Route both legacy and turnkey commands through
+  `executeAuthorizeWheelsUpV1` with the production dependency defaults; tests
+  inject its exact four-function dependency interface for call counts.
 - Preserve the legacy direct command and JSON output vectors.
 - Compare the compiler candidate and observation to their explicit closed
   projections from the prepared legacy result before rendering; any mismatch
@@ -262,6 +310,7 @@ Implementation is limited to:
 - `package-lock.json`
 - `packages/shield-team-system/package.json`
 - `packages/shield-team-system/src/mission-builder-v1.mts`
+- `packages/shield-team-system/src/authorize-wheels-up-executor-v1.mts`
 - `packages/shield-team-system/src/mission-preparation-host-v1.mts`
 - `packages/shield-team-system/src/mission-preparation-store-v1.mts`
 - `packages/shield-team-system/src/seat-dispatch-store.mts`
@@ -269,6 +318,7 @@ Implementation is limited to:
 - `packages/shield-team-system/src/mission-human-output-v1.mts` only if the
   existing renderer cannot represent a required additive preparation field;
 - `packages/shield-team-system/tests/mission-builder-v1.test.mjs`
+- `packages/shield-team-system/tests/authorize-wheels-up-executor-v1.test.mjs`
 - `packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs`
 - `packages/shield-team-system/tests/mission-preparation-store-v1.test.mjs`
 - `packages/shield-team-system/tests/seat-dispatch-store.test.mjs`
