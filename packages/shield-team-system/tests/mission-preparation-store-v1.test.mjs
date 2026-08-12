@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { lstat, link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -9,11 +13,15 @@ import {
   MISSION_REVIEWED_TRANSITION_GRAPH_ID_PREFIX,
   MISSION_REVIEWED_TRANSITION_GRAPH_SCHEMA_ID,
   MISSION_REVIEWED_TRANSITION_GRAPH_SCHEMA_VERSION,
+  MISSION_REVIEWED_TRANSITION_GRAPH_FILE,
   buildMissionReviewedTransitionGraphV1,
   computeMissionReviewedTransitionGraphDigestV1,
   computeMissionReviewedTransitionGraphIdV1,
+  deriveMissionReviewedTransitionGraphMaterializationPathV1,
   validateMissionReviewedTransitionGraphV1,
+  materializeMissionReviewedTransitionGraphV1,
 } from "../dist/mission-preparation-store-v1.mjs";
+import { canonicalJson } from "../dist/mission-v2.mjs";
 
 const EXCLUSIONS = ["review.comment.publish", "review.pull_request.update_draft", "review.pull_request.mark_ready", "merge", "deployment", "release", "final_acceptance"];
 
@@ -107,6 +115,32 @@ function graphInput() {
     parentPlanReviewEvidence: review,
     transitionIntent: transitionIntent(transition, review),
   };
+}
+
+function graphInputForMissionId(missionId, overrides = {}) {
+  const transition = transitionPlan({ missionId, ...overrides.transitionPlan });
+  const review = parentPlanReviewEvidence(transition, overrides.review);
+  const intent = transitionIntent(transition, review, overrides.intent);
+  return {
+    transitionPlan: transition,
+    parentPlanReviewEvidence: review,
+    transitionIntent: intent,
+  };
+}
+
+async function withMaterializationRoot(prefix = "shield-mps-270-") {
+  return mkdtemp(join(tmpdir(), prefix));
+}
+
+function cloneStatsWithMutation(stats, mutate) {
+  const clone = Object.create(Object.getPrototypeOf(stats));
+  Object.defineProperties(clone, Object.getOwnPropertyDescriptors(stats));
+  mutate(clone);
+  return clone;
+}
+
+function materializationInput(repositoryRoot, graph) {
+  return { repositoryRoot, graph };
 }
 
 test("build and validate mission reviewed transition graph snapshots are frozen and deterministic", () => {
@@ -253,4 +287,362 @@ test("validated results are immutable snapshots and do not share mutable input",
   input.parentPlanReviewEvidence.verdict = "FAIL";
   assert.equal(result.state, "valid");
   assert.equal(result.value.parentPlanReviewEvidence.verdict, "PASS");
+});
+
+test("deriveMissionReviewedTransitionGraphMaterializationPathV1 uses mission-id digest and scoped directories", () => {
+  const missionId = "mission:issue-270";
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1("/tmp/repo-issue-270", missionId);
+
+  assert.equal(paths.missionIdDigest, createHash("sha256").update(missionId, "utf8").digest("hex"));
+  assert.equal(paths.repositoryRoot, "/tmp/repo-issue-270");
+  assert.equal(paths.shieldDirectory.endsWith(".shield"), true);
+  assert.equal(paths.auditDirectory.endsWith(".shield/audit"), true);
+  assert.equal(paths.missionPreparationDirectory.endsWith(".shield/audit/mission-preparation"), true);
+  assert.equal(paths.missionDirectory.endsWith(`.shield/audit/mission-preparation/${paths.missionIdDigest}`), true);
+  assert.equal(paths.graphPath, join(paths.missionDirectory, MISSION_REVIEWED_TRANSITION_GRAPH_FILE));
+});
+
+test("materialize tolerates conventional preexisting .shield directory mode", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const resolvedRoot = await realpath(repositoryRoot);
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(resolvedRoot, "mission:issue-270");
+  await mkdir(paths.shieldDirectory, { mode: 0o755 });
+
+  try {
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(result.state, "materialized");
+    assert.equal(result.graphPath.endsWith(paths.graphPath), true);
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("materialize creates durable directories with exact modes and writes 600 final bytes", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const resolvedRoot = await realpath(repositoryRoot);
+  const derived = deriveMissionReviewedTransitionGraphMaterializationPathV1(resolvedRoot, "mission:issue-270");
+
+  try {
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(result.state, "materialized");
+    assert.equal(result.graphPath.endsWith(derived.graphPath), true);
+    assert.equal(result.graphId, built.graph.graphId);
+    assert.equal(result.graphDigest, built.graph.graphDigest);
+
+    const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270");
+    const missionDirectoryStats = await lstat(paths.missionDirectory);
+    const auditStats = await lstat(paths.missionPreparationDirectory);
+    assert.equal((missionDirectoryStats.mode & 0o777), 0o700);
+    assert.equal((auditStats.mode & 0o777), 0o700);
+    const graphStats = await lstat(result.graphPath);
+    assert.equal(graphStats.nlink, 1);
+    assert.equal((graphStats.mode & 0o777), 0o600);
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("materialize is idempotent and reports already_materialized", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  try {
+    const first = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(first.state, "materialized");
+
+    const second = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(second.state, "already_materialized");
+    assert.equal(second.graphId, built.graph.graphId);
+    assert.equal(second.graphDigest, built.graph.graphDigest);
+    assert.equal(first.graphPath, second.graphPath);
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("existing mismatched valid graph is detected as materialization_conflict", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const firstInput = graphInputForMissionId("mission:issue-270");
+  const secondInput = graphInputForMissionId("mission:issue-270", {
+    review: {
+      rawReceiptSetSha256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    },
+  });
+  const first = buildMissionReviewedTransitionGraphV1(firstInput);
+  const second = buildMissionReviewedTransitionGraphV1(secondInput);
+  assert.equal(first.state, "built");
+  assert.equal(second.state, "built");
+  assert.notEqual(first.graph.graphDigest, second.graph.graphDigest);
+  const graphPath = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270").graphPath;
+
+  try {
+    const materialized = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, first.graph));
+    assert.equal(materialized.state, "materialized");
+    const before = await readFile(graphPath, "utf8");
+
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, second.graph));
+    assert.equal(result.state, "materialization_conflict");
+    assert.equal(result.existingGraphId, first.graph.graphId);
+    assert.equal(result.existingGraphDigest, first.graph.graphDigest);
+
+    const after = await readFile(graphPath, "utf8");
+    assert.equal(after, before);
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("existing malformed or partial final file is treated as recovery_required", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270");
+  await mkdir(paths.missionDirectory, { mode: 0o700, recursive: true });
+  const partial = canonicalJson(built.graph).slice(0, 6);
+  await writeFile(paths.graphPath, partial, { mode: 0o600 });
+
+  try {
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(result.state, "recovery_required");
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("existing symbolic-link final artifact is treated as recovery_required", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270");
+  await mkdir(paths.missionDirectory, { mode: 0o700, recursive: true });
+  const redirectTarget = join(paths.missionPreparationDirectory, "redirection.json");
+  await writeFile(redirectTarget, canonicalJson(built.graph), { mode: 0o600 });
+  await symlink(redirectTarget, paths.graphPath);
+
+  try {
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(result.state, "recovery_required");
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("existing hard-linked final artifact is rejected and not overwritten", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270");
+  await mkdir(paths.missionDirectory, { mode: 0o700, recursive: true });
+  const backing = join(paths.missionPreparationDirectory, "backing.json");
+  await writeFile(backing, canonicalJson(built.graph), { mode: 0o600 });
+  await link(backing, paths.graphPath);
+
+  try {
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(result.state, "recovery_required");
+    const linkTargetStats = await lstat(backing);
+    const finalStats = await lstat(paths.graphPath);
+    assert.equal(linkTargetStats.nlink, 2);
+    assert.equal(finalStats.nlink, 2);
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("existing final with incorrect mode is treated as recovery_required", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270");
+  await mkdir(paths.missionDirectory, { mode: 0o700, recursive: true });
+  await writeFile(paths.graphPath, canonicalJson(built.graph), { mode: 0o644 });
+
+  try {
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(result.state, "recovery_required");
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("preexisting secure directory symlink causes invalid materialization input", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270");
+  await mkdir(paths.shieldDirectory, { mode: 0o700, recursive: true });
+  await rm(paths.auditDirectory, { recursive: true, force: true }).catch(() => undefined);
+  await symlink("/tmp", paths.auditDirectory);
+
+  try {
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(result.state, "invalid");
+    assert.equal(result.code, "invalid_materialization_input");
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("directory replacement during install is detected as recovery_required", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const resolvedRoot = await realpath(repositoryRoot);
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(resolvedRoot, "mission:issue-270");
+
+  let parentLstatCalls = 0;
+  const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+    lstatPath: async (path) => {
+      const stats = await lstat(path);
+      if (!path.includes(paths.missionIdDigest) || path.endsWith(MISSION_REVIEWED_TRANSITION_GRAPH_FILE)) {
+        return stats;
+      }
+      parentLstatCalls += 1;
+      if (parentLstatCalls <= 1) {
+        return stats;
+      }
+      return cloneStatsWithMutation(stats, (mutated) => {
+        mutated.ino = typeof mutated.ino === "bigint" ? mutated.ino + 1n : mutated.ino + 1;
+      });
+    },
+  });
+
+  try {
+    assert.equal(result.state, "recovery_required");
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("final-link collision with same bytes can be retried into already_materialized", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270");
+  let linkAttempts = 0;
+
+  const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+    randomBytes: () => Buffer.from("0000000000000000"),
+    linkPath: async (source, destination) => {
+      linkAttempts += 1;
+      if (linkAttempts === 1) {
+        await writeFile(destination, canonicalJson(built.graph), { mode: 0o600 });
+        const error = new Error("simulated race");
+        error.code = "EEXIST";
+        throw error;
+      }
+      return link(source, destination);
+    },
+  });
+
+  try {
+    assert.equal(result.state, "already_materialized");
+    assert.equal(result.graphPath.endsWith(paths.graphPath), true);
+    const bytes = await readFile(paths.graphPath, "utf8");
+    assert.equal(bytes, canonicalJson(built.graph));
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("verify-readback close failure before final link returns recovery_required and no final artifact", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(repositoryRoot, "mission:issue-270");
+  let closeCalls = 0;
+  try {
+    const result = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+      randomBytes: () => Buffer.from("0000000000000007"),
+      closeHandle: async (handle) => {
+        closeCalls += 1;
+        if (closeCalls === 1) {
+          await handle.close();
+          const error = new Error("verify-close-failure");
+          error.code = "EIO";
+          throw error;
+        }
+        return handle.close();
+      },
+    });
+    assert.equal(result.state, "recovery_required");
+    await assert.rejects(() => readFile(paths.graphPath, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("write/sync/close/link/unlink/readback uncertainty yields recovery_required", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+
+  try {
+    const shortWrite = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+      randomBytes: () => Buffer.from("0000000000000001"),
+      writeHandle: () => Promise.resolve(0),
+    });
+    assert.equal(shortWrite.state, "recovery_required");
+
+    const syncFail = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+      randomBytes: () => Buffer.from("0000000000000002"),
+      syncHandle: async () => {
+        const error = new Error("sync-failure");
+        error.code = "EIO";
+        throw error;
+      },
+    });
+    assert.equal(syncFail.state, "recovery_required");
+
+    const closeFail = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+      randomBytes: () => Buffer.from("0000000000000003"),
+      closeHandle: async (handle) => {
+        await handle.close();
+        const error = new Error("close-failure");
+        error.code = "EIO";
+        throw error;
+      },
+    });
+    assert.equal(closeFail.state, "recovery_required");
+
+    const linkFail = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+      randomBytes: () => Buffer.from("0000000000000004"),
+      linkPath: async () => {
+        const error = new Error("link-failure");
+        error.code = "EIO";
+        throw error;
+      },
+    });
+    assert.equal(linkFail.state, "recovery_required");
+
+    const unlinkFail = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+      randomBytes: () => Buffer.from("0000000000000005"),
+      unlinkPath: async () => {
+        const error = new Error("unlink-failure");
+        error.code = "EIO";
+        throw error;
+      },
+    });
+    assert.equal(unlinkFail.state, "recovery_required");
+
+    let readCalls = 0;
+    const finalReadbackFail = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph), {
+      randomBytes: () => Buffer.from("0000000000000006"),
+      readHandle: async (handle, size) => {
+        const value = await handle.readFile("utf8");
+        readCalls += 1;
+        if (readCalls >= 2) {
+          return `${value}x`;
+        }
+        return value;
+      },
+    });
+    assert.equal(finalReadbackFail.state, "recovery_required");
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
 });
