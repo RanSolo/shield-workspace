@@ -207,3 +207,41 @@ test("doctor treats simultaneous schema-3 adapter fields as one redacted adapter
   }]);
   assert.doesNotMatch(JSON.stringify(adapterChecks), /token|secret/iu);
 });
+
+test("doctor carries the closed worktree-state classification without treating provenance as authority", () => {
+  const config = canonicalConfig();
+  const prepared = evaluateDoctor({
+    repositoryRootReady: true,
+    packageVersion: SHIELD_PACKAGE_VERSION,
+    configPresent: true,
+    config,
+    worktreeState: {
+      classification: "prepared_worktree",
+      ok: true,
+      message: "Prepared policy is exact.",
+      receiptDigest: "a".repeat(64),
+    },
+  });
+  assert.equal(prepared.ok, true);
+  assert.deepEqual(prepared.worktreeState, {
+    classification: "prepared_worktree",
+    ok: true,
+    message: "Prepared policy is exact.",
+    receiptDigest: "a".repeat(64),
+  });
+
+  const stale = evaluateDoctor({
+    repositoryRootReady: true,
+    packageVersion: SHIELD_PACKAGE_VERSION,
+    configPresent: true,
+    config,
+    worktreeState: {
+      classification: "stale_or_malformed_worktree_state",
+      ok: false,
+      message: "Prepared policy drifted.",
+      receiptDigest: null,
+    },
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.worktreeState.classification, "stale_or_malformed_worktree_state");
+});

@@ -145,6 +145,20 @@ export interface DoctorInput {
   packageVersion: string | null;
   configPresent: boolean;
   config?: unknown;
+  worktreeState?: DoctorWorktreeState;
+}
+
+export type DoctorWorktreeStateClassification =
+  | "uninitialized_worktree"
+  | "manual_policy_present"
+  | "prepared_worktree"
+  | "stale_or_malformed_worktree_state";
+
+export interface DoctorWorktreeState {
+  classification: DoctorWorktreeStateClassification;
+  ok: boolean;
+  message: string;
+  receiptDigest: string | null;
 }
 
 export interface DoctorReport {
@@ -172,6 +186,7 @@ export interface DoctorReportV2 {
   reportVersion: 2;
   ok: boolean;
   checks: DoctorCheckV2[];
+  worktreeState: DoctorWorktreeState;
 }
 
 const CONFIG_V1_FIELDS = [
@@ -733,5 +748,30 @@ export function evaluateDoctor(input: DoctorInput): DoctorReportV2 {
       entry.message = "Configuration is unavailable for this check.";
     }
   }
-  return { reportVersion: DOCTOR_REPORT_VERSION, ok: checks.every(({ ok }) => ok), checks };
+  const worktreeState = input.worktreeState ?? (input.configPresent && validation?.state === "valid"
+    ? {
+        classification: "manual_policy_present" as const,
+        ok: true,
+        message: "Valid manually initialized policy is present; no worktree preparation receipt exists.",
+        receiptDigest: null,
+      }
+    : input.configPresent
+      ? {
+          classification: "stale_or_malformed_worktree_state" as const,
+          ok: false,
+          message: "Existing worktree policy is malformed and no valid preparation receipt is available.",
+          receiptDigest: null,
+        }
+      : {
+          classification: "uninitialized_worktree" as const,
+          ok: false,
+          message: "No worktree policy is present; run shield worktree prepare with an explicit source, or run shield init.",
+          receiptDigest: null,
+        });
+  return {
+    reportVersion: DOCTOR_REPORT_VERSION,
+    ok: checks.every(({ ok }) => ok) && worktreeState.ok,
+    checks,
+    worktreeState,
+  };
 }
