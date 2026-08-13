@@ -1084,6 +1084,19 @@ async function publicationAuthorize(args: string[]): Promise<number> {
       signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
       appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
     });
+    if (executed.state === "already_authorized") {
+      const existing: PreparedPublicationAlreadyAuthorizedResultV1 = {
+        schemaVersion: 1,
+        state: "publication_already_authorized",
+        missionId,
+        missionRevisionId: executed.projection.brief.revisionId,
+        authorizationId: executed.authorizationId,
+        authorityDigest: executed.authorityDigest,
+        journalSequence: executed.journalSequence,
+      };
+      output(existing, options.flags.has("--json"), renderPublicationAlreadyAuthorized(existing));
+      return 0;
+    }
     output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
     return 0;
   } catch (error) {
