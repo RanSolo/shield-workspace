@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
+
 import { isSafeGitHubContent } from "../contracts/workspace-contract.mjs";
 import { validateAdapterCandidate } from "../dist/adapter-v1.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
@@ -465,3 +468,305 @@ export function createGitHubFollowUpCandidate(input) {
     ? { state: "candidate", candidate: checked.value }
     : { state: "blocked", reason: checked.code, errors: checked.errors };
 }
+
+const FEATURE_INTEGRATION_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const FEATURE_INTEGRATION_REF = /^refs\/heads\/(?!main$)(?!.*(?:^|\/)\.\.?$)[A-Za-z0-9._/-]{1,255}$/u;
+const FEATURE_INTEGRATION_REVISION = /^[0-9a-f]{40}$/u;
+
+function featureIntegrationInput(input, fields) {
+  const value = dataValues(input, fields, true);
+  return value && FEATURE_INTEGRATION_REPOSITORY.test(value.repositoryId) &&
+    typeof value.challengeId === "string" && value.challengeId.length > 0 ? value : null;
+}
+
+function featureIntegrationCall(run, executable, args, options) {
+  try {
+    const result = run(executable, args, options);
+    return result && Number.isInteger(result.exitCode) && typeof result.stdout === "string" && typeof result.stderr === "string"
+      ? result : { exitCode: -1, stdout: "", stderr: "invalid runner result" };
+  } catch (error) { return { exitCode: -1, stdout: "", stderr: String(error?.message ?? error) }; }
+}
+
+function parseFeatureIntegrationJson(result) {
+  if (result.exitCode !== 0) return { state: "blocked", reason: failureReason(result) };
+  try { return { state: "observed", value: JSON.parse(result.stdout) }; }
+  catch { return { state: "blocked", reason: "malformed_response" }; }
+}
+
+/** Observes exact repository identity, main default, merge methods and branch protection. */
+export function observeFeatureIntegrationRepositoryV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "featureBranch", "challengeId"]);
+  if (!value || typeof value.featureBranch !== "string" || value.featureBranch === "main") return { state: "blocked", reason: "invalid_repository_observation" };
+  const run = options.run ?? defaultRun;
+  const repository = parseFeatureIntegrationJson(featureIntegrationCall(run, "gh", ["api", `repos/${value.repositoryId}`], { cwd: options.cwd }));
+  if (repository.state !== "observed" || repository.value?.full_name !== value.repositoryId || repository.value?.default_branch !== "main") return { state: "blocked", reason: repository.reason ?? "repository_identity_mismatch" };
+  const protectionResult = featureIntegrationCall(run, "gh", ["api", `repos/${value.repositoryId}/branches/${encodeURIComponent(value.featureBranch)}/protection`], { cwd: options.cwd });
+  let protection;
+  if (protectionResult.exitCode !== 0 && /404|not found/i.test(`${protectionResult.stdout}\n${protectionResult.stderr}`)) protection = { protected: false, requiredChecks: [], enforceAdmins: false, forcePushesAllowed: null };
+  else {
+    const parsed = parseFeatureIntegrationJson(protectionResult); if (parsed.state !== "observed") return parsed;
+    const checks = parsed.value?.required_status_checks?.contexts ?? [];
+    if (!Array.isArray(checks) || checks.some((item) => typeof item !== "string")) return { state: "blocked", reason: "malformed_response" };
+    protection = { protected: true, requiredChecks: [...checks].sort(), enforceAdmins: parsed.value?.enforce_admins?.enabled === true, forcePushesAllowed: parsed.value?.allow_force_pushes?.enabled === true };
+  }
+  const methods = [repository.value.allow_merge_commit === true ? "merge_commit" : null, repository.value.allow_rebase_merge === true ? "rebase_merge" : null, repository.value.allow_squash_merge === true ? "squash" : null].filter(Boolean);
+  return { state: "observed", observation: { repositoryId: value.repositoryId, defaultBranch: "main", featureBranch: value.featureBranch, allowedIntegrationMethods: methods, protection, challengeId: value.challengeId } };
+}
+
+/** Observes one exact non-main branch ref for the feature-integration workflow. */
+export function observeFeatureIntegrationRefV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "fullRef", "challengeId"]);
+  if (!value || !FEATURE_INTEGRATION_REF.test(value.fullRef)) return { state: "blocked", reason: "invalid_ref_observation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["api", `repos/${value.repositoryId}/git/ref/${value.fullRef.slice("refs/".length)}`], { cwd: options.cwd });
+  if (result.exitCode !== 0 && /not found|404/i.test(`${result.stdout}\n${result.stderr}`)) return { state: "observed", observation: { repositoryId: value.repositoryId, fullRef: value.fullRef, exists: false, headRevision: null, challengeId: value.challengeId } };
+  const parsed = parseFeatureIntegrationJson(result); if (parsed.state !== "observed") return parsed;
+  const record = parsed.value;
+  if (!record || record.ref !== value.fullRef || !record.object || record.object.type !== "commit" || !FEATURE_INTEGRATION_REVISION.test(record.object.sha)) return { state: "blocked", reason: "malformed_response" };
+  return { state: "observed", observation: { repositoryId: value.repositoryId, fullRef: value.fullRef, exists: true, headRevision: record.object.sha, challengeId: value.challengeId } };
+}
+
+/** Creates one exact feature or child branch; main and force updates are unrepresentable. */
+export function createFeatureIntegrationRefV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "fullRef", "sourceRevision", "challengeId"]);
+  if (!value || !FEATURE_INTEGRATION_REF.test(value.fullRef) || !FEATURE_INTEGRATION_REVISION.test(value.sourceRevision)) return { state: "blocked", reason: "invalid_ref_creation" };
+  const run = options.run ?? defaultRun;
+  const body = JSON.stringify({ ref: value.fullRef, sha: value.sourceRevision });
+  const result = featureIntegrationCall(run, "gh", ["api", "--method", "POST", `repos/${value.repositoryId}/git/refs`, "--input", "-"], { cwd: options.cwd, input: body });
+  if (result.exitCode !== 0) return { state: "effect_result", outcome: /already exists|422/i.test(`${result.stdout}\n${result.stderr}`) ? "uncertain" : "not_applied", reason: failureReason(result), challengeId: value.challengeId };
+  const parsed = parseFeatureIntegrationJson(result);
+  if (parsed.state !== "observed" || parsed.value?.ref !== value.fullRef || parsed.value?.object?.sha !== value.sourceRevision) return { state: "effect_result", outcome: "uncertain", reason: "ambiguous_response", challengeId: value.challengeId };
+  return { state: "effect_result", outcome: "applied", challengeId: value.challengeId };
+}
+
+/** Observes all open PRs for an exact head/base pair without selecting among ambiguous results. */
+export function observeFeatureIntegrationDraftPullRequestsV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "headBranch", "baseBranch", "challengeId"]);
+  if (!value || typeof value.headBranch !== "string" || typeof value.baseBranch !== "string" || value.headBranch === "main") return { state: "blocked", reason: "invalid_pr_observation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["pr", "list", "--repo", value.repositoryId, "--state", "open", "--head", value.headBranch, "--base", value.baseBranch, "--json", "number,url,isDraft,headRefName,headRefOid,baseRefName"], { cwd: options.cwd });
+  const parsed = parseFeatureIntegrationJson(result); if (parsed.state !== "observed" || !Array.isArray(parsed.value)) return { state: "blocked", reason: parsed.reason ?? "malformed_response" };
+  const observations = parsed.value.map((item) => ({ pullRequestId: Number.isInteger(item?.number) ? String(item.number) : null, url: item?.url, draft: item?.isDraft, headBranch: item?.headRefName, headRevision: item?.headRefOid, baseBranch: item?.baseRefName }));
+  if (observations.some((item) => item.pullRequestId === null || typeof item.url !== "string" || typeof item.draft !== "boolean" || item.headBranch !== value.headBranch || item.baseBranch !== value.baseBranch || !FEATURE_INTEGRATION_REVISION.test(item.headRevision))) return { state: "blocked", reason: "malformed_response" };
+  return { state: "observed", observation: { repositoryId: value.repositoryId, headBranch: value.headBranch, baseBranch: value.baseBranch, pullRequests: observations, challengeId: value.challengeId } };
+}
+
+/** Creates only a draft PR for an exact non-main source branch and exact target. */
+export function createFeatureIntegrationDraftPullRequestV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "headBranch", "baseBranch", "title", "body", "challengeId"]);
+  if (!value || typeof value.headBranch !== "string" || value.headBranch === "main" || typeof value.baseBranch !== "string" || typeof value.title !== "string" || typeof value.body !== "string" || !isSafeGitHubContent([value.title, value.body]).safe) return { state: "blocked", reason: "invalid_draft_pr_creation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["pr", "create", "--repo", value.repositoryId, "--head", value.headBranch, "--base", value.baseBranch, "--draft", "--title", value.title, "--body-file", "-"], { cwd: options.cwd, input: value.body });
+  if (result.exitCode !== 0) return { state: "effect_result", outcome: /already exists/i.test(`${result.stdout}\n${result.stderr}`) ? "uncertain" : "not_applied", reason: failureReason(result), challengeId: value.challengeId };
+  const url = result.stdout.trim();
+  return /^https:\/\/github\.com\//u.test(url) ? { state: "effect_result", outcome: "applied", receiptRef: url, challengeId: value.challengeId } : { state: "effect_result", outcome: "uncertain", reason: "ambiguous_response", challengeId: value.challengeId };
+}
+
+/** Observes one exact PR including target, draft state, mergeability and checks. */
+export function observeFeatureIntegrationPullRequestV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "pullRequestId", "challengeId"]);
+  if (!value || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1) return { state: "blocked", reason: "invalid_pr_observation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["pr", "view", String(value.pullRequestId), "--repo", value.repositoryId, "--json", "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,mergedAt,mergeCommit"], { cwd: options.cwd });
+  const parsed = parseFeatureIntegrationJson(result); if (parsed.state !== "observed") return parsed;
+  const item = parsed.value;
+  if (item?.number !== value.pullRequestId || typeof item.url !== "string" || typeof item.state !== "string" || typeof item.isDraft !== "boolean" || typeof item.headRefName !== "string" || !FEATURE_INTEGRATION_REVISION.test(item.headRefOid) || typeof item.baseRefName !== "string" || !Array.isArray(item.statusCheckRollup)) return { state: "blocked", reason: "malformed_response" };
+  const checks = item.statusCheckRollup.map((check) => ({ id: check.context ?? check.name, status: check.conclusion ?? check.state ?? check.status }));
+  if (checks.some((check) => typeof check.id !== "string" || typeof check.status !== "string")) return { state: "blocked", reason: "malformed_response" };
+  return { state: "observed", observation: { repositoryId: value.repositoryId, pullRequestId: String(value.pullRequestId), url: item.url, state: item.state, draft: item.isDraft, headBranch: item.headRefName, headRevision: item.headRefOid, baseBranch: item.baseRefName, mergeable: item.mergeable, mergeStateStatus: item.mergeStateStatus, checks, mergedAt: item.mergedAt ?? null, mergeCommitRevision: item.mergeCommit?.oid ?? null, challengeId: value.challengeId } };
+}
+
+/** Observes the exact tree of one commit. */
+export function observeFeatureIntegrationCommitV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "headRevision", "challengeId"]);
+  if (!value || !FEATURE_INTEGRATION_REVISION.test(value.headRevision)) return { state: "blocked", reason: "invalid_commit_observation" };
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["api", `repos/${value.repositoryId}/git/commits/${value.headRevision}`], { cwd: options.cwd });
+  const parsed = parseFeatureIntegrationJson(result); if (parsed.state !== "observed" || parsed.value?.sha !== value.headRevision || !FEATURE_INTEGRATION_REVISION.test(parsed.value?.tree?.sha)) return { state: "blocked", reason: parsed.reason ?? "malformed_response" };
+  return { state: "observed", observation: { repositoryId: value.repositoryId, headRevision: value.headRevision, treeDigest: `sha256:${createHash("sha256").update(parsed.value.tree.sha, "ascii").digest("hex")}`, gitTreeRevision: parsed.value.tree.sha, challengeId: value.challengeId } };
+}
+
+/** Integrates one already-observed child or rollback PR into a non-main feature branch. */
+export function integrateFeatureIntegrationPullRequestV1(input, options = {}) {
+  const value = featureIntegrationInput(input, ["repositoryId", "pullRequestId", "expectedHeadRevision", "targetFeatureBranch", "integrationMethod", "challengeId"]);
+  if (!value || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1 || !FEATURE_INTEGRATION_REVISION.test(value.expectedHeadRevision) || typeof value.targetFeatureBranch !== "string" || value.targetFeatureBranch === "main" || !["merge_commit", "rebase_merge", "squash"].includes(value.integrationMethod)) return { state: "blocked", reason: "invalid_integration_request" };
+  const method = { merge_commit: "merge", rebase_merge: "rebase", squash: "squash" }[value.integrationMethod];
+  const run = options.run ?? defaultRun;
+  const result = featureIntegrationCall(run, "gh", ["api", "--method", "PUT", `repos/${value.repositoryId}/pulls/${value.pullRequestId}/merge`, "-f", `merge_method=${method}`, "-f", `sha=${value.expectedHeadRevision}`], { cwd: options.cwd });
+  if (result.exitCode !== 0) {
+    const combined = `${result.stdout}\n${result.stderr}`;
+    const notApplied = /conflict|not mergeable|required check|head branch was modified|405|409/i.test(combined);
+    return { state: "effect_result", outcome: notApplied ? "not_applied" : "uncertain", reason: failureReason(result), challengeId: value.challengeId };
+  }
+  const parsed = parseFeatureIntegrationJson(result);
+  if (parsed.state !== "observed" || parsed.value?.merged !== true || !FEATURE_INTEGRATION_REVISION.test(parsed.value?.sha)) return { state: "effect_result", outcome: "uncertain", reason: "ambiguous_response", challengeId: value.challengeId };
+  return { state: "effect_result", outcome: "applied", resultingHeadRevision: parsed.value.sha, challengeId: value.challengeId };
+}
+
+const FEATURE_INTEGRATION_ADAPTER_REASONS_V2 = Object.freeze([
+  "adapter_unavailable", "authentication_failed", "authorization_failed", "rate_limited", "timeout", "host_rejected",
+  "not_found", "malformed_response", "ambiguous_response", "network_failed", "unknown",
+]);
+const V2_METHODS = Object.freeze(["merge_commit", "rebase_merge", "squash"]);
+
+function exactV2(value, fields) {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value) || isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).length !== fields.length) return null;
+    const output = {};
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor) || descriptor.value === undefined) return null;
+      output[field] = descriptor.value;
+    }
+    return output;
+  } catch { return null; }
+}
+
+function adapterOptionsV2(input) {
+  const value = exactV2(input, ["run", "cwd"]);
+  return value && typeof value.run === "function" && typeof value.cwd === "string" && value.cwd.length > 0 ? value : null;
+}
+
+function adapterInputV2(input, fields) {
+  const value = exactV2(input, fields);
+  return value && FEATURE_INTEGRATION_REPOSITORY.test(value.repositoryId) && typeof value.challengeId === "string" && value.challengeId.length > 0 ? value : null;
+}
+
+function adapterReasonV2(result) {
+  const text = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}\n${result?.errorCode ?? ""}`.toLowerCase();
+  if (/authenticat|not logged|credential|bad credentials/.test(text)) return "authentication_failed";
+  if (/forbidden|permission|not authorized|resource not accessible/.test(text)) return "authorization_failed";
+  if (/rate.?limit|secondary rate/.test(text)) return "rate_limited";
+  if (/timeout|timed out|etimedout/.test(text)) return "timeout";
+  if (/not found|could not resolve to|\b404\b/.test(text)) return "not_found";
+  if (/unprocessable|conflict|rejected|\b4\d\d\b/.test(text)) return "host_rejected";
+  if (/network|offline|connection|dns|econn|enotfound/.test(text)) return "network_failed";
+  if (/enoent|not installed|command not found/.test(text)) return "adapter_unavailable";
+  return "unknown";
+}
+
+function callV2(options, args) {
+  let result;
+  try { result = options.run("gh", args, { cwd: options.cwd, input: null }); }
+  catch (error) { return { state: "blocked", reason: adapterReasonV2({ stderr: String(error?.message ?? error) }) }; }
+  const value = exactV2(result, ["status", "stdout", "stderr", "errorCode"]);
+  if (!value || !(value.status === null || Number.isInteger(value.status)) || typeof value.stdout !== "string" || typeof value.stderr !== "string" || !(value.errorCode === null || typeof value.errorCode === "string")) return { state: "blocked", reason: "malformed_response" };
+  if (value.status !== 0) return { state: "blocked", reason: adapterReasonV2(value) };
+  try { return { state: "observed", value: JSON.parse(value.stdout) }; }
+  catch { return { state: "blocked", reason: "malformed_response" }; }
+}
+
+function checkStateV2(checks) {
+  if (!Array.isArray(checks)) return null;
+  if (checks.length === 0) return "unknown";
+  const states = checks.map((check) => check?.conclusion ?? check?.state ?? check?.status);
+  if (states.some((state) => typeof state !== "string")) return null;
+  if (states.every((state) => /success|neutral|skipped/i.test(state))) return "successful";
+  if (states.some((state) => /failure|error|cancel|timed_out|action_required/i.test(state))) return "not_successful";
+  return "unknown";
+}
+
+/** Returns a closed, challenge-correlated proof for one pull request. */
+export async function observeFeatureIntegrationPullRequestProofV2(input, options) {
+  const value = adapterInputV2(input, ["repositoryId", "pullRequestId", "challengeId"]), configured = adapterOptionsV2(options);
+  if (!value || !configured || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1) return { state: "blocked", reason: "adapter_unavailable" };
+  const viewed = callV2(configured, ["pr", "view", String(value.pullRequestId), "--repo", value.repositoryId, "--json", "number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,mergeCommit,statusCheckRollup,commits"]);
+  if (viewed.state !== "observed") return viewed;
+  const item = viewed.value;
+  const checkState = checkStateV2(item?.statusCheckRollup);
+  const commits = Array.isArray(item?.commits) ? item.commits.map((commit) => commit?.oid) : null;
+  if (item?.number !== value.pullRequestId || typeof item.url !== "string" || !["OPEN", "CLOSED", "MERGED"].includes(item.state) || typeof item.isDraft !== "boolean" ||
+      typeof item.headRefName !== "string" || !FEATURE_INTEGRATION_REVISION.test(item.headRefOid) || typeof item.baseRefName !== "string" || checkState === null ||
+      !commits || commits.some((commit) => !FEATURE_INTEGRATION_REVISION.test(commit))) return { state: "blocked", reason: "malformed_response" };
+  const inventory = callV2(configured, ["pr", "list", "--repo", value.repositoryId, "--state", "open", "--head", item.headRefName, "--base", item.baseRefName, "--json", "number"]);
+  if (inventory.state !== "observed") return inventory;
+  if (!Array.isArray(inventory.value) || inventory.value.some((pull) => !Number.isInteger(pull?.number))) return { state: "blocked", reason: "malformed_response" };
+  const merged = item.state === "MERGED" || item.mergedAt !== null && item.mergedAt !== undefined;
+  const mergeRevision = item.mergeCommit?.oid ?? null;
+  if (merged !== (mergeRevision !== null) || (mergeRevision !== null && !FEATURE_INTEGRATION_REVISION.test(mergeRevision))) return { state: "blocked", reason: "ambiguous_response" };
+  return { state: "observed", observation: { pullRequestId: value.pullRequestId, url: item.url, state: item.state.toLowerCase(), draft: item.isDraft,
+    headBranch: item.headRefName, headRevision: item.headRefOid, baseBranch: item.baseRefName, merged, mergeRevision, checkState,
+    conflictingPullRequestCount: inventory.value.filter((pull) => pull.number !== value.pullRequestId).length, pullRequestCommitHeads: commits } };
+}
+
+/** Returns the exact commit and tree currently named by a non-main target ref. */
+export async function observeFeatureIntegrationTargetProofV2(input, options) {
+  const value = adapterInputV2(input, ["repositoryId", "targetRef", "challengeId"]), configured = adapterOptionsV2(options);
+  if (!value || !configured || !FEATURE_INTEGRATION_REF.test(value.targetRef)) return { state: "blocked", reason: "adapter_unavailable" };
+  const ref = callV2(configured, ["api", `repos/${value.repositoryId}/git/ref/${value.targetRef.slice("refs/".length)}`]);
+  if (ref.state !== "observed") return ref;
+  if (ref.value?.ref !== value.targetRef || ref.value?.object?.type !== "commit" || !FEATURE_INTEGRATION_REVISION.test(ref.value?.object?.sha)) return { state: "blocked", reason: "malformed_response" };
+  const commit = callV2(configured, ["api", `repos/${value.repositoryId}/git/commits/${ref.value.object.sha}`]);
+  if (commit.state !== "observed") return commit;
+  if (commit.value?.sha !== ref.value.object.sha || !FEATURE_INTEGRATION_REVISION.test(commit.value?.tree?.sha)) return { state: "blocked", reason: "malformed_response" };
+  return { state: "observed", observation: { targetRef: value.targetRef, headRevision: ref.value.object.sha,
+    treeDigest: `sha256:${createHash("sha256").update(commit.value.tree.sha, "ascii").digest("hex")}` } };
+}
+
+function commitProofV2(repositoryId, revision, options) {
+  const observed = callV2(options, ["api", `repos/${repositoryId}/git/commits/${revision}`]);
+  if (observed.state !== "observed") return observed;
+  const parents = Array.isArray(observed.value?.parents) ? observed.value.parents.map((parent) => parent?.sha) : null;
+  if (observed.value?.sha !== revision || !parents || parents.some((parent) => !FEATURE_INTEGRATION_REVISION.test(parent)) || !FEATURE_INTEGRATION_REVISION.test(observed.value?.tree?.sha)) return { state: "blocked", reason: "malformed_response" };
+  return { state: "observed", value: { parents, treeDigest: `sha256:${createHash("sha256").update(observed.value.tree.sha, "ascii").digest("hex")}` } };
+}
+
+/** Proves method-specific commit ancestry independently from the merge response. */
+export async function observeFeatureIntegrationCommitMethodProofV2(input, options) {
+  const value = adapterInputV2(input, ["repositoryId", "headRevision", "priorHeadRevision", "integrationMethod", "pullRequestCommitHeads", "challengeId"]), configured = adapterOptionsV2(options);
+  if (!value || !configured || !FEATURE_INTEGRATION_REVISION.test(value.headRevision) || !FEATURE_INTEGRATION_REVISION.test(value.priorHeadRevision) ||
+      !V2_METHODS.includes(value.integrationMethod) || !Array.isArray(value.pullRequestCommitHeads) || value.pullRequestCommitHeads.length === 0 ||
+      value.pullRequestCommitHeads.some((revision) => !FEATURE_INTEGRATION_REVISION.test(revision))) return { state: "blocked", reason: "adapter_unavailable" };
+  const head = commitProofV2(value.repositoryId, value.headRevision, configured);
+  if (head.state !== "observed") return head;
+  const rebasedCommits = [];
+  let integrationMethodEvidence = "ambiguous";
+  if (value.integrationMethod === "merge_commit") {
+    integrationMethodEvidence = head.value.parents.length === 2 && head.value.parents[0] === value.priorHeadRevision &&
+      head.value.parents[1] === value.pullRequestCommitHeads.at(-1) ? "verified" : "ambiguous";
+  }
+  if (value.integrationMethod === "squash") {
+    const sourceHead = commitProofV2(value.repositoryId, value.pullRequestCommitHeads.at(-1), configured);
+    if (sourceHead.state !== "observed") return sourceHead;
+    integrationMethodEvidence = value.pullRequestCommitHeads.length > 1 && head.value.parents.length === 1 &&
+      head.value.parents[0] === value.priorHeadRevision && head.value.treeDigest === sourceHead.value.treeDigest &&
+      value.headRevision !== value.pullRequestCommitHeads.at(-1) ? "verified" : "ambiguous";
+  }
+  if (value.integrationMethod === "rebase_merge") {
+    const chain = [];
+    let current = value.headRevision;
+    for (let index = value.pullRequestCommitHeads.length - 1; index >= 0; index -= 1) {
+      const resultCommit = commitProofV2(value.repositoryId, current, configured);
+      if (resultCommit.state !== "observed" || resultCommit.value.parents.length !== 1) return resultCommit.state === "observed" ? { state: "blocked", reason: "ambiguous_response" } : resultCommit;
+      const sourceCommit = commitProofV2(value.repositoryId, value.pullRequestCommitHeads[index], configured);
+      if (sourceCommit.state !== "observed") return sourceCommit;
+      if (sourceCommit.value.treeDigest !== resultCommit.value.treeDigest) return { state: "blocked", reason: "ambiguous_response" };
+      chain.push({ sourceCommit: value.pullRequestCommitHeads[index], resultCommit: current, parentCommit: resultCommit.value.parents[0], treeDigest: resultCommit.value.treeDigest });
+      current = resultCommit.value.parents[0];
+    }
+    rebasedCommits.push(...chain.reverse());
+    integrationMethodEvidence = value.pullRequestCommitHeads.length > 1 && current === value.priorHeadRevision &&
+      new Set(rebasedCommits.flatMap((item) => [item.sourceCommit, item.resultCommit])).size === rebasedCommits.length * 2
+      ? "verified" : "ambiguous";
+  }
+  return { state: "observed", observation: { headRevision: value.headRevision, integrationMethodEvidence, resultingCommitParents: head.value.parents, rebasedCommits } };
+}
+
+/** Performs one bounded integration attempt; later observation remains authoritative. */
+export async function integrateFeatureIntegrationPullRequestV2(input, options) {
+  const value = adapterInputV2(input, ["repositoryId", "pullRequestId", "expectedHeadRevision", "targetFeatureBranch", "integrationMethod", "challengeId"]);
+  const configured = adapterOptionsV2(options);
+  if (!value || !configured || !Number.isInteger(value.pullRequestId) || value.pullRequestId < 1 ||
+      !FEATURE_INTEGRATION_REVISION.test(value.expectedHeadRevision) || typeof value.targetFeatureBranch !== "string" ||
+      value.targetFeatureBranch === "main" || !V2_METHODS.includes(value.integrationMethod)) return { state: "blocked", reason: "adapter_unavailable" };
+  const method = { merge_commit: "merge", rebase_merge: "rebase", squash: "squash" }[value.integrationMethod];
+  const result = callV2(configured, ["api", "--method", "PUT", `repos/${value.repositoryId}/pulls/${value.pullRequestId}/merge`,
+    "-f", `merge_method=${method}`, "-f", `sha=${value.expectedHeadRevision}`]);
+  if (result.state !== "observed") return { state: "effect_result", outcome: "uncertain", reason: result.reason };
+  if (result.value?.merged !== true || !FEATURE_INTEGRATION_REVISION.test(result.value?.sha)) {
+    return { state: "effect_result", outcome: result.value?.merged === false ? "not_applied" : "uncertain", reason: "ambiguous_response" };
+  }
+  return { state: "effect_result", outcome: "applied", resultingHeadRevision: result.value.sha };
+}
+
+export { FEATURE_INTEGRATION_ADAPTER_REASONS_V2 };

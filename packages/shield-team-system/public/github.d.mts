@@ -9,6 +9,18 @@ import type {
   FuryPlanReviewEvidenceCandidateV1,
   FuryPlanReviewEvidenceEvaluationV1,
 } from "../dist/fury-plan-review-evidence-v1.mjs";
+import type {
+  FeatureObservationChallengeV2,
+  FeatureIntegrationReplayProjectionV2,
+  FeatureIntegrationTrustAnchorV2,
+  FeatureOperationJournalV2,
+  FeatureTransitionRequestV2,
+  SignedFeatureAdmissionObservationV2,
+  SignedFeatureExpiryObservationV2,
+  SignedFeatureObservationChallengeV2,
+  SignedFeatureTransitionObservationV2,
+  SignedFeatureWorkspaceObservationV2,
+} from "../dist/feature-integration-v1.mjs";
 
 export * from "../dist/review-publication-v1.mjs";
 export {
@@ -28,6 +40,133 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
 }
+
+export interface FeatureIntegrationGitHubRefObservationV1 {
+  repositoryId: string;
+  fullRef: string;
+  exists: boolean;
+  headRevision: string | null;
+  challengeId: string;
+}
+
+export interface FeatureIntegrationGitHubPullRequestObservationV1 {
+  pullRequestId: string;
+  url: string;
+  draft: boolean;
+  headBranch: string;
+  headRevision: string;
+  baseBranch: string;
+}
+
+export type FeatureIntegrationGitHubEffectResultV1 =
+  | { state: "effect_result"; outcome: "applied"; challengeId: string; receiptRef?: string }
+  | { state: "effect_result"; outcome: "not_applied" | "uncertain"; challengeId: string; reason: string }
+  | { state: "blocked"; reason: string };
+
+export function observeFeatureIntegrationRefV1(input: { repositoryId: string; fullRef: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }):
+  { state: "observed"; observation: FeatureIntegrationGitHubRefObservationV1 } | { state: "blocked"; reason: string };
+export function createFeatureIntegrationRefV1(input: { repositoryId: string; fullRef: string; sourceRevision: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationRepositoryV1(input: { repositoryId: string; featureBranch: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: Record<string, unknown> } | { state: "blocked"; reason: string };
+export function observeFeatureIntegrationDraftPullRequestsV1(input: { repositoryId: string; headBranch: string; baseBranch: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }):
+  { state: "observed"; observation: { repositoryId: string; headBranch: string; baseBranch: string; pullRequests: FeatureIntegrationGitHubPullRequestObservationV1[]; challengeId: string } } | { state: "blocked"; reason: string };
+export function createFeatureIntegrationDraftPullRequestV1(input: { repositoryId: string; headBranch: string; baseBranch: string; title: string; body: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationPullRequestV1(input: { repositoryId: string; pullRequestId: number; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: Record<string, unknown> } | { state: "blocked"; reason: string };
+export function observeFeatureIntegrationCommitV1(input: { repositoryId: string; headRevision: string; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: { repositoryId: string; headRevision: string; treeDigest: string; gitTreeRevision: string; challengeId: string } } | { state: "blocked"; reason: string };
+export function integrateFeatureIntegrationPullRequestV1(input: { repositoryId: string; pullRequestId: number; expectedHeadRevision: string; targetFeatureBranch: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; challengeId: string }, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+
+export type FeatureIntegrationAdapterReasonV2 = "adapter_unavailable" | "authentication_failed" | "authorization_failed" | "rate_limited" | "timeout" | "host_rejected" | "not_found" | "malformed_response" | "ambiguous_response" | "network_failed" | "unknown";
+export declare const FEATURE_INTEGRATION_ADAPTER_REASONS_V2: readonly FeatureIntegrationAdapterReasonV2[];
+export interface FeatureIntegrationAdapterOptionsV2 {
+  run: (command: string, args: readonly string[], options: { cwd: string; input: string | null }) => { status: number | null; stdout: string; stderr: string; errorCode: string | null };
+  cwd: string;
+}
+export type FeatureIntegrationAdapterResultV2<T> = { state: "observed"; observation: T } | { state: "blocked"; reason: FeatureIntegrationAdapterReasonV2 };
+export interface FeatureIntegrationPullRequestProofV2 {
+  pullRequestId: number; url: string; state: "open" | "closed" | "merged"; draft: boolean; headBranch: string; headRevision: string; baseBranch: string;
+  merged: boolean; mergeRevision: string | null;
+  checkState: "successful" | "not_successful" | "unknown"; conflictingPullRequestCount: number; pullRequestCommitHeads: readonly string[];
+}
+export interface FeatureIntegrationTargetProofV2 { targetRef: string; headRevision: string; treeDigest: string }
+export interface FeatureIntegrationCommitMethodProofV2 { headRevision: string; integrationMethodEvidence: "verified" | "ambiguous"; resultingCommitParents: readonly string[]; rebasedCommits: readonly { sourceCommit: string; resultCommit: string; parentCommit: string; treeDigest: string }[] }
+export function observeFeatureIntegrationPullRequestProofV2(input: { repositoryId: string; pullRequestId: number; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationPullRequestProofV2>>;
+export function observeFeatureIntegrationTargetProofV2(input: { repositoryId: string; targetRef: string; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationTargetProofV2>>;
+export function observeFeatureIntegrationCommitMethodProofV2(input: { repositoryId: string; headRevision: string; priorHeadRevision: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; pullRequestCommitHeads: readonly string[]; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<FeatureIntegrationAdapterResultV2<FeatureIntegrationCommitMethodProofV2>>;
+export function integrateFeatureIntegrationPullRequestV2(input: { repositoryId: string; pullRequestId: number; expectedHeadRevision: string; targetFeatureBranch: string; integrationMethod: "merge_commit" | "rebase_merge" | "squash"; challengeId: string }, options: FeatureIntegrationAdapterOptionsV2): Promise<{ state: "effect_result"; outcome: "applied" | "not_applied" | "uncertain"; resultingHeadRevision?: string; reason?: FeatureIntegrationAdapterReasonV2 } | { state: "blocked"; reason: FeatureIntegrationAdapterReasonV2 }>;
+
+export interface FeatureGitHubObservationProducerConfigV2 {
+  adapterOptions: FeatureIntegrationAdapterOptionsV2;
+  producerId: string;
+  signEnvelope: (domain: string, payload: unknown) => Promise<{ payload: unknown; signatureBase64: string }>;
+  clock: () => string;
+}
+export interface FeatureGitHubObservationProducerV2 {
+  signChallenge(input: FeatureObservationChallengeV2): Promise<SignedFeatureObservationChallengeV2>;
+  executeTransition(input: { request: FeatureTransitionRequestV2; preparationEntryDigest: string; signedChallenge?: SignedFeatureObservationChallengeV2 }): Promise<unknown>;
+  observeAndSignWorkspace(input: unknown): Promise<SignedFeatureWorkspaceObservationV2>;
+  observeAndSignTransition(input: { request: FeatureTransitionRequestV2; preparationEntryDigest: string; signedChallenge?: SignedFeatureObservationChallengeV2; expectedRestoredTreeDigest?: string }): Promise<SignedFeatureTransitionObservationV2>;
+  observeAndSignAdmission(input: unknown): Promise<SignedFeatureAdmissionObservationV2>;
+  observeAndSignExpiry(input: unknown): Promise<SignedFeatureExpiryObservationV2>;
+}
+export function createGitHubFeatureObservationProducerV2(config: FeatureGitHubObservationProducerConfigV2): { state: "ready"; producer: FeatureGitHubObservationProducerV2 } | { state: "unavailable"; reason: "producer_unavailable" };
+
+export type FeatureOperationJournalStoreResultV2<T> =
+  | { state: "accepted"; value: Readonly<T> }
+  | { state: "blocked"; reason: string }
+  | { state: "recovery_required"; reason: "durability_uncertain" };
+export interface FeatureOperationJournalStoreV2 {
+  initializeJournal(input: { journal: FeatureOperationJournalV2 }): Promise<FeatureOperationJournalStoreResultV2<{ journal: FeatureOperationJournalV2; bytes: string; journalPath: string }>>;
+  readJournal(): Promise<FeatureOperationJournalStoreResultV2<{ journal: FeatureOperationJournalV2 | null; bytes: string; journalPath: string }>>;
+  appendEntry(input: { expectedJournalDigest: string; expectedEntrySequence: number; expectedLatestEntryDigest: string; entry: FeatureOperationJournalV2["entries"][number] }): Promise<FeatureOperationJournalStoreResultV2<{ journal: FeatureOperationJournalV2; bytes: string; journalPath: string }>>;
+  recoverJournal(input: { baselineJournalDigest: string; candidateJournalDigest: string }): Promise<FeatureOperationJournalStoreResultV2<{ classification: "unchanged_baseline" | "complete_candidate"; journal: FeatureOperationJournalV2 }>>;
+}
+export function createFeatureOperationJournalStoreV2(input: {
+  repositoryRoot: string;
+  operationId: string;
+  lockOwnerId: string;
+  trustAnchor: FeatureIntegrationTrustAnchorV2;
+}): Promise<{ state: "ready"; store: FeatureOperationJournalStoreV2 } | { state: "blocked"; reason: "invalid_input" }>;
+
+export function executeFeatureIntegrationWorkspaceStageV2(input: {
+  stage: "integration" | "rollback";
+  replay: FeatureIntegrationReplayProjectionV2;
+  journal: FeatureOperationJournalV2;
+  stageInput: Readonly<Record<string, unknown>>;
+  storeScope: FeatureOperationJournalStoreV2;
+  trustAnchor: FeatureIntegrationTrustAnchorV2;
+  repositoryProducer: FeatureGitHubObservationProducerV2;
+}): Promise<
+  | { state: "accepted"; appendedEntryDigest: string }
+  | { state: "blocked" | "recovery_required"; reason: "invalid_input" | "authorization_invalid" | "replay_invalid" | "compare_conflict" | "producer_unavailable" | "authentication_unavailable" | "durability_uncertain" | "execution_receipt_unavailable" | "effect_uncertain"; appendedEntryDigest: string | null }
+>;
+
+export interface GovernedRollbackWorkspaceReceiptV2 {
+  sourceMissionId: string; repositoryId: string; baseHeadRevision: string; rollbackBranch: string; restoredTreeDigest: string;
+  pullRequestId: string; pullRequestHeadRevision: string; pullRequestTargetBranch: string; draft: true; sourceAuthorityDigest: string;
+  sourceJournalDigest: string; completionReceiptDigest: string; sourceEffectKeys: readonly string[]; evidenceDigests: readonly string[];
+}
+export function computeGovernedRollbackWorkspaceReceiptDigestV2(input: GovernedRollbackWorkspaceReceiptV2): string;
+export function createRollbackMissionHandoffReadyV2(input: { replay: FeatureIntegrationReplayProjectionV2 }): Record<string, unknown>;
+export function acceptGovernedRollbackWorkspaceV2(input: {
+  replay: FeatureIntegrationReplayProjectionV2;
+  journal: FeatureOperationJournalV2;
+  handoff: Readonly<Record<string, unknown>>;
+  sourceJournal: unknown;
+  receipt: GovernedRollbackWorkspaceReceiptV2;
+  storeScope: FeatureOperationJournalStoreV2;
+  trustAnchor: FeatureIntegrationTrustAnchorV2;
+}): Promise<{ state: "accepted"; appendedEntryDigest: string } | { state: "blocked" | "recovery_required"; reason: string; appendedEntryDigest: string | null }>;
+
+export function prepareFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "prepared"; entry: Record<string, unknown>; candidate: Record<string, unknown> } | { state: "blocked"; reason: string };
+export function invokeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): { state: "observed"; observation: unknown } | { state: "blocked"; reason: string };
+export function reconcileFeatureIntegrationWorkspaceEffectV1(input: Record<string, unknown>): { state: "accepted" | "not_applied"; entryKind: string; payload: Record<string, unknown> } | { state: "blocked"; reason: string };
+export function executeFeatureIntegrationWorkspaceStageV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): Promise<Record<string, unknown>>;
+export function createRollbackMissionHandoffReadyV1(input: Record<string, unknown>): Record<string, unknown>;
+export function acceptGovernedRollbackWorkspaceV1(input: Record<string, unknown>): Record<string, unknown>;
+export function prepareFeatureIntegrationTransitionEffectV1(input: Record<string, unknown>): Record<string, unknown>;
+export function invokeFeatureIntegrationTransitionEffectV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): FeatureIntegrationGitHubEffectResultV1;
+export function observeFeatureIntegrationTransitionV1(input: Record<string, unknown>, options?: { run?: CommandRunner; cwd?: string }): Record<string, unknown>;
+export function reconcileFeatureIntegrationTransitionV1(input: Record<string, unknown>): Record<string, unknown>;
 
 export type CommandRunner = (
   executable: string,
