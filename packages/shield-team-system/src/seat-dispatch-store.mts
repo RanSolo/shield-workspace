@@ -119,6 +119,14 @@ export interface SeatDispatchReceiptStoreLedgerResult {
   readonly projections: readonly SeatDispatchReceiptProjectionV1[];
 }
 
+export interface SeatDispatchReceiptLedgerSnapshotV1 {
+  readonly logPath: string;
+  readonly entries: readonly SeatDispatchReceiptEventV1[];
+  readonly projections: readonly SeatDispatchReceiptProjectionV1[];
+  readonly bytes: string;
+  readonly rawEntryBytes: readonly Uint8Array[];
+}
+
 interface SeatDispatchReceiptStoreValidationToken {
   readonly lockOwnerId: string;
   readonly nonce: string;
@@ -1680,6 +1688,27 @@ export async function readSeatDispatchReceiptLedgerV1(
     entries: data.value.entries,
     projections: data.value.projections,
   });
+}
+
+export async function readSeatDispatchReceiptLedgerSnapshotV1(
+  input: unknown,
+): Promise<SeatDispatchStoreContractResult<SeatDispatchReceiptLedgerSnapshotV1>> {
+  const checked = validateScopeInput(input, "ledger snapshot read");
+  if (checked.state === "invalid") return checked;
+
+  const data = await readStoreLog(checked.value, { allowMissing: false });
+  if (data.state === "invalid") return data;
+  const rawEntryBytes = data.value.bytes === ""
+    ? []
+    : data.value.bytes.slice(0, -1).split("\n").map((line) => new Uint8Array(Buffer.from(line, "utf8")));
+
+  return valid(Object.freeze({
+    logPath: data.value.logPath,
+    entries: data.value.entries,
+    projections: data.value.projections,
+    bytes: data.value.bytes,
+    rawEntryBytes: Object.freeze(rawEntryBytes),
+  }));
 }
 
 export async function readSeatDispatchReceiptsByParentMissionSessionV1(

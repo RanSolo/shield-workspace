@@ -8,6 +8,7 @@ import {
   advanceMissionV1,
   appendMissionProvenanceRecordV1,
   buildMissionDefinitionV1,
+  buildMissionTransitionPlanV1,
   compileMissionCycleInputV1,
   createMissionProofreadingAcceptanceV1,
   createMissionValidationRecordV1,
@@ -978,4 +979,76 @@ test("benchmark contract reports all five before/after metrics", () => {
     { hillTokens: 4500, handoffs: 6, elapsedMilliseconds: 240000, repeatedContextReads: 2, humanInterventions: 2 },
   );
   assert.deepEqual(result, { state: "valid", deltas: { hillTokens: -7500, handoffs: -3, elapsedMilliseconds: -360000, repeatedContextReads: -5, humanInterventions: -2 } });
+});
+
+function transitionPlanInput() {
+  return {
+    missionId: "mission:issue-270",
+    subjectId: "github:RanSolo/shield-workspace/issue/270",
+    repositoryId: "RanSolo/shield-workspace",
+    planningBaseRevision: "d3f29002fe6c249152763815a633132589b5a9b1",
+    parentPlanCommit: "2a95be9fe241a7b8b0c22b3c37439938bf2e8e25",
+    parentPlanPath: "docs/missions/issue-270-turnkey-preparation-plan.md",
+    parentPlanRawSha256: "764fd6b9496c70d192302378995067df9358965358e4b8215291a758d3050264",
+    transitionKind: "fresh_authorize_wheels_up",
+    boundedOutcome: "Implement one turnkey reviewed mission transition.",
+    approvedRelativePaths: ["packages/shield-team-system/src/mission-builder-v1.mts"],
+    publicationPaths: ["packages/shield-team-system/src/mission-builder-v1.mts"],
+    approvedActionIds: ["action:issue-270.implement"],
+    approvedEffectClasses: ["behavioral_implementation"],
+    approvedEffectKeys: ["effect:issue-270.implementation"],
+    approvedCapabilities: ["filesystem.write"],
+    validationCommandIds: ["validation:nx.team-system"],
+    modelId: "model:gpt-5.3-codex-spark",
+    reasoningRuntimeId: "runtime:openai-codex",
+    toolExecutorId: "executor:codex-hosted",
+    exclusions: [
+      "review.comment.publish",
+      "review.pull_request.update_draft",
+      "review.pull_request.mark_ready",
+      "merge",
+      "deployment",
+      "release",
+      "final_acceptance",
+    ],
+  };
+}
+
+test("typed transition-plan producer returns one deterministic validated plan without mutating its input", () => {
+  const input = transitionPlanInput();
+  const before = structuredClone(input);
+  const first = buildMissionTransitionPlanV1(input);
+  const second = buildMissionTransitionPlanV1(structuredClone(input));
+  assert.equal(first.state, "built");
+  assert.equal(second.state, "built");
+  assert.deepEqual(first, second);
+  assert.deepEqual(input, before);
+  assert.equal(first.plan.schemaId, "mission.transition-plan.v1");
+  assert.equal(first.plan.authority, "none");
+  assert.match(first.plan.id, /^transition-plan:[A-Za-z0-9_-]{43}$/u);
+  assert.match(first.plan.digest, /^sha256:[A-Za-z0-9_-]{43}$/u);
+  assert.ok(Object.isFrozen(first.plan));
+});
+
+test("typed transition-plan producer distinguishes malformed shape from invalid semantics", () => {
+  const missing = transitionPlanInput();
+  delete missing.missionId;
+  assert.deepEqual(buildMissionTransitionPlanV1(missing), {
+    state: "invalid",
+    code: "malformed_transition_plan_input",
+    errors: ["Transition-plan input fields are not closed."],
+  });
+  assert.equal(buildMissionTransitionPlanV1({ ...transitionPlanInput(), extra: true }).code, "malformed_transition_plan_input");
+  assert.equal(buildMissionTransitionPlanV1({ ...transitionPlanInput(), missionId: "" }).code, "invalid_transition_plan");
+});
+
+test("typed transition-plan producer rejects proxy, accessor, symbolic, and inherited input", () => {
+  assert.equal(buildMissionTransitionPlanV1(new Proxy(transitionPlanInput(), {})).code, "malformed_transition_plan_input");
+  const accessor = transitionPlanInput();
+  Object.defineProperty(accessor, "missionId", { enumerable: true, get: () => "mission:forged" });
+  assert.equal(buildMissionTransitionPlanV1(accessor).code, "malformed_transition_plan_input");
+  const symbolic = { ...transitionPlanInput(), [Symbol("authority")]: "forged" };
+  assert.equal(buildMissionTransitionPlanV1(symbolic).code, "malformed_transition_plan_input");
+  const inherited = Object.assign(Object.create({ authority: "forged" }), transitionPlanInput());
+  assert.equal(buildMissionTransitionPlanV1(inherited).code, "malformed_transition_plan_input");
 });

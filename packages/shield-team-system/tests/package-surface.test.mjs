@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
+const missionPreparationPackageRoot = resolve(packageRoot, "../mission-preparation");
 const npmCache = join(tmpdir(), "shield-v0.3-2-npm-cache");
 
 test("exports only the documented public package specifiers", async () => {
@@ -135,6 +136,7 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof missionRuntime.runMissionCycle, "function");
   assert.equal(missionBuilder.MISSION_BUILDER_CONTRACT_VERSION, "mission.builder.v1");
   assert.equal(typeof missionBuilder.buildMissionDefinitionV1, "function");
+  assert.equal(typeof missionBuilder.buildMissionTransitionPlanV1, "function");
   assert.equal(root.buildMissionDefinitionV1, missionBuilder.buildMissionDefinitionV1);
   assert.equal(hillReadiness.HILL_READINESS_RUBRIC_VERSION, "hill.readiness.v1");
   assert.equal(typeof hillReadiness.evaluateHillReadinessV1, "function");
@@ -233,12 +235,18 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const fixture = await mkdtemp(join(tmpdir(), "shield-package-consumer-"));
   execFileSync("git", ["init", "--quiet"], { cwd: fixture });
   await writeFile(join(fixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
+  const missionPreparationPackOutput = JSON.parse(execFileSync(
+    "npm",
+    ["pack", missionPreparationPackageRoot, "--json", "--ignore-scripts", "--pack-destination", fixture, "--cache", npmCache],
+    { encoding: "utf8" },
+  ));
   const packOutput = JSON.parse(execFileSync(
     "npm",
     ["pack", packageRoot, "--json", "--ignore-scripts", "--pack-destination", fixture, "--cache", npmCache],
     { encoding: "utf8" },
   ));
   const packed = packOutput[0];
+  const missionPreparationTarball = join(fixture, missionPreparationPackOutput[0].filename);
   const packedPaths = new Set(packed.files.map(({ path }) => path));
   for (const path of [
     "public/index.mjs",
@@ -359,7 +367,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const tarball = join(fixture, packed.filename);
   execFileSync(
     "npm",
-    ["install", "--save-dev", "--save-exact", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    ["install", "--save-dev", "--save-exact", missionPreparationTarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    { cwd: fixture, stdio: "pipe" },
+  );
+  execFileSync(
+    "npm",
+    ["install", "--save-dev", "--save-exact", tarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
     { cwd: fixture, stdio: "pipe" },
   );
   await writeFile(join(fixture, "tsconfig.json"), JSON.stringify({
@@ -393,7 +406,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { type ProfileAwareProjectionV1 } from "@shield/team-system/profile-aware-mission";
     import { PERMISSION_AUDIT_SCHEMA_VERSION, replayPermissionAuditLedger, type PermissionAuditRecord } from "@shield/team-system/permission-audit";
     import { deriveMissionCycleIdentityV1, runMissionCycle, type MissionCycleInputV1, type MissionCycleResultV1 } from "@shield/team-system/mission-runtime";
-    import { MISSION_BUILDER_CONTRACT_VERSION, buildMissionDefinitionV1, projectMissionStatusV1, type MissionDefinitionV1, type MissionAdvanceInputV1, type MissionStatusProjectionV1 } from "@shield/team-system/mission-builder";
+    import { MISSION_BUILDER_CONTRACT_VERSION, buildMissionDefinitionV1, buildMissionTransitionPlanV1, projectMissionStatusV1, type BuildMissionTransitionPlanInputV1, type BuildMissionTransitionPlanResultV1, type MissionDefinitionV1, type MissionAdvanceInputV1, type MissionStatusProjectionV1 } from "@shield/team-system/mission-builder";
     import { REVIEW_PUBLICATION_CONTRACT_VERSION, evaluateReviewPublicationV1, type ReviewPublicationAuthorityV1, type ReviewPublicationProposalV1 } from "@shield/team-system/review-publication";
     import { PIPELINE_PROFILE_CONTRACT_VERSION, selectPipelineModesV1, type RepositoryPipelineProfileV1 } from "@shield/team-system/pipeline";
     import { SONARQUBE_EVIDENCE_CONTRACT_VERSION, evaluateSonarQubeEvidenceV1, type SonarQubeEvidenceV1 } from "@shield/team-system/sonarqube";
@@ -456,6 +469,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       validateDaisyCoordinationAuthorityV1,
       type DaisyCoordinationAuthorityV1,
     } from "@shield/team-system/daisy-coordination-authority";
+    import { canonicalJsonV1 } from "@shield/mission-preparation";
     import {
       claimSeatDispatchPacketV1,
       type SeatDispatchPacketClaimContractResultV1,
@@ -472,6 +486,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type SeatDispatchReceiptStoreScopeInput,
     } from "@shield/team-system/dispatch-receipts";
 
+    const missionPreparationCanonical = canonicalJsonV1({ value: { schema: "proof" } });
+    if (missionPreparationCanonical.state !== "valid") {
+      throw new Error("mission-preparation import did not execute correctly");
+    }
     const schema: 2 = MISSION_SCHEMA_VERSION;
     const state: MissionState = "approved";
     const flags: RiskFlags = {
@@ -541,6 +559,27 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const runtimeCycleResult = null as unknown as MissionCycleResultV1;
     const runtimeIdentity = deriveMissionCycleIdentityV1(runtimeCycleInput);
     const runRuntimeCycle = runMissionCycle;
+    const transitionPlanInput: BuildMissionTransitionPlanInputV1 = {
+      missionId: "mission:packed-consumer", subjectId: "issue:270", repositoryId: "RanSolo/shield-workspace",
+      planningBaseRevision: "1".repeat(40), parentPlanCommit: "2".repeat(40),
+      parentPlanPath: "docs/missions/issue-270-turnkey-preparation-plan.md", parentPlanRawSha256: "3".repeat(64),
+      transitionKind: "fresh_authorize_wheels_up", boundedOutcome: "Exercise the packed declaration producer.",
+      approvedRelativePaths: ["packages/shield-team-system/src/mission-builder-v1.mts"],
+      publicationPaths: ["packages/shield-team-system/src/mission-builder-v1.mts"],
+      approvedActionIds: ["implementation.transition-plan"], approvedEffectClasses: ["behavioral_implementation"],
+      approvedEffectKeys: ["effect:transition-plan"], approvedCapabilities: ["filesystem_write"],
+      validationCommandIds: ["validation:packed-consumer"], modelId: "model:packed-consumer",
+      reasoningRuntimeId: "runtime:packed-consumer", toolExecutorId: "executor:packed-consumer",
+      exclusions: ["review.comment.publish", "review.pull_request.update_draft", "review.pull_request.mark_ready", "merge", "deployment", "release", "final_acceptance"],
+    };
+    const transitionPlanResult: BuildMissionTransitionPlanResultV1 = buildMissionTransitionPlanV1(transitionPlanInput);
+    let transitionPlanNarrowing: string;
+    if (transitionPlanResult.state === "built") {
+      transitionPlanNarrowing = transitionPlanResult.plan.id;
+    } else {
+      const code: "malformed_transition_plan_input" | "invalid_transition_plan" = transitionPlanResult.code;
+      transitionPlanNarrowing = code + transitionPlanResult.errors.join("");
+    }
     const reviewPublicationContract: "review-publication.v1" = REVIEW_PUBLICATION_CONTRACT_VERSION;
     const reviewPublicationAuthority = null as unknown as ReviewPublicationAuthorityV1;
     const reviewPublicationProposal = null as unknown as ReviewPublicationProposalV1;
@@ -710,7 +749,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, transitionPlanInput, transitionPlanResult, transitionPlanNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
@@ -745,12 +784,18 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   await writeFile(join(javascriptFixture, "package.json"), "{\"private\":true,\"type\":\"module\"}\n");
   execFileSync(
     "npm",
-    ["install", "--save-dev", "--save-exact", tarball, "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    ["install", "--save-dev", "--save-exact", missionPreparationTarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    { cwd: javascriptFixture, stdio: "pipe" },
+  );
+  execFileSync(
+    "npm",
+    ["install", "--save-dev", "--save-exact", tarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
     { cwd: javascriptFixture, stdio: "pipe" },
   );
   await writeFile(join(javascriptFixture, "consumer.mjs"), `
     import { appendSeatDispatchReceiptEntryV1, claimSeatDispatchPacketV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
     import { CONFIG_SCHEMA_VERSION, configuredAdapterIds, createShieldConfig, migrateShieldConfig } from "@shield/team-system/config";
+    import { canonicalJsonV1 } from "@shield/mission-preparation";
     const packageBase = new URL("./node_modules/@shield/team-system/", import.meta.url);
     await import(new URL("dist/dispatch-receipts.mjs", packageBase).href);
     await import(new URL("dist/seat-dispatch-store.mjs", packageBase).href);
@@ -784,6 +829,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       throw new Error("dispatch-receipts exports missing");
     }
     if (CONFIG_SCHEMA_VERSION !== 3) throw new Error("unexpected config schema");
+    const missionPreparationCanonical = canonicalJsonV1({ value: { schema: "proof" } });
+    if (missionPreparationCanonical.state !== "valid") {
+      throw new Error("mission-preparation import did not execute correctly");
+    }
     const config = createShieldConfig({
       repositoryId: "fixture/javascript-consumer",
       coulsonBindingRef: "github:user:coulson",

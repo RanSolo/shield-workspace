@@ -177,5 +177,8 @@
   "devDependencies": {
     "@types/node": "20.12.12",
     "typescript": "5.4.5"
+  },
+  "dependencies": {
+    "@shield/mission-preparation": "0.1.0"
   }
 }
