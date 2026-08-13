@@ -1494,6 +1494,18 @@ test("authorize-wheels-up rejects symlink and gitlink publication paths without 
   }
 });
 
+test("prepare-next exhaustively consumes the exported five-state result without a cast", async () => {
+  const source = await readFile(new URL("../src/mission-cli.mts", import.meta.url), "utf8");
+  const start = source.indexOf("async function prepareNext");
+  const end = source.indexOf("\nfunction canonicalDigest", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const consumer = source.slice(start, end);
+  assert.match(consumer, /const result = await resolvePreparedMissionTransitionV1\([^;]+\);/u);
+  assert.doesNotMatch(consumer, /resolvePreparedMissionTransitionV1\([^;]+\) as/u);
+  assert.match(consumer, /const ready: Extract<ResolvePreparedMissionTransitionResultV1, \{ state: "ready" \}> = result;/u);
+});
+
 test("prepare-next derives and signs one prepared publication without caller JSON or external effect", async () => {
   const prepared = await preparedPublicationCliFixture();
   const path = journalPath(prepared.root, prepared.missionId);

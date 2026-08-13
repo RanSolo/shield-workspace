@@ -825,6 +825,8 @@ export type ResolvePreparedMissionTransitionResultV1 = Readonly<
       endingJournalSequence: number;
       authorizationManifestDigest: string;
     }
+  | PreparedPublicationReadyResultV1
+  | PreparedPublicationAlreadyAuthorizedResultV1
 >;
 
 export type PreparedPublicationReadyResultV1 = Readonly<{
@@ -907,11 +909,6 @@ export function projectPreparedReviewPublicationSemanticTupleV1(
     permittedEffects: [...authority.permittedEffects],
   });
 }
-
-type ResolvePreparedMissionTransitionInternalResultV1 =
-  | ResolvePreparedMissionTransitionResultV1
-  | PreparedPublicationReadyResultV1
-  | PreparedPublicationAlreadyAuthorizedResultV1;
 
 type InitialWheelsUpLineageV1 = Readonly<{
   initialHeadRevision: string;
@@ -1403,7 +1400,7 @@ async function preparedPublicationResult(
   config: ShieldConfig,
   repositoryRoot: string,
   journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
-): Promise<ResolvePreparedMissionTransitionInternalResultV1> {
+): Promise<ResolvePreparedMissionTransitionResultV1> {
   const missionId = graph.transitionPlan.missionId;
   const projection = environment.current.projection;
   const repository = environment.repository;
@@ -1533,7 +1530,7 @@ async function preparedPublicationAlreadyAuthorizedResult(
   config: ShieldConfig,
   repositoryRoot: string,
   journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
-): Promise<ResolvePreparedMissionTransitionInternalResultV1> {
+): Promise<ResolvePreparedMissionTransitionResultV1> {
   const selected = await preparedPublicationResult(
     graph,
     environment,
@@ -1619,7 +1616,7 @@ async function preparedPublicationAlreadyAuthorizedResult(
 async function resolvePreparedMissionTransitionV1WithDependencies(
   input: unknown,
   journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
-): Promise<ResolvePreparedMissionTransitionInternalResultV1> {
+): Promise<ResolvePreparedMissionTransitionResultV1> {
   let copied: unknown;
   try { copied = cloneClosedData(input); } catch { return blocked("unknown", "invalid_resolution_input", "Resolution input is not closed data."); }
   if (!exact(copied, ["missionId", "repositoryRoot"]) || !identifier(copied.missionId) || typeof copied.repositoryRoot !== "string" || copied.repositoryRoot.length === 0) {
@@ -1715,12 +1712,12 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
 }
 
 export async function resolvePreparedMissionTransitionV1(input: unknown): Promise<ResolvePreparedMissionTransitionResultV1> {
-  return resolvePreparedMissionTransitionV1WithDependencies(input, {}) as Promise<ResolvePreparedMissionTransitionResultV1>;
+  return resolvePreparedMissionTransitionV1WithDependencies(input, {});
 }
 
 export async function resolvePreparedMissionTransitionV1ForTest(
   input: unknown,
   journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
 ): Promise<ResolvePreparedMissionTransitionResultV1> {
-  return resolvePreparedMissionTransitionV1WithDependencies(input, journalDependencies) as Promise<ResolvePreparedMissionTransitionResultV1>;
+  return resolvePreparedMissionTransitionV1WithDependencies(input, journalDependencies);
 }

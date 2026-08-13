@@ -77,7 +77,7 @@ import {
   resolveSeatDispatchIdentityByReceiptIdV1,
   validateMissionTransitionPlanReviewV1,
   type PreparedPublicationAlreadyAuthorizedResultV1,
-  type PreparedPublicationReadyResultV1,
+  type ResolvePreparedMissionTransitionResultV1,
 } from "./mission-preparation-host-v1.mjs";
 import {
   assertPublicationAuthorizationFreshnessV1,
@@ -1294,10 +1294,7 @@ async function prepareNext(args: string[]): Promise<number> {
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
-  const result = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root }) as
-    Awaited<ReturnType<typeof resolvePreparedMissionTransitionV1>> |
-    PreparedPublicationReadyResultV1 |
-    PreparedPublicationAlreadyAuthorizedResultV1;
+  const result = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
   if (result.state === "blocked") {
     if (options.flags.has("--json")) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     else process.stderr.write(`Preparation blocked — ${result.reasonCode}: ${result.errors.join(" ")}\n`);
@@ -1338,7 +1335,8 @@ async function prepareNext(args: string[]): Promise<number> {
       throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
     }
   }
-  const intent = deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(result.plan);
+  const ready: Extract<ResolvePreparedMissionTransitionResultV1, { state: "ready" }> = result;
+  const intent = deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(ready.plan);
   const config = await repositoryConfig(root);
   try {
     return await executeAuthorizeWheelsUpV1({
@@ -1350,13 +1348,13 @@ async function prepareNext(args: string[]): Promise<number> {
       humanMode,
       promptOutput: { write: (value) => promptOutput.write(value) },
       expectedPreparation: {
-        plan: result.plan,
-        reviewEvidence: result.reviewEvidence,
-        intent: result.intent,
-        observation: result.observation,
-        selection: result.selection,
-        candidate: result.candidate,
-        receipt: result.preparationReceipt,
+        plan: ready.plan,
+        reviewEvidence: ready.reviewEvidence,
+        intent: ready.intent,
+        observation: ready.observation,
+        selection: ready.selection,
+        candidate: ready.candidate,
+        receipt: ready.preparationReceipt,
       },
       dependencies: {
         renderDecision: (entry) => {

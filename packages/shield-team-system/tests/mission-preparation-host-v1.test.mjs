@@ -66,6 +66,20 @@ const REPOSITORY_REVISION = "b".repeat(40);
 const PARENT_MISSION_REVISION = "c".repeat(40);
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
 
+test("exported prepared resolver result is the closed five-state union", async () => {
+  const declaration = await readFile(new URL("../dist/mission-preparation-host-v1.d.mts", import.meta.url), "utf8");
+  const start = declaration.indexOf("export type ResolvePreparedMissionTransitionResultV1");
+  const end = declaration.indexOf(">;", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const union = declaration.slice(start, end + 2);
+  assert.match(union, /state: "ready"/u);
+  assert.match(union, /state: "blocked"/u);
+  assert.match(union, /state: "already_authorized"/u);
+  assert.match(union, /PreparedPublicationReadyResultV1/u);
+  assert.match(union, /PreparedPublicationAlreadyAuthorizedResultV1/u);
+});
+
 function transitionPlanBase(overrides = {}) {
   return {
     missionId: MISSION_ID,
