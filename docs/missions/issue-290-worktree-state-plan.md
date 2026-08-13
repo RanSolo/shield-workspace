@@ -76,15 +76,19 @@ Retained no-follow descriptors capture exact bytes and identity for:
 - `.shield/trusted-human-bindings.json`.
 
 The implementation validates the config, closed trusted-binding registry, and
-exact agreement between every configured binding reference and registry row.
+bidirectional exact agreement: every configured binding reference resolves to
+exactly one registry row, and every registry row is referenced by the config.
+`bindingId` and `signingKeyRef` are each globally unique across the registry;
+cross-seat reuse is malformed rather than silently accepted.
 It records SHA-256 digests of the exact bytes and semantic projections. A
 symlink, non-regular file, duplicate binding, unsupported schema, malformed
 bytes, or post-capture identity/byte drift blocks before destination mutation.
 
 ### Repository observation
 
-Using a Git environment with inherited Git context variables removed, observe
-both roots:
+Using a closed Git subprocess environment containing only the observed
+executable `PATH`, `LANG=C`, and `LC_ALL=C` (with no inherited Git context
+variables), observe both roots:
 
 - canonical top-level root;
 - canonical `git rev-parse --git-common-dir`;
@@ -110,6 +114,9 @@ The only created or validated destination files are:
 3. `.shield/trusted-human-bindings.json` with the exact captured source bytes;
 4. `.shield/worktree-state.json`, a canonical JSON receipt plus one LF.
 
+The lock and create-only temporary files are staging artifacts only. They are
+never final prepared state and never appear in `installedPaths`.
+
 The materializer:
 
 - retains and verifies the destination root directory identity;
@@ -124,6 +131,10 @@ The materializer:
   returning ready;
 - never compensates by deleting an uncertain installed file. Uncertain write,
   rename, sync, readback, or lock release returns `recovery_required`.
+
+Fault outcomes are closed: a proven pre-install failure is safely retryable; a
+proven complete exact installation replays as `already_prepared`; only an
+uncertain filesystem or durability outcome returns `recovery_required`.
 
 Existing exact files with a valid matching receipt return `already_prepared`
 without rewriting bytes. Any partial, extra authority-bearing, or semantically
@@ -150,6 +161,8 @@ The receipt is provenance for a materialization operation, not mission
 authority. Mission preparation must independently reobserve current branch,
 HEAD, cleanliness, journal, and signer state. Later commits do not invalidate
 the historical preparation receipt when installed policy bytes remain exact.
+`receiptDigest` is SHA-256 over the canonical receipt fields with
+`receiptDigest` itself omitted, preventing a self-referential digest contract.
 
 ## Doctor behavior
 
@@ -215,18 +228,20 @@ human gates.
 
 ## Initial implementation paths
 
-- `docs/missions/issue-290-worktree-state-plan.md`
 - `docs/operations/worktree-state.md`
 - `packages/shield-team-system/package.json`
 - `packages/shield-team-system/src/cli.mts`
 - `packages/shield-team-system/src/config.mts`
-- `packages/shield-team-system/src/mission-preparation-host-v1.mts`
 - `packages/shield-team-system/src/worktree-state-v1.mts`
 - `packages/shield-team-system/tests/cli.test.mjs`
 - `packages/shield-team-system/tests/config.test.mjs`
 - `packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs`
 - `packages/shield-team-system/tests/package-surface.test.mjs`
 - `packages/shield-team-system/tests/worktree-state-v1.test.mjs`
+
+The reviewed plan is not a May write path. The existing mission-preparation
+host implementation is also excluded because this slice changes no host
+behavior; its focused test remains only as no-regression consumer evidence.
 
 Fury may remove paths or require a smaller child split. No implementation path
 is authorized by this plan.
