@@ -10,13 +10,20 @@ release.
 - Baseline: `d3f29002fe6c249152763815a633132589b5a9b1`.
 - Referenced sibling correction: `8a2edc1999b1b6eef6e723d1423262cccd5b8382`.
 - Evidence HEAD (historical dogfood run): `ee3de17b18690b14c5137d555ff03e152369b145`.
-- Report revision: `3685b20f835fa6f8256a42e19a4cbcacbe4c8fae`.
+- Prior reviewed revision and correction base:
+  `3685b20f835fa6f8256a42e19a4cbcacbe4c8fae`.
+- Current reviewed revision: an external review-envelope field named
+  `reviewedHead`. It must equal the repository's exact `HEAD` when review
+  begins and throughout review. This report intentionally does not embed its
+  own resulting commit hash, which would be self-referential.
 - Target-main reference at reconciliation: `8f9e8e79cb4c1bec284e690a09d0c01456854e0b`.
 - Historical artifact semantic digest: `6159f18f319e2815f17e4fa323afd70edf1ff1285fa42a39ba9d20e9fc869840`.
 - The ignored dogfood artifact binds its evidence to `evidence HEAD`; it is
-  not a current-target claim. Any guidance for target-main requires rerunning
-  all stale probes after target alignment, with the churn window ending at the
-  new evidence HEAD.
+  historical evidence, is outside authorized publication scope, and is not a
+  current-target claim. Its candidate rows, IDs, row digests, and semantic
+  digest are not recomputed by this report. A fresh exact-head evidence run
+  must recompute them after target alignment, with the churn window ending at
+  that run's exact evidence HEAD.
 - Collection focus, in canonical order: `boundaries`, `build`, `lint`, `test`.
 - Candidate budget: `3`.
 - The two pre-existing tracked changes in `.codex/agents/daisy.toml` and
@@ -133,11 +140,15 @@ Unresolved evidence, therefore collection status `incomplete`:
 
 ## Deterministic ranking semantics
 
-Candidate stable ID is
-`sha256(kind + "\n" + project + "\n" + canonicalPath + "\n" + scope)`. `kind`
-is one allowed disposition token and `canonicalPath` is repository-relative.
-Candidate IDs, kinds, projects, and paths participate in the final total
-tie-breaker.
+The immutable v1 `candidateKind` enum is `focused-target` or
+`internal-boundary`. It is separate from the immutable v1 `dispositionKind`
+enum: `Extract library`, `Add focused target`, `Split internally`, `Leave in
+place`, or `Insufficient evidence`. A candidate stable ID is
+`sha256(canonical({candidateKind, project, canonicalPath, scope}))`, where
+canonical JSON has the rules above and `canonicalPath` is repository-relative.
+Every field is a non-empty string; paths reject control characters,
+backslashes, `.` segments, and `..` segments. IDs are never constructed by
+delimiter concatenation.
 
 Each component is an integer in `[0,100]` or `null` when evidence is absent.
 `round` means nearest integer, with exact half values rounded upward; all
@@ -171,47 +182,68 @@ non-null components)`. The closed unresolved-evidence taxonomy is
 second, fourth, and fifth count as unresolved critical evidence for a candidate;
 environmental failure is critical only when it blocks that candidate's required
 probe. `uncertainty = min(100, 100 - coverage + 10*unresolvedCriticalCount)`;
-`confidence = max(0, coverage - 10*unresolvedCriticalCount)`. Risk components
-are scored by this closed rubric: reversibility is `0` for read-only/no-output
-change, `5` for one config/target addition reversible by one file revert, `15`
-for coordinated source/config rollback, and `25` for irreversible migration;
-publicApiMovement is `0` when exports are unchanged, `10` for additive exports,
-and `25` for removal/rename; dependencyFanout is `0` for no consumers, `5` for
-one to three, `15` for four to ten, and `25` for more than ten or unknown
-complete attribution; migrationBreadth is `0` for one target, `10` for one
-project, `15` for multiple projects, and `25` for workspace-wide changes. Each
-rubric value must cite an evidence row and is never inferred from size alone.
+`confidence = max(0, coverage - 10*unresolvedCriticalCount)`.
 
-Dependency tiers are derived from the packet DAG: tier 0 has no packet
-dependencies; each other tier is one plus the maximum dependency tier. The
-allowed disposition/actionability mapping is closed: `Extract library`, `Add
-focused target`, and `Split internally` may be actionable only when their
-candidate-required probes all succeeded and no critical unresolved evidence
-remains; `Leave in place` and `Insufficient evidence` are never actionable.
-Ordering is total and stable: dependency tier ascending; actionable before
-non-actionable; risk ascending; confidence descending; score descending; then
-stable ID, disposition kind, project, and canonical path, all ascending by
-Unicode code point. The candidate budget truncates only after sorting.
-Easy-win labeling never changes order.
+Risk is the sum of four components. Each component uses exactly one mutually
+exclusive, exhaustive class:
 
-Stable IDs use canonical JSON, not delimiter concatenation:
-`sha256(canonical({kind, project, canonicalPath, scope}))`. Each field is a
-closed non-empty string; repository-relative paths reject control characters,
-backslashes, and `..`, so the encoding is collision-safe and unambiguous.
+- `reversibility`: `0` for read-only work with no output change; `5` for
+  exactly one config/target addition reversible by one-file revert; `15` for
+  every other fully reversible change; `25` when irreversible or unresolved.
+- `publicApiMovement`: `0` when complete evidence or an explicit sketch
+  constraint keeps exports unchanged; `10` for additive-only exports; `25`
+  for any removal/rename or unresolved API effect.
+- `dependencyFanout`: `0` when no consumer requires migration; `5` when one to
+  three require migration; `15` when four to ten require migration; `25` when
+  more than ten require migration or attribution is incomplete.
+- `migrationBreadth`: `0` for read-only/no-output work or exactly one target in
+  one project; `10` for changes elsewhere in exactly one project; `15` for
+  more than one but fewer than all projects; `25` for workspace-wide or
+  unresolved breadth.
 
-## Dogfood candidate matrix
+Every value cites a source evidence row or an explicit sketch constraint;
+otherwise it takes that component's unresolved class. Size alone is never a
+risk basis.
 
-| Rank | Stable key | Disposition | Score / coverage | Confidence / risk / uncertainty | Conclusion |
-|---:|---|---|---|---|---|
-| 1 | `internal-boundary/team-system` (tier 0) | Insufficient evidence | 0 / 0 | 0 / 75 / 100 | Boundary/validation/consumer/churn components are null. No split or extraction may be planned until complete import/consumer/test/fixture attribution exists. |
-| 2 | `focused-target/team-system` (tier 1) | Insufficient evidence | 30 / 50 | 40 / 20 / 60 | Ranked hypothesis only: target 45, boundary null, validation 80, consumers/churn null. Required probes are incomplete, so no focused-target action is authorized. |
-| 3 | `focused-target/mission-preparation` (tier 2) | Insufficient evidence | 20 / 50 | 40 / 5 / 60 | Ranked hypothesis only: target 45, boundary null, validation 30, consumers/churn null. Required probes are incomplete, so no focused-target action is authorized. |
+The allowed disposition/actionability mapping is closed: `Extract library`,
+`Add focused target`, and `Split internally` may be actionable only after a
+fresh exact-head run succeeds for every candidate-required probe, leaves no
+critical unresolved evidence, and deterministically recomputes all rows,
+digests, IDs, scores, risks, and ordering. `Leave in place` and `Insufficient
+evidence` are never actionable. Ordering is total and stable: actionable
+before non-actionable; risk ascending; confidence descending; score descending;
+then stable ID, `candidateKind`, `dispositionKind`, project, canonical path, and
+scope, all ascending by Unicode code point. The candidate budget truncates only
+after sorting. Easy-win labeling never changes order.
 
-The artifact records component values and evidence-row references for each
-score. The `internal-boundary/team-system` candidate is deliberately not
-`Split internally`: broad exports and
-size do not establish a boundary. Multiband remains the negative control: its
-app-owned lint/format/lifecycle targets do not justify library extraction.
+## Historical dogfood candidate evidence
+
+These rows describe the historical artifact at evidence HEAD
+`ee3de17b18690b14c5137d555ff03e152369b145`. Their aliases are not canonical
+stable IDs, their displayed order is not a current deterministic ranking, and
+all current dispositions remain `Insufficient evidence`.
+
+| Historical alias | Disposition | targetGap | boundarySignal | validationSignal | consumerSignal | churnSignal | Score / coverage / confidence / uncertainty |
+|---|---|---:|---:|---:|---:|---:|---|
+| `internal-boundary/team-system` | Insufficient evidence | null (not applicable) | null (`p-attribution` partial) | null (`p-tests-fixtures` partial) | null (`p-attribution` partial) | null (`p-churn` unrepresentative) | 0 / 0 / 0 / 100 |
+| `focused-target/team-system` | Insufficient evidence | 45 (`p-project-details`, resolved targets) | null (not applicable) | 80 (`p-team-test-uncached` over 10 s; `p-project-details` shows focused validation missing) | null (`p-attribution` partial) | null (`p-churn` unrepresentative) | 30 / 50 / 40 / 60 |
+| `focused-target/mission-preparation` | Insufficient evidence | 45 (`p-project-details`, resolved targets) | null (not applicable) | 30 (`p-project-details` shows focused validation missing) | null (`p-attribution` partial) | null (`p-churn` unrepresentative) | 20 / 50 / 40 / 60 |
+
+The corrected risk components and their bases are:
+
+| Historical alias | Reversibility | Public API | Dependency fan-out | Migration breadth | Risk |
+|---|---:|---:|---:|---:|---:|
+| `internal-boundary/team-system` | 25 (no split/extraction sketch resolves reversibility) | 25 (`p-attribution` leaves API movement unresolved) | 25 (`p-attribution` is incomplete) | 10 (candidate scope is one project) | 85 |
+| `focused-target/team-system` | 5 (sketch limits change to one target/config addition) | 0 (sketch forbids export changes) | 0 (sketch requires no consumer migration) | 0 (sketch is exactly one target) | 5 |
+| `focused-target/mission-preparation` | 5 (sketch limits change to one target/config addition) | 0 (sketch forbids export changes) | 0 (sketch requires no consumer migration) | 0 (sketch is exactly one target) | 5 |
+
+The internal-boundary risk is therefore supported by explicit component bases,
+not inferred from size. It is deliberately not `Split internally`: broad
+exports and size do not establish a boundary. Multiband remains the negative
+control: its app-owned lint/format/lifecycle targets do not justify library
+extraction. Deterministic IDs, row digests, risk values, and order are current
+only when recomputed by the required fresh evidence run; this report does not
+modify or republish the ignored artifact.
 
 Candidate-specific required probes close actionability. `focused-target/team-
 system` requires `p-project-details`, `p-graph`, `p-manifests`,
@@ -220,82 +252,79 @@ system` requires `p-project-details`, `p-graph`, `p-manifests`,
 `p-project-details`, `p-manifests`, `p-mp-build-uncached`,
 `p-mp-build-cached`, and `p-tests-fixtures`; `internal-boundary/team-system`
 requires `p-project-details`, `p-manifests`, `p-attribution`, `p-tests-fixtures`,
-`p-churn`, and `p-affected-representative`. Because the first two sets include
-failed/partial or absent probes in this historical artifact, the two focused-target
-aliases are informational rankings only and their valid disposition is
-`Insufficient evidence`; their focused-target hypotheses are retained as
-non-actionable follow-up possibilities. The `internal-boundary/team-system`
-candidate is likewise `Insufficient evidence`.
+`p-churn`, and `p-affected-representative`. The union of every listed set must
+close in one fresh exact-head run before any implementation packet can be
+created. The historical artifact has partial, absent, or stale probes in every
+candidate path, so each current candidate is `Insufficient evidence`. P1-P3
+below are non-authorizing sketches only, contingent on that gate and a
+deterministic rescore selecting the corresponding candidate.
 
-## Dependency-ordered planning packets
+## Fresh-evidence gate and non-authorizing sketches
 
-These packets are plans only. Every implementation needs a new exact-revision
-plan, Fury review, and separate human authority; this report grants none.
+No implementation packet exists. P0 is the unsatisfied evidence gate. P1-P3
+are unordered sketches retained only to describe possible follow-up evidence;
+they are not plans, packets, authority, or a current implementation sequence.
 
-### P0 — complete team-system attribution (recon prerequisite)
+### P0 — fresh exact-head evidence and deterministic rescore
 
-- Revision/scope: rerun against the then-current exact HEAD; read-only parser
-  attribution for team-system imports, exports/consumers, test ownership, and
-  fixture coupling only.
-- Dependencies: none.
+- Revision/scope: rerun the complete required ledger against one externally
+  bound exact HEAD, including the union of every candidate-required probe.
+- Completion: every required probe succeeds, every candidate's required set
+  closes, no critical unresolved evidence remains, and all rows, digests, IDs,
+  scores, risks, and ordering are deterministically recomputed.
 - Tests/evidence: closed row set, source digests, parser/version identity,
-  unresolved dynamic imports, and reproducible totals.
+  unresolved dynamic imports, reproducible totals, and exact-head verification
+  before and after collection.
 - Rollback: discard ignored recon artifacts.
 - Stops: ambiguous module resolution, generated-source contamination, or any
   required write.
-- Authority gate: read-only recon authority only; no implementation authority.
+- Effect: only a successful deterministic rescore may permit Hill to create a
+  new exact-revision implementation packet; P0 itself grants no authority.
 
-### P1 — team-system lint target plan
+### P1 — team-system lint target sketch
 
-- Revision/scope: exact post-P0 revision; one package-owned lint target and its
-  declared Nx inputs/outputs only; no source cleanup or export changes.
-- Dependencies: P0 evidence accepted; P1 and P2 are parallel children of P0.
+- Contingency: usable only if P0's fresh rescore selects the corresponding
+  focused-target candidate for actionability.
+- Possible scope: one package-owned lint target and its declared Nx
+  inputs/outputs only; no source cleanup or export changes.
 - Tests: resolved target metadata; uncached run; second local-cache run; existing
   package build/test; affected graph for one representative package file.
 - Rollback: revert only target/config additions and remove disposable caches.
 - Stops: toolchain choice is ambiguous, baseline violations require broad code
   edits, target crosses package ownership, or environment blocks classification.
-- Authority gate: separate exact P1 implementation authority after Fury review.
 
-### P2 — team-system typecheck target plan
+### P2 — team-system typecheck target sketch
 
-- Revision/scope: exact post-P0 revision; one typecheck target proving a
-  contract distinct from build; no compiler-policy or export changes.
-- Dependencies: P0; P2 is parallel to P1 unless shared config is proposed.
+- Contingency: usable only if P0's fresh rescore selects the corresponding
+  focused-target candidate for actionability.
+- Possible scope: one typecheck target proving a contract distinct from build;
+  no compiler-policy or export changes.
 - Tests: resolved metadata; command equivalence check against build; uncached
   and cached runs; package build/test; representative affected graph.
 - Rollback/stops: revert only target/config additions; stop if it merely aliases
   build, expands compiler policy, or needs production edits.
-- Authority gate: separate exact P2 implementation authority after Fury review.
 
-### P3 — mission-preparation typecheck decision
+### P3 — mission-preparation typecheck decision sketch
 
-- Revision/scope: exact revision after P1/P2 decisions; first compare build and
-  proposed typecheck contracts, then either plan one target or record
-  `Leave in place`.
-- Dependencies: P1 and P2 measurement conventions and their exact decisions;
-  P3 follows both and cannot run in parallel with them.
+- Contingency: usable only if P0's fresh rescore selects the corresponding
+  focused-target candidate for actionability.
+- Possible scope: compare build and proposed typecheck contracts, then supply
+  evidence for either one-target planning or `Leave in place`.
 - Tests: command/diagnostic delta, resolved metadata, uncached/cached run if a
-  distinct target is authorized, package build/test, representative affected
-  graph.
+  distinct target is selected, package build/test, representative affected graph.
 - Rollback/stops: revert only target/config additions; stop on no distinct
   contract, cross-package config changes, or production edits.
-- Authority gate: separate exact P3 implementation authority after Fury review.
 
-P4, an internal split/extraction plan, does not exist. P0 must first produce
-enough evidence to rescore `internal-boundary/team-system`; `Insufficient evidence` cannot authorize
-a child implementation. The implementation order is therefore `P0 → (P1 ||
-P2) → P3`, then validation fixtures, then prompt consumer, then read-only CLI
-integration. The prompt consumer depends on schema, selector, and validation
-fixtures; CLI integration depends on all preceding contract, selector, and
-validation work.
+No internal split/extraction sketch exists. P0 must first close the required
+evidence and rescore `internal-boundary/team-system`; `Insufficient evidence`
+cannot authorize implementation.
 
 ## Before/after measurement schema
 
-Each authorized child would emit paired `before` and `after` records at exact
-commits using identical host category, Node/npm/Nx versions, environment
-prerequisite classification, change selector, target set, cache directories,
-and repetition count. Each record contains:
+Any future authorized implementation packet would emit paired `before` and
+`after` records at exact commits using identical host category, Node/npm/Nx
+versions, environment prerequisite classification, change selector, target
+set, cache directories, and repetition count. Each record contains:
 
 - revision/base/head, dirty digests, candidate/packet ID, command digest, exit
   classification, and environmental/product failure class;
@@ -352,10 +381,10 @@ exact ranked matrix and packets to Fury for a boundary challenge.
 
 ```text
 Seat: Fury. Technical review only. Verify the exact artifact digest, evidence
-HEAD, report revision, target-main reference, candidate-required probe sets,
-rounding/applicability/risk/tier/actionability rules, and collision-safe stable
-IDs. Reject any actionable candidate whose required probes are absent, partial,
-environmentally blocked, or stale. Challenge each seam for attributed
+HEAD, external reviewedHead equality to repository HEAD, target-main reference,
+candidate-required probe sets, rounding/applicability/risk/actionability rules,
+and collision-safe stable IDs. Reject any actionable candidate whose required
+probes are absent, partial, environmentally blocked, or stale. Challenge each seam for attributed
 consumers/ownership, focused-target sufficiency, negative-control compliance,
 uncertainty-driven disposition/order, and planning-only scope. Return PASS or
 REVISE with exact findings; never grant human authority.
