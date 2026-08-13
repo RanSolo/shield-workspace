@@ -12,7 +12,7 @@ import {
   unlink,
   type FileHandle,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { isProxy } from "node:util/types";
 
@@ -120,6 +120,14 @@ export interface WorktreeInstalledByteDigestsV1 {
   readonly ".shield/trusted-human-bindings.json": string;
 }
 
+export interface WorktreeTrackedBaselineExclusionV1 {
+  readonly path: string;
+  readonly gitMode: "100644" | "100755";
+  readonly headBlobOid: string;
+  readonly indexBlobOid: string;
+  readonly byteSha256: string;
+}
+
 export interface WorktreeStateReceiptBodyV1 {
   readonly schemaVersion: 1;
   readonly contractVersion: typeof WORKTREE_STATE_CONTRACT_VERSION;
@@ -136,6 +144,7 @@ export interface WorktreeStateReceiptBodyV1 {
   readonly installedPaths: typeof WORKTREE_STATE_INSTALLED_PATHS;
   readonly installedByteDigests: WorktreeInstalledByteDigestsV1;
   readonly exclusions: typeof WORKTREE_STATE_EXCLUSIONS;
+  readonly trackedBaselineExclusions?: readonly WorktreeTrackedBaselineExclusionV1[];
 }
 
 export interface WorktreeStateReceiptV1 extends WorktreeStateReceiptBodyV1 {
@@ -284,6 +293,27 @@ interface HeldLock {
   readonly token: Buffer;
   readonly handle: FileHandle;
   identity: FileIdentity | null;
+}
+
+interface GitTrackedBaselineEntry {
+  readonly path: string;
+  readonly gitMode: "100644" | "100755";
+  readonly headBlobOid: string;
+  readonly indexBlobOid: string;
+}
+
+interface HeldTrackedBaselineFile {
+  readonly record: WorktreeTrackedBaselineExclusionV1;
+  readonly absolutePath: string;
+  readonly bytes: Buffer;
+  readonly handle: FileHandle;
+  readonly identity: FileIdentity;
+}
+
+interface TrackedBaselineSnapshot {
+  readonly exclusions: readonly WorktreeTrackedBaselineExclusionV1[];
+  readonly files: readonly HeldTrackedBaselineFile[];
+  readonly directories: readonly HeldDirectory[];
 }
 
 class Blocked extends Error {
@@ -579,6 +609,107 @@ async function git(root: string, args: readonly string[], allowFailure = false):
   }
 }
 
+async function gitBytes(root: string, args: readonly string[], maxBuffer = 1024 * 1024): Promise<Buffer> {
+  try {
+    const { stdout } = await execFileAsync("git", [...args], {
+      cwd: root,
+      encoding: "buffer",
+      env: gitEnvironment(),
+      maxBuffer,
+    });
+    return Buffer.from(stdout);
+  } catch {
+    throw new Blocked("destination_conflict", "Destination tracked baseline could not be observed exactly.");
+  }
+}
+
+function exactUtf8(bytes: Buffer): string | null {
+  const value = bytes.toString("utf8");
+  return Buffer.from(value, "utf8").equals(bytes) ? value : null;
+}
+
+function validBaselinePath(path: string): boolean {
+  const components = path.split("/");
+  return components.length >= 3 && components[0] === SHIELD_DIRECTORY && components[1] === "journals" &&
+    components.slice(2).every((component) => component.length > 0 && component !== "." && component !== "..");
+}
+
+function validGitObjectId(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
+}
+
+function parseHeadBaselineEntries(bytes: Buffer): readonly { path: string; gitMode: string; blobOid: string }[] {
+  const entries: { path: string; gitMode: string; blobOid: string }[] = [];
+  for (const raw of bytes.subarray(0, bytes.length - (bytes.at(-1) === 0 ? 1 : 0)).toString("binary").split("\0")) {
+    if (raw.length === 0) continue;
+    const record = Buffer.from(raw, "binary");
+    const separator = record.indexOf(0x09);
+    if (separator < 0) throw new Blocked("destination_conflict", "Destination HEAD baseline metadata is malformed.");
+    const header = record.subarray(0, separator).toString("ascii");
+    const match = /^(\d{6}) ([a-z]+) ((?:[0-9a-f]{40}|[0-9a-f]{64}))$/u.exec(header);
+    const path = exactUtf8(record.subarray(separator + 1));
+    if (match === null || path === null || match[2] !== "blob") {
+      throw new Blocked("destination_conflict", "Destination HEAD baseline must contain only exact regular files.");
+    }
+    entries.push({ path, gitMode: match[1]!, blobOid: match[3]! });
+  }
+  return entries;
+}
+
+function parseIndexBaselineEntries(bytes: Buffer): readonly { path: string; gitMode: string; blobOid: string; stage: string }[] {
+  const entries: { path: string; gitMode: string; blobOid: string; stage: string }[] = [];
+  for (const raw of bytes.subarray(0, bytes.length - (bytes.at(-1) === 0 ? 1 : 0)).toString("binary").split("\0")) {
+    if (raw.length === 0) continue;
+    const record = Buffer.from(raw, "binary");
+    const separator = record.indexOf(0x09);
+    if (separator < 0) throw new Blocked("destination_conflict", "Destination index baseline metadata is malformed.");
+    const header = record.subarray(0, separator).toString("ascii");
+    const match = /^(\d{6}) ((?:[0-9a-f]{40}|[0-9a-f]{64})) ([0-3])$/u.exec(header);
+    const path = exactUtf8(record.subarray(separator + 1));
+    if (match === null || path === null) {
+      throw new Blocked("destination_conflict", "Destination index baseline metadata is malformed.");
+    }
+    entries.push({ path, gitMode: match[1]!, blobOid: match[2]!, stage: match[3]! });
+  }
+  return entries;
+}
+
+async function observeTrackedBaselineEntries(
+  destinationRoot: string,
+  destinationHead: string,
+): Promise<readonly GitTrackedBaselineEntry[]> {
+  const [headBytes, indexBytes] = await Promise.all([
+    gitBytes(destinationRoot, ["ls-tree", "-rz", "--full-tree", destinationHead, "--", SHIELD_DIRECTORY]),
+    gitBytes(destinationRoot, ["ls-files", "--stage", "-z", "--", SHIELD_DIRECTORY]),
+  ]);
+  const head = [...parseHeadBaselineEntries(headBytes)].sort((left, right) => compareBytes(left.path, right.path));
+  const index = [...parseIndexBaselineEntries(indexBytes)].sort((left, right) => compareBytes(left.path, right.path));
+  if (head.length !== index.length || index.some((entry) => entry.stage !== "0")) {
+    throw new Blocked("destination_conflict", "Destination HEAD and live index baseline sets do not agree exactly at stage zero.");
+  }
+  const result: GitTrackedBaselineEntry[] = [];
+  for (let indexPosition = 0; indexPosition < head.length; indexPosition += 1) {
+    const headEntry = head[indexPosition]!;
+    const indexEntry = index[indexPosition]!;
+    if (!validBaselinePath(headEntry.path) || headEntry.path !== indexEntry.path ||
+      (headEntry.gitMode !== "100644" && headEntry.gitMode !== "100755") ||
+      headEntry.gitMode !== indexEntry.gitMode || headEntry.blobOid !== indexEntry.blobOid ||
+      (indexPosition > 0 && head[indexPosition - 1]!.path === headEntry.path)) {
+      throw new Blocked(
+        "destination_conflict",
+        "Only identical destination HEAD/index regular files beneath .shield/journals may be tolerated.",
+      );
+    }
+    result.push({
+      path: headEntry.path,
+      gitMode: headEntry.gitMode,
+      headBlobOid: headEntry.blobOid,
+      indexBlobOid: indexEntry.blobOid,
+    });
+  }
+  return Object.freeze(result.map((entry) => Object.freeze(entry)));
+}
+
 function normalizedOriginRepositoryId(origin: string): string | null {
   const trimmed = origin.trim().replace(/[\\/]+$/u, "").replace(/\.git$/u, "");
   let path = trimmed;
@@ -717,6 +848,168 @@ async function closeDirectories(directories: readonly HeldDirectory[]): Promise<
   return closed;
 }
 
+async function captureTrackedBaselineFile(
+  destinationRoot: string,
+  entry: GitTrackedBaselineEntry,
+): Promise<HeldTrackedBaselineFile> {
+  const absolutePath = join(destinationRoot, entry.path);
+  let handle: FileHandle;
+  try { handle = await open(absolutePath, READ_FLAGS); }
+  catch { throw new Blocked("destination_conflict", "Tracked baseline files must be readable no-follow regular files."); }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.nlink !== 1) {
+      throw new Blocked("destination_conflict", "Tracked baseline files must be independent regular files.");
+    }
+    const capturedIdentity = identity(stats);
+    const expectedMode = entry.gitMode === "100755" ? 0o755 : FILE_MODE;
+    if (capturedIdentity.mode !== expectedMode) {
+      throw new Blocked("destination_conflict", "Tracked baseline worktree mode does not equal the destination Git mode.");
+    }
+    const bytes = await exactHandleBytes(handle, capturedIdentity.size);
+    const afterStats = await handle.stat();
+    const after = identity(afterStats);
+    const pathStats = await lstat(absolutePath);
+    if (afterStats.nlink !== 1 || pathStats.nlink !== 1 || pathStats.isSymbolicLink() || !pathStats.isFile() ||
+      !sameIdentity(capturedIdentity, after) ||
+      Number(pathStats.dev) !== capturedIdentity.dev || Number(pathStats.ino) !== capturedIdentity.ino) {
+      throw new Blocked("destination_conflict", "Tracked baseline file identity changed during capture.");
+    }
+    const blobBytes = await gitBytes(
+      destinationRoot,
+      ["cat-file", "blob", entry.headBlobOid],
+      Math.max(1024, bytes.length + 1),
+    );
+    if (!blobBytes.equals(bytes)) {
+      throw new Blocked("destination_conflict", "Tracked baseline worktree bytes do not equal the destination Git blob.");
+    }
+    const record = Object.freeze({ ...entry, byteSha256: sha256(bytes) });
+    return { record, absolutePath, bytes, handle, identity: capturedIdentity };
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+function trackedBaselineDirectoryPaths(entries: readonly GitTrackedBaselineEntry[]): readonly string[] {
+  const paths = new Set<string>();
+  for (const entry of entries) {
+    let current = dirname(entry.path);
+    while (current !== SHIELD_DIRECTORY) {
+      paths.add(current);
+      current = dirname(current);
+    }
+  }
+  return [...paths].sort((left, right) => {
+    const depth = left.split("/").length - right.split("/").length;
+    return depth || compareBytes(left, right);
+  });
+}
+
+async function closeTrackedBaseline(snapshot: TrackedBaselineSnapshot | null): Promise<void> {
+  if (snapshot === null) return;
+  await Promise.all(snapshot.files.map((file) => file.handle.close().catch(() => undefined)));
+  await closeDirectories(snapshot.directories);
+}
+
+async function captureTrackedBaseline(
+  destinationRoot: string,
+  destinationHead: string,
+  shieldHeld: HeldDirectory | null,
+): Promise<TrackedBaselineSnapshot> {
+  const entries = await observeTrackedBaselineEntries(destinationRoot, destinationHead);
+  if (entries.length === 0) return { exclusions: Object.freeze([]), files: Object.freeze([]), directories: Object.freeze([]) };
+  if (shieldHeld === null) {
+    throw new Blocked("destination_conflict", "Destination tracked baseline paths are absent from the worktree.");
+  }
+  const directories: HeldDirectory[] = [];
+  const files: HeldTrackedBaselineFile[] = [];
+  try {
+    for (const relative of trackedBaselineDirectoryPaths(entries)) {
+      directories.push(await holdDirectory(join(destinationRoot, relative)));
+    }
+    for (const entry of entries) files.push(await captureTrackedBaselineFile(destinationRoot, entry));
+    const snapshot = {
+      exclusions: Object.freeze(files.map((file) => file.record)),
+      files: Object.freeze(files),
+      directories: Object.freeze(directories),
+    };
+    if (!await trackedBaselineStillExact(snapshot, destinationRoot, destinationHead)) {
+      throw new Blocked("destination_conflict", "Destination tracked baseline changed during preflight.");
+    }
+    return snapshot;
+  } catch (error) {
+    await Promise.all(files.map((file) => file.handle.close().catch(() => undefined)));
+    await closeDirectories(directories);
+    throw error instanceof Blocked
+      ? error
+      : new Blocked("destination_conflict", "Tracked baseline ancestors must be necessary real directories.");
+  }
+}
+
+async function trackedBaselineStillExact(
+  snapshot: TrackedBaselineSnapshot,
+  destinationRoot: string,
+  destinationHead: string,
+): Promise<boolean> {
+  try {
+    if (!await directoryChainStillHeld(snapshot.directories)) return false;
+    for (const file of snapshot.files) {
+      const handleStats = await file.handle.stat();
+      const current = identity(handleStats);
+      const pathStats = await lstat(file.absolutePath);
+      if (handleStats.nlink === 1 && pathStats.nlink === 1 && !pathStats.isSymbolicLink() && pathStats.isFile() &&
+        sameIdentity(current, file.identity) &&
+        Number(pathStats.dev) === file.identity.dev && Number(pathStats.ino) === file.identity.ino &&
+        (await exactHandleBytes(file.handle, file.identity.size)).equals(file.bytes)) continue;
+      return false;
+    }
+    const currentEntries = await observeTrackedBaselineEntries(destinationRoot, destinationHead);
+    return canonicalJson(currentEntries) === canonicalJson(snapshot.exclusions.map((record) => ({
+      path: record.path,
+      gitMode: record.gitMode,
+      headBlobOid: record.headBlobOid,
+      indexBlobOid: record.indexBlobOid,
+    })));
+  } catch {
+    return false;
+  }
+}
+
+async function destinationLayoutExact(
+  shieldHeld: HeldDirectory,
+  baseline: TrackedBaselineSnapshot,
+  allowedShieldFiles: readonly string[],
+): Promise<boolean> {
+  try {
+    if (!await directoryStillHeld(shieldHeld.path, shieldHeld) || !await directoryChainStillHeld(baseline.directories)) return false;
+    const expected = new Map<string, Set<string>>();
+    const shieldRelative = SHIELD_DIRECTORY;
+    expected.set(shieldRelative, new Set(allowedShieldFiles));
+    for (const directory of baseline.directories) {
+      const relative = directory.path.slice(dirname(shieldHeld.path).length + 1);
+      expected.set(relative, new Set());
+      const parent = dirname(relative);
+      const siblings = expected.get(parent);
+      if (siblings === undefined) return false;
+      siblings.add(basename(relative));
+    }
+    for (const file of baseline.files) {
+      const siblings = expected.get(dirname(file.record.path));
+      if (siblings === undefined) return false;
+      siblings.add(basename(file.record.path));
+    }
+    for (const [relative, names] of expected) {
+      const actual = (await readdir(join(dirname(shieldHeld.path), relative))).sort(compareBytes);
+      const wanted = [...names].sort(compareBytes);
+      if (!exactArray(actual, wanted)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function syncDirectory(path: string): Promise<void> {
   const handle = await open(path, DIRECTORY_FLAGS);
   try { await handle.sync(); } finally { await handle.close(); }
@@ -774,8 +1067,9 @@ function receiptBody(
   snapshot: SourceSnapshot,
   source: WorktreeGitObservationV1,
   destination: WorktreeGitObservationV1,
+  trackedBaseline: TrackedBaselineSnapshot,
 ): WorktreeStateReceiptBodyV1 {
-  return {
+  const body: WorktreeStateReceiptBodyV1 = {
     schemaVersion: WORKTREE_STATE_SCHEMA_VERSION,
     contractVersion: WORKTREE_STATE_CONTRACT_VERSION,
     authority: "none",
@@ -796,6 +1090,9 @@ function receiptBody(
     },
     exclusions: WORKTREE_STATE_EXCLUSIONS,
   };
+  return trackedBaseline.exclusions.length === 0
+    ? body
+    : { ...body, trackedBaselineExclusions: trackedBaseline.exclusions };
 }
 
 function buildReceipt(body: WorktreeStateReceiptBodyV1): WorktreeStateReceiptV1 {
@@ -811,12 +1108,14 @@ function exactArray(value: unknown, expected: readonly string[]): boolean {
 }
 
 export function validateWorktreeStateReceiptV1(input: unknown): input is WorktreeStateReceiptV1 {
-  const fields = [
+  const fields: readonly string[] = [
     "schemaVersion", "contractVersion", "authority", "state", "reasonCode", "summary", "repositoryId",
     "commonGitDirectory", "source", "destination", "policy", "publicBindings", "installedPaths",
     "installedByteDigests", "exclusions", "receiptDigest",
-  ] as const;
-  if (!exact(input, fields)) return false;
+  ];
+  const hasTrackedBaseline = plain(input) && Object.hasOwn(input, "trackedBaselineExclusions");
+  const exactFields = hasTrackedBaseline ? [...fields, "trackedBaselineExclusions"] : fields;
+  if (!exact(input, exactFields)) return false;
   if (input.schemaVersion !== 1 || input.contractVersion !== WORKTREE_STATE_CONTRACT_VERSION || input.authority !== "none" ||
     input.state !== "ready" || input.reasonCode !== "prepared" || typeof input.summary !== "string" ||
     typeof input.repositoryId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u.test(input.repositoryId) ||
@@ -843,6 +1142,20 @@ export function validateWorktreeStateReceiptV1(input: unknown): input is Worktre
   if (!exactArray(input.installedPaths, WORKTREE_STATE_INSTALLED_PATHS) || !exactArray(input.exclusions, WORKTREE_STATE_EXCLUSIONS)) return false;
   if (!exact(input.installedByteDigests, [IGNORE_PATH, CONFIG_PATH, REGISTRY_PATH]) ||
     Object.values(input.installedByteDigests).some((value) => typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value))) return false;
+  if (hasTrackedBaseline) {
+    if (!Array.isArray(input.trackedBaselineExclusions) || input.trackedBaselineExclusions.length === 0) return false;
+    let previousPath: string | null = null;
+    for (const record of input.trackedBaselineExclusions) {
+      if (!exact(record, ["path", "gitMode", "headBlobOid", "indexBlobOid", "byteSha256"]) ||
+        typeof record.path !== "string" || !validBaselinePath(record.path) ||
+        (record.gitMode !== "100644" && record.gitMode !== "100755") ||
+        typeof record.headBlobOid !== "string" || !validGitObjectId(record.headBlobOid) ||
+        typeof record.indexBlobOid !== "string" || record.indexBlobOid !== record.headBlobOid ||
+        typeof record.byteSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(record.byteSha256) ||
+        (previousPath !== null && compareBytes(previousPath, record.path) >= 0)) return false;
+      previousPath = record.path;
+    }
+  }
   const { receiptDigest, ...body } = input;
   return receiptDigest === sha256(canonicalJson(body));
 }
@@ -881,6 +1194,7 @@ async function validateInstalledReceipt(
   receipt: WorktreeStateReceiptV1,
   expectedSnapshot?: SourceSnapshot,
   expectedDestination?: WorktreeGitObservationV1,
+  trackedBaseline?: TrackedBaselineSnapshot,
 ): Promise<boolean> {
   if (receipt.destination.root !== destinationRoot || receipt.commonGitDirectory !== receipt.destination.commonGitDirectory ||
     receipt.repositoryId !== receipt.destination.originRepositoryId) return false;
@@ -890,6 +1204,7 @@ async function validateInstalledReceipt(
     receipt.policy.registrySemanticSha256 !== expectedSnapshot.policy.registrySemanticSha256)) return false;
   if (expectedDestination !== undefined && (receipt.commonGitDirectory !== expectedDestination.commonGitDirectory ||
     receipt.repositoryId !== expectedDestination.originRepositoryId || receipt.destination.branch !== expectedDestination.branch)) return false;
+  if (trackedBaseline !== undefined && canonicalJson(receipt.trackedBaselineExclusions ?? []) !== canonicalJson(trackedBaseline.exclusions)) return false;
   try {
     const [ignoreBytes, configBytes, registryBytes] = await Promise.all([
       readNoFollowRegular(join(destinationRoot, IGNORE_PATH)),
@@ -1065,10 +1380,14 @@ async function cleanupTrackedArtifact(
 
 async function preflightDestination(
   destinationRoot: string,
+  destinationHead: string,
   retain: (held: HeldDirectory) => void,
-): Promise<WorktreeStateReceiptV1 | null> {
+): Promise<{ readonly receipt: WorktreeStateReceiptV1 | null; readonly baseline: TrackedBaselineSnapshot }> {
   const held = await holdShieldDirectoryIfPresent(destinationRoot);
-  if (held === null) return null;
+  if (held === null) {
+    const baseline = await captureTrackedBaseline(destinationRoot, destinationHead, null);
+    return { receipt: null, baseline };
+  }
   retain(held);
   const entries = await readdir(held.path);
   if (!await directoryStillHeld(held.path, held)) {
@@ -1077,20 +1396,27 @@ async function preflightDestination(
   if (entries.includes(LOCK_NAME)) {
     throw new Blocked("preparation_in_progress", "Destination preparation lock is already held.");
   }
-  const receiptPresent = entries.includes("worktree-state.json");
-  if (receiptPresent) {
-    const receipt = await readStoredReceipt(destinationRoot);
-    if (receipt === null) throw new Blocked("prepared_state_stale", "Destination worktree receipt is malformed or unsafe.");
-    const allowed = new Set([".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"]);
-    if (entries.some((entry) => !allowed.has(entry)) || !await validateInstalledReceipt(destinationRoot, receipt)) {
-      throw new Blocked("prepared_state_stale", "Destination prepared policy is partial, drifted, or contains conflicting state.");
+  const baseline = await captureTrackedBaseline(destinationRoot, destinationHead, held);
+  try {
+    const receiptPresent = entries.includes("worktree-state.json");
+    if (receiptPresent) {
+      const receipt = await readStoredReceipt(destinationRoot);
+      if (receipt === null) throw new Blocked("prepared_state_stale", "Destination worktree receipt is malformed or unsafe.");
+      const allowed = [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"];
+      if (!await destinationLayoutExact(held, baseline, allowed) ||
+        !await validateInstalledReceipt(destinationRoot, receipt, undefined, undefined, baseline)) {
+        throw new Blocked("prepared_state_stale", "Destination prepared policy is partial, drifted, or contains conflicting state.");
+      }
+      return { receipt, baseline };
     }
-    return receipt;
+    if (!await destinationLayoutExact(held, baseline, [])) {
+      throw new Blocked("destination_conflict", "Destination .shield contains existing policy, mission, secret, cache, or staging state.");
+    }
+    return { receipt: null, baseline };
+  } catch (error) {
+    await closeTrackedBaseline(baseline);
+    throw error;
   }
-  if (entries.length > 0) {
-    throw new Blocked("destination_conflict", "Destination .shield contains existing policy, mission, secret, cache, or staging state.");
-  }
-  return null;
 }
 
 async function reobserveStable(
@@ -1100,11 +1426,13 @@ async function reobserveStable(
   sourceHeld: HeldRoot,
   destinationHeld: HeldRoot,
   shieldHeld: HeldDirectory | null,
+  trackedBaseline: TrackedBaselineSnapshot,
 ): Promise<boolean> {
   if (!await directoryChainStillHeld(sourceHeld.directories) || !await directoryChainStillHeld(destinationHeld.directories) ||
     !await directoryStillHeld(snapshot.policyDirectory.path, snapshot.policyDirectory) ||
     (shieldHeld !== null && !await directoryStillHeld(shieldHeld.path, shieldHeld)) ||
-    !await revalidateCapturedFile(snapshot.configFile) || !await revalidateCapturedFile(snapshot.registryFile)) return false;
+    !await revalidateCapturedFile(snapshot.configFile) || !await revalidateCapturedFile(snapshot.registryFile) ||
+    !await trackedBaselineStillExact(trackedBaseline, destination.root, destination.head)) return false;
   const current = await observeRepositories(source.root, destination.root, snapshot.config.repositoryId);
   return canonicalJson(current.source) === canonicalJson(source) && canonicalJson(current.destination) === canonicalJson(destination);
 }
@@ -1122,6 +1450,7 @@ export async function prepareWorktreeStateV1ForTest(
   let sourceHeld: HeldRoot | null = null;
   let destinationHeld: HeldRoot | null = null;
   let snapshot: SourceSnapshot | null = null;
+  let trackedBaseline: TrackedBaselineSnapshot | null = null;
   let shieldHeld: HeldDirectory | null = null;
   let heldLock: HeldLock | null = null;
   let installedCount = 0;
@@ -1144,40 +1473,53 @@ export async function prepareWorktreeStateV1ForTest(
     await dependencies.phase?.("source_captured");
     const observed = await observeRepositories(sourceRoot, destinationRoot, snapshot.config.repositoryId);
     await dependencies.phase?.("repositories_observed");
-    const existing = await preflightDestination(destinationRoot, (held) => { shieldHeld = held; });
+    const preflight = await preflightDestination(destinationRoot, observed.destination.head, (held) => { shieldHeld = held; });
+    trackedBaseline = preflight.baseline;
+    const existing = preflight.receipt;
     if (existing !== null) {
-      if (!await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination)) {
+      if (!await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination, trackedBaseline)) {
         throw new Blocked("prepared_state_stale", "Existing receipt does not match current source policy or repository identity.");
       }
       await dependencies.phase?.("before_replay_ready");
-      if (!await reobserveStable(snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld) ||
-        !await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination)) {
+      if (shieldHeld === null || !await reobserveStable(
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
+      ) || !await destinationLayoutExact(
+        shieldHeld, trackedBaseline, [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+      ) || !await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination, trackedBaseline)) {
         throw new Blocked("source_policy_drift", "Source policy, repository, or prepared destination changed before replay success.");
       }
       outcome = success("already_prepared", existing);
     } else {
       await dependencies.phase?.("before_destination_mutation");
-      if (!await reobserveStable(snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld)) {
+      if (!await reobserveStable(
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
+      )) {
         throw new Blocked("source_policy_drift", "Source policy or repository state changed before destination mutation.");
       }
       const rootHeld = destinationHeld.directories.at(-1);
       if (rootHeld === undefined) throw new Error("Destination root descriptor was not retained.");
       const shield = await ensureShieldDirectory(destinationRoot, rootHeld, shieldHeld, () => { shieldCreated = true; });
       shieldHeld = shield.held;
-      if (!await directoryChainStillHeld(destinationHeld.directories) || !await directoryStillHeld(join(destinationRoot, SHIELD_DIRECTORY), shieldHeld)) {
+      if (!await directoryChainStillHeld(destinationHeld.directories) ||
+        !await directoryStillHeld(join(destinationRoot, SHIELD_DIRECTORY), shieldHeld) ||
+        !await reobserveStable(
+          snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
+        ) || !await destinationLayoutExact(shieldHeld, trackedBaseline, [])) {
         throw new Blocked("destination_conflict", "Destination directory identity changed during preparation.");
       }
       const shieldPath = join(destinationRoot, SHIELD_DIRECTORY);
       const token = Buffer.from(`${process.pid}:${randomBytes(24).toString("hex")}\n`, "utf8");
       heldLock = await acquireLock(shieldPath, token, dependencies, (lock) => { heldLock = lock; });
       await dependencies.phase?.("lock_acquired");
-      if ((await readdir(shieldPath)).some((entry) => entry !== LOCK_NAME)) {
+      if (!await destinationLayoutExact(shieldHeld, trackedBaseline, [LOCK_NAME])) {
         throw new Blocked("destination_conflict", "Destination state changed before materialization.");
       }
-      if (!await reobserveStable(snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld)) {
+      if (!await reobserveStable(
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
+      )) {
         throw new Blocked("source_policy_drift", "Source policy or Git observations changed before staging.");
       }
-      expectedReceipt = buildReceipt(receiptBody(snapshot, observed.source, observed.destination));
+      expectedReceipt = buildReceipt(receiptBody(snapshot, observed.source, observed.destination, trackedBaseline));
       const nonce = dependencies.nonce?.() ?? randomBytes(16).toString("hex");
       if (!/^[A-Za-z0-9_-]{8,128}$/u.test(nonce)) throw new Error("Invalid preparation nonce.");
       const installs: readonly { relative: string; bytes: Buffer }[] = [
@@ -1193,13 +1535,20 @@ export async function prepareWorktreeStateV1ForTest(
       await syncDirectoryPath(dependencies, shieldPath);
       await dependencies.phase?.("temporaries_synced");
       if (!await lockOwned(heldLock) || !await reobserveStable(
-        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
+      ) || !await destinationLayoutExact(
+        shieldHeld, trackedBaseline, [LOCK_NAME, ...temporaryFiles.map((temporary) => basename(temporary.path))],
       )) {
         throw new Blocked("source_policy_drift", "Retained source, repository, destination, or lock identity changed before installation.");
       }
       await dependencies.phase?.("before_install");
+      if (!await destinationLayoutExact(
+        shieldHeld, trackedBaseline, [LOCK_NAME, ...temporaryFiles.map((temporary) => basename(temporary.path))],
+      )) {
+        throw new Blocked("destination_conflict", "Destination state changed at the installation boundary.");
+      }
       if (!await lockOwned(heldLock) || !await reobserveStable(
-        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
       )) {
         throw new Blocked("source_policy_drift", "Retained state changed at the installation boundary.");
       }
@@ -1229,14 +1578,18 @@ export async function prepareWorktreeStateV1ForTest(
       installationUncertain = false;
       await dependencies.phase?.("after_install");
       if (!await lockOwned(heldLock) || !await reobserveStable(
-        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
-      ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination)) {
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
+      ) || !await destinationLayoutExact(
+        shieldHeld, trackedBaseline, [LOCK_NAME, ".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+      ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination, trackedBaseline)) {
         throw new Error("Post-installation revalidation failed.");
       }
       await dependencies.phase?.("before_ready");
       if (!await lockOwned(heldLock) || !await reobserveStable(
-        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
-      ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination)) {
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
+      ) || !await destinationLayoutExact(
+        shieldHeld, trackedBaseline, [LOCK_NAME, ".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+      ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination, trackedBaseline)) {
         throw new Error("Final ready-boundary revalidation failed.");
       }
       outcome = success("ready", expectedReceipt);
@@ -1261,6 +1614,7 @@ export async function prepareWorktreeStateV1ForTest(
       try { await heldLock.handle.close(); } catch { cleanupUncertain = true; }
     }
     if (shieldHeld !== null) await shieldHeld.handle.close().catch(() => { cleanupUncertain = true; });
+    await closeTrackedBaseline(trackedBaseline);
     await closeSnapshot(snapshot);
     if (destinationHeld !== null && !await closeDirectories(destinationHeld.directories)) cleanupUncertain = true;
     if (sourceHeld !== null && !await closeDirectories(sourceHeld.directories)) cleanupUncertain = true;
@@ -1269,10 +1623,18 @@ export async function prepareWorktreeStateV1ForTest(
   return outcome ?? blocked("operation_failed", "Preparation did not produce a closed result.", sourceRoot, destinationRoot);
 }
 
-async function doctorPreparedReceipt(root: string, receipt: WorktreeStateReceiptV1): Promise<boolean> {
-  if (!await validateInstalledReceipt(root, receipt)) return false;
+async function doctorPreparedReceipt(
+  root: string,
+  receipt: WorktreeStateReceiptV1,
+  shieldHeld: HeldDirectory,
+): Promise<boolean> {
+  let baseline: TrackedBaselineSnapshot | null = null;
   try {
     const observation = await observeGitRoot(root);
+    baseline = await captureTrackedBaseline(root, observation.head, shieldHeld);
+    if (!await destinationLayoutExact(
+      shieldHeld, baseline, [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+    ) || !await validateInstalledReceipt(root, receipt, undefined, undefined, baseline)) return false;
     const listing = await git(root, ["worktree", "list", "--porcelain"]);
     const registered = listing?.split("\n").filter((line) => line.startsWith("worktree "))
       .map((line) => line.slice("worktree ".length)).includes(root) ?? false;
@@ -1280,6 +1642,8 @@ async function doctorPreparedReceipt(root: string, receipt: WorktreeStateReceipt
       observation.originRepositoryId === receipt.repositoryId;
   } catch {
     return false;
+  } finally {
+    await closeTrackedBaseline(baseline);
   }
 }
 
@@ -1336,7 +1700,7 @@ export async function inspectWorktreeStateV1(input: {
         : stale("Existing worktree policy is malformed and no valid preparation receipt is available.");
     }
     const receipt = await readStoredReceipt(input.root);
-    if (receipt !== null && input.configPresent && input.configValid && await doctorPreparedReceipt(input.root, receipt) &&
+    if (receipt !== null && input.configPresent && input.configValid && await doctorPreparedReceipt(input.root, receipt, shieldHeld) &&
       await directoryChainStillHeld(rootHeld.directories) && await directoryStillHeld(shieldHeld.path, shieldHeld)) {
       return deepFreeze({
         classification: "prepared_worktree",
