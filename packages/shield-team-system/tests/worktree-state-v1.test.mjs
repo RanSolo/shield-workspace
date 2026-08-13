@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { link, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { link, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,6 +22,19 @@ import {
 
 function git(root, args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+}
+
+async function exists(path) {
+  try { await lstat(path); return true; }
+  catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function syncDirectory(path) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try { await handle.sync(); } finally { await handle.close(); }
 }
 
 function binding(seatId) {
@@ -253,7 +267,12 @@ test("serializes concurrent preparation and detects path substitution", async ()
 });
 
 test("tracks lock and temporary artifacts immediately and closes cleanup uncertainty", async () => {
-  for (const operation of ["after_lock_create", "after_temporary_create"]) {
+  for (const operation of [
+    "after_lock_create",
+    "after_lock_file_sync",
+    "after_temporary_create",
+    "after_temporary_file_sync",
+  ]) {
     const current = await fixture();
     let injected = false;
     const result = await prepareWorktreeStateV1ForTest(current, {
@@ -268,6 +287,22 @@ test("tracks lock and temporary artifacts immediately and closes cleanup uncerta
     assert.equal(result.state, "blocked", `${operation}: ${JSON.stringify(result)}`);
     assert.equal(result.reasonCode, "operation_failed", operation);
     assert.deepEqual(await readdir(join(current.destinationRoot, ".shield")), [], operation);
+    assert.equal((await prepareWorktreeStateV1(current)).state, "ready", operation);
+  }
+
+  for (const syncOccurrence of [1, 2]) {
+    const current = await fixture();
+    let observed = 0;
+    const result = await prepareWorktreeStateV1ForTest(current, {
+      syncDirectoryPath: async (path) => {
+        if (++observed === syncOccurrence) throw new Error(`injected pre-install directory sync ${syncOccurrence}`);
+        await syncDirectory(path);
+      },
+    });
+    assert.equal(result.state, "blocked", JSON.stringify(result));
+    assert.equal(result.reasonCode, "operation_failed");
+    assert.deepEqual(await readdir(join(current.destinationRoot, ".shield")), []);
+    assert.equal((await prepareWorktreeStateV1(current)).state, "ready");
   }
 
   const uncertain = await fixture();
@@ -289,6 +324,87 @@ test("tracks lock and temporary artifacts immediately and closes cleanup uncerta
   assert.equal(cleanupFailure, true);
   assert.equal(result.state, "recovery_required");
   assert.equal(result.reasonCode, "filesystem_outcome_uncertain");
+});
+
+test("installation fault seam returns recovery without compensating final-file deletion", async () => {
+  const cases = [
+    { operation: "linkPath", occurrence: 1, installedCount: 0 },
+    { operation: "linkPath", occurrence: 2, installedCount: 1 },
+    { operation: "syncDirectoryPath", occurrence: 3, installedCount: 1 },
+    { operation: "syncDirectoryPath", occurrence: 4, installedCount: 1 },
+    { operation: "syncDirectoryPath", occurrence: 5, installedCount: 2 },
+    { operation: "unlinkPath", occurrence: 2, installedCount: 2 },
+    { operation: "readInstalledPath", occurrence: 2, installedCount: 2 },
+  ];
+  for (const fault of cases) {
+    const current = await fixture();
+    let observed = 0;
+    const fail = () => {
+      if (++observed === fault.occurrence) throw new Error(`injected ${fault.operation} ${fault.occurrence}`);
+    };
+    const dependencies = fault.operation === "linkPath"
+      ? { linkPath: async (source, destination) => { fail(); await link(source, destination); } }
+      : fault.operation === "syncDirectoryPath"
+        ? { syncDirectoryPath: async (path) => { fail(); await syncDirectory(path); } }
+        : fault.operation === "unlinkPath"
+          ? { unlinkPath: async (path) => { fail(); await unlink(path); } }
+          : { readInstalledPath: async (path) => { fail(); return readFile(path); } };
+    const result = await prepareWorktreeStateV1ForTest(current, dependencies);
+    assert.equal(result.state, "recovery_required", `${fault.operation}: ${JSON.stringify(result)}`);
+    assert.equal(result.reasonCode, "filesystem_outcome_uncertain", fault.operation);
+    for (let index = 0; index < WORKTREE_STATE_INSTALLED_PATHS.length; index += 1) {
+      assert.equal(
+        await exists(join(current.destinationRoot, WORKTREE_STATE_INSTALLED_PATHS[index])),
+        index < fault.installedCount,
+        `${fault.operation}: final path ${index}`,
+      );
+    }
+  }
+});
+
+test("lock unlink and final directory-sync uncertainty override ready while exact completion replays", async () => {
+  const lockUnlink = await fixture();
+  let lockFault = false;
+  const lockResult = await prepareWorktreeStateV1ForTest(lockUnlink, {
+    unlinkPath: async (path) => {
+      if (!lockFault && path.endsWith("/.worktree-prepare.lock")) {
+        lockFault = true;
+        throw new Error("injected lock unlink uncertainty");
+      }
+      await unlink(path);
+    },
+  });
+  assert.equal(lockFault, true);
+  assert.equal(lockResult.state, "recovery_required");
+  assert.equal(await exists(join(lockUnlink.destinationRoot, ".shield", ".worktree-prepare.lock")), true);
+  for (const relative of WORKTREE_STATE_INSTALLED_PATHS) {
+    assert.equal(await exists(join(lockUnlink.destinationRoot, relative)), true, relative);
+  }
+
+  const finalSync = await fixture();
+  let syncFault = false;
+  let lockUnlinked = false;
+  const syncResult = await prepareWorktreeStateV1ForTest(finalSync, {
+    unlinkPath: async (path) => {
+      await unlink(path);
+      if (path.endsWith("/.worktree-prepare.lock")) lockUnlinked = true;
+    },
+    syncDirectoryPath: async (path) => {
+      if (lockUnlinked && !syncFault) {
+        syncFault = true;
+        throw new Error("injected final directory sync uncertainty");
+      }
+      await syncDirectory(path);
+    },
+  });
+  assert.equal(syncFault, true);
+  assert.equal(syncResult.state, "recovery_required");
+  assert.equal(await exists(join(finalSync.destinationRoot, ".shield", ".worktree-prepare.lock")), false);
+  for (const relative of WORKTREE_STATE_INSTALLED_PATHS) {
+    assert.equal(await exists(join(finalSync.destinationRoot, relative)), true, relative);
+  }
+  const replay = await prepareWorktreeStateV1(finalSync);
+  assert.equal(replay.state, "already_prepared", JSON.stringify(replay));
 });
 
 test("reports interruption after installation as recovery-required and exact retry as prepared", async () => {

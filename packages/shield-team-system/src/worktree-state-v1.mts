@@ -227,6 +227,10 @@ export interface WorktreePreparationTestDependenciesV1 {
   readonly phase?: (phase: WorktreePreparationTestPhaseV1) => void | Promise<void>;
   readonly nonce?: () => string;
   readonly filesystem?: (event: WorktreePreparationFilesystemEventV1) => void | Promise<void>;
+  readonly linkPath?: (source: string, destination: string) => Promise<void>;
+  readonly unlinkPath?: (path: string) => Promise<void>;
+  readonly syncDirectoryPath?: (path: string) => Promise<void>;
+  readonly readInstalledPath?: (path: string) => Promise<Uint8Array>;
 }
 
 interface CapturedFile {
@@ -920,6 +924,27 @@ async function filesystemEvent(
   await dependencies.filesystem?.(Object.freeze({ operation, path }));
 }
 
+async function linkPath(
+  dependencies: WorktreePreparationTestDependenciesV1,
+  source: string,
+  destination: string,
+): Promise<void> {
+  await (dependencies.linkPath ?? link)(source, destination);
+}
+
+async function unlinkPath(dependencies: WorktreePreparationTestDependenciesV1, path: string): Promise<void> {
+  await (dependencies.unlinkPath ?? unlink)(path);
+}
+
+async function syncDirectoryPath(dependencies: WorktreePreparationTestDependenciesV1, path: string): Promise<void> {
+  await (dependencies.syncDirectoryPath ?? syncDirectory)(path);
+}
+
+async function readInstalledPath(dependencies: WorktreePreparationTestDependenciesV1, path: string): Promise<Buffer> {
+  const bytes = await (dependencies.readInstalledPath ?? readNoFollowRegular)(path);
+  return Buffer.from(bytes);
+}
+
 async function acquireLock(
   shieldPath: string,
   token: Buffer,
@@ -951,7 +976,7 @@ async function acquireLock(
     throw new Error("Preparation lock could not be verified.");
   }
   lock.identity = capturedIdentity;
-  await syncDirectory(shieldPath);
+  await syncDirectoryPath(dependencies, shieldPath);
   return lock;
 }
 
@@ -1022,7 +1047,7 @@ async function cleanupTrackedArtifact(
       return false;
     }
     await filesystemEvent(dependencies, "before_cleanup_unlink", artifact.path);
-    await unlink(artifact.path);
+    await unlinkPath(dependencies, artifact.path);
     try {
       await lstat(artifact.path);
       return false;
@@ -1031,7 +1056,7 @@ async function cleanupTrackedArtifact(
     }
     if ((await artifact.handle.stat()).nlink !== 0) return false;
     await filesystemEvent(dependencies, "before_cleanup_directory_sync", parent);
-    await syncDirectory(parent);
+    await syncDirectoryPath(dependencies, parent);
     return true;
   } catch {
     return false;
@@ -1165,7 +1190,7 @@ export async function prepareWorktreeStateV1ForTest(
         const temporaryPath = join(shieldPath, `${TEMP_PREFIX}${nonce}-${index}.tmp`);
         await createTemporary(temporaryPath, installs[index]!.bytes, dependencies, (temporary) => { temporaryFiles.push(temporary); });
       }
-      await syncDirectory(shieldPath);
+      await syncDirectoryPath(dependencies, shieldPath);
       await dependencies.phase?.("temporaries_synced");
       if (!await lockOwned(heldLock) || !await reobserveStable(
         snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
@@ -1183,7 +1208,9 @@ export async function prepareWorktreeStateV1ForTest(
         const temporary = temporaryFiles[index]!;
         if (!await temporaryStillExact(temporary)) throw new Error("Temporary file changed before installation.");
         installationUncertain = true;
-        try { await link(temporary.path, finalPath); }
+        try {
+          await linkPath(dependencies, temporary.path, finalPath);
+        }
         catch (error) {
           if ((error as NodeJS.ErrnoException).code === "EEXIST" && installedCount === 0) {
             installationUncertain = false;
@@ -1192,11 +1219,11 @@ export async function prepareWorktreeStateV1ForTest(
           throw error;
         }
         installedCount += 1;
-        await syncDirectory(shieldPath);
-        await unlink(temporary.path);
+        await syncDirectoryPath(dependencies, shieldPath);
+        await unlinkPath(dependencies, temporary.path);
         temporary.installed = true;
-        await syncDirectory(shieldPath);
-        const installed = await readNoFollowRegular(finalPath);
+        await syncDirectoryPath(dependencies, shieldPath);
+        const installed = await readInstalledPath(dependencies, finalPath);
         if (!installed.equals(installs[index]!.bytes)) throw new Error("Installed file readback mismatch.");
       }
       installationUncertain = false;
