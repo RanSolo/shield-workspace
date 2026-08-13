@@ -70,6 +70,13 @@ import {
 import {
   executeAuthorizeWheelsUpV1,
 } from "./authorize-wheels-up-executor-v1.mjs";
+import {
+  materializeReviewedMissionTransitionV1,
+  resolvePreparedMissionTransitionV1,
+  resolveSeatDispatchIdentityByReceiptIdV1,
+  validateMissionTransitionPlanReviewV1,
+} from "./mission-preparation-host-v1.mjs";
+import { validateTransitionPlanV1 } from "@shield/mission-preparation";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import {
@@ -1353,6 +1360,110 @@ async function authorizeWheelsUp(args: string[]): Promise<number> {
   }
 }
 
+async function recordReviewedTransition(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--transition-plan", "--review-artifact", "--dispatch-receipt-id"]);
+  const root = await exactRoot(options.values.get("--root"), true);
+  const missionId = required(options, "--mission-id");
+  const planInput = await jsonFile(resolve(root, required(options, "--transition-plan")), "Mission transition plan");
+  const reviewInput = await jsonFile(resolve(root, required(options, "--review-artifact")), "Mission transition plan review");
+  const plan = validateTransitionPlanV1({ artifact: planInput });
+  if (plan.state === "invalid") throw new MissionCliError(`invalid_transition_plan: ${plan.errors.join(" ")}`, 1);
+  const review = validateMissionTransitionPlanReviewV1(reviewInput);
+  if (review.state === "invalid") throw new MissionCliError(`${review.code}: ${review.errors.join(" ")}`, 1);
+  if (missionId !== plan.value.missionId || missionId !== review.value.missionId) {
+    throw new MissionCliError("Mission transition record identity does not match --mission-id.", 1);
+  }
+  const identity = await resolveSeatDispatchIdentityByReceiptIdV1({
+    repositoryRoot: root,
+    repositoryId: plan.value.repositoryId,
+    receiptId: required(options, "--dispatch-receipt-id"),
+  });
+  if (identity.state === "invalid") throw new MissionCliError(`invalid_dispatch_identity: ${identity.errors.join(" ")}`, 1);
+  const expectedBinding = {
+    schemaVersion: 1 as const,
+    missionId: plan.value.missionId,
+    subjectId: plan.value.subjectId,
+    repositoryId: plan.value.repositoryId,
+    planningBaseRevision: plan.value.planningBaseRevision,
+    parentPlanCommit: plan.value.parentPlanCommit,
+    parentPlanPath: plan.value.parentPlanPath,
+    parentPlanRawSha256: plan.value.parentPlanRawSha256,
+    transitionPlanId: plan.value.id,
+    transitionPlanDigest: plan.value.digest,
+    reviewedArtifactId: plan.value.id,
+    reviewedArtifactRevision: plan.value.digest,
+  };
+  const result = await materializeReviewedMissionTransitionV1({
+    missionId,
+    repositoryRoot: root,
+    transitionPlan: plan.value,
+    reviewArtifact: review.value,
+    expectedBinding,
+    dispatchIdentity: identity.identity,
+  });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  return result.state === "materialized" || result.state === "already_materialized" ? 0 : 1;
+}
+
+function renderAlreadyAuthorized(result: Extract<Awaited<ReturnType<typeof resolvePreparedMissionTransitionV1>>, { state: "already_authorized" }>): string {
+  return [
+    `state: ${result.state}`,
+    `missionId: ${result.missionId}`,
+    `missionRevisionId: ${result.missionRevisionId}`,
+    `headRevision: ${result.headRevision}`,
+    `endingJournalSequence: ${result.endingJournalSequence}`,
+    `authorizationManifestDigest: ${result.authorizationManifestDigest}`,
+  ].join("\n");
+}
+
+async function prepareNext(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id"], ["--json", "--human", "--passcode-stdin"]);
+  if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
+  const root = await exactRoot(options.values.get("--root"), true);
+  const missionId = required(options, "--mission-id");
+  const result = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
+  if (result.state === "blocked") {
+    if (options.flags.has("--json")) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    else process.stderr.write(`Preparation blocked — ${result.reasonCode}: ${result.errors.join(" ")}\n`);
+    return 1;
+  }
+  if (result.state === "already_authorized") {
+    output(result, options.flags.has("--json"), renderAlreadyAuthorized(result));
+    return 0;
+  }
+  const intent = validateAuthorizeWheelsUpInput(result.candidate.actionInput);
+  const config = await repositoryConfig(root);
+  const humanMode = options.flags.has("--human") || (!options.flags.has("--json") && !options.flags.has("--passcode-stdin"));
+  const promptOutput = options.flags.has("--json") ? process.stderr : outputStream;
+  try {
+    return await executeAuthorizeWheelsUpV1({
+      root,
+      config,
+      missionId,
+      intent,
+      timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
+      humanMode,
+      promptOutput: { write: (value) => promptOutput.write(value) },
+      expectedPreparation: { candidate: result.candidate, observation: result.observation },
+      dependencies: {
+        renderDecision: (entry) => {
+          if (entry.kind === "manifest") {
+            if (entry.humanMode) return renderAuthorizeWheelsUpHumanV1(entry.manifest as Parameters<typeof renderAuthorizeWheelsUpHumanV1>[0]);
+            return `SHIELD_WHEELS_UP_MANIFEST_BEGIN\n${canonicalJson(entry.manifest)}\nSHIELD_WHEELS_UP_MANIFEST_END`;
+          }
+          if (entry.humanMode) return renderAuthorizeWheelsUpReceiptHumanV1(entry.receipt as Parameters<typeof renderAuthorizeWheelsUpReceiptHumanV1>[0]);
+          return JSON.stringify(entry.receipt, null, 2);
+        },
+        readPasscode: () => passcodeFromOptions(options, promptOutput),
+        signBatch: async (binding, passcode, payloads) => signPayloadBatchWithSigner(binding.signingKeyRef, binding.publicKeySpkiBase64, passcode, payloads),
+        appendBatchAtomic: appendProfileAwareMissionEntriesAtomicV1,
+      },
+    });
+  } catch (error) {
+    throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
+  }
+}
+
 function canonicalDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("base64url")}`;
 }
@@ -1940,6 +2051,8 @@ export function missionUsage(): string {
     "  shield mission signer setup [--seat coulson] [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
+    "  shield mission prepare-next --mission-id <id> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",
@@ -1961,6 +2074,8 @@ export async function runMissionCli(args: string[]): Promise<number> {
     if (action === "begin") return begin(rest);
     if (action === "authorize") return authorize(rest);
     if (action === "authorize-wheels-up") return authorizeWheelsUp(rest);
+    if (action === "record-reviewed-transition") return recordReviewedTransition(rest);
+    if (action === "prepare-next") return prepareNext(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
     if (action === "publication-authorize") return publicationAuthorize(rest);
     if (action === "publication-request") return publicationRequest(rest);

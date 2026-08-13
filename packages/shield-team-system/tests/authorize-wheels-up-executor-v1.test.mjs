@@ -213,7 +213,7 @@ test("executeAuthorizeWheelsUpV1 runs the four-entry append with one dependency 
   });
 
   assert.equal(result, 0);
-  assert.equal(calls.render, 2);
+  assert.equal(calls.render, 1);
   assert.equal(calls.readPasscode, 1);
   assert.equal(calls.sign, 1);
   assert.equal(calls.append, 1);

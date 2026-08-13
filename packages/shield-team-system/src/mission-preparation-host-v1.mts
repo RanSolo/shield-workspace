@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { lstat, readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { isProxy } from "node:util/types";
 
 import { canonicalJson } from "./mission-v2.mjs";
@@ -6,16 +8,22 @@ import {
   computeCanonicalContractDigestV1,
   computeContentIdV1,
   computeRawReceiptSetSha256V1,
+  prepareMissionTransitionV1,
+  validateFreshAuthorizeWheelsUpObservationV1,
   validateParentPlanReviewEvidenceV1,
   validateTransitionIntentV1,
   validateTransitionPlanV1,
   type ParentPlanReviewEvidenceV1,
   type TransitionIntentV1,
   type TransitionPlanV1,
+  type FreshAuthorizeWheelsUpObservationV1,
+  type FreshAuthorizeWheelsUpCandidateV1,
+  type PreparationReceiptV1,
 } from "@shield/mission-preparation";
 import {
   buildMissionReviewedTransitionGraphV1,
   materializeMissionReviewedTransitionGraphV1,
+  readMissionReviewedTransitionGraphV1,
   type MissionReviewedTransitionGraphMaterializationResultV1,
 } from "./mission-preparation-store-v1.mjs";
 import { readSeatDispatchReceiptLedgerSnapshotV1 } from "./seat-dispatch-store.mjs";
@@ -25,6 +33,13 @@ import {
   type SeatDispatchReceiptIdentityV1,
   type SeatDispatchReceiptProjectionV1,
 } from "./seat-dispatch-receipt-v1.mjs";
+import { parseShieldConfig, type ShieldConfig } from "./config.mjs";
+import {
+  observeAuthorizeWheelsUpEnvironmentV1,
+  validateAuthorizeWheelsUpInput,
+  type AuthorizeWheelsUpEnvironmentObservationV1,
+} from "./authorize-wheels-up-executor-v1.mjs";
+import { journalByteSha256 } from "./mission-store.mjs";
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION = "mission.transition-plan-review.v1" as const;
@@ -768,4 +783,355 @@ export async function materializeReviewedMissionTransitionV1(
   }
 
   return materialization as MaterializeReviewedMissionTransitionResultV1;
+}
+
+export type ResolvePreparedMissionTransitionResultV1 = Readonly<
+  | {
+      state: "ready";
+      missionId: string;
+      candidate: FreshAuthorizeWheelsUpCandidateV1;
+      observation: FreshAuthorizeWheelsUpObservationV1;
+      preparationReceipt: PreparationReceiptV1;
+    }
+  | {
+      state: "blocked";
+      missionId: string;
+      reasonCode: string;
+      errors: readonly string[];
+    }
+  | {
+      schemaVersion: 1;
+      state: "already_authorized";
+      missionId: string;
+      missionRevisionId: string;
+      headRevision: string;
+      endingJournalSequence: number;
+      authorizationManifestDigest: string;
+    }
+>;
+
+function blocked(missionId: string, reasonCode: string, ...errors: readonly string[]): ResolvePreparedMissionTransitionResultV1 {
+  return deepFreeze({
+    state: "blocked" as const,
+    missionId,
+    reasonCode,
+    errors: errors.length === 0 ? [reasonCode] : [...errors],
+  });
+}
+
+function dispatchIdentityFromEvent(event: Record<string, unknown>): SeatDispatchReceiptIdentityV1 | null {
+  const fields = [
+    "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision", "parentSessionId", "repositoryRevision",
+    "childTaskId", "childSessionId", "accountableSeatId", "repositoryId", "repositoryWorkspaceId", "subjectId",
+    "subjectRevision", "artifactId", "artifactRevision", "configuredRuntime", "requestedRuntime", "toolExecution",
+    "runtimeSelfReport", "runtimeHostObserved", "executorSelfReport", "executorHostObserved", "timestamp", "logSequence",
+    "previousLogDigest", "lifecycleSequence", "previousLifecycleDigest",
+  ] as const;
+  const candidate = Object.fromEntries(fields.map((field) => [field, event[field]]));
+  return validDispatchIdentity(candidate) ? candidate : null;
+}
+
+async function dispatchSnapshotForRepository(repositoryRoot: string, repositoryId: string) {
+  const path = join(resolve(repositoryRoot), ".shield", "dispatch-receipts.jsonl");
+  let bytes: string;
+  try {
+    const stats = await lstat(path);
+    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Dispatch ledger is not a regular file.");
+    bytes = await readFile(path, "utf8");
+  } catch (error) {
+    return { state: "invalid" as const, errors: [error instanceof Error ? error.message : "Dispatch ledger is unavailable."] };
+  }
+  const firstLine = bytes.endsWith("\n") ? bytes.slice(0, -1).split("\n")[0] : "";
+  let first: unknown;
+  try { first = JSON.parse(firstLine); } catch { return { state: "invalid" as const, errors: ["Dispatch ledger has no canonical first entry."] }; }
+  if (!plain(first) || first.repositoryId !== repositoryId || !identifier(first.repositoryWorkspaceId)) {
+    return { state: "invalid" as const, errors: ["Dispatch ledger repository scope is invalid."] };
+  }
+  return readSeatDispatchReceiptLedgerSnapshotV1({ repositoryRoot, repositoryId, repositoryWorkspaceId: first.repositoryWorkspaceId });
+}
+
+export async function resolveSeatDispatchIdentityByReceiptIdV1(input: {
+  readonly repositoryRoot: string;
+  readonly repositoryId: string;
+  readonly receiptId: string;
+}): Promise<Readonly<{ state: "resolved"; identity: SeatDispatchReceiptIdentityV1 } | { state: "invalid"; errors: readonly string[] }>> {
+  const snapshot = await dispatchSnapshotForRepository(input.repositoryRoot, input.repositoryId);
+  if (snapshot.state === "invalid") return Object.freeze({ state: "invalid", errors: Object.freeze([...snapshot.errors]) });
+  const starts = snapshot.value.entries.filter((entry) => entry.kind === "dispatch.started" && entry.receiptId === input.receiptId);
+  if (starts.length !== 1) return Object.freeze({ state: "invalid", errors: Object.freeze(["Named dispatch receipt does not have exactly one start entry."]) });
+  const identity = dispatchIdentityFromEvent(starts[0] as unknown as Record<string, unknown>);
+  if (identity === null) return Object.freeze({ state: "invalid", errors: Object.freeze(["Named dispatch receipt identity is invalid."]) });
+  return Object.freeze({ state: "resolved", identity });
+}
+
+async function readConfig(repositoryRoot: string): Promise<ShieldConfig | null> {
+  try {
+    const path = join(resolve(repositoryRoot), ".shield", "config.json");
+    const stats = await lstat(path);
+    if (!stats.isFile() || stats.isSymbolicLink()) return null;
+    const parsed = parseShieldConfig(await readFile(path, "utf8"));
+    return parsed.state === "valid" ? parsed.value : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildObservation(
+  graph: import("./mission-preparation-store-v1.mjs").MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+): FreshAuthorizeWheelsUpObservationV1 | null {
+  const current = environment.current.projection;
+  const repository = environment.repository;
+  const body = {
+    schemaId: "mission.fresh-authorize-wheels-up-observation.v1" as const,
+    authority: "none" as const,
+    missionId: graph.transitionPlan.missionId,
+    subjectId: graph.transitionPlan.subjectId,
+    repositoryId: graph.transitionPlan.repositoryId,
+    canonicalRoot: repository.canonicalRoot,
+    branch: repository.branch,
+    planningBaseRevision: graph.transitionPlan.planningBaseRevision,
+    baseRevision: repository.baseRevision,
+    headRevision: repository.headRevision,
+    baseAncestor: repository.baseAncestor,
+    workspaceClean: repository.statusEntries.length === 0,
+    changedPaths: [...repository.changedPaths],
+    symlinkPaths: [...environment.symlinkPaths],
+    gitlinkPaths: [...environment.gitlinkPaths],
+    missionSchemaVersion: current.schemaVersion,
+    authorizationState: current.authorization,
+    implementationAuthorityState: current.implementationAuthorityState,
+    finalAcceptanceState: current.finalAcceptance,
+    executionState: current.execution,
+    implementationAuthorityCount: current.implementationAuthority === null ? 0 : 1,
+    runtimeBindingCount: current.runtimeBindings.length,
+    activeRuntimeBindingCount: current.activeRuntimeBindings.length,
+    publicationAuthorizationCount: current.publicationAuthorizations.length,
+    pendingCoulsonMissionAuthorizationCount: environment.pendingCoulsonMissionAuthorizationCount,
+    journalSequence: current.lastSequence,
+    journalSha256: environment.journalSha256,
+    signerBindingId: environment.binding.bindingId,
+    signingKeyRef: environment.binding.signingKeyRef,
+    signerBindingMatchCount: environment.signerBindingMatchCount,
+    remainingHumanGates: [...environment.remainingHumanGates],
+    preparationEligibility: "preparationEligible" as const,
+  };
+  const computed = computeCanonicalContractDigestV1({ schemaId: body.schemaId, body });
+  if (computed.state === "invalid") return null;
+  const contentId = computeContentIdV1({ schemaId: body.schemaId, digest: computed.value });
+  if (contentId.state === "invalid") return null;
+  const checked = validateFreshAuthorizeWheelsUpObservationV1({ artifact: { ...body, id: contentId.value, digest: computed.value } });
+  return checked.state === "valid" ? checked.value : null;
+}
+
+function reconstructedReview(graph: import("./mission-preparation-store-v1.mjs").MissionReviewedTransitionGraphV1): MissionTransitionPlanReviewV1 | null {
+  const plan = graph.transitionPlan;
+  const review = graph.parentPlanReviewEvidence;
+  const built = buildMissionTransitionPlanReviewV1({
+    schemaVersion: 1,
+    contractVersion: MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION,
+    authority: "none",
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    repositoryId: plan.repositoryId,
+    planningBaseRevision: plan.planningBaseRevision,
+    parentPlanCommit: plan.parentPlanCommit,
+    parentPlanPath: plan.parentPlanPath,
+    parentPlanRawSha256: plan.parentPlanRawSha256,
+    transitionPlanId: plan.id,
+    transitionPlanDigest: plan.digest,
+    verdict: "PASS",
+    reviewerSeatId: "fury",
+    reviewerRuntimeId: review.reviewerRuntimeId,
+    reviewerModelId: review.reviewerModelId,
+    reviewerExecutorId: review.reviewerExecutorId,
+    reviewedArtifactId: plan.id,
+    reviewedArtifactRevision: plan.digest,
+  });
+  return built.state === "built" ? built.review : null;
+}
+
+async function revalidateStoredAttribution(
+  repositoryRoot: string,
+  graph: import("./mission-preparation-store-v1.mjs").MissionReviewedTransitionGraphV1,
+): Promise<readonly string[]> {
+  const review = reconstructedReview(graph);
+  if (review === null) return ["Stored Fury review could not be reconstructed."];
+  const snapshot = await dispatchSnapshotForRepository(repositoryRoot, graph.transitionPlan.repositoryId);
+  if (snapshot.state === "invalid") return snapshot.errors;
+  const replay = replaySeatDispatchReceiptsV1(snapshot.value.entries);
+  if (replay.state === "invalid") return [`Dispatch replay failed: ${replay.code}.`];
+  const matching = replay.projections.filter((projection) =>
+    projection.parentMissionId === graph.transitionPlan.missionId &&
+    projection.artifactId === graph.transitionPlan.id &&
+    projection.artifactRevision === graph.transitionPlan.digest &&
+    projection.accountableSeatId === "fury" &&
+    projection.state === "completed" &&
+    outputEvidenceRefsBound(review, projection.outputEvidenceRefs ?? []));
+  const bound = matching.filter((projection) => {
+    const raws = snapshot.value.rawEntryBytes.filter((_, index) => snapshot.value.entries[index]?.receiptId === projection.receiptId);
+    const digestResult = computeRawReceiptSetSha256V1({ rawReceipts: raws });
+    return digestResult.state === "valid" && digestResult.value === graph.parentPlanReviewEvidence.rawReceiptSetSha256;
+  });
+  if (bound.length !== 1) return ["Stored Fury attribution no longer resolves to exactly one raw receipt set."];
+  const start = snapshot.value.entries.find((entry) => entry.kind === "dispatch.started" && entry.receiptId === bound[0].receiptId);
+  const identity = start === undefined ? null : dispatchIdentityFromEvent(start as unknown as Record<string, unknown>);
+  if (identity === null) return ["Stored Fury dispatch identity is unavailable."];
+  const attribution = evaluateSeatDispatchAttributionV1({ ...identity, artifact: review, replayResult: replay });
+  if (attribution.state === "unattributed") return [...attribution.reasonCodes];
+  const observed = finalObservedProjection(attribution.receipt);
+  if (observed === null || observed.runtimeId !== graph.parentPlanReviewEvidence.reviewerRuntimeId ||
+      observed.model !== graph.parentPlanReviewEvidence.reviewerModelId || observed.executorId !== graph.parentPlanReviewEvidence.reviewerExecutorId) {
+    return ["Stored Fury reviewer attribution changed."];
+  }
+  return [];
+}
+
+function alreadyAuthorizedResult(
+  graph: import("./mission-preparation-store-v1.mjs").MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+): ResolvePreparedMissionTransitionResultV1 | null {
+  const projection = environment.current.projection;
+  if (projection.authorization !== "authorized" || projection.implementationAuthorityState !== "authorized" ||
+      projection.implementationAuthority === null || projection.runtimeBindings.length !== 1 || projection.activeRuntimeBindings.length !== 1 ||
+      projection.publicationAuthorizations.length !== 1 || projection.execution !== "not-started" || projection.finalAcceptance !== "waiting") return null;
+  const entries = environment.current.entries.slice(-4);
+  const kinds = ["governance.decided", "implementation.authorized", "runtime.binding_recorded", "review.publication_authorized"];
+  if (entries.length !== 4 || entries.some((entry, index) => entry.type !== kinds[index] || entry.sequence !== projection.lastSequence - 3 + index)) return null;
+  const authority = projection.implementationAuthority;
+  const runtimeWrapper = projection.activeRuntimeBindings[0];
+  const runtime = runtimeWrapper.binding;
+  const publicationRecord = projection.publicationAuthorizations[0];
+  const publication = publicationRecord.authority;
+  const plan = graph.transitionPlan;
+  const approvedCoulsonEvidence = projection.evidence.filter(({ evidenceKind, seatId, decision }) =>
+    evidenceKind === "mission_authorization" && seatId === "coulson" && decision === "approved");
+  const semantic = authority.missionId === plan.missionId && authority.subjectId === plan.subjectId && authority.repositoryId === plan.repositoryId &&
+    authority.baseRevision === plan.planningBaseRevision && authority.headRevision === environment.repository.headRevision && authority.branch === environment.repository.branch &&
+    canonicalJson(authority.approvedRelativePaths) === canonicalJson(plan.approvedRelativePaths) && canonicalJson(authority.approvedActionIds) === canonicalJson(plan.approvedActionIds) &&
+    canonicalJson(authority.approvedEffectClasses) === canonicalJson(plan.approvedEffectClasses) && canonicalJson(authority.approvedEffectKeys) === canonicalJson(plan.approvedEffectKeys) &&
+    canonicalJson(authority.approvedCapabilities) === canonicalJson(plan.approvedCapabilities) && canonicalJson(authority.validationCommandIds) === canonicalJson(plan.validationCommandIds) &&
+    authority.modelId === plan.modelId && runtime.reasoningRuntimeId === plan.reasoningRuntimeId && runtime.toolExecutorId === plan.toolExecutorId &&
+    publication.repositoryId === plan.repositoryId && publication.baseRevisionId === plan.planningBaseRevision && publication.headRevisionId === environment.repository.headRevision &&
+    canonicalJson(publication.authorizedPaths) === canonicalJson(plan.publicationPaths) && approvedCoulsonEvidence.length === 1;
+  if (!semantic) return null;
+  const journalLines = environment.journalBytes.endsWith("\n") ? environment.journalBytes.slice(0, -1).split("\n") : [];
+  if (journalLines.length !== projection.lastSequence + 1 || journalLines.length < 5) return null;
+  const startingJournalBytes = `${journalLines.slice(0, -4).join("\n")}\n`;
+  const pathKinds = { symlinks: [...environment.symlinkPaths], gitlinks: [...environment.gitlinkPaths] };
+  const manifestWithoutDigest = {
+    schemaVersion: 1,
+    schemaId: "shield.wheels-up-authorization-manifest.v1",
+    missionId: plan.missionId,
+    subjectId: projection.brief.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    repository: {
+      repositoryId: environment.repository.configuredRepositoryId,
+      configuredJournalPath: environment.configuredJournalPath,
+      canonicalRoot: environment.repository.canonicalRoot,
+      gitTopLevel: environment.repository.gitTopLevel,
+      originUrl: environment.repository.originUrl,
+      remoteRepositoryId: environment.repository.remoteRepositoryId,
+      branch: environment.repository.branch,
+      baseRevision: environment.repository.baseRevision,
+      headRevision: environment.repository.headRevision,
+      baseAncestor: environment.repository.baseAncestor,
+      workspaceClean: true,
+      changedPaths: environment.repository.changedPaths,
+      symlinkPaths: pathKinds.symlinks,
+      gitlinkPaths: pathKinds.gitlinks,
+    },
+    journal: {
+      startingSequence: projection.lastSequence - 4,
+      endingSequence: projection.lastSequence,
+      startingJournalSha256: journalByteSha256(startingJournalBytes),
+    },
+    humanBinding: {
+      seatId: environment.binding.seatId,
+      bindingId: environment.binding.bindingId,
+      humanPrincipalId: environment.binding.humanPrincipalId,
+      signingKeyRef: environment.binding.signingKeyRef,
+      missionScope: environment.binding.missionScope,
+      validFromSequence: environment.binding.validFromSequence,
+      validThroughSequence: environment.binding.validThroughSequence,
+    },
+    implementationAuthority: authority,
+    runtimeBinding: runtimeWrapper,
+    publicationAuthority: publication,
+    constituentPayloads: [
+      { eventType: entries[0].type, payload: (entries[0] as Extract<typeof entries[number], { type: "governance.decided" }>).payload.evidence.payload },
+      { eventType: entries[1].type, payload: (entries[1] as Extract<typeof entries[number], { type: "implementation.authorized" }>).payload.authority.payload },
+      { eventType: entries[2].type, payload: (entries[2] as Extract<typeof entries[number], { type: "runtime.binding_recorded" }>).payload.authorization.payload },
+      { eventType: entries[3].type, payload: (entries[3] as Extract<typeof entries[number], { type: "review.publication_authorized" }>).payload.authorization.payload },
+    ],
+    exclusions: [...plan.exclusions],
+    remainingHumanGates: [...environment.remainingHumanGates],
+  };
+  const authorizationManifestDigest = `sha256:${createHash("sha256").update(canonicalJson(manifestWithoutDigest)).digest("base64url")}`;
+  return deepFreeze({
+    schemaVersion: 1 as const,
+    state: "already_authorized" as const,
+    missionId: plan.missionId,
+    missionRevisionId: projection.brief.revisionId,
+    headRevision: environment.repository.headRevision,
+    endingJournalSequence: projection.lastSequence,
+    authorizationManifestDigest,
+  });
+}
+
+export async function resolvePreparedMissionTransitionV1(input: unknown): Promise<ResolvePreparedMissionTransitionResultV1> {
+  let copied: unknown;
+  try { copied = cloneClosedData(input); } catch { return blocked("unknown", "invalid_resolution_input", "Resolution input is not closed data."); }
+  if (!exact(copied, ["missionId", "repositoryRoot"]) || !identifier(copied.missionId) || typeof copied.repositoryRoot !== "string" || copied.repositoryRoot.length === 0) {
+    return blocked("unknown", "invalid_resolution_input", "Resolution input must contain only missionId and repositoryRoot.");
+  }
+  const missionId = copied.missionId;
+  const graphResult = await readMissionReviewedTransitionGraphV1({ repositoryRoot: copied.repositoryRoot, missionId });
+  if (graphResult.state === "invalid") return blocked(missionId, "protected_evidence_mismatch", ...graphResult.errors);
+  const graph = graphResult.graph;
+  const attributionErrors = await revalidateStoredAttribution(copied.repositoryRoot, graph);
+  if (attributionErrors.length > 0) return blocked(missionId, "protected_evidence_mismatch", ...attributionErrors);
+  const config = await readConfig(copied.repositoryRoot);
+  if (config === null || config.repositoryId !== graph.transitionPlan.repositoryId) return blocked(missionId, "repository_configuration_mismatch");
+  let intent: ReturnType<typeof validateAuthorizeWheelsUpInput>;
+  let environment: AuthorizeWheelsUpEnvironmentObservationV1;
+  try {
+    intent = validateAuthorizeWheelsUpInput(graph.transitionPlan.schemaId === "mission.transition-plan.v1" ? {
+      baseRevision: graph.transitionPlan.planningBaseRevision,
+      modelId: graph.transitionPlan.modelId,
+      approvedRelativePaths: [...graph.transitionPlan.approvedRelativePaths],
+      approvedActionIds: [...graph.transitionPlan.approvedActionIds],
+      approvedEffectClasses: [...graph.transitionPlan.approvedEffectClasses],
+      approvedEffectKeys: [...graph.transitionPlan.approvedEffectKeys],
+      approvedCapabilities: [...graph.transitionPlan.approvedCapabilities],
+      validationCommandIds: [...graph.transitionPlan.validationCommandIds],
+      reasoningRuntimeId: graph.transitionPlan.reasoningRuntimeId,
+      toolExecutorId: graph.transitionPlan.toolExecutorId,
+      publicationPaths: [...graph.transitionPlan.publicationPaths],
+    } : null);
+    environment = await observeAuthorizeWheelsUpEnvironmentV1({ root: copied.repositoryRoot, config, missionId, intent });
+  } catch (error) {
+    return blocked(missionId, "repository_observation_stale", error instanceof Error ? error.message : "Live mission observation failed.");
+  }
+  const observation = buildObservation(graph, environment);
+  if (observation === null) return blocked(missionId, "freshness_evidence_incomplete", "Live observation contract could not be built.");
+  if (environment.current.projection.authorization === "authorized") {
+    const retry = alreadyAuthorizedResult(graph, environment);
+    return retry ?? blocked(missionId, "authority_conflict", "Existing authority is partial, duplicated, replaced, or semantically mismatched.");
+  }
+  const prepared = prepareMissionTransitionV1({
+    plan: graph.transitionPlan,
+    reviewEvidence: graph.parentPlanReviewEvidence,
+    intent: graph.transitionIntent,
+    observation,
+  });
+  if (prepared.state === "invalid") return blocked(missionId, prepared.reasonCode, ...prepared.errors);
+  if (prepared.state === "blocked") return blocked(missionId, prepared.selection.reasonCode ?? "preparation_blocked");
+  return deepFreeze({
+    state: "ready" as const,
+    missionId,
+    candidate: prepared.candidate,
+    observation,
+    preparationReceipt: prepared.receipt,
+  });
 }

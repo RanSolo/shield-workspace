@@ -52,6 +52,11 @@ export type MissionReviewedTransitionGraphMaterializationResultV1 = Readonly<
   | { state: "invalid"; code: "invalid_materialization_graph"; errors: readonly string[] }
 >;
 
+export type MissionReviewedTransitionGraphReadResultV1 = Readonly<
+  | { state: "read"; graphPath: string; graph: MissionReviewedTransitionGraphV1; bytes: string }
+  | { state: "invalid"; code: "reviewed_transition_graph_unavailable"; errors: readonly string[] }
+>;
+
 type MissionReviewedTransitionGraphFileHandle = Awaited<ReturnType<typeof open>>;
 type MissionReviewedTransitionGraphFileIdentity = Pick<MissionReviewedTransitionGraphFileStats, "dev" | "ino">;
 
@@ -697,6 +702,61 @@ export async function materializeMissionReviewedTransitionGraphV1(
   dependencies: Partial<MissionReviewedTransitionGraphMaterializationDependencies> = {},
 ): Promise<MissionReviewedTransitionGraphMaterializationResultV1> {
   return materializeMissionReviewedTransitionGraphV1WithDependencies(input, materializationDependencies(dependencies));
+}
+
+export async function readMissionReviewedTransitionGraphV1(input: unknown): Promise<MissionReviewedTransitionGraphReadResultV1> {
+  const copied = cloneClosedData(input);
+  if (!plain(copied) || !exact(copied, ["repositoryRoot", "missionId"]) ||
+      typeof copied.repositoryRoot !== "string" || copied.repositoryRoot.length === 0 ||
+      typeof copied.missionId !== "string" || copied.missionId.length === 0) {
+    return Object.freeze({
+      state: "invalid",
+      code: "reviewed_transition_graph_unavailable",
+      errors: Object.freeze(["Reviewed transition graph read input is invalid."]),
+    });
+  }
+
+  const root = resolve(copied.repositoryRoot);
+  let paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(root, copied.missionId);
+  let handle: MissionReviewedTransitionGraphFileHandle | undefined;
+  try {
+    const canonicalRoot = await realpath(root);
+    paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(canonicalRoot, copied.missionId);
+    if (!inside(canonicalRoot, paths.graphPath)) throw new Error("Reviewed transition graph path escapes the repository root.");
+    for (const directory of [paths.shieldDirectory, paths.auditDirectory, paths.missionPreparationDirectory, paths.missionDirectory]) {
+      const stats = await lstat(directory);
+      if (!stats.isDirectory() || stats.isSymbolicLink() || await realpath(directory) !== directory) {
+        throw new Error("Reviewed transition graph directory is unsafe.");
+      }
+    }
+    const before = await lstat(paths.graphPath);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o777) !== MISSION_REVIEWED_TRANSITION_GRAPH_FILE_MODE) {
+      throw new Error("Reviewed transition graph is not a protected regular file.");
+    }
+    handle = await open(paths.graphPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.nlink !== 1 || !sameIdentity(before, opened) || (opened.mode & 0o777) !== MISSION_REVIEWED_TRANSITION_GRAPH_FILE_MODE) {
+      throw new Error("Reviewed transition graph identity changed during read.");
+    }
+    const bytes = await handle.readFile("utf8");
+    const after = await lstat(paths.graphPath);
+    if (!sameIdentity(opened, after) || after.nlink !== 1) throw new Error("Reviewed transition graph was replaced during read.");
+    let parsed: unknown;
+    try { parsed = JSON.parse(bytes); } catch { throw new Error("Reviewed transition graph JSON is malformed."); }
+    const validated = validateMissionReviewedTransitionGraphV1(parsed);
+    if (validated.state === "invalid" || validated.value.transitionPlan.missionId !== copied.missionId || canonicalJson(validated.value) !== bytes) {
+      throw new Error("Reviewed transition graph content is invalid or non-canonical.");
+    }
+    return Object.freeze({ state: "read", graphPath: paths.graphPath, graph: validated.value, bytes });
+  } catch (error) {
+    return Object.freeze({
+      state: "invalid",
+      code: "reviewed_transition_graph_unavailable",
+      errors: Object.freeze([error instanceof Error ? error.message : "Reviewed transition graph could not be read."]),
+    });
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 export interface MissionReviewedTransitionGraphV1 {

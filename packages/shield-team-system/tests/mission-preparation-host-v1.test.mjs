@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   buildMissionTransitionPlanReviewV1,
@@ -10,6 +13,7 @@ import {
   computeMissionTransitionPlanReviewDigestV1,
   computeMissionTransitionPlanReviewIdV1,
   MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION,
+  resolvePreparedMissionTransitionV1,
 } from "../dist/mission-preparation-host-v1.mjs";
 import { computeRawReceiptSetSha256V1 } from "@shield/mission-preparation";
 import {
@@ -25,6 +29,14 @@ import {
 import {
   readSeatDispatchReceiptLedgerSnapshotV1,
 } from "../dist/seat-dispatch-store.mjs";
+import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
+import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import { createProfileAwareMissionBegunEntry, createProfileAwareMissionBrief, MISSION_130_JOURNAL_DIGEST } from "../dist/profile-aware-mission-v1.mjs";
+import { appendProfileAwareMissionEntriesAtomicV1 } from "../dist/mission-store.mjs";
+import { executeAuthorizeWheelsUpV1, validateAuthorizeWheelsUpInput } from "../dist/authorize-wheels-up-executor-v1.mjs";
+import { signerTestOnly } from "../dist/mission-signer.mjs";
+
+const CLI = fileURLToPath(new URL("../dist/cli.mjs", import.meta.url));
 
 const MISSION_ID = "mission:issue-270";
 const SUBJECT_ID = "github:RanSolo/shield-workspace/issue/270";
@@ -711,4 +723,153 @@ test("materialize binds raw receipt set deterministically and reports conflict w
   assert.equal(second.state, "materialization_conflict");
   assert.equal(second.existingGraphId, first.graphId);
   assert.equal(second.existingGraphDigest, first.graphDigest);
+});
+
+function git(root, args) {
+  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: { ...process.env, LANG: "C", LC_ALL: "C" } }).trim();
+}
+
+async function resolutionFixture() {
+  const repositoryRoot = await repository();
+  await mkdir(join(repositoryRoot, ".shield"));
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const homeRoot = await mkdtemp(join(tmpdir(), "shield-270-signer-home-"));
+  const createdSigner = await signerTestOnly.createSigner(
+    { seatId: "coulson", bindingId: "binding:coulson", humanPrincipalId: "human:coulson" },
+    "turnkey-passcode",
+    { homeDirectory: homeRoot, generateKeyPair: () => ({ privateKey, publicKey }) },
+  );
+  const publicKeySpkiBase64 = createdSigner.publicKeySpkiBase64;
+  const signingKeyRef = createdSigner.signingKeyRef;
+  const binding = {
+    schemaVersion: 1, bindingId: "binding:coulson", humanPrincipalId: "human:coulson", seatId: "coulson", missionScope: "*",
+    signingKeyRef, publicKeySpkiBase64, validFromSequence: 0, validThroughSequence: null,
+    attestedBy: "repository-policy:maintainer", provenanceRef: "repository-config:coulson",
+  };
+  const config = createShieldConfig({
+    repositoryId: REPOSITORY_ID,
+    repositoryTrustProfileId: "coulson_only_platform_review",
+    coulsonBindingRef: signingKeyRef,
+  });
+  await writeFile(join(repositoryRoot, ".shield", "config.json"), formatShieldConfig(config));
+  await writeFile(join(repositoryRoot, ".shield", ".gitignore"), "/journals/\n/audit/\n/tmp/\n/dispatch-receipts.jsonl\n");
+  await writeFile(join(repositoryRoot, "package.json"), "{\"private\":true}\n");
+  git(repositoryRoot, ["init", "-q"]);
+  git(repositoryRoot, ["config", "user.email", "shield@example.invalid"]);
+  git(repositoryRoot, ["config", "user.name", "SHIELD Host Fixture"]);
+  git(repositoryRoot, ["remote", "add", "origin", `https://github.com/${REPOSITORY_ID}.git`]);
+  git(repositoryRoot, ["add", ".shield/config.json", ".shield/.gitignore", "package.json"]);
+  git(repositoryRoot, ["commit", "-qm", "preparation base"]);
+  const baseRevision = git(repositoryRoot, ["rev-parse", "HEAD"]);
+  await writeFile(join(repositoryRoot, "implementation.md"), "bounded implementation\n");
+  git(repositoryRoot, ["add", "implementation.md"]);
+  git(repositoryRoot, ["commit", "-qm", "preparation head"]);
+  const headRevision = git(repositoryRoot, ["rev-parse", "HEAD"]);
+
+  const plan = transitionPlan({
+    planningBaseRevision: baseRevision,
+    publicationPaths: ["implementation.md"],
+    approvedRelativePaths: ["implementation.md"],
+  });
+  const review = reviewForPlan(plan);
+  const identity = dispatchIdentity(plan, review, { repositoryRevision: headRevision });
+  const start = dispatchStarted(identity);
+  const completed = dispatchLifecycle(start, identity, "dispatch.completed", { outputEvidenceRefs: reviewOutputRefs(review) });
+  await writeDispatchLog(repositoryRoot, [start, completed]);
+  await mkdir(join(repositoryRoot, ".shield", "tmp"));
+  await writeFile(join(repositoryRoot, ".shield", "tmp", "transition-plan.json"), `${JSON.stringify(plan)}\n`);
+  await writeFile(join(repositoryRoot, ".shield", "tmp", "transition-review.json"), `${JSON.stringify(review)}\n`);
+  const recorded = spawnSync(process.execPath, [CLI, "mission", "record-reviewed-transition",
+    "--transition-plan", ".shield/tmp/transition-plan.json", "--review-artifact", ".shield/tmp/transition-review.json",
+    "--dispatch-receipt-id", identity.receiptId, "--mission-id", MISSION_ID, "--root", repositoryRoot], {
+    cwd: repositoryRoot, encoding: "utf8", env: { ...process.env, HOME: homeRoot },
+  });
+  assert.equal(recorded.status, 0, recorded.stderr);
+  assert.equal(JSON.parse(recorded.stdout).state, "materialized");
+
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2, missionId: MISSION_ID, objective: "Exercise turnkey mission preparation.", subjectId: SUBJECT_ID,
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false },
+    participants: ["hill", "may", "coulson", "fitz"].map((seatId) => ({ seatId })), activatedModes: [], requireSimmons: false,
+    createdAt: { value: "2026-08-11T12:00:00Z", provenance: "humanRecorded" }, profileId: "standard", profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"], predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const begun = createProfileAwareMissionBegunEntry(brief, [binding]);
+  const journalPath = join(repositoryRoot, ".shield", "journals", `${Buffer.from(MISSION_ID).toString("base64url")}.jsonl`);
+  await mkdir(join(repositoryRoot, ".shield", "journals"));
+  await writeFile(journalPath, `${JSON.stringify(begun)}\n`);
+  return { repositoryRoot, config, plan, privateKey, headRevision, journalPath, homeRoot };
+}
+
+test("resolve compiles a fresh candidate, blocks before a PIN on drift, executes once, and returns an idempotent retry", async () => {
+  const fixture = await resolutionFixture();
+  const fresh = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(fresh.state, "ready", JSON.stringify(fresh));
+  assert.deepEqual(fresh.candidate.actionInput, validateAuthorizeWheelsUpInput(fresh.candidate.actionInput));
+
+  await writeFile(join(fixture.repositoryRoot, "dirty.txt"), "dirty\n");
+  const blocked = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.reasonCode, "repository_observation_stale");
+  const blockedCli = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+    cwd: fixture.repositoryRoot, encoding: "utf8", input: "unused\n", env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(blockedCli.status, 1);
+  assert.equal(JSON.parse(blockedCli.stdout).reasonCode, "repository_observation_stale");
+  assert.doesNotMatch(blockedCli.stderr, /Passcode:/u);
+  await import("node:fs/promises").then(({ unlink }) => unlink(join(fixture.repositoryRoot, "dirty.txt")));
+
+  const calls = { render: 0, pin: 0, sign: 0, append: 0 };
+  const executed = await executeAuthorizeWheelsUpV1({
+    root: fixture.repositoryRoot,
+    config: fixture.config,
+    missionId: MISSION_ID,
+    intent: validateAuthorizeWheelsUpInput(fresh.candidate.actionInput),
+    timestamp: { value: "2026-08-11T12:01:00Z", provenance: "hostTrusted" },
+    humanMode: false,
+    promptOutput: { write: () => {} },
+    expectedPreparation: { candidate: fresh.candidate, observation: fresh.observation },
+    dependencies: {
+      renderDecision: () => { calls.render += 1; return "{}"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signBatch: async (_binding, _passcode, payloads) => { calls.sign += 1; return payloads.map((payload) => sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64")); },
+      appendBatchAtomic: async (input) => { calls.append += 1; return appendProfileAwareMissionEntriesAtomicV1(input); },
+    },
+  });
+  assert.equal(executed, 0);
+  assert.deepEqual(calls, { render: 1, pin: 1, sign: 1, append: 1 });
+
+  const retry = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(retry.state, "already_authorized", JSON.stringify(retry));
+  assert.equal(retry.headRevision, fixture.headRevision);
+  assert.equal(retry.endingJournalSequence, 4);
+});
+
+test("real prepare-next CLI performs one key turn and an exact retry does not prompt or append", async () => {
+  const fixture = await resolutionFixture();
+  const first = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+    cwd: fixture.repositoryRoot,
+    encoding: "utf8",
+    input: "turnkey-passcode\n",
+    env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(first.status, 0, first.stderr);
+  const receipt = JSON.parse(first.stdout);
+  assert.equal(receipt.endingJournalSequence, 4);
+  assert.deepEqual(receipt.constituents.map(({ eventType }) => eventType), [
+    "governance.decided", "implementation.authorized", "runtime.binding_recorded", "review.publication_authorized",
+  ]);
+  const bytesAfterFirst = await readFile(fixture.journalPath, "utf8");
+
+  const retry = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--human"], {
+    cwd: fixture.repositoryRoot,
+    encoding: "utf8",
+    env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.match(retry.stdout, /^state: already_authorized\n/u);
+  assert.equal(retry.stdout.includes(`authorizationManifestDigest: ${receipt.manifestDigest}\n`), true);
+  assert.doesNotMatch(`${retry.stdout}${retry.stderr}`, /Passcode:/u);
+  assert.equal(await readFile(fixture.journalPath, "utf8"), bytesAfterFirst);
 });

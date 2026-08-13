@@ -48,6 +48,10 @@ import {
   renderAuthorizeWheelsUpHumanV1,
   renderAuthorizeWheelsUpReceiptHumanV1,
 } from "./mission-human-output-v1.mjs";
+import type {
+  FreshAuthorizeWheelsUpCandidateV1,
+  FreshAuthorizeWheelsUpObservationV1,
+} from "@shield/mission-preparation";
 
 interface RepositoryObservation {
   canonicalRoot: string;
@@ -194,6 +198,7 @@ type PreparedAuthorizeWheelsUp = {
   publicationAuthority: ReviewPublicationAuthorityV1;
   payloads: readonly unknown[];
   manifest: Readonly<Record<string, unknown>>;
+  environment: AuthorizeWheelsUpEnvironmentObservationV1;
 };
 
 type ProfileAwareJournal = Extract<MissionJournalDisplay, { kind: "profile-aware" }>;
@@ -424,6 +429,61 @@ function remainingOnePasscodeHumanGates(current: ProfileAwareJournal): string[] 
   return [...gates].sort((left, right) => left.localeCompare(right));
 }
 
+export interface AuthorizeWheelsUpEnvironmentObservationV1 {
+  readonly current: ProfileAwareJournal;
+  readonly configuredJournalPath: string;
+  readonly repository: PublicationRepositoryObservation;
+  readonly journalBytes: string;
+  readonly journalSha256: string;
+  readonly binding: TrustedHumanBinding;
+  readonly signerBindingMatchCount: number;
+  readonly pendingCoulsonMissionAuthorizationCount: number;
+  readonly symlinkPaths: readonly string[];
+  readonly gitlinkPaths: readonly string[];
+  readonly remainingHumanGates: readonly string[];
+}
+
+export async function observeAuthorizeWheelsUpEnvironmentV1(input: {
+  readonly root: string;
+  readonly config: ShieldConfig;
+  readonly missionId: string;
+  readonly intent: Readonly<WheelsUpIntent>;
+}): Promise<AuthorizeWheelsUpEnvironmentObservationV1> {
+  const current = await currentProfileAwareMission(input.root, input.config, input.missionId);
+  const repository = await observePublicationRepository(
+    input.root,
+    input.config.repositoryId,
+    input.intent.baseRevision,
+    input.intent.publicationPaths,
+    canonicalPublicationPathCompare,
+  );
+  const pathKinds = publicationPathKinds(repository, canonicalPublicationPathCompare);
+  const binding = coulsonBinding(current);
+  const configuredCoulsonRefs = input.config.trustedHumanBindingRefs
+    .filter(({ seatId }) => seatId === "coulson")
+    .map(({ bindingRef }) => bindingRef);
+  const signerBindingMatchCount = configuredCoulsonRefs.filter((bindingRef) => bindingRef === binding.signingKeyRef).length;
+  const satisfied = new Set(current.projection.evidence.map(({ requirementId }) => requirementId));
+  const pendingCoulsonMissionAuthorizationCount = current.projection.requirements.filter(({ evidenceKind, requiredRoleId, phase, requirementId }) =>
+    evidenceKind === "mission_authorization" && requiredRoleId === "coulson" && phase === "authorization" && !satisfied.has(requirementId)).length;
+  const journalPaths = resolveSupervisedMissionPaths(input.root, input.config.paths.journals, input.missionId);
+  if (journalPaths.state !== "valid") throw new Error(journalPaths.errors.join(" "));
+  const journalBytes = await readFile(journalPaths.value.journalPath, "utf8");
+  return canonicalSnapshot({
+    current,
+    configuredJournalPath: input.config.paths.journals,
+    repository,
+    journalBytes,
+    journalSha256: journalByteSha256(journalBytes),
+    binding,
+    signerBindingMatchCount,
+    pendingCoulsonMissionAuthorizationCount,
+    symlinkPaths: pathKinds.symlinks,
+    gitlinkPaths: pathKinds.gitlinks,
+    remainingHumanGates: remainingOnePasscodeHumanGates(current),
+  });
+}
+
 function assertPreparedAuthorizeWheelsUpFresh(initial: PreparedAuthorizeWheelsUp, fresh: PreparedAuthorizeWheelsUp): void {
   if (fresh.configurationIdentity !== initial.configurationIdentity ||
       canonicalJson(fresh.observation) !== canonicalJson(initial.observation) ||
@@ -443,7 +503,8 @@ async function prepareAuthorizeWheelsUp(
   intent: Readonly<WheelsUpIntent>,
   timestamp: { value: string; provenance: "hostTrusted" },
 ): Promise<PreparedAuthorizeWheelsUp> {
-  const current = await currentProfileAwareMission(root, config, missionId);
+  const environment = await observeAuthorizeWheelsUpEnvironmentV1({ root, config, missionId, intent });
+  const current = environment.current;
   if (current.projection.authorization !== "waiting" || current.projection.execution !== "not-started" ||
       current.projection.implementationAuthorityState !== "waiting" || current.projection.implementationAuthority !== null ||
       current.projection.runtimeBindings.length !== 0 || current.projection.activeRuntimeBindings.length !== 0 ||
@@ -461,15 +522,15 @@ async function prepareAuthorizeWheelsUp(
     throw new Error("May seat, reasoning runtime, model, and tool executor must be mutually distinct and cannot be mission participants.");
   }
 
-  const observation = await observePublicationRepository(root, config.repositoryId, intent.baseRevision, intent.publicationPaths, canonicalPublicationPathCompare);
-  const pathKinds = publicationPathKinds(observation, canonicalPublicationPathCompare);
+  const observation = environment.repository;
+  const pathKinds = { symlinks: environment.symlinkPaths, gitlinks: environment.gitlinkPaths };
   if (observation.remoteRepositoryId !== config.repositoryId) throw new Error("Repository origin does not match configured repository identity.");
   if (observation.statusEntries.length !== 0) throw new Error("Authorize Wheels Up requires an exactly clean workspace.");
   if (canonicalJson(observation.changedPaths) !== canonicalJson(intent.publicationPaths)) {
     throw new Error("Initial draft publication paths must exactly equal the observed base-to-HEAD change set.");
   }
 
-  const binding = coulsonBinding(current);
+  const binding = environment.binding;
   const start = current.projection.lastSequence;
   const governancePayload = {
     schemaVersion: 1 as const,
@@ -630,11 +691,8 @@ async function prepareAuthorizeWheelsUp(
     timestamp,
   };
   const payloads = canonicalSnapshot([governancePayload, implementationAuthority, runtimeAuthorizationPayload, publicationPayload]);
-  const journalPaths = resolveSupervisedMissionPaths(root, config.paths.journals, missionId);
-  if (journalPaths.state !== "valid") throw new Error(journalPaths.errors.join(" "));
-  const journalText = await readFile(journalPaths.value.journalPath, "utf8");
-  const journalBytes = journalText;
-  const startingJournalSha256 = journalByteSha256(journalBytes);
+  const journalBytes = environment.journalBytes;
+  const startingJournalSha256 = environment.journalSha256;
   const manifestWithoutDigest = {
     schemaVersion: 1,
     schemaId: "shield.wheels-up-authorization-manifest.v1",
@@ -692,7 +750,96 @@ async function prepareAuthorizeWheelsUp(
     publicationAuthority,
     payloads,
     manifest,
+    environment,
   };
+}
+
+function assertPreparedProjectionMatchesCandidate(
+  prepared: PreparedAuthorizeWheelsUp,
+  candidate: FreshAuthorizeWheelsUpCandidateV1,
+  observation: FreshAuthorizeWheelsUpObservationV1,
+): void {
+  const actionInput = validateAuthorizeWheelsUpInput(candidate.actionInput);
+  if (canonicalJson(actionInput) !== canonicalJson({
+    baseRevision: prepared.observation.baseRevision,
+    modelId: prepared.implementationAuthority.modelId,
+    approvedRelativePaths: prepared.implementationAuthority.approvedRelativePaths,
+    approvedActionIds: prepared.implementationAuthority.approvedActionIds,
+    approvedEffectClasses: prepared.implementationAuthority.approvedEffectClasses,
+    approvedEffectKeys: prepared.implementationAuthority.approvedEffectKeys,
+    approvedCapabilities: prepared.implementationAuthority.approvedCapabilities,
+    validationCommandIds: prepared.implementationAuthority.validationCommandIds,
+    reasoningRuntimeId: prepared.runtimeBinding.binding.reasoningRuntimeId,
+    toolExecutorId: prepared.runtimeBinding.binding.toolExecutorId,
+    publicationPaths: prepared.publicationAuthority.authorizedPaths,
+  })) throw new Error("Prepared candidate action projection does not match the legacy Wheels Up intent.");
+
+  const decisionProjection = {
+    missionId: prepared.current.projection.missionId,
+    subjectId: prepared.current.projection.brief.subjectId,
+    repositoryId: prepared.observation.configuredRepositoryId,
+    branch: prepared.observation.branch,
+    baseRevision: prepared.observation.baseRevision,
+    headRevision: prepared.observation.headRevision,
+    approvedRelativePaths: prepared.implementationAuthority.approvedRelativePaths,
+    publicationPaths: prepared.publicationAuthority.authorizedPaths,
+    approvedActionIds: prepared.implementationAuthority.approvedActionIds,
+    approvedEffectClasses: prepared.implementationAuthority.approvedEffectClasses,
+    approvedEffectKeys: prepared.implementationAuthority.approvedEffectKeys,
+    approvedCapabilities: prepared.implementationAuthority.approvedCapabilities,
+    validationCommandIds: prepared.implementationAuthority.validationCommandIds,
+    seatId: "may",
+    modelId: prepared.implementationAuthority.modelId,
+    reasoningRuntimeId: prepared.runtimeBinding.binding.reasoningRuntimeId,
+    toolExecutorId: prepared.runtimeBinding.binding.toolExecutorId,
+    eventKinds: ["governance.decided", "implementation.authorized", "runtime.binding_recorded", "review.publication_authorized"],
+    publicationEffects: [...INITIAL_DRAFT_EFFECTS],
+    exclusions: [...ONE_PASSCODE_EXCLUSIONS],
+    remainingHumanGates: prepared.environment.remainingHumanGates,
+  };
+  if (canonicalJson(candidate.decisionProjection) !== canonicalJson(decisionProjection)) {
+    throw new Error("Prepared candidate decision projection does not match the legacy Wheels Up decision.");
+  }
+
+  const projectedObservation = {
+    schemaId: observation.schemaId,
+    authority: observation.authority,
+    id: observation.id,
+    digest: observation.digest,
+    missionId: prepared.current.projection.missionId,
+    subjectId: prepared.current.projection.brief.subjectId,
+    repositoryId: prepared.observation.configuredRepositoryId,
+    canonicalRoot: prepared.observation.canonicalRoot,
+    branch: prepared.observation.branch,
+    planningBaseRevision: observation.planningBaseRevision,
+    baseRevision: prepared.observation.baseRevision,
+    headRevision: prepared.observation.headRevision,
+    baseAncestor: prepared.observation.baseAncestor,
+    workspaceClean: prepared.observation.statusEntries.length === 0,
+    changedPaths: prepared.observation.changedPaths,
+    symlinkPaths: prepared.environment.symlinkPaths,
+    gitlinkPaths: prepared.environment.gitlinkPaths,
+    missionSchemaVersion: prepared.current.projection.schemaVersion,
+    authorizationState: prepared.current.projection.authorization,
+    implementationAuthorityState: prepared.current.projection.implementationAuthorityState,
+    finalAcceptanceState: prepared.current.projection.finalAcceptance,
+    executionState: prepared.current.projection.execution,
+    implementationAuthorityCount: prepared.current.projection.implementationAuthority === null ? 0 : 1,
+    runtimeBindingCount: prepared.current.projection.runtimeBindings.length,
+    activeRuntimeBindingCount: prepared.current.projection.activeRuntimeBindings.length,
+    publicationAuthorizationCount: prepared.current.projection.publicationAuthorizations.length,
+    pendingCoulsonMissionAuthorizationCount: prepared.environment.pendingCoulsonMissionAuthorizationCount,
+    journalSequence: prepared.current.projection.lastSequence,
+    journalSha256: prepared.environment.journalSha256,
+    signerBindingId: prepared.environment.binding.bindingId,
+    signingKeyRef: prepared.environment.binding.signingKeyRef,
+    signerBindingMatchCount: prepared.environment.signerBindingMatchCount,
+    remainingHumanGates: prepared.environment.remainingHumanGates,
+    preparationEligibility: "preparationEligible",
+  };
+  if (canonicalJson(observation) !== canonicalJson(projectedObservation)) {
+    throw new Error("Prepared repository, journal, signer, or gate projection does not match the compiler observation.");
+  }
 }
 
 export interface AuthorizeWheelsUpV1RenderInput {
@@ -702,7 +849,7 @@ export interface AuthorizeWheelsUpV1RenderInput {
   humanMode: boolean;
 }
 
-export interface AuthorizeWheelsUpV1Dependencies {
+export interface AuthorizeWheelsUpExecutionDependenciesV1 {
   renderDecision: (input: AuthorizeWheelsUpV1RenderInput) => string;
   readPasscode: (promptOutput: { write: (output: string) => void }) => Promise<string>;
   signBatch: (
@@ -719,6 +866,8 @@ export interface AuthorizeWheelsUpV1Dependencies {
   }) => Promise<ContractResult<ProfileAwareBatchReceipt>>;
 }
 
+export type AuthorizeWheelsUpV1Dependencies = AuthorizeWheelsUpExecutionDependenciesV1;
+
 export interface ExecuteAuthorizeWheelsUpV1Input {
   root: string;
   config: ShieldConfig;
@@ -727,7 +876,11 @@ export interface ExecuteAuthorizeWheelsUpV1Input {
   timestamp: { value: string; provenance: "hostTrusted" };
   humanMode: boolean;
   promptOutput: { write: (output: string) => void };
-  dependencies?: Partial<AuthorizeWheelsUpV1Dependencies>;
+  expectedPreparation?: Readonly<{
+    candidate: FreshAuthorizeWheelsUpCandidateV1;
+    observation: FreshAuthorizeWheelsUpObservationV1;
+  }>;
+  dependencies?: Partial<AuthorizeWheelsUpExecutionDependenciesV1>;
 }
 
 function defaultRenderDecision(input: AuthorizeWheelsUpV1RenderInput): string {
@@ -738,7 +891,7 @@ function defaultRenderDecision(input: AuthorizeWheelsUpV1RenderInput): string {
   if (input.humanMode) {
     return renderAuthorizeWheelsUpReceiptHumanV1(input.receipt as Parameters<typeof renderAuthorizeWheelsUpReceiptHumanV1>[0]);
   }
-  return `Authorize Wheels Up completed.\n${JSON.stringify(input.receipt, null, 2)}`;
+  return JSON.stringify(input.receipt, null, 2);
 }
 
 export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUpV1Input): Promise<number> {
@@ -750,6 +903,7 @@ export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUp
     timestamp,
     humanMode,
     promptOutput,
+    expectedPreparation,
     dependencies,
   } = input;
   const dependencyOverrides = dependencies ?? {};
@@ -768,6 +922,9 @@ export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUp
   }
 
   const prepared = await prepareAuthorizeWheelsUp(root, config, missionId, intent, timestamp);
+  if (expectedPreparation !== undefined) {
+    assertPreparedProjectionMatchesCandidate(prepared, expectedPreparation.candidate, expectedPreparation.observation);
+  }
   const manifestText = renderDecision({ kind: "manifest", manifest: prepared.manifest, humanMode });
   (humanMode ? process.stdout : process.stderr).write(`${manifestText}\n`);
 
@@ -937,7 +1094,7 @@ export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUp
     remainingHumanGates: remainingOnePasscodeHumanGates(prepared.current),
   };
   const finalReceipt = canonicalSnapshot({ ...receipt, receiptDigest: canonicalDigest(receipt) });
-  const receiptText = renderDecision({ kind: "receipt", receipt: finalReceipt, humanMode });
+  const receiptText = defaultRenderDecision({ kind: "receipt", receipt: finalReceipt, humanMode });
   process.stdout.write(`${receiptText}\n`);
 
   return 0;
