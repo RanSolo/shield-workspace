@@ -106,6 +106,10 @@
       "types": "./public/feature-operation.d.mts",
       "import": "./public/feature-operation.mjs"
     },
+    "./tdd-mission": {
+      "types": "./public/tdd-mission.d.mts",
+      "import": "./public/tdd-mission.mjs"
+    },
     "./feature-integration": {
       "types": "./public/feature-integration.d.mts",
       "import": "./public/feature-integration.mjs"

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 2,
+  "missionId": "mission:issue-162-bravo-correction-2",
+  "objective": "Correct only the seven direct issue #162 defects F2, F3, F4, F6, F7, F8, and F11 at the preserved implementation revision 87c889769093fe000d4bb0ef45c1da80bdb6f321 in four coherent behavioral packets, preserving the useful tdd.mission.v1 implementation and prior evidence while excluding hosted-Mack platform work, generalized identity/proxy hardening, publication execution, merge, deployment, release, and retroactive authorization.",
+  "subjectId": "github:RanSolo/shield-workspace/issue/162",
+  "riskFlags": {
+    "production": false,
+    "destructive": false,
+    "migration": false,
+    "credentialsOrSecurity": true,
+    "externalCommunication": false,
+    "merge": false,
+    "deploy": false,
+    "release": false,
+    "hillHighRisk": true
+  },
+  "participants": [
+    { "seatId": "hill" },
+    { "seatId": "fury" },
+    { "seatId": "may" },
+    { "seatId": "coulson" },
+    { "seatId": "fitz" }
+  ],
+  "activatedModes": [
+    {
+      "modeId": "delivery",
+      "modeVersion": "1.0.0",
+      "seatId": "hill",
+      "activationSource": "mission-brief"
+    }
+  ],
+  "requireSimmons": false,
+  "createdAt": {
+    "value": "2026-08-12T12:45:59Z",
+    "provenance": "hostTrusted"
+  },
+  "profileId": "standard",
+  "profileVersion": 1,
+  "requiredExecutionGateRoleIds": ["coulson"],
+  "requiredFinalAcceptanceGateRoleIds": ["coulson"],
+  "predecessorMissionId": "mission:issue-130",
+  "predecessorJournalDigest": "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9"
+}

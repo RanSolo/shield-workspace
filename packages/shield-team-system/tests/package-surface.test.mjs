@@ -11,6 +11,22 @@ const workspaceRoot = resolve(packageRoot, "../..");
 const missionPreparationPackageRoot = resolve(packageRoot, "../mission-preparation");
 const npmCache = join(tmpdir(), "shield-v0.3-2-npm-cache");
 
+test("documents the exported TDD mission evaluator and its exact effect boundary", async () => {
+  const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  const publicApi = await readFile(join(packageRoot, "PUBLIC_API.md"), "utf8");
+  const tddMission = await import("@shield/team-system/tdd-mission");
+
+  assert.deepEqual(manifest.exports["./tdd-mission"], {
+    types: "./public/tdd-mission.d.mts",
+    import: "./public/tdd-mission.mjs",
+  });
+  assert.equal(typeof tddMission.evaluateTddMissionV1, "function");
+  assert.match(
+    publicApi,
+    /\| `@shield\/team-system\/tdd-mission` \| Pure host-neutral, non-authoritative `tdd\.mission\.v1` evaluator; it performs no signing, journal append, dispatch, test execution, publication, or human-decision effect \|/u,
+  );
+});
+
 test("exports only the documented public package specifiers", async () => {
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   assert.deepEqual(Object.keys(manifest.exports), [
@@ -38,6 +54,7 @@ test("exports only the documented public package specifiers", async () => {
     "./profile-aware-mission",
     "./implementation-authority",
     "./feature-operation",
+    "./tdd-mission",
     "./feature-integration",
     "./daisy-coordination-authority",
     "./mission-runtime",
@@ -81,6 +98,7 @@ test("loads every supported runtime specifier", async () => {
   const missionBuilder = await import("@shield/team-system/mission-builder");
   const implementationAuthority = await import("@shield/team-system/implementation-authority");
   const featureOperation = await import("@shield/team-system/feature-operation");
+  const tddMission = await import("@shield/team-system/tdd-mission");
   const featureIntegration = await import("@shield/team-system/feature-integration");
   const daisyCoordinationAuthority = await import("@shield/team-system/daisy-coordination-authority");
   const sonarqube = await import("@shield/team-system/sonarqube");
@@ -119,6 +137,9 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(featureOperation.FEATURE_OPERATION_AUTHORITY_KIND, "epic_wheels_up");
   assert.equal(typeof featureOperation.evaluateFeatureOperationDerivedCandidateV1, "function");
   assert.equal(typeof featureOperation.verifySignedFeatureOperationAuthorityV1, "function");
+  assert.equal(tddMission.TDD_MISSION_SCHEMA_VERSION, 1);
+  assert.equal(tddMission.TDD_MISSION_CONTRACT_VERSION, "tdd.mission.v1");
+  assert.equal(typeof tddMission.evaluateTddMissionV1, "function");
   assert.equal(typeof featureOperation.evaluateFeatureOperationDerivedCandidateV2, "function");
   assert.equal(typeof featureOperation.verifySignedFeatureOperationAuthorityV2, "function");
   assert.equal(featureIntegration.FEATURE_INTEGRATION_CONTRACT_VERSION, "feature.integration.v1");
@@ -277,6 +298,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/feature-operation-v1.d.mts",
     "public/feature-operation.mjs",
     "public/feature-operation.d.mts",
+    "dist/tdd-mission-v1.mjs",
+    "dist/tdd-mission-v1.d.mts",
+    "public/tdd-mission.mjs",
+    "public/tdd-mission.d.mts",
     "dist/feature-integration-v1.mjs",
     "dist/feature-integration-v1.d.mts",
     "dist/feature-integration-store-v1.mjs",
@@ -454,6 +479,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type SignedFeatureOperationAuthorityV2,
     } from "@shield/team-system/feature-operation";
     import {
+      TDD_MISSION_CONTRACT_VERSION,
+      evaluateTddMissionV1,
+      type TddMissionEvaluationInputV1,
+      type TddMissionEvaluationV1,
+    } from "@shield/team-system/tdd-mission";
+    import {
       FEATURE_INTEGRATION_CONTRACT_VERSION,
       FEATURE_INTEGRATION_CONTRACT_VERSION_V2,
       FEATURE_INTEGRATION_CONTROLLER_CONTRACT_VERSION,
@@ -626,6 +657,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const featureOperationActiveLease = null as unknown as FeatureOperationActiveLeaseV1;
     const featureOperationCandidate = null as unknown as FeatureOperationDerivedCandidateV1;
     const evaluateFeatureOperation = evaluateFeatureOperationDerivedCandidateV1;
+    const tddMissionContract: "tdd.mission.v1" = TDD_MISSION_CONTRACT_VERSION;
+    const tddMissionInput = null as unknown as TddMissionEvaluationInputV1;
+    const tddMissionEvaluation: TddMissionEvaluationV1 = evaluateTddMissionV1(tddMissionInput);
     const featureOperationSchemaV2: 2 = FEATURE_OPERATION_SCHEMA_VERSION_V2;
     const featureOperationContractV2: "feature.operation.v2" = FEATURE_OPERATION_CONTRACT_VERSION_V2;
     const featureOperationPlanV2: FeatureOperationPlanV2 = {
@@ -749,7 +783,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, transitionPlanInput, transitionPlanResult, transitionPlanNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, canonicalRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, featureOperationContract, evaluateFeatureOperation, tddMissionContract, tddMissionInput, tddMissionEvaluation, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, transitionPlanInput, transitionPlanResult, transitionPlanNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
