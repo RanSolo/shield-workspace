@@ -176,6 +176,7 @@
     "build": "tsc -p tsconfig.build.json",
     "pretest": "npm run build",
     "test": "node --test tests/*.test.mjs",
+    "test:review-publication-executor": "node --test tests/review-publication-executor-v1.test.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {

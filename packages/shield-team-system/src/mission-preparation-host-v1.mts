@@ -24,6 +24,7 @@ import {
   buildMissionReviewedTransitionGraphV1,
   materializeMissionReviewedTransitionGraphV1,
   readMissionReviewedTransitionGraphV1,
+  type MissionReviewedTransitionGraphV1,
   type MissionReviewedTransitionGraphMaterializationResultV1,
 } from "./mission-preparation-store-v1.mjs";
 import { readSeatDispatchReceiptLedgerSnapshotV1 } from "./seat-dispatch-store.mjs";
@@ -49,7 +50,9 @@ import {
 import {
   computeReviewPublicationAuthorityDigest,
   type ReviewPublicationAuthorityV1,
+  type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
+import { replayProfileAwareMissionJournal } from "./profile-aware-mission-v1.mjs";
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION = "mission.transition-plan-review.v1" as const;
@@ -822,7 +825,95 @@ export type ResolvePreparedMissionTransitionResultV1 = Readonly<
       endingJournalSequence: number;
       authorizationManifestDigest: string;
     }
+  | PreparedPublicationReadyResultV1
+  | PreparedPublicationAlreadyAuthorizedResultV1
 >;
+
+export type PreparedPublicationReadyResultV1 = Readonly<{
+  schemaVersion: 1;
+  state: "publication_ready";
+  missionId: string;
+  protectedGraph: MissionReviewedTransitionGraphV1;
+  publicationIntent: Readonly<{
+    baseRevision: string;
+    authorizedPaths: readonly string[];
+    permittedEffects: readonly ["review.branch.push", "review.pull_request.create_draft"];
+  }>;
+  observation: Readonly<{
+    graphId: string;
+    graphDigest: string;
+    missionRevisionId: string;
+    repositoryId: string;
+    canonicalRoot: string;
+    branch: string;
+    baseRevision: string;
+    initialHeadRevision: string;
+    headRevision: string;
+    initialHeadAncestor: true;
+    workspaceClean: true;
+    changedPaths: readonly string[];
+    symlinkPaths: readonly string[];
+    gitlinkPaths: readonly string[];
+    journalSequence: number;
+    journalSha256: string;
+    signerBindingId: string;
+    signingKeyRef: string;
+    remainingHumanGates: readonly string[];
+  }>;
+}>;
+
+export type PreparedPublicationAlreadyAuthorizedResultV1 = Readonly<{
+  schemaVersion: 1;
+  state: "publication_already_authorized";
+  missionId: string;
+  missionRevisionId: string;
+  authorizationId: string;
+  authorityDigest: string;
+  journalSequence: number;
+}>;
+
+export type PreparedReviewPublicationSemanticTupleV1 = Readonly<{
+  publicationScopeSchemaVersion: 1;
+  contractVersion: "review-publication.v1";
+  authorityKind: "review.publish";
+  missionId: string;
+  subjectId: string;
+  missionRevisionId: string;
+  repositoryId: string;
+  canonicalRepositoryRoot: string;
+  branch: string;
+  baseRevisionId: string;
+  headRevisionId: string;
+  authorizedPaths: readonly string[];
+  permittedEffects: readonly ReviewPublicationEffect[];
+}>;
+
+export function projectPreparedReviewPublicationSemanticTupleV1(
+  authority: ReviewPublicationAuthorityV1,
+): PreparedReviewPublicationSemanticTupleV1 | null {
+  if (authority.publicationScopeSchemaVersion !== 1 || authority.contractVersion !== "review-publication.v1" ||
+      authority.authorityKind !== "review.publish") return null;
+  return deepFreeze({
+    publicationScopeSchemaVersion: authority.publicationScopeSchemaVersion,
+    contractVersion: authority.contractVersion,
+    authorityKind: authority.authorityKind,
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    repositoryId: authority.repositoryId,
+    canonicalRepositoryRoot: authority.canonicalRepositoryRoot,
+    branch: authority.branch,
+    baseRevisionId: authority.baseRevisionId,
+    headRevisionId: authority.headRevisionId,
+    authorizedPaths: [...authority.authorizedPaths],
+    permittedEffects: [...authority.permittedEffects],
+  });
+}
+
+type InitialWheelsUpLineageV1 = Readonly<{
+  initialHeadRevision: string;
+  exactRetry: Extract<ResolvePreparedMissionTransitionResultV1, { readonly state: "already_authorized" }> | null;
+}>;
 
 function blocked(missionId: string, reasonCode: string, ...errors: readonly string[]): ResolvePreparedMissionTransitionResultV1 {
   return deepFreeze({
@@ -1001,10 +1092,10 @@ async function revalidateStoredAttribution(
   return [];
 }
 
-function alreadyAuthorizedResult(
+function initialWheelsUpLineage(
   graph: import("./mission-preparation-store-v1.mjs").MissionReviewedTransitionGraphV1,
   environment: AuthorizeWheelsUpEnvironmentObservationV1,
-): ResolvePreparedMissionTransitionResultV1 | null {
+): InitialWheelsUpLineageV1 | null {
   const projection = environment.current.projection;
   if (projection.schemaVersion !== 9 || projection.authorization !== "authorized" || projection.implementationAuthorityState !== "authorized" ||
       projection.implementationAuthority === null || projection.runtimeBindings.length !== 1 || projection.activeRuntimeBindings.length !== 1 ||
@@ -1027,6 +1118,7 @@ function alreadyAuthorizedResult(
   const publication = publicationRecord.authority;
   const plan = graph.transitionPlan;
   const binding = environment.binding;
+  const initialHeadRevision = authority.headRevision;
   const authorizationRequirements = projection.requirements.filter(({ evidenceKind, requiredRoleId, phase }) =>
     evidenceKind === "mission_authorization" && requiredRoleId === "coulson" && phase === "authorization");
   const approvedCoulsonEvidence = projection.evidence.filter(({ evidenceKind, seatId, decision }) =>
@@ -1061,12 +1153,12 @@ function alreadyAuthorizedResult(
     subjectId: plan.subjectId,
     seatId: "may" as const,
     missionRevisionId: projection.brief.revisionId,
-    artifactRevisionId: environment.repository.headRevision,
+    artifactRevisionId: initialHeadRevision,
     repositoryId: plan.repositoryId,
     canonicalWritableRoot: environment.repository.canonicalRoot,
     branch: environment.repository.branch,
     baseRevision: plan.planningBaseRevision,
-    headRevision: environment.repository.headRevision,
+    headRevision: initialHeadRevision,
     modelId: plan.modelId,
     approvedRelativePaths: [...plan.approvedRelativePaths],
     approvedActionIds: [...plan.approvedActionIds],
@@ -1097,7 +1189,7 @@ function alreadyAuthorizedResult(
     repositoryId: plan.repositoryId,
     canonicalWritableRoot: environment.repository.canonicalRoot,
     branch: environment.repository.branch,
-    artifactRevisionId: environment.repository.headRevision,
+    artifactRevisionId: initialHeadRevision,
     recordedAtSequence: startingSequence + 3,
     activeThroughSequence: null,
     lifecycleState: "active" as const,
@@ -1119,7 +1211,7 @@ function alreadyAuthorizedResult(
     validationCommandIds: [...plan.validationCommandIds],
     modelId: plan.modelId,
     baseRevision: plan.planningBaseRevision,
-    headRevision: environment.repository.headRevision,
+    headRevision: initialHeadRevision,
   };
   const expectedRuntimeAuthorization = {
     schemaVersion: 1 as const,
@@ -1133,7 +1225,7 @@ function alreadyAuthorizedResult(
     priorBindingVersion: null,
     bindingDigest: computeRuntimeBindingDigest(expectedRuntime),
     schema9BindingDigest: computeSchema9RuntimeBindingDigest(expectedRuntimeWrapper),
-    artifactRevisionId: environment.repository.headRevision,
+    artifactRevisionId: initialHeadRevision,
     decision: "approved" as const,
     previousJournalSequence: startingSequence + 2,
     journalSequence: startingSequence + 3,
@@ -1155,7 +1247,7 @@ function alreadyAuthorizedResult(
     canonicalRepositoryRoot: environment.repository.canonicalRoot,
     branch: environment.repository.branch,
     baseRevisionId: plan.planningBaseRevision,
-    headRevisionId: environment.repository.headRevision,
+    headRevisionId: initialHeadRevision,
     authorizedPaths: [...plan.publicationPaths],
     permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
   };
@@ -1166,7 +1258,7 @@ function alreadyAuthorizedResult(
     missionId: plan.missionId,
     subjectId: plan.subjectId,
     missionRevisionId: projection.brief.revisionId,
-    artifactRevisionId: environment.repository.headRevision,
+    artifactRevisionId: initialHeadRevision,
     authorityKind: "wheels_up" as const,
     previousJournalSequence: startingSequence + 3,
     journalSequence: startingSequence + 4,
@@ -1197,14 +1289,18 @@ function alreadyAuthorizedResult(
   const expectedRemainingHumanGates = projection.brief.requireSimmons
     ? ["coulson.final_acceptance", "fitz.technical_review", "simmons.product_domain_review"]
     : ["coulson.final_acceptance", "fitz.technical_review"];
-  if (!workspaceClean || environment.repository.configuredRepositoryId !== plan.repositoryId ||
+  if (environment.repository.configuredRepositoryId !== plan.repositoryId ||
       environment.repository.remoteRepositoryId !== plan.repositoryId || environment.repository.canonicalRoot !== environment.repository.gitTopLevel ||
       environment.repository.branch === "HEAD" || environment.repository.baseRevision !== plan.planningBaseRevision ||
-      environment.repository.headRevision !== authority.headRevision || !environment.repository.baseAncestor ||
-      canonicalJson(environment.repository.changedPaths) !== canonicalJson(plan.publicationPaths) ||
-      environment.symlinkPaths.length !== 0 || environment.gitlinkPaths.length !== 0 ||
+      !environment.repository.baseAncestor ||
       canonicalJson(environment.remainingHumanGates) !== canonicalJson(expectedRemainingHumanGates) ||
       environment.journalSha256 !== journalByteSha256(environment.journalBytes)) return null;
+  const exactInitialRetry = workspaceClean && environment.repository.headRevision === initialHeadRevision &&
+    canonicalJson(environment.repository.changedPaths) === canonicalJson(plan.publicationPaths) &&
+    environment.symlinkPaths.length === 0 && environment.gitlinkPaths.length === 0;
+  if (!exactInitialRetry) {
+    return deepFreeze({ initialHeadRevision, exactRetry: null });
+  }
   const journalLines = environment.journalBytes.endsWith("\n") ? environment.journalBytes.slice(0, -1).split("\n") : [];
   if (journalLines.length !== projection.lastSequence + 1 || journalLines.length < 5) return null;
   const startingJournalBytes = `${journalLines.slice(0, -4).join("\n")}\n`;
@@ -1258,7 +1354,7 @@ function alreadyAuthorizedResult(
     remainingHumanGates: [...environment.remainingHumanGates],
   };
   const authorizationManifestDigest = `sha256:${createHash("sha256").update(canonicalJson(manifestWithoutDigest)).digest("base64url")}`;
-  return deepFreeze({
+  const exactRetry = deepFreeze({
     schemaVersion: 1 as const,
     state: "already_authorized" as const,
     missionId: plan.missionId,
@@ -1266,6 +1362,254 @@ function alreadyAuthorizedResult(
     headRevision: environment.repository.headRevision,
     endingJournalSequence: projection.lastSequence,
     authorizationManifestDigest,
+  });
+  return deepFreeze({ initialHeadRevision, exactRetry });
+}
+
+function publicationPathIsContained(path: string, approvedRoots: readonly string[]): boolean {
+  return approvedRoots.some((root) => path === root || path.startsWith(`${root}/`));
+}
+
+function samePreparedPublicationSnapshot(
+  initial: AuthorizeWheelsUpEnvironmentObservationV1,
+  current: AuthorizeWheelsUpEnvironmentObservationV1,
+): boolean {
+  const initialRepository = initial.repository;
+  const currentRepository = current.repository;
+  return initial.journalBytes === current.journalBytes && initial.journalSha256 === current.journalSha256 &&
+    initial.configuredJournalPath === current.configuredJournalPath &&
+    canonicalJson(initial.current) === canonicalJson(current.current) &&
+    canonicalJson(initial.binding) === canonicalJson(current.binding) &&
+    initial.signerBindingMatchCount === current.signerBindingMatchCount &&
+    initial.pendingCoulsonMissionAuthorizationCount === current.pendingCoulsonMissionAuthorizationCount &&
+    canonicalJson(initial.remainingHumanGates) === canonicalJson(current.remainingHumanGates) &&
+    initialRepository.configuredRepositoryId === currentRepository.configuredRepositoryId &&
+    initialRepository.originUrl === currentRepository.originUrl &&
+    initialRepository.remoteRepositoryId === currentRepository.remoteRepositoryId &&
+    initialRepository.canonicalRoot === currentRepository.canonicalRoot &&
+    initialRepository.gitTopLevel === currentRepository.gitTopLevel &&
+    initialRepository.branch === currentRepository.branch &&
+    initialRepository.headRevision === currentRepository.headRevision &&
+    canonicalJson(initialRepository.statusEntries) === canonicalJson(currentRepository.statusEntries);
+}
+
+async function preparedPublicationResult(
+  graph: MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+  initialHeadRevision: string,
+  config: ShieldConfig,
+  repositoryRoot: string,
+  journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
+): Promise<ResolvePreparedMissionTransitionResultV1> {
+  const missionId = graph.transitionPlan.missionId;
+  const projection = environment.current.projection;
+  const repository = environment.repository;
+  const changedPaths = [...repository.changedPaths];
+  if (repository.statusEntries.length !== 0) {
+    return blocked(missionId, "repository_observation_stale", "Prepared publication requires an exactly clean workspace.");
+  }
+  if (repository.headRevision === initialHeadRevision) {
+    return blocked(missionId, "authority_conflict", "Existing initial authority is not an exact retry and HEAD has not advanced.");
+  }
+  if (changedPaths.length === 0) {
+    return blocked(missionId, "authority_conflict", "Prepared publication requires a non-empty base-to-HEAD change set.");
+  }
+  const authority = projection.implementationAuthority;
+  if (authority === null ||
+      changedPaths.some((path) => !publicationPathIsContained(path, authority.approvedRelativePaths)) ||
+      changedPaths.some((path) => !publicationPathIsContained(path, graph.transitionPlan.approvedRelativePaths))) {
+    return blocked(missionId, "authority_conflict", "Prepared publication changed paths escape the approved implementation scope.");
+  }
+
+  let publicationEnvironment: AuthorizeWheelsUpEnvironmentObservationV1;
+  let ancestryEnvironment: AuthorizeWheelsUpEnvironmentObservationV1;
+  try {
+    const publicationIntent = validateAuthorizeWheelsUpInput({
+      baseRevision: graph.transitionPlan.planningBaseRevision,
+      modelId: graph.transitionPlan.modelId,
+      approvedRelativePaths: [...graph.transitionPlan.approvedRelativePaths],
+      approvedActionIds: [...graph.transitionPlan.approvedActionIds],
+      approvedEffectClasses: [...graph.transitionPlan.approvedEffectClasses],
+      approvedEffectKeys: [...graph.transitionPlan.approvedEffectKeys],
+      approvedCapabilities: [...graph.transitionPlan.approvedCapabilities],
+      validationCommandIds: [...graph.transitionPlan.validationCommandIds],
+      reasoningRuntimeId: graph.transitionPlan.reasoningRuntimeId,
+      toolExecutorId: graph.transitionPlan.toolExecutorId,
+      publicationPaths: changedPaths,
+    });
+    publicationEnvironment = await observeAuthorizeWheelsUpEnvironmentV1(
+      { root: repositoryRoot, config, missionId, intent: publicationIntent },
+      journalDependencies,
+    );
+    ancestryEnvironment = await observeAuthorizeWheelsUpEnvironmentV1(
+      {
+        root: repositoryRoot,
+        config,
+        missionId,
+        intent: validateAuthorizeWheelsUpInput({ ...publicationIntent, baseRevision: initialHeadRevision }),
+      },
+      journalDependencies,
+    );
+  } catch (error) {
+    return blocked(missionId, "repository_observation_stale", error instanceof Error ? error.message : "Prepared publication observation failed.");
+  }
+
+  if (!samePreparedPublicationSnapshot(environment, publicationEnvironment) ||
+      !samePreparedPublicationSnapshot(environment, ancestryEnvironment) ||
+      canonicalJson(publicationEnvironment.repository.changedPaths) !== canonicalJson(changedPaths) ||
+      publicationEnvironment.repository.baseRevision !== graph.transitionPlan.planningBaseRevision ||
+      ancestryEnvironment.repository.baseRevision !== initialHeadRevision ||
+      ancestryEnvironment.repository.headRevision !== repository.headRevision ||
+      changedPaths.some((path) => !publicationEnvironment.repository.headTreeEntries.some((entry) =>
+        entry.path === path && entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755"))) ||
+      publicationEnvironment.symlinkPaths.length !== 0 || publicationEnvironment.gitlinkPaths.length !== 0) {
+    return blocked(missionId, "repository_observation_stale", "Prepared publication repository or mission evidence changed during selection.");
+  }
+
+  return deepFreeze({
+    schemaVersion: 1 as const,
+    state: "publication_ready" as const,
+    missionId,
+    protectedGraph: graph,
+    publicationIntent: {
+      baseRevision: authority.baseRevision,
+      authorizedPaths: changedPaths,
+      permittedEffects: ["review.branch.push", "review.pull_request.create_draft"] as const,
+    },
+    observation: {
+      graphId: graph.graphId,
+      graphDigest: graph.graphDigest,
+      missionRevisionId: projection.brief.revisionId,
+      repositoryId: repository.configuredRepositoryId,
+      canonicalRoot: repository.canonicalRoot,
+      branch: repository.branch,
+      baseRevision: repository.baseRevision,
+      initialHeadRevision,
+      headRevision: repository.headRevision,
+      initialHeadAncestor: true as const,
+      workspaceClean: true as const,
+      changedPaths,
+      symlinkPaths: [...publicationEnvironment.symlinkPaths],
+      gitlinkPaths: [...publicationEnvironment.gitlinkPaths],
+      journalSequence: projection.lastSequence,
+      journalSha256: environment.journalSha256,
+      signerBindingId: environment.binding.bindingId,
+      signingKeyRef: environment.binding.signingKeyRef,
+      remainingHumanGates: [...environment.remainingHumanGates],
+    },
+  });
+}
+
+function initialLineageEnvironmentBeforePreparedPublication(
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+): AuthorizeWheelsUpEnvironmentObservationV1 | null {
+  const records = environment.current.projection.publicationAuthorizations;
+  if (records.length !== 2 || !environment.journalBytes.endsWith("\n")) return null;
+  const currentRecord = records[1];
+  const currentEntry = environment.current.entries[currentRecord.journalSequence];
+  if (currentEntry?.type !== "review.publication_authorized" || currentEntry.entryId !== currentRecord.entryId ||
+      currentEntry.sequence !== currentRecord.journalSequence) return null;
+  const lines = environment.journalBytes.slice(0, -1).split("\n");
+  if (lines.length !== environment.current.entries.length || currentRecord.journalSequence < 1) return null;
+  const entries = environment.current.entries.slice(0, currentRecord.journalSequence);
+  const replay = replayProfileAwareMissionJournal(entries);
+  if (replay.state === "invalid") return null;
+  const journalBytes = `${lines.slice(0, currentRecord.journalSequence).join("\n")}\n`;
+  return deepFreeze({
+    ...environment,
+    current: { kind: "profile-aware" as const, entries, projection: replay.value },
+    journalBytes,
+    journalSha256: journalByteSha256(journalBytes),
+  });
+}
+
+async function preparedPublicationAlreadyAuthorizedResult(
+  graph: MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+  initialHeadRevision: string,
+  config: ShieldConfig,
+  repositoryRoot: string,
+  journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
+): Promise<ResolvePreparedMissionTransitionResultV1> {
+  const selected = await preparedPublicationResult(
+    graph,
+    environment,
+    initialHeadRevision,
+    config,
+    repositoryRoot,
+    journalDependencies,
+  );
+  if (selected.state !== "publication_ready") return selected;
+
+  const projection = environment.current.projection;
+  const records = projection.publicationAuthorizations;
+  if (records.length !== 2) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Duplicate legacy publication recovery is deferred to #279.");
+  }
+  const currentRecord = records[1];
+  const sequence = currentRecord.journalSequence;
+  const authorization = currentRecord.authorization;
+  const entry = environment.current.entries[sequence];
+  const preparedProvenance = entry?.type === "review.publication_authorized" && entry.sequence === sequence &&
+    entry.entryId === currentRecord.entryId &&
+    currentRecord.authority.authorityRef === `authorization:${graph.transitionPlan.missionId}:review-publish:${sequence}` &&
+    authorization.authorizationId === currentRecord.authority.authorityRef &&
+    authorization.authorityDigest === computeReviewPublicationAuthorityDigest(currentRecord.authority) &&
+    authorization.authorityKind === "review.publish" && authorization.previousJournalSequence === sequence - 1 &&
+    authorization.journalSequence === sequence && authorization.sourceRef === `cli:prepare-next:publication-authorize:${sequence}` &&
+    canonicalJson(entry.payload.authority) === canonicalJson(currentRecord.authority) &&
+    canonicalJson(entry.payload.authorization.payload) === canonicalJson(authorization);
+  if (!preparedProvenance) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Duplicate or legacy publication authority recovery is deferred to #279.");
+  }
+
+  const expectedAuthority: ReviewPublicationAuthorityV1 = {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: currentRecord.authorization.authorizationId,
+    missionId: graph.transitionPlan.missionId,
+    subjectId: projection.brief.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    repositoryId: selected.observation.repositoryId,
+    canonicalRepositoryRoot: selected.observation.canonicalRoot,
+    branch: selected.observation.branch,
+    baseRevisionId: selected.publicationIntent.baseRevision,
+    headRevisionId: selected.observation.headRevision,
+    authorizedPaths: [...selected.publicationIntent.authorizedPaths],
+    permittedEffects: [...selected.publicationIntent.permittedEffects],
+  };
+  const expectedTuple = projectPreparedReviewPublicationSemanticTupleV1(expectedAuthority);
+  const matching = records.filter((record) => {
+    const tuple = projectPreparedReviewPublicationSemanticTupleV1(record.authority);
+    return tuple !== null && expectedTuple !== null && canonicalJson(tuple) === canonicalJson(expectedTuple);
+  });
+  if (matching.length !== 1 || matching[0] !== currentRecord) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Existing publication authorization meaning differs from the current prepared publication.");
+  }
+
+  const exactCurrentIdentity = sequence === projection.lastSequence && authorization.missionId === graph.transitionPlan.missionId &&
+    authorization.subjectId === projection.brief.subjectId &&
+    authorization.missionRevisionId === projection.brief.revisionId && authorization.artifactRevisionId === selected.observation.headRevision &&
+    authorization.humanPrincipalId === environment.binding.humanPrincipalId &&
+    authorization.humanBindingId === environment.binding.bindingId && authorization.signingKeyRef === environment.binding.signingKeyRef &&
+    environment.journalSha256 === journalByteSha256(environment.journalBytes);
+  if (!exactCurrentIdentity) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Existing prepared publication authorization identity is stale or conflicting.");
+  }
+  if (projection.communication.requests.some((request) =>
+    "publicationAuthorizationId" in request && request.publicationAuthorizationId === authorization.authorizationId)) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Existing prepared publication authorization has already been consumed or conflicted by a publication request.");
+  }
+
+  return deepFreeze({
+    schemaVersion: 1 as const,
+    state: "publication_already_authorized" as const,
+    missionId: graph.transitionPlan.missionId,
+    missionRevisionId: projection.brief.revisionId,
+    authorizationId: authorization.authorizationId,
+    authorityDigest: authorization.authorityDigest,
+    journalSequence: sequence,
   });
 }
 
@@ -1312,8 +1656,39 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
   const observation = buildObservation(graph, environment);
   if (observation === null) return blocked(missionId, "freshness_evidence_incomplete", "Live observation contract could not be built.");
   if (environment.current.projection.authorization === "authorized") {
-    const retry = alreadyAuthorizedResult(graph, environment);
-    return retry ?? blocked(missionId, "authority_conflict", "Existing authority is partial, duplicated, replaced, or semantically mismatched.");
+    const publicationCount = environment.current.projection.publicationAuthorizations.length;
+    if (publicationCount < 1 || publicationCount > 2) {
+      return blocked(missionId, "authority_conflict", "Duplicate legacy publication recovery is deferred to #279.");
+    }
+    const lineageEnvironment = publicationCount === 1
+      ? environment
+      : initialLineageEnvironmentBeforePreparedPublication(environment);
+    const lineage = lineageEnvironment === null ? null : initialWheelsUpLineage(graph, lineageEnvironment);
+    if (lineage === null) {
+      return blocked(missionId, "authority_conflict", "Existing authority is partial, duplicated, replaced, or semantically mismatched.");
+    }
+    if (publicationCount === 1 && lineage.exactRetry !== null) return lineage.exactRetry;
+    if (publicationCount === 2) {
+      if (lineage.exactRetry !== null) {
+        return blocked(missionId, "authority_conflict", "Duplicate legacy publication recovery is deferred to #279.");
+      }
+      return preparedPublicationAlreadyAuthorizedResult(
+        graph,
+        environment,
+        lineage.initialHeadRevision,
+        config,
+        copied.repositoryRoot,
+        journalDependencies,
+      );
+    }
+    return preparedPublicationResult(
+      graph,
+      environment,
+      lineage.initialHeadRevision,
+      config,
+      copied.repositoryRoot,
+      journalDependencies,
+    );
   }
   const prepared = prepareMissionTransitionV1({
     plan: graph.transitionPlan,

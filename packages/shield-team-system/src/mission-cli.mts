@@ -76,7 +76,16 @@ import {
   resolvePreparedMissionTransitionV1,
   resolveSeatDispatchIdentityByReceiptIdV1,
   validateMissionTransitionPlanReviewV1,
+  type PreparedPublicationAlreadyAuthorizedResultV1,
+  type ResolvePreparedMissionTransitionResultV1,
 } from "./mission-preparation-host-v1.mjs";
+import {
+  assertPublicationAuthorizationFreshnessV1,
+  executeReviewPublicationAuthorizationV1,
+  type PreparedReviewPublicationDecisionV1,
+  type PublicationRepositoryObservationV1,
+  type PublicationTreeEntryV1,
+} from "./review-publication-executor-v1.mjs";
 import { validateTransitionPlanV1 } from "@shield/mission-preparation";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
@@ -310,22 +319,8 @@ type PublicationRequestIntent = {
   targetRef: string;
   requestedEffects: ReviewPublicationEffect[];
 };
-export type PublicationTreeEntry = { mode: string; type: string; path: string };
-export type PublicationRepositoryObservation = {
-  configuredRepositoryId: string;
-  originUrl: string;
-  remoteRepositoryId: string;
-  canonicalRoot: string;
-  gitTopLevel: string;
-  branch: string;
-  baseRevision: string;
-  headRevision: string;
-  baseAncestor: true;
-  statusEntries: string[];
-  changedPaths: string[];
-  baseTreeEntries: PublicationTreeEntry[];
-  headTreeEntries: PublicationTreeEntry[];
-};
+export type PublicationTreeEntry = PublicationTreeEntryV1;
+export type PublicationRepositoryObservation = PublicationRepositoryObservationV1;
 
 const INITIAL_DRAFT_EFFECTS = Object.freeze([
   "review.branch.push",
@@ -516,37 +511,6 @@ async function gitValue(root: string, args: readonly string[]): Promise<string> 
   return (await gitOutput(root, args)).trim().split("\n")[0] ?? "";
 }
 
-function nulRecords(value: string, label: string): string[] {
-  if (value.length === 0) return [];
-  if (!value.endsWith("\0")) throw new MissionCliError(`${label} was not NUL-terminated.`, 1);
-  return value.slice(0, -1).split("\0");
-}
-
-function treeEntries(value: string, label: string): PublicationTreeEntry[] {
-  return nulRecords(value, label).map((record) => {
-    const match = /^(?<mode>[0-9]{6}) (?<type>[a-z]+) [0-9a-f]+\t(?<path>[\s\S]+)$/u.exec(record);
-    if (!match?.groups) throw new MissionCliError(`${label} contains malformed tree evidence.`, 1);
-    return { mode: match.groups.mode, type: match.groups.type, path: match.groups.path };
-  });
-}
-
-function exactTreeEntries(value: string, label: string, authorizedPaths: readonly string[]): PublicationTreeEntry[] {
-  const entries = treeEntries(value, label);
-  const authorized = new Set(authorizedPaths);
-  const observed = new Set<string>();
-  for (const entry of entries) {
-    if (!authorized.has(entry.path) || observed.has(entry.path)) {
-      throw new MissionCliError(`${label} contains an unexpected or duplicate path.`, 1);
-    }
-    observed.add(entry.path);
-  }
-  return entries;
-}
-
-function literalPathspec(path: string): string {
-  return `:(top,literal)${path}`;
-}
-
 function repositoryIdFromOrigin(value: string): string {
   const exact = value.trim().replace(/\.git$/u, "");
   const match = /^(?:git@github\.com:|https:\/\/github\.com\/)(?<repository>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/u.exec(exact);
@@ -570,57 +534,6 @@ async function observeRepository(root: string): Promise<RepositoryObservation> {
   }
 }
 
-async function observePublicationRepository(
-  root: string,
-  configuredRepositoryId: string,
-  baseRevisionInput: string,
-  authorizedPaths: readonly string[],
-  pathComparator?: StringComparator,
-): Promise<PublicationRepositoryObservation> {
-  if (baseRevisionInput.trim() !== baseRevisionInput || baseRevisionInput.length === 0) {
-    throw new MissionCliError("Publication baseRevision is malformed.", 1);
-  }
-  try {
-    const canonicalRoot = await fsRealpath(root);
-    const top = await gitValue(canonicalRoot, ["rev-parse", "--show-toplevel"]);
-    const gitTopLevel = await fsRealpath(top);
-    const originUrl = await gitValue(canonicalRoot, ["remote", "get-url", "origin"]);
-    const remoteRepositoryId = repositoryIdFromOrigin(originUrl);
-    const branch = await gitValue(canonicalRoot, ["branch", "--show-current"]);
-    const baseRevision = await gitValue(canonicalRoot, ["rev-parse", `${baseRevisionInput}^{commit}`]);
-    const headRevision = await gitValue(canonicalRoot, ["rev-parse", "HEAD"]);
-    await gitOutput(canonicalRoot, ["merge-base", "--is-ancestor", baseRevision, headRevision]);
-    const [status, changed, baseTree, headTree] = await Promise.all([
-      gitOutput(canonicalRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
-      gitOutput(canonicalRoot, ["diff", "--name-only", "--no-renames", "-z", baseRevision, headRevision, "--"]),
-      gitOutput(canonicalRoot, ["ls-tree", "-rz", baseRevision, "--", ...authorizedPaths.map(literalPathspec)]),
-      gitOutput(canonicalRoot, ["ls-tree", "-rz", headRevision, "--", ...authorizedPaths.map(literalPathspec)]),
-    ]);
-    if (canonicalRoot !== gitTopLevel || branch.length === 0 || branch === "HEAD" ||
-        baseRevision.length === 0 || headRevision.length === 0) {
-      throw new Error("repository identity is not a real attached top-level checkout");
-    }
-    return {
-      configuredRepositoryId,
-      originUrl,
-      remoteRepositoryId,
-      canonicalRoot,
-      gitTopLevel,
-      branch,
-      baseRevision,
-      headRevision,
-      baseAncestor: true,
-      statusEntries: nulRecords(status, "Repository status"),
-      changedPaths: nulRecords(changed, "Repository change set").sort(pathComparator),
-      baseTreeEntries: exactTreeEntries(baseTree, "Base tree", authorizedPaths),
-      headTreeEntries: exactTreeEntries(headTree, "HEAD tree", authorizedPaths),
-    };
-  } catch (error) {
-    if (error instanceof MissionCliError) throw error;
-    throw new MissionCliError(`Publication repository observation failed: ${error instanceof Error ? error.message : String(error)}.`, 1);
-  }
-}
-
 export function assertPublicationAuthorizationFreshness(input: {
   initialConfigurationIdentity: string;
   freshConfigurationIdentity: string;
@@ -629,19 +542,11 @@ export function assertPublicationAuthorizationFreshness(input: {
   initialJournalSequence: number;
   freshJournalSequence: number;
 }): void {
-  if (input.freshConfigurationIdentity !== input.initialConfigurationIdentity ||
-      canonicalJson(input.freshObservation) !== canonicalJson(input.initialObservation) ||
-      input.freshJournalSequence !== input.initialJournalSequence) {
-    throw new MissionCliError("Mission journal, repository configuration, or publication observation changed while authorization was being signed.", 1);
+  try {
+    assertPublicationAuthorizationFreshnessV1(input);
+  } catch (error) {
+    throw new MissionCliError(error instanceof Error ? error.message : String(error), 1);
   }
-}
-
-function publicationPathKinds(observation: PublicationRepositoryObservation, pathComparator?: StringComparator) {
-  const all = [...observation.baseTreeEntries, ...observation.headTreeEntries];
-  return {
-    symlinks: [...new Set(all.filter(({ mode }) => mode === "120000").map(({ path }) => path))].sort(pathComparator),
-    gitlinks: [...new Set(all.filter(({ mode, type }) => mode === "160000" || type === "commit").map(({ path }) => path))].sort(pathComparator),
-  };
 }
 
 async function validateBaseRevision(observation: RepositoryObservation, baseRevision: string): Promise<void> {
@@ -1157,91 +1062,28 @@ async function authorize(args: string[]): Promise<number> {
 async function publicationAuthorize(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--passcode-stdin"]);
   const root = await exactRoot(options.values.get("--root"), true);
-  const config = await repositoryConfig(root);
-  const configurationIdentity = canonicalJson(config);
   const missionId = required(options, "--mission-id");
-  const current = await currentProfileAwareMission(root, config, missionId);
   const intent = publicationAuthorizationIntent(await jsonFile(resolve(root, required(options, "--input")), "Publication authorization input"));
-  const observation = await observePublicationRepository(root, config.repositoryId, intent.baseRevision, intent.authorizedPaths);
-  const sequence = current.projection.lastSequence + 1;
-  const authorizationId = `authorization:${missionId}:review-publish:${sequence}`;
-  const authority = {
-    publicationScopeSchemaVersion: 1 as const,
-    contractVersion: "review-publication.v1" as const,
-    authorityKind: "review.publish" as const,
-    authorityRef: authorizationId,
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    repositoryId: config.repositoryId,
-    canonicalRepositoryRoot: observation.canonicalRoot,
-    branch: observation.branch,
-    baseRevisionId: observation.baseRevision,
-    headRevisionId: observation.headRevision,
-    authorizedPaths: [...intent.authorizedPaths],
-    permittedEffects: [...intent.permittedEffects],
-  };
-  const pathKinds = publicationPathKinds(observation);
-  const evaluation = evaluateReviewPublicationV1(authority, {
-    publicationScopeSchemaVersion: 1,
-    contractVersion: "review-publication.v1",
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    repositoryId: observation.remoteRepositoryId,
-    canonicalRepositoryRoot: observation.gitTopLevel,
-    branch: observation.branch,
-    baseRevisionId: observation.baseRevision,
-    headRevisionId: observation.headRevision,
-    proposedChangedPaths: intent.authorizedPaths,
-    observedChangedPaths: observation.changedPaths,
-    requestedEffects: intent.permittedEffects,
-    observedSymlinkPaths: pathKinds.symlinks,
-    observedGitlinkPaths: pathKinds.gitlinks,
-    workspaceClean: observation.statusEntries.length === 0,
-  });
-  if (evaluation.state === "blocked") throw new MissionCliError(`Publication authorization blocked: ${evaluation.reasonCode}.`, 1);
-  const binding = coulsonBinding(current);
-  const timestamp = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
-  const payload = {
-    schemaVersion: 1 as const,
-    authorizationId,
-    authorityDigest: computeReviewPublicationAuthorityDigest(authority),
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    artifactRevisionId: observation.headRevision,
-    authorityKind: "review.publish" as const,
-    previousJournalSequence: current.projection.lastSequence,
-    journalSequence: sequence,
-    humanPrincipalId: binding.humanPrincipalId,
-    humanBindingId: binding.bindingId,
-    signingKeyRef: binding.signingKeyRef,
-    sourceRef: `cli:publication-authorize:${sequence}`,
-    timestamp,
-  };
-  const passcode = await passcodeFromOptions(options);
-  const signatureBase64 = await signMissionPayload(binding, passcode, payload, missionId);
-  const freshConfig = await repositoryConfig(root);
-  const freshObservation = await observePublicationRepository(root, freshConfig.repositoryId, intent.baseRevision, intent.authorizedPaths);
-  const fresh = await currentProfileAwareMission(root, freshConfig, missionId);
-  assertPublicationAuthorizationFreshness({
-    initialConfigurationIdentity: configurationIdentity,
-    freshConfigurationIdentity: canonicalJson(freshConfig),
-    initialObservation: observation,
-    freshObservation,
-    initialJournalSequence: current.projection.lastSequence,
-    freshJournalSequence: fresh.projection.lastSequence,
-  });
-  const entry = produce(() => createProfileAwareReviewPublicationAuthorizationEntryV1({
-    projection: fresh.projection,
-    trustedBindings: profileAwareBindings(fresh),
-    authority,
-    authorization: { payload, signatureBase64 },
-  }));
-  const appended = unwrap(await appendProfileAwareMissionEntryV1({ ...missionPaths(root, freshConfig, missionId), entry }));
-  output(appended.projection, options.flags.has("--json"), profileAwareStatusText(appended.projection));
-  return 0;
+  try {
+    const executed = await executeReviewPublicationAuthorizationV1({
+      mode: "legacy",
+      root,
+      missionId,
+      intent,
+      timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: outputStream,
+    }, {
+      renderDecision: () => { throw new Error("Legacy publication must not render a new decision."); },
+      readPasscode: () => passcodeFromOptions(options),
+      signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
+      appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
+    });
+    output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
+    return 0;
+  } catch (error) {
+    throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
+  }
 }
 
 async function publicationRequest(args: string[]): Promise<number> {
@@ -1417,6 +1259,36 @@ function renderAlreadyAuthorized(result: Extract<Awaited<ReturnType<typeof resol
   ].join("\n");
 }
 
+function renderPublicationAlreadyAuthorized(result: PreparedPublicationAlreadyAuthorizedResultV1): string {
+  return [
+    "ALREADY AUTHORIZED — nothing repeated.",
+    `authorizationId: ${result.authorizationId}`,
+    `authorityDigest: ${result.authorityDigest}`,
+    `journalSequence: ${result.journalSequence}`,
+  ].join("\n");
+}
+
+function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicationDecisionV1): string {
+  return [
+    "REVIEW PUBLICATION AUTHORIZATION",
+    `Mission: ${decision.missionId}`,
+    `Revision: ${decision.missionRevisionId}`,
+    `Repository: ${decision.repository.repositoryId}`,
+    `Root: ${decision.repository.canonicalRoot}`,
+    `Branch: ${decision.repository.branch}`,
+    `Base: ${decision.repository.baseRevision}`,
+    `HEAD: ${decision.repository.headRevision}`,
+    "Paths:",
+    ...decision.authorizedPaths.map((path) => `  - ${path}`),
+    "Effects:",
+    ...decision.permittedEffects.map((effect) => `  - ${effect}`),
+    "Exclusions:",
+    ...decision.exclusions.map((exclusion) => `  - ${exclusion}`),
+    "Remaining human gates:",
+    ...decision.remainingHumanGates.map((gate) => `  - ${gate}`),
+  ].join("\n");
+}
+
 async function prepareNext(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id"], ["--json", "--human", "--passcode-stdin"]);
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
@@ -1432,10 +1304,40 @@ async function prepareNext(args: string[]): Promise<number> {
     output(result, options.flags.has("--json"), renderAlreadyAuthorized(result));
     return 0;
   }
-  const intent = deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(result.plan);
-  const config = await repositoryConfig(root);
+  if (result.state === "publication_already_authorized") {
+    output(result, options.flags.has("--json"), renderPublicationAlreadyAuthorized(result));
+    return 0;
+  }
   const humanMode = options.flags.has("--human") || (!options.flags.has("--json") && !options.flags.has("--passcode-stdin"));
   const promptOutput = options.flags.has("--json") ? process.stderr : outputStream;
+  if (result.state === "publication_ready") {
+    try {
+      const executed = await executeReviewPublicationAuthorizationV1({
+        mode: "prepared",
+        root,
+        missionId,
+        intent: result.publicationIntent,
+        expectedPreparation: result,
+        timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
+        humanMode,
+        decisionOutput: { write: (value) => promptOutput.write(value) },
+      }, {
+        renderDecision: (decision, renderHuman) => renderHuman
+          ? renderPreparedReviewPublicationHumanV1(decision)
+          : `SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN\n${canonicalJson(decision)}\nSHIELD_REVIEW_PUBLICATION_DECISION_END`,
+        readPasscode: () => passcodeFromOptions(options, promptOutput),
+        signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
+        appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
+      });
+      output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
+      return 0;
+    } catch (error) {
+      throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
+    }
+  }
+  const ready: Extract<ResolvePreparedMissionTransitionResultV1, { state: "ready" }> = result;
+  const intent = deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(ready.plan);
+  const config = await repositoryConfig(root);
   try {
     return await executeAuthorizeWheelsUpV1({
       root,
@@ -1446,13 +1348,13 @@ async function prepareNext(args: string[]): Promise<number> {
       humanMode,
       promptOutput: { write: (value) => promptOutput.write(value) },
       expectedPreparation: {
-        plan: result.plan,
-        reviewEvidence: result.reviewEvidence,
-        intent: result.intent,
-        observation: result.observation,
-        selection: result.selection,
-        candidate: result.candidate,
-        receipt: result.preparationReceipt,
+        plan: ready.plan,
+        reviewEvidence: ready.reviewEvidence,
+        intent: ready.intent,
+        observation: ready.observation,
+        selection: ready.selection,
+        candidate: ready.candidate,
+        receipt: ready.preparationReceipt,
       },
       dependencies: {
         renderDecision: (entry) => {
