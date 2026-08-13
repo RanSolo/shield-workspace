@@ -1,8 +1,8 @@
 # Issue #290 — deterministic SHIELD state for new Git worktrees
 
-Status: proposed implementation plan for Fury review  
-Mission: `mission:issue-290`  
-Repository: `RanSolo/shield-workspace`  
+Status: proposed implementation plan for Fury review
+Mission: `mission:issue-290`
+Repository: `RanSolo/shield-workspace`
 Planning base: `56844464abaf67f0ea3c8fc3cc485864d66a922f`
 
 ## Objective
