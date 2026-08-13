@@ -30,18 +30,25 @@ authority, preparation, journal, or publication behavior.
 Use the existing project graph; do not create another library or duplicate the
 dependency edge.
 
-1. Add `dependsOn: ["^build"]` to the workspace build target default in
-   `nx.json`. Nx must derive the predecessor from the graph rather than from a
-   package-specific shell command.
+1. In Team System's package-local Nx target metadata, add
+   `dependsOn: ["^build"]`. Nx must derive the predecessor from the graph rather
+   than from a package-specific shell command. Do not alter the workspace-wide
+   default or Multiband's build graph.
 2. Declare `{projectRoot}/dist` as the build output for both
    `@shield/mission-preparation` and `@shield/team-system` in their package-local
-   Nx target metadata. Do not commit generated output.
-3. Add a deterministic regression command which creates a disposable
-   repository snapshot containing the candidate files, installs from the exact
-   lockfile, proves `nx build @shield/team-system` schedules preparation first,
-   proves the resulting CLI starts and exposes `mission prepare-next`, removes
-   both generated `dist` directories, reruns through cache, and proves both
-   runtime and declaration outputs were restored.
+   Nx target metadata. Add a tracked preparation-package `.gitignore` containing
+   `dist/` so generated output cannot become an input or require machine-local
+   excludes. Do not commit generated output.
+3. Add a deterministic regression command which materializes the exact
+   implementation commit with `git archive` into a system-temp directory,
+   installs from the committed lockfile, and uses fresh absolute Nx cache and
+   workspace-data directories with the daemon and Nx Cloud disabled. Parse the
+   task graph and require the exact Team-build to preparation-build edge. Build
+   from absent outputs; rerun without deletion and require two local cache hits;
+   record sorted SHA-256 manifests of both `dist` trees; delete both trees;
+   rerun and again require two cache hits plus byte-identical restored manifests.
+   Require preparation `index.mjs`/`index.d.mts`, Team System
+   `cli.mjs`/`cli.d.mts`, and CLI help containing `mission prepare-next`.
 4. Keep the regression isolated from the ordinary package unit-test process so
    it cannot race shared `dist` artifacts. Expose it as one explicit root npm
    validation command and document that command as the canonical clean-build
@@ -65,8 +72,8 @@ dependency edge.
 ## Initial implementation paths
 
 - `docs/operations/dependency-aware-build.md`
-- `nx.json`
 - `package.json`
+- `packages/mission-preparation/.gitignore`
 - `packages/mission-preparation/package.json`
 - `packages/shield-team-system/package.json`
 - `tools/verify-team-system-clean-build.mjs`
