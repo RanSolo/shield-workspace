@@ -424,8 +424,11 @@ test("protected reader rejects partial, noncanonical, and unsafe-mode artifacts"
   }
 });
 
-test("protected reader rejects file replacement, in-place mutation, metadata mutation, directory replacement, and close uncertainty", async () => {
-  for (const mutation of ["file-replaced", "file-mutated", "file-inode-mutated", "file-mode-mutated", "file-link-mutated", "file-time-mutated", "directory-replaced", "close-uncertain"]) {
+test("protected reader rejects file, root, and directory identity or metadata mutation plus close uncertainty", async () => {
+  for (const mutation of [
+    "file-replaced", "file-mutated", "file-inode-mutated", "file-mode-mutated", "file-link-mutated", "file-time-mutated",
+    "root-replaced", "root-metadata-mutated", "root-realpath-replaced", "directory-replaced", "directory-metadata-mutated", "close-uncertain",
+  ]) {
     const repositoryRoot = await withMaterializationRoot();
     const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
     assert.equal(built.state, "built");
@@ -435,6 +438,8 @@ test("protected reader rejects file replacement, in-place mutation, metadata mut
       const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(await realpath(repositoryRoot), "mission:issue-270");
       let graphLstatCalls = 0;
       let missionDirectoryLstatCalls = 0;
+      let rootLstatCalls = 0;
+      let rootRealpathCalls = 0;
       let handleStatCalls = 0;
       let closeCalls = 0;
       const read = await readMissionReviewedTransitionGraphV1ForTest(
@@ -442,6 +447,17 @@ test("protected reader rejects file replacement, in-place mutation, metadata mut
         {
           lstatPath: async (path) => {
             const stats = await lstat(path);
+            if (path === repositoryRoot || path === paths.repositoryRoot) {
+              rootLstatCalls += 1;
+              if (mutation === "root-replaced" && rootLstatCalls === 3) {
+                return cloneStatsWithMutation(stats, (changed) => {
+                  changed.ino = typeof changed.ino === "bigint" ? changed.ino + 1n : changed.ino + 1;
+                });
+              }
+              if (mutation === "root-metadata-mutated" && rootLstatCalls === 3) {
+                return cloneStatsWithMutation(stats, (changed) => { changed.ctimeMs += 1; });
+              }
+            }
             if (path === paths.graphPath) {
               graphLstatCalls += 1;
               if (mutation === "file-replaced" && graphLstatCalls === 2) {
@@ -457,8 +473,19 @@ test("protected reader rejects file replacement, in-place mutation, metadata mut
                   changed.ino = typeof changed.ino === "bigint" ? changed.ino + 1n : changed.ino + 1;
                 });
               }
+              if (mutation === "directory-metadata-mutated" && missionDirectoryLstatCalls === 2) {
+                return cloneStatsWithMutation(stats, (changed) => { changed.size += 1; });
+              }
             }
             return stats;
+          },
+          realpathPath: async (path) => {
+            const resolved = await realpath(path);
+            if (path === repositoryRoot || path === paths.repositoryRoot) {
+              rootRealpathCalls += 1;
+              if (mutation === "root-realpath-replaced" && rootRealpathCalls === 4) return `${resolved}-replaced`;
+            }
+            return resolved;
           },
           statHandle: async (handle) => {
             const stats = await handle.stat();

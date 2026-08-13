@@ -171,6 +171,14 @@ function sameIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+function sameStableMetadata(
+  left: Pick<MissionReviewedTransitionGraphFileStats, "dev" | "ino" | "nlink" | "mode" | "size" | "mtimeMs" | "ctimeMs">,
+  right: Pick<MissionReviewedTransitionGraphFileStats, "dev" | "ino" | "nlink" | "mode" | "size" | "mtimeMs" | "ctimeMs">,
+): boolean {
+  return sameIdentity(left, right) && left.nlink === right.nlink && left.mode === right.mode && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
 function inside(root: string, target: string): boolean {
   const relativePath = relative(root, target);
   return relativePath !== "" && relativePath !== `..${sep}` && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath);
@@ -799,16 +807,17 @@ async function readMissionReviewedTransitionGraphV1WithDependencies(
     for (const anchor of directoryAnchors) {
       const afterDirectory = await dependencies.lstatPath(anchor.path);
       const protectedDirectory = anchor.path === paths.auditDirectory || anchor.path === paths.missionPreparationDirectory || anchor.path === paths.missionDirectory;
-      if (!afterDirectory.isDirectory() || afterDirectory.isSymbolicLink() || !sameIdentity(anchor.stats, afterDirectory) ||
-          afterDirectory.mode !== anchor.stats.mode || (afterDirectory.mode & 0o22) !== 0 ||
+      if (!afterDirectory.isDirectory() || afterDirectory.isSymbolicLink() || !sameStableMetadata(anchor.stats, afterDirectory) ||
+          (afterDirectory.mode & 0o22) !== 0 ||
           (protectedDirectory && (afterDirectory.mode & 0o777) !== MISSION_REVIEWED_TRANSITION_GRAPH_DIRECTORY_MODE) ||
           await dependencies.realpathPath(anchor.path) !== anchor.path) {
-        throw new Error("Reviewed transition graph directory was replaced during read.");
+        throw new Error("Reviewed transition graph directory identity or metadata changed during read.");
       }
     }
     const rootAfter = await dependencies.lstatPath(root);
-    if (!rootAfter.isDirectory() || rootAfter.isSymbolicLink() || !sameIdentity(rootBefore, rootAfter) || rootAfter.mode !== rootBefore.mode) {
-      throw new Error("Reviewed transition graph repository root was replaced during read.");
+    if (!rootAfter.isDirectory() || rootAfter.isSymbolicLink() || !sameStableMetadata(rootBefore, rootAfter) ||
+        await dependencies.realpathPath(root) !== canonicalRoot) {
+      throw new Error("Reviewed transition graph repository root identity, metadata, or realpath changed during read.");
     }
     return Object.freeze({ state: "read", graphPath: paths.graphPath, graph: validated.value, bytes });
   } catch (error) {

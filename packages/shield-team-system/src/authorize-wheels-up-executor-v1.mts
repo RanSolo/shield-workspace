@@ -2,8 +2,8 @@ import { execFile as execFileNode } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, readFile, realpath as fsRealpath } from "node:fs/promises";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { join, resolve } from "node:path";
-import { types } from "node:util";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { TextDecoder, types } from "node:util";
 import { parseShieldConfig, type ShieldConfig } from "./config.mjs";
 import {
   canonicalJson,
@@ -15,6 +15,7 @@ import {
   createProfileAwareRuntimeBindingRecordedEntryV1,
   createProfileAwareReviewPublicationAuthorizationEntryV1,
   type ProfileAwareMissionEntryV1,
+  type ProfileAwareProjectionV1,
   type SignedProfileEvidenceV1,
   replayProfileAwareMissionJournal,
 } from "./profile-aware-mission-v1.mjs";
@@ -39,8 +40,6 @@ import { type TrustedHumanBinding } from "./mission-v2.mjs";
 import {
   appendProfileAwareMissionEntriesAtomicV1,
   journalByteSha256,
-  readMissionJournalForDisplay,
-  type MissionJournalDisplay,
   type ProfileAwareBatchReceipt,
   resolveSupervisedMissionPaths,
 } from "./mission-store.mjs";
@@ -53,8 +52,18 @@ import {
   computeContentIdV1,
   validateFreshAuthorizeWheelsUpCandidateV1,
   validateFreshAuthorizeWheelsUpObservationV1,
+  validateNextTransitionSelectionV1,
+  validateParentPlanReviewEvidenceV1,
+  validatePreparationReceiptV1,
+  validateTransitionIntentV1,
+  validateTransitionPlanV1,
   type FreshAuthorizeWheelsUpCandidateV1,
   type FreshAuthorizeWheelsUpObservationV1,
+  type NextTransitionSelectionV1,
+  type ParentPlanReviewEvidenceV1,
+  type PreparationReceiptV1,
+  type TransitionIntentV1,
+  type TransitionPlanV1,
 } from "@shield/mission-preparation";
 
 interface RepositoryObservation {
@@ -205,7 +214,11 @@ type PreparedAuthorizeWheelsUp = {
   environment: AuthorizeWheelsUpEnvironmentObservationV1;
 };
 
-type ProfileAwareJournal = Extract<MissionJournalDisplay, { kind: "profile-aware" }>;
+type ProfileAwareJournal = {
+  kind: "profile-aware";
+  entries: ProfileAwareMissionEntryV1[];
+  projection: ProfileAwareProjectionV1;
+};
 type GovernanceDecisionEntry = Extract<ProfileAwareMissionEntryV1, { type: "governance.decided" }>;
 type ImplementationAuthorityEntry = Extract<ProfileAwareMissionEntryV1, { type: "implementation.authorized" }>;
 type RuntimeBindingRecordedEntry = Extract<ProfileAwareMissionEntryV1, { type: "runtime.binding_recorded" }>;
@@ -298,10 +311,130 @@ function coulsonBinding(current: ProfileAwareJournal): TrustedHumanBinding {
   return matches[0];
 }
 
-async function currentProfileAwareMission(root: string, config: ShieldConfig, missionId: string): Promise<ProfileAwareJournal> {
-  const current = unwrap(await readMissionJournalForDisplay(missionPaths(root, config, missionId)));
-  if (current.kind !== "profile-aware") throw new Error("Command requires a schema-9 profile-aware mission journal.");
-  return current;
+type AuthorizeWheelsUpJournalFileHandleV1 = Awaited<ReturnType<typeof open>>;
+type AuthorizeWheelsUpJournalFileStatsV1 = {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+  readonly nlink: number;
+  readonly mode: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly isFile: () => boolean;
+  readonly isSymbolicLink: () => boolean;
+};
+
+export interface AuthorizeWheelsUpJournalSnapshotDependenciesV1 {
+  readonly lstatPath: (path: string) => Promise<AuthorizeWheelsUpJournalFileStatsV1>;
+  readonly openPath: (path: string, flags: number) => Promise<AuthorizeWheelsUpJournalFileHandleV1>;
+  readonly statHandle: (handle: AuthorizeWheelsUpJournalFileHandleV1) => Promise<AuthorizeWheelsUpJournalFileStatsV1>;
+  readonly readHandle: (handle: AuthorizeWheelsUpJournalFileHandleV1, size: number) => Promise<Buffer>;
+  readonly closeHandle: (handle: AuthorizeWheelsUpJournalFileHandleV1) => Promise<void>;
+  readonly realpathPath: (path: string) => Promise<string>;
+}
+
+function journalSnapshotDependencies(
+  overrides: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1> = {},
+): AuthorizeWheelsUpJournalSnapshotDependenciesV1 {
+  const defaults: AuthorizeWheelsUpJournalSnapshotDependenciesV1 = {
+    lstatPath: lstat,
+    openPath: (path, flags) => open(path, flags),
+    statHandle: (handle) => handle.stat(),
+    readHandle: async (handle, size) => {
+      const bytes = Buffer.alloc(size);
+      let offset = 0;
+      while (offset < size) {
+        const result = await handle.read(bytes, offset, size - offset, offset);
+        if (result.bytesRead === 0) break;
+        offset += result.bytesRead;
+      }
+      return bytes.subarray(0, offset);
+    },
+    closeHandle: (handle) => handle.close(),
+    realpathPath: fsRealpath,
+  };
+  return { ...defaults, ...overrides };
+}
+
+function sameJournalSnapshotStats(left: AuthorizeWheelsUpJournalFileStatsV1, right: AuthorizeWheelsUpJournalFileStatsV1): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.nlink === right.nlink && left.mode === right.mode &&
+    left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function journalSnapshotConflict(message: string): Error {
+  return new Error(`authority_conflict: ${message}`);
+}
+
+function parseProfileAwareJournalSnapshot(bytes: string, missionId: string): ProfileAwareJournal {
+  if (bytes.length === 0 || !bytes.endsWith("\n")) throw journalSnapshotConflict("Mission journal bytes are empty or incomplete.");
+  const lines = bytes.slice(0, -1).split("\n");
+  const entries: unknown[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].length === 0) throw journalSnapshotConflict(`Mission journal line ${index + 1} is empty.`);
+    try { entries.push(JSON.parse(lines[index])); }
+    catch { throw journalSnapshotConflict(`Mission journal line ${index + 1} is malformed JSON.`); }
+  }
+  if (entries.some((entry) => !plainObject(entry) || entry.schemaVersion !== 9)) {
+    throw journalSnapshotConflict("Command requires one unmixed schema-9 profile-aware mission journal snapshot.");
+  }
+  const replay = replayProfileAwareMissionJournal(entries);
+  if (replay.state === "invalid") throw journalSnapshotConflict(replay.errors.join(" "));
+  if (replay.value.missionId !== missionId) throw journalSnapshotConflict("Mission journal identity does not match the requested mission.");
+  return canonicalSnapshot({ kind: "profile-aware" as const, entries: entries as ProfileAwareMissionEntryV1[], projection: replay.value });
+}
+
+async function readAuthorizeWheelsUpJournalSnapshotV1(
+  input: { readonly root: string; readonly config: ShieldConfig; readonly missionId: string },
+  dependencyOverrides: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1> = {},
+): Promise<{ readonly current: ProfileAwareJournal; readonly bytes: string }> {
+  const dependencies = journalSnapshotDependencies(dependencyOverrides);
+  const journalPaths = resolveSupervisedMissionPaths(input.root, input.config.paths.journals, input.missionId);
+  if (journalPaths.state === "invalid") throw journalSnapshotConflict(journalPaths.errors.join(" "));
+  const repositoryRoot = await dependencies.realpathPath(resolve(input.root)).catch(() => null);
+  const journalRoot = await dependencies.realpathPath(journalPaths.value.root).catch(() => null);
+  if (repositoryRoot === null || journalRoot === null) throw journalSnapshotConflict("Mission journal root could not be resolved.");
+  const relativeJournalRoot = relative(repositoryRoot, journalRoot);
+  if (relativeJournalRoot === "" || relativeJournalRoot === ".." || relativeJournalRoot.startsWith(`..${sep}`) || isAbsolute(relativeJournalRoot)) {
+    throw journalSnapshotConflict("Mission journal root escapes or equals the repository root.");
+  }
+
+  let handle: AuthorizeWheelsUpJournalFileHandleV1 | undefined;
+  try {
+    const before = await dependencies.lstatPath(journalPaths.value.journalPath);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size < 1) {
+      throw journalSnapshotConflict("Mission journal is not one protected regular file.");
+    }
+    handle = await dependencies.openPath(journalPaths.value.journalPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await dependencies.statHandle(handle);
+    if (!opened.isFile() || opened.isSymbolicLink() || opened.nlink !== 1 || !sameJournalSnapshotStats(before, opened)) {
+      throw journalSnapshotConflict("Mission journal identity changed while opening the snapshot.");
+    }
+    const rawBytes = await dependencies.readHandle(handle, opened.size);
+    const afterRead = await dependencies.statHandle(handle);
+    if (rawBytes.byteLength !== opened.size || !sameJournalSnapshotStats(opened, afterRead)) {
+      throw journalSnapshotConflict("Mission journal changed while reading the snapshot.");
+    }
+    const pathAfterRead = await dependencies.lstatPath(journalPaths.value.journalPath);
+    if (!pathAfterRead.isFile() || pathAfterRead.isSymbolicLink() || pathAfterRead.nlink !== 1 || !sameJournalSnapshotStats(afterRead, pathAfterRead)) {
+      throw journalSnapshotConflict("Mission journal path was replaced while reading the snapshot.");
+    }
+    let bytes: string;
+    try { bytes = new TextDecoder("utf-8", { fatal: true }).decode(rawBytes); }
+    catch { throw journalSnapshotConflict("Mission journal is not valid UTF-8."); }
+    const current = parseProfileAwareJournalSnapshot(bytes, input.missionId);
+    await dependencies.closeHandle(handle);
+    handle = undefined;
+    const afterClose = await dependencies.lstatPath(journalPaths.value.journalPath);
+    if (!afterClose.isFile() || afterClose.isSymbolicLink() || afterClose.nlink !== 1 || !sameJournalSnapshotStats(pathAfterRead, afterClose)) {
+      throw journalSnapshotConflict("Mission journal path changed after snapshot close.");
+    }
+    return canonicalSnapshot({ current, bytes });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("authority_conflict:")) throw error;
+    throw journalSnapshotConflict("Mission journal snapshot could not be verified.");
+  } finally {
+    if (handle !== undefined) await dependencies.closeHandle(handle).catch(() => undefined);
+  }
 }
 
 function literalPath(path: string): string {
@@ -452,8 +585,9 @@ export async function observeAuthorizeWheelsUpEnvironmentV1(input: {
   readonly config: ShieldConfig;
   readonly missionId: string;
   readonly intent: Readonly<WheelsUpIntent>;
-}): Promise<AuthorizeWheelsUpEnvironmentObservationV1> {
-  const current = await currentProfileAwareMission(input.root, input.config, input.missionId);
+}, journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1> = {}): Promise<AuthorizeWheelsUpEnvironmentObservationV1> {
+  const journalSnapshot = await readAuthorizeWheelsUpJournalSnapshotV1(input, journalDependencies);
+  const current = journalSnapshot.current;
   const repository = await observePublicationRepository(
     input.root,
     input.config.repositoryId,
@@ -470,9 +604,7 @@ export async function observeAuthorizeWheelsUpEnvironmentV1(input: {
   const satisfied = new Set(current.projection.evidence.map(({ requirementId }) => requirementId));
   const pendingCoulsonMissionAuthorizationCount = current.projection.requirements.filter(({ evidenceKind, requiredRoleId, phase, requirementId }) =>
     evidenceKind === "mission_authorization" && requiredRoleId === "coulson" && phase === "authorization" && !satisfied.has(requirementId)).length;
-  const journalPaths = resolveSupervisedMissionPaths(input.root, input.config.paths.journals, input.missionId);
-  if (journalPaths.state !== "valid") throw new Error(journalPaths.errors.join(" "));
-  const journalBytes = await readFile(journalPaths.value.journalPath, "utf8");
+  const journalBytes = journalSnapshot.bytes;
   return canonicalSnapshot({
     current,
     configuredJournalPath: input.config.paths.journals,
@@ -879,6 +1011,86 @@ function assertPreparedProjectionMatchesCandidate(
   }
 }
 
+export interface ExpectedAuthorizeWheelsUpPreparationV1 {
+  readonly plan: TransitionPlanV1;
+  readonly reviewEvidence: ParentPlanReviewEvidenceV1;
+  readonly intent: TransitionIntentV1;
+  readonly observation: FreshAuthorizeWheelsUpObservationV1;
+  readonly selection: NextTransitionSelectionV1;
+  readonly candidate: FreshAuthorizeWheelsUpCandidateV1;
+  readonly receipt: PreparationReceiptV1;
+}
+
+export function deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(plan: TransitionPlanV1): Readonly<WheelsUpIntent> {
+  return validateAuthorizeWheelsUpInput({
+    baseRevision: plan.planningBaseRevision,
+    modelId: plan.modelId,
+    approvedRelativePaths: [...plan.approvedRelativePaths],
+    approvedActionIds: [...plan.approvedActionIds],
+    approvedEffectClasses: [...plan.approvedEffectClasses],
+    approvedEffectKeys: [...plan.approvedEffectKeys],
+    approvedCapabilities: [...plan.approvedCapabilities],
+    validationCommandIds: [...plan.validationCommandIds],
+    reasoningRuntimeId: plan.reasoningRuntimeId,
+    toolExecutorId: plan.toolExecutorId,
+    publicationPaths: [...plan.publicationPaths],
+  });
+}
+
+function validateAndBindExpectedPreparation(
+  expected: ExpectedAuthorizeWheelsUpPreparationV1,
+): Readonly<{ candidate: FreshAuthorizeWheelsUpCandidateV1; observation: FreshAuthorizeWheelsUpObservationV1; intent: Readonly<WheelsUpIntent> }> {
+  const plan = validateTransitionPlanV1({ artifact: expected.plan });
+  const review = validateParentPlanReviewEvidenceV1({ artifact: expected.reviewEvidence });
+  const transitionIntent = validateTransitionIntentV1({ artifact: expected.intent });
+  const observation = validateFreshAuthorizeWheelsUpObservationV1({ artifact: expected.observation });
+  const selection = validateNextTransitionSelectionV1({ artifact: expected.selection });
+  const candidate = validateFreshAuthorizeWheelsUpCandidateV1({ artifact: expected.candidate });
+  const receipt = validatePreparationReceiptV1({ artifact: expected.receipt });
+  const invalid = [plan, review, transitionIntent, observation, selection, candidate, receipt]
+    .filter((result) => result.state === "invalid")
+    .flatMap((result) => result.state === "invalid" ? result.errors : []);
+  if (plan.state === "invalid" || review.state === "invalid" || transitionIntent.state === "invalid" || observation.state === "invalid" ||
+      selection.state === "invalid" || candidate.state === "invalid" || receipt.state === "invalid") {
+    throw new Error(`Expected preparation contracts are invalid: ${invalid.join(" ")}`);
+  }
+  const allReferencesMatch =
+    review.value.repositoryId === plan.value.repositoryId && review.value.planningBaseRevision === plan.value.planningBaseRevision &&
+    review.value.parentPlanCommit === plan.value.parentPlanCommit && review.value.parentPlanPath === plan.value.parentPlanPath &&
+    review.value.parentPlanRawSha256 === plan.value.parentPlanRawSha256 &&
+    review.value.transitionPlanId === plan.value.id && review.value.transitionPlanDigest === plan.value.digest &&
+    transitionIntent.value.missionId === plan.value.missionId && transitionIntent.value.subjectId === plan.value.subjectId &&
+    transitionIntent.value.repositoryId === plan.value.repositoryId && transitionIntent.value.planningBaseRevision === plan.value.planningBaseRevision &&
+    transitionIntent.value.transitionPlanId === plan.value.id && transitionIntent.value.transitionPlanDigest === plan.value.digest &&
+    transitionIntent.value.parentReviewEvidenceId === review.value.id && transitionIntent.value.parentReviewEvidenceDigest === review.value.digest &&
+    observation.value.missionId === plan.value.missionId && observation.value.subjectId === plan.value.subjectId &&
+    observation.value.repositoryId === plan.value.repositoryId && observation.value.planningBaseRevision === plan.value.planningBaseRevision &&
+    selection.value.state === "ready" && selection.value.transitionKind === "authorize-wheels-up" && selection.value.reasonCode === null &&
+    selection.value.missionId === plan.value.missionId &&
+    selection.value.transitionIntentId === transitionIntent.value.id && selection.value.transitionIntentDigest === transitionIntent.value.digest &&
+    selection.value.observationId === observation.value.id && selection.value.observationDigest === observation.value.digest &&
+    candidate.value.missionId === plan.value.missionId && candidate.value.subjectId === plan.value.subjectId && candidate.value.repositoryId === plan.value.repositoryId &&
+    candidate.value.transitionPlanId === plan.value.id && candidate.value.transitionPlanDigest === plan.value.digest &&
+    candidate.value.parentReviewEvidenceId === review.value.id && candidate.value.parentReviewEvidenceDigest === review.value.digest &&
+    candidate.value.transitionIntentId === transitionIntent.value.id && candidate.value.transitionIntentDigest === transitionIntent.value.digest &&
+    candidate.value.observationId === observation.value.id && candidate.value.observationDigest === observation.value.digest &&
+    candidate.value.selectionId === selection.value.id && candidate.value.selectionDigest === selection.value.digest &&
+    receipt.value.missionId === plan.value.missionId && receipt.value.repositoryId === plan.value.repositoryId &&
+    receipt.value.transitionPlanId === plan.value.id && receipt.value.transitionPlanDigest === plan.value.digest &&
+    receipt.value.parentReviewEvidenceId === review.value.id && receipt.value.parentReviewEvidenceDigest === review.value.digest &&
+    receipt.value.transitionIntentId === transitionIntent.value.id && receipt.value.transitionIntentDigest === transitionIntent.value.digest &&
+    receipt.value.observationId === observation.value.id && receipt.value.observationDigest === observation.value.digest &&
+    receipt.value.selectionId === selection.value.id && receipt.value.selectionDigest === selection.value.digest &&
+    receipt.value.candidateId === candidate.value.id && receipt.value.candidateDigest === candidate.value.digest &&
+    receipt.value.rawReceiptSetSha256 === review.value.rawReceiptSetSha256;
+  if (!allReferencesMatch) throw new Error("Expected preparation receipt does not bind the complete plan, review, intent, observation, selection, and candidate graph.");
+  const executorIntent = deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(plan.value);
+  if (canonicalJson(candidate.value.actionInput) !== canonicalJson(executorIntent)) {
+    throw new Error("Prepared candidate action projection is not derived from the receipt-bound transition plan.");
+  }
+  return Object.freeze({ candidate: candidate.value, observation: observation.value, intent: executorIntent });
+}
+
 export interface AuthorizeWheelsUpV1RenderInput {
   kind: "manifest" | "receipt";
   manifest?: Readonly<Record<string, unknown>>;
@@ -913,10 +1125,7 @@ export interface ExecuteAuthorizeWheelsUpV1Input {
   timestamp: { value: string; provenance: "hostTrusted" };
   humanMode: boolean;
   promptOutput: { write: (output: string) => void };
-  expectedPreparation?: Readonly<{
-    candidate: FreshAuthorizeWheelsUpCandidateV1;
-    observation: FreshAuthorizeWheelsUpObservationV1;
-  }>;
+  expectedPreparation?: Readonly<ExpectedAuthorizeWheelsUpPreparationV1>;
   dependencies?: Partial<AuthorizeWheelsUpExecutionDependenciesV1>;
 }
 
@@ -958,9 +1167,11 @@ export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUp
     throw new Error("Missing atomic append dependency.");
   }
 
-  const prepared = await prepareAuthorizeWheelsUp(root, config, missionId, intent, timestamp);
-  if (expectedPreparation !== undefined) {
-    assertPreparedProjectionMatchesCandidate(prepared, expectedPreparation.candidate, expectedPreparation.observation);
+  const boundPreparation = expectedPreparation === undefined ? undefined : validateAndBindExpectedPreparation(expectedPreparation);
+  const executorIntent = boundPreparation?.intent ?? intent;
+  const prepared = await prepareAuthorizeWheelsUp(root, config, missionId, executorIntent, timestamp);
+  if (boundPreparation !== undefined) {
+    assertPreparedProjectionMatchesCandidate(prepared, boundPreparation.candidate, boundPreparation.observation);
   }
   const manifestText = renderDecision({ kind: "manifest", manifest: prepared.manifest, humanMode });
   (humanMode ? process.stdout : process.stderr).write(`${manifestText}\n`);
@@ -987,7 +1198,7 @@ export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUp
   }
 
   const afterSigningConfig = await repositoryConfig(root);
-  const afterSigning = await prepareAuthorizeWheelsUp(root, afterSigningConfig, missionId, intent, timestamp);
+  const afterSigning = await prepareAuthorizeWheelsUp(root, afterSigningConfig, missionId, executorIntent, timestamp);
   assertPreparedAuthorizeWheelsUpFresh(prepared, afterSigning);
 
   const trustedBindings = profileAwareBindings(prepared.current);

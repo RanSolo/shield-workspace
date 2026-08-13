@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import {
   computeMissionTransitionPlanReviewIdV1,
   MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION,
   resolvePreparedMissionTransitionV1,
+  resolvePreparedMissionTransitionV1ForTest,
 } from "../dist/mission-preparation-host-v1.mjs";
 import {
   computeCanonicalContractDigestV1,
@@ -755,6 +756,19 @@ function reidentifyContract(artifact, overrides = {}) {
   return { ...body, id: id.value, digest: digest.value };
 }
 
+function expectedPreparation(fresh, overrides = {}) {
+  return {
+    plan: fresh.plan,
+    reviewEvidence: fresh.reviewEvidence,
+    intent: fresh.intent,
+    observation: fresh.observation,
+    selection: fresh.selection,
+    candidate: fresh.candidate,
+    receipt: fresh.preparationReceipt,
+    ...overrides,
+  };
+}
+
 async function protectedFixtureSnapshot(fixture) {
   return {
     config: await readFile(join(fixture.repositoryRoot, ".shield", "config.json")),
@@ -765,6 +779,11 @@ async function protectedFixtureSnapshot(fixture) {
     head: git(fixture.repositoryRoot, ["rev-parse", "HEAD"]),
     status: git(fixture.repositoryRoot, ["status", "--short"]),
   };
+}
+
+async function nonAttackerEvidenceSnapshot(fixture) {
+  const { journal: _journal, ...snapshot } = await protectedFixtureSnapshot(fixture);
+  return snapshot;
 }
 
 async function authorizeResolutionFixture(fixture, intentOverrides = {}) {
@@ -1039,7 +1058,7 @@ test("resolve compiles a fresh candidate, blocks before a PIN on drift, executes
     timestamp: { value: "2026-08-11T12:01:00Z", provenance: "hostTrusted" },
     humanMode: false,
     promptOutput: { write: () => {} },
-    expectedPreparation: { candidate: fresh.candidate, observation: fresh.observation },
+    expectedPreparation: expectedPreparation(fresh),
     dependencies: {
       renderDecision: () => { calls.render += 1; return "{}"; },
       readPasscode: async () => { calls.pin += 1; return "unused"; },
@@ -1104,10 +1123,15 @@ test("executor rejects forged candidate identity, action projection, and linked 
     observationDigest: forgedObservation.digest,
   });
   const cases = [
-    { candidate: forgedIdentity, observation: fresh.observation, message: /candidate identity/u },
-    { candidate: forgedAction, observation: fresh.observation, message: /candidate action projection/u },
-    { candidate: fresh.candidate, observation: forgedObservation, message: /not linked to the supplied observation/u },
-    { candidate: forgedObservationCandidate, observation: forgedObservation, message: /repository, journal, signer, or gate projection/u },
+    { candidate: forgedIdentity, observation: fresh.observation, message: /preparation receipt does not bind/u },
+    {
+      candidate: forgedAction,
+      observation: fresh.observation,
+      suppliedIntent: validateAuthorizeWheelsUpInput(forgedAction.actionInput),
+      message: /preparation receipt does not bind/u,
+    },
+    { candidate: fresh.candidate, observation: forgedObservation, message: /preparation receipt does not bind/u },
+    { candidate: forgedObservationCandidate, observation: forgedObservation, message: /preparation receipt does not bind/u },
   ];
 
   for (const forged of cases) {
@@ -1116,11 +1140,11 @@ test("executor rejects forged candidate identity, action projection, and linked 
       root: fixture.repositoryRoot,
       config: fixture.config,
       missionId: MISSION_ID,
-      intent: validateAuthorizeWheelsUpInput(fresh.candidate.actionInput),
+      intent: forged.suppliedIntent ?? validateAuthorizeWheelsUpInput(fresh.candidate.actionInput),
       timestamp: { value: "2026-08-11T12:01:00Z", provenance: "hostTrusted" },
       humanMode: false,
       promptOutput: { write: () => {} },
-      expectedPreparation: { candidate: forged.candidate, observation: forged.observation },
+      expectedPreparation: expectedPreparation(fresh, { candidate: forged.candidate, observation: forged.observation }),
       dependencies: {
         renderDecision: () => { calls.render += 1; return "{}"; },
         readPasscode: async () => { calls.pin += 1; return "unused"; },
@@ -1170,4 +1194,63 @@ test("already-authorized retry rejects partial, replaced, duplicate, revoked, an
     assert.doesNotMatch(`${cli.stdout}${cli.stderr}`, /Passcode:|SHIELD_WHEELS_UP_MANIFEST_BEGIN/u, variant.name);
     assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline, variant.name);
   }
+});
+
+test("already-authorized replay rejects one-snapshot journal replacement, malformed bytes, and differently-authorized bytes", async () => {
+  for (const variant of ["malformed", "differently-authorized"]) {
+    const fixture = await resolutionFixture();
+    await authorizeResolutionFixture(fixture);
+    const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
+    assert.equal(lines.length, 5);
+    if (variant === "malformed") lines[2] = "{";
+    else lines[1] = lines[1].replace('"decision":"approved"', '"decision":"rejected"');
+    await writeFile(fixture.journalPath, `${lines.join("\n")}\n`);
+    const baseline = await protectedFixtureSnapshot(fixture);
+    const result = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(result.state, "blocked", `${variant}: ${JSON.stringify(result)}`);
+    assert.equal(result.reasonCode, "authority_conflict", variant);
+    assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline, variant);
+    const cli = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+      cwd: fixture.repositoryRoot,
+      encoding: "utf8",
+      input: "must-not-be-read\n",
+      env: { ...process.env, HOME: fixture.homeRoot },
+    });
+    assert.equal(cli.status, 1, `${variant}: ${cli.stderr}`);
+    assert.equal(JSON.parse(cli.stdout).reasonCode, "authority_conflict", variant);
+    assert.doesNotMatch(`${cli.stdout}${cli.stderr}`, /Passcode:|SHIELD_WHEELS_UP_MANIFEST_BEGIN/u, variant);
+    assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline, variant);
+  }
+
+  const fixture = await resolutionFixture();
+  await authorizeResolutionFixture(fixture);
+  const originalBytes = await readFile(fixture.journalPath);
+  const replacementBytes = Buffer.from(originalBytes.toString("utf8").replace('"decision":"approved"', '"decision":"rejected"'));
+  const baseline = await nonAttackerEvidenceSnapshot(fixture);
+  let attacked = false;
+  const result = await resolvePreparedMissionTransitionV1ForTest(
+    { missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot },
+    {
+      readHandle: async (handle, size) => {
+        const bytes = Buffer.alloc(size);
+        let offset = 0;
+        while (offset < size) {
+          const read = await handle.read(bytes, offset, size - offset, offset);
+          if (read.bytesRead === 0) break;
+          offset += read.bytesRead;
+        }
+        assert.equal(offset, size);
+        if (!attacked) {
+          attacked = true;
+          await rename(fixture.journalPath, `${fixture.journalPath}.attacker-original`);
+          await writeFile(fixture.journalPath, replacementBytes);
+        }
+        return bytes;
+      },
+    },
+  );
+  assert.equal(attacked, true);
+  assert.equal(result.state, "blocked", JSON.stringify(result));
+  assert.equal(result.reasonCode, "authority_conflict");
+  assert.deepEqual(await nonAttackerEvidenceSnapshot(fixture), baseline);
 });

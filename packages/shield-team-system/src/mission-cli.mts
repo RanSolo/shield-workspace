@@ -68,6 +68,7 @@ import {
   type ReviewPublicationAuthorityV1,
 } from "./review-publication-v1.mjs";
 import {
+  deriveAuthorizeWheelsUpIntentFromTransitionPlanV1,
   executeAuthorizeWheelsUpV1,
 } from "./authorize-wheels-up-executor-v1.mjs";
 import {
@@ -1431,7 +1432,7 @@ async function prepareNext(args: string[]): Promise<number> {
     output(result, options.flags.has("--json"), renderAlreadyAuthorized(result));
     return 0;
   }
-  const intent = validateAuthorizeWheelsUpInput(result.candidate.actionInput);
+  const intent = deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(result.plan);
   const config = await repositoryConfig(root);
   const humanMode = options.flags.has("--human") || (!options.flags.has("--json") && !options.flags.has("--passcode-stdin"));
   const promptOutput = options.flags.has("--json") ? process.stderr : outputStream;
@@ -1444,7 +1445,15 @@ async function prepareNext(args: string[]): Promise<number> {
       timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
       humanMode,
       promptOutput: { write: (value) => promptOutput.write(value) },
-      expectedPreparation: { candidate: result.candidate, observation: result.observation },
+      expectedPreparation: {
+        plan: result.plan,
+        reviewEvidence: result.reviewEvidence,
+        intent: result.intent,
+        observation: result.observation,
+        selection: result.selection,
+        candidate: result.candidate,
+        receipt: result.preparationReceipt,
+      },
       dependencies: {
         renderDecision: (entry) => {
           if (entry.kind === "manifest") {

@@ -38,6 +38,7 @@ import {
   observeAuthorizeWheelsUpEnvironmentV1,
   validateAuthorizeWheelsUpInput,
   type AuthorizeWheelsUpEnvironmentObservationV1,
+  type AuthorizeWheelsUpJournalSnapshotDependenciesV1,
 } from "./authorize-wheels-up-executor-v1.mjs";
 import { journalByteSha256 } from "./mission-store.mjs";
 import {
@@ -798,6 +799,10 @@ export type ResolvePreparedMissionTransitionResultV1 = Readonly<
   | {
       state: "ready";
       missionId: string;
+      plan: TransitionPlanV1;
+      reviewEvidence: ParentPlanReviewEvidenceV1;
+      intent: TransitionIntentV1;
+      selection: import("@shield/mission-preparation").NextTransitionSelectionV1;
       candidate: FreshAuthorizeWheelsUpCandidateV1;
       observation: FreshAuthorizeWheelsUpObservationV1;
       preparationReceipt: PreparationReceiptV1;
@@ -1264,7 +1269,10 @@ function alreadyAuthorizedResult(
   });
 }
 
-export async function resolvePreparedMissionTransitionV1(input: unknown): Promise<ResolvePreparedMissionTransitionResultV1> {
+async function resolvePreparedMissionTransitionV1WithDependencies(
+  input: unknown,
+  journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
+): Promise<ResolvePreparedMissionTransitionResultV1> {
   let copied: unknown;
   try { copied = cloneClosedData(input); } catch { return blocked("unknown", "invalid_resolution_input", "Resolution input is not closed data."); }
   if (!exact(copied, ["missionId", "repositoryRoot"]) || !identifier(copied.missionId) || typeof copied.repositoryRoot !== "string" || copied.repositoryRoot.length === 0) {
@@ -1294,8 +1302,11 @@ export async function resolvePreparedMissionTransitionV1(input: unknown): Promis
       toolExecutorId: graph.transitionPlan.toolExecutorId,
       publicationPaths: [...graph.transitionPlan.publicationPaths],
     } : null);
-    environment = await observeAuthorizeWheelsUpEnvironmentV1({ root: copied.repositoryRoot, config, missionId, intent });
+    environment = await observeAuthorizeWheelsUpEnvironmentV1({ root: copied.repositoryRoot, config, missionId, intent }, journalDependencies);
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith("authority_conflict:")) {
+      return blocked(missionId, "authority_conflict", error.message.slice("authority_conflict:".length).trim());
+    }
     return blocked(missionId, "repository_observation_stale", error instanceof Error ? error.message : "Live mission observation failed.");
   }
   const observation = buildObservation(graph, environment);
@@ -1315,8 +1326,23 @@ export async function resolvePreparedMissionTransitionV1(input: unknown): Promis
   return deepFreeze({
     state: "ready" as const,
     missionId,
+    plan: graph.transitionPlan,
+    reviewEvidence: graph.parentPlanReviewEvidence,
+    intent: graph.transitionIntent,
+    selection: prepared.selection,
     candidate: prepared.candidate,
     observation,
     preparationReceipt: prepared.receipt,
   });
+}
+
+export async function resolvePreparedMissionTransitionV1(input: unknown): Promise<ResolvePreparedMissionTransitionResultV1> {
+  return resolvePreparedMissionTransitionV1WithDependencies(input, {});
+}
+
+export async function resolvePreparedMissionTransitionV1ForTest(
+  input: unknown,
+  journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
+): Promise<ResolvePreparedMissionTransitionResultV1> {
+  return resolvePreparedMissionTransitionV1WithDependencies(input, journalDependencies);
 }
