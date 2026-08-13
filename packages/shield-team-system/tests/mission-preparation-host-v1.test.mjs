@@ -1157,6 +1157,38 @@ test("executor rejects forged candidate identity, action projection, and linked 
   }
 });
 
+test("production executor rejects a forged legacy intent before renderer, PIN, signing, or append", async () => {
+  const fixture = await resolutionFixture();
+  const fresh = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(fresh.state, "ready", JSON.stringify(fresh));
+  const baseline = await protectedFixtureSnapshot(fixture);
+  const forgedIntent = validateAuthorizeWheelsUpInput({
+    ...fresh.candidate.actionInput,
+    approvedActionIds: ["action:forged-legacy-intent"],
+  });
+  const calls = { render: 0, pin: 0, sign: 0, append: 0 };
+
+  await assert.rejects(() => executeAuthorizeWheelsUpV1({
+    root: fixture.repositoryRoot,
+    config: fixture.config,
+    missionId: MISSION_ID,
+    intent: forgedIntent,
+    timestamp: { value: "2026-08-11T12:01:00Z", provenance: "hostTrusted" },
+    humanMode: false,
+    promptOutput: { write: () => {} },
+    expectedPreparation: expectedPreparation(fresh),
+    dependencies: {
+      renderDecision: () => { calls.render += 1; return "{}"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signBatch: async () => { calls.sign += 1; return []; },
+      appendBatchAtomic: async () => { calls.append += 1; return { state: "invalid", code: "unexpected", errors: ["unexpected"] }; },
+    },
+  }), /input intent does not match the receipt-bound executor intent/u);
+
+  assert.deepEqual(calls, { render: 0, pin: 0, sign: 0, append: 0 });
+  assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline);
+});
+
 test("already-authorized retry rejects partial, replaced, duplicate, revoked, and graph-mismatched provenance without effects", async () => {
   const variants = [
     {

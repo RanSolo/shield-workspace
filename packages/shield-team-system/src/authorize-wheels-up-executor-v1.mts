@@ -1169,6 +1169,9 @@ export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUp
 
   const boundPreparation = expectedPreparation === undefined ? undefined : validateAndBindExpectedPreparation(expectedPreparation);
   const executorIntent = boundPreparation?.intent ?? intent;
+  if (boundPreparation !== undefined && canonicalJson(validateAuthorizeWheelsUpInput(intent)) !== canonicalJson(executorIntent)) {
+    throw new Error("Authorize Wheels Up input intent does not match the receipt-bound executor intent.");
+  }
   const prepared = await prepareAuthorizeWheelsUp(root, config, missionId, executorIntent, timestamp);
   if (boundPreparation !== undefined) {
     assertPreparedProjectionMatchesCandidate(prepared, boundPreparation.candidate, boundPreparation.observation);
@@ -1266,7 +1269,7 @@ export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUp
   }
 
   const beforeStoreConfig = await repositoryConfig(root);
-  const beforeStore = await prepareAuthorizeWheelsUp(root, beforeStoreConfig, missionId, intent, timestamp);
+  const beforeStore = await prepareAuthorizeWheelsUp(root, beforeStoreConfig, missionId, executorIntent, timestamp);
   assertPreparedAuthorizeWheelsUpFresh(prepared, beforeStore);
 
   const stored = unwrap(await appendBatchAtomic({
@@ -1325,19 +1328,19 @@ export async function executeAuthorizeWheelsUpV1(input: ExecuteAuthorizeWheelsUp
       },
     ],
     may: {
-      modelId: intent.modelId,
-      reasoningRuntimeId: intent.reasoningRuntimeId,
-      toolExecutorId: intent.toolExecutorId,
+      modelId: executorIntent.modelId,
+      reasoningRuntimeId: executorIntent.reasoningRuntimeId,
+      toolExecutorId: executorIntent.toolExecutorId,
     },
     implementationScope: {
-      approvedRelativePaths: intent.approvedRelativePaths,
-      approvedActionIds: intent.approvedActionIds,
-      approvedEffectClasses: intent.approvedEffectClasses,
-      approvedEffectKeys: intent.approvedEffectKeys,
-      approvedCapabilities: intent.approvedCapabilities,
-      validationCommandIds: intent.validationCommandIds,
+      approvedRelativePaths: executorIntent.approvedRelativePaths,
+      approvedActionIds: executorIntent.approvedActionIds,
+      approvedEffectClasses: executorIntent.approvedEffectClasses,
+      approvedEffectKeys: executorIntent.approvedEffectKeys,
+      approvedCapabilities: executorIntent.approvedCapabilities,
+      validationCommandIds: executorIntent.validationCommandIds,
     },
-    publicationScope: { authorizedPaths: intent.publicationPaths, permittedEffects: [...INITIAL_DRAFT_EFFECTS] },
+    publicationScope: { authorizedPaths: executorIntent.publicationPaths, permittedEffects: [...INITIAL_DRAFT_EFFECTS] },
     exclusions: [...ONE_PASSCODE_EXCLUSIONS],
     remainingHumanGates: remainingOnePasscodeHumanGates(prepared.current),
   };
