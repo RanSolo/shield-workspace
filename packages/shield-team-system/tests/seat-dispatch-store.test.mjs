@@ -11,6 +11,7 @@ import test from "node:test";
 import {
   appendSeatDispatchReceiptEntryV1,
   claimSeatDispatchPacketV1,
+  readSeatDispatchReceiptLedgerSnapshotV1,
   readSeatDispatchReceiptLedgerV1,
   readSeatDispatchReceiptByReceiptIdV1,
   readSeatDispatchReceiptsByParentMissionSessionV1,
@@ -1356,6 +1357,77 @@ test("raw ledger read is restart-safe, facade-exported, and usable for attributi
   });
   assert.equal(attributed.state, "attributed");
   assert.deepEqual(attributed.artifact, { evidenceId: "fury-evidence" });
+});
+
+test("internal ledger snapshot preserves complete interleaved replay and exact per-entry bytes", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-dispatch-snapshot-"));
+  const firstStart = started();
+  const secondStart = started({
+    receiptId: "receipt-2",
+    dispatchId: "dispatch-2",
+    childTaskId: "task-2",
+    childSessionId: "child-session-2",
+    timestamp: "2026-07-29T12:00:01.000Z",
+    logSequence: 1,
+    previousLogDigest: firstStart.entryDigest,
+  });
+  const firstComplete = completed(firstStart, {
+    timestamp: "2026-07-29T12:00:02.000Z",
+    logSequence: 2,
+    previousLogDigest: secondStart.entryDigest,
+    outputEvidenceRefs: ["evidence:first-complete"],
+  });
+  assert.equal((await appendReceipt(repositoryRoot, firstStart)).state, "valid");
+  assert.equal((await appendReceipt(repositoryRoot, secondStart, "owner-b")).state, "valid");
+  assert.equal((await appendReceipt(repositoryRoot, firstComplete, "owner-c")).state, "valid");
+
+  const scope = {
+    repositoryRoot,
+    repositoryId: firstStart.repositoryId,
+    repositoryWorkspaceId: firstStart.repositoryWorkspaceId,
+  };
+  const snapshot = await readSeatDispatchReceiptLedgerSnapshotV1(scope);
+  assert.equal(snapshot.state, "valid", snapshot.errors?.join(" "));
+  const expectedBytes = await readLogBytes(snapshot.value.logPath);
+  assert.equal(snapshot.value.bytes, expectedBytes);
+  assert.deepEqual(
+    snapshot.value.rawEntryBytes.map((bytes) => Buffer.from(bytes).toString("utf8")),
+    expectedBytes.slice(0, -1).split("\n"),
+  );
+  assert.equal(snapshot.value.entries.length, 3);
+  assert.equal(snapshot.value.projections.length, 2);
+  assert.equal(snapshot.value.projections.find(({ receiptId }) => receiptId === firstStart.receiptId)?.state, "completed");
+  assert.equal(snapshot.value.projections.find(({ receiptId }) => receiptId === secondStart.receiptId)?.state, "started");
+  assert.ok(Object.isFrozen(snapshot.value));
+  assert.ok(Object.isFrozen(snapshot.value.rawEntryBytes));
+
+  snapshot.value.rawEntryBytes[0][0] ^= 0xff;
+  const reread = await readSeatDispatchReceiptLedgerSnapshotV1(scope);
+  assert.equal(reread.state, "valid");
+  assert.equal(Buffer.from(reread.value.rawEntryBytes[0]).toString("utf8"), expectedBytes.split("\n")[0]);
+
+  const facade = await import(dispatchReceiptsFacade);
+  assert.equal(facade.readSeatDispatchReceiptLedgerSnapshotV1, undefined);
+});
+
+test("internal ledger snapshot preserves public ledger missing and unsafe-path failures", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-dispatch-snapshot-errors-"));
+  const scope = { repositoryRoot, repositoryId: "repo-1", repositoryWorkspaceId: "workspace-1" };
+  const [publicMissing, snapshotMissing] = await Promise.all([
+    readSeatDispatchReceiptLedgerV1(scope),
+    readSeatDispatchReceiptLedgerSnapshotV1(scope),
+  ]);
+  assert.equal(snapshotMissing.state, "invalid");
+  assert.equal(snapshotMissing.code, publicMissing.code);
+
+  await mkdir(join(repositoryRoot, ".shield"), { mode: 0o700 });
+  await symlink("missing-target", join(repositoryRoot, ".shield", "dispatch-receipts.jsonl"));
+  const [publicUnsafe, snapshotUnsafe] = await Promise.all([
+    readSeatDispatchReceiptLedgerV1(scope),
+    readSeatDispatchReceiptLedgerSnapshotV1(scope),
+  ]);
+  assert.equal(snapshotUnsafe.state, "invalid");
+  assert.equal(snapshotUnsafe.code, publicUnsafe.code);
 });
 
 test("fresh process retrieval is byte-identical and creates no new bytes", async () => {

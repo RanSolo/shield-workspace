@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 
+import {
+  computeCanonicalContractDigestV1,
+  computeContentIdV1,
+  validateTransitionPlanV1,
+  type TransitionPlanV1,
+} from "@shield/mission-preparation";
+
 import { evaluateMackValidationV0, type MackEvaluationV0, type MackExpectedBindingV0, type MackValidationReportV0 } from "./mack-validation-v0.mjs";
 import { missionIntakeV1, type MissionIntakeCandidateV1 } from "./mission-intake-v1.mjs";
 import {
@@ -347,6 +354,24 @@ const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/u;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/u;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u;
 const PATTERNS = new Set<string>(MISSION_BUILDER_PATTERNS);
+const TRANSITION_PLAN_BODY_FIELDS = [
+  "missionId", "subjectId", "repositoryId", "planningBaseRevision", "parentPlanCommit",
+  "parentPlanPath", "parentPlanRawSha256", "transitionKind", "boundedOutcome",
+  "approvedRelativePaths", "publicationPaths", "approvedActionIds", "approvedEffectClasses",
+  "approvedEffectKeys", "approvedCapabilities", "validationCommandIds", "modelId",
+  "reasoningRuntimeId", "toolExecutorId", "exclusions",
+] as const;
+
+export type BuildMissionTransitionPlanInputV1 = Omit<TransitionPlanV1, "schemaId" | "authority" | "id" | "digest">;
+
+export type BuildMissionTransitionPlanResultV1 = Readonly<
+  | { state: "built"; plan: TransitionPlanV1 }
+  | {
+      state: "invalid";
+      code: "malformed_transition_plan_input" | "invalid_transition_plan";
+      errors: readonly string[];
+    }
+>;
 
 function plain(value: unknown): value is Plain {
   try { return value !== null && typeof value === "object" && !Array.isArray(value) && !isProxy(value) && Object.getPrototypeOf(value) === Object.prototype; }
@@ -395,6 +420,53 @@ function cloneClosedData(value: unknown, seen = new WeakSet<object>()): unknown 
   }
   seen.delete(value);
   return output;
+}
+
+export function buildMissionTransitionPlanV1(input: unknown): BuildMissionTransitionPlanResultV1 {
+  let copied: unknown;
+  try {
+    copied = cloneClosedData(input);
+  } catch {
+    return Object.freeze({
+      state: "invalid" as const,
+      code: "malformed_transition_plan_input" as const,
+      errors: Object.freeze(["Transition-plan input must be closed ordinary data."]),
+    });
+  }
+  if (!exact(copied, TRANSITION_PLAN_BODY_FIELDS)) {
+    return Object.freeze({
+      state: "invalid" as const,
+      code: "malformed_transition_plan_input" as const,
+      errors: Object.freeze(["Transition-plan input fields are not closed." ]),
+    });
+  }
+
+  const body = { schemaId: "mission.transition-plan.v1" as const, authority: "none" as const, ...copied };
+  const computedDigest = computeCanonicalContractDigestV1({ schemaId: "mission.transition-plan.v1", body });
+  if (computedDigest.state === "invalid") {
+    return Object.freeze({
+      state: "invalid" as const,
+      code: "invalid_transition_plan" as const,
+      errors: Object.freeze([...computedDigest.errors]),
+    });
+  }
+  const computedId = computeContentIdV1({ schemaId: "mission.transition-plan.v1", digest: computedDigest.value });
+  if (computedId.state === "invalid") {
+    return Object.freeze({
+      state: "invalid" as const,
+      code: "invalid_transition_plan" as const,
+      errors: Object.freeze([...computedId.errors]),
+    });
+  }
+  const checked = validateTransitionPlanV1({ artifact: { ...body, id: computedId.value, digest: computedDigest.value } });
+  if (checked.state === "invalid") {
+    return Object.freeze({
+      state: "invalid" as const,
+      code: "invalid_transition_plan" as const,
+      errors: Object.freeze([...checked.errors]),
+    });
+  }
+  return Object.freeze({ state: "built" as const, plan: checked.value });
 }
 
 const INTAKE_CANDIDATE_FIELDS = ["state", "schemaVersion", "contractVersion", "authority", "persistence", "repositoryObservation", "issueObservation", "configObservation", "brief", "risk", "requirements", "recommendedModes", "modeActivationState", "participants", "seatGateEnforcement", "artifacts", "communication", "runtimeObservations", "blockers", "pendingHumanGates", "nextAction"] as const;
