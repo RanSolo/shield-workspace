@@ -622,7 +622,6 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const tddMissionInput = null as unknown as TddMissionEvaluationInputV1;
     const tddMissionEvaluation: TddMissionEvaluationV1 = evaluateTddMissionV1(tddMissionInput);
     const featureOperationSchemaV2: 2 = FEATURE_OPERATION_SCHEMA_VERSION_V2;
-    const featureOperationSchemaV2: 2 = FEATURE_OPERATION_SCHEMA_VERSION_V2;
     const featureOperationContractV2: "feature.operation.v2" = FEATURE_OPERATION_CONTRACT_VERSION_V2;
     const featureOperationPlanV2: FeatureOperationPlanV2 = {
       ...featureOperationPlan,
