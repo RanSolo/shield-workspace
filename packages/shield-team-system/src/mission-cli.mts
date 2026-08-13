@@ -67,6 +67,9 @@ import {
   type ReviewPublicationEffect,
   type ReviewPublicationAuthorityV1,
 } from "./review-publication-v1.mjs";
+import {
+  executeAuthorizeWheelsUpV1,
+} from "./authorize-wheels-up-executor-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import {
@@ -1299,6 +1302,57 @@ async function publicationResult(args: string[]): Promise<number> {
   return 0;
 }
 
+async function authorizeWheelsUp(args: string[]): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--human", "--passcode-stdin"]);
+  if (options.flags.has("--json") && options.flags.has("--human")) {
+    throw new MissionCliError("--human and --json are mutually exclusive.");
+  }
+  const humanMode = options.flags.has("--human") || (!options.flags.has("--json") && !options.flags.has("--passcode-stdin"));
+  const promptOutput = options.flags.has("--json") ? process.stderr : outputStream;
+  const root = await exactRoot(options.values.get("--root"), true);
+  const config = await repositoryConfig(root);
+  const missionId = required(options, "--mission-id");
+  const input = await jsonFile(resolve(root, required(options, "--input")), "Authorize Wheels Up input");
+  const intent = validateAuthorizeWheelsUpInput(input);
+  const timestamp = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
+  const renderDecision = (entry: { kind: "manifest" | "receipt"; manifest?: Readonly<Record<string, unknown>>; receipt?: Readonly<Record<string, unknown>>; humanMode: boolean; }) => {
+    if (entry.kind === "manifest") {
+      if (entry.humanMode) return renderAuthorizeWheelsUpHumanV1(entry.manifest as Parameters<typeof renderAuthorizeWheelsUpHumanV1>[0]);
+      return `SHIELD_WHEELS_UP_MANIFEST_BEGIN\n${canonicalJson(entry.manifest)}\nSHIELD_WHEELS_UP_MANIFEST_END`;
+    }
+    if (entry.humanMode) return renderAuthorizeWheelsUpReceiptHumanV1(entry.receipt as Parameters<typeof renderAuthorizeWheelsUpReceiptHumanV1>[0]);
+    return JSON.stringify(entry.receipt, null, 2);
+  };
+  try {
+    return await executeAuthorizeWheelsUpV1({
+      root,
+      config,
+      missionId,
+      intent,
+      timestamp,
+      humanMode,
+      promptOutput: { write: (value) => promptOutput.write(value) },
+      dependencies: {
+        renderDecision,
+        readPasscode: () => passcodeFromOptions(options, promptOutput),
+        signBatch: async (binding, passcode, payloads) => {
+          try {
+            return await signPayloadBatchWithSigner(binding.signingKeyRef, binding.publicKeySpkiBase64, passcode, payloads);
+          } catch (error) {
+            if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+              throw new MissionCliError("No local Coulson signer was found for this mission binding.", 1);
+            }
+            throw error instanceof Error ? new MissionCliError(error.message, 1) : new MissionCliError("Coulson batch signing failed.", 1);
+          }
+        },
+        appendBatchAtomic: appendProfileAwareMissionEntriesAtomicV1,
+      },
+    });
+  } catch (error) {
+    throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
+  }
+}
+
 function canonicalDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("base64url")}`;
 }
@@ -1319,448 +1373,6 @@ function remainingOnePasscodeHumanGates(current: ProfileAwareJournal): string[] 
   const gates = new Set<string>(["coulson.final_acceptance", "fitz.technical_review"]);
   if (current.projection.brief.requireSimmons) gates.add("simmons.product_domain_review");
   return [...gates].sort((left, right) => left.localeCompare(right));
-}
-
-type PreparedAuthorizeWheelsUp = {
-  configurationIdentity: string;
-  current: ProfileAwareJournal;
-  observation: PublicationRepositoryObservation;
-  journalBytes: string;
-  startingJournalSha256: string;
-  binding: TrustedHumanBinding;
-  implementationAuthority: ImplementationAuthorityV1;
-  runtimeBinding: Schema9RuntimeBindingV1;
-  publicationAuthority: ReviewPublicationAuthorityV1;
-  payloads: readonly unknown[];
-  manifest: Readonly<Record<string, unknown>>;
-};
-
-async function prepareAuthorizeWheelsUp(
-  root: string,
-  config: ShieldConfig,
-  missionId: string,
-  intent: Readonly<AuthorizeWheelsUpIntent>,
-  timestamp: { value: string; provenance: "hostTrusted" },
-): Promise<PreparedAuthorizeWheelsUp> {
-  const current = await currentProfileAwareMission(root, config, missionId);
-  if (current.projection.authorization !== "waiting" || current.projection.execution !== "not-started" ||
-      current.projection.implementationAuthorityState !== "waiting" || current.projection.implementationAuthority !== null ||
-      current.projection.runtimeBindings.length !== 0 || current.projection.activeRuntimeBindings.length !== 0 ||
-      current.projection.publicationAuthorizations.length !== 0 || current.projection.finalAcceptance !== "waiting") {
-    throw new MissionCliError("Authorize Wheels Up requires a fresh pending schema-9 mission with no implementation, runtime-binding, or publication authority.", 1);
-  }
-  const satisfied = new Set(current.projection.evidence.map(({ requirementId }) => requirementId));
-  const requirements = current.projection.requirements.filter(({ evidenceKind, requiredRoleId, phase, requirementId }) =>
-    evidenceKind === "mission_authorization" && requiredRoleId === "coulson" && phase === "authorization" && !satisfied.has(requirementId));
-  if (requirements.length !== 1) throw new MissionCliError("Authorize Wheels Up requires exactly one pending Coulson mission authorization.", 1);
-
-  const identities = ["may", intent.reasoningRuntimeId, intent.modelId, intent.toolExecutorId];
-  if (new Set(identities).size !== identities.length ||
-      current.projection.brief.participants.some(({ seatId }) => identities.slice(1).includes(seatId))) {
-    throw new MissionCliError("May seat, reasoning runtime, model, and tool executor must be mutually distinct and cannot be mission participants.", 1);
-  }
-
-  const observation = await observePublicationRepository(
-    root,
-    config.repositoryId,
-    intent.baseRevision,
-    intent.publicationPaths,
-    canonicalPublicationPathCompare,
-  );
-  const pathKinds = publicationPathKinds(observation, canonicalPublicationPathCompare);
-  if (observation.remoteRepositoryId !== config.repositoryId) throw new MissionCliError("Repository origin does not match configured repository identity.", 1);
-  if (observation.statusEntries.length !== 0) throw new MissionCliError("Authorize Wheels Up requires an exactly clean workspace.", 1);
-  if (canonicalJson(observation.changedPaths) !== canonicalJson(intent.publicationPaths)) {
-    throw new MissionCliError("Initial draft publication paths must exactly equal the observed base-to-HEAD change set.", 1);
-  }
-
-  const binding = coulsonBinding(current);
-  const start = current.projection.lastSequence;
-  const governancePayload = {
-    schemaVersion: 1 as const,
-    evidenceId: `evidence:coulson:${start + 1}`,
-    requirementId: requirements[0].requirementId,
-    missionId,
-    revisionId: current.projection.brief.revisionId,
-    seatId: "coulson" as const,
-    evidenceKind: "mission_authorization" as const,
-    decision: "approved" as const,
-    humanPrincipalId: binding.humanPrincipalId,
-    bindingId: binding.bindingId,
-    signingKeyRef: binding.signingKeyRef,
-    sourceRef: `passcode-signer:${missionId}:authorize-wheels-up`,
-    timestamp,
-    journalSequence: start + 1,
-  };
-  const implementationAuthority = unwrap(validateImplementationAuthorityV1({
-    schemaVersion: 1,
-    contractVersion: "implementation-authority.v1",
-    authorityKind: "wheels_up",
-    authorityRef: `authority:${missionId}:${start + 2}`,
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    seatId: "may",
-    missionRevisionId: current.projection.brief.revisionId,
-    artifactRevisionId: observation.headRevision,
-    repositoryId: config.repositoryId,
-    canonicalWritableRoot: observation.canonicalRoot,
-    branch: observation.branch,
-    baseRevision: observation.baseRevision,
-    headRevision: observation.headRevision,
-    modelId: intent.modelId,
-    approvedRelativePaths: intent.approvedRelativePaths,
-    approvedActionIds: intent.approvedActionIds,
-    approvedEffectClasses: intent.approvedEffectClasses,
-    approvedEffectKeys: intent.approvedEffectKeys,
-    approvedCapabilities: intent.approvedCapabilities,
-    validationCommandIds: intent.validationCommandIds,
-    journalSequence: start + 2,
-    humanPrincipalId: binding.humanPrincipalId,
-    humanBindingId: binding.bindingId,
-    signingKeyRef: binding.signingKeyRef,
-    sourceRef: `cli:authorize-wheels-up:${start + 2}`,
-    evidenceRef: `evidence:authorize-wheels-up:${start + 2}`,
-    timestamp,
-  }));
-  const authorizationId = `authorization:runtime-binding:${start + 3}`;
-  const runtime: RuntimeBinding = {
-    bindingSchemaVersion: 1,
-    bindingId: `binding:${missionId}:may:1`,
-    bindingVersion: 1,
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    seatId: "may",
-    reasoningRuntimeId: intent.reasoningRuntimeId,
-    toolExecutorId: intent.toolExecutorId,
-    repositoryId: implementationAuthority.repositoryId,
-    canonicalWritableRoot: implementationAuthority.canonicalWritableRoot,
-    branch: implementationAuthority.branch,
-    artifactRevisionId: implementationAuthority.artifactRevisionId,
-    recordedAtSequence: start + 3,
-    activeThroughSequence: null,
-    lifecycleState: "active",
-    approvedScope: {
-      actionIds: [...implementationAuthority.approvedActionIds],
-      effectClasses: [...implementationAuthority.approvedEffectClasses],
-      effectKeys: [...implementationAuthority.approvedEffectKeys],
-      capabilities: [...implementationAuthority.approvedCapabilities],
-    },
-    coulsonAuthorizationRef: authorizationId,
-  };
-  const runtimeBinding = unwrap(validateSchema9RuntimeBindingV1({
-    schemaVersion: 1,
-    binding: runtime,
-    implementationAuthorityRef: implementationAuthority.authorityRef,
-    implementationAuthorityDigest: computeImplementationAuthorityDigest(implementationAuthority),
-    implementationAuthoritySequence: implementationAuthority.journalSequence,
-    approvedRelativePaths: [...implementationAuthority.approvedRelativePaths],
-    validationCommandIds: [...implementationAuthority.validationCommandIds],
-    modelId: implementationAuthority.modelId,
-    baseRevision: implementationAuthority.baseRevision,
-    headRevision: implementationAuthority.headRevision,
-  }));
-  const runtimeAuthorizationPayload: Schema9RuntimeBindingAuthorizationPayload = unwrap(validateSchema9RuntimeBindingAuthorizationPayload({
-    schemaVersion: 1,
-    authorizationId,
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    seatId: "may",
-    bindingId: runtime.bindingId,
-    bindingVersion: 1,
-    priorBindingId: null,
-    priorBindingVersion: null,
-    bindingDigest: computeRuntimeBindingDigest(runtime),
-    schema9BindingDigest: computeSchema9RuntimeBindingDigest(runtimeBinding),
-    artifactRevisionId: implementationAuthority.artifactRevisionId,
-    decision: "approved",
-    previousJournalSequence: start + 2,
-    journalSequence: start + 3,
-    humanPrincipalId: binding.humanPrincipalId,
-    humanBindingId: binding.bindingId,
-    signingKeyRef: binding.signingKeyRef,
-    sourceRef: `cli:authorize-wheels-up:runtime-binding:${start + 3}`,
-    timestamp,
-  }));
-  const publicationAuthorizationId = `authorization:${missionId}:review-publish:${start + 4}`;
-  const publicationAuthority = {
-    publicationScopeSchemaVersion: 1 as const,
-    contractVersion: "review-publication.v1" as const,
-    authorityKind: "wheels_up" as const,
-    authorityRef: publicationAuthorizationId,
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    repositoryId: config.repositoryId,
-    canonicalRepositoryRoot: observation.canonicalRoot,
-    branch: observation.branch,
-    baseRevisionId: observation.baseRevision,
-    headRevisionId: observation.headRevision,
-    authorizedPaths: [...intent.publicationPaths],
-    permittedEffects: [...INITIAL_DRAFT_EFFECTS],
-  };
-  const evaluation = evaluateReviewPublicationV1(publicationAuthority, {
-    publicationScopeSchemaVersion: 1,
-    contractVersion: "review-publication.v1",
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    repositoryId: observation.remoteRepositoryId,
-    canonicalRepositoryRoot: observation.gitTopLevel,
-    branch: observation.branch,
-    baseRevisionId: observation.baseRevision,
-    headRevisionId: observation.headRevision,
-    proposedChangedPaths: intent.publicationPaths,
-    observedChangedPaths: observation.changedPaths,
-    requestedEffects: [...INITIAL_DRAFT_EFFECTS],
-    observedSymlinkPaths: pathKinds.symlinks,
-    observedGitlinkPaths: pathKinds.gitlinks,
-    workspaceClean: true,
-  });
-  if (evaluation.state === "blocked") throw new MissionCliError(`Initial draft publication authorization blocked: ${evaluation.reasonCode}.`, 1);
-  const publicationPayload = {
-    schemaVersion: 1 as const,
-    authorizationId: publicationAuthorizationId,
-    authorityDigest: computeReviewPublicationAuthorityDigest(publicationAuthority),
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    artifactRevisionId: observation.headRevision,
-    authorityKind: "wheels_up" as const,
-    previousJournalSequence: start + 3,
-    journalSequence: start + 4,
-    humanPrincipalId: binding.humanPrincipalId,
-    humanBindingId: binding.bindingId,
-    signingKeyRef: binding.signingKeyRef,
-    sourceRef: `cli:authorize-wheels-up:publication:${start + 4}`,
-    timestamp,
-  };
-  const payloads = canonicalSnapshot([governancePayload, implementationAuthority, runtimeAuthorizationPayload, publicationPayload]);
-  const journalPaths = unwrap(resolveSupervisedMissionPaths(root, config.paths.journals, missionId));
-  const journalBytes = await regularTextFile(journalPaths.journalPath, "Mission journal");
-  const startingJournalSha256 = journalByteSha256(journalBytes);
-  const manifestWithoutDigest = {
-    schemaVersion: 1,
-    schemaId: "shield.wheels-up-authorization-manifest.v1",
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    repository: {
-      repositoryId: config.repositoryId,
-      configuredJournalPath: config.paths.journals,
-      canonicalRoot: observation.canonicalRoot,
-      gitTopLevel: observation.gitTopLevel,
-      originUrl: observation.originUrl,
-      remoteRepositoryId: observation.remoteRepositoryId,
-      branch: observation.branch,
-      baseRevision: observation.baseRevision,
-      headRevision: observation.headRevision,
-      baseAncestor: observation.baseAncestor,
-      workspaceClean: true,
-      changedPaths: observation.changedPaths,
-      symlinkPaths: pathKinds.symlinks,
-      gitlinkPaths: pathKinds.gitlinks,
-    },
-    journal: { startingSequence: start, endingSequence: start + 4, startingJournalSha256 },
-    humanBinding: {
-      seatId: binding.seatId,
-      bindingId: binding.bindingId,
-      humanPrincipalId: binding.humanPrincipalId,
-      signingKeyRef: binding.signingKeyRef,
-      missionScope: binding.missionScope,
-      validFromSequence: binding.validFromSequence,
-      validThroughSequence: binding.validThroughSequence,
-    },
-    implementationAuthority,
-    runtimeBinding,
-    publicationAuthority,
-    constituentPayloads: [
-      { eventType: "governance.decided", payload: payloads[0] },
-      { eventType: "implementation.authorized", payload: payloads[1] },
-      { eventType: "runtime.binding_recorded", payload: payloads[2] },
-      { eventType: "review.publication_authorized", payload: payloads[3] },
-    ],
-    exclusions: [...ONE_PASSCODE_EXCLUSIONS],
-    remainingHumanGates: remainingOnePasscodeHumanGates(current),
-  };
-  const manifest = canonicalSnapshot({ ...manifestWithoutDigest, manifestDigest: canonicalDigest(manifestWithoutDigest) });
-  return {
-    configurationIdentity: canonicalJson(config),
-    current,
-    observation,
-    journalBytes,
-    startingJournalSha256,
-    binding,
-    implementationAuthority,
-    runtimeBinding,
-    publicationAuthority,
-    payloads,
-    manifest,
-  };
-}
-
-function assertPreparedAuthorizeWheelsUpFresh(initial: PreparedAuthorizeWheelsUp, fresh: PreparedAuthorizeWheelsUp): void {
-  if (fresh.configurationIdentity !== initial.configurationIdentity ||
-      canonicalJson(fresh.observation) !== canonicalJson(initial.observation) ||
-      fresh.journalBytes !== initial.journalBytes || fresh.startingJournalSha256 !== initial.startingJournalSha256 ||
-      canonicalJson(fresh.current.entries) !== canonicalJson(initial.current.entries) ||
-      canonicalJson(fresh.current.projection) !== canonicalJson(initial.current.projection) ||
-      canonicalJson(fresh.payloads) !== canonicalJson(initial.payloads) ||
-      canonicalJson(fresh.manifest) !== canonicalJson(initial.manifest)) {
-    throw new MissionCliError("Authorize Wheels Up inputs, manifest, repository, or mission journal changed after display.", 1);
-  }
-}
-
-async function authorizeWheelsUp(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--human", "--passcode-stdin"]);
-  if (options.flags.has("--json") && options.flags.has("--human")) {
-    throw new MissionCliError("--human and --json are mutually exclusive.");
-  }
-  const humanMode = options.flags.has("--human") ||
-    (!options.flags.has("--json") && !options.flags.has("--passcode-stdin"));
-  const root = await exactRoot(options.values.get("--root"), true);
-  const config = await repositoryConfig(root);
-  const missionId = required(options, "--mission-id");
-  const intent = validateAuthorizeWheelsUpInput(await jsonFile(resolve(root, required(options, "--input")), "Authorize Wheels Up input"));
-  const timestamp = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
-  const prepared = await prepareAuthorizeWheelsUp(root, config, missionId, intent, timestamp);
-
-  const framedManifest = `SHIELD_WHEELS_UP_MANIFEST_BEGIN\n${canonicalJson(prepared.manifest)}\nSHIELD_WHEELS_UP_MANIFEST_END\n`;
-  if (humanMode) process.stdout.write(`${renderAuthorizeWheelsUpHumanV1(prepared.manifest as Parameters<typeof renderAuthorizeWheelsUpHumanV1>[0])}\n`);
-  else process.stderr.write(framedManifest);
-
-  const passcode = await passcodeFromOptions(options, options.flags.has("--json") ? process.stderr : outputStream);
-  let signatures: readonly string[];
-  try {
-    signatures = await signPayloadBatchWithSigner(
-      prepared.binding.signingKeyRef,
-      prepared.binding.publicKeySpkiBase64,
-      passcode,
-      prepared.payloads,
-    );
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      throw new MissionCliError("No local Coulson signer was found for this mission binding.", 1);
-    }
-    throw new MissionCliError(error instanceof Error ? error.message : "Coulson batch signing failed.", 1);
-  }
-  if (signatures.length !== 4) throw new MissionCliError("Coulson batch signer did not return exactly four signatures.", 1);
-  const publicKey = createPublicKey({ key: Buffer.from(prepared.binding.publicKeySpkiBase64, "base64"), format: "der", type: "spki" });
-  for (let index = 0; index < prepared.payloads.length; index += 1) {
-    if (!verify(null, Buffer.from(canonicalJson(prepared.payloads[index])), publicKey, Buffer.from(signatures[index], "base64"))) {
-      throw new MissionCliError(`Independent signature verification failed for constituent ${index + 1}.`, 1);
-    }
-  }
-
-  const afterSigningConfig = await repositoryConfig(root);
-  const afterSigning = await prepareAuthorizeWheelsUp(root, afterSigningConfig, missionId, intent, timestamp);
-  assertPreparedAuthorizeWheelsUpFresh(prepared, afterSigning);
-
-  const trustedBindings = profileAwareBindings(prepared.current);
-  const stagedEntries = [...prepared.current.entries];
-  let stagedProjection = prepared.current.projection;
-  const governanceEvidence: SignedProfileEvidenceV1 = { payload: prepared.payloads[0] as SignedProfileEvidenceV1["payload"], signatureBase64: signatures[0] };
-  const governanceEntry = produce(() => createProfileAwareGovernanceDecisionEntryV1({ projection: stagedProjection, trustedBindings, evidence: governanceEvidence })) as Extract<ProfileAwareMissionEntryV1, { type: "governance.decided" }>;
-  stagedEntries.push(governanceEntry);
-  stagedProjection = unwrap(replayProfileAwareMissionJournal(stagedEntries));
-  if (canonicalJson(governanceEntry.payload.evidence.payload) !== canonicalJson(prepared.payloads[0])) throw new MissionCliError("Governance constructor expanded the frozen payload.", 1);
-
-  const implementationEntry = produce(() => createProfileAwareImplementationAuthorityEntryV1({
-    projection: stagedProjection,
-    trustedBindings,
-    authority: { payload: prepared.payloads[1] as ImplementationAuthorityV1, signatureBase64: signatures[1] },
-  })) as Extract<ProfileAwareMissionEntryV1, { type: "implementation.authorized" }>;
-  stagedEntries.push(implementationEntry);
-  stagedProjection = unwrap(replayProfileAwareMissionJournal(stagedEntries));
-  if (canonicalJson(implementationEntry.payload.authority.payload) !== canonicalJson(prepared.payloads[1])) throw new MissionCliError("Implementation constructor expanded the frozen payload.", 1);
-
-  const runtimeEntry = produce(() => createProfileAwareRuntimeBindingRecordedEntryV1({
-    projection: stagedProjection,
-    trustedBindings,
-    binding: prepared.runtimeBinding,
-    authorization: { payload: prepared.payloads[2] as Schema9RuntimeBindingAuthorizationPayload, signatureBase64: signatures[2] },
-  })) as Extract<ProfileAwareMissionEntryV1, { type: "runtime.binding_recorded" }>;
-  stagedEntries.push(runtimeEntry);
-  stagedProjection = unwrap(replayProfileAwareMissionJournal(stagedEntries));
-  if (canonicalJson(runtimeEntry.payload.authorization.payload) !== canonicalJson(prepared.payloads[2])) throw new MissionCliError("Runtime-binding constructor expanded the frozen payload.", 1);
-
-  const publicationEntry = produce(() => createProfileAwareReviewPublicationAuthorizationEntryV1({
-    projection: stagedProjection,
-    trustedBindings,
-    authority: prepared.publicationAuthority,
-    authorization: { payload: prepared.payloads[3] as Parameters<typeof createProfileAwareReviewPublicationAuthorizationEntryV1>[0]["authorization"]["payload"], signatureBase64: signatures[3] },
-  })) as Extract<ProfileAwareMissionEntryV1, { type: "review.publication_authorized" }>;
-  stagedEntries.push(publicationEntry);
-  stagedProjection = unwrap(replayProfileAwareMissionJournal(stagedEntries));
-  if (canonicalJson(publicationEntry.payload.authorization.payload) !== canonicalJson(prepared.payloads[3])) throw new MissionCliError("Publication constructor expanded the frozen payload.", 1);
-  const batchEntries = [governanceEntry, implementationEntry, runtimeEntry, publicationEntry];
-  if (canonicalJson(batchEntries.map(({ type, sequence }) => ({ type, sequence }))) !== canonicalJson([
-    { type: "governance.decided", sequence: prepared.current.projection.lastSequence + 1 },
-    { type: "implementation.authorized", sequence: prepared.current.projection.lastSequence + 2 },
-    { type: "runtime.binding_recorded", sequence: prepared.current.projection.lastSequence + 3 },
-    { type: "review.publication_authorized", sequence: prepared.current.projection.lastSequence + 4 },
-  ])) throw new MissionCliError("Constructed batch is not the frozen four-entry transition.", 1);
-
-  const beforeStoreConfig = await repositoryConfig(root);
-  const beforeStore = await prepareAuthorizeWheelsUp(root, beforeStoreConfig, missionId, intent, timestamp);
-  assertPreparedAuthorizeWheelsUpFresh(prepared, beforeStore);
-  const stored = unwrap(await appendProfileAwareMissionEntriesAtomicV1({
-    ...missionPaths(root, beforeStoreConfig, missionId),
-    entries: batchEntries,
-    expectedStartingJournalSha256: prepared.startingJournalSha256,
-  }));
-  if (canonicalJson(stored.projection) !== canonicalJson(stagedProjection)) throw new MissionCliError("Durable batch projection differs from staged replay.", 1);
-
-  const constituentEntries = [
-    { entry: governanceEntry, envelope: governanceEntry.payload.evidence, constituentId: governanceEntry.payload.evidence.payload.evidenceId },
-    { entry: implementationEntry, envelope: implementationEntry.payload.authority, constituentId: implementationEntry.payload.authority.payload.authorityRef },
-    { entry: runtimeEntry, envelope: runtimeEntry.payload.authorization, constituentId: runtimeEntry.payload.authorization.payload.authorizationId },
-    { entry: publicationEntry, envelope: publicationEntry.payload.authorization, constituentId: publicationEntry.payload.authorization.payload.authorizationId },
-  ];
-  const receiptWithoutDigest = {
-    schemaVersion: 1,
-    schemaId: "shield.wheels-up-authorization-receipt.v1",
-    missionId,
-    subjectId: prepared.current.projection.brief.subjectId,
-    missionRevisionId: prepared.current.projection.brief.revisionId,
-    repositoryId: config.repositoryId,
-    canonicalRoot: prepared.observation.canonicalRoot,
-    branch: prepared.observation.branch,
-    baseRevision: prepared.observation.baseRevision,
-    headRevision: prepared.observation.headRevision,
-    startingJournalSequence: stored.startingSequence,
-    endingJournalSequence: stored.endingSequence,
-    manifestDigest: prepared.manifest.manifestDigest,
-    finalJournalSha256: stored.finalJournalSha256,
-    constituents: constituentEntries.map(({ entry, envelope, constituentId }) => ({
-      eventType: entry.type,
-      entryId: entry.entryId,
-      sequence: entry.sequence,
-      constituentId,
-      signedEnvelopeSha256: canonicalDigest(envelope),
-    })),
-    may: { modelId: intent.modelId, reasoningRuntimeId: intent.reasoningRuntimeId, toolExecutorId: intent.toolExecutorId },
-    implementationScope: {
-      approvedRelativePaths: intent.approvedRelativePaths,
-      approvedActionIds: intent.approvedActionIds,
-      approvedEffectClasses: intent.approvedEffectClasses,
-      approvedEffectKeys: intent.approvedEffectKeys,
-      approvedCapabilities: intent.approvedCapabilities,
-      validationCommandIds: intent.validationCommandIds,
-    },
-    publicationScope: { authorizedPaths: intent.publicationPaths, permittedEffects: [...INITIAL_DRAFT_EFFECTS] },
-    exclusions: [...ONE_PASSCODE_EXCLUSIONS],
-    remainingHumanGates: remainingOnePasscodeHumanGates(prepared.current),
-  };
-  const receipt = canonicalSnapshot({ ...receiptWithoutDigest, receiptDigest: canonicalDigest(receiptWithoutDigest) });
-  output(
-    receipt,
-    options.flags.has("--json"),
-    humanMode
-      ? renderAuthorizeWheelsUpReceiptHumanV1(receipt)
-      : `Authorize Wheels Up completed.\n${JSON.stringify(receipt, null, 2)}`,
-  );
-  return 0;
 }
 
 type DaisyRepositoryObservation = RepositoryObservation & {
