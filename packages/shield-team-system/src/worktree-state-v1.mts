@@ -634,6 +634,10 @@ function validBaselinePath(path: string): boolean {
     components.slice(2).every((component) => component.length > 0 && component !== "." && component !== "..");
 }
 
+function validGitObjectId(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
+}
+
 function parseHeadBaselineEntries(bytes: Buffer): readonly { path: string; gitMode: string; blobOid: string }[] {
   const entries: { path: string; gitMode: string; blobOid: string }[] = [];
   for (const raw of bytes.subarray(0, bytes.length - (bytes.at(-1) === 0 ? 1 : 0)).toString("binary").split("\0")) {
@@ -642,7 +646,7 @@ function parseHeadBaselineEntries(bytes: Buffer): readonly { path: string; gitMo
     const separator = record.indexOf(0x09);
     if (separator < 0) throw new Blocked("destination_conflict", "Destination HEAD baseline metadata is malformed.");
     const header = record.subarray(0, separator).toString("ascii");
-    const match = /^(\d{6}) ([a-z]+) ([0-9a-f]{40,64})$/u.exec(header);
+    const match = /^(\d{6}) ([a-z]+) ((?:[0-9a-f]{40}|[0-9a-f]{64}))$/u.exec(header);
     const path = exactUtf8(record.subarray(separator + 1));
     if (match === null || path === null || match[2] !== "blob") {
       throw new Blocked("destination_conflict", "Destination HEAD baseline must contain only exact regular files.");
@@ -660,7 +664,7 @@ function parseIndexBaselineEntries(bytes: Buffer): readonly { path: string; gitM
     const separator = record.indexOf(0x09);
     if (separator < 0) throw new Blocked("destination_conflict", "Destination index baseline metadata is malformed.");
     const header = record.subarray(0, separator).toString("ascii");
-    const match = /^(\d{6}) ([0-9a-f]{40,64}) ([0-3])$/u.exec(header);
+    const match = /^(\d{6}) ((?:[0-9a-f]{40}|[0-9a-f]{64})) ([0-3])$/u.exec(header);
     const path = exactUtf8(record.subarray(separator + 1));
     if (match === null || path === null) {
       throw new Blocked("destination_conflict", "Destination index baseline metadata is malformed.");
@@ -863,9 +867,11 @@ async function captureTrackedBaselineFile(
       throw new Blocked("destination_conflict", "Tracked baseline worktree mode does not equal the destination Git mode.");
     }
     const bytes = await exactHandleBytes(handle, capturedIdentity.size);
-    const after = identity(await handle.stat());
+    const afterStats = await handle.stat();
+    const after = identity(afterStats);
     const pathStats = await lstat(absolutePath);
-    if (pathStats.isSymbolicLink() || !pathStats.isFile() || !sameIdentity(capturedIdentity, after) ||
+    if (afterStats.nlink !== 1 || pathStats.nlink !== 1 || pathStats.isSymbolicLink() || !pathStats.isFile() ||
+      !sameIdentity(capturedIdentity, after) ||
       Number(pathStats.dev) !== capturedIdentity.dev || Number(pathStats.ino) !== capturedIdentity.ino) {
       throw new Blocked("destination_conflict", "Tracked baseline file identity changed during capture.");
     }
@@ -949,9 +955,11 @@ async function trackedBaselineStillExact(
   try {
     if (!await directoryChainStillHeld(snapshot.directories)) return false;
     for (const file of snapshot.files) {
-      const current = identity(await file.handle.stat());
+      const handleStats = await file.handle.stat();
+      const current = identity(handleStats);
       const pathStats = await lstat(file.absolutePath);
-      if (!pathStats.isSymbolicLink() && pathStats.isFile() && sameIdentity(current, file.identity) &&
+      if (handleStats.nlink === 1 && pathStats.nlink === 1 && !pathStats.isSymbolicLink() && pathStats.isFile() &&
+        sameIdentity(current, file.identity) &&
         Number(pathStats.dev) === file.identity.dev && Number(pathStats.ino) === file.identity.ino &&
         (await exactHandleBytes(file.handle, file.identity.size)).equals(file.bytes)) continue;
       return false;
@@ -1141,7 +1149,7 @@ export function validateWorktreeStateReceiptV1(input: unknown): input is Worktre
       if (!exact(record, ["path", "gitMode", "headBlobOid", "indexBlobOid", "byteSha256"]) ||
         typeof record.path !== "string" || !validBaselinePath(record.path) ||
         (record.gitMode !== "100644" && record.gitMode !== "100755") ||
-        typeof record.headBlobOid !== "string" || !/^[0-9a-f]{40,64}$/u.test(record.headBlobOid) ||
+        typeof record.headBlobOid !== "string" || !validGitObjectId(record.headBlobOid) ||
         typeof record.indexBlobOid !== "string" || record.indexBlobOid !== record.headBlobOid ||
         typeof record.byteSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(record.byteSha256) ||
         (previousPath !== null && compareBytes(previousPath, record.path) >= 0)) return false;

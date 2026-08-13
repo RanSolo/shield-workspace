@@ -44,6 +44,20 @@ function withReceiptDigest(receipt) {
   return { ...body, receiptDigest: sha256(canonicalJson(body)) };
 }
 
+async function writeReceipt(root, receipt) {
+  await writeFile(join(root, ".shield", "worktree-state.json"), `${canonicalJson(receipt)}\n`);
+}
+
+async function assertStaleDoctor(root) {
+  const result = await inspectWorktreeStateV1({ root, configPresent: true, configValid: true });
+  assert.deepEqual(result, {
+    classification: "stale_or_malformed_worktree_state",
+    ok: false,
+    message: "Worktree preparation receipt or installed policy is stale, malformed, unsafe, or belongs to another repository.",
+    receiptDigest: null,
+  });
+}
+
 async function exists(path) {
   try { await lstat(path); return true; }
   catch (error) {
@@ -344,6 +358,47 @@ test("revalidates retained tracked baseline identities across lock, install, rea
   assert.deepEqual(await readFile(join(replayRace.destinationRoot, ".shield", "worktree-state.json")), storedReceipt);
 });
 
+test("rejects post-capture out-of-tree hardlinks at every baseline boundary", async () => {
+  for (const phaseName of ["before_destination_mutation", "lock_acquired", "before_install"]) {
+    const current = await trackedFixture();
+    const baselinePath = join(current.destinationRoot, TRACKED_JOURNALS[0].path);
+    const hardlinkPath = join(current.destinationRoot, `outside-baseline-${phaseName}`);
+    const result = await prepareWorktreeStateV1ForTest(current, {
+      phase: async (phase) => {
+        if (phase === phaseName) await link(baselinePath, hardlinkPath);
+      },
+    });
+    assert.equal(result.state, "blocked", `${phaseName}: ${JSON.stringify(result)}`);
+    assert.equal((await lstat(baselinePath)).nlink, 2, phaseName);
+    for (const relative of WORKTREE_STATE_INSTALLED_PATHS) {
+      assert.equal(await exists(join(current.destinationRoot, relative)), false, `${phaseName}: ${relative}`);
+    }
+  }
+
+  const ready = await trackedFixture();
+  const readyBaseline = join(ready.destinationRoot, TRACKED_JOURNALS[0].path);
+  const readyResult = await prepareWorktreeStateV1ForTest(ready, {
+    phase: async (phase) => {
+      if (phase === "before_ready") await link(readyBaseline, join(ready.destinationRoot, "outside-baseline-ready"));
+    },
+  });
+  assert.equal(readyResult.state, "recovery_required", JSON.stringify(readyResult));
+  assert.equal((await lstat(readyBaseline)).nlink, 2);
+
+  const replay = await trackedFixture();
+  assert.equal((await prepareWorktreeStateV1(replay)).state, "ready");
+  const replayBaseline = join(replay.destinationRoot, TRACKED_JOURNALS[0].path);
+  const receiptBytes = await readFile(join(replay.destinationRoot, ".shield", "worktree-state.json"));
+  const replayResult = await prepareWorktreeStateV1ForTest(replay, {
+    phase: async (phase) => {
+      if (phase === "before_replay_ready") await link(replayBaseline, join(replay.destinationRoot, "outside-baseline-replay"));
+    },
+  });
+  assert.equal(replayResult.state, "blocked", JSON.stringify(replayResult));
+  assert.equal((await lstat(replayBaseline)).nlink, 2);
+  assert.deepEqual(await readFile(join(replay.destinationRoot, ".shield", "worktree-state.json")), receiptBytes);
+});
+
 test("binds optional tracked baseline exclusions into receipts and rejects live tamper", async () => {
   const current = await trackedFixture();
   const prepared = await prepareWorktreeStateV1(current);
@@ -357,18 +412,74 @@ test("binds optional tracked baseline exclusions into receipts and rejects live 
   empty.trackedBaselineExclusions = [];
   assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(empty)), false);
 
+  const duplicate = structuredClone(prepared.receipt);
+  duplicate.trackedBaselineExclusions[1].path = duplicate.trackedBaselineExclusions[0].path;
+  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(duplicate)), false);
+
+  const outside = structuredClone(prepared.receipt);
+  outside.trackedBaselineExclusions[0].path = ".shield/evidence/outside.jsonl";
+  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(outside)), false);
+
+  const sixtyFour = structuredClone(prepared.receipt);
+  sixtyFour.trackedBaselineExclusions[0].headBlobOid = "a".repeat(64);
+  sixtyFour.trackedBaselineExclusions[0].indexBlobOid = "a".repeat(64);
+  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(sixtyFour)), true);
+
+  for (let length = 41; length <= 63; length += 1) {
+    const malformedOid = structuredClone(prepared.receipt);
+    malformedOid.trackedBaselineExclusions[0].headBlobOid = "a".repeat(length);
+    malformedOid.trackedBaselineExclusions[0].indexBlobOid = "a".repeat(length);
+    assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(malformedOid)), false, `OID length ${length}`);
+  }
+
   const tampered = structuredClone(prepared.receipt);
   tampered.trackedBaselineExclusions[0].byteSha256 = "0".repeat(64);
   assert.equal(validateWorktreeStateReceiptV1(tampered), false);
   const digestBoundTamper = withReceiptDigest(tampered);
   assert.equal(validateWorktreeStateReceiptV1(digestBoundTamper), true);
-  await writeFile(
-    join(current.destinationRoot, ".shield", "worktree-state.json"),
-    `${canonicalJson(digestBoundTamper)}\n`,
-  );
+  await writeReceipt(current.destinationRoot, digestBoundTamper);
   const replay = await prepareWorktreeStateV1(current);
   assert.equal(replay.state, "blocked");
   assert.equal(replay.reasonCode, "prepared_state_stale");
+  await assertStaleDoctor(current.destinationRoot);
+
+  const substituted = await trackedFixture();
+  const substitutedPrepared = await prepareWorktreeStateV1(substituted);
+  assert.equal(substitutedPrepared.state, "ready");
+  const oidSubstitution = structuredClone(substitutedPrepared.receipt);
+  const substituteOid = oidSubstitution.trackedBaselineExclusions[0].headBlobOid === "f".repeat(40)
+    ? "e".repeat(40)
+    : "f".repeat(40);
+  oidSubstitution.trackedBaselineExclusions[0].headBlobOid = substituteOid;
+  oidSubstitution.trackedBaselineExclusions[0].indexBlobOid = substituteOid;
+  const digestBoundOidSubstitution = withReceiptDigest(oidSubstitution);
+  assert.equal(validateWorktreeStateReceiptV1(digestBoundOidSubstitution), true);
+  await writeReceipt(substituted.destinationRoot, digestBoundOidSubstitution);
+  const substitutedReplay = await prepareWorktreeStateV1(substituted);
+  assert.equal(substitutedReplay.state, "blocked");
+  assert.equal(substitutedReplay.reasonCode, "prepared_state_stale");
+  await assertStaleDoctor(substituted.destinationRoot);
+});
+
+test("baseline-bearing receipts become stale after live baseline removal or change", async () => {
+  const removed = await trackedFixture();
+  assert.equal((await prepareWorktreeStateV1(removed)).state, "ready");
+  git(removed.destinationRoot, ["rm", "--quiet", "--", TRACKED_JOURNALS[0].path]);
+  git(removed.destinationRoot, ["commit", "--quiet", "-m", "remove tracked baseline"]);
+  const removedReplay = await prepareWorktreeStateV1(removed);
+  assert.equal(removedReplay.state, "blocked");
+  assert.equal(removedReplay.reasonCode, "prepared_state_stale");
+  await assertStaleDoctor(removed.destinationRoot);
+
+  const changed = await trackedFixture();
+  assert.equal((await prepareWorktreeStateV1(changed)).state, "ready");
+  await writeFile(join(changed.destinationRoot, TRACKED_JOURNALS[0].path), "changed tracked baseline\n");
+  git(changed.destinationRoot, ["add", "--force", "--", TRACKED_JOURNALS[0].path]);
+  git(changed.destinationRoot, ["commit", "--quiet", "-m", "change tracked baseline"]);
+  const changedReplay = await prepareWorktreeStateV1(changed);
+  assert.equal(changedReplay.state, "blocked");
+  assert.equal(changedReplay.reasonCode, "prepared_state_stale");
+  await assertStaleDoctor(changed.destinationRoot);
 });
 
 test("accepts legacy baseline-free v1 receipts only while the live tracked baseline remains empty", async () => {
