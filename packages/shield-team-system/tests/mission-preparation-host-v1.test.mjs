@@ -49,6 +49,10 @@ import { executeAuthorizeWheelsUpV1, validateAuthorizeWheelsUpInput } from "../d
 import { executeReviewPublicationAuthorizationV1 } from "../dist/review-publication-executor-v1.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
 import {
+  worktreePreparationAuthorityV1,
+  worktreePreparationIsReadyV1,
+} from "../dist/worktree-state-v1.mjs";
+import {
   computeImplementationAuthorityDigest,
   computeRuntimeBindingDigest,
   computeSchema9RuntimeBindingDigest,
@@ -65,6 +69,23 @@ const SUBJECT_REVISION = "a".repeat(40);
 const REPOSITORY_REVISION = "b".repeat(40);
 const PARENT_MISSION_REVISION = "c".repeat(40);
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
+
+test("worktree preparation provenance remains authority-none and cannot replace live mission observations", async () => {
+  const provenance = {
+    state: "ready",
+    authority: "none",
+    receipt: { receiptDigest: "a".repeat(64) },
+  };
+  assert.equal(worktreePreparationIsReadyV1(provenance), true);
+  assert.equal(worktreePreparationAuthorityV1(provenance), "none");
+  const result = await resolvePreparedMissionTransitionV1({
+    missionId: MISSION_ID,
+    repositoryRoot: "/tmp/not-observed",
+    worktreePreparationReceipt: provenance.receipt,
+  });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "invalid_resolution_input");
+});
 
 test("exported prepared resolver result is the closed five-state union", async () => {
   const declaration = await readFile(new URL("../dist/mission-preparation-host-v1.d.mts", import.meta.url), "utf8");

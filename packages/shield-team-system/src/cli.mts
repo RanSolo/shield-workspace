@@ -31,6 +31,12 @@ import {
   type StarterPipelineId,
 } from "./pipeline-starter-v1.mjs";
 import { MissionCliError, missionUsage, runMissionCli } from "./mission-cli.mjs";
+import {
+  inspectWorktreeStateV1,
+  prepareWorktreeStateV1,
+  worktreePreparationIsReadyV1,
+  type WorktreePreparationResultV1,
+} from "./worktree-state-v1.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".shield", "config.json");
 const PIPELINE_PROFILE_RELATIVE_PATH = join(".shield", "pipeline-profile.json");
@@ -72,6 +78,7 @@ function usage(): string {
     "Usage:",
     `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> [--repository-trust-profile <${REPOSITORY_TRUST_PROFILE_IDS.join("|")}>] [--fitz-binding-ref <ref>] [--simmons-binding-ref <ref>] [--adapters <${CONFIGURED_HOST_ADAPTER_IDS.join(",")}>] [--migrate-config] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
     "  shield doctor [--root <path>] [--json]",
+    "  shield worktree prepare --source-root <path> --root <destination> [--json]",
     "",
     missionUsage(),
   ].join("\n");
@@ -673,6 +680,7 @@ function renderDoctor(report: DoctorReportV2): string {
     const suffix = "adapterId" in entry ? ` [${entry.adapterId ?? "unclassified"}]` : "";
     return `${entry.ok ? "PASS" : "FAIL"} ${entry.id}${suffix}: ${entry.message}`;
   });
+  lines.push(`${report.worktreeState.ok ? "PASS" : "FAIL"} worktree-state [${report.worktreeState.classification}]: ${report.worktreeState.message}`);
   lines.push(report.ok ? "SHIELD doctor: healthy." : "SHIELD doctor: action required.");
   return `${lines.join("\n")}\n`;
 }
@@ -701,6 +709,11 @@ async function runDoctor(args: string[]): Promise<number> {
       : parsed?.state === "invalid" && rawConfig !== undefined
         ? { config: rawConfig }
         : {}),
+    worktreeState: await inspectWorktreeStateV1({
+      root,
+      configPresent: configState.exists,
+      configValid: parsed?.state === "valid",
+    }),
   });
   if (parsed?.state === "invalid" && parsed.issues[0]?.code === "invalid_json") {
     const schema = report.checks.find(({ id }) => id === "config-schema");
@@ -716,6 +729,35 @@ async function runDoctor(args: string[]): Promise<number> {
   return report.ok ? 0 : 1;
 }
 
+function renderWorktreePreparation(result: WorktreePreparationResultV1): string {
+  if (!worktreePreparationIsReadyV1(result)) {
+    return `${result.state.toUpperCase()}: ${result.reasonCode}\n${result.summary}\nNEXT: ${result.nextAction}\n`;
+  }
+  const receipt = result.receipt;
+  return [
+    result.state === "ready" ? "READY" : "ALREADY PREPARED",
+    `Destination: ${receipt.destination.root}`,
+    `Repository: ${receipt.repositoryId}`,
+    `Branch: ${receipt.destination.branch ?? "detached"}`,
+    `HEAD: ${receipt.destination.head}`,
+    `Receipt: ${receipt.receiptDigest}`,
+    "",
+  ].join("\n");
+}
+
+async function runWorktree(args: string[]): Promise<number> {
+  const [subcommand, ...rest] = args;
+  if (subcommand !== "prepare") throw new CliError(`Unsupported worktree command: ${subcommand ?? "missing"}.\n${usage()}`);
+  const options = parseOptions(rest, ["--source-root", "--root"], ["--json"]);
+  const sourceRoot = await inspectRoot(required(options, "--source-root"), false);
+  const destinationRoot = await inspectRoot(required(options, "--root"), true);
+  const result = await prepareWorktreeStateV1({ sourceRoot, destinationRoot });
+  process.stdout.write(options.flags.has("--json")
+    ? `${JSON.stringify(result, null, 2)}\n`
+    : renderWorktreePreparation(result));
+  return worktreePreparationIsReadyV1(result) ? 0 : 1;
+}
+
 export async function runCli(args: string[]): Promise<number> {
   const [command, ...rest] = args;
   if (command === undefined || command === "--help" || command === "help") {
@@ -724,6 +766,7 @@ export async function runCli(args: string[]): Promise<number> {
   }
   if (command === "init") return runInit(rest);
   if (command === "doctor") return runDoctor(rest);
+  if (command === "worktree") return runWorktree(rest);
   if (command === "mission" || command === "evidence" || command === "delegation") return runMissionCli([command, ...rest]);
   throw new CliError(`Unsupported command: ${command}.\n${usage()}`);
 }

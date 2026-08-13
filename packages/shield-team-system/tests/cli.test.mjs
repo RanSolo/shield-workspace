@@ -1419,3 +1419,58 @@ test("init and doctor require the exact Git package root without ancestor search
     /not the Git worktree root/i,
   );
 });
+
+test("worktree prepare exposes closed JSON, concise replay output, and prepared doctor state", async () => {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-cli-worktree-")));
+  const sourceRoot = join(parent, "source");
+  const destinationRoot = join(parent, "destination");
+  await mkdir(sourceRoot);
+  execFileSync("git", ["init", "--quiet"], { cwd: sourceRoot });
+  execFileSync("git", ["config", "user.email", "shield@example.invalid"], { cwd: sourceRoot });
+  execFileSync("git", ["config", "user.name", "SHIELD CLI Worktree"], { cwd: sourceRoot });
+  execFileSync("git", ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"], { cwd: sourceRoot });
+  await writeFile(join(sourceRoot, ".gitignore"), ".shield/\n");
+  await writeFile(join(sourceRoot, "package.json"), "{\"private\":true}\n");
+  execFileSync("git", ["add", ".gitignore", "package.json"], { cwd: sourceRoot });
+  execFileSync("git", ["commit", "--quiet", "-m", "CLI worktree fixture"], { cwd: sourceRoot });
+  execFileSync("git", ["worktree", "add", "--quiet", "-b", `cli-lane-${process.pid}-${Date.now()}`, destinationRoot, "HEAD"], { cwd: sourceRoot });
+
+  const coulson = cliAuthority("coulson");
+  const fitz = cliAuthority("fitz");
+  const config = createShieldConfig({
+    repositoryId: "RanSolo/fixture",
+    coulsonBindingRef: coulson.signingKeyRef,
+    fitzBindingRef: fitz.signingKeyRef,
+  });
+  await mkdir(join(sourceRoot, ".shield"));
+  await writeFile(join(sourceRoot, ".shield", "config.json"), formatShieldConfig(config));
+  await writeFile(
+    join(sourceRoot, ".shield", "trusted-human-bindings.json"),
+    `${JSON.stringify({ schemaVersion: 1, bindings: [coulson, fitz] }, null, 2)}\n`,
+  );
+
+  const prepared = run([
+    "worktree", "prepare", "--source-root", await realpath(sourceRoot),
+    "--root", await realpath(destinationRoot), "--json",
+  ], destinationRoot);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const receipt = JSON.parse(prepared.stdout);
+  assert.equal(receipt.state, "ready");
+  assert.equal(receipt.authority, "none");
+  assert.equal(receipt.receipt.repositoryId, "RanSolo/fixture");
+
+  const replay = run([
+    "worktree", "prepare", "--source-root", await realpath(sourceRoot),
+    "--root", await realpath(destinationRoot),
+  ], destinationRoot);
+  assert.equal(replay.status, 0, replay.stderr);
+  assert.match(replay.stdout, /^ALREADY PREPARED\n/u);
+  assert.match(replay.stdout, /Repository: RanSolo\/fixture/u);
+  assert.doesNotMatch(replay.stdout + replay.stderr, /PIN|passcode/iu);
+
+  const doctor = run(["doctor", "--root", await realpath(destinationRoot), "--json"], destinationRoot);
+  assert.equal(doctor.status, 0, doctor.stderr);
+  const report = JSON.parse(doctor.stdout);
+  assert.equal(report.worktreeState.classification, "prepared_worktree");
+  assert.equal(report.worktreeState.receiptDigest, receipt.receipt.receiptDigest);
+});
