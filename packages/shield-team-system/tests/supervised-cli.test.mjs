@@ -1536,6 +1536,20 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   const after = await readJournalEntries(prepared.root, prepared.missionId);
   assert.equal(after.length, 6);
   assert.equal(after.at(-1).type, "review.publication_authorized");
+
+  const bytesAfterAuthorization = await readFile(path, "utf8");
+  const retry = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--human"],
+    { env: { HOME: prepared.homeRoot } },
+  );
+  assert.equal(retry.status, 0, retry.stderr);
+  assert.match(retry.stdout, /^ALREADY AUTHORIZED — nothing repeated\.\n/u);
+  assert.match(retry.stdout, new RegExp(`authorizationId: ${publication.authorization.authorizationId}\\n`, "u"));
+  assert.match(retry.stdout, new RegExp(`authorityDigest: ${publication.authorization.authorityDigest}\\n`, "u"));
+  assert.match(retry.stdout, new RegExp(`journalSequence: ${publication.journalSequence}\\n`, "u"));
+  assert.doesNotMatch(`${retry.stdout}${retry.stderr}`, /Passcode:/u);
+  assert.equal(await readFile(path, "utf8"), bytesAfterAuthorization);
 });
 
 test("schema-9 publication CLI signs authorization, queues without passcode, and rejects file-delivered outcomes", async () => {

@@ -17,7 +17,10 @@ import {
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntriesAtomicV1, journalByteSha256 } from "../dist/mission-store.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
-import { executeReviewPublicationAuthorizationV1 } from "../dist/review-publication-executor-v1.mjs";
+import {
+  executeReviewPublicationAuthorizationV1,
+  projectPreparedReviewPublicationSemanticTupleV1,
+} from "../dist/review-publication-executor-v1.mjs";
 
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], {
@@ -153,6 +156,31 @@ function dependencies(fixture, calls, overrides = {}) {
     ...overrides,
   };
 }
+
+test("prepared semantic tuple ignores record identity but closes HEAD, paths, and effects", () => {
+  const authority = {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: "authorization:mission:semantic:review-publish:5",
+    missionId: "mission:semantic",
+    subjectId: "issue:286",
+    missionRevisionId: "revision:semantic",
+    repositoryId: "RanSolo/fixture",
+    canonicalRepositoryRoot: "/fixture",
+    branch: "main",
+    baseRevisionId: "a".repeat(40),
+    headRevisionId: "b".repeat(40),
+    authorizedPaths: ["implementation.md"],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+  };
+  const tuple = projectPreparedReviewPublicationSemanticTupleV1(authority);
+  assert.deepEqual(projectPreparedReviewPublicationSemanticTupleV1({ ...authority, authorityRef: "authorization:other" }), tuple);
+  assert.notDeepEqual(projectPreparedReviewPublicationSemanticTupleV1({ ...authority, headRevisionId: "c".repeat(40) }), tuple);
+  assert.notDeepEqual(projectPreparedReviewPublicationSemanticTupleV1({ ...authority, authorizedPaths: ["other.md"] }), tuple);
+  assert.notDeepEqual(projectPreparedReviewPublicationSemanticTupleV1({ ...authority, permittedEffects: ["review.branch.push"] }), tuple);
+  assert.equal(projectPreparedReviewPublicationSemanticTupleV1({ ...authority, authorityKind: "wheels_up" }), null);
+});
 
 test("legacy mode preserves identity and display semantics while using one-entry atomic CAS", async () => {
   const fixture = await legacyFixture();

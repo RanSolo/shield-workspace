@@ -46,6 +46,7 @@ import {
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntriesAtomicV1, readMissionJournalForDisplay } from "../dist/mission-store.mjs";
 import { executeAuthorizeWheelsUpV1, validateAuthorizeWheelsUpInput } from "../dist/authorize-wheels-up-executor-v1.mjs";
+import { executeReviewPublicationAuthorizationV1 } from "../dist/review-publication-executor-v1.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
 import {
   computeImplementationAuthorityDigest,
@@ -1105,6 +1106,58 @@ test("resolve selects deterministic publication readiness at a clean strict desc
   assert.equal(result.observation.initialHeadAncestor, true);
   assert.equal(result.observation.workspaceClean, true);
   assert.deepEqual(result.observation.changedPaths, ["implementation/initial.md", "implementation/nested.md"]);
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = fixture.homeRoot;
+  try {
+    const calls = { render: 0, pin: 0, sign: 0, append: 0 };
+    const executed = await executeReviewPublicationAuthorizationV1({
+      mode: "prepared",
+      root: fixture.repositoryRoot,
+      missionId: MISSION_ID,
+      intent: result.publicationIntent,
+      expectedPreparation: result,
+      timestamp: { value: "2026-08-11T12:03:00Z", provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, {
+      renderDecision: () => { calls.render += 1; return "{}"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signPayload: async (_binding, _passcode, payload) => {
+        calls.sign += 1;
+        return sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64");
+      },
+      appendEntryAtomic: async (input) => {
+        calls.append += 1;
+        return appendProfileAwareMissionEntriesAtomicV1(input);
+      },
+    });
+    assert.deepEqual(calls, { render: 1, pin: 1, sign: 1, append: 1 });
+    const bytesAfterAuthorization = await readFile(fixture.journalPath, "utf8");
+
+    const retry = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.deepEqual(retry, {
+      schemaVersion: 1,
+      state: "publication_already_authorized",
+      missionId: MISSION_ID,
+      missionRevisionId: result.observation.missionRevisionId,
+      authorizationId: executed.authorizationId,
+      authorityDigest: executed.authorityDigest,
+      journalSequence: executed.journalSequence,
+    });
+    assert.equal(await readFile(fixture.journalPath, "utf8"), bytesAfterAuthorization);
+
+    await writeFile(join(fixture.repositoryRoot, "implementation", "nested.md"), "changed retry meaning\n");
+    git(fixture.repositoryRoot, ["add", "implementation/nested.md"]);
+    git(fixture.repositoryRoot, ["commit", "-qm", "change publication meaning"]);
+    const changed = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(changed.state, "blocked", JSON.stringify(changed));
+    assert.equal(changed.reasonCode, "authority_conflict");
+    assert.equal(await readFile(fixture.journalPath, "utf8"), bytesAfterAuthorization);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
 });
 
 test("publication selection fails closed on dirty, empty, scope-escaped, non-descendant, and non-regular changes", async () => {
@@ -1308,6 +1361,7 @@ test("already-authorized retry rejects partial, replaced, duplicate, revoked, an
     const result = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
     assert.equal(result.state, "blocked", `${variant.name}: ${JSON.stringify(result)}`);
     assert.equal(result.reasonCode, "authority_conflict", variant.name);
+    if (variant.name === "duplicate") assert.match(result.errors.join(" "), /#279/u);
     assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline, variant.name);
 
     const cli = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {

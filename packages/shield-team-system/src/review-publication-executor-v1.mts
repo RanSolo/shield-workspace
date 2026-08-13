@@ -24,13 +24,18 @@ import {
   type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
 import {
+  projectPreparedReviewPublicationSemanticTupleV1,
   resolvePreparedMissionTransitionV1,
   type PreparedPublicationReadyResultV1,
+  type PreparedReviewPublicationSemanticTupleV1,
 } from "./mission-preparation-host-v1.mjs";
 import {
   assertMissionSignerSnapshotUnchanged,
   captureMissionSignerSnapshot,
 } from "./mission-signer.mjs";
+
+export { projectPreparedReviewPublicationSemanticTupleV1 };
+export type { PreparedReviewPublicationSemanticTupleV1 };
 
 export type ReviewPublicationAuthorizationIntentV1 = Readonly<{
   baseRevision: string;

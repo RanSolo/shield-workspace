@@ -76,6 +76,7 @@ import {
   resolvePreparedMissionTransitionV1,
   resolveSeatDispatchIdentityByReceiptIdV1,
   validateMissionTransitionPlanReviewV1,
+  type PreparedPublicationAlreadyAuthorizedResultV1,
   type PreparedPublicationReadyResultV1,
 } from "./mission-preparation-host-v1.mjs";
 import {
@@ -1258,6 +1259,15 @@ function renderAlreadyAuthorized(result: Extract<Awaited<ReturnType<typeof resol
   ].join("\n");
 }
 
+function renderPublicationAlreadyAuthorized(result: PreparedPublicationAlreadyAuthorizedResultV1): string {
+  return [
+    "ALREADY AUTHORIZED — nothing repeated.",
+    `authorizationId: ${result.authorizationId}`,
+    `authorityDigest: ${result.authorityDigest}`,
+    `journalSequence: ${result.journalSequence}`,
+  ].join("\n");
+}
+
 function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicationDecisionV1): string {
   return [
     "REVIEW PUBLICATION AUTHORIZATION",
@@ -1285,7 +1295,9 @@ async function prepareNext(args: string[]): Promise<number> {
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
   const result = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root }) as
-    Awaited<ReturnType<typeof resolvePreparedMissionTransitionV1>> | PreparedPublicationReadyResultV1;
+    Awaited<ReturnType<typeof resolvePreparedMissionTransitionV1>> |
+    PreparedPublicationReadyResultV1 |
+    PreparedPublicationAlreadyAuthorizedResultV1;
   if (result.state === "blocked") {
     if (options.flags.has("--json")) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     else process.stderr.write(`Preparation blocked — ${result.reasonCode}: ${result.errors.join(" ")}\n`);
@@ -1293,6 +1305,10 @@ async function prepareNext(args: string[]): Promise<number> {
   }
   if (result.state === "already_authorized") {
     output(result, options.flags.has("--json"), renderAlreadyAuthorized(result));
+    return 0;
+  }
+  if (result.state === "publication_already_authorized") {
+    output(result, options.flags.has("--json"), renderPublicationAlreadyAuthorized(result));
     return 0;
   }
   const humanMode = options.flags.has("--human") || (!options.flags.has("--json") && !options.flags.has("--passcode-stdin"));

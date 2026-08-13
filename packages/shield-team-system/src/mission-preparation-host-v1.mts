@@ -50,7 +50,9 @@ import {
 import {
   computeReviewPublicationAuthorityDigest,
   type ReviewPublicationAuthorityV1,
+  type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
+import { replayProfileAwareMissionJournal } from "./profile-aware-mission-v1.mjs";
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION = "mission.transition-plan-review.v1" as const;
@@ -858,7 +860,58 @@ export type PreparedPublicationReadyResultV1 = Readonly<{
   }>;
 }>;
 
-type ResolvePreparedMissionTransitionInternalResultV1 = ResolvePreparedMissionTransitionResultV1 | PreparedPublicationReadyResultV1;
+export type PreparedPublicationAlreadyAuthorizedResultV1 = Readonly<{
+  schemaVersion: 1;
+  state: "publication_already_authorized";
+  missionId: string;
+  missionRevisionId: string;
+  authorizationId: string;
+  authorityDigest: string;
+  journalSequence: number;
+}>;
+
+export type PreparedReviewPublicationSemanticTupleV1 = Readonly<{
+  publicationScopeSchemaVersion: 1;
+  contractVersion: "review-publication.v1";
+  authorityKind: "review.publish";
+  missionId: string;
+  subjectId: string;
+  missionRevisionId: string;
+  repositoryId: string;
+  canonicalRepositoryRoot: string;
+  branch: string;
+  baseRevisionId: string;
+  headRevisionId: string;
+  authorizedPaths: readonly string[];
+  permittedEffects: readonly ReviewPublicationEffect[];
+}>;
+
+export function projectPreparedReviewPublicationSemanticTupleV1(
+  authority: ReviewPublicationAuthorityV1,
+): PreparedReviewPublicationSemanticTupleV1 | null {
+  if (authority.publicationScopeSchemaVersion !== 1 || authority.contractVersion !== "review-publication.v1" ||
+      authority.authorityKind !== "review.publish") return null;
+  return deepFreeze({
+    publicationScopeSchemaVersion: authority.publicationScopeSchemaVersion,
+    contractVersion: authority.contractVersion,
+    authorityKind: authority.authorityKind,
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    repositoryId: authority.repositoryId,
+    canonicalRepositoryRoot: authority.canonicalRepositoryRoot,
+    branch: authority.branch,
+    baseRevisionId: authority.baseRevisionId,
+    headRevisionId: authority.headRevisionId,
+    authorizedPaths: [...authority.authorizedPaths],
+    permittedEffects: [...authority.permittedEffects],
+  });
+}
+
+type ResolvePreparedMissionTransitionInternalResultV1 =
+  | ResolvePreparedMissionTransitionResultV1
+  | PreparedPublicationReadyResultV1
+  | PreparedPublicationAlreadyAuthorizedResultV1;
 
 type InitialWheelsUpLineageV1 = Readonly<{
   initialHeadRevision: string;
@@ -1450,6 +1503,119 @@ async function preparedPublicationResult(
   });
 }
 
+function initialLineageEnvironmentBeforePreparedPublication(
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+): AuthorizeWheelsUpEnvironmentObservationV1 | null {
+  const records = environment.current.projection.publicationAuthorizations;
+  if (records.length !== 2 || !environment.journalBytes.endsWith("\n")) return null;
+  const currentRecord = records[1];
+  const currentEntry = environment.current.entries[currentRecord.journalSequence];
+  if (currentEntry?.type !== "review.publication_authorized" || currentEntry.entryId !== currentRecord.entryId ||
+      currentEntry.sequence !== currentRecord.journalSequence) return null;
+  const lines = environment.journalBytes.slice(0, -1).split("\n");
+  if (lines.length !== environment.current.entries.length || currentRecord.journalSequence < 1) return null;
+  const entries = environment.current.entries.slice(0, currentRecord.journalSequence);
+  const replay = replayProfileAwareMissionJournal(entries);
+  if (replay.state === "invalid") return null;
+  const journalBytes = `${lines.slice(0, currentRecord.journalSequence).join("\n")}\n`;
+  return deepFreeze({
+    ...environment,
+    current: { kind: "profile-aware" as const, entries, projection: replay.value },
+    journalBytes,
+    journalSha256: journalByteSha256(journalBytes),
+  });
+}
+
+async function preparedPublicationAlreadyAuthorizedResult(
+  graph: MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+  initialHeadRevision: string,
+  config: ShieldConfig,
+  repositoryRoot: string,
+  journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
+): Promise<ResolvePreparedMissionTransitionInternalResultV1> {
+  const selected = await preparedPublicationResult(
+    graph,
+    environment,
+    initialHeadRevision,
+    config,
+    repositoryRoot,
+    journalDependencies,
+  );
+  if (selected.state !== "publication_ready") return selected;
+
+  const projection = environment.current.projection;
+  const records = projection.publicationAuthorizations;
+  if (records.length !== 2) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Duplicate legacy publication recovery is deferred to #279.");
+  }
+  const currentRecord = records[1];
+  const sequence = currentRecord.journalSequence;
+  const authorization = currentRecord.authorization;
+  const entry = environment.current.entries[sequence];
+  const preparedProvenance = entry?.type === "review.publication_authorized" && entry.sequence === sequence &&
+    entry.entryId === currentRecord.entryId &&
+    currentRecord.authority.authorityRef === `authorization:${graph.transitionPlan.missionId}:review-publish:${sequence}` &&
+    authorization.authorizationId === currentRecord.authority.authorityRef &&
+    authorization.authorityDigest === computeReviewPublicationAuthorityDigest(currentRecord.authority) &&
+    authorization.authorityKind === "review.publish" && authorization.previousJournalSequence === sequence - 1 &&
+    authorization.journalSequence === sequence && authorization.sourceRef === `cli:prepare-next:publication-authorize:${sequence}` &&
+    canonicalJson(entry.payload.authority) === canonicalJson(currentRecord.authority) &&
+    canonicalJson(entry.payload.authorization.payload) === canonicalJson(authorization);
+  if (!preparedProvenance) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Duplicate or legacy publication authority recovery is deferred to #279.");
+  }
+
+  const expectedAuthority: ReviewPublicationAuthorityV1 = {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: currentRecord.authorization.authorizationId,
+    missionId: graph.transitionPlan.missionId,
+    subjectId: projection.brief.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    repositoryId: selected.observation.repositoryId,
+    canonicalRepositoryRoot: selected.observation.canonicalRoot,
+    branch: selected.observation.branch,
+    baseRevisionId: selected.publicationIntent.baseRevision,
+    headRevisionId: selected.observation.headRevision,
+    authorizedPaths: [...selected.publicationIntent.authorizedPaths],
+    permittedEffects: [...selected.publicationIntent.permittedEffects],
+  };
+  const expectedTuple = projectPreparedReviewPublicationSemanticTupleV1(expectedAuthority);
+  const matching = records.filter((record) => {
+    const tuple = projectPreparedReviewPublicationSemanticTupleV1(record.authority);
+    return tuple !== null && expectedTuple !== null && canonicalJson(tuple) === canonicalJson(expectedTuple);
+  });
+  if (matching.length !== 1 || matching[0] !== currentRecord) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Existing publication authorization meaning differs from the current prepared publication.");
+  }
+
+  const exactCurrentIdentity = sequence === projection.lastSequence && authorization.missionId === graph.transitionPlan.missionId &&
+    authorization.subjectId === projection.brief.subjectId &&
+    authorization.missionRevisionId === projection.brief.revisionId && authorization.artifactRevisionId === selected.observation.headRevision &&
+    authorization.humanPrincipalId === environment.binding.humanPrincipalId &&
+    authorization.humanBindingId === environment.binding.bindingId && authorization.signingKeyRef === environment.binding.signingKeyRef &&
+    environment.journalSha256 === journalByteSha256(environment.journalBytes);
+  if (!exactCurrentIdentity) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Existing prepared publication authorization identity is stale or conflicting.");
+  }
+  if (projection.communication.requests.some((request) =>
+    "publicationAuthorizationId" in request && request.publicationAuthorizationId === authorization.authorizationId)) {
+    return blocked(graph.transitionPlan.missionId, "authority_conflict", "Existing prepared publication authorization has already been consumed or conflicted by a publication request.");
+  }
+
+  return deepFreeze({
+    schemaVersion: 1 as const,
+    state: "publication_already_authorized" as const,
+    missionId: graph.transitionPlan.missionId,
+    missionRevisionId: projection.brief.revisionId,
+    authorizationId: authorization.authorizationId,
+    authorityDigest: authorization.authorityDigest,
+    journalSequence: sequence,
+  });
+}
+
 async function resolvePreparedMissionTransitionV1WithDependencies(
   input: unknown,
   journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
@@ -1493,11 +1659,31 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
   const observation = buildObservation(graph, environment);
   if (observation === null) return blocked(missionId, "freshness_evidence_incomplete", "Live observation contract could not be built.");
   if (environment.current.projection.authorization === "authorized") {
-    const lineage = initialWheelsUpLineage(graph, environment);
+    const publicationCount = environment.current.projection.publicationAuthorizations.length;
+    if (publicationCount < 1 || publicationCount > 2) {
+      return blocked(missionId, "authority_conflict", "Duplicate legacy publication recovery is deferred to #279.");
+    }
+    const lineageEnvironment = publicationCount === 1
+      ? environment
+      : initialLineageEnvironmentBeforePreparedPublication(environment);
+    const lineage = lineageEnvironment === null ? null : initialWheelsUpLineage(graph, lineageEnvironment);
     if (lineage === null) {
       return blocked(missionId, "authority_conflict", "Existing authority is partial, duplicated, replaced, or semantically mismatched.");
     }
-    if (lineage.exactRetry !== null) return lineage.exactRetry;
+    if (publicationCount === 1 && lineage.exactRetry !== null) return lineage.exactRetry;
+    if (publicationCount === 2) {
+      if (lineage.exactRetry !== null) {
+        return blocked(missionId, "authority_conflict", "Duplicate legacy publication recovery is deferred to #279.");
+      }
+      return preparedPublicationAlreadyAuthorizedResult(
+        graph,
+        environment,
+        lineage.initialHeadRevision,
+        config,
+        copied.repositoryRoot,
+        journalDependencies,
+      );
+    }
     return preparedPublicationResult(
       graph,
       environment,
