@@ -66,6 +66,9 @@ type MissionReviewedTransitionGraphFileStats = {
   readonly nlink: number;
   readonly mode: number;
   readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly isDirectory: () => boolean;
   readonly isFile: () => boolean;
   readonly isSymbolicLink: () => boolean;
 };
@@ -111,6 +114,9 @@ function defaultMaterializationDependencies(): MissionReviewedTransitionGraphMat
       nlink: stats.nlink,
       mode: stats.mode,
       size: stats.size,
+      mtimeMs: stats.mtimeMs,
+      ctimeMs: stats.ctimeMs,
+      isDirectory: stats.isDirectory.bind(stats),
       isFile: stats.isFile.bind(stats),
       isSymbolicLink: stats.isSymbolicLink.bind(stats),
     })),
@@ -705,7 +711,23 @@ export async function materializeMissionReviewedTransitionGraphV1(
 }
 
 export async function readMissionReviewedTransitionGraphV1(input: unknown): Promise<MissionReviewedTransitionGraphReadResultV1> {
-  const copied = cloneClosedData(input);
+  return readMissionReviewedTransitionGraphV1WithDependencies(input, materializationDependencies());
+}
+
+async function readMissionReviewedTransitionGraphV1WithDependencies(
+  input: unknown,
+  dependencies: MissionReviewedTransitionGraphMaterializationDependencies,
+): Promise<MissionReviewedTransitionGraphReadResultV1> {
+  let copied: unknown;
+  try {
+    copied = cloneClosedData(input);
+  } catch {
+    return Object.freeze({
+      state: "invalid",
+      code: "reviewed_transition_graph_unavailable",
+      errors: Object.freeze(["Reviewed transition graph read input is invalid."]),
+    });
+  }
   if (!plain(copied) || !exact(copied, ["repositoryRoot", "missionId"]) ||
       typeof copied.repositoryRoot !== "string" || copied.repositoryRoot.length === 0 ||
       typeof copied.missionId !== "string" || copied.missionId.length === 0) {
@@ -720,32 +742,73 @@ export async function readMissionReviewedTransitionGraphV1(input: unknown): Prom
   let paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(root, copied.missionId);
   let handle: MissionReviewedTransitionGraphFileHandle | undefined;
   try {
-    const canonicalRoot = await realpath(root);
+    const rootBefore = await dependencies.lstatPath(root);
+    if (!rootBefore.isDirectory() || rootBefore.isSymbolicLink() || (rootBefore.mode & 0o22) !== 0) {
+      throw new Error("Reviewed transition graph repository root is unsafe.");
+    }
+    const canonicalRoot = await dependencies.realpathPath(root);
     paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(canonicalRoot, copied.missionId);
     if (!inside(canonicalRoot, paths.graphPath)) throw new Error("Reviewed transition graph path escapes the repository root.");
-    for (const directory of [paths.shieldDirectory, paths.auditDirectory, paths.missionPreparationDirectory, paths.missionDirectory]) {
-      const stats = await lstat(directory);
-      if (!stats.isDirectory() || stats.isSymbolicLink() || await realpath(directory) !== directory) {
+
+    const directories = [canonicalRoot, paths.shieldDirectory, paths.auditDirectory, paths.missionPreparationDirectory, paths.missionDirectory];
+    const directoryAnchors: Array<{ path: string; stats: MissionReviewedTransitionGraphFileStats }> = [];
+    for (const directory of directories) {
+      const stats = await dependencies.lstatPath(directory);
+      const protectedDirectory = directory === paths.auditDirectory || directory === paths.missionPreparationDirectory || directory === paths.missionDirectory;
+      if (!stats.isDirectory() || stats.isSymbolicLink() || await dependencies.realpathPath(directory) !== directory) {
         throw new Error("Reviewed transition graph directory is unsafe.");
       }
+      if ((stats.mode & 0o22) !== 0 || (protectedDirectory && (stats.mode & 0o777) !== MISSION_REVIEWED_TRANSITION_GRAPH_DIRECTORY_MODE)) {
+        throw new Error("Reviewed transition graph directory mode is unsafe.");
+      }
+      directoryAnchors.push({ path: directory, stats });
     }
-    const before = await lstat(paths.graphPath);
+
+    const before = await dependencies.lstatPath(paths.graphPath);
     if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o777) !== MISSION_REVIEWED_TRANSITION_GRAPH_FILE_MODE) {
       throw new Error("Reviewed transition graph is not a protected regular file.");
     }
-    handle = await open(paths.graphPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.nlink !== 1 || !sameIdentity(before, opened) || (opened.mode & 0o777) !== MISSION_REVIEWED_TRANSITION_GRAPH_FILE_MODE) {
+    handle = await dependencies.openPath(paths.graphPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await dependencies.statHandle(handle);
+    if (!opened.isFile() || opened.isSymbolicLink() || opened.size < 1 || opened.nlink !== 1 || !sameIdentity(before, opened) ||
+        opened.size !== before.size || opened.mode !== before.mode || opened.mtimeMs !== before.mtimeMs || opened.ctimeMs !== before.ctimeMs ||
+        (opened.mode & 0o777) !== MISSION_REVIEWED_TRANSITION_GRAPH_FILE_MODE) {
       throw new Error("Reviewed transition graph identity changed during read.");
     }
-    const bytes = await handle.readFile("utf8");
-    const after = await lstat(paths.graphPath);
-    if (!sameIdentity(opened, after) || after.nlink !== 1) throw new Error("Reviewed transition graph was replaced during read.");
+    const bytes = await dependencies.readHandle(handle, opened.size);
+    const postRead = await dependencies.statHandle(handle);
+    if (!postRead.isFile() || postRead.isSymbolicLink() || !sameIdentity(opened, postRead) || postRead.size !== opened.size ||
+        postRead.mode !== opened.mode || postRead.nlink !== opened.nlink || postRead.mtimeMs !== opened.mtimeMs || postRead.ctimeMs !== opened.ctimeMs ||
+        postRead.nlink !== 1 || Buffer.byteLength(bytes, "utf8") !== opened.size) {
+      throw new Error("Reviewed transition graph changed during read.");
+    }
+    const after = await dependencies.lstatPath(paths.graphPath);
+    if (!after.isFile() || after.isSymbolicLink() || !sameIdentity(postRead, after) || after.size !== postRead.size ||
+        after.mode !== postRead.mode || after.nlink !== postRead.nlink || after.mtimeMs !== postRead.mtimeMs || after.ctimeMs !== postRead.ctimeMs || after.nlink !== 1) {
+      throw new Error("Reviewed transition graph was replaced during read.");
+    }
     let parsed: unknown;
     try { parsed = JSON.parse(bytes); } catch { throw new Error("Reviewed transition graph JSON is malformed."); }
     const validated = validateMissionReviewedTransitionGraphV1(parsed);
     if (validated.state === "invalid" || validated.value.transitionPlan.missionId !== copied.missionId || canonicalJson(validated.value) !== bytes) {
       throw new Error("Reviewed transition graph content is invalid or non-canonical.");
+    }
+
+    await dependencies.closeHandle(handle);
+    handle = undefined;
+    for (const anchor of directoryAnchors) {
+      const afterDirectory = await dependencies.lstatPath(anchor.path);
+      const protectedDirectory = anchor.path === paths.auditDirectory || anchor.path === paths.missionPreparationDirectory || anchor.path === paths.missionDirectory;
+      if (!afterDirectory.isDirectory() || afterDirectory.isSymbolicLink() || !sameIdentity(anchor.stats, afterDirectory) ||
+          afterDirectory.mode !== anchor.stats.mode || (afterDirectory.mode & 0o22) !== 0 ||
+          (protectedDirectory && (afterDirectory.mode & 0o777) !== MISSION_REVIEWED_TRANSITION_GRAPH_DIRECTORY_MODE) ||
+          await dependencies.realpathPath(anchor.path) !== anchor.path) {
+        throw new Error("Reviewed transition graph directory was replaced during read.");
+      }
+    }
+    const rootAfter = await dependencies.lstatPath(root);
+    if (!rootAfter.isDirectory() || rootAfter.isSymbolicLink() || !sameIdentity(rootBefore, rootAfter) || rootAfter.mode !== rootBefore.mode) {
+      throw new Error("Reviewed transition graph repository root was replaced during read.");
     }
     return Object.freeze({ state: "read", graphPath: paths.graphPath, graph: validated.value, bytes });
   } catch (error) {
@@ -755,8 +818,15 @@ export async function readMissionReviewedTransitionGraphV1(input: unknown): Prom
       errors: Object.freeze([error instanceof Error ? error.message : "Reviewed transition graph could not be read."]),
     });
   } finally {
-    await handle?.close().catch(() => undefined);
+    if (handle !== undefined) await dependencies.closeHandle(handle).catch(() => undefined);
   }
+}
+
+export async function readMissionReviewedTransitionGraphV1ForTest(
+  input: unknown,
+  dependencies: Partial<MissionReviewedTransitionGraphMaterializationDependencies>,
+): Promise<MissionReviewedTransitionGraphReadResultV1> {
+  return readMissionReviewedTransitionGraphV1WithDependencies(input, materializationDependencies(dependencies));
 }
 
 export interface MissionReviewedTransitionGraphV1 {

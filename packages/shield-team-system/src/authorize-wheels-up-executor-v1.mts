@@ -48,9 +48,13 @@ import {
   renderAuthorizeWheelsUpHumanV1,
   renderAuthorizeWheelsUpReceiptHumanV1,
 } from "./mission-human-output-v1.mjs";
-import type {
-  FreshAuthorizeWheelsUpCandidateV1,
-  FreshAuthorizeWheelsUpObservationV1,
+import {
+  computeCanonicalContractDigestV1,
+  computeContentIdV1,
+  validateFreshAuthorizeWheelsUpCandidateV1,
+  validateFreshAuthorizeWheelsUpObservationV1,
+  type FreshAuthorizeWheelsUpCandidateV1,
+  type FreshAuthorizeWheelsUpObservationV1,
 } from "@shield/mission-preparation";
 
 interface RepositoryObservation {
@@ -759,9 +763,79 @@ function assertPreparedProjectionMatchesCandidate(
   candidate: FreshAuthorizeWheelsUpCandidateV1,
   observation: FreshAuthorizeWheelsUpObservationV1,
 ): void {
-  const actionInput = validateAuthorizeWheelsUpInput(candidate.actionInput);
-  if (canonicalJson(actionInput) !== canonicalJson({
+  const checkedCandidate = validateFreshAuthorizeWheelsUpCandidateV1({ artifact: candidate });
+  if (checkedCandidate.state === "invalid") {
+    throw new Error(`Prepared candidate contract is invalid: ${checkedCandidate.errors.join(" ")}`);
+  }
+  const checkedObservation = validateFreshAuthorizeWheelsUpObservationV1({ artifact: observation });
+  if (checkedObservation.state === "invalid") {
+    throw new Error(`Prepared observation contract is invalid: ${checkedObservation.errors.join(" ")}`);
+  }
+  if (checkedCandidate.value.observationId !== checkedObservation.value.id ||
+      checkedCandidate.value.observationDigest !== checkedObservation.value.digest) {
+    throw new Error("Prepared candidate is not linked to the supplied observation identity.");
+  }
+  if (checkedCandidate.value.missionId !== prepared.current.projection.missionId ||
+      checkedCandidate.value.subjectId !== prepared.current.projection.brief.subjectId ||
+      checkedCandidate.value.repositoryId !== prepared.observation.configuredRepositoryId) {
+    throw new Error("Prepared candidate identity does not match the legacy Wheels Up state.");
+  }
+
+  const projectedObservationBody = {
+    schemaId: "mission.fresh-authorize-wheels-up-observation.v1" as const,
+    authority: "none" as const,
+    missionId: prepared.current.projection.missionId,
+    subjectId: prepared.current.projection.brief.subjectId,
+    repositoryId: prepared.observation.configuredRepositoryId,
+    canonicalRoot: prepared.observation.canonicalRoot,
+    branch: prepared.observation.branch,
+    planningBaseRevision: prepared.implementationAuthority.baseRevision,
     baseRevision: prepared.observation.baseRevision,
+    headRevision: prepared.observation.headRevision,
+    baseAncestor: prepared.observation.baseAncestor,
+    workspaceClean: prepared.observation.statusEntries.length === 0,
+    changedPaths: prepared.observation.changedPaths,
+    symlinkPaths: prepared.environment.symlinkPaths,
+    gitlinkPaths: prepared.environment.gitlinkPaths,
+    missionSchemaVersion: prepared.current.projection.schemaVersion,
+    authorizationState: prepared.current.projection.authorization,
+    implementationAuthorityState: prepared.current.projection.implementationAuthorityState,
+    finalAcceptanceState: prepared.current.projection.finalAcceptance,
+    executionState: prepared.current.projection.execution,
+    implementationAuthorityCount: prepared.current.projection.implementationAuthority === null ? 0 : 1,
+    runtimeBindingCount: prepared.current.projection.runtimeBindings.length,
+    activeRuntimeBindingCount: prepared.current.projection.activeRuntimeBindings.length,
+    publicationAuthorizationCount: prepared.current.projection.publicationAuthorizations.length,
+    pendingCoulsonMissionAuthorizationCount: prepared.environment.pendingCoulsonMissionAuthorizationCount,
+    journalSequence: prepared.current.projection.lastSequence,
+    journalSha256: prepared.environment.journalSha256,
+    signerBindingId: prepared.environment.binding.bindingId,
+    signingKeyRef: prepared.environment.binding.signingKeyRef,
+    signerBindingMatchCount: prepared.environment.signerBindingMatchCount,
+    remainingHumanGates: prepared.environment.remainingHumanGates,
+    preparationEligibility: "preparationEligible" as const,
+  };
+  const projectedDigest = computeCanonicalContractDigestV1({
+    schemaId: projectedObservationBody.schemaId,
+    body: projectedObservationBody,
+  });
+  if (projectedDigest.state === "invalid") {
+    throw new Error(`Prepared observation digest could not be derived: ${projectedDigest.errors.join(" ")}`);
+  }
+  const projectedId = computeContentIdV1({ schemaId: projectedObservationBody.schemaId, digest: projectedDigest.value });
+  if (projectedId.state === "invalid") {
+    throw new Error(`Prepared observation ID could not be derived: ${projectedId.errors.join(" ")}`);
+  }
+  const projectedObservation = validateFreshAuthorizeWheelsUpObservationV1({
+    artifact: { ...projectedObservationBody, id: projectedId.value, digest: projectedDigest.value },
+  });
+  if (projectedObservation.state === "invalid") {
+    throw new Error(`Legacy Wheels Up observation projection is invalid: ${projectedObservation.errors.join(" ")}`);
+  }
+
+  const actionInput = validateAuthorizeWheelsUpInput(checkedCandidate.value.actionInput);
+  if (canonicalJson(actionInput) !== canonicalJson({
+    baseRevision: prepared.implementationAuthority.baseRevision,
     modelId: prepared.implementationAuthority.modelId,
     approvedRelativePaths: prepared.implementationAuthority.approvedRelativePaths,
     approvedActionIds: prepared.implementationAuthority.approvedActionIds,
@@ -797,47 +871,10 @@ function assertPreparedProjectionMatchesCandidate(
     exclusions: [...ONE_PASSCODE_EXCLUSIONS],
     remainingHumanGates: prepared.environment.remainingHumanGates,
   };
-  if (canonicalJson(candidate.decisionProjection) !== canonicalJson(decisionProjection)) {
+  if (canonicalJson(checkedCandidate.value.decisionProjection) !== canonicalJson(decisionProjection)) {
     throw new Error("Prepared candidate decision projection does not match the legacy Wheels Up decision.");
   }
-
-  const projectedObservation = {
-    schemaId: observation.schemaId,
-    authority: observation.authority,
-    id: observation.id,
-    digest: observation.digest,
-    missionId: prepared.current.projection.missionId,
-    subjectId: prepared.current.projection.brief.subjectId,
-    repositoryId: prepared.observation.configuredRepositoryId,
-    canonicalRoot: prepared.observation.canonicalRoot,
-    branch: prepared.observation.branch,
-    planningBaseRevision: observation.planningBaseRevision,
-    baseRevision: prepared.observation.baseRevision,
-    headRevision: prepared.observation.headRevision,
-    baseAncestor: prepared.observation.baseAncestor,
-    workspaceClean: prepared.observation.statusEntries.length === 0,
-    changedPaths: prepared.observation.changedPaths,
-    symlinkPaths: prepared.environment.symlinkPaths,
-    gitlinkPaths: prepared.environment.gitlinkPaths,
-    missionSchemaVersion: prepared.current.projection.schemaVersion,
-    authorizationState: prepared.current.projection.authorization,
-    implementationAuthorityState: prepared.current.projection.implementationAuthorityState,
-    finalAcceptanceState: prepared.current.projection.finalAcceptance,
-    executionState: prepared.current.projection.execution,
-    implementationAuthorityCount: prepared.current.projection.implementationAuthority === null ? 0 : 1,
-    runtimeBindingCount: prepared.current.projection.runtimeBindings.length,
-    activeRuntimeBindingCount: prepared.current.projection.activeRuntimeBindings.length,
-    publicationAuthorizationCount: prepared.current.projection.publicationAuthorizations.length,
-    pendingCoulsonMissionAuthorizationCount: prepared.environment.pendingCoulsonMissionAuthorizationCount,
-    journalSequence: prepared.current.projection.lastSequence,
-    journalSha256: prepared.environment.journalSha256,
-    signerBindingId: prepared.environment.binding.bindingId,
-    signingKeyRef: prepared.environment.binding.signingKeyRef,
-    signerBindingMatchCount: prepared.environment.signerBindingMatchCount,
-    remainingHumanGates: prepared.environment.remainingHumanGates,
-    preparationEligibility: "preparationEligible",
-  };
-  if (canonicalJson(observation) !== canonicalJson(projectedObservation)) {
+  if (canonicalJson(checkedObservation.value) !== canonicalJson(projectedObservation.value)) {
     throw new Error("Prepared repository, journal, signer, or gate projection does not match the compiler observation.");
   }
 }

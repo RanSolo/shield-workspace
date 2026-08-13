@@ -40,6 +40,15 @@ import {
   type AuthorizeWheelsUpEnvironmentObservationV1,
 } from "./authorize-wheels-up-executor-v1.mjs";
 import { journalByteSha256 } from "./mission-store.mjs";
+import {
+  computeImplementationAuthorityDigest,
+  computeRuntimeBindingDigest,
+  computeSchema9RuntimeBindingDigest,
+} from "./implementation-authority-v1.mjs";
+import {
+  computeReviewPublicationAuthorityDigest,
+  type ReviewPublicationAuthorityV1,
+} from "./review-publication-v1.mjs";
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION = "mission.transition-plan-review.v1" as const;
@@ -992,29 +1001,205 @@ function alreadyAuthorizedResult(
   environment: AuthorizeWheelsUpEnvironmentObservationV1,
 ): ResolvePreparedMissionTransitionResultV1 | null {
   const projection = environment.current.projection;
-  if (projection.authorization !== "authorized" || projection.implementationAuthorityState !== "authorized" ||
+  if (projection.schemaVersion !== 9 || projection.authorization !== "authorized" || projection.implementationAuthorityState !== "authorized" ||
       projection.implementationAuthority === null || projection.runtimeBindings.length !== 1 || projection.activeRuntimeBindings.length !== 1 ||
-      projection.publicationAuthorizations.length !== 1 || projection.execution !== "not-started" || projection.finalAcceptance !== "waiting") return null;
+      projection.publicationAuthorizations.length !== 1 || projection.execution !== "not-started" || projection.finalAcceptance !== "waiting" ||
+      environment.pendingCoulsonMissionAuthorizationCount !== 0) return null;
   const entries = environment.current.entries.slice(-4);
   const kinds = ["governance.decided", "implementation.authorized", "runtime.binding_recorded", "review.publication_authorized"];
-  if (entries.length !== 4 || entries.some((entry, index) => entry.type !== kinds[index] || entry.sequence !== projection.lastSequence - 3 + index)) return null;
+  const startingSequence = projection.lastSequence - 4;
+  if (startingSequence < 0 || entries.length !== 4 || entries.some((entry, index) =>
+    entry.type !== kinds[index] || entry.schemaVersion !== 9 || entry.missionId !== graph.transitionPlan.missionId ||
+    entry.sequence !== startingSequence + index + 1 || entry.entryId !== `entry:${graph.transitionPlan.missionId}:${startingSequence + index + 1}`)) return null;
+  const governanceEntry = entries[0] as Extract<typeof entries[number], { type: "governance.decided" }>;
+  const implementationEntry = entries[1] as Extract<typeof entries[number], { type: "implementation.authorized" }>;
+  const runtimeEntry = entries[2] as Extract<typeof entries[number], { type: "runtime.binding_recorded" }>;
+  const publicationEntry = entries[3] as Extract<typeof entries[number], { type: "review.publication_authorized" }>;
   const authority = projection.implementationAuthority;
   const runtimeWrapper = projection.activeRuntimeBindings[0];
   const runtime = runtimeWrapper.binding;
   const publicationRecord = projection.publicationAuthorizations[0];
   const publication = publicationRecord.authority;
   const plan = graph.transitionPlan;
+  const binding = environment.binding;
+  const authorizationRequirements = projection.requirements.filter(({ evidenceKind, requiredRoleId, phase }) =>
+    evidenceKind === "mission_authorization" && requiredRoleId === "coulson" && phase === "authorization");
   const approvedCoulsonEvidence = projection.evidence.filter(({ evidenceKind, seatId, decision }) =>
     evidenceKind === "mission_authorization" && seatId === "coulson" && decision === "approved");
-  const semantic = authority.missionId === plan.missionId && authority.subjectId === plan.subjectId && authority.repositoryId === plan.repositoryId &&
-    authority.baseRevision === plan.planningBaseRevision && authority.headRevision === environment.repository.headRevision && authority.branch === environment.repository.branch &&
-    canonicalJson(authority.approvedRelativePaths) === canonicalJson(plan.approvedRelativePaths) && canonicalJson(authority.approvedActionIds) === canonicalJson(plan.approvedActionIds) &&
-    canonicalJson(authority.approvedEffectClasses) === canonicalJson(plan.approvedEffectClasses) && canonicalJson(authority.approvedEffectKeys) === canonicalJson(plan.approvedEffectKeys) &&
-    canonicalJson(authority.approvedCapabilities) === canonicalJson(plan.approvedCapabilities) && canonicalJson(authority.validationCommandIds) === canonicalJson(plan.validationCommandIds) &&
-    authority.modelId === plan.modelId && runtime.reasoningRuntimeId === plan.reasoningRuntimeId && runtime.toolExecutorId === plan.toolExecutorId &&
-    publication.repositoryId === plan.repositoryId && publication.baseRevisionId === plan.planningBaseRevision && publication.headRevisionId === environment.repository.headRevision &&
-    canonicalJson(publication.authorizedPaths) === canonicalJson(plan.publicationPaths) && approvedCoulsonEvidence.length === 1;
+  if (authorizationRequirements.length !== 1 || approvedCoulsonEvidence.length !== 1 ||
+      approvedCoulsonEvidence[0].requirementId !== authorizationRequirements[0].requirementId ||
+      environment.signerBindingMatchCount !== 1 || binding.seatId !== "coulson") return null;
+
+  const timestamp = governanceEntry.payload.evidence.payload.timestamp;
+  const expectedGovernancePayload = {
+    schemaVersion: 1 as const,
+    evidenceId: `evidence:coulson:${startingSequence + 1}`,
+    requirementId: authorizationRequirements[0].requirementId,
+    missionId: plan.missionId,
+    revisionId: projection.brief.revisionId,
+    seatId: "coulson" as const,
+    evidenceKind: "mission_authorization" as const,
+    decision: "approved" as const,
+    humanPrincipalId: binding.humanPrincipalId,
+    bindingId: binding.bindingId,
+    signingKeyRef: binding.signingKeyRef,
+    sourceRef: `passcode-signer:${plan.missionId}:authorize-wheels-up`,
+    timestamp,
+    journalSequence: startingSequence + 1,
+  };
+  const expectedAuthority = {
+    schemaVersion: 1 as const,
+    contractVersion: "implementation-authority.v1" as const,
+    authorityKind: "wheels_up" as const,
+    authorityRef: `authority:${plan.missionId}:${startingSequence + 2}`,
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    seatId: "may" as const,
+    missionRevisionId: projection.brief.revisionId,
+    artifactRevisionId: environment.repository.headRevision,
+    repositoryId: plan.repositoryId,
+    canonicalWritableRoot: environment.repository.canonicalRoot,
+    branch: environment.repository.branch,
+    baseRevision: plan.planningBaseRevision,
+    headRevision: environment.repository.headRevision,
+    modelId: plan.modelId,
+    approvedRelativePaths: [...plan.approvedRelativePaths],
+    approvedActionIds: [...plan.approvedActionIds],
+    approvedEffectClasses: [...plan.approvedEffectClasses],
+    approvedEffectKeys: [...plan.approvedEffectKeys],
+    approvedCapabilities: [...plan.approvedCapabilities],
+    validationCommandIds: [...plan.validationCommandIds],
+    journalSequence: startingSequence + 2,
+    humanPrincipalId: binding.humanPrincipalId,
+    humanBindingId: binding.bindingId,
+    signingKeyRef: binding.signingKeyRef,
+    sourceRef: `cli:authorize-wheels-up:${startingSequence + 2}`,
+    evidenceRef: `evidence:authorize-wheels-up:${startingSequence + 2}`,
+    timestamp,
+  };
+  const implementationAuthorityDigest = computeImplementationAuthorityDigest(expectedAuthority);
+  const authorizationId = `authorization:runtime-binding:${startingSequence + 3}`;
+  const expectedRuntime = {
+    bindingSchemaVersion: 1 as const,
+    bindingId: `binding:${plan.missionId}:may:1`,
+    bindingVersion: 1,
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    seatId: "may" as const,
+    reasoningRuntimeId: plan.reasoningRuntimeId,
+    toolExecutorId: plan.toolExecutorId,
+    repositoryId: plan.repositoryId,
+    canonicalWritableRoot: environment.repository.canonicalRoot,
+    branch: environment.repository.branch,
+    artifactRevisionId: environment.repository.headRevision,
+    recordedAtSequence: startingSequence + 3,
+    activeThroughSequence: null,
+    lifecycleState: "active" as const,
+    approvedScope: {
+      actionIds: [...plan.approvedActionIds],
+      effectClasses: [...plan.approvedEffectClasses],
+      effectKeys: [...plan.approvedEffectKeys],
+      capabilities: [...plan.approvedCapabilities],
+    },
+    coulsonAuthorizationRef: authorizationId,
+  };
+  const expectedRuntimeWrapper = {
+    schemaVersion: 1 as const,
+    binding: expectedRuntime,
+    implementationAuthorityRef: expectedAuthority.authorityRef,
+    implementationAuthorityDigest,
+    implementationAuthoritySequence: expectedAuthority.journalSequence,
+    approvedRelativePaths: [...plan.approvedRelativePaths],
+    validationCommandIds: [...plan.validationCommandIds],
+    modelId: plan.modelId,
+    baseRevision: plan.planningBaseRevision,
+    headRevision: environment.repository.headRevision,
+  };
+  const expectedRuntimeAuthorization = {
+    schemaVersion: 1 as const,
+    authorizationId,
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    seatId: "may" as const,
+    bindingId: expectedRuntime.bindingId,
+    bindingVersion: 1,
+    priorBindingId: null,
+    priorBindingVersion: null,
+    bindingDigest: computeRuntimeBindingDigest(expectedRuntime),
+    schema9BindingDigest: computeSchema9RuntimeBindingDigest(expectedRuntimeWrapper),
+    artifactRevisionId: environment.repository.headRevision,
+    decision: "approved" as const,
+    previousJournalSequence: startingSequence + 2,
+    journalSequence: startingSequence + 3,
+    humanPrincipalId: binding.humanPrincipalId,
+    humanBindingId: binding.bindingId,
+    signingKeyRef: binding.signingKeyRef,
+    sourceRef: `cli:authorize-wheels-up:runtime-binding:${startingSequence + 3}`,
+    timestamp,
+  };
+  const expectedPublication: ReviewPublicationAuthorityV1 = {
+    publicationScopeSchemaVersion: 1 as const,
+    authorityRef: `authorization:${plan.missionId}:review-publish:${startingSequence + 4}`,
+    contractVersion: "review-publication.v1" as const,
+    authorityKind: "wheels_up" as const,
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    repositoryId: plan.repositoryId,
+    canonicalRepositoryRoot: environment.repository.canonicalRoot,
+    branch: environment.repository.branch,
+    baseRevisionId: plan.planningBaseRevision,
+    headRevisionId: environment.repository.headRevision,
+    authorizedPaths: [...plan.publicationPaths],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+  };
+  const expectedPublicationAuthorization = {
+    schemaVersion: 1 as const,
+    authorizationId: expectedPublication.authorityRef,
+    authorityDigest: computeReviewPublicationAuthorityDigest(expectedPublication),
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    artifactRevisionId: environment.repository.headRevision,
+    authorityKind: "wheels_up" as const,
+    previousJournalSequence: startingSequence + 3,
+    journalSequence: startingSequence + 4,
+    humanPrincipalId: binding.humanPrincipalId,
+    humanBindingId: binding.bindingId,
+    signingKeyRef: binding.signingKeyRef,
+    sourceRef: `cli:authorize-wheels-up:publication:${startingSequence + 4}`,
+    timestamp,
+  };
+
+  const semantic = canonicalJson(governanceEntry.payload.evidence.payload) === canonicalJson(expectedGovernancePayload) &&
+    canonicalJson(approvedCoulsonEvidence[0]) === canonicalJson(expectedGovernancePayload) &&
+    canonicalJson(implementationEntry.payload.authority.payload) === canonicalJson(expectedAuthority) &&
+    canonicalJson(authority) === canonicalJson(expectedAuthority) && projection.implementationAuthorityDigest === implementationAuthorityDigest &&
+    canonicalJson(runtimeEntry.payload.binding) === canonicalJson(expectedRuntimeWrapper) &&
+    canonicalJson(runtimeEntry.payload.authorization.payload) === canonicalJson(expectedRuntimeAuthorization) &&
+    canonicalJson(runtimeWrapper) === canonicalJson(expectedRuntimeWrapper) && canonicalJson(runtime) === canonicalJson(expectedRuntime) &&
+    canonicalJson(publicationEntry.payload.authority) === canonicalJson(expectedPublication) &&
+    canonicalJson(publicationEntry.payload.authorization.payload) === canonicalJson(expectedPublicationAuthorization) &&
+    canonicalJson(publication) === canonicalJson(expectedPublication) &&
+    canonicalJson(publicationRecord.authorization) === canonicalJson(expectedPublicationAuthorization) &&
+    publicationRecord.entryId === publicationEntry.entryId && publicationRecord.journalSequence === publicationEntry.sequence &&
+    canonicalJson(governanceEntry.timestamp) === canonicalJson(timestamp) && canonicalJson(implementationEntry.timestamp) === canonicalJson(timestamp) &&
+    canonicalJson(runtimeEntry.timestamp) === canonicalJson(timestamp) && canonicalJson(publicationEntry.timestamp) === canonicalJson(timestamp);
   if (!semantic) return null;
+
+  const workspaceClean = environment.repository.statusEntries.length === 0;
+  const expectedRemainingHumanGates = projection.brief.requireSimmons
+    ? ["coulson.final_acceptance", "fitz.technical_review", "simmons.product_domain_review"]
+    : ["coulson.final_acceptance", "fitz.technical_review"];
+  if (!workspaceClean || environment.repository.configuredRepositoryId !== plan.repositoryId ||
+      environment.repository.remoteRepositoryId !== plan.repositoryId || environment.repository.canonicalRoot !== environment.repository.gitTopLevel ||
+      environment.repository.branch === "HEAD" || environment.repository.baseRevision !== plan.planningBaseRevision ||
+      environment.repository.headRevision !== authority.headRevision || !environment.repository.baseAncestor ||
+      canonicalJson(environment.repository.changedPaths) !== canonicalJson(plan.publicationPaths) ||
+      environment.symlinkPaths.length !== 0 || environment.gitlinkPaths.length !== 0 ||
+      canonicalJson(environment.remainingHumanGates) !== canonicalJson(expectedRemainingHumanGates) ||
+      environment.journalSha256 !== journalByteSha256(environment.journalBytes)) return null;
   const journalLines = environment.journalBytes.endsWith("\n") ? environment.journalBytes.slice(0, -1).split("\n") : [];
   if (journalLines.length !== projection.lastSequence + 1 || journalLines.length < 5) return null;
   const startingJournalBytes = `${journalLines.slice(0, -4).join("\n")}\n`;
@@ -1036,7 +1221,7 @@ function alreadyAuthorizedResult(
       baseRevision: environment.repository.baseRevision,
       headRevision: environment.repository.headRevision,
       baseAncestor: environment.repository.baseAncestor,
-      workspaceClean: true,
+      workspaceClean,
       changedPaths: environment.repository.changedPaths,
       symlinkPaths: pathKinds.symlinks,
       gitlinkPaths: pathKinds.gitlinks,
@@ -1055,14 +1240,14 @@ function alreadyAuthorizedResult(
       validFromSequence: environment.binding.validFromSequence,
       validThroughSequence: environment.binding.validThroughSequence,
     },
-    implementationAuthority: authority,
-    runtimeBinding: runtimeWrapper,
-    publicationAuthority: publication,
+    implementationAuthority: expectedAuthority,
+    runtimeBinding: expectedRuntimeWrapper,
+    publicationAuthority: expectedPublication,
     constituentPayloads: [
-      { eventType: entries[0].type, payload: (entries[0] as Extract<typeof entries[number], { type: "governance.decided" }>).payload.evidence.payload },
-      { eventType: entries[1].type, payload: (entries[1] as Extract<typeof entries[number], { type: "implementation.authorized" }>).payload.authority.payload },
-      { eventType: entries[2].type, payload: (entries[2] as Extract<typeof entries[number], { type: "runtime.binding_recorded" }>).payload.authorization.payload },
-      { eventType: entries[3].type, payload: (entries[3] as Extract<typeof entries[number], { type: "review.publication_authorized" }>).payload.authorization.payload },
+      { eventType: governanceEntry.type, payload: expectedGovernancePayload },
+      { eventType: implementationEntry.type, payload: expectedAuthority },
+      { eventType: runtimeEntry.type, payload: expectedRuntimeAuthorization },
+      { eventType: publicationEntry.type, payload: expectedPublicationAuthorization },
     ],
     exclusions: [...plan.exclusions],
     remainingHumanGates: [...environment.remainingHumanGates],

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { lstat, link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,6 +20,8 @@ import {
   deriveMissionReviewedTransitionGraphMaterializationPathV1,
   validateMissionReviewedTransitionGraphV1,
   materializeMissionReviewedTransitionGraphV1,
+  readMissionReviewedTransitionGraphV1,
+  readMissionReviewedTransitionGraphV1ForTest,
 } from "../dist/mission-preparation-store-v1.mjs";
 import { canonicalJson } from "../dist/mission-v2.mjs";
 
@@ -361,6 +363,137 @@ test("materialize is idempotent and reports already_materialized", async () => {
     assert.equal(first.graphPath, second.graphPath);
   } finally {
     await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("protected reader returns only exact canonical bytes from anchored protected directories", async () => {
+  const repositoryRoot = await withMaterializationRoot();
+  const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+  assert.equal(built.state, "built");
+  try {
+    const materialized = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+    assert.equal(materialized.state, "materialized");
+    const read = await readMissionReviewedTransitionGraphV1({ repositoryRoot, missionId: "mission:issue-270" });
+    assert.equal(read.state, "read", JSON.stringify(read));
+    assert.equal(read.bytes, canonicalJson(built.graph));
+    assert.deepEqual(read.graph, built.graph);
+  } finally {
+    await rm(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("protected reader rejects hostile closed-data input without invoking accessors", async () => {
+  let getterCalls = 0;
+  const input = { missionId: "mission:issue-270", repositoryRoot: "/tmp" };
+  Object.defineProperty(input, "missionId", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return "mission:issue-270";
+    },
+  });
+  const accessor = await readMissionReviewedTransitionGraphV1(input);
+  assert.equal(accessor.state, "invalid");
+  assert.equal(accessor.code, "reviewed_transition_graph_unavailable");
+  assert.equal(getterCalls, 0);
+
+  const proxy = await readMissionReviewedTransitionGraphV1(new Proxy({ missionId: "mission:issue-270", repositoryRoot: "/tmp" }, {}));
+  assert.equal(proxy.state, "invalid");
+  assert.equal(proxy.code, "reviewed_transition_graph_unavailable");
+});
+
+test("protected reader rejects partial, noncanonical, and unsafe-mode artifacts", async () => {
+  for (const mutation of ["partial", "noncanonical", "directory-mode"]) {
+    const repositoryRoot = await withMaterializationRoot();
+    const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+    assert.equal(built.state, "built");
+    try {
+      const materialized = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+      assert.equal(materialized.state, "materialized");
+      const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(await realpath(repositoryRoot), "mission:issue-270");
+      if (mutation === "partial") await writeFile(paths.graphPath, canonicalJson(built.graph).slice(0, -1), { mode: 0o600 });
+      if (mutation === "noncanonical") await writeFile(paths.graphPath, `${canonicalJson(built.graph)}\n`, { mode: 0o600 });
+      if (mutation === "directory-mode") await chmod(paths.auditDirectory, 0o755);
+
+      const read = await readMissionReviewedTransitionGraphV1({ repositoryRoot, missionId: "mission:issue-270" });
+      assert.equal(read.state, "invalid", mutation);
+      assert.equal(read.code, "reviewed_transition_graph_unavailable", mutation);
+    } finally {
+      await rm(repositoryRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test("protected reader rejects file replacement, in-place mutation, metadata mutation, directory replacement, and close uncertainty", async () => {
+  for (const mutation of ["file-replaced", "file-mutated", "file-inode-mutated", "file-mode-mutated", "file-link-mutated", "file-time-mutated", "directory-replaced", "close-uncertain"]) {
+    const repositoryRoot = await withMaterializationRoot();
+    const built = buildMissionReviewedTransitionGraphV1(graphInputForMissionId("mission:issue-270"));
+    assert.equal(built.state, "built");
+    try {
+      const materialized = await materializeMissionReviewedTransitionGraphV1(materializationInput(repositoryRoot, built.graph));
+      assert.equal(materialized.state, "materialized");
+      const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(await realpath(repositoryRoot), "mission:issue-270");
+      let graphLstatCalls = 0;
+      let missionDirectoryLstatCalls = 0;
+      let handleStatCalls = 0;
+      let closeCalls = 0;
+      const read = await readMissionReviewedTransitionGraphV1ForTest(
+        { repositoryRoot, missionId: "mission:issue-270" },
+        {
+          lstatPath: async (path) => {
+            const stats = await lstat(path);
+            if (path === paths.graphPath) {
+              graphLstatCalls += 1;
+              if (mutation === "file-replaced" && graphLstatCalls === 2) {
+                return cloneStatsWithMutation(stats, (changed) => {
+                  changed.ino = typeof changed.ino === "bigint" ? changed.ino + 1n : changed.ino + 1;
+                });
+              }
+            }
+            if (path === paths.missionDirectory) {
+              missionDirectoryLstatCalls += 1;
+              if (mutation === "directory-replaced" && missionDirectoryLstatCalls === 2) {
+                return cloneStatsWithMutation(stats, (changed) => {
+                  changed.ino = typeof changed.ino === "bigint" ? changed.ino + 1n : changed.ino + 1;
+                });
+              }
+            }
+            return stats;
+          },
+          statHandle: async (handle) => {
+            const stats = await handle.stat();
+            handleStatCalls += 1;
+            if (mutation === "file-mutated" && handleStatCalls === 2) {
+              return cloneStatsWithMutation(stats, (changed) => { changed.size += 1; });
+            }
+            if (mutation === "file-inode-mutated" && handleStatCalls === 2) {
+              return cloneStatsWithMutation(stats, (changed) => {
+                changed.ino = typeof changed.ino === "bigint" ? changed.ino + 1n : changed.ino + 1;
+              });
+            }
+            if (mutation === "file-mode-mutated" && handleStatCalls === 2) {
+              return cloneStatsWithMutation(stats, (changed) => { changed.mode ^= 0o100; });
+            }
+            if (mutation === "file-link-mutated" && handleStatCalls === 2) {
+              return cloneStatsWithMutation(stats, (changed) => { changed.nlink += 1; });
+            }
+            if (mutation === "file-time-mutated" && handleStatCalls === 2) {
+              return cloneStatsWithMutation(stats, (changed) => { changed.mtimeMs += 1; });
+            }
+            return stats;
+          },
+          closeHandle: async (handle) => {
+            closeCalls += 1;
+            await handle.close();
+            if (mutation === "close-uncertain" && closeCalls === 1) throw new Error("simulated close uncertainty");
+          },
+        },
+      );
+      assert.equal(read.state, "invalid", mutation);
+      assert.equal(read.code, "reviewed_transition_graph_unavailable", mutation);
+    } finally {
+      await rm(repositoryRoot, { recursive: true, force: true });
+    }
   }
 });
 

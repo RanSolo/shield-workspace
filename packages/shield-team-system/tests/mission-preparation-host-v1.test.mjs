@@ -15,7 +15,11 @@ import {
   MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION,
   resolvePreparedMissionTransitionV1,
 } from "../dist/mission-preparation-host-v1.mjs";
-import { computeRawReceiptSetSha256V1 } from "@shield/mission-preparation";
+import {
+  computeCanonicalContractDigestV1,
+  computeContentIdV1,
+  computeRawReceiptSetSha256V1,
+} from "@shield/mission-preparation";
 import {
   buildMissionTransitionPlanV1,
 } from "../dist/mission-builder-v1.mjs";
@@ -31,10 +35,23 @@ import {
 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
-import { createProfileAwareMissionBegunEntry, createProfileAwareMissionBrief, MISSION_130_JOURNAL_DIGEST } from "../dist/profile-aware-mission-v1.mjs";
-import { appendProfileAwareMissionEntriesAtomicV1 } from "../dist/mission-store.mjs";
+import {
+  createProfileAwareImplementationAuthorityRevocationEntryV1,
+  createProfileAwareMissionBegunEntry,
+  createProfileAwareMissionBrief,
+  createProfileAwareReviewPublicationAuthorizationEntryV1,
+  createProfileAwareRuntimeBindingSupersessionEntryV1,
+  MISSION_130_JOURNAL_DIGEST,
+} from "../dist/profile-aware-mission-v1.mjs";
+import { appendProfileAwareMissionEntriesAtomicV1, readMissionJournalForDisplay } from "../dist/mission-store.mjs";
 import { executeAuthorizeWheelsUpV1, validateAuthorizeWheelsUpInput } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
+import {
+  computeImplementationAuthorityDigest,
+  computeRuntimeBindingDigest,
+  computeSchema9RuntimeBindingDigest,
+} from "../dist/implementation-authority-v1.mjs";
+import { computeReviewPublicationAuthorityDigest } from "../dist/review-publication-v1.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/cli.mjs", import.meta.url));
 
@@ -729,6 +746,188 @@ function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: { ...process.env, LANG: "C", LC_ALL: "C" } }).trim();
 }
 
+function reidentifyContract(artifact, overrides = {}) {
+  const { id: _id, digest: _digest, ...body } = { ...artifact, ...overrides };
+  const digest = computeCanonicalContractDigestV1({ schemaId: body.schemaId, body });
+  assert.equal(digest.state, "valid", JSON.stringify(digest));
+  const id = computeContentIdV1({ schemaId: body.schemaId, digest: digest.value });
+  assert.equal(id.state, "valid", JSON.stringify(id));
+  return { ...body, id: id.value, digest: digest.value };
+}
+
+async function protectedFixtureSnapshot(fixture) {
+  return {
+    config: await readFile(join(fixture.repositoryRoot, ".shield", "config.json")),
+    journal: await readFile(fixture.journalPath),
+    preparationStore: await readFile(fixture.graphPath),
+    dispatchLog: await readFile(join(fixture.repositoryRoot, ".shield", "dispatch-receipts.jsonl")),
+    signer: await readFile(fixture.signerPath),
+    head: git(fixture.repositoryRoot, ["rev-parse", "HEAD"]),
+    status: git(fixture.repositoryRoot, ["status", "--short"]),
+  };
+}
+
+async function authorizeResolutionFixture(fixture, intentOverrides = {}) {
+  const fresh = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(fresh.state, "ready", JSON.stringify(fresh));
+  const intent = validateAuthorizeWheelsUpInput({ ...fresh.candidate.actionInput, ...intentOverrides });
+  const calls = { render: 0, pin: 0, sign: 0, append: 0 };
+  await executeAuthorizeWheelsUpV1({
+    root: fixture.repositoryRoot,
+    config: fixture.config,
+    missionId: MISSION_ID,
+    intent,
+    timestamp: { value: "2026-08-11T12:01:00Z", provenance: "hostTrusted" },
+    humanMode: false,
+    promptOutput: { write: () => {} },
+    dependencies: {
+      renderDecision: () => { calls.render += 1; return "{}"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signBatch: async (_binding, _passcode, payloads) => {
+        calls.sign += 1;
+        return payloads.map((payload) => sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64"));
+      },
+      appendBatchAtomic: async (input) => { calls.append += 1; return appendProfileAwareMissionEntriesAtomicV1(input); },
+    },
+  });
+  assert.deepEqual(calls, { render: 1, pin: 1, sign: 1, append: 1 });
+}
+
+async function currentProfileJournal(fixture) {
+  const current = await readMissionJournalForDisplay({
+    repositoryRoot: fixture.repositoryRoot,
+    configuredJournalPath: fixture.config.paths.journals,
+    missionId: MISSION_ID,
+  });
+  assert.equal(current.state, "valid", JSON.stringify(current));
+  assert.equal(current.value.kind, "profile-aware");
+  return current.value;
+}
+
+async function appendJournalEntry(fixture, entry) {
+  const bytes = await readFile(fixture.journalPath, "utf8");
+  await writeFile(fixture.journalPath, `${bytes}${JSON.stringify(entry)}\n`);
+}
+
+function signedPayload(payload, privateKey) {
+  return {
+    payload,
+    signatureBase64: sign(null, Buffer.from(canonicalJson(payload)), privateKey).toString("base64"),
+  };
+}
+
+async function appendRuntimeReplacement(fixture) {
+  const current = await currentProfileJournal(fixture);
+  const projection = current.projection;
+  const prior = projection.activeRuntimeBindings[0];
+  assert.ok(prior);
+  const authorizationId = `authorization:runtime-binding:${projection.lastSequence + 1}`;
+  const replacementBinding = {
+    ...prior.binding,
+    bindingVersion: prior.binding.bindingVersion + 1,
+    reasoningRuntimeId: "runtime:replacement-270",
+    recordedAtSequence: projection.lastSequence + 1,
+    coulsonAuthorizationRef: authorizationId,
+  };
+  const replacement = { ...prior, binding: replacementBinding };
+  const timestamp = { value: "2026-08-11T12:02:00Z", provenance: "hostTrusted" };
+  const payload = {
+    schemaVersion: 1,
+    authorizationId,
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    seatId: "may",
+    bindingId: replacementBinding.bindingId,
+    bindingVersion: replacementBinding.bindingVersion,
+    priorBindingId: prior.binding.bindingId,
+    priorBindingVersion: prior.binding.bindingVersion,
+    bindingDigest: computeRuntimeBindingDigest(replacementBinding),
+    schema9BindingDigest: computeSchema9RuntimeBindingDigest(replacement),
+    artifactRevisionId: replacementBinding.artifactRevisionId,
+    decision: "approved",
+    previousJournalSequence: projection.lastSequence,
+    journalSequence: projection.lastSequence + 1,
+    humanPrincipalId: fixture.binding.humanPrincipalId,
+    humanBindingId: fixture.binding.bindingId,
+    signingKeyRef: fixture.binding.signingKeyRef,
+    sourceRef: `test:runtime-replacement:${projection.lastSequence + 1}`,
+    timestamp,
+  };
+  const entry = createProfileAwareRuntimeBindingSupersessionEntryV1({
+    projection,
+    trustedBindings: current.entries[0].payload.trustedBindings,
+    priorBindingId: prior.binding.bindingId,
+    priorBindingVersion: prior.binding.bindingVersion,
+    binding: replacement,
+    authorization: signedPayload(payload, fixture.privateKey),
+  });
+  await appendJournalEntry(fixture, entry);
+}
+
+async function appendDuplicatePublicationAuthority(fixture) {
+  const current = await currentProfileJournal(fixture);
+  const projection = current.projection;
+  const prior = projection.publicationAuthorizations[0].authority;
+  const sequence = projection.lastSequence + 1;
+  const authority = { ...prior, authorityRef: `authorization:${MISSION_ID}:review-publish:${sequence}` };
+  const timestamp = { value: "2026-08-11T12:02:00Z", provenance: "hostTrusted" };
+  const payload = {
+    schemaVersion: 1,
+    authorizationId: authority.authorityRef,
+    authorityDigest: computeReviewPublicationAuthorityDigest(authority),
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    artifactRevisionId: authority.headRevisionId,
+    authorityKind: "wheels_up",
+    previousJournalSequence: projection.lastSequence,
+    journalSequence: sequence,
+    humanPrincipalId: fixture.binding.humanPrincipalId,
+    humanBindingId: fixture.binding.bindingId,
+    signingKeyRef: fixture.binding.signingKeyRef,
+    sourceRef: `test:publication-duplicate:${sequence}`,
+    timestamp,
+  };
+  const entry = createProfileAwareReviewPublicationAuthorizationEntryV1({
+    projection,
+    trustedBindings: current.entries[0].payload.trustedBindings,
+    authority,
+    authorization: signedPayload(payload, fixture.privateKey),
+  });
+  await appendJournalEntry(fixture, entry);
+}
+
+async function appendAuthorityRevocation(fixture) {
+  const current = await currentProfileJournal(fixture);
+  const projection = current.projection;
+  const authority = projection.implementationAuthority;
+  assert.ok(authority);
+  const sequence = projection.lastSequence + 1;
+  const payload = {
+    schemaVersion: 1,
+    contractVersion: "implementation-authority.v1",
+    authorityRef: authority.authorityRef,
+    authorityDigest: projection.implementationAuthorityDigest ?? computeImplementationAuthorityDigest(authority),
+    authoritySequence: authority.journalSequence,
+    missionId: projection.missionId,
+    subjectId: projection.brief.subjectId,
+    missionRevisionId: projection.brief.revisionId,
+    previousJournalSequence: projection.lastSequence,
+    journalSequence: sequence,
+    humanPrincipalId: fixture.binding.humanPrincipalId,
+    humanBindingId: fixture.binding.bindingId,
+    signingKeyRef: fixture.binding.signingKeyRef,
+    sourceRef: `test:authority-revocation:${sequence}`,
+    timestamp: { value: "2026-08-11T12:02:00Z", provenance: "hostTrusted" },
+  };
+  const entry = createProfileAwareImplementationAuthorityRevocationEntryV1({
+    projection,
+    trustedBindings: current.entries[0].payload.trustedBindings,
+    revocation: signedPayload(payload, fixture.privateKey),
+  });
+  await appendJournalEntry(fixture, entry);
+}
+
 async function resolutionFixture() {
   const repositoryRoot = await repository();
   await mkdir(join(repositoryRoot, ".shield"));
@@ -799,7 +998,18 @@ async function resolutionFixture() {
   const journalPath = join(repositoryRoot, ".shield", "journals", `${Buffer.from(MISSION_ID).toString("base64url")}.jsonl`);
   await mkdir(join(repositoryRoot, ".shield", "journals"));
   await writeFile(journalPath, `${JSON.stringify(begun)}\n`);
-  return { repositoryRoot, config, plan, privateKey, headRevision, journalPath, homeRoot };
+  return {
+    repositoryRoot,
+    config,
+    plan,
+    privateKey,
+    binding,
+    headRevision,
+    journalPath,
+    graphPath: JSON.parse(recorded.stdout).graphPath,
+    signerPath: createdSigner.signerPath,
+    homeRoot,
+  };
 }
 
 test("resolve compiles a fresh candidate, blocks before a PIN on drift, executes once, and returns an idempotent retry", async () => {
@@ -872,4 +1082,92 @@ test("real prepare-next CLI performs one key turn and an exact retry does not pr
   assert.equal(retry.stdout.includes(`authorizationManifestDigest: ${receipt.manifestDigest}\n`), true);
   assert.doesNotMatch(`${retry.stdout}${retry.stderr}`, /Passcode:/u);
   assert.equal(await readFile(fixture.journalPath, "utf8"), bytesAfterFirst);
+});
+
+test("executor rejects forged candidate identity, action projection, and linked observation projection before renderer or PIN", async () => {
+  const fixture = await resolutionFixture();
+  const fresh = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(fresh.state, "ready", JSON.stringify(fresh));
+  const baseline = await protectedFixtureSnapshot(fixture);
+
+  const forgedIdentity = reidentifyContract(fresh.candidate, {
+    missionId: "mission:issue-999",
+    decisionProjection: { ...fresh.candidate.decisionProjection, missionId: "mission:issue-999" },
+  });
+  const forgedAction = reidentifyContract(fresh.candidate, {
+    actionInput: { ...fresh.candidate.actionInput, approvedActionIds: ["action:forged"] },
+    decisionProjection: { ...fresh.candidate.decisionProjection, approvedActionIds: ["action:forged"] },
+  });
+  const forgedObservation = reidentifyContract(fresh.observation, { planningBaseRevision: "9".repeat(40) });
+  const forgedObservationCandidate = reidentifyContract(fresh.candidate, {
+    observationId: forgedObservation.id,
+    observationDigest: forgedObservation.digest,
+  });
+  const cases = [
+    { candidate: forgedIdentity, observation: fresh.observation, message: /candidate identity/u },
+    { candidate: forgedAction, observation: fresh.observation, message: /candidate action projection/u },
+    { candidate: fresh.candidate, observation: forgedObservation, message: /not linked to the supplied observation/u },
+    { candidate: forgedObservationCandidate, observation: forgedObservation, message: /repository, journal, signer, or gate projection/u },
+  ];
+
+  for (const forged of cases) {
+    const calls = { render: 0, pin: 0, sign: 0, append: 0 };
+    await assert.rejects(() => executeAuthorizeWheelsUpV1({
+      root: fixture.repositoryRoot,
+      config: fixture.config,
+      missionId: MISSION_ID,
+      intent: validateAuthorizeWheelsUpInput(fresh.candidate.actionInput),
+      timestamp: { value: "2026-08-11T12:01:00Z", provenance: "hostTrusted" },
+      humanMode: false,
+      promptOutput: { write: () => {} },
+      expectedPreparation: { candidate: forged.candidate, observation: forged.observation },
+      dependencies: {
+        renderDecision: () => { calls.render += 1; return "{}"; },
+        readPasscode: async () => { calls.pin += 1; return "unused"; },
+        signBatch: async () => { calls.sign += 1; return []; },
+        appendBatchAtomic: async () => { calls.append += 1; return { state: "invalid", code: "unexpected", errors: ["unexpected"] }; },
+      },
+    }), forged.message);
+    assert.deepEqual(calls, { render: 0, pin: 0, sign: 0, append: 0 });
+    assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline);
+  }
+});
+
+test("already-authorized retry rejects partial, replaced, duplicate, revoked, and graph-mismatched provenance without effects", async () => {
+  const variants = [
+    {
+      name: "partial",
+      mutate: async (fixture) => {
+        const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
+        await writeFile(fixture.journalPath, `${lines.slice(0, 2).join("\n")}\n`);
+      },
+    },
+    { name: "replaced", mutate: appendRuntimeReplacement },
+    { name: "duplicate", mutate: appendDuplicatePublicationAuthority },
+    { name: "revoked", mutate: appendAuthorityRevocation },
+    { name: "mismatched", intentOverrides: { approvedActionIds: ["action:mismatched-270"] }, mutate: async () => {} },
+  ];
+
+  for (const variant of variants) {
+    const fixture = await resolutionFixture();
+    await authorizeResolutionFixture(fixture, variant.intentOverrides);
+    await variant.mutate(fixture);
+    const baseline = await protectedFixtureSnapshot(fixture);
+
+    const result = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(result.state, "blocked", `${variant.name}: ${JSON.stringify(result)}`);
+    assert.equal(result.reasonCode, "authority_conflict", variant.name);
+    assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline, variant.name);
+
+    const cli = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+      cwd: fixture.repositoryRoot,
+      encoding: "utf8",
+      input: "must-not-be-read\n",
+      env: { ...process.env, HOME: fixture.homeRoot },
+    });
+    assert.equal(cli.status, 1, `${variant.name}: ${cli.stderr}`);
+    assert.equal(JSON.parse(cli.stdout).reasonCode, "authority_conflict", variant.name);
+    assert.doesNotMatch(`${cli.stdout}${cli.stderr}`, /Passcode:|SHIELD_WHEELS_UP_MANIFEST_BEGIN/u, variant.name);
+    assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline, variant.name);
+  }
 });
