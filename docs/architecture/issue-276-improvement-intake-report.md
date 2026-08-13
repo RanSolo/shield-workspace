@@ -8,9 +8,10 @@ release.
 
 - Repository: `RanSolo/shield-workspace`.
 - Baseline: `d3f29002fe6c249152763815a633132589b5a9b1`.
-- Fury-revised report input: `b37bedbac345d844de2d6dda7cde9a8a724285ea`.
-- The ignored dogfood artifact is regenerated after this report is committed;
-  both its envelope and payload bind `head` to that correction commit.
+- Referenced sibling correction: `8a2edc1999b1b6eef6e723d1423262cccd5b8382`.
+- Current report-only validation HEAD: `ee3de17b18690b14c5137d555ff03e152369b145`.
+- The ignored dogfood artifact is regenerated for the current validation HEAD;
+  both its envelope and payload bind `head` to that exact revision.
 - Collection focus, in canonical order: `boundaries`, `build`, `lint`, `test`.
 - Candidate budget: `3`.
 - The two pre-existing tracked changes in `.codex/agents/daisy.toml` and
@@ -167,8 +168,8 @@ sorting. Easy-win labeling never changes order.
 
 | Rank | Stable key | Disposition | Score / coverage | Confidence / risk / uncertainty | Conclusion |
 |---:|---|---|---|---|---|
-| 1 | `focused-target/team-system` | Add focused target | 66 / 75 | 75 / 20 / 25 | Components: target 100, boundary 80, validation 80, consumers/churn null. Actionable planning candidate: add separately owned lint and typecheck targets without export movement. |
-| 2 | `focused-target/mission-preparation` | Add focused target | 47 / 75 | 65 / 15 / 35 | Components: target 100, boundary 43, validation 30, consumers/churn null. Actionable planning candidate: first prove typecheck is distinct from build; otherwise leave in place. |
+| 1 | `focused-target/team-system` | Add focused target | 50 / 75 | 75 / 20 / 25 | Components: target 45, boundary 80, validation 80, consumers/churn null. Actionable planning candidate: add separately owned lint and typecheck targets without export movement. |
+| 2 | `focused-target/mission-preparation` | Add focused target | 30 / 75 | 65 / 15 / 35 | Components: target 45, boundary 43, validation 30, consumers/churn null. Actionable planning candidate: first prove typecheck is distinct from build; otherwise leave in place. |
 | 3 | `internal-boundary/team-system` | Insufficient evidence | 0 / 0 | 0 / 55 / 100 | Boundary/validation/consumer/churn components are null. No split or extraction may be planned until complete import/consumer/test/fixture attribution exists. |
 
 The artifact records component values and evidence-row references for each
