@@ -24,6 +24,15 @@ import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
 import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
 import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
+import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
+import {
+  buildMissionTransitionPlanReviewV1,
+  materializeReviewedMissionTransitionV1,
+} from "../dist/mission-preparation-host-v1.mjs";
+import {
+  createSeatDispatchLifecycleEventV1,
+  createSeatDispatchStartedEventV1,
+} from "../dist/seat-dispatch-receipt-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
@@ -358,6 +367,237 @@ async function readJournalEntries(root, missionId) {
     .split("\n")
     .filter((entry) => entry.length > 0)
     .map((entry) => JSON.parse(entry));
+}
+
+function dispatchIdentityPayload(identity) {
+  return {
+    receiptId: identity.receiptId,
+    dispatchId: identity.dispatchId,
+    parentMissionId: identity.parentMissionId,
+    parentMissionRevision: identity.parentMissionRevision,
+    parentSessionId: identity.parentSessionId,
+    repositoryRevision: identity.repositoryRevision,
+    childTaskId: identity.childTaskId,
+    childSessionId: identity.childSessionId,
+    accountableSeatId: identity.accountableSeatId,
+    repositoryId: identity.repositoryId,
+    repositoryWorkspaceId: identity.repositoryWorkspaceId,
+    subjectId: identity.subjectId,
+    subjectRevision: identity.subjectRevision,
+    artifactId: identity.artifactId,
+    artifactRevision: identity.artifactRevision,
+    configuredRuntime: identity.configuredRuntime,
+    requestedRuntime: identity.requestedRuntime,
+    toolExecution: identity.toolExecution,
+    runtimeSelfReport: identity.runtimeSelfReport,
+    runtimeHostObserved: identity.runtimeHostObserved,
+    executorSelfReport: identity.executorSelfReport,
+    executorHostObserved: identity.executorHostObserved,
+  };
+}
+
+function canonicalDispatchEventLine(event) {
+  const baseFields = [
+    "schemaVersion", "contractVersion", "kind", "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision",
+    "repositoryRevision", "parentSessionId", "childTaskId", "childSessionId", "accountableSeatId", "repositoryId",
+    "repositoryWorkspaceId", "subjectId", "subjectRevision", "artifactId", "artifactRevision", "configuredRuntime",
+    "requestedRuntime", "toolExecution", "runtimeSelfReport", "runtimeHostObserved", "executorSelfReport", "executorHostObserved",
+    "timestamp", "logSequence", "previousLogDigest", "lifecycleSequence", "previousLifecycleDigest",
+  ];
+  const keys = event.kind === "dispatch.started"
+    ? [...baseFields, "entryDigest", "inputEvidenceRefs"]
+    : [...baseFields, "entryDigest", "outputEvidenceRefs"];
+  return JSON.stringify(Object.fromEntries(keys.filter((key) => Object.hasOwn(event, key)).map((key) => [key, event[key]])));
+}
+
+async function preparedPublicationCliFixture() {
+  const current = await fixture(false, "coulson_only_platform_review");
+  const missionId = "mission:cli-prepared-publication";
+  const subjectId = "github:RanSolo/fixture/issue/286";
+  const homeRoot = join(current.root, ".shield", "tmp", "prepared-home");
+  await mkdir(homeRoot, { recursive: true });
+  await signerTestOnly.createSigner(
+    {
+      seatId: "coulson",
+      bindingId: current.coulson.binding.bindingId,
+      humanPrincipalId: current.coulson.binding.humanPrincipalId,
+    },
+    "prepared-passcode",
+    {
+      homeDirectory: homeRoot,
+      generateKeyPair: () => ({ privateKey: current.coulson.privateKey, publicKey: createPublicKey(current.coulson.privateKey) }),
+    },
+  );
+
+  await writeFile(join(current.root, ".shield", ".gitignore"), "/journals/\n/reports/\n/tmp/\n/audit/\n/dispatch-receipts.jsonl\n");
+  runGit(current.root, ["init", "-q"]);
+  runGit(current.root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(current.root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(current.root, ["remote", "add", "origin", "https://github.com/RanSolo/fixture.git"]);
+  runGit(current.root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore"]);
+  runGit(current.root, ["commit", "-qm", "prepared publication base"]);
+  const baseRevision = runGit(current.root, ["rev-parse", "HEAD"]);
+  await writeFile(join(current.root, "implementation.md"), "initial implementation\n");
+  runGit(current.root, ["add", "implementation.md"]);
+  runGit(current.root, ["commit", "-qm", "prepared publication initial head"]);
+  const initialHeadRevision = runGit(current.root, ["rev-parse", "HEAD"]);
+
+  const builtPlan = buildMissionTransitionPlanV1({
+    missionId,
+    subjectId,
+    repositoryId: "RanSolo/fixture",
+    planningBaseRevision: baseRevision,
+    parentPlanCommit: baseRevision,
+    parentPlanPath: "docs/missions/issue-286-prepared-publication-plan.md",
+    parentPlanRawSha256: "a".repeat(64),
+    transitionKind: "fresh_authorize_wheels_up",
+    boundedOutcome: "Authorize bounded prepared publication.",
+    approvedRelativePaths: ["implementation.md"],
+    publicationPaths: ["implementation.md"],
+    approvedActionIds: ["action:issue-286:p2"],
+    approvedEffectClasses: ["behavioral_implementation"],
+    approvedEffectKeys: ["effect:issue-286:p2"],
+    approvedCapabilities: ["capability:issue-286:p2"],
+    validationCommandIds: ["validation:issue-286:p2"],
+    modelId: "model:prepared-may",
+    reasoningRuntimeId: "runtime:prepared-may",
+    toolExecutorId: "executor:prepared-tools",
+    exclusions: [
+      "review.comment.publish", "review.pull_request.update_draft", "review.pull_request.mark_ready",
+      "merge", "deployment", "release", "final_acceptance",
+    ],
+  });
+  assert.equal(builtPlan.state, "built", JSON.stringify(builtPlan));
+  const plan = builtPlan.plan;
+  const builtReview = buildMissionTransitionPlanReviewV1({
+    schemaVersion: 1,
+    contractVersion: "mission.transition-plan-review.v1",
+    authority: "none",
+    missionId,
+    subjectId,
+    repositoryId: plan.repositoryId,
+    planningBaseRevision: plan.planningBaseRevision,
+    parentPlanCommit: plan.parentPlanCommit,
+    parentPlanPath: plan.parentPlanPath,
+    parentPlanRawSha256: plan.parentPlanRawSha256,
+    transitionPlanId: plan.id,
+    transitionPlanDigest: plan.digest,
+    verdict: "PASS",
+    reviewerSeatId: "fury",
+    reviewerRuntimeId: "runtime:fury:prepared",
+    reviewerModelId: "model:fury:prepared",
+    reviewerExecutorId: "executor:fury:prepared",
+    reviewedArtifactId: plan.id,
+    reviewedArtifactRevision: plan.digest,
+  });
+  assert.equal(builtReview.state, "built", JSON.stringify(builtReview));
+  const review = builtReview.review;
+  const identity = {
+    receiptId: "receipt:fury:prepared-publication",
+    dispatchId: "dispatch:fury:prepared-publication",
+    parentMissionId: missionId,
+    parentMissionRevision: "b".repeat(40),
+    parentSessionId: "session:fury:prepared-publication",
+    repositoryRevision: initialHeadRevision,
+    childTaskId: "task:fury:prepared-publication",
+    childSessionId: "session:fury:prepared-publication",
+    accountableSeatId: "fury",
+    repositoryId: plan.repositoryId,
+    repositoryWorkspaceId: "workspace:prepared-publication",
+    subjectId,
+    subjectRevision: "c".repeat(40),
+    artifactId: plan.id,
+    artifactRevision: plan.digest,
+    configuredRuntime: { kind: "runtime.configured", runtimeId: review.reviewerRuntimeId, model: review.reviewerModelId },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: review.reviewerRuntimeId, model: review.reviewerModelId },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: "binding:fury:prepared" },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
+    runtimeHostObserved: { kind: "runtime.host_observed", runtimeId: review.reviewerRuntimeId, model: review.reviewerModelId, evidenceRefs: ["host:fury:runtime"] },
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: { kind: "executor.host_observed", executorId: review.reviewerExecutorId, evidenceRefs: ["host:fury:executor"] },
+    timestamp: "2026-08-13T01:00:00.000Z",
+    logSequence: 0,
+    previousLogDigest: null,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null,
+  };
+  const started = createSeatDispatchStartedEventV1({
+    ...dispatchIdentityPayload(identity),
+    timestamp: identity.timestamp,
+    logSequence: 0,
+    previousLogDigest: null,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null,
+    inputEvidenceRefs: ["artifact:prepared-plan"],
+  });
+  const completed = createSeatDispatchLifecycleEventV1({
+    ...dispatchIdentityPayload(identity),
+    kind: "dispatch.completed",
+    timestamp: "2026-08-13T01:00:01.000Z",
+    logSequence: 1,
+    previousLogDigest: started.entryDigest,
+    lifecycleSequence: 1,
+    previousLifecycleDigest: started.entryDigest,
+    outputEvidenceRefs: [review.reviewId, review.reviewDigest, review.reviewedArtifactId, review.reviewedArtifactRevision],
+  });
+  await writeFile(join(current.root, ".shield", "dispatch-receipts.jsonl"), `${canonicalDispatchEventLine(started)}\n${canonicalDispatchEventLine(completed)}\n`);
+  const materialized = await materializeReviewedMissionTransitionV1({
+    missionId,
+    repositoryRoot: current.root,
+    transitionPlan: plan,
+    reviewArtifact: review,
+    expectedBinding: {
+      schemaVersion: 1,
+      missionId,
+      subjectId,
+      repositoryId: plan.repositoryId,
+      planningBaseRevision: plan.planningBaseRevision,
+      parentPlanCommit: plan.parentPlanCommit,
+      parentPlanPath: plan.parentPlanPath,
+      parentPlanRawSha256: plan.parentPlanRawSha256,
+      transitionPlanId: plan.id,
+      transitionPlanDigest: plan.digest,
+      reviewedArtifactId: plan.id,
+      reviewedArtifactRevision: plan.digest,
+    },
+    dispatchIdentity: identity,
+  });
+  assert.equal(materialized.state, "materialized", JSON.stringify(materialized));
+
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Exercise caller-free prepared review publication.",
+    subjectId,
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+    },
+    participants: ["hill", "may", "coulson", "fitz"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-13T01:01:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...briefContent } = brief;
+  await writeFile(join(current.root, ".shield", "tmp", "prepared-brief.json"), `${JSON.stringify(briefContent, null, 2)}\n`);
+  const begun = run(current.root, ["mission", "begin", "--profile-aware", "--brief", ".shield/tmp/prepared-brief.json", "--json"]);
+  assert.equal(begun.status, 0, begun.stderr);
+  const initial = run(
+    current.root,
+    ["mission", "prepare-next", "--mission-id", missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: homeRoot }, input: "prepared-passcode\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:02:00Z") },
+  );
+  assert.equal(initial.status, 0, initial.stderr);
+  await writeFile(join(current.root, "implementation.md"), "initial implementation\nprepared publication change\n");
+  runGit(current.root, ["add", "implementation.md"]);
+  runGit(current.root, ["commit", "-qm", "prepared publication descendant"]);
+  return { ...current, missionId, homeRoot, plan, initialHeadRevision };
 }
 
 test("packed CLI path completes execution while Fitz readiness remains waiting", async () => {
@@ -1252,6 +1492,50 @@ test("authorize-wheels-up rejects symlink and gitlink publication paths without 
     assert.match(rejected.stderr, new RegExp(`${pathKind}_path_denied`, "u"), pathKind);
     assert.equal(await readFile(journalPath(root, missionId), "utf8"), before, pathKind);
   }
+});
+
+test("prepare-next derives and signs one prepared publication without caller JSON or external effect", async () => {
+  const prepared = await preparedPublicationCliFixture();
+  const path = journalPath(prepared.root, prepared.missionId);
+  const beforeCancellation = await readFile(path, "utf8");
+  const cancelled = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
+  );
+  assert.equal(cancelled.status, 2);
+  assert.match(cancelled.stderr, /SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.match(cancelled.stderr, /Passcode input was empty/u);
+  assert.equal(await readFile(path, "utf8"), beforeCancellation);
+
+  const authorized = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
+  );
+  assert.equal(authorized.status, 0, authorized.stderr);
+  const decisionMatch = /SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN\n(?<decision>[^\n]+)\nSHIELD_REVIEW_PUBLICATION_DECISION_END/u.exec(authorized.stderr);
+  assert.ok(decisionMatch?.groups?.decision, authorized.stderr);
+  const decision = JSON.parse(decisionMatch.groups.decision);
+  assert.equal(decision.missionId, prepared.missionId);
+  assert.equal(decision.repository.baseRevision, prepared.plan.planningBaseRevision);
+  assert.equal(decision.repository.headRevision, runGit(prepared.root, ["rev-parse", "HEAD"]));
+  assert.deepEqual(decision.authorizedPaths, ["implementation.md"]);
+  assert.deepEqual(decision.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
+  assert.deepEqual(decision.remainingHumanGates, ["coulson.final_acceptance", "fitz.technical_review"]);
+
+  const projection = JSON.parse(authorized.stdout);
+  assert.equal(projection.publicationAuthorizations.length, 2);
+  const publication = projection.publicationAuthorizations[1];
+  assert.equal(publication.authority.authorityKind, "review.publish");
+  assert.equal(publication.authority.authorityRef, `authorization:${prepared.missionId}:review-publish:5`);
+  assert.equal(publication.authorization.sourceRef, "cli:prepare-next:publication-authorize:5");
+  assert.deepEqual(publication.authority.authorizedPaths, ["implementation.md"]);
+  assert.deepEqual(publication.authority.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
+  assert.equal(projection.communication.requests.length, 0);
+  const after = await readJournalEntries(prepared.root, prepared.missionId);
+  assert.equal(after.length, 6);
+  assert.equal(after.at(-1).type, "review.publication_authorized");
 });
 
 test("schema-9 publication CLI signs authorization, queues without passcode, and rejects file-delivered outcomes", async () => {
