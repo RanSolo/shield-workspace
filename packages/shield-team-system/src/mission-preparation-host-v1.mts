@@ -54,6 +54,7 @@ import {
 } from "./implementation-authority-v1.mjs";
 import {
   computeReviewPublicationAuthorityDigest,
+  computeReviewPublicationAuthoritySemanticIdentityV1,
   type ReviewPublicationAuthorityV1,
   type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
@@ -944,23 +945,9 @@ export type PreparedReviewPublicationSemanticTupleV1 = Readonly<{
 export function projectPreparedReviewPublicationSemanticTupleV1(
   authority: ReviewPublicationAuthorityV1,
 ): PreparedReviewPublicationSemanticTupleV1 | null {
-  if (authority.publicationScopeSchemaVersion !== 1 || authority.contractVersion !== "review-publication.v1" ||
-      authority.authorityKind !== "review.publish") return null;
-  return deepFreeze({
-    publicationScopeSchemaVersion: authority.publicationScopeSchemaVersion,
-    contractVersion: authority.contractVersion,
-    authorityKind: authority.authorityKind,
-    missionId: authority.missionId,
-    subjectId: authority.subjectId,
-    missionRevisionId: authority.missionRevisionId,
-    repositoryId: authority.repositoryId,
-    canonicalRepositoryRoot: authority.canonicalRepositoryRoot,
-    branch: authority.branch,
-    baseRevisionId: authority.baseRevisionId,
-    headRevisionId: authority.headRevisionId,
-    authorizedPaths: [...authority.authorizedPaths],
-    permittedEffects: [...authority.permittedEffects],
-  });
+  const identity = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
+  if (identity.state === "blocked" || identity.material.authorityKind !== "review.publish") return null;
+  return identity.material as PreparedReviewPublicationSemanticTupleV1;
 }
 
 type InitialWheelsUpLineageV1 = Readonly<{

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
 
 export const REVIEW_PUBLICATION_CONTRACT_VERSION = "review-publication.v1" as const;
 export const REVIEW_PUBLICATION_AUTHORITY_KINDS = ["review.publish", "wheels_up"] as const;
@@ -44,6 +45,33 @@ export interface ReviewPublicationAuthorityV1 {
   authorizedPaths: string[];
   permittedEffects: ReviewPublicationEffect[];
 }
+
+export type ReviewPublicationAuthoritySemanticMaterialV1 = Readonly<{
+  publicationScopeSchemaVersion: 1;
+  contractVersion: "review-publication.v1";
+  authorityKind: ReviewPublicationAuthorityKind;
+  missionId: string;
+  subjectId: string;
+  missionRevisionId: string;
+  repositoryId: string;
+  canonicalRepositoryRoot: string;
+  branch: string;
+  baseRevisionId: string;
+  headRevisionId: string;
+  authorizedPaths: readonly string[];
+  permittedEffects: readonly ReviewPublicationEffect[];
+}>;
+
+export type ReviewPublicationAuthoritySemanticIdentityResultV1 =
+  | Readonly<{
+      state: "valid";
+      semanticIdentity: string;
+      material: ReviewPublicationAuthoritySemanticMaterialV1;
+    }>
+  | Readonly<{
+      state: "blocked";
+      reasonCode: Exclude<ReviewPublicationReasonCode, "publication_scope_allowed">;
+    }>;
 
 export interface ReviewPublicationProposalV1 {
   publicationScopeSchemaVersion: 1;
@@ -121,8 +149,12 @@ const DENIED_EXTENSIONS = new Set(["pem", "key", "p12", "pfx"]);
 const ALLOWED_EFFECTS = new Set<string>(REVIEW_PUBLICATION_EFFECTS);
 
 function plain(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value) &&
-    Object.getPrototypeOf(value) === Object.prototype;
+  try {
+    return value !== null && typeof value === "object" && !Array.isArray(value) &&
+      !isProxy(value) && Object.getPrototypeOf(value) === Object.prototype;
+  } catch {
+    return false;
+  }
 }
 
 function exactData(value: unknown, fields: readonly string[]): Record<string, unknown> | null {
@@ -315,6 +347,33 @@ export function validateReviewPublicationAuthorityV1(input: unknown):
   } catch {
     return { state: "blocked", reasonCode: "authority_malformed" };
   }
+}
+
+export function computeReviewPublicationAuthoritySemanticIdentityV1(
+  input: unknown,
+): ReviewPublicationAuthoritySemanticIdentityResultV1 {
+  const checked = validateReviewPublicationAuthorityV1(input);
+  if (checked.state === "blocked") return Object.freeze(checked);
+  const authority = checked.value;
+  const material: ReviewPublicationAuthoritySemanticMaterialV1 = Object.freeze({
+    publicationScopeSchemaVersion: authority.publicationScopeSchemaVersion,
+    contractVersion: authority.contractVersion,
+    authorityKind: authority.authorityKind,
+    missionId: authority.missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    repositoryId: authority.repositoryId,
+    canonicalRepositoryRoot: authority.canonicalRepositoryRoot,
+    branch: authority.branch,
+    baseRevisionId: authority.baseRevisionId,
+    headRevisionId: authority.headRevisionId,
+    authorizedPaths: Object.freeze([...authority.authorizedPaths]),
+    permittedEffects: Object.freeze([...authority.permittedEffects]),
+  });
+  const semanticIdentity = `sha256:${createHash("sha256")
+    .update(JSON.stringify(canonical(material)))
+    .digest("base64url")}`;
+  return Object.freeze({ state: "valid", semanticIdentity, material });
 }
 
 export function validateReviewPublicationEvidenceV1(input: unknown):

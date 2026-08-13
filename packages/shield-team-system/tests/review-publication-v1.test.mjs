@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   REVIEW_PUBLICATION_EFFECTS,
+  computeReviewPublicationAuthorityDigest,
+  computeReviewPublicationAuthoritySemanticIdentityV1,
   evaluateReviewPublicationV1,
   isSensitiveReviewPublicationPath,
 } from "../dist/review-publication-v1.mjs";
@@ -61,6 +63,90 @@ function proposal(overrides = {}) {
     ...overrides,
   };
 }
+
+test("semantic identity excludes only authorityRef and retains every authority meaning field", () => {
+  const original = authority();
+  const equivalent = authority({ authorityRef: "authorization:issue-113:review-publish:retry" });
+  const first = computeReviewPublicationAuthoritySemanticIdentityV1(original);
+  const retry = computeReviewPublicationAuthoritySemanticIdentityV1(equivalent);
+
+  assert.equal(first.state, "valid");
+  assert.equal(retry.state, "valid");
+  assert.equal(first.semanticIdentity, retry.semanticIdentity);
+  assert.notEqual(
+    computeReviewPublicationAuthorityDigest(original),
+    computeReviewPublicationAuthorityDigest(equivalent),
+  );
+  assert.deepEqual(first.material, {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    missionId: original.missionId,
+    subjectId: original.subjectId,
+    missionRevisionId: original.missionRevisionId,
+    repositoryId: original.repositoryId,
+    canonicalRepositoryRoot: original.canonicalRepositoryRoot,
+    branch: original.branch,
+    baseRevisionId: original.baseRevisionId,
+    headRevisionId: original.headRevisionId,
+    authorizedPaths: original.authorizedPaths,
+    permittedEffects: original.permittedEffects,
+  });
+  assert.equal(Object.isFrozen(first.material), true);
+  assert.equal(Object.isFrozen(first.material.authorizedPaths), true);
+  assert.equal(Object.isFrozen(first.material.permittedEffects), true);
+
+  const meaningChanges = [
+    { authorityKind: "wheels_up" },
+    { missionId: "mission:issue-114" },
+    { subjectId: "issue:114" },
+    { missionRevisionId: "sha256:mission-issue-114" },
+    { repositoryId: "RanSolo/other-workspace" },
+    { canonicalRepositoryRoot: "/workspace/other-workspace" },
+    { branch: "codex/issue-114-review-publish-scope" },
+    { baseRevisionId: "3".repeat(40) },
+    { headRevisionId: "4".repeat(40) },
+    { authorizedPaths: [paths[0]] },
+    { permittedEffects: ["review.branch.push"] },
+  ];
+  for (const change of meaningChanges) {
+    const changed = computeReviewPublicationAuthoritySemanticIdentityV1(authority(change));
+    assert.equal(changed.state, "valid", JSON.stringify(change));
+    assert.notEqual(changed.semanticIdentity, first.semanticIdentity, JSON.stringify(change));
+  }
+});
+
+test("semantic identity fails closed on malformed and hostile authority inputs", () => {
+  const sparsePaths = [];
+  sparsePaths.length = 1;
+  const aliasedPaths = ["Docs/review.md", "docs/review.md"];
+  const duplicatePaths = [paths[0], paths[0]];
+  const reorderedPaths = [...paths].reverse();
+  for (const input of [
+    null,
+    { ...authority(), extra: true },
+    authority({ authorizedPaths: sparsePaths }),
+    authority({ authorizedPaths: aliasedPaths }),
+    authority({ authorizedPaths: duplicatePaths }),
+    authority({ authorizedPaths: reorderedPaths }),
+    authority({ permittedEffects: [...authority().permittedEffects].reverse() }),
+    new Proxy(authority(), {}),
+  ]) {
+    assert.equal(computeReviewPublicationAuthoritySemanticIdentityV1(input).state, "blocked");
+  }
+
+  let touched = 0;
+  const accessor = authority();
+  Object.defineProperty(accessor, "missionId", {
+    enumerable: true,
+    get() {
+      touched += 1;
+      return "mission:hostile";
+    },
+  });
+  assert.equal(computeReviewPublicationAuthoritySemanticIdentityV1(accessor).state, "blocked");
+  assert.equal(touched, 0);
+});
 
 test("allows an exact review-only two-artifact publication and binds a stable digest", () => {
   const first = evaluateReviewPublicationV1(authority(), proposal());
