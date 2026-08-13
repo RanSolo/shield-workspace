@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -8,6 +11,295 @@ import {
   computeMissionTransitionPlanReviewIdV1,
   MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION,
 } from "../dist/mission-preparation-host-v1.mjs";
+import { computeRawReceiptSetSha256V1 } from "@shield/mission-preparation";
+import {
+  buildMissionTransitionPlanV1,
+} from "../dist/mission-builder-v1.mjs";
+import {
+  createSeatDispatchLifecycleEventV1,
+  createSeatDispatchStartedEventV1,
+} from "../dist/seat-dispatch-receipt-v1.mjs";
+import {
+  materializeReviewedMissionTransitionV1,
+} from "../dist/mission-preparation-host-v1.mjs";
+import {
+  readSeatDispatchReceiptLedgerSnapshotV1,
+} from "../dist/seat-dispatch-store.mjs";
+
+const MISSION_ID = "mission:issue-270";
+const SUBJECT_ID = "github:RanSolo/shield-workspace/issue/270";
+const REPOSITORY_ID = "RanSolo/shield-workspace";
+const WORKSPACE_ID = "workspace:issue-270";
+const SUBJECT_REVISION = "a".repeat(40);
+const REPOSITORY_REVISION = "b".repeat(40);
+const PARENT_MISSION_REVISION = "c".repeat(40);
+const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
+
+function transitionPlanBase(overrides = {}) {
+  return {
+    missionId: MISSION_ID,
+    subjectId: SUBJECT_ID,
+    repositoryId: REPOSITORY_ID,
+    planningBaseRevision: "d".repeat(40),
+    parentPlanCommit: "e".repeat(40),
+    parentPlanPath: "docs/missions/issue-270-turnkey-preparation-plan.md",
+    parentPlanRawSha256: "f".repeat(64),
+    transitionKind: "fresh_authorize_wheels_up",
+    boundedOutcome: "Authorize wheels up transition for issue 270.",
+    approvedRelativePaths: ["packages/shield-team-system/src"],
+    publicationPaths: ["docs/missions/issue-270-turnkey-preparation-plan.md"],
+    approvedActionIds: ["action:issue-270"],
+    approvedEffectClasses: ["behavioral_implementation"],
+    approvedEffectKeys: ["effect:issue-270"],
+    approvedCapabilities: ["capability:issue-270"],
+    validationCommandIds: ["validation:issue-270"],
+    modelId: "model:issue-270",
+    reasoningRuntimeId: "runtime:issue-270",
+    toolExecutorId: "executor:issue-270",
+    exclusions: [
+      "review.comment.publish",
+      "review.pull_request.update_draft",
+      "review.pull_request.mark_ready",
+      "merge",
+      "deployment",
+      "release",
+      "final_acceptance",
+    ],
+    ...overrides,
+  };
+}
+
+function transitionPlan(overrides = {}) {
+  const built = buildMissionTransitionPlanV1(transitionPlanBase(overrides));
+  assert.equal(built.state, "built");
+  return built.plan;
+}
+
+function reviewForPlan(plan, overrides = {}) {
+  const built = buildReview({
+    ...transitionPlanReview({
+      missionId: plan.missionId,
+      subjectId: plan.subjectId,
+      repositoryId: plan.repositoryId,
+      planningBaseRevision: plan.planningBaseRevision,
+      parentPlanCommit: plan.parentPlanCommit,
+      parentPlanPath: plan.parentPlanPath,
+      parentPlanRawSha256: plan.parentPlanRawSha256,
+      transitionPlanId: plan.id,
+      transitionPlanDigest: plan.digest,
+      reviewedArtifactId: plan.id,
+      reviewedArtifactRevision: plan.digest,
+      ...overrides,
+    }),
+    ...overrides,
+  });
+  if (built && typeof built === "object" && "reviewId" in built && "reviewDigest" in built && !("state" in built)) {
+    return built;
+  }
+  assert.equal(built.state, "built");
+  return built.review;
+}
+
+function expectedBinding(plan, overrides = {}) {
+  return {
+    schemaVersion: 1,
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    repositoryId: plan.repositoryId,
+    planningBaseRevision: plan.planningBaseRevision,
+    parentPlanCommit: plan.parentPlanCommit,
+    parentPlanPath: plan.parentPlanPath,
+    parentPlanRawSha256: plan.parentPlanRawSha256,
+    transitionPlanId: plan.id,
+    transitionPlanDigest: plan.digest,
+    reviewedArtifactId: plan.id,
+    reviewedArtifactRevision: plan.digest,
+    ...overrides,
+  };
+}
+
+function dispatchIdentity(plan, review, overrides = {}) {
+  return {
+    receiptId: "receipt:fury:issue-270",
+    dispatchId: "dispatch:fury:issue-270",
+    parentMissionId: plan.missionId,
+    parentMissionRevision: PARENT_MISSION_REVISION,
+    parentSessionId: "session:fury:issue-270",
+    repositoryRevision: REPOSITORY_REVISION,
+    childTaskId: "task:fury:issue-270",
+    childSessionId: "session:fury:issue-270",
+    accountableSeatId: "fury",
+    repositoryId: plan.repositoryId,
+    repositoryWorkspaceId: WORKSPACE_ID,
+    subjectId: plan.subjectId,
+    subjectRevision: SUBJECT_REVISION,
+    artifactId: plan.id,
+    artifactRevision: plan.digest,
+    configuredRuntime: { kind: "runtime.configured", runtimeId: review.reviewerRuntimeId, model: review.reviewerModelId },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: review.reviewerRuntimeId, model: review.reviewerModelId },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: "binding:fury:issue-270" },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
+    runtimeHostObserved: {
+      kind: "runtime.host_observed",
+      runtimeId: review.reviewerRuntimeId,
+      model: review.reviewerModelId,
+      evidenceRefs: ["host:fury:runtime"],
+    },
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: {
+      kind: "executor.host_observed",
+      executorId: review.reviewerExecutorId,
+      evidenceRefs: ["host:fury:executor"],
+    },
+    timestamp: BASE_TIMESTAMP,
+    logSequence: 0,
+    previousLogDigest: null,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null,
+    ...overrides,
+  };
+}
+
+function dispatchStarted(identity, overrides = {}) {
+  return createSeatDispatchStartedEventV1({
+    ...dispatchIdentityPayload(identity),
+    timestamp: identity.timestamp,
+    logSequence: identity.logSequence,
+    previousLogDigest: identity.previousLogDigest,
+    lifecycleSequence: identity.lifecycleSequence,
+    previousLifecycleDigest: identity.previousLifecycleDigest,
+    inputEvidenceRefs: ["artifact:source"],
+    ...overrides,
+  });
+}
+
+function dispatchIdentityPayload(identity) {
+  return {
+    receiptId: identity.receiptId,
+    dispatchId: identity.dispatchId,
+    parentMissionId: identity.parentMissionId,
+    parentMissionRevision: identity.parentMissionRevision,
+    parentSessionId: identity.parentSessionId,
+    repositoryRevision: identity.repositoryRevision,
+    childTaskId: identity.childTaskId,
+    childSessionId: identity.childSessionId,
+    accountableSeatId: identity.accountableSeatId,
+    repositoryId: identity.repositoryId,
+    repositoryWorkspaceId: identity.repositoryWorkspaceId,
+    subjectId: identity.subjectId,
+    subjectRevision: identity.subjectRevision,
+    artifactId: identity.artifactId,
+    artifactRevision: identity.artifactRevision,
+    configuredRuntime: identity.configuredRuntime,
+    requestedRuntime: identity.requestedRuntime,
+    toolExecution: identity.toolExecution,
+    runtimeSelfReport: identity.runtimeSelfReport,
+    runtimeHostObserved: identity.runtimeHostObserved,
+    executorSelfReport: identity.executorSelfReport,
+    executorHostObserved: identity.executorHostObserved,
+  };
+}
+
+function dispatchLifecycle(previousEvent, identity, kind, overrides = {}) {
+  return createSeatDispatchLifecycleEventV1({
+    ...dispatchIdentityPayload(identity),
+    kind,
+    timestamp: new Date(Date.parse(previousEvent.timestamp) + 1000).toISOString(),
+    logSequence: previousEvent.logSequence + 1,
+    previousLogDigest: previousEvent.entryDigest,
+    lifecycleSequence: previousEvent.lifecycleSequence + 1,
+    previousLifecycleDigest: previousEvent.entryDigest,
+    ...overrides,
+  });
+}
+
+function dispatchLifecycleInterleaved(previousReceiptEvent, previousLogEvent, identity, kind, overrides = {}) {
+  return createSeatDispatchLifecycleEventV1({
+    ...dispatchIdentityPayload(identity),
+    kind,
+    timestamp: new Date(Date.parse(previousLogEvent.timestamp) + 1000).toISOString(),
+    logSequence: previousLogEvent.logSequence + 1,
+    previousLogDigest: previousLogEvent.entryDigest,
+    lifecycleSequence: previousReceiptEvent.lifecycleSequence + 1,
+    previousLifecycleDigest: previousReceiptEvent.entryDigest,
+    ...overrides,
+  });
+}
+
+function canonicalDispatchEventLine(event) {
+  const kind = event.kind;
+  if (kind !== "dispatch.started" && kind !== "dispatch.interrupted" && kind !== "dispatch.resumed" && kind !== "dispatch.completed" && kind !== "dispatch.failed" && kind !== "dispatch.cancelled") {
+    return JSON.stringify(event);
+  }
+  const baseFields = [
+    "schemaVersion",
+    "contractVersion",
+    "kind",
+    "receiptId",
+    "dispatchId",
+    "parentMissionId",
+    "parentMissionRevision",
+    "repositoryRevision",
+    "parentSessionId",
+    "childTaskId",
+    "childSessionId",
+    "accountableSeatId",
+    "repositoryId",
+    "repositoryWorkspaceId",
+    "subjectId",
+    "subjectRevision",
+    "artifactId",
+    "artifactRevision",
+    "configuredRuntime",
+    "requestedRuntime",
+    "toolExecution",
+    "runtimeSelfReport",
+    "runtimeHostObserved",
+    "executorSelfReport",
+    "executorHostObserved",
+    "timestamp",
+    "logSequence",
+    "previousLogDigest",
+    "lifecycleSequence",
+    "previousLifecycleDigest",
+  ];
+  const canonicalKeys = kind === "dispatch.started"
+    ? [...baseFields, "entryDigest", "inputEvidenceRefs"]
+    : [...baseFields, "entryDigest", ...(kind === "dispatch.interrupted" || kind === "dispatch.resumed" ? [] : ["outputEvidenceRefs"])];
+  const canonical = {};
+  for (const key of canonicalKeys) {
+    if (Object.hasOwn(event, key)) {
+      // @ts-expect-error direct passthrough from fixture objects
+      canonical[key] = event[key];
+    }
+  }
+  return JSON.stringify(canonical);
+}
+
+function reviewOutputRefs(review) {
+  return [review.reviewId, review.reviewDigest, review.reviewedArtifactId, review.reviewedArtifactRevision];
+}
+
+async function writeDispatchLog(repositoryRoot, events) {
+  const logPath = join(repositoryRoot, ".shield", "dispatch-receipts.jsonl");
+  await mkdir(join(repositoryRoot, ".shield"), { recursive: true });
+  await writeFile(logPath, events.map((event) => `${canonicalDispatchEventLine(event)}\n`).join(""), "utf8");
+}
+
+function materializationInput(plan, review, binding, identity, repositoryRoot) {
+  return {
+    missionId: plan.missionId,
+    repositoryRoot,
+    transitionPlan: plan,
+    reviewArtifact: review,
+    expectedBinding: binding,
+    dispatchIdentity: identity,
+  };
+}
+
+function repository() {
+  return mkdtemp(join(tmpdir(), "shield-270-host-"));
+}
 
 function transitionPlanReview(overrides = {}) {
   return {
@@ -36,6 +328,9 @@ function transitionPlanReview(overrides = {}) {
 
 function buildReview(overrides = {}) {
   const built = buildMissionTransitionPlanReviewV1(transitionPlanReview(overrides));
+  if (built !== null && typeof built === "object" && "reviewId" in built && "reviewDigest" in built && !("state" in built)) {
+    return built;
+  }
   assert.equal(built.state, "built");
   return built.review;
 }
@@ -144,4 +439,276 @@ test("binding fields and runtime/executor separation are enforced", () => {
   const badArtifactRevision = validateMissionTransitionPlanReviewV1({ ...artifact, reviewedArtifactRevision: `sha256:${"g".repeat(43)}` });
   assert.equal(badArtifactRevision.state, "invalid");
   assert.equal(badArtifactRevision.errors.includes("reviewed_artifact_binding_revision_mismatch"), true);
+});
+
+test("materialize selects the named Fury receipt from interleaved logs and produces deterministic binding", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const binding = expectedBinding(plan);
+  const identity = dispatchIdentity(plan, review);
+  const rival = dispatchIdentity(plan, review, {
+    receiptId: "receipt:fury:rival",
+    dispatchId: "dispatch:fury:rival",
+    childTaskId: "task:fury:rival",
+    childSessionId: "session:fury:rival",
+    accountableSeatId: "may",
+    artifactId: `transition-plan:${"g".repeat(43)}`,
+    artifactRevision: `sha256:${"g".repeat(43)}`,
+  });
+
+  const repositoryRoot = await repository();
+  const furyStart = dispatchStarted(identity);
+  const rivalStart = dispatchStarted(rival, {
+    timestamp: new Date(Date.parse(furyStart.timestamp) + 1000).toISOString(),
+    logSequence: 1,
+    previousLogDigest: furyStart.entryDigest,
+    inputEvidenceRefs: ["artifact:rival-source"],
+  });
+  const rivalCompleted = dispatchLifecycleInterleaved(rivalStart, rivalStart, rival, "dispatch.completed", {
+    outputEvidenceRefs: ["artifact:rival-output"],
+  });
+  const furyInterrupted = dispatchLifecycleInterleaved(furyStart, rivalCompleted, identity, "dispatch.interrupted");
+  const furyResumed = dispatchLifecycleInterleaved(furyInterrupted, furyInterrupted, identity, "dispatch.resumed");
+  const furyCompleted = dispatchLifecycleInterleaved(furyResumed, furyResumed, identity, "dispatch.completed", {
+    outputEvidenceRefs: reviewOutputRefs(review),
+  });
+  await writeDispatchLog(repositoryRoot, [furyStart, rivalStart, rivalCompleted, furyInterrupted, furyResumed, furyCompleted]);
+
+  const result = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, binding, identity, repositoryRoot));
+  assert.equal(result.state, "materialized", JSON.stringify(result));
+  assert.equal(typeof result.bytes, "string");
+  const graph = JSON.parse(await readFile(result.graphPath, "utf8"));
+  assert.equal(graph.schemaId, "mission.reviewed-transition-graph.v1");
+  assert.equal(graph.transitionPlan.id, plan.id);
+
+  const snapshot = await readSeatDispatchReceiptLedgerSnapshotV1({
+    repositoryRoot,
+    repositoryId: plan.repositoryId,
+    repositoryWorkspaceId: identity.repositoryWorkspaceId,
+  });
+  assert.equal(snapshot.state, "valid", snapshot.errors?.join(" "));
+  const selectedRawReceipts = snapshot.value.rawEntryBytes.filter((_, index) => snapshot.value.entries[index].receiptId === identity.receiptId);
+  const rawReceiptSet = computeRawReceiptSetSha256V1({ rawReceipts: selectedRawReceipts });
+  assert.equal(rawReceiptSet.state, "valid");
+  assert.equal(graph.parentPlanReviewEvidence.rawReceiptSetSha256, rawReceiptSet.value);
+
+  const again = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, binding, identity, repositoryRoot));
+  assert.equal(again.state, "already_materialized");
+  assert.equal(again.graphPath, result.graphPath);
+});
+
+test("materialize ignores non-closed host orchestration-only input and rejects extra authority/CLI fields", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const input = materializationInput(plan, review, expectedBinding(plan), dispatchIdentity(plan, review), await repository());
+  const result = await materializeReviewedMissionTransitionV1({
+    ...input,
+    compiler: { kind: "compiler" },
+    signer: { kind: "signer" },
+    missionAuthorizeCommand: "/bin/true",
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "invalid_materialization_input");
+});
+
+test("materialize rejects wrong top-level mission identifier", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const identity = dispatchIdentity(plan, review);
+  const repositoryRoot = await repository();
+
+  const start = dispatchStarted(identity);
+  const completed = dispatchLifecycle(start, identity, "dispatch.completed", {
+    outputEvidenceRefs: reviewOutputRefs(review),
+  });
+  await writeDispatchLog(repositoryRoot, [start, completed]);
+
+  const result = await materializeReviewedMissionTransitionV1({
+    ...materializationInput(plan, review, expectedBinding(plan), identity, repositoryRoot),
+    missionId: "mission:issue-999",
+  });
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "invalid_materialization_input");
+});
+
+test("materialize rejects binding mismatches for mission, plan, artifact, and revision", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const identity = dispatchIdentity(plan, review);
+  const repositoryRoot = await repository();
+
+  const start = dispatchStarted(identity);
+  const completed = dispatchLifecycle(start, identity, "dispatch.completed", {
+    outputEvidenceRefs: reviewOutputRefs(review),
+  });
+  await writeDispatchLog(repositoryRoot, [start, completed]);
+
+  const mismatchBinding = {
+    ...expectedBinding(plan),
+    missionId: "mission:wrong-270",
+    transitionPlanId: `transition-plan:${"f".repeat(43)}`,
+    transitionPlanDigest: `sha256:${"f".repeat(43)}`,
+    reviewedArtifactId: `transition-plan:${"g".repeat(43)}`,
+    reviewedArtifactRevision: `sha256:${"g".repeat(43)}`,
+  };
+  const result = await materializeReviewedMissionTransitionV1(materializationInput(
+    plan,
+    review,
+    mismatchBinding,
+    identity,
+    repositoryRoot,
+  ));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "invalid_expected_binding");
+  assert.ok(result.errors.includes("mission_binding_mismatch"));
+  assert.ok(result.errors.includes("transition_plan_id_binding_mismatch"));
+  assert.ok(result.errors.includes("reviewed_artifact_id_binding_mismatch"));
+});
+
+test("materialize rejects missing terminal lifecycle and wrong-seat receipts", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const identity = dispatchIdentity(plan, review);
+  const repositoryRoot = await repository();
+
+  const started = dispatchStarted(identity);
+  const partial = dispatchLifecycle(started, identity, "dispatch.interrupted");
+  await writeDispatchLog(repositoryRoot, [started, partial]);
+
+  const noTerminal = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, expectedBinding(plan), identity, repositoryRoot));
+  assert.equal(noTerminal.state, "invalid");
+  assert.equal(noTerminal.code, "invalid_attribution");
+  assert.ok(noTerminal.errors.includes("non_terminal_lifecycle"));
+
+  const rival = dispatchIdentity(plan, review, {
+    receiptId: "receipt:may:wrong-seat",
+    dispatchId: "dispatch:may:wrong-seat",
+    childTaskId: "task:may:wrong-seat",
+    childSessionId: "session:may:wrong-seat",
+    accountableSeatId: "may",
+  });
+  const rivalStarted = dispatchStarted(rival);
+  const rivalCompleted = dispatchLifecycle(rivalStarted, rival, "dispatch.completed", {
+    outputEvidenceRefs: ["artifact:rival-output"],
+  });
+  const wrongSeatRepositoryRoot = await repository();
+  await writeDispatchLog(wrongSeatRepositoryRoot, [rivalStarted, rivalCompleted]);
+
+  const wrongSeat = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, expectedBinding(plan), identity, wrongSeatRepositoryRoot));
+  assert.equal(wrongSeat.state, "invalid");
+  assert.equal(wrongSeat.code, "invalid_attribution");
+  assert.ok(wrongSeat.errors.includes("forged_seat_label"));
+});
+
+test("materialize fails when dispatch ledger has duplicate receipt entries", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const identity = dispatchIdentity(plan, review);
+  const repositoryRoot = await repository();
+
+  const start = dispatchStarted(identity);
+  const duplicateStart = dispatchStarted(identity, {
+    timestamp: new Date(Date.parse(start.timestamp) + 1000).toISOString(),
+    logSequence: 1,
+    previousLogDigest: start.entryDigest,
+  });
+  await writeDispatchLog(repositoryRoot, [start, duplicateStart]);
+
+  const result = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, expectedBinding(plan), identity, repositoryRoot));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "invalid_receipt_snapshot");
+});
+
+test("materialize rejects stale repository revision and reviewer runtime/model/executor substitution", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const ledgerIdentity = dispatchIdentity(plan, review, { repositoryRevision: "9".repeat(40) });
+  const inputIdentity = dispatchIdentity(plan, review, { repositoryRevision: "a".repeat(40) });
+  const repositoryRoot = await repository();
+
+  const staleStart = dispatchStarted(ledgerIdentity);
+  const staleCompleted = dispatchLifecycle(staleStart, ledgerIdentity, "dispatch.completed", {
+    outputEvidenceRefs: reviewOutputRefs(review),
+  });
+  await writeDispatchLog(repositoryRoot, [staleStart, staleCompleted]);
+
+  const staleRevision = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, expectedBinding(plan), inputIdentity, repositoryRoot));
+  assert.equal(staleRevision.state, "invalid");
+  assert.equal(staleRevision.code, "invalid_attribution");
+  assert.ok(staleRevision.errors.includes("stale_repository_revision"));
+
+  const substitutedIdentity = dispatchIdentity(plan, review, {
+    runtimeHostObserved: {
+      kind: "runtime.host_observed",
+      runtimeId: "runtime:substituted",
+      model: "model:substituted",
+      evidenceRefs: ["host:fury:runtime:substituted"],
+    },
+    executorHostObserved: {
+      kind: "executor.host_observed",
+      executorId: "executor:substituted",
+      evidenceRefs: ["host:fury:executor:substituted"],
+    },
+  });
+  const substituteRoot = await repository();
+  const substituteStart = dispatchStarted(substitutedIdentity);
+  const substituteCompleted = dispatchLifecycle(substituteStart, substitutedIdentity, "dispatch.completed", {
+    outputEvidenceRefs: reviewOutputRefs(review),
+  });
+  await writeDispatchLog(substituteRoot, [substituteStart, substituteCompleted]);
+
+  const mismatch = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, expectedBinding(plan), substitutedIdentity, substituteRoot));
+  assert.equal(mismatch.state, "invalid");
+  assert.equal(mismatch.code, "reviewer_declaration_mismatch");
+});
+
+test("materialize fails on forged review identity", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan, {
+    reviewerRuntimeId: "runtime:substitute",
+  });
+  const forged = {
+    ...review,
+    reviewId: `transition-plan-review:${"q".repeat(43)}`,
+  };
+  const identity = dispatchIdentity(plan, review);
+  const repositoryRoot = await repository();
+  const start = dispatchStarted(identity);
+  const completed = dispatchLifecycle(start, identity, "dispatch.completed", {
+    outputEvidenceRefs: reviewOutputRefs(review),
+  });
+  await writeDispatchLog(repositoryRoot, [start, completed]);
+
+  const result = await materializeReviewedMissionTransitionV1(materializationInput(plan, forged, expectedBinding(plan), identity, repositoryRoot));
+  assert.equal(result.state, "invalid");
+  assert.equal(result.code, "invalid_review_artifact");
+});
+
+test("materialize binds raw receipt set deterministically and reports conflict when receipt set changes", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const identity = dispatchIdentity(plan, review);
+  const repositoryRoot = await repository();
+
+  const start = dispatchStarted(identity);
+  const completed = dispatchLifecycle(start, identity, "dispatch.completed", {
+    outputEvidenceRefs: reviewOutputRefs(review),
+  });
+  await writeDispatchLog(repositoryRoot, [start, completed]);
+
+  const first = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, expectedBinding(plan), identity, repositoryRoot));
+  assert.equal(first.state, "materialized", JSON.stringify(first));
+
+  const tamperedCompleted = dispatchLifecycle(start, identity, "dispatch.completed", {
+    timestamp: completed.timestamp,
+    logSequence: 1,
+    previousLogDigest: start.entryDigest,
+    outputEvidenceRefs: [...reviewOutputRefs(review), "artifact:tampered"],
+  });
+  await writeDispatchLog(repositoryRoot, [start, tamperedCompleted]);
+
+  const second = await materializeReviewedMissionTransitionV1(materializationInput(plan, review, expectedBinding(plan), identity, repositoryRoot));
+  assert.equal(second.state, "materialization_conflict");
+  assert.equal(second.existingGraphId, first.graphId);
+  assert.equal(second.existingGraphDigest, first.graphDigest);
 });

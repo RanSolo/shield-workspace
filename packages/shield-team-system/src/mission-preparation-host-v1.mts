@@ -2,6 +2,29 @@ import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 
 import { canonicalJson } from "./mission-v2.mjs";
+import {
+  computeCanonicalContractDigestV1,
+  computeContentIdV1,
+  computeRawReceiptSetSha256V1,
+  validateParentPlanReviewEvidenceV1,
+  validateTransitionIntentV1,
+  validateTransitionPlanV1,
+  type ParentPlanReviewEvidenceV1,
+  type TransitionIntentV1,
+  type TransitionPlanV1,
+} from "@shield/mission-preparation";
+import {
+  buildMissionReviewedTransitionGraphV1,
+  materializeMissionReviewedTransitionGraphV1,
+  type MissionReviewedTransitionGraphMaterializationResultV1,
+} from "./mission-preparation-store-v1.mjs";
+import { readSeatDispatchReceiptLedgerSnapshotV1 } from "./seat-dispatch-store.mjs";
+import {
+  evaluateSeatDispatchAttributionV1,
+  replaySeatDispatchReceiptsV1,
+  type SeatDispatchReceiptIdentityV1,
+  type SeatDispatchReceiptProjectionV1,
+} from "./seat-dispatch-receipt-v1.mjs";
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION = "mission.transition-plan-review.v1" as const;
@@ -20,6 +43,78 @@ const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{
 const REVISION = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const TRANSITION_PLAN_ID = /^transition-plan:[A-Za-z0-9_-]{43}$/u;
+const REVIEW_BINDING_FIELDS = [
+  "schemaVersion",
+  "missionId",
+  "subjectId",
+  "repositoryId",
+  "planningBaseRevision",
+  "parentPlanCommit",
+  "parentPlanPath",
+  "parentPlanRawSha256",
+  "transitionPlanId",
+  "transitionPlanDigest",
+  "reviewedArtifactId",
+  "reviewedArtifactRevision",
+] as const;
+const MATERIALIZATION_FIELDS = [
+  "missionId",
+  "repositoryRoot",
+  "transitionPlan",
+  "reviewArtifact",
+  "expectedBinding",
+  "dispatchIdentity",
+] as const;
+
+export interface MissionTransitionPlanReviewExpectedBindingV1 {
+  readonly schemaVersion: 1;
+  readonly missionId: string;
+  readonly subjectId: string;
+  readonly repositoryId: string;
+  readonly planningBaseRevision: string;
+  readonly parentPlanCommit: string;
+  readonly parentPlanPath: string;
+  readonly parentPlanRawSha256: string;
+  readonly transitionPlanId: string;
+  readonly transitionPlanDigest: string;
+  readonly reviewedArtifactId: string;
+  readonly reviewedArtifactRevision: string;
+}
+
+export interface MaterializeReviewedMissionTransitionInputV1 {
+  readonly missionId: string;
+  readonly repositoryRoot: string;
+  readonly transitionPlan: TransitionPlanV1;
+  readonly reviewArtifact: MissionTransitionPlanReviewV1;
+  readonly expectedBinding: MissionTransitionPlanReviewExpectedBindingV1;
+  readonly dispatchIdentity: SeatDispatchReceiptIdentityV1;
+}
+
+type MaterializeReviewedMissionTransitionInvalidCodeV1 =
+  | "invalid_materialization_input"
+  | "invalid_transition_plan"
+  | "invalid_review_artifact"
+  | "invalid_expected_binding"
+  | "invalid_dispatch_identity"
+  | "invalid_receipt_snapshot"
+  | "invalid_receipt_replay"
+  | "invalid_attribution"
+  | "invalid_output_evidence_refs"
+  | "reviewer_projection_mismatch"
+  | "reviewer_declaration_mismatch"
+  | "parent_review_derivation_failed"
+  | "transition_intent_derivation_failed"
+  | "raw_receipt_set_digest_failed";
+
+export type MaterializeReviewedMissionTransitionResultV1 =
+  | MissionReviewedTransitionGraphMaterializationResultV1
+  | {
+      readonly state: "invalid";
+      readonly code: MaterializeReviewedMissionTransitionInvalidCodeV1;
+      readonly errors: readonly string[];
+    };
+
+type MaterializeReviewedMissionTransitionInvalidV1 = Extract<MaterializeReviewedMissionTransitionResultV1, { readonly state: "invalid" }>;
 
 export interface MissionTransitionPlanReviewV1 {
   readonly schemaVersion: 1;
@@ -83,6 +178,258 @@ function exact(value: unknown, fields: readonly string[]): value is Plain {
   return true;
 }
 
+function materializeInvalid(code: MaterializeReviewedMissionTransitionInvalidCodeV1, ...errors: readonly string[]): MaterializeReviewedMissionTransitionResultV1 {
+  return Object.freeze({
+    state: "invalid" as const,
+    code,
+    errors: Object.freeze(errors.length === 0 ? ["Mission transition review materialization is invalid."] : errors),
+  });
+}
+
+function normalizeExpectedBinding(input: unknown): MissionTransitionPlanReviewExpectedBindingV1 | null {
+  if (!plain(input) || !exact(input, REVIEW_BINDING_FIELDS)) return null;
+  const candidate = input as Record<string, unknown>;
+  if (candidate.schemaVersion !== 1 || !identifier(candidate.missionId) || !identifier(candidate.subjectId) ||
+    !repository(candidate.repositoryId) || !revision(candidate.planningBaseRevision) || !revision(candidate.parentPlanCommit) ||
+    !transitionPlanPath(candidate.parentPlanPath) || !SHA256.test(candidate.parentPlanRawSha256 as string) ||
+    !TRANSITION_PLAN_ID.test(candidate.transitionPlanId as string) || !digest(candidate.transitionPlanDigest) ||
+    !TRANSITION_PLAN_ID.test(candidate.reviewedArtifactId as string) || !digest(candidate.reviewedArtifactRevision)) {
+    return null;
+  }
+  return candidate as unknown as MissionTransitionPlanReviewExpectedBindingV1;
+}
+
+function finalObservedProjection(projection: SeatDispatchReceiptProjectionV1): { runtimeId: string; model: string; executorId: string } | null {
+  const runtime = projection.runtimeHostHistory.at(-1);
+  const executor = projection.executorHostHistory.at(-1);
+  if (!runtime || !executor) return null;
+  if (!identifier(runtime.runtimeId) || !identifier(runtime.model) || !identifier(executor.executorId)) return null;
+  if (runtime.runtimeId === executor.executorId || runtime.runtimeId === "fury" || executor.executorId === "fury") return null;
+  return {
+    runtimeId: runtime.runtimeId,
+    model: runtime.model,
+    executorId: executor.executorId,
+  };
+}
+
+function outputEvidenceRefsBound(review: MissionTransitionPlanReviewV1, outputEvidenceRefs: readonly string[]): boolean {
+  return [review.reviewId, review.reviewDigest, review.reviewedArtifactId, review.reviewedArtifactRevision]
+    .every((expected) => outputEvidenceRefs.includes(expected));
+}
+
+function deriveBindingErrors(review: MissionTransitionPlanReviewV1, transitionPlan: TransitionPlanV1, binding: MissionTransitionPlanReviewExpectedBindingV1): readonly string[] {
+  const errors: string[] = [];
+  if (review.missionId !== transitionPlan.missionId || transitionPlan.missionId !== binding.missionId) {
+    errors.push("mission_binding_mismatch");
+  }
+  if (review.subjectId !== transitionPlan.subjectId || transitionPlan.subjectId !== binding.subjectId) {
+    errors.push("subject_binding_mismatch");
+  }
+  if (review.repositoryId !== transitionPlan.repositoryId || transitionPlan.repositoryId !== binding.repositoryId) {
+    errors.push("repository_binding_mismatch");
+  }
+  if (review.planningBaseRevision !== transitionPlan.planningBaseRevision || transitionPlan.planningBaseRevision !== binding.planningBaseRevision) {
+    errors.push("planning_base_revision_binding_mismatch");
+  }
+  if (review.parentPlanCommit !== transitionPlan.parentPlanCommit || review.parentPlanCommit !== binding.parentPlanCommit) {
+    errors.push("parent_plan_commit_binding_mismatch");
+  }
+  if (review.parentPlanPath !== transitionPlan.parentPlanPath || review.parentPlanPath !== binding.parentPlanPath) {
+    errors.push("parent_plan_path_binding_mismatch");
+  }
+  if (review.parentPlanRawSha256 !== transitionPlan.parentPlanRawSha256 || review.parentPlanRawSha256 !== binding.parentPlanRawSha256) {
+    errors.push("parent_plan_sha_binding_mismatch");
+  }
+  if (review.transitionPlanId !== transitionPlan.id || review.transitionPlanId !== binding.transitionPlanId) {
+    errors.push("transition_plan_id_binding_mismatch");
+  }
+  if (review.transitionPlanDigest !== transitionPlan.digest || review.transitionPlanDigest !== binding.transitionPlanDigest) {
+    errors.push("transition_plan_digest_binding_mismatch");
+  }
+  if (review.reviewedArtifactId !== transitionPlan.id || review.reviewedArtifactId !== binding.reviewedArtifactId) {
+    errors.push("reviewed_artifact_id_binding_mismatch");
+  }
+  if (review.reviewedArtifactRevision !== transitionPlan.digest || review.reviewedArtifactRevision !== binding.reviewedArtifactRevision) {
+    errors.push("reviewed_artifact_revision_binding_mismatch");
+  }
+  return errors;
+}
+
+type DerivedParentPlanReviewV1 = { state: "valid"; value: ParentPlanReviewEvidenceV1 } | MaterializeReviewedMissionTransitionInvalidV1;
+
+function deriveParentPlanReview(input: {
+  review: MissionTransitionPlanReviewV1;
+  projection: SeatDispatchReceiptProjectionV1;
+  rawReceiptSetSha256: string;
+}): DerivedParentPlanReviewV1 {
+  const observed = finalObservedProjection(input.projection);
+  if (observed === null) {
+    return materializeInvalid("reviewer_projection_mismatch", "Projection runtime or executor host evidence is missing.") as MaterializeReviewedMissionTransitionInvalidV1;
+  }
+  if (input.review.reviewerRuntimeId !== observed.runtimeId || input.review.reviewerModelId !== observed.model || input.review.reviewerExecutorId !== observed.executorId) {
+    return materializeInvalid("reviewer_declaration_mismatch", "Reviewed declaration runtime/model/executor does not match attributed host observation.") as MaterializeReviewedMissionTransitionInvalidV1;
+  }
+  const body = {
+    schemaId: "mission.parent-plan-review-evidence.v1",
+    authority: "none" as const,
+    repositoryId: input.review.repositoryId,
+    planningBaseRevision: input.review.planningBaseRevision,
+    parentPlanCommit: input.review.parentPlanCommit,
+    parentPlanPath: input.review.parentPlanPath,
+    parentPlanRawSha256: input.review.parentPlanRawSha256,
+    transitionPlanId: input.review.transitionPlanId,
+    transitionPlanDigest: input.review.transitionPlanDigest,
+    verdict: input.review.verdict,
+    reviewerSeatId: input.review.reviewerSeatId,
+    reviewerRuntimeId: input.review.reviewerRuntimeId,
+    reviewerModelId: input.review.reviewerModelId,
+    reviewerExecutorId: input.review.reviewerExecutorId,
+    rawReceiptSetSha256: input.rawReceiptSetSha256,
+    attributionClass: "team_system_projection" as const,
+    preparationEligibility: "preparationEligible" as const,
+  };
+  const digest = computeCanonicalContractDigestV1({
+    schemaId: "mission.parent-plan-review-evidence.v1",
+    body,
+  });
+  if (digest.state === "invalid") {
+    return materializeInvalid("parent_review_derivation_failed", ...digest.errors) as MaterializeReviewedMissionTransitionInvalidV1;
+  }
+  const id = computeContentIdV1({
+    schemaId: "mission.parent-plan-review-evidence.v1",
+    digest: digest.value,
+  });
+  if (id.state === "invalid") {
+    return materializeInvalid("parent_review_derivation_failed", ...id.errors) as MaterializeReviewedMissionTransitionInvalidV1;
+  }
+  const candidate = {
+    ...body,
+    id: id.value,
+    digest: digest.value,
+  };
+  const validated = validateParentPlanReviewEvidenceV1({ artifact: candidate });
+  if (validated.state === "invalid") {
+    return materializeInvalid("parent_review_derivation_failed", ...validated.errors) as MaterializeReviewedMissionTransitionInvalidV1;
+  }
+  return {
+    state: "valid" as const,
+    value: validated.value,
+  };
+}
+
+type DerivedTransitionIntentV1 = { state: "valid"; value: TransitionIntentV1 } | MaterializeReviewedMissionTransitionInvalidV1;
+
+function deriveTransitionIntent(plan: TransitionPlanV1, review: ParentPlanReviewEvidenceV1): DerivedTransitionIntentV1 {
+  const body = {
+    schemaId: "mission.transition-intent.v1" as const,
+    authority: "none" as const,
+    missionId: plan.missionId,
+    subjectId: plan.subjectId,
+    repositoryId: plan.repositoryId,
+    planningBaseRevision: plan.planningBaseRevision,
+    transitionPlanId: plan.id,
+    transitionPlanDigest: plan.digest,
+    parentReviewEvidenceId: review.id,
+    parentReviewEvidenceDigest: review.digest,
+    transitionKind: "fresh_authorize_wheels_up" as const,
+    preparationEligibility: "preparationEligible" as const,
+  };
+  const digest = computeCanonicalContractDigestV1({
+    schemaId: "mission.transition-intent.v1",
+    body,
+  });
+  if (digest.state === "invalid") {
+    return materializeInvalid("transition_intent_derivation_failed", ...digest.errors) as MaterializeReviewedMissionTransitionInvalidV1;
+  }
+  const id = computeContentIdV1({
+    schemaId: "mission.transition-intent.v1",
+    digest: digest.value,
+  });
+  if (id.state === "invalid") {
+    return materializeInvalid("transition_intent_derivation_failed", ...id.errors) as MaterializeReviewedMissionTransitionInvalidV1;
+  }
+  const validated = validateTransitionIntentV1({
+    artifact: {
+      ...body,
+      id: id.value,
+      digest: digest.value,
+    },
+  });
+  if (validated.state === "invalid") {
+    return materializeInvalid("transition_intent_derivation_failed", ...validated.errors) as MaterializeReviewedMissionTransitionInvalidV1;
+  }
+  return {
+    state: "valid" as const,
+    value: validated.value,
+  };
+}
+
+function validDispatchIdentity(candidate: unknown): candidate is SeatDispatchReceiptIdentityV1 {
+  const fields = [
+    "receiptId",
+    "dispatchId",
+    "parentMissionId",
+    "parentMissionRevision",
+    "parentSessionId",
+    "repositoryRevision",
+    "childTaskId",
+    "childSessionId",
+    "accountableSeatId",
+    "repositoryId",
+    "repositoryWorkspaceId",
+    "subjectId",
+    "subjectRevision",
+    "artifactId",
+    "artifactRevision",
+    "configuredRuntime",
+    "requestedRuntime",
+    "toolExecution",
+    "runtimeSelfReport",
+    "runtimeHostObserved",
+    "executorSelfReport",
+    "executorHostObserved",
+    "timestamp",
+    "logSequence",
+    "previousLogDigest",
+    "lifecycleSequence",
+    "previousLifecycleDigest",
+  ] as const;
+  if (!plain(candidate) || !exact(candidate, fields)) {
+    return false;
+  }
+
+  const value = candidate as Record<string, unknown>;
+  const matches = {
+    accountable: value.accountableSeatId === "fury",
+    receipt: identifier(value.receiptId),
+    dispatch: identifier(value.dispatchId),
+    parentMission: identifier(value.parentMissionId),
+    parentMissionRevision: revision(value.parentMissionRevision),
+    parentSession: identifier(value.parentSessionId),
+    childTask: identifier(value.childTaskId),
+    childSession: identifier(value.childSessionId),
+    repository: repository(value.repositoryId),
+    repositoryWorkspace: identifier(value.repositoryWorkspaceId),
+    repositoryRevision: revision(value.repositoryRevision),
+    subject: identifier(value.subjectId),
+    subjectRevision: revision(value.subjectRevision),
+    artifact: TRANSITION_PLAN_ID.test(typeof value.artifactId === "string" ? value.artifactId : ""),
+    revision: digest(typeof value.artifactRevision === "string" ? value.artifactRevision : ""),
+  };
+  if (!Object.values(matches).every((value) => value)) {
+    return false;
+  }
+  if (!identifier(value.receiptId) || !identifier(value.dispatchId) || !identifier(value.parentMissionId) || !revision(value.parentMissionRevision) ||
+    !identifier(value.parentSessionId) || !identifier(value.childTaskId) || !identifier(value.childSessionId) ||
+    !repository(value.repositoryId) || !identifier(value.repositoryWorkspaceId) || !revision(value.repositoryRevision) ||
+    !identifier(value.subjectId) || !revision(value.subjectRevision) ||
+    !TRANSITION_PLAN_ID.test(typeof value.artifactId === "string" ? value.artifactId : "") ||
+    !digest(typeof value.artifactRevision === "string" ? value.artifactRevision : "")) {
+    return false;
+  }
+  return true;
+}
+
 function cloneClosedData(value: unknown, seen = new WeakSet<object>()): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return value;
   if (typeof value !== "object" || isProxy(value) || seen.has(value)) throw new TypeError("non_closed_data");
@@ -91,7 +438,8 @@ function cloneClosedData(value: unknown, seen = new WeakSet<object>()): unknown 
     if (Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError("non_plain_array");
     const keys = Reflect.ownKeys(value);
     if (keys.some((key) => typeof key !== "string")) throw new TypeError("array_symbol_keys");
-    if (keys.length !== value.length) throw new TypeError("array_sparsity");
+    const allowed = new Set(["length", ...Array.from({ length: value.length }, (_unused, index) => String(index))]);
+    if (keys.some((key) => !allowed.has(key as string))) throw new TypeError("array_sparsity");
     const output: unknown[] = [];
     seen.add(value);
     for (let index = 0; index < value.length; index += 1) {
@@ -300,4 +648,124 @@ export function validateMissionTransitionPlanReviewV1(input: unknown): MissionTr
       ...candidate,
     }),
   });
+}
+
+export async function materializeReviewedMissionTransitionV1(
+  input: unknown,
+): Promise<MaterializeReviewedMissionTransitionResultV1> {
+  let copied: unknown;
+  try {
+    copied = cloneClosedData(input);
+  } catch {
+    return materializeInvalid("invalid_materialization_input", "Materialization input is not closed ordinary data.");
+  }
+
+  if (!exact(copied, MATERIALIZATION_FIELDS)) {
+    return materializeInvalid("invalid_materialization_input", "Materialization input fields are not closed.");
+  }
+
+  const value = copied as unknown as MaterializeReviewedMissionTransitionInputV1;
+  if (!identifier(value.missionId)
+    || value.missionId !== value.transitionPlan.missionId
+    || value.missionId !== value.dispatchIdentity.parentMissionId
+    || !validDispatchIdentity(value.dispatchIdentity)) {
+    return materializeInvalid("invalid_materialization_input", "Materialization mission id or dispatch identity is invalid.");
+  }
+  if (typeof value.repositoryRoot !== "string" || value.repositoryRoot.length === 0) {
+    return materializeInvalid("invalid_materialization_input", "Materialization repositoryRoot is invalid.");
+  }
+
+  const transitionPlan = validateTransitionPlanV1({ artifact: value.transitionPlan });
+  if (transitionPlan.state === "invalid") {
+    return materializeInvalid("invalid_transition_plan", ...transitionPlan.errors);
+  }
+
+  const review = validateMissionTransitionPlanReviewV1(value.reviewArtifact);
+  if (review.state === "invalid") {
+    return materializeInvalid("invalid_review_artifact", ...review.errors);
+  }
+
+  const expectedBinding = normalizeExpectedBinding(value.expectedBinding);
+  if (expectedBinding === null) {
+    return materializeInvalid("invalid_expected_binding", "Expected binding is invalid.");
+  }
+  const bindingErrors = deriveBindingErrors(review.value, transitionPlan.value, expectedBinding);
+  if (bindingErrors.length > 0) {
+    return materializeInvalid("invalid_expected_binding", ...bindingErrors);
+  }
+
+  const snapshot = await readSeatDispatchReceiptLedgerSnapshotV1({
+    repositoryRoot: value.repositoryRoot,
+    repositoryId: value.dispatchIdentity.repositoryId,
+    repositoryWorkspaceId: value.dispatchIdentity.repositoryWorkspaceId,
+  });
+
+  if (snapshot.state === "invalid") {
+    return materializeInvalid("invalid_receipt_snapshot", ...snapshot.errors);
+  }
+
+  const replay = replaySeatDispatchReceiptsV1(snapshot.value.entries);
+  if (replay.state === "invalid") {
+    return materializeInvalid("invalid_receipt_replay", replay.code);
+  }
+
+  const attribution = evaluateSeatDispatchAttributionV1({
+    ...value.dispatchIdentity,
+    artifact: review.value,
+    replayResult: replay,
+  });
+  if (attribution.state === "unattributed") {
+    return materializeInvalid("invalid_attribution", ...attribution.reasonCodes);
+  }
+
+  if (attribution.receipt.state !== "completed") {
+    return materializeInvalid("invalid_attribution", `Receipt lifecycle was ${attribution.receipt.state}, expected completed.`);
+  }
+  if (!outputEvidenceRefsBound(review.value, attribution.receipt.outputEvidenceRefs ?? [])) {
+    return materializeInvalid("invalid_output_evidence_refs", "Terminal receipt output evidence does not bind review artifact references.");
+  }
+
+  const selectedRawReceipts = snapshot.value.rawEntryBytes.filter((_, index) => snapshot.value.entries[index]?.receiptId === attribution.receipt.receiptId);
+  if (selectedRawReceipts.length === 0) {
+    return materializeInvalid("invalid_attribution", "Attributed receipt did not include raw ledger entries.");
+  }
+  const rawReceiptSet = computeRawReceiptSetSha256V1({ rawReceipts: selectedRawReceipts });
+  if (rawReceiptSet.state === "invalid") {
+    return materializeInvalid("raw_receipt_set_digest_failed", ...rawReceiptSet.errors);
+  }
+
+  const parentPlanReview = deriveParentPlanReview({
+    review: review.value,
+    projection: attribution.receipt,
+    rawReceiptSetSha256: rawReceiptSet.value,
+  });
+  if (parentPlanReview.state === "invalid") {
+    return parentPlanReview;
+  }
+  const parentPlanReviewValue = parentPlanReview.value;
+
+  const transitionIntent = deriveTransitionIntent(transitionPlan.value, parentPlanReviewValue);
+  if (transitionIntent.state === "invalid") {
+    return transitionIntent;
+  }
+  const transitionIntentValue = transitionIntent.value;
+
+  const graph = buildMissionReviewedTransitionGraphV1({
+    transitionPlan: transitionPlan.value,
+    parentPlanReviewEvidence: parentPlanReviewValue,
+    transitionIntent: transitionIntentValue,
+  });
+  if (graph.state === "invalid") {
+    return materializeInvalid("invalid_transition_plan", ...graph.errors);
+  }
+
+  const materialization = await materializeMissionReviewedTransitionGraphV1({
+    repositoryRoot: value.repositoryRoot,
+    graph: graph.graph,
+  });
+  if (materialization.state === "invalid") {
+    return materializeInvalid("invalid_materialization_input", ...materialization.errors);
+  }
+
+  return materialization as MaterializeReviewedMissionTransitionResultV1;
 }
