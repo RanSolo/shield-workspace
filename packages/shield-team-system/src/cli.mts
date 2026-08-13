@@ -691,8 +691,14 @@ async function runDoctor(args: string[]): Promise<number> {
   const rootIssue = await repositoryRootIssue(root);
   const shieldDirectory = join(root, ".shield");
   const configPath = join(root, CONFIG_RELATIVE_PATH);
-  await inspectDirectory(shieldDirectory);
-  const configState = await inspectTarget(configPath);
+  let configState: TargetState = { exists: false };
+  let configFilesystemUnsafe = false;
+  try {
+    await inspectDirectory(shieldDirectory);
+    configState = await inspectTarget(configPath);
+  } catch {
+    configFilesystemUnsafe = true;
+  }
   const parsed = configState.exists ? parseShieldConfig(configState.content) : null;
   let rawConfig: unknown;
   if (configState.exists && parsed?.state === "invalid") {
@@ -703,7 +709,7 @@ async function runDoctor(args: string[]): Promise<number> {
     repositoryRootReady: rootIssue === null,
     ...(rootIssue === null ? {} : { repositoryRootIssue: rootIssue }),
     packageVersion: await installedPackageVersion(),
-    configPresent: configState.exists,
+    configPresent: configState.exists || configFilesystemUnsafe,
     ...(parsed?.state === "valid"
       ? { config: parsed.value }
       : parsed?.state === "invalid" && rawConfig !== undefined
@@ -711,7 +717,7 @@ async function runDoctor(args: string[]): Promise<number> {
         : {}),
     worktreeState: await inspectWorktreeStateV1({
       root,
-      configPresent: configState.exists,
+      configPresent: configState.exists || configFilesystemUnsafe,
       configValid: parsed?.state === "valid",
     }),
   });
@@ -749,8 +755,8 @@ async function runWorktree(args: string[]): Promise<number> {
   const [subcommand, ...rest] = args;
   if (subcommand !== "prepare") throw new CliError(`Unsupported worktree command: ${subcommand ?? "missing"}.\n${usage()}`);
   const options = parseOptions(rest, ["--source-root", "--root"], ["--json"]);
-  const sourceRoot = await inspectRoot(required(options, "--source-root"), false);
-  const destinationRoot = await inspectRoot(required(options, "--root"), true);
+  const sourceRoot = required(options, "--source-root");
+  const destinationRoot = required(options, "--root");
   const result = await prepareWorktreeStateV1({ sourceRoot, destinationRoot });
   process.stdout.write(options.flags.has("--json")
     ? `${JSON.stringify(result, null, 2)}\n`

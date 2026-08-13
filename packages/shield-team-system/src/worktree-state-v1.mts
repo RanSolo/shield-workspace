@@ -12,7 +12,7 @@ import {
   unlink,
   type FileHandle,
 } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { isProxy } from "node:util/types";
 
@@ -202,15 +202,31 @@ export interface WorktreeStateDoctorResultV1 {
 export type WorktreePreparationTestPhaseV1 =
   | "source_captured"
   | "repositories_observed"
+  | "before_destination_mutation"
   | "lock_acquired"
   | "temporaries_synced"
   | "before_install"
   | "after_install"
+  | "before_replay_ready"
   | "before_ready";
+
+export type WorktreePreparationFilesystemOperationV1 =
+  | "after_lock_create"
+  | "after_lock_file_sync"
+  | "after_temporary_create"
+  | "after_temporary_file_sync"
+  | "before_cleanup_unlink"
+  | "before_cleanup_directory_sync";
+
+export interface WorktreePreparationFilesystemEventV1 {
+  readonly operation: WorktreePreparationFilesystemOperationV1;
+  readonly path: string;
+}
 
 export interface WorktreePreparationTestDependenciesV1 {
   readonly phase?: (phase: WorktreePreparationTestPhaseV1) => void | Promise<void>;
   readonly nonce?: () => string;
+  readonly filesystem?: (event: WorktreePreparationFilesystemEventV1) => void | Promise<void>;
 }
 
 interface CapturedFile {
@@ -228,6 +244,7 @@ interface SourceSnapshot {
   readonly registry: TrustedBindingRegistry;
   readonly policy: WorktreePolicySnapshotV1;
   readonly publicBindings: readonly WorktreePublicBindingV1[];
+  readonly policyDirectory: HeldDirectory;
 }
 
 interface FileIdentity {
@@ -240,15 +257,21 @@ interface FileIdentity {
 }
 
 interface HeldDirectory {
+  readonly path: string;
   readonly handle: FileHandle;
   readonly identity: FileIdentity;
+}
+
+interface HeldRoot {
+  readonly root: string;
+  readonly directories: readonly HeldDirectory[];
 }
 
 interface TemporaryFile {
   readonly path: string;
   readonly bytes: Buffer;
   readonly handle: FileHandle;
-  readonly identity: FileIdentity;
+  identity: FileIdentity | null;
   installed: boolean;
 }
 
@@ -256,7 +279,7 @@ interface HeldLock {
   readonly path: string;
   readonly token: Buffer;
   readonly handle: FileHandle;
-  readonly identity: FileIdentity;
+  identity: FileIdentity | null;
 }
 
 class Blocked extends Error {
@@ -283,6 +306,15 @@ function exact(value: unknown, fields: readonly string[]): value is Record<strin
     return descriptor !== undefined && Object.hasOwn(descriptor, "value") && descriptor.enumerable &&
       descriptor.get === undefined && descriptor.set === undefined;
   }) && (keys as string[]).every((key) => fields.includes(key));
+}
+
+function deepFreeze<T>(value: T, seen = new Set<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const nested of Reflect.ownKeys(value).map((key) => (value as Record<PropertyKey, unknown>)[key])) {
+    deepFreeze(nested, seen);
+  }
+  return Object.freeze(value);
 }
 
 function canonicalJson(value: unknown): string {
@@ -330,7 +362,7 @@ function blocked(
     exclusions: WORKTREE_STATE_EXCLUSIONS,
     receipt: null,
   };
-  return Object.freeze({ ...body, receiptDigest: digestOutcome(body) });
+  return deepFreeze({ ...body, receiptDigest: digestOutcome(body) });
 }
 
 function recovery(
@@ -351,7 +383,7 @@ function recovery(
     exclusions: WORKTREE_STATE_EXCLUSIONS,
     receipt,
   };
-  return Object.freeze({ ...body, receiptDigest: digestOutcome(body) });
+  return deepFreeze({ ...body, receiptDigest: digestOutcome(body) });
 }
 
 function success(
@@ -374,7 +406,7 @@ function success(
     exclusions: WORKTREE_STATE_EXCLUSIONS,
     receipt,
   };
-  return Object.freeze({ ...body, receiptDigest: digestOutcome(body) }) as WorktreePreparationReadyV1 | WorktreePreparationAlreadyPreparedV1;
+  return deepFreeze({ ...body, receiptDigest: digestOutcome(body) }) as WorktreePreparationReadyV1 | WorktreePreparationAlreadyPreparedV1;
 }
 
 function identity(stats: Awaited<ReturnType<FileHandle["stat"]>>): FileIdentity {
@@ -465,7 +497,19 @@ function validatePolicyAgreement(config: ShieldConfig, registry: TrustedBindingR
 }
 
 async function captureSourcePolicy(sourceRoot: string): Promise<SourceSnapshot> {
-  const configFile = await captureRegularFile(join(sourceRoot, CONFIG_PATH));
+  let policyDirectory: HeldDirectory;
+  try {
+    policyDirectory = await holdDirectory(join(sourceRoot, SHIELD_DIRECTORY));
+  } catch {
+    throw new Blocked("source_policy_unsafe", "Source policy ancestors must be retained no-follow directories.");
+  }
+  let configFile: CapturedFile;
+  try {
+    configFile = await captureRegularFile(join(sourceRoot, CONFIG_PATH));
+  } catch (error) {
+    await policyDirectory.handle.close().catch(() => undefined);
+    throw error;
+  }
   let registryFile: CapturedFile | null = null;
   try {
     registryFile = await captureRegularFile(join(sourceRoot, REGISTRY_PATH));
@@ -493,10 +537,12 @@ async function captureSourcePolicy(sourceRoot: string): Promise<SourceSnapshot> 
       registry: parsedRegistry.value,
       policy,
       publicBindings: registryProjection(parsedRegistry.value),
+      policyDirectory,
     };
   } catch (error) {
     await configFile.handle.close().catch(() => undefined);
     if (registryFile !== null) await registryFile.handle.close().catch(() => undefined);
+    await policyDirectory.handle.close().catch(() => undefined);
     throw error;
   }
 }
@@ -506,6 +552,7 @@ async function closeSnapshot(snapshot: SourceSnapshot | null): Promise<void> {
   await Promise.all([
     snapshot.configFile.handle.close().catch(() => undefined),
     snapshot.registryFile.handle.close().catch(() => undefined),
+    snapshot.policyDirectory.handle.close().catch(() => undefined),
   ]);
 }
 
@@ -547,17 +594,29 @@ function normalizedOriginRepositoryId(origin: string): string | null {
   return `${segments[0]}/${segments[1]}`;
 }
 
-async function canonicalRoot(root: string): Promise<string> {
+async function captureCanonicalRoot(root: string): Promise<HeldRoot> {
   if (!isAbsolute(root) || resolve(root) !== root) {
     throw new Blocked("root_invalid", "Worktree roots must be canonical absolute paths supplied explicitly by the host.");
   }
-  let canonical: string;
-  try { canonical = await realpath(root); }
-  catch { throw new Blocked("root_invalid", "Worktree roots must be accessible real directories."); }
-  if (canonical !== root) throw new Blocked("root_invalid", "Worktree roots must not use aliases or symbolic links.");
-  const stats = await lstat(root);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Blocked("root_invalid", "Worktree roots must be real directories.");
-  return canonical;
+  const directories: HeldDirectory[] = [];
+  try {
+    const rootPrefix = parse(root).root;
+    const segments = root.slice(rootPrefix.length).split(sep).filter(Boolean);
+    let current = rootPrefix;
+    directories.push(await holdDirectory(current));
+    for (const segment of segments) {
+      current = join(current, segment);
+      directories.push(await holdDirectory(current));
+    }
+    const canonical = await realpath(root);
+    if (canonical !== root || !await directoryChainStillHeld(directories)) {
+      throw new Error("Root path contains an alias or changed directory component.");
+    }
+    return { root: canonical, directories };
+  } catch {
+    await closeDirectories(directories);
+    throw new Blocked("root_invalid", "Worktree roots and every ancestor must be accessible canonical no-follow directories.");
+  }
 }
 
 async function observeGitRoot(root: string): Promise<WorktreeGitObservationV1> {
@@ -612,20 +671,46 @@ async function observeRepositories(sourceRoot: string, destinationRoot: string, 
 
 async function holdDirectory(path: string): Promise<HeldDirectory> {
   const handle = await open(path, DIRECTORY_FLAGS);
-  const stats = await handle.stat();
-  if (!stats.isDirectory()) {
-    await handle.close();
-    throw new Error("Expected a directory.");
+  try {
+    const stats = await handle.stat();
+    const pathStats = await lstat(path);
+    if (!stats.isDirectory() || pathStats.isSymbolicLink() || !pathStats.isDirectory() ||
+      Number(pathStats.dev) !== Number(stats.dev) || Number(pathStats.ino) !== Number(stats.ino)) {
+      throw new Error("Expected one retained no-follow directory identity.");
+    }
+    return { path, handle, identity: identity(stats) };
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
   }
-  return { handle, identity: identity(stats) };
 }
 
 async function directoryStillHeld(path: string, held: HeldDirectory): Promise<boolean> {
-  const handleIdentity = identity(await held.handle.stat());
-  const pathStats = await lstat(path);
-  return !pathStats.isSymbolicLink() && pathStats.isDirectory() &&
-    handleIdentity.dev === held.identity.dev && handleIdentity.ino === held.identity.ino &&
-    Number(pathStats.dev) === held.identity.dev && Number(pathStats.ino) === held.identity.ino;
+  try {
+    if (path !== held.path) return false;
+    const handleIdentity = identity(await held.handle.stat());
+    const pathStats = await lstat(path);
+    return !pathStats.isSymbolicLink() && pathStats.isDirectory() &&
+      handleIdentity.dev === held.identity.dev && handleIdentity.ino === held.identity.ino &&
+      Number(pathStats.dev) === held.identity.dev && Number(pathStats.ino) === held.identity.ino;
+  } catch {
+    return false;
+  }
+}
+
+async function directoryChainStillHeld(directories: readonly HeldDirectory[]): Promise<boolean> {
+  for (const directory of directories) {
+    if (!await directoryStillHeld(directory.path, directory)) return false;
+  }
+  return true;
+}
+
+async function closeDirectories(directories: readonly HeldDirectory[]): Promise<boolean> {
+  let closed = true;
+  for (const directory of [...directories].reverse()) {
+    try { await directory.handle.close(); } catch { closed = false; }
+  }
+  return closed;
 }
 
 async function syncDirectory(path: string): Promise<void> {
@@ -638,8 +723,19 @@ async function pathExists(path: string): Promise<boolean> {
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT" ? Promise.reject(error) : false; }
 }
 
-async function ensureShieldDirectory(destinationRoot: string, root: HeldDirectory): Promise<{ held: HeldDirectory; created: boolean }> {
+async function ensureShieldDirectory(
+  destinationRoot: string,
+  root: HeldDirectory,
+  existing: HeldDirectory | null,
+  onCreated: () => void,
+): Promise<{ held: HeldDirectory; created: boolean }> {
   const shieldPath = join(destinationRoot, SHIELD_DIRECTORY);
+  if (existing !== null) {
+    if (!await directoryStillHeld(shieldPath, existing)) {
+      throw new Blocked("destination_conflict", "Destination .shield identity changed before preparation.");
+    }
+    return { held: existing, created: false };
+  }
   let created = false;
   try {
     const stats = await lstat(shieldPath);
@@ -649,22 +745,23 @@ async function ensureShieldDirectory(destinationRoot: string, root: HeldDirector
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     await mkdir(shieldPath, { mode: 0o700 });
+    onCreated();
     await root.handle.sync();
     created = true;
   }
   return { held: await holdDirectory(shieldPath), created };
 }
 
-async function existingShieldEntries(destinationRoot: string): Promise<readonly string[]> {
+async function holdShieldDirectoryIfPresent(destinationRoot: string): Promise<HeldDirectory | null> {
   const shieldPath = join(destinationRoot, SHIELD_DIRECTORY);
   try {
     const stats = await lstat(shieldPath);
     if (stats.isSymbolicLink() || !stats.isDirectory()) {
       throw new Blocked("destination_conflict", "Destination .shield must be absent or a real directory.");
     }
-    return await readdir(shieldPath);
+    return await holdDirectory(shieldPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
 }
@@ -698,7 +795,7 @@ function receiptBody(
 }
 
 function buildReceipt(body: WorktreeStateReceiptBodyV1): WorktreeStateReceiptV1 {
-  return Object.freeze({ ...body, receiptDigest: sha256(canonicalJson(body)) });
+  return deepFreeze({ ...body, receiptDigest: sha256(canonicalJson(body)) });
 }
 
 function receiptBytes(receipt: WorktreeStateReceiptV1): Buffer {
@@ -772,7 +869,7 @@ async function readStoredReceipt(destinationRoot: string): Promise<WorktreeState
   let parsed: unknown;
   try { parsed = JSON.parse(bytes.toString("utf8")) as unknown; }
   catch { return null; }
-  return validateWorktreeStateReceiptV1(parsed) && bytes.equals(receiptBytes(parsed)) ? parsed : null;
+  return validateWorktreeStateReceiptV1(parsed) && bytes.equals(receiptBytes(parsed)) ? deepFreeze(parsed) : null;
 }
 
 async function validateInstalledReceipt(
@@ -815,7 +912,20 @@ async function validateInstalledReceipt(
   }
 }
 
-async function acquireLock(shieldPath: string, token: Buffer): Promise<HeldLock> {
+async function filesystemEvent(
+  dependencies: WorktreePreparationTestDependenciesV1,
+  operation: WorktreePreparationFilesystemOperationV1,
+  path: string,
+): Promise<void> {
+  await dependencies.filesystem?.(Object.freeze({ operation, path }));
+}
+
+async function acquireLock(
+  shieldPath: string,
+  token: Buffer,
+  dependencies: WorktreePreparationTestDependenciesV1,
+  retain: (lock: HeldLock) => void,
+): Promise<HeldLock> {
   const path = join(shieldPath, LOCK_NAME);
   let handle: FileHandle;
   try { handle = await open(path, WRITE_EXCLUSIVE_FLAGS, 0o600); }
@@ -825,28 +935,29 @@ async function acquireLock(shieldPath: string, token: Buffer): Promise<HeldLock>
     }
     throw error;
   }
-  try {
-    await handle.chmod(0o600);
-    await handle.writeFile(token);
-    await handle.sync();
-    const stats = await handle.stat();
-    const capturedIdentity = identity(stats);
-    const pathStats = await lstat(path);
-    if (!stats.isFile() || stats.nlink !== 1 || capturedIdentity.mode !== 0o600 || capturedIdentity.size !== token.length ||
-      pathStats.isSymbolicLink() || !pathStats.isFile() || Number(pathStats.dev) !== capturedIdentity.dev ||
-      Number(pathStats.ino) !== capturedIdentity.ino || !(await exactHandleBytes(handle, token.length)).equals(token)) {
-      throw new Error("Preparation lock could not be verified.");
-    }
-    await syncDirectory(shieldPath);
-    return { path, token, handle, identity: capturedIdentity };
-  } catch (error) {
-    await handle.close().catch(() => undefined);
-    throw error;
+  const lock: HeldLock = { path, token, handle, identity: null };
+  retain(lock);
+  await filesystemEvent(dependencies, "after_lock_create", path);
+  await handle.chmod(0o600);
+  await handle.writeFile(token);
+  await handle.sync();
+  await filesystemEvent(dependencies, "after_lock_file_sync", path);
+  const stats = await handle.stat();
+  const capturedIdentity = identity(stats);
+  const pathStats = await lstat(path);
+  if (!stats.isFile() || stats.nlink !== 1 || capturedIdentity.mode !== 0o600 || capturedIdentity.size !== token.length ||
+    pathStats.isSymbolicLink() || !pathStats.isFile() || Number(pathStats.dev) !== capturedIdentity.dev ||
+    Number(pathStats.ino) !== capturedIdentity.ino || !(await exactHandleBytes(handle, token.length)).equals(token)) {
+    throw new Error("Preparation lock could not be verified.");
   }
+  lock.identity = capturedIdentity;
+  await syncDirectory(shieldPath);
+  return lock;
 }
 
 async function lockOwned(lock: HeldLock): Promise<boolean> {
   try {
+    if (lock.identity === null) return false;
     const stats = await lock.handle.stat();
     const current = identity(stats);
     const pathStats = await lstat(lock.path);
@@ -858,30 +969,36 @@ async function lockOwned(lock: HeldLock): Promise<boolean> {
   }
 }
 
-async function createTemporary(path: string, bytes: Buffer): Promise<TemporaryFile> {
+async function createTemporary(
+  path: string,
+  bytes: Buffer,
+  dependencies: WorktreePreparationTestDependenciesV1,
+  retain: (temporary: TemporaryFile) => void,
+): Promise<TemporaryFile> {
   const handle = await open(path, WRITE_EXCLUSIVE_FLAGS, FILE_MODE);
-  try {
-    await handle.chmod(FILE_MODE);
-    await handle.writeFile(bytes);
-    await handle.sync();
-    const stats = await handle.stat();
-    if (!stats.isFile() || stats.nlink !== 1 || stats.size !== bytes.length || (Number(stats.mode) & 0o7777) !== FILE_MODE) {
-      throw new Error("Temporary file write could not be verified.");
-    }
-    const capturedIdentity = identity(stats);
-    const pathStats = await lstat(path);
-    if (pathStats.isSymbolicLink() || !pathStats.isFile() || Number(pathStats.dev) !== capturedIdentity.dev ||
-      Number(pathStats.ino) !== capturedIdentity.ino || !(await exactHandleBytes(handle, bytes.length)).equals(bytes)) {
-      throw new Error("Temporary file identity or bytes could not be verified.");
-    }
-    return { path, bytes, handle, identity: capturedIdentity, installed: false };
-  } catch (error) {
-    await handle.close().catch(() => undefined);
-    throw error;
+  const temporary: TemporaryFile = { path, bytes, handle, identity: null, installed: false };
+  retain(temporary);
+  await filesystemEvent(dependencies, "after_temporary_create", path);
+  await handle.chmod(FILE_MODE);
+  await handle.writeFile(bytes);
+  await handle.sync();
+  await filesystemEvent(dependencies, "after_temporary_file_sync", path);
+  const stats = await handle.stat();
+  if (!stats.isFile() || stats.nlink !== 1 || stats.size !== bytes.length || (Number(stats.mode) & 0o7777) !== FILE_MODE) {
+    throw new Error("Temporary file write could not be verified.");
   }
+  const capturedIdentity = identity(stats);
+  const pathStats = await lstat(path);
+  if (pathStats.isSymbolicLink() || !pathStats.isFile() || Number(pathStats.dev) !== capturedIdentity.dev ||
+    Number(pathStats.ino) !== capturedIdentity.ino || !(await exactHandleBytes(handle, bytes.length)).equals(bytes)) {
+    throw new Error("Temporary file identity or bytes could not be verified.");
+  }
+  temporary.identity = capturedIdentity;
+  return temporary;
 }
 
 async function temporaryStillExact(temporary: TemporaryFile): Promise<boolean> {
+  if (temporary.identity === null) return false;
   const stats = await temporary.handle.stat();
   const current = identity(stats);
   const pathStats = await lstat(temporary.path);
@@ -890,8 +1007,48 @@ async function temporaryStillExact(temporary: TemporaryFile): Promise<boolean> {
     Number(pathStats.ino) === current.ino && (await exactHandleBytes(temporary.handle, current.size)).equals(temporary.bytes);
 }
 
-async function preflightDestination(destinationRoot: string): Promise<WorktreeStateReceiptV1 | null> {
-  const entries = await existingShieldEntries(destinationRoot);
+async function cleanupTrackedArtifact(
+  artifact: HeldLock | TemporaryFile,
+  dependencies: WorktreePreparationTestDependenciesV1,
+): Promise<boolean> {
+  const parent = dirname(artifact.path);
+  try {
+    const handleStats = await artifact.handle.stat();
+    if (!handleStats.isFile() || handleStats.nlink !== 1) return false;
+    const pathStats = await lstat(artifact.path);
+    if (pathStats.isSymbolicLink() || !pathStats.isFile() || Number(pathStats.dev) !== Number(handleStats.dev) ||
+      Number(pathStats.ino) !== Number(handleStats.ino) ||
+      (artifact.identity !== null && (artifact.identity.dev !== Number(handleStats.dev) || artifact.identity.ino !== Number(handleStats.ino)))) {
+      return false;
+    }
+    await filesystemEvent(dependencies, "before_cleanup_unlink", artifact.path);
+    await unlink(artifact.path);
+    try {
+      await lstat(artifact.path);
+      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    if ((await artifact.handle.stat()).nlink !== 0) return false;
+    await filesystemEvent(dependencies, "before_cleanup_directory_sync", parent);
+    await syncDirectory(parent);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function preflightDestination(
+  destinationRoot: string,
+  retain: (held: HeldDirectory) => void,
+): Promise<WorktreeStateReceiptV1 | null> {
+  const held = await holdShieldDirectoryIfPresent(destinationRoot);
+  if (held === null) return null;
+  retain(held);
+  const entries = await readdir(held.path);
+  if (!await directoryStillHeld(held.path, held)) {
+    throw new Blocked("destination_conflict", "Destination .shield identity changed during preflight.");
+  }
   if (entries.includes(LOCK_NAME)) {
     throw new Blocked("preparation_in_progress", "Destination preparation lock is already held.");
   }
@@ -915,8 +1072,14 @@ async function reobserveStable(
   snapshot: SourceSnapshot,
   source: WorktreeGitObservationV1,
   destination: WorktreeGitObservationV1,
+  sourceHeld: HeldRoot,
+  destinationHeld: HeldRoot,
+  shieldHeld: HeldDirectory | null,
 ): Promise<boolean> {
-  if (!await revalidateCapturedFile(snapshot.configFile) || !await revalidateCapturedFile(snapshot.registryFile)) return false;
+  if (!await directoryChainStillHeld(sourceHeld.directories) || !await directoryChainStillHeld(destinationHeld.directories) ||
+    !await directoryStillHeld(snapshot.policyDirectory.path, snapshot.policyDirectory) ||
+    (shieldHeld !== null && !await directoryStillHeld(shieldHeld.path, shieldHeld)) ||
+    !await revalidateCapturedFile(snapshot.configFile) || !await revalidateCapturedFile(snapshot.registryFile)) return false;
   const current = await observeRepositories(source.root, destination.root, snapshot.config.repositoryId);
   return canonicalJson(current.source) === canonicalJson(source) && canonicalJson(current.destination) === canonicalJson(destination);
 }
@@ -931,8 +1094,9 @@ export async function prepareWorktreeStateV1ForTest(
 ): Promise<WorktreePreparationResultV1> {
   let sourceRoot: string | null = null;
   let destinationRoot: string | null = null;
+  let sourceHeld: HeldRoot | null = null;
+  let destinationHeld: HeldRoot | null = null;
   let snapshot: SourceSnapshot | null = null;
-  let rootHeld: HeldDirectory | null = null;
   let shieldHeld: HeldDirectory | null = null;
   let heldLock: HeldLock | null = null;
   let installedCount = 0;
@@ -940,89 +1104,118 @@ export async function prepareWorktreeStateV1ForTest(
   const temporaryFiles: TemporaryFile[] = [];
   let outcome: WorktreePreparationResultV1 | null = null;
   let cleanupUncertain = false;
+  let installationUncertain = false;
+  let shieldCreated = false;
   try {
     if (!exact(input, ["sourceRoot", "destinationRoot"]) || typeof input.sourceRoot !== "string" || typeof input.destinationRoot !== "string") {
       return blocked("invalid_request", "Preparation request must contain only sourceRoot and destinationRoot strings.", null, null);
     }
-    [sourceRoot, destinationRoot] = await Promise.all([canonicalRoot(input.sourceRoot), canonicalRoot(input.destinationRoot)]);
+    sourceHeld = await captureCanonicalRoot(input.sourceRoot);
+    sourceRoot = sourceHeld.root;
+    destinationHeld = await captureCanonicalRoot(input.destinationRoot);
+    destinationRoot = destinationHeld.root;
     if (sourceRoot === destinationRoot) throw new Blocked("roots_not_distinct", "Source and destination must be distinct worktrees.");
     snapshot = await captureSourcePolicy(sourceRoot);
     await dependencies.phase?.("source_captured");
     const observed = await observeRepositories(sourceRoot, destinationRoot, snapshot.config.repositoryId);
     await dependencies.phase?.("repositories_observed");
-    const existing = await preflightDestination(destinationRoot);
+    const existing = await preflightDestination(destinationRoot, (held) => { shieldHeld = held; });
     if (existing !== null) {
       if (!await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination)) {
         throw new Blocked("prepared_state_stale", "Existing receipt does not match current source policy or repository identity.");
       }
-      outcome = success("already_prepared", existing);
-      return outcome;
-    }
-    rootHeld = await holdDirectory(destinationRoot);
-    const shield = await ensureShieldDirectory(destinationRoot, rootHeld);
-    shieldHeld = shield.held;
-    if (!await directoryStillHeld(destinationRoot, rootHeld) || !await directoryStillHeld(join(destinationRoot, SHIELD_DIRECTORY), shieldHeld)) {
-      throw new Blocked("destination_conflict", "Destination directory identity changed during preparation.");
-    }
-    const shieldPath = join(destinationRoot, SHIELD_DIRECTORY);
-    const token = Buffer.from(`${process.pid}:${randomBytes(24).toString("hex")}\n`, "utf8");
-    heldLock = await acquireLock(shieldPath, token);
-    await dependencies.phase?.("lock_acquired");
-    if ((await readdir(shieldPath)).some((entry) => entry !== LOCK_NAME)) {
-      throw new Blocked("destination_conflict", "Destination state changed before materialization.");
-    }
-    if (!await reobserveStable(snapshot, observed.source, observed.destination)) {
-      throw new Blocked("source_policy_drift", "Source policy or Git observations changed before installation.");
-    }
-    expectedReceipt = buildReceipt(receiptBody(snapshot, observed.source, observed.destination));
-    const nonce = dependencies.nonce?.() ?? randomBytes(16).toString("hex");
-    if (!/^[A-Za-z0-9_-]{8,128}$/u.test(nonce)) throw new Error("Invalid preparation nonce.");
-    const installs: readonly { relative: string; bytes: Buffer }[] = [
-      { relative: IGNORE_PATH, bytes: IGNORE_BYTES },
-      { relative: CONFIG_PATH, bytes: snapshot.configFile.bytes },
-      { relative: REGISTRY_PATH, bytes: snapshot.registryFile.bytes },
-      { relative: WORKTREE_STATE_RELATIVE_PATH, bytes: receiptBytes(expectedReceipt) },
-    ];
-    for (let index = 0; index < installs.length; index += 1) {
-      const temporary = join(shieldPath, `${TEMP_PREFIX}${nonce}-${index}.tmp`);
-      temporaryFiles.push(await createTemporary(temporary, installs[index]!.bytes));
-    }
-    await syncDirectory(shieldPath);
-    await dependencies.phase?.("temporaries_synced");
-    if (!await lockOwned(heldLock) || !await directoryStillHeld(destinationRoot, rootHeld) ||
-      !await directoryStillHeld(shieldPath, shieldHeld) || !await reobserveStable(snapshot, observed.source, observed.destination)) {
-      throw new Blocked("source_policy_drift", "Retained source, repository, destination, or lock identity changed before installation.");
-    }
-    await dependencies.phase?.("before_install");
-    for (let index = 0; index < installs.length; index += 1) {
-      const finalPath = join(destinationRoot, installs[index]!.relative);
-      const temporary = temporaryFiles[index]!;
-      if (!await temporaryStillExact(temporary)) throw new Error("Temporary file changed before installation.");
-      try { await link(temporary.path, finalPath); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST" && installedCount === 0) {
-          throw new Blocked("destination_conflict", "A destination policy path appeared during installation.");
-        }
-        throw error;
+      await dependencies.phase?.("before_replay_ready");
+      if (!await reobserveStable(snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld) ||
+        !await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination)) {
+        throw new Blocked("source_policy_drift", "Source policy, repository, or prepared destination changed before replay success.");
       }
-      installedCount += 1;
+      outcome = success("already_prepared", existing);
+    } else {
+      await dependencies.phase?.("before_destination_mutation");
+      if (!await reobserveStable(snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld)) {
+        throw new Blocked("source_policy_drift", "Source policy or repository state changed before destination mutation.");
+      }
+      const rootHeld = destinationHeld.directories.at(-1);
+      if (rootHeld === undefined) throw new Error("Destination root descriptor was not retained.");
+      const shield = await ensureShieldDirectory(destinationRoot, rootHeld, shieldHeld, () => { shieldCreated = true; });
+      shieldHeld = shield.held;
+      if (!await directoryChainStillHeld(destinationHeld.directories) || !await directoryStillHeld(join(destinationRoot, SHIELD_DIRECTORY), shieldHeld)) {
+        throw new Blocked("destination_conflict", "Destination directory identity changed during preparation.");
+      }
+      const shieldPath = join(destinationRoot, SHIELD_DIRECTORY);
+      const token = Buffer.from(`${process.pid}:${randomBytes(24).toString("hex")}\n`, "utf8");
+      heldLock = await acquireLock(shieldPath, token, dependencies, (lock) => { heldLock = lock; });
+      await dependencies.phase?.("lock_acquired");
+      if ((await readdir(shieldPath)).some((entry) => entry !== LOCK_NAME)) {
+        throw new Blocked("destination_conflict", "Destination state changed before materialization.");
+      }
+      if (!await reobserveStable(snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld)) {
+        throw new Blocked("source_policy_drift", "Source policy or Git observations changed before staging.");
+      }
+      expectedReceipt = buildReceipt(receiptBody(snapshot, observed.source, observed.destination));
+      const nonce = dependencies.nonce?.() ?? randomBytes(16).toString("hex");
+      if (!/^[A-Za-z0-9_-]{8,128}$/u.test(nonce)) throw new Error("Invalid preparation nonce.");
+      const installs: readonly { relative: string; bytes: Buffer }[] = [
+        { relative: IGNORE_PATH, bytes: IGNORE_BYTES },
+        { relative: CONFIG_PATH, bytes: snapshot.configFile.bytes },
+        { relative: REGISTRY_PATH, bytes: snapshot.registryFile.bytes },
+        { relative: WORKTREE_STATE_RELATIVE_PATH, bytes: receiptBytes(expectedReceipt) },
+      ];
+      for (let index = 0; index < installs.length; index += 1) {
+        const temporaryPath = join(shieldPath, `${TEMP_PREFIX}${nonce}-${index}.tmp`);
+        await createTemporary(temporaryPath, installs[index]!.bytes, dependencies, (temporary) => { temporaryFiles.push(temporary); });
+      }
       await syncDirectory(shieldPath);
-      await unlink(temporary.path);
-      temporary.installed = true;
-      await syncDirectory(shieldPath);
-      const installed = await readNoFollowRegular(finalPath);
-      if (!installed.equals(installs[index]!.bytes)) throw new Error("Installed file readback mismatch.");
+      await dependencies.phase?.("temporaries_synced");
+      if (!await lockOwned(heldLock) || !await reobserveStable(
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
+      )) {
+        throw new Blocked("source_policy_drift", "Retained source, repository, destination, or lock identity changed before installation.");
+      }
+      await dependencies.phase?.("before_install");
+      if (!await lockOwned(heldLock) || !await reobserveStable(
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
+      )) {
+        throw new Blocked("source_policy_drift", "Retained state changed at the installation boundary.");
+      }
+      for (let index = 0; index < installs.length; index += 1) {
+        const finalPath = join(destinationRoot, installs[index]!.relative);
+        const temporary = temporaryFiles[index]!;
+        if (!await temporaryStillExact(temporary)) throw new Error("Temporary file changed before installation.");
+        installationUncertain = true;
+        try { await link(temporary.path, finalPath); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST" && installedCount === 0) {
+            installationUncertain = false;
+            throw new Blocked("destination_conflict", "A destination policy path appeared during installation.");
+          }
+          throw error;
+        }
+        installedCount += 1;
+        await syncDirectory(shieldPath);
+        await unlink(temporary.path);
+        temporary.installed = true;
+        await syncDirectory(shieldPath);
+        const installed = await readNoFollowRegular(finalPath);
+        if (!installed.equals(installs[index]!.bytes)) throw new Error("Installed file readback mismatch.");
+      }
+      installationUncertain = false;
+      await dependencies.phase?.("after_install");
+      if (!await lockOwned(heldLock) || !await reobserveStable(
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
+      ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination)) {
+        throw new Error("Post-installation revalidation failed.");
+      }
+      await dependencies.phase?.("before_ready");
+      if (!await lockOwned(heldLock) || !await reobserveStable(
+        snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld,
+      ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination)) {
+        throw new Error("Final ready-boundary revalidation failed.");
+      }
+      outcome = success("ready", expectedReceipt);
     }
-    await dependencies.phase?.("after_install");
-    if (!await lockOwned(heldLock) || !await directoryStillHeld(destinationRoot, rootHeld) ||
-      !await directoryStillHeld(shieldPath, shieldHeld) || !await reobserveStable(snapshot, observed.source, observed.destination) ||
-      !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination)) {
-      throw new Error("Post-installation revalidation failed.");
-    }
-    await dependencies.phase?.("before_ready");
-    outcome = success("ready", expectedReceipt);
   } catch (error) {
-    if (installedCount > 0) {
+    if (installedCount > 0 || installationUncertain || (shieldCreated && shieldHeld === null)) {
       outcome = recovery(sourceRoot, destinationRoot, expectedReceipt);
     } else if (error instanceof Blocked) {
       outcome = blocked(error.reasonCode, error.message, sourceRoot, destinationRoot);
@@ -1032,33 +1225,18 @@ export async function prepareWorktreeStateV1ForTest(
   } finally {
     for (const temporary of temporaryFiles) {
       if (!temporary.installed) {
-        try { await unlink(temporary.path); } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") cleanupUncertain = true;
-        }
+        if (!await cleanupTrackedArtifact(temporary, dependencies)) cleanupUncertain = true;
       }
       try { await temporary.handle.close(); } catch { cleanupUncertain = true; }
     }
     if (heldLock !== null) {
-      let owned = false;
-      try { owned = await lockOwned(heldLock); } catch { cleanupUncertain = true; }
-      if (!owned) {
-        cleanupUncertain = true;
-      } else {
-        try {
-          await unlink(heldLock.path);
-          if (await pathExists(heldLock.path)) cleanupUncertain = true;
-        } catch {
-          cleanupUncertain = true;
-        }
-      }
+      if (!await cleanupTrackedArtifact(heldLock, dependencies)) cleanupUncertain = true;
       try { await heldLock.handle.close(); } catch { cleanupUncertain = true; }
-      if (destinationRoot !== null) {
-        try { await syncDirectory(join(destinationRoot, SHIELD_DIRECTORY)); } catch { cleanupUncertain = true; }
-      }
     }
     if (shieldHeld !== null) await shieldHeld.handle.close().catch(() => { cleanupUncertain = true; });
-    if (rootHeld !== null) await rootHeld.handle.close().catch(() => { cleanupUncertain = true; });
     await closeSnapshot(snapshot);
+    if (destinationHeld !== null && !await closeDirectories(destinationHeld.directories)) cleanupUncertain = true;
+    if (sourceHeld !== null && !await closeDirectories(sourceHeld.directories)) cleanupUncertain = true;
   }
   if (cleanupUncertain) return recovery(sourceRoot, destinationRoot, installedCount === 4 ? expectedReceipt : null);
   return outcome ?? blocked("operation_failed", "Preparation did not produce a closed result.", sourceRoot, destinationRoot);
@@ -1083,44 +1261,57 @@ export async function inspectWorktreeStateV1(input: {
   readonly configPresent: boolean;
   readonly configValid: boolean;
 }): Promise<WorktreeStateDoctorResultV1> {
+  const stale = (message: string): WorktreeStateDoctorResultV1 => deepFreeze({
+    classification: "stale_or_malformed_worktree_state" as const,
+    ok: false,
+    message,
+    receiptDigest: null,
+  });
   if (!exact(input, ["root", "configPresent", "configValid"]) || typeof input.root !== "string" ||
     typeof input.configPresent !== "boolean" || typeof input.configValid !== "boolean") {
-    return Object.freeze({
-      classification: "stale_or_malformed_worktree_state",
-      ok: false,
-      message: "Worktree-state inspection input is malformed.",
-      receiptDigest: null,
-    });
+    return stale("Worktree-state inspection input is malformed.");
   }
-  const receiptPath = join(input.root, WORKTREE_STATE_RELATIVE_PATH);
-  if (!await pathExists(receiptPath).catch(() => false)) {
-    if (!input.configPresent) {
-      return Object.freeze({
-        classification: "uninitialized_worktree" as const,
-        ok: false,
-        message: "No worktree policy is present; run shield worktree prepare with an explicit source, or run shield init for the supported manual fallback.",
-        receiptDigest: null,
-      });
-    }
-    if (input.configValid) {
-      return Object.freeze({
-        classification: "manual_policy_present" as const,
-        ok: true,
-        message: "Valid manually initialized policy is present; no worktree preparation receipt exists.",
-        receiptDigest: null,
-      });
-    }
-    return Object.freeze({
-      classification: "stale_or_malformed_worktree_state" as const,
-      ok: false,
-      message: "Existing worktree policy is malformed and no valid preparation receipt is available.",
-      receiptDigest: null,
-    });
-  }
+  let rootHeld: HeldRoot | null = null;
+  let shieldHeld: HeldDirectory | null = null;
   try {
+    rootHeld = await captureCanonicalRoot(input.root);
+    shieldHeld = await holdShieldDirectoryIfPresent(input.root);
+    if (shieldHeld === null) {
+      return input.configPresent
+        ? stale("Existing worktree policy has an unsafe or impossible directory state.")
+        : deepFreeze({
+          classification: "uninitialized_worktree" as const,
+          ok: false,
+          message: "No worktree policy is present; run shield worktree prepare with an explicit source, or run shield init for the supported manual fallback.",
+          receiptDigest: null,
+        });
+    }
+    const receiptPath = join(input.root, WORKTREE_STATE_RELATIVE_PATH);
+    if (!await pathExists(receiptPath)) {
+      if (!await directoryChainStillHeld(rootHeld.directories) || !await directoryStillHeld(shieldHeld.path, shieldHeld)) {
+        return stale("Worktree policy ancestors changed during inspection.");
+      }
+      if (!input.configPresent) {
+        return deepFreeze({
+          classification: "uninitialized_worktree" as const,
+          ok: false,
+          message: "No worktree policy is present; run shield worktree prepare with an explicit source, or run shield init for the supported manual fallback.",
+          receiptDigest: null,
+        });
+      }
+      return input.configValid
+        ? deepFreeze({
+          classification: "manual_policy_present" as const,
+          ok: true,
+          message: "Valid manually initialized policy is present; no worktree preparation receipt exists.",
+          receiptDigest: null,
+        })
+        : stale("Existing worktree policy is malformed and no valid preparation receipt is available.");
+    }
     const receipt = await readStoredReceipt(input.root);
-    if (receipt !== null && input.configPresent && input.configValid && await doctorPreparedReceipt(input.root, receipt)) {
-      return Object.freeze({
+    if (receipt !== null && input.configPresent && input.configValid && await doctorPreparedReceipt(input.root, receipt) &&
+      await directoryChainStillHeld(rootHeld.directories) && await directoryStillHeld(shieldHeld.path, shieldHeld)) {
+      return deepFreeze({
         classification: "prepared_worktree",
         ok: true,
         message: "Prepared worktree policy and immutable provenance receipt are exact.",
@@ -1128,14 +1319,12 @@ export async function inspectWorktreeStateV1(input: {
       });
     }
   } catch {
-    // Closed classification below.
+    return stale("Worktree preparation receipt or an ancestor path is stale, malformed, unsafe, or inaccessible.");
+  } finally {
+    if (shieldHeld !== null) await shieldHeld.handle.close().catch(() => undefined);
+    if (rootHeld !== null) await closeDirectories(rootHeld.directories);
   }
-  return Object.freeze({
-    classification: "stale_or_malformed_worktree_state",
-    ok: false,
-    message: "Worktree preparation receipt or installed policy is stale, malformed, unsafe, or belongs to another repository.",
-    receiptDigest: null,
-  });
+  return stale("Worktree preparation receipt or installed policy is stale, malformed, unsafe, or belongs to another repository.");
 }
 
 export function worktreePreparationIsReadyV1(

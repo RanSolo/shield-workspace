@@ -59,8 +59,9 @@ the canonical receipt fields with `receiptDigest` omitted.
 Preparation never copies or shares journals, evidence, mission reports,
 dispatch state, signer records, passcodes, caches, model context,
 `pipeline-profile.json`, or any Git-common-directory state. Mission preparation
-must independently reobserve branch, HEAD, cleanliness, journals, signers, and
-current authority.
+does not consume this receipt in this slice. The exported receipt is public
+non-authoritative provenance only; any future consumer must independently
+reobserve branch, HEAD, cleanliness, journals, signers, and current authority.
 
 ## Doctor classifications
 

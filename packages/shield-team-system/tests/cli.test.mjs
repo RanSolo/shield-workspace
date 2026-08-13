@@ -1474,3 +1474,47 @@ test("worktree prepare exposes closed JSON, concise replay output, and prepared 
   assert.equal(report.worktreeState.classification, "prepared_worktree");
   assert.equal(report.worktreeState.receiptDigest, receipt.receipt.receiptDigest);
 });
+
+test("worktree prepare renders root filesystem failures as closed blocked results", async () => {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-cli-worktree-blocked-")));
+  const missingSource = join(parent, "missing-source");
+  const missingDestination = join(parent, "missing-destination");
+  const json = run([
+    "worktree", "prepare", "--source-root", missingSource, "--root", missingDestination, "--json",
+  ], parent);
+  assert.equal(json.status, 1, json.stderr);
+  assert.doesNotMatch(json.stderr, /SHIELD:/u);
+  const result = JSON.parse(json.stdout);
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "root_invalid");
+  assert.equal(result.authority, "none");
+
+  const human = run([
+    "worktree", "prepare", "--source-root", missingSource, "--root", missingDestination,
+  ], parent);
+  assert.equal(human.status, 1, human.stderr);
+  assert.doesNotMatch(human.stderr, /SHIELD:/u);
+  assert.match(human.stdout, /^BLOCKED: root_invalid\n/u);
+
+  const usageFailure = run(["worktree", "prepare", "--source-root", missingSource, "--json"], parent);
+  assert.equal(usageFailure.status, 2);
+  assert.match(usageFailure.stderr, /Missing required option: --root/u);
+});
+
+test("doctor classifies unsafe SHIELD ancestors as stale instead of a usage failure", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-cli-doctor-unsafe-")));
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "shield@example.invalid"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "SHIELD Doctor Fixture"], { cwd: root });
+  await writeFile(join(root, "package.json"), "{\"private\":true}\n");
+  execFileSync("git", ["add", "package.json"], { cwd: root });
+  execFileSync("git", ["commit", "--quiet", "-m", "doctor fixture"], { cwd: root });
+  const foreign = await realpath(await mkdtemp(join(tmpdir(), "shield-cli-doctor-foreign-")));
+  await symlink(foreign, join(root, ".shield"));
+
+  const inspected = run(["doctor", "--root", root, "--json"], root);
+  assert.equal(inspected.status, 1, inspected.stderr);
+  const report = JSON.parse(inspected.stdout);
+  assert.equal(report.worktreeState.classification, "stale_or_malformed_worktree_state");
+  assert.equal(report.worktreeState.ok, false);
+});

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { link, mkdtemp, mkdir, readFile, realpath, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -81,6 +81,12 @@ test("prepares the exact authority-neutral four-file state and replays without w
   assert.equal(worktreePreparationIsReadyV1(first), true);
   assert.equal(worktreePreparationAuthorityV1(first), "none");
   assert.equal(validateWorktreeStateReceiptV1(first.receipt), true);
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(Object.isFrozen(first.receipt), true);
+  assert.equal(Object.isFrozen(first.receipt.source), true);
+  assert.equal(Object.isFrozen(first.receipt.publicBindings), true);
+  assert.equal(validateWorktreeStateReceiptV1({ ...first.receipt, authority: "wheels_up" }), false);
+  assert.equal(validateWorktreeStateReceiptV1({ ...first.receipt, extra: true }), false);
   assert.deepEqual(first.receipt.installedPaths, WORKTREE_STATE_INSTALLED_PATHS);
   assert.deepEqual(first.receipt.exclusions, WORKTREE_STATE_EXCLUSIONS);
   assert.deepEqual(
@@ -147,6 +153,43 @@ test("blocks malformed policy agreement and source descriptor drift", async () =
   assert.equal(driftResult.reasonCode, "source_policy_drift");
 });
 
+test("revalidates before the first destination mutation, on replay, and after before_ready", async () => {
+  const beforeMutation = await fixture();
+  const beforeMutationResult = await prepareWorktreeStateV1ForTest(beforeMutation, {
+    phase: async (phase) => {
+      if (phase === "before_destination_mutation") {
+        await writeFile(join(beforeMutation.sourceRoot, ".shield", "config.json"), "{}\n");
+      }
+    },
+  });
+  assert.equal(beforeMutationResult.state, "blocked");
+  assert.equal(beforeMutationResult.reasonCode, "source_policy_drift");
+  await assert.rejects(() => lstat(join(beforeMutation.destinationRoot, ".shield")), { code: "ENOENT" });
+
+  const replayed = await fixture();
+  assert.equal((await prepareWorktreeStateV1(replayed)).state, "ready");
+  const replayResult = await prepareWorktreeStateV1ForTest(replayed, {
+    phase: async (phase) => {
+      if (phase === "before_replay_ready") {
+        await writeFile(join(replayed.sourceRoot, ".shield", "config.json"), "{}\n");
+      }
+    },
+  });
+  assert.equal(replayResult.state, "blocked");
+  assert.equal(replayResult.reasonCode, "source_policy_drift");
+
+  const finalBoundary = await fixture();
+  const finalResult = await prepareWorktreeStateV1ForTest(finalBoundary, {
+    phase: async (phase) => {
+      if (phase === "before_ready") {
+        await writeFile(join(finalBoundary.sourceRoot, ".shield", "config.json"), "{}\n");
+      }
+    },
+  });
+  assert.equal(finalResult.state, "recovery_required");
+  assert.equal(finalResult.reasonCode, "filesystem_outcome_uncertain");
+});
+
 test("rejects symlink, FIFO, and hardlink source policy substitutions without hanging", async () => {
   const symlinked = await fixture();
   const symlinkConfig = join(symlinked.sourceRoot, ".shield", "config.json");
@@ -209,6 +252,45 @@ test("serializes concurrent preparation and detects path substitution", async ()
   assert.equal(await readFile(join(substituted.destinationRoot, "package.json"), "utf8"), "{\"private\":true}\n");
 });
 
+test("tracks lock and temporary artifacts immediately and closes cleanup uncertainty", async () => {
+  for (const operation of ["after_lock_create", "after_temporary_create"]) {
+    const current = await fixture();
+    let injected = false;
+    const result = await prepareWorktreeStateV1ForTest(current, {
+      filesystem: ({ operation: observed }) => {
+        if (!injected && observed === operation) {
+          injected = true;
+          throw new Error(`injected ${operation}`);
+        }
+      },
+    });
+    assert.equal(injected, true, operation);
+    assert.equal(result.state, "blocked", `${operation}: ${JSON.stringify(result)}`);
+    assert.equal(result.reasonCode, "operation_failed", operation);
+    assert.deepEqual(await readdir(join(current.destinationRoot, ".shield")), [], operation);
+  }
+
+  const uncertain = await fixture();
+  let creationFailure = false;
+  let cleanupFailure = false;
+  const result = await prepareWorktreeStateV1ForTest(uncertain, {
+    filesystem: ({ operation }) => {
+      if (!creationFailure && operation === "after_temporary_create") {
+        creationFailure = true;
+        throw new Error("injected temporary failure");
+      }
+      if (!cleanupFailure && operation === "before_cleanup_directory_sync") {
+        cleanupFailure = true;
+        throw new Error("injected cleanup sync uncertainty");
+      }
+    },
+  });
+  assert.equal(creationFailure, true);
+  assert.equal(cleanupFailure, true);
+  assert.equal(result.state, "recovery_required");
+  assert.equal(result.reasonCode, "filesystem_outcome_uncertain");
+});
+
 test("reports interruption after installation as recovery-required and exact retry as prepared", async () => {
   const current = await fixture();
   const interrupted = await prepareWorktreeStateV1ForTest(current, {
@@ -242,4 +324,41 @@ test("classifies manual and uninitialized policy without repairing either", asyn
   const manual = await inspectWorktreeStateV1({ root: current.sourceRoot, configPresent: true, configValid: true });
   assert.equal(manual.classification, "manual_policy_present");
   assert.equal(manual.ok, true);
+});
+
+test("rejects unsafe source, destination, and doctor ancestor components", async () => {
+  const aliased = await fixture();
+  const aliasRoot = join(aliased.sourceRoot, "..", "ancestor-alias");
+  await symlink(await realpath(join(aliased.sourceRoot, "..")), aliasRoot);
+  const aliasResult = await prepareWorktreeStateV1({
+    sourceRoot: join(aliasRoot, "source"),
+    destinationRoot: aliased.destinationRoot,
+  });
+  assert.equal(aliasResult.state, "blocked");
+  assert.equal(aliasResult.reasonCode, "root_invalid");
+  await assert.rejects(() => lstat(join(aliased.destinationRoot, ".shield")), { code: "ENOENT" });
+  const aliasDoctor = await inspectWorktreeStateV1({
+    root: join(aliasRoot, "destination"),
+    configPresent: false,
+    configValid: false,
+  });
+  assert.equal(aliasDoctor.classification, "stale_or_malformed_worktree_state");
+
+  const sourceAncestor = await fixture();
+  const realPolicy = join(sourceAncestor.sourceRoot, ".shield-real");
+  await rename(join(sourceAncestor.sourceRoot, ".shield"), realPolicy);
+  await symlink(".shield-real", join(sourceAncestor.sourceRoot, ".shield"));
+  const sourceResult = await prepareWorktreeStateV1(sourceAncestor);
+  assert.equal(sourceResult.state, "blocked");
+  assert.equal(sourceResult.reasonCode, "source_policy_unsafe");
+
+  const doctorUnsafe = await fixture();
+  await symlink(join(doctorUnsafe.sourceRoot, ".shield"), join(doctorUnsafe.destinationRoot, ".shield"));
+  const doctorResult = await inspectWorktreeStateV1({
+    root: doctorUnsafe.destinationRoot,
+    configPresent: false,
+    configValid: false,
+  });
+  assert.equal(doctorResult.classification, "stale_or_malformed_worktree_state");
+  assert.equal(doctorResult.ok, false);
 });
