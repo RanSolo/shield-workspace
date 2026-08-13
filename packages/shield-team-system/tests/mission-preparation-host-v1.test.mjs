@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -947,7 +947,10 @@ async function appendAuthorityRevocation(fixture) {
   await appendJournalEntry(fixture, entry);
 }
 
-async function resolutionFixture() {
+async function resolutionFixture({
+  implementationPath = "implementation.md",
+  approvedRelativePaths = [implementationPath],
+} = {}) {
   const repositoryRoot = await repository();
   await mkdir(join(repositoryRoot, ".shield"));
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -979,15 +982,16 @@ async function resolutionFixture() {
   git(repositoryRoot, ["add", ".shield/config.json", ".shield/.gitignore", "package.json"]);
   git(repositoryRoot, ["commit", "-qm", "preparation base"]);
   const baseRevision = git(repositoryRoot, ["rev-parse", "HEAD"]);
-  await writeFile(join(repositoryRoot, "implementation.md"), "bounded implementation\n");
-  git(repositoryRoot, ["add", "implementation.md"]);
+  await mkdir(dirname(join(repositoryRoot, implementationPath)), { recursive: true });
+  await writeFile(join(repositoryRoot, implementationPath), "bounded implementation\n");
+  git(repositoryRoot, ["add", implementationPath]);
   git(repositoryRoot, ["commit", "-qm", "preparation head"]);
   const headRevision = git(repositoryRoot, ["rev-parse", "HEAD"]);
 
   const plan = transitionPlan({
     planningBaseRevision: baseRevision,
-    publicationPaths: ["implementation.md"],
-    approvedRelativePaths: ["implementation.md"],
+    publicationPaths: [implementationPath],
+    approvedRelativePaths,
   });
   const review = reviewForPlan(plan);
   const identity = dispatchIdentity(plan, review, { repositoryRevision: headRevision });
@@ -1028,6 +1032,7 @@ async function resolutionFixture() {
     graphPath: JSON.parse(recorded.stdout).graphPath,
     signerPath: createdSigner.signerPath,
     homeRoot,
+    implementationPath,
   };
 }
 
@@ -1073,6 +1078,96 @@ test("resolve compiles a fresh candidate, blocks before a PIN on drift, executes
   assert.equal(retry.state, "already_authorized", JSON.stringify(retry));
   assert.equal(retry.headRevision, fixture.headRevision);
   assert.equal(retry.endingJournalSequence, 4);
+});
+
+test("resolve selects deterministic publication readiness at a clean strict descendant", async () => {
+  const fixture = await resolutionFixture({
+    implementationPath: "implementation/initial.md",
+    approvedRelativePaths: ["implementation"],
+  });
+  await authorizeResolutionFixture(fixture);
+  await writeFile(join(fixture.repositoryRoot, "implementation", "nested.md"), "review-ready change\n");
+  git(fixture.repositoryRoot, ["add", "implementation/nested.md"]);
+  git(fixture.repositoryRoot, ["commit", "-qm", "advance implementation"]);
+  const publicationHead = git(fixture.repositoryRoot, ["rev-parse", "HEAD"]);
+
+  const result = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+
+  assert.equal(result.state, "publication_ready", JSON.stringify(result));
+  assert.equal(result.protectedGraph.graphId.length > 0, true);
+  assert.deepEqual(result.publicationIntent, {
+    baseRevision: fixture.plan.planningBaseRevision,
+    authorizedPaths: ["implementation/initial.md", "implementation/nested.md"],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+  });
+  assert.equal(result.observation.initialHeadRevision, fixture.headRevision);
+  assert.equal(result.observation.headRevision, publicationHead);
+  assert.equal(result.observation.initialHeadAncestor, true);
+  assert.equal(result.observation.workspaceClean, true);
+  assert.deepEqual(result.observation.changedPaths, ["implementation/initial.md", "implementation/nested.md"]);
+});
+
+test("publication selection fails closed on dirty, empty, scope-escaped, non-descendant, and non-regular changes", async () => {
+  const variants = [
+    {
+      name: "dirty",
+      reasonCode: "repository_observation_stale",
+      mutate: async (fixture) => {
+        await writeFile(join(fixture.repositoryRoot, fixture.implementationPath), "dirty implementation\n");
+      },
+    },
+    {
+      name: "empty",
+      reasonCode: "authority_conflict",
+      mutate: async (fixture) => {
+        git(fixture.repositoryRoot, ["rm", "-q", fixture.implementationPath]);
+        git(fixture.repositoryRoot, ["commit", "-qm", "remove implementation change"]);
+      },
+    },
+    {
+      name: "segment escape",
+      reasonCode: "authority_conflict",
+      mutate: async (fixture) => {
+        await mkdir(join(fixture.repositoryRoot, "implementation.md-extra"));
+        await writeFile(join(fixture.repositoryRoot, "implementation.md-extra", "escape.md"), "escape\n");
+        git(fixture.repositoryRoot, ["add", "implementation.md-extra/escape.md"]);
+        git(fixture.repositoryRoot, ["commit", "-qm", "attempt segment escape"]);
+      },
+    },
+    {
+      name: "non-descendant",
+      reasonCode: "repository_observation_stale",
+      mutate: async (fixture) => {
+        git(fixture.repositoryRoot, ["checkout", "-q", "-B", "main", fixture.plan.planningBaseRevision]);
+        await writeFile(join(fixture.repositoryRoot, fixture.implementationPath), "divergent implementation\n");
+        git(fixture.repositoryRoot, ["add", fixture.implementationPath]);
+        git(fixture.repositoryRoot, ["commit", "-qm", "divergent implementation"]);
+      },
+    },
+    {
+      name: "symlink",
+      reasonCode: "repository_observation_stale",
+      mutate: async (fixture) => {
+        await unlink(join(fixture.repositoryRoot, fixture.implementationPath));
+        await symlink("package.json", join(fixture.repositoryRoot, fixture.implementationPath));
+        git(fixture.repositoryRoot, ["add", fixture.implementationPath]);
+        git(fixture.repositoryRoot, ["commit", "-qm", "replace implementation with symlink"]);
+      },
+    },
+  ];
+
+  for (const variant of variants) {
+    const fixture = await resolutionFixture();
+    await authorizeResolutionFixture(fixture);
+    await variant.mutate(fixture);
+    const journalBefore = await readFile(fixture.journalPath);
+
+    const result = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+
+    assert.equal(result.state, "blocked", `${variant.name}: ${JSON.stringify(result)}`);
+    assert.equal(result.reasonCode, variant.reasonCode, variant.name);
+    assert.deepEqual(await readFile(fixture.journalPath), journalBefore, variant.name);
+  }
 });
 
 test("real prepare-next CLI performs one key turn and an exact retry does not prompt or append", async () => {
