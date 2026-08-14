@@ -22,7 +22,7 @@ durable terminal dispatch receipt or reviewed journal transition
 → run at most one already-authorized routine successor
 ```
 
-The relay never contains authority and never decides that a successor is legal. Existing journal replay, permission evaluation, Mission Builder status, and `advanceMissionV1` remain the sources of truth. Human gates, material scope changes, ambiguous evidence, failed validation, exhausted repairs, and final completion surface to Hill instead of auto-advancing.
+The relay never contains authority and never decides that a successor is legal. Existing journal replay, permission evaluation, Mission Builder status, and `advanceMissionV1` remain the sources of truth. Human gates, material scope changes, ambiguous evidence, failed validation without an authorized repair remaining, exhausted repairs, and final completion surface to Hill instead of auto-advancing. A failed validation with a bounded authorized repair remaining is routine clockwork.
 
 ## Acceptance-contract mapping
 
@@ -32,7 +32,7 @@ The relay never contains authority and never decides that a successor is legal. 
 | AC2 | Receiver rereads authoritative state | No acknowledgement or successor call occurs until exact journal, mission definition/status, and repository revision are reread and validated. |
 | AC3 | Delivery lifecycle is explicit | Replay distinguishes emitted, delivery-started, delivered, acknowledged, successor-claimed, successor-recorded, superseded, duplicate, recipient mismatch, and recovery-required states. |
 | AC4 | Relay and authority remain distinct | Every artifact declares `authority: "none"`; tests prove a relay cannot satisfy a gate, permission decision, review, or acceptance requirement. |
-| AC5 | Payload is compact and host-safe | Delivery receives only relay ID/digest, mission/session identity, recipient, event kind, source evidence reference, requested observation, and sequence. No prompt, output body, passcode, signer material, or private journal entry is copied. |
+| AC5 | Payload is compact and host-safe | Delivery receives only relay ID/digest, flight/mission/session identity, registry digest, recipient seat/lane/controller scope, adapter/endpoint identity digests, event kind, source evidence reference, requested observation, and sequence. No prompt, output body, passcode, signer material, or private journal entry is copied. |
 | AC6 | Feature Hill can inspect state | A read-only projection lists exact pending and acknowledged relays with their stop/next-action classification. |
 | AC7 | Terminal states turn the next gear | `PACKET_COMPLETE`, successful validation, and technical review completion invoke at most one routine successor when authoritative replay says it is ready. |
 | AC8 | Stops are actionable | Human gate, external blocker, scope/authority conflict, recovery requirement, and completion return exact revision, completed evidence, active seat/gear, performed effects, boundary, and smallest legal next action. |
@@ -63,7 +63,8 @@ The adapter contract supplies create-once delivery under a host-derived idempote
 V1 recognizes only closed source variants already represented durably:
 
 - the exact terminal `dispatch.completed`, `dispatch.failed`, or `dispatch.cancelled` entry from the seat-dispatch ledger;
-- the exact Mission Builder step receipt or signed human-evidence journal entry that changed the graph's current node.
+- the exact Mission Builder step receipt that changed the graph's current node;
+- a signed journal entry that newly satisfies exactly one currently active human gate under the bound mission definition, revision, and parent session. This source wakes the controller but does not claim the graph node changed.
 
 Projected status changes are not source evidence. Free-form thread text, polling timeout, model self-report, bare `done`, and caller-asserted `PACKET_COMPLETE` are not source evidence.
 
@@ -71,11 +72,13 @@ Projected status changes are not source evidence. Free-form thread text, polling
 
 One relay identity is derived from the immutable tuple:
 
-- mission and definition revision;
+- flight ID, mission ID, and definition revision;
 - parent session;
 - repository/workspace/revision;
 - source kind, source digest, and source sequence;
-- recipient seat/lane identity;
+- active-controller registry digest;
+- recipient seat/lane identity and controller scope;
+- delivery adapter identity and endpoint-identity digest;
 - requested observation.
 
 Cross-domain source selection uses the total tuple `sourceDomain`, `sourceDomainSequence`, `sourceDigest`, where the closed domain order is `mission_journal`, `mission_step`, `seat_dispatch`. Domain sequences are never compared without the domain discriminator.
@@ -94,10 +97,44 @@ The successor identity is derived from relay ID, authoritative-state digest, def
 6. Reconcile that key through the queryable adapter; create once only after definitive absence, then append/read back `relay.delivered` with the adapter receipt. Ambiguity returns `recovery_required`.
 7. Receiver validates recipient/controller identity, rereads the signed mission journal, mission definition/provenance, step receipts, dispatch receipts, live repository state, and permission context.
 8. If the authoritative tuple is newer, append `relay.superseded`; otherwise append `relay.acknowledged`, binding the observation digests, and verify readback.
-9. Project Mission Builder status and map every state: satisfied human evidence or authorized repair remaining to `routine_successor`; unsatisfied human evidence to `human_gate`; exhausted repair to `authority_or_scope_conflict`; malformed/uncertain replay to `recovery_required`; evidenced host failure to `external_blocker`; terminal node to `complete`.
+9. Project Mission Builder status and apply the exhaustive pre-call table below.
 10. For `routine_successor`, derive the closed successor identity, append/read back `relay.successor_claimed`, then call `advanceMissionV1` once with the reread observation.
 11. Append/read back `relay.successor_recorded` with the exact result and receipt digests. All non-routine classes surface a compact Hill packet and perform no successor effect.
 12. Restart replays all ledgers. It reconciles delivery claims through the adapter and successor claims through authoritative receipts; unresolved claims return `recovery_required`.
+
+## Exhaustive successor classification
+
+### Before `advanceMissionV1`
+
+| Mission status / observation | Relay disposition |
+| --- | --- |
+| `ready` at a Runner or Mack node, with exact current authority and attempts remaining | `routine_successor` |
+| `waiting` / `human_gate` with exactly one newly satisfying signed evidence entry | `routine_successor` |
+| `waiting` / `human_gate` without that evidence | `human_gate` |
+| `blocked` / `repair_exhausted`, or validation failure without a bounded authorized repair | `authority_or_scope_conflict` |
+| validation failure with a bounded authorized repair and attempts remaining | `routine_successor` |
+| `complete` / `terminal` | `complete` |
+| null status, `invalid_replay`, malformed/ambiguous durable input, or uncertain readback | `recovery_required` |
+| stale definition/provenance/permission, unsupported effect, exhausted capability, or repository/scope mismatch | `authority_or_scope_conflict` |
+| separately evidenced host/runtime/adapter unavailability with intact authority and replay | `external_blocker` |
+
+### After `advanceMissionV1`
+
+Every `MissionAdvanceResultV1` value is mapped before `relay.successor_recorded`:
+
+| Outcome / reason | Relay disposition |
+| --- | --- |
+| `advanced` / `complete` | record exact successor receipt/result; the resulting durable step receipt may emit the next relay |
+| `complete` / `complete` | `complete` |
+| `waiting` / `human_evidence_required` | `human_gate` |
+| `blocked` / `repair_exhausted` | `authority_or_scope_conflict` |
+| `blocked` with `observation_mismatch`, `provenance_stale`, or `proofreading_required` | `authority_or_scope_conflict` |
+| `blocked` or `waiting` with `runner_blocked` or `mack_blocked` | `external_blocker` only when the nested result durably identifies host/environment unavailability; otherwise `authority_or_scope_conflict` |
+| `blocked` with `input_invalid`, `definition_invalid`, `receipt_invalid`, `receipt_conflict`, or `readback_mismatch` | `recovery_required` |
+| `uncertain` / `uncertain_execution` | `recovery_required` |
+| any outcome/reason/status combination outside the closed table | `recovery_required` |
+
+A signed human-evidence source and the later node-changing human step receipt are different ordered sources. The first wakes the controller to record the edge; the second may wake the next recipient. Their domain, sequence, and digest identities prevent duplicate interpretation.
 
 ## Rapid-strike packets
 
@@ -157,7 +194,8 @@ No later failure may mask an earlier malformed or uncertain durable state.
 - Nx affected build/test from exact planning base; the expected affected project is only `@shield/team-system`.
 - Focused Team System relay store/host/package-surface tests.
 - Packed-install `shield-ops` consumer proof; the relay remains an internal operations/CLI seam with no new public declaration export.
-- Full-suite validation on Node.js `24.18.0`. Reproduce the frozen #302 Node.js `22.22.0` baseline separately when that runtime is available; only failures outside that exact baseline or changed focused surfaces are #248 regressions.
+- Full-suite validation on Node.js `24.18.0`.
+- Under Node.js `22.22.0`, run the identical `npm exec nx -- run @shield/team-system:test --skip-nx-cache` command at planning base `cdaf96fcfff069cbce36c8136eb87a17f2da36a6` and at the implementation revision. Persist sorted failing test identities, exit code, and raw-output SHA-256 for both runs in the validation packet. The implementation passes comparison only when it introduces no new failing identity and no previously passing changed relay/controller test fails; unavailable Node 22 evidence leaves this validation incomplete rather than assuming the #302 baseline.
 - `git diff --check` and exact changed-path allowlist verification.
 
 ## Exclusions
