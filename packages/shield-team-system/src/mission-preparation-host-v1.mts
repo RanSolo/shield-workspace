@@ -18,6 +18,7 @@ import {
   type TransitionPlanV1,
   type FreshAuthorizeWheelsUpObservationV1,
   type FreshAuthorizeWheelsUpCandidateV1,
+  type PrepareMissionTransitionResultV1,
   type PreparationReceiptV1,
 } from "@shield/mission-preparation";
 import {
@@ -46,6 +47,10 @@ import {
   computeImplementationAuthorityDigest,
   computeRuntimeBindingDigest,
   computeSchema9RuntimeBindingDigest,
+  validateSchema9RuntimeBindingV1,
+  type ImplementationAuthorityV1,
+  type Schema9RuntimeBindingAuthorizationPayload,
+  type Schema9RuntimeBindingV1,
 } from "./implementation-authority-v1.mjs";
 import {
   computeReviewPublicationAuthorityDigest,
@@ -359,7 +364,7 @@ function deriveTransitionIntent(plan: TransitionPlanV1, review: ParentPlanReview
     transitionPlanDigest: plan.digest,
     parentReviewEvidenceId: review.id,
     parentReviewEvidenceDigest: review.digest,
-    transitionKind: "fresh_authorize_wheels_up" as const,
+    transitionKind: plan.transitionKind,
     preparationEligibility: "preparationEligible" as const,
   };
   const digest = computeCanonicalContractDigestV1({
@@ -827,7 +832,55 @@ export type ResolvePreparedMissionTransitionResultV1 = Readonly<
     }
   | PreparedPublicationReadyResultV1
   | PreparedPublicationAlreadyAuthorizedResultV1
+  | PreparedRuntimeBindingReadyResultV1
+  | PreparedRuntimeBindingAlreadyAuthorizedResultV1
 >;
+
+type InitialRuntimeBindingCandidateContractV1 = Extract<
+  Extract<PrepareMissionTransitionResultV1, { readonly state: "ready" }>["candidate"],
+  { readonly transitionKind: "initial-runtime-binding" }
+>;
+
+export type PreparedRuntimeBindingReadyResultV1 = Readonly<{
+  schemaVersion: 1;
+  state: "runtime_binding_ready";
+  missionId: string;
+  protectedGraph: MissionReviewedTransitionGraphV1;
+  selection: import("@shield/mission-preparation").NextTransitionSelectionV1;
+  candidate: InitialRuntimeBindingCandidateContractV1;
+  preparationReceipt: PreparationReceiptV1;
+  implementationAuthority: ImplementationAuthorityV1;
+  runtimeBinding: Schema9RuntimeBindingV1;
+  observation: Readonly<{
+    graphId: string;
+    graphDigest: string;
+    missionRevisionId: string;
+    repositoryId: string;
+    canonicalRoot: string;
+    branch: string;
+    baseRevision: string;
+    headRevision: string;
+    workspaceClean: true;
+    journalSequence: number;
+    journalSha256: string;
+    signerBindingId: string;
+    signingKeyRef: string;
+    implementationAuthorityDigest: string;
+    remainingHumanGates: readonly string[];
+  }>;
+}>;
+
+export type PreparedRuntimeBindingAlreadyAuthorizedResultV1 = Readonly<{
+  schemaVersion: 1;
+  state: "runtime_binding_already_authorized";
+  missionId: string;
+  missionRevisionId: string;
+  bindingId: string;
+  bindingVersion: 1;
+  authorizationId: string;
+  schema9BindingDigest: string;
+  journalSequence: number;
+}>;
 
 export type PreparedPublicationReadyResultV1 = Readonly<{
   schemaVersion: 1;
@@ -1026,6 +1079,119 @@ function buildObservation(
   const contentId = computeContentIdV1({ schemaId: body.schemaId, digest: computed.value });
   if (contentId.state === "invalid") return null;
   const checked = validateFreshAuthorizeWheelsUpObservationV1({ artifact: { ...body, id: contentId.value, digest: computed.value } });
+  return checked.state === "valid" ? checked.value : null;
+}
+
+function buildInitialRuntimeBindingObservation(
+  graph: MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+): unknown | null {
+  const current = environment.current.projection;
+  const repository = environment.repository;
+  const authority = current.implementationAuthority;
+  const authorityPresent = authority !== null && current.implementationAuthorityState === "authorized";
+  const body = {
+    schemaId: "mission.initial-runtime-binding-observation.v1" as const,
+    authority: "none" as const,
+    missionId: graph.transitionPlan.missionId,
+    subjectId: graph.transitionPlan.subjectId,
+    missionRevisionId: current.brief.revisionId,
+    repositoryId: graph.transitionPlan.repositoryId,
+    canonicalRoot: repository.canonicalRoot,
+    branch: repository.branch,
+    planningBaseRevision: graph.transitionPlan.planningBaseRevision,
+    headRevision: repository.headRevision,
+    baseAncestor: repository.baseAncestor,
+    workspaceClean: repository.statusEntries.length === 0,
+    symlinkPaths: [...environment.symlinkPaths],
+    gitlinkPaths: [...environment.gitlinkPaths],
+    missionSchemaVersion: current.schemaVersion,
+    authorizationState: current.authorization,
+    implementationAuthorityState: current.implementationAuthorityState,
+    finalAcceptanceState: current.finalAcceptance,
+    executionState: current.execution,
+    implementationAuthorityCount: authorityPresent ? 1 : 0,
+    runtimeBindingCount: current.runtimeBindings.length,
+    activeRuntimeBindingCount: current.activeRuntimeBindings.length,
+    pendingCoulsonMissionAuthorizationCount: environment.pendingCoulsonMissionAuthorizationCount,
+    journalSequence: current.lastSequence,
+    journalSha256: environment.journalSha256,
+    signerBindingId: environment.binding.bindingId,
+    signingKeyRef: environment.binding.signingKeyRef,
+    signerBindingMatchCount: environment.signerBindingMatchCount,
+    implementationAuthorityRef: authorityPresent ? authority.authorityRef : null,
+    implementationAuthorityDigest: authorityPresent ? current.implementationAuthorityDigest : null,
+    implementationAuthoritySequence: authorityPresent ? authority.journalSequence : null,
+    authorityMissionId: authorityPresent ? authority.missionId : null,
+    authoritySubjectId: authorityPresent ? authority.subjectId : null,
+    authorityRepositoryId: authorityPresent ? authority.repositoryId : null,
+    authorityCanonicalWritableRoot: authorityPresent ? authority.canonicalWritableRoot : null,
+    authorityBranch: authorityPresent ? authority.branch : null,
+    authorityBaseRevision: authorityPresent ? authority.baseRevision : null,
+    authorityHeadRevision: authorityPresent ? authority.headRevision : null,
+    authorityModelId: authorityPresent ? authority.modelId : null,
+    authorityApprovedRelativePaths: authorityPresent ? [...authority.approvedRelativePaths] : [],
+    authorityApprovedActionIds: authorityPresent ? [...authority.approvedActionIds] : [],
+    authorityApprovedEffectClasses: authorityPresent ? [...authority.approvedEffectClasses] : [],
+    authorityApprovedEffectKeys: authorityPresent ? [...authority.approvedEffectKeys] : [],
+    authorityApprovedCapabilities: authorityPresent ? [...authority.approvedCapabilities] : [],
+    authorityValidationCommandIds: authorityPresent ? [...authority.validationCommandIds] : [],
+    remainingHumanGates: [...environment.remainingHumanGates],
+    preparationEligibility: "preparationEligible" as const,
+  };
+  const serialized = canonicalJson(body);
+  if (Buffer.byteLength(serialized, "utf8") > 1_048_576) return null;
+  const digest = `sha256:${createHash("sha256").update(Buffer.concat([
+    Buffer.from(body.schemaId, "utf8"), Buffer.from([0]), Buffer.from(serialized, "utf8"),
+  ])).digest("base64url")}`;
+  return { ...body, id: `initial-runtime-binding-observation:${digest.slice("sha256:".length)}`, digest };
+}
+
+function preparedInitialRuntimeBinding(
+  graph: MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+  sequence: number,
+): Schema9RuntimeBindingV1 | null {
+  const projection = environment.current.projection;
+  const authority = projection.implementationAuthority;
+  if (authority === null || projection.implementationAuthorityDigest === null) return null;
+  const authorizationId = `authorization:runtime-binding:${sequence}`;
+  const checked = validateSchema9RuntimeBindingV1({
+    schemaVersion: 1,
+    binding: {
+      bindingSchemaVersion: 1,
+      bindingId: `binding:${graph.transitionPlan.missionId}:may:1`,
+      bindingVersion: 1,
+      missionId: graph.transitionPlan.missionId,
+      subjectId: graph.transitionPlan.subjectId,
+      missionRevisionId: projection.brief.revisionId,
+      seatId: "may",
+      reasoningRuntimeId: graph.transitionPlan.reasoningRuntimeId,
+      toolExecutorId: graph.transitionPlan.toolExecutorId,
+      repositoryId: graph.transitionPlan.repositoryId,
+      canonicalWritableRoot: environment.repository.canonicalRoot,
+      branch: environment.repository.branch,
+      artifactRevisionId: environment.repository.headRevision,
+      recordedAtSequence: sequence,
+      activeThroughSequence: null,
+      lifecycleState: "active",
+      approvedScope: {
+        actionIds: [...graph.transitionPlan.approvedActionIds],
+        effectClasses: [...graph.transitionPlan.approvedEffectClasses],
+        effectKeys: [...graph.transitionPlan.approvedEffectKeys],
+        capabilities: [...graph.transitionPlan.approvedCapabilities],
+      },
+      coulsonAuthorizationRef: authorizationId,
+    },
+    implementationAuthorityRef: authority.authorityRef,
+    implementationAuthorityDigest: projection.implementationAuthorityDigest,
+    implementationAuthoritySequence: authority.journalSequence,
+    approvedRelativePaths: [...graph.transitionPlan.approvedRelativePaths],
+    validationCommandIds: [...graph.transitionPlan.validationCommandIds],
+    modelId: graph.transitionPlan.modelId,
+    baseRevision: graph.transitionPlan.planningBaseRevision,
+    headRevision: environment.repository.headRevision,
+  });
   return checked.state === "valid" ? checked.value : null;
 }
 
@@ -1613,6 +1779,118 @@ async function preparedPublicationAlreadyAuthorizedResult(
   });
 }
 
+function exactPreparedInitialRuntimeBindingRetry(
+  graph: MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+): PreparedRuntimeBindingAlreadyAuthorizedResultV1 | null {
+  const projection = environment.current.projection;
+  if (projection.schemaVersion !== 9 || projection.authorization !== "authorized" || projection.implementationAuthorityState !== "authorized" ||
+      projection.implementationAuthority === null || projection.implementationAuthorityDigest === null || projection.execution !== "not-started" ||
+      projection.finalAcceptance !== "waiting" || projection.runtimeBindings.length !== 1 || projection.activeRuntimeBindings.length !== 1 ||
+      environment.pendingCoulsonMissionAuthorizationCount !== 0 || environment.signerBindingMatchCount !== 1 || environment.binding.seatId !== "coulson" ||
+      environment.repository.statusEntries.length !== 0 || !environment.repository.baseAncestor || environment.symlinkPaths.length !== 0 || environment.gitlinkPaths.length !== 0) return null;
+  const sequence = projection.lastSequence;
+  const entry = environment.current.entries[sequence];
+  if (entry?.type !== "runtime.binding_recorded" || entry.sequence !== sequence || entry.entryId !== `entry:${graph.transitionPlan.missionId}:${sequence}`) return null;
+  const expectedWrapper = preparedInitialRuntimeBinding(graph, environment, sequence);
+  if (expectedWrapper === null || canonicalJson(entry.payload.binding) !== canonicalJson(expectedWrapper) ||
+      canonicalJson(projection.runtimeBindings[0]) !== canonicalJson(expectedWrapper) || canonicalJson(projection.activeRuntimeBindings[0]) !== canonicalJson(expectedWrapper)) return null;
+  const authorization = entry.payload.authorization.payload;
+  const expectedAuthorization: Schema9RuntimeBindingAuthorizationPayload = {
+    schemaVersion: 1,
+    authorizationId: `authorization:runtime-binding:${sequence}`,
+    missionId: graph.transitionPlan.missionId,
+    subjectId: graph.transitionPlan.subjectId,
+    seatId: "may",
+    bindingId: expectedWrapper.binding.bindingId,
+    bindingVersion: 1,
+    priorBindingId: null,
+    priorBindingVersion: null,
+    bindingDigest: computeRuntimeBindingDigest(expectedWrapper.binding),
+    schema9BindingDigest: computeSchema9RuntimeBindingDigest(expectedWrapper),
+    artifactRevisionId: environment.repository.headRevision,
+    decision: "approved",
+    previousJournalSequence: sequence - 1,
+    journalSequence: sequence,
+    humanPrincipalId: environment.binding.humanPrincipalId,
+    humanBindingId: environment.binding.bindingId,
+    signingKeyRef: environment.binding.signingKeyRef,
+    sourceRef: `cli:prepare-next:runtime-binding:${sequence}`,
+    timestamp: authorization.timestamp,
+  };
+  if (canonicalJson(authorization) !== canonicalJson(expectedAuthorization)) return null;
+  return deepFreeze({
+    schemaVersion: 1 as const,
+    state: "runtime_binding_already_authorized" as const,
+    missionId: graph.transitionPlan.missionId,
+    missionRevisionId: projection.brief.revisionId,
+    bindingId: expectedWrapper.binding.bindingId,
+    bindingVersion: 1 as const,
+    authorizationId: expectedAuthorization.authorizationId,
+    schema9BindingDigest: expectedAuthorization.schema9BindingDigest,
+    journalSequence: sequence,
+  });
+}
+
+function preparedInitialRuntimeBindingResult(
+  graph: MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+): ResolvePreparedMissionTransitionResultV1 {
+  const missionId = graph.transitionPlan.missionId;
+  const projection = environment.current.projection;
+  if (projection.runtimeBindings.length !== 0 || projection.activeRuntimeBindings.length !== 0) {
+    const retry = exactPreparedInitialRuntimeBindingRetry(graph, environment);
+    return retry ?? blocked(missionId, "authority_conflict", "Existing runtime binding is historical, superseded, legacy, duplicated, or not the exact prepared initial binding.");
+  }
+  const observation = buildInitialRuntimeBindingObservation(graph, environment);
+  if (observation === null) return blocked(missionId, "freshness_evidence_incomplete", "Initial runtime-binding observation could not be built.");
+  const prepared = prepareMissionTransitionV1({
+    plan: graph.transitionPlan,
+    reviewEvidence: graph.parentPlanReviewEvidence,
+    intent: graph.transitionIntent,
+    observation,
+  });
+  if (prepared.state === "invalid") return blocked(missionId, prepared.reasonCode, ...prepared.errors);
+  if (prepared.state === "blocked") return blocked(missionId, prepared.selection.reasonCode ?? "preparation_blocked");
+  if (prepared.candidate.transitionKind !== "initial-runtime-binding") {
+    return blocked(missionId, "protected_evidence_mismatch", "Initial runtime-binding graph selected a different transition candidate.");
+  }
+  const authority = projection.implementationAuthority;
+  const authorityDigest = projection.implementationAuthorityDigest;
+  const runtimeBinding = preparedInitialRuntimeBinding(graph, environment, projection.lastSequence + 1);
+  if (authority === null || authorityDigest === null || runtimeBinding === null) {
+    return blocked(missionId, "implementation_authority_mismatch", "Active implementation authority cannot produce the reviewed initial runtime binding.");
+  }
+  return deepFreeze({
+    schemaVersion: 1 as const,
+    state: "runtime_binding_ready" as const,
+    missionId,
+    protectedGraph: graph,
+    selection: prepared.selection,
+    candidate: prepared.candidate,
+    preparationReceipt: prepared.receipt,
+    implementationAuthority: authority,
+    runtimeBinding,
+    observation: {
+      graphId: graph.graphId,
+      graphDigest: graph.graphDigest,
+      missionRevisionId: projection.brief.revisionId,
+      repositoryId: environment.repository.configuredRepositoryId,
+      canonicalRoot: environment.repository.canonicalRoot,
+      branch: environment.repository.branch,
+      baseRevision: graph.transitionPlan.planningBaseRevision,
+      headRevision: environment.repository.headRevision,
+      workspaceClean: true as const,
+      journalSequence: projection.lastSequence,
+      journalSha256: environment.journalSha256,
+      signerBindingId: environment.binding.bindingId,
+      signingKeyRef: environment.binding.signingKeyRef,
+      implementationAuthorityDigest: authorityDigest,
+      remainingHumanGates: [...environment.remainingHumanGates],
+    },
+  });
+}
+
 async function resolvePreparedMissionTransitionV1WithDependencies(
   input: unknown,
   journalDependencies: Partial<AuthorizeWheelsUpJournalSnapshotDependenciesV1>,
@@ -1626,6 +1904,9 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
   const graphResult = await readMissionReviewedTransitionGraphV1({ repositoryRoot: copied.repositoryRoot, missionId });
   if (graphResult.state === "invalid") return blocked(missionId, "protected_evidence_mismatch", ...graphResult.errors);
   const graph = graphResult.graph;
+  if (graph.transitionPlan.transitionKind !== graph.transitionIntent.transitionKind) {
+    return blocked(missionId, "protected_evidence_mismatch", "Reviewed transition plan and intent kinds differ.");
+  }
   const attributionErrors = await revalidateStoredAttribution(copied.repositoryRoot, graph);
   if (attributionErrors.length > 0) return blocked(missionId, "protected_evidence_mismatch", ...attributionErrors);
   const config = await readConfig(copied.repositoryRoot);
@@ -1652,6 +1933,12 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
       return blocked(missionId, "authority_conflict", error.message.slice("authority_conflict:".length).trim());
     }
     return blocked(missionId, "repository_observation_stale", error instanceof Error ? error.message : "Live mission observation failed.");
+  }
+  if (graph.transitionIntent.transitionKind === "initial_runtime_binding") {
+    return preparedInitialRuntimeBindingResult(graph, environment);
+  }
+  if (graph.transitionIntent.transitionKind !== "fresh_authorize_wheels_up") {
+    return blocked(missionId, "protected_evidence_mismatch", "Reviewed transition kind is unsupported.");
   }
   const observation = buildObservation(graph, environment);
   if (observation === null) return blocked(missionId, "freshness_evidence_incomplete", "Live observation contract could not be built.");
@@ -1698,6 +1985,9 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
   });
   if (prepared.state === "invalid") return blocked(missionId, prepared.reasonCode, ...prepared.errors);
   if (prepared.state === "blocked") return blocked(missionId, prepared.selection.reasonCode ?? "preparation_blocked");
+  if (prepared.candidate.transitionKind !== "authorize-wheels-up") {
+    return blocked(missionId, "protected_evidence_mismatch", "Fresh Wheels Up graph selected a different transition candidate.");
+  }
   return deepFreeze({
     state: "ready" as const,
     missionId,

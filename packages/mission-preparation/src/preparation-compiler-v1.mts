@@ -10,6 +10,8 @@ import {
   createCandidateV1,
   createReceiptV1,
   createSelectionV1,
+  validateInitialRuntimeBindingCandidateV1,
+  validateInitialRuntimeBindingObservationV1,
   validateFreshAuthorizeWheelsUpCandidateV1,
   validateFreshAuthorizeWheelsUpObservationV1,
   validateNextTransitionSelectionV1,
@@ -19,6 +21,8 @@ import {
   validateTransitionPlanV1,
   type FreshAuthorizeWheelsUpCandidateV1,
   type FreshAuthorizeWheelsUpObservationV1,
+  type InitialRuntimeBindingCandidateV1,
+  type InitialRuntimeBindingObservationV1,
   type NextTransitionSelectionV1,
   type ParentPlanReviewEvidenceV1,
   type PreparationReasonCodeV1,
@@ -62,7 +66,7 @@ export type PrepareMissionTransitionResultV1 =
   | Readonly<{
       state: "ready";
       selection: NextTransitionSelectionV1;
-      candidate: FreshAuthorizeWheelsUpCandidateV1;
+      candidate: FreshAuthorizeWheelsUpCandidateV1 | InitialRuntimeBindingCandidateV1;
       receipt: PreparationReceiptV1;
     }>;
 
@@ -70,7 +74,7 @@ type ValidatedInputs = Readonly<{
   plan: TransitionPlanV1;
   review: ParentPlanReviewEvidenceV1;
   intent: TransitionIntentV1;
-  observation: FreshAuthorizeWheelsUpObservationV1;
+  observation: FreshAuthorizeWheelsUpObservationV1 | InitialRuntimeBindingObservationV1;
 }>;
 
 function closedInput(input: unknown, keys: readonly string[]): PreparationValidationResultV1<Record<string, unknown>> {
@@ -85,7 +89,9 @@ function validateInputs(input: unknown): PreparationValidationResultV1<Validated
   const plan = validateTransitionPlanV1({ artifact: argument.value.plan });
   const review = validateParentPlanReviewEvidenceV1({ artifact: argument.value.reviewEvidence });
   const intent = validateTransitionIntentV1({ artifact: argument.value.intent });
-  const observation = validateFreshAuthorizeWheelsUpObservationV1({ artifact: argument.value.observation });
+  const observation = plan.state === "valid" && intent.state === "valid" && plan.value.transitionKind === "initial_runtime_binding" && intent.value.transitionKind === "initial_runtime_binding"
+    ? validateInitialRuntimeBindingObservationV1(argument.value.observation)
+    : validateFreshAuthorizeWheelsUpObservationV1({ artifact: argument.value.observation });
   const errors = [plan, review, intent, observation].flatMap((result) => result.state === "invalid" ? result.errors : []);
   if (plan.state === "invalid" || review.state === "invalid" || intent.state === "invalid" || observation.state === "invalid") {
     return invalidResult(...errors);
@@ -100,12 +106,16 @@ function reviewedPlanMismatch({ plan, review, intent, observation }: ValidatedIn
   return review.repositoryId !== plan.repositoryId || review.planningBaseRevision !== plan.planningBaseRevision || review.parentPlanCommit !== plan.parentPlanCommit ||
     review.parentPlanPath !== plan.parentPlanPath || review.parentPlanRawSha256 !== plan.parentPlanRawSha256 || review.transitionPlanId !== plan.id || review.transitionPlanDigest !== plan.digest ||
     intent.missionId !== plan.missionId || intent.subjectId !== plan.subjectId || intent.repositoryId !== plan.repositoryId || intent.planningBaseRevision !== plan.planningBaseRevision ||
-    intent.transitionPlanId !== plan.id || intent.transitionPlanDigest !== plan.digest || intent.parentReviewEvidenceId !== review.id || intent.parentReviewEvidenceDigest !== review.digest ||
+    intent.transitionPlanId !== plan.id || intent.transitionPlanDigest !== plan.digest || intent.parentReviewEvidenceId !== review.id || intent.parentReviewEvidenceDigest !== review.digest || intent.transitionKind !== plan.transitionKind ||
     observation.missionId !== plan.missionId || observation.subjectId !== plan.subjectId || observation.repositoryId !== plan.repositoryId || observation.planningBaseRevision !== plan.planningBaseRevision ||
     new Set(mayIdentities).size !== mayIdentities.length || mayIdentities.slice(1).some((identity) => MISSION_PARTICIPANT_IDS.has(identity));
 }
 
-function repositoryObservationStale(plan: TransitionPlanV1, observation: FreshAuthorizeWheelsUpObservationV1): boolean {
+function repositoryObservationStale(plan: TransitionPlanV1, observation: FreshAuthorizeWheelsUpObservationV1 | InitialRuntimeBindingObservationV1): boolean {
+  if ("missionRevisionId" in observation) {
+    return observation.branch === "HEAD" || observation.headRevision === plan.planningBaseRevision || !observation.baseAncestor || !observation.workspaceClean ||
+      observation.symlinkPaths.length !== 0 || observation.gitlinkPaths.length !== 0;
+  }
   return observation.branch === "HEAD" || observation.baseRevision !== plan.planningBaseRevision || observation.headRevision === observation.baseRevision || !observation.baseAncestor || !observation.workspaceClean ||
     JSON.stringify(observation.changedPaths) !== JSON.stringify(plan.publicationPaths) || observation.symlinkPaths.length !== 0 || observation.gitlinkPaths.length !== 0;
 }
@@ -125,12 +135,36 @@ function freshnessIncomplete(observation: FreshAuthorizeWheelsUpObservationV1): 
     (gates !== JSON.stringify(ordinaryGates) && gates !== JSON.stringify(simmonsGates));
 }
 
+function initialRuntimeBindingStateIneligible(observation: InitialRuntimeBindingObservationV1): boolean {
+  return observation.missionSchemaVersion !== 9 || observation.authorizationState !== "authorized" || observation.implementationAuthorityState !== "authorized" ||
+    observation.finalAcceptanceState !== "waiting" || observation.executionState !== "not-started" || observation.implementationAuthorityCount !== 1 ||
+    observation.runtimeBindingCount !== 0 || observation.activeRuntimeBindingCount !== 0 || observation.pendingCoulsonMissionAuthorizationCount !== 0;
+}
+
+function implementationAuthorityMismatch(plan: TransitionPlanV1, observation: InitialRuntimeBindingObservationV1): boolean {
+  return observation.authorityMissionId !== plan.missionId || observation.authoritySubjectId !== plan.subjectId || observation.authorityRepositoryId !== plan.repositoryId ||
+    observation.authorityCanonicalWritableRoot !== observation.canonicalRoot || observation.authorityBranch !== observation.branch ||
+    observation.authorityBaseRevision !== plan.planningBaseRevision || observation.authorityHeadRevision !== observation.headRevision || observation.authorityModelId !== plan.modelId ||
+    JSON.stringify(observation.authorityApprovedRelativePaths) !== JSON.stringify(plan.approvedRelativePaths) ||
+    JSON.stringify(observation.authorityApprovedActionIds) !== JSON.stringify(plan.approvedActionIds) ||
+    JSON.stringify(observation.authorityApprovedEffectClasses) !== JSON.stringify(plan.approvedEffectClasses) ||
+    JSON.stringify(observation.authorityApprovedEffectKeys) !== JSON.stringify(plan.approvedEffectKeys) ||
+    JSON.stringify(observation.authorityApprovedCapabilities) !== JSON.stringify(plan.approvedCapabilities) ||
+    JSON.stringify(observation.authorityValidationCommandIds) !== JSON.stringify(plan.validationCommandIds);
+}
+
 function reason(inputs: ValidatedInputs): Exclude<PreparationReasonCodeV1, "invalid_preparation_input"> | null {
   if (reviewedPlanMismatch(inputs)) return "reviewed_plan_mismatch";
   if (inputs.review.verdict !== "PASS" || inputs.review.attributionClass === "synthetic_test") return "parent_plan_review_ineligible";
   if (repositoryObservationStale(inputs.plan, inputs.observation)) return "repository_observation_stale";
-  if (freshStateIneligible(inputs.observation)) return "fresh_wheels_up_state_ineligible";
-  if (freshnessIncomplete(inputs.observation)) return "freshness_evidence_incomplete";
+  if ("missionRevisionId" in inputs.observation) {
+    if (initialRuntimeBindingStateIneligible(inputs.observation)) return "initial_runtime_binding_state_ineligible";
+    if (implementationAuthorityMismatch(inputs.plan, inputs.observation)) return "implementation_authority_mismatch";
+    if (freshnessIncomplete(inputs.observation as unknown as FreshAuthorizeWheelsUpObservationV1)) return "freshness_evidence_incomplete";
+  } else {
+    if (freshStateIneligible(inputs.observation)) return "fresh_wheels_up_state_ineligible";
+    if (freshnessIncomplete(inputs.observation)) return "freshness_evidence_incomplete";
+  }
   return null;
 }
 
@@ -153,9 +187,12 @@ export function compileFreshAuthorizeWheelsUpCandidateV1(
   });
   const selection = validateNextTransitionSelectionV1({ artifact: argument.value.selection });
   if (validated.state === "invalid" || selection.state === "invalid") return invalidResult(...(validated.state === "invalid" ? validated.errors : []), ...(selection.state === "invalid" ? selection.errors : []));
+  if (validated.value.intent.transitionKind !== "fresh_authorize_wheels_up" || "missionRevisionId" in validated.value.observation) {
+    return invalidResult("Fresh Wheels Up compilation requires the fresh transition graph variant.");
+  }
   const expected = createSelectionV1(validated.value.intent, validated.value.observation, reason(validated.value));
   if (selection.value.state !== "ready" || selection.value.id !== expected.id || selection.value.digest !== expected.digest) return invalidResult("Selection is not the bound ready selection.");
-  const candidate = createCandidateV1(validated.value.plan, validated.value.review, validated.value.intent, validated.value.observation, selection.value);
+  const candidate = createCandidateV1(validated.value.plan, validated.value.review, validated.value.intent, validated.value.observation, selection.value) as FreshAuthorizeWheelsUpCandidateV1;
   const checked = validateFreshAuthorizeWheelsUpCandidateV1({ artifact: candidate });
   return checked.state === "valid" ? checked : invalidResult(...checked.errors);
 }
@@ -166,7 +203,9 @@ export function prepareMissionTransitionV1(input: PrepareMissionTransitionInputV
   const selection = createSelectionV1(validated.value.intent, validated.value.observation, reason(validated.value));
   if (selection.state === "blocked") return deepFreeze({ state: "blocked" as const, selection });
   const candidate = createCandidateV1(validated.value.plan, validated.value.review, validated.value.intent, validated.value.observation, selection);
-  const checkedCandidate = validateFreshAuthorizeWheelsUpCandidateV1({ artifact: candidate });
+  const checkedCandidate = candidate.transitionKind === "authorize-wheels-up"
+    ? validateFreshAuthorizeWheelsUpCandidateV1({ artifact: candidate })
+    : validateInitialRuntimeBindingCandidateV1(candidate);
   if (checkedCandidate.state === "invalid") return checkedCandidate;
   const receipt = createReceiptV1(validated.value.plan, validated.value.review, validated.value.intent, validated.value.observation, selection, checkedCandidate.value);
   const checkedReceipt = validatePreparationReceiptV1({ artifact: receipt });

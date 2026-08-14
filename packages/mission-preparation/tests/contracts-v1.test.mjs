@@ -256,3 +256,19 @@ test("review attribution equality rules are exact", () => {
     assert.equal(api.validateParentPlanReviewEvidenceV1({ artifact: artifact({ ...body(reviewEvidence), ...changed }) }).state, "invalid");
   }
 });
+
+test("transition plan and intent preserve the initial-runtime-binding graph identity", () => {
+  const values = fixture();
+  const body = ({ id, digest, ...rest }) => rest;
+  const plan = artifact({ ...body(values.plan), transitionKind: "initial_runtime_binding" });
+  const intent = artifact({
+    ...body(values.intent),
+    transitionPlanId: plan.id,
+    transitionPlanDigest: plan.digest,
+    transitionKind: "initial_runtime_binding",
+  });
+  assert.equal(api.validateTransitionPlanV1({ artifact: plan }).state, "valid");
+  assert.equal(api.validateTransitionIntentV1({ artifact: intent }).state, "valid");
+  assert.notEqual(plan.id, values.plan.id);
+  assert.notEqual(intent.id, values.intent.id);
+});

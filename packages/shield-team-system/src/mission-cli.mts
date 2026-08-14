@@ -77,8 +77,13 @@ import {
   resolveSeatDispatchIdentityByReceiptIdV1,
   validateMissionTransitionPlanReviewV1,
   type PreparedPublicationAlreadyAuthorizedResultV1,
+  type PreparedRuntimeBindingAlreadyAuthorizedResultV1,
   type ResolvePreparedMissionTransitionResultV1,
 } from "./mission-preparation-host-v1.mjs";
+import {
+  executeRuntimeBindingV1,
+  type PreparedRuntimeBindingDecisionV1,
+} from "./runtime-binding-executor-v1.mjs";
 import {
   assertPublicationAuthorizationFreshnessV1,
   executeReviewPublicationAuthorizationV1,
@@ -1268,6 +1273,37 @@ function renderPublicationAlreadyAuthorized(result: PreparedPublicationAlreadyAu
   ].join("\n");
 }
 
+function renderRuntimeBindingAlreadyAuthorized(result: PreparedRuntimeBindingAlreadyAuthorizedResultV1): string {
+  return [
+    "ALREADY AUTHORIZED — nothing repeated.",
+    `bindingId: ${result.bindingId}`,
+    `authorizationId: ${result.authorizationId}`,
+    `journalSequence: ${result.journalSequence}`,
+  ].join("\n");
+}
+
+function renderPreparedRuntimeBindingHumanV1(decision: PreparedRuntimeBindingDecisionV1): string {
+  return [
+    "INITIAL MAY RUNTIME BINDING",
+    `Mission: ${decision.missionId}`,
+    `Revision: ${decision.missionRevisionId}`,
+    `Repository: ${decision.repository.repositoryId}`,
+    `Root: ${decision.repository.canonicalRoot}`,
+    `Branch: ${decision.repository.branch}`,
+    `Base: ${decision.repository.baseRevision}`,
+    `HEAD: ${decision.repository.headRevision}`,
+    `Model: ${decision.modelId}`,
+    `Reasoning runtime: ${decision.reasoningRuntimeId}`,
+    `Tool executor: ${decision.toolExecutorId}`,
+    "Approved paths:",
+    ...decision.approvedRelativePaths.map((path) => `  - ${path}`),
+    "Exclusions:",
+    ...decision.exclusions.map((exclusion) => `  - ${exclusion}`),
+    "Remaining human gates:",
+    ...decision.remainingHumanGates.map((gate) => `  - ${gate}`),
+  ].join("\n");
+}
+
 function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicationDecisionV1): string {
   return [
     "REVIEW PUBLICATION AUTHORIZATION",
@@ -1308,8 +1344,41 @@ async function prepareNext(args: string[]): Promise<number> {
     output(result, options.flags.has("--json"), renderPublicationAlreadyAuthorized(result));
     return 0;
   }
+  if (result.state === "runtime_binding_already_authorized") {
+    output(result, options.flags.has("--json"), renderRuntimeBindingAlreadyAuthorized(result));
+    return 0;
+  }
   const humanMode = options.flags.has("--human") || (!options.flags.has("--json") && !options.flags.has("--passcode-stdin"));
   const promptOutput = options.flags.has("--json") ? process.stderr : outputStream;
+  if (result.state === "runtime_binding_ready") {
+    try {
+      const executed = await executeRuntimeBindingV1({
+        mode: "prepared",
+        root,
+        missionId,
+        intent: {
+          reasoningRuntimeId: result.runtimeBinding.binding.reasoningRuntimeId,
+          toolExecutorId: result.runtimeBinding.binding.toolExecutorId,
+        },
+        expectedPreparation: result,
+        timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
+        humanMode,
+        decisionOutput: { write: (value) => promptOutput.write(value) },
+      }, {
+        renderDecision: (decision, renderHuman) => renderHuman
+          ? renderPreparedRuntimeBindingHumanV1(decision)
+          : `SHIELD_RUNTIME_BINDING_DECISION_BEGIN\n${canonicalJson(decision)}\nSHIELD_RUNTIME_BINDING_DECISION_END`,
+        readPasscode: () => passcodeFromOptions(options, promptOutput),
+        signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
+        appendEntryLegacy: appendProfileAwareMissionEntryV1,
+        appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
+      });
+      output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
+      return 0;
+    } catch (error) {
+      throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
+    }
+  }
   if (result.state === "publication_ready") {
     try {
       const executed = await executeReviewPublicationAuthorizationV1({
@@ -1796,111 +1865,29 @@ async function wheelsUp(args: string[]): Promise<number> {
 async function bindMay(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id", "--input"], ["--json", "--passcode-stdin"]);
   const root = await exactRoot(options.values.get("--root"), true);
-  const config = await repositoryConfig(root);
   const missionId = required(options, "--mission-id");
-  const current = await currentProfileAwareMission(root, config, missionId);
-  const authority = current.projection.implementationAuthority;
-  if (current.projection.implementationAuthorityState !== "authorized" || authority === null) {
-    throw new MissionCliError("May binding requires an active Wheels Up implementation authority.", 1);
-  }
-  if (config.repositoryId !== authority.repositoryId) {
-    throw new MissionCliError("Repository ID no longer matches Wheels Up authority.", 1);
-  }
   const intent = bindIntent(await jsonFile(resolve(root, required(options, "--input")), "May binding input"));
-  const identities = ["may", intent.reasoningRuntimeId, authority.modelId, intent.toolExecutorId];
-  if (new Set(identities).size !== identities.length ||
-      current.projection.brief.participants.some(({ seatId }) => identities.slice(1).includes(seatId))) {
-    throw new MissionCliError("May seat, reasoning runtime, model, and tool executor must be mutually distinct and cannot be mission participants.", 1);
+  try {
+    const executed = await executeRuntimeBindingV1({
+      mode: "legacy",
+      root,
+      missionId,
+      intent,
+      timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: outputStream,
+    }, {
+      renderDecision: () => { throw new Error("Legacy runtime binding must not render a prepared decision."); },
+      readPasscode: () => passcodeFromOptions(options),
+      signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
+      appendEntryLegacy: appendProfileAwareMissionEntryV1,
+      appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
+    });
+    output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
+    return 0;
+  } catch (error) {
+    throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
   }
-  const observation = await observeRepository(root);
-  if (observation.canonicalRoot !== authority.canonicalWritableRoot || observation.branch !== authority.branch || observation.head !== authority.headRevision) {
-    throw new MissionCliError("Repository root, branch, or HEAD no longer matches Wheels Up authority.", 1);
-  }
-  const sequence = current.projection.lastSequence + 1;
-  const authorizationId = `authorization:runtime-binding:${sequence}`;
-  const runtimeBinding: RuntimeBinding = {
-    bindingSchemaVersion: 1,
-    bindingId: `binding:${missionId}:may:1`,
-    bindingVersion: 1,
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    missionRevisionId: current.projection.brief.revisionId,
-    seatId: "may",
-    reasoningRuntimeId: intent.reasoningRuntimeId,
-    toolExecutorId: intent.toolExecutorId,
-    repositoryId: authority.repositoryId,
-    canonicalWritableRoot: authority.canonicalWritableRoot,
-    branch: authority.branch,
-    artifactRevisionId: authority.artifactRevisionId,
-    recordedAtSequence: sequence,
-    activeThroughSequence: null,
-    lifecycleState: "active",
-    approvedScope: {
-      actionIds: [...authority.approvedActionIds],
-      effectClasses: [...authority.approvedEffectClasses],
-      effectKeys: [...authority.approvedEffectKeys],
-      capabilities: [...authority.approvedCapabilities],
-    },
-    coulsonAuthorizationRef: authorizationId,
-  };
-  const wrapper = unwrap(validateSchema9RuntimeBindingV1({
-    schemaVersion: 1,
-    binding: runtimeBinding,
-    implementationAuthorityRef: authority.authorityRef,
-    implementationAuthorityDigest: computeImplementationAuthorityDigest(authority),
-    implementationAuthoritySequence: authority.journalSequence,
-    approvedRelativePaths: [...authority.approvedRelativePaths],
-    validationCommandIds: [...authority.validationCommandIds],
-    modelId: authority.modelId,
-    baseRevision: authority.baseRevision,
-    headRevision: authority.headRevision,
-  }));
-  const signer = coulsonBinding(current);
-  const timestamp = { value: new Date().toISOString(), provenance: "hostTrusted" as const };
-  const payload: Schema9RuntimeBindingAuthorizationPayload = unwrap(validateSchema9RuntimeBindingAuthorizationPayload({
-    schemaVersion: 1,
-    authorizationId,
-    missionId,
-    subjectId: current.projection.brief.subjectId,
-    seatId: "may",
-    bindingId: runtimeBinding.bindingId,
-    bindingVersion: 1,
-    priorBindingId: null,
-    priorBindingVersion: null,
-    bindingDigest: computeRuntimeBindingDigest(runtimeBinding),
-    schema9BindingDigest: computeSchema9RuntimeBindingDigest(wrapper),
-    artifactRevisionId: authority.artifactRevisionId,
-    decision: "approved",
-    previousJournalSequence: current.projection.lastSequence,
-    journalSequence: sequence,
-    humanPrincipalId: signer.humanPrincipalId,
-    humanBindingId: signer.bindingId,
-    signingKeyRef: signer.signingKeyRef,
-    sourceRef: `cli:runtime-binding:${sequence}`,
-    timestamp,
-  }));
-  const passcode = await passcodeFromOptions(options);
-  const signatureBase64 = await signMissionPayload(signer, passcode, payload, missionId);
-  const [freshConfig, freshObservation] = await Promise.all([
-    repositoryConfig(root),
-    observeRepository(root),
-  ]);
-  if (freshConfig.repositoryId !== config.repositoryId || freshConfig.paths.journals !== config.paths.journals || freshConfig.repositoryId !== authority.repositoryId) {
-    throw new MissionCliError("Repository configuration changed while May binding was being signed.", 1);
-  }
-  const fresh = await currentProfileAwareMission(root, freshConfig, missionId);
-  if (fresh.projection.lastSequence !== current.projection.lastSequence || !sameObservation(observation, freshObservation)) {
-    throw new MissionCliError("Mission journal or repository identity changed while May binding was being signed.", 1);
-  }
-  const entry = produce(() => createProfileAwareRuntimeBindingRecordedEntryV1({
-    projection: fresh.projection,
-    trustedBindings: profileAwareBindings(fresh),
-    binding: wrapper,
-    authorization: { payload, signatureBase64 },
-  }));
-  const appended = unwrap(await appendProfileAwareMissionEntryV1({ ...missionPaths(root, config, missionId), entry }));
-  output(appended.projection, options.flags.has("--json"), profileAwareStatusText(appended.projection));
-  return 0;
 }
 
 async function step(args: string[]): Promise<number> {

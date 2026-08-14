@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import * as api from "../dist/index.mjs";
@@ -15,16 +16,25 @@ function artifact(body) {
   return { ...body, id: unwrap(api.computeContentIdV1({ schemaId: body.schemaId, digest })), digest };
 }
 
+function initialArtifact(body, prefix) {
+  const serialized = unwrap(api.canonicalJsonV1({ value: body }));
+  const digest = `sha256:${createHash("sha256").update(Buffer.concat([
+    Buffer.from(body.schemaId), Buffer.from([0]), Buffer.from(serialized),
+  ])).digest("base64url")}`;
+  return { ...body, id: `${prefix}:${digest.slice("sha256:".length)}`, digest };
+}
+
 function withoutAddress(value) {
   const { id, digest, ...body } = value;
   return body;
 }
 
 function graph(changes = {}) {
+  const transitionKind = changes.plan?.transitionKind ?? "fresh_authorize_wheels_up";
   const plan = artifact({
     schemaId: "mission.transition-plan.v1", authority: "none", missionId: "mission:issue-269", subjectId: "issue-269", repositoryId: "RanSolo/shield-workspace",
     planningBaseRevision: "a".repeat(40), parentPlanCommit: "b".repeat(40), parentPlanPath: "docs/missions/issue-268-key-turn-plan.md", parentPlanRawSha256: "c".repeat(64),
-    transitionKind: "fresh_authorize_wheels_up", boundedOutcome: "Prepare exactly one authority-none candidate.",
+    transitionKind, boundedOutcome: "Prepare exactly one authority-none candidate.",
     approvedRelativePaths: ["package-lock.json", "packages/mission-preparation/package.json"],
     publicationPaths: ["docs/missions/issue-268-key-turn-plan.md", "docs/missions/issue-269-mission-preparation-plan.md"],
     approvedActionIds: ["repository.run_validation", "repository.write_file"], approvedEffectClasses: ["behavioral_implementation", "verification"],
@@ -42,9 +52,25 @@ function graph(changes = {}) {
   const intent = artifact({
     schemaId: "mission.transition-intent.v1", authority: "none", missionId: plan.missionId, subjectId: plan.subjectId, repositoryId: plan.repositoryId,
     planningBaseRevision: plan.planningBaseRevision, transitionPlanId: plan.id, transitionPlanDigest: plan.digest, parentReviewEvidenceId: reviewEvidence.id,
-    parentReviewEvidenceDigest: reviewEvidence.digest, transitionKind: "fresh_authorize_wheels_up", preparationEligibility: "preparationEligible", ...changes.intent,
+    parentReviewEvidenceDigest: reviewEvidence.digest, transitionKind, preparationEligibility: "preparationEligible", ...changes.intent,
   });
-  const observation = artifact({
+  const observation = transitionKind === "initial_runtime_binding" ? initialArtifact({
+    schemaId: "mission.initial-runtime-binding-observation.v1", authority: "none", missionId: plan.missionId, subjectId: plan.subjectId,
+    missionRevisionId: `sha256:${"M".repeat(43)}`, repositoryId: plan.repositoryId, canonicalRoot: "/private/tmp/shield-worktree",
+    branch: "agent/issue-269-mission-preparation", planningBaseRevision: plan.planningBaseRevision, headRevision: "e".repeat(40), baseAncestor: true,
+    workspaceClean: true, symlinkPaths: [], gitlinkPaths: [], missionSchemaVersion: 9, authorizationState: "authorized",
+    implementationAuthorityState: "authorized", finalAcceptanceState: "waiting", executionState: "not-started", implementationAuthorityCount: 1,
+    runtimeBindingCount: 0, activeRuntimeBindingCount: 0, pendingCoulsonMissionAuthorizationCount: 0, journalSequence: 2,
+    journalSha256: `sha256:${"f".repeat(64)}`, signerBindingId: "binding:coulson:1", signingKeyRef: `ed25519:sha256:${"A".repeat(43)}`,
+    signerBindingMatchCount: 1, implementationAuthorityRef: "authority:mission:issue-269:2", implementationAuthorityDigest: `sha256:${"I".repeat(43)}`,
+    implementationAuthoritySequence: 2, authorityMissionId: plan.missionId, authoritySubjectId: plan.subjectId, authorityRepositoryId: plan.repositoryId,
+    authorityCanonicalWritableRoot: "/private/tmp/shield-worktree", authorityBranch: "agent/issue-269-mission-preparation",
+    authorityBaseRevision: plan.planningBaseRevision, authorityHeadRevision: "e".repeat(40), authorityModelId: plan.modelId,
+    authorityApprovedRelativePaths: [...plan.approvedRelativePaths], authorityApprovedActionIds: [...plan.approvedActionIds],
+    authorityApprovedEffectClasses: [...plan.approvedEffectClasses], authorityApprovedEffectKeys: [...plan.approvedEffectKeys],
+    authorityApprovedCapabilities: [...plan.approvedCapabilities], authorityValidationCommandIds: [...plan.validationCommandIds],
+    remainingHumanGates: ["coulson.final_acceptance", "fitz.technical_review"], preparationEligibility: "preparationEligible", ...changes.observation,
+  }, "initial-runtime-binding-observation") : artifact({
     schemaId: "mission.fresh-authorize-wheels-up-observation.v1", authority: "none", missionId: plan.missionId, subjectId: plan.subjectId, repositoryId: plan.repositoryId,
     canonicalRoot: "/private/tmp/shield-worktree", branch: "agent/issue-269-mission-preparation", planningBaseRevision: plan.planningBaseRevision,
     baseRevision: plan.planningBaseRevision, headRevision: "e".repeat(40), baseAncestor: true, workspaceClean: true, changedPaths: [...plan.publicationPaths],
@@ -105,6 +131,25 @@ test("ready preparation derives the exact candidate and receipt graph", () => {
   const compiled = api.compileFreshAuthorizeWheelsUpCandidateV1({ ...values, selection: prepared.selection });
   assert.equal(compiled.state, "valid");
   assert.deepEqual(compiled.value, prepared.candidate);
+});
+
+test("initial runtime binding uses a distinct closed observation and candidate contract", () => {
+  const values = graph({ plan: { transitionKind: "initial_runtime_binding" } });
+  const prepared = api.prepareMissionTransitionV1(values);
+  assert.equal(prepared.state, "ready", prepared.errors?.join(" "));
+  assert.equal(prepared.selection.transitionKind, "initial-runtime-binding");
+  assert.equal(prepared.candidate.schemaId, "mission.initial-runtime-binding-candidate.v1");
+  assert.match(prepared.candidate.id, /^initial-runtime-binding-candidate:[A-Za-z0-9_-]{43}$/u);
+  assert.equal(prepared.candidate.bindingId, `binding:${values.plan.missionId}:may:1`);
+  assert.equal("eventKinds" in prepared.candidate, false);
+  assert.equal("publicationEffects" in prepared.candidate, false);
+  assert.equal("publicationPaths" in prepared.candidate.actionInput, false);
+  assert.equal("publicationPaths" in prepared.candidate.decisionProjection, false);
+  assert.equal(api.validateFreshAuthorizeWheelsUpCandidateV1({ artifact: prepared.candidate }).state, "invalid");
+  assert.equal(prepared.receipt.candidateId, prepared.candidate.id);
+
+  assert.equal(reasonCode(graph({ plan: { transitionKind: "initial_runtime_binding" }, observation: { authorityModelId: "model:other" } })), "implementation_authority_mismatch");
+  assert.equal(reasonCode(graph({ plan: { transitionKind: "initial_runtime_binding" }, observation: { runtimeBindingCount: 1 } })), "initial_runtime_binding_state_ineligible");
 });
 
 test("blocked preparation emits only a content-addressed selection", () => {
