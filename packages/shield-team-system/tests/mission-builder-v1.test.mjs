@@ -1030,6 +1030,17 @@ test("typed transition-plan producer returns one deterministic validated plan wi
   assert.ok(Object.isFrozen(first.plan));
 });
 
+test("typed transition-plan producer preserves distinct immutable transition graph variants", () => {
+  const fresh = buildMissionTransitionPlanV1(transitionPlanInput());
+  const initial = buildMissionTransitionPlanV1({ ...transitionPlanInput(), transitionKind: "initial_runtime_binding" });
+  assert.equal(fresh.state, "built");
+  assert.equal(initial.state, "built");
+  assert.equal(fresh.plan.transitionKind, "fresh_authorize_wheels_up");
+  assert.equal(initial.plan.transitionKind, "initial_runtime_binding");
+  assert.notEqual(fresh.plan.id, initial.plan.id);
+  assert.notEqual(fresh.plan.digest, initial.plan.digest);
+});
+
 test("typed transition-plan producer distinguishes malformed shape from invalid semantics", () => {
   const missing = transitionPlanInput();
   delete missing.missionId;

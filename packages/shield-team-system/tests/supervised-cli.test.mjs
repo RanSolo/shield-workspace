@@ -1494,7 +1494,7 @@ test("authorize-wheels-up rejects symlink and gitlink publication paths without 
   }
 });
 
-test("prepare-next exhaustively consumes the exported five-state result without a cast", async () => {
+test("prepare-next exhaustively consumes the exported transition result without a cast", async () => {
   const source = await readFile(new URL("../src/mission-cli.mts", import.meta.url), "utf8");
   const start = source.indexOf("async function prepareNext");
   const end = source.indexOf("\nfunction canonicalDigest", start);
@@ -1504,6 +1504,8 @@ test("prepare-next exhaustively consumes the exported five-state result without 
   assert.match(consumer, /const result = await resolvePreparedMissionTransitionV1\([^;]+\);/u);
   assert.doesNotMatch(consumer, /resolvePreparedMissionTransitionV1\([^;]+\) as/u);
   assert.match(consumer, /const ready: Extract<ResolvePreparedMissionTransitionResultV1, \{ state: "ready" \}> = result;/u);
+  assert.match(consumer, /result\.state === "runtime_binding_ready"/u);
+  assert.match(consumer, /result\.state === "runtime_binding_already_authorized"/u);
 });
 
 test("prepare-next derives and signs one prepared publication without caller JSON or external effect", async () => {

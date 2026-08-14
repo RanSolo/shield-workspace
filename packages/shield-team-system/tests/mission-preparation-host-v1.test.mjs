@@ -44,9 +44,10 @@ import {
   createProfileAwareRuntimeBindingSupersessionEntryV1,
   MISSION_130_JOURNAL_DIGEST,
 } from "../dist/profile-aware-mission-v1.mjs";
-import { appendProfileAwareMissionEntriesAtomicV1, readMissionJournalForDisplay } from "../dist/mission-store.mjs";
+import { appendProfileAwareMissionEntriesAtomicV1, appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "../dist/mission-store.mjs";
 import { executeAuthorizeWheelsUpV1, validateAuthorizeWheelsUpInput } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import { executeReviewPublicationAuthorizationV1 } from "../dist/review-publication-executor-v1.mjs";
+import { executeRuntimeBindingV1 } from "../dist/runtime-binding-executor-v1.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
 import {
   computeImplementationAuthorityDigest,
@@ -66,7 +67,7 @@ const REPOSITORY_REVISION = "b".repeat(40);
 const PARENT_MISSION_REVISION = "c".repeat(40);
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
 
-test("exported prepared resolver result is the closed five-state union", async () => {
+test("exported prepared resolver result is the closed seven-state union", async () => {
   const declaration = await readFile(new URL("../dist/mission-preparation-host-v1.d.mts", import.meta.url), "utf8");
   const start = declaration.indexOf("export type ResolvePreparedMissionTransitionResultV1");
   const end = declaration.indexOf(">;", start);
@@ -78,6 +79,8 @@ test("exported prepared resolver result is the closed five-state union", async (
   assert.match(union, /state: "already_authorized"/u);
   assert.match(union, /PreparedPublicationReadyResultV1/u);
   assert.match(union, /PreparedPublicationAlreadyAuthorizedResultV1/u);
+  assert.match(union, /PreparedRuntimeBindingReadyResultV1/u);
+  assert.match(union, /PreparedRuntimeBindingAlreadyAuthorizedResultV1/u);
 });
 
 function transitionPlanBase(overrides = {}) {
@@ -965,6 +968,7 @@ async function appendAuthorityRevocation(fixture) {
 async function resolutionFixture({
   implementationPath = "implementation.md",
   approvedRelativePaths = [implementationPath],
+  transitionKind = "fresh_authorize_wheels_up",
 } = {}) {
   const repositoryRoot = await repository();
   await mkdir(join(repositoryRoot, ".shield"));
@@ -1007,6 +1011,7 @@ async function resolutionFixture({
     planningBaseRevision: baseRevision,
     publicationPaths: [implementationPath],
     approvedRelativePaths,
+    transitionKind,
   });
   const review = reviewForPlan(plan);
   const identity = dispatchIdentity(plan, review, { repositoryRevision: headRevision });
@@ -1050,6 +1055,311 @@ async function resolutionFixture({
     implementationPath,
   };
 }
+
+async function initialRuntimeBindingFixture() {
+  const fixture = await resolutionFixture({ transitionKind: "initial_runtime_binding" });
+  const authorize = spawnSync(process.execPath, [CLI, "mission", "authorize", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--passcode-stdin", "--json"], {
+    cwd: fixture.repositoryRoot, encoding: "utf8", input: "turnkey-passcode\n", env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(authorize.status, 0, authorize.stderr);
+  const wheelsInput = {
+    baseRevision: fixture.plan.planningBaseRevision,
+    modelId: fixture.plan.modelId,
+    approvedRelativePaths: [...fixture.plan.approvedRelativePaths],
+    approvedActionIds: [...fixture.plan.approvedActionIds],
+    approvedEffectClasses: [...fixture.plan.approvedEffectClasses],
+    approvedEffectKeys: [...fixture.plan.approvedEffectKeys],
+    approvedCapabilities: [...fixture.plan.approvedCapabilities],
+    validationCommandIds: [...fixture.plan.validationCommandIds],
+  };
+  await writeFile(join(fixture.repositoryRoot, ".shield", "tmp", "wheels-up.json"), `${JSON.stringify(wheelsInput)}\n`);
+  const wheels = spawnSync(process.execPath, [CLI, "mission", "wheels-up", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--input", ".shield/tmp/wheels-up.json", "--passcode-stdin", "--json"], {
+    cwd: fixture.repositoryRoot, encoding: "utf8", input: "turnkey-passcode\n", env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(wheels.status, 0, wheels.stderr);
+  return fixture;
+}
+
+async function rewriteImplementationAuthority(fixture, mutate) {
+  const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
+  const entry = JSON.parse(lines[2]);
+  assert.equal(entry.type, "implementation.authorized");
+  entry.payload.authority.payload = mutate(entry.payload.authority.payload);
+  entry.payload.authority.signatureBase64 = sign(null, Buffer.from(canonicalJson(entry.payload.authority.payload)), fixture.privateKey).toString("base64");
+  lines[2] = JSON.stringify(entry);
+  await writeFile(fixture.journalPath, `${lines.join("\n")}\n`);
+  await currentProfileJournal(fixture);
+}
+
+async function rewriteRuntimeBindingScope(fixture) {
+  const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
+  const entry = JSON.parse(lines[3]);
+  assert.equal(entry.type, "runtime.binding_recorded");
+  entry.payload.binding.binding.approvedScope.capabilities = [];
+  entry.payload.authorization.payload.bindingDigest = computeRuntimeBindingDigest(entry.payload.binding.binding);
+  entry.payload.authorization.payload.schema9BindingDigest = computeSchema9RuntimeBindingDigest(entry.payload.binding);
+  entry.payload.authorization.signatureBase64 = sign(null, Buffer.from(canonicalJson(entry.payload.authorization.payload)), fixture.privateKey).toString("base64");
+  lines[3] = JSON.stringify(entry);
+  await writeFile(fixture.journalPath, `${lines.join("\n")}\n`);
+  await currentProfileJournal(fixture);
+}
+
+function executePreparedBindingCli(fixture) {
+  const result = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+    cwd: fixture.repositoryRoot,
+    encoding: "utf8",
+    input: "turnkey-passcode\n",
+    env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result;
+}
+
+test("initial-runtime-binding graph selects one exact prepared binding and exact retry preserves journal bytes", async () => {
+  const fixture = await initialRuntimeBindingFixture();
+  const ready = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(ready.state, "runtime_binding_ready", JSON.stringify(ready));
+  assert.equal(ready.protectedGraph.transitionIntent.transitionKind, "initial_runtime_binding");
+  assert.equal(ready.candidate.transitionKind, "initial-runtime-binding");
+  assert.deepEqual(ready.runtimeBinding.approvedRelativePaths, fixture.plan.approvedRelativePaths);
+  assert.equal(ready.runtimeBinding.binding.reasoningRuntimeId, fixture.plan.reasoningRuntimeId);
+  assert.equal(ready.runtimeBinding.binding.toolExecutorId, fixture.plan.toolExecutorId);
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = fixture.homeRoot;
+  try {
+    const cancelledCalls = { render: 0, pin: 0, sign: 0, append: 0 };
+    await assert.rejects(executeRuntimeBindingV1({
+      mode: "prepared",
+      root: fixture.repositoryRoot,
+      missionId: MISSION_ID,
+      intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
+      expectedPreparation: ready,
+      timestamp: { value: new Date(Date.now() + 1_000).toISOString(), provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, {
+      renderDecision: () => { cancelledCalls.render += 1; return "{}"; },
+      readPasscode: async () => { cancelledCalls.pin += 1; throw new Error("cancelled"); },
+      signPayload: async () => { cancelledCalls.sign += 1; return "unused"; },
+      appendEntryLegacy: async () => { throw new Error("legacy append used"); },
+      appendEntryAtomic: async () => { cancelledCalls.append += 1; throw new Error("atomic append used"); },
+    }), /cancelled/u);
+    assert.deepEqual(cancelledCalls, { render: 1, pin: 1, sign: 0, append: 0 });
+
+    for (const drift of [
+      {
+        name: "workspace",
+        mutate: async () => writeFile(join(fixture.repositoryRoot, "post-pin-drift.txt"), "drift\n"),
+        restore: async () => unlink(join(fixture.repositoryRoot, "post-pin-drift.txt")),
+      },
+      {
+        name: "origin identity",
+        mutate: async () => { git(fixture.repositoryRoot, ["remote", "set-url", "origin", "https://github.com/Other/repository.git"]); },
+        restore: async () => { git(fixture.repositoryRoot, ["remote", "set-url", "origin", `https://github.com/${REPOSITORY_ID}.git`]); },
+      },
+    ]) {
+      const journalBeforeDrift = await readFile(fixture.journalPath, "utf8");
+      const driftCalls = { render: 0, pin: 0, sign: 0, append: 0 };
+      await assert.rejects(executeRuntimeBindingV1({
+        mode: "prepared",
+        root: fixture.repositoryRoot,
+        missionId: MISSION_ID,
+        intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
+        expectedPreparation: ready,
+        timestamp: { value: new Date(Date.now() + 1_000).toISOString(), provenance: "hostTrusted" },
+        humanMode: false,
+        decisionOutput: { write: () => {} },
+      }, {
+        renderDecision: () => { driftCalls.render += 1; return "{}"; },
+        readPasscode: async () => { driftCalls.pin += 1; return "unused"; },
+        signPayload: async (_binding, _passcode, payload) => {
+          driftCalls.sign += 1;
+          await drift.mutate();
+          return sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64");
+        },
+        appendEntryLegacy: async () => { throw new Error("legacy append used"); },
+        appendEntryAtomic: async () => { driftCalls.append += 1; throw new Error("atomic append used"); },
+      }), /no longer matches|changed while|repository identit/iu, drift.name);
+      assert.deepEqual(driftCalls, { render: 1, pin: 1, sign: 1, append: 0 }, drift.name);
+      assert.equal(await readFile(fixture.journalPath, "utf8"), journalBeforeDrift, drift.name);
+      await drift.restore();
+    }
+
+    const calls = { render: 0, pin: 0, sign: 0, legacyAppend: 0, atomicAppend: 0 };
+    await executeRuntimeBindingV1({
+      mode: "prepared",
+      root: fixture.repositoryRoot,
+      missionId: MISSION_ID,
+      intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
+      expectedPreparation: ready,
+      timestamp: { value: new Date(Date.now() + 1_000).toISOString(), provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, {
+      renderDecision: () => { calls.render += 1; return "{}"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signPayload: async (_binding, _passcode, payload) => {
+        calls.sign += 1;
+        return sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64");
+      },
+      appendEntryLegacy: async () => { calls.legacyAppend += 1; throw new Error("legacy append used"); },
+      appendEntryAtomic: async (input) => { calls.atomicAppend += 1; assert.equal(input.entries.length, 1); return appendProfileAwareMissionEntriesAtomicV1(input); },
+    });
+    assert.deepEqual(calls, { render: 1, pin: 1, sign: 1, legacyAppend: 0, atomicAppend: 1 });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+
+  const journalBytes = await readFile(fixture.journalPath, "utf8");
+  const retry = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(retry.state, "runtime_binding_already_authorized", JSON.stringify(retry));
+  assert.equal(retry.bindingId, `binding:${MISSION_ID}:may:1`);
+  assert.equal(await readFile(fixture.journalPath, "utf8"), journalBytes);
+
+  const cliRetry = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--human"], {
+    cwd: fixture.repositoryRoot, encoding: "utf8", env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(cliRetry.status, 0, cliRetry.stderr);
+  assert.match(cliRetry.stdout, /^ALREADY AUTHORIZED — nothing repeated\./u);
+  assert.doesNotMatch(`${cliRetry.stdout}${cliRetry.stderr}`, /Passcode:/u);
+  assert.equal(await readFile(fixture.journalPath, "utf8"), journalBytes);
+});
+
+test("legacy mission bind accepts base-compatible status-only and unrelated valid configuration drift after signing", async () => {
+  const variants = [
+    {
+      name: "status-only drift",
+      mutate: async (fixture) => writeFile(join(fixture.repositoryRoot, "legacy-status-drift.txt"), "untracked after signing\n"),
+    },
+    {
+      name: "unrelated valid configuration drift",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "config.json");
+        const config = JSON.parse(await readFile(path, "utf8"));
+        assert.deepEqual(config.adapterIds, ["github"]);
+        await writeFile(path, `${JSON.stringify({ ...config, adapterIds: ["github", "atlassian"] }, null, 2)}\n`);
+      },
+    },
+  ];
+
+  for (const variant of variants) {
+    const fixture = await initialRuntimeBindingFixture();
+    const journalBefore = await readFile(fixture.journalPath, "utf8");
+    const calls = { render: 0, pin: 0, sign: 0, legacy: 0, atomic: 0 };
+    const result = await executeRuntimeBindingV1({
+      mode: "legacy",
+      root: fixture.repositoryRoot,
+      missionId: MISSION_ID,
+      intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
+      timestamp: { value: new Date(Date.now() + 1_000).toISOString(), provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, {
+      renderDecision: () => { calls.render += 1; return "unused"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signPayload: async (_binding, _passcode, payload) => {
+        calls.sign += 1;
+        await variant.mutate(fixture);
+        return sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64");
+      },
+      appendEntryLegacy: async (input) => { calls.legacy += 1; return appendProfileAwareMissionEntryV1(input); },
+      appendEntryAtomic: async () => { calls.atomic += 1; throw new Error("atomic append used"); },
+    });
+    assert.deepEqual(calls, { render: 0, pin: 1, sign: 1, legacy: 1, atomic: 0 }, variant.name);
+    assert.equal(result.projection.runtimeBindings.length, 1, variant.name);
+    const journalAfter = await readFile(fixture.journalPath, "utf8");
+    assert.equal(journalAfter.startsWith(journalBefore), true, variant.name);
+    assert.notEqual(journalAfter, journalBefore, variant.name);
+  }
+});
+
+test("prepared runtime-binding executor rejects repository and authority identity drift before every effect", async () => {
+  const variants = [
+    {
+      name: "remote repository identity",
+      mutate: async (fixture) => { git(fixture.repositoryRoot, ["remote", "set-url", "origin", "https://github.com/Other/repository.git"]); },
+    },
+    {
+      name: "configured repository identity",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "config.json");
+        await writeFile(path, (await readFile(path, "utf8")).replace(REPOSITORY_ID, "Other/repository"));
+      },
+    },
+    {
+      name: "authority artifact revision",
+      mutate: async (fixture) => rewriteImplementationAuthority(fixture, (authority) => ({ ...authority, artifactRevisionId: authority.baseRevision })),
+    },
+    {
+      name: "authority repository identity",
+      mutate: async (fixture) => rewriteImplementationAuthority(fixture, (authority) => ({ ...authority, repositoryId: "Other/repository" })),
+    },
+  ];
+
+  for (const variant of variants) {
+    const fixture = await initialRuntimeBindingFixture();
+    const ready = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(ready.state, "runtime_binding_ready", JSON.stringify(ready));
+    await variant.mutate(fixture);
+    const journalBytes = await readFile(fixture.journalPath, "utf8");
+    const blocked = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(blocked.state, "blocked", `${variant.name}: ${JSON.stringify(blocked)}`);
+    const calls = { render: 0, pin: 0, sign: 0, legacy: 0, atomic: 0 };
+    await assert.rejects(executeRuntimeBindingV1({
+      mode: "prepared",
+      root: fixture.repositoryRoot,
+      missionId: MISSION_ID,
+      intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
+      expectedPreparation: ready,
+      timestamp: { value: "2026-08-13T12:00:00Z", provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, {
+      renderDecision: () => { calls.render += 1; return "{}"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signPayload: async () => { calls.sign += 1; return "unused"; },
+      appendEntryLegacy: async () => { calls.legacy += 1; throw new Error("legacy append used"); },
+      appendEntryAtomic: async () => { calls.atomic += 1; throw new Error("atomic append used"); },
+    }), /repository|artifact revision|reviewed candidate/iu, variant.name);
+    assert.deepEqual(calls, { render: 0, pin: 0, sign: 0, legacy: 0, atomic: 0 }, variant.name);
+    assert.equal(await readFile(fixture.journalPath, "utf8"), journalBytes, variant.name);
+  }
+});
+
+test("prepare-next retry rejects HEAD, scope, and superseded-binding drift without replaying the key turn", async () => {
+  const variants = [
+    {
+      name: "HEAD drift",
+      mutate: async (fixture) => {
+        await writeFile(join(fixture.repositoryRoot, "retry-head-drift.txt"), "drift\n");
+        git(fixture.repositoryRoot, ["add", "retry-head-drift.txt"]);
+        git(fixture.repositoryRoot, ["commit", "-qm", "retry head drift"]);
+      },
+    },
+    { name: "scope drift", mutate: rewriteRuntimeBindingScope },
+    { name: "superseded binding", mutate: appendRuntimeReplacement },
+  ];
+
+  for (const variant of variants) {
+    const fixture = await initialRuntimeBindingFixture();
+    executePreparedBindingCli(fixture);
+    await variant.mutate(fixture);
+    const journalBytes = await readFile(fixture.journalPath, "utf8");
+    const resolution = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(resolution.state, "blocked", `${variant.name}: ${JSON.stringify(resolution)}`);
+    const replay = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+      cwd: fixture.repositoryRoot,
+      encoding: "utf8",
+      input: "must-not-be-read\n",
+      env: { ...process.env, HOME: fixture.homeRoot },
+    });
+    assert.equal(replay.status, 1, `${variant.name}: ${replay.stderr}`);
+    assert.doesNotMatch(`${replay.stdout}${replay.stderr}`, /Passcode:|prepared-runtime-binding-decision/iu, variant.name);
+    assert.equal(await readFile(fixture.journalPath, "utf8"), journalBytes, variant.name);
+  }
+});
 
 test("resolve compiles a fresh candidate, blocks before a PIN on drift, executes once, and returns an idempotent retry", async () => {
   const fixture = await resolutionFixture();
