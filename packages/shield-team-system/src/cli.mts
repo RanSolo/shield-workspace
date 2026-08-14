@@ -31,6 +31,7 @@ import {
   type StarterPipelineId,
 } from "./pipeline-starter-v1.mjs";
 import { MissionCliError, missionUsage, runMissionCli } from "./mission-cli.mjs";
+import { GuidedReviewCliError, guidedReviewUsage, runGuidedReviewCli } from "./guided-review-cli-v1.mjs";
 import {
   inspectWorktreeStateV1,
   prepareWorktreeStateV1,
@@ -79,6 +80,8 @@ function usage(): string {
     `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> [--repository-trust-profile <${REPOSITORY_TRUST_PROFILE_IDS.join("|")}>] [--fitz-binding-ref <ref>] [--simmons-binding-ref <ref>] [--adapters <${CONFIGURED_HOST_ADAPTER_IDS.join(",")}>] [--migrate-config] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
     "  shield doctor [--root <path>] [--json]",
     "  shield worktree prepare --source-root <path> --root <destination> [--json]",
+    "",
+    guidedReviewUsage(),
     "",
     missionUsage(),
   ].join("\n");
@@ -773,6 +776,7 @@ export async function runCli(args: string[]): Promise<number> {
   if (command === "init") return runInit(rest);
   if (command === "doctor") return runDoctor(rest);
   if (command === "worktree") return runWorktree(rest);
+  if (command === "guided-review") return runGuidedReviewCli(rest);
   if (command === "mission" || command === "evidence" || command === "delegation") return runMissionCli([command, ...rest]);
   throw new CliError(`Unsupported command: ${command}.\n${usage()}`);
 }
@@ -788,7 +792,7 @@ if (cliIsMain) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`SHIELD: ${message}\n`);
-    process.exitCode = error instanceof CliError || error instanceof MissionCliError ? error.exitCode : 2;
+    process.exitCode = error instanceof CliError || error instanceof MissionCliError || error instanceof GuidedReviewCliError ? error.exitCode : 2;
   }
 }
 

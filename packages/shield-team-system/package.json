@@ -142,6 +142,10 @@
       "types": "./public/qa-mode.d.mts",
       "import": "./public/qa-mode.mjs"
     },
+    "./guided-review": {
+      "types": "./public/guided-review.d.mts",
+      "import": "./public/guided-review.mjs"
+    },
     "./knowledge": {
       "types": "./public/knowledge.d.mts",
       "import": "./public/knowledge.mjs"
