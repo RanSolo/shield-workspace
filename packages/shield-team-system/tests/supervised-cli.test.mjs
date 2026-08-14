@@ -30,6 +30,8 @@ import {
 } from "../dist/guided-review-v1.mjs";
 import { createGuidedReviewDriverReceiptV1 } from "../dist/guided-review-driver-v1.mjs";
 import { createGuidedReviewRouteOverlayV1 } from "../dist/guided-review-route-overlay-v1.mjs";
+import { resolveGuidedReviewRoutePreparationHostV1 } from "../dist/guided-review-route-resolution-host-v1.mjs";
+import { answerCurrentGuidedReviewSessionHostV1 } from "../dist/guided-review-session-host-v1.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import {
   buildMissionTransitionPlanReviewV1,
@@ -1839,7 +1841,7 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
 
   const playbook = JSON.parse(await readFile(active.paths.playbookPath, "utf8"));
   const progressedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-    "--guided-review-choice", "yes", "--guided-review-disposition", "PASS", "--guided-review-observation", "Observed the exact current inspection prompt.",
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
     "--passcode-stdin", "--json"],
   { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
   assert.equal(progressedRun.status, 0, progressedRun.stderr);
@@ -1847,13 +1849,14 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
   assert.equal(progressed.state, "guided_review_in_progress");
   assert.notEqual(progressed.sessionDigest, active.sessionDigest);
   assert.notEqual(progressed.currentStep.stepId, active.currentStep.stepId);
+  assert.equal(JSON.parse(await readFile(active.paths.sessionPath, "utf8")).decisions.at(-1).observation, "PASS");
   assert.doesNotMatch(`${progressedRun.stdout}${progressedRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
 
   let session = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
   const totalSteps = playbook.stages.flatMap((stage) => stage.steps).length;
   while (session.decisions.length < totalSteps - 1) {
     const next = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-      "--guided-review-choice", "yes", "--guided-review-disposition", "PASS", "--guided-review-observation", "Observed the exact current inspection prompt.",
+      "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
       "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
     assert.equal(next.status, 0, next.stderr);
     assert.equal(JSON.parse(next.stdout).state, "guided_review_in_progress");
@@ -1861,7 +1864,7 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
     session = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
   }
   const completedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-    "--guided-review-choice", "yes", "--guided-review-disposition", "PASS", "--guided-review-observation", "Observed the final exact inspection prompt.",
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
     "--passcode-stdin", "--json"],
   { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n" });
   assert.equal(completedRun.status, 0, completedRun.stderr);
@@ -1871,6 +1874,75 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
   assert.equal(after.at(-1).type, "review.publication_authorized");
   assert.match(after.at(-1).payload.authorization.payload.sourceRef, /:guided-review-v2:sha256:/u);
   assert.notEqual(await readFile(journal, "utf8"), "");
+});
+
+test("prepare-next bare answers preserve exact human follow-ups and mutate at most one current question", async () => {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const evidence = await preparedGuidedReviewContext(prepared);
+  const routedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "unused\n" });
+  assert.equal(routedRun.status, 0, routedRun.stderr);
+  await authorPreparedFuryRoute(prepared, JSON.parse(routedRun.stdout));
+  const activeRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "unused\n" });
+  assert.equal(activeRun.status, 0, activeRun.stderr);
+  const active = JSON.parse(activeRun.stdout);
+  const sessionPath = active.paths.sessionPath;
+  const journalBefore = await readFile(journalPath(prepared.root, prepared.missionId), "utf8");
+  const sessionBefore = await readFile(sessionPath, "utf8");
+
+  for (const [answer, requiredField] of [["FAIL", "finding"], ["NOT_OBSERVED", "finding"], ["CONDITIONAL_PASS", "condition"]]) {
+    const followUpRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--guided-review-answer", answer, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(followUpRun.status, 0, followUpRun.stderr);
+    const followUp = JSON.parse(followUpRun.stdout);
+    assert.equal(followUp.state, "follow_up_required");
+    assert.equal(followUp.answer, answer);
+    assert.equal(followUp.requiredField, requiredField);
+    assert.equal(await readFile(sessionPath, "utf8"), sessionBefore);
+    assert.doesNotMatch(`${followUpRun.stdout}${followUpRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  }
+
+  const exactFinding = "The exact current behavior violates the inspected boundary.";
+  const failed = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "FAIL", "--guided-review-finding", exactFinding,
+    "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(failed.status, 0, failed.stderr);
+  let session = JSON.parse(await readFile(sessionPath, "utf8"));
+  assert.deepEqual({ observation: session.decisions.at(-1).observation, finding: session.decisions.at(-1).finding },
+    { observation: "FAIL", finding: exactFinding });
+
+  const exactCondition = "Proceed only after the named boundary is corrected.";
+  const conditional = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "CONDITIONAL_PASS", "--guided-review-condition", exactCondition,
+    "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(conditional.status, 0, conditional.stderr);
+  session = JSON.parse(await readFile(sessionPath, "utf8"));
+  assert.deepEqual({ observation: session.decisions.at(-1).observation, condition: session.decisions.at(-1).condition },
+    { observation: "CONDITIONAL_PASS", condition: exactCondition });
+
+  const passed = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS", "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(passed.status, 0, passed.stderr);
+  session = JSON.parse(await readFile(sessionPath, "utf8"));
+  assert.equal(session.decisions.at(-1).observation, "PASS");
+  assert.notEqual(session.currentStepId, active.currentStep.stepId);
+  const freshPreparation = await resolvePreparedMissionTransitionV1({ missionId: prepared.missionId, repositoryRoot: prepared.root });
+  assert.equal(freshPreparation.state, "publication_ready");
+  const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: freshPreparation, repositoryRoot: prepared.root });
+  assert.equal(resolution.state, "guided_review_ready");
+  const expectedSessionDigest = session.sessionDigest;
+  const decisionInput = { repositoryRoot: prepared.root, resolution, expectedSessionDigest, disposition: "pass",
+    observation: "PASS", finding: null, condition: null, decidedAt: new Date().toISOString() };
+  const firstCas = await answerCurrentGuidedReviewSessionHostV1(decisionInput);
+  assert.equal(firstCas.state, "ready", JSON.stringify(firstCas));
+  const staleCas = await answerCurrentGuidedReviewSessionHostV1(decisionInput);
+  assert.equal(staleCas.state, "invalid");
+  assert.equal(staleCas.code, "GUIDED_REVIEW_ANSWER_STALE");
+  assert.equal(await readFile(journalPath(prepared.root, prepared.missionId), "utf8"), journalBefore);
 });
 
 async function completedPreparedGuidedReviewFixture() {
@@ -1995,6 +2067,12 @@ test("prepare-next No and Cancel never resume Guided Review or inspect poisoned 
     await symlink(outside, join(prepared.root, ".shield", "tmp", "guided-review"));
     const ledger = join(prepared.root, ".shield", "dispatch-receipts.jsonl");
     const ledgerBefore = await readFile(ledger, "utf8");
+    const rejectedAnswer = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", choice, "--guided-review-answer", "PASS", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(rejectedAnswer.status, 1);
+    assert.match(rejectedAnswer.stderr, /Only the Guided Review Yes route accepts/u);
+    assert.doesNotMatch(`${rejectedAnswer.stdout}${rejectedAnswer.stderr}`, /ROUTE|OVERLAY|FURY|DISPATCH_LEDGER|Passcode:/u);
     const result = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
       "--guided-review-choice", choice, "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: choice === "no" ? "prepared-passcode\n" : "must-not-be-read\n" });

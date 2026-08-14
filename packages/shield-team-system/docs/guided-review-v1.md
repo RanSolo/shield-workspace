@@ -224,13 +224,15 @@ session command:
 shield mission prepare-next \
   --mission-id mission:example \
   --guided-review-choice yes \
-  --guided-review-disposition PASS \
-  --guided-review-observation "Observed the exact expected behavior."
+  --guided-review-answer PASS
 ```
 
-`CONDITIONAL_PASS` additionally requires `--guided-review-condition`; `FAIL`
-and `NOT_OBSERVED` record the observation as the durable finding. The same
-command resumes one question at a time until the session is complete. It does
+Bare `PASS` records the exact observation `PASS`; the host does not generate
+review prose. `FAIL` and `NOT_OBSERVED` require exactly one
+`--guided-review-finding`, while `CONDITIONAL_PASS` requires exactly one
+`--guided-review-condition`. If that follow-up is absent, the command returns
+`follow_up_required` without changing the session. The same command resumes
+one question at a time until the session is complete. It does
 not read a PIN or append mission authority while another question remains.
 Only completion displays the combined Guided Review/publication decision and
 requests the one final PIN. Every pre-display and post-signature reload re-resolves the request,

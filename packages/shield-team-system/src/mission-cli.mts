@@ -1408,14 +1408,49 @@ function renderGuidedReviewInProgress(
 type GuidedReviewCurrentAnswer = Readonly<{
   disposition: "pass" | "fail" | "conditional_pass" | "not_observed";
   observation: string;
+  finding: string | null;
   condition: string | null;
 }>;
 
-function guidedReviewCurrentAnswer(options: ParsedOptions): GuidedReviewCurrentAnswer | null {
+type GuidedReviewAnswerSelection = Readonly<{
+  answer: "PASS" | "FAIL" | "CONDITIONAL_PASS" | "NOT_OBSERVED";
+  decision: GuidedReviewCurrentAnswer | null;
+  requiredField: "finding" | "condition" | null;
+}>;
+
+function guidedReviewCurrentAnswer(options: ParsedOptions): GuidedReviewAnswerSelection | null {
+  const bareAnswer = options.values.get("--guided-review-answer");
   const rawDisposition = options.values.get("--guided-review-disposition");
   const observation = options.values.get("--guided-review-observation");
+  const finding = options.values.get("--guided-review-finding");
   const condition = options.values.get("--guided-review-condition");
-  if (rawDisposition === undefined && observation === undefined && condition === undefined) return null;
+  if (bareAnswer === undefined && rawDisposition === undefined && observation === undefined && finding === undefined && condition === undefined) return null;
+  if (bareAnswer !== undefined) {
+    if (rawDisposition !== undefined || observation !== undefined) {
+      throw new MissionCliError("--guided-review-answer cannot be combined with the legacy disposition/observation form.", 1);
+    }
+    if (!["PASS", "FAIL", "CONDITIONAL_PASS", "NOT_OBSERVED"].includes(bareAnswer)) {
+      throw new MissionCliError("--guided-review-answer must be exactly PASS, FAIL, CONDITIONAL_PASS, or NOT_OBSERVED.", 1);
+    }
+    const answer = bareAnswer as GuidedReviewAnswerSelection["answer"];
+    if (answer === "PASS") {
+      if (finding !== undefined || condition !== undefined) throw new MissionCliError("PASS accepts no finding or condition.", 1);
+      return Object.freeze({ answer, decision: Object.freeze({ disposition: "pass", observation: "PASS", finding: null, condition: null }), requiredField: null });
+    }
+    if (answer === "FAIL" || answer === "NOT_OBSERVED") {
+      if (condition !== undefined) throw new MissionCliError(`${answer} accepts a finding, not a condition.`, 1);
+      if (finding === undefined) return Object.freeze({ answer, decision: null, requiredField: "finding" });
+      if (finding.trim() !== finding || finding.length === 0 || finding.length > 4000) throw new MissionCliError("--guided-review-finding must be normalized and contain 1-4000 characters.", 1);
+      return Object.freeze({ answer, decision: Object.freeze({ disposition: answer === "FAIL" ? "fail" : "not_observed",
+        observation: answer, finding, condition: null }), requiredField: null });
+    }
+    if (finding !== undefined) throw new MissionCliError("CONDITIONAL_PASS accepts a condition, not a finding.", 1);
+    if (condition === undefined) return Object.freeze({ answer, decision: null, requiredField: "condition" });
+    if (condition.trim() !== condition || condition.length === 0 || condition.length > 4000) throw new MissionCliError("--guided-review-condition must be normalized and contain 1-4000 characters.", 1);
+    return Object.freeze({ answer, decision: Object.freeze({ disposition: "conditional_pass", observation: "CONDITIONAL_PASS",
+      finding: null, condition }), requiredField: null });
+  }
+  if (finding !== undefined) throw new MissionCliError("--guided-review-finding is used only with --guided-review-answer FAIL or NOT_OBSERVED.", 1);
   if (rawDisposition === undefined || observation === undefined) {
     throw new MissionCliError("A Guided Review answer requires both --guided-review-disposition and --guided-review-observation.", 1);
   }
@@ -1433,7 +1468,8 @@ function guidedReviewCurrentAnswer(options: ParsedOptions): GuidedReviewCurrentA
   } else if (condition !== undefined) {
     throw new MissionCliError("--guided-review-condition is accepted only with CONDITIONAL_PASS.", 1);
   }
-  return Object.freeze({ disposition, observation, condition: condition ?? null });
+  return Object.freeze({ answer: normalized as GuidedReviewAnswerSelection["answer"], decision: Object.freeze({ disposition, observation,
+    finding: disposition === "fail" || disposition === "not_observed" ? observation : null, condition: condition ?? null }), requiredField: null });
 }
 
 function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicationDecisionV1): string {
@@ -1494,7 +1530,7 @@ async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"y
 
 async function prepareNext(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
-    "--guided-review-disposition", "--guided-review-observation", "--guided-review-condition"], ["--json", "--human", "--passcode-stdin"]);
+    "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition", "--guided-review-observation", "--guided-review-condition"], ["--json", "--human", "--passcode-stdin"]);
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
@@ -1608,11 +1644,19 @@ async function prepareNext(args: string[]): Promise<number> {
         }
         if (resumed.state === "guided_review_in_progress") {
           if (currentAnswer !== null) {
+            if (currentAnswer.decision === null) {
+              const followUp = Object.freeze({ schemaVersion: 1, state: "follow_up_required", missionId: resumed.missionId,
+                exactRevision: resumed.exactRevision, sessionDigest: resumed.sessionDigest, answer: currentAnswer.answer,
+                requiredField: currentAnswer.requiredField, currentStage: resumed.currentStage, currentStep: resumed.currentStep, paths: resumed.paths });
+              output(followUp, options.flags.has("--json"), ["GUIDED REVIEW FOLLOW-UP REQUIRED", `Answer: ${currentAnswer.answer}`,
+                `Required: ${currentAnswer.requiredField}`, `Question: ${resumed.currentStep?.question ?? "none"}`].join("\n"));
+              return 0;
+            }
             const answered = await answerCurrentGuidedReviewSessionHostV1({ repositoryRoot: root, resolution: await (async () => {
               const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: result, repositoryRoot: root });
               if (resolution.state !== "guided_review_ready") throw new MissionCliError("Guided Review route changed before the current answer could be recorded.", 1);
               return resolution;
-            })(), expectedSessionDigest: resumed.sessionDigest, ...currentAnswer, decidedAt: new Date().toISOString() });
+            })(), expectedSessionDigest: resumed.sessionDigest, ...currentAnswer.decision, decidedAt: new Date().toISOString() });
             if (answered.state === "invalid") throw new MissionCliError(`${answered.code}: ${answered.errors.join(" ")}`, 1);
             answerConsumed = true;
             resumed = await resume(result);
@@ -2224,7 +2268,7 @@ export function missionUsage(): string {
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
-    "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-disposition PASS|FAIL|CONDITIONAL_PASS|NOT_OBSERVED --guided-review-observation <text> [--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-answer PASS|FAIL|CONDITIONAL_PASS|NOT_OBSERVED [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",

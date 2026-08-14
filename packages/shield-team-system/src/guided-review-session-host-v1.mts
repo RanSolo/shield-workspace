@@ -252,6 +252,7 @@ export interface AnswerCurrentGuidedReviewSessionHostInputV1 {
   readonly expectedSessionDigest: string;
   readonly disposition: "pass" | "fail" | "conditional_pass" | "not_observed";
   readonly observation: string;
+  readonly finding: string | null;
   readonly condition: string | null;
   readonly decidedAt: string;
 }
@@ -286,7 +287,7 @@ export async function answerCurrentGuidedReviewSessionHostV1(
     observation: input.observation,
     evidenceRefs: current.value.currentStepId === null ? [] : playbook.value.stages.flatMap((stage) => stage.steps)
       .find((step) => step.stepId === current.value.currentStepId)?.evidenceRefs ?? [],
-    finding: input.disposition === "fail" || input.disposition === "not_observed" ? input.observation : null,
+    finding: input.finding,
     condition: input.condition,
     decidedAt: input.decidedAt,
   });
