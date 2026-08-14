@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { constants } from "node:fs";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
 import { isProxy } from "node:util/types";
 
-import { canonicalJson } from "./mission-v2.mjs";
+import { canonicalJson, deriveRepositoryMissionBindings, type TrustedHumanBinding } from "./mission-v2.mjs";
 import {
   computeCanonicalContractDigestV1,
   computeContentIdV1,
@@ -11,11 +12,13 @@ import {
   prepareMissionTransitionV1,
   validateFreshAuthorizeWheelsUpObservationV1,
   validateParentPlanReviewEvidenceV1,
+  validateProfileAwareMissionIntakeTemplateV1,
   validateTransitionIntentV1,
-  validateTransitionPlanV1,
+  validateTransitionPlanV1OrV2,
   type ParentPlanReviewEvidenceV1,
+  type ProfileAwareMissionIntakeTemplateV1,
   type TransitionIntentV1,
-  type TransitionPlanV1,
+  type TransitionPlanV1OrV2,
   type FreshAuthorizeWheelsUpObservationV1,
   type FreshAuthorizeWheelsUpCandidateV1,
   type PrepareMissionTransitionResultV1,
@@ -42,7 +45,12 @@ import {
   type AuthorizeWheelsUpEnvironmentObservationV1,
   type AuthorizeWheelsUpJournalSnapshotDependenciesV1,
 } from "./authorize-wheels-up-executor-v1.mjs";
-import { journalByteSha256 } from "./mission-store.mjs";
+import {
+  initializeProfileAwareMissionJournalV1,
+  journalByteSha256,
+  readMissionJournalForDisplay,
+  resolveSupervisedMissionPaths,
+} from "./mission-store.mjs";
 import {
   computeImplementationAuthorityDigest,
   computeRuntimeBindingDigest,
@@ -58,7 +66,14 @@ import {
   type ReviewPublicationAuthorityV1,
   type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
-import { replayProfileAwareMissionJournal } from "./profile-aware-mission-v1.mjs";
+import {
+  createProfileAwareMissionBrief,
+  profileAwareMissionIntakeV1,
+  replayProfileAwareMissionJournal,
+  validateProfileAwareMissionBrief,
+  type ProfileAwareMissionBriefContentV1,
+  type ProfileAwareMissionEntryV1,
+} from "./profile-aware-mission-v1.mjs";
 
 export const MISSION_TRANSITION_PLAN_REVIEW_SCHEMA_VERSION = 1 as const;
 export const MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION = "mission.transition-plan-review.v1" as const;
@@ -118,7 +133,7 @@ export interface MissionTransitionPlanReviewExpectedBindingV1 {
 export interface MaterializeReviewedMissionTransitionInputV1 {
   readonly missionId: string;
   readonly repositoryRoot: string;
-  readonly transitionPlan: TransitionPlanV1;
+  readonly transitionPlan: TransitionPlanV1OrV2;
   readonly reviewArtifact: MissionTransitionPlanReviewV1;
   readonly expectedBinding: MissionTransitionPlanReviewExpectedBindingV1;
   readonly dispatchIdentity: SeatDispatchReceiptIdentityV1;
@@ -251,7 +266,7 @@ function outputEvidenceRefsBound(review: MissionTransitionPlanReviewV1, outputEv
     .every((expected) => outputEvidenceRefs.includes(expected));
 }
 
-function deriveBindingErrors(review: MissionTransitionPlanReviewV1, transitionPlan: TransitionPlanV1, binding: MissionTransitionPlanReviewExpectedBindingV1): readonly string[] {
+function deriveBindingErrors(review: MissionTransitionPlanReviewV1, transitionPlan: TransitionPlanV1OrV2, binding: MissionTransitionPlanReviewExpectedBindingV1): readonly string[] {
   const errors: string[] = [];
   if (review.missionId !== transitionPlan.missionId || transitionPlan.missionId !== binding.missionId) {
     errors.push("mission_binding_mismatch");
@@ -353,7 +368,7 @@ function deriveParentPlanReview(input: {
 
 type DerivedTransitionIntentV1 = { state: "valid"; value: TransitionIntentV1 } | MaterializeReviewedMissionTransitionInvalidV1;
 
-function deriveTransitionIntent(plan: TransitionPlanV1, review: ParentPlanReviewEvidenceV1): DerivedTransitionIntentV1 {
+function deriveTransitionIntent(plan: TransitionPlanV1OrV2, review: ParentPlanReviewEvidenceV1): DerivedTransitionIntentV1 {
   const body = {
     schemaId: "mission.transition-intent.v1" as const,
     authority: "none" as const,
@@ -709,7 +724,7 @@ export async function materializeReviewedMissionTransitionV1(
     return materializeInvalid("invalid_materialization_input", "Materialization repositoryRoot is invalid.");
   }
 
-  const transitionPlan = validateTransitionPlanV1({ artifact: value.transitionPlan });
+  const transitionPlan = validateTransitionPlanV1OrV2({ artifact: value.transitionPlan });
   if (transitionPlan.state === "invalid") {
     return materializeInvalid("invalid_transition_plan", ...transitionPlan.errors);
   }
@@ -808,7 +823,7 @@ export type ResolvePreparedMissionTransitionResultV1 = Readonly<
   | {
       state: "ready";
       missionId: string;
-      plan: TransitionPlanV1;
+      plan: TransitionPlanV1OrV2;
       reviewEvidence: ParentPlanReviewEvidenceV1;
       intent: TransitionIntentV1;
       selection: import("@shield/mission-preparation").NextTransitionSelectionV1;
@@ -1019,6 +1034,247 @@ async function readConfig(repositoryRoot: string): Promise<ShieldConfig | null> 
   } catch {
     return null;
   }
+}
+
+type StableTextSnapshotV1 = Readonly<{ bytes: string; identity: string }>;
+type StableConfigurationSnapshotV1 = StableTextSnapshotV1 & Readonly<{ config: ShieldConfig }>;
+type PreparationRepositoryObservationV1 = Readonly<{
+  configuredRepositoryId: string;
+  remoteRepositoryId: string;
+  canonicalRoot: string;
+  gitTopLevel: string;
+  branch: string;
+  baseRevision: string;
+  headRevision: string;
+  baseAncestor: true;
+  statusEntries: readonly string[];
+  changedPaths: readonly string[];
+  baseTreeEntries: readonly Readonly<{ mode: string; type: string }>[];
+  headTreeEntries: readonly Readonly<{ mode: string; type: string }>[];
+}>;
+export interface MissionPreparationSessionDependenciesV1 {
+  observePublicationRepository: (
+    repositoryRoot: string,
+    configuredRepositoryId: string,
+    baseRevision: string,
+    changedPaths: readonly string[],
+  ) => Promise<PreparationRepositoryObservationV1>;
+}
+type JournalPresenceV1 = Readonly<{
+  state: "absent" | "present" | "unsafe_or_uncertain";
+  journalPath: string | null;
+}>;
+
+function fileIdentity(stats: Awaited<ReturnType<Awaited<ReturnType<typeof open>>["stat"]>>): string {
+  return [stats.dev, stats.ino, stats.mode, stats.size, stats.mtimeMs, stats.ctimeMs].join(":");
+}
+
+async function stableRegularTextFile(path: string): Promise<StableTextSnapshotV1 | null> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let snapshot: StableTextSnapshotV1 | null = null;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = await handle.stat();
+    if (before.isFile()) {
+      const bytes = await handle.readFile("utf8");
+      const after = await handle.stat();
+      const pathStats = await lstat(path);
+      const identity = fileIdentity(before);
+      if (pathStats.isFile() && !pathStats.isSymbolicLink() && identity === fileIdentity(after) && identity === fileIdentity(pathStats)) {
+        snapshot = { bytes, identity: `${identity}:${createHash("sha256").update(bytes).digest("hex")}` };
+      }
+    }
+  } catch { snapshot = null; }
+  if (handle === undefined) return null;
+  try { await handle.close(); }
+  catch { return null; }
+  return snapshot;
+}
+
+async function canonicalRepositoryRoot(input: string): Promise<string | null> {
+  try {
+    const lexical = resolve(input);
+    const stats = await lstat(lexical);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) return null;
+    return await realpath(lexical);
+  } catch {
+    return null;
+  }
+}
+
+async function stableConfigurationSnapshot(
+  repositoryRoot: string,
+  repositoryId: string,
+): Promise<StableConfigurationSnapshotV1 | null> {
+  const snapshot = await stableRegularTextFile(join(repositoryRoot, ".shield", "config.json"));
+  if (snapshot === null) return null;
+  const parsed = parseShieldConfig(snapshot.bytes);
+  if (parsed.state === "invalid" || parsed.value.repositoryId !== repositoryId) return null;
+  const paths = resolveSupervisedMissionPaths(repositoryRoot, parsed.value.paths.journals, "mission:configuration-probe");
+  if (paths.state === "invalid") return null;
+  return { ...snapshot, config: parsed.value };
+}
+
+type ObservedPathIdentityV1 = Readonly<{ path: string; identity: string }>;
+
+async function observationsRemainStable(observations: readonly ObservedPathIdentityV1[]): Promise<boolean> {
+  try {
+    for (const observation of observations) {
+      const stats = await lstat(observation.path);
+      if (fileIdentity(stats) !== observation.identity) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function probeMissionJournalPresence(
+  repositoryRoot: string,
+  configuredJournalPath: string,
+  missionId: string,
+): Promise<JournalPresenceV1> {
+  const paths = resolveSupervisedMissionPaths(repositoryRoot, configuredJournalPath, missionId);
+  if (paths.state === "invalid") return { state: "unsafe_or_uncertain", journalPath: null };
+  const suffix = relative(repositoryRoot, paths.value.journalPath);
+  if (suffix === "" || suffix === ".." || suffix.startsWith(`..${sep}`)) return { state: "unsafe_or_uncertain", journalPath: null };
+  const observations: ObservedPathIdentityV1[] = [];
+  let current = repositoryRoot;
+  try {
+    const rootStats = await lstat(current);
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) return { state: "unsafe_or_uncertain", journalPath: paths.value.journalPath };
+    observations.push({ path: current, identity: fileIdentity(rootStats) });
+    const components = suffix.split(sep);
+    for (const [index, component] of components.entries()) {
+      current = resolve(current, component);
+      let stats;
+      try { stats = await lstat(current); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" && await observationsRemainStable(observations)) {
+          return { state: "absent", journalPath: paths.value.journalPath };
+        }
+        return { state: "unsafe_or_uncertain", journalPath: paths.value.journalPath };
+      }
+      if (stats.isSymbolicLink() || (index < components.length - 1 ? !stats.isDirectory() : !stats.isFile())) {
+        return { state: "unsafe_or_uncertain", journalPath: paths.value.journalPath };
+      }
+      observations.push({ path: current, identity: fileIdentity(stats) });
+    }
+    return await observationsRemainStable(observations)
+      ? { state: "present", journalPath: paths.value.journalPath }
+      : { state: "unsafe_or_uncertain", journalPath: paths.value.journalPath };
+  } catch {
+    return { state: "unsafe_or_uncertain", journalPath: paths.value.journalPath };
+  }
+}
+
+export async function probeMissionJournalPresenceV1ForTest(input: {
+  repositoryRoot: string;
+  configuredJournalPath: string;
+  missionId: string;
+}): Promise<JournalPresenceV1> {
+  return probeMissionJournalPresence(input.repositoryRoot, input.configuredJournalPath, input.missionId);
+}
+
+function intakeBriefContent(template: ProfileAwareMissionIntakeTemplateV1): ProfileAwareMissionBriefContentV1 {
+  return {
+    schemaVersion: template.schemaVersion,
+    missionId: template.missionId,
+    objective: template.objective,
+    subjectId: template.subjectId,
+    riskFlags: { ...template.riskFlags },
+    participants: template.participants.map((participant) => ({ ...participant })),
+    activatedModes: template.activatedModes.map((activation) => ({ ...activation })),
+    requireSimmons: template.requireSimmons,
+    createdAt: { ...template.createdAt },
+    profileId: template.profileId,
+    profileVersion: template.profileVersion,
+    requiredExecutionGateRoleIds: [...template.requiredExecutionGateRoleIds],
+    requiredFinalAcceptanceGateRoleIds: [...template.requiredFinalAcceptanceGateRoleIds],
+    predecessorMissionId: template.predecessorMissionId,
+    predecessorJournalDigest: template.predecessorJournalDigest,
+  };
+}
+
+function eligibleFreshIntake(
+  plan: Extract<TransitionPlanV1OrV2, { schemaId: "mission.transition-plan.v2" }>,
+  config: ShieldConfig,
+): ProfileAwareMissionBriefContentV1 | null {
+  const checkedTemplate = validateProfileAwareMissionIntakeTemplateV1({ artifact: plan.intakeTemplate });
+  if (checkedTemplate.state === "invalid") return null;
+  const template = checkedTemplate.value;
+  if (template.missionId !== plan.missionId || template.subjectId !== plan.subjectId || template.objective !== plan.boundedOutcome ||
+      template.profileId !== "standard" || template.profileVersion !== 1 || template.requireSimmons ||
+      canonicalJson(template.requiredExecutionGateRoleIds) !== canonicalJson(["coulson"]) ||
+      canonicalJson(template.requiredFinalAcceptanceGateRoleIds) !== canonicalJson(["coulson"]) ||
+      !template.participants.some(({ seatId }) => seatId === "may") || !template.participants.some(({ seatId }) => seatId === "coulson") ||
+      template.participants.some(({ seatId }) => !config.supportedSeatIds.includes(seatId as never)) ||
+      template.activatedModes.some(({ modeId, seatId }) => modeId !== "delivery" || !config.supportedModeIds.includes(modeId as never) ||
+        !template.participants.some((participant) => participant.seatId === seatId))) return null;
+  const content = intakeBriefContent(template);
+  try {
+    const checkedBrief = validateProfileAwareMissionBrief(createProfileAwareMissionBrief(content));
+    return checkedBrief.state === "valid" ? content : null;
+  } catch {
+    return null;
+  }
+}
+
+async function expectedFreshIntakeEntry(
+  repositoryRoot: string,
+  plan: Extract<TransitionPlanV1OrV2, { schemaId: "mission.transition-plan.v2" }>,
+  config: ShieldConfig,
+): Promise<Readonly<{ entry: ProfileAwareMissionEntryV1; bindings: readonly TrustedHumanBinding[] }> | null> {
+  const content = eligibleFreshIntake(plan, config);
+  if (content === null) return null;
+  const registrySnapshot = await stableRegularTextFile(join(repositoryRoot, ".shield", "trusted-human-bindings.json"));
+  if (registrySnapshot === null) return null;
+  let registry: unknown;
+  try { registry = JSON.parse(registrySnapshot.bytes); }
+  catch { return null; }
+  const bindings = deriveRepositoryMissionBindings(config, registry, plan.missionId, {
+    kind: "profile-aware",
+    profileId: content.profileId,
+    profileVersion: content.profileVersion,
+    requireSimmons: content.requireSimmons,
+  });
+  if (bindings.state === "invalid") return null;
+  const intake = profileAwareMissionIntakeV1({ brief: content, trustedBindings: bindings.value });
+  return intake.state === "valid" ? { entry: intake.value.entry, bindings: bindings.value } : null;
+}
+
+async function reconcileFreshIntake(
+  repositoryRoot: string,
+  config: ShieldConfig,
+  plan: Extract<TransitionPlanV1OrV2, { schemaId: "mission.transition-plan.v2" }>,
+  expected: ProfileAwareMissionEntryV1,
+  journalPath: string,
+): Promise<boolean> {
+  const snapshot = await stableRegularTextFile(journalPath);
+  if (snapshot === null || !snapshot.bytes.endsWith("\n")) return false;
+  const firstLineEnd = snapshot.bytes.indexOf("\n");
+  if (firstLineEnd < 0 || snapshot.bytes.slice(0, firstLineEnd + 1) !== `${canonicalJson(expected)}\n`) return false;
+  const current = await readMissionJournalForDisplay({
+    repositoryRoot,
+    configuredJournalPath: config.paths.journals,
+    missionId: plan.missionId,
+  });
+  return current.state === "valid" && current.value.kind === "profile-aware" && current.value.entries.length > 0 &&
+    canonicalJson(current.value.entries[0]) === canonicalJson(expected);
+}
+
+function repositoryObservationEligible(
+  observation: PreparationRepositoryObservationV1,
+  plan: Extract<TransitionPlanV1OrV2, { schemaId: "mission.transition-plan.v2" }>,
+  repositoryRoot: string,
+): boolean {
+  const treeEntries = [...observation.baseTreeEntries, ...observation.headTreeEntries];
+  return observation.configuredRepositoryId === plan.repositoryId && observation.remoteRepositoryId === plan.repositoryId &&
+    observation.canonicalRoot === repositoryRoot && observation.gitTopLevel === repositoryRoot && observation.branch !== "HEAD" &&
+    observation.baseRevision === plan.planningBaseRevision && observation.headRevision !== observation.baseRevision && observation.baseAncestor &&
+    observation.statusEntries.length === 0 && canonicalJson(observation.changedPaths) === canonicalJson(plan.publicationPaths) &&
+    plan.publicationPaths.every((path) => plan.approvedRelativePaths.includes(path)) &&
+    treeEntries.every(({ mode, type }) => mode !== "120000" && mode !== "160000" && type !== "commit");
 }
 
 function buildObservation(
@@ -1907,7 +2163,7 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
   let intent: ReturnType<typeof validateAuthorizeWheelsUpInput>;
   let environment: AuthorizeWheelsUpEnvironmentObservationV1;
   try {
-    intent = validateAuthorizeWheelsUpInput(graph.transitionPlan.schemaId === "mission.transition-plan.v1" ? {
+    intent = validateAuthorizeWheelsUpInput({
       baseRevision: graph.transitionPlan.planningBaseRevision,
       modelId: graph.transitionPlan.modelId,
       approvedRelativePaths: [...graph.transitionPlan.approvedRelativePaths],
@@ -1919,7 +2175,7 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
       reasoningRuntimeId: graph.transitionPlan.reasoningRuntimeId,
       toolExecutorId: graph.transitionPlan.toolExecutorId,
       publicationPaths: [...graph.transitionPlan.publicationPaths],
-    } : null);
+    });
     environment = await observeAuthorizeWheelsUpEnvironmentV1({ root: copied.repositoryRoot, config, missionId, intent }, journalDependencies);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("authority_conflict:")) {
@@ -1994,6 +2250,95 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
     observation,
     preparationReceipt: prepared.receipt,
   });
+}
+
+export async function prepareMissionTransitionSessionV1(
+  input: unknown,
+  dependencies: MissionPreparationSessionDependenciesV1,
+): Promise<ResolvePreparedMissionTransitionResultV1> {
+  let copied: unknown;
+  try { copied = cloneClosedData(input); }
+  catch { return blocked("unknown", "invalid_resolution_input", "Resolution input is not closed data."); }
+  if (!exact(copied, ["missionId", "repositoryRoot"]) || !identifier(copied.missionId) || typeof copied.repositoryRoot !== "string" || copied.repositoryRoot.length === 0) {
+    return blocked("unknown", "invalid_resolution_input", "Resolution input must contain only missionId and repositoryRoot.");
+  }
+  const missionId = copied.missionId;
+  const repositoryRoot = await canonicalRepositoryRoot(copied.repositoryRoot);
+  if (repositoryRoot === null) return blocked(missionId, "invalid_resolution_input", "Repository root is unsafe or inaccessible.");
+
+  const graphResult = await readMissionReviewedTransitionGraphV1({ repositoryRoot, missionId });
+  if (graphResult.state === "invalid") return blocked(missionId, "protected_evidence_mismatch", ...graphResult.errors);
+  const graph = graphResult.graph;
+  if (graph.transitionPlan.transitionKind !== graph.transitionIntent.transitionKind) {
+    return blocked(missionId, "protected_evidence_mismatch", "Reviewed transition plan and intent kinds differ.");
+  }
+  const attributionErrors = await revalidateStoredAttribution(repositoryRoot, graph);
+  if (attributionErrors.length > 0) return blocked(missionId, "protected_evidence_mismatch", ...attributionErrors);
+
+  let configuration = await stableConfigurationSnapshot(repositoryRoot, graph.transitionPlan.repositoryId);
+  if (configuration === null) return blocked(missionId, "repository_configuration_mismatch");
+  let presence = await probeMissionJournalPresence(repositoryRoot, configuration.config.paths.journals, missionId);
+  if (presence.state === "unsafe_or_uncertain" || presence.journalPath === null) return blocked(missionId, "unsafe_journal_path");
+
+  if (graph.transitionPlan.schemaId === "mission.transition-plan.v1") {
+    if (presence.state === "absent") return blocked(missionId, "mission_intake_template_required");
+    return resolvePreparedMissionTransitionV1WithDependencies({ missionId, repositoryRoot }, {});
+  }
+
+  let expected = await expectedFreshIntakeEntry(repositoryRoot, graph.transitionPlan, configuration.config);
+  if (expected === null) return blocked(missionId, "mission_intake_invalid");
+  if (presence.state === "present") {
+    if (!await reconcileFreshIntake(repositoryRoot, configuration.config, graph.transitionPlan, expected.entry, presence.journalPath)) {
+      return blocked(missionId, "mission_intake_mismatch");
+    }
+  } else {
+    let observation: PreparationRepositoryObservationV1;
+    try {
+      observation = await dependencies.observePublicationRepository(
+        repositoryRoot,
+        configuration.config.repositoryId,
+        graph.transitionPlan.planningBaseRevision,
+        graph.transitionPlan.publicationPaths,
+      );
+    } catch (error) {
+      return blocked(missionId, "repository_observation_stale", error instanceof Error ? error.message : "Repository observation failed.");
+    }
+    if (!repositoryObservationEligible(observation, graph.transitionPlan, repositoryRoot)) {
+      return blocked(missionId, "repository_observation_stale");
+    }
+    const initialized = await initializeProfileAwareMissionJournalV1({
+      repositoryRoot,
+      configuredJournalPath: configuration.config.paths.journals,
+      missionId,
+      entry: expected.entry,
+    });
+    if (initialized.state === "invalid" && initialized.code !== "mission_exists") {
+      return blocked(missionId, initialized.code === "recovery_required" ? "recovery_required" : "initialization_conflict", ...initialized.errors);
+    }
+    if (initialized.state === "invalid") {
+      configuration = await stableConfigurationSnapshot(repositoryRoot, graph.transitionPlan.repositoryId);
+      if (configuration === null) return blocked(missionId, "repository_configuration_mismatch");
+      presence = await probeMissionJournalPresence(repositoryRoot, configuration.config.paths.journals, missionId);
+      if (presence.state !== "present" || presence.journalPath === null) return blocked(missionId, "initialization_conflict");
+      expected = await expectedFreshIntakeEntry(repositoryRoot, graph.transitionPlan, configuration.config);
+      if (expected === null) return blocked(missionId, "mission_intake_invalid");
+      if (!await reconcileFreshIntake(repositoryRoot, configuration.config, graph.transitionPlan, expected.entry, presence.journalPath)) {
+        return blocked(missionId, "mission_intake_mismatch");
+      }
+    }
+  }
+
+  const resolved = await resolvePreparedMissionTransitionV1WithDependencies({ missionId, repositoryRoot }, {});
+  const finalConfiguration = await stableConfigurationSnapshot(repositoryRoot, graph.transitionPlan.repositoryId);
+  if (finalConfiguration === null) return blocked(missionId, "repository_configuration_mismatch");
+  const finalPresence = await probeMissionJournalPresence(repositoryRoot, finalConfiguration.config.paths.journals, missionId);
+  if (finalPresence.state !== "present" || finalPresence.journalPath === null) return blocked(missionId, "unsafe_journal_path");
+  const finalExpected = await expectedFreshIntakeEntry(repositoryRoot, graph.transitionPlan, finalConfiguration.config);
+  if (finalExpected === null) return blocked(missionId, "mission_intake_invalid");
+  if (!await reconcileFreshIntake(repositoryRoot, finalConfiguration.config, graph.transitionPlan, finalExpected.entry, finalPresence.journalPath)) {
+    return blocked(missionId, "mission_intake_mismatch");
+  }
+  return resolved;
 }
 
 export async function resolvePreparedMissionTransitionV1(input: unknown): Promise<ResolvePreparedMissionTransitionResultV1> {

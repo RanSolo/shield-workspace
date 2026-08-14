@@ -7,6 +7,9 @@ export {
 
 export {
   validateTransitionPlanV1,
+  validateTransitionPlanV2,
+  validateTransitionPlanV1OrV2,
+  validateProfileAwareMissionIntakeTemplateV1,
   validateParentPlanReviewEvidenceV1,
   validateTransitionIntentV1,
   validateFreshAuthorizeWheelsUpObservationV1,
@@ -31,6 +34,9 @@ export type {
 
 export type {
   TransitionPlanV1,
+  TransitionPlanV2,
+  TransitionPlanV1OrV2,
+  ProfileAwareMissionIntakeTemplateV1,
   ParentPlanReviewEvidenceV1,
   TransitionIntentV1,
   FreshAuthorizeWheelsUpObservationV1,

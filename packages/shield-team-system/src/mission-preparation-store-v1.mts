@@ -8,10 +8,10 @@ import { canonicalJson } from "./mission-v2.mjs";
 import {
   validateParentPlanReviewEvidenceV1,
   validateTransitionIntentV1,
-  validateTransitionPlanV1,
+  validateTransitionPlanV1OrV2,
   type ParentPlanReviewEvidenceV1,
   type TransitionIntentV1,
-  type TransitionPlanV1,
+  type TransitionPlanV1OrV2,
 } from "@shield/mission-preparation";
 
 export const MISSION_REVIEWED_TRANSITION_GRAPH_SCHEMA_VERSION = 1 as const;
@@ -844,7 +844,7 @@ export interface MissionReviewedTransitionGraphV1 {
   readonly authority: "none";
   readonly graphId: string;
   readonly graphDigest: string;
-  readonly transitionPlan: TransitionPlanV1;
+  readonly transitionPlan: TransitionPlanV1OrV2;
   readonly parentPlanReviewEvidence: ParentPlanReviewEvidenceV1;
   readonly transitionIntent: TransitionIntentV1;
 }
@@ -955,7 +955,7 @@ export function computeMissionReviewedTransitionGraphDigestV1(input: {
   schemaVersion: 1;
   schemaId: typeof MISSION_REVIEWED_TRANSITION_GRAPH_SCHEMA_ID;
   authority: "none";
-  transitionPlan: TransitionPlanV1;
+  transitionPlan: TransitionPlanV1OrV2;
   parentPlanReviewEvidence: ParentPlanReviewEvidenceV1;
   transitionIntent: TransitionIntentV1;
 }): string {
@@ -977,7 +977,7 @@ export function computeMissionReviewedTransitionGraphIdV1(input: string): string
 }
 
 function identityBindingsMatch(
-  transitionPlan: TransitionPlanV1,
+  transitionPlan: TransitionPlanV1OrV2,
   parentPlanReviewEvidence: ParentPlanReviewEvidenceV1,
   transitionIntent: TransitionIntentV1,
 ): readonly string[] {
@@ -1033,7 +1033,7 @@ export function buildMissionReviewedTransitionGraphV1(input: unknown): MissionRe
     return invalidBuild("malformed_reviewed_transition_graph_input", "Reviewed transition graph input fields are not closed.");
   }
 
-  const transitionPlanCheck = validateTransitionPlanV1({ artifact: copied.transitionPlan });
+  const transitionPlanCheck = validateTransitionPlanV1OrV2({ artifact: copied.transitionPlan });
   if (transitionPlanCheck.state === "invalid") {
     return invalidBuild("invalid_reviewed_transition_graph", ...transitionPlanCheck.errors);
   }
@@ -1089,7 +1089,7 @@ export function validateMissionReviewedTransitionGraphV1(input: unknown): Missio
     return invalidValidation("invalid_reviewed_transition_graph", "Mission reviewed transition graph identity fields are invalid.");
   }
 
-  const transitionPlanCheck = validateTransitionPlanV1({ artifact: candidate.transitionPlan });
+  const transitionPlanCheck = validateTransitionPlanV1OrV2({ artifact: candidate.transitionPlan });
   if (transitionPlanCheck.state === "invalid") {
     return invalidValidation("invalid_reviewed_transition_graph", ...transitionPlanCheck.errors);
   }

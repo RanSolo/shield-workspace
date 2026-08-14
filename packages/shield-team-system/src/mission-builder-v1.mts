@@ -4,8 +4,12 @@ import { isProxy } from "node:util/types";
 import {
   computeCanonicalContractDigestV1,
   computeContentIdV1,
+  validateProfileAwareMissionIntakeTemplateV1,
   validateTransitionPlanV1,
+  validateTransitionPlanV2,
+  type ProfileAwareMissionIntakeTemplateV1,
   type TransitionPlanV1,
+  type TransitionPlanV2,
 } from "@shield/mission-preparation";
 
 import { evaluateMackValidationV0, type MackEvaluationV0, type MackExpectedBindingV0, type MackValidationReportV0 } from "./mack-validation-v0.mjs";
@@ -361,8 +365,14 @@ const TRANSITION_PLAN_BODY_FIELDS = [
   "approvedEffectKeys", "approvedCapabilities", "validationCommandIds", "modelId",
   "reasoningRuntimeId", "toolExecutorId", "exclusions",
 ] as const;
+const PROFILE_AWARE_INTAKE_TEMPLATE_BODY_FIELDS = [
+  "schemaVersion", "missionId", "objective", "subjectId", "riskFlags", "participants", "activatedModes", "requireSimmons", "createdAt",
+  "profileId", "profileVersion", "requiredExecutionGateRoleIds", "requiredFinalAcceptanceGateRoleIds", "predecessorMissionId", "predecessorJournalDigest",
+] as const;
 
 export type BuildMissionTransitionPlanInputV1 = Omit<TransitionPlanV1, "schemaId" | "authority" | "id" | "digest">;
+export type BuildProfileAwareMissionIntakeTemplateInputV1 = Omit<ProfileAwareMissionIntakeTemplateV1, "schemaId" | "authority" | "id" | "digest">;
+export type BuildMissionTransitionPlanInputV2 = Omit<TransitionPlanV2, "schemaId" | "authority" | "id" | "digest">;
 
 export type BuildMissionTransitionPlanResultV1 = Readonly<
   | { state: "built"; plan: TransitionPlanV1 }
@@ -371,6 +381,14 @@ export type BuildMissionTransitionPlanResultV1 = Readonly<
       code: "malformed_transition_plan_input" | "invalid_transition_plan";
       errors: readonly string[];
     }
+>;
+export type BuildProfileAwareMissionIntakeTemplateResultV1 = Readonly<
+  | { state: "built"; template: ProfileAwareMissionIntakeTemplateV1 }
+  | { state: "invalid"; code: "malformed_intake_template_input" | "invalid_intake_template"; errors: readonly string[] }
+>;
+export type BuildMissionTransitionPlanResultV2 = Readonly<
+  | { state: "built"; plan: TransitionPlanV2 }
+  | { state: "invalid"; code: "malformed_transition_plan_input" | "invalid_transition_plan"; errors: readonly string[] }
 >;
 
 function plain(value: unknown): value is Plain {
@@ -467,6 +485,46 @@ export function buildMissionTransitionPlanV1(input: unknown): BuildMissionTransi
     });
   }
   return Object.freeze({ state: "built" as const, plan: checked.value });
+}
+
+export function buildProfileAwareMissionIntakeTemplateV1(input: unknown): BuildProfileAwareMissionIntakeTemplateResultV1 {
+  let copied: unknown;
+  try { copied = cloneClosedData(input); }
+  catch {
+    return Object.freeze({ state: "invalid" as const, code: "malformed_intake_template_input" as const, errors: Object.freeze(["Intake-template input must be closed ordinary data."]) });
+  }
+  if (!exact(copied, PROFILE_AWARE_INTAKE_TEMPLATE_BODY_FIELDS)) {
+    return Object.freeze({ state: "invalid" as const, code: "malformed_intake_template_input" as const, errors: Object.freeze(["Intake-template input fields are not closed."]) });
+  }
+  const body = { schemaId: "mission.profile-aware-intake-template.v1" as const, authority: "none" as const, ...copied };
+  const digest = computeCanonicalContractDigestV1({ schemaId: body.schemaId, body });
+  if (digest.state === "invalid") return Object.freeze({ state: "invalid" as const, code: "invalid_intake_template" as const, errors: Object.freeze([...digest.errors]) });
+  const id = computeContentIdV1({ schemaId: body.schemaId, digest: digest.value });
+  if (id.state === "invalid") return Object.freeze({ state: "invalid" as const, code: "invalid_intake_template" as const, errors: Object.freeze([...id.errors]) });
+  const checked = validateProfileAwareMissionIntakeTemplateV1({ artifact: { ...body, id: id.value, digest: digest.value } });
+  return checked.state === "valid"
+    ? Object.freeze({ state: "built" as const, template: checked.value })
+    : Object.freeze({ state: "invalid" as const, code: "invalid_intake_template" as const, errors: Object.freeze([...checked.errors]) });
+}
+
+export function buildMissionTransitionPlanV2(input: unknown): BuildMissionTransitionPlanResultV2 {
+  let copied: unknown;
+  try { copied = cloneClosedData(input); }
+  catch {
+    return Object.freeze({ state: "invalid" as const, code: "malformed_transition_plan_input" as const, errors: Object.freeze(["Transition-plan input must be closed ordinary data."]) });
+  }
+  if (!exact(copied, [...TRANSITION_PLAN_BODY_FIELDS, "intakeTemplate"])) {
+    return Object.freeze({ state: "invalid" as const, code: "malformed_transition_plan_input" as const, errors: Object.freeze(["Transition-plan input fields are not closed."]) });
+  }
+  const body = { schemaId: "mission.transition-plan.v2" as const, authority: "none" as const, ...copied };
+  const digest = computeCanonicalContractDigestV1({ schemaId: body.schemaId, body });
+  if (digest.state === "invalid") return Object.freeze({ state: "invalid" as const, code: "invalid_transition_plan" as const, errors: Object.freeze([...digest.errors]) });
+  const id = computeContentIdV1({ schemaId: body.schemaId, digest: digest.value });
+  if (id.state === "invalid") return Object.freeze({ state: "invalid" as const, code: "invalid_transition_plan" as const, errors: Object.freeze([...id.errors]) });
+  const checked = validateTransitionPlanV2({ artifact: { ...body, id: id.value, digest: digest.value } });
+  return checked.state === "valid"
+    ? Object.freeze({ state: "built" as const, plan: checked.value })
+    : Object.freeze({ state: "invalid" as const, code: "invalid_transition_plan" as const, errors: Object.freeze([...checked.errors]) });
 }
 
 const INTAKE_CANDIDATE_FIELDS = ["state", "schemaVersion", "contractVersion", "authority", "persistence", "repositoryObservation", "issueObservation", "configObservation", "brief", "risk", "requirements", "recommendedModes", "modeActivationState", "participants", "seatGateEnforcement", "artifacts", "communication", "runtimeObservations", "blockers", "pendingHumanGates", "nextAction"] as const;

@@ -8,7 +8,9 @@ import {
   advanceMissionV1,
   appendMissionProvenanceRecordV1,
   buildMissionDefinitionV1,
+  buildMissionTransitionPlanV2,
   buildMissionTransitionPlanV1,
+  buildProfileAwareMissionIntakeTemplateV1,
   compileMissionCycleInputV1,
   createMissionProofreadingAcceptanceV1,
   createMissionValidationRecordV1,
@@ -1014,6 +1016,19 @@ function transitionPlanInput() {
   };
 }
 
+function intakeTemplateInput() {
+  return {
+    schemaVersion: 2, missionId: "mission:issue-270", objective: "Implement one turnkey reviewed mission transition.",
+    subjectId: "github:RanSolo/shield-workspace/issue/270",
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false },
+    participants: [{ seatId: "coulson" }, { seatId: "may" }],
+    activatedModes: [{ modeId: "delivery", modeVersion: "1", seatId: "may", activationSource: "hill_reviewed" }],
+    requireSimmons: false, createdAt: { value: "2026-08-13T12:00:00Z", provenance: "humanRecorded" }, profileId: "standard", profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"], predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: `sha256:${"a".repeat(64)}`,
+  };
+}
+
 test("typed transition-plan producer returns one deterministic validated plan without mutating its input", () => {
   const input = transitionPlanInput();
   const before = structuredClone(input);
@@ -1039,6 +1054,22 @@ test("typed transition-plan producer preserves distinct immutable transition gra
   assert.equal(initial.plan.transitionKind, "initial_runtime_binding");
   assert.notEqual(fresh.plan.id, initial.plan.id);
   assert.notEqual(fresh.plan.digest, initial.plan.digest);
+});
+
+test("typed intake and enriched transition-plan producers bind the complete reviewed template", () => {
+  const template = buildProfileAwareMissionIntakeTemplateV1(intakeTemplateInput());
+  assert.equal(template.state, "built", template.errors?.join(" "));
+  const plan = buildMissionTransitionPlanV2({ ...transitionPlanInput(), intakeTemplate: template.template });
+  assert.equal(plan.state, "built", plan.errors?.join(" "));
+  assert.equal(plan.plan.schemaId, "mission.transition-plan.v2");
+  assert.equal(plan.plan.intakeTemplate.id, template.template.id);
+  assert.match(plan.plan.id, /^transition-plan:[A-Za-z0-9_-]{43}$/u);
+  const changed = buildProfileAwareMissionIntakeTemplateV1({ ...intakeTemplateInput(), riskFlags: { ...intakeTemplateInput().riskFlags, production: true } });
+  assert.equal(changed.state, "built");
+  const changedPlan = buildMissionTransitionPlanV2({ ...transitionPlanInput(), intakeTemplate: changed.template });
+  assert.equal(changedPlan.state, "built");
+  assert.notEqual(changedPlan.plan.digest, plan.plan.digest);
+  assert.equal(buildMissionTransitionPlanV2({ ...transitionPlanInput(), transitionKind: "initial_runtime_binding", intakeTemplate: template.template }).code, "invalid_transition_plan");
 });
 
 test("typed transition-plan producer distinguishes malformed shape from invalid semantics", () => {

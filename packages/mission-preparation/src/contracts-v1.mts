@@ -70,6 +70,48 @@ export type TransitionPlanV1 = CommonContractV1 & Readonly<{
   exclusions: typeof EXCLUSIONS_V1;
 }>;
 
+export type ProfileAwareMissionIntakeTemplateV1 = CommonContractV1 & Readonly<{
+  schemaId: "mission.profile-aware-intake-template.v1";
+  schemaVersion: 2;
+  missionId: string;
+  objective: string;
+  subjectId: string;
+  riskFlags: Readonly<{
+    production: boolean;
+    destructive: boolean;
+    migration: boolean;
+    credentialsOrSecurity: boolean;
+    externalCommunication: boolean;
+    merge: boolean;
+    deploy: boolean;
+    release: boolean;
+    hillHighRisk: boolean;
+  }>;
+  participants: readonly Readonly<{ seatId: string }>[];
+  activatedModes: readonly Readonly<{
+    modeId: string;
+    modeVersion: string;
+    seatId: string;
+    activationSource: string;
+  }>[];
+  requireSimmons: boolean;
+  createdAt: Readonly<{ value: string; provenance: "humanRecorded" | "hostTrusted" }>;
+  profileId: "standard" | "high_assurance" | "product_sensitive";
+  profileVersion: 1;
+  requiredExecutionGateRoleIds: readonly ("coulson" | "fitz" | "simmons")[];
+  requiredFinalAcceptanceGateRoleIds: readonly ["coulson"];
+  predecessorMissionId: string;
+  predecessorJournalDigest: string;
+}>;
+
+export type TransitionPlanV2 = Omit<TransitionPlanV1, "schemaId" | "transitionKind"> & Readonly<{
+  schemaId: "mission.transition-plan.v2";
+  transitionKind: "fresh_authorize_wheels_up";
+  intakeTemplate: ProfileAwareMissionIntakeTemplateV1;
+}>;
+
+export type TransitionPlanV1OrV2 = TransitionPlanV1 | TransitionPlanV2;
+
 export type ParentPlanReviewEvidenceV1 = CommonContractV1 & Readonly<{
   schemaId: "mission.parent-plan-review-evidence.v1";
   repositoryId: string;
@@ -358,6 +400,8 @@ const MISSION_REVISION = /^(?:[0-9a-f]{40}|sha256:[A-Za-z0-9_-]{6,})$/;
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
 const RAW_SHA256 = /^sha256:[0-9a-f]{64}$/;
 const SIGNING_KEY = /^ed25519:sha256:[A-Za-z0-9_-]{43}$/;
+const PROFILE_DIGEST = /^sha256:(?:[a-f0-9]{64}|[A-Za-z0-9_-]{43})$/;
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const EFFECT_CLASSES = new Set(["behavioral_implementation", "verification", "coordination"]);
 const VERDICTS = new Set(["PASS", "PASS_WITH_REQUIRED_CHANGES", "FAIL"]);
 const REASONS = new Set(["reviewed_plan_mismatch", "parent_plan_review_ineligible", "repository_observation_stale", "fresh_wheels_up_state_ineligible", "initial_runtime_binding_state_ineligible", "implementation_authority_mismatch", "freshness_evidence_incomplete"]);
@@ -484,6 +528,64 @@ function makeDistinctInitialBindingContract<T extends Record<string, unknown>>(
 }
 
 const PLAN_FIELDS = ["missionId", "subjectId", "repositoryId", "planningBaseRevision", "parentPlanCommit", "parentPlanPath", "parentPlanRawSha256", "transitionKind", "boundedOutcome", "approvedRelativePaths", "publicationPaths", "approvedActionIds", "approvedEffectClasses", "approvedEffectKeys", "approvedCapabilities", "validationCommandIds", "modelId", "reasoningRuntimeId", "toolExecutorId", "exclusions"] as const;
+const INTAKE_TEMPLATE_FIELDS = [
+  "schemaVersion", "missionId", "objective", "subjectId", "riskFlags", "participants", "activatedModes", "requireSimmons", "createdAt",
+  "profileId", "profileVersion", "requiredExecutionGateRoleIds", "requiredFinalAcceptanceGateRoleIds", "predecessorMissionId", "predecessorJournalDigest",
+] as const;
+const RISK_FIELDS = ["production", "destructive", "migration", "credentialsOrSecurity", "externalCommunication", "merge", "deploy", "release", "hillHighRisk"] as const;
+
+function tupleCompare(left: readonly string[], right: readonly string[]): number {
+  for (let index = 0; index < left.length; index += 1) {
+    const compared = utf16CompareV1(left[index], right[index]);
+    if (compared !== 0) return compared;
+  }
+  return 0;
+}
+
+function intakeTemplateShape(value: Record<string, unknown>): boolean {
+  const riskFlags = value.riskFlags;
+  if (value.schemaVersion !== 2 || !identifier(value.missionId) || !identifier(value.subjectId) ||
+      !bytesAtMost(value.objective, 512) || value.objective.length === 0 || !record(riskFlags) || !exactKeys(riskFlags, RISK_FIELDS) ||
+      !RISK_FIELDS.every((field) => typeof riskFlags[field] === "boolean") || !Array.isArray(value.participants) ||
+      value.participants.length < 2 || value.participants.length > 16 || !Array.isArray(value.activatedModes) ||
+      value.activatedModes.length < 1 || value.activatedModes.length > 16 || typeof value.requireSimmons !== "boolean" ||
+      !record(value.createdAt) || !exactKeys(value.createdAt, ["value", "provenance"]) || typeof value.createdAt.value !== "string" ||
+      !ISO_TIMESTAMP.test(value.createdAt.value) || !Number.isFinite(Date.parse(value.createdAt.value)) ||
+      (value.createdAt.provenance !== "humanRecorded" && value.createdAt.provenance !== "hostTrusted") || value.profileVersion !== 1 ||
+      !identifier(value.predecessorMissionId) || typeof value.predecessorJournalDigest !== "string" || !PROFILE_DIGEST.test(value.predecessorJournalDigest)) return false;
+
+  let previousSeat = "";
+  const participantSeats = new Set<string>();
+  for (const [index, participantValue] of value.participants.entries()) {
+    if (!record(participantValue) || !exactKeys(participantValue, ["seatId"]) || !identifier(participantValue.seatId)) return false;
+    const seatId = participantValue.seatId;
+    if (index > 0 && utf16CompareV1(previousSeat, seatId) >= 0) return false;
+    previousSeat = seatId;
+    participantSeats.add(seatId);
+  }
+
+  let previousActivation: readonly string[] | null = null;
+  for (const activationValue of value.activatedModes) {
+    if (!record(activationValue) || !exactKeys(activationValue, ["modeId", "modeVersion", "seatId", "activationSource"])) return false;
+    const tuple = [activationValue.modeId, activationValue.modeVersion, activationValue.seatId, activationValue.activationSource];
+    if (!tuple.every(identifier) || !participantSeats.has(tuple[2] as string) || (previousActivation !== null && tupleCompare(previousActivation, tuple as string[]) >= 0)) return false;
+    previousActivation = tuple as string[];
+  }
+
+  const expectedGates = value.profileId === "standard" ? ["coulson"]
+    : value.profileId === "high_assurance" ? ["coulson", "fitz"]
+      : value.profileId === "product_sensitive" ? ["coulson", "simmons"] : null;
+  return expectedGates !== null && value.requireSimmons === (value.profileId === "product_sensitive") &&
+    literalArray(value.requiredExecutionGateRoleIds, expectedGates) && literalArray(value.requiredFinalAcceptanceGateRoleIds, ["coulson"]);
+}
+
+export function validateProfileAwareMissionIntakeTemplateV1(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<ProfileAwareMissionIntakeTemplateV1> {
+  const argument = canonicalArgument(input);
+  if (argument.state === "invalid") return argument;
+  return validateComplete(argument.value, "mission.profile-aware-intake-template.v1", INTAKE_TEMPLATE_FIELDS, intakeTemplateShape);
+}
 
 export function validateTransitionPlanV1(input: Readonly<{ artifact: unknown }>): PreparationValidationResultV1<TransitionPlanV1> {
   const argument = canonicalArgument(input);
@@ -497,6 +599,36 @@ export function validateTransitionPlanV1(input: Readonly<{ artifact: unknown }>)
     sortedUniqueStrings(value.approvedActionIds, identifier, locale) && sortedUniqueStrings(value.approvedEffectClasses, (item): item is string => typeof item === "string" && EFFECT_CLASSES.has(item), locale, 1, 3) &&
     sortedUniqueStrings(value.approvedEffectKeys, identifier, locale) && sortedUniqueStrings(value.approvedCapabilities, identifier, locale) && sortedUniqueStrings(value.validationCommandIds, identifier, locale) &&
     identifier(value.modelId) && identifier(value.reasoningRuntimeId) && identifier(value.toolExecutorId) && literalArray(value.exclusions, EXCLUSIONS_V1));
+}
+
+export function validateTransitionPlanV2(input: Readonly<{ artifact: unknown }>): PreparationValidationResultV1<TransitionPlanV2> {
+  const argument = canonicalArgument(input);
+  if (argument.state === "invalid") return argument;
+  const checked = validateComplete<TransitionPlanV2>(argument.value, "mission.transition-plan.v2", [...PLAN_FIELDS, "intakeTemplate"], (value) =>
+    identifier(value.missionId) && identifier(value.subjectId) && repository(value.repositoryId) && revision(value.planningBaseRevision) && revision(value.parentPlanCommit) &&
+    relativePath(value.parentPlanPath) && typeof value.parentPlanRawSha256 === "string" && HEX_SHA256.test(value.parentPlanRawSha256) &&
+    value.transitionKind === "fresh_authorize_wheels_up" && bytesAtMost(value.boundedOutcome, 1024) && value.boundedOutcome.length > 0 &&
+    sortedUniqueStrings(value.approvedRelativePaths, approvedPath, locale) && sortedUniqueStrings(value.publicationPaths, relativePath, utf16CompareV1) &&
+    sortedUniqueStrings(value.approvedActionIds, identifier, locale) && sortedUniqueStrings(value.approvedEffectClasses, (item): item is string => typeof item === "string" && EFFECT_CLASSES.has(item), locale, 1, 3) &&
+    sortedUniqueStrings(value.approvedEffectKeys, identifier, locale) && sortedUniqueStrings(value.approvedCapabilities, identifier, locale) && sortedUniqueStrings(value.validationCommandIds, identifier, locale) &&
+    identifier(value.modelId) && identifier(value.reasoningRuntimeId) && identifier(value.toolExecutorId) && literalArray(value.exclusions, EXCLUSIONS_V1) && record(value.intakeTemplate));
+  if (checked.state === "invalid") return checked;
+  const template = validateProfileAwareMissionIntakeTemplateV1({ artifact: checked.value.intakeTemplate });
+  if (template.state === "invalid" || template.value.missionId !== checked.value.missionId || template.value.subjectId !== checked.value.subjectId) {
+    return invalidResult(...(template.state === "invalid" ? template.errors : ["Transition plan and intake template identities differ."]));
+  }
+  return validResult({ ...checked.value, intakeTemplate: template.value });
+}
+
+export function validateTransitionPlanV1OrV2(
+  input: Readonly<{ artifact: unknown }>,
+): PreparationValidationResultV1<TransitionPlanV1OrV2> {
+  const cloned = canonicalArgument(input);
+  if (cloned.state === "invalid") return cloned;
+  if (!record(cloned.value)) return invalidResult("Transition plan must be closed plain data.");
+  return cloned.value.schemaId === "mission.transition-plan.v2"
+    ? validateTransitionPlanV2({ artifact: cloned.value })
+    : validateTransitionPlanV1({ artifact: cloned.value });
 }
 
 const REVIEW_FIELDS = ["repositoryId", "planningBaseRevision", "parentPlanCommit", "parentPlanPath", "parentPlanRawSha256", "transitionPlanId", "transitionPlanDigest", "verdict", "reviewerSeatId", "reviewerRuntimeId", "reviewerModelId", "reviewerExecutorId", "rawReceiptSetSha256", "attributionClass", "preparationEligibility"] as const;
@@ -749,7 +881,7 @@ export function createSelectionV1(intent: TransitionIntentV1, observation: Prepa
   }) as NextTransitionSelectionV1;
 }
 
-export function createCandidateV1(plan: TransitionPlanV1, review: ParentPlanReviewEvidenceV1, intent: TransitionIntentV1, observation: PreparationObservationV1, selection: NextTransitionSelectionV1): PreparationCandidateV1 {
+export function createCandidateV1(plan: TransitionPlanV1OrV2, review: ParentPlanReviewEvidenceV1, intent: TransitionIntentV1, observation: PreparationObservationV1, selection: NextTransitionSelectionV1): PreparationCandidateV1 {
   const actionInput = {
     baseRevision: plan.planningBaseRevision,
     modelId: plan.modelId,
@@ -879,7 +1011,7 @@ export function createCandidateV1(plan: TransitionPlanV1, review: ParentPlanRevi
   }) as unknown as FreshAuthorizeWheelsUpCandidateV1;
 }
 
-export function createReceiptV1(plan: TransitionPlanV1, review: ParentPlanReviewEvidenceV1, intent: TransitionIntentV1, observation: PreparationObservationV1, selection: NextTransitionSelectionV1, candidate: PreparationCandidateV1): PreparationReceiptV1 {
+export function createReceiptV1(plan: TransitionPlanV1OrV2, review: ParentPlanReviewEvidenceV1, intent: TransitionIntentV1, observation: PreparationObservationV1, selection: NextTransitionSelectionV1, candidate: PreparationCandidateV1): PreparationReceiptV1 {
   return makeContractV1("mission.preparation-receipt.v1", {
     schemaId: "mission.preparation-receipt.v1" as const,
     authority: "none" as const,

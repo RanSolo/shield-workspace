@@ -29,7 +29,7 @@ function assertBoundaryBytes(paths) {
   }
 }
 
-function installedGraph(api) {
+function installedGraph(api, enriched = false) {
   const unwrap = (result) => {
     assert.equal(result.state, "valid");
     return result.value;
@@ -39,13 +39,24 @@ function installedGraph(api) {
     return { ...body, id: unwrap(api.computeContentIdV1({ schemaId: body.schemaId, digest })), digest };
   };
   const exclusions = ["review.comment.publish", "review.pull_request.update_draft", "review.pull_request.mark_ready", "merge", "deployment", "release", "final_acceptance"];
+  const intakeTemplate = artifact({
+    schemaId: "mission.profile-aware-intake-template.v1", authority: "none", schemaVersion: 2, missionId: "mission:package-boundary",
+    objective: "Prove the installed authority-none compiler.", subjectId: "package-boundary",
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false },
+    participants: [{ seatId: "coulson" }, { seatId: "may" }],
+    activatedModes: [{ modeId: "delivery", modeVersion: "1", seatId: "may", activationSource: "hill_reviewed" }],
+    requireSimmons: false, createdAt: { value: "2026-08-13T12:00:00Z", provenance: "humanRecorded" }, profileId: "standard", profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"], predecessorMissionId: "mission:predecessor",
+    predecessorJournalDigest: `sha256:${"a".repeat(64)}`,
+  });
   const plan = artifact({
-    schemaId: "mission.transition-plan.v1", authority: "none", missionId: "mission:package-boundary", subjectId: "package-boundary", repositoryId: "Example/repository",
+    schemaId: enriched ? "mission.transition-plan.v2" : "mission.transition-plan.v1", authority: "none", missionId: "mission:package-boundary", subjectId: "package-boundary", repositoryId: "Example/repository",
     planningBaseRevision: "1".repeat(40), parentPlanCommit: "2".repeat(40), parentPlanPath: "docs/plan.md", parentPlanRawSha256: "3".repeat(64),
     transitionKind: "fresh_authorize_wheels_up", boundedOutcome: "Prove the installed authority-none compiler.", approvedRelativePaths: ["package-lock.json"],
     publicationPaths: ["docs/plan.md"], approvedActionIds: ["repository.write_file"], approvedEffectClasses: ["behavioral_implementation"],
     approvedEffectKeys: ["effect:package-boundary"], approvedCapabilities: ["filesystem_write"], validationCommandIds: ["validation:package-boundary"],
     modelId: "model:may", reasoningRuntimeId: "runtime:may", toolExecutorId: "executor:may", exclusions,
+    ...(enriched ? { intakeTemplate } : {}),
   });
   const reviewEvidence = artifact({
     schemaId: "mission.parent-plan-review-evidence.v1", authority: "none", repositoryId: plan.repositoryId, planningBaseRevision: plan.planningBaseRevision,
@@ -125,6 +136,13 @@ test("the tarball installs offline and compiles a fixed candidate independently"
     assert.equal(prepared.state, "ready");
     assert.equal(prepared.candidate.transitionKind, "authorize-wheels-up");
     assert.equal(prepared.receipt.result, "candidate_compiled");
+    const enrichedGraph = installedGraph(installed, true);
+    assert.equal(installed.validateTransitionPlanV2({ artifact: enrichedGraph.plan }).state, "valid");
+    assert.equal(installed.validateProfileAwareMissionIntakeTemplateV1({ artifact: enrichedGraph.plan.intakeTemplate }).state, "valid");
+    const enriched = installed.prepareMissionTransitionV1(enrichedGraph);
+    assert.equal(enriched.state, "ready");
+    assert.equal(enriched.candidate.transitionPlanId, enrichedGraph.plan.id);
+    assert.equal(enriched.candidate.transitionPlanDigest, enrichedGraph.plan.digest);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

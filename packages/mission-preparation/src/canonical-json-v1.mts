@@ -3,6 +3,8 @@ import { isProxy, isUint8Array } from "node:util/types";
 
 export type ContractSchemaIdV1 =
   | "mission.transition-plan.v1"
+  | "mission.transition-plan.v2"
+  | "mission.profile-aware-intake-template.v1"
   | "mission.parent-plan-review-evidence.v1"
   | "mission.transition-intent.v1"
   | "mission.fresh-authorize-wheels-up-observation.v1"
@@ -33,6 +35,8 @@ const MAX_RECEIPT_SET_BYTES = 16_777_216;
 
 export const CONTENT_ID_PREFIXES: Readonly<Record<ContractSchemaIdV1, string>> = Object.freeze({
   "mission.transition-plan.v1": "transition-plan:",
+  "mission.transition-plan.v2": "transition-plan:",
+  "mission.profile-aware-intake-template.v1": "profile-aware-intake-template:",
   "mission.parent-plan-review-evidence.v1": "parent-plan-review-evidence:",
   "mission.transition-intent.v1": "transition-intent:",
   "mission.fresh-authorize-wheels-up-observation.v1": "fresh-authorize-wheels-up-observation:",

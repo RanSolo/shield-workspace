@@ -18,7 +18,7 @@ import {
   validateParentPlanReviewEvidenceV1,
   validatePreparationReceiptV1,
   validateTransitionIntentV1,
-  validateTransitionPlanV1,
+  validateTransitionPlanV1OrV2,
   type FreshAuthorizeWheelsUpCandidateV1,
   type FreshAuthorizeWheelsUpObservationV1,
   type InitialRuntimeBindingCandidateV1,
@@ -28,7 +28,7 @@ import {
   type PreparationReasonCodeV1,
   type PreparationReceiptV1,
   type TransitionIntentV1,
-  type TransitionPlanV1,
+  type TransitionPlanV1OrV2,
 } from "./contracts-v1.mjs";
 
 export type SelectNextTransitionInputV1 = Readonly<{
@@ -71,7 +71,7 @@ export type PrepareMissionTransitionResultV1 =
     }>;
 
 type ValidatedInputs = Readonly<{
-  plan: TransitionPlanV1;
+  plan: TransitionPlanV1OrV2;
   review: ParentPlanReviewEvidenceV1;
   intent: TransitionIntentV1;
   observation: FreshAuthorizeWheelsUpObservationV1 | InitialRuntimeBindingObservationV1;
@@ -86,7 +86,7 @@ function closedInput(input: unknown, keys: readonly string[]): PreparationValida
 function validateInputs(input: unknown): PreparationValidationResultV1<ValidatedInputs> {
   const argument = closedInput(input, ["plan", "reviewEvidence", "intent", "observation"]);
   if (argument.state === "invalid") return argument;
-  const plan = validateTransitionPlanV1({ artifact: argument.value.plan });
+  const plan = validateTransitionPlanV1OrV2({ artifact: argument.value.plan });
   const review = validateParentPlanReviewEvidenceV1({ artifact: argument.value.reviewEvidence });
   const intent = validateTransitionIntentV1({ artifact: argument.value.intent });
   const observation = plan.state === "valid" && intent.state === "valid" && plan.value.transitionKind === "initial_runtime_binding" && intent.value.transitionKind === "initial_runtime_binding"
@@ -111,7 +111,7 @@ function reviewedPlanMismatch({ plan, review, intent, observation }: ValidatedIn
     new Set(mayIdentities).size !== mayIdentities.length || mayIdentities.slice(1).some((identity) => MISSION_PARTICIPANT_IDS.has(identity));
 }
 
-function repositoryObservationStale(plan: TransitionPlanV1, observation: FreshAuthorizeWheelsUpObservationV1 | InitialRuntimeBindingObservationV1): boolean {
+function repositoryObservationStale(plan: TransitionPlanV1OrV2, observation: FreshAuthorizeWheelsUpObservationV1 | InitialRuntimeBindingObservationV1): boolean {
   if ("missionRevisionId" in observation) {
     return observation.branch === "HEAD" || observation.headRevision === plan.planningBaseRevision || !observation.baseAncestor || !observation.workspaceClean ||
       observation.symlinkPaths.length !== 0 || observation.gitlinkPaths.length !== 0;
@@ -141,7 +141,7 @@ function initialRuntimeBindingStateIneligible(observation: InitialRuntimeBinding
     observation.runtimeBindingCount !== 0 || observation.activeRuntimeBindingCount !== 0 || observation.pendingCoulsonMissionAuthorizationCount !== 0;
 }
 
-function implementationAuthorityMismatch(plan: TransitionPlanV1, observation: InitialRuntimeBindingObservationV1): boolean {
+function implementationAuthorityMismatch(plan: TransitionPlanV1OrV2, observation: InitialRuntimeBindingObservationV1): boolean {
   return observation.authorityMissionId !== plan.missionId || observation.authoritySubjectId !== plan.subjectId || observation.authorityRepositoryId !== plan.repositoryId ||
     observation.authorityCanonicalWritableRoot !== observation.canonicalRoot || observation.authorityBranch !== observation.branch ||
     observation.authorityBaseRevision !== plan.planningBaseRevision || observation.authorityHeadRevision !== observation.headRevision ||

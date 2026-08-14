@@ -74,6 +74,7 @@ import {
 } from "./authorize-wheels-up-executor-v1.mjs";
 import {
   materializeReviewedMissionTransitionV1,
+  prepareMissionTransitionSessionV1,
   resolvePreparedMissionTransitionV1,
   resolveSeatDispatchIdentityByReceiptIdV1,
   validateMissionTransitionPlanReviewV1,
@@ -88,11 +89,12 @@ import {
 import {
   assertPublicationAuthorizationFreshnessV1,
   executeReviewPublicationAuthorizationV1,
+  observePublicationRepositoryV1,
   type PreparedReviewPublicationDecisionV1,
   type PublicationRepositoryObservationV1,
   type PublicationTreeEntryV1,
 } from "./review-publication-executor-v1.mjs";
-import { validateTransitionPlanV1 } from "@shield/mission-preparation";
+import { validateTransitionPlanV1OrV2 } from "@shield/mission-preparation";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import {
@@ -1229,7 +1231,7 @@ async function recordReviewedTransition(args: string[]): Promise<number> {
   const missionId = required(options, "--mission-id");
   const planInput = await jsonFile(resolve(root, required(options, "--transition-plan")), "Mission transition plan");
   const reviewInput = await jsonFile(resolve(root, required(options, "--review-artifact")), "Mission transition plan review");
-  const plan = validateTransitionPlanV1({ artifact: planInput });
+  const plan = validateTransitionPlanV1OrV2({ artifact: planInput });
   if (plan.state === "invalid") throw new MissionCliError(`invalid_transition_plan: ${plan.errors.join(" ")}`, 1);
   const review = validateMissionTransitionPlanReviewV1(reviewInput);
   if (review.state === "invalid") throw new MissionCliError(`${review.code}: ${review.errors.join(" ")}`, 1);
@@ -1345,7 +1347,10 @@ async function prepareNext(args: string[]): Promise<number> {
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
-  const result = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
+  const result = await prepareMissionTransitionSessionV1(
+    { missionId, repositoryRoot: root },
+    { observePublicationRepository: observePublicationRepositoryV1 },
+  );
   if (result.state === "blocked") {
     if (options.flags.has("--json")) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     else process.stderr.write(`Preparation blocked — ${result.reasonCode}: ${result.errors.join(" ")}\n`);
@@ -1420,7 +1425,21 @@ async function prepareNext(args: string[]): Promise<number> {
     }
   }
   const ready: Extract<ResolvePreparedMissionTransitionResultV1, { state: "ready" }> = result;
-  const intent = deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(ready.plan);
+  const intent = ready.plan.schemaId === "mission.transition-plan.v1"
+    ? deriveAuthorizeWheelsUpIntentFromTransitionPlanV1(ready.plan)
+    : validateAuthorizeWheelsUpInput({
+        baseRevision: ready.plan.planningBaseRevision,
+        modelId: ready.plan.modelId,
+        approvedRelativePaths: [...ready.plan.approvedRelativePaths],
+        approvedActionIds: [...ready.plan.approvedActionIds],
+        approvedEffectClasses: [...ready.plan.approvedEffectClasses],
+        approvedEffectKeys: [...ready.plan.approvedEffectKeys],
+        approvedCapabilities: [...ready.plan.approvedCapabilities],
+        validationCommandIds: [...ready.plan.validationCommandIds],
+        reasoningRuntimeId: ready.plan.reasoningRuntimeId,
+        toolExecutorId: ready.plan.toolExecutorId,
+        publicationPaths: [...ready.plan.publicationPaths],
+      });
   const config = await repositoryConfig(root);
   try {
     return await executeAuthorizeWheelsUpV1({
@@ -1431,15 +1450,17 @@ async function prepareNext(args: string[]): Promise<number> {
       timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
       humanMode,
       promptOutput: { write: (value) => promptOutput.write(value) },
-      expectedPreparation: {
-        plan: ready.plan,
-        reviewEvidence: ready.reviewEvidence,
-        intent: ready.intent,
-        observation: ready.observation,
-        selection: ready.selection,
-        candidate: ready.candidate,
-        receipt: ready.preparationReceipt,
-      },
+      ...(ready.plan.schemaId === "mission.transition-plan.v1" ? {
+        expectedPreparation: {
+          plan: ready.plan,
+          reviewEvidence: ready.reviewEvidence,
+          intent: ready.intent,
+          observation: ready.observation,
+          selection: ready.selection,
+          candidate: ready.candidate,
+          receipt: ready.preparationReceipt,
+        },
+      } : {}),
       dependencies: {
         renderDecision: (entry) => {
           if (entry.kind === "manifest") {
