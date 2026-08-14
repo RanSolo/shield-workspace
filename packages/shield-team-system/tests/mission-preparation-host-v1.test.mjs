@@ -44,7 +44,7 @@ import {
   createProfileAwareRuntimeBindingSupersessionEntryV1,
   MISSION_130_JOURNAL_DIGEST,
 } from "../dist/profile-aware-mission-v1.mjs";
-import { appendProfileAwareMissionEntriesAtomicV1, readMissionJournalForDisplay } from "../dist/mission-store.mjs";
+import { appendProfileAwareMissionEntriesAtomicV1, appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "../dist/mission-store.mjs";
 import { executeAuthorizeWheelsUpV1, validateAuthorizeWheelsUpInput } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import { executeReviewPublicationAuthorizationV1 } from "../dist/review-publication-executor-v1.mjs";
 import { executeRuntimeBindingV1 } from "../dist/runtime-binding-executor-v1.mjs";
@@ -1225,6 +1225,54 @@ test("initial-runtime-binding graph selects one exact prepared binding and exact
   assert.match(cliRetry.stdout, /^ALREADY AUTHORIZED — nothing repeated\./u);
   assert.doesNotMatch(`${cliRetry.stdout}${cliRetry.stderr}`, /Passcode:/u);
   assert.equal(await readFile(fixture.journalPath, "utf8"), journalBytes);
+});
+
+test("legacy mission bind accepts base-compatible status-only and unrelated valid configuration drift after signing", async () => {
+  const variants = [
+    {
+      name: "status-only drift",
+      mutate: async (fixture) => writeFile(join(fixture.repositoryRoot, "legacy-status-drift.txt"), "untracked after signing\n"),
+    },
+    {
+      name: "unrelated valid configuration drift",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "config.json");
+        const config = JSON.parse(await readFile(path, "utf8"));
+        assert.deepEqual(config.adapterIds, ["github"]);
+        await writeFile(path, `${JSON.stringify({ ...config, adapterIds: ["github", "atlassian"] }, null, 2)}\n`);
+      },
+    },
+  ];
+
+  for (const variant of variants) {
+    const fixture = await initialRuntimeBindingFixture();
+    const journalBefore = await readFile(fixture.journalPath, "utf8");
+    const calls = { render: 0, pin: 0, sign: 0, legacy: 0, atomic: 0 };
+    const result = await executeRuntimeBindingV1({
+      mode: "legacy",
+      root: fixture.repositoryRoot,
+      missionId: MISSION_ID,
+      intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
+      timestamp: { value: new Date(Date.now() + 1_000).toISOString(), provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, {
+      renderDecision: () => { calls.render += 1; return "unused"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signPayload: async (_binding, _passcode, payload) => {
+        calls.sign += 1;
+        await variant.mutate(fixture);
+        return sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64");
+      },
+      appendEntryLegacy: async (input) => { calls.legacy += 1; return appendProfileAwareMissionEntryV1(input); },
+      appendEntryAtomic: async () => { calls.atomic += 1; throw new Error("atomic append used"); },
+    });
+    assert.deepEqual(calls, { render: 0, pin: 1, sign: 1, legacy: 1, atomic: 0 }, variant.name);
+    assert.equal(result.projection.runtimeBindings.length, 1, variant.name);
+    const journalAfter = await readFile(fixture.journalPath, "utf8");
+    assert.equal(journalAfter.startsWith(journalBefore), true, variant.name);
+    assert.notEqual(journalAfter, journalBefore, variant.name);
+  }
 });
 
 test("prepared runtime-binding executor rejects repository and authority identity drift before every effect", async () => {

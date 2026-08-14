@@ -221,12 +221,16 @@ async function revalidatePrepared(expected: PreparedRuntimeBindingReadyResultV1)
   return exactPrepared(await resolvePreparedMissionTransitionV1({ missionId: expected.missionId, repositoryRoot: expected.observation.canonicalRoot }), expected);
 }
 
-function sameConfiguration(left: ConfigurationSnapshot, right: ConfigurationSnapshot, exact: boolean): boolean {
-  return canonicalJson(left.config) === canonicalJson(right.config) && (!exact || left.bytes === right.bytes && left.identity === right.identity);
+function samePreparedConfiguration(left: ConfigurationSnapshot, right: ConfigurationSnapshot): boolean {
+  return canonicalJson(left.config) === canonicalJson(right.config) && left.bytes === right.bytes && left.identity === right.identity;
 }
 
-function sameJournal(left: JournalSnapshot, right: JournalSnapshot): boolean {
+function samePreparedJournal(left: JournalSnapshot, right: JournalSnapshot): boolean {
   return left.bytes === right.bytes && left.sha256 === right.sha256 && canonicalJson(left.current) === canonicalJson(right.current);
+}
+
+function sameLegacyRepository(left: RepositorySnapshot, right: RepositorySnapshot): boolean {
+  return left.canonicalRoot === right.canonicalRoot && left.branch === right.branch && left.headRevision === right.headRevision;
 }
 
 function validateIntent(value: RuntimeBindingIntentV1): RuntimeBindingIntentV1 {
@@ -348,22 +352,38 @@ export async function executeRuntimeBindingV1(
   const passcode = await dependencies.readPasscode();
   const signatureBase64 = await dependencies.signPayload(signer, passcode, payload);
 
-  const captureFresh = async () => {
+  const capturePreparedFresh = async () => {
     const config = await configurationSnapshot(input.root);
     const [journal, repository, signerState] = await Promise.all([
-      journalSnapshot(input.root, config.config, input.missionId), repositorySnapshot(input.root, input.mode === "prepared"),
-      input.mode === "prepared" ? captureMissionSignerSnapshot(signer.signingKeyRef) : Promise.resolve(null),
+      journalSnapshot(input.root, config.config, input.missionId), repositorySnapshot(input.root, true),
+      captureMissionSignerSnapshot(signer.signingKeyRef),
     ]);
-    if (input.mode === "prepared") await revalidatePrepared(input.expectedPreparation as PreparedRuntimeBindingReadyResultV1);
+    await revalidatePrepared(input.expectedPreparation as PreparedRuntimeBindingReadyResultV1);
     return { config, journal, repository, signerState };
   };
-  const afterSigning = await captureFresh();
-  const beforeAppend = input.mode === "prepared" ? await captureFresh() : afterSigning;
-  for (const fresh of [afterSigning, beforeAppend]) {
-    if (!sameConfiguration(initialConfig, fresh.config, input.mode === "prepared") || !sameJournal(initialJournal, fresh.journal) ||
-        canonicalJson(initialRepository) !== canonicalJson(fresh.repository)) throw new Error("Mission journal, repository configuration, or repository identity changed while May binding was being signed.");
-    if (signerSnapshot !== null && fresh.signerState !== null) assertMissionSignerSnapshotUnchanged(signerSnapshot, fresh.signerState);
-    if (canonicalJson(signer) !== canonicalJson(coulsonBinding(fresh.journal.current))) throw new Error("Coulson signer binding changed while May binding was being signed.");
+  let beforeAppend: Readonly<{ config: ConfigurationSnapshot; journal: JournalSnapshot; repository: RepositorySnapshot; signerState: Awaited<ReturnType<typeof captureMissionSignerSnapshot>> | null }>;
+  if (input.mode === "prepared") {
+    const afterSigning = await capturePreparedFresh();
+    const beforePreparedAppend = await capturePreparedFresh();
+    for (const fresh of [afterSigning, beforePreparedAppend]) {
+      if (!samePreparedConfiguration(initialConfig, fresh.config) || !samePreparedJournal(initialJournal, fresh.journal) ||
+          canonicalJson(initialRepository) !== canonicalJson(fresh.repository)) throw new Error("Mission journal, repository configuration, or repository identity changed while May binding was being signed.");
+      if (signerSnapshot !== null) assertMissionSignerSnapshotUnchanged(signerSnapshot, fresh.signerState);
+      if (canonicalJson(signer) !== canonicalJson(coulsonBinding(fresh.journal.current))) throw new Error("Coulson signer binding changed while May binding was being signed.");
+    }
+    beforeAppend = beforePreparedAppend;
+  } else {
+    const [config, repository] = await Promise.all([
+      configurationSnapshot(input.root),
+      repositorySnapshot(input.root, false),
+    ]);
+    if (config.config.repositoryId !== initialConfig.config.repositoryId || config.config.paths.journals !== initialConfig.config.paths.journals ||
+        config.config.repositoryId !== authority.repositoryId) throw new Error("Repository configuration changed while May binding was being signed.");
+    const journal = await journalSnapshot(input.root, config.config, input.missionId);
+    if (journal.current.projection.lastSequence !== initialJournal.current.projection.lastSequence || !sameLegacyRepository(initialRepository, repository)) {
+      throw new Error("Mission journal or repository identity changed while May binding was being signed.");
+    }
+    beforeAppend = { config, journal, repository, signerState: null };
   }
 
   const entry = createProfileAwareRuntimeBindingRecordedEntryV1({
