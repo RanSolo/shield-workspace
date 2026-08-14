@@ -41,7 +41,9 @@ The package owns a structurally independent representation and validator; it doe
 
 ### Transition-plan compatibility
 
-Do not reinterpret an existing `mission.transition-plan.v1` or a missing template as `standard`. Add a tagged backward-compatible transition-plan variant that binds the intake template through the transition-plan digest. Existing V1 plan and protected-graph bytes remain valid and continue through every current path.
+Do not reinterpret an existing `mission.transition-plan.v1` or a missing template as `standard`. Add the exact schema `mission.transition-plan.v2`, retaining the generic `transition-plan:` content-ID prefix. V2 contains every V1 body field plus exactly one `intakeTemplate` field containing the complete validated template object, not merely its ID/digest. V2 is eligible here only when `transitionKind` is `fresh_authorize_wheels_up`.
+
+The intake template schema ID is exactly `mission.profile-aware-intake-template.v1` and its content-ID prefix is `profile-aware-intake-template:`. Register both schema IDs in the canonical registry. Define plan/compiler/protected-graph inputs as the explicit `TransitionPlanV1 | TransitionPlanV2` union. Existing V1 fields, bytes, IDs, digests, and behavior remain unchanged. Parent review and intent continue binding the exact plan ID/digest, so the embedded template bytes are covered by both plan and graph digests.
 
 The enriched variant must preserve all current transition-plan fields and semantics. Its intake template must bind the same mission ID and subject ID. The fresh-journal route additionally requires:
 
@@ -55,33 +57,52 @@ The enriched variant must preserve all current transition-plan fields and semant
 - objective equal to the reviewed bounded outcome;
 - canonical predecessor identity accepted by the existing profile-aware validator.
 
+Array rules are exact:
+
+- participants contain 2–16 unique entries and are sorted by `seatId` with the repository UTF-16 code-unit comparator;
+- activations contain 1–16 unique entries and are sorted by the tuple `modeId`, `modeVersion`, `seatId`, `activationSource` with that comparator;
+- execution and final-acceptance gate arrays preserve canonical profile-defined order and reject duplicates;
+- validators never sort caller data: unsorted or duplicate reviewed arrays are invalid.
+
 Legacy plans remain eligible only when their mission journal already exists. A legacy plan plus a missing journal returns `mission_intake_template_required` without mutation.
 
 ## Host flow
 
 Add one package-internal preparation facade used by `mission prepare-next`. Keep `resolvePreparedMissionTransitionV1` as the read/replay resolver used by post-sign freshness checks and existing executors.
 
+Add a package-internal no-follow journal presence probe returning exactly `absent | present | unsafe_or_uncertain`. It accepts a journal path derived from a stable, validated repository-configuration snapshot and first proves lexical confinement beneath the configured journal root. It then walks the confined path component by component without following links. The first verified `ENOENT` anywhere in the confined journal-root suffix—including a missing journal root, missing intermediate directory, or missing final journal file—is `absent`. A symlink, non-directory intermediate component, non-regular final object, inaccessible component, path escape, unstable or replaced observation, or any other filesystem error is `unsafe_or_uncertain`. Never infer absence by matching resolver prose.
+
 The facade performs this order:
 
-1. Call the existing resolver. Return every non-missing-journal result unchanged.
-2. For a genuinely missing journal only, reread and validate the protected graph and raw Fury attribution.
-3. Require the enriched fresh-Wheels-Up plan and validate the intake template and cross-bindings.
-4. Read repository config and trusted binding registry; prove profile admission, participants, modes, and signer bindings through existing Team System functions.
-5. Observe canonical root, configured remote repository identity, branch, base, HEAD, cleanliness, changed paths, symlinks, gitlinks, and reviewed scope before mutation. Any stale or ambiguous fact blocks.
-6. Convert the reviewed template to `ProfileAwareMissionBriefContentV1`, reuse `profileAwareMissionIntakeV1`, and call `initializeProfileAwareMissionJournalV1` once.
-7. If concurrent initialization reports `mission_exists`, never overwrite or repair. Reread and continue only through normal exact resolver semantics.
-8. Invoke `resolvePreparedMissionTransitionV1` again from scratch. Return only its closed result.
-9. The CLI then follows its current rendering/PIN/executor path. `executeAuthorizeWheelsUpV1` remains unchanged.
+1. Reread and validate the protected graph and raw Fury attribution.
+2. Read one stable no-follow repository-configuration snapshot. Validate only repository identity, configured journal-root/path derivation, and confinement before probing. These failures precede all journal-presence and missing-template decisions; do not read or require the live trusted-binding registry yet.
+3. Probe journal presence from that validated snapshot. `unsafe_or_uncertain` blocks.
+4. For `present`, branch by reviewed graph version. A legacy V1 graph invokes the existing resolver unchanged and without a new live-registry prerequisite. An enriched V2 graph reads the trusted-binding registry, validates profile admission, participants, modes, and signer bindings through existing Team System functions, then performs exact reviewed-intake reconciliation before returning any resolver result.
+5. For verified `absent`, a legacy V1 graph immediately returns `mission_intake_template_required` without reading the live registry. An enriched V2 graph validates the intake template and cross-bindings, then reads the registry and proves profile admission, participants, modes, and signer bindings.
+6. Reuse exported `observePublicationRepositoryV1` for journal-independent Git observation. Validate canonical root, configured remote repository identity, branch, base, HEAD, cleanliness, changed paths, symlinks, gitlinks, and reviewed scope before mutation. Do not duplicate the private Wheels Up observer. Any stale or ambiguous fact blocks.
+7. Convert the reviewed template to `ProfileAwareMissionBriefContentV1`, reuse `profileAwareMissionIntakeV1`, and call `initializeProfileAwareMissionJournalV1` once; that initializer may create the verified-missing confined journal-root suffix.
+8. If concurrent initialization reports `mission_exists`, never overwrite or repair. Reread configuration and the journal through the same stable no-follow validation, then continue only after V2 registry validation and exact reviewed-intake reconciliation.
+9. Invoke `resolvePreparedMissionTransitionV1` again from scratch. Return only its closed result.
+10. The CLI then follows its current rendering/PIN/executor path. `executeAuthorizeWheelsUpV1` remains unchanged.
 
 The initial journal entry's bytes, brief revision, requirements, and bindings come only from reviewed template content plus existing trusted binding derivation. A restart never regenerates `createdAt` or substitutes a new template.
+
+For every enriched V2 graph—whether the journal was newly created, concurrently created, proposed, authorized, publication-ready, runtime-binding-ready, or already authorized—derive the expected sequence-zero entry from the reviewed template and current trusted-binding derivation before returning any resolver result. Compare complete brief content/revision, trusted bindings, generated requirements, sequence/type/entry identity/timestamp, and exact canonical first-line bytes. Binding and requirement comparisons include order and every field.
+
+Any mismatch returns `mission_intake_mismatch`, preserves all bytes, and cannot produce `ready`, retry, publication, or runtime-binding results. V1 graphs with existing journals retain current behavior. V1 graphs with absent journals return `mission_intake_template_required`.
 
 ## Exact file scope
 
 Expected implementation paths:
 
 - `docs/missions/issue-300-delivery-session-key-turn-plan.md`
+- `packages/mission-preparation/src/canonical-json-v1.mts`
 - `packages/mission-preparation/src/contracts-v1.mts`
+- `packages/mission-preparation/src/index.mts`
+- `packages/mission-preparation/src/preparation-compiler-v1.mts`
 - `packages/mission-preparation/tests/contracts-v1.test.mjs`
+- `packages/mission-preparation/tests/package-boundary.test.mjs`
+- `packages/mission-preparation/tests/preparation-compiler-v1.test.mjs`
 - `packages/shield-team-system/src/mission-builder-v1.mts`
 - `packages/shield-team-system/src/mission-preparation-store-v1.mts`
 - `packages/shield-team-system/src/mission-preparation-host-v1.mts`
@@ -121,11 +142,12 @@ Before proposed-journal creation:
 
 1. malformed invocation or unsafe root;
 2. missing/malformed/ambiguous protected graph or Fury attribution;
-3. `mission_intake_template_required` for a legacy graph with no journal;
-4. invalid intake template or plan/template identity mismatch;
-5. repository configuration, profile admission, participant, mode, or binding mismatch;
-6. stale root/remote/branch/base/HEAD/worktree/path-kind/reviewed-scope observation;
-7. initialization conflict or `recovery_required`.
+3. missing/malformed/unstable repository configuration, repository identity, or journal-path confinement;
+4. unsafe or uncertain journal-path observation;
+5. `mission_intake_template_required` for a legacy graph with a verified-absent journal;
+6. for enriched V2 only, invalid intake template, plan/template identity mismatch, missing/malformed live registry, or profile/participant/mode/binding mismatch;
+7. stale root/remote/branch/base/HEAD/worktree/path-kind/reviewed-scope observation;
+8. initialization conflict, `mission_intake_mismatch`, or `recovery_required`.
 
 After initialization, existing resolver and executor precedence remains authoritative. Do not mask an existing malformed or partially authorized journal as a fresh initialization opportunity.
 
@@ -142,16 +164,19 @@ After initialization, existing resolver and executor precedence remains authorit
 
 Tests must cover:
 
-- accessor, proxy, symbol, non-enumerable, duplicate, unsorted, oversized, or extra-field template data;
-- template ID/digest tamper and plan/template/graph cross-substitution;
+- accessor, proxy, symbol, non-enumerable, duplicate, unsorted, oversized, or extra-field template data, including exact array bounds/order;
+- template ID/digest tamper, plan/template/graph cross-substitution, embedded-template plan/graph digest coverage, installed-consumer execution, and unchanged V1 vectors;
 - profile, gates, risk, participant, activation, predecessor, objective, mission, and subject mismatch;
 - Fury receipt replacement/reordering/truncation and reviewer identity drift;
 - repository/config/remote/root/branch/base/HEAD/path/symlink/gitlink/dirty-worktree drift before initialization;
+- an entirely missing configured journal root and a missing intermediate configured journal directory both initialize through the verified `absent` path, while symlinked, replaced, inaccessible, and non-directory components fail closed;
 - signer binding/key rotation;
 - cancellation, wrong PIN, signer failure, post-PIN drift, and process loss;
 - exact and conflicting concurrent initialization;
 - exact proposed-journal restart and malformed/partial/advanced conflicting journals;
+- for enriched graphs, otherwise-valid journals differing only in risk, participant, mode, `createdAt`, profile, requirement, or any non-Coulson binding field;
 - no duplicate signed authority on exact retry;
+- present and absent legacy V1 graphs preserve their existing resolver or `mission_intake_template_required` result when the live trusted-binding registry is missing, malformed, or rotated;
 - unchanged behavior for legacy begin/authorize/authorize-wheels-up/bind/publication-authorize, existing-journal prepare-next, prepared publication, and prepared runtime binding.
 
 ## Exclusions
