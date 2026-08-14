@@ -102,9 +102,12 @@ import { type GuidedReviewPublicationBundleV1 } from "./guided-review-v1.mjs";
 import { prepareGuidedReviewRouteRequestHostV1 } from "./guided-review-route-preparation-host-v1.mjs";
 import { readGuidedReviewRoutePackageJsonV1 } from "./guided-review-route-request-v1.mjs";
 import { resolveGuidedReviewRoutePreparationHostV1 } from "./guided-review-route-resolution-host-v1.mjs";
-import { projectCurrentGuidedReviewStepHostV1, type GuidedReviewProjectionHostResultV1 } from "./guided-review-projection-host-v1.mjs";
-import { answerCurrentGuidedReviewSessionHostV1, revalidateCompletedGuidedReviewSessionHostV1,
-  startOrResumeGuidedReviewSessionHostV1 } from "./guided-review-session-host-v1.mjs";
+import { type GuidedReviewProjectionHostResultV1 } from "./guided-review-projection-host-v1.mjs";
+import { createGuidedReviewAnswerEnvelopeV1, type GuidedReviewQuestionEnvelopeV1 } from "./guided-review-conversation-v1.mjs";
+import { answerGuidedReviewConversationHostV1, currentGuidedReviewQuestionHostV1,
+  revalidateCurrentGuidedReviewQuestionHostV1,
+  type GuidedReviewAutomatedChecksV1 } from "./guided-review-conversation-host-v1.mjs";
+import { revalidateCompletedGuidedReviewSessionHostV1, startOrResumeGuidedReviewSessionHostV1 } from "./guided-review-session-host-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import {
@@ -1386,6 +1389,8 @@ function renderRoutePreparationRequired(result: Awaited<ReturnType<typeof prepar
 function renderGuidedReviewInProgress(
   result: Awaited<ReturnType<typeof startOrResumeGuidedReviewSessionHostV1>> & { state: "guided_review_in_progress" },
   projection: GuidedReviewProjectionHostResultV1,
+  questionEnvelope: GuidedReviewQuestionEnvelopeV1,
+  automatedChecks: GuidedReviewAutomatedChecksV1,
 ): string {
   const targets = projection.state === "ready" ? projection.projection.behaviorGroups.flatMap((group) => group.targets.map((target) =>
     `  - [${target.targetType}] ${target.relativePath} old ${target.oldRange.start},${target.oldRange.lines} new ${target.newRange.start},${target.newRange.lines}; argv=${JSON.stringify(target.navigation.argv)}`)) :
@@ -1398,6 +1403,10 @@ function renderGuidedReviewInProgress(
     `Stage: ${result.currentStage?.title ?? "none"}`,
     `Purpose: ${result.currentStage?.purpose ?? "none"}`,
     `Question: ${result.currentStep?.question ?? "none"}`,
+    `Question digest: ${questionEnvelope.questionDigest}`,
+    `Question session: ${questionEnvelope.sessionId} @ ${questionEnvelope.sessionDigest}`,
+    `Question position: ${questionEnvelope.stageId} / ${questionEnvelope.checkpointId} / ${questionEnvelope.stepId}`,
+    `Question projection: ${questionEnvelope.projectionDigest}`,
     "Instructions:",
     ...(result.currentStep?.instructions.map((entry) => `  - ${entry}`) ?? ["  - none"]),
     `Relevant paths: ${result.currentStep?.relevantPaths.join(", ") || "none"}`,
@@ -1408,76 +1417,51 @@ function renderGuidedReviewInProgress(
     `Projection: ${projection.state === "ready" ? projection.projectionPath : projection.state}`,
     "Local targets:",
     ...targets,
+    "Automated tests and checks:",
+    ...renderGuidedReviewAutomatedChecksV1(automatedChecks),
     `Playbook: ${result.paths.playbookPath}`,
     `Session: ${result.paths.sessionPath}`,
   ].join("\n");
 }
 
-type GuidedReviewCurrentAnswer = Readonly<{
-  disposition: "pass" | "fail" | "conditional_pass" | "not_observed";
-  observation: string;
+export function renderGuidedReviewAutomatedChecksV1(automatedChecks: GuidedReviewAutomatedChecksV1): readonly string[] {
+  return automatedChecks.state === "unavailable" ? Object.freeze(["  - unavailable"]) : Object.freeze(automatedChecks.receipts.map((receipt) =>
+    `  - ${receipt.commandId}: command=${JSON.stringify(receipt.command)} argv=${JSON.stringify(receipt.argv)} outcome=${receipt.outcome} exitCode=${receipt.exitCode === null ? "null" : receipt.exitCode} authority=${receipt.authority} provenance=${receipt.provenance} sourceByteSha256=${receipt.sourceByteSha256}`));
+}
+
+type GuidedReviewAnswerSelection = Readonly<{
+  questionDigest: string;
+  rawResponse: string;
   finding: string | null;
   condition: string | null;
 }>;
 
-type GuidedReviewAnswerSelection = Readonly<{
-  answer: "PASS" | "FAIL" | "CONDITIONAL_PASS" | "NOT_OBSERVED";
-  decision: GuidedReviewCurrentAnswer | null;
-  requiredField: "finding" | "condition" | null;
-}>;
-
 function guidedReviewCurrentAnswer(options: ParsedOptions): GuidedReviewAnswerSelection | null {
+  const rawResponse = options.values.get("--guided-review-response");
   const bareAnswer = options.values.get("--guided-review-answer");
   const rawDisposition = options.values.get("--guided-review-disposition");
   const observation = options.values.get("--guided-review-observation");
   const finding = options.values.get("--guided-review-finding");
   const condition = options.values.get("--guided-review-condition");
-  if (bareAnswer === undefined && rawDisposition === undefined && observation === undefined && finding === undefined && condition === undefined) return null;
-  if (bareAnswer !== undefined) {
-    if (rawDisposition !== undefined || observation !== undefined) {
-      throw new MissionCliError("--guided-review-answer cannot be combined with the legacy disposition/observation form.", 1);
-    }
-    if (!["PASS", "FAIL", "CONDITIONAL_PASS", "NOT_OBSERVED"].includes(bareAnswer)) {
-      throw new MissionCliError("--guided-review-answer must be exactly PASS, FAIL, CONDITIONAL_PASS, or NOT_OBSERVED.", 1);
-    }
-    const answer = bareAnswer as GuidedReviewAnswerSelection["answer"];
-    if (answer === "PASS") {
-      if (finding !== undefined || condition !== undefined) throw new MissionCliError("PASS accepts no finding or condition.", 1);
-      return Object.freeze({ answer, decision: Object.freeze({ disposition: "pass", observation: "PASS", finding: null, condition: null }), requiredField: null });
-    }
-    if (answer === "FAIL" || answer === "NOT_OBSERVED") {
-      if (condition !== undefined) throw new MissionCliError(`${answer} accepts a finding, not a condition.`, 1);
-      if (finding === undefined) return Object.freeze({ answer, decision: null, requiredField: "finding" });
-      if (finding.trim() !== finding || finding.length === 0 || finding.length > 4000) throw new MissionCliError("--guided-review-finding must be normalized and contain 1-4000 characters.", 1);
-      return Object.freeze({ answer, decision: Object.freeze({ disposition: answer === "FAIL" ? "fail" : "not_observed",
-        observation: answer, finding, condition: null }), requiredField: null });
-    }
-    if (finding !== undefined) throw new MissionCliError("CONDITIONAL_PASS accepts a condition, not a finding.", 1);
-    if (condition === undefined) return Object.freeze({ answer, decision: null, requiredField: "condition" });
-    if (condition.trim() !== condition || condition.length === 0 || condition.length > 4000) throw new MissionCliError("--guided-review-condition must be normalized and contain 1-4000 characters.", 1);
-    return Object.freeze({ answer, decision: Object.freeze({ disposition: "conditional_pass", observation: "CONDITIONAL_PASS",
-      finding: null, condition }), requiredField: null });
+  const questionDigest = options.values.get("--guided-review-question-digest");
+  if (rawResponse === undefined && bareAnswer === undefined && rawDisposition === undefined && observation === undefined &&
+      finding === undefined && condition === undefined && questionDigest === undefined) return null;
+  if (questionDigest === undefined) throw new MissionCliError("Guided Review answers require the displayed --guided-review-question-digest.", 1);
+  if (rawResponse !== undefined && (bareAnswer !== undefined || rawDisposition !== undefined || observation !== undefined)) {
+    throw new MissionCliError("--guided-review-response cannot be combined with legacy Guided Review answer flags.", 1);
   }
-  if (finding !== undefined) throw new MissionCliError("--guided-review-finding is used only with --guided-review-answer FAIL or NOT_OBSERVED.", 1);
-  if (rawDisposition === undefined || observation === undefined) {
-    throw new MissionCliError("A Guided Review answer requires both --guided-review-disposition and --guided-review-observation.", 1);
+  if (bareAnswer !== undefined && (rawDisposition !== undefined || observation !== undefined)) {
+    throw new MissionCliError("--guided-review-answer cannot be combined with the legacy disposition/observation form.", 1);
   }
-  const normalized = rawDisposition.toUpperCase();
-  const dispositions = { PASS: "pass", FAIL: "fail", CONDITIONAL_PASS: "conditional_pass", NOT_OBSERVED: "not_observed" } as const;
-  const disposition = dispositions[normalized as keyof typeof dispositions];
-  if (disposition === undefined) throw new MissionCliError("--guided-review-disposition must be PASS, FAIL, CONDITIONAL_PASS, or NOT_OBSERVED.", 1);
-  if (observation.trim() !== observation || observation.length === 0 || observation.length > 8000) {
-    throw new MissionCliError("--guided-review-observation must be normalized and contain 1-8000 characters.", 1);
+  let selected = rawResponse ?? bareAnswer;
+  let selectedFinding = finding ?? null;
+  if (rawDisposition !== undefined || observation !== undefined) {
+    if (rawDisposition === undefined || observation === undefined) throw new MissionCliError("Legacy Guided Review answers require both disposition and observation.", 1);
+    selected = rawDisposition;
+    if (["FAIL", "NOT_OBSERVED"].includes(rawDisposition.toUpperCase()) && selectedFinding === null) selectedFinding = observation;
   }
-  if (disposition === "conditional_pass") {
-    if (condition === undefined || condition.trim() !== condition || condition.length === 0 || condition.length > 4000) {
-      throw new MissionCliError("CONDITIONAL_PASS requires a normalized --guided-review-condition of 1-4000 characters.", 1);
-    }
-  } else if (condition !== undefined) {
-    throw new MissionCliError("--guided-review-condition is accepted only with CONDITIONAL_PASS.", 1);
-  }
-  return Object.freeze({ answer: normalized as GuidedReviewAnswerSelection["answer"], decision: Object.freeze({ disposition, observation,
-    finding: disposition === "fail" || disposition === "not_observed" ? observation : null, condition: condition ?? null }), requiredField: null });
+  if (selected === undefined) throw new MissionCliError("A Guided Review question digest must accompany an answer response.", 1);
+  return Object.freeze({ questionDigest, rawResponse: selected, finding: selectedFinding, condition: condition ?? null });
 }
 
 function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicationDecisionV1): string {
@@ -1538,7 +1522,8 @@ async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"y
 
 async function prepareNext(args: string[]): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
-    "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition", "--guided-review-observation", "--guided-review-condition"], ["--json", "--human", "--passcode-stdin"]);
+    "--guided-review-response", "--guided-review-question-digest", "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition",
+    "--guided-review-observation", "--guided-review-condition"], ["--json", "--human", "--passcode-stdin"]);
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
@@ -1645,39 +1630,57 @@ async function prepareNext(args: string[]): Promise<number> {
         };
         let resumed = await resume(result);
         let answerConsumed = false;
+        let conversationAnswered: Extract<Awaited<ReturnType<typeof answerGuidedReviewConversationHostV1>>, { state: "answered" }> | null = null;
         if (resumed.state === "route_preparation_required") {
           if (currentAnswer !== null) throw new MissionCliError("Guided Review has no current question until Fury route preparation completes.", 1);
           output(resumed, options.flags.has("--json"), renderRoutePreparationRequired(resumed));
           return 0;
         }
         if (resumed.state === "guided_review_in_progress") {
+          const projectionResolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: result, repositoryRoot: root });
+          if (projectionResolution.state !== "guided_review_ready") {
+            if (currentAnswer !== null) throw new MissionCliError("Guided Review route is unavailable for the displayed question digest.", 1);
+          } else {
           if (currentAnswer !== null) {
-            if (currentAnswer.decision === null) {
-              const followUp = Object.freeze({ schemaVersion: 1, state: "follow_up_required", missionId: resumed.missionId,
-                exactRevision: resumed.exactRevision, sessionDigest: resumed.sessionDigest, answer: currentAnswer.answer,
-                requiredField: currentAnswer.requiredField, currentStage: resumed.currentStage, currentStep: resumed.currentStep, paths: resumed.paths });
-              output(followUp, options.flags.has("--json"), ["GUIDED REVIEW FOLLOW-UP REQUIRED", `Answer: ${currentAnswer.answer}`,
-                `Required: ${currentAnswer.requiredField}`, `Question: ${resumed.currentStep?.question ?? "none"}`].join("\n"));
-              return 0;
-            }
-            const answered = await answerCurrentGuidedReviewSessionHostV1({ repositoryRoot: root, resolution: await (async () => {
-              const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: result, repositoryRoot: root });
-              if (resolution.state !== "guided_review_ready") throw new MissionCliError("Guided Review route changed before the current answer could be recorded.", 1);
-              return resolution;
-            })(), expectedSessionDigest: resumed.sessionDigest, ...currentAnswer.decision, decidedAt: new Date().toISOString() });
-            if (answered.state === "invalid") throw new MissionCliError(`${answered.code}: ${answered.errors.join(" ")}`, 1);
+              const answerEnvelope = createGuidedReviewAnswerEnvelopeV1({ schemaVersion: 1, contractVersion: "guided.review.answer.v1",
+                questionDigest: currentAnswer.questionDigest, rawResponse: currentAnswer.rawResponse,
+                finding: currentAnswer.finding, condition: currentAnswer.condition });
+              if (answerEnvelope.state !== "ready") throw new MissionCliError(`${answerEnvelope.code}: ${answerEnvelope.errors.join(" ")}`, 1);
+              const displayed = await revalidateCurrentGuidedReviewQuestionHostV1({ repositoryRoot: root, preparation: result,
+                resolution: projectionResolution, expectedSessionDigest: resumed.sessionDigest,
+                expectedQuestionDigest: currentAnswer.questionDigest });
+              if (displayed.state !== "question_ready") {
+                throw new MissionCliError(`${displayed.code}: ${displayed.errors.join(" ")}`, 1);
+              }
+              const answered = await answerGuidedReviewConversationHostV1({ repositoryRoot: root, preparation: result, resolution: projectionResolution,
+                questionEnvelope: displayed.questionEnvelope, answerEnvelope: answerEnvelope.value, decidedAt: new Date().toISOString() });
+              if (answered.state === "invalid") throw new MissionCliError(`${answered.code}: ${answered.errors.join(" ")}`, 1);
+              if (answered.state === "confirmation_required") {
+                output(answered, options.flags.has("--json"), ["GUIDED REVIEW ANSWER CONFIRMATION REQUIRED",
+                  `Question digest: ${answered.questionEnvelope.questionDigest}`, `Accepted answers: ${answered.acceptedAnswers.join(", ")}`].join("\n"));
+                return 0;
+              }
+              if (answered.state === "follow_up_required") {
+                output(answered, options.flags.has("--json"), ["GUIDED REVIEW ANSWER FOLLOW-UP REQUIRED",
+                  `Question digest: ${answered.questionEnvelope.questionDigest}`, `Answer: ${answered.canonicalAnswer}`,
+                  `Required: ${answered.requiredField}`].join("\n"));
+                return 0;
+              }
+              conversationAnswered = answered;
             answerConsumed = true;
             resumed = await resume(result);
             if (resumed.state === "route_preparation_required") throw new MissionCliError("Guided Review route became unavailable after recording the current answer.", 1);
           }
+          }
         }
         if (resumed.state === "guided_review_in_progress") {
           const projectionResolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: result, repositoryRoot: root });
-          const projection: GuidedReviewProjectionHostResultV1 = projectionResolution.state === "guided_review_ready"
-            ? await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: root, preparation: result, resolution: projectionResolution,
-              expectedSessionDigest: resumed.sessionDigest })
-            : Object.freeze({ state: "projection_unavailable", code: "GUIDED_REVIEW_PROJECTION_UNAVAILABLE",
-              errors: Object.freeze(["The exact Guided Review route is unavailable for current-step projection."]) });
+          const displayed = projectionResolution.state === "guided_review_ready"
+            ? await currentGuidedReviewQuestionHostV1({ repositoryRoot: root, preparation: result, resolution: projectionResolution,
+              expectedSessionDigest: resumed.sessionDigest }) : null;
+          const projection: GuidedReviewProjectionHostResultV1 = displayed?.state === "question_ready" ? displayed.projection :
+            conversationAnswered?.projection ?? Object.freeze({ state: "projection_unavailable", code: "GUIDED_REVIEW_PROJECTION_UNAVAILABLE",
+              errors: Object.freeze(["The exact Guided Review route or current question projection is unavailable."]) });
           if (answerConsumed && projection.state !== "ready") {
             const recorded = Object.freeze({ schemaVersion: 1, state: "guided_review_decision_recorded", missionId: resumed.missionId,
               exactRevision: resumed.exactRevision, sessionDigest: resumed.sessionDigest, projection, session: resumed });
@@ -1685,7 +1688,11 @@ async function prepareNext(args: string[]): Promise<number> {
               `Projection: ${projection.code}: ${projection.errors.join(" ")}`].join("\n"));
             return 0;
           }
-          output(Object.freeze({ ...resumed, projection }), options.flags.has("--json"), renderGuidedReviewInProgress(resumed, projection));
+          if (displayed?.state !== "question_ready") throw new MissionCliError("Current Guided Review question envelope is unavailable.", 1);
+          const inProgress = Object.freeze({ ...resumed, projection, questionEnvelope: displayed.questionEnvelope,
+            automatedChecks: displayed.automatedChecks });
+          output(inProgress, options.flags.has("--json"), renderGuidedReviewInProgress(resumed, projection,
+            displayed.questionEnvelope, displayed.automatedChecks));
           return 0;
         }
         if (currentAnswer !== null && !answerConsumed) throw new MissionCliError("Completed Guided Review has no current question to answer.", 1);
@@ -2289,7 +2296,7 @@ export function missionUsage(): string {
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
-    "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-answer PASS|FAIL|CONDITIONAL_PASS|NOT_OBSERVED [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",

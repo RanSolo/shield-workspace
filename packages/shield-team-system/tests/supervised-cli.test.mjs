@@ -1855,6 +1855,7 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
   const playbook = JSON.parse(await readFile(active.paths.playbookPath, "utf8"));
   const progressedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
     "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+    "--guided-review-question-digest", active.questionEnvelope.questionDigest,
     "--passcode-stdin", "--json"],
   { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
   assert.equal(progressedRun.status, 0, progressedRun.stderr);
@@ -1871,18 +1872,22 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
   assert.doesNotMatch(`${progressedRun.stdout}${progressedRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
 
   let session = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
+  let displayed = progressed;
   const totalSteps = playbook.stages.flatMap((stage) => stage.steps).length;
   while (session.decisions.length < totalSteps - 1) {
     const next = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
       "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+      "--guided-review-question-digest", displayed.questionEnvelope.questionDigest,
       "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
     assert.equal(next.status, 0, next.stderr);
-    assert.equal(JSON.parse(next.stdout).state, "guided_review_in_progress");
+    displayed = JSON.parse(next.stdout);
+    assert.equal(displayed.state, "guided_review_in_progress");
     assert.doesNotMatch(`${next.stdout}${next.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
     session = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
   }
   const completedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
     "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+    "--guided-review-question-digest", displayed.questionEnvelope.questionDigest,
     "--passcode-stdin", "--json"],
   { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n" });
   assert.equal(completedRun.status, 0, completedRun.stderr);
@@ -1894,40 +1899,80 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
   assert.notEqual(await readFile(journal, "utf8"), "");
 });
 
-test("accepted Guided Review answers survive unavailable symlinked and hard-linked ephemeral projections", async (t) => {
-  for (const kind of ["symlink", "hardlink"]) await t.test(kind, async () => {
-    const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
-    const evidence = await preparedGuidedReviewContext(prepared);
-    const routedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-      "--guided-review-choice", "yes", "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
-    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
-    assert.equal(routedRun.status, 0, routedRun.stderr);
-    const routed = JSON.parse(routedRun.stdout);
-    await authorPreparedFuryRoute(prepared, routed);
-    const activeRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-      "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
-    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
-    assert.equal(activeRun.status, 0, activeRun.stderr);
-    const active = JSON.parse(activeRun.stdout);
-    assert.equal(active.projection.state, "ready");
+test("ignored symlinked, hard-linked, and replaced projections cannot block a previously displayed bound answer", async (t) => {
+  for (const kind of ["symlink", "hardlink", "replaced"]) await t.test(kind, async () => {
+    const value = await activeGuidedReviewProjectionFixture();
+    const { active, prepared } = value;
     const sessionBefore = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
-    const outside = join(await mkdtemp(join(tmpdir(), "shield-guided-projection-outside-")), "projection.json");
-    await writeFile(outside, "outside projection\n", { mode: 0o600 });
-    await unlink(active.projection.projectionPath);
-    if (kind === "symlink") await symlink(outside, active.projection.projectionPath);
-    else await link(outside, active.projection.projectionPath);
+    const projectionPath = active.projection.projectionPath;
+    const outside = kind === "replaced" ? null : join(await mkdtemp(join(tmpdir(), "shield-guided-projection-outside-")), "projection.json");
+    if (outside !== null) await writeFile(outside, "outside projection\n", { mode: 0o600 });
+    const installIgnoredStorage = async () => {
+      await unlink(projectionPath).catch(() => undefined);
+      if (kind === "symlink") await symlink(outside, projectionPath);
+      else if (kind === "hardlink") await link(outside, projectionPath);
+      else await writeFile(projectionPath, "replaced projection storage\n", { mode: 0o600 });
+    };
+    await installIgnoredStorage();
+    const outsideBefore = outside === null ? null : { bytes: await readFile(outside, "utf8"), stat: await lstat(outside) };
+    const hostilePathBefore = await lstat(projectionPath);
+
+    const materialized = await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: prepared.root, preparation: value.preparation,
+      resolution: value.resolution, expectedSessionDigest: active.sessionDigest }, projectionDependencies());
+    if (kind === "replaced") assert.equal(materialized.state, "ready", JSON.stringify(materialized));
+    else assert.equal(materialized.state, "projection_unavailable", JSON.stringify(materialized));
+    assert.deepEqual(JSON.parse(await readFile(active.paths.sessionPath, "utf8")), sessionBefore);
+    if (outside !== null) {
+      assert.equal(await readFile(outside, "utf8"), outsideBefore.bytes);
+      const outsideAfterMaterialization = await lstat(outside);
+      assert.equal(outsideAfterMaterialization.dev, outsideBefore.stat.dev);
+      assert.equal(outsideAfterMaterialization.ino, outsideBefore.stat.ino);
+      const hostilePathAfterMaterialization = await lstat(projectionPath);
+      assert.equal(hostilePathAfterMaterialization.dev, hostilePathBefore.dev);
+      assert.equal(hostilePathAfterMaterialization.ino, hostilePathBefore.ino);
+    } else {
+      await installIgnoredStorage();
+    }
 
     const answeredRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-      "--guided-review-choice", "yes", "--guided-review-answer", "PASS", "--passcode-stdin", "--json"],
+      "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+      "--guided-review-question-digest", active.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
     assert.equal(answeredRun.status, 0, answeredRun.stderr);
     const answered = JSON.parse(answeredRun.stdout);
-    assert.equal(answered.state, "guided_review_decision_recorded");
-    assert.equal(answered.projection.state, "projection_unavailable");
+    if (kind === "replaced") {
+      assert.equal(answered.state, "guided_review_in_progress");
+      assert.equal(answered.projection.state, "ready");
+    } else {
+      assert.equal(answered.state, "guided_review_decision_recorded");
+      assert.equal(answered.projection.state, "projection_unavailable");
+    }
     const sessionAfter = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
     assert.equal(sessionAfter.decisions.length, sessionBefore.decisions.length + 1);
     assert.equal(sessionAfter.decisions.at(-1).observation, "PASS");
-    assert.equal(await readFile(outside, "utf8"), "outside projection\n");
+    if (outside !== null) {
+      assert.equal(await readFile(outside, "utf8"), outsideBefore.bytes);
+      const outsideAfter = await lstat(outside);
+      assert.equal(outsideAfter.dev, outsideBefore.stat.dev);
+      assert.equal(outsideAfter.ino, outsideBefore.stat.ino);
+      const hostilePathAfter = await lstat(projectionPath);
+      assert.equal(hostilePathAfter.dev, hostilePathBefore.dev);
+      assert.equal(hostilePathAfter.ino, hostilePathBefore.ino);
+    }
+
+    const duplicateRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+      "--guided-review-question-digest", active.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(duplicateRun.status, 1);
+    assert.match(duplicateRun.stderr, /GUIDED_REVIEW_ANSWER_STALE/u);
+    assert.deepEqual(JSON.parse(await readFile(active.paths.sessionPath, "utf8")), sessionAfter);
+    if (outside !== null) {
+      assert.equal(await readFile(outside, "utf8"), outsideBefore.bytes);
+      const outsideAfterDuplicate = await lstat(outside);
+      assert.equal(outsideAfterDuplicate.dev, outsideBefore.stat.dev);
+      assert.equal(outsideAfterDuplicate.ino, outsideBefore.stat.ino);
+    }
   });
 });
 
@@ -2052,27 +2097,58 @@ test("prepare-next bare answers preserve exact human follow-ups and mutate at mo
   assert.equal(activeRun.status, 0, activeRun.stderr);
   const active = JSON.parse(activeRun.stdout);
   const sessionPath = active.paths.sessionPath;
+  const projectionPath = active.projection.projectionPath;
   const journalBefore = await readFile(journalPath(prepared.root, prepared.missionId), "utf8");
   const sessionBefore = await readFile(sessionPath, "utf8");
+  const projectionBefore = await readFile(projectionPath, "utf8");
+  const projectionStatBefore = await lstat(projectionPath);
+
+  const unsafeLegacy = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS", "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(unsafeLegacy.status, 1);
+  assert.match(unsafeLegacy.stderr, /displayed --guided-review-question-digest/u);
+  assert.equal(await readFile(sessionPath, "utf8"), sessionBefore);
+
+  const confirmationRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-response", "PASS because it looks good",
+    "--guided-review-question-digest", active.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(confirmationRun.status, 0, confirmationRun.stderr);
+  const confirmation = JSON.parse(confirmationRun.stdout);
+  assert.equal(confirmation.state, "confirmation_required");
+  assert.equal(confirmation.code, "GUIDED_REVIEW_ANSWER_CONFIRMATION_REQUIRED");
+  assert.equal(confirmation.questionEnvelope.questionDigest, active.questionEnvelope.questionDigest);
+  assert.deepEqual(confirmation.acceptedAnswers, ["PASS", "FAIL", "NOT_OBSERVED", "CONDITIONAL_PASS"]);
+  assert.equal(await readFile(sessionPath, "utf8"), sessionBefore);
+  assert.equal(await readFile(journalPath(prepared.root, prepared.missionId), "utf8"), journalBefore);
+  assert.equal(await readFile(projectionPath, "utf8"), projectionBefore);
+  assert.equal((await lstat(projectionPath)).ino, projectionStatBefore.ino);
 
   for (const [answer, requiredField] of [["FAIL", "finding"], ["NOT_OBSERVED", "finding"], ["CONDITIONAL_PASS", "condition"]]) {
     const followUpRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-      "--guided-review-choice", "yes", "--guided-review-answer", answer, "--passcode-stdin", "--json"],
+      "--guided-review-choice", "yes", "--guided-review-answer", answer,
+      "--guided-review-question-digest", active.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
     assert.equal(followUpRun.status, 0, followUpRun.stderr);
     const followUp = JSON.parse(followUpRun.stdout);
     assert.equal(followUp.state, "follow_up_required");
-    assert.equal(followUp.answer, answer);
+    assert.equal(followUp.canonicalAnswer, answer);
     assert.equal(followUp.requiredField, requiredField);
     assert.equal(await readFile(sessionPath, "utf8"), sessionBefore);
+    assert.equal(await readFile(journalPath(prepared.root, prepared.missionId), "utf8"), journalBefore);
+    assert.equal(await readFile(projectionPath, "utf8"), projectionBefore);
+    assert.equal((await lstat(projectionPath)).ino, projectionStatBefore.ino);
     assert.doesNotMatch(`${followUpRun.stdout}${followUpRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
   }
 
   const exactFinding = "The exact current behavior violates the inspected boundary.";
   const failed = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
     "--guided-review-choice", "yes", "--guided-review-answer", "FAIL", "--guided-review-finding", exactFinding,
+    "--guided-review-question-digest", active.questionEnvelope.questionDigest,
     "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
   assert.equal(failed.status, 0, failed.stderr);
+  const failedOutput = JSON.parse(failed.stdout);
   let session = JSON.parse(await readFile(sessionPath, "utf8"));
   assert.deepEqual({ observation: session.decisions.at(-1).observation, finding: session.decisions.at(-1).finding },
     { observation: "FAIL", finding: exactFinding });
@@ -2080,19 +2156,25 @@ test("prepare-next bare answers preserve exact human follow-ups and mutate at mo
   const exactCondition = "Proceed only after the named boundary is corrected.";
   const conditional = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
     "--guided-review-choice", "yes", "--guided-review-answer", "CONDITIONAL_PASS", "--guided-review-condition", exactCondition,
+    "--guided-review-question-digest", failedOutput.questionEnvelope.questionDigest,
     "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
   assert.equal(conditional.status, 0, conditional.stderr);
+  const conditionalOutput = JSON.parse(conditional.stdout);
   session = JSON.parse(await readFile(sessionPath, "utf8"));
   assert.deepEqual({ observation: session.decisions.at(-1).observation, condition: session.decisions.at(-1).condition },
     { observation: "CONDITIONAL_PASS", condition: exactCondition });
 
+  await unlink(conditionalOutput.projection.projectionPath);
+  assert.equal(await lstat(conditionalOutput.projection.projectionPath).then(() => true, () => false), false);
   const passed = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-    "--guided-review-choice", "yes", "--guided-review-answer", "PASS", "--passcode-stdin", "--json"],
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+    "--guided-review-question-digest", conditionalOutput.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
   { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
   assert.equal(passed.status, 0, passed.stderr);
   session = JSON.parse(await readFile(sessionPath, "utf8"));
   assert.equal(session.decisions.at(-1).observation, "PASS");
   assert.notEqual(session.currentStepId, active.currentStep.stepId);
+  assert.equal(await lstat(passed.status === 0 ? JSON.parse(passed.stdout).projection.projectionPath : projectionPath).then(() => true, () => false), true);
   const freshPreparation = await resolvePreparedMissionTransitionV1({ missionId: prepared.missionId, repositoryRoot: prepared.root });
   assert.equal(freshPreparation.state, "publication_ready");
   const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: freshPreparation, repositoryRoot: prepared.root });
@@ -2231,7 +2313,8 @@ test("prepare-next No and Cancel never resume Guided Review or inspect poisoned 
     const ledger = join(prepared.root, ".shield", "dispatch-receipts.jsonl");
     const ledgerBefore = await readFile(ledger, "utf8");
     const rejectedAnswer = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
-      "--guided-review-choice", choice, "--guided-review-answer", "PASS", "--passcode-stdin", "--json"],
+      "--guided-review-choice", choice, "--guided-review-answer", "PASS", "--guided-review-question-digest", `sha256:${"x".repeat(43)}`,
+      "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
     assert.equal(rejectedAnswer.status, 1);
     assert.match(rejectedAnswer.stderr, /Only the Guided Review Yes route accepts/u);

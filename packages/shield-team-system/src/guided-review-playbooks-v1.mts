@@ -79,7 +79,7 @@ const FRONTEND: readonly StageTemplate[] = Object.freeze([
   },
   {
     id: "evidence-pass", title: "Evidence Pass", purpose: "Connect human observations to durable automated evidence.", steps: [
-      { id: "regression", title: "Regression evidence", question: "Do the reviewed tests prove the important behavior without replacing human observation?", instructions: ["Inspect the focused automated coverage.", "Distinguish technical GREEN from the human observation."], dependsOn: ["recovery"] },
+      { id: "regression", title: "Regression evidence", question: "Do the reviewed tests prove the important behavior without replacing human observation?", instructions: ["Inspect the focused automated coverage.", "Distinguish automated tests and checks from the human observation."], dependsOn: ["recovery"] },
       { id: "responsible-code", title: "Responsible code", question: "Does the focused code view explain the behavior you just observed?", instructions: ["Reveal the responsible component, state transition, or Cypress checkpoint.", "Use code as a teaching aid rather than a raw diff dump."], dependsOn: ["regression"] },
       { id: "qa-checklist", title: "Reusable QA checklist", question: "Will the generated checklist let another QA reviewer repeat the important checks?", instructions: ["Review each checklist item for observable outcomes.", "Keep environment instructions separate from product expectations."], dependsOn: ["responsible-code"] },
     ],
@@ -109,7 +109,7 @@ const BACKEND: readonly StageTemplate[] = Object.freeze([
   {
     id: "validation-pass", title: "Validation Pass", purpose: "Understand what the automated evidence proves and misses.", steps: [
       { id: "tests", title: "Test meaning", question: "Do the tests cover representative success, failure, and regression behavior?", instructions: ["Read focused assertions, not only check status.", "Identify important untested boundaries."], dependsOn: ["maintainability"] },
-      { id: "green", title: "Exact-revision GREEN", question: "Is independent GREEN evidence bound to this exact candidate?", instructions: ["Verify command, outcome, and exact revision.", "Treat environment or malformed-test failures separately from product defects."], dependsOn: ["tests"] },
+      { id: "green", title: "Automated tests and checks", question: "Are independent automated tests and checks bound to this exact candidate?", instructions: ["Verify command, outcome, and exact revision.", "Treat environment or malformed-test failures separately from product defects."], dependsOn: ["tests"] },
     ],
   },
   {

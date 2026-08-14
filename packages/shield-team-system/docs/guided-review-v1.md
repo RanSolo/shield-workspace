@@ -224,7 +224,8 @@ session command:
 shield mission prepare-next \
   --mission-id mission:example \
   --guided-review-choice yes \
-  --guided-review-answer PASS
+  --guided-review-answer PASS \
+  --guided-review-question-digest sha256:DISPLAYED_DIGEST
 ```
 
 Bare `PASS` records the exact observation `PASS`; the host does not generate
@@ -261,6 +262,55 @@ evidence or publication authority. The host refuses symlinked, hard-linked,
 non-0600, stale-HEAD, detached-branch, and non-descendant projections. A stale
 or unavailable projection never rewrites the durable session, never rolls back
 an accepted answer, and is not included in the publication bundle or PIN turn.
+
+## Exact question and answer envelopes
+
+Every hosted current question is displayed as a content-addressed
+`guided.review.question.v1` envelope. Its digest binds the exact repository
+revision, route request, session digest, stage, checkpoint, step, and current
+local projection digest. Submit that displayed digest with either
+`--guided-review-response` or the compatibility `--guided-review-answer` flag:
+
+```bash
+shield mission prepare-next \
+  --mission-id mission:example \
+  --guided-review-choice yes \
+  --guided-review-response PASS \
+  --guided-review-question-digest sha256:DISPLAYED_DIGEST
+```
+
+The grammar accepts one ASCII token—`PASS`, `FAIL`, `NOT_OBSERVED`, or
+`CONDITIONAL_PASS`—case-insensitively with outer space or horizontal-tab only.
+Punctuation, prose, multiple tokens, Unicode lookalikes, and line breaks return
+`confirmation_required` before projection refresh, session revalidation, or
+CAS, without changing journal, session, or ephemeral projection bytes. Missing
+findings or conditions return only the exact required follow-up through the
+same zero-mutation path. A complete answer revalidates the displayed question
+against the exact repository/session context without requiring
+`current-projection.json`; deletion of that ephemeral display aid cannot reject
+an otherwise current answer. PASS is durably recorded
+as the canonical exact bytes `PASS` with no generated prose. Legacy answer,
+disposition, and observation flags are rejected unless accompanied by the same
+explicit displayed question digest. The hosted output labels automated tests
+and checks as unavailable unless the host securely reads the deterministic
+`automated-check-source.json` from the exact content-addressed route package.
+Callers cannot inject receipts through the question input. The source is a
+closed content-addressed `guided.review.automated-check-source.v1` advisory
+observation (`authority: "none"`), bound to mission, repository ID and canonical
+root, request, session, and exact revision. The host projects closed
+`guided.review.automated-check.v1` receipts whose provenance records the exact
+host-read source bytes and whose `sourceByteSha256` binds those bytes. Missing
+or unreadable sources render unavailable; malformed, non-canonical, tampered,
+wrong-session, or wrong-revision sources fail closed and never render a passed
+outcome. This follows the existing command-evidence posture: structural
+traceability without producer authentication or gate authority.
+
+`guided.review.follow-up.v1` is the pure deterministic handoff for a recorded
+finding. It preserves the exact finding and source-decision identity, with
+optional closed parent/linked issue identities. Its frozen `authority: "none"`
+and `effect: "external_issue_creation_not_authorized"` fields explicitly grant
+no network adapter, issue creation, or other external effect. Repeating the
+same input returns the same `followUpDigest`.
 
 Route requests, Fury overlays, compiled playbooks, sessions, fork artifacts,
 runtime handoffs, and publication bundles are content-addressed. Session updates

@@ -8,3 +8,5 @@ export * from "../dist/guided-review-route-resolution-host-v1.mjs";
 export * from "../dist/guided-review-session-host-v1.mjs";
 export * from "../dist/guided-review-projection-v1.mjs";
 export * from "../dist/guided-review-projection-host-v1.mjs";
+export * from "../dist/guided-review-conversation-v1.mjs";
+export * from "../dist/guided-review-conversation-host-v1.mjs";

@@ -40,6 +40,12 @@ export type GuidedReviewProjectionHostResultV1 = Readonly<
   | { state: "projection_unavailable"; code: "GUIDED_REVIEW_PROJECTION_UNAVAILABLE"; errors: readonly string[] }
 >;
 
+export type GuidedReviewProjectionContextHostResultV1 = Readonly<
+  | { state: "ready"; projection: GuidedReviewProjectionV1 }
+  | { state: "projection_stale"; code: "GUIDED_REVIEW_PROJECTION_STALE"; errors: readonly string[] }
+  | { state: "projection_unavailable"; code: "GUIDED_REVIEW_PROJECTION_UNAVAILABLE"; errors: readonly string[] }
+>;
+
 const MAX_PROJECTION_BYTES = 2 * 1024 * 1024;
 const SAFE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\\)[A-Za-z0-9._/@# +:=,-]+$/u;
 
@@ -274,6 +280,25 @@ export async function projectCurrentGuidedReviewStepHostV1(
     }
     return Object.freeze({ state: "ready", projection, projectionPath: path });
   } finally { await releaseProjectionLock(lockPath, lock).catch(() => undefined); }
+}
+
+export async function revalidateGuidedReviewProjectionContextHostV1(
+  input: ProjectCurrentGuidedReviewStepHostInputV1,
+  dependencies: GuidedReviewProjectionHostDependenciesV1 = DEFAULT_DEPENDENCIES,
+): Promise<GuidedReviewProjectionContextHostResultV1> {
+  const context = await currentContext(input, dependencies);
+  if ("state" in context) return context;
+  let projection: GuidedReviewProjectionV1 | null;
+  try { projection = await buildProjection(input, context, dependencies); }
+  catch { return unavailable("The current local literal diff context could not be revalidated."); }
+  if (projection === null) return unavailable("The current Guided Review step has no bounded local projection context.");
+  const finalContext = await currentContext(input, dependencies);
+  if ("state" in finalContext) return finalContext;
+  if (finalContext.session.sessionDigest !== context.session.sessionDigest || finalContext.stageId !== context.stageId ||
+      finalContext.stepId !== context.stepId || finalContext.root !== context.root || finalContext.projectionPath !== context.projectionPath) {
+    return stale("Repository or Guided Review session context changed during read-only projection revalidation.");
+  }
+  return Object.freeze({ state: "ready", projection });
 }
 
 export async function readCurrentGuidedReviewProjectionHostV1(input: ProjectCurrentGuidedReviewStepHostInputV1,
