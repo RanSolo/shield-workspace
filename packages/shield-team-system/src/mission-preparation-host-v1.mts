@@ -1936,8 +1936,10 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
   const observation = buildObservation(graph, environment);
   if (observation === null) return blocked(missionId, "freshness_evidence_incomplete", "Live observation contract could not be built.");
   if (environment.current.projection.authorization === "authorized") {
-    const publicationCount = environment.current.projection.publicationAuthorizations.length;
-    if (publicationCount < 1 || publicationCount > 2) {
+    const canonicalPublicationRecords = environment.current.projection.publicationAuthorizations;
+    const publicationAliasProvenance = canonicalPublicationRecords.flatMap((record) => record.aliases);
+    const publicationCount = canonicalPublicationRecords.length;
+    if (publicationCount < 1 || publicationCount > 2 || publicationAliasProvenance.length > 0) {
       return blocked(missionId, "authority_conflict", "Duplicate legacy publication recovery is deferred to #279.");
     }
     const lineageEnvironment = publicationCount === 1

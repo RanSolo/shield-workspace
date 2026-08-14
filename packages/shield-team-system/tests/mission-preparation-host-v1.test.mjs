@@ -1708,6 +1708,11 @@ test("already-authorized retry rejects partial, replaced, duplicate, revoked, an
     const fixture = await resolutionFixture();
     await authorizeResolutionFixture(fixture, variant.intentOverrides);
     await variant.mutate(fixture);
+    if (variant.name === "duplicate") {
+      const current = await currentProfileJournal(fixture);
+      assert.equal(current.projection.publicationAuthorizations.length, 1);
+      assert.equal(current.projection.publicationAuthorizations[0].aliases.length, 1);
+    }
     const baseline = await protectedFixtureSnapshot(fixture);
 
     const result = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
@@ -1723,7 +1728,9 @@ test("already-authorized retry rejects partial, replaced, duplicate, revoked, an
       env: { ...process.env, HOME: fixture.homeRoot },
     });
     assert.equal(cli.status, 1, `${variant.name}: ${cli.stderr}`);
-    assert.equal(JSON.parse(cli.stdout).reasonCode, "authority_conflict", variant.name);
+    const cliResult = JSON.parse(cli.stdout);
+    assert.equal(cliResult.reasonCode, "authority_conflict", variant.name);
+    if (variant.name === "duplicate") assert.match(cliResult.errors.join(" "), /#279/u);
     assert.doesNotMatch(`${cli.stdout}${cli.stderr}`, /Passcode:|SHIELD_WHEELS_UP_MANIFEST_BEGIN/u, variant.name);
     assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline, variant.name);
   }
