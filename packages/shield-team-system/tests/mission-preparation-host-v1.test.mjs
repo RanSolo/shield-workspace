@@ -1231,14 +1231,22 @@ test("enriched fresh graph initializes through a missing configured intermediate
   assert.equal(proposed.entries[0].sequence, 0);
 });
 
-test("exact concurrent enriched callers reconcile to the same ready result and sequence-zero entry", async () => {
+test("exact concurrent enriched callers under delayed initialization reconcile to the same ready result and sequence-zero entry", async () => {
   const fixture = await resolutionFixture({ enriched: true });
-  const results = await Promise.all([
-    prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot }),
-    prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot }),
-  ]);
-  assert.deepEqual(results.map(({ state }) => state), ["ready", "ready"], JSON.stringify(results));
-  assert.deepEqual(results[0], results[1]);
+  let initializationStarts = 0;
+  const dependencies = {
+    beforeJournalInitializationForTest: async () => {
+      initializationStarts += 1;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 750));
+    },
+  };
+  const results = await Promise.all(Array.from(
+    { length: 12 },
+    () => prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot }, dependencies),
+  ));
+  assert.deepEqual(results.map(({ state }) => state), Array(12).fill("ready"), JSON.stringify(results));
+  for (const result of results.slice(1)) assert.deepEqual(result, results[0]);
+  assert.equal(initializationStarts, 1);
   const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
   assert.equal(lines.length, 1);
   assert.equal(JSON.parse(lines[0]).type, "mission.begun");

@@ -1060,6 +1060,7 @@ export interface MissionPreparationSessionDependenciesV1 {
     changedPaths: readonly string[],
   ) => Promise<PreparationRepositoryObservationV1>;
   beforeInitializationRevalidationForTest?: () => Promise<void>;
+  beforeJournalInitializationForTest?: () => Promise<void>;
 }
 type JournalPresenceV1 = Readonly<{
   state: "absent" | "present" | "unsafe_or_uncertain";
@@ -1338,12 +1339,41 @@ async function waitForConcurrentJournal(
   configuredJournalPath: string,
   missionId: string,
 ): Promise<JournalPresenceV1> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 5));
+  const deadline = Date.now() + 30_000;
+  do {
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
     const presence = await probeMissionJournalPresence(repositoryRoot, configuredJournalPath, missionId);
     if (presence.state !== "absent") return presence;
-  }
+  } while (Date.now() < deadline);
   return { state: "absent", journalPath: null };
+}
+
+type ProfileAwareInitializationResultV1 = Awaited<ReturnType<typeof initializeProfileAwareMissionJournalV1>>;
+const inFlightProfileAwareInitializations = new Map<string, Promise<ProfileAwareInitializationResultV1>>();
+
+async function initializeProfileAwareMissionJournalSharedV1(
+  input: Parameters<typeof initializeProfileAwareMissionJournalV1>[0],
+  beforeInitialization?: () => Promise<void>,
+): Promise<ProfileAwareInitializationResultV1> {
+  const value = input as { repositoryRoot: string; configuredJournalPath: string; missionId: string; entry: unknown };
+  const key = canonicalJson({
+    repositoryRoot: value.repositoryRoot,
+    configuredJournalPath: value.configuredJournalPath,
+    missionId: value.missionId,
+    entry: value.entry,
+  });
+  const existing = inFlightProfileAwareInitializations.get(key);
+  if (existing !== undefined) return existing;
+  const pending = (async () => {
+    await beforeInitialization?.();
+    return initializeProfileAwareMissionJournalV1(input);
+  })();
+  inFlightProfileAwareInitializations.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (inFlightProfileAwareInitializations.get(key) === pending) inFlightProfileAwareInitializations.delete(key);
+  }
 }
 
 async function stableConfigurationSnapshotWithRetry(
@@ -2470,12 +2500,15 @@ export async function prepareMissionTransitionSessionV1(
     configuration = freshConfiguration;
     expected = freshExpected;
     if (presence.state === "absent") {
-      const initialized = await initializeProfileAwareMissionJournalV1({
-        repositoryRoot,
-        configuredJournalPath: configuration.config.paths.journals,
-        missionId,
-        entry: expected.entry,
-      });
+      const initialized = await initializeProfileAwareMissionJournalSharedV1(
+        {
+          repositoryRoot,
+          configuredJournalPath: configuration.config.paths.journals,
+          missionId,
+          entry: expected.entry,
+        },
+        dependencies.beforeJournalInitializationForTest,
+      );
       if (initialized.state === "invalid" && initialized.code !== "mission_exists" && initialized.code !== "journal_lock_held") {
         return blocked(missionId, initialized.code === "recovery_required" ? "recovery_required" : "initialization_conflict", ...initialized.errors);
       }
