@@ -24,6 +24,7 @@ import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
 import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
 import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
+import { createGuidedReviewPlanV1, evaluateGuidedReviewPublicationForkV1 } from "../dist/guided-review-v1.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import {
   buildMissionTransitionPlanReviewV1,
@@ -597,7 +598,38 @@ async function preparedPublicationCliFixture() {
   await writeFile(join(current.root, "implementation.md"), "initial implementation\nprepared publication change\n");
   runGit(current.root, ["add", "implementation.md"]);
   runGit(current.root, ["commit", "-qm", "prepared publication descendant"]);
-  return { ...current, missionId, homeRoot, plan, initialHeadRevision };
+  const exactRevision = runGit(current.root, ["rev-parse", "HEAD"]);
+  const guidedPlanResult = createGuidedReviewPlanV1({
+    schemaVersion: 1,
+    contractVersion: "guided.review.v1",
+    planId: "plan:prepared-publication:automated-omission",
+    missionId,
+    subjectId,
+    kind: "code",
+    required: false,
+    rationale: "This non-UI compatibility fixture is covered by automated evidence.",
+    method: "code_review",
+    coveredCriterionRefs: [],
+    evidenceRequirements: [],
+    exactRevision,
+    gateOwnerSeatId: "coulson",
+  });
+  assert.equal(guidedPlanResult.state, "ready");
+  const guidedForkResult = evaluateGuidedReviewPublicationForkV1({
+    choice: "no",
+    exactRevision,
+    plan: guidedPlanResult.value,
+    playbook: null,
+    session: null,
+  });
+  assert.equal(guidedForkResult.state, "ready");
+  const guidedReviewForkPath = join(".shield", "tmp", "guided-review-fork.json");
+  await writeFile(join(current.root, guidedReviewForkPath), `${JSON.stringify(guidedForkResult.value, null, 2)}\n`);
+  const cancelForkResult = evaluateGuidedReviewPublicationForkV1({ choice: "cancel", exactRevision, plan: guidedPlanResult.value, playbook: null, session: null });
+  assert.equal(cancelForkResult.state, "ready");
+  const cancelForkPath = join(".shield", "tmp", "guided-review-cancel-fork.json");
+  await writeFile(join(current.root, cancelForkPath), `${JSON.stringify(cancelForkResult.value, null, 2)}\n`);
+  return { ...current, missionId, homeRoot, plan, initialHeadRevision, guidedReviewForkPath, guidedReviewFork: guidedForkResult.value, cancelForkPath };
 }
 
 test("packed CLI path completes execution while Fitz readiness remains waiting", async () => {
@@ -1512,9 +1544,27 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   const prepared = await preparedPublicationCliFixture();
   const path = journalPath(prepared.root, prepared.missionId);
   const beforeCancellation = await readFile(path, "utf8");
-  const cancelled = run(
+  const missingFork = run(
     prepared.root,
     ["mission", "prepare-next", "--mission-id", prepared.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
+  );
+  assert.equal(missingFork.status, 1);
+  assert.match(missingFork.stderr, /requires --guided-review-fork/u);
+  assert.doesNotMatch(missingFork.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), beforeCancellation);
+  const cancelledFork = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-fork", prepared.cancelForkPath, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
+  );
+  assert.equal(cancelledFork.status, 1);
+  assert.match(cancelledFork.stderr, /not PIN-eligible/u);
+  assert.doesNotMatch(cancelledFork.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), beforeCancellation);
+  const cancelled = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-fork", prepared.guidedReviewForkPath, "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
   );
   assert.equal(cancelled.status, 2);
@@ -1524,7 +1574,7 @@ test("prepare-next derives and signs one prepared publication without caller JSO
 
   const authorized = run(
     prepared.root,
-    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--passcode-stdin", "--json"],
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-fork", prepared.guidedReviewForkPath, "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
   );
   assert.equal(authorized.status, 0, authorized.stderr);
@@ -1537,13 +1587,19 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   assert.deepEqual(decision.authorizedPaths, ["implementation.md"]);
   assert.deepEqual(decision.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
   assert.deepEqual(decision.remainingHumanGates, ["coulson.final_acceptance", "fitz.technical_review"]);
+  assert.equal(decision.guidedReview.choice, "no");
+  assert.equal(decision.guidedReview.disposition, "skipped_by_operator");
+  assert.equal(decision.guidedReview.required, false);
+  assert.match(decision.guidedReview.rationale, /automated evidence/u);
+  assert.equal(decision.guidedReview.gateOwnerSeatId, "coulson");
+  assert.equal(decision.guidedReview.forkDigest, prepared.guidedReviewFork.forkDigest);
 
   const projection = JSON.parse(authorized.stdout);
   assert.equal(projection.publicationAuthorizations.length, 2);
   const publication = projection.publicationAuthorizations[1];
   assert.equal(publication.authority.authorityKind, "review.publish");
   assert.equal(publication.authority.authorityRef, `authorization:${prepared.missionId}:review-publish:5`);
-  assert.equal(publication.authorization.sourceRef, "cli:prepare-next:publication-authorize:5");
+  assert.equal(publication.authorization.sourceRef, `cli:prepare-next:publication-authorize:5:guided-review:${prepared.guidedReviewFork.forkDigest}`);
   assert.deepEqual(publication.authority.authorizedPaths, ["implementation.md"]);
   assert.deepEqual(publication.authority.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
   assert.equal(projection.communication.requests.length, 0);

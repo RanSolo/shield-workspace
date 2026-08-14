@@ -227,10 +227,12 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof qaMode.evaluateQaValidationV0, "function");
   assert.equal(guidedReview.GUIDED_REVIEW_CONTRACT_VERSION, "guided.review.v1");
   assert.equal(typeof guidedReview.createGuidedReviewPlaybookV1, "function");
+  assert.equal(typeof guidedReview.createGuidedReviewPlanV1, "function");
   assert.equal(typeof guidedReview.createBuiltInGuidedReviewPlaybookV1, "function");
   assert.equal(typeof guidedReview.startGuidedReviewSessionV1, "function");
   assert.equal(typeof guidedReview.decideGuidedReviewStepV1, "function");
   assert.equal(typeof guidedReview.evaluateGuidedReviewPublicationForkV1, "function");
+  assert.equal(typeof guidedReview.validateGuidedReviewPublicationForkV1, "function");
   assert.equal(knowledge.KNOWLEDGE_ENTRY_CONTRACT_VERSION, "knowledge.entry.v0");
   assert.equal(typeof knowledge.verifyKnowledgeSliceV0, "function");
   assert.equal(typeof localTools.runLocalToolSession, "function");

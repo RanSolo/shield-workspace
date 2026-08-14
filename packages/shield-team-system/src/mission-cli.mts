@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { execFile as execFileNode } from "node:child_process";
 import { access, chmod, lstat, mkdir, open, readFile, realpath as fsRealpath, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { stdin as input, stdout as outputStream } from "node:process";
 import { types } from "node:util";
 import { configuredAdapterIds, parseShieldConfig, type ShieldConfig } from "./config.mjs";
@@ -95,6 +95,7 @@ import {
   type PublicationTreeEntryV1,
 } from "./review-publication-executor-v1.mjs";
 import { validateTransitionPlanV1OrV2 } from "@shield/mission-preparation";
+import { validateGuidedReviewPublicationForkV1, type GuidedReviewPublicationForkV1 } from "./guided-review-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import {
@@ -1339,11 +1340,26 @@ function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicat
     ...decision.exclusions.map((exclusion) => `  - ${exclusion}`),
     "Remaining human gates:",
     ...decision.remainingHumanGates.map((gate) => `  - ${gate}`),
+    ...(decision.guidedReview === undefined ? [] : [
+      "Guided Review:",
+      `  Choice: ${decision.guidedReview.choice}`,
+      `  Disposition: ${decision.guidedReview.disposition}`,
+      `  Required: ${decision.guidedReview.required}`,
+      `  Rationale: ${decision.guidedReview.rationale}`,
+      `  Method: ${decision.guidedReview.method}`,
+      `  Covered ACs: ${decision.guidedReview.coveredCriterionRefs.join(", ") || "none"}`,
+      `  Evidence: ${decision.guidedReview.evidenceRequirements.join("; ") || "none"}`,
+      `  Gate owner: ${decision.guidedReview.gateOwnerSeatId}`,
+      `  Plan: ${decision.guidedReview.planDigest}`,
+      `  Session: ${decision.guidedReview.sessionDigest ?? "skipped"}`,
+      `  Fork: ${decision.guidedReview.forkDigest}`,
+      `  One PIN purpose: ${decision.guidedReview.pinPurpose}`,
+    ]),
   ].join("\n");
 }
 
 async function prepareNext(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root", "--mission-id"], ["--json", "--human", "--passcode-stdin"]);
+  const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-fork"], ["--json", "--human", "--passcode-stdin"]);
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
@@ -1401,12 +1417,23 @@ async function prepareNext(args: string[]): Promise<number> {
   }
   if (result.state === "publication_ready") {
     try {
+      const forkPath = options.values.get("--guided-review-fork");
+      if (forkPath === undefined) throw new MissionCliError("Prepared review-candidate publication requires --guided-review-fork with an exact-candidate Yes or No disposition.", 1);
+      const resolvedForkPath = resolve(root, forkPath);
+      const forkRelation = relative(root, resolvedForkPath);
+      if (forkRelation === "" || forkRelation === ".." || forkRelation.startsWith("../") || isAbsolute(forkRelation)) {
+        throw new MissionCliError("Guided Review publication fork must resolve beneath the repository root.", 1);
+      }
+      const checkedFork = validateGuidedReviewPublicationForkV1(await jsonFile(resolvedForkPath, "Guided Review publication fork"));
+      if (checkedFork.state === "invalid") throw new MissionCliError(`${checkedFork.code}: ${checkedFork.errors.join(" ")}`, 1);
+      const guidedReviewFork: GuidedReviewPublicationForkV1 = checkedFork.value;
       const executed = await executeReviewPublicationAuthorizationV1({
         mode: "prepared",
         root,
         missionId,
         intent: result.publicationIntent,
         expectedPreparation: result,
+        guidedReviewFork,
         timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
         humanMode,
         decisionOutput: { write: (value) => promptOutput.write(value) },
@@ -1986,7 +2013,7 @@ export function missionUsage(): string {
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
-    "  shield mission prepare-next --mission-id <id> [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission prepare-next --mission-id <id> [--guided-review-fork <fork.json>] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",

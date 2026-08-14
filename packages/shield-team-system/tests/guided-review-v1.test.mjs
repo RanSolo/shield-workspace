@@ -3,12 +3,14 @@ import test from "node:test";
 
 import {
   GUIDED_REVIEW_CONTRACT_VERSION,
+  createGuidedReviewPlanV1,
   decideGuidedReviewStepV1,
   evaluateGuidedReviewPublicationForkV1,
   renderGuidedReviewChecklistV1,
   reviseGuidedReviewSessionV1,
   startGuidedReviewSessionV1,
   summarizeGuidedReviewSessionV1,
+  validateGuidedReviewPublicationForkV1,
 } from "../dist/guided-review-v1.mjs";
 import {
   BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS,
@@ -17,6 +19,25 @@ import {
 
 const head = "1234567890abcdef1234567890abcdef12345678";
 const nextHead = "abcdef1234567890abcdef1234567890abcdef12";
+function reviewPlan(kind = "product_qa", exactRevision = head, required = true) {
+  const result = createGuidedReviewPlanV1({
+    schemaVersion: 1,
+    contractVersion: "guided.review.v1",
+    planId: `plan:${kind}:${required ? "required" : "optional"}`,
+    missionId: "mission:issue-238",
+    subjectId: "issue:238",
+    kind,
+    required,
+    rationale: required ? "Human observation is material to publication." : "Automated evidence is sufficient for this candidate.",
+    method: kind === "product_qa" ? "local_browser" : kind === "code" ? "code_review" : "document_review",
+    coveredCriterionRefs: required ? ["AC-1", "AC-2"] : [],
+    evidenceRequirements: required ? ["Named observations and exact-revision checklist."] : [],
+    exactRevision,
+    gateOwnerSeatId: "coulson",
+  });
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  return result.value;
+}
 const base = {
   missionId: "mission:issue-238",
   subjectId: "issue:238",
@@ -44,7 +65,8 @@ const base = {
 };
 
 function playbook(kind = "product_qa", overrides = {}) {
-  const result = createBuiltInGuidedReviewPlaybookV1(kind, { ...base, ...overrides });
+  const values = { ...base, ...overrides };
+  const result = createBuiltInGuidedReviewPlaybookV1(kind, { ...values, plan: overrides.plan ?? reviewPlan(kind, values.exactRevision) });
   assert.equal(result.state, "ready", JSON.stringify(result));
   return result.value;
 }
@@ -97,6 +119,16 @@ test("exports three standard playbooks whose stages contain several one-question
     assert.ok(book.stages.every((stage) => stage.checkpointId === `checkpoint:${stage.stageId}`));
     assert.ok(book.stages.flatMap((stage) => stage.steps).every((step) => !step.question.includes("\n")));
   }
+});
+
+test("plan records required or safely omitted QA against exact AC and gate ownership", () => {
+  const required = reviewPlan();
+  assert.equal(required.required, true);
+  assert.deepEqual(required.coveredCriterionRefs, ["AC-1", "AC-2"]);
+  assert.equal(required.gateOwnerSeatId, "coulson");
+  const omitted = reviewPlan("code", head, false);
+  assert.equal(omitted.required, false);
+  assert.match(omitted.rationale, /Automated evidence/u);
 });
 
 test("a stage remains active until all of its ordered questions pass", () => {
@@ -155,6 +187,7 @@ test("a corrected revision stales only selected steps and their downstream depen
   const completed = complete(book);
   const revised = reviseGuidedReviewSessionV1(book, completed, {
     exactRevision: nextHead,
+    plan: reviewPlan("code", nextHead),
     runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, receiptDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" },
     affectedStepIds: ["tests"],
     rationale: "Focused test coverage changed.",
@@ -169,6 +202,16 @@ test("a corrected revision stales only selected steps and their downstream depen
   assert.equal(revised.value.currentStepId, "tests");
   assert.deepEqual(revised.value.revisions[0].staleStepIds, ["tests", "green", "limitations", "exact-candidate"]);
   assert.equal(revised.value.runtimeHandoff.exactRevision, nextHead);
+  assert.equal(revised.value.plan.exactRevision, nextHead);
+  let replayed = revised.value;
+  let replayMinute = 1;
+  while (replayed.state !== "completed") {
+    replayed = decide(book, replayed, "pass", { decidedAt: `2026-08-13T23:${String(replayMinute).padStart(2, "0")}:00.000Z` });
+    replayMinute += 1;
+  }
+  const fork = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: nextHead, plan: replayed.plan, playbook: book, session: replayed });
+  assert.equal(fork.state, "ready");
+  assert.equal(fork.value.state, "pin_required");
 });
 
 test("formal correction replay rejects a stale or blocked runtime handoff", () => {
@@ -176,6 +219,7 @@ test("formal correction replay rejects a stale or blocked runtime handoff", () =
   const completed = complete(book);
   const stale = reviseGuidedReviewSessionV1(book, completed, {
     exactRevision: nextHead,
+    plan: reviewPlan("code", nextHead),
     runtimeHandoff: base.runtimeHandoff,
     affectedStepIds: ["tests"],
     rationale: "Coverage changed.",
@@ -185,6 +229,7 @@ test("formal correction replay rejects a stale or blocked runtime handoff", () =
   assert.equal(stale.code, "MALFORMED_REVISION");
   const blocked = reviseGuidedReviewSessionV1(book, completed, {
     exactRevision: nextHead,
+    plan: reviewPlan("code", nextHead),
     runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, status: "blocked" },
     affectedStepIds: ["tests"],
     rationale: "Coverage changed.",
@@ -215,19 +260,26 @@ test("acceptance and publication profiles require a ready exact-revision runtime
 test("publication fork has Yes, No, and Cancel routes with exactly one remaining PIN", () => {
   const book = playbook();
   const completed = complete(book);
-  const yes = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: head, playbook: book, session: completed });
+  const yes = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: head, plan: book.plan, playbook: book, session: completed });
   assert.equal(yes.state, "ready");
   assert.equal(yes.value.state, "pin_required");
   assert.equal(yes.value.pinPurpose, "guided_review_and_publication");
-  const no = evaluateGuidedReviewPublicationForkV1({ choice: "no", exactRevision: head, playbook: null, session: null });
+  const requiredNo = evaluateGuidedReviewPublicationForkV1({ choice: "no", exactRevision: head, plan: book.plan, playbook: null, session: null });
+  assert.equal(requiredNo.state, "ready");
+  assert.equal(requiredNo.value.state, "blocked");
+  assert.equal(requiredNo.value.reasonCode, "GUIDED_REVIEW_REQUIRED");
+  const optionalPlan = reviewPlan("product_qa", head, false);
+  const no = evaluateGuidedReviewPublicationForkV1({ choice: "no", exactRevision: head, plan: optionalPlan, playbook: null, session: null });
   assert.equal(no.state, "ready");
   assert.equal(no.value.guidedReviewDisposition, "skipped_by_operator");
   assert.equal(no.value.pinPurpose, "publication");
-  const cancel = evaluateGuidedReviewPublicationForkV1({ choice: "cancel", exactRevision: head, playbook: null, session: null });
+  assert.equal(validateGuidedReviewPublicationForkV1(no.value).state, "ready");
+  assert.equal(validateGuidedReviewPublicationForkV1({ ...no.value, plan: book.plan }).state, "invalid");
+  const cancel = evaluateGuidedReviewPublicationForkV1({ choice: "cancel", exactRevision: head, plan: book.plan, playbook: null, session: null });
   assert.equal(cancel.state, "ready");
   assert.equal(cancel.value.state, "cancelled");
   assert.equal(cancel.value.pinPurpose, null);
-  const stale = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: nextHead, playbook: book, session: completed });
+  const stale = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: nextHead, plan: reviewPlan("product_qa", nextHead), playbook: book, session: completed });
   assert.equal(stale.state, "ready");
   assert.equal(stale.value.state, "blocked");
   assert.equal(stale.value.reasonCode, "GUIDED_REVIEW_INCOMPLETE_OR_STALE");

@@ -34,6 +34,10 @@ import {
   assertMissionSignerSnapshotUnchanged,
   captureMissionSignerSnapshot,
 } from "./mission-signer.mjs";
+import {
+  validateGuidedReviewPublicationForkV1,
+  type GuidedReviewPublicationForkV1,
+} from "./guided-review-v1.mjs";
 
 export { projectPreparedReviewPublicationSemanticTupleV1 };
 export type { PreparedReviewPublicationSemanticTupleV1 };
@@ -79,6 +83,20 @@ export type PreparedReviewPublicationDecisionV1 = Readonly<{
   permittedEffects: readonly ReviewPublicationEffect[];
   exclusions: readonly string[];
   remainingHumanGates: readonly string[];
+  guidedReview?: Readonly<{
+    planDigest: string;
+    forkDigest: string;
+    choice: "yes" | "no";
+    disposition: "completed" | "skipped_by_operator";
+    required: boolean;
+    rationale: string;
+    method: string;
+    coveredCriterionRefs: readonly string[];
+    evidenceRequirements: readonly string[];
+    gateOwnerSeatId: "coulson";
+    sessionDigest: string | null;
+    pinPurpose: "guided_review_and_publication" | "publication";
+  }>;
 }>;
 
 export type ReviewPublicationAuthorizationExecutorInputV1 = Readonly<{
@@ -87,6 +105,7 @@ export type ReviewPublicationAuthorizationExecutorInputV1 = Readonly<{
   missionId: string;
   intent: ReviewPublicationAuthorizationIntentV1;
   expectedPreparation?: PreparedPublicationReadyResultV1;
+  guidedReviewFork?: GuidedReviewPublicationForkV1;
   timestamp: Readonly<{ value: string; provenance: "hostTrusted" }>;
   humanMode: boolean;
   decisionOutput: { write: (value: string) => void };
@@ -407,6 +426,7 @@ function preparedDecision(
   preparation: PreparedPublicationReadyResultV1,
   projection: ProfileAwareProjectionV1,
   observation: PublicationRepositoryObservationV1,
+  guidedReviewFork: GuidedReviewPublicationForkV1 | null,
 ): PreparedReviewPublicationDecisionV1 {
   return canonicalSnapshot({
     schemaVersion: 1 as const,
@@ -425,6 +445,20 @@ function preparedDecision(
     permittedEffects: [...preparation.publicationIntent.permittedEffects],
     exclusions: [...PREPARED_EXCLUSIONS],
     remainingHumanGates: [...preparation.observation.remainingHumanGates],
+    ...(guidedReviewFork === null ? {} : { guidedReview: {
+      planDigest: guidedReviewFork.planDigest,
+      forkDigest: guidedReviewFork.forkDigest,
+      choice: guidedReviewFork.choice as "yes" | "no",
+      disposition: guidedReviewFork.guidedReviewDisposition as "completed" | "skipped_by_operator",
+      required: guidedReviewFork.plan.required,
+      rationale: guidedReviewFork.plan.rationale,
+      method: guidedReviewFork.plan.method,
+      coveredCriterionRefs: [...guidedReviewFork.plan.coveredCriterionRefs],
+      evidenceRequirements: [...guidedReviewFork.plan.evidenceRequirements],
+      gateOwnerSeatId: guidedReviewFork.plan.gateOwnerSeatId,
+      sessionDigest: guidedReviewFork.sessionDigest,
+      pinPurpose: guidedReviewFork.pinPurpose as "guided_review_and_publication" | "publication",
+    } }),
   });
 }
 
@@ -433,8 +467,9 @@ export async function executeReviewPublicationAuthorizationV1(
   dependencies: ReviewPublicationAuthorizationExecutorDependenciesV1,
 ): Promise<ReviewPublicationAuthorizationExecutorResultV1> {
   const intent = validateReviewPublicationAuthorizationIntentV1(input.intent);
-  if (input.mode === "legacy" && input.expectedPreparation !== undefined) throw new Error("Legacy publication cannot include prepared evidence.");
+  if (input.mode === "legacy" && (input.expectedPreparation !== undefined || input.guidedReviewFork !== undefined)) throw new Error("Legacy publication cannot include prepared or Guided Review evidence.");
   if (input.mode === "prepared" && input.expectedPreparation === undefined) throw new Error("Prepared publication requires exact selected evidence.");
+  if (input.mode === "prepared" && input.guidedReviewFork === undefined) throw new Error("Prepared publication requires a PIN-eligible Guided Review fork.");
   if (input.mode === "prepared" && (input.expectedPreparation?.missionId !== input.missionId ||
       canonicalJson(input.expectedPreparation.publicationIntent) !== canonicalJson(intent))) {
     throw new Error("Prepared publication intent does not match the selected transition.");
@@ -452,6 +487,14 @@ export async function executeReviewPublicationAuthorizationV1(
     intent.baseRevision,
     intent.authorizedPaths,
   );
+  const guidedReviewFork = input.guidedReviewFork === undefined ? null : (() => {
+    const checked = validateGuidedReviewPublicationForkV1(input.guidedReviewFork);
+    if (checked.state === "invalid") throw new Error(`${checked.code}: ${checked.errors.join(" ")}`);
+    if (checked.value.state !== "pin_required" || checked.value.exactRevision !== observation.headRevision) {
+      throw new Error("Guided Review fork is not PIN-eligible for the exact publication candidate.");
+    }
+    return checked.value;
+  })();
   const pathKinds = publicationPathKinds(observation);
   const projection = initialJournal.current.projection;
   const sequence = projection.lastSequence + 1;
@@ -533,12 +576,14 @@ export async function executeReviewPublicationAuthorizationV1(
     signingKeyRef: binding.signingKeyRef,
     sourceRef: input.mode === "legacy"
       ? `cli:publication-authorize:${sequence}`
-      : `cli:prepare-next:publication-authorize:${sequence}`,
+      : guidedReviewFork === null
+        ? `cli:prepare-next:publication-authorize:${sequence}`
+        : `cli:prepare-next:publication-authorize:${sequence}:guided-review:${guidedReviewFork.forkDigest}`,
     timestamp: input.timestamp,
   };
 
   if (preparation !== null) {
-    const rendered = dependencies.renderDecision(preparedDecision(preparation, projection, observation), input.humanMode);
+    const rendered = dependencies.renderDecision(preparedDecision(preparation, projection, observation, guidedReviewFork), input.humanMode);
     input.decisionOutput.write(`${rendered}\n`);
   }
   const passcode = await dependencies.readPasscode();

@@ -3,6 +3,7 @@ import {
   createGuidedReviewPlaybookV1,
   type GuidedReviewCriterionV1,
   type GuidedReviewPlaybookKindV1,
+  type GuidedReviewPlanV1,
   type GuidedReviewPlaybookV1,
   type GuidedReviewResultV1,
   type GuidedReviewRuntimeHandoffV1,
@@ -21,6 +22,7 @@ export interface BuiltInGuidedReviewInputV1 {
   readonly repositoryId: string;
   readonly branch: string;
   readonly exactRevision: string;
+  readonly plan: GuidedReviewPlanV1;
   readonly title: string;
   readonly acceptanceCriteria: readonly GuidedReviewCriterionV1[];
   readonly runtimeHandoff: GuidedReviewRuntimeHandoffV1;
@@ -170,6 +172,7 @@ export function createBuiltInGuidedReviewPlaybookV1(
     repositoryId: input.repositoryId,
     branch: input.branch,
     exactRevision: input.exactRevision,
+    plan: input.plan,
     participantRelationship: definition.participantRelationship,
     acceptanceCriteria: input.acceptanceCriteria,
     runtimeHandoff: input.runtimeHandoff,

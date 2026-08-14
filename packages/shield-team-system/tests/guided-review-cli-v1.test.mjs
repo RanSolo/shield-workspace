@@ -21,12 +21,31 @@ function run(root, args, expectedStatus = 0) {
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "shield-guided-review-"));
+  const planInput = {
+    schemaVersion: 1,
+    contractVersion: "guided.review.v1",
+    planId: "plan:issue-238",
+    missionId: "mission:issue-238",
+    subjectId: "issue:238",
+    kind: "document",
+    required: true,
+    rationale: "The publication recommendation requires human document review.",
+    method: "document_review",
+    coveredCriterionRefs: ["AC-1"],
+    evidenceRequirements: ["Named observation for every question."],
+    exactRevision: head,
+    gateOwnerSeatId: "coulson",
+  };
+  await writeFile(join(root, "plan-input.json"), `${JSON.stringify(planInput, null, 2)}\n`);
+  run(root, ["plan", "create", "--input", "plan-input.json", "--output", "plan.json"]);
+  const plan = JSON.parse(await readFile(join(root, "plan.json"), "utf8"));
   const context = {
     missionId: "mission:issue-238",
     subjectId: "issue:238",
     repositoryId: "RanSolo/shield-workspace",
     branch: "agent/guided-review-238",
     exactRevision: head,
+    plan,
     title: "Issue 238 Guided Review",
     acceptanceCriteria: [{ criterionId: "AC-1", text: "Questions form durable stages." }],
     runtimeHandoff: {
@@ -76,11 +95,21 @@ test("CLI refuses output overwrite and emits non-authoritative skip/cancel fork 
   const root = await fixture();
   const duplicate = run(root, ["playbook", "create", "--kind", "document", "--input", "context.json", "--output", "playbook.json"], 1);
   assert.match(duplicate.stderr, /Refusing to overwrite/u);
-  const skipped = run(root, ["publication-choice", "--choice", "no", "--exact-revision", head, "--output", "skip.json"]);
+  const requiredSkip = run(root, ["publication-choice", "--choice", "no", "--exact-revision", head, "--plan", "plan.json", "--output", "required-skip.json"], 1);
+  assert.equal(JSON.parse(requiredSkip.stdout).reasonCode, "GUIDED_REVIEW_REQUIRED");
+  const optionalInput = JSON.parse(await readFile(join(root, "plan-input.json"), "utf8"));
+  optionalInput.required = false;
+  optionalInput.planId = "plan:issue-238:optional";
+  optionalInput.rationale = "Automated evidence is sufficient for this candidate.";
+  optionalInput.coveredCriterionRefs = [];
+  optionalInput.evidenceRequirements = [];
+  await writeFile(join(root, "optional-plan-input.json"), `${JSON.stringify(optionalInput, null, 2)}\n`);
+  run(root, ["plan", "create", "--input", "optional-plan-input.json", "--output", "optional-plan.json"]);
+  const skipped = run(root, ["publication-choice", "--choice", "no", "--exact-revision", head, "--plan", "optional-plan.json", "--output", "skip.json"]);
   const skip = JSON.parse(skipped.stdout);
   assert.equal(skip.authority, "none");
   assert.equal(skip.pinPurpose, "publication");
-  const cancelled = run(root, ["publication-choice", "--choice", "cancel", "--exact-revision", head, "--output", "cancel.json"]);
+  const cancelled = run(root, ["publication-choice", "--choice", "cancel", "--exact-revision", head, "--plan", "plan.json", "--output", "cancel.json"]);
   assert.equal(JSON.parse(cancelled.stdout).state, "cancelled");
 });
 

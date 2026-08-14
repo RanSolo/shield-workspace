@@ -8,12 +8,14 @@ import {
   GUIDED_REVIEW_PROFILES,
   GUIDED_REVIEW_PUBLICATION_CHOICES,
   decideGuidedReviewStepV1,
+  createGuidedReviewPlanV1,
   evaluateGuidedReviewPublicationForkV1,
   renderGuidedReviewChecklistV1,
   reviseGuidedReviewSessionV1,
   startGuidedReviewSessionV1,
   summarizeGuidedReviewSessionV1,
   type GuidedReviewPlaybookV1,
+  type GuidedReviewPlanV1,
   type GuidedReviewSessionV1,
 } from "./guided-review-v1.mjs";
 import { createBuiltInGuidedReviewPlaybookV1 } from "./guided-review-playbooks-v1.mjs";
@@ -27,13 +29,14 @@ interface Options { values: Map<string, string>; flags: Set<string> }
 export function guidedReviewUsage(): string {
   return [
     "Guided Review:",
+    "  shield guided-review plan create --input <plan-input.json> --output <plan.json> [--root <path>] [--json]",
     `  shield guided-review playbook create --kind <${GUIDED_REVIEW_PLAYBOOK_KINDS.join("|")}> --input <context.json> --output <playbook.json> [--root <path>] [--json]`,
     `  shield guided-review start --playbook <playbook.json> --profile <${GUIDED_REVIEW_PROFILES.join("|")}> --session-id <id> --output <session.json> [--root <path>] [--json]`,
     "  shield guided-review status --playbook <playbook.json> --session <session.json> [--root <path>] [--json]",
     `  shield guided-review decide --playbook <playbook.json> --session <session.json> --decision-id <id> --disposition <${GUIDED_REVIEW_DISPOSITIONS.join("|")}> --observation <text> [--evidence-refs <id,id>] [--finding <text>] [--condition <text>] [--root <path>] [--json]`,
-    "  shield guided-review revise --playbook <playbook.json> --session <session.json> --exact-revision <revision> --runtime-handoff <receipt.json> --affected-steps <id,id> --rationale <text> [--root <path>] [--json]",
+    "  shield guided-review revise --playbook <playbook.json> --session <session.json> --exact-revision <revision> --plan <plan.json> --runtime-handoff <receipt.json> --affected-steps <id,id> --rationale <text> [--root <path>] [--json]",
     "  shield guided-review checklist --playbook <playbook.json> --session <session.json> --output <checklist.md> [--root <path>] [--json]",
-    `  shield guided-review publication-choice --choice <${GUIDED_REVIEW_PUBLICATION_CHOICES.join("|")}> --exact-revision <revision> --output <fork.json> [--playbook <playbook.json> --session <session.json>] [--root <path>] [--json]`,
+    `  shield guided-review publication-choice --choice <${GUIDED_REVIEW_PUBLICATION_CHOICES.join("|")}> --exact-revision <revision> --plan <plan.json> --output <fork.json> [--playbook <playbook.json> --session <session.json>] [--root <path>] [--json]`,
   ].join("\n");
 }
 
@@ -202,6 +205,17 @@ async function playbookCreate(args: string[]): Promise<number> {
   return 0;
 }
 
+async function planCreate(args: string[]): Promise<number> {
+  const options = parse(args, ["--input", "--output", "--root"]);
+  const root = await rootPath(options.values.get("--root"));
+  const input = await jsonFile<unknown>(inside(root, required(options, "--input")));
+  const plan = unwrap(createGuidedReviewPlanV1(input.value));
+  const target = inside(root, required(options, "--output"));
+  await writeExclusive(target, jsonBytes(plan));
+  output(plan, `Created Guided Review plan: ${target}\nDigest: ${plan.planDigest}\n`, options.flags.has("--json"));
+  return 0;
+}
+
 async function start(args: string[]): Promise<number> {
   const options = parse(args, ["--playbook", "--profile", "--session-id", "--output", "--root"]);
   const root = await rootPath(options.values.get("--root"));
@@ -256,12 +270,14 @@ async function decide(args: string[]): Promise<number> {
 }
 
 async function revise(args: string[]): Promise<number> {
-  const options = parse(args, ["--playbook", "--session", "--exact-revision", "--runtime-handoff", "--affected-steps", "--rationale", "--root"]);
+  const options = parse(args, ["--playbook", "--session", "--exact-revision", "--plan", "--runtime-handoff", "--affected-steps", "--rationale", "--root"]);
   const root = await rootPath(options.values.get("--root"));
   const pair = await loadPair(options, root);
+  const plan = (await jsonFile<GuidedReviewPlanV1>(inside(root, required(options, "--plan")))).value;
   const runtimeHandoff = (await jsonFile<unknown>(inside(root, required(options, "--runtime-handoff")))).value;
   const session = unwrap(reviseGuidedReviewSessionV1(pair.playbook, pair.session, {
     exactRevision: required(options, "--exact-revision"),
+    plan,
     runtimeHandoff,
     affectedStepIds: list(required(options, "--affected-steps")),
     rationale: required(options, "--rationale"),
@@ -286,15 +302,16 @@ async function checklist(args: string[]): Promise<number> {
 }
 
 async function publicationChoice(args: string[]): Promise<number> {
-  const options = parse(args, ["--choice", "--exact-revision", "--output", "--playbook", "--session", "--root"]);
+  const options = parse(args, ["--choice", "--exact-revision", "--plan", "--output", "--playbook", "--session", "--root"]);
   const root = await rootPath(options.values.get("--root"));
   const choice = required(options, "--choice");
   if (!GUIDED_REVIEW_PUBLICATION_CHOICES.includes(choice as never)) throw new GuidedReviewCliError(`Unsupported publication choice: ${choice}.`);
+  const plan = (await jsonFile<GuidedReviewPlanV1>(inside(root, required(options, "--plan")))).value;
   const hasPlaybook = options.values.has("--playbook");
   const hasSession = options.values.has("--session");
   if (hasPlaybook !== hasSession || (choice === "yes" && !hasPlaybook)) throw new GuidedReviewCliError("YES requires both --playbook and --session; NO and CANCEL accept either neither or both.");
   const pair = hasPlaybook ? await loadPair(options, root) : null;
-  const fork = unwrap(evaluateGuidedReviewPublicationForkV1({ choice, exactRevision: required(options, "--exact-revision"), playbook: pair?.playbook ?? null, session: pair?.session ?? null }));
+  const fork = unwrap(evaluateGuidedReviewPublicationForkV1({ choice, exactRevision: required(options, "--exact-revision"), plan, playbook: pair?.playbook ?? null, session: pair?.session ?? null }));
   const target = inside(root, required(options, "--output"));
   await writeExclusive(target, jsonBytes(fork));
   output(fork, `${fork.summary}\nState: ${fork.state}\nAuthority: none\n`, options.flags.has("--json"));
@@ -307,6 +324,7 @@ export async function runGuidedReviewCli(args: string[]): Promise<number> {
     process.stdout.write(`${guidedReviewUsage()}\n`);
     return command === undefined ? 2 : 0;
   }
+  if (command === "plan" && rest[0] === "create") return planCreate(rest.slice(1));
   if (command === "playbook" && rest[0] === "create") return playbookCreate(rest.slice(1));
   if (command === "start") return start(rest);
   if (command === "status") return status(rest);

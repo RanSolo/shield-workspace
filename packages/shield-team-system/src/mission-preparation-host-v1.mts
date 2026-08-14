@@ -2091,7 +2091,8 @@ async function preparedPublicationAlreadyAuthorizedResult(
     authorization.authorizationId === currentRecord.authority.authorityRef &&
     authorization.authorityDigest === computeReviewPublicationAuthorityDigest(currentRecord.authority) &&
     authorization.authorityKind === "review.publish" && authorization.previousJournalSequence === sequence - 1 &&
-    authorization.journalSequence === sequence && authorization.sourceRef === `cli:prepare-next:publication-authorize:${sequence}` &&
+    authorization.journalSequence === sequence &&
+    new RegExp(`^cli:prepare-next:publication-authorize:${sequence}(?::guided-review:sha256:[A-Za-z0-9_-]{43})?$`, "u").test(authorization.sourceRef) &&
     canonicalJson(entry.payload.authority) === canonicalJson(currentRecord.authority) &&
     canonicalJson(entry.payload.authorization.payload) === canonicalJson(authorization);
   if (!preparedProvenance) {

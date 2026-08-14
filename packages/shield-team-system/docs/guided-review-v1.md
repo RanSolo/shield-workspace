@@ -65,6 +65,16 @@ Routine dependency, environment, fixture, binding, port, health, external-
 effect policy, teardown, and recovery work belongs in the builder runtime
 handoff. The first human checkpoint begins after that receipt says ready.
 
+## Plan selection
+
+Before a playbook or omission route exists, the plan records `required`, a
+reviewable rationale, method, covered acceptance-criterion references, evidence
+requirements, exact revision, playbook kind, and `gateOwnerSeatId: coulson`.
+A required plan must name at least one criterion and evidence requirement. A
+playbook can only be built from a required plan with the same mission, subject,
+kind, and revision. A safely omitted plan remains inspectable and is the only
+plan for which the `no` publication route is PIN-eligible.
+
 ## Corrections and revision changes
 
 A same-scope correction creates a new exact revision and supplies a fresh
@@ -83,20 +93,32 @@ The gate offers `yes`, `no`, and `cancel`:
 
 - `yes` requires a completed publication-profile session for the exact
   candidate and yields `pinPurpose: guided_review_and_publication`;
-- `no` records `skipped_by_operator` for the exact candidate and yields
-  `pinPurpose: publication`;
+- `no` records `skipped_by_operator` and yields `pinPurpose: publication` only
+  when the exact-candidate plan explicitly permits omission;
 - `cancel` yields no PIN and no publication intent.
 
-Both successful routes specify exactly one remaining PIN. The current public
+Both successful routes specify exactly one remaining PIN. The public fork
 contract is intentionally `authority: none`: it does not read a passcode, sign,
-append a journal entry, push, publish, merge, deploy, or release. A host
-integration must consume this exact fork evidence in the shared prepared-
-publication executor so the final key turn signs the selected route and the
-exact-candidate publication transition together.
+append a journal entry, push, publish, merge, deploy, or release. The
+profile-aware `mission prepare-next` host consumes a PIN-eligible fork, shows
+its plan/session/fork identities in the publication decision, and embeds the
+fork digest in the signed publication authorization `sourceRef`. That is one
+key turn: the same PIN binds the selected Guided Review route and exact review-
+candidate publication. Missing, cancelled, blocked, malformed, or stale fork
+evidence stops before decision rendering or passcode access.
 
 ## Durable CLI
 
-Create a standard playbook from a closed context:
+Freeze the required-or-omitted plan first:
+
+```bash
+shield guided-review plan create \
+  --input .shield/tmp/guided-review/plan-input.json \
+  --output .shield/tmp/guided-review/plan.json
+```
+
+Create a standard playbook from a closed context containing that required
+plan:
 
 ```bash
 shield guided-review playbook create \
@@ -129,6 +151,13 @@ shield guided-review decide \
 `status` reopens the current question. `revise` binds a new revision and stale
 question list. `checklist` emits the reusable publication/QA checklist.
 `publication-choice` freezes the non-authoritative Yes/No/Cancel fork artifact.
+Give the PIN-eligible result to the existing prepared publication key turn:
+
+```bash
+shield mission prepare-next \
+  --mission-id mission:example \
+  --guided-review-fork .shield/tmp/guided-review/fork.json
+```
 
 Playbooks, sessions, and fork artifacts are content-addressed. Session updates
 use an exclusive lock, exact-byte compare, file sync, atomic rename, and
