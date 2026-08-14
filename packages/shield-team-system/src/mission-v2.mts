@@ -29,6 +29,7 @@ import {
   validateShieldConfig,
 } from "./config.mjs";
 import {
+  computeReviewPublicationAuthoritySemanticIdentityV1,
   computeReviewPublicationAuthorityDigest,
   validateReviewPublicationAuthorityV1,
   validateReviewPublicationEvidenceV1,
@@ -263,11 +264,99 @@ export interface SignedReviewPublicationAuthorization {
   signatureBase64: string;
 }
 
-export interface ReviewPublicationAuthorizationRecord {
+export interface ReviewPublicationAuthorizationProvenance {
   authority: Readonly<ReviewPublicationAuthorityV1>;
   authorization: ReviewPublicationAuthorizationPayload;
   entryId: string;
   journalSequence: number;
+}
+
+export interface ReviewPublicationAuthorizationRecord extends ReviewPublicationAuthorizationProvenance {
+  semanticIdentity: string;
+  aliases: ReviewPublicationAuthorizationProvenance[];
+}
+
+export function resolveReviewPublicationAuthorizationRecordV1(
+  records: readonly ReviewPublicationAuthorizationRecord[],
+  authorizationId: string,
+): ReviewPublicationAuthorizationRecord | null {
+  const matches = records.filter((record) =>
+    record.authorization.authorizationId === authorizationId ||
+    record.aliases.some((alias) => alias.authorization.authorizationId === authorizationId));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function publicationAuthorizationIds(record: ReviewPublicationAuthorizationRecord): readonly string[] {
+  return [record.authorization.authorizationId, ...record.aliases.map((alias) => alias.authorization.authorizationId)];
+}
+
+function publicationProvenance(
+  authority: Readonly<ReviewPublicationAuthorityV1>,
+  authorization: ReviewPublicationAuthorizationPayload,
+  entryId: string,
+  journalSequence: number,
+): ReviewPublicationAuthorizationProvenance {
+  return { authority, authorization, entryId, journalSequence };
+}
+
+function copyReviewPublicationAuthorizationProvenanceV1(
+  record: ReviewPublicationAuthorizationProvenance,
+): ReviewPublicationAuthorizationProvenance {
+  return {
+    authority: {
+      ...record.authority,
+      authorizedPaths: [...record.authority.authorizedPaths],
+      permittedEffects: [...record.authority.permittedEffects],
+    },
+    authorization: { ...record.authorization, timestamp: { ...record.authorization.timestamp } },
+    entryId: record.entryId,
+    journalSequence: record.journalSequence,
+  };
+}
+
+export function copyReviewPublicationAuthorizationRecordV1(
+  record: ReviewPublicationAuthorizationRecord,
+): ReviewPublicationAuthorizationRecord {
+  return {
+    ...copyReviewPublicationAuthorizationProvenanceV1(record),
+    semanticIdentity: record.semanticIdentity,
+    aliases: record.aliases.map(copyReviewPublicationAuthorizationProvenanceV1),
+  };
+}
+
+export function projectReviewPublicationAuthorizationV1(
+  records: ReviewPublicationAuthorizationRecord[],
+  incoming: ReviewPublicationAuthorizationProvenance,
+  communicationRequests: readonly CommunicationRequestProjection[],
+): ContractResult<null> {
+  const identity = computeReviewPublicationAuthoritySemanticIdentityV1(incoming.authority);
+  if (identity.state === "blocked") return invalid("malformed", "Review publication semantic identity is invalid.");
+  const sameKind = records.filter((record) => record.authority.authorityKind === incoming.authority.authorityKind);
+  if (sameKind.length === 0) {
+    records.push({ ...incoming, semanticIdentity: identity.semanticIdentity, aliases: [] });
+    return valid(null);
+  }
+  if (sameKind.length !== 1) return invalid("binding_ambiguous", "Current publication authority is ambiguous.");
+  const current = sameKind[0];
+  if (current.semanticIdentity === identity.semanticIdentity) {
+    current.aliases.push(incoming);
+    return valid(null);
+  }
+  const currentIds = new Set(publicationAuthorizationIds(current));
+  if (communicationRequests.some((request) =>
+    request.adapterContractVersion === 2 && currentIds.has(request.publicationAuthorizationId))) {
+    return invalid("binding_invalid", "Consumed publication authority cannot be superseded.");
+  }
+  const lineageTip = current.aliases.at(-1)?.journalSequence ?? current.journalSequence;
+  if (incoming.authorization.previousJournalSequence !== lineageTip) {
+    return invalid("binding_invalid", "Publication authority supersession lineage is stale or unlinked.");
+  }
+  records.splice(records.indexOf(current), 1, {
+    ...incoming,
+    semanticIdentity: identity.semanticIdentity,
+    aliases: [],
+  });
+  return valid(null);
 }
 
 export interface ExecutionEffectPayload {
@@ -1790,16 +1879,7 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       evidence: [...evidence],
       ...(journalSchemaVersion === 8
         ? {
-          publicationAuthorizations: publicationAuthorizations.map((record) => ({
-            authority: {
-              ...record.authority,
-              authorizedPaths: [...record.authority.authorizedPaths],
-              permittedEffects: [...record.authority.permittedEffects],
-            },
-            authorization: { ...record.authorization, timestamp: { ...record.authorization.timestamp } },
-            entryId: record.entryId,
-            journalSequence: record.journalSequence,
-          })),
+          publicationAuthorizations: publicationAuthorizations.map(copyReviewPublicationAuthorizationRecordV1),
         }
         : {}),
       ...((journalSchemaVersion === 7 || journalSchemaVersion === 8) && currentReviewSubject !== undefined && routeToFitz !== undefined
@@ -2017,18 +2097,18 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (canonicalJson(input.timestamp) !== canonicalJson(authorized.value.timestamp)) {
         return invalid("malformed", `Entry ${index} timestamp does not match its authorization.`);
       }
-      if (publicationAuthorizations.some(
-        ({ authorization: record }) =>
-          record.authorizationId === authorized.value.authorizationId,
-      )) {
+      if (resolveReviewPublicationAuthorizationRecordV1(
+        publicationAuthorizations,
+        authorized.value.authorizationId,
+      ) !== null) {
         return invalid("duplicate_evidence", `Entry ${index} duplicates publication authorizationId.`);
       }
-      publicationAuthorizations.push({
-        authority: authority.value,
-        authorization: authorized.value,
-        entryId: input.entryId,
-        journalSequence: index,
-      });
+      const projected = projectReviewPublicationAuthorizationV1(
+        publicationAuthorizations,
+        publicationProvenance(authority.value, authorized.value, input.entryId, index),
+        communicationRequests,
+      );
+      if (projected.state === "invalid") return projected;
     } else if (input.type === "communication.requested") {
       if (journalSchemaVersion !== 4 && journalSchemaVersion !== 5 && journalSchemaVersion !== 6 && journalSchemaVersion !== 7 && journalSchemaVersion !== 8) return invalid("unsupported_schema", "Communication requests require journal v4 through v8.");
       if (governance !== "approved" || authorization.state !== "authorized") {
@@ -2049,14 +2129,14 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
         return invalid("stale_candidate", `Entry ${index} communication request revision is stale.`);
       }
       if (journalSchemaVersion === 8 && request.adapterContractVersion === 2) {
-        const matches = publicationAuthorizations.filter(
-          ({ authorization: record }) =>
-            record.authorizationId === request.publicationAuthorizationId,
+        const matched = resolveReviewPublicationAuthorizationRecordV1(
+          publicationAuthorizations,
+          request.publicationAuthorizationId,
         );
-        if (matches.length !== 1) {
+        if (matched === null) {
           return invalid("binding_missing", `Entry ${index} publication authorization is absent or ambiguous.`);
         }
-        const authority = matches[0].authority;
+        const authority = matched.authority;
         if (authority.headRevisionId !== request.artifactRevisionId ||
             canonicalJson(authority.authorizedPaths) !== canonicalJson(request.proposedChangedPaths) ||
             request.requestedEffects.some(
@@ -2068,8 +2148,26 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (communicationRequests.some((existing) => existing.requestId === request.requestId)) {
         return invalid("duplicate_request", `Entry ${index} duplicates communication requestId.`);
       }
+      if (journalSchemaVersion === 8 && request.adapterContractVersion === 2) {
+        const matched = resolveReviewPublicationAuthorizationRecordV1(publicationAuthorizations, request.publicationAuthorizationId);
+        if (matched !== null && communicationRequests.some((existing) =>
+          existing.adapterContractVersion === 2 && existing.state !== "failed" &&
+          existing.publicationAuthorizationId === matched.authorization.authorizationId)) {
+          return invalid("duplicate_request", `Entry ${index} publication authority already has a request.`);
+        }
+      }
+      const normalizedRequest: AnyCommunicationRequestPayload =
+        journalSchemaVersion === 8 && request.adapterContractVersion === 2
+          ? {
+            ...request,
+            publicationAuthorizationId: resolveReviewPublicationAuthorizationRecordV1(
+              publicationAuthorizations,
+              request.publicationAuthorizationId,
+            )!.authorization.authorizationId,
+          }
+          : request;
       communicationRequests.push({
-        ...request,
+        ...normalizedRequest,
         state: "queued",
         candidateId: null,
         failureReason: null,
@@ -2106,14 +2204,11 @@ export function replaySupervisedMissionJournal(entries: unknown): ContractResult
       if (journalSchemaVersion === 8 &&
           request.adapterContractVersion === 2 &&
           candidate.adapterContractVersion === 2) {
-        const matches = publicationAuthorizations.filter(
-          ({ authorization: record }) =>
-            record.authorizationId === request.publicationAuthorizationId,
-        );
-        if (matches.length !== 1) {
+        const matched = resolveReviewPublicationAuthorizationRecordV1(publicationAuthorizations, request.publicationAuthorizationId);
+        if (matched === null) {
           return invalid("binding_missing", `Entry ${index} publication result authorization is absent or ambiguous.`);
         }
-        const authority = matches[0].authority;
+        const authority = matched.authority;
         const binding = candidate.payload.publicationBinding;
         const expectedAuthorityBinding = {
           authorityKind: authority.authorityKind,
@@ -2463,10 +2558,28 @@ export function createReviewPublicationAuthorizationEntry(
   );
   if (authorized.state === "invalid") return authorized;
   if ((projection.publicationAuthorizations ?? []).some(
-    ({ authorization: record }) =>
-      record.authorizationId === authorized.value.authorizationId,
+    (record) => publicationAuthorizationIds(record).includes(authorized.value.authorizationId),
   )) {
     return invalid("duplicate_evidence", "Review publication authorizationId has already been recorded.");
+  }
+  const currentRecords = projection.publicationAuthorizations ?? [];
+  const sameKind = currentRecords.filter((record) => record.authority.authorityKind === authority.value.authorityKind);
+  if (sameKind.length > 1) return invalid("binding_ambiguous", "Current publication authority is ambiguous.");
+  if (sameKind.length === 1) {
+    const identity = computeReviewPublicationAuthoritySemanticIdentityV1(authority.value);
+    if (identity.state === "blocked") return invalid("malformed", "Review publication semantic identity is invalid.");
+    const current = sameKind[0];
+    if (identity.semanticIdentity !== current.semanticIdentity) {
+      const currentIds = new Set(publicationAuthorizationIds(current));
+      if (projection.communication.requests.some((request) =>
+        request.adapterContractVersion === 2 && currentIds.has(request.publicationAuthorizationId))) {
+        return invalid("binding_invalid", "Consumed publication authority cannot be superseded.");
+      }
+      const lineageTip = current.aliases.at(-1)?.journalSequence ?? current.journalSequence;
+      if (projection.lastSequence !== lineageTip) {
+        return invalid("binding_invalid", "Publication authority supersession lineage is stale or unlinked.");
+      }
+    }
   }
   return valid({
     schemaVersion: 8,
@@ -2513,14 +2626,14 @@ export function createCommunicationRequestEntry(
     return invalid("stale_candidate", "Communication request revision is stale.");
   }
   if (projection.journalSchemaVersion === 8 && request.adapterContractVersion === 2) {
-    const matches = (projection.publicationAuthorizations ?? []).filter(
-      ({ authorization: record }) =>
-        record.authorizationId === request.publicationAuthorizationId,
+    const matched = resolveReviewPublicationAuthorizationRecordV1(
+      projection.publicationAuthorizations ?? [],
+      request.publicationAuthorizationId,
     );
-    if (matches.length !== 1) {
+    if (matched === null) {
       return invalid("binding_missing", "Communication request publication authorization is absent or ambiguous.");
     }
-    const authority = matches[0].authority;
+    const authority = matched.authority;
     if (authority.headRevisionId !== request.artifactRevisionId ||
         canonicalJson(authority.authorizedPaths) !== canonicalJson(request.proposedChangedPaths) ||
         request.requestedEffects.some(
@@ -2532,6 +2645,20 @@ export function createCommunicationRequestEntry(
   if (projection.communication.requests.some((existing) => existing.requestId === request.requestId)) {
     return invalid("duplicate_request", "Communication requestId has already been recorded.");
   }
+  const canonicalRequest = projection.journalSchemaVersion === 8 && request.adapterContractVersion === 2
+    ? {
+      ...request,
+      publicationAuthorizationId: resolveReviewPublicationAuthorizationRecordV1(
+        projection.publicationAuthorizations ?? [],
+        request.publicationAuthorizationId,
+      )?.authorization.authorizationId as string,
+    }
+    : request;
+  if (canonicalRequest.adapterContractVersion === 2 && projection.communication.requests.some((existing) =>
+    existing.adapterContractVersion === 2 && existing.state !== "failed" &&
+    existing.publicationAuthorizationId === canonicalRequest.publicationAuthorizationId)) {
+    return invalid("duplicate_request", "Publication authority already has a request.");
+  }
   return valid({
     schemaVersion: projection.journalSchemaVersion,
     entryId: `entry:${projection.missionId}:${projection.lastSequence + 1}`,
@@ -2539,7 +2666,7 @@ export function createCommunicationRequestEntry(
     sequence: projection.lastSequence + 1,
     type: "communication.requested",
     timestamp,
-    payload: { request },
+    payload: { request: canonicalRequest },
   });
 }
 
@@ -2573,14 +2700,14 @@ export function createCommunicationResultEntry(
   if (projection.journalSchemaVersion === 8 &&
       request.adapterContractVersion === 2 &&
       candidate.adapterContractVersion === 2) {
-    const matches = (projection.publicationAuthorizations ?? []).filter(
-      ({ authorization: record }) =>
-        record.authorizationId === request.publicationAuthorizationId,
+    const matched = resolveReviewPublicationAuthorizationRecordV1(
+      projection.publicationAuthorizations ?? [],
+      request.publicationAuthorizationId,
     );
-    if (matches.length !== 1) {
+    if (matched === null) {
       return invalid("binding_missing", "Communication result publication authorization is absent or ambiguous.");
     }
-    const authority = matches[0].authority;
+    const authority = matched.authority;
     const expected = {
       authorityKind: authority.authorityKind,
       authorityRef: authority.authorityRef,

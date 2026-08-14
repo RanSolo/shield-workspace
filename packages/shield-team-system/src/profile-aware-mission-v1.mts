@@ -2,7 +2,10 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { types as utilTypes } from "node:util";
 import {
   canonicalJson,
+  copyReviewPublicationAuthorizationRecordV1,
   computeEd25519SigningKeyRef,
+  projectReviewPublicationAuthorizationV1,
+  resolveReviewPublicationAuthorizationRecordV1,
   verifySignedReviewPublicationAuthorization,
   type CommunicationRequestProjection,
   validateTrustedBindingRegistry,
@@ -853,22 +856,6 @@ export function createProfileAwareDaisyRuntimeBindingSupersessionEntryV1(input: 
   };
 }
 
-function copyPublicationAuthorization(record: ReviewPublicationAuthorizationRecord): ReviewPublicationAuthorizationRecord {
-  return {
-    authority: {
-      ...record.authority,
-      authorizedPaths: [...record.authority.authorizedPaths],
-      permittedEffects: [...record.authority.permittedEffects],
-    },
-    authorization: {
-      ...record.authorization,
-      timestamp: { ...record.authorization.timestamp },
-    },
-    entryId: record.entryId,
-    journalSequence: record.journalSequence,
-  };
-}
-
 function copyCommunicationRequest(request: CommunicationRequestProjection): CommunicationRequestProjection {
   return {
     ...request,
@@ -927,12 +914,21 @@ export function createProfileAwareReviewPublicationAuthorizationEntryV1(input: {
     verificationProjection,
   );
   if (authorized.state === "invalid") throw new Error(authorized.errors.join(" "));
-  if (input.projection.publicationAuthorizations.some(
-    ({ authorization }) => authorization.authorizationId === authorized.value.authorizationId,
-  )) {
+  if (resolveReviewPublicationAuthorizationRecordV1(
+    input.projection.publicationAuthorizations,
+    authorized.value.authorizationId,
+  ) !== null) {
     throw new Error("Review publication authorizationId has already been recorded.");
   }
   const sequence = input.projection.lastSequence + 1;
+  const projected = input.projection.publicationAuthorizations.map(copyReviewPublicationAuthorizationRecordV1);
+  const recovery = projectReviewPublicationAuthorizationV1(projected, {
+    authority: authority.value,
+    authorization: authorized.value,
+    entryId: `entry:${input.projection.missionId}:${sequence}`,
+    journalSequence: sequence,
+  }, input.projection.communication.requests);
+  if (recovery.state === "invalid") throw new Error(recovery.errors.join(" "));
   return {
     schemaVersion: 9,
     entryId: `entry:${input.projection.missionId}:${sequence}`,
@@ -974,11 +970,12 @@ export function createProfileAwareCommunicationRequestEntryV1(input: {
       request.revisionId !== input.projection.brief.revisionId) {
     throw new Error("Profile-aware communication request does not match the canonical mission subject and revision.");
   }
-  const matches = input.projection.publicationAuthorizations.filter(
-    ({ authorization }) => authorization.authorizationId === request.publicationAuthorizationId,
+  const matched = resolveReviewPublicationAuthorizationRecordV1(
+    input.projection.publicationAuthorizations,
+    request.publicationAuthorizationId,
   );
-  if (matches.length !== 1) throw new Error("Communication request publication authorization is absent or ambiguous.");
-  const authority = matches[0].authority;
+  if (matched === null) throw new Error("Communication request publication authorization is absent or ambiguous.");
+  const authority = matched.authority;
   if (authority.headRevisionId !== request.artifactRevisionId ||
       canonicalJson(authority.authorizedPaths) !== canonicalJson(request.proposedChangedPaths) ||
       request.requestedEffects.some((effect) => !authority.permittedEffects.includes(effect))) {
@@ -986,6 +983,11 @@ export function createProfileAwareCommunicationRequestEntryV1(input: {
   }
   if (input.projection.communication.requests.some(({ requestId }) => requestId === request.requestId)) {
     throw new Error("Communication requestId has already been recorded.");
+  }
+  if (input.projection.communication.requests.some((existing) =>
+    existing.adapterContractVersion === 2 && existing.state !== "failed" &&
+    existing.publicationAuthorizationId === matched.authorization.authorizationId)) {
+    throw new Error("Publication authority already has a request.");
   }
   const sequence = input.projection.lastSequence + 1;
   return {
@@ -998,6 +1000,7 @@ export function createProfileAwareCommunicationRequestEntryV1(input: {
     payload: {
       request: {
         ...request,
+        publicationAuthorizationId: matched.authorization.authorizationId,
         proposedChangedPaths: [...request.proposedChangedPaths],
         requestedEffects: [...request.requestedEffects],
       },
@@ -1032,11 +1035,12 @@ export function createProfileAwareCommunicationResultEntryV1(input: {
   if (request.adapterContractVersion !== 2) throw new Error("Communication result request is not publication-bound.");
   if (request.state !== "queued") throw new Error("Communication request already has a result.");
   if (request.adapterId !== candidate.adapterId) throw new Error("Communication result adapter does not match its request.");
-  const authorizations = input.projection.publicationAuthorizations.filter(
-    ({ authorization }) => authorization.authorizationId === request.publicationAuthorizationId,
+  const authorization = resolveReviewPublicationAuthorizationRecordV1(
+    input.projection.publicationAuthorizations,
+    request.publicationAuthorizationId,
   );
-  if (authorizations.length !== 1) throw new Error("Communication result publication authorization is absent or ambiguous.");
-  const expected = expectedPublicationBinding(authorizations[0].authority, request);
+  if (authorization === null) throw new Error("Communication result publication authorization is absent or ambiguous.");
+  const expected = expectedPublicationBinding(authorization.authority, request);
   if (canonicalJson(candidate.payload.publicationBinding) !== canonicalJson(expected) ||
       candidate.payload.operation !== request.operation ||
       candidate.payload.targetRef !== request.targetRef) {
@@ -1393,15 +1397,20 @@ function replayProfileAwareMissionJournalUnchecked(entries: unknown): ProfileAwa
       if (entry.entryId !== `entry:${brief.missionId}:${index}` || canonicalJson(entry.timestamp) !== canonicalJson(authorized.value.timestamp)) {
         return invalid("malformed", `Entry ${index} publication authorization identity or timestamp is invalid.`);
       }
-      if (publicationAuthorizations.some(({ authorization: record }) => record.authorizationId === authorized.value.authorizationId)) {
+      if (resolveReviewPublicationAuthorizationRecordV1(publicationAuthorizations, authorized.value.authorizationId) !== null) {
         return invalid("duplicate_evidence", `Entry ${index} duplicates publication authorizationId.`);
       }
-      publicationAuthorizations.push({
-        authority: authority.value,
-        authorization: authorized.value,
-        entryId: entry.entryId,
-        journalSequence: index,
-      });
+      const projected = projectReviewPublicationAuthorizationV1(
+        publicationAuthorizations,
+        {
+          authority: authority.value,
+          authorization: authorized.value,
+          entryId: entry.entryId,
+          journalSequence: index,
+        },
+        communicationRequests,
+      );
+      if (projected.state === "invalid") return invalid(projected.code, ...projected.errors);
     } else if (entry.type === "communication.requested") {
       if (!exact(entry.payload, ["request"])) return invalid("malformed", `Entry ${index} communication request payload is not closed.`);
       if (authorization !== "authorized" || execution !== "not-started") return invalid("ordering_invalid", `Entry ${index} communication request requires an authorized not-started mission.`);
@@ -1413,17 +1422,23 @@ function replayProfileAwareMissionJournalUnchecked(entries: unknown): ProfileAwa
         return invalid("mission_mismatch", `Entry ${index} communication request does not match the canonical mission subject.`);
       }
       if (request.revisionId !== brief.revisionId) return invalid("stale_candidate", `Entry ${index} communication request revision is stale.`);
-      const matches = publicationAuthorizations.filter(({ authorization: record }) => record.authorizationId === request.publicationAuthorizationId);
-      if (matches.length !== 1) return invalid("binding_missing", `Entry ${index} publication authorization is absent or ambiguous.`);
-      const authority = matches[0].authority;
+      const matched = resolveReviewPublicationAuthorizationRecordV1(publicationAuthorizations, request.publicationAuthorizationId);
+      if (matched === null) return invalid("binding_missing", `Entry ${index} publication authorization is absent or ambiguous.`);
+      const authority = matched.authority;
       if (authority.headRevisionId !== request.artifactRevisionId ||
           canonicalJson(authority.authorizedPaths) !== canonicalJson(request.proposedChangedPaths) ||
           request.requestedEffects.some((effect) => !authority.permittedEffects.includes(effect))) {
         return invalid("binding_invalid", `Entry ${index} publication request widens or mismatches its authorization.`);
       }
       if (communicationRequests.some(({ requestId }) => requestId === request.requestId)) return invalid("duplicate_request", `Entry ${index} duplicates communication requestId.`);
+      if (communicationRequests.some((existing) =>
+        existing.adapterContractVersion === 2 && existing.state !== "failed" &&
+        existing.publicationAuthorizationId === matched.authorization.authorizationId)) {
+        return invalid("duplicate_request", `Entry ${index} publication authority already has a request.`);
+      }
       communicationRequests.push({
         ...request,
+        publicationAuthorizationId: matched.authorization.authorizationId,
         proposedChangedPaths: [...request.proposedChangedPaths],
         requestedEffects: [...request.requestedEffects],
         state: "queued",
@@ -1450,9 +1465,9 @@ function replayProfileAwareMissionJournalUnchecked(entries: unknown): ProfileAwa
       if (request.adapterContractVersion !== 2) return invalid("binding_invalid", `Entry ${index} communication result request is not publication-bound.`);
       if (request.state !== "queued") return invalid("duplicate_result", `Entry ${index} communication request already has a result.`);
       if (request.adapterId !== candidate.adapterId) return invalid("adapter_mismatch", `Entry ${index} communication result adapter does not match its request.`);
-      const matches = publicationAuthorizations.filter(({ authorization: record }) => record.authorizationId === request.publicationAuthorizationId);
-      if (matches.length !== 1) return invalid("binding_missing", `Entry ${index} publication result authorization is absent or ambiguous.`);
-      const expected = expectedPublicationBinding(matches[0].authority, request);
+      const matched = resolveReviewPublicationAuthorizationRecordV1(publicationAuthorizations, request.publicationAuthorizationId);
+      if (matched === null) return invalid("binding_missing", `Entry ${index} publication result authorization is absent or ambiguous.`);
+      const expected = expectedPublicationBinding(matched.authority, request);
       if (canonicalJson(candidate.payload.publicationBinding) !== canonicalJson(expected) ||
           candidate.payload.operation !== request.operation || candidate.payload.targetRef !== request.targetRef) {
         return invalid("binding_invalid", `Entry ${index} publication result scope or target does not match its request.`);
@@ -1540,7 +1555,7 @@ function replayProfileAwareMissionJournalUnchecked(entries: unknown): ProfileAwa
           daisyRuntimeBindings: daisyRuntimeBindings.map((binding) => copyDaisyCoordinationRuntimeBindingV1(binding)),
           activeDaisyRuntimeBindings: activeDaisyRuntimeBindings.map((binding) => copyDaisyCoordinationRuntimeBindingV1(binding)),
         }),
-    publicationAuthorizations: publicationAuthorizations.map(copyPublicationAuthorization),
+    publicationAuthorizations: publicationAuthorizations.map(copyReviewPublicationAuthorizationRecordV1),
     communication: {
       state: communicationState,
       requests: communicationRequests.map(copyCommunicationRequest),
