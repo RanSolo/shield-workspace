@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
-import { access as fsAccess, mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { access as fsAccess, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -672,10 +672,12 @@ test("schema9 permission context load is ready on valid replay with all required
   assert.equal(context.attestations.every((attestation) => attestation.expiresAt === attestation.observedAt), true);
 });
 
-test("May replay, dispatch projection, permission context, and permission artifact retain fixed canonical bytes", async () => {
-  const repositoryRoot = "/private/tmp/shield-team-system-may-golden-v1";
+test("May replay, dispatch projection, permission context, and permission artifact retain fixed canonical bytes", async (context) => {
+  // Keep the protocol root stable while bypassing macOS's /tmp realpath alias in the trusted fixture host.
+  const repositoryRoot = "/tmp/shield-team-system-may-golden-v1";
+  await rm(repositoryRoot, { recursive: true, force: true });
   await mkdir(repositoryRoot, { recursive: true });
-  assert.equal(await realpath(repositoryRoot), repositoryRoot);
+  context.after(() => rm(repositoryRoot, { recursive: true, force: true }));
   const fixture = createProfileAwareFixture({ writableRoot: repositoryRoot });
   await writeJournal(repositoryRoot, fixture.profile.missionId, fixture.entries);
   const plan = permissionPlanFromProjection(fixture.projection, {
@@ -684,7 +686,7 @@ test("May replay, dispatch projection, permission context, and permission artifa
     validationId: "validation:lint",
   });
   const hostOps = {
-    realpath: (path) => realpath(path),
+    realpath: async (path) => path,
     access: async (path) => { assert.equal(path, repositoryRoot); },
     now: () => "2026-08-10T18:00:00Z",
     execFile: async (_command, args) => {
@@ -731,16 +733,18 @@ test("May replay, dispatch projection, permission context, and permission artifa
   });
   const decision = await authorize(plan);
   assert.equal(decision.outcome, "allow");
+  assert.equal(dispatch.projection.repositoryObservations.every(({ canonicalRoot }) => canonicalRoot === repositoryRoot), true);
+  assert.equal(permission.context.attestations.every(({ canonicalWritableRoot }) => canonicalWritableRoot === repositoryRoot), true);
   assert.deepEqual({
     replay: canonicalSha256(fixture.projection),
     dispatch: canonicalSha256(dispatch.projection),
     permissionContext: canonicalSha256(permission.context),
     permissionArtifact: canonicalSha256(decision.authorizationArtifact),
   }, {
-    replay: "fe51c2fe0a3bb1da1b088dacf471812017e06eaed8c10c8f60ecc35849da5b31",
-    dispatch: "7807dfba77b82224ec70f0f7963da9996c31e606303ee405567e1d84ead40a19",
-    permissionContext: "191b35aa4c02fc73e6160def668d4fd03bd73017b916cb7968462adb9e9b525e",
-    permissionArtifact: "7c09aafc562421e66929a97516f62dc1214bde27b70ac5b64064b20609d33a6e",
+    replay: "18b2a24ada5a6cdf68621dd397b6f39ac5daac39eb63b42eb8e9380ac359c8d0",
+    dispatch: "caa940613decfdee82bb363209790c994d9fdc0687dfae7cef72ed4969217e00",
+    permissionContext: "b58ec8f713c639a70c3b73625485e206030c72cf7607538e4b3a2622fc3e58f9",
+    permissionArtifact: "302279567289c69d9c1c5d1c6940d0ac4012493cc8d59f400e432224321933e2",
   });
 });
 

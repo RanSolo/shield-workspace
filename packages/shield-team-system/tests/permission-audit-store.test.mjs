@@ -170,7 +170,7 @@ async function runPermissionAuditMockedAppendScenario(scenario) {
     let prewriteUnavailableReadConsumed = false;
 
       mock.module("node:fs/promises", {
-        exports: {
+        namedExports: {
         ...realFs,
         mkdir: async (path, options) => {
           const result = await realFs.mkdir(path, options);

@@ -253,7 +253,7 @@ async function runPacketClaimFaultScenario(scenario) {
     let capturedMarker = null;
 
     mock.module("node:crypto", {
-      exports: {
+      namedExports: {
         createHash: realCrypto.createHash,
         randomBytes: (...args) => {
           if (phase === "fault" && scenario.fault === "entropy-failure") {
@@ -268,7 +268,7 @@ async function runPacketClaimFaultScenario(scenario) {
     });
 
     mock.module("node:fs/promises", {
-      exports: {
+      namedExports: {
         ...realFs,
         open: async (path, flags, mode) => {
           const handle = await realFs.open(path, flags, mode);
