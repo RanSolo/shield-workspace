@@ -1,4 +1,7 @@
-import { replaySupervisedMissionJournal } from "../dist/mission-v2.mjs";
+import {
+  replaySupervisedMissionJournal,
+  resolveReviewPublicationAuthorizationRecordV1,
+} from "../dist/mission-v2.mjs";
 import { replayProfileAwareMissionJournal } from "../dist/profile-aware-mission-v1.mjs";
 
 function blocked(reason) {
@@ -41,17 +44,17 @@ export function resolveJournaledPublicationRequest(requestId, options = {}) {
   }
   const request = requests[0];
   if (request.state !== "queued") return blocked("publication_request_not_queued");
-  const authorizations = (projection.publicationAuthorizations ?? []).filter(
-    ({ authorization }) =>
-      authorization.authorizationId === request.publicationAuthorizationId,
+  const authorization = resolveReviewPublicationAuthorizationRecordV1(
+    projection.publicationAuthorizations ?? [],
+    request.publicationAuthorizationId,
   );
-  if (authorizations.length !== 1) {
+  if (authorization === null) {
     return blocked("publication_authorization_missing");
   }
   return {
     state: "allowed",
     request,
-    authority: authorizations[0].authority,
+    authority: authorization.authority,
     usedCandidateIds: projection.communication.requests
       .map(({ candidateId }) => candidateId)
       .filter((candidateId) => candidateId !== null),

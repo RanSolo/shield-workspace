@@ -19,6 +19,7 @@ import {
 } from "./profile-aware-mission-v1.mjs";
 import {
   computeReviewPublicationAuthorityDigest,
+  computeReviewPublicationAuthoritySemanticIdentityV1,
   evaluateReviewPublicationV1,
   type ReviewPublicationAuthorityV1,
   type ReviewPublicationEffect,
@@ -91,13 +92,23 @@ export type ReviewPublicationAuthorizationExecutorInputV1 = Readonly<{
   decisionOutput: { write: (value: string) => void };
 }>;
 
-export type ReviewPublicationAuthorizationExecutorResultV1 = Readonly<{
-  projection: ProfileAwareProjectionV1;
-  authorizationId: string;
-  authorityDigest: string;
-  journalSequence: number;
-  finalJournalSha256: string;
-}>;
+export type ReviewPublicationAuthorizationExecutorResultV1 =
+  | Readonly<{
+      state: "authorized";
+      projection: ProfileAwareProjectionV1;
+      authorizationId: string;
+      authorityDigest: string;
+      journalSequence: number;
+      finalJournalSha256: string;
+    }>
+  | Readonly<{
+      state: "already_authorized";
+      projection: ProfileAwareProjectionV1;
+      authorizationId: string;
+      authorityDigest: string;
+      journalSequence: number;
+      finalJournalSha256: string;
+    }>;
 
 export type ReviewPublicationAuthorizationExecutorDependenciesV1 = Readonly<{
   renderDecision: (decision: PreparedReviewPublicationDecisionV1, humanMode: boolean) => string;
@@ -481,6 +492,28 @@ export async function executeReviewPublicationAuthorizationV1(
   });
   if (evaluation.state === "blocked") throw new Error(`Publication authorization blocked: ${evaluation.reasonCode}.`);
 
+  if (input.mode === "legacy" && projection.publicationAuthorizations.length > 0) {
+    const candidateIdentity = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
+    if (candidateIdentity.state === "blocked") throw new Error("Requested publication authority meaning is malformed.");
+    const matches = projection.publicationAuthorizations.filter((record) => {
+      const existingIdentity = computeReviewPublicationAuthoritySemanticIdentityV1(record.authority);
+      return existingIdentity.state === "valid" &&
+        existingIdentity.semanticIdentity === candidateIdentity.semanticIdentity;
+    });
+    if (projection.publicationAuthorizations.length !== 1 || matches.length !== 1) {
+      throw new Error("Requested publication meaning conflicts with the current canonical publication authority.");
+    }
+    const existing = matches[0];
+    return canonicalSnapshot({
+      state: "already_authorized" as const,
+      projection,
+      authorizationId: existing.authorization.authorizationId,
+      authorityDigest: existing.authorization.authorityDigest,
+      journalSequence: existing.journalSequence,
+      finalJournalSha256: initialJournal.sha256,
+    });
+  }
+
   const binding = coulsonBinding(initialJournal.current);
   const signerSnapshot = await captureMissionSignerSnapshot(binding.signingKeyRef);
   const authorityDigest = computeReviewPublicationAuthorityDigest(authority);
@@ -547,6 +580,7 @@ export async function executeReviewPublicationAuthorizationV1(
     expectedStartingJournalSha256: initialJournal.sha256,
   }));
   return canonicalSnapshot({
+    state: "authorized" as const,
     projection: appended.projection,
     authorizationId,
     authorityDigest,

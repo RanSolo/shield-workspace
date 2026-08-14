@@ -1566,7 +1566,7 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   assert.equal(await readFile(path, "utf8"), bytesAfterAuthorization);
 });
 
-test("schema-9 publication CLI signs authorization, queues without passcode, and rejects file-delivered outcomes", async () => {
+test("schema-9 publication-authorize CLI signs once, retries without passcode, queues, and rejects file-delivered outcomes", async () => {
   const { root } = await fixture();
   const homeRoot = join(root, ".shield", "tmp", "home");
   await mkdir(homeRoot, { recursive: true });
@@ -1659,6 +1659,35 @@ test("schema-9 publication CLI signs authorization, queues without passcode, and
   assert.equal(projection.publicationAuthorizations[0].authorization.authorizationId, authorizationId);
   assert.equal(projection.publicationAuthorizations[0].authority.authorityRef, authorizationId);
   assert.equal(projection.publicationAuthorizations[0].authorization.sourceRef, "cli:publication-authorize:2");
+
+  const bytesAfterPublicationAuthorization = await readFile(journalPath(root, missionId), "utf8");
+  const publicationRetry = run(
+    root,
+    ["mission", "publication-authorize", "--mission-id", missionId, "--input", ".shield/tmp/publication-authorize.json", "--json"],
+    { env: { HOME: homeRoot }, nodeArgs: fixedClockNodeArgs("2026-08-13T00:03:00Z") },
+  );
+  assert.equal(publicationRetry.status, 0, publicationRetry.stderr);
+  assert.deepEqual(JSON.parse(publicationRetry.stdout), {
+    schemaVersion: 1,
+    state: "publication_already_authorized",
+    missionId,
+    missionRevisionId: created.revisionId,
+    authorizationId,
+    authorityDigest: projection.publicationAuthorizations[0].authorization.authorityDigest,
+    journalSequence: 2,
+  });
+  assert.doesNotMatch(`${publicationRetry.stdout}${publicationRetry.stderr}`, /Passcode:|passcode|privateKey|signing material/iu);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), bytesAfterPublicationAuthorization);
+
+  const humanPublicationRetry = run(
+    root,
+    ["mission", "publication-authorize", "--mission-id", missionId, "--input", ".shield/tmp/publication-authorize.json"],
+    { env: { HOME: homeRoot } },
+  );
+  assert.equal(humanPublicationRetry.status, 0, humanPublicationRetry.stderr);
+  assert.match(humanPublicationRetry.stdout, /^ALREADY AUTHORIZED — nothing repeated\.\n/u);
+  assert.doesNotMatch(`${humanPublicationRetry.stdout}${humanPublicationRetry.stderr}`, /Passcode:/u);
+  assert.equal(await readFile(journalPath(root, missionId), "utf8"), bytesAfterPublicationAuthorization);
 
   await writeFile(join(temporaryRoot, "publication-request.json"), `${JSON.stringify({
     authorizationId,

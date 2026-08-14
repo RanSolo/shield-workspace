@@ -27,8 +27,32 @@ import {
 import { createShieldConfig } from "../dist/config.mjs";
 import { canonicalDelegationJson, createDelegationLogEntry, createWheelsOffDelegation, createWheelsOffEligibility } from "../dist/delegation-v1.mjs";
 import { MISSION_PROFILE_IDS } from "../dist/mission-profile-v1.mjs";
+import {
+  appendPublicationAuthorizationFixtureEntry,
+  publicationJournalFixture,
+} from "./fixtures/review-publication-journal.mjs";
 
 const artifactRevisionId = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+
+test("schema-8 legacy publication recovery is deterministic and preserves immutable alias provenance", () => {
+  const fixture = publicationJournalFixture({ schemaVersion: 8 });
+  const entries = structuredClone(fixture.entries.slice(0, 3));
+  const exactHead = "b".repeat(40);
+  const canonical = appendPublicationAuthorizationFixtureEntry(fixture, entries, { headRevisionId: exactHead });
+  const alias = appendPublicationAuthorizationFixtureEntry(fixture, entries, { headRevisionId: exactHead });
+  const replayed = replaySupervisedMissionJournal(entries);
+  assert.equal(replayed.state, "valid", replayed.errors?.join(" "));
+  assert.equal(replayed.value.publicationAuthorizations.length, 1);
+  assert.equal(
+    replayed.value.publicationAuthorizations[0].authorization.authorizationId,
+    canonical.authorization.payload.authorizationId,
+  );
+  assert.deepEqual(
+    replayed.value.publicationAuthorizations[0].aliases.map(({ authorization }) => authorization.authorizationId),
+    [alias.authorization.payload.authorizationId],
+  );
+  assert.deepEqual(replaySupervisedMissionJournal(structuredClone(entries)), replayed);
+});
 
 function keyBinding(seatId, humanPrincipalId) {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");

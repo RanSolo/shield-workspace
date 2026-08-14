@@ -14,6 +14,7 @@ import {
 } from "../public/github.mjs";
 import { canonicalJson } from "../dist/mission-v2.mjs";
 import {
+  createProfileAwareCommunicationRequestEntryV1,
   createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareRuntimeBindingRecordedEntryV1,
   replayProfileAwareMissionJournal,
@@ -33,7 +34,10 @@ import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
 } from "../dist/seat-dispatch-receipt-v1.mjs";
-import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
+import {
+  appendPublicationAuthorizationFixtureEntry,
+  publicationJournalFixture,
+} from "./fixtures/review-publication-journal.mjs";
 
 const head = "0123456789012345678901234567890123456789";
 const base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -892,6 +896,45 @@ test("schema-9 create resumes by exact verification and reaches dispatch_ready w
   assert.equal(journalReads, 3);
   assert.equal(furyReads, 2);
   assert.equal(dispatchReads, 2);
+});
+
+test("legacy alias recovery reuses the one exact existing draft without another push or draft creation", () => {
+  const entries = structuredClone(schema9CreatePublication.entries.slice(0, 3));
+  const alias = appendPublicationAuthorizationFixtureEntry(schema9CreatePublication, entries);
+  let projection = replaySchema9(entries);
+  entries.push(createProfileAwareCommunicationRequestEntryV1({
+    projection,
+    request: {
+      ...schema9CreatePublication.request,
+      requestId: "request:mission-44:legacy-alias",
+      publicationAuthorizationId: alias.authorization.payload.authorizationId,
+    },
+    timestamp: { value: "2026-07-29T10:04:00Z", provenance: "hostTrusted" },
+  }));
+  projection = replaySchema9(entries);
+  assert.equal(projection.publicationAuthorizations.length, 1);
+  assert.equal(projection.publicationAuthorizations[0].aliases.length, 1);
+  const resumeRun = runner([
+    ...initialChecks(),
+    ok(JSON.stringify([pr({ body: "Issue 44 Mission Workspace" })])),
+    ...scopeChecks(),
+    ok(),
+  ]);
+  const result = prepareDeliveryWorkspaceForDispatch(
+    input({
+      publicationRequestId: "request:mission-44:legacy-alias",
+      publicationCandidateId: "candidate:mission-44:legacy-alias",
+    }),
+    {
+      run: resumeRun,
+      loadJournal: () => structuredClone(entries),
+      realpath: (value) => value,
+    },
+  );
+  assert.equal(result.state, "workspace_ready", JSON.stringify(result));
+  assert.equal(result.publicationAction, "verified_existing_draft_pr");
+  assert.equal(resumeRun.calls.some(({ executable, args }) => executable === "git" && args[0] === "push"), false);
+  assert.equal(resumeRun.calls.some(({ executable, args }) => executable === "gh" && args[0] === "pr" && ["create", "edit"].includes(args[1])), false);
 });
 
 test("governed async workspace reaches dispatch_ready when May implementation paths exclude the exact-bound blueprint", async () => {

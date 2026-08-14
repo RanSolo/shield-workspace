@@ -16,6 +16,7 @@ import {
   createProfileAwareGovernanceDecisionEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
+  createProfileAwareCommunicationRequestEntryV1,
   createProfileRequirementsV1,
   MISSION_130_JOURNAL_DIGEST,
   replayProfileAwareMissionJournal,
@@ -32,7 +33,10 @@ import {
   computeRuntimeBindingDigest,
   computeSchema9RuntimeBindingDigest,
 } from "../dist/implementation-authority-v1.mjs";
-import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
+import {
+  appendPublicationAuthorizationFixtureEntry,
+  publicationJournalFixture,
+} from "./fixtures/review-publication-journal.mjs";
 
 const predecessorDigest = "sha256:7f1f8c50a703cf43e1c477d88446473c5d1d755b99a4ad35a2b6662558ded7b9";
 const riskFlags = { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: true };
@@ -1074,6 +1078,85 @@ test("schema-9 publication authorization, request, and trusted result replay ide
   const restarted = replay(terminalEntries);
   assert.deepEqual(restarted.publicationAuthorizations[0].authority.authorizedPaths, fixture.authority.authorizedPaths);
   assert.deepEqual(restarted.communication.requests[0].requestedEffects, fixture.request.requestedEffects);
+});
+
+test("schema-9 legacy authority recovery selects one canonical record, retains aliases, and canonicalizes one request chain", () => {
+  const fixture = publicationJournalFixture({ schemaVersion: 9, prePublicationRuntime: true });
+  const entries = structuredClone(fixture.entries.slice(0, 5));
+  const exactHead = "b".repeat(40);
+  const canonical = appendPublicationAuthorizationFixtureEntry(fixture, entries, {
+    headRevisionId: exactHead,
+  });
+  const aliasOne = appendPublicationAuthorizationFixtureEntry(fixture, entries, {
+    authorityRef: `authorization:${fixture.request.missionId}:review-publish:6`,
+    headRevisionId: exactHead,
+  });
+  const aliasTwo = appendPublicationAuthorizationFixtureEntry(fixture, entries, {
+    authorityRef: `authorization:${fixture.request.missionId}:review-publish:7`,
+    headRevisionId: exactHead,
+  });
+  assert.equal(fixture.entries[4].sequence, 4);
+  assert.equal(canonical.entry.sequence, 5);
+  assert.equal(aliasOne.entry.sequence, 6);
+  assert.equal(aliasTwo.entry.sequence, 7);
+  let projection = replay(entries);
+  const request = {
+    ...fixture.request,
+    requestId: `request:${fixture.request.missionId}:review-publish:8`,
+    artifactRevisionId: exactHead,
+    publicationAuthorizationId: aliasTwo.authorization.payload.authorizationId,
+  };
+  entries.push(createProfileAwareCommunicationRequestEntryV1({
+    projection,
+    request,
+    timestamp: { value: "2026-07-29T10:08:00Z", provenance: "hostTrusted" },
+  }));
+  projection = replay(entries);
+
+  assert.equal(projection.publicationAuthorizations.length, 1);
+  const recovered = projection.publicationAuthorizations[0];
+  assert.equal(recovered.authorization.authorizationId, canonical.authorization.payload.authorizationId);
+  assert.equal(recovered.journalSequence, 5);
+  assert.match(recovered.semanticIdentity, /^sha256:[A-Za-z0-9_-]{43}$/u);
+  assert.deepEqual(
+    recovered.aliases.map(({ authorization }) => authorization.authorizationId),
+    [aliasOne.authorization.payload.authorizationId, aliasTwo.authorization.payload.authorizationId],
+  );
+  assert.equal(
+    projection.communication.requests[0].publicationAuthorizationId,
+    canonical.authorization.payload.authorizationId,
+  );
+  assert.deepEqual(replayProfileAwareMissionJournal(structuredClone(entries)), replayProfileAwareMissionJournal(entries));
+
+  const duplicate = {
+    ...request,
+    requestId: `request:${fixture.request.missionId}:review-publish:9`,
+    publicationAuthorizationId: aliasOne.authorization.payload.authorizationId,
+  };
+  assert.throws(() => createProfileAwareCommunicationRequestEntryV1({
+    projection,
+    request: duplicate,
+    timestamp: { value: "2026-07-29T10:09:00Z", provenance: "hostTrusted" },
+  }), /already has a request/u);
+});
+
+test("schema-9 legacy authority recovery rejects malformed lineage and consumed non-equivalent conflicts", () => {
+  const fixture = publicationJournalFixture({ schemaVersion: 9, prePublicationRuntime: true });
+  const consumed = structuredClone(fixture.entries);
+  assert.throws(() => appendPublicationAuthorizationFixtureEntry(fixture, consumed, {
+    headRevisionId: "c".repeat(40),
+  }), /Consumed|consumed|lineage|conflict/u);
+
+  const malformed = structuredClone(fixture.entries.slice(0, 5));
+  appendPublicationAuthorizationFixtureEntry(fixture, malformed, {
+    headRevisionId: "d".repeat(40),
+  });
+  const successor = appendPublicationAuthorizationFixtureEntry(fixture, malformed, {
+    headRevisionId: "e".repeat(40),
+  });
+  successor.entry.payload.authorization.payload.previousJournalSequence -= 1;
+  successor.entry.payload.authorization = fixture.signAuthorizationPayload(successor.entry.payload.authorization.payload);
+  assert.equal(replayProfileAwareMissionJournal(malformed).state, "invalid");
 });
 
 test("schema-9 publication replay rejects signed-envelope, scope, sequence, duplicate, and lifecycle drift", () => {

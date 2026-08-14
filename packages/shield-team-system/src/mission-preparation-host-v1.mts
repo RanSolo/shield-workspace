@@ -54,6 +54,7 @@ import {
 } from "./implementation-authority-v1.mjs";
 import {
   computeReviewPublicationAuthorityDigest,
+  computeReviewPublicationAuthoritySemanticIdentityV1,
   type ReviewPublicationAuthorityV1,
   type ReviewPublicationEffect,
 } from "./review-publication-v1.mjs";
@@ -944,23 +945,9 @@ export type PreparedReviewPublicationSemanticTupleV1 = Readonly<{
 export function projectPreparedReviewPublicationSemanticTupleV1(
   authority: ReviewPublicationAuthorityV1,
 ): PreparedReviewPublicationSemanticTupleV1 | null {
-  if (authority.publicationScopeSchemaVersion !== 1 || authority.contractVersion !== "review-publication.v1" ||
-      authority.authorityKind !== "review.publish") return null;
-  return deepFreeze({
-    publicationScopeSchemaVersion: authority.publicationScopeSchemaVersion,
-    contractVersion: authority.contractVersion,
-    authorityKind: authority.authorityKind,
-    missionId: authority.missionId,
-    subjectId: authority.subjectId,
-    missionRevisionId: authority.missionRevisionId,
-    repositoryId: authority.repositoryId,
-    canonicalRepositoryRoot: authority.canonicalRepositoryRoot,
-    branch: authority.branch,
-    baseRevisionId: authority.baseRevisionId,
-    headRevisionId: authority.headRevisionId,
-    authorizedPaths: [...authority.authorizedPaths],
-    permittedEffects: [...authority.permittedEffects],
-  });
+  const identity = computeReviewPublicationAuthoritySemanticIdentityV1(authority);
+  if (identity.state === "blocked" || identity.material.authorityKind !== "review.publish") return null;
+  return identity.material as PreparedReviewPublicationSemanticTupleV1;
 }
 
 type InitialWheelsUpLineageV1 = Readonly<{
@@ -1949,8 +1936,10 @@ async function resolvePreparedMissionTransitionV1WithDependencies(
   const observation = buildObservation(graph, environment);
   if (observation === null) return blocked(missionId, "freshness_evidence_incomplete", "Live observation contract could not be built.");
   if (environment.current.projection.authorization === "authorized") {
-    const publicationCount = environment.current.projection.publicationAuthorizations.length;
-    if (publicationCount < 1 || publicationCount > 2) {
+    const canonicalPublicationRecords = environment.current.projection.publicationAuthorizations;
+    const publicationAliasProvenance = canonicalPublicationRecords.flatMap((record) => record.aliases);
+    const publicationCount = canonicalPublicationRecords.length;
+    if (publicationCount < 1 || publicationCount > 2 || publicationAliasProvenance.length > 0) {
       return blocked(missionId, "authority_conflict", "Duplicate legacy publication recovery is deferred to #279.");
     }
     const lineageEnvironment = publicationCount === 1

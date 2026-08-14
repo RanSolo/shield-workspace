@@ -165,7 +165,7 @@ test("prepared semantic tuple ignores record identity but closes HEAD, paths, an
     authorityRef: "authorization:mission:semantic:review-publish:5",
     missionId: "mission:semantic",
     subjectId: "issue:286",
-    missionRevisionId: "revision:semantic",
+    missionRevisionId: `sha256:${"a".repeat(43)}`,
     repositoryId: "RanSolo/fixture",
     canonicalRepositoryRoot: "/fixture",
     branch: "main",
@@ -198,16 +198,78 @@ test("legacy mode preserves identity and display semantics while using one-entry
       decisionOutput: { write: () => { throw new Error("legacy display widened"); } },
     }, dependencies(fixture, calls));
 
+    assert.equal(result.state, "authorized");
     assert.deepEqual(calls, { render: 0, pin: 1, sign: 1, append: 1 });
     const record = result.projection.publicationAuthorizations[0];
     assert.equal(record.authority.authorityRef, `authorization:${fixture.missionId}:review-publish:2`);
     assert.equal(record.authorization.authorizationId, record.authority.authorityRef);
     assert.equal(record.authorization.sourceRef, "cli:publication-authorize:2");
     assert.equal(result.journalSequence, 2);
+
+    const bytesAfterFirstAuthorization = await readFile(fixture.journalPath);
+    const retryCalls = { render: 0, pin: 0, sign: 0, append: 0 };
+    const retry = await executeReviewPublicationAuthorizationV1({
+      mode: "legacy",
+      root: fixture.root,
+      missionId: fixture.missionId,
+      intent: fixture.intent,
+      timestamp: { value: "2026-08-13T00:03:00Z", provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => { throw new Error("legacy retry display widened"); } },
+    }, dependencies(fixture, retryCalls));
+    assert.equal(retry.state, "already_authorized");
+    assert.equal(retry.authorizationId, record.authorization.authorizationId);
+    assert.equal(retry.authorityDigest, record.authorization.authorityDigest);
+    assert.equal(retry.journalSequence, record.journalSequence);
+    assert.deepEqual(retryCalls, { render: 0, pin: 0, sign: 0, append: 0 });
+    assert.deepEqual(await readFile(fixture.journalPath), bytesAfterFirstAuthorization);
+
+    const conflictingCalls = { render: 0, pin: 0, sign: 0, append: 0 };
+    await assert.rejects(() => executeReviewPublicationAuthorizationV1({
+      mode: "legacy",
+      root: fixture.root,
+      missionId: fixture.missionId,
+      intent: { ...fixture.intent, permittedEffects: ["review.branch.push"] },
+      timestamp: { value: "2026-08-13T00:04:00Z", provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, dependencies(fixture, conflictingCalls)), /conflicts with the current canonical publication authority/u);
+    assert.deepEqual(conflictingCalls, { render: 0, pin: 0, sign: 0, append: 0 });
+    assert.deepEqual(await readFile(fixture.journalPath), bytesAfterFirstAuthorization);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
   }
+});
+
+test("legacy cancellation, signer failure, and append interruption leave zero partial authorization", async () => {
+  const previousHome = process.env.HOME;
+  for (const variant of ["cancel", "sign", "append"]) {
+    const fixture = await legacyFixture();
+    process.env.HOME = fixture.homeRoot;
+    const before = await readFile(fixture.journalPath);
+    const calls = { render: 0, pin: 0, sign: 0, append: 0 };
+    const base = dependencies(fixture, calls);
+    const overrides = variant === "cancel"
+      ? { readPasscode: async () => { calls.pin += 1; throw new Error("Passcode prompt cancelled."); } }
+      : variant === "sign"
+        ? { signPayload: async () => { calls.sign += 1; throw new Error("Signer rejected the passcode."); } }
+        : { appendEntryAtomic: async () => { calls.append += 1; throw new Error("Atomic append interrupted."); } };
+    await assert.rejects(() => executeReviewPublicationAuthorizationV1({
+      mode: "legacy",
+      root: fixture.root,
+      missionId: fixture.missionId,
+      intent: fixture.intent,
+      timestamp: { value: "2026-08-13T00:02:00Z", provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, { ...base, ...overrides }));
+    assert.deepEqual(await readFile(fixture.journalPath), before, variant);
+    assert.equal(calls.render, 0, variant);
+    assert.equal(calls.append, variant === "append" ? 1 : 0, variant);
+  }
+  if (previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousHome;
 });
 
 test("prepared mode requires exact selected evidence before display, PIN, signing, or append", async () => {

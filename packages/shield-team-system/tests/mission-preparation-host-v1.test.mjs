@@ -13,6 +13,7 @@ import {
   computeMissionTransitionPlanReviewDigestV1,
   computeMissionTransitionPlanReviewIdV1,
   MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION,
+  projectPreparedReviewPublicationSemanticTupleV1,
   resolvePreparedMissionTransitionV1,
   resolvePreparedMissionTransitionV1ForTest,
 } from "../dist/mission-preparation-host-v1.mjs";
@@ -54,7 +55,10 @@ import {
   computeRuntimeBindingDigest,
   computeSchema9RuntimeBindingDigest,
 } from "../dist/implementation-authority-v1.mjs";
-import { computeReviewPublicationAuthorityDigest } from "../dist/review-publication-v1.mjs";
+import {
+  computeReviewPublicationAuthorityDigest,
+  computeReviewPublicationAuthoritySemanticIdentityV1,
+} from "../dist/review-publication-v1.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/cli.mjs", import.meta.url));
 
@@ -66,6 +70,30 @@ const SUBJECT_REVISION = "a".repeat(40);
 const REPOSITORY_REVISION = "b".repeat(40);
 const PARENT_MISSION_REVISION = "c".repeat(40);
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
+
+test("prepared publication semantic tuple delegates to the shared closed identity material", () => {
+  const preparedAuthority = {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: `authorization:${MISSION_ID}:review-publish:4`,
+    missionId: MISSION_ID,
+    subjectId: SUBJECT_ID,
+    missionRevisionId: `sha256:${"a".repeat(43)}`,
+    repositoryId: REPOSITORY_ID,
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    branch: "agent/issue-270",
+    baseRevisionId: "1".repeat(40),
+    headRevisionId: "2".repeat(40),
+    authorizedPaths: ["implementation.md"],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+  };
+  const shared = computeReviewPublicationAuthoritySemanticIdentityV1(preparedAuthority);
+  assert.equal(shared.state, "valid");
+  assert.deepEqual(projectPreparedReviewPublicationSemanticTupleV1(preparedAuthority), shared.material);
+  assert.equal(projectPreparedReviewPublicationSemanticTupleV1({ ...preparedAuthority, authorityKind: "wheels_up" }), null);
+  assert.equal(projectPreparedReviewPublicationSemanticTupleV1(new Proxy(preparedAuthority, {})), null);
+});
 
 test("exported prepared resolver result is the closed seven-state union", async () => {
   const declaration = await readFile(new URL("../dist/mission-preparation-host-v1.d.mts", import.meta.url), "utf8");
@@ -1680,6 +1708,11 @@ test("already-authorized retry rejects partial, replaced, duplicate, revoked, an
     const fixture = await resolutionFixture();
     await authorizeResolutionFixture(fixture, variant.intentOverrides);
     await variant.mutate(fixture);
+    if (variant.name === "duplicate") {
+      const current = await currentProfileJournal(fixture);
+      assert.equal(current.projection.publicationAuthorizations.length, 1);
+      assert.equal(current.projection.publicationAuthorizations[0].aliases.length, 1);
+    }
     const baseline = await protectedFixtureSnapshot(fixture);
 
     const result = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
@@ -1695,7 +1728,9 @@ test("already-authorized retry rejects partial, replaced, duplicate, revoked, an
       env: { ...process.env, HOME: fixture.homeRoot },
     });
     assert.equal(cli.status, 1, `${variant.name}: ${cli.stderr}`);
-    assert.equal(JSON.parse(cli.stdout).reasonCode, "authority_conflict", variant.name);
+    const cliResult = JSON.parse(cli.stdout);
+    assert.equal(cliResult.reasonCode, "authority_conflict", variant.name);
+    if (variant.name === "duplicate") assert.match(cliResult.errors.join(" "), /#279/u);
     assert.doesNotMatch(`${cli.stdout}${cli.stderr}`, /Passcode:|SHIELD_WHEELS_UP_MANIFEST_BEGIN/u, variant.name);
     assert.deepEqual(await protectedFixtureSnapshot(fixture), baseline, variant.name);
   }

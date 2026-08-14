@@ -13,15 +13,22 @@ import {
 import {
   createProfileAwareCommunicationRequestEntryV1,
   createProfileAwareGovernanceDecisionEntryV1,
+  createProfileAwareImplementationAuthorityEntryV1,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
   createProfileAwareReviewPublicationAuthorizationEntryV1,
+  createProfileAwareRuntimeBindingRecordedEntryV1,
   MISSION_130_JOURNAL_DIGEST,
   replayProfileAwareMissionJournal,
 } from "../../dist/profile-aware-mission-v1.mjs";
 import {
   computeReviewPublicationAuthorityDigest,
 } from "../../dist/review-publication-v1.mjs";
+import {
+  computeImplementationAuthorityDigest,
+  computeRuntimeBindingDigest,
+  computeSchema9RuntimeBindingDigest,
+} from "../../dist/implementation-authority-v1.mjs";
 
 function replay(entries) {
   const result = replaySupervisedMissionJournal(entries);
@@ -62,11 +69,11 @@ export function publicationJournalFixture(options = {}) {
     permittedEffects)].sort();
   const operation = options.operation ?? "publish_review_artifact";
   const requestId = options.requestId ?? (schemaVersion === 9
-    ? `request:${missionId}:review-publish:3`
+    ? `request:${missionId}:review-publish:${options.prePublicationRuntime === true ? 5 : 3}`
     : `request:${missionId}:publication`);
   const authorizationId = options.authorizationId ??
     (schemaVersion === 9
-      ? `authorization:${missionId}:review-publish:2`
+      ? `authorization:${missionId}:review-publish:${options.prePublicationRuntime === true ? 4 : 2}`
       : `authorization:${missionId}:publication`);
 
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -163,6 +170,114 @@ export function publicationJournalFixture(options = {}) {
     replayed = replayProfileAwareMissionJournal(entries);
     if (replayed.state !== "valid") throw new Error(replayed.errors.join(" "));
     projection = replayed.value;
+    if (options.prePublicationRuntime === true) {
+      const authorityPayload = {
+        schemaVersion: 1,
+        contractVersion: "implementation-authority.v1",
+        authorityKind: "wheels_up",
+        authorityRef: `authority:${missionId}:2`,
+        missionId,
+        subjectId,
+        seatId: "may",
+        missionRevisionId: brief.revisionId,
+        artifactRevisionId: headRevisionId,
+        repositoryId,
+        canonicalWritableRoot: canonicalRepositoryRoot,
+        branch,
+        baseRevision: baseRevisionId,
+        headRevision: headRevisionId,
+        modelId: "model:publication-fixture",
+        approvedRelativePaths: [...authorizedPaths],
+        approvedActionIds: ["action:implement"],
+        approvedEffectClasses: ["behavioral_implementation", "verification"],
+        approvedEffectKeys: ["effect:implementation", "effect:validation"],
+        approvedCapabilities: ["filesystem_write"],
+        validationCommandIds: ["validation:test"],
+        journalSequence: 2,
+        humanPrincipalId: coulson.humanPrincipalId,
+        humanBindingId: coulson.bindingId,
+        signingKeyRef: coulson.signingKeyRef,
+        sourceRef: `fixture:${missionId}:implementation-authority:2`,
+        evidenceRef: `evidence:${missionId}:implementation-authority:2`,
+        timestamp: { value: "2026-07-29T10:02:00Z", provenance: "humanRecorded" },
+      };
+      entries.push(createProfileAwareImplementationAuthorityEntryV1({
+        projection,
+        trustedBindings: [coulson],
+        authority: signed(privateKey, authorityPayload),
+      }));
+      replayed = replayProfileAwareMissionJournal(entries);
+      if (replayed.state !== "valid") throw new Error(replayed.errors.join(" "));
+      projection = replayed.value;
+      const runtime = {
+        bindingSchemaVersion: 1,
+        bindingId: `binding:${missionId}:may:1`,
+        bindingVersion: 1,
+        missionId,
+        subjectId,
+        missionRevisionId: brief.revisionId,
+        seatId: "may",
+        reasoningRuntimeId: "runtime:publication-fixture",
+        toolExecutorId: "executor:publication-fixture",
+        repositoryId,
+        canonicalWritableRoot: canonicalRepositoryRoot,
+        branch,
+        artifactRevisionId: headRevisionId,
+        recordedAtSequence: 3,
+        activeThroughSequence: null,
+        lifecycleState: "active",
+        approvedScope: {
+          actionIds: [...authorityPayload.approvedActionIds],
+          effectClasses: [...authorityPayload.approvedEffectClasses],
+          effectKeys: [...authorityPayload.approvedEffectKeys],
+          capabilities: [...authorityPayload.approvedCapabilities],
+        },
+        coulsonAuthorizationRef: `authorization:${missionId}:runtime-binding:3`,
+      };
+      const wrapper = {
+        schemaVersion: 1,
+        binding: runtime,
+        implementationAuthorityRef: authorityPayload.authorityRef,
+        implementationAuthorityDigest: computeImplementationAuthorityDigest(authorityPayload),
+        implementationAuthoritySequence: 2,
+        approvedRelativePaths: [...authorityPayload.approvedRelativePaths],
+        validationCommandIds: [...authorityPayload.validationCommandIds],
+        modelId: authorityPayload.modelId,
+        baseRevision: baseRevisionId,
+        headRevision: headRevisionId,
+      };
+      const runtimeAuthorization = {
+        schemaVersion: 1,
+        authorizationId: runtime.coulsonAuthorizationRef,
+        missionId,
+        subjectId,
+        seatId: "may",
+        bindingId: runtime.bindingId,
+        bindingVersion: 1,
+        priorBindingId: null,
+        priorBindingVersion: null,
+        bindingDigest: computeRuntimeBindingDigest(runtime),
+        schema9BindingDigest: computeSchema9RuntimeBindingDigest(wrapper),
+        artifactRevisionId: headRevisionId,
+        decision: "approved",
+        previousJournalSequence: 2,
+        journalSequence: 3,
+        humanPrincipalId: coulson.humanPrincipalId,
+        humanBindingId: coulson.bindingId,
+        signingKeyRef: coulson.signingKeyRef,
+        sourceRef: `fixture:${missionId}:runtime-binding:3`,
+        timestamp: { value: "2026-07-29T10:03:00Z", provenance: "humanRecorded" },
+      };
+      entries.push(createProfileAwareRuntimeBindingRecordedEntryV1({
+        projection,
+        trustedBindings: [coulson],
+        binding: wrapper,
+        authorization: signed(privateKey, runtimeAuthorization),
+      }));
+      replayed = replayProfileAwareMissionJournal(entries);
+      if (replayed.state !== "valid") throw new Error(replayed.errors.join(" "));
+      projection = replayed.value;
+    }
     const authority = {
       publicationScopeSchemaVersion: 1,
       contractVersion: "review-publication.v1",
@@ -188,13 +303,13 @@ export function publicationJournalFixture(options = {}) {
       missionRevisionId: brief.revisionId,
       artifactRevisionId: headRevisionId,
       authorityKind: authority.authorityKind,
-      previousJournalSequence: 1,
-      journalSequence: 2,
+      previousJournalSequence: projection.lastSequence,
+      journalSequence: projection.lastSequence + 1,
       humanPrincipalId: coulson.humanPrincipalId,
       humanBindingId: coulson.bindingId,
       signingKeyRef: coulson.signingKeyRef,
       sourceRef: `authorization:${missionId}:publication`,
-      timestamp: { value: "2026-07-29T10:02:00Z", provenance: "humanRecorded" },
+      timestamp: { value: `2026-07-29T10:0${projection.lastSequence + 1}:00Z`, provenance: "humanRecorded" },
     };
     const authorization = signed(privateKey, authorizationPayload);
     entries.push(createProfileAwareReviewPublicationAuthorizationEntryV1({
@@ -223,7 +338,7 @@ export function publicationJournalFixture(options = {}) {
     entries.push(createProfileAwareCommunicationRequestEntryV1({
       projection,
       request,
-      timestamp: { value: "2026-07-29T10:03:00Z", provenance: "hostTrusted" },
+      timestamp: { value: `2026-07-29T10:0${projection.lastSequence + 1}:00Z`, provenance: "hostTrusted" },
     }));
     return {
       authority,
@@ -387,4 +502,45 @@ export function publicationJournalFixture(options = {}) {
     signAuthorizationPayload: (payload) => signed(privateKey, payload),
     loadJournal: () => structuredClone(entries),
   };
+}
+
+export function appendPublicationAuthorizationFixtureEntry(fixture, entries, overrides = {}) {
+  const schemaVersion = entries[0]?.schemaVersion;
+  const replayed = schemaVersion === 9
+    ? replayProfileAwareMissionJournal(entries)
+    : replaySupervisedMissionJournal(entries);
+  if (replayed.state !== "valid") throw new Error(replayed.errors.join(" "));
+  const projection = replayed.value;
+  const sequence = projection.lastSequence + 1;
+  const authority = {
+    ...fixture.authority,
+    authorityRef: `authorization:${projection.missionId}:review-publish:${sequence}`,
+    ...overrides,
+  };
+  const payload = {
+    ...fixture.authorization.payload,
+    authorizationId: authority.authorityRef,
+    authorityDigest: computeReviewPublicationAuthorityDigest(authority),
+    artifactRevisionId: authority.headRevisionId,
+    authorityKind: authority.authorityKind,
+    previousJournalSequence: projection.lastSequence,
+    journalSequence: sequence,
+    sourceRef: `fixture:publication-authorization:${sequence}`,
+    timestamp: {
+      value: `2026-07-29T10:${String(sequence).padStart(2, "0")}:00Z`,
+      provenance: "humanRecorded",
+    },
+  };
+  const authorization = fixture.signAuthorizationPayload(payload);
+  const entry = schemaVersion === 9
+    ? createProfileAwareReviewPublicationAuthorizationEntryV1({
+      projection,
+      trustedBindings: entries[0].payload.trustedBindings,
+      authority,
+      authorization,
+    })
+    : createReviewPublicationAuthorizationEntry(projection, authority, authorization).value;
+  if (!entry) throw new Error("Publication authorization fixture entry was rejected.");
+  entries.push(entry);
+  return { authority, authorization, entry };
 }

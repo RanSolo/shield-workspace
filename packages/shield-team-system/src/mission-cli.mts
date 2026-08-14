@@ -17,6 +17,7 @@ import {
   deriveRepositoryMissionBindings,
   planMissionStep,
   replaySupervisedMissionJournal,
+  resolveReviewPublicationAuthorizationRecordV1,
   selectCoulsonOperationBinding,
   validateSupervisedMissionBrief,
   validateTrustedBindingRegistry,
@@ -1084,6 +1085,19 @@ async function publicationAuthorize(args: string[]): Promise<number> {
       signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
       appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
     });
+    if (executed.state === "already_authorized") {
+      const existing: PreparedPublicationAlreadyAuthorizedResultV1 = {
+        schemaVersion: 1,
+        state: "publication_already_authorized",
+        missionId,
+        missionRevisionId: executed.projection.brief.revisionId,
+        authorizationId: executed.authorizationId,
+        authorityDigest: executed.authorityDigest,
+        journalSequence: executed.journalSequence,
+      };
+      output(existing, options.flags.has("--json"), renderPublicationAlreadyAuthorized(existing));
+      return 0;
+    }
     output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
     return 0;
   } catch (error) {
@@ -1100,11 +1114,12 @@ async function publicationRequest(args: string[]): Promise<number> {
   const missionId = required(options, "--mission-id");
   const current = await currentProfileAwareMission(root, config, missionId);
   const intent = publicationRequestIntent(await jsonFile(resolve(root, required(options, "--input")), "Publication request input"));
-  const matches = current.projection.publicationAuthorizations.filter(
-    ({ authorization }) => authorization.authorizationId === intent.authorizationId,
+  const matched = resolveReviewPublicationAuthorizationRecordV1(
+    current.projection.publicationAuthorizations,
+    intent.authorizationId,
   );
-  if (matches.length !== 1) throw new MissionCliError("Publication request authorization is absent or ambiguous.", 1);
-  const authority = matches[0].authority;
+  if (matched === null) throw new MissionCliError("Publication request authorization is absent or ambiguous.", 1);
+  const authority = matched.authority;
   const sequence = current.projection.lastSequence + 1;
   const request = {
     requestId: `request:${missionId}:review-publish:${sequence}`,
@@ -1116,7 +1131,7 @@ async function publicationRequest(args: string[]): Promise<number> {
     revisionId: current.projection.brief.revisionId,
     artifactRevisionId: authority.headRevisionId,
     targetRef: intent.targetRef,
-    publicationAuthorizationId: matches[0].authorization.authorizationId,
+    publicationAuthorizationId: matched.authorization.authorizationId,
     proposedChangedPaths: [...authority.authorizedPaths],
     requestedEffects: [...intent.requestedEffects],
   };
