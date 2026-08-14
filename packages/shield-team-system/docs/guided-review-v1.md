@@ -131,6 +131,16 @@ exact review-candidate publication. The host revalidates the protected graph,
 repository, journal, signer, and exact bundle bytes before and after signing.
 Missing, incomplete, substituted, malformed, or stale evidence fails closed.
 
+The expensive route preparation is deliberately lazy. The operator first
+chooses whether to enter Guided Review. `no` proceeds directly to the ordinary
+publication PIN when omission is permitted, and `cancel` has no effect. Only a
+`yes` choice creates an authority-neutral route request for Fury. Fury supplies
+the small mission-specific overlay: acceptance-criterion mappings, risks,
+inspection points, and unusual route adjustments. A deterministic compiler
+expands that overlay against the pinned Backend, Frontend, or Spike template.
+The human session then asks the already-prepared questions one at a time; it
+does not invoke a model or ask the reviewer to invent the route while reviewing.
+
 ## Durable CLI
 
 Freeze the required-or-omitted plan first:
@@ -141,8 +151,8 @@ shield guided-review plan create \
   --output .shield/tmp/guided-review/plan.json
 ```
 
-Create a standard playbook from a closed context containing that required
-plan:
+Standalone exploration may create a standard playbook from a closed context
+containing that plan:
 
 ```bash
 shield guided-review playbook create \
@@ -176,24 +186,66 @@ shield guided-review decide \
 `status` reopens the current question. `revise` binds a new revision and stale
 question list. `checklist` emits the reusable publication/QA checklist.
 `publication-choice` freezes a non-authoritative Yes/No/Cancel fork artifact.
-For Yes, give the complete reviewed playbook and session to the prepared
-publication key turn. The host creates the graph-bound closed bundle:
+At a publication gate, `yes` does not accept a caller-created playbook or
+session. On the first invocation Hill supplies the closed route context. The
+host freezes an authority-neutral, content-addressed request and stops for
+Fury route preparation:
 
 ```bash
 shield mission prepare-next \
   --mission-id mission:example \
   --guided-review-choice yes \
-  --guided-review-playbook .shield/tmp/guided-review/playbook.json \
-  --guided-review-session .shield/tmp/guided-review/session.json
+  --guided-review-context .shield/tmp/guided-review/context.json
 ```
+
+The context contains the already-governed plan, acceptance criteria, runtime
+handoff, participant relationship, and selected built-in kind. Mission,
+repository, graph, policy, and exact-HEAD identities come from the prepared
+publication state rather than that file.
+
+After the completed Fury dispatch has produced the exact overlay, repeat the
+same `yes` choice without the context. The host automatically resolves the
+request and dispatch evidence, compiles and freezes the route, and opens or
+resumes the next one-question checkpoint:
+
+```bash
+shield mission prepare-next \
+  --mission-id mission:example \
+  --guided-review-choice yes
+```
+
+Each invocation displays the complete current checkpoint, question,
+instructions, relevant paths, evidence and acceptance-criterion references,
+plus Fury's route rationale and risks. Record exactly one current answer on the
+same command and receive the next question without constructing a separate
+session command:
+
+```bash
+shield mission prepare-next \
+  --mission-id mission:example \
+  --guided-review-choice yes \
+  --guided-review-disposition PASS \
+  --guided-review-observation "Observed the exact expected behavior."
+```
+
+`CONDITIONAL_PASS` additionally requires `--guided-review-condition`; `FAIL`
+and `NOT_OBSERVED` record the observation as the durable finding. The same
+command resumes one question at a time until the session is complete. It does
+not read a PIN or append mission authority while another question remains.
+Only completion displays the combined Guided Review/publication decision and
+requests the one final PIN. Every pre-display and post-signature reload re-resolves the request,
+Fury dispatch, overlay, compiled playbook, session, repository, graph, and
+exact HEAD using a strictly read-only path. Once initialization has frozen either
+the playbook or session, a missing request, overlay, playbook, or session is
+deletion drift: reload never recreates it and produces no journal append.
 
 For an eligible No route, omit the bundle; the host derives the record from the
 protected transition policy. `--guided-review-choice cancel` stops before PIN.
 In an interactive terminal, omitting the choice presents
 `Enter Guided Review? Yes / No / Cancel`.
 
-Playbooks, sessions, fork artifacts, runtime handoffs, and publication bundles
-are content-addressed. Session updates
+Route requests, Fury overlays, compiled playbooks, sessions, fork artifacts,
+runtime handoffs, and publication bundles are content-addressed. Session updates
 use an exclusive lock, exact-byte compare, file sync, atomic rename, and
 directory sync. Concurrent or stale writers fail without silently overwriting a
 human decision.

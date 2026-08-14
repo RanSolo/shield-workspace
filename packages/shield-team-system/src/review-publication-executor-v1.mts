@@ -627,6 +627,9 @@ export async function executeReviewPublicationAuthorizationV1(
     }
     return checked.value;
   })();
+  if (guidedReviewBundle?.fork.choice === "yes" && dependencies.revalidateGuidedReviewBundle === undefined) {
+    throw new Error("Prepared Guided Review Yes requires host revalidation before display and after signing.");
+  }
   if (guidedReviewBundle !== null && dependencies.revalidateGuidedReviewBundle !== undefined) {
     const currentBundle = validateGuidedReviewPublicationBundleV1(await dependencies.revalidateGuidedReviewBundle());
     if (currentBundle.state === "invalid" || canonicalJson(currentBundle.value) !== canonicalJson(guidedReviewBundle)) {

@@ -20,6 +20,7 @@ import {
   type GuidedReviewSessionV1,
 } from "./guided-review-v1.mjs";
 import { createBuiltInGuidedReviewPlaybookV1 } from "./guided-review-playbooks-v1.mjs";
+import { canonicalJson } from "./mission-v2.mjs";
 
 export class GuidedReviewCliError extends Error {
   constructor(message: string, readonly exitCode = 2) { super(message); }
@@ -158,6 +159,10 @@ async function replaceExact(path: string, expectedBytes: string, bytes: string):
 
 function jsonBytes(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
 
+function sessionBytes(path: string, value: unknown): string {
+  return path.includes("/.shield/tmp/guided-review/") ? canonicalJson(value) : jsonBytes(value);
+}
+
 function unwrap<T>(result: { state: "ready"; value: T } | { state: "invalid"; code: string; errors: readonly string[] }): T {
   if (result.state === "invalid") throw new GuidedReviewCliError(`${result.code}: ${result.errors.join(" ")}`, 1);
   return result.value;
@@ -274,7 +279,7 @@ async function decide(args: string[]): Promise<number> {
     condition: options.values.get("--condition") ?? null,
     decidedAt: new Date().toISOString(),
   }));
-  await replaceExact(pair.sessionPath, pair.sessionBytes, jsonBytes(session));
+  await replaceExact(pair.sessionPath, pair.sessionBytes, sessionBytes(pair.sessionPath, session));
   const display = currentDisplay(pair.playbook, session);
   output(display, render(display), options.flags.has("--json"));
   return 0;
@@ -294,7 +299,7 @@ async function revise(args: string[]): Promise<number> {
     rationale: required(options, "--rationale"),
     revisedAt: new Date().toISOString(),
   }));
-  await replaceExact(pair.sessionPath, pair.sessionBytes, jsonBytes(session));
+  await replaceExact(pair.sessionPath, pair.sessionBytes, sessionBytes(pair.sessionPath, session));
   const display = currentDisplay(pair.playbook, session);
   output(display, render(display), options.flags.has("--json"));
   return 0;

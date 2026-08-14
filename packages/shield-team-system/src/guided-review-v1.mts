@@ -117,6 +117,9 @@ export interface GuidedReviewPlaybookInputV1 {
   readonly participantRelationship: GuidedReviewParticipantRelationshipV1;
   readonly acceptanceCriteria: readonly GuidedReviewCriterionV1[];
   readonly runtimeHandoff: GuidedReviewRuntimeHandoffV1;
+  readonly overlayId: string | null;
+  readonly overlayDigest: string | null;
+  readonly compiledRouteDigest: string | null;
   readonly stages: readonly GuidedReviewStageV1[];
 }
 
@@ -149,6 +152,9 @@ export interface GuidedReviewSessionV1 {
   readonly contractVersion: typeof GUIDED_REVIEW_CONTRACT_VERSION;
   readonly sessionId: string;
   readonly playbookDigest: string;
+  readonly overlayId: string | null;
+  readonly overlayDigest: string | null;
+  readonly compiledRouteDigest: string | null;
   readonly missionId: string;
   readonly subjectId: string;
   readonly profile: GuidedReviewProfileV1;
@@ -201,6 +207,9 @@ export interface GuidedReviewPublicationBundleV1 {
   readonly parentPlanReviewEvidenceId: string;
   readonly parentPlanReviewEvidenceDigest: string;
   readonly policyMode: "required" | "operator_optional" | "omitted";
+  readonly overlayId: string | null;
+  readonly overlayDigest: string | null;
+  readonly compiledRouteDigest: string | null;
   readonly candidatePlan: GuidedReviewPlanV1;
   readonly fork: GuidedReviewPublicationForkV1;
   readonly playbook: GuidedReviewPlaybookV1 | null;
@@ -231,6 +240,10 @@ function exact(value: unknown, fields: readonly string[]): value is Record<strin
 function id(value: unknown): value is string { return typeof value === "string" && IDENTIFIER.test(value); }
 function revision(value: unknown): value is string { return typeof value === "string" && REVISION.test(value); }
 function digest(value: unknown): value is string { return typeof value === "string" && DIGEST.test(value); }
+function validRouteIdentity(overlayId: unknown, overlayDigest: unknown, compiledRouteDigest: unknown): boolean {
+  return (overlayId === null && overlayDigest === null && compiledRouteDigest === null) ||
+    (id(overlayId) && digest(overlayDigest) && digest(compiledRouteDigest));
+}
 function text(value: unknown, max = 4000): value is string {
   return typeof value === "string" && value.trim() === value && value.length > 0 && value.length <= max;
 }
@@ -363,17 +376,18 @@ export function createGuidedReviewPlanV1(input: unknown): GuidedReviewResultV1<G
 }
 
 function validPlaybookInput(value: unknown): value is GuidedReviewPlaybookInputV1 {
-  const fields = ["schemaVersion", "contractVersion", "playbookId", "kind", "title", "missionId", "subjectId", "repositoryId", "branch", "exactRevision", "plan", "participantRelationship", "acceptanceCriteria", "runtimeHandoff", "stages"];
+  const fields = ["schemaVersion", "contractVersion", "playbookId", "kind", "title", "missionId", "subjectId", "repositoryId", "branch", "exactRevision", "plan", "participantRelationship", "acceptanceCriteria", "runtimeHandoff", "overlayId", "overlayDigest", "compiledRouteDigest", "stages"];
   if (!exact(value, fields) || value.schemaVersion !== 1 || value.contractVersion !== GUIDED_REVIEW_CONTRACT_VERSION ||
       !id(value.playbookId) || !GUIDED_REVIEW_PLAYBOOK_KINDS.includes(value.kind as GuidedReviewPlaybookKindV1) ||
       !text(value.title, 200) || !id(value.missionId) || !id(value.subjectId) ||
       typeof value.repositoryId !== "string" || !REPOSITORY.test(value.repositoryId) || !id(value.branch) || !revision(value.exactRevision) ||
-      !planValid(value.plan) || value.plan.required !== true || value.plan.missionId !== value.missionId || value.plan.subjectId !== value.subjectId ||
+      !planValid(value.plan) || value.plan.missionId !== value.missionId || value.plan.subjectId !== value.subjectId ||
       value.plan.kind !== value.kind || value.plan.exactRevision !== value.exactRevision || value.plan.participantRelationship !== value.participantRelationship ||
       !["builder", "independent_reviewer", "product_reviewer", "document_reviewer"].includes(value.participantRelationship as string) ||
       !Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.length === 0 || !value.acceptanceCriteria.every(validCriterion) ||
       new Set(value.acceptanceCriteria.map((criterion) => criterion.criterionId)).size !== value.acceptanceCriteria.length ||
-      !validRuntime(value.runtimeHandoff) || !Array.isArray(value.stages) || value.stages.length === 0 || value.stages.length > 32 ||
+      !validRuntime(value.runtimeHandoff) || !validRouteIdentity(value.overlayId, value.overlayDigest, value.compiledRouteDigest) ||
+      !Array.isArray(value.stages) || value.stages.length === 0 || value.stages.length > 32 ||
       !value.stages.every(validStage) || new Set(value.stages.map((stage) => stage.stageId)).size !== value.stages.length ||
       new Set(value.stages.map((stage) => stage.checkpointId)).size !== value.stages.length) return false;
   const criteria = new Set(value.acceptanceCriteria.map((criterion) => criterion.criterionId));
@@ -381,7 +395,8 @@ function validPlaybookInput(value: unknown): value is GuidedReviewPlaybookInputV
   const stepIds = new Set(steps.map((step) => step.stepId));
   if (stepIds.size !== steps.length || value.runtimeHandoff.exactRevision !== value.exactRevision ||
       value.runtimeHandoff.repositoryId !== value.repositoryId || value.runtimeHandoff.branch !== value.branch ||
-      value.plan.coveredCriterionRefs.some((criterion) => !criteria.has(criterion))) return false;
+      value.plan.coveredCriterionRefs.some((criterion) => !criteria.has(criterion)) ||
+      (value.compiledRouteDigest !== null && sha256({ overlayId: value.overlayId, overlayDigest: value.overlayDigest, stages: value.stages }) !== value.compiledRouteDigest)) return false;
   return steps.every((step) => step.criterionRefs.every((criterion) => criteria.has(criterion)) &&
     step.dependsOnStepIds.every((dependency) => stepIds.has(dependency) && dependency !== step.stepId));
 }
@@ -451,7 +466,11 @@ function withSessionDigest(session: Omit<GuidedReviewSessionV1, "sessionDigest">
 function validSession(playbook: GuidedReviewPlaybookV1, session: unknown): session is GuidedReviewSessionV1 {
   if (!plain(session) || !digest(session.sessionDigest)) return false;
   const { sessionDigest, ...body } = session;
-  if (sha256(body) !== sessionDigest || session.playbookDigest !== playbook.playbookDigest ||
+  if (!exact(body, ["schemaVersion", "contractVersion", "sessionId", "playbookDigest", "overlayId", "overlayDigest", "compiledRouteDigest", "missionId", "subjectId", "profile",
+      "exactRevision", "plan", "runtimeHandoff", "participant", "state", "currentStageId", "currentStepId", "stepStates", "stageStates", "decisions", "revisions", "startedAt", "updatedAt"]) ||
+      sha256(body) !== sessionDigest || session.playbookDigest !== playbook.playbookDigest ||
+      !validRouteIdentity(session.overlayId, session.overlayDigest, session.compiledRouteDigest) ||
+      session.overlayId !== playbook.overlayId || session.overlayDigest !== playbook.overlayDigest || session.compiledRouteDigest !== playbook.compiledRouteDigest ||
       session.missionId !== playbook.missionId || session.subjectId !== playbook.subjectId || !revision(session.exactRevision) ||
       !planValid(session.plan) || session.plan.missionId !== session.missionId || session.plan.subjectId !== session.subjectId ||
       session.plan.kind !== playbook.kind || session.plan.exactRevision !== session.exactRevision ||
@@ -464,6 +483,7 @@ function validSession(playbook: GuidedReviewPlaybookV1, session: unknown): sessi
       !session.decisions.every(validDecision) || new Set(session.decisions.map((decision) => decision.decisionId)).size !== session.decisions.length ||
       !session.revisions.every(validRevisionRecord)) return false;
   if (session.profile !== "exploration" && session.runtimeHandoff.status !== "ready") return false;
+  if (session.profile !== "exploration" && session.compiledRouteDigest === null) return false;
   if (session.revisions.length === 0 && session.runtimeHandoff.handoffDigest !== playbook.runtimeHandoff.handoffDigest) return false;
   const expectedSteps = playbook.stages.flatMap((stage) => stage.steps.map((step) => step.stepId)).sort();
   const expectedStages = playbook.stages.map((stage) => stage.stageId).sort();
@@ -518,6 +538,9 @@ export function startGuidedReviewSessionV1(playbookInput: unknown, input: unknow
   if (input.profile !== "exploration" && playbookInput.runtimeHandoff.status !== "ready") {
     return invalid("RUNTIME_NOT_READY", "Acceptance and publication review require a ready builder runtime handoff.");
   }
+  if (input.profile !== "exploration" && playbookInput.compiledRouteDigest === null) {
+    return invalid("FORMAL_ROUTE_REQUIRED", "Acceptance and publication review require an exact compiled Guided Review route.");
+  }
   if (input.profile === "publication" && (input.participant.seatId !== playbookInput.plan.gateOwnerSeatId || input.participant.bindingRef === null)) {
     return invalid("PUBLICATION_PARTICIPANT_INELIGIBLE", "Publication review requires the configured gate owner and a named binding reference.");
   }
@@ -528,6 +551,9 @@ export function startGuidedReviewSessionV1(playbookInput: unknown, input: unknow
     contractVersion: GUIDED_REVIEW_CONTRACT_VERSION,
     sessionId: input.sessionId,
     playbookDigest: playbookInput.playbookDigest,
+    overlayId: playbookInput.overlayId,
+    overlayDigest: playbookInput.overlayDigest,
+    compiledRouteDigest: playbookInput.compiledRouteDigest,
     missionId: playbookInput.missionId,
     subjectId: playbookInput.subjectId,
     profile: input.profile as GuidedReviewProfileV1,
@@ -598,7 +624,7 @@ export function reviseGuidedReviewSessionV1(playbookInput: unknown, sessionInput
   if (!playbookValid(playbookInput)) return invalid("INVALID_PLAYBOOK", "Playbook digest or shape is invalid.");
   if (!validSession(playbookInput, sessionInput)) return invalid("INVALID_SESSION", "Session digest or binding is invalid.");
   if (!exact(input, ["exactRevision", "plan", "runtimeHandoff", "affectedStepIds", "rationale", "revisedAt"]) || !revision(input.exactRevision) ||
-      !planValid(input.plan) || input.plan.required !== true || input.plan.missionId !== sessionInput.missionId ||
+      !planValid(input.plan) || input.plan.missionId !== sessionInput.missionId ||
       input.plan.subjectId !== sessionInput.subjectId || input.plan.kind !== playbookInput.kind || input.plan.exactRevision !== input.exactRevision ||
       !validRuntime(input.runtimeHandoff) || input.runtimeHandoff.exactRevision !== input.exactRevision ||
       !uniqueStrings(input.affectedStepIds, id, false) || !text(input.rationale, 4000) || !timestamp(input.revisedAt)) {
@@ -717,12 +743,13 @@ export function validateGuidedReviewPublicationForkV1(input: unknown): GuidedRev
 function validPublicationBundleBody(value: unknown): value is Omit<GuidedReviewPublicationBundleV1, "bundleDigest"> {
   if (!exact(value, ["schemaVersion", "contractVersion", "missionId", "subjectId", "repositoryId", "branch", "exactRevision",
       "protectedGraphId", "protectedGraphDigest", "transitionPlanId", "transitionPlanDigest", "parentPlanReviewEvidenceId",
-      "parentPlanReviewEvidenceDigest", "policyMode", "candidatePlan", "fork", "playbook", "session"]) ||
+      "parentPlanReviewEvidenceDigest", "policyMode", "overlayId", "overlayDigest", "compiledRouteDigest", "candidatePlan", "fork", "playbook", "session"]) ||
       value.schemaVersion !== 1 || value.contractVersion !== GUIDED_REVIEW_CONTRACT_VERSION || !id(value.missionId) || !id(value.subjectId) ||
       typeof value.repositoryId !== "string" || !REPOSITORY.test(value.repositoryId) || !id(value.branch) || !revision(value.exactRevision) ||
       !id(value.protectedGraphId) || !digest(value.protectedGraphDigest) || !id(value.transitionPlanId) || !digest(value.transitionPlanDigest) ||
       !id(value.parentPlanReviewEvidenceId) || !digest(value.parentPlanReviewEvidenceDigest) ||
-      !["required", "operator_optional", "omitted"].includes(value.policyMode as string) || !planValid(value.candidatePlan) ||
+      !["required", "operator_optional", "omitted"].includes(value.policyMode as string) ||
+      !validRouteIdentity(value.overlayId, value.overlayDigest, value.compiledRouteDigest) || !planValid(value.candidatePlan) ||
       value.candidatePlan.missionId !== value.missionId || value.candidatePlan.subjectId !== value.subjectId ||
       value.candidatePlan.exactRevision !== value.exactRevision ||
       value.candidatePlan.required !== (value.policyMode === "required")) return false;
@@ -731,10 +758,14 @@ function validPublicationBundleBody(value: unknown): value is Omit<GuidedReviewP
       canonicalJson(forkResult.value.plan) !== canonicalJson(value.candidatePlan)) return false;
   if (forkResult.value.choice === "yes") {
     if (!playbookValid(value.playbook) || !validSession(value.playbook, value.session) || value.session.profile !== "publication" ||
+        value.compiledRouteDigest === null || value.overlayId !== value.playbook.overlayId || value.overlayDigest !== value.playbook.overlayDigest ||
+        value.compiledRouteDigest !== value.playbook.compiledRouteDigest || value.overlayId !== value.session.overlayId ||
+        value.overlayDigest !== value.session.overlayDigest || value.compiledRouteDigest !== value.session.compiledRouteDigest ||
         value.session.state !== "completed" || value.session.exactRevision !== value.exactRevision ||
         value.session.plan.planDigest !== value.candidatePlan.planDigest || value.session.sessionDigest !== forkResult.value.sessionDigest ||
         canonicalJson(value.session.participant) !== canonicalJson(forkResult.value.participant)) return false;
-  } else if (value.playbook !== null || value.session !== null || forkResult.value.sessionDigest !== null) return false;
+  } else if (value.playbook !== null || value.session !== null || forkResult.value.sessionDigest !== null ||
+      value.overlayId !== null || value.overlayDigest !== null || value.compiledRouteDigest !== null) return false;
   const evaluated = evaluateGuidedReviewPublicationForkV1({
     choice: forkResult.value.choice,
     exactRevision: value.exactRevision,
@@ -751,7 +782,12 @@ export function createGuidedReviewPublicationBundleV1(input: unknown): GuidedRev
       "candidatePlan", "fork", "playbook", "session"])) {
     return invalid("MALFORMED_PUBLICATION_BUNDLE", "Guided Review publication bundle input is malformed or not closed.");
   }
-  const body = { schemaVersion: 1 as const, contractVersion: GUIDED_REVIEW_CONTRACT_VERSION, ...input };
+  const routeIdentity = plain(input.session) ? {
+    overlayId: input.session.overlayId,
+    overlayDigest: input.session.overlayDigest,
+    compiledRouteDigest: input.session.compiledRouteDigest,
+  } : { overlayId: null, overlayDigest: null, compiledRouteDigest: null };
+  const body = { schemaVersion: 1 as const, contractVersion: GUIDED_REVIEW_CONTRACT_VERSION, ...input, ...routeIdentity };
   if (!validPublicationBundleBody(body)) {
     return invalid("MALFORMED_PUBLICATION_BUNDLE", "Guided Review publication bundle chain is incomplete, stale, substituted, or invalid.");
   }

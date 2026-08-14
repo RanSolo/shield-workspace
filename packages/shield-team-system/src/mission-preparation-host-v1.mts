@@ -926,6 +926,7 @@ export type PreparedPublicationReadyResultV1 = Readonly<{
     journalSequence: number;
     journalSha256: string;
     signerBindingId: string;
+    signerHumanPrincipalId: string;
     signingKeyRef: string;
     remainingHumanGates: readonly string[];
   }>;
@@ -2029,6 +2030,7 @@ async function preparedPublicationResult(
       journalSequence: projection.lastSequence,
       journalSha256: environment.journalSha256,
       signerBindingId: environment.binding.bindingId,
+      signerHumanPrincipalId: environment.binding.humanPrincipalId,
       signingKeyRef: environment.binding.signingKeyRef,
       remainingHumanGates: [...environment.remainingHumanGates],
     },

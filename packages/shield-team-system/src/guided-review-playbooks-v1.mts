@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   GUIDED_REVIEW_CONTRACT_VERSION,
   createGuidedReviewPlaybookV1,
@@ -10,6 +12,7 @@ import {
   type GuidedReviewRuntimeHandoffV1,
   type GuidedReviewStageV1,
 } from "./guided-review-v1.mjs";
+import { canonicalJson } from "./mission-v2.mjs";
 
 export const BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS = [
   "guided-review:backend:v1",
@@ -32,7 +35,7 @@ export interface BuiltInGuidedReviewInputV1 {
   readonly evidenceRefs: readonly string[];
 }
 
-type StepTemplate = Readonly<{
+export type GuidedReviewBuiltInStepTemplateV1 = Readonly<{
   id: string;
   title: string;
   question: string;
@@ -40,12 +43,25 @@ type StepTemplate = Readonly<{
   dependsOn?: readonly string[];
 }>;
 
-type StageTemplate = Readonly<{
+export type GuidedReviewBuiltInStageTemplateV1 = Readonly<{
   id: string;
   title: string;
   purpose: string;
-  steps: readonly StepTemplate[];
+  steps: readonly GuidedReviewBuiltInStepTemplateV1[];
 }>;
+
+type StepTemplate = GuidedReviewBuiltInStepTemplateV1;
+type StageTemplate = GuidedReviewBuiltInStageTemplateV1;
+
+export interface GuidedReviewBuiltInTemplateV1 {
+  readonly templateId: (typeof BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS)[number];
+  readonly templateVersion: "1";
+  readonly kind: GuidedReviewPlaybookKindV1;
+  readonly coreStepIds: readonly string[];
+  readonly routeGraphDigest: string;
+  readonly stages: readonly GuidedReviewBuiltInStageTemplateV1[];
+  readonly templateDigest: string;
+}
 
 const FRONTEND: readonly StageTemplate[] = Object.freeze([
   {
@@ -133,6 +149,44 @@ const SPIKE: readonly StageTemplate[] = Object.freeze([
   },
 ]);
 
+function registryDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("base64url")}`;
+}
+
+function registrySnapshot<T>(value: T): T {
+  const output = JSON.parse(canonicalJson(value)) as T;
+  const freeze = (candidate: unknown): void => {
+    if (candidate !== null && typeof candidate === "object") {
+      for (const child of Object.values(candidate)) freeze(child);
+      Object.freeze(candidate);
+    }
+  };
+  freeze(output);
+  return output;
+}
+
+function registeredTemplate(
+  templateId: GuidedReviewBuiltInTemplateV1["templateId"],
+  kind: GuidedReviewPlaybookKindV1,
+  stages: readonly StageTemplate[],
+  coreStepIds: readonly string[],
+): GuidedReviewBuiltInTemplateV1 {
+  const frozenCoreStepIds = registrySnapshot([...new Set(coreStepIds)].sort());
+  const graph = registrySnapshot({
+    coreStepIds: frozenCoreStepIds,
+    stages: stages.map((stage) => ({ stageId: stage.id, steps: stage.steps.map((step) => ({ stepId: step.id, dependsOnStepIds: step.dependsOn ?? [] })) })),
+  });
+  const body = registrySnapshot({ templateId, templateVersion: "1" as const, kind, coreStepIds: frozenCoreStepIds,
+    routeGraphDigest: registryDigest(graph), stages });
+  return registrySnapshot({ ...body, templateDigest: registryDigest(body) });
+}
+
+export const BUILT_IN_GUIDED_REVIEW_TEMPLATE_REGISTRY_V1: readonly GuidedReviewBuiltInTemplateV1[] = registrySnapshot([
+  registeredTemplate(BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[0], "backend", BACKEND, ["intent", "green", "limitations", "exact-candidate"]),
+  registeredTemplate(BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[1], "frontend", FRONTEND, ["intent", "regression", "product-recap", "exact-candidate"]),
+  registeredTemplate(BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[2], "spike", SPIKE, ["placement", "ac-mapping", "document-recap", "exact-candidate"]),
+]);
+
 function stages(
   templates: readonly StageTemplate[],
   input: BuiltInGuidedReviewInputV1,
@@ -180,6 +234,9 @@ export function createBuiltInGuidedReviewPlaybookV1(
     participantRelationship: input.participantRelationship,
     acceptanceCriteria: input.acceptanceCriteria,
     runtimeHandoff: input.runtimeHandoff,
+    overlayId: null,
+    overlayDigest: null,
+    compiledRouteDigest: null,
     stages: stages(definition.templates, input),
   });
 }

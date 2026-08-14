@@ -239,6 +239,11 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof guidedReview.validateGuidedReviewPublicationBundleV1, "function");
   assert.equal(guidedReview.GUIDED_REVIEW_DRIVER_CONTRACT_VERSION, "guided.review.driver.v1");
   assert.equal(typeof guidedReview.createGuidedReviewDriverReceiptV1, "function");
+  assert.equal(typeof guidedReview.createGuidedReviewRouteOverlayV1, "function");
+  assert.equal(typeof guidedReview.prepareGuidedReviewRouteRequestHostV1, "function");
+  assert.equal(typeof guidedReview.resolveGuidedReviewRoutePreparationHostV1, "function");
+  assert.equal(typeof guidedReview.startOrResumeGuidedReviewSessionHostV1, "function");
+  assert.equal(typeof guidedReview.materializeGuidedReviewRouteRequestV1, "function");
   assert.equal(knowledge.KNOWLEDGE_ENTRY_CONTRACT_VERSION, "knowledge.entry.v0");
   assert.equal(typeof knowledge.verifyKnowledgeSliceV0, "function");
   assert.equal(typeof localTools.runLocalToolSession, "function");

@@ -98,11 +98,12 @@ import {
   type PublicationTreeEntryV1,
 } from "./review-publication-executor-v1.mjs";
 import { validateTransitionPlanV1OrV2 } from "@shield/mission-preparation";
-import {
-  validateGuidedReviewPlaybookV1,
-  validateGuidedReviewSessionV1,
-  type GuidedReviewPublicationBundleV1,
-} from "./guided-review-v1.mjs";
+import { type GuidedReviewPublicationBundleV1 } from "./guided-review-v1.mjs";
+import { prepareGuidedReviewRouteRequestHostV1 } from "./guided-review-route-preparation-host-v1.mjs";
+import { readGuidedReviewRoutePackageJsonV1 } from "./guided-review-route-request-v1.mjs";
+import { resolveGuidedReviewRoutePreparationHostV1 } from "./guided-review-route-resolution-host-v1.mjs";
+import { answerCurrentGuidedReviewSessionHostV1, revalidateCompletedGuidedReviewSessionHostV1,
+  startOrResumeGuidedReviewSessionHostV1 } from "./guided-review-session-host-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import {
@@ -219,6 +220,46 @@ async function jsonFile(path: string, label: string): Promise<unknown> {
   catch (error) {
     if (error instanceof MissionCliError) throw error;
     throw new MissionCliError(`${label} contains malformed JSON: ${path}.`);
+  }
+}
+
+async function secureJsonFileBeneathRoot(root: string, suppliedPath: string, label: string): Promise<unknown> {
+  const candidate = resolve(root, suppliedPath);
+  const relation = relative(root, candidate);
+  if (relation === "" || relation === ".." || relation.startsWith("../") || isAbsolute(relation)) {
+    throw new MissionCliError(`${label} must resolve beneath the repository root.`, 1);
+  }
+  let handle;
+  try {
+    const realCandidate = await fsRealpath(candidate);
+    const realRelation = relative(root, realCandidate);
+    if (realRelation === "" || realRelation === ".." || realRelation.startsWith("../") || isAbsolute(realRelation)) {
+      throw new MissionCliError(`${label} must resolve beneath the repository root.`, 1);
+    }
+    const before = await lstat(candidate);
+    if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1 || before.size < 1 || before.size > 2 * 1024 * 1024) {
+      throw new MissionCliError(`${label} must be a singly linked regular file of bounded size.`, 1);
+    }
+    handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      throw new MissionCliError(`${label} identity changed before read.`, 1);
+    }
+    const bytes = await handle.readFile("utf8");
+    const after = await handle.stat();
+    const pathAfter = await lstat(candidate);
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size || after.nlink !== 1 ||
+        pathAfter.isSymbolicLink() || !pathAfter.isFile() || pathAfter.nlink !== 1 || pathAfter.dev !== opened.dev ||
+        pathAfter.ino !== opened.ino || pathAfter.size !== opened.size) {
+      throw new MissionCliError(`${label} identity changed during read.`, 1);
+    }
+    try { return JSON.parse(bytes) as unknown; }
+    catch { throw new MissionCliError(`${label} contains malformed JSON: ${candidate}.`, 1); }
+  } catch (error) {
+    if (error instanceof MissionCliError) throw error;
+    throw new MissionCliError(`${label} is missing, unsafe, or unreadable: ${candidate}.`, 1);
+  } finally {
+    if (handle !== undefined) await handle.close();
   }
 }
 
@@ -1329,6 +1370,72 @@ function renderPreparedRuntimeBindingHumanV1(decision: PreparedRuntimeBindingDec
   ].join("\n");
 }
 
+function renderRoutePreparationRequired(result: Awaited<ReturnType<typeof prepareGuidedReviewRouteRequestHostV1>> & { state: "route_preparation_required" }): string {
+  return [
+    "GUIDED REVIEW ROUTE PREPARATION REQUIRED",
+    `Mission: ${result.missionId}`,
+    `Exact revision: ${result.exactRevision}`,
+    `Request: ${result.requestId}`,
+    `Digest: ${result.requestDigest}`,
+    `Path: ${result.requestPath}`,
+    `Accountable seat: ${result.accountableSeatId}`,
+  ].join("\n");
+}
+
+function renderGuidedReviewInProgress(
+  result: Awaited<ReturnType<typeof startOrResumeGuidedReviewSessionHostV1>> & { state: "guided_review_in_progress" },
+): string {
+  return [
+    "GUIDED REVIEW IN PROGRESS",
+    `Mission: ${result.missionId}`,
+    `HEAD: ${result.exactRevision}`,
+    `Checkpoint: ${result.currentStage?.checkpointId ?? "none"}`,
+    `Stage: ${result.currentStage?.title ?? "none"}`,
+    `Purpose: ${result.currentStage?.purpose ?? "none"}`,
+    `Question: ${result.currentStep?.question ?? "none"}`,
+    "Instructions:",
+    ...(result.currentStep?.instructions.map((entry) => `  - ${entry}`) ?? ["  - none"]),
+    `Relevant paths: ${result.currentStep?.relevantPaths.join(", ") || "none"}`,
+    `Evidence refs: ${result.currentStep?.evidenceRefs.join(", ") || "none"}`,
+    `Acceptance criteria: ${result.currentStep?.criterionRefs.join(", ") || "none"}`,
+    `Route rationale: ${result.routeContext.rationale}`,
+    `Route risks: ${result.routeContext.risks.join("; ") || "none"}`,
+    `Playbook: ${result.paths.playbookPath}`,
+    `Session: ${result.paths.sessionPath}`,
+  ].join("\n");
+}
+
+type GuidedReviewCurrentAnswer = Readonly<{
+  disposition: "pass" | "fail" | "conditional_pass" | "not_observed";
+  observation: string;
+  condition: string | null;
+}>;
+
+function guidedReviewCurrentAnswer(options: ParsedOptions): GuidedReviewCurrentAnswer | null {
+  const rawDisposition = options.values.get("--guided-review-disposition");
+  const observation = options.values.get("--guided-review-observation");
+  const condition = options.values.get("--guided-review-condition");
+  if (rawDisposition === undefined && observation === undefined && condition === undefined) return null;
+  if (rawDisposition === undefined || observation === undefined) {
+    throw new MissionCliError("A Guided Review answer requires both --guided-review-disposition and --guided-review-observation.", 1);
+  }
+  const normalized = rawDisposition.toUpperCase();
+  const dispositions = { PASS: "pass", FAIL: "fail", CONDITIONAL_PASS: "conditional_pass", NOT_OBSERVED: "not_observed" } as const;
+  const disposition = dispositions[normalized as keyof typeof dispositions];
+  if (disposition === undefined) throw new MissionCliError("--guided-review-disposition must be PASS, FAIL, CONDITIONAL_PASS, or NOT_OBSERVED.", 1);
+  if (observation.trim() !== observation || observation.length === 0 || observation.length > 8000) {
+    throw new MissionCliError("--guided-review-observation must be normalized and contain 1-8000 characters.", 1);
+  }
+  if (disposition === "conditional_pass") {
+    if (condition === undefined || condition.trim() !== condition || condition.length === 0 || condition.length > 4000) {
+      throw new MissionCliError("CONDITIONAL_PASS requires a normalized --guided-review-condition of 1-4000 characters.", 1);
+    }
+  } else if (condition !== undefined) {
+    throw new MissionCliError("--guided-review-condition is accepted only with CONDITIONAL_PASS.", 1);
+  }
+  return Object.freeze({ disposition, observation, condition: condition ?? null });
+}
+
 function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicationDecisionV1): string {
   return [
     "REVIEW PUBLICATION AUTHORIZATION",
@@ -1386,7 +1493,8 @@ async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"y
 }
 
 async function prepareNext(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-choice", "--guided-review-playbook", "--guided-review-session"], ["--json", "--human", "--passcode-stdin"]);
+  const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
+    "--guided-review-disposition", "--guided-review-observation", "--guided-review-condition"], ["--json", "--human", "--passcode-stdin"]);
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
@@ -1445,37 +1553,89 @@ async function prepareNext(args: string[]): Promise<number> {
   if (result.state === "publication_ready") {
     try {
       const choice = await guidedReviewChoiceFromOptions(options);
+      const currentAnswer = guidedReviewCurrentAnswer(options);
+      if (currentAnswer !== null && choice !== "yes") throw new MissionCliError("Only the Guided Review Yes route accepts a current answer.", 1);
       if (choice === "cancel") {
+        if (options.values.has("--guided-review-context")) throw new MissionCliError("Cancel cannot include --guided-review-context.", 1);
         if (options.values.has("--guided-review-playbook") || options.values.has("--guided-review-session")) throw new MissionCliError("Cancel cannot include Guided Review evidence paths.", 1);
         if (options.flags.has("--json")) process.stdout.write(`${JSON.stringify({ state: "cancelled", missionId, gate: "guided_review" }, null, 2)}\n`);
         else process.stderr.write("Guided Review publication cancelled before PIN.\n");
         return 1;
       }
-      let reloadGuidedReviewBundle: (() => Promise<GuidedReviewPublicationBundleV1>) | null = null;
+      if (choice === "yes") {
+        if (options.values.has("--guided-review-playbook") || options.values.has("--guided-review-session")) {
+          throw new MissionCliError("Yes no longer accepts --guided-review-playbook or --guided-review-session; use --guided-review-context.", 1);
+        }
+        const contextPath = options.values.get("--guided-review-context");
+        if (contextPath !== undefined) {
+          if (currentAnswer !== null) throw new MissionCliError("Initial Guided Review route creation cannot include a current answer.", 1);
+          const context = await secureJsonFileBeneathRoot(root, contextPath, "Guided Review context");
+          const prepared = await prepareGuidedReviewRouteRequestHostV1({ preparation: result, repositoryRoot: root, context });
+          if (prepared.state === "invalid") throw new MissionCliError(`${prepared.code}: ${prepared.errors.join(" ")}`, 1);
+          output(prepared, options.flags.has("--json"), renderRoutePreparationRequired(prepared));
+          return 0;
+        }
+      }
+      if (options.values.has("--guided-review-context")) throw new MissionCliError("No cannot include --guided-review-context.", 1);
       let guidedReviewBundle: GuidedReviewPublicationBundleV1;
+      let revalidateGuidedReviewBundle: (() => Promise<unknown>) | undefined;
       if (choice === "no") {
         if (options.values.has("--guided-review-playbook") || options.values.has("--guided-review-session")) throw new MissionCliError("No is host-derived and cannot include caller-supplied Guided Review evidence.", 1);
         guidedReviewBundle = createHostNoGuidedReviewBundleV1(result);
-      } else {
-        const playbookPath = options.values.get("--guided-review-playbook");
-        const sessionPath = options.values.get("--guided-review-session");
-        if (playbookPath === undefined || sessionPath === undefined) throw new MissionCliError("The Yes route requires --guided-review-playbook and --guided-review-session with the complete reviewed chain.", 1);
-        const resolvedPlaybookPath = resolve(root, playbookPath);
-        const resolvedSessionPath = resolve(root, sessionPath);
-        for (const [label, candidate] of [["playbook", resolvedPlaybookPath], ["session", resolvedSessionPath]] as const) {
-          const relation = relative(root, candidate);
-          if (relation === "" || relation === ".." || relation.startsWith("../") || isAbsolute(relation)) {
-            throw new MissionCliError(`Guided Review ${label} must resolve beneath the repository root.`, 1);
+      } else if (choice === "yes") {
+        const startedAt = new Date().toISOString();
+        const resume = async (preparation: typeof result) => {
+          const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation, repositoryRoot: root });
+          if (resolution.state === "invalid") throw new MissionCliError(`${resolution.code}: ${resolution.errors.join(" ")}`, 1);
+          if (resolution.state === "route_preparation_required") {
+            const priorPlaybook = await readGuidedReviewRoutePackageJsonV1(root, resolution.request, "playbook");
+            if (priorPlaybook.state === "ready") {
+              throw new MissionCliError("Guided Review Fury route artifact is missing after session initialization; recreation is forbidden.", 1);
+            }
+            if (priorPlaybook.code !== "PACKAGE_ARTIFACT_MISSING") throw new MissionCliError(`${priorPlaybook.code}: ${priorPlaybook.errors.join(" ")}`, 1);
+            return resolution;
+          }
+          const session = await startOrResumeGuidedReviewSessionHostV1({ repositoryRoot: root, resolution, startedAt });
+          if (session.state === "invalid") throw new MissionCliError(`${session.code}: ${session.errors.join(" ")}`, 1);
+          return session;
+        };
+        let resumed = await resume(result);
+        let answerConsumed = false;
+        if (resumed.state === "route_preparation_required") {
+          if (currentAnswer !== null) throw new MissionCliError("Guided Review has no current question until Fury route preparation completes.", 1);
+          output(resumed, options.flags.has("--json"), renderRoutePreparationRequired(resumed));
+          return 0;
+        }
+        if (resumed.state === "guided_review_in_progress") {
+          if (currentAnswer !== null) {
+            const answered = await answerCurrentGuidedReviewSessionHostV1({ repositoryRoot: root, resolution: await (async () => {
+              const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: result, repositoryRoot: root });
+              if (resolution.state !== "guided_review_ready") throw new MissionCliError("Guided Review route changed before the current answer could be recorded.", 1);
+              return resolution;
+            })(), expectedSessionDigest: resumed.sessionDigest, ...currentAnswer, decidedAt: new Date().toISOString() });
+            if (answered.state === "invalid") throw new MissionCliError(`${answered.code}: ${answered.errors.join(" ")}`, 1);
+            answerConsumed = true;
+            resumed = await resume(result);
+            if (resumed.state === "route_preparation_required") throw new MissionCliError("Guided Review route became unavailable after recording the current answer.", 1);
           }
         }
-        reloadGuidedReviewBundle = async () => {
-          const checkedPlaybook = validateGuidedReviewPlaybookV1(await jsonFile(resolvedPlaybookPath, "Guided Review playbook"));
-          if (checkedPlaybook.state === "invalid") throw new MissionCliError(`${checkedPlaybook.code}: ${checkedPlaybook.errors.join(" ")}`, 1);
-          const checkedSession = validateGuidedReviewSessionV1(checkedPlaybook.value, await jsonFile(resolvedSessionPath, "Guided Review session"));
-          if (checkedSession.state === "invalid") throw new MissionCliError(`${checkedSession.code}: ${checkedSession.errors.join(" ")}`, 1);
-          return createHostYesGuidedReviewBundleV1(result, checkedPlaybook.value, checkedSession.value);
+        if (resumed.state === "guided_review_in_progress") {
+          output(resumed, options.flags.has("--json"), renderGuidedReviewInProgress(resumed));
+          return 0;
+        }
+        if (currentAnswer !== null && !answerConsumed) throw new MissionCliError("Completed Guided Review has no current question to answer.", 1);
+        guidedReviewBundle = createHostYesGuidedReviewBundleV1(result, resumed.playbook, resumed.session);
+        revalidateGuidedReviewBundle = async () => {
+          const freshPreparation = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
+          if (freshPreparation.state !== "publication_ready") throw new Error("Prepared publication is no longer ready during Guided Review reload.");
+          const freshResolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: freshPreparation, repositoryRoot: root });
+          if (freshResolution.state !== "guided_review_ready") throw new Error("Guided Review request or Fury route is no longer complete during publication reload.");
+          const fresh = await revalidateCompletedGuidedReviewSessionHostV1({ repositoryRoot: root, resolution: freshResolution });
+          if (fresh.state !== "guided_review_completed") throw new Error("Guided Review is no longer complete during publication authorization reload.");
+          return createHostYesGuidedReviewBundleV1(freshPreparation, fresh.playbook, fresh.session);
         };
-        guidedReviewBundle = await reloadGuidedReviewBundle();
+      } else {
+        throw new MissionCliError("Unsupported Guided Review choice.", 1);
       }
       const executed = await executeReviewPublicationAuthorizationV1({
         mode: "prepared",
@@ -1494,7 +1654,7 @@ async function prepareNext(args: string[]): Promise<number> {
         readPasscode: () => passcodeFromOptions(options, promptOutput),
         signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
         appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
-        ...(reloadGuidedReviewBundle === null ? {} : { revalidateGuidedReviewBundle: reloadGuidedReviewBundle }),
+        ...(revalidateGuidedReviewBundle === undefined ? {} : { revalidateGuidedReviewBundle }),
       });
       output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
       return 0;
@@ -2064,7 +2224,7 @@ export function missionUsage(): string {
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
-    "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-playbook <playbook.json> --guided-review-session <session.json>] [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-disposition PASS|FAIL|CONDITIONAL_PASS|NOT_OBSERVED --guided-review-observation <text> [--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",

@@ -104,7 +104,7 @@ async function fixture() {
 
 test("CLI creates a playbook and starts with one current question", async () => {
   const root = await fixture();
-  const started = run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:cli", "--participant", "participant.json", "--output", "session.json"]);
+  const started = run(root, ["start", "--playbook", "playbook.json", "--profile", "exploration", "--session-id", "session:cli", "--participant", "participant.json", "--output", "session.json"]);
   const display = JSON.parse(started.stdout);
   assert.equal(display.stage.stageId, "placement-purpose");
   assert.equal(display.stage.checkpointId, "checkpoint:placement-purpose");
@@ -115,7 +115,7 @@ test("CLI creates a playbook and starts with one current question", async () => 
 
 test("CLI atomically persists a decision and advances within the same stage", async () => {
   const root = await fixture();
-  run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:cli", "--participant", "participant.json", "--output", "session.json"]);
+  run(root, ["start", "--playbook", "playbook.json", "--profile", "exploration", "--session-id", "session:cli", "--participant", "participant.json", "--output", "session.json"]);
   const decided = run(root, ["decide", "--playbook", "playbook.json", "--session", "session.json", "--decision-id", "decision:1", "--disposition", "pass", "--observation", "The page is beside its source material."]);
   const display = JSON.parse(decided.stdout);
   assert.equal(display.stage.stageId, "placement-purpose");
@@ -152,7 +152,7 @@ test("CLI rejects a symlinked output parent", async () => {
   const root = await fixture();
   await mkdir(join(root, "real-output"));
   await symlink(join(root, "real-output"), join(root, "linked-output"));
-  const result = run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:unsafe", "--participant", "participant.json", "--output", "linked-output/session.json"], 2);
+  const result = run(root, ["start", "--playbook", "playbook.json", "--profile", "exploration", "--session-id", "session:unsafe", "--participant", "participant.json", "--output", "linked-output/session.json"], 2);
   assert.match(result.stderr, /Output parent must be a real directory/u);
   await assert.rejects(readFile(join(root, "real-output", "session.json")));
 });

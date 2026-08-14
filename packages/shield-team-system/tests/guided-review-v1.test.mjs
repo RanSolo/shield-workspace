@@ -21,8 +21,14 @@ import {
 } from "../dist/guided-review-v1.mjs";
 import {
   BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS,
+  BUILT_IN_GUIDED_REVIEW_TEMPLATE_REGISTRY_V1,
   createBuiltInGuidedReviewPlaybookV1,
 } from "../dist/guided-review-playbooks-v1.mjs";
+import {
+  compileGuidedReviewRouteV1,
+  createFormalGuidedReviewPlaybookV1,
+  createGuidedReviewRouteOverlayV1,
+} from "../dist/guided-review-route-overlay-v1.mjs";
 import { createGuidedReviewDriverReceiptV1, validateGuidedReviewDriverReceiptV1 } from "../dist/guided-review-driver-v1.mjs";
 
 const head = "1234567890abcdef1234567890abcdef12345678";
@@ -139,7 +145,41 @@ function publicationBundleInput(candidatePlan, fork, playbookValue, sessionValue
 function playbook(kind = "frontend", overrides = {}) {
   const values = { ...base, ...overrides };
   const participantRelationship = overrides.participantRelationship ?? (kind === "frontend" ? "product_reviewer" : kind === "backend" ? "independent_reviewer" : "document_reviewer");
-  const result = createBuiltInGuidedReviewPlaybookV1(kind, { ...values, participantRelationship, plan: overrides.plan ?? reviewPlan(kind, values.exactRevision) });
+  const input = { ...values, participantRelationship, plan: overrides.plan ?? reviewPlan(kind, values.exactRevision) };
+  const template = BUILT_IN_GUIDED_REVIEW_TEMPLATE_REGISTRY_V1.find((entry) => entry.kind === kind);
+  assert.ok(template);
+  const firstStepId = template.stages[0].steps[0].id;
+  const overlayResult = createGuidedReviewRouteOverlayV1({
+    schemaVersion: 1,
+    contractVersion: "guided.review.route-overlay.v1",
+    overlayId: `overlay:test:${kind}`,
+    missionId: input.missionId,
+    subjectId: input.subjectId,
+    repositoryId: input.repositoryId,
+    branch: input.branch,
+    exactRevision: input.exactRevision,
+    protectedGraphId: "protected-graph:mission:issue-238",
+    protectedGraphDigest: "sha256:PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP",
+    templateId: template.templateId,
+    templateVersion: template.templateVersion,
+    templateDigest: template.templateDigest,
+    kind,
+    rationale: "Compile the exact formal route used by the core Guided Review tests.",
+    risks: [],
+    acceptanceCriterionMappings: input.acceptanceCriteria.map((criterion) => ({ criterionId: criterion.criterionId, stepIds: [firstStepId] })),
+    inspectionPoints: [],
+    overrides: [],
+    furySeatId: "fury",
+    furyBindingRef: "binding:fury:test",
+    furyReasoningRuntimeId: "runtime:fury:test",
+    furyModelId: "model:fury:test",
+    furyToolExecutorId: "executor:fury:test",
+    identityAuthority: "claimed_only",
+  });
+  assert.equal(overlayResult.state, "ready", JSON.stringify(overlayResult));
+  const compiled = compileGuidedReviewRouteV1(overlayResult.value);
+  assert.equal(compiled.state, "ready", JSON.stringify(compiled));
+  const result = createFormalGuidedReviewPlaybookV1(compiled.value, input);
   assert.equal(result.state, "ready", JSON.stringify(result));
   return result.value;
 }
@@ -247,6 +287,35 @@ test("exported plan, playbook, and session validators reject open or tampered re
   assert.equal(validateGuidedReviewPlanV1({ ...plan, unexpected: true }).state, "invalid");
   assert.equal(validateGuidedReviewPlaybookV1({ ...book, title: "Substituted" }).state, "invalid");
   assert.equal(validateGuidedReviewSessionV1(book, { ...session, participant: { ...session.participant, participantId: "human:other" } }).state, "invalid");
+});
+
+test("formal sessions require and preserve exact compiled-route identity while exploration keeps built-ins", () => {
+  const formalBook = playbook();
+  assert.match(formalBook.overlayDigest, /^sha256:/u);
+  assert.match(formalBook.compiledRouteDigest, /^sha256:/u);
+  const formalSession = start(formalBook, "acceptance");
+  assert.equal(formalSession.overlayId, formalBook.overlayId);
+  assert.equal(formalSession.overlayDigest, formalBook.overlayDigest);
+  assert.equal(formalSession.compiledRouteDigest, formalBook.compiledRouteDigest);
+  assert.equal(validateGuidedReviewSessionV1(formalBook, { ...formalSession, overlayId: "overlay:substituted" }).state, "invalid");
+
+  const builtIn = createBuiltInGuidedReviewPlaybookV1("frontend", { ...base, participantRelationship: "product_reviewer", plan: reviewPlan() });
+  assert.equal(builtIn.state, "ready", JSON.stringify(builtIn));
+  assert.equal(builtIn.value.compiledRouteDigest, null);
+  assert.equal(startGuidedReviewSessionV1(builtIn.value, {
+    sessionId: "session:exploration-built-in",
+    profile: "exploration",
+    participant: { participantId: "human:explorer", relationship: "product_reviewer", seatId: null, bindingRef: null },
+    startedAt: "2026-08-13T20:00:00.000Z",
+  }).state, "ready");
+  const rejectedFormal = startGuidedReviewSessionV1(builtIn.value, {
+    sessionId: "session:formal-built-in",
+    profile: "acceptance",
+    participant: { participantId: "human:reviewer", relationship: "product_reviewer", seatId: "coulson", bindingRef: "binding:reviewer" },
+    startedAt: "2026-08-13T20:00:00.000Z",
+  });
+  assert.equal(rejectedFormal.state, "invalid");
+  assert.equal(rejectedFormal.code, "FORMAL_ROUTE_REQUIRED");
 });
 
 test("participant policy admits the builder only when the reviewed plan selects that relationship", () => {
@@ -465,6 +534,9 @@ test("publication bundles carry and revalidate the complete YES chain and null e
   const yes = createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value, book, completed));
   assert.equal(yes.state, "ready", JSON.stringify(yes));
   assert.equal(validateGuidedReviewPublicationBundleV1(yes.value).state, "ready");
+  assert.equal(yes.value.overlayId, book.overlayId);
+  assert.equal(yes.value.overlayDigest, book.overlayDigest);
+  assert.equal(yes.value.compiledRouteDigest, book.compiledRouteDigest);
   assert.equal(yes.value.playbook.playbookDigest, book.playbookDigest);
   assert.equal(yes.value.session.sessionDigest, completed.sessionDigest);
 
@@ -480,6 +552,7 @@ test("publication bundles carry and revalidate the complete YES chain and null e
   const otherSession = complete(otherBook);
   assert.equal(createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value, otherBook, otherSession)).state, "invalid");
   assert.equal(validateGuidedReviewPublicationBundleV1({ ...yes.value, session: otherSession }).state, "invalid");
+  assert.equal(validateGuidedReviewPublicationBundleV1({ ...yes.value, overlayId: "overlay:substituted" }).state, "invalid");
 
   const optional = reviewPlan("frontend", head, false);
   const noFork = evaluateGuidedReviewPublicationForkV1({ choice: "no", exactRevision: head, plan: optional, playbook: null, session: null });
