@@ -1848,7 +1848,8 @@ test("publication selection fails closed on dirty, empty, scope-escaped, non-des
       name: "non-descendant",
       reasonCode: "repository_observation_stale",
       mutate: async (fixture) => {
-        git(fixture.repositoryRoot, ["checkout", "-q", "-B", "main", fixture.plan.planningBaseRevision]);
+        const branch = git(fixture.repositoryRoot, ["branch", "--show-current"]);
+        git(fixture.repositoryRoot, ["checkout", "-q", "-B", branch, fixture.plan.planningBaseRevision]);
         await writeFile(join(fixture.repositoryRoot, fixture.implementationPath), "divergent implementation\n");
         git(fixture.repositoryRoot, ["add", fixture.implementationPath]);
         git(fixture.repositoryRoot, ["commit", "-qm", "divergent implementation"]);

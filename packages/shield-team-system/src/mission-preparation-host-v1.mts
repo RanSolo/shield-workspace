@@ -1828,10 +1828,9 @@ function initialWheelsUpLineage(
   if (environment.repository.configuredRepositoryId !== plan.repositoryId ||
       environment.repository.remoteRepositoryId !== plan.repositoryId || environment.repository.canonicalRoot !== environment.repository.gitTopLevel ||
       environment.repository.branch === "HEAD" || environment.repository.baseRevision !== plan.planningBaseRevision ||
-      !environment.repository.baseAncestor ||
       canonicalJson(environment.remainingHumanGates) !== canonicalJson(expectedRemainingHumanGates) ||
       environment.journalSha256 !== journalByteSha256(environment.journalBytes)) return null;
-  const exactInitialRetry = workspaceClean && environment.repository.headRevision === initialHeadRevision &&
+  const exactInitialRetry = workspaceClean && environment.repository.baseAncestor && environment.repository.headRevision === initialHeadRevision &&
     canonicalJson(environment.repository.changedPaths) === canonicalJson(plan.publicationPaths) &&
     environment.symlinkPaths.length === 0 && environment.gitlinkPaths.length === 0;
   if (!exactInitialRetry) {
@@ -1943,6 +1942,9 @@ async function preparedPublicationResult(
   const changedPaths = [...repository.changedPaths];
   if (repository.statusEntries.length !== 0) {
     return blocked(missionId, "repository_observation_stale", "Prepared publication requires an exactly clean workspace.");
+  }
+  if (!repository.baseAncestor) {
+    return blocked(missionId, "repository_observation_stale", "Prepared publication HEAD is not a descendant of the reviewed planning base revision.");
   }
   if (repository.headRevision === initialHeadRevision) {
     return blocked(missionId, "authority_conflict", "Existing initial authority is not an exact retry and HEAD has not advanced.");
