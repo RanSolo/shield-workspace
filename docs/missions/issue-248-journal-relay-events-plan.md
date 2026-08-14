@@ -30,7 +30,7 @@ The relay never contains authority and never decides that a successor is legal. 
 | --- | --- | --- |
 | AC1 | Wake the intended active lane without human packet copying | One terminal receipt produces one recipient-scoped pending relay and one host delivery call. |
 | AC2 | Receiver rereads authoritative state | No acknowledgement or successor call occurs until exact journal, mission definition/status, and repository revision are reread and validated. |
-| AC3 | Delivery lifecycle is explicit | Replay distinguishes pending, delivered, acknowledged, stale, duplicate, recipient mismatch, and recovery-required states. |
+| AC3 | Delivery lifecycle is explicit | Replay distinguishes emitted, delivery-started, delivered, acknowledged, successor-claimed, successor-recorded, superseded, duplicate, recipient mismatch, and recovery-required states. |
 | AC4 | Relay and authority remain distinct | Every artifact declares `authority: "none"`; tests prove a relay cannot satisfy a gate, permission decision, review, or acceptance requirement. |
 | AC5 | Payload is compact and host-safe | Delivery receives only relay ID/digest, mission/session identity, recipient, event kind, source evidence reference, requested observation, and sequence. No prompt, output body, passcode, signer material, or private journal entry is copied. |
 | AC6 | Feature Hill can inspect state | A read-only projection lists exact pending and acknowledged relays with their stop/next-action classification. |
@@ -54,16 +54,18 @@ The host reuses:
 - Feature Flight structural projection in `feature-flight-controller.mjs`;
 - repository, journal, runtime, and permission replay.
 
-The host accepts a configured recipient registry and delivery adapter as capabilities, not authority. It derives relay identity from a verified terminal source record plus mission/session/repository identity. It appends the pending relay before delivery, records delivery/acknowledgement durably, rereads all authoritative inputs, and then calls `advanceMissionV1` at most once. Adapter failure leaves a replayable pending relay and performs no successor effect.
+The host accepts a closed, content-addressed active-controller registry and a delivery adapter as capabilities, not authority. The registry joins flight ID, mission ID, Mission Builder definition revision, parent session, repository/workspace/revision, lane, canonical recipient seat, controller scope, adapter identity, and endpoint identity. `hill` remains the canonical seat; `controlling_hill` and `lane_hill` are controller scopes, never new seats.
+
+The adapter contract supplies create-once delivery under a host-derived idempotency key and a query operation that authoritatively reconciles that same key and target identity. The host appends `relay.delivery_started` and verifies readback before invocation. A crash or exception after that claim may resume only by querying the adapter. Exact accepted delivery is recorded; definitive create-once absence may invoke using the same key; ambiguous observation returns `recovery_required` and never redelivers blindly.
 
 ### Source events
 
-V1 recognizes only closed terminal sources already represented durably:
+V1 recognizes only closed source variants already represented durably:
 
-- `dispatch.completed`, `dispatch.failed`, or `dispatch.cancelled` from the seat-dispatch ledger;
-- a Mission Builder status transition whose exact evidence is already durable and whose next node is deterministically derivable.
+- the exact terminal `dispatch.completed`, `dispatch.failed`, or `dispatch.cancelled` entry from the seat-dispatch ledger;
+- the exact Mission Builder step receipt or signed human-evidence journal entry that changed the graph's current node.
 
-Free-form thread text, polling timeout, model self-report, bare `done`, and caller-asserted `PACKET_COMPLETE` are not source evidence.
+Projected status changes are not source evidence. Free-form thread text, polling timeout, model self-report, bare `done`, and caller-asserted `PACKET_COMPLETE` are not source evidence.
 
 ### Event lifecycle
 
@@ -76,21 +78,26 @@ One relay identity is derived from the immutable tuple:
 - recipient seat/lane identity;
 - requested observation.
 
-Lifecycle entries are `relay.emitted`, `relay.delivered`, and `relay.acknowledged`. The global log and each relay lifecycle are digest chained. Exact retries return the existing projection; conflicting reuse fails closed. Acknowledgement binds the receiver observation digest and the authoritative state digest it replayed.
+Cross-domain source selection uses the total tuple `sourceDomain`, `sourceDomainSequence`, `sourceDigest`, where the closed domain order is `mission_journal`, `mission_step`, `seat_dispatch`. Domain sequences are never compared without the domain discriminator.
+
+Lifecycle entries are `relay.emitted`, `relay.delivery_started`, `relay.delivered`, `relay.acknowledged`, `relay.successor_claimed`, `relay.successor_recorded`, and `relay.superseded`. The global log and each relay lifecycle are digest chained. Exact retries return the existing projection; conflicting reuse fails closed. `relay.superseded` binds the newer authoritative mission/controller tuple that made the pending relay stale. Acknowledgement binds the receiver observation digest and the authoritative state digest it replayed.
+
+The successor identity is derived from relay ID, authoritative-state digest, definition revision, current node, selected transition, and expected effect/receipt identity. `relay.successor_claimed` is appended and read back before calling `advanceMissionV1`. Its exact result, Mission Builder step-receipt digest, and any dispatch/effect receipt digests are then stored in `relay.successor_recorded`. Restart reconciles an incomplete claim only from those authoritative receipts; absence or ambiguity is `recovery_required`, never a blind second call.
 
 ## Clockwork algorithm
 
 1. Snapshot and replay the complete source receipt ledger; reject malformed or ambiguous history.
 2. Snapshot and replay the relay ledger; reject malformed, unsafe, or uncertain storage.
-3. Select the next unrelayed terminal source by source sequence and deterministic recipient mapping.
+3. Validate the exact active-controller registry snapshot and select the next unrelayed source by the total cross-domain ordering tuple and deterministic recipient mapping.
 4. Append `relay.emitted` create-once and verify exact readback.
-5. Deliver only the compact reference through the configured host adapter.
-6. Append `relay.delivered` and verify exact readback. Delivery uncertainty returns `recovery_required`; it does not redeliver blindly.
-7. Receiver validates recipient identity, rereads the signed mission journal, mission definition/provenance, step receipts, dispatch receipts, live repository state, and permission context.
-8. Receiver appends `relay.acknowledged`, binding those observation digests, and verifies readback.
-9. Project Mission Builder status. Classify exactly one of `routine_successor`, `human_gate`, `external_blocker`, `authority_or_scope_conflict`, `recovery_required`, or `complete`.
-10. Only `routine_successor` may call `advanceMissionV1`, once, with the reread observation. All other classes surface a compact Hill packet and perform no successor effect.
-11. Restart replays both ledgers and resumes from the last durable lifecycle state without reconstructing or duplicating authority.
+5. Append/read back `relay.delivery_started` with adapter idempotency key and target identity.
+6. Reconcile that key through the queryable adapter; create once only after definitive absence, then append/read back `relay.delivered` with the adapter receipt. Ambiguity returns `recovery_required`.
+7. Receiver validates recipient/controller identity, rereads the signed mission journal, mission definition/provenance, step receipts, dispatch receipts, live repository state, and permission context.
+8. If the authoritative tuple is newer, append `relay.superseded`; otherwise append `relay.acknowledged`, binding the observation digests, and verify readback.
+9. Project Mission Builder status and map every state: satisfied human evidence or authorized repair remaining to `routine_successor`; unsatisfied human evidence to `human_gate`; exhausted repair to `authority_or_scope_conflict`; malformed/uncertain replay to `recovery_required`; evidenced host failure to `external_blocker`; terminal node to `complete`.
+10. For `routine_successor`, derive the closed successor identity, append/read back `relay.successor_claimed`, then call `advanceMissionV1` once with the reread observation.
+11. Append/read back `relay.successor_recorded` with the exact result and receipt digests. All non-routine classes surface a compact Hill packet and perform no successor effect.
+12. Restart replays all ledgers. It reconciles delivery claims through the adapter and successor claims through authoritative receipts; unresolved claims return `recovery_required`.
 
 ## Rapid-strike packets
 
@@ -109,7 +116,7 @@ These are implementation packets inside one Delivery Session, not separate missi
 
 ### Packet 3 — receiver and one-step clockwork host
 
-- Add configured delivery/acknowledgement adapter seams and Feature Flight inspection.
+- Add the active-controller registry, queryable create-once delivery/acknowledgement adapter seams, and Feature Flight inspection.
 - Reread authoritative state before acknowledgement and successor selection.
 - Route only `routine_successor` into one `advanceMissionV1` call; surface all valid stop classes.
 - Prove successful automatic gear movement, human-gate stop, malformed/stale source, wrong recipient, delivery uncertainty, post-delivery drift, process restart, and at-most-one successor effect.
@@ -138,7 +145,7 @@ These are implementation packets inside one Delivery Session, not separate missi
 3. malformed, unsafe, or uncertain relay store;
 4. source identity, mission/session/repository/revision, or recipient mismatch;
 5. duplicate/conflicting relay identity or lifecycle chain;
-6. delivery uncertainty;
+6. delivery claim/reconciliation uncertainty;
 7. authoritative journal, repository, runtime, permission, or mission-status reread failure;
 8. acknowledgement uncertainty;
 9. successor classification or bounded execution result.
@@ -149,8 +156,8 @@ No later failure may mask an earlier malformed or uncertain durable state.
 
 - Nx affected build/test from exact planning base; the expected affected project is only `@shield/team-system`.
 - Focused Team System relay store/host/package-surface tests.
-- Full `@shield/team-system` suite on the repository-supported Node version; separately classify the known Node 22 failures tracked by #302.
-- Installed-consumer package import and declaration proof.
+- Packed-install `shield-ops` consumer proof; the relay remains an internal operations/CLI seam with no new public declaration export.
+- Full-suite validation on Node.js `24.18.0`. Reproduce the frozen #302 Node.js `22.22.0` baseline separately when that runtime is available; only failures outside that exact baseline or changed focused surfaces are #248 regressions.
 - `git diff --check` and exact changed-path allowlist verification.
 
 ## Exclusions
