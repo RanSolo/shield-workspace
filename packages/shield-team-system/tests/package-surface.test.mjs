@@ -63,6 +63,7 @@ test("exports only the documented public package specifiers", async () => {
     "./sonarqube",
     "./mack-validation",
     "./qa-mode",
+    "./guided-review",
     "./knowledge",
     "./local-tools",
     "./github",
@@ -106,6 +107,7 @@ test("loads every supported runtime specifier", async () => {
   const sonarqube = await import("@shield/team-system/sonarqube");
   const mackValidation = await import("@shield/team-system/mack-validation");
   const qaMode = await import("@shield/team-system/qa-mode");
+  const guidedReview = await import("@shield/team-system/guided-review");
   const knowledge = await import("@shield/team-system/knowledge");
   const localTools = await import("@shield/team-system/local-tools");
   const github = await import("@shield/team-system/github");
@@ -223,6 +225,25 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(qaMode.QA_MODE_CONTRACT_VERSION, "qa.mode.v0");
   assert.equal(typeof qaMode.createQaHandoffV0, "function");
   assert.equal(typeof qaMode.evaluateQaValidationV0, "function");
+  assert.equal(guidedReview.GUIDED_REVIEW_CONTRACT_VERSION, "guided.review.v1");
+  assert.equal(typeof guidedReview.createGuidedReviewPlaybookV1, "function");
+  assert.equal(typeof guidedReview.createGuidedReviewPlanV1, "function");
+  assert.equal(typeof guidedReview.createBuiltInGuidedReviewPlaybookV1, "function");
+  assert.equal(typeof guidedReview.startGuidedReviewSessionV1, "function");
+  assert.equal(typeof guidedReview.decideGuidedReviewStepV1, "function");
+  assert.equal(typeof guidedReview.evaluateGuidedReviewPublicationForkV1, "function");
+  assert.equal(typeof guidedReview.validateGuidedReviewPublicationForkV1, "function");
+  assert.equal(typeof guidedReview.createGuidedReviewRuntimeHandoffV1, "function");
+  assert.equal(typeof guidedReview.validateGuidedReviewRuntimeHandoffV1, "function");
+  assert.equal(typeof guidedReview.createGuidedReviewPublicationBundleV1, "function");
+  assert.equal(typeof guidedReview.validateGuidedReviewPublicationBundleV1, "function");
+  assert.equal(guidedReview.GUIDED_REVIEW_DRIVER_CONTRACT_VERSION, "guided.review.driver.v1");
+  assert.equal(typeof guidedReview.createGuidedReviewDriverReceiptV1, "function");
+  assert.equal(typeof guidedReview.createGuidedReviewRouteOverlayV1, "function");
+  assert.equal(typeof guidedReview.prepareGuidedReviewRouteRequestHostV1, "function");
+  assert.equal(typeof guidedReview.resolveGuidedReviewRoutePreparationHostV1, "function");
+  assert.equal(typeof guidedReview.startOrResumeGuidedReviewSessionHostV1, "function");
+  assert.equal(typeof guidedReview.materializeGuidedReviewRouteRequestV1, "function");
   assert.equal(knowledge.KNOWLEDGE_ENTRY_CONTRACT_VERSION, "knowledge.entry.v0");
   assert.equal(typeof knowledge.verifyKnowledgeSliceV0, "function");
   assert.equal(typeof localTools.runLocalToolSession, "function");

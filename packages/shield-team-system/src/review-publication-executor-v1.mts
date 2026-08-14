@@ -34,6 +34,15 @@ import {
   assertMissionSignerSnapshotUnchanged,
   captureMissionSignerSnapshot,
 } from "./mission-signer.mjs";
+import {
+  createGuidedReviewPlanV1,
+  createGuidedReviewPublicationBundleV1,
+  evaluateGuidedReviewPublicationForkV1,
+  validateGuidedReviewPublicationBundleV1,
+  type GuidedReviewPublicationBundleV1,
+  type GuidedReviewPlaybookV1,
+  type GuidedReviewSessionV1,
+} from "./guided-review-v1.mjs";
 
 export { projectPreparedReviewPublicationSemanticTupleV1 };
 export type { PreparedReviewPublicationSemanticTupleV1 };
@@ -79,6 +88,25 @@ export type PreparedReviewPublicationDecisionV1 = Readonly<{
   permittedEffects: readonly ReviewPublicationEffect[];
   exclusions: readonly string[];
   remainingHumanGates: readonly string[];
+  guidedReview?: Readonly<{
+    planDigest: string;
+    bundleDigest: string;
+    forkDigest: string;
+    choice: "yes" | "no";
+    disposition: "completed" | "skipped_by_operator";
+    required: boolean;
+    rationale: string;
+    method: string;
+    plannedParticipantRelationship: string;
+    coveredCriterionRefs: readonly string[];
+    evidenceRequirements: readonly string[];
+    gateOwnerSeatId: "coulson";
+    sessionDigest: string | null;
+    participantId: string | null;
+    participantRelationship: string | null;
+    participantBindingRef: string | null;
+    pinPurpose: "guided_review_and_publication" | "publication";
+  }>;
 }>;
 
 export type ReviewPublicationAuthorizationExecutorInputV1 = Readonly<{
@@ -87,6 +115,7 @@ export type ReviewPublicationAuthorizationExecutorInputV1 = Readonly<{
   missionId: string;
   intent: ReviewPublicationAuthorizationIntentV1;
   expectedPreparation?: PreparedPublicationReadyResultV1;
+  guidedReviewBundle?: GuidedReviewPublicationBundleV1;
   timestamp: Readonly<{ value: string; provenance: "hostTrusted" }>;
   humanMode: boolean;
   decisionOutput: { write: (value: string) => void };
@@ -115,6 +144,7 @@ export type ReviewPublicationAuthorizationExecutorDependenciesV1 = Readonly<{
   readPasscode: () => Promise<string>;
   signPayload: (binding: TrustedHumanBinding, passcode: string, payload: unknown) => Promise<string>;
   appendEntryAtomic: typeof appendProfileAwareMissionEntriesAtomicV1;
+  revalidateGuidedReviewBundle?: () => Promise<unknown>;
 }>;
 
 type ProfileAwareJournal = Readonly<{
@@ -407,6 +437,7 @@ function preparedDecision(
   preparation: PreparedPublicationReadyResultV1,
   projection: ProfileAwareProjectionV1,
   observation: PublicationRepositoryObservationV1,
+  guidedReviewBundle: GuidedReviewPublicationBundleV1 | null,
 ): PreparedReviewPublicationDecisionV1 {
   return canonicalSnapshot({
     schemaVersion: 1 as const,
@@ -425,7 +456,142 @@ function preparedDecision(
     permittedEffects: [...preparation.publicationIntent.permittedEffects],
     exclusions: [...PREPARED_EXCLUSIONS],
     remainingHumanGates: [...preparation.observation.remainingHumanGates],
+    ...(guidedReviewBundle === null ? {} : { guidedReview: {
+      planDigest: guidedReviewBundle.candidatePlan.planDigest,
+      bundleDigest: guidedReviewBundle.bundleDigest,
+      forkDigest: guidedReviewBundle.fork.forkDigest,
+      choice: guidedReviewBundle.fork.choice as "yes" | "no",
+      disposition: guidedReviewBundle.fork.guidedReviewDisposition as "completed" | "skipped_by_operator",
+      required: guidedReviewBundle.candidatePlan.required,
+      rationale: guidedReviewBundle.candidatePlan.rationale,
+      method: guidedReviewBundle.candidatePlan.method,
+      plannedParticipantRelationship: guidedReviewBundle.candidatePlan.participantRelationship,
+      coveredCriterionRefs: [...guidedReviewBundle.candidatePlan.coveredCriterionRefs],
+      evidenceRequirements: [...guidedReviewBundle.candidatePlan.evidenceRequirements],
+      gateOwnerSeatId: guidedReviewBundle.candidatePlan.gateOwnerSeatId,
+      sessionDigest: guidedReviewBundle.fork.sessionDigest,
+      participantId: guidedReviewBundle.fork.participant?.participantId ?? null,
+      participantRelationship: guidedReviewBundle.fork.participant?.relationship ?? null,
+      participantBindingRef: guidedReviewBundle.fork.participant?.bindingRef ?? null,
+      pinPurpose: guidedReviewBundle.fork.pinPurpose as "guided_review_and_publication" | "publication",
+    } }),
   });
+}
+
+type GuidedReviewPolicyModeV1 = GuidedReviewPublicationBundleV1["policyMode"];
+
+export function deriveProtectedGuidedReviewPolicyV1(preparation: PreparedPublicationReadyResultV1): GuidedReviewPolicyModeV1 {
+  const capabilities = preparation.protectedGraph.transitionPlan.approvedCapabilities;
+  const required = capabilities.includes("guided_review_required");
+  const omitted = capabilities.includes("guided_review_omitted");
+  if (required && omitted) throw new Error("Protected transition plan contains conflicting Guided Review policy capabilities.");
+  return required ? "required" : omitted ? "omitted" : "operator_optional";
+}
+
+export function createHostNoGuidedReviewBundleV1(preparation: PreparedPublicationReadyResultV1): GuidedReviewPublicationBundleV1 {
+  const policyMode = deriveProtectedGuidedReviewPolicyV1(preparation);
+  if (policyMode === "required") throw new Error("The protected Fury-reviewed transition plan requires Guided Review; No is not available.");
+  const graph = preparation.protectedGraph;
+  const plan = createGuidedReviewPlanV1({
+    schemaVersion: 1,
+    contractVersion: "guided.review.v1",
+    planId: `plan:publication:${graph.graphId}`,
+    missionId: preparation.missionId,
+    subjectId: graph.transitionPlan.subjectId,
+    kind: "backend",
+    required: false,
+    rationale: policyMode === "omitted"
+      ? "The protected Fury-reviewed transition plan explicitly omits Guided Review for this publication."
+      : "The operator selected the protected compatibility policy's optional No route at publication.",
+    method: "cli",
+    participantRelationship: "independent_reviewer",
+    coveredCriterionRefs: [],
+    evidenceRequirements: [],
+    exactRevision: preparation.observation.headRevision,
+    gateOwnerSeatId: "coulson",
+  });
+  if (plan.state === "invalid") throw new Error(`${plan.code}: ${plan.errors.join(" ")}`);
+  const fork = evaluateGuidedReviewPublicationForkV1({ choice: "no", exactRevision: preparation.observation.headRevision,
+    plan: plan.value, playbook: null, session: null });
+  if (fork.state === "invalid") throw new Error(`${fork.code}: ${fork.errors.join(" ")}`);
+  const bundle = createGuidedReviewPublicationBundleV1({
+    missionId: preparation.missionId,
+    subjectId: graph.transitionPlan.subjectId,
+    repositoryId: preparation.observation.repositoryId,
+    branch: preparation.observation.branch,
+    exactRevision: preparation.observation.headRevision,
+    protectedGraphId: graph.graphId,
+    protectedGraphDigest: graph.graphDigest,
+    transitionPlanId: graph.transitionPlan.id,
+    transitionPlanDigest: graph.transitionPlan.digest,
+    parentPlanReviewEvidenceId: graph.parentPlanReviewEvidence.id,
+    parentPlanReviewEvidenceDigest: graph.parentPlanReviewEvidence.digest,
+    policyMode,
+    candidatePlan: plan.value,
+    fork: fork.value,
+    playbook: null,
+    session: null,
+  });
+  if (bundle.state === "invalid") throw new Error(`${bundle.code}: ${bundle.errors.join(" ")}`);
+  return bundle.value;
+}
+
+export function createHostYesGuidedReviewBundleV1(
+  preparation: PreparedPublicationReadyResultV1,
+  playbook: GuidedReviewPlaybookV1,
+  session: GuidedReviewSessionV1,
+): GuidedReviewPublicationBundleV1 {
+  const policyMode = deriveProtectedGuidedReviewPolicyV1(preparation);
+  if (policyMode === "omitted") throw new Error("The protected Fury-reviewed transition plan explicitly omits Guided Review; Yes is not available.");
+  const graph = preparation.protectedGraph;
+  const fork = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: preparation.observation.headRevision,
+    plan: playbook.plan, playbook, session });
+  if (fork.state === "invalid") throw new Error(`${fork.code}: ${fork.errors.join(" ")}`);
+  const bundle = createGuidedReviewPublicationBundleV1({
+    missionId: preparation.missionId,
+    subjectId: graph.transitionPlan.subjectId,
+    repositoryId: preparation.observation.repositoryId,
+    branch: preparation.observation.branch,
+    exactRevision: preparation.observation.headRevision,
+    protectedGraphId: graph.graphId,
+    protectedGraphDigest: graph.graphDigest,
+    transitionPlanId: graph.transitionPlan.id,
+    transitionPlanDigest: graph.transitionPlan.digest,
+    parentPlanReviewEvidenceId: graph.parentPlanReviewEvidence.id,
+    parentPlanReviewEvidenceDigest: graph.parentPlanReviewEvidence.digest,
+    policyMode,
+    candidatePlan: playbook.plan,
+    fork: fork.value,
+    playbook,
+    session,
+  });
+  if (bundle.state === "invalid") throw new Error(`${bundle.code}: ${bundle.errors.join(" ")}`);
+  return bundle.value;
+}
+
+function assertGuidedReviewBundleBinding(
+  bundle: GuidedReviewPublicationBundleV1,
+  preparation: PreparedPublicationReadyResultV1,
+  observation: PublicationRepositoryObservationV1,
+  projection: ProfileAwareProjectionV1,
+): void {
+  const graph = preparation.protectedGraph;
+  const review = graph.parentPlanReviewEvidence;
+  const policyMode = deriveProtectedGuidedReviewPolicyV1(preparation);
+  if (bundle.missionId !== preparation.missionId || bundle.subjectId !== projection.brief.subjectId ||
+      bundle.repositoryId !== observation.configuredRepositoryId || bundle.branch !== observation.branch ||
+      bundle.exactRevision !== observation.headRevision || bundle.protectedGraphId !== graph.graphId ||
+      bundle.protectedGraphDigest !== graph.graphDigest || bundle.transitionPlanId !== graph.transitionPlan.id ||
+      bundle.transitionPlanDigest !== graph.transitionPlan.digest || bundle.parentPlanReviewEvidenceId !== review.id ||
+      bundle.parentPlanReviewEvidenceDigest !== review.digest || bundle.policyMode !== policyMode) {
+    throw new Error("Guided Review publication bundle does not match the protected Fury-reviewed transition graph and exact candidate.");
+  }
+  if (policyMode === "required" && bundle.fork.choice !== "yes") {
+    throw new Error("Protected transition plan requires Guided Review; publication cannot take the No route.");
+  }
+  if (policyMode === "omitted" && bundle.fork.choice !== "no") {
+    throw new Error("Protected transition plan omits Guided Review; publication must use the recorded No route.");
+  }
 }
 
 export async function executeReviewPublicationAuthorizationV1(
@@ -433,8 +599,9 @@ export async function executeReviewPublicationAuthorizationV1(
   dependencies: ReviewPublicationAuthorizationExecutorDependenciesV1,
 ): Promise<ReviewPublicationAuthorizationExecutorResultV1> {
   const intent = validateReviewPublicationAuthorizationIntentV1(input.intent);
-  if (input.mode === "legacy" && input.expectedPreparation !== undefined) throw new Error("Legacy publication cannot include prepared evidence.");
+  if (input.mode === "legacy" && (input.expectedPreparation !== undefined || input.guidedReviewBundle !== undefined)) throw new Error("Legacy publication cannot include prepared or Guided Review evidence.");
   if (input.mode === "prepared" && input.expectedPreparation === undefined) throw new Error("Prepared publication requires exact selected evidence.");
+  if (input.mode === "prepared" && input.guidedReviewBundle === undefined) throw new Error("Prepared publication requires a closed Guided Review publication bundle.");
   if (input.mode === "prepared" && (input.expectedPreparation?.missionId !== input.missionId ||
       canonicalJson(input.expectedPreparation.publicationIntent) !== canonicalJson(intent))) {
     throw new Error("Prepared publication intent does not match the selected transition.");
@@ -452,8 +619,28 @@ export async function executeReviewPublicationAuthorizationV1(
     intent.baseRevision,
     intent.authorizedPaths,
   );
+  const guidedReviewBundle = input.guidedReviewBundle === undefined ? null : (() => {
+    const checked = validateGuidedReviewPublicationBundleV1(input.guidedReviewBundle);
+    if (checked.state === "invalid") throw new Error(`${checked.code}: ${checked.errors.join(" ")}`);
+    if (checked.value.fork.state !== "pin_required") {
+      throw new Error("Guided Review publication bundle is not PIN-eligible.");
+    }
+    return checked.value;
+  })();
+  if (guidedReviewBundle?.fork.choice === "yes" && dependencies.revalidateGuidedReviewBundle === undefined) {
+    throw new Error("Prepared Guided Review Yes requires host revalidation before display and after signing.");
+  }
+  if (guidedReviewBundle !== null && dependencies.revalidateGuidedReviewBundle !== undefined) {
+    const currentBundle = validateGuidedReviewPublicationBundleV1(await dependencies.revalidateGuidedReviewBundle());
+    if (currentBundle.state === "invalid" || canonicalJson(currentBundle.value) !== canonicalJson(guidedReviewBundle)) {
+      throw new Error("Guided Review publication bundle changed before authorization display or PIN.");
+    }
+  }
   const pathKinds = publicationPathKinds(observation);
   const projection = initialJournal.current.projection;
+  if (preparation !== null && guidedReviewBundle !== null) {
+    assertGuidedReviewBundleBinding(guidedReviewBundle, preparation, observation, projection);
+  }
   const sequence = projection.lastSequence + 1;
   const authorizationId = `authorization:${input.missionId}:review-publish:${sequence}`;
   const authority: ReviewPublicationAuthorityV1 = {
@@ -515,6 +702,15 @@ export async function executeReviewPublicationAuthorizationV1(
   }
 
   const binding = coulsonBinding(initialJournal.current);
+  if (preparation !== null && (preparation.observation.signerBindingId !== binding.bindingId ||
+      preparation.observation.signingKeyRef !== binding.signingKeyRef)) {
+    throw new Error("Prepared publication signer observation does not match the active Coulson signer binding.");
+  }
+  const participant = guidedReviewBundle?.fork.choice === "yes" ? guidedReviewBundle.fork.participant : null;
+  if (participant !== null && (participant.seatId !== "coulson" || participant.participantId !== binding.humanPrincipalId ||
+      participant.bindingRef !== binding.signingKeyRef)) {
+    throw new Error("Guided Review participant identity does not match the active Coulson signer for this publication key turn.");
+  }
   const signerSnapshot = await captureMissionSignerSnapshot(binding.signingKeyRef);
   const authorityDigest = computeReviewPublicationAuthorityDigest(authority);
   const payload = {
@@ -533,12 +729,14 @@ export async function executeReviewPublicationAuthorizationV1(
     signingKeyRef: binding.signingKeyRef,
     sourceRef: input.mode === "legacy"
       ? `cli:publication-authorize:${sequence}`
-      : `cli:prepare-next:publication-authorize:${sequence}`,
+      : guidedReviewBundle === null
+        ? `cli:prepare-next:publication-authorize:${sequence}`
+        : `cli:prepare-next:publication-authorize:${sequence}:guided-review-v2:${guidedReviewBundle.bundleDigest}`,
     timestamp: input.timestamp,
   };
 
   if (preparation !== null) {
-    const rendered = dependencies.renderDecision(preparedDecision(preparation, projection, observation), input.humanMode);
+    const rendered = dependencies.renderDecision(preparedDecision(preparation, projection, observation, guidedReviewBundle), input.humanMode);
     input.decisionOutput.write(`${rendered}\n`);
   }
   const passcode = await dependencies.readPasscode();
@@ -553,7 +751,14 @@ export async function executeReviewPublicationAuthorizationV1(
     intent.authorizedPaths,
   );
   const freshSignerSnapshot = await captureMissionSignerSnapshot(binding.signingKeyRef);
-  if (input.mode === "prepared") await revalidatePrepared(input.expectedPreparation as PreparedPublicationReadyResultV1);
+  const freshPreparation = input.mode === "prepared" ? await revalidatePrepared(input.expectedPreparation as PreparedPublicationReadyResultV1) : null;
+  if (guidedReviewBundle !== null && dependencies.revalidateGuidedReviewBundle !== undefined) {
+    const freshBundle = validateGuidedReviewPublicationBundleV1(await dependencies.revalidateGuidedReviewBundle());
+    if (freshBundle.state === "invalid" || canonicalJson(freshBundle.value) !== canonicalJson(guidedReviewBundle)) {
+      throw new Error("Guided Review publication bundle changed while authorization was being signed.");
+    }
+    if (freshPreparation !== null) assertGuidedReviewBundleBinding(freshBundle.value, freshPreparation, freshObservation, freshJournal.current.projection);
+  }
 
   const configurationFresh = input.mode === "prepared"
     ? exactConfigurationUnchanged(initialConfig, freshConfig)

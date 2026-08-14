@@ -926,6 +926,7 @@ export type PreparedPublicationReadyResultV1 = Readonly<{
     journalSequence: number;
     journalSha256: string;
     signerBindingId: string;
+    signerHumanPrincipalId: string;
     signingKeyRef: string;
     remainingHumanGates: readonly string[];
   }>;
@@ -1827,10 +1828,9 @@ function initialWheelsUpLineage(
   if (environment.repository.configuredRepositoryId !== plan.repositoryId ||
       environment.repository.remoteRepositoryId !== plan.repositoryId || environment.repository.canonicalRoot !== environment.repository.gitTopLevel ||
       environment.repository.branch === "HEAD" || environment.repository.baseRevision !== plan.planningBaseRevision ||
-      !environment.repository.baseAncestor ||
       canonicalJson(environment.remainingHumanGates) !== canonicalJson(expectedRemainingHumanGates) ||
       environment.journalSha256 !== journalByteSha256(environment.journalBytes)) return null;
-  const exactInitialRetry = workspaceClean && environment.repository.headRevision === initialHeadRevision &&
+  const exactInitialRetry = workspaceClean && environment.repository.baseAncestor && environment.repository.headRevision === initialHeadRevision &&
     canonicalJson(environment.repository.changedPaths) === canonicalJson(plan.publicationPaths) &&
     environment.symlinkPaths.length === 0 && environment.gitlinkPaths.length === 0;
   if (!exactInitialRetry) {
@@ -1943,6 +1943,9 @@ async function preparedPublicationResult(
   if (repository.statusEntries.length !== 0) {
     return blocked(missionId, "repository_observation_stale", "Prepared publication requires an exactly clean workspace.");
   }
+  if (!repository.baseAncestor) {
+    return blocked(missionId, "repository_observation_stale", "Prepared publication HEAD is not a descendant of the reviewed planning base revision.");
+  }
   if (repository.headRevision === initialHeadRevision) {
     return blocked(missionId, "authority_conflict", "Existing initial authority is not an exact retry and HEAD has not advanced.");
   }
@@ -2029,6 +2032,7 @@ async function preparedPublicationResult(
       journalSequence: projection.lastSequence,
       journalSha256: environment.journalSha256,
       signerBindingId: environment.binding.bindingId,
+      signerHumanPrincipalId: environment.binding.humanPrincipalId,
       signingKeyRef: environment.binding.signingKeyRef,
       remainingHumanGates: [...environment.remainingHumanGates],
     },
@@ -2091,7 +2095,8 @@ async function preparedPublicationAlreadyAuthorizedResult(
     authorization.authorizationId === currentRecord.authority.authorityRef &&
     authorization.authorityDigest === computeReviewPublicationAuthorityDigest(currentRecord.authority) &&
     authorization.authorityKind === "review.publish" && authorization.previousJournalSequence === sequence - 1 &&
-    authorization.journalSequence === sequence && authorization.sourceRef === `cli:prepare-next:publication-authorize:${sequence}` &&
+    authorization.journalSequence === sequence &&
+    new RegExp(`^cli:prepare-next:publication-authorize:${sequence}(?::(?:guided-review|guided-review-v2):sha256:[A-Za-z0-9_-]{43})?$`, "u").test(authorization.sourceRef) &&
     canonicalJson(entry.payload.authority) === canonicalJson(currentRecord.authority) &&
     canonicalJson(entry.payload.authorization.payload) === canonicalJson(authorization);
   if (!preparedProvenance) {

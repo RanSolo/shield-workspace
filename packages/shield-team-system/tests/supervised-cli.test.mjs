@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
-import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -24,11 +24,23 @@ import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
 import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
 import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
+import {
+  createGuidedReviewPlanV1,
+  createGuidedReviewRuntimeHandoffV1,
+} from "../dist/guided-review-v1.mjs";
+import { createGuidedReviewDriverReceiptV1 } from "../dist/guided-review-driver-v1.mjs";
+import { createGuidedReviewRouteOverlayV1 } from "../dist/guided-review-route-overlay-v1.mjs";
+import { resolveGuidedReviewRoutePreparationHostV1 } from "../dist/guided-review-route-resolution-host-v1.mjs";
+import { projectCurrentGuidedReviewStepHostV1 } from "../dist/guided-review-projection-host-v1.mjs";
+import { readGuidedReviewRoutePackageJsonV1, resolveGuidedReviewRoutePackagePathsV1 } from "../dist/guided-review-route-request-v1.mjs";
+import { answerCurrentGuidedReviewSessionHostV1 } from "../dist/guided-review-session-host-v1.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import {
   buildMissionTransitionPlanReviewV1,
   materializeReviewedMissionTransitionV1,
+  resolvePreparedMissionTransitionV1,
 } from "../dist/mission-preparation-host-v1.mjs";
+import { deriveMissionReviewedTransitionGraphMaterializationPathV1 } from "../dist/mission-preparation-store-v1.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
@@ -410,7 +422,7 @@ function canonicalDispatchEventLine(event) {
   return JSON.stringify(Object.fromEntries(keys.filter((key) => Object.hasOwn(event, key)).map((key) => [key, event[key]])));
 }
 
-async function preparedPublicationCliFixture() {
+async function preparedPublicationCliFixture(approvedCapabilities = ["capability:issue-286:p2"]) {
   const current = await fixture(false, "coulson_only_platform_review");
   const missionId = "mission:cli-prepared-publication";
   const subjectId = "github:RanSolo/fixture/issue/286";
@@ -457,7 +469,7 @@ async function preparedPublicationCliFixture() {
     approvedActionIds: ["action:issue-286:p2"],
     approvedEffectClasses: ["behavioral_implementation"],
     approvedEffectKeys: ["effect:issue-286:p2"],
-    approvedCapabilities: ["capability:issue-286:p2"],
+    approvedCapabilities,
     validationCommandIds: ["validation:issue-286:p2"],
     modelId: "model:prepared-may",
     reasoningRuntimeId: "runtime:prepared-may",
@@ -598,6 +610,131 @@ async function preparedPublicationCliFixture() {
   runGit(current.root, ["add", "implementation.md"]);
   runGit(current.root, ["commit", "-qm", "prepared publication descendant"]);
   return { ...current, missionId, homeRoot, plan, initialHeadRevision };
+}
+
+async function preparedGuidedReviewContext(prepared) {
+  const selected = await resolvePreparedMissionTransitionV1({ missionId: prepared.missionId, repositoryRoot: prepared.root });
+  assert.equal(selected.state, "publication_ready", JSON.stringify(selected));
+  const exactRevision = selected.observation.headRevision;
+  const driver = createGuidedReviewDriverReceiptV1({
+    schemaVersion: 1, contractVersion: "guided.review.driver.v1", driverId: "driver:prepared-review", driverVersion: "v1",
+    executorRef: "executor:prepared-review", exactRevision, environmentRef: "environment:prepared-review", status: "ready",
+    capabilities: ["code_review"], scenarioRefs: ["scenario:prepared-review"], evidenceRefs: ["evidence:prepared-review"],
+    effectClass: "read_only", detail: "Prepared Guided Review fixture.",
+  });
+  assert.equal(driver.state, "ready");
+  const runtime = createGuidedReviewRuntimeHandoffV1({
+    status: "ready", repositoryId: selected.observation.repositoryId, canonicalWorktreeRef: "worktree:prepared-review",
+    branch: selected.observation.branch, exactRevision, builderSeatId: "may", builderBindingRef: "binding:may:prepared-review",
+    reasoningRuntimeId: "runtime:may:prepared-review", toolExecutorId: "executor:prepared-review",
+    dependencyBuildReceiptRef: "receipt:build:prepared-review", environmentRef: "environment:prepared-review",
+    fixtureRef: "fixture:prepared-review", resourceBindingsRef: "bindings:prepared-review:redacted",
+    endpointOwnershipRef: "ownership:prepared-review", portPreflightRef: "preflight:port:prepared-review",
+    watcherPreflightRef: "preflight:watcher:prepared-review", externalEffectPolicyRef: "policy:no-external-effects",
+    launchCommandRef: "command:prepared-review", healthProbeRef: "probe:prepared-review",
+    reviewUrl: "http://127.0.0.1:4173/", teardownRef: "command:stop:prepared-review", recoveryRef: "recovery:prepared-review",
+    driverReceipt: driver.value,
+  });
+  assert.equal(runtime.state, "ready");
+  const plan = createGuidedReviewPlanV1({
+    schemaVersion: 1, contractVersion: "guided.review.v1", planId: "plan:prepared-review", missionId: prepared.missionId,
+    subjectId: selected.protectedGraph.transitionPlan.subjectId, kind: "backend", required: true,
+    rationale: "The protected plan requires a completed exact-candidate code review.", method: "code_review",
+    participantRelationship: "independent_reviewer", coveredCriterionRefs: ["AC-1"], evidenceRequirements: ["Named exact-revision observations."],
+    exactRevision, gateOwnerSeatId: "coulson",
+  });
+  assert.equal(plan.state, "ready");
+  const context = {
+    plan: plan.value,
+    acceptanceCriteria: [{ criterionId: "AC-1", text: "The exact candidate receives a named code review." }],
+    runtimeHandoff: runtime.value,
+    participantRelationship: "independent_reviewer",
+    kind: "backend",
+  };
+  const contextPath = join(".shield", "tmp", "guided-review-context.json");
+  await writeFile(join(prepared.root, contextPath), `${JSON.stringify(context, null, 2)}\n`);
+  return { context, contextPath };
+}
+
+async function authorPreparedFuryRoute(prepared, routed) {
+  const request = JSON.parse(await readFile(routed.paths.routeRequestPath, "utf8"));
+  const ledgerPath = join(prepared.root, ".shield", "dispatch-receipts.jsonl");
+  const existingBytes = await readFile(ledgerPath, "utf8");
+  const existingEntries = existingBytes.trimEnd().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const route = createGuidedReviewRouteOverlayV1({
+    schemaVersion: 1, contractVersion: "guided.review.route-overlay.v1", overlayId: "overlay:cli-prepared-review",
+    missionId: request.missionId, subjectId: request.subjectId, repositoryId: request.repositoryId, branch: request.branch,
+    exactRevision: request.exactRevision, protectedGraphId: request.protectedGraphId, protectedGraphDigest: request.protectedGraphDigest,
+    templateId: request.templateId, templateVersion: request.templateVersion, templateDigest: request.templateDigest, kind: request.kind,
+    rationale: "Fury selected the exact prepared publication route.", risks: ["Publication must remain exact-head."],
+    acceptanceCriterionMappings: [{ criterionId: "AC-1", stepIds: ["intent"] }], inspectionPoints: [], overrides: [],
+    furySeatId: "fury", furyBindingRef: "receipt:fury:cli-prepared-review",
+    furyReasoningRuntimeId: "runtime:fury:cli-prepared-review", furyModelId: "model:fury:cli-prepared-review",
+    furyToolExecutorId: "executor:fury:cli-prepared-review", identityAuthority: "claimed_only",
+  });
+  assert.equal(route.state, "ready", JSON.stringify(route));
+  await writeFile(routed.paths.routeOverlayPath, canonicalJson(route.value), { mode: 0o600 });
+  const common = {
+    receiptId: route.value.furyBindingRef, dispatchId: "dispatch:fury:cli-prepared-review",
+    parentMissionId: request.missionId, parentMissionRevision: request.missionRevisionId,
+    parentSessionId: "session:hill:cli-prepared-review", childTaskId: "task:fury:cli-prepared-review",
+    childSessionId: "session:fury:cli-prepared-review", accountableSeatId: "fury",
+    repositoryId: request.repositoryId, repositoryWorkspaceId: existingEntries[0].repositoryWorkspaceId,
+    repositoryRevision: request.exactRevision, subjectId: request.subjectId, subjectRevision: request.exactRevision,
+    artifactId: request.requestId, artifactRevision: request.requestDigest,
+    configuredRuntime: { kind: "runtime.configured", runtimeId: route.value.furyReasoningRuntimeId, model: route.value.furyModelId },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: route.value.furyReasoningRuntimeId, model: route.value.furyModelId },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: "binding:fury:cli-prepared-review" },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
+    runtimeHostObserved: { kind: "runtime.host_observed", runtimeId: route.value.furyReasoningRuntimeId,
+      model: route.value.furyModelId, evidenceRefs: ["host:fury:runtime"] },
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: { kind: "executor.host_observed", executorId: route.value.furyToolExecutorId,
+      evidenceRefs: ["host:fury:executor"] },
+  };
+  const previous = existingEntries.at(-1);
+  const started = createSeatDispatchStartedEventV1({ ...common, inputEvidenceRefs: [request.requestId, request.requestDigest],
+    timestamp: "2026-08-13T02:00:00.000Z", logSequence: existingEntries.length, previousLogDigest: previous?.entryDigest ?? null,
+    lifecycleSequence: 0, previousLifecycleDigest: null });
+  const completed = createSeatDispatchLifecycleEventV1({ ...common, kind: "dispatch.completed",
+    outputEvidenceRefs: [request.requestId, request.requestDigest, route.value.overlayId, route.value.overlayDigest,
+      request.protectedGraphId, request.protectedGraphDigest], timestamp: "2026-08-13T02:01:00.000Z",
+    logSequence: existingEntries.length + 1, previousLogDigest: started.entryDigest, lifecycleSequence: 1, previousLifecycleDigest: started.entryDigest });
+  await writeFile(ledgerPath, `${existingBytes}${canonicalDispatchEventLine(started)}\n${canonicalDispatchEventLine(completed)}\n`, { mode: 0o600 });
+  return { request, overlay: route.value, started, completed };
+}
+
+async function passCurrentGuidedReviewStep(prepared, paths, minute) {
+  const result = run(prepared.root, ["guided-review", "decide", "--playbook", paths.playbookPath,
+    "--session", paths.sessionPath, "--decision-id", `decision:cli-prepared:${minute}`,
+    "--disposition", "pass", "--observation", `Observed exact candidate question ${minute}.`,
+    "--evidence-refs", "evidence:cli-prepared-review", "--json"]);
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(await readFile(paths.sessionPath, "utf8"));
+}
+
+async function runPreparedYesAtDecision(prepared, mutate) {
+  const child = spawn(process.execPath, [cli, "mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+  { cwd: prepared.root, env: { ...process.env, HOME: prepared.homeRoot }, stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let mutation = null;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    if (mutation === null && stderr.includes("SHIELD_REVIEW_PUBLICATION_DECISION_END")) {
+      mutation = Promise.resolve(mutate()).then(() => child.stdin.end("prepared-passcode\n"));
+    }
+  });
+  const status = await new Promise((resolveStatus, reject) => {
+    child.once("error", reject);
+    child.once("close", resolveStatus);
+  });
+  if (mutation !== null) await mutation;
+  return { status, stdout, stderr, mutated: mutation !== null };
 }
 
 test("packed CLI path completes execution while Fitz readiness remains waiting", async () => {
@@ -1512,19 +1649,37 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   const prepared = await preparedPublicationCliFixture();
   const path = journalPath(prepared.root, prepared.missionId);
   const beforeCancellation = await readFile(path, "utf8");
-  const cancelled = run(
+  const missingChoice = run(
     prepared.root,
     ["mission", "prepare-next", "--mission-id", prepared.missionId, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
+  );
+  assert.equal(missingChoice.status, 1);
+  assert.match(missingChoice.stderr, /requires --guided-review-choice/u);
+  assert.doesNotMatch(missingChoice.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), beforeCancellation);
+  const cancelledFork = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "cancel", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
+  );
+  assert.equal(cancelledFork.status, 1);
+  assert.match(cancelledFork.stdout, /"state": "cancelled"/u);
+  assert.doesNotMatch(cancelledFork.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), beforeCancellation);
+  const cancelled = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "no", "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
   );
-  assert.equal(cancelled.status, 2);
+  assert.equal(cancelled.status, 2, cancelled.stderr);
   assert.match(cancelled.stderr, /SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
   assert.match(cancelled.stderr, /Passcode input was empty/u);
   assert.equal(await readFile(path, "utf8"), beforeCancellation);
 
   const authorized = run(
     prepared.root,
-    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--passcode-stdin", "--json"],
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "no", "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
   );
   assert.equal(authorized.status, 0, authorized.stderr);
@@ -1537,13 +1692,19 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   assert.deepEqual(decision.authorizedPaths, ["implementation.md"]);
   assert.deepEqual(decision.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
   assert.deepEqual(decision.remainingHumanGates, ["coulson.final_acceptance", "fitz.technical_review"]);
+  assert.equal(decision.guidedReview.choice, "no");
+  assert.equal(decision.guidedReview.disposition, "skipped_by_operator");
+  assert.equal(decision.guidedReview.required, false);
+  assert.match(decision.guidedReview.rationale, /optional No route/u);
+  assert.equal(decision.guidedReview.gateOwnerSeatId, "coulson");
+  assert.match(decision.guidedReview.bundleDigest, /^sha256:/u);
 
   const projection = JSON.parse(authorized.stdout);
   assert.equal(projection.publicationAuthorizations.length, 2);
   const publication = projection.publicationAuthorizations[1];
   assert.equal(publication.authority.authorityKind, "review.publish");
   assert.equal(publication.authority.authorityRef, `authorization:${prepared.missionId}:review-publish:5`);
-  assert.equal(publication.authorization.sourceRef, "cli:prepare-next:publication-authorize:5");
+  assert.equal(publication.authorization.sourceRef, `cli:prepare-next:publication-authorize:5:guided-review-v2:${decision.guidedReview.bundleDigest}`);
   assert.deepEqual(publication.authority.authorizedPaths, ["implementation.md"]);
   assert.deepEqual(publication.authority.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
   assert.equal(projection.communication.requests.length, 0);
@@ -1564,6 +1725,608 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   assert.match(retry.stdout, new RegExp(`journalSequence: ${publication.journalSequence}\\n`, "u"));
   assert.doesNotMatch(`${retry.stdout}${retry.stderr}`, /Passcode:/u);
   assert.equal(await readFile(path, "utf8"), bytesAfterAuthorization);
+});
+
+test("prepare-next rejects legacy or missing YES context and a required-to-optional downgrade before PIN", async () => {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const path = journalPath(prepared.root, prepared.missionId);
+  const before = await readFile(path, "utf8");
+  const no = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "no", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" },
+  );
+  assert.equal(no.status, 1);
+  assert.match(no.stderr, /requires Guided Review; No is not available/u);
+  assert.doesNotMatch(no.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), before);
+
+  const yesWithoutContext = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" },
+  );
+  assert.equal(yesWithoutContext.status, 1);
+  assert.match(yesWithoutContext.stderr, /CURRENT_ROUTE_REQUEST_NOT_FOUND/u);
+  assert.doesNotMatch(yesWithoutContext.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), before);
+
+  const legacy = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "yes",
+      "--guided-review-playbook", ".shield/tmp/legacy-playbook.json", "--guided-review-session", ".shield/tmp/legacy-session.json",
+      "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" },
+  );
+  assert.equal(legacy.status, 1);
+  assert.match(legacy.stderr, /Yes no longer accepts --guided-review-playbook or --guided-review-session/u);
+  assert.doesNotMatch(legacy.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), before);
+
+  const outside = join(await mkdtemp(join(tmpdir(), "shield-guided-context-outside-")), "context.json");
+  await writeFile(outside, "{}\n");
+  const outsideContext = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "yes",
+      "--guided-review-context", outside, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" },
+  );
+  assert.equal(outsideContext.status, 1);
+  assert.match(outsideContext.stderr, /Guided Review context must resolve beneath the repository root/u);
+  assert.doesNotMatch(outsideContext.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), before);
+});
+
+test("prepare-next YES materializes a lazy exact-head route request before decision, PIN, sign, or journal append", async () => {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const evidence = await preparedGuidedReviewContext(prepared);
+  const path = journalPath(prepared.root, prepared.missionId);
+  const before = await readFile(path, "utf8");
+  const routed = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "yes",
+      "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" },
+  );
+  assert.equal(routed.status, 0, routed.stderr);
+  assert.doesNotMatch(`${routed.stdout}${routed.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  const result = JSON.parse(routed.stdout);
+  assert.equal(result.state, "route_preparation_required");
+  assert.equal(result.missionId, prepared.missionId);
+  assert.equal(result.exactRevision, runGit(prepared.root, ["rev-parse", "HEAD"]));
+  assert.equal(result.accountableSeatId, "fury");
+  assert.match(result.requestId, /^guided-review-route-request:/u);
+  assert.match(result.requestDigest, /^sha256:/u);
+  assert.equal(result.requestPath, result.paths.routeRequestPath);
+  assert.equal(await readFile(result.requestPath, "utf8"), canonicalJson(result.request));
+  assert.equal(await readFile(path, "utf8"), before);
+});
+
+test("prepare-next YES automatically resumes pending, active, progressed, and completed Guided Review with one final PIN", async () => {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const evidence = await preparedGuidedReviewContext(prepared);
+  const journal = journalPath(prepared.root, prepared.missionId);
+  const before = await readJournalEntries(prepared.root, prepared.missionId);
+  const routedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(routedRun.status, 0, routedRun.stderr);
+  const routed = JSON.parse(routedRun.stdout);
+
+  const pendingRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(pendingRun.status, 0, pendingRun.stderr);
+  assert.equal(JSON.parse(pendingRun.stdout).state, "route_preparation_required");
+  assert.doesNotMatch(`${pendingRun.stdout}${pendingRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal((await readJournalEntries(prepared.root, prepared.missionId)).length, before.length);
+
+  await authorPreparedFuryRoute(prepared, routed);
+  const activeRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(activeRun.status, 0, JSON.stringify(activeRun));
+  const active = JSON.parse(activeRun.stdout);
+  assert.equal(active.state, "guided_review_in_progress");
+  assert.match(active.currentStage.checkpointId, /^checkpoint:/u);
+  assert.equal(typeof active.currentStep.question, "string");
+  assert.equal(Array.isArray(active.currentStep.instructions), true);
+  assert.equal(Array.isArray(active.currentStep.relevantPaths), true);
+  assert.equal(Array.isArray(active.currentStep.evidenceRefs), true);
+  assert.equal(Array.isArray(active.currentStep.criterionRefs), true);
+  assert.equal(typeof active.currentStage.purpose, "string");
+  assert.equal(typeof active.routeContext.rationale, "string");
+  assert.equal(Array.isArray(active.routeContext.risks), true);
+  assert.equal(Object.hasOwn(active, "currentStage"), true);
+  assert.equal(Object.hasOwn(active, "currentStep"), true);
+  assert.equal(active.projection.state, "ready", JSON.stringify(active.projection));
+  assert.equal(active.projection.projection.authority, "none");
+  assert.equal(active.projection.projection.durability, "ephemeral");
+  assert.equal(active.projection.projection.sessionDigest, active.sessionDigest);
+  assert.equal(active.projection.projection.stepId, active.currentStep.stepId);
+  assert.equal(active.projection.projection.exactRevision, active.exactRevision);
+  assert.equal(active.projection.projection.behaviorGroups.flatMap((group) => group.targets).every((target) =>
+    target.navigation.executor === "git" && target.navigation.argv.at(-1).startsWith(":(top,literal)")), true);
+  const projectionStat = await lstat(active.projection.projectionPath);
+  assert.equal(projectionStat.isFile() && !projectionStat.isSymbolicLink() && projectionStat.nlink === 1, true);
+  assert.equal(projectionStat.mode & 0o777, 0o600);
+  assert.doesNotMatch(`${activeRun.stdout}${activeRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+
+  const playbook = JSON.parse(await readFile(active.paths.playbookPath, "utf8"));
+  const progressedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+    "--guided-review-question-digest", active.questionEnvelope.questionDigest,
+    "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(progressedRun.status, 0, progressedRun.stderr);
+  const progressed = JSON.parse(progressedRun.stdout);
+  assert.equal(progressed.state, "guided_review_in_progress");
+  assert.notEqual(progressed.sessionDigest, active.sessionDigest);
+  assert.notEqual(progressed.currentStep.stepId, active.currentStep.stepId);
+  assert.equal(progressed.projection.state, "ready", JSON.stringify(progressed.projection));
+  assert.equal(progressed.projection.projection.sessionDigest, progressed.sessionDigest);
+  assert.equal(progressed.projection.projection.stepId, progressed.currentStep.stepId);
+  assert.notEqual(progressed.projection.projection.projectionDigest, active.projection.projection.projectionDigest);
+  assert.equal(progressed.projection.projectionPath, active.projection.projectionPath);
+  assert.equal(JSON.parse(await readFile(active.paths.sessionPath, "utf8")).decisions.at(-1).observation, "PASS");
+  assert.doesNotMatch(`${progressedRun.stdout}${progressedRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+
+  let session = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
+  let displayed = progressed;
+  const totalSteps = playbook.stages.flatMap((stage) => stage.steps).length;
+  while (session.decisions.length < totalSteps - 1) {
+    const next = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+      "--guided-review-question-digest", displayed.questionEnvelope.questionDigest,
+      "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(next.status, 0, next.stderr);
+    displayed = JSON.parse(next.stdout);
+    assert.equal(displayed.state, "guided_review_in_progress");
+    assert.doesNotMatch(`${next.stdout}${next.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+    session = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
+  }
+  const completedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+    "--guided-review-question-digest", displayed.questionEnvelope.questionDigest,
+    "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n" });
+  assert.equal(completedRun.status, 0, completedRun.stderr);
+  assert.equal((completedRun.stderr.match(/SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/gu) ?? []).length, 1);
+  const after = await readJournalEntries(prepared.root, prepared.missionId);
+  assert.equal(after.length, before.length + 1);
+  assert.equal(after.at(-1).type, "review.publication_authorized");
+  assert.match(after.at(-1).payload.authorization.payload.sourceRef, /:guided-review-v2:sha256:/u);
+  assert.notEqual(await readFile(journal, "utf8"), "");
+});
+
+test("ignored symlinked, hard-linked, and replaced projections cannot block a previously displayed bound answer", async (t) => {
+  for (const kind of ["symlink", "hardlink", "replaced"]) await t.test(kind, async () => {
+    const value = await activeGuidedReviewProjectionFixture();
+    const { active, prepared } = value;
+    const sessionBefore = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
+    const projectionPath = active.projection.projectionPath;
+    const outside = kind === "replaced" ? null : join(await mkdtemp(join(tmpdir(), "shield-guided-projection-outside-")), "projection.json");
+    if (outside !== null) await writeFile(outside, "outside projection\n", { mode: 0o600 });
+    const installIgnoredStorage = async () => {
+      await unlink(projectionPath).catch(() => undefined);
+      if (kind === "symlink") await symlink(outside, projectionPath);
+      else if (kind === "hardlink") await link(outside, projectionPath);
+      else await writeFile(projectionPath, "replaced projection storage\n", { mode: 0o600 });
+    };
+    await installIgnoredStorage();
+    const outsideBefore = outside === null ? null : { bytes: await readFile(outside, "utf8"), stat: await lstat(outside) };
+    const hostilePathBefore = await lstat(projectionPath);
+
+    const materialized = await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: prepared.root, preparation: value.preparation,
+      resolution: value.resolution, expectedSessionDigest: active.sessionDigest }, projectionDependencies());
+    if (kind === "replaced") assert.equal(materialized.state, "ready", JSON.stringify(materialized));
+    else assert.equal(materialized.state, "projection_unavailable", JSON.stringify(materialized));
+    assert.deepEqual(JSON.parse(await readFile(active.paths.sessionPath, "utf8")), sessionBefore);
+    if (outside !== null) {
+      assert.equal(await readFile(outside, "utf8"), outsideBefore.bytes);
+      const outsideAfterMaterialization = await lstat(outside);
+      assert.equal(outsideAfterMaterialization.dev, outsideBefore.stat.dev);
+      assert.equal(outsideAfterMaterialization.ino, outsideBefore.stat.ino);
+      const hostilePathAfterMaterialization = await lstat(projectionPath);
+      assert.equal(hostilePathAfterMaterialization.dev, hostilePathBefore.dev);
+      assert.equal(hostilePathAfterMaterialization.ino, hostilePathBefore.ino);
+    } else {
+      await installIgnoredStorage();
+    }
+
+    const answeredRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+      "--guided-review-question-digest", active.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(answeredRun.status, 0, answeredRun.stderr);
+    const answered = JSON.parse(answeredRun.stdout);
+    if (kind === "replaced") {
+      assert.equal(answered.state, "guided_review_in_progress");
+      assert.equal(answered.projection.state, "ready");
+    } else {
+      assert.equal(answered.state, "guided_review_decision_recorded");
+      assert.equal(answered.projection.state, "projection_unavailable");
+    }
+    const sessionAfter = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
+    assert.equal(sessionAfter.decisions.length, sessionBefore.decisions.length + 1);
+    assert.equal(sessionAfter.decisions.at(-1).observation, "PASS");
+    if (outside !== null) {
+      assert.equal(await readFile(outside, "utf8"), outsideBefore.bytes);
+      const outsideAfter = await lstat(outside);
+      assert.equal(outsideAfter.dev, outsideBefore.stat.dev);
+      assert.equal(outsideAfter.ino, outsideBefore.stat.ino);
+      const hostilePathAfter = await lstat(projectionPath);
+      assert.equal(hostilePathAfter.dev, hostilePathBefore.dev);
+      assert.equal(hostilePathAfter.ino, hostilePathBefore.ino);
+    }
+
+    const duplicateRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+      "--guided-review-question-digest", active.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(duplicateRun.status, 1);
+    assert.match(duplicateRun.stderr, /GUIDED_REVIEW_ANSWER_STALE/u);
+    assert.deepEqual(JSON.parse(await readFile(active.paths.sessionPath, "utf8")), sessionAfter);
+    if (outside !== null) {
+      assert.equal(await readFile(outside, "utf8"), outsideBefore.bytes);
+      const outsideAfterDuplicate = await lstat(outside);
+      assert.equal(outsideAfterDuplicate.dev, outsideBefore.stat.dev);
+      assert.equal(outsideAfterDuplicate.ino, outsideBefore.stat.ino);
+    }
+  });
+});
+
+async function activeGuidedReviewProjectionFixture() {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const evidence = await preparedGuidedReviewContext(prepared);
+  const routedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(routedRun.status, 0, routedRun.stderr);
+  await authorPreparedFuryRoute(prepared, JSON.parse(routedRun.stdout));
+  const activeRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(activeRun.status, 0, activeRun.stderr);
+  const active = JSON.parse(activeRun.stdout);
+  assert.equal(active.projection.state, "ready", JSON.stringify(active));
+  const preparation = await resolvePreparedMissionTransitionV1({ missionId: prepared.missionId, repositoryRoot: prepared.root });
+  assert.equal(preparation.state, "publication_ready");
+  const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation, repositoryRoot: prepared.root });
+  assert.equal(resolution.state, "guided_review_ready");
+  return { prepared, active, preparation, resolution };
+}
+
+function projectionDependencies(afterProjectionLockAcquired) {
+  return {
+    async runGit(root, argv) { return runGit(root, argv); },
+    resolvePaths: resolveGuidedReviewRoutePackagePathsV1,
+    readArtifact: readGuidedReviewRoutePackageJsonV1,
+    ...(afterProjectionLockAcquired === undefined ? {} : { afterProjectionLockAcquired }),
+  };
+}
+
+test("projection host rejects substituted package paths without touching outside bytes", async () => {
+  const value = await activeGuidedReviewProjectionFixture();
+  const outside = await mkdtemp(join(tmpdir(), "shield-guided-projection-hostile-path-"));
+  const sentinel = join(outside, "sentinel.json");
+  await writeFile(sentinel, "outside bytes\n", { mode: 0o600 });
+  const hostile = { ...value.resolution, paths: { ...value.resolution.paths, packageDirectory: outside,
+    routeRequestPath: sentinel, routeOverlayPath: sentinel, playbookPath: sentinel, sessionPath: sentinel } };
+  const result = await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: value.prepared.root, preparation: value.preparation,
+    resolution: hostile, expectedSessionDigest: value.active.sessionDigest }, projectionDependencies());
+  assert.equal(result.state, "projection_stale", JSON.stringify(result));
+  assert.equal(await readFile(sentinel, "utf8"), "outside bytes\n");
+  assert.equal(await lstat(join(outside, "current-projection.json")).then(() => true, () => false), false);
+  assert.equal(runGit(value.prepared.root, ["status", "--porcelain"]), "");
+});
+
+test("locked projection refresh rejects HEAD drift and preserves the prior projection bytes", async () => {
+  const value = await activeGuidedReviewProjectionFixture();
+  const path = value.active.projection.projectionPath;
+  const before = await readFile(path, "utf8");
+  const result = await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: value.prepared.root, preparation: value.preparation,
+    resolution: value.resolution, expectedSessionDigest: value.active.sessionDigest }, projectionDependencies(async () => {
+      await writeFile(join(value.prepared.root, "implementation.md"), "initial implementation\nprepared publication change\nracing change\n");
+      runGit(value.prepared.root, ["add", "implementation.md"]);
+      runGit(value.prepared.root, ["commit", "-qm", "projection race head"]);
+    }));
+  assert.equal(result.state, "projection_stale", JSON.stringify(result));
+  assert.equal(await readFile(path, "utf8"), before);
+  assert.equal(runGit(value.prepared.root, ["status", "--porcelain"]), "");
+});
+
+test("an older locked writer cannot overwrite the next-session projection", async () => {
+  const value = await activeGuidedReviewProjectionFixture();
+  const path = value.active.projection.projectionPath;
+  const oldBytes = await readFile(path, "utf8");
+  let nextSessionDigest;
+  let competing;
+  const oldInput = { repositoryRoot: value.prepared.root, preparation: value.preparation, resolution: value.resolution,
+    expectedSessionDigest: value.active.sessionDigest };
+  const oldResult = await projectCurrentGuidedReviewStepHostV1(oldInput, projectionDependencies(async () => {
+    const answered = await answerCurrentGuidedReviewSessionHostV1({ repositoryRoot: value.prepared.root, resolution: value.resolution,
+      expectedSessionDigest: value.active.sessionDigest, disposition: "pass", observation: "PASS", finding: null, condition: null,
+      decidedAt: "2026-08-14T12:00:00.000Z" });
+    assert.equal(answered.state, "ready", JSON.stringify(answered));
+    nextSessionDigest = answered.value.sessionDigest;
+    competing = await projectCurrentGuidedReviewStepHostV1({ ...oldInput, expectedSessionDigest: nextSessionDigest }, projectionDependencies());
+  }));
+  assert.equal(competing.state, "projection_unavailable", JSON.stringify(competing));
+  assert.equal(oldResult.state, "projection_stale", JSON.stringify(oldResult));
+  assert.equal(await readFile(path, "utf8"), oldBytes);
+  const current = await projectCurrentGuidedReviewStepHostV1({ ...oldInput, expectedSessionDigest: nextSessionDigest }, projectionDependencies());
+  assert.equal(current.state, "ready", JSON.stringify(current));
+  assert.notEqual(await readFile(path, "utf8"), oldBytes);
+  assert.equal(current.projection.sessionDigest, nextSessionDigest);
+  assert.equal(runGit(value.prepared.root, ["status", "--porcelain"]), "");
+});
+
+test("post-replace session drift restores prior projection bytes without rolling back the answer", async () => {
+  const value = await activeGuidedReviewProjectionFixture();
+  const path = value.active.projection.projectionPath;
+  const priorBytes = await readFile(path, "utf8");
+  let nextSessionDigest;
+  const dependencies = { ...projectionDependencies(), afterProjectionReplace: async () => {
+    const answered = await answerCurrentGuidedReviewSessionHostV1({ repositoryRoot: value.prepared.root, resolution: value.resolution,
+      expectedSessionDigest: value.active.sessionDigest, disposition: "pass", observation: "PASS", finding: null, condition: null,
+      decidedAt: "2026-08-14T12:01:00.000Z" });
+    assert.equal(answered.state, "ready", JSON.stringify(answered));
+    nextSessionDigest = answered.value.sessionDigest;
+  } };
+  const result = await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: value.prepared.root, preparation: value.preparation,
+    resolution: value.resolution, expectedSessionDigest: value.active.sessionDigest }, dependencies);
+  assert.equal(result.state, "projection_stale", JSON.stringify(result));
+  assert.equal(await readFile(path, "utf8"), priorBytes);
+  const session = JSON.parse(await readFile(value.active.paths.sessionPath, "utf8"));
+  assert.equal(session.sessionDigest, nextSessionDigest);
+  assert.equal(session.decisions.at(-1).observation, "PASS");
+  assert.equal(runGit(value.prepared.root, ["status", "--porcelain"]), "");
+});
+
+test("prepare-next bare answers preserve exact human follow-ups and mutate at most one current question", async () => {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const evidence = await preparedGuidedReviewContext(prepared);
+  const routedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "unused\n" });
+  assert.equal(routedRun.status, 0, routedRun.stderr);
+  await authorPreparedFuryRoute(prepared, JSON.parse(routedRun.stdout));
+  const activeRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "unused\n" });
+  assert.equal(activeRun.status, 0, activeRun.stderr);
+  const active = JSON.parse(activeRun.stdout);
+  const sessionPath = active.paths.sessionPath;
+  const projectionPath = active.projection.projectionPath;
+  const journalBefore = await readFile(journalPath(prepared.root, prepared.missionId), "utf8");
+  const sessionBefore = await readFile(sessionPath, "utf8");
+  const projectionBefore = await readFile(projectionPath, "utf8");
+  const projectionStatBefore = await lstat(projectionPath);
+
+  const unsafeLegacy = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS", "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(unsafeLegacy.status, 1);
+  assert.match(unsafeLegacy.stderr, /displayed --guided-review-question-digest/u);
+  assert.equal(await readFile(sessionPath, "utf8"), sessionBefore);
+
+  const confirmationRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-response", "PASS because it looks good",
+    "--guided-review-question-digest", active.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(confirmationRun.status, 0, confirmationRun.stderr);
+  const confirmation = JSON.parse(confirmationRun.stdout);
+  assert.equal(confirmation.state, "confirmation_required");
+  assert.equal(confirmation.code, "GUIDED_REVIEW_ANSWER_CONFIRMATION_REQUIRED");
+  assert.equal(confirmation.questionEnvelope.questionDigest, active.questionEnvelope.questionDigest);
+  assert.deepEqual(confirmation.acceptedAnswers, ["PASS", "FAIL", "NOT_OBSERVED", "CONDITIONAL_PASS"]);
+  assert.equal(await readFile(sessionPath, "utf8"), sessionBefore);
+  assert.equal(await readFile(journalPath(prepared.root, prepared.missionId), "utf8"), journalBefore);
+  assert.equal(await readFile(projectionPath, "utf8"), projectionBefore);
+  assert.equal((await lstat(projectionPath)).ino, projectionStatBefore.ino);
+
+  for (const [answer, requiredField] of [["FAIL", "finding"], ["NOT_OBSERVED", "finding"], ["CONDITIONAL_PASS", "condition"]]) {
+    const followUpRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--guided-review-answer", answer,
+      "--guided-review-question-digest", active.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(followUpRun.status, 0, followUpRun.stderr);
+    const followUp = JSON.parse(followUpRun.stdout);
+    assert.equal(followUp.state, "follow_up_required");
+    assert.equal(followUp.canonicalAnswer, answer);
+    assert.equal(followUp.requiredField, requiredField);
+    assert.equal(await readFile(sessionPath, "utf8"), sessionBefore);
+    assert.equal(await readFile(journalPath(prepared.root, prepared.missionId), "utf8"), journalBefore);
+    assert.equal(await readFile(projectionPath, "utf8"), projectionBefore);
+    assert.equal((await lstat(projectionPath)).ino, projectionStatBefore.ino);
+    assert.doesNotMatch(`${followUpRun.stdout}${followUpRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  }
+
+  const exactFinding = "The exact current behavior violates the inspected boundary.";
+  const failed = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "FAIL", "--guided-review-finding", exactFinding,
+    "--guided-review-question-digest", active.questionEnvelope.questionDigest,
+    "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(failed.status, 0, failed.stderr);
+  const failedOutput = JSON.parse(failed.stdout);
+  let session = JSON.parse(await readFile(sessionPath, "utf8"));
+  assert.deepEqual({ observation: session.decisions.at(-1).observation, finding: session.decisions.at(-1).finding },
+    { observation: "FAIL", finding: exactFinding });
+
+  const exactCondition = "Proceed only after the named boundary is corrected.";
+  const conditional = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "CONDITIONAL_PASS", "--guided-review-condition", exactCondition,
+    "--guided-review-question-digest", failedOutput.questionEnvelope.questionDigest,
+    "--passcode-stdin", "--json"], { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(conditional.status, 0, conditional.stderr);
+  const conditionalOutput = JSON.parse(conditional.stdout);
+  session = JSON.parse(await readFile(sessionPath, "utf8"));
+  assert.deepEqual({ observation: session.decisions.at(-1).observation, condition: session.decisions.at(-1).condition },
+    { observation: "CONDITIONAL_PASS", condition: exactCondition });
+
+  await unlink(conditionalOutput.projection.projectionPath);
+  assert.equal(await lstat(conditionalOutput.projection.projectionPath).then(() => true, () => false), false);
+  const passed = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-answer", "PASS",
+    "--guided-review-question-digest", conditionalOutput.questionEnvelope.questionDigest, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(passed.status, 0, passed.stderr);
+  session = JSON.parse(await readFile(sessionPath, "utf8"));
+  assert.equal(session.decisions.at(-1).observation, "PASS");
+  assert.notEqual(session.currentStepId, active.currentStep.stepId);
+  assert.equal(await lstat(passed.status === 0 ? JSON.parse(passed.stdout).projection.projectionPath : projectionPath).then(() => true, () => false), true);
+  const freshPreparation = await resolvePreparedMissionTransitionV1({ missionId: prepared.missionId, repositoryRoot: prepared.root });
+  assert.equal(freshPreparation.state, "publication_ready");
+  const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: freshPreparation, repositoryRoot: prepared.root });
+  assert.equal(resolution.state, "guided_review_ready");
+  const expectedSessionDigest = session.sessionDigest;
+  const decisionInput = { repositoryRoot: prepared.root, resolution, expectedSessionDigest, disposition: "pass",
+    observation: "PASS", finding: null, condition: null, decidedAt: new Date().toISOString() };
+  const firstCas = await answerCurrentGuidedReviewSessionHostV1(decisionInput);
+  assert.equal(firstCas.state, "ready", JSON.stringify(firstCas));
+  const staleCas = await answerCurrentGuidedReviewSessionHostV1(decisionInput);
+  assert.equal(staleCas.state, "invalid");
+  assert.equal(staleCas.code, "GUIDED_REVIEW_ANSWER_STALE");
+  assert.equal(await readFile(journalPath(prepared.root, prepared.missionId), "utf8"), journalBefore);
+});
+
+async function completedPreparedGuidedReviewFixture() {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const evidence = await preparedGuidedReviewContext(prepared);
+  const routedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "unused\n" });
+  assert.equal(routedRun.status, 0, routedRun.stderr);
+  const routed = JSON.parse(routedRun.stdout);
+  await authorPreparedFuryRoute(prepared, routed);
+  const activeRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "unused\n" });
+  assert.equal(activeRun.status, 0, JSON.stringify(activeRun));
+  const active = JSON.parse(activeRun.stdout);
+  const playbook = JSON.parse(await readFile(active.paths.playbookPath, "utf8"));
+  let session = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
+  while (session.state !== "completed") session = await passCurrentGuidedReviewStep(prepared, active.paths, session.decisions.length + 1);
+  return { prepared, routed, active, playbook, session };
+}
+
+test("completed YES revalidates before display and after signing; every route artifact or HEAD mutation appends zero", async (t) => {
+  for (const kind of ["request", "ledger", "overlay", "playbook", "session", "graph", "HEAD"]) await t.test(kind, async () => {
+    const value = await completedPreparedGuidedReviewFixture();
+    const path = journalPath(value.prepared.root, value.prepared.missionId);
+    const before = await readFile(path, "utf8");
+    const result = await runPreparedYesAtDecision(value.prepared, async () => {
+      if (kind === "HEAD") {
+        await writeFile(join(value.prepared.root, "implementation.md"), "mutated during Guided Review signing\n");
+        runGit(value.prepared.root, ["add", "implementation.md"]);
+        runGit(value.prepared.root, ["commit", "-qm", "mutate guided review head"]);
+        return;
+      }
+      const target = kind === "request" ? value.routed.paths.routeRequestPath
+        : kind === "ledger" ? join(value.prepared.root, ".shield", "dispatch-receipts.jsonl")
+          : kind === "overlay" ? value.routed.paths.routeOverlayPath
+            : kind === "playbook" ? value.active.paths.playbookPath
+              : kind === "graph" ? deriveMissionReviewedTransitionGraphMaterializationPathV1(
+                value.prepared.root,
+                value.prepared.missionId,
+              ).graphPath
+                : value.active.paths.sessionPath;
+      if (kind === "ledger") await writeFile(target, `${await readFile(target, "utf8")}{malformed\n`);
+      else {
+        const artifact = JSON.parse(await readFile(target, "utf8"));
+        artifact.schemaVersion = 99;
+        await writeFile(target, canonicalJson(artifact));
+      }
+    });
+    assert.equal(result.mutated, true, kind);
+    assert.equal(result.status, 1, `${kind}: ${result.stderr}`);
+    assert.match(result.stderr, /changed while authorization was being signed|no longer complete|INVALID|MALFORMED|HEAD|ledger|graph/iu, kind);
+    assert.equal(await readFile(path, "utf8"), before, kind);
+  });
+});
+
+test("completed YES read-only reload never recreates a deleted request, overlay, playbook, or session", async (t) => {
+  for (const phase of ["before-display", "after-signing"]) for (const kind of ["request", "overlay", "playbook", "session"]) await t.test(`${phase}:${kind}`, async () => {
+    const value = await completedPreparedGuidedReviewFixture();
+    const journal = journalPath(value.prepared.root, value.prepared.missionId);
+    const before = await readFile(journal, "utf8");
+    const target = kind === "request" ? value.routed.paths.routeRequestPath
+      : kind === "overlay" ? value.routed.paths.routeOverlayPath
+        : kind === "playbook" ? value.active.paths.playbookPath : value.active.paths.sessionPath;
+    const result = phase === "after-signing"
+      ? await runPreparedYesAtDecision(value.prepared, async () => unlink(target))
+      : await (async () => {
+          await unlink(target);
+          const child = run(value.prepared.root, ["mission", "prepare-next", "--mission-id", value.prepared.missionId,
+            "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+          { env: { HOME: value.prepared.homeRoot }, input: "prepared-passcode\n" });
+          return { ...child, mutated: true };
+        })();
+    assert.equal(result.mutated, true, `${phase}:${kind}`);
+    assert.equal(result.status, 1, `${kind}: ${result.stderr}`);
+    assert.match(result.stderr, /no longer complete|no longer ready|missing|not found|unavailable|failed/iu, kind);
+    await assert.rejects(readFile(target), { code: "ENOENT" });
+    assert.equal(await readFile(journal, "utf8"), before, kind);
+  });
+});
+
+test("prepare-next No and Cancel reject route context before PIN and preserve their one-PIN/no-effect boundaries", async () => {
+  for (const choice of ["no", "cancel"]) {
+    const prepared = await preparedPublicationCliFixture();
+    const evidence = await preparedGuidedReviewContext(prepared);
+    const path = journalPath(prepared.root, prepared.missionId);
+    const before = await readFile(path, "utf8");
+    const rejected = run(
+      prepared.root,
+      ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", choice,
+        "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+      { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" },
+    );
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, new RegExp(`${choice === "no" ? "No" : "Cancel"} cannot include --guided-review-context`, "u"));
+    assert.doesNotMatch(rejected.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+    assert.equal(await readFile(path, "utf8"), before);
+  }
+
+  const prepared = await preparedPublicationCliFixture();
+  const beforeEntries = await readJournalEntries(prepared.root, prepared.missionId);
+  const accepted = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "no", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n" },
+  );
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal((accepted.stderr.match(/SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/gu) ?? []).length, 1);
+  const afterEntries = await readJournalEntries(prepared.root, prepared.missionId);
+  assert.equal(afterEntries.length, beforeEntries.length + 1);
+  assert.equal(afterEntries.at(-1).type, "review.publication_authorized");
+  assert.equal(afterEntries.filter(({ type }) => type === "review.publication_authorized").length,
+    beforeEntries.filter(({ type }) => type === "review.publication_authorized").length + 1);
+});
+
+test("prepare-next No and Cancel never resume Guided Review or inspect poisoned overlay and Fury state", async (t) => {
+  for (const choice of ["no", "cancel"]) await t.test(choice, async () => {
+    const prepared = await preparedPublicationCliFixture();
+    const outside = await mkdtemp(join(tmpdir(), "shield-poisoned-guided-review-"));
+    await writeFile(join(outside, "route-overlay.json"), "{malformed\n");
+    await symlink(outside, join(prepared.root, ".shield", "tmp", "guided-review"));
+    const ledger = join(prepared.root, ".shield", "dispatch-receipts.jsonl");
+    const ledgerBefore = await readFile(ledger, "utf8");
+    const rejectedAnswer = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", choice, "--guided-review-answer", "PASS", "--guided-review-question-digest", `sha256:${"x".repeat(43)}`,
+      "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(rejectedAnswer.status, 1);
+    assert.match(rejectedAnswer.stderr, /Only the Guided Review Yes route accepts/u);
+    assert.doesNotMatch(`${rejectedAnswer.stdout}${rejectedAnswer.stderr}`, /ROUTE|OVERLAY|FURY|DISPATCH_LEDGER|Passcode:/u);
+    const result = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", choice, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: choice === "no" ? "prepared-passcode\n" : "must-not-be-read\n" });
+    assert.equal(result.status, choice === "no" ? 0 : 1, result.stderr);
+    assert.equal((result.stderr.match(/SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/gu) ?? []).length, choice === "no" ? 1 : 0);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /ROUTE|OVERLAY|FURY|DISPATCH_LEDGER|Passcode:/u);
+    assert.equal(await readFile(ledger, "utf8"), ledgerBefore);
+  });
 });
 
 test("schema-9 publication-authorize CLI signs once, retries without passcode, queues, and rejects file-delivered outcomes", async () => {
