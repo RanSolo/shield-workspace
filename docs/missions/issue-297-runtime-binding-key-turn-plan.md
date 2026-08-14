@@ -46,21 +46,47 @@ model, and executor identities.
 
 ### 1. Closed initial-binding transition
 
-Extend the authority-none preparation contracts with one additive transition
-variant for `initial_runtime_binding`. Its reviewed decisions are limited to:
+Extend the authority-none preparation contracts with one additive, distinct
+transition-plan/intent graph variant for `initial_runtime_binding`. That graph
+is materialized before any mission authority mutation and remains immutable.
+The resolver dispatches strictly by the stored intent kind; it never
+reinterprets a `fresh_authorize_wheels_up` graph as a binding graph.
+
+Its reviewed decisions are:
 
 - exact mission, subject, repository, planning base, and reviewed-plan identity;
 - May as the adapter-fixed seat;
-- reviewed model, reasoning-runtime, and tool-executor identities;
+- exact approved paths, actions, effect classes, effect keys, capabilities, and
+  validation-command IDs;
+- exact planning base and reviewed model, reasoning-runtime, and tool-executor
+  identities;
 - unchanged exclusions.
 
 The host derives all current facts: repository root, branch, HEAD, mission
 revision, journal sequence and digest, active implementation authority and
-digest, signer binding, binding ID/version, approved scope, paths, validation
-commands, and remaining gates. The preparation library remains authority-none
-and receives only a closed observation projection.
+digest, signer binding, binding ID/version, and remaining gates. It requires
+exact equality between every reviewed scope/base/model field, the active
+implementation authority, and the generated binding; lawful subsets accepted
+by the lower-level validator are not eligible for this deterministic adapter.
+The preparation library remains authority-none and receives only a closed
+observation projection.
 
-The transition is ready only when:
+The ordered resolver matrix is literal:
+
+1. `fresh_authorize_wheels_up` graph plus fresh waiting state selects existing
+   A1 readiness;
+2. the same graph plus its exact four-entry lineage selects existing A1 retry,
+   B1 publication readiness/retry, or its existing stable blocker;
+3. `initial_runtime_binding` graph plus current authorization, exactly one
+   matching active implementation authority, and zero historical runtime
+   bindings selects `runtime_binding_ready`;
+4. the same binding graph plus exactly one matching prepared initial binding
+   selects `runtime_binding_already_authorized`;
+5. a legacy partial binding, any historical/superseded binding, wrong graph
+   kind, partial/duplicate authority, or ambiguous state returns a stable
+   blocker and never falls through to another transition.
+
+The initial-binding transition is ready only when:
 
 - the protected graph and Fury attribution remain exact and production-eligible;
 - schema 9 mission authorization is current;
@@ -87,12 +113,18 @@ Extract the existing effectful body of `mission bind` into one package-internal
 - the prepared initial-binding branch of `mission prepare-next`.
 
 The executor has explicit `legacy` and `prepared` modes and bounded injectable
-dependencies for rendering, passcode input, signing, and atomic append.
-Legacy mode preserves the existing input, IDs, source reference, output, and
-failure behavior. Prepared mode accepts only the exact host-produced candidate
-and revalidates the protected graph, Fury attribution, configuration, journal,
-signer, implementation authority, and repository observation before display,
-after PIN, and before append.
+dependencies for rendering, passcode input, signing, legacy append, and atomic
+append. Legacy mode preserves the existing input, IDs, source reference,
+output, `appendProfileAwareMissionEntryV1` call, and failure behavior. Prepared
+mode accepts only the exact host-produced candidate and uses the existing
+single-entry atomic CAS surface.
+
+Prepared execution captures configuration identity and bytes, protected graph
+and raw Fury attribution, exact journal bytes/digest, signer-store snapshot,
+active implementation authority, and repository observation before rendering.
+It repeats and compares every snapshot after signing and immediately before
+atomic append. Any changed identity, bytes, sequence, authority, root, branch,
+HEAD, scope, signer, graph, or attribution fails without append.
 
 Both modes reuse:
 
@@ -100,7 +132,9 @@ Both modes reuse:
 - `validateSchema9RuntimeBindingAuthorizationPayload`;
 - `createProfileAwareRuntimeBindingRecordedEntryV1`;
 - `signMissionPayload`;
-- `appendProfileAwareMissionEntriesAtomicV1` with one entry and the exact
+- their existing append semantics: legacy retains
+  `appendProfileAwareMissionEntryV1`; prepared uses
+  `appendProfileAwareMissionEntriesAtomicV1` with one entry and the exact
   starting journal SHA-256.
 
 Prepared identity formulas remain deterministic:
@@ -166,14 +200,16 @@ packet completion is not a new mission or PIN gate.
 - `packages/mission-preparation/src/preparation-compiler-v1.mts`
 - `packages/mission-preparation/tests/contracts-v1.test.mjs`
 - `packages/mission-preparation/tests/preparation-compiler-v1.test.mjs`
+- `packages/mission-preparation/tests/package-boundary.test.mjs`
+- `packages/shield-team-system/src/mission-builder-v1.mts`
 - `packages/shield-team-system/src/mission-preparation-host-v1.mts`
 - `packages/shield-team-system/src/runtime-binding-executor-v1.mts`
 - `packages/shield-team-system/src/mission-cli.mts`
+- `packages/shield-team-system/tests/mission-builder-v1.test.mjs`
 - `packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs`
 - `packages/shield-team-system/tests/runtime-binding-executor-v1.test.mjs`
 - `packages/shield-team-system/tests/supervised-cli.test.mjs`
-- `packages/shield-team-system/package.json` only if a focused inferred target
-  cannot be expressed without a script.
+- `packages/shield-team-system/tests/package-surface.test.mjs`
 
 No mission-preparation store, seat-dispatch store, profile-aware journal
 producer, package export, or authority contract change is authorized.
@@ -182,9 +218,10 @@ producer, package export, or authority contract change is authorized.
 
 - `npm exec nx run @shield/mission-preparation:build`
 - `npm exec nx run @shield/mission-preparation:test`
-- focused Team System host, executor, and real-CLI tests;
-- existing profile-aware runtime-binding lifecycle tests;
+- `node --test packages/mission-preparation/tests/contracts-v1.test.mjs packages/mission-preparation/tests/preparation-compiler-v1.test.mjs packages/mission-preparation/tests/package-boundary.test.mjs`;
+- `node --test packages/shield-team-system/tests/mission-builder-v1.test.mjs packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs packages/shield-team-system/tests/runtime-binding-executor-v1.test.mjs packages/shield-team-system/tests/supervised-cli.test.mjs packages/shield-team-system/tests/profile-aware-mission-v1.test.mjs packages/shield-team-system/tests/package-surface.test.mjs`;
 - `npm exec nx run @shield/team-system:build`
+- `npm exec nx run @shield/team-system:test`;
 - exact-base/head `npm exec nx affected -t build,test --base=3d3b80cdebe8b6e9858a27ffbdbe8090688ebbd1 --head=HEAD`;
 - package-surface validation and `git diff --check`;
 - Mack exact-revision validation and Fury exact-revision conformance review.
