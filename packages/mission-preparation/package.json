@@ -21,6 +21,15 @@
     "test": "node --test tests/*.test.mjs",
     "prepack": "npm run build"
   },
+  "nx": {
+    "targets": {
+      "build": {
+        "outputs": [
+          "{projectRoot}/dist"
+        ]
+      }
+    }
+  },
   "devDependencies": {
     "@types/node": "20.12.12",
     "typescript": "5.4.5"

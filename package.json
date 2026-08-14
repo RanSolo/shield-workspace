@@ -13,6 +13,7 @@
     "test:shield": "nx test @shield/team-system",
     "test:multiband": "nx test @shield/multiband",
     "build:multiband": "nx build @shield/multiband",
+    "verify:team-system-clean-build": "node tools/verify-team-system-clean-build.mjs",
     "affected:test": "nx affected -t test",
     "affected:build": "nx affected -t build"
   },
