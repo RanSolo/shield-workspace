@@ -246,6 +246,22 @@ protected transition policy. `--guided-review-choice cancel` stops before PIN.
 In an interactive terminal, omitting the choice presents
 `Enter Guided Review? Yes / No / Cancel`.
 
+## Current-step local projection
+
+An active publication Guided Review also materializes
+`current-projection.json` inside the content-addressed route-request package.
+The closed `guided.review.projection.v1` document is explicitly
+`authority: "none"` and `durability: "ephemeral"`. It binds the planning base,
+review base, exact attached branch and HEAD, request, compiled route, Fury
+overlay, playbook, session digest, stage, checkpoint, and current step.
+
+Behavior groups contain only bounded repository-relative literal targets and
+structured `git` argv descriptors. They are local navigation aids, not review
+evidence or publication authority. The host refuses symlinked, hard-linked,
+non-0600, stale-HEAD, detached-branch, and non-descendant projections. A stale
+or unavailable projection never rewrites the durable session, never rolls back
+an accepted answer, and is not included in the publication bundle or PIN turn.
+
 Route requests, Fury overlays, compiled playbooks, sessions, fork artifacts,
 runtime handoffs, and publication bundles are content-addressed. Session updates
 use an exclusive lock, exact-byte compare, file sync, atomic rename, and

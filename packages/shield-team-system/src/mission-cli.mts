@@ -102,6 +102,7 @@ import { type GuidedReviewPublicationBundleV1 } from "./guided-review-v1.mjs";
 import { prepareGuidedReviewRouteRequestHostV1 } from "./guided-review-route-preparation-host-v1.mjs";
 import { readGuidedReviewRoutePackageJsonV1 } from "./guided-review-route-request-v1.mjs";
 import { resolveGuidedReviewRoutePreparationHostV1 } from "./guided-review-route-resolution-host-v1.mjs";
+import { projectCurrentGuidedReviewStepHostV1, type GuidedReviewProjectionHostResultV1 } from "./guided-review-projection-host-v1.mjs";
 import { answerCurrentGuidedReviewSessionHostV1, revalidateCompletedGuidedReviewSessionHostV1,
   startOrResumeGuidedReviewSessionHostV1 } from "./guided-review-session-host-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
@@ -1384,7 +1385,11 @@ function renderRoutePreparationRequired(result: Awaited<ReturnType<typeof prepar
 
 function renderGuidedReviewInProgress(
   result: Awaited<ReturnType<typeof startOrResumeGuidedReviewSessionHostV1>> & { state: "guided_review_in_progress" },
+  projection: GuidedReviewProjectionHostResultV1,
 ): string {
+  const targets = projection.state === "ready" ? projection.projection.behaviorGroups.flatMap((group) => group.targets.map((target) =>
+    `  - [${target.targetType}] ${target.relativePath} old ${target.oldRange.start},${target.oldRange.lines} new ${target.newRange.start},${target.newRange.lines}; argv=${JSON.stringify(target.navigation.argv)}`)) :
+    [`  - ${projection.code}: ${projection.errors.join(" ")}`];
   return [
     "GUIDED REVIEW IN PROGRESS",
     `Mission: ${result.missionId}`,
@@ -1400,6 +1405,9 @@ function renderGuidedReviewInProgress(
     `Acceptance criteria: ${result.currentStep?.criterionRefs.join(", ") || "none"}`,
     `Route rationale: ${result.routeContext.rationale}`,
     `Route risks: ${result.routeContext.risks.join("; ") || "none"}`,
+    `Projection: ${projection.state === "ready" ? projection.projectionPath : projection.state}`,
+    "Local targets:",
+    ...targets,
     `Playbook: ${result.paths.playbookPath}`,
     `Session: ${result.paths.sessionPath}`,
   ].join("\n");
@@ -1664,7 +1672,20 @@ async function prepareNext(args: string[]): Promise<number> {
           }
         }
         if (resumed.state === "guided_review_in_progress") {
-          output(resumed, options.flags.has("--json"), renderGuidedReviewInProgress(resumed));
+          const projectionResolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation: result, repositoryRoot: root });
+          const projection: GuidedReviewProjectionHostResultV1 = projectionResolution.state === "guided_review_ready"
+            ? await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: root, preparation: result, resolution: projectionResolution,
+              expectedSessionDigest: resumed.sessionDigest })
+            : Object.freeze({ state: "projection_unavailable", code: "GUIDED_REVIEW_PROJECTION_UNAVAILABLE",
+              errors: Object.freeze(["The exact Guided Review route is unavailable for current-step projection."]) });
+          if (answerConsumed && projection.state !== "ready") {
+            const recorded = Object.freeze({ schemaVersion: 1, state: "guided_review_decision_recorded", missionId: resumed.missionId,
+              exactRevision: resumed.exactRevision, sessionDigest: resumed.sessionDigest, projection, session: resumed });
+            output(recorded, options.flags.has("--json"), ["GUIDED REVIEW DECISION RECORDED", `Session: ${resumed.sessionDigest}`,
+              `Projection: ${projection.code}: ${projection.errors.join(" ")}`].join("\n"));
+            return 0;
+          }
+          output(Object.freeze({ ...resumed, projection }), options.flags.has("--json"), renderGuidedReviewInProgress(resumed, projection));
           return 0;
         }
         if (currentAnswer !== null && !answerConsumed) throw new MissionCliError("Completed Guided Review has no current question to answer.", 1);

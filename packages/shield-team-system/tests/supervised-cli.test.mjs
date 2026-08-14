@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
-import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -31,6 +31,8 @@ import {
 import { createGuidedReviewDriverReceiptV1 } from "../dist/guided-review-driver-v1.mjs";
 import { createGuidedReviewRouteOverlayV1 } from "../dist/guided-review-route-overlay-v1.mjs";
 import { resolveGuidedReviewRoutePreparationHostV1 } from "../dist/guided-review-route-resolution-host-v1.mjs";
+import { projectCurrentGuidedReviewStepHostV1 } from "../dist/guided-review-projection-host-v1.mjs";
+import { readGuidedReviewRoutePackageJsonV1, resolveGuidedReviewRoutePackagePathsV1 } from "../dist/guided-review-route-request-v1.mjs";
 import { answerCurrentGuidedReviewSessionHostV1 } from "../dist/guided-review-session-host-v1.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import {
@@ -1837,6 +1839,17 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
   assert.equal(Array.isArray(active.routeContext.risks), true);
   assert.equal(Object.hasOwn(active, "currentStage"), true);
   assert.equal(Object.hasOwn(active, "currentStep"), true);
+  assert.equal(active.projection.state, "ready", JSON.stringify(active.projection));
+  assert.equal(active.projection.projection.authority, "none");
+  assert.equal(active.projection.projection.durability, "ephemeral");
+  assert.equal(active.projection.projection.sessionDigest, active.sessionDigest);
+  assert.equal(active.projection.projection.stepId, active.currentStep.stepId);
+  assert.equal(active.projection.projection.exactRevision, active.exactRevision);
+  assert.equal(active.projection.projection.behaviorGroups.flatMap((group) => group.targets).every((target) =>
+    target.navigation.executor === "git" && target.navigation.argv.at(-1).startsWith(":(top,literal)")), true);
+  const projectionStat = await lstat(active.projection.projectionPath);
+  assert.equal(projectionStat.isFile() && !projectionStat.isSymbolicLink() && projectionStat.nlink === 1, true);
+  assert.equal(projectionStat.mode & 0o777, 0o600);
   assert.doesNotMatch(`${activeRun.stdout}${activeRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
 
   const playbook = JSON.parse(await readFile(active.paths.playbookPath, "utf8"));
@@ -1849,6 +1862,11 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
   assert.equal(progressed.state, "guided_review_in_progress");
   assert.notEqual(progressed.sessionDigest, active.sessionDigest);
   assert.notEqual(progressed.currentStep.stepId, active.currentStep.stepId);
+  assert.equal(progressed.projection.state, "ready", JSON.stringify(progressed.projection));
+  assert.equal(progressed.projection.projection.sessionDigest, progressed.sessionDigest);
+  assert.equal(progressed.projection.projection.stepId, progressed.currentStep.stepId);
+  assert.notEqual(progressed.projection.projection.projectionDigest, active.projection.projection.projectionDigest);
+  assert.equal(progressed.projection.projectionPath, active.projection.projectionPath);
   assert.equal(JSON.parse(await readFile(active.paths.sessionPath, "utf8")).decisions.at(-1).observation, "PASS");
   assert.doesNotMatch(`${progressedRun.stdout}${progressedRun.stderr}`, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
 
@@ -1874,6 +1892,151 @@ test("prepare-next YES automatically resumes pending, active, progressed, and co
   assert.equal(after.at(-1).type, "review.publication_authorized");
   assert.match(after.at(-1).payload.authorization.payload.sourceRef, /:guided-review-v2:sha256:/u);
   assert.notEqual(await readFile(journal, "utf8"), "");
+});
+
+test("accepted Guided Review answers survive unavailable symlinked and hard-linked ephemeral projections", async (t) => {
+  for (const kind of ["symlink", "hardlink"]) await t.test(kind, async () => {
+    const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+    const evidence = await preparedGuidedReviewContext(prepared);
+    const routedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(routedRun.status, 0, routedRun.stderr);
+    const routed = JSON.parse(routedRun.stdout);
+    await authorPreparedFuryRoute(prepared, routed);
+    const activeRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(activeRun.status, 0, activeRun.stderr);
+    const active = JSON.parse(activeRun.stdout);
+    assert.equal(active.projection.state, "ready");
+    const sessionBefore = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
+    const outside = join(await mkdtemp(join(tmpdir(), "shield-guided-projection-outside-")), "projection.json");
+    await writeFile(outside, "outside projection\n", { mode: 0o600 });
+    await unlink(active.projection.projectionPath);
+    if (kind === "symlink") await symlink(outside, active.projection.projectionPath);
+    else await link(outside, active.projection.projectionPath);
+
+    const answeredRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+      "--guided-review-choice", "yes", "--guided-review-answer", "PASS", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+    assert.equal(answeredRun.status, 0, answeredRun.stderr);
+    const answered = JSON.parse(answeredRun.stdout);
+    assert.equal(answered.state, "guided_review_decision_recorded");
+    assert.equal(answered.projection.state, "projection_unavailable");
+    const sessionAfter = JSON.parse(await readFile(active.paths.sessionPath, "utf8"));
+    assert.equal(sessionAfter.decisions.length, sessionBefore.decisions.length + 1);
+    assert.equal(sessionAfter.decisions.at(-1).observation, "PASS");
+    assert.equal(await readFile(outside, "utf8"), "outside projection\n");
+  });
+});
+
+async function activeGuidedReviewProjectionFixture() {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const evidence = await preparedGuidedReviewContext(prepared);
+  const routedRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--guided-review-context", evidence.contextPath, "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(routedRun.status, 0, routedRun.stderr);
+  await authorPreparedFuryRoute(prepared, JSON.parse(routedRun.stdout));
+  const activeRun = run(prepared.root, ["mission", "prepare-next", "--mission-id", prepared.missionId,
+    "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+  { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" });
+  assert.equal(activeRun.status, 0, activeRun.stderr);
+  const active = JSON.parse(activeRun.stdout);
+  assert.equal(active.projection.state, "ready", JSON.stringify(active));
+  const preparation = await resolvePreparedMissionTransitionV1({ missionId: prepared.missionId, repositoryRoot: prepared.root });
+  assert.equal(preparation.state, "publication_ready");
+  const resolution = await resolveGuidedReviewRoutePreparationHostV1({ preparation, repositoryRoot: prepared.root });
+  assert.equal(resolution.state, "guided_review_ready");
+  return { prepared, active, preparation, resolution };
+}
+
+function projectionDependencies(afterProjectionLockAcquired) {
+  return {
+    async runGit(root, argv) { return runGit(root, argv); },
+    resolvePaths: resolveGuidedReviewRoutePackagePathsV1,
+    readArtifact: readGuidedReviewRoutePackageJsonV1,
+    ...(afterProjectionLockAcquired === undefined ? {} : { afterProjectionLockAcquired }),
+  };
+}
+
+test("projection host rejects substituted package paths without touching outside bytes", async () => {
+  const value = await activeGuidedReviewProjectionFixture();
+  const outside = await mkdtemp(join(tmpdir(), "shield-guided-projection-hostile-path-"));
+  const sentinel = join(outside, "sentinel.json");
+  await writeFile(sentinel, "outside bytes\n", { mode: 0o600 });
+  const hostile = { ...value.resolution, paths: { ...value.resolution.paths, packageDirectory: outside,
+    routeRequestPath: sentinel, routeOverlayPath: sentinel, playbookPath: sentinel, sessionPath: sentinel } };
+  const result = await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: value.prepared.root, preparation: value.preparation,
+    resolution: hostile, expectedSessionDigest: value.active.sessionDigest }, projectionDependencies());
+  assert.equal(result.state, "projection_stale", JSON.stringify(result));
+  assert.equal(await readFile(sentinel, "utf8"), "outside bytes\n");
+  assert.equal(await lstat(join(outside, "current-projection.json")).then(() => true, () => false), false);
+  assert.equal(runGit(value.prepared.root, ["status", "--porcelain"]), "");
+});
+
+test("locked projection refresh rejects HEAD drift and preserves the prior projection bytes", async () => {
+  const value = await activeGuidedReviewProjectionFixture();
+  const path = value.active.projection.projectionPath;
+  const before = await readFile(path, "utf8");
+  const result = await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: value.prepared.root, preparation: value.preparation,
+    resolution: value.resolution, expectedSessionDigest: value.active.sessionDigest }, projectionDependencies(async () => {
+      await writeFile(join(value.prepared.root, "implementation.md"), "initial implementation\nprepared publication change\nracing change\n");
+      runGit(value.prepared.root, ["add", "implementation.md"]);
+      runGit(value.prepared.root, ["commit", "-qm", "projection race head"]);
+    }));
+  assert.equal(result.state, "projection_stale", JSON.stringify(result));
+  assert.equal(await readFile(path, "utf8"), before);
+  assert.equal(runGit(value.prepared.root, ["status", "--porcelain"]), "");
+});
+
+test("an older locked writer cannot overwrite the next-session projection", async () => {
+  const value = await activeGuidedReviewProjectionFixture();
+  const path = value.active.projection.projectionPath;
+  const oldBytes = await readFile(path, "utf8");
+  let nextSessionDigest;
+  let competing;
+  const oldInput = { repositoryRoot: value.prepared.root, preparation: value.preparation, resolution: value.resolution,
+    expectedSessionDigest: value.active.sessionDigest };
+  const oldResult = await projectCurrentGuidedReviewStepHostV1(oldInput, projectionDependencies(async () => {
+    const answered = await answerCurrentGuidedReviewSessionHostV1({ repositoryRoot: value.prepared.root, resolution: value.resolution,
+      expectedSessionDigest: value.active.sessionDigest, disposition: "pass", observation: "PASS", finding: null, condition: null,
+      decidedAt: "2026-08-14T12:00:00.000Z" });
+    assert.equal(answered.state, "ready", JSON.stringify(answered));
+    nextSessionDigest = answered.value.sessionDigest;
+    competing = await projectCurrentGuidedReviewStepHostV1({ ...oldInput, expectedSessionDigest: nextSessionDigest }, projectionDependencies());
+  }));
+  assert.equal(competing.state, "projection_unavailable", JSON.stringify(competing));
+  assert.equal(oldResult.state, "projection_stale", JSON.stringify(oldResult));
+  assert.equal(await readFile(path, "utf8"), oldBytes);
+  const current = await projectCurrentGuidedReviewStepHostV1({ ...oldInput, expectedSessionDigest: nextSessionDigest }, projectionDependencies());
+  assert.equal(current.state, "ready", JSON.stringify(current));
+  assert.notEqual(await readFile(path, "utf8"), oldBytes);
+  assert.equal(current.projection.sessionDigest, nextSessionDigest);
+  assert.equal(runGit(value.prepared.root, ["status", "--porcelain"]), "");
+});
+
+test("post-replace session drift restores prior projection bytes without rolling back the answer", async () => {
+  const value = await activeGuidedReviewProjectionFixture();
+  const path = value.active.projection.projectionPath;
+  const priorBytes = await readFile(path, "utf8");
+  let nextSessionDigest;
+  const dependencies = { ...projectionDependencies(), afterProjectionReplace: async () => {
+    const answered = await answerCurrentGuidedReviewSessionHostV1({ repositoryRoot: value.prepared.root, resolution: value.resolution,
+      expectedSessionDigest: value.active.sessionDigest, disposition: "pass", observation: "PASS", finding: null, condition: null,
+      decidedAt: "2026-08-14T12:01:00.000Z" });
+    assert.equal(answered.state, "ready", JSON.stringify(answered));
+    nextSessionDigest = answered.value.sessionDigest;
+  } };
+  const result = await projectCurrentGuidedReviewStepHostV1({ repositoryRoot: value.prepared.root, preparation: value.preparation,
+    resolution: value.resolution, expectedSessionDigest: value.active.sessionDigest }, dependencies);
+  assert.equal(result.state, "projection_stale", JSON.stringify(result));
+  assert.equal(await readFile(path, "utf8"), priorBytes);
+  const session = JSON.parse(await readFile(value.active.paths.sessionPath, "utf8"));
+  assert.equal(session.sessionDigest, nextSessionDigest);
+  assert.equal(session.decisions.at(-1).observation, "PASS");
+  assert.equal(runGit(value.prepared.root, ["status", "--porcelain"]), "");
 });
 
 test("prepare-next bare answers preserve exact human follow-ups and mutate at most one current question", async () => {
