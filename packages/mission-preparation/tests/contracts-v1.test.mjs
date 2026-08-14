@@ -27,6 +27,29 @@ function artifact(body) {
   return { ...body, id, digest };
 }
 
+function intakeTemplate(overrides = {}) {
+  return artifact({
+    schemaId: "mission.profile-aware-intake-template.v1",
+    authority: "none",
+    schemaVersion: 2,
+    missionId: "mission:issue-269",
+    objective: "Compile the reviewed fresh Wheels Up transition.",
+    subjectId: "issue-269",
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false },
+    participants: [{ seatId: "coulson" }, { seatId: "may" }],
+    activatedModes: [{ modeId: "delivery", modeVersion: "1", seatId: "may", activationSource: "hill_reviewed" }],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-13T12:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: `sha256:${"a".repeat(64)}`,
+    ...overrides,
+  });
+}
+
 function fixture() {
   const plan = artifact({
     schemaId: "mission.transition-plan.v1",
@@ -136,9 +159,60 @@ test("the package exposes exactly the approved runtime API", () => {
     "validateNextTransitionSelectionV1",
     "validateParentPlanReviewEvidenceV1",
     "validatePreparationReceiptV1",
+    "validateProfileAwareMissionIntakeTemplateV1",
     "validateTransitionIntentV1",
     "validateTransitionPlanV1",
+    "validateTransitionPlanV1OrV2",
+    "validateTransitionPlanV2",
   ].sort());
+});
+
+test("reviewed intake template and transition plan v2 are closed content-addressed contracts", () => {
+  const template = intakeTemplate();
+  assert.equal(api.validateProfileAwareMissionIntakeTemplateV1({ artifact: template }).state, "valid");
+  assert.match(template.id, /^profile-aware-intake-template:[A-Za-z0-9_-]{43}$/u);
+  const legacy = fixture().plan;
+  const { id: _id, digest: _digest, schemaId: _schemaId, ...legacyBody } = legacy;
+  const plan = artifact({ ...legacyBody, schemaId: "mission.transition-plan.v2", intakeTemplate: template });
+  assert.equal(api.validateTransitionPlanV2({ artifact: plan }).state, "valid");
+  assert.equal(api.validateTransitionPlanV1OrV2({ artifact: plan }).state, "valid");
+  assert.match(plan.id, /^transition-plan:[A-Za-z0-9_-]{43}$/u);
+  assert.notEqual(plan.digest, legacy.digest);
+  assert.equal(api.validateTransitionPlanV1({ artifact: plan }).state, "invalid");
+
+  const otherTemplate = intakeTemplate({ missionId: "mission:other" });
+  const substituted = artifact({ ...legacyBody, schemaId: "mission.transition-plan.v2", intakeTemplate: otherTemplate });
+  assert.equal(api.validateTransitionPlanV2({ artifact: substituted }).state, "invalid");
+  assert.equal(api.validateTransitionPlanV2({ artifact: { ...plan, intakeTemplate: { ...template, digest: `sha256:${"Z".repeat(43)}` } } }).state, "invalid");
+});
+
+test("intake template rejects hostile, non-canonical, duplicate, unsorted, oversized, and extra data", () => {
+  const body = ({ id, digest, ...value }) => value;
+  const valid = intakeTemplate();
+  const variants = [
+    { participants: [{ seatId: "may" }, { seatId: "coulson" }] },
+    { participants: [{ seatId: "coulson" }, { seatId: "coulson" }] },
+    { participants: [{ seatId: "coulson" }] },
+    { participants: Array.from({ length: 17 }, (_, index) => ({ seatId: `seat:${String(index).padStart(2, "0")}` })) },
+    { activatedModes: [] },
+    { activatedModes: [{ modeId: "delivery", modeVersion: "1", seatId: "may", activationSource: "z" }, { modeId: "delivery", modeVersion: "1", seatId: "may", activationSource: "a" }] },
+    { requiredExecutionGateRoleIds: ["coulson", "coulson"] },
+    { profileId: "high_assurance", requiredExecutionGateRoleIds: ["coulson"], requireSimmons: false },
+    { extra: true },
+  ];
+  for (const override of variants) {
+    const candidate = artifact({ ...body(valid), ...override });
+    assert.equal(api.validateProfileAwareMissionIntakeTemplateV1({ artifact: candidate }).state, "invalid");
+  }
+  let invoked = false;
+  const accessor = { ...body(valid) };
+  Object.defineProperty(accessor, "participants", { enumerable: true, get() { invoked = true; return []; } });
+  assert.equal(api.validateProfileAwareMissionIntakeTemplateV1({ artifact: accessor }).state, "invalid");
+  assert.equal(invoked, false);
+  assert.equal(api.validateProfileAwareMissionIntakeTemplateV1({ artifact: new Proxy(valid, {}) }).state, "invalid");
+  const hidden = body(valid);
+  Object.defineProperty(hidden, "hidden", { value: true });
+  assert.equal(api.validateProfileAwareMissionIntakeTemplateV1({ artifact: hidden }).state, "invalid");
 });
 
 test("canonical JSON uses UTF-16 ordering without normalization", () => {

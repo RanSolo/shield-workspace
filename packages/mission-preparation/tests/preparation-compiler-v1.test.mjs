@@ -83,6 +83,24 @@ function graph(changes = {}) {
   return { plan, reviewEvidence, intent, observation };
 }
 
+function enrichedGraph() {
+  const legacy = graph();
+  const template = artifact({
+    schemaId: "mission.profile-aware-intake-template.v1", authority: "none", schemaVersion: 2,
+    missionId: legacy.plan.missionId, objective: legacy.plan.boundedOutcome, subjectId: legacy.plan.subjectId,
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false },
+    participants: [{ seatId: "coulson" }, { seatId: "may" }],
+    activatedModes: [{ modeId: "delivery", modeVersion: "1", seatId: "may", activationSource: "hill_reviewed" }],
+    requireSimmons: false, createdAt: { value: "2026-08-13T12:00:00Z", provenance: "humanRecorded" }, profileId: "standard", profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"], predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: `sha256:${"a".repeat(64)}`,
+  });
+  const plan = artifact({ ...withoutAddress(legacy.plan), schemaId: "mission.transition-plan.v2", intakeTemplate: template });
+  const reviewEvidence = artifact({ ...withoutAddress(legacy.reviewEvidence), transitionPlanId: plan.id, transitionPlanDigest: plan.digest });
+  const intent = artifact({ ...withoutAddress(legacy.intent), transitionPlanId: plan.id, transitionPlanDigest: plan.digest, parentReviewEvidenceId: reviewEvidence.id, parentReviewEvidenceDigest: reviewEvidence.digest });
+  return { plan, reviewEvidence, intent, observation: legacy.observation };
+}
+
 function reasonCode(values) {
   const result = api.selectNextTransitionV1(values);
   assert.equal(result.state, "selected");
@@ -131,6 +149,15 @@ test("ready preparation derives the exact candidate and receipt graph", () => {
   const compiled = api.compileFreshAuthorizeWheelsUpCandidateV1({ ...values, selection: prepared.selection });
   assert.equal(compiled.state, "valid");
   assert.deepEqual(compiled.value, prepared.candidate);
+});
+
+test("enriched transition plans compile through the explicit v1-or-v2 union", () => {
+  const values = enrichedGraph();
+  const prepared = api.prepareMissionTransitionV1(values);
+  assert.equal(prepared.state, "ready", prepared.errors?.join(" "));
+  assert.equal(prepared.candidate.transitionPlanId, values.plan.id);
+  assert.equal(prepared.receipt.transitionPlanDigest, values.plan.digest);
+  assert.equal(prepared.candidate.transitionKind, "authorize-wheels-up");
 });
 
 test("initial runtime binding uses a distinct closed observation and candidate contract", () => {

@@ -72,6 +72,20 @@ function transitionPlan(overrides = {}) {
   }, "mission.transition-plan.v1");
 }
 
+function enrichedTransitionPlan(overrides = {}) {
+  const legacy = transitionPlan();
+  const { id: _legacyId, digest: _legacyDigest, schemaId: _legacySchema, ...legacyBody } = legacy;
+  const template = contract({
+    schemaVersion: 2, missionId: legacy.missionId, objective: legacy.boundedOutcome, subjectId: legacy.subjectId,
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false },
+    participants: [{ seatId: "coulson" }, { seatId: "may" }], activatedModes: [{ modeId: "delivery", modeVersion: "1", seatId: "may", activationSource: "hill_reviewed" }],
+    requireSimmons: false, createdAt: { value: "2026-08-13T12:00:00Z", provenance: "humanRecorded" }, profileId: "standard", profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"], predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: `sha256:${"a".repeat(64)}`,
+  }, "mission.profile-aware-intake-template.v1");
+  return contract({ ...legacyBody, intakeTemplate: template, ...overrides }, "mission.transition-plan.v2");
+}
+
 function parentPlanReviewEvidence(plan, overrides = {}) {
   return contract({
     repositoryId: plan.repositoryId,
@@ -174,6 +188,22 @@ test("build and validate mission reviewed transition graph snapshots are frozen 
   assert.equal(validated.state, "valid");
   assert.deepEqual(validated.value, built.graph);
   assert.ok(Object.isFrozen(validated.value));
+});
+
+test("reviewed graph digest covers the complete enriched intake template while legacy bytes remain valid", () => {
+  const transition = enrichedTransitionPlan();
+  const review = parentPlanReviewEvidence(transition);
+  const built = buildMissionReviewedTransitionGraphV1({ transitionPlan: transition, parentPlanReviewEvidence: review, transitionIntent: transitionIntent(transition, review) });
+  assert.equal(built.state, "built", built.errors?.join(" "));
+  assert.equal(validateMissionReviewedTransitionGraphV1(built.graph).state, "valid");
+  const { id: _templateId, digest: _templateDigest, schemaId: _templateSchema, authority: _templateAuthority, ...templateBody } = transition.intakeTemplate;
+  const changed = enrichedTransitionPlan({ intakeTemplate: contract({ ...templateBody, riskFlags: { ...transition.intakeTemplate.riskFlags, deploy: true } }, "mission.profile-aware-intake-template.v1") });
+  assert.notEqual(changed.digest, transition.digest);
+  const changedReview = parentPlanReviewEvidence(changed);
+  const changedGraph = buildMissionReviewedTransitionGraphV1({ transitionPlan: changed, parentPlanReviewEvidence: changedReview, transitionIntent: transitionIntent(changed, changedReview) });
+  assert.equal(changedGraph.state, "built");
+  assert.notEqual(changedGraph.graph.graphDigest, built.graph.graphDigest);
+  assert.equal(validateMissionReviewedTransitionGraphV1(buildMissionReviewedTransitionGraphV1(graphInput()).graph).state, "valid");
 });
 
 test("build rejects hostile graph input and never evaluates malicious accessors", () => {

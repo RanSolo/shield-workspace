@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -14,8 +14,11 @@ import {
   computeMissionTransitionPlanReviewIdV1,
   MISSION_TRANSITION_PLAN_REVIEW_CONTRACT_VERSION,
   projectPreparedReviewPublicationSemanticTupleV1,
+  prepareMissionTransitionSessionV1,
+  probeMissionJournalPresenceV1ForTest,
   resolvePreparedMissionTransitionV1,
   resolvePreparedMissionTransitionV1ForTest,
+  stableRegularTextFileV1ForTest,
 } from "../dist/mission-preparation-host-v1.mjs";
 import {
   computeCanonicalContractDigestV1,
@@ -23,7 +26,9 @@ import {
   computeRawReceiptSetSha256V1,
 } from "@shield/mission-preparation";
 import {
+  buildMissionTransitionPlanV2,
   buildMissionTransitionPlanV1,
+  buildProfileAwareMissionIntakeTemplateV1,
 } from "../dist/mission-builder-v1.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
@@ -47,7 +52,7 @@ import {
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntriesAtomicV1, appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "../dist/mission-store.mjs";
 import { executeAuthorizeWheelsUpV1, validateAuthorizeWheelsUpInput } from "../dist/authorize-wheels-up-executor-v1.mjs";
-import { executeReviewPublicationAuthorizationV1 } from "../dist/review-publication-executor-v1.mjs";
+import { executeReviewPublicationAuthorizationV1, observePublicationRepositoryV1 } from "../dist/review-publication-executor-v1.mjs";
 import { executeRuntimeBindingV1 } from "../dist/runtime-binding-executor-v1.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
 import {
@@ -59,6 +64,11 @@ import {
   computeReviewPublicationAuthorityDigest,
   computeReviewPublicationAuthoritySemanticIdentityV1,
 } from "../dist/review-publication-v1.mjs";
+
+const prepareSession = (input, dependencies = {}) => prepareMissionTransitionSessionV1(input, {
+  observePublicationRepository: observePublicationRepositoryV1,
+  ...dependencies,
+});
 
 const CLI = fileURLToPath(new URL("../dist/cli.mjs", import.meta.url));
 
@@ -148,6 +158,24 @@ function transitionPlanBase(overrides = {}) {
 function transitionPlan(overrides = {}) {
   const built = buildMissionTransitionPlanV1(transitionPlanBase(overrides));
   assert.equal(built.state, "built");
+  return built.plan;
+}
+
+function enrichedTransitionPlan(overrides = {}, intakeOverrides = {}) {
+  const base = transitionPlanBase(overrides);
+  const template = buildProfileAwareMissionIntakeTemplateV1({
+    schemaVersion: 2, missionId: base.missionId, objective: base.boundedOutcome, subjectId: base.subjectId,
+    riskFlags: { production: false, destructive: false, migration: false, credentialsOrSecurity: false, externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false },
+    participants: [{ seatId: "coulson" }, { seatId: "may" }],
+    activatedModes: [{ modeId: "delivery", modeVersion: "1", seatId: "may", activationSource: "hill_reviewed" }],
+    requireSimmons: false, createdAt: { value: "2026-08-11T12:00:00Z", provenance: "humanRecorded" }, profileId: "standard", profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"], predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+    ...intakeOverrides,
+  });
+  assert.equal(template.state, "built", template.errors?.join(" "));
+  const built = buildMissionTransitionPlanV2({ ...base, intakeTemplate: template.template });
+  assert.equal(built.state, "built", built.errors?.join(" "));
   return built.plan;
 }
 
@@ -997,6 +1025,9 @@ async function resolutionFixture({
   implementationPath = "implementation.md",
   approvedRelativePaths = [implementationPath],
   transitionKind = "fresh_authorize_wheels_up",
+  enriched = false,
+  configuredJournalPath = ".shield/journals",
+  intakeOverrides = {},
 } = {}) {
   const repositoryRoot = await repository();
   await mkdir(join(repositoryRoot, ".shield"));
@@ -1014,19 +1045,21 @@ async function resolutionFixture({
     signingKeyRef, publicKeySpkiBase64, validFromSequence: 0, validThroughSequence: null,
     attestedBy: "repository-policy:maintainer", provenanceRef: "repository-config:coulson",
   };
-  const config = createShieldConfig({
+  const createdConfig = createShieldConfig({
     repositoryId: REPOSITORY_ID,
     repositoryTrustProfileId: "coulson_only_platform_review",
     coulsonBindingRef: signingKeyRef,
   });
+  const config = { ...createdConfig, paths: { ...createdConfig.paths, journals: configuredJournalPath } };
   await writeFile(join(repositoryRoot, ".shield", "config.json"), formatShieldConfig(config));
-  await writeFile(join(repositoryRoot, ".shield", ".gitignore"), "/journals/\n/audit/\n/tmp/\n/dispatch-receipts.jsonl\n");
+  if (enriched) await writeFile(join(repositoryRoot, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({ schemaVersion: 1, bindings: [binding] }, null, 2)}\n`);
+  await writeFile(join(repositoryRoot, ".shield", ".gitignore"), "/journals/\n/nested/\n/audit/\n/tmp/\n/dispatch-receipts.jsonl\n");
   await writeFile(join(repositoryRoot, "package.json"), "{\"private\":true}\n");
   git(repositoryRoot, ["init", "-q"]);
   git(repositoryRoot, ["config", "user.email", "shield@example.invalid"]);
   git(repositoryRoot, ["config", "user.name", "SHIELD Host Fixture"]);
   git(repositoryRoot, ["remote", "add", "origin", `https://github.com/${REPOSITORY_ID}.git`]);
-  git(repositoryRoot, ["add", ".shield/config.json", ".shield/.gitignore", "package.json"]);
+  git(repositoryRoot, ["add", ".shield/config.json", ".shield/.gitignore", "package.json", ...(enriched ? [".shield/trusted-human-bindings.json"] : [])]);
   git(repositoryRoot, ["commit", "-qm", "preparation base"]);
   const baseRevision = git(repositoryRoot, ["rev-parse", "HEAD"]);
   await mkdir(dirname(join(repositoryRoot, implementationPath)), { recursive: true });
@@ -1035,7 +1068,7 @@ async function resolutionFixture({
   git(repositoryRoot, ["commit", "-qm", "preparation head"]);
   const headRevision = git(repositoryRoot, ["rev-parse", "HEAD"]);
 
-  const plan = transitionPlan({
+  const plan = (enriched ? (overrides) => enrichedTransitionPlan(overrides, intakeOverrides) : transitionPlan)({
     planningBaseRevision: baseRevision,
     publicationPaths: [implementationPath],
     approvedRelativePaths,
@@ -1065,10 +1098,12 @@ async function resolutionFixture({
     requiredExecutionGateRoleIds: ["coulson"], requiredFinalAcceptanceGateRoleIds: ["coulson"], predecessorMissionId: "mission:issue-130",
     predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
   });
-  const begun = createProfileAwareMissionBegunEntry(brief, [binding]);
-  const journalPath = join(repositoryRoot, ".shield", "journals", `${Buffer.from(MISSION_ID).toString("base64url")}.jsonl`);
-  await mkdir(join(repositoryRoot, ".shield", "journals"));
-  await writeFile(journalPath, `${JSON.stringify(begun)}\n`);
+  const journalPath = join(repositoryRoot, config.paths.journals, `${Buffer.from(MISSION_ID).toString("base64url")}.jsonl`);
+  if (!enriched) {
+    const begun = createProfileAwareMissionBegunEntry(brief, [binding]);
+    await mkdir(join(repositoryRoot, ".shield", "journals"));
+    await writeFile(journalPath, `${JSON.stringify(begun)}\n`);
+  }
   return {
     repositoryRoot,
     config,
@@ -1107,6 +1142,271 @@ async function initialRuntimeBindingFixture() {
   assert.equal(wheels.status, 0, wheels.stderr);
   return fixture;
 }
+
+test("journal presence probe treats missing suffixes as absent and link or non-directory components as uncertain", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-300-probe-"));
+  await mkdir(join(root, ".shield"));
+  const missingRoot = await probeMissionJournalPresenceV1ForTest({ repositoryRoot: root, configuredJournalPath: ".shield/journals", missionId: MISSION_ID });
+  assert.equal(missingRoot.state, "absent");
+  const missingIntermediate = await probeMissionJournalPresenceV1ForTest({ repositoryRoot: root, configuredJournalPath: ".shield/missing/journals", missionId: MISSION_ID });
+  assert.equal(missingIntermediate.state, "absent");
+  await mkdir(join(root, ".shield", "journals"));
+  const missingFile = await probeMissionJournalPresenceV1ForTest({ repositoryRoot: root, configuredJournalPath: ".shield/journals", missionId: MISSION_ID });
+  assert.equal(missingFile.state, "absent");
+  await unlink(join(root, ".shield", "journals")).catch(() => undefined);
+  const target = await mkdtemp(join(tmpdir(), "shield-300-probe-target-"));
+  await symlink(target, join(root, ".shield", "linked-journals"));
+  const linked = await probeMissionJournalPresenceV1ForTest({ repositoryRoot: root, configuredJournalPath: ".shield/linked-journals", missionId: MISSION_ID });
+  assert.equal(linked.state, "unsafe_or_uncertain");
+  await writeFile(join(root, ".shield", "not-a-directory"), "x");
+  const nonDirectory = await probeMissionJournalPresenceV1ForTest({ repositoryRoot: root, configuredJournalPath: ".shield/not-a-directory/journals", missionId: MISSION_ID });
+  assert.equal(nonDirectory.state, "unsafe_or_uncertain");
+});
+
+test("anchored text snapshots reject linked, replaced, inaccessible, and non-directory path components", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-300-anchored-read-"));
+  await mkdir(join(root, "safe", "nested"), { recursive: true });
+  await writeFile(join(root, "safe", "nested", "config.json"), "{}\n");
+  assert.notEqual(await stableRegularTextFileV1ForTest({ repositoryRoot: root, relativePath: "safe/nested/config.json" }), null);
+
+  await symlink(join(root, "safe"), join(root, "linked"));
+  assert.equal(await stableRegularTextFileV1ForTest({ repositoryRoot: root, relativePath: "linked/nested/config.json" }), null);
+  await writeFile(join(root, "not-a-directory"), "x");
+  assert.equal(await stableRegularTextFileV1ForTest({ repositoryRoot: root, relativePath: "not-a-directory/config.json" }), null);
+
+  await mkdir(join(root, "locked", "nested"), { recursive: true });
+  await writeFile(join(root, "locked", "nested", "config.json"), "{}\n");
+  await chmod(join(root, "locked"), 0o000);
+  try {
+    assert.equal(await stableRegularTextFileV1ForTest({ repositoryRoot: root, relativePath: "locked/nested/config.json" }), null);
+  } finally {
+    await chmod(join(root, "locked"), 0o700);
+  }
+
+  await mkdir(join(root, "replace", "nested"), { recursive: true });
+  await writeFile(join(root, "replace", "nested", "config.json"), "{}\n");
+  const replaced = await stableRegularTextFileV1ForTest({
+    repositoryRoot: root,
+    relativePath: "replace/nested/config.json",
+    beforeRead: async () => {
+      await rename(join(root, "replace"), join(root, "replace-old"));
+      await mkdir(join(root, "replace", "nested"), { recursive: true });
+      await writeFile(join(root, "replace", "nested", "config.json"), "{}\n");
+    },
+  });
+  assert.equal(replaced, null);
+});
+
+test("enriched fresh graph initializes reviewed sequence zero and the unchanged key turn appends exactly entries one through four", async () => {
+  const fixture = await resolutionFixture({ enriched: true });
+  const prepared = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  const proposed = await currentProfileJournal(fixture);
+  assert.equal(proposed.entries.length, 1);
+  assert.equal(proposed.projection.lastSequence, 0);
+  assert.equal(proposed.entries[0].payload.brief.objective, fixture.plan.boundedOutcome);
+  assert.deepEqual(proposed.entries[0].payload.brief.participants, fixture.plan.intakeTemplate.participants);
+  assert.deepEqual(proposed.entries[0].payload.brief.activatedModes, fixture.plan.intakeTemplate.activatedModes);
+
+  const executed = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+    cwd: fixture.repositoryRoot, encoding: "utf8", input: "turnkey-passcode\n", env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(executed.status, 0, executed.stderr);
+  const authorized = await currentProfileJournal(fixture);
+  assert.deepEqual(authorized.entries.map(({ sequence, type }) => [sequence, type]), [
+    [0, "mission.begun"], [1, "governance.decided"], [2, "implementation.authorized"], [3, "runtime.binding_recorded"], [4, "review.publication_authorized"],
+  ]);
+  const bytes = await readFile(fixture.journalPath, "utf8");
+  const restarted = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(restarted.state, "already_authorized", JSON.stringify(restarted));
+  assert.equal(await readFile(fixture.journalPath, "utf8"), bytes);
+});
+
+test("enriched fresh graph initializes through a missing configured intermediate directory", async () => {
+  const fixture = await resolutionFixture({ enriched: true, configuredJournalPath: ".shield/nested/journals" });
+  const prepared = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  const proposed = await currentProfileJournal(fixture);
+  assert.equal(proposed.entries.length, 1);
+  assert.equal(proposed.entries[0].sequence, 0);
+});
+
+test("exact concurrent enriched callers under delayed initialization reconcile to the same ready result and sequence-zero entry", async () => {
+  const fixture = await resolutionFixture({ enriched: true });
+  let initializationStarts = 0;
+  const dependencies = {
+    beforeJournalInitializationForTest: async () => {
+      initializationStarts += 1;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 750));
+    },
+  };
+  const results = await Promise.all(Array.from(
+    { length: 12 },
+    () => prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot }, dependencies),
+  ));
+  assert.deepEqual(results.map(({ state }) => state), Array(12).fill("ready"), JSON.stringify(results));
+  for (const result of results.slice(1)) assert.deepEqual(result, results[0]);
+  assert.equal(initializationStarts, 1);
+  const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
+  assert.equal(lines.length, 1);
+  assert.equal(JSON.parse(lines[0]).type, "mission.begun");
+});
+
+test("conflicting concurrent initialization is preserved and rejected without overwrite", async () => {
+  const fixture = await resolutionFixture({ enriched: true });
+  let conflictingBytes = "";
+  const result = await prepareSession(
+    { missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot },
+    {
+      beforeInitializationRevalidationForTest: async () => {
+        const { schemaId: _schemaId, authority: _authority, id: _id, digest: _digest, ...content } = fixture.plan.intakeTemplate;
+        const brief = createProfileAwareMissionBrief({ ...content, objective: "Conflicting concurrent objective." });
+        const entry = createProfileAwareMissionBegunEntry(brief, [fixture.binding]);
+        conflictingBytes = `${JSON.stringify(entry)}\n`;
+        await mkdir(dirname(fixture.journalPath), { recursive: true });
+        await writeFile(fixture.journalPath, conflictingBytes);
+      },
+    },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "mission_intake_mismatch");
+  assert.equal(await readFile(fixture.journalPath, "utf8"), conflictingBytes);
+});
+
+test("pre-initialization protected evidence, config, registry, and repository drift leaves zero journal bytes", async () => {
+  const variants = [
+    {
+      name: "protected graph drift",
+      reasonCode: "protected_evidence_mismatch",
+      mutate: async (fixture) => writeFile(fixture.graphPath, "{}\n"),
+    },
+    {
+      name: "Fury attribution drift",
+      reasonCode: "protected_evidence_mismatch",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "dispatch-receipts.jsonl");
+        await writeFile(path, `${await readFile(path, "utf8")}{}\n`);
+      },
+    },
+    {
+      name: "config component replacement",
+      reasonCode: "repository_configuration_mismatch",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "config.json");
+        const bytes = await readFile(path);
+        await rename(path, `${path}.replaced`);
+        await writeFile(path, bytes);
+      },
+    },
+    {
+      name: "registry byte drift",
+      reasonCode: "mission_intake_invalid",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "trusted-human-bindings.json");
+        await writeFile(path, `${await readFile(path, "utf8")}\n`);
+      },
+    },
+    {
+      name: "repository drift",
+      reasonCode: "repository_observation_stale",
+      mutate: async (fixture) => writeFile(join(fixture.repositoryRoot, fixture.implementationPath), "drift\n"),
+    },
+  ];
+  for (const variant of variants) {
+    const fixture = await resolutionFixture({ enriched: true });
+    const result = await prepareSession(
+      { missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot },
+      { beforeInitializationRevalidationForTest: async () => variant.mutate(fixture) },
+    );
+    assert.equal(result.state, "blocked", variant.name);
+    assert.equal(result.reasonCode, variant.reasonCode, variant.name);
+    await assert.rejects(readFile(fixture.journalPath), { code: "ENOENT" }, variant.name);
+  }
+});
+
+test("fresh enriched signing failure preserves only reviewed sequence zero and exact restart readiness", async () => {
+  const fixture = await resolutionFixture({ enriched: true });
+  const failed = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+    cwd: fixture.repositoryRoot, encoding: "utf8", input: "wrong-passcode\n", env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(failed.status, 1);
+  const current = await currentProfileJournal(fixture);
+  assert.equal(current.entries.length, 1);
+  assert.equal(current.entries[0].type, "mission.begun");
+  const restarted = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(restarted.state, "ready", JSON.stringify(restarted));
+});
+
+test("legacy missing journal requires reviewed intake without consulting a live binding registry", async () => {
+  const fixture = await resolutionFixture();
+  await unlink(fixture.journalPath);
+  await writeFile(join(fixture.repositoryRoot, ".shield", "trusted-human-bindings.json"), "{malformed\n");
+  const result = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "mission_intake_template_required");
+});
+
+test("fresh enriched intake eligibility rejects reviewed objective, profile, and predecessor drift without mutation", async () => {
+  const variants = [
+    { name: "objective", intakeOverrides: { objective: "A different reviewed outcome." } },
+    {
+      name: "profile",
+      intakeOverrides: {
+        profileId: "high_assurance",
+        participants: [{ seatId: "coulson" }, { seatId: "fitz" }, { seatId: "may" }],
+        requiredExecutionGateRoleIds: ["coulson", "fitz"],
+      },
+    },
+    { name: "predecessor", intakeOverrides: { predecessorMissionId: "mission:other" } },
+  ];
+  for (const variant of variants) {
+    const fixture = await resolutionFixture({ enriched: true, intakeOverrides: variant.intakeOverrides });
+    const result = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(result.state, "blocked", variant.name);
+    assert.equal(result.reasonCode, "mission_intake_invalid", variant.name);
+    await assert.rejects(readFile(fixture.journalPath), { code: "ENOENT" }, variant.name);
+  }
+});
+
+test("enriched restart rejects exact sequence-zero intake drift without changing journal bytes", async () => {
+  const fixture = await resolutionFixture({ enriched: true });
+  const ready = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(ready.state, "ready", JSON.stringify(ready));
+  const entry = JSON.parse((await readFile(fixture.journalPath, "utf8")).trim());
+  entry.payload.brief.riskFlags.production = true;
+  const tampered = `${JSON.stringify(entry)}\n`;
+  await writeFile(fixture.journalPath, tampered);
+  const result = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "mission_intake_mismatch");
+  assert.equal(await readFile(fixture.journalPath, "utf8"), tampered);
+});
+
+test("enriched reconciliation rejects otherwise-valid brief and binding substitutions", async () => {
+  const variants = [
+    { name: "risk", mutate: (content) => ({ ...content, riskFlags: { ...content.riskFlags, production: true } }) },
+    { name: "participant", mutate: (content) => ({ ...content, participants: [{ seatId: "coulson" }, { seatId: "hill" }, { seatId: "may" }] }) },
+    { name: "mode", mutate: (content) => ({ ...content, activatedModes: [{ ...content.activatedModes[0], activationSource: "alternate_reviewed" }] }) },
+    { name: "createdAt", mutate: (content) => ({ ...content, createdAt: { ...content.createdAt, value: "2026-08-11T12:00:01Z" } }) },
+    { name: "objective", mutate: (content) => ({ ...content, objective: "A different otherwise-valid objective." }) },
+    { name: "binding", mutate: (content) => content, mutateBinding: true },
+  ];
+  for (const variant of variants) {
+    const fixture = await resolutionFixture({ enriched: true });
+    const { schemaId: _schemaId, authority: _authority, id: _id, digest: _digest, ...reviewedContent } = fixture.plan.intakeTemplate;
+    const brief = createProfileAwareMissionBrief(variant.mutate(reviewedContent));
+    const bindings = variant.mutateBinding ? [{ ...fixture.binding, provenanceRef: "repository-config:substituted" }] : [fixture.binding];
+    const entry = createProfileAwareMissionBegunEntry(brief, bindings);
+    await mkdir(dirname(fixture.journalPath), { recursive: true });
+    await writeFile(fixture.journalPath, `${JSON.stringify(entry)}\n`);
+    await currentProfileJournal(fixture);
+    const before = await readFile(fixture.journalPath, "utf8");
+    const result = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(result.state, "blocked", variant.name);
+    assert.equal(result.reasonCode, "mission_intake_mismatch", variant.name);
+    assert.equal(await readFile(fixture.journalPath, "utf8"), before, variant.name);
+  }
+});
 
 async function rewriteImplementationAuthority(fixture, mutate) {
   const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");

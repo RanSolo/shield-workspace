@@ -1501,8 +1501,8 @@ test("prepare-next exhaustively consumes the exported transition result without 
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const consumer = source.slice(start, end);
-  assert.match(consumer, /const result = await resolvePreparedMissionTransitionV1\([^;]+\);/u);
-  assert.doesNotMatch(consumer, /resolvePreparedMissionTransitionV1\([^;]+\) as/u);
+  assert.match(consumer, /const result = await prepareMissionTransitionSessionV1\([^;]+\);/u);
+  assert.doesNotMatch(consumer, /prepareMissionTransitionSessionV1\([^;]+\) as/u);
   assert.match(consumer, /const ready: Extract<ResolvePreparedMissionTransitionResultV1, \{ state: "ready" \}> = result;/u);
   assert.match(consumer, /result\.state === "runtime_binding_ready"/u);
   assert.match(consumer, /result\.state === "runtime_binding_already_authorized"/u);
