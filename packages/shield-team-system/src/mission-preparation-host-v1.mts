@@ -1129,6 +1129,7 @@ function buildInitialRuntimeBindingObservation(
     authorityBranch: authorityPresent ? authority.branch : null,
     authorityBaseRevision: authorityPresent ? authority.baseRevision : null,
     authorityHeadRevision: authorityPresent ? authority.headRevision : null,
+    authorityArtifactRevisionId: authorityPresent ? authority.artifactRevisionId : null,
     authorityModelId: authorityPresent ? authority.modelId : null,
     authorityApprovedRelativePaths: authorityPresent ? [...authority.approvedRelativePaths] : [],
     authorityApprovedActionIds: authorityPresent ? [...authority.approvedActionIds] : [],
@@ -1155,6 +1156,7 @@ function preparedInitialRuntimeBinding(
   const projection = environment.current.projection;
   const authority = projection.implementationAuthority;
   if (authority === null || projection.implementationAuthorityDigest === null) return null;
+  if (authority.artifactRevisionId !== authority.headRevision || authority.artifactRevisionId !== environment.repository.headRevision) return null;
   const authorizationId = `authorization:runtime-binding:${sequence}`;
   const checked = validateSchema9RuntimeBindingV1({
     schemaVersion: 1,
@@ -1838,6 +1840,10 @@ function preparedInitialRuntimeBindingResult(
 ): ResolvePreparedMissionTransitionResultV1 {
   const missionId = graph.transitionPlan.missionId;
   const projection = environment.current.projection;
+  if (environment.repository.configuredRepositoryId !== graph.transitionPlan.repositoryId ||
+      environment.repository.remoteRepositoryId !== graph.transitionPlan.repositoryId) {
+    return blocked(missionId, "repository_configuration_mismatch", "Configured, remote, and reviewed repository identities must match exactly.");
+  }
   if (projection.runtimeBindings.length !== 0 || projection.activeRuntimeBindings.length !== 0) {
     const retry = exactPreparedInitialRuntimeBindingRetry(graph, environment);
     return retry ?? blocked(missionId, "authority_conflict", "Existing runtime binding is historical, superseded, legacy, duplicated, or not the exact prepared initial binding.");

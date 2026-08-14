@@ -175,6 +175,7 @@ export type InitialRuntimeBindingObservationV1 = CommonContractV1 & Readonly<{
   authorityBranch: string | null;
   authorityBaseRevision: string | null;
   authorityHeadRevision: string | null;
+  authorityArtifactRevisionId: string | null;
   authorityModelId: string | null;
   authorityApprovedRelativePaths: readonly string[];
   authorityApprovedActionIds: readonly string[];
@@ -549,7 +550,7 @@ const INITIAL_BINDING_OBSERVATION_FIELDS = [
   "executionState", "implementationAuthorityCount", "runtimeBindingCount", "activeRuntimeBindingCount", "pendingCoulsonMissionAuthorizationCount", "journalSequence",
   "journalSha256", "signerBindingId", "signingKeyRef", "signerBindingMatchCount", "implementationAuthorityRef", "implementationAuthorityDigest",
   "implementationAuthoritySequence", "authorityMissionId", "authoritySubjectId", "authorityRepositoryId", "authorityCanonicalWritableRoot", "authorityBranch",
-  "authorityBaseRevision", "authorityHeadRevision", "authorityModelId", "authorityApprovedRelativePaths", "authorityApprovedActionIds",
+  "authorityBaseRevision", "authorityHeadRevision", "authorityArtifactRevisionId", "authorityModelId", "authorityApprovedRelativePaths", "authorityApprovedActionIds",
   "authorityApprovedEffectClasses", "authorityApprovedEffectKeys", "authorityApprovedCapabilities", "authorityValidationCommandIds", "remainingHumanGates",
   "preparationEligibility",
 ] as const;
@@ -567,14 +568,14 @@ export function validateInitialRuntimeBindingObservationV1(
       const authorityShape = authorityPresent
         ? identifier(value.implementationAuthorityRef) && digest(value.implementationAuthorityDigest) && integer(value.implementationAuthoritySequence, 1, Number.MAX_SAFE_INTEGER) &&
           identifier(value.authorityMissionId) && identifier(value.authoritySubjectId) && repository(value.authorityRepositoryId) && absoluteNormalizedPath(value.authorityCanonicalWritableRoot) &&
-          identifier(value.authorityBranch) && revision(value.authorityBaseRevision) && revision(value.authorityHeadRevision) && identifier(value.authorityModelId) &&
+          identifier(value.authorityBranch) && revision(value.authorityBaseRevision) && revision(value.authorityHeadRevision) && revision(value.authorityArtifactRevisionId) && identifier(value.authorityModelId) &&
           sortedUniqueStrings(value.authorityApprovedRelativePaths, approvedPath, locale) && sortedUniqueStrings(value.authorityApprovedActionIds, identifier, locale) &&
           sortedUniqueStrings(value.authorityApprovedEffectClasses, (item): item is string => typeof item === "string" && EFFECT_CLASSES.has(item), locale, 1, 3) &&
           sortedUniqueStrings(value.authorityApprovedEffectKeys, identifier, locale) && sortedUniqueStrings(value.authorityApprovedCapabilities, identifier, locale) &&
           sortedUniqueStrings(value.authorityValidationCommandIds, identifier, locale)
         : value.implementationAuthorityRef === null && value.implementationAuthorityDigest === null && value.implementationAuthoritySequence === null &&
           value.authorityMissionId === null && value.authoritySubjectId === null && value.authorityRepositoryId === null && value.authorityCanonicalWritableRoot === null &&
-          value.authorityBranch === null && value.authorityBaseRevision === null && value.authorityHeadRevision === null && value.authorityModelId === null &&
+          value.authorityBranch === null && value.authorityBaseRevision === null && value.authorityHeadRevision === null && value.authorityArtifactRevisionId === null && value.authorityModelId === null &&
           Array.isArray(value.authorityApprovedRelativePaths) && value.authorityApprovedRelativePaths.length === 0 &&
           Array.isArray(value.authorityApprovedActionIds) && value.authorityApprovedActionIds.length === 0 &&
           Array.isArray(value.authorityApprovedEffectClasses) && value.authorityApprovedEffectClasses.length === 0 &&

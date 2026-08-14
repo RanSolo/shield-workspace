@@ -65,7 +65,7 @@ function graph(changes = {}) {
     signerBindingMatchCount: 1, implementationAuthorityRef: "authority:mission:issue-269:2", implementationAuthorityDigest: `sha256:${"I".repeat(43)}`,
     implementationAuthoritySequence: 2, authorityMissionId: plan.missionId, authoritySubjectId: plan.subjectId, authorityRepositoryId: plan.repositoryId,
     authorityCanonicalWritableRoot: "/private/tmp/shield-worktree", authorityBranch: "agent/issue-269-mission-preparation",
-    authorityBaseRevision: plan.planningBaseRevision, authorityHeadRevision: "e".repeat(40), authorityModelId: plan.modelId,
+    authorityBaseRevision: plan.planningBaseRevision, authorityHeadRevision: "e".repeat(40), authorityArtifactRevisionId: "e".repeat(40), authorityModelId: plan.modelId,
     authorityApprovedRelativePaths: [...plan.approvedRelativePaths], authorityApprovedActionIds: [...plan.approvedActionIds],
     authorityApprovedEffectClasses: [...plan.approvedEffectClasses], authorityApprovedEffectKeys: [...plan.approvedEffectKeys],
     authorityApprovedCapabilities: [...plan.approvedCapabilities], authorityValidationCommandIds: [...plan.validationCommandIds],
@@ -149,6 +149,7 @@ test("initial runtime binding uses a distinct closed observation and candidate c
   assert.equal(prepared.receipt.candidateId, prepared.candidate.id);
 
   assert.equal(reasonCode(graph({ plan: { transitionKind: "initial_runtime_binding" }, observation: { authorityModelId: "model:other" } })), "implementation_authority_mismatch");
+  assert.equal(reasonCode(graph({ plan: { transitionKind: "initial_runtime_binding" }, observation: { authorityArtifactRevisionId: "9".repeat(40) } })), "implementation_authority_mismatch");
   assert.equal(reasonCode(graph({ plan: { transitionKind: "initial_runtime_binding" }, observation: { runtimeBindingCount: 1 } })), "initial_runtime_binding_state_ineligible");
 });
 

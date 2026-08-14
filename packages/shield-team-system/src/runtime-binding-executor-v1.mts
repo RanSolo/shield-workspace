@@ -91,7 +91,15 @@ export type RuntimeBindingExecutorResultV1 = Readonly<{
 type ProfileAwareJournal = Readonly<{ kind: "profile-aware"; entries: readonly ProfileAwareMissionEntryV1[]; projection: ProfileAwareProjectionV1 }>;
 type ConfigurationSnapshot = Readonly<{ config: ShieldConfig; bytes: string; identity: string }>;
 type JournalSnapshot = Readonly<{ current: ProfileAwareJournal; bytes: string; sha256: string }>;
-type RepositorySnapshot = Readonly<{ canonicalRoot: string; gitTopLevel: string; branch: string; headRevision: string; statusEntries: readonly string[] }>;
+type RepositorySnapshot = Readonly<{
+  canonicalRoot: string;
+  gitTopLevel: string;
+  originUrl: string | null;
+  remoteRepositoryId: string | null;
+  branch: string;
+  headRevision: string;
+  statusEntries: readonly string[];
+}>;
 
 const CONFIG_PATH = join(".shield", "config.json");
 const PREPARED_EXCLUSIONS = Object.freeze([
@@ -130,14 +138,23 @@ function nulRecords(value: string): string[] {
   return value.slice(0, -1).split("\0");
 }
 
-async function repositorySnapshot(root: string): Promise<RepositorySnapshot> {
+function repositoryIdFromOrigin(value: string): string {
+  const exact = value.trim().replace(/\.git$/u, "");
+  const match = /^(?:git@github\.com:|https:\/\/github\.com\/)(?<repository>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/u.exec(exact);
+  if (!match?.groups?.repository) throw new Error("Repository origin URL is unsupported or malformed.");
+  return match.groups.repository;
+}
+
+async function repositorySnapshot(root: string, bindRemoteIdentity: boolean): Promise<RepositorySnapshot> {
   const canonicalRoot = await fsRealpath(root);
   const gitTopLevel = await fsRealpath((await gitOutput(canonicalRoot, ["rev-parse", "--show-toplevel"])).trim());
+  const originUrl = bindRemoteIdentity ? (await gitOutput(canonicalRoot, ["remote", "get-url", "origin"])).trim() : null;
+  const remoteRepositoryId = originUrl === null ? null : repositoryIdFromOrigin(originUrl);
   const branch = (await gitOutput(canonicalRoot, ["branch", "--show-current"])).trim();
   const headRevision = (await gitOutput(canonicalRoot, ["rev-parse", "HEAD"])).trim();
   const statusEntries = nulRecords(await gitOutput(canonicalRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
   if (canonicalRoot !== gitTopLevel || branch.length === 0 || branch === "HEAD" || headRevision.length === 0) throw new Error("Repository identity is not a real attached top-level checkout.");
-  return snapshot({ canonicalRoot, gitTopLevel, branch, headRevision, statusEntries });
+  return snapshot({ canonicalRoot, gitTopLevel, originUrl, remoteRepositoryId, branch, headRevision, statusEntries });
 }
 
 async function configurationSnapshot(root: string): Promise<ConfigurationSnapshot> {
@@ -252,6 +269,9 @@ function candidateWrapper(
       current.projection.brief.participants.some(({ seatId }) => identities.slice(1).includes(seatId))) {
     throw new Error("May seat, reasoning runtime, model, and tool executor must be mutually distinct and cannot be mission participants.");
   }
+  if (mode === "prepared" && (repository.remoteRepositoryId !== authority.repositoryId || authority.artifactRevisionId !== authority.headRevision)) {
+    throw new Error("Repository identity or artifact revision no longer matches Wheels Up authority.");
+  }
   if (repository.canonicalRoot !== authority.canonicalWritableRoot || repository.branch !== authority.branch || repository.headRevision !== authority.headRevision) {
     throw new Error("Repository root, branch, or HEAD no longer matches Wheels Up authority.");
   }
@@ -299,10 +319,15 @@ export async function executeRuntimeBindingV1(
 
   const initialConfig = await configurationSnapshot(input.root);
   const initialJournal = await journalSnapshot(input.root, initialConfig.config, input.missionId);
-  const initialRepository = await repositorySnapshot(input.root);
+  const initialRepository = await repositorySnapshot(input.root, input.mode === "prepared");
   const authority = initialJournal.current.projection.implementationAuthority;
   if (initialJournal.current.projection.implementationAuthorityState !== "authorized" || authority === null) throw new Error("May binding requires an active Wheels Up implementation authority.");
-  if (initialConfig.config.repositoryId !== authority.repositoryId) throw new Error("Repository ID no longer matches Wheels Up authority.");
+  if (input.mode === "prepared") {
+    const reviewedRepositoryId = input.expectedPreparation?.protectedGraph.transitionPlan.repositoryId;
+    if (initialRepository.remoteRepositoryId !== initialConfig.config.repositoryId || initialConfig.config.repositoryId !== reviewedRepositoryId || reviewedRepositoryId !== authority.repositoryId) {
+      throw new Error("Remote, configured, reviewed, and Wheels Up repository identities must match exactly.");
+    }
+  } else if (initialConfig.config.repositoryId !== authority.repositoryId) throw new Error("Repository ID no longer matches Wheels Up authority.");
   const wrapper = candidateWrapper(initialJournal.current, initialRepository, input.missionId, intent, input.mode);
   const expected = input.mode === "prepared" ? await revalidatePrepared(input.expectedPreparation as PreparedRuntimeBindingReadyResultV1) : null;
   if (expected !== null && canonicalJson(wrapper) !== canonicalJson(expected.runtimeBinding)) throw new Error("Generated runtime binding differs from the exact reviewed candidate.");
@@ -326,7 +351,7 @@ export async function executeRuntimeBindingV1(
   const captureFresh = async () => {
     const config = await configurationSnapshot(input.root);
     const [journal, repository, signerState] = await Promise.all([
-      journalSnapshot(input.root, config.config, input.missionId), repositorySnapshot(input.root),
+      journalSnapshot(input.root, config.config, input.missionId), repositorySnapshot(input.root, input.mode === "prepared"),
       input.mode === "prepared" ? captureMissionSignerSnapshot(signer.signingKeyRef) : Promise.resolve(null),
     ]);
     if (input.mode === "prepared") await revalidatePrepared(input.expectedPreparation as PreparedRuntimeBindingReadyResultV1);

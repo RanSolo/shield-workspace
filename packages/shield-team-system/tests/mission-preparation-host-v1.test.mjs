@@ -1080,6 +1080,41 @@ async function initialRuntimeBindingFixture() {
   return fixture;
 }
 
+async function rewriteImplementationAuthority(fixture, mutate) {
+  const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
+  const entry = JSON.parse(lines[2]);
+  assert.equal(entry.type, "implementation.authorized");
+  entry.payload.authority.payload = mutate(entry.payload.authority.payload);
+  entry.payload.authority.signatureBase64 = sign(null, Buffer.from(canonicalJson(entry.payload.authority.payload)), fixture.privateKey).toString("base64");
+  lines[2] = JSON.stringify(entry);
+  await writeFile(fixture.journalPath, `${lines.join("\n")}\n`);
+  await currentProfileJournal(fixture);
+}
+
+async function rewriteRuntimeBindingScope(fixture) {
+  const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
+  const entry = JSON.parse(lines[3]);
+  assert.equal(entry.type, "runtime.binding_recorded");
+  entry.payload.binding.binding.approvedScope.capabilities = [];
+  entry.payload.authorization.payload.bindingDigest = computeRuntimeBindingDigest(entry.payload.binding.binding);
+  entry.payload.authorization.payload.schema9BindingDigest = computeSchema9RuntimeBindingDigest(entry.payload.binding);
+  entry.payload.authorization.signatureBase64 = sign(null, Buffer.from(canonicalJson(entry.payload.authorization.payload)), fixture.privateKey).toString("base64");
+  lines[3] = JSON.stringify(entry);
+  await writeFile(fixture.journalPath, `${lines.join("\n")}\n`);
+  await currentProfileJournal(fixture);
+}
+
+function executePreparedBindingCli(fixture) {
+  const result = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+    cwd: fixture.repositoryRoot,
+    encoding: "utf8",
+    input: "turnkey-passcode\n",
+    env: { ...process.env, HOME: fixture.homeRoot },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result;
+}
+
 test("initial-runtime-binding graph selects one exact prepared binding and exact retry preserves journal bytes", async () => {
   const fixture = await initialRuntimeBindingFixture();
   const ready = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
@@ -1112,32 +1147,44 @@ test("initial-runtime-binding graph selects one exact prepared binding and exact
     }), /cancelled/u);
     assert.deepEqual(cancelledCalls, { render: 1, pin: 1, sign: 0, append: 0 });
 
-    const journalBeforeDrift = await readFile(fixture.journalPath, "utf8");
-    const driftPath = join(fixture.repositoryRoot, "post-pin-drift.txt");
-    const driftCalls = { sign: 0, append: 0 };
-    await assert.rejects(executeRuntimeBindingV1({
-      mode: "prepared",
-      root: fixture.repositoryRoot,
-      missionId: MISSION_ID,
-      intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
-      expectedPreparation: ready,
-      timestamp: { value: new Date(Date.now() + 1_000).toISOString(), provenance: "hostTrusted" },
-      humanMode: false,
-      decisionOutput: { write: () => {} },
-    }, {
-      renderDecision: () => "{}",
-      readPasscode: async () => "unused",
-      signPayload: async (_binding, _passcode, payload) => {
-        driftCalls.sign += 1;
-        await writeFile(driftPath, "drift\n");
-        return sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64");
+    for (const drift of [
+      {
+        name: "workspace",
+        mutate: async () => writeFile(join(fixture.repositoryRoot, "post-pin-drift.txt"), "drift\n"),
+        restore: async () => unlink(join(fixture.repositoryRoot, "post-pin-drift.txt")),
       },
-      appendEntryLegacy: async () => { throw new Error("legacy append used"); },
-      appendEntryAtomic: async () => { driftCalls.append += 1; throw new Error("atomic append used"); },
-    }), /no longer matches|changed while/u);
-    assert.deepEqual(driftCalls, { sign: 1, append: 0 });
-    assert.equal(await readFile(fixture.journalPath, "utf8"), journalBeforeDrift);
-    await unlink(driftPath);
+      {
+        name: "origin identity",
+        mutate: async () => { git(fixture.repositoryRoot, ["remote", "set-url", "origin", "https://github.com/Other/repository.git"]); },
+        restore: async () => { git(fixture.repositoryRoot, ["remote", "set-url", "origin", `https://github.com/${REPOSITORY_ID}.git`]); },
+      },
+    ]) {
+      const journalBeforeDrift = await readFile(fixture.journalPath, "utf8");
+      const driftCalls = { render: 0, pin: 0, sign: 0, append: 0 };
+      await assert.rejects(executeRuntimeBindingV1({
+        mode: "prepared",
+        root: fixture.repositoryRoot,
+        missionId: MISSION_ID,
+        intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
+        expectedPreparation: ready,
+        timestamp: { value: new Date(Date.now() + 1_000).toISOString(), provenance: "hostTrusted" },
+        humanMode: false,
+        decisionOutput: { write: () => {} },
+      }, {
+        renderDecision: () => { driftCalls.render += 1; return "{}"; },
+        readPasscode: async () => { driftCalls.pin += 1; return "unused"; },
+        signPayload: async (_binding, _passcode, payload) => {
+          driftCalls.sign += 1;
+          await drift.mutate();
+          return sign(null, Buffer.from(canonicalJson(payload)), fixture.privateKey).toString("base64");
+        },
+        appendEntryLegacy: async () => { throw new Error("legacy append used"); },
+        appendEntryAtomic: async () => { driftCalls.append += 1; throw new Error("atomic append used"); },
+      }), /no longer matches|changed while|repository identit/iu, drift.name);
+      assert.deepEqual(driftCalls, { render: 1, pin: 1, sign: 1, append: 0 }, drift.name);
+      assert.equal(await readFile(fixture.journalPath, "utf8"), journalBeforeDrift, drift.name);
+      await drift.restore();
+    }
 
     const calls = { render: 0, pin: 0, sign: 0, legacyAppend: 0, atomicAppend: 0 };
     await executeRuntimeBindingV1({
@@ -1178,6 +1225,92 @@ test("initial-runtime-binding graph selects one exact prepared binding and exact
   assert.match(cliRetry.stdout, /^ALREADY AUTHORIZED — nothing repeated\./u);
   assert.doesNotMatch(`${cliRetry.stdout}${cliRetry.stderr}`, /Passcode:/u);
   assert.equal(await readFile(fixture.journalPath, "utf8"), journalBytes);
+});
+
+test("prepared runtime-binding executor rejects repository and authority identity drift before every effect", async () => {
+  const variants = [
+    {
+      name: "remote repository identity",
+      mutate: async (fixture) => { git(fixture.repositoryRoot, ["remote", "set-url", "origin", "https://github.com/Other/repository.git"]); },
+    },
+    {
+      name: "configured repository identity",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "config.json");
+        await writeFile(path, (await readFile(path, "utf8")).replace(REPOSITORY_ID, "Other/repository"));
+      },
+    },
+    {
+      name: "authority artifact revision",
+      mutate: async (fixture) => rewriteImplementationAuthority(fixture, (authority) => ({ ...authority, artifactRevisionId: authority.baseRevision })),
+    },
+    {
+      name: "authority repository identity",
+      mutate: async (fixture) => rewriteImplementationAuthority(fixture, (authority) => ({ ...authority, repositoryId: "Other/repository" })),
+    },
+  ];
+
+  for (const variant of variants) {
+    const fixture = await initialRuntimeBindingFixture();
+    const ready = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(ready.state, "runtime_binding_ready", JSON.stringify(ready));
+    await variant.mutate(fixture);
+    const journalBytes = await readFile(fixture.journalPath, "utf8");
+    const blocked = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(blocked.state, "blocked", `${variant.name}: ${JSON.stringify(blocked)}`);
+    const calls = { render: 0, pin: 0, sign: 0, legacy: 0, atomic: 0 };
+    await assert.rejects(executeRuntimeBindingV1({
+      mode: "prepared",
+      root: fixture.repositoryRoot,
+      missionId: MISSION_ID,
+      intent: { reasoningRuntimeId: fixture.plan.reasoningRuntimeId, toolExecutorId: fixture.plan.toolExecutorId },
+      expectedPreparation: ready,
+      timestamp: { value: "2026-08-13T12:00:00Z", provenance: "hostTrusted" },
+      humanMode: false,
+      decisionOutput: { write: () => {} },
+    }, {
+      renderDecision: () => { calls.render += 1; return "{}"; },
+      readPasscode: async () => { calls.pin += 1; return "unused"; },
+      signPayload: async () => { calls.sign += 1; return "unused"; },
+      appendEntryLegacy: async () => { calls.legacy += 1; throw new Error("legacy append used"); },
+      appendEntryAtomic: async () => { calls.atomic += 1; throw new Error("atomic append used"); },
+    }), /repository|artifact revision|reviewed candidate/iu, variant.name);
+    assert.deepEqual(calls, { render: 0, pin: 0, sign: 0, legacy: 0, atomic: 0 }, variant.name);
+    assert.equal(await readFile(fixture.journalPath, "utf8"), journalBytes, variant.name);
+  }
+});
+
+test("prepare-next retry rejects HEAD, scope, and superseded-binding drift without replaying the key turn", async () => {
+  const variants = [
+    {
+      name: "HEAD drift",
+      mutate: async (fixture) => {
+        await writeFile(join(fixture.repositoryRoot, "retry-head-drift.txt"), "drift\n");
+        git(fixture.repositoryRoot, ["add", "retry-head-drift.txt"]);
+        git(fixture.repositoryRoot, ["commit", "-qm", "retry head drift"]);
+      },
+    },
+    { name: "scope drift", mutate: rewriteRuntimeBindingScope },
+    { name: "superseded binding", mutate: appendRuntimeReplacement },
+  ];
+
+  for (const variant of variants) {
+    const fixture = await initialRuntimeBindingFixture();
+    executePreparedBindingCli(fixture);
+    await variant.mutate(fixture);
+    const journalBytes = await readFile(fixture.journalPath, "utf8");
+    const resolution = await resolvePreparedMissionTransitionV1({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
+    assert.equal(resolution.state, "blocked", `${variant.name}: ${JSON.stringify(resolution)}`);
+    const replay = spawnSync(process.execPath, [CLI, "mission", "prepare-next", "--mission-id", MISSION_ID, "--root", fixture.repositoryRoot, "--json", "--passcode-stdin"], {
+      cwd: fixture.repositoryRoot,
+      encoding: "utf8",
+      input: "must-not-be-read\n",
+      env: { ...process.env, HOME: fixture.homeRoot },
+    });
+    assert.equal(replay.status, 1, `${variant.name}: ${replay.stderr}`);
+    assert.doesNotMatch(`${replay.stdout}${replay.stderr}`, /Passcode:|prepared-runtime-binding-decision/iu, variant.name);
+    assert.equal(await readFile(fixture.journalPath, "utf8"), journalBytes, variant.name);
+  }
 });
 
 test("resolve compiles a fresh candidate, blocks before a PIN on drift, executes once, and returns an idempotent retry", async () => {

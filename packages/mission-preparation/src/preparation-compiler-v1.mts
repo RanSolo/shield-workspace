@@ -144,7 +144,8 @@ function initialRuntimeBindingStateIneligible(observation: InitialRuntimeBinding
 function implementationAuthorityMismatch(plan: TransitionPlanV1, observation: InitialRuntimeBindingObservationV1): boolean {
   return observation.authorityMissionId !== plan.missionId || observation.authoritySubjectId !== plan.subjectId || observation.authorityRepositoryId !== plan.repositoryId ||
     observation.authorityCanonicalWritableRoot !== observation.canonicalRoot || observation.authorityBranch !== observation.branch ||
-    observation.authorityBaseRevision !== plan.planningBaseRevision || observation.authorityHeadRevision !== observation.headRevision || observation.authorityModelId !== plan.modelId ||
+    observation.authorityBaseRevision !== plan.planningBaseRevision || observation.authorityHeadRevision !== observation.headRevision ||
+    observation.authorityArtifactRevisionId !== observation.authorityHeadRevision || observation.authorityArtifactRevisionId !== observation.headRevision || observation.authorityModelId !== plan.modelId ||
     JSON.stringify(observation.authorityApprovedRelativePaths) !== JSON.stringify(plan.approvedRelativePaths) ||
     JSON.stringify(observation.authorityApprovedActionIds) !== JSON.stringify(plan.approvedActionIds) ||
     JSON.stringify(observation.authorityApprovedEffectClasses) !== JSON.stringify(plan.approvedEffectClasses) ||
