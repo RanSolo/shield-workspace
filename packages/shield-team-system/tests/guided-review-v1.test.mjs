@@ -3,14 +3,21 @@ import test from "node:test";
 
 import {
   GUIDED_REVIEW_CONTRACT_VERSION,
+  createGuidedReviewPublicationBundleV1,
   createGuidedReviewPlanV1,
+  createGuidedReviewRuntimeHandoffV1,
   decideGuidedReviewStepV1,
   evaluateGuidedReviewPublicationForkV1,
   renderGuidedReviewChecklistV1,
   reviseGuidedReviewSessionV1,
   startGuidedReviewSessionV1,
   summarizeGuidedReviewSessionV1,
+  validateGuidedReviewPlanV1,
+  validateGuidedReviewPlaybookV1,
+  validateGuidedReviewPublicationBundleV1,
   validateGuidedReviewPublicationForkV1,
+  validateGuidedReviewRuntimeHandoffV1,
+  validateGuidedReviewSessionV1,
 } from "../dist/guided-review-v1.mjs";
 import {
   BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS,
@@ -60,6 +67,37 @@ function driverReceipt(exactRevision = head, status = "ready") {
   return result.value;
 }
 
+function runtimeHandoff(exactRevision = head, status = "ready", overrides = {}) {
+  const result = createGuidedReviewRuntimeHandoffV1({
+    status,
+    repositoryId: "RanSolo/shield-workspace",
+    canonicalWorktreeRef: "worktree:guided-review-238",
+    branch: "agent/guided-review-238",
+    exactRevision,
+    builderSeatId: "may",
+    builderBindingRef: "binding:may:guided-review-238",
+    reasoningRuntimeId: "runtime:may:test",
+    toolExecutorId: "executor:test",
+    dependencyBuildReceiptRef: "receipt:build:test",
+    environmentRef: "environment:test",
+    fixtureRef: "fixture:test",
+    resourceBindingsRef: "bindings:test:redacted",
+    endpointOwnershipRef: "ownership:test",
+    portPreflightRef: "preflight:port:test",
+    watcherPreflightRef: "preflight:watcher:test",
+    externalEffectPolicyRef: "policy:no-external-effects",
+    launchCommandRef: "command:start",
+    healthProbeRef: "probe:ready",
+    reviewUrl: "http://127.0.0.1:5173/",
+    teardownRef: "command:stop",
+    recoveryRef: "recovery:test",
+    driverReceipt: driverReceipt(exactRevision, status === "ready" ? "ready" : "blocked"),
+    ...overrides,
+  });
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  return result.value;
+}
+
 const base = {
   missionId: "mission:issue-238",
   subjectId: "issue:238",
@@ -71,21 +109,32 @@ const base = {
     { criterionId: "AC-1", text: "Review proceeds in small durable questions grouped into stages." },
     { criterionId: "AC-2", text: "Publication offers one-PIN Yes, No, or Cancel routes." },
   ],
-  runtimeHandoff: {
-    status: "ready",
-    receiptDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-    exactRevision: head,
-    environmentRef: "environment:test",
-    launchCommandRef: "command:start",
-    healthProbeRef: "probe:ready",
-    reviewUrl: "http://127.0.0.1:5173/",
-    teardownRef: "command:stop",
-    externalEffectPolicyRef: "policy:no-external-effects",
-    driverReceipt: driverReceipt(),
-  },
+  runtimeHandoff: runtimeHandoff(),
   relevantPaths: ["packages/shield-team-system/src/guided-review-v1.mts"],
   evidenceRefs: ["evidence:test:guided-review"],
 };
+
+function publicationBundleInput(candidatePlan, fork, playbookValue, sessionValue, overrides = {}) {
+  return {
+    missionId: base.missionId,
+    subjectId: base.subjectId,
+    repositoryId: base.repositoryId,
+    branch: base.branch,
+    exactRevision: candidatePlan.exactRevision,
+    protectedGraphId: "graph:guided-review:test",
+    protectedGraphDigest: "sha256:GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG",
+    transitionPlanId: "transition-plan:guided-review:test",
+    transitionPlanDigest: "sha256:TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+    parentPlanReviewEvidenceId: "review:fury:guided-review:test",
+    parentPlanReviewEvidenceDigest: "sha256:FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    policyMode: candidatePlan.required ? "required" : "operator_optional",
+    candidatePlan,
+    fork,
+    playbook: playbookValue,
+    session: sessionValue,
+    ...overrides,
+  };
+}
 
 function playbook(kind = "frontend", overrides = {}) {
   const values = { ...base, ...overrides };
@@ -155,6 +204,29 @@ test("versioned driver receipts bind executor, environment, revision, effects, a
   assert.equal(validateGuidedReviewDriverReceiptV1({ ...receipt, executorRef: "executor:substituted" }).state, "invalid");
 });
 
+test("runtime handoffs content-address the closed builder, runtime, launch, and driver chain", () => {
+  const handoff = runtimeHandoff();
+  const { handoffDigest: _handoffDigest, ...handoffBody } = handoff;
+  assert.equal(handoff.builderSeatId, "may");
+  assert.equal(validateGuidedReviewRuntimeHandoffV1(handoff).state, "ready");
+  assert.equal(validateGuidedReviewRuntimeHandoffV1({ ...handoff, reasoningRuntimeId: "runtime:substituted" }).state, "invalid");
+  assert.equal(validateGuidedReviewRuntimeHandoffV1({ ...handoff, recoveryRef: "recovery:substituted" }).state, "invalid");
+  assert.equal(validateGuidedReviewRuntimeHandoffV1({
+    ...handoff,
+    driverReceipt: { ...handoff.driverReceipt, detail: "Mutated after the wrapper digest was issued." },
+  }).state, "invalid");
+  assert.equal(createGuidedReviewRuntimeHandoffV1({
+    ...handoffBody,
+    reviewUrl: "http://user:secret@127.0.0.1:5173/",
+  }).state, "invalid");
+  assert.equal(createBuiltInGuidedReviewPlaybookV1("frontend", {
+    ...base,
+    runtimeHandoff: runtimeHandoff(head, "ready", { repositoryId: "Other/repository" }),
+    participantRelationship: "product_reviewer",
+    plan: reviewPlan(),
+  }).state, "invalid");
+});
+
 test("plan records required or safely omitted QA against exact AC and gate ownership", () => {
   const required = reviewPlan();
   assert.equal(required.required, true);
@@ -163,6 +235,18 @@ test("plan records required or safely omitted QA against exact AC and gate owner
   const omitted = reviewPlan("backend", head, false);
   assert.equal(omitted.required, false);
   assert.match(omitted.rationale, /Automated evidence/u);
+});
+
+test("exported plan, playbook, and session validators reject open or tampered records", () => {
+  const plan = reviewPlan();
+  const book = playbook();
+  const session = start(book);
+  assert.equal(validateGuidedReviewPlanV1(plan).state, "ready");
+  assert.equal(validateGuidedReviewPlaybookV1(book).state, "ready");
+  assert.equal(validateGuidedReviewSessionV1(book, session).state, "ready");
+  assert.equal(validateGuidedReviewPlanV1({ ...plan, unexpected: true }).state, "invalid");
+  assert.equal(validateGuidedReviewPlaybookV1({ ...book, title: "Substituted" }).state, "invalid");
+  assert.equal(validateGuidedReviewSessionV1(book, { ...session, participant: { ...session.participant, participantId: "human:other" } }).state, "invalid");
 });
 
 test("participant policy admits the builder only when the reviewed plan selects that relationship", () => {
@@ -247,7 +331,7 @@ test("frontend dogfood routes a finding through focused correction and preserves
   const revised = reviseGuidedReviewSessionV1(book, session, {
     exactRevision: nextHead,
     plan: reviewPlan("frontend", nextHead),
-    runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, receiptDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", driverReceipt: driverReceipt(nextHead) },
+    runtimeHandoff: runtimeHandoff(nextHead),
     affectedStepIds: ["failure"],
     rationale: "Same-scope recovery behavior was corrected and independently revalidated.",
     revisedAt: "2026-08-13T22:00:00.000Z",
@@ -274,7 +358,7 @@ test("a corrected revision stales only selected steps and their downstream depen
   const revised = reviseGuidedReviewSessionV1(book, completed, {
     exactRevision: nextHead,
     plan: reviewPlan("backend", nextHead),
-    runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, receiptDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", driverReceipt: driverReceipt(nextHead) },
+    runtimeHandoff: runtimeHandoff(nextHead),
     affectedStepIds: ["tests"],
     rationale: "Focused test coverage changed.",
     revisedAt: "2026-08-13T22:00:00.000Z",
@@ -316,7 +400,7 @@ test("formal correction replay rejects a stale or blocked runtime handoff", () =
   const blocked = reviseGuidedReviewSessionV1(book, completed, {
     exactRevision: nextHead,
     plan: reviewPlan("backend", nextHead),
-    runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, status: "blocked", driverReceipt: driverReceipt(nextHead, "blocked") },
+    runtimeHandoff: runtimeHandoff(nextHead, "blocked"),
     affectedStepIds: ["tests"],
     rationale: "Coverage changed.",
     revisedAt: "2026-08-13T22:00:00.000Z",
@@ -327,7 +411,7 @@ test("formal correction replay rejects a stale or blocked runtime handoff", () =
 
 test("acceptance and publication profiles require a ready exact-revision runtime handoff", () => {
   const blockedBook = playbook("frontend", {
-    runtimeHandoff: { ...base.runtimeHandoff, status: "blocked" },
+    runtimeHandoff: runtimeHandoff(head, "blocked"),
   });
   const formal = startGuidedReviewSessionV1(blockedBook, {
     sessionId: "session:blocked",
@@ -371,6 +455,46 @@ test("publication fork has Yes, No, and Cancel routes with exactly one remaining
   assert.equal(stale.state, "ready");
   assert.equal(stale.value.state, "blocked");
   assert.equal(stale.value.reasonCode, "GUIDED_REVIEW_INCOMPLETE_OR_STALE");
+});
+
+test("publication bundles carry and revalidate the complete YES chain and null evidence on No or Cancel", () => {
+  const book = playbook();
+  const completed = complete(book);
+  const yesFork = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: head, plan: book.plan, playbook: book, session: completed });
+  assert.equal(yesFork.state, "ready");
+  const yes = createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value, book, completed));
+  assert.equal(yes.state, "ready", JSON.stringify(yes));
+  assert.equal(validateGuidedReviewPublicationBundleV1(yes.value).state, "ready");
+  assert.equal(yes.value.playbook.playbookDigest, book.playbookDigest);
+  assert.equal(yes.value.session.sessionDigest, completed.sessionDigest);
+
+  assert.equal(createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value, null, completed)).state, "invalid");
+  assert.equal(createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value, book, null)).state, "invalid");
+  assert.equal(createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value,
+    { ...book, title: "Tampered playbook bytes" }, completed)).state, "invalid");
+  assert.equal(createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value, book,
+    { ...completed, sessionDigest: "sha256:IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII" })).state, "invalid");
+
+  const otherPlan = reviewPlan("frontend", head, true);
+  const otherBook = playbook("frontend", { plan: otherPlan, title: "Other Guided Review" });
+  const otherSession = complete(otherBook);
+  assert.equal(createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value, otherBook, otherSession)).state, "invalid");
+  assert.equal(validateGuidedReviewPublicationBundleV1({ ...yes.value, session: otherSession }).state, "invalid");
+
+  const optional = reviewPlan("frontend", head, false);
+  const noFork = evaluateGuidedReviewPublicationForkV1({ choice: "no", exactRevision: head, plan: optional, playbook: null, session: null });
+  const no = createGuidedReviewPublicationBundleV1(publicationBundleInput(optional, noFork.value, null, null));
+  assert.equal(no.state, "ready", JSON.stringify(no));
+  assert.equal(validateGuidedReviewPublicationBundleV1(no.value).state, "ready");
+  assert.equal(createGuidedReviewPublicationBundleV1(publicationBundleInput(optional, noFork.value, book, null)).state, "invalid");
+
+  const cancelFork = evaluateGuidedReviewPublicationForkV1({ choice: "cancel", exactRevision: head, plan: book.plan, playbook: null, session: null });
+  const cancel = createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, cancelFork.value, null, null));
+  assert.equal(cancel.state, "ready", JSON.stringify(cancel));
+  assert.equal(validateGuidedReviewPublicationBundleV1(cancel.value).state, "ready");
+
+  assert.equal(validateGuidedReviewPublicationBundleV1({ ...yes.value, protectedGraphDigest: "sha256:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" }).state, "invalid");
+  assert.equal(createGuidedReviewPublicationBundleV1(publicationBundleInput(book.plan, yesFork.value, book, completed, { policyMode: "operator_optional" })).state, "invalid");
 });
 
 test("tampered content-addressed sessions and malformed playbooks fail closed", () => {

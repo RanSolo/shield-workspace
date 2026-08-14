@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createGuidedReviewDriverReceiptV1 } from "../dist/guided-review-driver-v1.mjs";
+import { createGuidedReviewRuntimeHandoffV1 } from "../dist/guided-review-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist/cli.mjs");
@@ -67,18 +68,31 @@ async function fixture() {
     title: "Issue 238 Guided Review",
     participantRelationship: "document_reviewer",
     acceptanceCriteria: [{ criterionId: "AC-1", text: "Questions form durable stages." }],
-    runtimeHandoff: {
+    runtimeHandoff: createGuidedReviewRuntimeHandoffV1({
       status: "ready",
-      receiptDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      repositoryId: "RanSolo/shield-workspace",
+      canonicalWorktreeRef: "worktree:guided-review-cli",
+      branch: "agent/guided-review-238",
       exactRevision: head,
+      builderSeatId: "may",
+      builderBindingRef: "binding:may:guided-review-cli",
+      reasoningRuntimeId: "runtime:may:guided-review-cli",
+      toolExecutorId: "executor:test",
+      dependencyBuildReceiptRef: "receipt:build:test",
       environmentRef: "environment:test",
+      fixtureRef: "fixture:guided-review-cli",
+      resourceBindingsRef: "bindings:guided-review-cli:redacted",
+      endpointOwnershipRef: "ownership:guided-review-cli",
+      portPreflightRef: "preflight:port:guided-review-cli",
+      watcherPreflightRef: "preflight:watcher:guided-review-cli",
+      externalEffectPolicyRef: "policy:none",
       launchCommandRef: "command:start",
       healthProbeRef: "probe:ready",
       reviewUrl: "http://127.0.0.1:5173/",
       teardownRef: "command:stop",
-      externalEffectPolicyRef: "policy:none",
+      recoveryRef: "recovery:guided-review-cli",
       driverReceipt: driver.value,
-    },
+    }).value,
     relevantPaths: ["packages/shield-team-system/src/guided-review-v1.mts"],
     evidenceRefs: ["evidence:guided-review:test"],
   };

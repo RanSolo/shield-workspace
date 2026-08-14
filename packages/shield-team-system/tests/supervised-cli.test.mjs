@@ -24,11 +24,19 @@ import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
 import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
 import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
-import { createGuidedReviewPlanV1, evaluateGuidedReviewPublicationForkV1 } from "../dist/guided-review-v1.mjs";
+import {
+  createGuidedReviewPlanV1,
+  createGuidedReviewRuntimeHandoffV1,
+  decideGuidedReviewStepV1,
+  startGuidedReviewSessionV1,
+} from "../dist/guided-review-v1.mjs";
+import { createBuiltInGuidedReviewPlaybookV1 } from "../dist/guided-review-playbooks-v1.mjs";
+import { createGuidedReviewDriverReceiptV1 } from "../dist/guided-review-driver-v1.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import {
   buildMissionTransitionPlanReviewV1,
   materializeReviewedMissionTransitionV1,
+  resolvePreparedMissionTransitionV1,
 } from "../dist/mission-preparation-host-v1.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
@@ -411,7 +419,7 @@ function canonicalDispatchEventLine(event) {
   return JSON.stringify(Object.fromEntries(keys.filter((key) => Object.hasOwn(event, key)).map((key) => [key, event[key]])));
 }
 
-async function preparedPublicationCliFixture() {
+async function preparedPublicationCliFixture(approvedCapabilities = ["capability:issue-286:p2"]) {
   const current = await fixture(false, "coulson_only_platform_review");
   const missionId = "mission:cli-prepared-publication";
   const subjectId = "github:RanSolo/fixture/issue/286";
@@ -458,7 +466,7 @@ async function preparedPublicationCliFixture() {
     approvedActionIds: ["action:issue-286:p2"],
     approvedEffectClasses: ["behavioral_implementation"],
     approvedEffectKeys: ["effect:issue-286:p2"],
-    approvedCapabilities: ["capability:issue-286:p2"],
+    approvedCapabilities,
     validationCommandIds: ["validation:issue-286:p2"],
     modelId: "model:prepared-may",
     reasoningRuntimeId: "runtime:prepared-may",
@@ -598,39 +606,70 @@ async function preparedPublicationCliFixture() {
   await writeFile(join(current.root, "implementation.md"), "initial implementation\nprepared publication change\n");
   runGit(current.root, ["add", "implementation.md"]);
   runGit(current.root, ["commit", "-qm", "prepared publication descendant"]);
-  const exactRevision = runGit(current.root, ["rev-parse", "HEAD"]);
-  const guidedPlanResult = createGuidedReviewPlanV1({
-    schemaVersion: 1,
-    contractVersion: "guided.review.v1",
-    planId: "plan:prepared-publication:automated-omission",
-    missionId,
-    subjectId,
-    kind: "backend",
-    required: false,
-    rationale: "This non-UI compatibility fixture is covered by automated evidence.",
-    method: "cli",
-    participantRelationship: "independent_reviewer",
-    coveredCriterionRefs: [],
-    evidenceRequirements: [],
-    exactRevision,
-    gateOwnerSeatId: "coulson",
+  return { ...current, missionId, homeRoot, plan, initialHeadRevision };
+}
+
+async function completedPreparedGuidedReview(prepared, participantId = "human:coulson") {
+  const selected = await resolvePreparedMissionTransitionV1({ missionId: prepared.missionId, repositoryRoot: prepared.root });
+  assert.equal(selected.state, "publication_ready", JSON.stringify(selected));
+  const exactRevision = selected.observation.headRevision;
+  const driver = createGuidedReviewDriverReceiptV1({
+    schemaVersion: 1, contractVersion: "guided.review.driver.v1", driverId: "driver:prepared-review", driverVersion: "v1",
+    executorRef: "executor:prepared-review", exactRevision, environmentRef: "environment:prepared-review", status: "ready",
+    capabilities: ["code_review"], scenarioRefs: ["scenario:prepared-review"], evidenceRefs: ["evidence:prepared-review"],
+    effectClass: "read_only", detail: "Prepared Guided Review fixture.",
   });
-  assert.equal(guidedPlanResult.state, "ready");
-  const guidedForkResult = evaluateGuidedReviewPublicationForkV1({
-    choice: "no",
-    exactRevision,
-    plan: guidedPlanResult.value,
-    playbook: null,
-    session: null,
+  assert.equal(driver.state, "ready");
+  const runtime = createGuidedReviewRuntimeHandoffV1({
+    status: "ready", repositoryId: selected.observation.repositoryId, canonicalWorktreeRef: "worktree:prepared-review",
+    branch: selected.observation.branch, exactRevision, builderSeatId: "may", builderBindingRef: "binding:may:prepared-review",
+    reasoningRuntimeId: "runtime:may:prepared-review", toolExecutorId: "executor:prepared-review",
+    dependencyBuildReceiptRef: "receipt:build:prepared-review", environmentRef: "environment:prepared-review",
+    fixtureRef: "fixture:prepared-review", resourceBindingsRef: "bindings:prepared-review:redacted",
+    endpointOwnershipRef: "ownership:prepared-review", portPreflightRef: "preflight:port:prepared-review",
+    watcherPreflightRef: "preflight:watcher:prepared-review", externalEffectPolicyRef: "policy:no-external-effects",
+    launchCommandRef: "command:prepared-review", healthProbeRef: "probe:prepared-review",
+    reviewUrl: "http://127.0.0.1:4173/", teardownRef: "command:stop:prepared-review", recoveryRef: "recovery:prepared-review",
+    driverReceipt: driver.value,
   });
-  assert.equal(guidedForkResult.state, "ready");
-  const guidedReviewForkPath = join(".shield", "tmp", "guided-review-fork.json");
-  await writeFile(join(current.root, guidedReviewForkPath), `${JSON.stringify(guidedForkResult.value, null, 2)}\n`);
-  const cancelForkResult = evaluateGuidedReviewPublicationForkV1({ choice: "cancel", exactRevision, plan: guidedPlanResult.value, playbook: null, session: null });
-  assert.equal(cancelForkResult.state, "ready");
-  const cancelForkPath = join(".shield", "tmp", "guided-review-cancel-fork.json");
-  await writeFile(join(current.root, cancelForkPath), `${JSON.stringify(cancelForkResult.value, null, 2)}\n`);
-  return { ...current, missionId, homeRoot, plan, initialHeadRevision, guidedReviewForkPath, guidedReviewFork: guidedForkResult.value, cancelForkPath };
+  assert.equal(runtime.state, "ready");
+  const plan = createGuidedReviewPlanV1({
+    schemaVersion: 1, contractVersion: "guided.review.v1", planId: "plan:prepared-review", missionId: prepared.missionId,
+    subjectId: selected.protectedGraph.transitionPlan.subjectId, kind: "backend", required: true,
+    rationale: "The protected plan requires a completed exact-candidate code review.", method: "code_review",
+    participantRelationship: "independent_reviewer", coveredCriterionRefs: ["AC-1"], evidenceRequirements: ["Named exact-revision observations."],
+    exactRevision, gateOwnerSeatId: "coulson",
+  });
+  assert.equal(plan.state, "ready");
+  const playbook = createBuiltInGuidedReviewPlaybookV1("backend", {
+    missionId: prepared.missionId, subjectId: selected.protectedGraph.transitionPlan.subjectId,
+    repositoryId: selected.observation.repositoryId, branch: selected.observation.branch, exactRevision, plan: plan.value,
+    title: "Prepared publication Guided Review", participantRelationship: "independent_reviewer",
+    acceptanceCriteria: [{ criterionId: "AC-1", text: "The exact candidate receives a named code review." }],
+    runtimeHandoff: runtime.value, relevantPaths: ["implementation.md"], evidenceRefs: ["evidence:prepared-review"],
+  });
+  assert.equal(playbook.state, "ready", JSON.stringify(playbook));
+  let sessionResult = startGuidedReviewSessionV1(playbook.value, {
+    sessionId: "session:prepared-review", profile: "publication",
+    participant: { participantId, relationship: "independent_reviewer", seatId: "coulson", bindingRef: prepared.coulson.binding.signingKeyRef },
+    startedAt: "2026-08-13T02:00:00.000Z",
+  });
+  assert.equal(sessionResult.state, "ready");
+  let session = sessionResult.value;
+  for (let index = 1; session.state !== "completed"; index += 1) {
+    const decided = decideGuidedReviewStepV1(playbook.value, session, {
+      decisionId: `decision:prepared-review:${index}`, stepId: session.currentStepId, exactRevision, disposition: "pass",
+      observation: `Observed ${session.currentStepId} on the exact candidate.`, evidenceRefs: ["evidence:prepared-review"],
+      finding: null, condition: null, decidedAt: `2026-08-13T02:${String(index).padStart(2, "0")}:00.000Z`,
+    });
+    assert.equal(decided.state, "ready", JSON.stringify(decided));
+    session = decided.value;
+  }
+  const playbookPath = join(".shield", "tmp", "guided-review-playbook.json");
+  const sessionPath = join(".shield", "tmp", "guided-review-session.json");
+  await writeFile(join(prepared.root, playbookPath), `${JSON.stringify(playbook.value, null, 2)}\n`);
+  await writeFile(join(prepared.root, sessionPath), `${JSON.stringify(session, null, 2)}\n`);
+  return { playbookPath, sessionPath };
 }
 
 test("packed CLI path completes execution while Fitz readiness remains waiting", async () => {
@@ -1545,37 +1584,37 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   const prepared = await preparedPublicationCliFixture();
   const path = journalPath(prepared.root, prepared.missionId);
   const beforeCancellation = await readFile(path, "utf8");
-  const missingFork = run(
+  const missingChoice = run(
     prepared.root,
     ["mission", "prepare-next", "--mission-id", prepared.missionId, "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
   );
-  assert.equal(missingFork.status, 1);
-  assert.match(missingFork.stderr, /requires --guided-review-fork/u);
-  assert.doesNotMatch(missingFork.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(missingChoice.status, 1);
+  assert.match(missingChoice.stderr, /requires --guided-review-choice/u);
+  assert.doesNotMatch(missingChoice.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
   assert.equal(await readFile(path, "utf8"), beforeCancellation);
   const cancelledFork = run(
     prepared.root,
-    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-fork", prepared.cancelForkPath, "--passcode-stdin", "--json"],
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "cancel", "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
   );
   assert.equal(cancelledFork.status, 1);
-  assert.match(cancelledFork.stderr, /not PIN-eligible/u);
+  assert.match(cancelledFork.stdout, /"state": "cancelled"/u);
   assert.doesNotMatch(cancelledFork.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
   assert.equal(await readFile(path, "utf8"), beforeCancellation);
   const cancelled = run(
     prepared.root,
-    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-fork", prepared.guidedReviewForkPath, "--passcode-stdin", "--json"],
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "no", "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
   );
-  assert.equal(cancelled.status, 2);
+  assert.equal(cancelled.status, 2, cancelled.stderr);
   assert.match(cancelled.stderr, /SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
   assert.match(cancelled.stderr, /Passcode input was empty/u);
   assert.equal(await readFile(path, "utf8"), beforeCancellation);
 
   const authorized = run(
     prepared.root,
-    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-fork", prepared.guidedReviewForkPath, "--passcode-stdin", "--json"],
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "no", "--passcode-stdin", "--json"],
     { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n", nodeArgs: fixedClockNodeArgs("2026-08-13T01:03:00Z") },
   );
   assert.equal(authorized.status, 0, authorized.stderr);
@@ -1591,16 +1630,16 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   assert.equal(decision.guidedReview.choice, "no");
   assert.equal(decision.guidedReview.disposition, "skipped_by_operator");
   assert.equal(decision.guidedReview.required, false);
-  assert.match(decision.guidedReview.rationale, /automated evidence/u);
+  assert.match(decision.guidedReview.rationale, /optional No route/u);
   assert.equal(decision.guidedReview.gateOwnerSeatId, "coulson");
-  assert.equal(decision.guidedReview.forkDigest, prepared.guidedReviewFork.forkDigest);
+  assert.match(decision.guidedReview.bundleDigest, /^sha256:/u);
 
   const projection = JSON.parse(authorized.stdout);
   assert.equal(projection.publicationAuthorizations.length, 2);
   const publication = projection.publicationAuthorizations[1];
   assert.equal(publication.authority.authorityKind, "review.publish");
   assert.equal(publication.authority.authorityRef, `authorization:${prepared.missionId}:review-publish:5`);
-  assert.equal(publication.authorization.sourceRef, `cli:prepare-next:publication-authorize:5:guided-review:${prepared.guidedReviewFork.forkDigest}`);
+  assert.equal(publication.authorization.sourceRef, `cli:prepare-next:publication-authorize:5:guided-review-v2:${decision.guidedReview.bundleDigest}`);
   assert.deepEqual(publication.authority.authorizedPaths, ["implementation.md"]);
   assert.deepEqual(publication.authority.permittedEffects, ["review.branch.push", "review.pull_request.create_draft"]);
   assert.equal(projection.communication.requests.length, 0);
@@ -1621,6 +1660,59 @@ test("prepare-next derives and signs one prepared publication without caller JSO
   assert.match(retry.stdout, new RegExp(`journalSequence: ${publication.journalSequence}\\n`, "u"));
   assert.doesNotMatch(`${retry.stdout}${retry.stderr}`, /Passcode:/u);
   assert.equal(await readFile(path, "utf8"), bytesAfterAuthorization);
+});
+
+test("prepare-next rejects forged YES evidence and a required-to-optional downgrade before PIN", async () => {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const path = journalPath(prepared.root, prepared.missionId);
+  const before = await readFile(path, "utf8");
+  const no = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "no", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" },
+  );
+  assert.equal(no.status, 1);
+  assert.match(no.stderr, /requires Guided Review; No is not available/u);
+  assert.doesNotMatch(no.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), before);
+
+  const yesWithoutChain = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "yes", "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "must-not-be-read\n" },
+  );
+  assert.equal(yesWithoutChain.status, 1);
+  assert.match(yesWithoutChain.stderr, /requires --guided-review-playbook and --guided-review-session with the complete reviewed chain/u);
+  assert.doesNotMatch(yesWithoutChain.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(path, "utf8"), before);
+});
+
+test("prepare-next binds a complete YES chain to the active Coulson signer and one PIN", async () => {
+  const prepared = await preparedPublicationCliFixture(["guided_review_required"]);
+  const evidence = await completedPreparedGuidedReview(prepared);
+  const accepted = run(
+    prepared.root,
+    ["mission", "prepare-next", "--mission-id", prepared.missionId, "--guided-review-choice", "yes",
+      "--guided-review-playbook", evidence.playbookPath, "--guided-review-session", evidence.sessionPath, "--passcode-stdin", "--json"],
+    { env: { HOME: prepared.homeRoot }, input: "prepared-passcode\n" },
+  );
+  assert.equal(accepted.status, 0, accepted.stderr);
+  const projection = JSON.parse(accepted.stdout);
+  assert.match(projection.publicationAuthorizations.at(-1).authorization.sourceRef, /:guided-review-v2:sha256:/u);
+
+  const wrong = await preparedPublicationCliFixture(["guided_review_required"]);
+  const wrongEvidence = await completedPreparedGuidedReview(wrong, "human:substituted");
+  const before = await readFile(journalPath(wrong.root, wrong.missionId), "utf8");
+  const rejected = run(
+    wrong.root,
+    ["mission", "prepare-next", "--mission-id", wrong.missionId, "--guided-review-choice", "yes",
+      "--guided-review-playbook", wrongEvidence.playbookPath, "--guided-review-session", wrongEvidence.sessionPath, "--passcode-stdin", "--json"],
+    { env: { HOME: wrong.homeRoot }, input: "must-not-be-read\n" },
+  );
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /participant identity does not match the active Coulson signer/u);
+  assert.doesNotMatch(rejected.stderr, /Passcode:|SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN/u);
+  assert.equal(await readFile(journalPath(wrong.root, wrong.missionId), "utf8"), before);
 });
 
 test("schema-9 publication-authorize CLI signs once, retries without passcode, queues, and rejects file-delivered outcomes", async () => {

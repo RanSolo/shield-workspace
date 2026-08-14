@@ -113,14 +113,23 @@ The gate offers `yes`, `no`, and `cancel`:
 - `cancel` yields no PIN and no publication intent.
 
 Both successful routes specify exactly one remaining PIN. The public fork
-contract is intentionally `authority: none`: it does not read a passcode, sign,
-append a journal entry, push, publish, merge, deploy, or release. The
-profile-aware `mission prepare-next` host consumes a PIN-eligible fork, shows
-its plan/session/fork identities in the publication decision, and embeds the
-fork digest in the signed publication authorization `sourceRef`. That is one
-key turn: the same PIN binds the selected Guided Review route and exact review-
-candidate publication. Missing, cancelled, blocked, malformed, or stale fork
-evidence stops before decision rendering or passcode access.
+contract is intentionally `authority: none`: it remains useful as an advisory
+projection, but it is not sufficient publication evidence. The profile-aware
+`mission prepare-next` host owns the Yes/No/Cancel choice. A Yes route requires
+a content-addressed publication bundle carrying the complete playbook and
+completed session bytes. The bundle also binds the mission, subject,
+repository, branch, exact HEAD, protected graph, transition plan, Fury review
+evidence, and protected policy mode. A No route is constructed by the host from
+that protected policy; callers cannot downgrade a required review by supplying
+a different local plan. Cancel stops before decision rendering or passcode
+access.
+
+The publication decision displays the bundle, plan, session, and fork
+identities and embeds the bundle digest in the signed authorization
+`sourceRef`. The same single PIN binds the selected Guided Review route and
+exact review-candidate publication. The host revalidates the protected graph,
+repository, journal, signer, and exact bundle bytes before and after signing.
+Missing, incomplete, substituted, malformed, or stale evidence fails closed.
 
 ## Durable CLI
 
@@ -166,16 +175,25 @@ shield guided-review decide \
 
 `status` reopens the current question. `revise` binds a new revision and stale
 question list. `checklist` emits the reusable publication/QA checklist.
-`publication-choice` freezes the non-authoritative Yes/No/Cancel fork artifact.
-Give the PIN-eligible result to the existing prepared publication key turn:
+`publication-choice` freezes a non-authoritative Yes/No/Cancel fork artifact.
+For Yes, give the complete reviewed playbook and session to the prepared
+publication key turn. The host creates the graph-bound closed bundle:
 
 ```bash
 shield mission prepare-next \
   --mission-id mission:example \
-  --guided-review-fork .shield/tmp/guided-review/fork.json
+  --guided-review-choice yes \
+  --guided-review-playbook .shield/tmp/guided-review/playbook.json \
+  --guided-review-session .shield/tmp/guided-review/session.json
 ```
 
-Playbooks, sessions, and fork artifacts are content-addressed. Session updates
+For an eligible No route, omit the bundle; the host derives the record from the
+protected transition policy. `--guided-review-choice cancel` stops before PIN.
+In an interactive terminal, omitting the choice presents
+`Enter Guided Review? Yes / No / Cancel`.
+
+Playbooks, sessions, fork artifacts, runtime handoffs, and publication bundles
+are content-addressed. Session updates
 use an exclusive lock, exact-byte compare, file sync, atomic rename, and
 directory sync. Concurrent or stale writers fail without silently overwriting a
 human decision.
@@ -192,5 +210,8 @@ human result:
   participant identity, linked evidence, and the carried condition in the
   reusable checklist and final publication fork.
 
-These are deterministic engine proofs. The actual human observations remain in
-the issue's attributed dogfood records and are not recreated by automated tests.
+These are deterministic engine proofs, not real UI or non-UI dogfood missions.
+The current Mack-shaped check is host-asserted, non-authoritative validation;
+the installed participant registry does not make that evidence Mack human or
+journal authority. Actual human observations and named dogfood records must be
+captured separately before the issue is treated as complete.

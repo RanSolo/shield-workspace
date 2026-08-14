@@ -52,7 +52,11 @@ import {
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntriesAtomicV1, appendProfileAwareMissionEntryV1, readMissionJournalForDisplay } from "../dist/mission-store.mjs";
 import { executeAuthorizeWheelsUpV1, validateAuthorizeWheelsUpInput } from "../dist/authorize-wheels-up-executor-v1.mjs";
-import { executeReviewPublicationAuthorizationV1, observePublicationRepositoryV1 } from "../dist/review-publication-executor-v1.mjs";
+import {
+  createHostNoGuidedReviewBundleV1,
+  executeReviewPublicationAuthorizationV1,
+  observePublicationRepositoryV1,
+} from "../dist/review-publication-executor-v1.mjs";
 import { executeRuntimeBindingV1 } from "../dist/runtime-binding-executor-v1.mjs";
 import { signerTestOnly } from "../dist/mission-signer.mjs";
 import {
@@ -1769,6 +1773,7 @@ test("resolve selects deterministic publication readiness at a clean strict desc
       missionId: MISSION_ID,
       intent: result.publicationIntent,
       expectedPreparation: result,
+      guidedReviewBundle: createHostNoGuidedReviewBundleV1(result),
       timestamp: { value: "2026-08-11T12:03:00Z", provenance: "hostTrusted" },
       humanMode: false,
       decisionOutput: { write: () => {} },

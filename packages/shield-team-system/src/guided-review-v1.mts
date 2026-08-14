@@ -53,17 +53,33 @@ export interface GuidedReviewStageV1 {
 }
 
 export interface GuidedReviewRuntimeHandoffV1 {
+  readonly handoffDigest: string;
   readonly status: "ready" | "blocked" | "externally_uncertain";
-  readonly receiptDigest: string;
+  readonly repositoryId: string;
+  readonly canonicalWorktreeRef: string;
+  readonly branch: string;
   readonly exactRevision: string;
+  readonly builderSeatId: "may";
+  readonly builderBindingRef: string;
+  readonly reasoningRuntimeId: string;
+  readonly toolExecutorId: string;
+  readonly dependencyBuildReceiptRef: string;
   readonly environmentRef: string;
+  readonly fixtureRef: string;
+  readonly resourceBindingsRef: string;
+  readonly endpointOwnershipRef: string;
+  readonly portPreflightRef: string;
+  readonly watcherPreflightRef: string;
+  readonly externalEffectPolicyRef: string;
   readonly launchCommandRef: string;
   readonly healthProbeRef: string;
   readonly reviewUrl: string;
   readonly teardownRef: string;
-  readonly externalEffectPolicyRef: string;
+  readonly recoveryRef: string;
   readonly driverReceipt: GuidedReviewDriverReceiptV1;
 }
+
+export type GuidedReviewRuntimeHandoffInputV1 = Omit<GuidedReviewRuntimeHandoffV1, "handoffDigest">;
 
 export interface GuidedReviewPlanInputV1 {
   readonly schemaVersion: 1;
@@ -170,6 +186,28 @@ export interface GuidedReviewPublicationForkV1 {
   readonly forkDigest: string;
 }
 
+export interface GuidedReviewPublicationBundleV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: typeof GUIDED_REVIEW_CONTRACT_VERSION;
+  readonly missionId: string;
+  readonly subjectId: string;
+  readonly repositoryId: string;
+  readonly branch: string;
+  readonly exactRevision: string;
+  readonly protectedGraphId: string;
+  readonly protectedGraphDigest: string;
+  readonly transitionPlanId: string;
+  readonly transitionPlanDigest: string;
+  readonly parentPlanReviewEvidenceId: string;
+  readonly parentPlanReviewEvidenceDigest: string;
+  readonly policyMode: "required" | "operator_optional" | "omitted";
+  readonly candidatePlan: GuidedReviewPlanV1;
+  readonly fork: GuidedReviewPublicationForkV1;
+  readonly playbook: GuidedReviewPlaybookV1 | null;
+  readonly session: GuidedReviewSessionV1 | null;
+  readonly bundleDigest: string;
+}
+
 export type GuidedReviewResultV1<T> =
   | Readonly<{ state: "ready"; value: T }>
   | Readonly<{ state: "invalid"; code: string; errors: readonly string[] }>;
@@ -244,15 +282,50 @@ function validStage(value: unknown): value is GuidedReviewStageV1 {
     value.steps.every(validStep) && new Set(value.steps.map((step) => step.stepId)).size === value.steps.length;
 }
 
-function validRuntime(value: unknown): value is GuidedReviewRuntimeHandoffV1 {
-  if (!exact(value, ["status", "receiptDigest", "exactRevision", "environmentRef", "launchCommandRef", "healthProbeRef", "reviewUrl", "teardownRef", "externalEffectPolicyRef", "driverReceipt"]) ||
-    !(["ready", "blocked", "externally_uncertain"].includes(value.status as string) && digest(value.receiptDigest) &&
-    revision(value.exactRevision) && id(value.environmentRef) && id(value.launchCommandRef) && id(value.healthProbeRef) &&
-    typeof value.reviewUrl === "string" && value.reviewUrl.length > 0 && value.reviewUrl.length <= 2048 &&
-    id(value.teardownRef) && id(value.externalEffectPolicyRef))) return false;
+const RUNTIME_HANDOFF_FIELDS = ["status", "repositoryId", "canonicalWorktreeRef", "branch", "exactRevision", "builderSeatId", "builderBindingRef",
+  "reasoningRuntimeId", "toolExecutorId", "dependencyBuildReceiptRef", "environmentRef", "fixtureRef", "resourceBindingsRef", "endpointOwnershipRef",
+  "portPreflightRef", "watcherPreflightRef", "externalEffectPolicyRef", "launchCommandRef", "healthProbeRef", "reviewUrl", "teardownRef", "recoveryRef", "driverReceipt"] as const;
+
+function safeReviewUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) return false;
+  try {
+    const parsed = new URL(value);
+    return ["http:", "https:"].includes(parsed.protocol) && parsed.username === "" && parsed.password === "" && parsed.search === "" && parsed.hash === "";
+  } catch {
+    return false;
+  }
+}
+
+function validRuntimeInput(value: unknown): value is GuidedReviewRuntimeHandoffInputV1 {
+  if (!exact(value, RUNTIME_HANDOFF_FIELDS) ||
+    !(["ready", "blocked", "externally_uncertain"].includes(value.status as string) &&
+    typeof value.repositoryId === "string" && REPOSITORY.test(value.repositoryId) && id(value.canonicalWorktreeRef) && id(value.branch) &&
+    revision(value.exactRevision) && value.builderSeatId === "may" && id(value.builderBindingRef) && id(value.reasoningRuntimeId) && id(value.toolExecutorId) &&
+    value.reasoningRuntimeId !== value.toolExecutorId && value.reasoningRuntimeId !== value.builderSeatId && value.toolExecutorId !== value.builderSeatId &&
+    id(value.dependencyBuildReceiptRef) && id(value.environmentRef) && id(value.fixtureRef) && id(value.resourceBindingsRef) &&
+    id(value.endpointOwnershipRef) && id(value.portPreflightRef) && id(value.watcherPreflightRef) && id(value.externalEffectPolicyRef) &&
+    id(value.launchCommandRef) && id(value.healthProbeRef) && safeReviewUrl(value.reviewUrl) &&
+    id(value.teardownRef) && id(value.recoveryRef))) return false;
   const driver = validateGuidedReviewDriverReceiptV1(value.driverReceipt);
   return driver.state === "ready" && driver.value.exactRevision === value.exactRevision && driver.value.environmentRef === value.environmentRef &&
-    (value.status !== "ready" || driver.value.status === "ready");
+    driver.value.executorRef === value.toolExecutorId && (value.status !== "ready" || driver.value.status === "ready");
+}
+
+function validRuntime(value: unknown): value is GuidedReviewRuntimeHandoffV1 {
+  if (!plain(value) || !digest(value.handoffDigest)) return false;
+  const { handoffDigest, ...body } = value;
+  return validRuntimeInput(body) && sha256(body) === handoffDigest;
+}
+
+export function createGuidedReviewRuntimeHandoffV1(input: unknown): GuidedReviewResultV1<GuidedReviewRuntimeHandoffV1> {
+  if (!validRuntimeInput(input)) return invalid("MALFORMED_RUNTIME_HANDOFF", "Guided Review runtime handoff is malformed or not closed.");
+  const body = snapshot(input);
+  return { state: "ready", value: snapshot({ ...body, handoffDigest: sha256(body) }) };
+}
+
+export function validateGuidedReviewRuntimeHandoffV1(input: unknown): GuidedReviewResultV1<GuidedReviewRuntimeHandoffV1> {
+  return validRuntime(input) ? { state: "ready", value: snapshot(input) }
+    : invalid("MALFORMED_RUNTIME_HANDOFF", "Guided Review runtime handoff shape, binding, or digest is invalid.");
 }
 
 function validParticipant(value: unknown): value is GuidedReviewParticipantV1 {
@@ -276,6 +349,11 @@ function planValid(value: unknown): value is GuidedReviewPlanV1 {
   if (!plain(value) || !Object.hasOwn(value, "planDigest")) return false;
   const { planDigest, ...body } = value;
   return digest(planDigest) && validPlanInput(body) && sha256(body) === planDigest;
+}
+
+export function validateGuidedReviewPlanV1(input: unknown): GuidedReviewResultV1<GuidedReviewPlanV1> {
+  return planValid(input) ? { state: "ready", value: snapshot(input) }
+    : invalid("MALFORMED_GUIDED_REVIEW_PLAN", "Guided Review plan shape or digest is invalid.");
 }
 
 export function createGuidedReviewPlanV1(input: unknown): GuidedReviewResultV1<GuidedReviewPlanV1> {
@@ -302,6 +380,7 @@ function validPlaybookInput(value: unknown): value is GuidedReviewPlaybookInputV
   const steps = value.stages.flatMap((stage) => stage.steps);
   const stepIds = new Set(steps.map((step) => step.stepId));
   if (stepIds.size !== steps.length || value.runtimeHandoff.exactRevision !== value.exactRevision ||
+      value.runtimeHandoff.repositoryId !== value.repositoryId || value.runtimeHandoff.branch !== value.branch ||
       value.plan.coveredCriterionRefs.some((criterion) => !criteria.has(criterion))) return false;
   return steps.every((step) => step.criterionRefs.every((criterion) => criteria.has(criterion)) &&
     step.dependsOnStepIds.every((dependency) => stepIds.has(dependency) && dependency !== step.stepId));
@@ -322,6 +401,11 @@ function playbookValid(value: unknown): value is GuidedReviewPlaybookV1 {
   if (!plain(value) || !Object.hasOwn(value, "playbookDigest")) return false;
   const { playbookDigest, ...body } = value;
   return digest(playbookDigest) && validPlaybookInput(body) && sha256(body) === playbookDigest;
+}
+
+export function validateGuidedReviewPlaybookV1(input: unknown): GuidedReviewResultV1<GuidedReviewPlaybookV1> {
+  return playbookValid(input) ? { state: "ready", value: snapshot(input) }
+    : invalid("INVALID_PLAYBOOK", "Playbook digest or shape is invalid.");
 }
 
 function route(playbook: GuidedReviewPlaybookV1, states: Readonly<Record<string, GuidedReviewStepStateV1>>): {
@@ -380,6 +464,7 @@ function validSession(playbook: GuidedReviewPlaybookV1, session: unknown): sessi
       !session.decisions.every(validDecision) || new Set(session.decisions.map((decision) => decision.decisionId)).size !== session.decisions.length ||
       !session.revisions.every(validRevisionRecord)) return false;
   if (session.profile !== "exploration" && session.runtimeHandoff.status !== "ready") return false;
+  if (session.revisions.length === 0 && session.runtimeHandoff.handoffDigest !== playbook.runtimeHandoff.handoffDigest) return false;
   const expectedSteps = playbook.stages.flatMap((stage) => stage.steps.map((step) => step.stepId)).sort();
   const expectedStages = playbook.stages.map((stage) => stage.stageId).sort();
   if (canonicalJson(Object.keys(session.stepStates).sort()) !== canonicalJson(expectedSteps) ||
@@ -415,6 +500,12 @@ function validSession(playbook: GuidedReviewPlaybookV1, session: unknown): sessi
   const derived = route(playbook, session.stepStates as Readonly<Record<string, GuidedReviewStepStateV1>>);
   return session.state === derived.state && session.currentStageId === derived.currentStageId && session.currentStepId === derived.currentStepId &&
     canonicalJson(session.stageStates) === canonicalJson(derived.stageStates);
+}
+
+export function validateGuidedReviewSessionV1(playbookInput: unknown, sessionInput: unknown): GuidedReviewResultV1<GuidedReviewSessionV1> {
+  if (!playbookValid(playbookInput)) return invalid("INVALID_PLAYBOOK", "Playbook digest or shape is invalid.");
+  return validSession(playbookInput, sessionInput) ? { state: "ready", value: snapshot(sessionInput) }
+    : invalid("INVALID_SESSION", "Session digest or binding is invalid.");
 }
 
 export function startGuidedReviewSessionV1(playbookInput: unknown, input: unknown): GuidedReviewResultV1<GuidedReviewSessionV1> {
@@ -621,6 +712,62 @@ export function validateGuidedReviewPublicationForkV1(input: unknown): GuidedRev
     (body.state === "blocked" && body.guidedReviewDisposition === "ineligible" && body.participant === null && body.pinPurpose === null && body.reasonCode !== null);
   return semantic ? { state: "ready", value: snapshot(input as unknown as GuidedReviewPublicationForkV1) }
     : invalid("MALFORMED_PUBLICATION_FORK", "Publication fork choice and disposition are inconsistent.");
+}
+
+function validPublicationBundleBody(value: unknown): value is Omit<GuidedReviewPublicationBundleV1, "bundleDigest"> {
+  if (!exact(value, ["schemaVersion", "contractVersion", "missionId", "subjectId", "repositoryId", "branch", "exactRevision",
+      "protectedGraphId", "protectedGraphDigest", "transitionPlanId", "transitionPlanDigest", "parentPlanReviewEvidenceId",
+      "parentPlanReviewEvidenceDigest", "policyMode", "candidatePlan", "fork", "playbook", "session"]) ||
+      value.schemaVersion !== 1 || value.contractVersion !== GUIDED_REVIEW_CONTRACT_VERSION || !id(value.missionId) || !id(value.subjectId) ||
+      typeof value.repositoryId !== "string" || !REPOSITORY.test(value.repositoryId) || !id(value.branch) || !revision(value.exactRevision) ||
+      !id(value.protectedGraphId) || !digest(value.protectedGraphDigest) || !id(value.transitionPlanId) || !digest(value.transitionPlanDigest) ||
+      !id(value.parentPlanReviewEvidenceId) || !digest(value.parentPlanReviewEvidenceDigest) ||
+      !["required", "operator_optional", "omitted"].includes(value.policyMode as string) || !planValid(value.candidatePlan) ||
+      value.candidatePlan.missionId !== value.missionId || value.candidatePlan.subjectId !== value.subjectId ||
+      value.candidatePlan.exactRevision !== value.exactRevision ||
+      value.candidatePlan.required !== (value.policyMode === "required")) return false;
+  const forkResult = validateGuidedReviewPublicationForkV1(value.fork);
+  if (forkResult.state !== "ready" || forkResult.value.exactRevision !== value.exactRevision ||
+      canonicalJson(forkResult.value.plan) !== canonicalJson(value.candidatePlan)) return false;
+  if (forkResult.value.choice === "yes") {
+    if (!playbookValid(value.playbook) || !validSession(value.playbook, value.session) || value.session.profile !== "publication" ||
+        value.session.state !== "completed" || value.session.exactRevision !== value.exactRevision ||
+        value.session.plan.planDigest !== value.candidatePlan.planDigest || value.session.sessionDigest !== forkResult.value.sessionDigest ||
+        canonicalJson(value.session.participant) !== canonicalJson(forkResult.value.participant)) return false;
+  } else if (value.playbook !== null || value.session !== null || forkResult.value.sessionDigest !== null) return false;
+  const evaluated = evaluateGuidedReviewPublicationForkV1({
+    choice: forkResult.value.choice,
+    exactRevision: value.exactRevision,
+    plan: value.candidatePlan,
+    playbook: value.playbook,
+    session: value.session,
+  });
+  return evaluated.state === "ready" && canonicalJson(evaluated.value) === canonicalJson(forkResult.value);
+}
+
+export function createGuidedReviewPublicationBundleV1(input: unknown): GuidedReviewResultV1<GuidedReviewPublicationBundleV1> {
+  if (!exact(input, ["missionId", "subjectId", "repositoryId", "branch", "exactRevision", "protectedGraphId", "protectedGraphDigest",
+      "transitionPlanId", "transitionPlanDigest", "parentPlanReviewEvidenceId", "parentPlanReviewEvidenceDigest", "policyMode",
+      "candidatePlan", "fork", "playbook", "session"])) {
+    return invalid("MALFORMED_PUBLICATION_BUNDLE", "Guided Review publication bundle input is malformed or not closed.");
+  }
+  const body = { schemaVersion: 1 as const, contractVersion: GUIDED_REVIEW_CONTRACT_VERSION, ...input };
+  if (!validPublicationBundleBody(body)) {
+    return invalid("MALFORMED_PUBLICATION_BUNDLE", "Guided Review publication bundle chain is incomplete, stale, substituted, or invalid.");
+  }
+  const closed = snapshot(body);
+  return { state: "ready", value: snapshot({ ...closed, bundleDigest: sha256(closed) }) };
+}
+
+export function validateGuidedReviewPublicationBundleV1(input: unknown): GuidedReviewResultV1<GuidedReviewPublicationBundleV1> {
+  if (!plain(input) || !digest(input.bundleDigest)) {
+    return invalid("MALFORMED_PUBLICATION_BUNDLE", "Guided Review publication bundle digest is absent or malformed.");
+  }
+  const { bundleDigest, ...body } = input;
+  if (!validPublicationBundleBody(body) || sha256(body) !== bundleDigest) {
+    return invalid("MALFORMED_PUBLICATION_BUNDLE", "Guided Review publication bundle shape, complete chain, or digest is invalid.");
+  }
+  return { state: "ready", value: snapshot(input as unknown as GuidedReviewPublicationBundleV1) };
 }
 
 export function renderGuidedReviewChecklistV1(playbookInput: unknown, sessionInput: unknown): GuidedReviewResultV1<string> {

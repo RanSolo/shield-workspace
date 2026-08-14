@@ -4,6 +4,7 @@ import { execFile as execFileNode } from "node:child_process";
 import { access, chmod, lstat, mkdir, open, readFile, realpath as fsRealpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { stdin as input, stdout as outputStream } from "node:process";
+import { createInterface } from "node:readline/promises";
 import { types } from "node:util";
 import { configuredAdapterIds, parseShieldConfig, type ShieldConfig } from "./config.mjs";
 import {
@@ -88,6 +89,8 @@ import {
 } from "./runtime-binding-executor-v1.mjs";
 import {
   assertPublicationAuthorizationFreshnessV1,
+  createHostNoGuidedReviewBundleV1,
+  createHostYesGuidedReviewBundleV1,
   executeReviewPublicationAuthorizationV1,
   observePublicationRepositoryV1,
   type PreparedReviewPublicationDecisionV1,
@@ -95,7 +98,11 @@ import {
   type PublicationTreeEntryV1,
 } from "./review-publication-executor-v1.mjs";
 import { validateTransitionPlanV1OrV2 } from "@shield/mission-preparation";
-import { validateGuidedReviewPublicationForkV1, type GuidedReviewPublicationForkV1 } from "./guided-review-v1.mjs";
+import {
+  validateGuidedReviewPlaybookV1,
+  validateGuidedReviewSessionV1,
+  type GuidedReviewPublicationBundleV1,
+} from "./guided-review-v1.mjs";
 import { createDelegationLogEntry, DELEGATED_INVALIDATION_REASONS, type SignedWheelsOffDelegation, type SignedWheelsOffRevocation, type WheelsOffEligibility } from "./delegation-v1.mjs";
 import { appendDelegationEntry, readDelegationLog } from "./delegation-store.mjs";
 import {
@@ -1353,13 +1360,33 @@ function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicat
       `  Plan: ${decision.guidedReview.planDigest}`,
       `  Session: ${decision.guidedReview.sessionDigest ?? "skipped"}`,
       `  Fork: ${decision.guidedReview.forkDigest}`,
+      `  Bundle: ${decision.guidedReview.bundleDigest}`,
       `  One PIN purpose: ${decision.guidedReview.pinPurpose}`,
     ]),
   ].join("\n");
 }
 
+async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"yes" | "no" | "cancel"> {
+  const configured = options.values.get("--guided-review-choice")?.toLowerCase();
+  if (configured !== undefined) {
+    if (!["yes", "no", "cancel"].includes(configured)) throw new MissionCliError("--guided-review-choice must be yes, no, or cancel.", 1);
+    return configured as "yes" | "no" | "cancel";
+  }
+  if (options.flags.has("--json") || options.flags.has("--passcode-stdin") || !process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new MissionCliError("Prepared publication requires --guided-review-choice yes|no|cancel in non-interactive mode.", 1);
+  }
+  const terminal = createInterface({ input, output: outputStream });
+  try {
+    const answer = (await terminal.question("Enter Guided Review? Yes / No / Cancel: ")).trim().toLowerCase();
+    if (!["yes", "no", "cancel"].includes(answer)) throw new MissionCliError("Guided Review choice must be Yes, No, or Cancel.", 1);
+    return answer as "yes" | "no" | "cancel";
+  } finally {
+    terminal.close();
+  }
+}
+
 async function prepareNext(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-fork"], ["--json", "--human", "--passcode-stdin"]);
+  const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-choice", "--guided-review-playbook", "--guided-review-session"], ["--json", "--human", "--passcode-stdin"]);
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
@@ -1417,23 +1444,46 @@ async function prepareNext(args: string[]): Promise<number> {
   }
   if (result.state === "publication_ready") {
     try {
-      const forkPath = options.values.get("--guided-review-fork");
-      if (forkPath === undefined) throw new MissionCliError("Prepared review-candidate publication requires --guided-review-fork with an exact-candidate Yes or No disposition.", 1);
-      const resolvedForkPath = resolve(root, forkPath);
-      const forkRelation = relative(root, resolvedForkPath);
-      if (forkRelation === "" || forkRelation === ".." || forkRelation.startsWith("../") || isAbsolute(forkRelation)) {
-        throw new MissionCliError("Guided Review publication fork must resolve beneath the repository root.", 1);
+      const choice = await guidedReviewChoiceFromOptions(options);
+      if (choice === "cancel") {
+        if (options.values.has("--guided-review-playbook") || options.values.has("--guided-review-session")) throw new MissionCliError("Cancel cannot include Guided Review evidence paths.", 1);
+        if (options.flags.has("--json")) process.stdout.write(`${JSON.stringify({ state: "cancelled", missionId, gate: "guided_review" }, null, 2)}\n`);
+        else process.stderr.write("Guided Review publication cancelled before PIN.\n");
+        return 1;
       }
-      const checkedFork = validateGuidedReviewPublicationForkV1(await jsonFile(resolvedForkPath, "Guided Review publication fork"));
-      if (checkedFork.state === "invalid") throw new MissionCliError(`${checkedFork.code}: ${checkedFork.errors.join(" ")}`, 1);
-      const guidedReviewFork: GuidedReviewPublicationForkV1 = checkedFork.value;
+      let reloadGuidedReviewBundle: (() => Promise<GuidedReviewPublicationBundleV1>) | null = null;
+      let guidedReviewBundle: GuidedReviewPublicationBundleV1;
+      if (choice === "no") {
+        if (options.values.has("--guided-review-playbook") || options.values.has("--guided-review-session")) throw new MissionCliError("No is host-derived and cannot include caller-supplied Guided Review evidence.", 1);
+        guidedReviewBundle = createHostNoGuidedReviewBundleV1(result);
+      } else {
+        const playbookPath = options.values.get("--guided-review-playbook");
+        const sessionPath = options.values.get("--guided-review-session");
+        if (playbookPath === undefined || sessionPath === undefined) throw new MissionCliError("The Yes route requires --guided-review-playbook and --guided-review-session with the complete reviewed chain.", 1);
+        const resolvedPlaybookPath = resolve(root, playbookPath);
+        const resolvedSessionPath = resolve(root, sessionPath);
+        for (const [label, candidate] of [["playbook", resolvedPlaybookPath], ["session", resolvedSessionPath]] as const) {
+          const relation = relative(root, candidate);
+          if (relation === "" || relation === ".." || relation.startsWith("../") || isAbsolute(relation)) {
+            throw new MissionCliError(`Guided Review ${label} must resolve beneath the repository root.`, 1);
+          }
+        }
+        reloadGuidedReviewBundle = async () => {
+          const checkedPlaybook = validateGuidedReviewPlaybookV1(await jsonFile(resolvedPlaybookPath, "Guided Review playbook"));
+          if (checkedPlaybook.state === "invalid") throw new MissionCliError(`${checkedPlaybook.code}: ${checkedPlaybook.errors.join(" ")}`, 1);
+          const checkedSession = validateGuidedReviewSessionV1(checkedPlaybook.value, await jsonFile(resolvedSessionPath, "Guided Review session"));
+          if (checkedSession.state === "invalid") throw new MissionCliError(`${checkedSession.code}: ${checkedSession.errors.join(" ")}`, 1);
+          return createHostYesGuidedReviewBundleV1(result, checkedPlaybook.value, checkedSession.value);
+        };
+        guidedReviewBundle = await reloadGuidedReviewBundle();
+      }
       const executed = await executeReviewPublicationAuthorizationV1({
         mode: "prepared",
         root,
         missionId,
         intent: result.publicationIntent,
         expectedPreparation: result,
-        guidedReviewFork,
+        guidedReviewBundle,
         timestamp: { value: new Date().toISOString(), provenance: "hostTrusted" },
         humanMode,
         decisionOutput: { write: (value) => promptOutput.write(value) },
@@ -1444,6 +1494,7 @@ async function prepareNext(args: string[]): Promise<number> {
         readPasscode: () => passcodeFromOptions(options, promptOutput),
         signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
         appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
+        ...(reloadGuidedReviewBundle === null ? {} : { revalidateGuidedReviewBundle: reloadGuidedReviewBundle }),
       });
       output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
       return 0;
@@ -2013,7 +2064,7 @@ export function missionUsage(): string {
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
-    "  shield mission prepare-next --mission-id <id> [--guided-review-fork <fork.json>] [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-playbook <playbook.json> --guided-review-session <session.json>] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",
