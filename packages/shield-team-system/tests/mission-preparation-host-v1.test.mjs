@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,7 @@ import {
   probeMissionJournalPresenceV1ForTest,
   resolvePreparedMissionTransitionV1,
   resolvePreparedMissionTransitionV1ForTest,
+  stableRegularTextFileV1ForTest,
 } from "../dist/mission-preparation-host-v1.mjs";
 import {
   computeCanonicalContractDigestV1,
@@ -64,7 +65,10 @@ import {
   computeReviewPublicationAuthoritySemanticIdentityV1,
 } from "../dist/review-publication-v1.mjs";
 
-const prepareSession = (input) => prepareMissionTransitionSessionV1(input, { observePublicationRepository: observePublicationRepositoryV1 });
+const prepareSession = (input, dependencies = {}) => prepareMissionTransitionSessionV1(input, {
+  observePublicationRepository: observePublicationRepositoryV1,
+  ...dependencies,
+});
 
 const CLI = fileURLToPath(new URL("../dist/cli.mjs", import.meta.url));
 
@@ -1159,6 +1163,40 @@ test("journal presence probe treats missing suffixes as absent and link or non-d
   assert.equal(nonDirectory.state, "unsafe_or_uncertain");
 });
 
+test("anchored text snapshots reject linked, replaced, inaccessible, and non-directory path components", async () => {
+  const root = await mkdtemp(join(tmpdir(), "shield-300-anchored-read-"));
+  await mkdir(join(root, "safe", "nested"), { recursive: true });
+  await writeFile(join(root, "safe", "nested", "config.json"), "{}\n");
+  assert.notEqual(await stableRegularTextFileV1ForTest({ repositoryRoot: root, relativePath: "safe/nested/config.json" }), null);
+
+  await symlink(join(root, "safe"), join(root, "linked"));
+  assert.equal(await stableRegularTextFileV1ForTest({ repositoryRoot: root, relativePath: "linked/nested/config.json" }), null);
+  await writeFile(join(root, "not-a-directory"), "x");
+  assert.equal(await stableRegularTextFileV1ForTest({ repositoryRoot: root, relativePath: "not-a-directory/config.json" }), null);
+
+  await mkdir(join(root, "locked", "nested"), { recursive: true });
+  await writeFile(join(root, "locked", "nested", "config.json"), "{}\n");
+  await chmod(join(root, "locked"), 0o000);
+  try {
+    assert.equal(await stableRegularTextFileV1ForTest({ repositoryRoot: root, relativePath: "locked/nested/config.json" }), null);
+  } finally {
+    await chmod(join(root, "locked"), 0o700);
+  }
+
+  await mkdir(join(root, "replace", "nested"), { recursive: true });
+  await writeFile(join(root, "replace", "nested", "config.json"), "{}\n");
+  const replaced = await stableRegularTextFileV1ForTest({
+    repositoryRoot: root,
+    relativePath: "replace/nested/config.json",
+    beforeRead: async () => {
+      await rename(join(root, "replace"), join(root, "replace-old"));
+      await mkdir(join(root, "replace", "nested"), { recursive: true });
+      await writeFile(join(root, "replace", "nested", "config.json"), "{}\n");
+    },
+  });
+  assert.equal(replaced, null);
+});
+
 test("enriched fresh graph initializes reviewed sequence zero and the unchanged key turn appends exactly entries one through four", async () => {
   const fixture = await resolutionFixture({ enriched: true });
   const prepared = await prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot });
@@ -1193,17 +1231,89 @@ test("enriched fresh graph initializes through a missing configured intermediate
   assert.equal(proposed.entries[0].sequence, 0);
 });
 
-test("concurrent enriched initialization preserves one exact reviewed sequence-zero entry", async () => {
+test("exact concurrent enriched callers reconcile to the same ready result and sequence-zero entry", async () => {
   const fixture = await resolutionFixture({ enriched: true });
   const results = await Promise.all([
     prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot }),
     prepareSession({ missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot }),
   ]);
-  assert.equal(results.some(({ state }) => state === "ready"), true);
-  assert.equal(results.filter(({ state }) => state === "blocked").every(({ reasonCode }) => reasonCode === "initialization_conflict"), true);
+  assert.deepEqual(results.map(({ state }) => state), ["ready", "ready"], JSON.stringify(results));
+  assert.deepEqual(results[0], results[1]);
   const lines = (await readFile(fixture.journalPath, "utf8")).trimEnd().split("\n");
   assert.equal(lines.length, 1);
   assert.equal(JSON.parse(lines[0]).type, "mission.begun");
+});
+
+test("conflicting concurrent initialization is preserved and rejected without overwrite", async () => {
+  const fixture = await resolutionFixture({ enriched: true });
+  let conflictingBytes = "";
+  const result = await prepareSession(
+    { missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot },
+    {
+      beforeInitializationRevalidationForTest: async () => {
+        const { schemaId: _schemaId, authority: _authority, id: _id, digest: _digest, ...content } = fixture.plan.intakeTemplate;
+        const brief = createProfileAwareMissionBrief({ ...content, objective: "Conflicting concurrent objective." });
+        const entry = createProfileAwareMissionBegunEntry(brief, [fixture.binding]);
+        conflictingBytes = `${JSON.stringify(entry)}\n`;
+        await mkdir(dirname(fixture.journalPath), { recursive: true });
+        await writeFile(fixture.journalPath, conflictingBytes);
+      },
+    },
+  );
+  assert.equal(result.state, "blocked");
+  assert.equal(result.reasonCode, "mission_intake_mismatch");
+  assert.equal(await readFile(fixture.journalPath, "utf8"), conflictingBytes);
+});
+
+test("pre-initialization protected evidence, config, registry, and repository drift leaves zero journal bytes", async () => {
+  const variants = [
+    {
+      name: "protected graph drift",
+      reasonCode: "protected_evidence_mismatch",
+      mutate: async (fixture) => writeFile(fixture.graphPath, "{}\n"),
+    },
+    {
+      name: "Fury attribution drift",
+      reasonCode: "protected_evidence_mismatch",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "dispatch-receipts.jsonl");
+        await writeFile(path, `${await readFile(path, "utf8")}{}\n`);
+      },
+    },
+    {
+      name: "config component replacement",
+      reasonCode: "repository_configuration_mismatch",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "config.json");
+        const bytes = await readFile(path);
+        await rename(path, `${path}.replaced`);
+        await writeFile(path, bytes);
+      },
+    },
+    {
+      name: "registry byte drift",
+      reasonCode: "mission_intake_invalid",
+      mutate: async (fixture) => {
+        const path = join(fixture.repositoryRoot, ".shield", "trusted-human-bindings.json");
+        await writeFile(path, `${await readFile(path, "utf8")}\n`);
+      },
+    },
+    {
+      name: "repository drift",
+      reasonCode: "repository_observation_stale",
+      mutate: async (fixture) => writeFile(join(fixture.repositoryRoot, fixture.implementationPath), "drift\n"),
+    },
+  ];
+  for (const variant of variants) {
+    const fixture = await resolutionFixture({ enriched: true });
+    const result = await prepareSession(
+      { missionId: MISSION_ID, repositoryRoot: fixture.repositoryRoot },
+      { beforeInitializationRevalidationForTest: async () => variant.mutate(fixture) },
+    );
+    assert.equal(result.state, "blocked", variant.name);
+    assert.equal(result.reasonCode, variant.reasonCode, variant.name);
+    await assert.rejects(readFile(fixture.journalPath), { code: "ENOENT" }, variant.name);
+  }
 });
 
 test("fresh enriched signing failure preserves only reviewed sequence zero and exact restart readiness", async () => {

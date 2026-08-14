@@ -1059,6 +1059,7 @@ export interface MissionPreparationSessionDependenciesV1 {
     baseRevision: string,
     changedPaths: readonly string[],
   ) => Promise<PreparationRepositoryObservationV1>;
+  beforeInitializationRevalidationForTest?: () => Promise<void>;
 }
 type JournalPresenceV1 = Readonly<{
   state: "absent" | "present" | "unsafe_or_uncertain";
@@ -1069,19 +1070,55 @@ function fileIdentity(stats: Awaited<ReturnType<Awaited<ReturnType<typeof open>>
   return [stats.dev, stats.ino, stats.mode, stats.size, stats.mtimeMs, stats.ctimeMs].join(":");
 }
 
-async function stableRegularTextFile(path: string): Promise<StableTextSnapshotV1 | null> {
+async function stableRegularTextFile(
+  repositoryRoot: string,
+  relativePath: string,
+  beforeReadForTest?: () => Promise<void>,
+): Promise<StableTextSnapshotV1 | null> {
+  const target = resolve(repositoryRoot, relativePath);
+  const suffix = relative(repositoryRoot, target);
+  if (suffix === "" || suffix === ".." || suffix.startsWith(`..${sep}`)) return null;
+  const observations: ObservedPathIdentityV1[] = [];
+  let current = repositoryRoot;
+  try {
+    if (await realpath(repositoryRoot) !== repositoryRoot) return null;
+    const rootStats = await lstat(repositoryRoot);
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) return null;
+    observations.push({ path: repositoryRoot, identity: fileIdentity(rootStats), kind: "directory" });
+    const components = suffix.split(sep);
+    for (const [index, component] of components.entries()) {
+      current = resolve(current, component);
+      const stats = await lstat(current);
+      const kind = index === components.length - 1 ? "file" : "directory";
+      if (stats.isSymbolicLink() || (kind === "directory" ? !stats.isDirectory() : !stats.isFile())) return null;
+      observations.push({ path: current, identity: fileIdentity(stats), kind });
+    }
+  } catch {
+    return null;
+  }
+
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let snapshot: StableTextSnapshotV1 | null = null;
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    await beforeReadForTest?.();
+    if (!await observationsRemainStable(observations)) return null;
+    handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
     const before = await handle.stat();
-    if (before.isFile()) {
+    const observedFile = observations.at(-1);
+    if (before.isFile() && observedFile?.kind === "file" && fileIdentity(before) === observedFile.identity) {
       const bytes = await handle.readFile("utf8");
       const after = await handle.stat();
-      const pathStats = await lstat(path);
       const identity = fileIdentity(before);
-      if (pathStats.isFile() && !pathStats.isSymbolicLink() && identity === fileIdentity(after) && identity === fileIdentity(pathStats)) {
-        snapshot = { bytes, identity: `${identity}:${createHash("sha256").update(bytes).digest("hex")}` };
+      if (identity === fileIdentity(after) && await observationsRemainStable(observations)) {
+        const pathIdentity = observations.map(({ path, identity: componentIdentity, kind }) => ({
+          path: relative(repositoryRoot, path),
+          identity: componentIdentity,
+          kind,
+        }));
+        snapshot = {
+          bytes,
+          identity: createHash("sha256").update(canonicalJson({ pathIdentity, bytes })).digest("hex"),
+        };
       }
     }
   } catch { snapshot = null; }
@@ -1089,6 +1126,15 @@ async function stableRegularTextFile(path: string): Promise<StableTextSnapshotV1
   try { await handle.close(); }
   catch { return null; }
   return snapshot;
+}
+
+export async function stableRegularTextFileV1ForTest(input: {
+  repositoryRoot: string;
+  relativePath: string;
+  beforeRead?: () => Promise<void>;
+}): Promise<StableTextSnapshotV1 | null> {
+  const root = await canonicalRepositoryRoot(input.repositoryRoot);
+  return root === null ? null : stableRegularTextFile(root, input.relativePath, input.beforeRead);
 }
 
 async function canonicalRepositoryRoot(input: string): Promise<string | null> {
@@ -1106,7 +1152,7 @@ async function stableConfigurationSnapshot(
   repositoryRoot: string,
   repositoryId: string,
 ): Promise<StableConfigurationSnapshotV1 | null> {
-  const snapshot = await stableRegularTextFile(join(repositoryRoot, ".shield", "config.json"));
+  const snapshot = await stableRegularTextFile(repositoryRoot, ".shield/config.json");
   if (snapshot === null) return null;
   const parsed = parseShieldConfig(snapshot.bytes);
   if (parsed.state === "invalid" || parsed.value.repositoryId !== repositoryId) return null;
@@ -1115,13 +1161,14 @@ async function stableConfigurationSnapshot(
   return { ...snapshot, config: parsed.value };
 }
 
-type ObservedPathIdentityV1 = Readonly<{ path: string; identity: string }>;
+type ObservedPathIdentityV1 = Readonly<{ path: string; identity: string; kind: "directory" | "file" }>;
 
 async function observationsRemainStable(observations: readonly ObservedPathIdentityV1[]): Promise<boolean> {
   try {
     for (const observation of observations) {
       const stats = await lstat(observation.path);
-      if (fileIdentity(stats) !== observation.identity) return false;
+      if (stats.isSymbolicLink() || fileIdentity(stats) !== observation.identity ||
+          (observation.kind === "directory" ? !stats.isDirectory() : !stats.isFile())) return false;
     }
     return true;
   } catch {
@@ -1143,7 +1190,7 @@ async function probeMissionJournalPresence(
   try {
     const rootStats = await lstat(current);
     if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) return { state: "unsafe_or_uncertain", journalPath: paths.value.journalPath };
-    observations.push({ path: current, identity: fileIdentity(rootStats) });
+    observations.push({ path: current, identity: fileIdentity(rootStats), kind: "directory" });
     const components = suffix.split(sep);
     for (const [index, component] of components.entries()) {
       current = resolve(current, component);
@@ -1158,7 +1205,7 @@ async function probeMissionJournalPresence(
       if (stats.isSymbolicLink() || (index < components.length - 1 ? !stats.isDirectory() : !stats.isFile())) {
         return { state: "unsafe_or_uncertain", journalPath: paths.value.journalPath };
       }
-      observations.push({ path: current, identity: fileIdentity(stats) });
+      observations.push({ path: current, identity: fileIdentity(stats), kind: index < components.length - 1 ? "directory" : "file" });
     }
     return await observationsRemainStable(observations)
       ? { state: "present", journalPath: paths.value.journalPath }
@@ -1224,10 +1271,14 @@ async function expectedFreshIntakeEntry(
   repositoryRoot: string,
   plan: Extract<TransitionPlanV1OrV2, { schemaId: "mission.transition-plan.v2" }>,
   config: ShieldConfig,
-): Promise<Readonly<{ entry: ProfileAwareMissionEntryV1; bindings: readonly TrustedHumanBinding[] }> | null> {
+): Promise<Readonly<{
+  entry: ProfileAwareMissionEntryV1;
+  bindings: readonly TrustedHumanBinding[];
+  registrySnapshot: StableTextSnapshotV1;
+}> | null> {
   const content = eligibleFreshIntake(plan, config);
   if (content === null) return null;
-  const registrySnapshot = await stableRegularTextFile(join(repositoryRoot, ".shield", "trusted-human-bindings.json"));
+  const registrySnapshot = await stableRegularTextFile(repositoryRoot, ".shield/trusted-human-bindings.json");
   if (registrySnapshot === null) return null;
   let registry: unknown;
   try { registry = JSON.parse(registrySnapshot.bytes); }
@@ -1240,7 +1291,7 @@ async function expectedFreshIntakeEntry(
   });
   if (bindings.state === "invalid") return null;
   const intake = profileAwareMissionIntakeV1({ brief: content, trustedBindings: bindings.value });
-  return intake.state === "valid" ? { entry: intake.value.entry, bindings: bindings.value } : null;
+  return intake.state === "valid" ? { entry: intake.value.entry, bindings: bindings.value, registrySnapshot } : null;
 }
 
 async function reconcileFreshIntake(
@@ -1250,7 +1301,8 @@ async function reconcileFreshIntake(
   expected: ProfileAwareMissionEntryV1,
   journalPath: string,
 ): Promise<boolean> {
-  const snapshot = await stableRegularTextFile(journalPath);
+  const journalRelativePath = relative(repositoryRoot, journalPath);
+  const snapshot = await stableRegularTextFile(repositoryRoot, journalRelativePath);
   if (snapshot === null || !snapshot.bytes.endsWith("\n")) return false;
   const firstLineEnd = snapshot.bytes.indexOf("\n");
   if (firstLineEnd < 0 || snapshot.bytes.slice(0, firstLineEnd + 1) !== `${canonicalJson(expected)}\n`) return false;
@@ -1275,6 +1327,48 @@ function repositoryObservationEligible(
     observation.statusEntries.length === 0 && canonicalJson(observation.changedPaths) === canonicalJson(plan.publicationPaths) &&
     plan.publicationPaths.every((path) => plan.approvedRelativePaths.includes(path)) &&
     treeEntries.every(({ mode, type }) => mode !== "120000" && mode !== "160000" && type !== "commit");
+}
+
+function sameStableSnapshot(left: StableTextSnapshotV1, right: StableTextSnapshotV1): boolean {
+  return left.bytes === right.bytes && left.identity === right.identity;
+}
+
+async function waitForConcurrentJournal(
+  repositoryRoot: string,
+  configuredJournalPath: string,
+  missionId: string,
+): Promise<JournalPresenceV1> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 5));
+    const presence = await probeMissionJournalPresence(repositoryRoot, configuredJournalPath, missionId);
+    if (presence.state !== "absent") return presence;
+  }
+  return { state: "absent", journalPath: null };
+}
+
+async function stableConfigurationSnapshotWithRetry(
+  repositoryRoot: string,
+  repositoryId: string,
+): Promise<StableConfigurationSnapshotV1 | null> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const snapshot = await stableConfigurationSnapshot(repositoryRoot, repositoryId);
+    if (snapshot !== null) return snapshot;
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 5));
+  }
+  return null;
+}
+
+async function expectedFreshIntakeEntryWithRetry(
+  repositoryRoot: string,
+  plan: Extract<TransitionPlanV1OrV2, { schemaId: "mission.transition-plan.v2" }>,
+  config: ShieldConfig,
+): Promise<Awaited<ReturnType<typeof expectedFreshIntakeEntry>>> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const expected = await expectedFreshIntakeEntry(repositoryRoot, plan, config);
+    if (expected !== null) return expected;
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 5));
+  }
+  return null;
 }
 
 function buildObservation(
@@ -2272,8 +2366,24 @@ export async function prepareMissionTransitionSessionV1(
   if (graph.transitionPlan.transitionKind !== graph.transitionIntent.transitionKind) {
     return blocked(missionId, "protected_evidence_mismatch", "Reviewed transition plan and intent kinds differ.");
   }
+  const initialAttributionSnapshot = graph.transitionPlan.schemaId === "mission.transition-plan.v2"
+    ? await dispatchSnapshotForRepository(repositoryRoot, graph.transitionPlan.repositoryId)
+    : null;
+  if (initialAttributionSnapshot?.state === "invalid") {
+    return blocked(missionId, "protected_evidence_mismatch", ...initialAttributionSnapshot.errors);
+  }
   const attributionErrors = await revalidateStoredAttribution(repositoryRoot, graph);
   if (attributionErrors.length > 0) return blocked(missionId, "protected_evidence_mismatch", ...attributionErrors);
+  if (initialAttributionSnapshot !== null) {
+    const confirmedAttributionSnapshot = await dispatchSnapshotForRepository(repositoryRoot, graph.transitionPlan.repositoryId);
+    if (confirmedAttributionSnapshot.state === "invalid" || confirmedAttributionSnapshot.value.bytes !== initialAttributionSnapshot.value.bytes) {
+      return blocked(
+        missionId,
+        "protected_evidence_mismatch",
+        ...(confirmedAttributionSnapshot.state === "invalid" ? confirmedAttributionSnapshot.errors : ["Stored Fury attribution changed during validation."]),
+      );
+    }
+  }
 
   let configuration = await stableConfigurationSnapshot(repositoryRoot, graph.transitionPlan.repositoryId);
   if (configuration === null) return blocked(missionId, "repository_configuration_mismatch");
@@ -2292,6 +2402,7 @@ export async function prepareMissionTransitionSessionV1(
       return blocked(missionId, "mission_intake_mismatch");
     }
   } else {
+    if (initialAttributionSnapshot === null) return blocked(missionId, "protected_evidence_mismatch");
     let observation: PreparationRepositoryObservationV1;
     try {
       observation = await dependencies.observePublicationRepository(
@@ -2306,34 +2417,102 @@ export async function prepareMissionTransitionSessionV1(
     if (!repositoryObservationEligible(observation, graph.transitionPlan, repositoryRoot)) {
       return blocked(missionId, "repository_observation_stale");
     }
-    const initialized = await initializeProfileAwareMissionJournalV1({
-      repositoryRoot,
-      configuredJournalPath: configuration.config.paths.journals,
-      missionId,
-      entry: expected.entry,
-    });
-    if (initialized.state === "invalid" && initialized.code !== "mission_exists") {
-      return blocked(missionId, initialized.code === "recovery_required" ? "recovery_required" : "initialization_conflict", ...initialized.errors);
+
+    await dependencies.beforeInitializationRevalidationForTest?.();
+
+    const freshGraphResult = await readMissionReviewedTransitionGraphV1({ repositoryRoot, missionId });
+    if (freshGraphResult.state === "invalid" || canonicalJson(freshGraphResult.graph) !== canonicalJson(graph)) {
+      return blocked(missionId, "protected_evidence_mismatch", ...(freshGraphResult.state === "invalid" ? freshGraphResult.errors : ["Protected graph changed before initialization."]));
     }
-    if (initialized.state === "invalid") {
-      configuration = await stableConfigurationSnapshot(repositoryRoot, graph.transitionPlan.repositoryId);
-      if (configuration === null) return blocked(missionId, "repository_configuration_mismatch");
-      presence = await probeMissionJournalPresence(repositoryRoot, configuration.config.paths.journals, missionId);
-      if (presence.state !== "present" || presence.journalPath === null) return blocked(missionId, "initialization_conflict");
-      expected = await expectedFreshIntakeEntry(repositoryRoot, graph.transitionPlan, configuration.config);
-      if (expected === null) return blocked(missionId, "mission_intake_invalid");
-      if (!await reconcileFreshIntake(repositoryRoot, configuration.config, graph.transitionPlan, expected.entry, presence.journalPath)) {
+    const freshAttributionErrors = await revalidateStoredAttribution(repositoryRoot, freshGraphResult.graph);
+    const freshAttributionSnapshot = await dispatchSnapshotForRepository(repositoryRoot, graph.transitionPlan.repositoryId);
+    if (freshAttributionErrors.length > 0 || freshAttributionSnapshot.state === "invalid" ||
+        freshAttributionSnapshot.value.bytes !== initialAttributionSnapshot.value.bytes) {
+      return blocked(
+        missionId,
+        "protected_evidence_mismatch",
+        ...freshAttributionErrors,
+        ...(freshAttributionSnapshot.state === "invalid" ? freshAttributionSnapshot.errors : []),
+      );
+    }
+    const freshConfiguration = await stableConfigurationSnapshotWithRetry(repositoryRoot, graph.transitionPlan.repositoryId);
+    if (freshConfiguration === null) return blocked(missionId, "repository_configuration_mismatch");
+    const freshExpected = await expectedFreshIntakeEntryWithRetry(repositoryRoot, graph.transitionPlan, freshConfiguration.config);
+    if (freshExpected === null) return blocked(missionId, "mission_intake_invalid");
+    let freshObservation: PreparationRepositoryObservationV1;
+    try {
+      freshObservation = await dependencies.observePublicationRepository(
+        repositoryRoot,
+        freshConfiguration.config.repositoryId,
+        graph.transitionPlan.planningBaseRevision,
+        graph.transitionPlan.publicationPaths,
+      );
+    } catch (error) {
+      return blocked(missionId, "repository_observation_stale", error instanceof Error ? error.message : "Repository observation failed.");
+    }
+    presence = await probeMissionJournalPresence(repositoryRoot, configuration.config.paths.journals, missionId);
+    if (presence.state === "unsafe_or_uncertain" || presence.journalPath === null) return blocked(missionId, "unsafe_journal_path");
+    const concurrentJournalPresent = presence.state === "present";
+    const configurationMatches = concurrentJournalPresent
+      ? configuration.bytes === freshConfiguration.bytes
+      : sameStableSnapshot(configuration, freshConfiguration);
+    if (!configurationMatches) return blocked(missionId, "repository_configuration_mismatch");
+    const expectedMatches = (concurrentJournalPresent
+      ? expected.registrySnapshot.bytes === freshExpected.registrySnapshot.bytes
+      : sameStableSnapshot(expected.registrySnapshot, freshExpected.registrySnapshot)) &&
+      canonicalJson(expected.entry) === canonicalJson(freshExpected.entry);
+    if (!expectedMatches) return blocked(missionId, "mission_intake_invalid");
+    if (!repositoryObservationEligible(freshObservation, graph.transitionPlan, repositoryRoot) ||
+        canonicalJson(freshObservation) !== canonicalJson(observation)) {
+      return blocked(missionId, "repository_observation_stale");
+    }
+
+    configuration = freshConfiguration;
+    expected = freshExpected;
+    if (presence.state === "absent") {
+      const initialized = await initializeProfileAwareMissionJournalV1({
+        repositoryRoot,
+        configuredJournalPath: configuration.config.paths.journals,
+        missionId,
+        entry: expected.entry,
+      });
+      if (initialized.state === "invalid" && initialized.code !== "mission_exists" && initialized.code !== "journal_lock_held") {
+        return blocked(missionId, initialized.code === "recovery_required" ? "recovery_required" : "initialization_conflict", ...initialized.errors);
+      }
+      if (initialized.state === "invalid") {
+        presence = initialized.code === "journal_lock_held"
+          ? await waitForConcurrentJournal(repositoryRoot, configuration.config.paths.journals, missionId)
+          : await probeMissionJournalPresence(repositoryRoot, configuration.config.paths.journals, missionId);
+      } else {
+        presence = await probeMissionJournalPresence(repositoryRoot, configuration.config.paths.journals, missionId);
+      }
+    }
+    if (presence.state === "present" && presence.journalPath !== null) {
+      const currentConfiguration = await stableConfigurationSnapshotWithRetry(repositoryRoot, graph.transitionPlan.repositoryId);
+      if (currentConfiguration === null || configuration.bytes !== currentConfiguration.bytes) {
+        return blocked(missionId, "repository_configuration_mismatch");
+      }
+      const currentExpected = await expectedFreshIntakeEntryWithRetry(repositoryRoot, graph.transitionPlan, currentConfiguration.config);
+      if (currentExpected === null || expected.registrySnapshot.bytes !== currentExpected.registrySnapshot.bytes ||
+          canonicalJson(expected.entry) !== canonicalJson(currentExpected.entry)) return blocked(missionId, "mission_intake_invalid");
+      if (!await reconcileFreshIntake(repositoryRoot, currentConfiguration.config, graph.transitionPlan, currentExpected.entry, presence.journalPath)) {
         return blocked(missionId, "mission_intake_mismatch");
       }
+      configuration = currentConfiguration;
+      expected = currentExpected;
+    } else if (presence.state !== "absent" || presence.journalPath !== null) {
+      return blocked(missionId, "initialization_conflict");
+    } else {
+      return blocked(missionId, "initialization_conflict");
     }
   }
 
   const resolved = await resolvePreparedMissionTransitionV1WithDependencies({ missionId, repositoryRoot }, {});
-  const finalConfiguration = await stableConfigurationSnapshot(repositoryRoot, graph.transitionPlan.repositoryId);
+  const finalConfiguration = await stableConfigurationSnapshotWithRetry(repositoryRoot, graph.transitionPlan.repositoryId);
   if (finalConfiguration === null) return blocked(missionId, "repository_configuration_mismatch");
   const finalPresence = await probeMissionJournalPresence(repositoryRoot, finalConfiguration.config.paths.journals, missionId);
   if (finalPresence.state !== "present" || finalPresence.journalPath === null) return blocked(missionId, "unsafe_journal_path");
-  const finalExpected = await expectedFreshIntakeEntry(repositoryRoot, graph.transitionPlan, finalConfiguration.config);
+  const finalExpected = await expectedFreshIntakeEntryWithRetry(repositoryRoot, graph.transitionPlan, finalConfiguration.config);
   if (finalExpected === null) return blocked(missionId, "mission_intake_invalid");
   if (!await reconcileFreshIntake(repositoryRoot, finalConfiguration.config, graph.transitionPlan, finalExpected.entry, finalPresence.journalPath)) {
     return blocked(missionId, "mission_intake_mismatch");
