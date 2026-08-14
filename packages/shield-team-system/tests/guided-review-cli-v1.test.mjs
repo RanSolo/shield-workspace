@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createGuidedReviewDriverReceiptV1 } from "../dist/guided-review-driver-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist/cli.mjs");
@@ -27,10 +28,11 @@ async function fixture() {
     planId: "plan:issue-238",
     missionId: "mission:issue-238",
     subjectId: "issue:238",
-    kind: "document",
+    kind: "spike",
     required: true,
     rationale: "The publication recommendation requires human document review.",
     method: "document_review",
+    participantRelationship: "document_reviewer",
     coveredCriterionRefs: ["AC-1"],
     evidenceRequirements: ["Named observation for every question."],
     exactRevision: head,
@@ -39,6 +41,22 @@ async function fixture() {
   await writeFile(join(root, "plan-input.json"), `${JSON.stringify(planInput, null, 2)}\n`);
   run(root, ["plan", "create", "--input", "plan-input.json", "--output", "plan.json"]);
   const plan = JSON.parse(await readFile(join(root, "plan.json"), "utf8"));
+  const driver = createGuidedReviewDriverReceiptV1({
+    schemaVersion: 1,
+    contractVersion: "guided.review.driver.v1",
+    driverId: "driver:code-guided",
+    driverVersion: "v1",
+    executorRef: "executor:test",
+    exactRevision: head,
+    environmentRef: "environment:test",
+    status: "ready",
+    capabilities: ["artifact_focus"],
+    scenarioRefs: ["scenario:spike"],
+    evidenceRefs: ["evidence:guided-review:test"],
+    effectClass: "read_only",
+    detail: "CLI fixture driver.",
+  });
+  assert.equal(driver.state, "ready");
   const context = {
     missionId: "mission:issue-238",
     subjectId: "issue:238",
@@ -47,6 +65,7 @@ async function fixture() {
     exactRevision: head,
     plan,
     title: "Issue 238 Guided Review",
+    participantRelationship: "document_reviewer",
     acceptanceCriteria: [{ criterionId: "AC-1", text: "Questions form durable stages." }],
     runtimeHandoff: {
       status: "ready",
@@ -58,18 +77,20 @@ async function fixture() {
       reviewUrl: "http://127.0.0.1:5173/",
       teardownRef: "command:stop",
       externalEffectPolicyRef: "policy:none",
+      driverReceipt: driver.value,
     },
     relevantPaths: ["packages/shield-team-system/src/guided-review-v1.mts"],
     evidenceRefs: ["evidence:guided-review:test"],
   };
+  await writeFile(join(root, "participant.json"), `${JSON.stringify({ participantId: "human:cli-reviewer", relationship: "document_reviewer", seatId: "coulson", bindingRef: "binding:cli-reviewer" }, null, 2)}\n`);
   await writeFile(join(root, "context.json"), `${JSON.stringify(context, null, 2)}\n`);
-  run(root, ["playbook", "create", "--kind", "document", "--input", "context.json", "--output", "playbook.json"]);
+  run(root, ["playbook", "create", "--kind", "spike", "--input", "context.json", "--output", "playbook.json"]);
   return root;
 }
 
 test("CLI creates a playbook and starts with one current question", async () => {
   const root = await fixture();
-  const started = run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:cli", "--output", "session.json"]);
+  const started = run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:cli", "--participant", "participant.json", "--output", "session.json"]);
   const display = JSON.parse(started.stdout);
   assert.equal(display.stage.stageId, "placement-purpose");
   assert.equal(display.stage.checkpointId, "checkpoint:placement-purpose");
@@ -80,7 +101,7 @@ test("CLI creates a playbook and starts with one current question", async () => 
 
 test("CLI atomically persists a decision and advances within the same stage", async () => {
   const root = await fixture();
-  run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:cli", "--output", "session.json"]);
+  run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:cli", "--participant", "participant.json", "--output", "session.json"]);
   const decided = run(root, ["decide", "--playbook", "playbook.json", "--session", "session.json", "--decision-id", "decision:1", "--disposition", "pass", "--observation", "The page is beside its source material."]);
   const display = JSON.parse(decided.stdout);
   assert.equal(display.stage.stageId, "placement-purpose");
@@ -93,7 +114,7 @@ test("CLI atomically persists a decision and advances within the same stage", as
 
 test("CLI refuses output overwrite and emits non-authoritative skip/cancel fork evidence", async () => {
   const root = await fixture();
-  const duplicate = run(root, ["playbook", "create", "--kind", "document", "--input", "context.json", "--output", "playbook.json"], 1);
+  const duplicate = run(root, ["playbook", "create", "--kind", "spike", "--input", "context.json", "--output", "playbook.json"], 1);
   assert.match(duplicate.stderr, /Refusing to overwrite/u);
   const requiredSkip = run(root, ["publication-choice", "--choice", "no", "--exact-revision", head, "--plan", "plan.json", "--output", "required-skip.json"], 1);
   assert.equal(JSON.parse(requiredSkip.stdout).reasonCode, "GUIDED_REVIEW_REQUIRED");
@@ -117,7 +138,7 @@ test("CLI rejects a symlinked output parent", async () => {
   const root = await fixture();
   await mkdir(join(root, "real-output"));
   await symlink(join(root, "real-output"), join(root, "linked-output"));
-  const result = run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:unsafe", "--output", "linked-output/session.json"], 2);
+  const result = run(root, ["start", "--playbook", "playbook.json", "--profile", "publication", "--session-id", "session:unsafe", "--participant", "participant.json", "--output", "linked-output/session.json"], 2);
   assert.match(result.stderr, /Output parent must be a real directory/u);
   await assert.rejects(readFile(join(root, "real-output", "session.json")));
 });

@@ -91,10 +91,14 @@ export type PreparedReviewPublicationDecisionV1 = Readonly<{
     required: boolean;
     rationale: string;
     method: string;
+    plannedParticipantRelationship: string;
     coveredCriterionRefs: readonly string[];
     evidenceRequirements: readonly string[];
     gateOwnerSeatId: "coulson";
     sessionDigest: string | null;
+    participantId: string | null;
+    participantRelationship: string | null;
+    participantBindingRef: string | null;
     pinPurpose: "guided_review_and_publication" | "publication";
   }>;
 }>;
@@ -453,10 +457,14 @@ function preparedDecision(
       required: guidedReviewFork.plan.required,
       rationale: guidedReviewFork.plan.rationale,
       method: guidedReviewFork.plan.method,
+      plannedParticipantRelationship: guidedReviewFork.plan.participantRelationship,
       coveredCriterionRefs: [...guidedReviewFork.plan.coveredCriterionRefs],
       evidenceRequirements: [...guidedReviewFork.plan.evidenceRequirements],
       gateOwnerSeatId: guidedReviewFork.plan.gateOwnerSeatId,
       sessionDigest: guidedReviewFork.sessionDigest,
+      participantId: guidedReviewFork.participant?.participantId ?? null,
+      participantRelationship: guidedReviewFork.participant?.relationship ?? null,
+      participantBindingRef: guidedReviewFork.participant?.bindingRef ?? null,
       pinPurpose: guidedReviewFork.pinPurpose as "guided_review_and_publication" | "publication",
     } }),
   });
@@ -558,6 +566,9 @@ export async function executeReviewPublicationAuthorizationV1(
   }
 
   const binding = coulsonBinding(initialJournal.current);
+  if (guidedReviewFork?.choice === "yes" && guidedReviewFork.participant?.bindingRef !== binding.signingKeyRef) {
+    throw new Error("Guided Review participant binding does not match the Coulson signer for this publication key turn.");
+  }
   const signerSnapshot = await captureMissionSignerSnapshot(binding.signingKeyRef);
   const authorityDigest = computeReviewPublicationAuthorityDigest(authority);
   const payload = {

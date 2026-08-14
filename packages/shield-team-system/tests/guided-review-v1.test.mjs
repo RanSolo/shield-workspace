@@ -16,10 +16,11 @@ import {
   BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS,
   createBuiltInGuidedReviewPlaybookV1,
 } from "../dist/guided-review-playbooks-v1.mjs";
+import { createGuidedReviewDriverReceiptV1, validateGuidedReviewDriverReceiptV1 } from "../dist/guided-review-driver-v1.mjs";
 
 const head = "1234567890abcdef1234567890abcdef12345678";
 const nextHead = "abcdef1234567890abcdef1234567890abcdef12";
-function reviewPlan(kind = "product_qa", exactRevision = head, required = true) {
+function reviewPlan(kind = "frontend", exactRevision = head, required = true, participantRelationship = kind === "frontend" ? "product_reviewer" : kind === "backend" ? "independent_reviewer" : "document_reviewer") {
   const result = createGuidedReviewPlanV1({
     schemaVersion: 1,
     contractVersion: "guided.review.v1",
@@ -29,7 +30,8 @@ function reviewPlan(kind = "product_qa", exactRevision = head, required = true) 
     kind,
     required,
     rationale: required ? "Human observation is material to publication." : "Automated evidence is sufficient for this candidate.",
-    method: kind === "product_qa" ? "local_browser" : kind === "code" ? "code_review" : "document_review",
+    method: kind === "frontend" ? "local_browser" : kind === "backend" ? "cli" : "document_review",
+    participantRelationship,
     coveredCriterionRefs: required ? ["AC-1", "AC-2"] : [],
     evidenceRequirements: required ? ["Named observations and exact-revision checklist."] : [],
     exactRevision,
@@ -38,6 +40,26 @@ function reviewPlan(kind = "product_qa", exactRevision = head, required = true) 
   assert.equal(result.state, "ready", JSON.stringify(result));
   return result.value;
 }
+function driverReceipt(exactRevision = head, status = "ready") {
+  const result = createGuidedReviewDriverReceiptV1({
+    schemaVersion: 1,
+    contractVersion: "guided.review.driver.v1",
+    driverId: "driver:code-guided",
+    driverVersion: "v1",
+    executorRef: "executor:test",
+    exactRevision,
+    environmentRef: "environment:test",
+    status,
+    capabilities: ["artifact_focus", "technical_evidence"],
+    scenarioRefs: ["scenario:issue-238"],
+    evidenceRefs: ["evidence:test:guided-review"],
+    effectClass: "read_only",
+    detail: "Deterministic test driver receipt.",
+  });
+  assert.equal(result.state, "ready", JSON.stringify(result));
+  return result.value;
+}
+
 const base = {
   missionId: "mission:issue-238",
   subjectId: "issue:238",
@@ -59,14 +81,16 @@ const base = {
     reviewUrl: "http://127.0.0.1:5173/",
     teardownRef: "command:stop",
     externalEffectPolicyRef: "policy:no-external-effects",
+    driverReceipt: driverReceipt(),
   },
   relevantPaths: ["packages/shield-team-system/src/guided-review-v1.mts"],
   evidenceRefs: ["evidence:test:guided-review"],
 };
 
-function playbook(kind = "product_qa", overrides = {}) {
+function playbook(kind = "frontend", overrides = {}) {
   const values = { ...base, ...overrides };
-  const result = createBuiltInGuidedReviewPlaybookV1(kind, { ...values, plan: overrides.plan ?? reviewPlan(kind, values.exactRevision) });
+  const participantRelationship = overrides.participantRelationship ?? (kind === "frontend" ? "product_reviewer" : kind === "backend" ? "independent_reviewer" : "document_reviewer");
+  const result = createBuiltInGuidedReviewPlaybookV1(kind, { ...values, participantRelationship, plan: overrides.plan ?? reviewPlan(kind, values.exactRevision) });
   assert.equal(result.state, "ready", JSON.stringify(result));
   return result.value;
 }
@@ -75,6 +99,7 @@ function start(book = playbook(), profile = "publication") {
   const result = startGuidedReviewSessionV1(book, {
     sessionId: "session:issue-238",
     profile,
+    participant: { participantId: "human:test-reviewer", relationship: book.participantRelationship, seatId: "coulson", bindingRef: "binding:test-reviewer" },
     startedAt: "2026-08-13T20:00:00.000Z",
   });
   assert.equal(result.state, "ready", JSON.stringify(result));
@@ -107,18 +132,27 @@ function complete(book, session = start(book)) {
 
 test("exports three standard playbooks whose stages contain several one-question steps", () => {
   assert.deepEqual(BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS, [
-    "guided-review:product-qa:v1",
-    "guided-review:code:v1",
-    "guided-review:document-spike:v1",
+    "guided-review:backend:v1",
+    "guided-review:frontend:v1",
+    "guided-review:spike:v1",
   ]);
-  for (const kind of ["product_qa", "code", "document"]) {
+  for (const kind of ["backend", "frontend", "spike"]) {
     const book = playbook(kind);
     assert.equal(book.contractVersion, GUIDED_REVIEW_CONTRACT_VERSION);
     assert.ok(book.stages.length >= 4);
     assert.ok(book.stages.every((stage) => stage.steps.length >= 2));
     assert.ok(book.stages.every((stage) => stage.checkpointId === `checkpoint:${stage.stageId}`));
     assert.ok(book.stages.flatMap((stage) => stage.steps).every((step) => !step.question.includes("\n")));
+    assert.ok(book.stages.flatMap((stage) => stage.steps).some((step) => step.stepId === "responsible-code"));
   }
+});
+
+test("versioned driver receipts bind executor, environment, revision, effects, and evidence", () => {
+  const receipt = driverReceipt();
+  assert.equal(receipt.contractVersion, "guided.review.driver.v1");
+  assert.equal(receipt.effectClass, "read_only");
+  assert.equal(validateGuidedReviewDriverReceiptV1(receipt).state, "ready");
+  assert.equal(validateGuidedReviewDriverReceiptV1({ ...receipt, executorRef: "executor:substituted" }).state, "invalid");
 });
 
 test("plan records required or safely omitted QA against exact AC and gate ownership", () => {
@@ -126,9 +160,28 @@ test("plan records required or safely omitted QA against exact AC and gate owner
   assert.equal(required.required, true);
   assert.deepEqual(required.coveredCriterionRefs, ["AC-1", "AC-2"]);
   assert.equal(required.gateOwnerSeatId, "coulson");
-  const omitted = reviewPlan("code", head, false);
+  const omitted = reviewPlan("backend", head, false);
   assert.equal(omitted.required, false);
   assert.match(omitted.rationale, /Automated evidence/u);
+});
+
+test("participant policy admits the builder only when the reviewed plan selects that relationship", () => {
+  const builderPlan = reviewPlan("frontend", head, true, "builder");
+  const book = playbook("frontend", { participantRelationship: "builder", plan: builderPlan });
+  const builder = startGuidedReviewSessionV1(book, {
+    sessionId: "session:builder",
+    profile: "exploration",
+    participant: { participantId: "human:builder", relationship: "builder", seatId: null, bindingRef: null },
+    startedAt: "2026-08-13T20:00:00.000Z",
+  });
+  assert.equal(builder.state, "ready");
+  const substituted = startGuidedReviewSessionV1(book, {
+    sessionId: "session:substituted",
+    profile: "exploration",
+    participant: { participantId: "human:product", relationship: "product_reviewer", seatId: null, bindingRef: null },
+    startedAt: "2026-08-13T20:00:00.000Z",
+  });
+  assert.equal(substituted.state, "invalid");
 });
 
 test("a stage remains active until all of its ordered questions pass", () => {
@@ -169,7 +222,7 @@ test("the engine rejects out-of-order answers and records FAIL as a durable stop
 });
 
 test("conditional PASS carries its condition through the final recap and checklist", () => {
-  const book = playbook("document");
+  const book = playbook("spike");
   let session = start(book);
   session = decide(book, session, "conditional_pass");
   session = complete(book, session);
@@ -180,15 +233,48 @@ test("conditional PASS carries its condition through the final recap and checkli
   assert.equal(checklist.state, "ready");
   assert.match(checklist.value, /Carried condition: Condition from placement\./u);
   assert.match(checklist.value, /## Placement and Purpose/u);
+  assert.match(checklist.value, /human:test-reviewer/u);
+});
+
+test("frontend dogfood routes a finding through focused correction and preserves named participant evidence", () => {
+  const book = playbook("frontend");
+  let session = start(book);
+  session = decide(book, session);
+  session = decide(book, session);
+  session = decide(book, session);
+  session = decide(book, session, "fail", { observation: "The error modal opened, but recovery was broken.", finding: "Recovery action left the workflow blocked." });
+  assert.equal(session.state, "blocked");
+  const revised = reviseGuidedReviewSessionV1(book, session, {
+    exactRevision: nextHead,
+    plan: reviewPlan("frontend", nextHead),
+    runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, receiptDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", driverReceipt: driverReceipt(nextHead) },
+    affectedStepIds: ["failure"],
+    rationale: "Same-scope recovery behavior was corrected and independently revalidated.",
+    revisedAt: "2026-08-13T22:00:00.000Z",
+  });
+  assert.equal(revised.state, "ready", JSON.stringify(revised));
+  assert.equal(revised.value.stepStates.success, "passed");
+  assert.equal(revised.value.stepStates.failure, "stale");
+  let completed = revised.value;
+  let replayMinute = 1;
+  while (completed.state !== "completed") {
+    completed = decide(book, completed, "pass", { decidedAt: `2026-08-13T23:${String(replayMinute).padStart(2, "0")}:00.000Z` });
+    replayMinute += 1;
+  }
+  assert.equal(completed.participant.participantId, "human:test-reviewer");
+  assert.equal(completed.revisions.length, 1);
+  const fork = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: nextHead, plan: completed.plan, playbook: book, session: completed });
+  assert.equal(fork.state, "ready");
+  assert.equal(fork.value.state, "pin_required");
 });
 
 test("a corrected revision stales only selected steps and their downstream dependencies", () => {
-  const book = playbook("code");
+  const book = playbook("backend");
   const completed = complete(book);
   const revised = reviseGuidedReviewSessionV1(book, completed, {
     exactRevision: nextHead,
-    plan: reviewPlan("code", nextHead),
-    runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, receiptDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" },
+    plan: reviewPlan("backend", nextHead),
+    runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, receiptDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", driverReceipt: driverReceipt(nextHead) },
     affectedStepIds: ["tests"],
     rationale: "Focused test coverage changed.",
     revisedAt: "2026-08-13T22:00:00.000Z",
@@ -215,11 +301,11 @@ test("a corrected revision stales only selected steps and their downstream depen
 });
 
 test("formal correction replay rejects a stale or blocked runtime handoff", () => {
-  const book = playbook("code");
+  const book = playbook("backend");
   const completed = complete(book);
   const stale = reviseGuidedReviewSessionV1(book, completed, {
     exactRevision: nextHead,
-    plan: reviewPlan("code", nextHead),
+    plan: reviewPlan("backend", nextHead),
     runtimeHandoff: base.runtimeHandoff,
     affectedStepIds: ["tests"],
     rationale: "Coverage changed.",
@@ -229,8 +315,8 @@ test("formal correction replay rejects a stale or blocked runtime handoff", () =
   assert.equal(stale.code, "MALFORMED_REVISION");
   const blocked = reviseGuidedReviewSessionV1(book, completed, {
     exactRevision: nextHead,
-    plan: reviewPlan("code", nextHead),
-    runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, status: "blocked" },
+    plan: reviewPlan("backend", nextHead),
+    runtimeHandoff: { ...base.runtimeHandoff, exactRevision: nextHead, status: "blocked", driverReceipt: driverReceipt(nextHead, "blocked") },
     affectedStepIds: ["tests"],
     rationale: "Coverage changed.",
     revisedAt: "2026-08-13T22:00:00.000Z",
@@ -240,12 +326,13 @@ test("formal correction replay rejects a stale or blocked runtime handoff", () =
 });
 
 test("acceptance and publication profiles require a ready exact-revision runtime handoff", () => {
-  const blockedBook = playbook("product_qa", {
+  const blockedBook = playbook("frontend", {
     runtimeHandoff: { ...base.runtimeHandoff, status: "blocked" },
   });
   const formal = startGuidedReviewSessionV1(blockedBook, {
     sessionId: "session:blocked",
     profile: "acceptance",
+    participant: { participantId: "human:test-reviewer", relationship: blockedBook.participantRelationship, seatId: "coulson", bindingRef: "binding:test-reviewer" },
     startedAt: "2026-08-13T20:00:00.000Z",
   });
   assert.equal(formal.state, "invalid");
@@ -253,6 +340,7 @@ test("acceptance and publication profiles require a ready exact-revision runtime
   assert.equal(startGuidedReviewSessionV1(blockedBook, {
     sessionId: "session:explore",
     profile: "exploration",
+    participant: { participantId: "human:test-reviewer", relationship: blockedBook.participantRelationship, seatId: "coulson", bindingRef: "binding:test-reviewer" },
     startedAt: "2026-08-13T20:00:00.000Z",
   }).state, "ready");
 });
@@ -268,7 +356,7 @@ test("publication fork has Yes, No, and Cancel routes with exactly one remaining
   assert.equal(requiredNo.state, "ready");
   assert.equal(requiredNo.value.state, "blocked");
   assert.equal(requiredNo.value.reasonCode, "GUIDED_REVIEW_REQUIRED");
-  const optionalPlan = reviewPlan("product_qa", head, false);
+  const optionalPlan = reviewPlan("frontend", head, false);
   const no = evaluateGuidedReviewPublicationForkV1({ choice: "no", exactRevision: head, plan: optionalPlan, playbook: null, session: null });
   assert.equal(no.state, "ready");
   assert.equal(no.value.guidedReviewDisposition, "skipped_by_operator");
@@ -279,7 +367,7 @@ test("publication fork has Yes, No, and Cancel routes with exactly one remaining
   assert.equal(cancel.state, "ready");
   assert.equal(cancel.value.state, "cancelled");
   assert.equal(cancel.value.pinPurpose, null);
-  const stale = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: nextHead, plan: reviewPlan("product_qa", nextHead), playbook: book, session: completed });
+  const stale = evaluateGuidedReviewPublicationForkV1({ choice: "yes", exactRevision: nextHead, plan: reviewPlan("frontend", nextHead), playbook: book, session: completed });
   assert.equal(stale.state, "ready");
   assert.equal(stale.value.state, "blocked");
   assert.equal(stale.value.reasonCode, "GUIDED_REVIEW_INCOMPLETE_OR_STALE");
@@ -302,7 +390,7 @@ test("tampered content-addressed sessions and malformed playbooks fail closed", 
   });
   assert.equal(result.state, "invalid");
   assert.equal(result.code, "INVALID_SESSION");
-  assert.equal(createBuiltInGuidedReviewPlaybookV1("product_qa", {
+  assert.equal(createBuiltInGuidedReviewPlaybookV1("frontend", {
     ...base,
     exactRevision: nextHead,
   }).state, "invalid");

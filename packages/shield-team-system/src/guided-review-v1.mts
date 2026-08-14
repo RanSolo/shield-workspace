@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 
 import { canonicalJson } from "./mission-v2.mjs";
+import { validateGuidedReviewDriverReceiptV1, type GuidedReviewDriverReceiptV1 } from "./guided-review-driver-v1.mjs";
 
 export const GUIDED_REVIEW_SCHEMA_VERSION = 1 as const;
 export const GUIDED_REVIEW_CONTRACT_VERSION = "guided.review.v1" as const;
-export const GUIDED_REVIEW_PLAYBOOK_KINDS = ["product_qa", "code", "document"] as const;
+export const GUIDED_REVIEW_PLAYBOOK_KINDS = ["backend", "frontend", "spike"] as const;
 export const GUIDED_REVIEW_PROFILES = ["exploration", "acceptance", "publication"] as const;
 export const GUIDED_REVIEW_DISPOSITIONS = ["pass", "fail", "conditional_pass", "not_observed"] as const;
 export const GUIDED_REVIEW_PUBLICATION_CHOICES = ["yes", "no", "cancel"] as const;
@@ -18,6 +19,14 @@ export type GuidedReviewPublicationChoiceV1 = (typeof GUIDED_REVIEW_PUBLICATION_
 export type GuidedReviewMethodV1 = (typeof GUIDED_REVIEW_METHODS)[number];
 export type GuidedReviewStepStateV1 = "pending" | "passed" | "failed" | "conditional" | "not_observed" | "stale";
 export type GuidedReviewStageStateV1 = "locked" | "active" | "passed" | "blocked" | "stale";
+export type GuidedReviewParticipantRelationshipV1 = "builder" | "independent_reviewer" | "product_reviewer" | "document_reviewer";
+
+export interface GuidedReviewParticipantV1 {
+  readonly participantId: string;
+  readonly relationship: GuidedReviewParticipantRelationshipV1;
+  readonly seatId: string | null;
+  readonly bindingRef: string | null;
+}
 
 export interface GuidedReviewCriterionV1 {
   readonly criterionId: string;
@@ -53,6 +62,7 @@ export interface GuidedReviewRuntimeHandoffV1 {
   readonly reviewUrl: string;
   readonly teardownRef: string;
   readonly externalEffectPolicyRef: string;
+  readonly driverReceipt: GuidedReviewDriverReceiptV1;
 }
 
 export interface GuidedReviewPlanInputV1 {
@@ -65,6 +75,7 @@ export interface GuidedReviewPlanInputV1 {
   readonly required: boolean;
   readonly rationale: string;
   readonly method: GuidedReviewMethodV1;
+  readonly participantRelationship: GuidedReviewParticipantRelationshipV1;
   readonly coveredCriterionRefs: readonly string[];
   readonly evidenceRequirements: readonly string[];
   readonly exactRevision: string;
@@ -87,7 +98,7 @@ export interface GuidedReviewPlaybookInputV1 {
   readonly branch: string;
   readonly exactRevision: string;
   readonly plan: GuidedReviewPlanV1;
-  readonly participantRelationship: "builder" | "independent_reviewer" | "product_reviewer" | "document_reviewer";
+  readonly participantRelationship: GuidedReviewParticipantRelationshipV1;
   readonly acceptanceCriteria: readonly GuidedReviewCriterionV1[];
   readonly runtimeHandoff: GuidedReviewRuntimeHandoffV1;
   readonly stages: readonly GuidedReviewStageV1[];
@@ -128,6 +139,7 @@ export interface GuidedReviewSessionV1 {
   readonly exactRevision: string;
   readonly plan: GuidedReviewPlanV1;
   readonly runtimeHandoff: GuidedReviewRuntimeHandoffV1;
+  readonly participant: GuidedReviewParticipantV1;
   readonly state: "active" | "blocked" | "completed" | "cancelled";
   readonly currentStageId: string | null;
   readonly currentStepId: string | null;
@@ -151,6 +163,7 @@ export interface GuidedReviewPublicationForkV1 {
   readonly plan: GuidedReviewPlanV1;
   readonly guidedReviewDisposition: "completed" | "skipped_by_operator" | "cancelled" | "ineligible";
   readonly sessionDigest: string | null;
+  readonly participant: GuidedReviewParticipantV1 | null;
   readonly pinPurpose: "guided_review_and_publication" | "publication" | null;
   readonly reasonCode: string | null;
   readonly summary: string;
@@ -232,18 +245,28 @@ function validStage(value: unknown): value is GuidedReviewStageV1 {
 }
 
 function validRuntime(value: unknown): value is GuidedReviewRuntimeHandoffV1 {
-  return exact(value, ["status", "receiptDigest", "exactRevision", "environmentRef", "launchCommandRef", "healthProbeRef", "reviewUrl", "teardownRef", "externalEffectPolicyRef"]) &&
-    ["ready", "blocked", "externally_uncertain"].includes(value.status as string) && digest(value.receiptDigest) &&
+  if (!exact(value, ["status", "receiptDigest", "exactRevision", "environmentRef", "launchCommandRef", "healthProbeRef", "reviewUrl", "teardownRef", "externalEffectPolicyRef", "driverReceipt"]) ||
+    !(["ready", "blocked", "externally_uncertain"].includes(value.status as string) && digest(value.receiptDigest) &&
     revision(value.exactRevision) && id(value.environmentRef) && id(value.launchCommandRef) && id(value.healthProbeRef) &&
     typeof value.reviewUrl === "string" && value.reviewUrl.length > 0 && value.reviewUrl.length <= 2048 &&
-    id(value.teardownRef) && id(value.externalEffectPolicyRef);
+    id(value.teardownRef) && id(value.externalEffectPolicyRef))) return false;
+  const driver = validateGuidedReviewDriverReceiptV1(value.driverReceipt);
+  return driver.state === "ready" && driver.value.exactRevision === value.exactRevision && driver.value.environmentRef === value.environmentRef &&
+    (value.status !== "ready" || driver.value.status === "ready");
+}
+
+function validParticipant(value: unknown): value is GuidedReviewParticipantV1 {
+  return exact(value, ["participantId", "relationship", "seatId", "bindingRef"]) && id(value.participantId) &&
+    ["builder", "independent_reviewer", "product_reviewer", "document_reviewer"].includes(value.relationship as string) &&
+    (value.seatId === null || id(value.seatId)) && (value.bindingRef === null || id(value.bindingRef));
 }
 
 function validPlanInput(value: unknown): value is GuidedReviewPlanInputV1 {
-  return exact(value, ["schemaVersion", "contractVersion", "planId", "missionId", "subjectId", "kind", "required", "rationale", "method", "coveredCriterionRefs", "evidenceRequirements", "exactRevision", "gateOwnerSeatId"]) &&
+  return exact(value, ["schemaVersion", "contractVersion", "planId", "missionId", "subjectId", "kind", "required", "rationale", "method", "participantRelationship", "coveredCriterionRefs", "evidenceRequirements", "exactRevision", "gateOwnerSeatId"]) &&
     value.schemaVersion === 1 && value.contractVersion === GUIDED_REVIEW_CONTRACT_VERSION && id(value.planId) &&
     id(value.missionId) && id(value.subjectId) && GUIDED_REVIEW_PLAYBOOK_KINDS.includes(value.kind as GuidedReviewPlaybookKindV1) &&
     typeof value.required === "boolean" && text(value.rationale, 4000) && GUIDED_REVIEW_METHODS.includes(value.method as GuidedReviewMethodV1) &&
+    ["builder", "independent_reviewer", "product_reviewer", "document_reviewer"].includes(value.participantRelationship as string) &&
     uniqueStrings(value.coveredCriterionRefs, id, value.required === false) &&
     uniqueStrings(value.evidenceRequirements, (entry): entry is string => text(entry, 2000), value.required === false) &&
     revision(value.exactRevision) && value.gateOwnerSeatId === "coulson";
@@ -268,7 +291,7 @@ function validPlaybookInput(value: unknown): value is GuidedReviewPlaybookInputV
       !text(value.title, 200) || !id(value.missionId) || !id(value.subjectId) ||
       typeof value.repositoryId !== "string" || !REPOSITORY.test(value.repositoryId) || !id(value.branch) || !revision(value.exactRevision) ||
       !planValid(value.plan) || value.plan.required !== true || value.plan.missionId !== value.missionId || value.plan.subjectId !== value.subjectId ||
-      value.plan.kind !== value.kind || value.plan.exactRevision !== value.exactRevision ||
+      value.plan.kind !== value.kind || value.plan.exactRevision !== value.exactRevision || value.plan.participantRelationship !== value.participantRelationship ||
       !["builder", "independent_reviewer", "product_reviewer", "document_reviewer"].includes(value.participantRelationship as string) ||
       !Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.length === 0 || !value.acceptanceCriteria.every(validCriterion) ||
       new Set(value.acceptanceCriteria.map((criterion) => criterion.criterionId)).size !== value.acceptanceCriteria.length ||
@@ -348,7 +371,8 @@ function validSession(playbook: GuidedReviewPlaybookV1, session: unknown): sessi
       session.missionId !== playbook.missionId || session.subjectId !== playbook.subjectId || !revision(session.exactRevision) ||
       !planValid(session.plan) || session.plan.missionId !== session.missionId || session.plan.subjectId !== session.subjectId ||
       session.plan.kind !== playbook.kind || session.plan.exactRevision !== session.exactRevision ||
-      !validRuntime(session.runtimeHandoff) || session.runtimeHandoff.exactRevision !== session.exactRevision ||
+      !validRuntime(session.runtimeHandoff) || session.runtimeHandoff.exactRevision !== session.exactRevision || !validParticipant(session.participant) ||
+      session.participant.relationship !== playbook.participantRelationship ||
       !GUIDED_REVIEW_PROFILES.includes(session.profile as GuidedReviewProfileV1) || !id(session.sessionId) || !timestamp(session.startedAt) || !timestamp(session.updatedAt) ||
       !["active", "blocked", "completed", "cancelled"].includes(session.state as string) ||
       !(session.currentStageId === null || id(session.currentStageId)) || !(session.currentStepId === null || id(session.currentStepId)) ||
@@ -395,12 +419,16 @@ function validSession(playbook: GuidedReviewPlaybookV1, session: unknown): sessi
 
 export function startGuidedReviewSessionV1(playbookInput: unknown, input: unknown): GuidedReviewResultV1<GuidedReviewSessionV1> {
   if (!playbookValid(playbookInput)) return invalid("INVALID_PLAYBOOK", "Playbook digest or shape is invalid.");
-  if (!exact(input, ["sessionId", "profile", "startedAt"]) || !id(input.sessionId) ||
+  if (!exact(input, ["sessionId", "profile", "participant", "startedAt"]) || !id(input.sessionId) || !validParticipant(input.participant) ||
+      input.participant.relationship !== playbookInput.participantRelationship ||
       !GUIDED_REVIEW_PROFILES.includes(input.profile as GuidedReviewProfileV1) || !timestamp(input.startedAt)) {
     return invalid("MALFORMED_SESSION_START", "Session start input is malformed or not closed.");
   }
   if (input.profile !== "exploration" && playbookInput.runtimeHandoff.status !== "ready") {
     return invalid("RUNTIME_NOT_READY", "Acceptance and publication review require a ready builder runtime handoff.");
+  }
+  if (input.profile === "publication" && (input.participant.seatId !== playbookInput.plan.gateOwnerSeatId || input.participant.bindingRef === null)) {
+    return invalid("PUBLICATION_PARTICIPANT_INELIGIBLE", "Publication review requires the configured gate owner and a named binding reference.");
   }
   const stepStates = Object.fromEntries(playbookInput.stages.flatMap((stage) => stage.steps.map((step) => [step.stepId, "pending"]))) as Record<string, GuidedReviewStepStateV1>;
   const derived = route(playbookInput, stepStates);
@@ -415,6 +443,7 @@ export function startGuidedReviewSessionV1(playbookInput: unknown, input: unknow
     exactRevision: playbookInput.exactRevision,
     plan: playbookInput.plan,
     runtimeHandoff: playbookInput.runtimeHandoff,
+    participant: input.participant,
     state: derived.state,
     currentStageId: derived.currentStageId,
     currentStepId: derived.currentStepId,
@@ -540,14 +569,14 @@ export function evaluateGuidedReviewPublicationForkV1(input: unknown): GuidedRev
   let body: Omit<GuidedReviewPublicationForkV1, "forkDigest">;
   if (choice === "cancel") {
     body = { schemaVersion: 1, contractVersion: GUIDED_REVIEW_CONTRACT_VERSION, authority: "none", choice, state: "cancelled", exactRevision,
-      planDigest: plan.planDigest, plan, guidedReviewDisposition: "cancelled", sessionDigest: null, pinPurpose: null, reasonCode: null, summary: "No PIN and no publication effect." };
+      planDigest: plan.planDigest, plan, guidedReviewDisposition: "cancelled", sessionDigest: null, participant: null, pinPurpose: null, reasonCode: null, summary: "No PIN and no publication effect." };
   } else if (choice === "no" && plan.required) {
     body = { schemaVersion: 1, contractVersion: GUIDED_REVIEW_CONTRACT_VERSION, authority: "none", choice, state: "blocked", exactRevision,
-      planDigest: plan.planDigest, plan, guidedReviewDisposition: "ineligible", sessionDigest: null, pinPurpose: null, reasonCode: "GUIDED_REVIEW_REQUIRED",
+      planDigest: plan.planDigest, plan, guidedReviewDisposition: "ineligible", sessionDigest: null, participant: null, pinPurpose: null, reasonCode: "GUIDED_REVIEW_REQUIRED",
       summary: "The exact-candidate plan requires Guided Review; omission is not eligible for publication." };
   } else if (choice === "no") {
     body = { schemaVersion: 1, contractVersion: GUIDED_REVIEW_CONTRACT_VERSION, authority: "none", choice, state: "pin_required", exactRevision,
-      planDigest: plan.planDigest, plan, guidedReviewDisposition: "skipped_by_operator", sessionDigest: null, pinPurpose: "publication", reasonCode: null,
+      planDigest: plan.planDigest, plan, guidedReviewDisposition: "skipped_by_operator", sessionDigest: null, participant: null, pinPurpose: "publication", reasonCode: null,
       summary: "Guided Review skipped for the exact candidate; one ordinary publication PIN remains." };
   } else if (!playbookValid(input.playbook) || !validSession(input.playbook, input.session) || input.session.profile !== "publication" ||
       input.session.plan.planDigest !== plan.planDigest || input.session.state !== "completed" || input.session.exactRevision !== exactRevision) {
@@ -555,12 +584,13 @@ export function evaluateGuidedReviewPublicationForkV1(input: unknown): GuidedRev
       planDigest: plan.planDigest,
       plan,
       guidedReviewDisposition: "ineligible", sessionDigest: plain(input.session) && digest(input.session.sessionDigest) ? input.session.sessionDigest : null,
+      participant: null,
       pinPurpose: null, reasonCode: "GUIDED_REVIEW_INCOMPLETE_OR_STALE", summary: "Completed publication-profile Guided Review evidence for the exact candidate is required." };
   } else {
     body = { schemaVersion: 1, contractVersion: GUIDED_REVIEW_CONTRACT_VERSION, authority: "none", choice, state: "pin_required", exactRevision,
       planDigest: plan.planDigest,
       plan,
-      guidedReviewDisposition: "completed", sessionDigest: input.session.sessionDigest, pinPurpose: "guided_review_and_publication", reasonCode: null,
+      guidedReviewDisposition: "completed", sessionDigest: input.session.sessionDigest, participant: input.session.participant, pinPurpose: "guided_review_and_publication", reasonCode: null,
       summary: "One combined Guided Review and exact-candidate publication PIN remains." };
   }
   return { state: "ready", value: snapshot({ ...body, forkDigest: sha256(body) }) };
@@ -569,24 +599,26 @@ export function evaluateGuidedReviewPublicationForkV1(input: unknown): GuidedRev
 export function validateGuidedReviewPublicationForkV1(input: unknown): GuidedReviewResultV1<GuidedReviewPublicationForkV1> {
   if (!plain(input) || !digest(input.forkDigest)) return invalid("MALFORMED_PUBLICATION_FORK", "Publication fork digest is absent or malformed.");
   const { forkDigest, ...body } = input;
-  if (!exact(body, ["schemaVersion", "contractVersion", "authority", "choice", "state", "exactRevision", "planDigest", "plan", "guidedReviewDisposition", "sessionDigest", "pinPurpose", "reasonCode", "summary"]) ||
+  if (!exact(body, ["schemaVersion", "contractVersion", "authority", "choice", "state", "exactRevision", "planDigest", "plan", "guidedReviewDisposition", "sessionDigest", "participant", "pinPurpose", "reasonCode", "summary"]) ||
       body.schemaVersion !== 1 || body.contractVersion !== GUIDED_REVIEW_CONTRACT_VERSION || body.authority !== "none" ||
       !GUIDED_REVIEW_PUBLICATION_CHOICES.includes(body.choice as GuidedReviewPublicationChoiceV1) || !revision(body.exactRevision) || !digest(body.planDigest) ||
       !planValid(body.plan) || body.plan.planDigest !== body.planDigest || body.plan.exactRevision !== body.exactRevision ||
       !["pin_required", "cancelled", "blocked"].includes(body.state as string) ||
       !["completed", "skipped_by_operator", "cancelled", "ineligible"].includes(body.guidedReviewDisposition as string) ||
       !(body.sessionDigest === null || digest(body.sessionDigest)) ||
+      !(body.participant === null || validParticipant(body.participant)) ||
       !(body.pinPurpose === null || body.pinPurpose === "guided_review_and_publication" || body.pinPurpose === "publication") ||
       !(body.reasonCode === null || id(body.reasonCode)) || !text(body.summary, 1000) || sha256(body) !== forkDigest) {
     return invalid("MALFORMED_PUBLICATION_FORK", "Publication fork shape, semantics, or digest is invalid.");
   }
   const semantic = (body.choice === "yes" && body.state === "pin_required" && body.guidedReviewDisposition === "completed" &&
-      body.sessionDigest !== null && body.pinPurpose === "guided_review_and_publication" && body.reasonCode === null) ||
+      body.sessionDigest !== null && body.participant !== null && body.participant.seatId === body.plan.gateOwnerSeatId && body.participant.bindingRef !== null &&
+      body.pinPurpose === "guided_review_and_publication" && body.reasonCode === null) ||
     (body.choice === "no" && body.plan.required === false && body.state === "pin_required" && body.guidedReviewDisposition === "skipped_by_operator" &&
-      body.sessionDigest === null && body.pinPurpose === "publication" && body.reasonCode === null) ||
+      body.sessionDigest === null && body.participant === null && body.pinPurpose === "publication" && body.reasonCode === null) ||
     (body.choice === "cancel" && body.state === "cancelled" && body.guidedReviewDisposition === "cancelled" &&
-      body.sessionDigest === null && body.pinPurpose === null && body.reasonCode === null) ||
-    (body.state === "blocked" && body.guidedReviewDisposition === "ineligible" && body.pinPurpose === null && body.reasonCode !== null);
+      body.sessionDigest === null && body.participant === null && body.pinPurpose === null && body.reasonCode === null) ||
+    (body.state === "blocked" && body.guidedReviewDisposition === "ineligible" && body.participant === null && body.pinPurpose === null && body.reasonCode !== null);
   return semantic ? { state: "ready", value: snapshot(input as unknown as GuidedReviewPublicationForkV1) }
     : invalid("MALFORMED_PUBLICATION_FORK", "Publication fork choice and disposition are inconsistent.");
 }
@@ -600,6 +632,7 @@ export function renderGuidedReviewChecklistV1(playbookInput: unknown, sessionInp
     `- Exact revision: \`${sessionInput.exactRevision}\``,
     `- Playbook: \`${playbookInput.playbookId}\``,
     `- Profile: \`${sessionInput.profile}\``, "",
+    `- Participant: \`${sessionInput.participant.participantId}\` (${sessionInput.participant.relationship})`, "",
   ];
   for (const stage of playbookInput.stages) {
     lines.push(`## ${stage.title}`, "", stage.purpose, "");

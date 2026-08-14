@@ -29,28 +29,30 @@ candidate revision.
 
 ## Built-in playbooks
 
-### Product QA
+### Backend
 
-Product QA walks through ticket intent, representative success/failure/recovery
-behavior, automated regression meaning, the reusable QA checklist, and the
-exact candidate. Frontend drivers may use reviewed Cypress tests; backend
-drivers may use representative request, job, CLI, or library checks. Driver
-GREEN is technical evidence and never fabricates the human observation.
+The Backend playbook guides representative API, CLI, job, event, database, or
+library inputs through outputs and failure behavior. It reveals responsible
+handlers, queries, schemas, contracts, effects, and exact automated evidence.
 
-### Code review
+### Frontend
 
-Code review walks through ticket mapping, scope, architectural fit, state and
-external effects, maintainability, test meaning, exact-revision GREEN evidence,
-risks, limitations, and the named exact-candidate disposition. It does not
-substitute one configured seat for another or grant merge, deployment, or
-release authority.
+The Frontend playbook teaches intent, then walks representative success,
+failure, and recovery behavior. A reviewed Cypress flow may prepare and
+navigate application state, but Cypress GREEN remains technical evidence and
+never fabricates the participant's visual or usability observation.
 
-### Document/spike review
+### Spike
 
-Document review walks through placement and purpose, summary, acceptance
+Spike review walks through placement and purpose, summary, acceptance
 mapping, linked example folders/files, comparison quality, recommendation
 conditions, accumulated corrections, and the exact document candidate. This is
 the playbook for discovery records, ADRs, scorecards, and Confluence drafts.
+
+Guided Code Review is cross-cutting rather than a fourth peer playbook. Every
+journey includes a focused responsible-code step that connects an acceptance
+criterion and observed behavior or claim to the relevant symbol, diff, POC, and
+automated evidence.
 
 ## Profiles
 
@@ -63,16 +65,29 @@ the playbook for discovery records, ADRs, scorecards, and Confluence drafts.
 
 Routine dependency, environment, fixture, binding, port, health, external-
 effect policy, teardown, and recovery work belongs in the builder runtime
-handoff. The first human checkpoint begins after that receipt says ready.
+handoff. It embeds a content-addressed `guided.review.driver.v1` receipt naming
+the driver/version, actual executor, exact revision and environment,
+capabilities, scenarios, evidence, and effect class. Driver output remains
+distinct from participant observation and authority. The first human
+checkpoint begins after both receipts say ready.
+
+The session also freezes the named participant, their relationship to the
+candidate, optional SHIELD seat, and binding reference. Every step decision is
+therefore attributable through the content-addressed session. The later
+publication key turn binds that session; the runner itself never signs or
+claims a human result.
 
 ## Plan selection
 
 Before a playbook or omission route exists, the plan records `required`, a
-reviewable rationale, method, covered acceptance-criterion references, evidence
-requirements, exact revision, playbook kind, and `gateOwnerSeatId: coulson`.
+reviewable rationale, method, selected participant relationship, covered
+acceptance-criterion references, evidence requirements, exact revision,
+playbook kind, and `gateOwnerSeatId: coulson`.
 A required plan must name at least one criterion and evidence requirement. A
 playbook can only be built from a required plan with the same mission, subject,
-kind, and revision. A safely omitted plan remains inspectable and is the only
+kind, participant relationship, and revision. This permits builder-led review
+when the plan explicitly selects it while preserving an independent or Product
+relationship when policy requires one. A safely omitted plan remains inspectable and is the only
 plan for which the `no` publication route is PIN-eligible.
 
 ## Corrections and revision changes
@@ -122,7 +137,7 @@ plan:
 
 ```bash
 shield guided-review playbook create \
-  --kind product_qa \
+  --kind frontend \
   --input .shield/tmp/guided-review/context.json \
   --output .shield/tmp/guided-review/playbook.json
 ```
@@ -134,6 +149,7 @@ shield guided-review start \
   --playbook .shield/tmp/guided-review/playbook.json \
   --profile publication \
   --session-id session:example \
+  --participant .shield/tmp/guided-review/participant.json \
   --output .shield/tmp/guided-review/session.json
 ```
 
@@ -163,3 +179,18 @@ Playbooks, sessions, and fork artifacts are content-addressed. Session updates
 use an exclusive lock, exact-byte compare, file sync, atomic rename, and
 directory sync. Concurrent or stale writers fail without silently overwriting a
 human decision.
+
+## Dogfood evidence
+
+The contract suite replays both issue-backed patterns without inventing a new
+human result:
+
+- the NXT-430 frontend pattern records a blocking human finding, binds a new
+  exact revision and ready driver/runtime receipts, preserves unaffected PASS
+  decisions, and resumes only the stale failure checkpoint and its dependents;
+- the NXT-449 spike/document pattern preserves a conditional Product decision,
+  participant identity, linked evidence, and the carried condition in the
+  reusable checklist and final publication fork.
+
+These are deterministic engine proofs. The actual human observations remain in
+the issue's attributed dogfood records and are not recreated by automated tests.

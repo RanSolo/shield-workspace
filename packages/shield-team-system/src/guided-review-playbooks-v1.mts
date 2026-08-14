@@ -4,6 +4,7 @@ import {
   type GuidedReviewCriterionV1,
   type GuidedReviewPlaybookKindV1,
   type GuidedReviewPlanV1,
+  type GuidedReviewParticipantRelationshipV1,
   type GuidedReviewPlaybookV1,
   type GuidedReviewResultV1,
   type GuidedReviewRuntimeHandoffV1,
@@ -11,9 +12,9 @@ import {
 } from "./guided-review-v1.mjs";
 
 export const BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS = [
-  "guided-review:product-qa:v1",
-  "guided-review:code:v1",
-  "guided-review:document-spike:v1",
+  "guided-review:backend:v1",
+  "guided-review:frontend:v1",
+  "guided-review:spike:v1",
 ] as const;
 
 export interface BuiltInGuidedReviewInputV1 {
@@ -24,6 +25,7 @@ export interface BuiltInGuidedReviewInputV1 {
   readonly exactRevision: string;
   readonly plan: GuidedReviewPlanV1;
   readonly title: string;
+  readonly participantRelationship: GuidedReviewParticipantRelationshipV1;
   readonly acceptanceCriteria: readonly GuidedReviewCriterionV1[];
   readonly runtimeHandoff: GuidedReviewRuntimeHandoffV1;
   readonly relevantPaths: readonly string[];
@@ -45,7 +47,7 @@ type StageTemplate = Readonly<{
   steps: readonly StepTemplate[];
 }>;
 
-const PRODUCT_QA: readonly StageTemplate[] = Object.freeze([
+const FRONTEND: readonly StageTemplate[] = Object.freeze([
   {
     id: "mission-briefing", title: "Mission Briefing", purpose: "Understand the ticket intent before exercising behavior.", steps: [
       { id: "intent", title: "Ticket intent", question: "Does the stated behavior match the ticket intent?", instructions: ["Read the ticket summary and acceptance criteria.", "Compare them with the candidate summary."] },
@@ -62,7 +64,8 @@ const PRODUCT_QA: readonly StageTemplate[] = Object.freeze([
   {
     id: "evidence-pass", title: "Evidence Pass", purpose: "Connect human observations to durable automated evidence.", steps: [
       { id: "regression", title: "Regression evidence", question: "Do the reviewed tests prove the important behavior without replacing human observation?", instructions: ["Inspect the focused automated coverage.", "Distinguish technical GREEN from the human observation."], dependsOn: ["recovery"] },
-      { id: "qa-checklist", title: "Reusable QA checklist", question: "Will the generated checklist let another QA reviewer repeat the important checks?", instructions: ["Review each checklist item for observable outcomes.", "Keep environment instructions separate from product expectations."], dependsOn: ["regression"] },
+      { id: "responsible-code", title: "Responsible code", question: "Does the focused code view explain the behavior you just observed?", instructions: ["Reveal the responsible component, state transition, or Cypress checkpoint.", "Use code as a teaching aid rather than a raw diff dump."], dependsOn: ["regression"] },
+      { id: "qa-checklist", title: "Reusable QA checklist", question: "Will the generated checklist let another QA reviewer repeat the important checks?", instructions: ["Review each checklist item for observable outcomes.", "Keep environment instructions separate from product expectations."], dependsOn: ["responsible-code"] },
     ],
   },
   {
@@ -73,7 +76,7 @@ const PRODUCT_QA: readonly StageTemplate[] = Object.freeze([
   },
 ]);
 
-const CODE: readonly StageTemplate[] = Object.freeze([
+const BACKEND: readonly StageTemplate[] = Object.freeze([
   {
     id: "mission-briefing", title: "Mission Briefing", purpose: "Establish intent, scope, and the reviewer relationship.", steps: [
       { id: "intent", title: "Intent and ACs", question: "Does the implementation claim map clearly to the ticket and acceptance criteria?", instructions: ["Read the ticket and candidate summary.", "Identify the code expected to carry each behavior."] },
@@ -82,8 +85,8 @@ const CODE: readonly StageTemplate[] = Object.freeze([
   },
   {
     id: "implementation-pass", title: "Implementation Pass", purpose: "Understand the responsible code and its effects.", steps: [
-      { id: "design", title: "Design fit", question: "Does the implementation fit the repository architecture and ownership boundaries?", instructions: ["Trace entry points and dependencies.", "Check that responsibilities sit at the intended layer."], dependsOn: ["scope"] },
-      { id: "effects", title: "State and effects", question: "Are state changes, external effects, and failure boundaries explicit and safe?", instructions: ["Trace success and failure paths.", "Check authorization, idempotency, and recovery where relevant."], dependsOn: ["design"] },
+      { id: "responsible-code", title: "Responsible code and design", question: "Does the responsible implementation fit the repository architecture and ownership boundaries?", instructions: ["Reveal the focused handler, query, schema, job, or contract.", "Trace entry points and dependencies without dumping the full diff."], dependsOn: ["scope"] },
+      { id: "effects", title: "State and effects", question: "Are state changes, external effects, and failure boundaries explicit and safe?", instructions: ["Trace success and failure paths.", "Check authorization, idempotency, and recovery where relevant."], dependsOn: ["responsible-code"] },
       { id: "maintainability", title: "Maintainability", question: "Can another developer safely understand and change this code?", instructions: ["Review naming, contracts, duplication, and explanatory comments.", "Prefer evidence over style-only preference."], dependsOn: ["effects"] },
     ],
   },
@@ -101,7 +104,7 @@ const CODE: readonly StageTemplate[] = Object.freeze([
   },
 ]);
 
-const DOCUMENT: readonly StageTemplate[] = Object.freeze([
+const SPIKE: readonly StageTemplate[] = Object.freeze([
   {
     id: "placement-purpose", title: "Placement and Purpose", purpose: "Confirm where the document belongs and what decision it supports.", steps: [
       { id: "placement", title: "Placement", question: "Is the proposed location discoverable beside the relevant source material?", instructions: ["Inspect the destination hierarchy and neighboring documents.", "Record exact folder and page links as evidence."] },
@@ -118,7 +121,8 @@ const DOCUMENT: readonly StageTemplate[] = Object.freeze([
   {
     id: "recommendation-pass", title: "Recommendation Pass", purpose: "Understand tradeoffs, evidence, and conditions that survive publication.", steps: [
       { id: "comparison", title: "Comparison", question: "Are advantages, disadvantages, maintainability, and developer experience compared fairly?", instructions: ["Inspect the scorecard and narrative together.", "Clarify ambiguous measures such as byte versus semantic determinism."], dependsOn: ["examples"] },
-      { id: "conditions", title: "Conditions", question: "Are discovered opportunities and Product-dependent choices carried as named conditions?", instructions: ["Review visual-authoring and ownership findings.", "Distinguish original requirements from opportunities discovered during the spike."], dependsOn: ["comparison"] },
+      { id: "responsible-code", title: "Responsible POC code", question: "Does the focused POC code and validation seam support the stated finding?", instructions: ["Reveal only the implementation and test evidence responsible for the claim.", "Keep Guided Code Review inside this Spike journey."], dependsOn: ["comparison"] },
+      { id: "conditions", title: "Conditions", question: "Are discovered opportunities and Product-dependent choices carried as named conditions?", instructions: ["Review visual-authoring and ownership findings.", "Distinguish original requirements from opportunities discovered during the spike."], dependsOn: ["responsible-code"] },
     ],
   },
   {
@@ -156,11 +160,11 @@ export function createBuiltInGuidedReviewPlaybookV1(
   kind: GuidedReviewPlaybookKindV1,
   input: BuiltInGuidedReviewInputV1,
 ): GuidedReviewResultV1<GuidedReviewPlaybookV1> {
-  const definition = kind === "product_qa"
-    ? { playbookId: BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[0], participantRelationship: "product_reviewer" as const, templates: PRODUCT_QA }
-    : kind === "code"
-      ? { playbookId: BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[1], participantRelationship: "independent_reviewer" as const, templates: CODE }
-      : { playbookId: BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[2], participantRelationship: "document_reviewer" as const, templates: DOCUMENT };
+  const definition = kind === "backend"
+    ? { playbookId: BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[0], templates: BACKEND }
+    : kind === "frontend"
+      ? { playbookId: BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[1], templates: FRONTEND }
+      : { playbookId: BUILT_IN_GUIDED_REVIEW_PLAYBOOK_IDS[2], templates: SPIKE };
   return createGuidedReviewPlaybookV1({
     schemaVersion: 1,
     contractVersion: GUIDED_REVIEW_CONTRACT_VERSION,
@@ -173,7 +177,7 @@ export function createBuiltInGuidedReviewPlaybookV1(
     branch: input.branch,
     exactRevision: input.exactRevision,
     plan: input.plan,
-    participantRelationship: definition.participantRelationship,
+    participantRelationship: input.participantRelationship,
     acceptanceCriteria: input.acceptanceCriteria,
     runtimeHandoff: input.runtimeHandoff,
     stages: stages(definition.templates, input),

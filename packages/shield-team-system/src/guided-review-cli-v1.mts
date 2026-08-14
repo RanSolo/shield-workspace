@@ -16,6 +16,7 @@ import {
   summarizeGuidedReviewSessionV1,
   type GuidedReviewPlaybookV1,
   type GuidedReviewPlanV1,
+  type GuidedReviewParticipantV1,
   type GuidedReviewSessionV1,
 } from "./guided-review-v1.mjs";
 import { createBuiltInGuidedReviewPlaybookV1 } from "./guided-review-playbooks-v1.mjs";
@@ -31,7 +32,7 @@ export function guidedReviewUsage(): string {
     "Guided Review:",
     "  shield guided-review plan create --input <plan-input.json> --output <plan.json> [--root <path>] [--json]",
     `  shield guided-review playbook create --kind <${GUIDED_REVIEW_PLAYBOOK_KINDS.join("|")}> --input <context.json> --output <playbook.json> [--root <path>] [--json]`,
-    `  shield guided-review start --playbook <playbook.json> --profile <${GUIDED_REVIEW_PROFILES.join("|")}> --session-id <id> --output <session.json> [--root <path>] [--json]`,
+    `  shield guided-review start --playbook <playbook.json> --profile <${GUIDED_REVIEW_PROFILES.join("|")}> --session-id <id> --participant <participant.json> --output <session.json> [--root <path>] [--json]`,
     "  shield guided-review status --playbook <playbook.json> --session <session.json> [--root <path>] [--json]",
     `  shield guided-review decide --playbook <playbook.json> --session <session.json> --decision-id <id> --disposition <${GUIDED_REVIEW_DISPOSITIONS.join("|")}> --observation <text> [--evidence-refs <id,id>] [--finding <text>] [--condition <text>] [--root <path>] [--json]`,
     "  shield guided-review revise --playbook <playbook.json> --session <session.json> --exact-revision <revision> --plan <plan.json> --runtime-handoff <receipt.json> --affected-steps <id,id> --rationale <text> [--root <path>] [--json]",
@@ -169,6 +170,13 @@ function currentDisplay(playbook: GuidedReviewPlaybookV1, session: GuidedReviewS
   return {
     ...summary,
     sessionDigest: session.sessionDigest,
+    participant: session.participant,
+    driver: {
+      driverId: session.runtimeHandoff.driverReceipt.driverId,
+      driverVersion: session.runtimeHandoff.driverReceipt.driverVersion,
+      executorRef: session.runtimeHandoff.driverReceipt.executorRef,
+      status: session.runtimeHandoff.driverReceipt.status,
+    },
     stage: stage === null ? null : { stageId: stage.stageId, checkpointId: stage.checkpointId, title: stage.title, purpose: stage.purpose },
     step: step === null ? null : { stepId: step.stepId, title: step.title, question: step.question, instructions: step.instructions,
       criterionRefs: step.criterionRefs, evidenceRefs: step.evidenceRefs, relevantPaths: step.relevantPaths },
@@ -181,6 +189,8 @@ function render(display: Record<string, unknown>): string {
   const lines = [
     `GUIDED REVIEW — ${String(display.state).toUpperCase()}`,
     `Revision: ${display.exactRevision}`,
+    `Participant: ${String((display.participant as { participantId: string }).participantId)}`,
+    `Driver: ${String((display.driver as { driverId: string }).driverId)} (${String((display.driver as { status: string }).status)})`,
     `Progress: ${display.completedStages}/${display.totalStages} stages; ${display.completedSteps}/${display.totalSteps} questions`,
   ];
   if (stage && step) lines.push("", `STAGE — ${stage.title}`, `QUESTION — ${step.title}`, "", step.question, "", ...step.instructions.map((entry) => `- ${entry}`));
@@ -217,12 +227,13 @@ async function planCreate(args: string[]): Promise<number> {
 }
 
 async function start(args: string[]): Promise<number> {
-  const options = parse(args, ["--playbook", "--profile", "--session-id", "--output", "--root"]);
+  const options = parse(args, ["--playbook", "--profile", "--session-id", "--participant", "--output", "--root"]);
   const root = await rootPath(options.values.get("--root"));
   const playbook = (await jsonFile<GuidedReviewPlaybookV1>(inside(root, required(options, "--playbook")))).value;
   const profile = required(options, "--profile");
   if (!GUIDED_REVIEW_PROFILES.includes(profile as never)) throw new GuidedReviewCliError(`Unsupported profile: ${profile}.`);
-  const session = unwrap(startGuidedReviewSessionV1(playbook, { sessionId: required(options, "--session-id"), profile, startedAt: new Date().toISOString() }));
+  const participant = (await jsonFile<GuidedReviewParticipantV1>(inside(root, required(options, "--participant")))).value;
+  const session = unwrap(startGuidedReviewSessionV1(playbook, { sessionId: required(options, "--session-id"), profile, participant, startedAt: new Date().toISOString() }));
   const target = inside(root, required(options, "--output"));
   await writeExclusive(target, jsonBytes(session));
   const display = currentDisplay(playbook, session);
