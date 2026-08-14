@@ -4,13 +4,13 @@
 
 - Mission: `mission:issue-279`
 - Subject: `github:RanSolo/shield-workspace/issue/279`
-- Base and planning parent: refreshed `origin/main` at
-  `56844464abaf67f0ea3c8fc3cc485864d66a922f`
+- Base and planning parent: reconciled onto refreshed `origin/main` at
+  `3d3b80cdebe8b6e9858a27ffbdbe8090688ebbd1`
 - Required dependency: merged #286/#291 commit
   `984c9a5eaa6b054111a2f2d69fbef039c805792d`, an ancestor of this base.
 - The existing `f14972e` plan is historical input only; this corrective plan
   is reconciled against the merged prepared-publication contracts.
-- Branch: `agent/issue-279-publication-idempotency`
+- Branch: `agent/issue-279-publication-idempotency-reconciled`
 - Blocks: #278 publication, then #226 and #162 continuation
 - Authority state: planning only. May must not edit implementation paths until
   Fury approves this exact plan revision and Coulson grants fresh exact Wheels
@@ -31,7 +31,8 @@ downstream publication request/result adapters. A #286-prepared result is
 accepted as an existing canonical request/effect input; it is never converted
 back into a new authorization.
 
-The plan is bound to these exact observations at `5684446`: #286's prepared
+The original plan was bound to `5684446`; after the upstream rebase, the
+reconciled plan is bound to `3d3b80c`: #286's prepared
 publication host and executor tests are present; direct `publication-authorize`
 still derives a fresh sequence-bound authorization before semantic comparison;
 profile-aware replay currently requires one authorization record per ID;
