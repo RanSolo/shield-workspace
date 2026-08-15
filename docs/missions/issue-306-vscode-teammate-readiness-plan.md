@@ -78,14 +78,50 @@ from mutable working-tree bytes. The report binds:
   including Agents-window rendering, account model entitlement, inherited MCP
   availability, and successful agent creation.
 
-The closed JSON contract is `shield.teammate-readiness.v1`, with a fixed ordered
-check-ID list, `authority: "none"`, top-level disposition exactly
+The closed JSON contract is `shield.teammate-readiness.v1`, with `authority:
+"none"`, top-level disposition exactly
 `ready_for_host_confirmation | action_required`, and every host-confirmation
 item exactly `unverified`. Repository declarations are never labeled `loaded`
 or `verified`. Every failed machine check has one actionable next step. JSON is
 complete and stable; human output is concise. Exit codes are exactly zero for
 `ready_for_host_confirmation`, one for `action_required`, and two for usage or
 closed-input errors.
+
+Machine checks are emitted in this exact order. Each check contains only its
+fixed ID, `pass | fail | observed` status, closed reason code, and the stated
+single next action:
+
+| ID | Pass criterion | Failure reason / next action | Gating |
+| --- | --- | --- | --- |
+| `input.closed` | CLI input is closed and `--expected-head` is one 40-hex object ID | `invalid_input` / correct the invocation | yes; exit 2 |
+| `repository.root` | root resolves once to an accessible Git worktree | `repository_unavailable` / select the disposable clone root | yes |
+| `repository.expected_head` | initial HEAD equals `--expected-head` | `expected_head_mismatch` / checkout the expected revision | yes |
+| `repository.clean` | initial porcelain-v1 status is empty | `workspace_dirty` / inspect and preserve or remove unexpected state | yes |
+| `repository.declarations` | expected-commit blobs contain AGENTS, config, and exactly five valid canonical seat cards | `declaration_invalid` / repair the tracked declarations | yes |
+| `repository.tracked_shield` | expected-commit `.shield` inventory is exactly empty | `tracked_state_present` / remove tracked runtime state | yes |
+| `package.team_system` | installed package identity/version is available and matches the workspace declaration | `package_unavailable` / install the exact lockfile and rebuild | yes |
+| `host.vscode` | fixed no-shell probe returns a well-formed VS Code version/build/architecture tuple | `host_probe_failed` / repair or select the intended VS Code host | yes |
+| `host.openai_extension` | fixed no-shell probe finds exactly one well-formed OpenAI extension identity/version | `host_probe_failed` / install or repair the intended extension | yes |
+| `host.codex_cli` | fixed no-shell probe returns a well-formed Codex CLI classification/version; absolute executable path is local-only | `host_probe_failed` / repair the intended CLI installation | yes |
+| `shield.worktree_state` | doctor classifies the fresh clone as `uninitialized_worktree` | `unexpected_policy_state` or `malformed_policy_state` / remove copied policy or recreate the clone | observed only for `uninitialized_worktree`; other classifications gate |
+| `repository.stable` | final root, branch, HEAD, status, and tracked inventory byte-match initial observations | `repository_drift` / discard the report and rerun from a stable checkout | yes |
+
+Disposition precedence is exact and first-match wins: closed-input failure
+(exit 2), inaccessible root, expected-HEAD mismatch, repository drift, dirty
+state, declaration failure, tracked-state failure, package failure, host-probe
+failure, unexpected or malformed worktree state, then
+`ready_for_host_confirmation`. The special `uninitialized_worktree`
+observation is non-gating and cannot override another failure.
+
+Host confirmations are emitted after machine checks, all as `unverified`, in
+this exact order: `host.agents_window_rendered`, `host.account_entitlement`,
+then for each of `hill`, `daisy`, `fury`, `may`, and `mack` in that order:
+`host.seat.<seat>.identity`, `.model`, `.reasoning_effort`, `.sandbox_mode`,
+`.repository_instructions`, `.mcp_inventory`, and `.agent_creation`. The guide
+records the operator's observation separately. Every field except MCP inventory
+must match its tracked declaration; MCP inventory is observation-only because
+this mission defines no intended MCP contract. A required mismatch or
+unobservable setting yields `REVISE_BEFORE_DEMO`.
 
 The implementation may use only fixed read-only Git and executable-version
 probes, without a shell, with bounded captured output and fixed timeouts. It may
@@ -148,6 +184,14 @@ The guide must distinguish repository-shareable declarations from local
 `.shield` state and must never instruct users to copy config, trusted bindings,
 journals, signer records, passcodes, tokens, caches, or chat transcripts.
 
+Raw preflight JSON is local-only because it contains the absolute disposable
+root and may contain the Codex executable path. PR evidence uses a mandatory
+publication-safe projection: replace the disposable root with
+`<DISPOSABLE_ROOT>`, omit executable paths, and identify Codex only by source
+classification, extension identity/version, and CLI version. Validation fails
+if published evidence contains the raw disposable root or any absolute
+executable path.
+
 ### 4. Remove tracked mission history
 
 Delete the two currently tracked `.shield/journals/*.jsonl` files. Do not add a
@@ -187,7 +231,7 @@ go/no-go disposition)
 - Verify that Hill identifies Issue #307, scope, gate, and next action from the
   sole bootstrap guide. Any missing element is `REVISE_BEFORE_DEMO`.
 - Record setup time, commands, manual corrections, questions, and Coulson
-  interventions in the PR evidence.
+  interventions in the publication-safe PR evidence projection.
 - Return exactly `GO_FOR_TEAMMATE_DEMO` or `REVISE_BEFORE_DEMO`.
 
 ## Expected implementation paths
@@ -215,6 +259,8 @@ worktree-state, CLI, and canonical seat contract.
 - clean exact-head worktree;
 - manual VS Code Agents-window confirmations recorded as human observations,
   never inferred from automated checks.
+- publication-safe evidence tests proving absolute disposable-root and
+  executable paths cannot appear in PR evidence.
 
 ## Exclusions
 
