@@ -14,21 +14,26 @@
 
 ## Repository evidence
 
-- `.codex/config.toml` already registers exactly the five canonical seats and
-  points to tracked seat cards. The VS Code/Codex host loads these repository
-  files; no in-repository VS Code transport adapter exists or is required for
-  the first trial.
+- `.codex/config.toml` already declares exactly the five canonical seats and
+  points to tracked seat cards. Repository bytes prove only those declarations;
+  they do not prove that a VS Code/Codex host loaded, rendered, or applied them.
+  No in-repository VS Code transport adapter exists or is required for the first
+  trial.
 - `AGENTS.md` already supplies the repository-wide routing and run-silent
   contract.
 - `shield worktree prepare` and `shield doctor` already prepare and classify
-  SHIELD policy without copying signer records, passcodes, journals, model
-  context, or authority.
+  SHIELD policy, but `prepare` intentionally copies public configuration and
+  trusted-binding records from another governed worktree. The teammate flow
+  must not use that seam because no cross-person binding transfer is authorized.
 - The current tracked tree still contains two historical files under
   `.shield/journals/`. A fresh clone therefore receives personal mission
   history despite `.shield/` now being ignored.
-- The currently observed host reports VS Code `1.133.0` and Codex CLI
-  `0.147.0-alpha.6.5`. These are trial observations, not permanent compatibility
-  promises.
+- The currently observed host tuple is VS Code `1.133.0`, build
+  `a5b500951314efd502d07465bd138dfbd714a960`, architecture `arm64`, OpenAI
+  extension `openai.chatgpt@26.810.41047`, and Codex CLI
+  `0.147.0-alpha.6.5` from extension directory `26.803.61601`. These are distinct
+  trial observations, not proof that the active extension uses the PATH CLI and
+  not a permanent compatibility promise.
 - Seat-specific MCP requirements are not declared in `.codex`; seats inherit
   the host's available capabilities. The trial must not claim that an MCP is
   available merely because a repository file exists.
@@ -40,71 +45,108 @@
 Add one read-only command:
 
 ```text
-shield teammate preflight --root /absolute/repository/root [--json]
+shield teammate preflight --root /absolute/repository/root \
+  --expected-head 40_LOWERCASE_HEX [--json]
 ```
 
 The command observes only fixed local facts and returns a closed report. It
 must not initialize SHIELD, copy policy, create a mission, request a PIN,
 invoke a model, contact GitHub, or mutate the repository.
 
-The report binds:
+The command captures branch, HEAD, porcelain-v1 status, root identity, and
+tracked-file inventory before any other probe, then repeats every observation
+afterward. Any change returns `action_required` with reason
+`repository_drift`. `--expected-head` is mandatory and mismatch fails before
+host probes.
+
+Repository declarations are read as exact blobs from `--expected-head`, never
+from mutable working-tree bytes. The report binds:
 
 - repository root, branch, exact HEAD, and cleanliness;
 - installed Team System package version;
-- observed VS Code and Codex CLI versions, including stable unavailable and
-  malformed classifications;
+- observed VS Code version/build/architecture, OpenAI extension
+  identifier/version, and Codex CLI version/path, including stable
+  `unavailable`, `malformed`, and `timeout` classifications;
 - tracked presence of `AGENTS.md`, `.codex/config.toml`, and exactly the five
   canonical seat-card paths;
-- the canonical seat names, configured model IDs, reasoning efforts, and
-  sandbox modes parsed from the tracked repository files;
-- absence of tracked `.shield` runtime state outside the explicitly allowed
-  public scaffold paths;
+- the canonical seat names, declared model IDs, reasoning efforts, and sandbox
+  modes projected from the tracked repository files, each labeled `declared`;
+- an exact empty tracked `.shield` inventory;
 - `shield doctor`/worktree-state classification without reinterpreting its
   authority-neutral result;
 - host-confirmation items that cannot be proven from repository bytes,
   including Agents-window rendering, account model entitlement, inherited MCP
   availability, and successful agent creation.
 
-The top-level disposition is exactly `ready_for_host_confirmation` or
-`action_required`. Host-confirmation items are never represented as passed by
-the command. Every failed machine check has one actionable next step. JSON is
-complete and stable; human output is concise.
+The closed JSON contract is `shield.teammate-readiness.v1`, with a fixed ordered
+check-ID list, `authority: "none"`, top-level disposition exactly
+`ready_for_host_confirmation | action_required`, and every host-confirmation
+item exactly `unverified`. Repository declarations are never labeled `loaded`
+or `verified`. Every failed machine check has one actionable next step. JSON is
+complete and stable; human output is concise. Exit codes are exactly zero for
+`ready_for_host_confirmation`, one for `action_required`, and two for usage or
+closed-input errors.
 
-The implementation may use fixed read-only Git and executable-version probes.
-It may not accept caller booleans asserting readiness, arbitrary command
-strings, alternate seat paths, or caller-provided model identities.
+The implementation may use only fixed read-only Git and executable-version
+probes, without a shell, with bounded captured output and fixed timeouts. It may
+not accept caller booleans asserting readiness, arbitrary command strings,
+alternate seat paths, or caller-provided model identities. A dependency-free
+closed projection scanner extracts only fixed single-line fields from the
+repository's known TOML subset; it rejects missing, duplicate, malformed, or
+unsupported target declarations and does not claim general TOML validation.
 
 ### 2. Shareable fresh-Hill bootstrap
 
 Add one tracked prompt that a teammate can paste into a fresh VS Code Agents
-chat. It instructs Hill to:
+chat. The trial guide is its sole bootstrap anchor. Invocation must provide the
+exact expected HEAD; the guide itself binds Issue #307, the selected bounded
+exercise, its scope, active gate, and next legal action. The prompt instructs
+Hill to:
 
 1. read `AGENTS.md` and the repository seat configuration;
 2. run the teammate preflight;
-3. recover mission state only from durable repository evidence;
-4. report the mission, scope, current gate, and next legal action;
+3. verify the supplied expected HEAD and read only the guide's bounded #307
+   exercise rather than searching historical missions;
+4. report Issue #307, the exact exercise scope, current gate, and next legal
+   action;
 5. avoid transcript dumps and never ask for or expose passcodes or private
    signer material;
 6. stop at a genuine human decision or actionable host-confirmation item.
 
-The prompt grants no authority and names no assumed mission.
+The prompt grants no authority. A missing guide field, missing expected HEAD,
+HEAD mismatch, or failure to identify all four required elements terminates as
+`REVISE_BEFORE_DEMO`.
 
 ### 3. Secret-free trial and reset guide
 
 Document the exact teammate flow:
 
-- clone or use a disposable clean worktree at an exact revision;
+- clone a fresh disposable checkout at an exact revision; do not use
+  `shield worktree prepare` or copy policy/binding files from another person;
 - open that root in VS Code and confirm the five displayed seats;
 - run preflight and complete the explicit host confirmations;
 - use the fresh-Hill prompt;
 - select only the bounded #307 exercise;
 - record setup time, commands, repairs, questions, and Coulson interventions;
-- stop safely and remove only the known disposable worktree after proving it
-  clean.
+- stop safely; cleanup is permitted only for the canonical disposable path
+  created and recorded by this guide, after exact root/HEAD/ownership checks
+  and proof that tracked, untracked, and ignored state contain no unexpected
+  files. Reused worktrees are never removed, force is forbidden, and any
+  mismatch stops for the operator.
 
-The guide must distinguish repository-shareable policy from local `.shield`
-state and must never instruct users to copy config, trusted bindings, journals,
-signer records, passcodes, tokens, caches, or chat transcripts.
+The fresh clone is expected to classify as `uninitialized_worktree`. That is a
+valid non-authoritative observation, not mission readiness. The disposition
+mapping is fixed: `uninitialized_worktree` may reach only
+`ready_for_host_confirmation`; `manual_policy_present` and `prepared_worktree`
+are `action_required/unexpected_policy_state` for this cross-person trial;
+`stale_or_malformed_worktree_state` is `action_required/malformed_policy_state`.
+`GO_FOR_TEAMMATE_DEMO` remains unavailable until #307 either selects an
+authority-none exercise or obtains a separately authorized teammate-owned
+trial-policy provisioning step.
+
+The guide must distinguish repository-shareable declarations from local
+`.shield` state and must never instruct users to copy config, trusted bindings,
+journals, signer records, passcodes, tokens, caches, or chat transcripts.
 
 ### 4. Remove tracked mission history
 
@@ -112,11 +154,10 @@ Delete the two currently tracked `.shield/journals/*.jsonl` files. Do not add a
 replacement fixture under `.shield`. Existing synthetic tests remain in their
 test-owned fixture roots.
 
-Add a regression assertion that the tracked repository surface contains no
-`.shield/journals`, signer, evidence, report, artifact, temporary, or secret
-state. The fixed public paths permitted for repository sharing are policy
-scaffolding only; this change does not publish local `.shield/config.json` or
-trusted bindings.
+Add a regression assertion that `git ls-files -z -- .shield` is exactly empty.
+Separately inspect packed-package paths for unexpected signer, passcode,
+credential, journal, runtime-state, or host-path content; do not apply those
+terms as an unqualified repository-wide filename ban.
 
 ## Acceptance lanes
 
@@ -125,9 +166,10 @@ actionable diagnostics)
 
 - Add the closed readiness evaluator and read-only host adapter.
 - Add the `shield teammate preflight` CLI route and JSON/human rendering.
-- Test exact seats, models, reasoning, sandbox settings, Git identity,
-  cleanliness, executable versions, unavailable tools, malformed repository
-  files, uninitialized/prepared/malformed SHIELD state, and no mutations.
+- Test exact expected-HEAD binding, pre/post repository drift, exact seats,
+  declared models/reasoning/sandbox settings, Git identity, cleanliness,
+  executable and extension versions, timeout/unavailable/malformed probes,
+  every doctor classification, fixed disposition precedence, and no mutations.
 
 ### Lane B — shareable context (ACs: bootstrap, secret separation, reset)
 
@@ -142,8 +184,8 @@ go/no-go disposition)
 - Pack/install the exact candidate into a disposable consumer or use the exact
   built CLI from a clean disposable worktree.
 - Run preflight from a fresh hosted Hill context with no prior chat.
-- Verify that Hill identifies the mission, scope, gate, and next action from
-  durable evidence, or records the exact missing evidence.
+- Verify that Hill identifies Issue #307, scope, gate, and next action from the
+  sole bootstrap guide. Any missing element is `REVISE_BEFORE_DEMO`.
 - Record setup time, commands, manual corrections, questions, and Coulson
   interventions in the PR evidence.
 - Return exactly `GO_FOR_TEAMMATE_DEMO` or `REVISE_BEFORE_DEMO`.
@@ -155,7 +197,6 @@ go/no-go disposition)
 - `.codex/prompts/fresh-hill-teammate-trial.md`
 - `packages/shield-team-system/src/teammate-readiness-v1.mts`
 - `packages/shield-team-system/src/cli.mts`
-- `packages/shield-team-system/package.json`
 - `packages/shield-team-system/tests/teammate-readiness-v1.test.mjs`
 - `packages/shield-team-system/tests/package-surface.test.mjs`
 - the two currently tracked `.shield/journals/*.jsonl` files (deletion only)
@@ -180,7 +221,8 @@ worktree-state, CLI, and canonical seat contract.
 - No VS Code extension or transport adapter.
 - No new authority, mission, journal, signer, session, or MCP contract.
 - No account entitlement or MCP-availability claim from repository data.
-- No copy of personal chat, journals, evidence, trusted bindings, signer data,
+- No `shield worktree prepare` in the cross-person flow and no copy of personal
+  chat, journals, evidence, configuration, trusted bindings, signer data,
   passcodes, credentials, or host-specific absolute paths.
 - No production/enterprise repository installation, model invocation from the
   CLI, GitHub mutation, merge, deployment, release, or final acceptance.
