@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +10,35 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
 const missionPreparationPackageRoot = resolve(packageRoot, "../mission-preparation");
 const npmCache = join(tmpdir(), "shield-v0.3-2-npm-cache");
+
+test("repository tracks no local SHIELD runtime state", () => {
+  const tracked = execFileSync("git", ["ls-files", "-z", "--", ".shield"], { cwd: workspaceRoot });
+  assert.equal(tracked.length, 0, "tracked .shield inventory must be exactly empty");
+});
+
+test("teammate bootstrap binds only the descriptive Issue 307 exercise and publication-safe evidence", async () => {
+  const guide = await readFile(join(workspaceRoot, "docs/operations/vscode-agents-teammate-trial.md"), "utf8");
+  const prompt = await readFile(join(workspaceRoot, ".codex/prompts/fresh-hill-teammate-trial.md"), "utf8");
+  for (const binding of [
+    "657fe1afc66e1b54975232255b8c1e8ee81d732f",
+    "ec7ddf7ed0f84bf22f840a869151480ea0742f0d14e33337f089039d4afc46fd",
+    "mission:issue-307-guided-review-smoke-v1",
+    "subject:issue-307-guided-review-smoke-v1",
+    "standalone-guided-review",
+    "exploration/backend",
+    "sha256:22d0ecea8e6521d53d1d31d7053a2e0adb83ddaa0c7edf83fa8570258b85d1a4",
+    "AC-307-B1",
+    "dependency_not_ready",
+    "GO_FOR_TEAMMATE_DEMO",
+  ]) assert.ok(guide.includes(binding), `guide is missing frozen binding ${binding}`);
+  assert.match(guide, /Issue #306 never prepares or executes/u);
+  assert.match(guide, /Raw preflight JSON is local-only/u);
+  assert.match(guide, /replaces the repository root with `<DISPOSABLE_ROOT>`, omits every\nexecutable path/u);
+  assert.match(prompt, /This prompt grants no authority/u);
+  assert.match(prompt, /sole bootstrap\n   anchor/u);
+  assert.match(prompt, /Do not prepare or execute Issue #307/u);
+  assert.match(prompt, /REVISE_BEFORE_DEMO/u);
+});
 
 test("documents the exported TDD mission evaluator and its exact effect boundary", async () => {
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
@@ -310,6 +339,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/config.d.mts",
     "dist/worktree-state-v1.mjs",
     "dist/worktree-state-v1.d.mts",
+    "dist/teammate-readiness-v1.mjs",
+    "dist/teammate-readiness-v1.d.mts",
     "dist/mission-intake-v1.mjs",
     "dist/mission-intake-v1.d.mts",
     "dist/mission-v2.mjs",
@@ -407,6 +438,13 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "MISSION_BUILDER.md",
   ]) {
     assert.ok(packedPaths.has(path), `packed artifact is missing ${path}`);
+  }
+  const forbiddenRuntimeSegments = new Set([".shield", "journals", "signers", "passcodes", "credentials", "runtime-state", "host-paths"]);
+  for (const path of packedPaths) {
+    assert.equal(isAbsolute(path), false, `packed path must be relative: ${path}`);
+    assert.equal(path.split("/").includes(".."), false, `packed path must not traverse parents: ${path}`);
+    const unexpected = path.split("/").find((segment) => forbiddenRuntimeSegments.has(segment.toLowerCase()));
+    assert.equal(unexpected, undefined, `packed path contains unexpected local runtime or secret-state segment: ${path}`);
   }
   const packedMackRunner = await readFile(join(packageRoot, "scripts/model/mack-validation-runner.mjs"), "utf8");
   assert.match(packedMackRunner, /export async function readMackProductionValidationRegistryV1/u);
@@ -832,6 +870,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   });
 
   const bin = join(fixture, "node_modules", ".bin", "shield");
+  const shieldHelp = execFileSync(bin, ["--help"], { cwd: fixture, encoding: "utf8" });
+  assert.match(shieldHelp, /shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> \[--json\]/u);
   execFileSync(bin, [
     "init",
     "--repository-id", "fixture/typescript-consumer",
