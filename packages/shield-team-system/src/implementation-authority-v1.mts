@@ -216,7 +216,11 @@ function assertRelativePath(value: unknown): value is string {
   return true;
 }
 
-function assertSortedUniqueStrings(values: unknown, label: string, allowEmpty = false): string[] | null {
+function assertSortedUniquePlainStringArray(
+  values: unknown,
+  predicate: (value: unknown) => value is string,
+  allowEmpty = false,
+): string[] | null {
   if (!Array.isArray(values) || Object.getPrototypeOf(values) !== Array.prototype) return null;
   for (const key of Reflect.ownKeys(values)) {
     if (key === "length") continue;
@@ -226,7 +230,7 @@ function assertSortedUniqueStrings(values: unknown, label: string, allowEmpty = 
   const seen = new Set<string>();
   for (let index = 0; index < values.length; index += 1) {
     const item = values[index];
-    if (typeof item !== "string" || !assertIdentifier(item) || seen.has(item)) return null;
+    if (!predicate(item) || seen.has(item)) return null;
     seen.add(item);
     next.push(item);
   }
@@ -236,6 +240,14 @@ function assertSortedUniqueStrings(values: unknown, label: string, allowEmpty = 
   }
   if (!allowEmpty && next.length === 0) return null;
   return next;
+}
+
+function assertSortedUniqueStrings(values: unknown, label: string, allowEmpty = false): string[] | null {
+  return assertSortedUniquePlainStringArray(values, assertIdentifier, allowEmpty);
+}
+
+function assertSortedUniqueRelativePaths(values: unknown, label: string, allowEmpty = false): string[] | null {
+  return assertSortedUniquePlainStringArray(values, assertRelativePath, allowEmpty);
 }
 
 function assertSortedUniqueEffectClasses(values: unknown, label: string, allowEmpty = false): ExecutionEffectClass[] | null {
@@ -365,7 +377,7 @@ function validateImplementationAuthorityPayload(input: unknown): ContractResult<
   }
   if (!assertRootPath(input.canonicalWritableRoot) || !KEY_REF.test(input.signingKeyRef)) return invalid("malformed", "Implementation authority path or key reference is invalid.");
   if (!assertTimestamp(input.timestamp)) return invalid("malformed", "Implementation authority timestamp is invalid.");
-  const approvedRelativePaths = assertSortedUniqueStrings(input.approvedRelativePaths, "approvedRelativePaths");
+  const approvedRelativePaths = assertSortedUniqueRelativePaths(input.approvedRelativePaths, "approvedRelativePaths");
   const approvedActionIds = assertSortedUniqueStrings(input.approvedActionIds, "approvedActionIds");
   const approvedEffectKeys = assertSortedUniqueStrings(input.approvedEffectKeys, "approvedEffectKeys");
   const approvedCapabilities = assertSortedUniqueStrings(input.approvedCapabilities, "approvedCapabilities");
@@ -374,7 +386,7 @@ function validateImplementationAuthorityPayload(input: unknown): ContractResult<
   if (!approvedRelativePaths || !approvedActionIds || !approvedEffectKeys || !approvedCapabilities || !validationCommandIds || !approvedEffectClasses) {
     return invalid("malformed", "Implementation authority scope is malformed.");
   }
-  if (!approvedRelativePaths.every(assertRelativePath) || !approvedActionIds.every(assertIdentifier)) return invalid("malformed", "Implementation authority scope items are malformed.");
+  if (!approvedActionIds.every(assertIdentifier)) return invalid("malformed", "Implementation authority scope items are malformed.");
   if (!validSequence(input.journalSequence)) return invalid("malformed", "Implementation authority sequence is invalid.");
   return valid(copyAuthority({
     ...input as unknown as ImplementationAuthorityV1,
@@ -550,12 +562,11 @@ export function validateSchema9RuntimeBindingV1(input: unknown): ContractResult<
   if (!validSequence(candidate.implementationAuthoritySequence) || (candidate.implementationAuthoritySequence as number) < 1) {
     return invalid("malformed", "Schema-9 runtime-binding authority sequence is invalid.");
   }
-  const approvedRelativePaths = assertSortedUniqueStrings(candidate.approvedRelativePaths, "approvedRelativePaths");
+  const approvedRelativePaths = assertSortedUniqueRelativePaths(candidate.approvedRelativePaths, "approvedRelativePaths");
   const validationCommandIds = assertSortedUniqueStrings(candidate.validationCommandIds, "validationCommandIds");
   if (!approvedRelativePaths || !validationCommandIds || approvedRelativePaths.length === 0 || validationCommandIds.length === 0) {
     return invalid("malformed", "Schema-9 runtime-binding scope is malformed.");
   }
-  if (!approvedRelativePaths.every(assertRelativePath)) return invalid("malformed", "Schema-9 runtime-binding approved relative paths are invalid.");
   const executionIdentities = [binding.seatId, binding.reasoningRuntimeId, candidate.modelId as string, binding.toolExecutorId];
   if (new Set(executionIdentities).size !== executionIdentities.length) {
     return invalid("malformed", "Schema-9 runtime-binding seat, reasoning runtime, model, and tool executor identities must be mutually distinct.");

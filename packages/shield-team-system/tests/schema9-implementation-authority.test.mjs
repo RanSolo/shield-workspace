@@ -207,6 +207,27 @@ test("implementation authority validator rejects malformed and mismatched fields
   ).state, "invalid");
 });
 
+test("implementation authority accepts sorted hidden paths and rejects non-confined path arrays", () => {
+  const valid = authority({
+    approvedRelativePaths: [".codex/agents/may.toml", ".shield/config.json"],
+  });
+  assert.equal(validateImplementationAuthorityV1(valid).state, "valid");
+
+  for (const [label, approvedRelativePaths] of [
+    ["absolute path", ["/private/tmp/forbidden"]],
+    ["current-directory segment", ["packages/./shield-team-system"]],
+    ["parent-directory segment", ["packages/../forbidden"]],
+    ["duplicate paths", [".codex/agents/may.toml", ".codex/agents/may.toml"]],
+    ["unsorted paths", [".shield/config.json", ".codex/agents/may.toml"]],
+  ]) {
+    assert.equal(
+      validateImplementationAuthorityV1({ ...valid, approvedRelativePaths }).state,
+      "invalid",
+      label,
+    );
+  }
+});
+
 test("implementation authority revocation is strictly bound to active authority and sequence", () => {
   const { privateKey: coulsonPrivate, binding: coulsonBinding } = authoritySigner();
   const validAuthority = authority({ signingKeyRef: coulsonBinding.signingKeyRef });
@@ -293,6 +314,29 @@ test("schema9 runtime-binding wrapper validation, auth validation, and signature
     approvedRelativePaths: ["docs/issue-181", "infra", "src"],
   });
   assert.equal(assertAuthoritySubsetOfScope(wide, authorityPayload).state, "invalid");
+});
+
+test("schema9 runtime-binding accepts sorted hidden paths and rejects non-confined path arrays", () => {
+  const trusted = authoritySigner();
+  const authorityPayload = authority({ signingKeyRef: trusted.binding.signingKeyRef });
+  const valid = schema9Wrapper(authorityPayload, {
+    approvedRelativePaths: [".codex/agents/may.toml", ".shield/config.json"],
+  });
+  assert.equal(validateSchema9RuntimeBindingV1(valid).state, "valid");
+
+  for (const [label, approvedRelativePaths] of [
+    ["absolute path", ["/private/tmp/forbidden"]],
+    ["current-directory segment", ["packages/./shield-team-system"]],
+    ["parent-directory segment", ["packages/../forbidden"]],
+    ["duplicate paths", [".codex/agents/may.toml", ".codex/agents/may.toml"]],
+    ["unsorted paths", [".shield/config.json", ".codex/agents/may.toml"]],
+  ]) {
+    assert.equal(
+      validateSchema9RuntimeBindingV1({ ...valid, approvedRelativePaths }).state,
+      "invalid",
+      label,
+    );
+  }
 });
 
 test("schema9 runtime-binding identities are mutually distinct", () => {
