@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { access, link, lstat, mkdir, open, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -38,6 +38,10 @@ import {
   worktreePreparationIsReadyV1,
   type WorktreePreparationResultV1,
 } from "./worktree-state-v1.mjs";
+import {
+  runTeammateReadinessPreflightV1,
+  type TeammateReadinessReportV1,
+} from "./teammate-readiness-v1.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".shield", "config.json");
 const PIPELINE_PROFILE_RELATIVE_PATH = join(".shield", "pipeline-profile.json");
@@ -80,6 +84,7 @@ function usage(): string {
     `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> [--repository-trust-profile <${REPOSITORY_TRUST_PROFILE_IDS.join("|")}>] [--fitz-binding-ref <ref>] [--simmons-binding-ref <ref>] [--adapters <${CONFIGURED_HOST_ADAPTER_IDS.join(",")}>] [--migrate-config] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
     "  shield doctor [--root <path>] [--json]",
     "  shield worktree prepare --source-root <path> --root <destination> [--json]",
+    "  shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> [--json]",
     "",
     guidedReviewUsage(),
     "",
@@ -767,6 +772,28 @@ async function runWorktree(args: string[]): Promise<number> {
   return worktreePreparationIsReadyV1(result) ? 0 : 1;
 }
 
+function renderTeammateReadiness(report: TeammateReadinessReportV1): string {
+  const lines = [
+    `SHIELD teammate preflight: ${report.disposition} (${report.reasonCode}); authority: ${report.authority}.`,
+    ...report.machineChecks.map((entry) =>
+      `${entry.status.toUpperCase()} ${entry.id}: ${entry.reasonCode}${entry.status === "pass" ? "" : `; NEXT: ${entry.nextAction}`}`
+    ),
+    `Host confirmations: ${report.hostConfirmations.length} ordered items remain unverified.`,
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+async function runTeammate(args: string[]): Promise<number> {
+  const [subcommand, ...rest] = args;
+  if (subcommand !== "preflight") throw new CliError(`Unsupported teammate command: ${subcommand ?? "missing"}.\n${usage()}`);
+  const options = parseOptions(rest, ["--root", "--expected-head"], ["--json"]);
+  const root = required(options, "--root");
+  const expectedHead = required(options, "--expected-head");
+  const report = await runTeammateReadinessPreflightV1({ root, expectedHead });
+  process.stdout.write(options.flags.has("--json") ? `${JSON.stringify(report, null, 2)}\n` : renderTeammateReadiness(report));
+  return report.reasonCode === "invalid_input" ? 2 : report.disposition === "ready_for_host_confirmation" ? 0 : 1;
+}
+
 export async function runCli(args: string[]): Promise<number> {
   const [command, ...rest] = args;
   if (command === undefined || command === "--help" || command === "help") {
@@ -776,6 +803,7 @@ export async function runCli(args: string[]): Promise<number> {
   if (command === "init") return runInit(rest);
   if (command === "doctor") return runDoctor(rest);
   if (command === "worktree") return runWorktree(rest);
+  if (command === "teammate") return runTeammate(rest);
   if (command === "guided-review") return runGuidedReviewCli(rest);
   if (command === "mission" || command === "evidence" || command === "delegation") return runMissionCli([command, ...rest]);
   throw new CliError(`Unsupported command: ${command}.\n${usage()}`);

@@ -591,7 +591,7 @@ async function closeSnapshot(snapshot: SourceSnapshot | null): Promise<void> {
 }
 
 function gitEnvironment(): NodeJS.ProcessEnv {
-  return { PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C" };
+  return { PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" };
 }
 
 async function git(root: string, args: readonly string[], allowFailure = false): Promise<string | null> {
