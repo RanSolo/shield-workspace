@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
@@ -184,6 +184,36 @@ test("prepares the exact authority-neutral four-file state and replays without w
   const stale = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: false });
   assert.equal(stale.classification, "stale_or_malformed_worktree_state");
   assert.equal(stale.ok, false);
+});
+
+test("real prepared-worktree inspection preserves stale index bytes and metadata", async () => {
+  const current = await fixture();
+  const prepared = await prepareWorktreeStateV1(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+
+  const trackedPath = join(current.destinationRoot, "package.json");
+  const trackedBytes = await readFile(trackedPath);
+  await writeFile(trackedPath, trackedBytes);
+  await utimes(trackedPath, new Date("2001-01-01T00:00:00.000Z"), new Date("2001-01-01T00:00:00.000Z"));
+  const indexOutput = git(current.destinationRoot, ["rev-parse", "--git-path", "index"]);
+  const indexPath = resolve(current.destinationRoot, indexOutput);
+  const beforeBytes = await readFile(indexPath);
+  const before = await stat(indexPath, { bigint: true });
+
+  const inspected = await inspectWorktreeStateV1({
+    root: current.destinationRoot,
+    configPresent: true,
+    configValid: true,
+  });
+  const afterBytes = await readFile(indexPath);
+  const after = await stat(indexPath, { bigint: true });
+  const metadata = ({ dev, ino, mode, nlink, uid, gid, rdev, size, blksize, blocks, mtimeNs, ctimeNs, birthtimeNs }) =>
+    ({ dev, ino, mode, nlink, uid, gid, rdev, size, blksize, blocks, mtimeNs, ctimeNs, birthtimeNs });
+
+  assert.equal(inspected.classification, "prepared_worktree");
+  assert.equal(inspected.receiptDigest, prepared.receipt.receiptDigest);
+  assert.deepEqual(afterBytes, beforeBytes);
+  assert.deepEqual(metadata(after), metadata(before));
 });
 
 test("prepares the real linked-worktree bootstrap-journal baseline without rewriting it", async () => {

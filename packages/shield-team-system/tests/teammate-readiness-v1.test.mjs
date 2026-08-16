@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rename, stat, utimes, writeFile } from "node:fs/promises";
+import { generateKeyPairSync } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,9 @@ import {
   projectTeammateReadinessForPublicationV1,
   runTeammateReadinessPreflightV1,
 } from "../dist/teammate-readiness-v1.mjs";
+import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
+import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import { prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
@@ -44,6 +48,24 @@ function seatCard(seat) {
   return `name = "${seat}"\ndescription = "fixture"\nmodel = "${values[0]}"\nmodel_reasoning_effort = "${values[1]}"\nsandbox_mode = "${values[2]}"\ndeveloper_instructions = """\nfixture\n"""\n`;
 }
 
+function humanBinding(seatId) {
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const publicKeySpkiBase64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  return {
+    schemaVersion: 1,
+    bindingId: `binding:readiness:${seatId}`,
+    humanPrincipalId: `human:readiness:${seatId}`,
+    seatId,
+    missionScope: "*",
+    signingKeyRef: computeEd25519SigningKeyRef(publicKeySpkiBase64),
+    publicKeySpkiBase64,
+    validFromSequence: 0,
+    validThroughSequence: null,
+    attestedBy: "repository-policy:readiness-test",
+    provenanceRef: `repository-policy:readiness-test:${seatId}`,
+  };
+}
+
 async function fixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), "shield-teammate-readiness-"));
   await mkdir(join(root, ".codex", "agents"), { recursive: true });
@@ -57,6 +79,7 @@ async function fixture(options = {}) {
   if (options.invalidDeclaration) config = config.replace('config_file = "agents/may.toml"', 'config_file = "agents/hill.toml"');
   await writeFile(join(root, ".codex", "config.toml"), config);
   await writeFile(join(root, "packages", "shield-team-system", "package.json"), JSON.stringify({ name: "@shield/team-system", version: options.declaredVersion ?? "0.1.0" }));
+  if (options.preparedWorktree) await writeFile(join(root, ".gitignore"), ".shield/\n");
   if (options.trackedShield) {
     await mkdir(join(root, ".shield", "journals"), { recursive: true });
     await writeFile(join(root, ".shield", "journals", "history.jsonl"), "{}\n");
@@ -64,9 +87,29 @@ async function fixture(options = {}) {
   git(root, ["init", "--quiet"]);
   git(root, ["config", "user.email", "fixture@example.test"]);
   git(root, ["config", "user.name", "Fixture"]);
+  if (options.preparedWorktree) git(root, ["remote", "add", "origin", "git@github.com:RanSolo/readiness-fixture.git"]);
   git(root, ["add", "."]);
   git(root, ["commit", "--quiet", "-m", "fixture"]);
-  return { root, head: git(root, ["rev-parse", "HEAD"]) };
+  const head = git(root, ["rev-parse", "HEAD"]);
+  if (!options.preparedWorktree) return { root, head };
+
+  const canonicalSourceRoot = await realpath(root);
+  const destinationRoot = `${canonicalSourceRoot}-prepared`;
+  git(root, ["worktree", "add", "--quiet", "-b", `readiness-${process.pid}-${Date.now()}`, destinationRoot, "HEAD"]);
+  const canonicalDestinationRoot = await realpath(destinationRoot);
+  const coulson = humanBinding("coulson");
+  const fitz = humanBinding("fitz");
+  const shieldConfig = createShieldConfig({
+    repositoryId: "RanSolo/readiness-fixture",
+    coulsonBindingRef: coulson.signingKeyRef,
+    fitzBindingRef: fitz.signingKeyRef,
+  });
+  await mkdir(join(canonicalSourceRoot, ".shield"), { recursive: true });
+  await writeFile(join(canonicalSourceRoot, ".shield", "config.json"), formatShieldConfig(shieldConfig));
+  await writeFile(join(canonicalSourceRoot, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({ schemaVersion: 1, bindings: [coulson, fitz] }, null, 2)}\n`);
+  const prepared = await prepareWorktreeStateV1({ sourceRoot: canonicalSourceRoot, destinationRoot: canonicalDestinationRoot });
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  return { root: canonicalDestinationRoot, sourceRoot: canonicalSourceRoot, head, prepared };
 }
 
 function uninitialized() {
@@ -275,6 +318,17 @@ test("maps every doctor worktree classification without treating uninitialized a
     assert.equal(report.machineChecks.find(({ id }) => id === "shield.worktree_state").status, status);
     assert.equal(report.authority, "none");
   }
+});
+
+test("readiness integration classifies prepared policy through the real worktree inspector", async () => {
+  const f = await fixture({ preparedWorktree: true });
+  const dependencies = goodDependencies();
+  delete dependencies.inspectWorktreeState;
+  const report = await runTeammateReadinessPreflightV1({ root: f.root, expectedHead: f.head }, dependencies);
+  assert.equal(report.reasonCode, "unexpected_policy_state");
+  assert.equal(report.worktreeState.classification, "prepared_worktree");
+  assert.equal(report.worktreeState.receiptDigest, f.prepared.receipt.receiptDigest);
+  assert.equal(report.machineChecks.find(({ id }) => id === "shield.worktree_state").reasonCode, "unexpected_policy_state");
 });
 
 test("classifies fixed host probes as available, unavailable, timeout, or malformed", async () => {
