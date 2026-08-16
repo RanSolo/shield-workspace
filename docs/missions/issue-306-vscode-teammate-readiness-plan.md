@@ -262,6 +262,27 @@ worktree-state, CLI, and canonical seat contract.
 - publication-safe evidence tests proving absolute disposable-root and
   executable paths cannot appear in PR evidence.
 
+## In-mission scope amendment 1 — delegated Git probe immutability
+
+Exact-head review found that readiness correctly disables optional Git locks
+for its direct probes but delegates prepared-worktree classification to
+`inspectWorktreeStateV1()`, whose private Git environment does not carry the
+same setting. Close that coupled seam without changing the mission objective,
+effects, capabilities, risk, or output contract:
+
+- add `packages/shield-team-system/src/worktree-state-v1.mts` and
+  `packages/shield-team-system/tests/worktree-state-v1.test.mjs` to the exact
+  implementation scope;
+- set `GIT_OPTIONAL_LOCKS=0` for the inspector's fixed Git environment;
+- test a real prepared-worktree classification with forced stale-stat
+  conditions and prove index bytes and metadata remain unchanged;
+- retain the readiness integration proof through the real inspector rather
+  than a dependency stub.
+
+This is a coupled path amendment only. It adds no command, authority system,
+effect, model invocation, teammate-trial execution, publication, merge,
+deployment, release, or external operation.
+
 ## Exclusions
 
 - No VS Code extension or transport adapter.
