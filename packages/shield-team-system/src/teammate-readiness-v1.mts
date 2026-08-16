@@ -159,6 +159,7 @@ function notObservedChecks(from: number): TeammateReadinessCheckV1[] {
 function cleanGitEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
   for (const name of GIT_CONTEXT_VARIABLES) delete environment[name];
+  environment.GIT_OPTIONAL_LOCKS = "0";
   return environment;
 }
 
@@ -290,18 +291,23 @@ function parseDeclarations(blobs: ReadonlyMap<string, string>, trackedPaths: rea
 async function expectedCommitMaterial(root: string, expectedHead: string): Promise<{
   declarations: readonly TeammateSeatDeclarationV1[] | null;
   trackedShieldPaths: readonly string[];
+  trackedInventoryAvailable: boolean;
   packageIdentity: { name: string; version: string } | null;
 }> {
-  const tree = await git(root, ["ls-tree", "-r", "-z", "--name-only", expectedHead]);
-  const trackedPaths = tree.split("\0").filter(Boolean);
+  const tree = await git(root, ["ls-tree", "-r", "-z", "--name-only", expectedHead]).catch(() => null);
+  const trackedPaths = tree === null ? [] : tree.split("\0").filter(Boolean);
   const declarationPaths = ["AGENTS.md", ".codex/config.toml", ...TEAMMATE_READINESS_SEATS.map((seat) => `.codex/agents/${seat}.toml`)];
   const blobs = new Map<string, string>();
-  for (const path of declarationPaths) blobs.set(path, await git(root, ["show", `${expectedHead}:${path}`]));
-  const packageBytes = await git(root, ["show", `${expectedHead}:packages/shield-team-system/package.json`]);
+  for (const path of declarationPaths) {
+    const bytes = await git(root, ["show", `${expectedHead}:${path}`]).catch(() => null);
+    if (bytes !== null) blobs.set(path, bytes);
+  }
+  const packageBytes = await git(root, ["show", `${expectedHead}:packages/shield-team-system/package.json`]).catch(() => null);
   return {
-    declarations: parseDeclarations(blobs, trackedPaths),
+    declarations: tree === null ? null : parseDeclarations(blobs, trackedPaths),
     trackedShieldPaths: Object.freeze(trackedPaths.filter((path) => path === ".shield" || path.startsWith(".shield/"))),
-    packageIdentity: parsePackageIdentity(packageBytes),
+    trackedInventoryAvailable: tree !== null,
+    packageIdentity: packageBytes === null ? null : parsePackageIdentity(packageBytes),
   };
 }
 
@@ -453,7 +459,7 @@ export async function runTeammateReadinessPreflightV1(
     });
   }
 
-  const material = await expectedCommitMaterial(initial.root, input.expectedHead).catch(() => ({ declarations: null, trackedShieldPaths: [] as readonly string[], packageIdentity: null }));
+  const material = await expectedCommitMaterial(initial.root, input.expectedHead);
   const installed = await (dependencies.installedPackageIdentity ?? defaultInstalledPackageIdentity)();
   const host = await probeTeammateHostV1(dependencies);
   const worktreeState = await currentWorktreeState(initial.root, dependencies.inspectWorktreeState ?? inspectWorktreeStateV1);
@@ -463,7 +469,8 @@ export async function runTeammateReadinessPreflightV1(
 
   checks.push(check("repository.clean", initial.porcelainV1 === "" ? "pass" : "fail", initial.porcelainV1 === "" ? "none" : "workspace_dirty"));
   checks.push(check("repository.declarations", material.declarations !== null ? "pass" : "fail", material.declarations !== null ? "none" : "declaration_invalid"));
-  checks.push(check("repository.tracked_shield", material.trackedShieldPaths.length === 0 ? "pass" : "fail", material.trackedShieldPaths.length === 0 ? "none" : "tracked_state_present"));
+  const trackedShieldReady = material.trackedInventoryAvailable && material.trackedShieldPaths.length === 0;
+  checks.push(check("repository.tracked_shield", trackedShieldReady ? "pass" : "fail", trackedShieldReady ? "none" : "tracked_state_present"));
   const packageReady = material.packageIdentity?.name === "@shield/team-system" && installed?.name === material.packageIdentity.name && installed.version === material.packageIdentity.version;
   checks.push(check("package.team_system", packageReady ? "pass" : "fail", packageReady ? "none" : "package_unavailable"));
   checks.push(check("host.vscode", host.vscode.classification === "available" ? "pass" : "fail", host.vscode.classification === "available" ? "none" : "host_probe_failed"));

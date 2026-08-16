@@ -789,12 +789,9 @@ async function runTeammate(args: string[]): Promise<number> {
   const options = parseOptions(rest, ["--root", "--expected-head"], ["--json"]);
   const root = required(options, "--root");
   const expectedHead = required(options, "--expected-head");
-  if (!isAbsolute(root) || !/^[0-9a-f]{40}$/u.test(expectedHead)) {
-    throw new CliError("teammate preflight requires an absolute --root and one lowercase 40-hex --expected-head.");
-  }
   const report = await runTeammateReadinessPreflightV1({ root, expectedHead });
   process.stdout.write(options.flags.has("--json") ? `${JSON.stringify(report, null, 2)}\n` : renderTeammateReadiness(report));
-  return report.disposition === "ready_for_host_confirmation" ? 0 : 1;
+  return report.reasonCode === "invalid_input" ? 2 : report.disposition === "ready_for_host_confirmation" ? 0 : 1;
 }
 
 export async function runCli(args: string[]): Promise<number> {

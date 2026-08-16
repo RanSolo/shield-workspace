@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -20,23 +21,28 @@ test("teammate bootstrap binds only the descriptive Issue 307 exercise and publi
   const guide = await readFile(join(workspaceRoot, "docs/operations/vscode-agents-teammate-trial.md"), "utf8");
   const prompt = await readFile(join(workspaceRoot, ".codex/prompts/fresh-hill-teammate-trial.md"), "utf8");
   for (const binding of [
-    "657fe1afc66e1b54975232255b8c1e8ee81d732f",
-    "ec7ddf7ed0f84bf22f840a869151480ea0742f0d14e33337f089039d4afc46fd",
+    "797d7b76ef902507e4af37da22e640087b925983",
+    "c4bc39dfc7adb0e14c247bf8cd41576ae484e0d05b2d1bcc331d63e1a4f58d11",
     "mission:issue-307-guided-review-smoke-v1",
     "subject:issue-307-guided-review-smoke-v1",
     "standalone-guided-review",
     "exploration/backend",
     "sha256:22d0ecea8e6521d53d1d31d7053a2e0adb83ddaa0c7edf83fa8570258b85d1a4",
     "AC-307-B1",
-    "dependency_not_ready",
     "GO_FOR_TEAMMATE_DEMO",
   ]) assert.ok(guide.includes(binding), `guide is missing frozen binding ${binding}`);
   assert.match(guide, /Issue #306 never prepares or executes/u);
   assert.match(guide, /Raw preflight JSON is local-only/u);
   assert.match(guide, /replaces the repository root with `<DISPOSABLE_ROOT>`, omits every\nexecutable path/u);
+  assert.match(guide, /Current gate\/disposition: exactly `GO_FOR_TEAMMATE_DEMO`/u);
+  assert.match(guide, /VS Code `version`, `build`, and `architecture`[\s\S]*Codex `source`[\s\S]*Seat `hill` creation\/config[\s\S]*Seat `daisy` creation\/config[\s\S]*Seat `fury` creation\/config[\s\S]*Seat `may` creation\/config[\s\S]*Seat `mack` creation\/config[\s\S]*Terminal disposition `GO_FOR_TEAMMATE_DEMO`/u);
+  assert.match(guide, /pair visible session status with the final #307\nplan and the configured seat contracts/u);
+  assert.match(guide, /do not claim that it emits every plan, authority, identity, model, reasoning,\nsandbox, or MCP distinction by itself/u);
   assert.match(prompt, /This prompt grants no authority/u);
   assert.match(prompt, /sole bootstrap\n   anchor/u);
   assert.match(prompt, /Do not prepare or execute Issue #307/u);
+  assert.match(prompt, /terminal `GO_FOR_TEAMMATE_DEMO`/u);
+  assert.match(prompt, /Do not claim that status alone emits/u);
   assert.match(prompt, /REVISE_BEFORE_DEMO/u);
 });
 
@@ -324,6 +330,10 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     { encoding: "utf8" },
   ));
   const packed = packOutput[0];
+  const tarball = join(fixture, packed.filename);
+  const unpacked = await mkdtemp(join(tmpdir(), "shield-packed-bytes-"));
+  execFileSync("tar", ["-xzf", tarball, "-C", unpacked], { stdio: "pipe" });
+  const unpackedPackageRoot = join(unpacked, "package");
   const missionPreparationTarball = join(fixture, missionPreparationPackOutput[0].filename);
   const packedPaths = new Set(packed.files.map(({ path }) => path));
   for (const path of [
@@ -446,18 +456,45 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const unexpected = path.split("/").find((segment) => forbiddenRuntimeSegments.has(segment.toLowerCase()));
     assert.equal(unexpected, undefined, `packed path contains unexpected local runtime or secret-state segment: ${path}`);
   }
-  const packedMackRunner = await readFile(join(packageRoot, "scripts/model/mack-validation-runner.mjs"), "utf8");
+  const packedBytes = new Map(await Promise.all([...packedPaths].map(async (path) =>
+    [path, await readFile(join(unpackedPackageRoot, path))],
+  )));
+  const forbiddenHostFragments = [workspaceRoot, packageRoot, homedir(), "/private/tmp/shield-306.NpGKb7/worktree"];
+  for (const [path, bytes] of packedBytes) {
+    const text = bytes.toString("utf8");
+    for (const fragment of forbiddenHostFragments) {
+      assert.equal(text.includes(fragment), false, `packed bytes leak host path ${fragment} in ${path}`);
+    }
+  }
+  const runtimeLiteralFiles = [...packedBytes]
+    .filter(([, bytes]) => bytes.includes(Buffer.from(".shield/journals")))
+    .map(([path]) => path)
+    .sort();
+  assert.deepEqual(runtimeLiteralFiles, ["TECHNICAL_DESIGN.md", "dist/config.mjs", "dist/worktree-state-v1.mjs"],
+    "only targeted runtime-contract files may contain the journal path literal");
+  const removedJournalNames = [
+    "bWlzc2lvbjppc3N1ZS0xMzAtcnVudGltZS12Mg.jsonl",
+    "bWlzc2lvbjppc3N1ZS0xMzEtcHJvZmlsZS12MQ.jsonl",
+  ];
+  const removedJournalDigests = new Set([
+    "a49279003234db7afacc295b88316367fe51a8c6b4e70497f308bdf90108a1a4",
+    "8a95ce32bcfc2305024dc4868accbb48703141d8874eb86e1e9b3ead1f656dac",
+  ]);
+  for (const [path, bytes] of packedBytes) {
+    assert.ok(removedJournalNames.every((name) => !bytes.includes(Buffer.from(name))), `packed bytes retain removed journal identity in ${path}`);
+    assert.equal(removedJournalDigests.has(createHash("sha256").update(bytes).digest("hex")), false, `packed file matches removed journal payload digest: ${path}`);
+  }
+  const packedMackRunner = (packedBytes.get("scripts/model/mack-validation-runner.mjs"))?.toString("utf8") ?? "";
   assert.match(packedMackRunner, /export async function readMackProductionValidationRegistryV1/u);
   assert.doesNotMatch(packedMackRunner, /export (?:async )?function promoteProductionEvidence/u);
   for (const document of ["feature-flight-review-gates.md", "feature-operation-plan.md", "feature-integration.md", "persisted-artifact-contract-matrix.md"]) {
     assert.equal(
-      await readFile(join(packageRoot, "docs/operations", document), "utf8"),
+      await readFile(join(unpackedPackageRoot, "docs/operations", document), "utf8"),
       await readFile(join(workspaceRoot, "docs/operations", document), "utf8"),
       `${document} package mirror drifted`,
     );
   }
 
-  const tarball = join(fixture, packed.filename);
   execFileSync(
     "npm",
     ["install", "--save-dev", "--save-exact", missionPreparationTarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],

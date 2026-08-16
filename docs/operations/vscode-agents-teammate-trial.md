@@ -8,8 +8,8 @@ prove what the host loaded.
 ## Frozen bounded exercise
 
 - Issue: `#307`
-- Source commit: `657fe1afc66e1b54975232255b8c1e8ee81d732f`
-- Source SHA-256: `ec7ddf7ed0f84bf22f840a869151480ea0742f0d14e33337f089039d4afc46fd`
+- Source commit: `797d7b76ef902507e4af37da22e640087b925983`
+- Plan SHA-256: `c4bc39dfc7adb0e14c247bf8cd41576ae484e0d05b2d1bcc331d63e1a4f58d11`
 - Mission: `mission:issue-307-guided-review-smoke-v1`
 - Subject: `subject:issue-307-guided-review-smoke-v1`
 - Mode: `standalone-guided-review`
@@ -18,11 +18,11 @@ prove what the host loaded.
 - Fixture: `sha256:22d0ecea8e6521d53d1d31d7053a2e0adb83ddaa0c7edf83fa8570258b85d1a4`
 - Acceptance criterion: `AC-307-B1` — participant identifies the checkpoint
   and records one observation without a PIN or effect.
-- Current gate: `dependency_not_ready` until an accepted Issue #306 revision
-  and the human decision `GO_FOR_TEAMMATE_DEMO` both exist.
-- Next legal action: complete Issue #306 acceptance, then obtain the genuine
-  `GO_FOR_TEAMMATE_DEMO` human decision. Issue #306 never prepares or executes
-  this exercise.
+- Current gate/disposition: exactly `GO_FOR_TEAMMATE_DEMO`.
+- Next legal action: complete this Issue #306 setup trial through the terminal
+  `GO_FOR_TEAMMATE_DEMO` observation, then stop. This descriptive predecessor
+  context grants no authority: Issue #306 never prepares or executes Issue
+  #307.
 
 ## 1. Create the disposable checkout
 
@@ -74,14 +74,23 @@ Any machine-check failure stops the trial at `REVISE_BEFORE_DEMO`.
 
 ## 3. Record host confirmations in order
 
-The raw report leaves every item `unverified`. Observe and record them
-separately in this exact order:
+The raw report leaves every host-confirmation item `unverified`. Retain and
+record the complete setup sequence in this exact order, using the preflight's
+machine observations where named and separate operator observations for the
+unverified items:
 
 1. `host.agents_window_rendered`
 2. `host.account_entitlement`
-3. For each seat `hill`, `daisy`, `fury`, `may`, and `mack`, in that order:
-   `identity`, `model`, `reasoning_effort`, `sandbox_mode`,
-   `repository_instructions`, `mcp_inventory`, and `agent_creation`.
+3. VS Code `version`, `build`, and `architecture`.
+4. Codex `source`, OpenAI extension identity/version, and CLI version.
+5. Seat `hill` creation/config: `identity`, `model`, `reasoning_effort`,
+   `sandbox_mode`, `repository_instructions`, `mcp_inventory`, and
+   `agent_creation`.
+6. Seat `daisy` creation/config, with the same ordered fields.
+7. Seat `fury` creation/config, with the same ordered fields.
+8. Seat `may` creation/config, with the same ordered fields.
+9. Seat `mack` creation/config, with the same ordered fields.
+10. Terminal disposition `GO_FOR_TEAMMATE_DEMO`.
 
 Confirm the Agents window renders exactly the five declared seats. For every
 seat, identity, model, reasoning effort, sandbox mode, repository instructions,
@@ -104,14 +113,18 @@ guide alone:
 2. Scope `standalone-guided-review`, `exploration/backend`, non-Coulson, using
    the bound source and fixture above; `AC-307-B1` permits one checkpoint
    observation without PIN or effect.
-3. Gate `dependency_not_ready` until accepted Issue #306 plus
-   `GO_FOR_TEAMMATE_DEMO`.
-4. Next legal action: finish Issue #306 acceptance and obtain the genuine human
-   go decision.
+3. Gate/disposition exactly `GO_FOR_TEAMMATE_DEMO`.
+4. Next legal action: complete the ordered setup confirmations through the
+   terminal disposition, then stop without preparing or executing Issue #307.
 
 If any element is absent, return `REVISE_BEFORE_DEMO`. Do not create, prepare,
 or execute the #307 mission; invoke a model for it; copy trust; publish; or
 perform any PIN, effect, merge, deploy, or release action.
+
+When explaining a boundary, pair visible session status with the final #307
+plan and the configured seat contracts. Visible status is useful evidence, but
+do not claim that it emits every plan, authority, identity, model, reasoning,
+sandbox, or MCP distinction by itself.
 
 ## 5. Measurements and publication-safe evidence
 
@@ -133,8 +146,9 @@ path. Never publish the raw report, host-path strings, transcripts, local
 
 ## 6. Safe stop and reset
 
-Stop with exactly `GO_FOR_TEAMMATE_DEMO` or `REVISE_BEFORE_DEMO`; only a genuine
-authorized human can supply the former. This guide does not.
+Stop with exactly `GO_FOR_TEAMMATE_DEMO` or `REVISE_BEFORE_DEMO`. The former is
+the final descriptive setup disposition and does not authorize Issue #307
+preparation or execution.
 
 Cleanup is permitted only for the canonical disposable path created and
 recorded in section 1. Before cleanup, independently prove all of the following:
