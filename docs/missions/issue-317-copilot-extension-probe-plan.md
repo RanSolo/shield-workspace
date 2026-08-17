@@ -47,9 +47,19 @@ nullable extension version, and the closed extension classifications
 Change only the meaning of `host.copilot_extension`:
 
 - it is always an advisory `observed` row;
-- `available` with one valid version records reason `none`;
-- `unavailable`, `malformed`, and `timeout` remain truthfully classified and
-  receive a closed non-authoritative diagnostic reason;
+- its classification maps to exactly one closed row:
+
+  | extension classification | status | reason code |
+  | --- | --- | --- |
+  | `available` | `observed` | `none` |
+  | `unavailable` | `observed` | `copilot_extension_not_observed` |
+  | `malformed` | `observed` | `copilot_extension_observation_malformed` |
+  | `timeout` | `observed` | `copilot_extension_observation_timeout` |
+
+- `available` uses the existing no-action text;
+- every non-available classification uses exact bounded next-action text that
+  requires visible VS Code confirmation without claiming extension availability,
+  entitlement, picker state, or seat readiness;
 - none of those extension classifications participates in readiness
   disposition;
 - `host.vscode` remains a required passing machine check;
@@ -98,7 +108,9 @@ The plan itself is the only additional changed path during planning.
    - absent or malformed VS Code host still blocking;
    - missing or malformed SHIELD agent cards still blocking;
    - launcher validation and receipt preservation for non-available extension
-     observations.
+     observations;
+   - launcher rejection of classification, reason-code, next-action, or
+     version-consistency mismatches.
 6. Correct the teammate-trial guide so extension identity is advisory and
    visible operator confirmation remains the actual Copilot gate.
 
@@ -143,4 +155,3 @@ Stop and return to Fury or Hill if the correction requires:
 - No broad seat-contract hardening from #316.
 - No global VS Code or Copilot installation changes.
 - No claim that extension absence proves Copilot availability.
-
