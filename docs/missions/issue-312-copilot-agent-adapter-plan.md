@@ -58,10 +58,12 @@ entitlement remain host observations, not repository claims.
 Canonical picker names are `Hill`, `Daisy`, `Fury`, `May`, and `Mack`.
 Filenames are the stable lowercase seat identifiers. All five are directly
 user-invocable because the teammate must be able to select and understand each
-seat during the trial. All five set `disable-model-invocation: false` so the
-specialists remain available to Hill as subagents. Hill's explicit `agents`
-allowlist is the model-driven routing boundary; specialists cannot invoke other
-agents because they omit both the `agent` tool and the `agents` field.
+seat during the trial. Hill sets `disable-model-invocation: false`.
+Specialists set `disable-model-invocation: true`, protecting them from general
+subagent selection. Current VS Code semantics permit Hill to invoke those
+protected specialists because Hill names each one explicitly in its closed
+`agents` allowlist. Specialists cannot invoke other agents because they omit
+both the `agent` tool and the `agents` field.
 
 ## Tool and routing boundaries
 
@@ -117,8 +119,9 @@ Add one focused Node test that reads the tracked files and proves:
 - frontmatter is parsed from the supported closed YAML subset with duplicate
   and unknown key rejection, exact types, and closed nested handoffs;
 - no `model` field exists;
-- all five are user-invocable and subagent-invocable; only Hill has the `agent`
-  tool and an `agents` allowlist;
+- all five are user-invocable; Hill is generally model-invocable, specialists
+  are protected from general model invocation, and Hill's explicit allowlist
+  resolves all four protected specialists;
 - canonical names and filenames match;
 - tool sets preserve each seat boundary;
 - only Hill declares `agent`, the exact case-sensitive four-agent allowlist,
