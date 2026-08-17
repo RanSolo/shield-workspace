@@ -57,6 +57,10 @@ function createBootstrapV2Commit(indexPath) {
   };
   git(["read-tree", "HEAD"], { env: environment });
   git(["update-index", "--add", "--cacheinfo", `100644,${blob},${bootstrapPath}`], { env: environment });
+  for (const path of ["packages/shield-team-system/src/copilot-teammate-readiness-v1.mts"]) {
+    const implementationBlob = git(["hash-object", "-w", "--", path]).trim();
+    git(["update-index", "--add", "--cacheinfo", `100644,${implementationBlob},${path}`], { env: environment });
+  }
   for (const path of [v1.reviewedPlanPath, `.codex/prompts/issue-${v1.issueId}-teammate-demo.md`]) {
     const oid = git(["rev-parse", `${expectedHead}:${path}`]).trim();
     git(["update-index", "--add", "--cacheinfo", `100644,${oid},${path}`], { env: environment });
@@ -139,7 +143,7 @@ function exactCopilotReport(root = "/fixture/checkout", head = "a".repeat(40)) {
     ["input.closed", "pass", "none"], ["repository.root", "pass", "none"],
     ["repository.expected_head", "pass", "none"], ["repository.clean", "pass", "none"],
     ["repository.copilot_agents", "pass", "none"], ["host.vscode", "pass", "none"],
-    ["host.copilot_extension", "pass", "none"], ["repository.stable", "pass", "none"],
+    ["host.copilot_extension", "observed", "none"], ["repository.stable", "pass", "none"],
   ];
   const artifacts = seats.map((seat, index) => ({ path: `.github/agents/${seat}.agent.md`, sha256: String(index + 1).repeat(64) }));
   return {
@@ -160,12 +164,34 @@ function exactCopilotReport(root = "/fixture/checkout", head = "a".repeat(40)) {
         copilotExtension: { classification: "available", identifier: "github.copilot-chat", version: "0.32.3" },
         entitlement: { status: "unverified" },
       },
-      machineChecks: checkRows.map(([id, status, reasonCode]) => ({ id, status, reasonCode, nextAction: "bounded next action" })),
+      machineChecks: checkRows.map(([id, status, reasonCode]) => ({
+        id,
+        status,
+        reasonCode,
+        nextAction: id === "host.copilot_extension" ? "No machine action is required for this check." : "bounded next action",
+      })),
       hostConfirmations: ["host.copilot_picker_rendered", "host.account_entitlement", ...seats.flatMap((seat) =>
         ["identity", "selected_model", "tools", "instructions", "creation"].map((field) => `host.seat.${seat}.${field}`))]
         .map((id) => ({ id, status: "unverified" })),
     },
   };
+}
+
+function setCopilotExtensionObservation(report, classification) {
+  const reasonCodes = {
+    available: "none",
+    unavailable: "copilot_extension_not_observed",
+    malformed: "copilot_extension_observation_malformed",
+    timeout: "copilot_extension_observation_timeout",
+  };
+  report.host.copilotExtension.classification = classification;
+  report.host.copilotExtension.version = classification === "available" ? "0.32.3" : null;
+  const row = report.machineChecks.find((entry) => entry.id === "host.copilot_extension");
+  row.status = "observed";
+  row.reasonCode = reasonCodes[classification];
+  row.nextAction = classification === "available"
+    ? "No machine action is required for this check."
+    : "Confirm the Copilot picker, account entitlement, and required agents visibly in VS Code.";
 }
 
 test("bootstrap parser rejects stale, malformed, and authority-bearing packets", () => {
@@ -372,21 +398,42 @@ test("exact teammate-readiness validator rejects nested identity, ordering, clas
   assert.equal(report.hostConfirmations.length, 37);
 });
 
-test("Copilot report and durable receipt adapter reject wrong-host identity", () => {
+test("Copilot report and durable receipt adapter preserve every closed extension observation", () => {
   const { artifacts, report } = exactCopilotReport();
   const context = { input: { root: report.repository.root, expectedHead: report.repository.expectedHead }, artifacts: { copilotAgents: artifacts } };
-  assert.equal(validateExactCopilotPreflightReport(report, context), report);
-  assert.deepEqual(createCopilotReceiptAdapter(artifacts, report), {
-    kind: "github-copilot",
-    agents: artifacts,
-    extension: { classification: "available", identifier: "github.copilot-chat", version: "0.32.3" },
-  });
+  for (const classification of ["available", "unavailable", "malformed", "timeout"]) {
+    const observed = structuredClone(report);
+    setCopilotExtensionObservation(observed, classification);
+    assert.equal(validateExactCopilotPreflightReport(observed, context), observed);
+    assert.deepEqual(createCopilotReceiptAdapter(artifacts, observed), {
+      kind: "github-copilot",
+      agents: artifacts,
+      extension: {
+        classification,
+        identifier: "github.copilot-chat",
+        version: classification === "available" ? "0.32.3" : null,
+      },
+    });
+  }
+});
+
+test("Copilot report rejects extension classification, row, action, and version inconsistencies", () => {
+  const { artifacts, report } = exactCopilotReport();
+  const context = { input: { root: report.repository.root, expectedHead: report.repository.expectedHead }, artifacts: { copilotAgents: artifacts } };
   for (const mutate of [
     (value) => { value.contractVersion = "shield.teammate-readiness.v1"; },
     (value) => { value.adapter.kind = "codex"; },
     (value) => { value.agents[0].model = "pinned"; },
     (value) => { value.host.copilotExtension.identifier = "openai.chatgpt"; },
     (value) => { value.host.entitlement.status = "verified"; },
+    (value) => { value.host.copilotExtension.classification = "unknown"; },
+    (value) => { value.machineChecks[6].reasonCode = "copilot_extension_not_observed"; },
+    (value) => { value.machineChecks[6].nextAction = "bounded next action"; },
+    (value) => { value.host.copilotExtension.version = null; },
+    (value) => {
+      setCopilotExtensionObservation(value, "unavailable");
+      value.host.copilotExtension.version = "0.32.3";
+    },
   ]) {
     const changed = structuredClone(report);
     mutate(changed);
@@ -395,6 +442,18 @@ test("Copilot report and durable receipt adapter reject wrong-host identity", ()
   const wrongHost = structuredClone(report);
   wrongHost.adapter.kind = "codex";
   assert.throws(() => createCopilotReceiptAdapter(artifacts, wrongHost), /copilot_receipt_adapter_invalid/u);
+  for (const mutate of [
+    (value) => { value.host.copilotExtension.classification = "unknown"; },
+    (value) => { value.host.copilotExtension.version = null; },
+    (value) => {
+      setCopilotExtensionObservation(value, "timeout");
+      value.host.copilotExtension.version = "0.32.3";
+    },
+  ]) {
+    const changed = structuredClone(report);
+    mutate(changed);
+    assert.throws(() => createCopilotReceiptAdapter(artifacts, changed), /copilot_receipt_adapter_invalid/u);
+  }
 });
 
 test("bootstrap v2 executes the Copilot preflight and binds its complete receipt evidence", { timeout: 300_000 }, async () => {
@@ -404,7 +463,7 @@ test("bootstrap v2 executes the Copilot preflight and binds its complete receipt
   await mkdir(decoys);
   await writeFile(join(decoys, "code"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '1.133.0\\n${"c".repeat(40)}\\narm64\\n'; exit 0; fi
-if [ "$1" = "--list-extensions" ] && [ "$2" = "--show-versions" ]; then printf 'github.copilot-chat@0.32.3\\n'; exit 0; fi
+if [ "$1" = "--list-extensions" ] && [ "$2" = "--show-versions" ]; then printf 'publisher.unrelated@1.2.3\\n'; exit 0; fi
 exit 95
 `);
   await chmod(join(decoys, "code"), 0o755);
@@ -464,9 +523,9 @@ exit 95
     assert.deepEqual(receipt.adapter.agents, expectedAgents);
     assert.equal(receipt.preflightReportSha256, createHash("sha256").update(stableJson(report)).digest("hex"));
     assert.deepEqual(receipt.adapter.extension, {
-      classification: "available",
+      classification: "unavailable",
       identifier: "github.copilot-chat",
-      version: "0.32.3",
+      version: null,
     });
     assert.deepEqual(result.publicationSafeReceipt.adapter, receipt.adapter);
 

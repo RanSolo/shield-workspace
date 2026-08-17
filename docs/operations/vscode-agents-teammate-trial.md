@@ -102,9 +102,15 @@ node "$DISPOSABLE_ROOT/packages/shield-team-system/dist/cli.mjs" teammate prefli
   --host github-copilot --json
 ```
 
-The Copilot route probes VS Code and `github.copilot-chat`; it does not probe
-the OpenAI extension or a global Codex CLI. It records the selected model as a
-host observation and leaves account entitlement unverified.
+The Copilot route requires a valid VS Code host observation and also records an
+advisory `github.copilot-chat` extension-version observation; it does not probe
+the OpenAI extension or a global Codex CLI. The advisory observation is
+`available`, `unavailable`, `malformed`, or `timeout`. Every classification is
+recorded as `observed` and does not decide readiness: `available` carries a
+semver version, while the other classifications carry `version: null`. The
+receipt preserves that classification and nullable version without converting
+it into proof of Copilot availability. The report leaves account entitlement
+and every selected model as unverified host confirmations.
 
 The preflight is read-only. It does not initialize SHIELD, copy policy, create
 a mission, request a PIN, invoke a model, contact GitHub, or grant authority. A
@@ -127,7 +133,9 @@ The other worktree classifications are closed:
 - `stale_or_malformed_worktree_state` means
   `action_required/malformed_policy_state`.
 
-Any machine-check failure stops the trial at `REVISE_BEFORE_DEMO`.
+Any machine-check failure stops the trial at `REVISE_BEFORE_DEMO`. The advisory
+`host.copilot_extension` row is not a machine-check failure; when its version is
+not reliably observable, continue only to the visible host-confirmation gate.
 
 ## 3. Record host confirmations in order
 
@@ -138,6 +146,8 @@ that the Copilot picker renders exactly the five canonical title-case seats,
 that each card has the expected tools and instructions, and that each creation
 succeeds. A missing card, unavailable tool, pinned or unobservable model, or
 unverified entitlement at the terminal gate produces `REVISE_BEFORE_DEMO`.
+An observed extension classification or version never verifies any of these
+host confirmations.
 
 The sequence below applies only to the retained bootstrap v1 Codex predecessor;
 it is not evidence for Copilot picker discovery.

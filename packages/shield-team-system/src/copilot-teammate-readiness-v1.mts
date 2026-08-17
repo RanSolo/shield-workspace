@@ -309,7 +309,9 @@ export async function probeCopilotTeammateHostV1(
   if (extensionResult.state === "success") {
     const matches = extensionResult.stdout.split(/\r?\n/u).filter((line) => line.startsWith("github.copilot-chat@"));
     const version = matches.length === 1 ? matches[0]?.slice("github.copilot-chat@".length) ?? "" : "";
-    copilotExtension = matches.length === 1 && /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u.test(version)
+    copilotExtension = matches.length === 0
+      ? { classification: "unavailable", identifier: "github.copilot-chat", version: null }
+      : matches.length === 1 && /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u.test(version)
       ? { classification: "available", identifier: "github.copilot-chat", version }
       : { classification: "malformed", identifier: "github.copilot-chat", version: null };
   } else copilotExtension = { classification: extensionResult.state === "timeout" ? "timeout" : "unavailable", identifier: "github.copilot-chat", version: null };
@@ -326,6 +328,30 @@ function check(id: string, pass: boolean, failure: string): CopilotTeammateReadi
   const reasonCode = pass ? "none" : failure;
   const nextAction = pass ? "No machine action is required for this check." : `Resolve ${failure} and rerun the complete Copilot preflight.`;
   return Object.freeze({ id, status: pass ? "pass" : "fail", reasonCode, nextAction });
+}
+
+function copilotExtensionObservation(
+  classification: ProbeClassification,
+): CopilotTeammateReadinessReportV1["machineChecks"][number] {
+  const observations = {
+    available: {
+      reasonCode: "none",
+      nextAction: "No machine action is required for this check.",
+    },
+    unavailable: {
+      reasonCode: "copilot_extension_not_observed",
+      nextAction: "Confirm the Copilot picker, account entitlement, and required agents visibly in VS Code.",
+    },
+    malformed: {
+      reasonCode: "copilot_extension_observation_malformed",
+      nextAction: "Confirm the Copilot picker, account entitlement, and required agents visibly in VS Code.",
+    },
+    timeout: {
+      reasonCode: "copilot_extension_observation_timeout",
+      nextAction: "Confirm the Copilot picker, account entitlement, and required agents visibly in VS Code.",
+    },
+  } satisfies Record<ProbeClassification, { readonly reasonCode: string; readonly nextAction: string }>;
+  return Object.freeze({ id: "host.copilot_extension", status: "observed", ...observations[classification] });
 }
 
 function sameRepository(left: RepositorySnapshot, right: RepositorySnapshot): boolean {
@@ -362,7 +388,7 @@ export async function runCopilotTeammateReadinessPreflightV1(
     check("repository.clean", initial?.status === "", "workspace_dirty"),
     check("repository.copilot_agents", declarationsReady, "declaration_invalid"),
     check("host.vscode", host.vscode.classification === "available", "host_probe_failed"),
-    check("host.copilot_extension", host.copilotExtension.classification === "available", "host_probe_failed"),
+    copilotExtensionObservation(host.copilotExtension.classification),
     check("repository.stable", initial !== null && final !== null && sameRepository(initial, final), "repository_drift"),
   ]);
   const failed = checks.find((entry) => entry.status === "fail");

@@ -57,9 +57,31 @@ const COPILOT_MACHINE_CHECKS = Object.freeze([
   ["repository.clean", "pass", "none"],
   ["repository.copilot_agents", "pass", "none"],
   ["host.vscode", "pass", "none"],
-  ["host.copilot_extension", "pass", "none"],
+  ["host.copilot_extension", null, null],
   ["repository.stable", "pass", "none"],
 ]);
+const COPILOT_EXTENSION_OBSERVATIONS = Object.freeze({
+  available: Object.freeze({
+    status: "observed",
+    reasonCode: "none",
+    nextAction: "No machine action is required for this check.",
+  }),
+  unavailable: Object.freeze({
+    status: "observed",
+    reasonCode: "copilot_extension_not_observed",
+    nextAction: "Confirm the Copilot picker, account entitlement, and required agents visibly in VS Code.",
+  }),
+  malformed: Object.freeze({
+    status: "observed",
+    reasonCode: "copilot_extension_observation_malformed",
+    nextAction: "Confirm the Copilot picker, account entitlement, and required agents visibly in VS Code.",
+  }),
+  timeout: Object.freeze({
+    status: "observed",
+    reasonCode: "copilot_extension_observation_timeout",
+    nextAction: "Confirm the Copilot picker, account entitlement, and required agents visibly in VS Code.",
+  }),
+});
 const COPILOT_HOST_CONFIRMATIONS = Object.freeze([
   "host.copilot_picker_rendered",
   "host.account_entitlement",
@@ -134,6 +156,16 @@ function sha256(bytes) {
 function exactObject(value, keys) {
   return value !== null && typeof value === "object" && !Array.isArray(value) &&
     Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
+}
+
+function validCopilotExtensionObservation(extension) {
+  const semver = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u;
+  return exactObject(extension, ["classification", "identifier", "version"]) &&
+    Object.hasOwn(COPILOT_EXTENSION_OBSERVATIONS, extension.classification) &&
+    extension.identifier === "github.copilot-chat" &&
+    (extension.classification === "available"
+      ? typeof extension.version === "string" && semver.test(extension.version)
+      : extension.version === null);
 }
 
 function stableJson(value) {
@@ -795,9 +827,16 @@ export function validateExactCopilotPreflightReport(report, context) {
       entry.seat === SEATS[index] && entry.name === COPILOT_NAMES[index] && entry.path === COPILOT_AGENT_PATHS[index] &&
       entry.sha256 === artifacts[index].sha256 && entry.model === "host-selected");
   const checksExact = Array.isArray(report?.machineChecks) && report.machineChecks.length === COPILOT_MACHINE_CHECKS.length &&
-    report.machineChecks.every((entry, index) => exactObject(entry, ["id", "status", "reasonCode", "nextAction"]) &&
-      entry.id === COPILOT_MACHINE_CHECKS[index][0] && entry.status === COPILOT_MACHINE_CHECKS[index][1] &&
-      entry.reasonCode === COPILOT_MACHINE_CHECKS[index][2] && typeof entry.nextAction === "string" && entry.nextAction.length > 0);
+    report.machineChecks.every((entry, index) => {
+      if (!exactObject(entry, ["id", "status", "reasonCode", "nextAction"]) || entry.id !== COPILOT_MACHINE_CHECKS[index][0]) return false;
+      if (entry.id === "host.copilot_extension") {
+        const observation = COPILOT_EXTENSION_OBSERVATIONS[report?.host?.copilotExtension?.classification];
+        return observation !== undefined && entry.status === observation.status && entry.reasonCode === observation.reasonCode &&
+          entry.nextAction === observation.nextAction;
+      }
+      return entry.status === COPILOT_MACHINE_CHECKS[index][1] && entry.reasonCode === COPILOT_MACHINE_CHECKS[index][2] &&
+        typeof entry.nextAction === "string" && entry.nextAction.length > 0;
+    });
   const confirmationsExact = Array.isArray(report?.hostConfirmations) && report.hostConfirmations.length === COPILOT_HOST_CONFIRMATIONS.length &&
     report.hostConfirmations.every((entry, index) => exactObject(entry, ["id", "status"]) &&
       entry.id === COPILOT_HOST_CONFIRMATIONS[index] && entry.status === "unverified");
@@ -811,9 +850,7 @@ export function validateExactCopilotPreflightReport(report, context) {
       !exactObject(report.host.vscode, ["classification", "version", "build", "architecture"]) ||
       report.host.vscode.classification !== "available" || typeof report.host.vscode.version !== "string" || !semver.test(report.host.vscode.version) ||
       typeof report.host.vscode.build !== "string" || !HASH_40.test(report.host.vscode.build) || !["arm64", "armhf", "x64"].includes(report.host.vscode.architecture) ||
-      !exactObject(report.host.copilotExtension, ["classification", "identifier", "version"]) ||
-      report.host.copilotExtension.classification !== "available" || report.host.copilotExtension.identifier !== "github.copilot-chat" ||
-      typeof report.host.copilotExtension.version !== "string" || !semver.test(report.host.copilotExtension.version) ||
+      !validCopilotExtensionObservation(report.host.copilotExtension) ||
       !exactObject(report.host.entitlement, ["status"]) || report.host.entitlement.status !== "unverified" || !checksExact || !confirmationsExact) {
     throw new Error("copilot_preflight_schema_or_identity_invalid");
   }
@@ -998,12 +1035,9 @@ function repositoryId(origin) {
 }
 
 export function createCopilotReceiptAdapter(agentArtifacts, report) {
-  const semver = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u;
   if (!Array.isArray(agentArtifacts) || agentArtifacts.length !== COPILOT_AGENT_PATHS.length ||
       agentArtifacts.some((artifact, index) => artifact?.path !== COPILOT_AGENT_PATHS[index] || !HASH_64.test(artifact.sha256)) ||
-      report?.adapter?.kind !== "github-copilot" || report?.host?.copilotExtension?.classification !== "available" ||
-      report.host.copilotExtension.identifier !== "github.copilot-chat" ||
-      typeof report.host.copilotExtension.version !== "string" || !semver.test(report.host.copilotExtension.version)) {
+      report?.adapter?.kind !== "github-copilot" || !validCopilotExtensionObservation(report?.host?.copilotExtension)) {
     throw new Error("copilot_receipt_adapter_invalid");
   }
   return {
