@@ -17,9 +17,25 @@ test("repository tracks no local SHIELD runtime state", () => {
   assert.equal(tracked.length, 0, "tracked .shield inventory must be exactly empty");
 });
 
+test("teammate launcher is a root-only authority-neutral operator entrypoint", async () => {
+  const rootManifest = JSON.parse(await readFile(join(workspaceRoot, "package.json"), "utf8"));
+  const packageManifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  const launcher = await readFile(join(workspaceRoot, "tools/teammate-launch.mjs"), "utf8");
+  const guide = await readFile(join(workspaceRoot, "docs/operations/vscode-agents-teammate-trial.md"), "utf8");
+
+  assert.equal(rootManifest.scripts["teammate:launch"], "node tools/teammate-launch.mjs");
+  assert.equal(rootManifest.scripts["test:teammate-launch"], "node --test tools/teammate-launch.test.mjs");
+  assert.equal(Object.keys(packageManifest.exports).some((specifier) => specifier.includes("teammate-launch")), false);
+  assert.match(launcher, /shield\.teammate-launch\.v1/u);
+  assert.match(launcher, /authority: "none"/u);
+  assert.match(launcher, /`Prompt: \$\{result\.artifacts\.prompt\.path\}`/u);
+  assert.doesNotMatch(launcher, /spawn\([^\n]*["'](?:shield|nx|code)["']/u);
+  assert.match(guide, /A failure emits no VS Code open action/u);
+  assert.match(guide, /The launcher never executes that action or claims that VS Code opened/u);
+});
+
 test("teammate bootstrap binds only the descriptive Issue 307 exercise and publication-safe evidence", async () => {
   const guide = await readFile(join(workspaceRoot, "docs/operations/vscode-agents-teammate-trial.md"), "utf8");
-  const prompt = await readFile(join(workspaceRoot, ".codex/prompts/fresh-hill-teammate-trial.md"), "utf8");
   for (const binding of [
     "797d7b76ef902507e4af37da22e640087b925983",
     "c4bc39dfc7adb0e14c247bf8cd41576ae484e0d05b2d1bcc331d63e1a4f58d11",
@@ -38,12 +54,8 @@ test("teammate bootstrap binds only the descriptive Issue 307 exercise and publi
   assert.match(guide, /VS Code `version`, `build`, and `architecture`[\s\S]*Codex `source`[\s\S]*Seat `hill` creation\/config[\s\S]*Seat `daisy` creation\/config[\s\S]*Seat `fury` creation\/config[\s\S]*Seat `may` creation\/config[\s\S]*Seat `mack` creation\/config[\s\S]*Terminal disposition `GO_FOR_TEAMMATE_DEMO`/u);
   assert.match(guide, /pair visible session status with the final #307\nplan and the configured seat contracts/u);
   assert.match(guide, /do not claim that it emits every plan, authority, identity, model, reasoning,\nsandbox, or MCP distinction by itself/u);
-  assert.match(prompt, /This prompt grants no authority/u);
-  assert.match(prompt, /sole bootstrap\n   anchor/u);
-  assert.match(prompt, /Do not prepare or execute Issue #307/u);
-  assert.match(prompt, /terminal `GO_FOR_TEAMMATE_DEMO`/u);
-  assert.match(prompt, /Do not claim that status alone emits/u);
-  assert.match(prompt, /REVISE_BEFORE_DEMO/u);
+  assert.match(guide, /`result\.artifacts\.prompt\.path`[\s\S]*exactly `\.codex\/prompts\/issue-307-teammate-demo\.md`/u);
+  assert.doesNotMatch(guide, /fresh-hill-teammate-trial/u);
 });
 
 test("documents the exported TDD mission evaluator and its exact effect boundary", async () => {
