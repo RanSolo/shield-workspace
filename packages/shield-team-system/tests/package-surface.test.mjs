@@ -17,6 +17,22 @@ test("repository tracks no local SHIELD runtime state", () => {
   assert.equal(tracked.length, 0, "tracked .shield inventory must be exactly empty");
 });
 
+test("teammate launcher is a root-only authority-neutral operator entrypoint", async () => {
+  const rootManifest = JSON.parse(await readFile(join(workspaceRoot, "package.json"), "utf8"));
+  const packageManifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  const launcher = await readFile(join(workspaceRoot, "tools/teammate-launch.mjs"), "utf8");
+  const guide = await readFile(join(workspaceRoot, "docs/operations/vscode-agents-teammate-trial.md"), "utf8");
+
+  assert.equal(rootManifest.scripts["teammate:launch"], "node tools/teammate-launch.mjs");
+  assert.equal(rootManifest.scripts["test:teammate-launch"], "node --test tools/teammate-launch.test.mjs");
+  assert.equal(Object.keys(packageManifest.exports).some((specifier) => specifier.includes("teammate-launch")), false);
+  assert.match(launcher, /shield\.teammate-launch\.v1/u);
+  assert.match(launcher, /authority: "none"/u);
+  assert.doesNotMatch(launcher, /spawn\([^\n]*["'](?:shield|nx|code)["']/u);
+  assert.match(guide, /A failure emits no VS Code open action/u);
+  assert.match(guide, /The launcher never executes that action or claims that VS Code opened/u);
+});
+
 test("teammate bootstrap binds only the descriptive Issue 307 exercise and publication-safe evidence", async () => {
   const guide = await readFile(join(workspaceRoot, "docs/operations/vscode-agents-teammate-trial.md"), "utf8");
   const prompt = await readFile(join(workspaceRoot, ".codex/prompts/fresh-hill-teammate-trial.md"), "utf8");

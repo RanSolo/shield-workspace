@@ -12,6 +12,8 @@
     "test": "nx run-many -t test",
     "test:shield": "nx test @shield/team-system",
     "test:multiband": "nx test @shield/multiband",
+    "teammate:launch": "node tools/teammate-launch.mjs",
+    "test:teammate-launch": "node --test tools/teammate-launch.test.mjs",
     "build:multiband": "nx build @shield/multiband",
     "verify:team-system-clean-build": "node tools/verify-team-system-clean-build.mjs",
     "affected:test": "nx affected -t test",

@@ -24,44 +24,72 @@ prove what the host loaded.
   context grants no authority: Issue #306 never prepares or executes Issue
   #307.
 
-## 1. Create the disposable checkout
+## 1. Prepare the exact disposable checkout
 
-Record the exact candidate revision as `EXPECTED_HEAD`. It must be the accepted
-Issue #306 implementation revision, expressed as 40 lowercase hexadecimal
-characters. Create a new canonical disposable directory and record its exact
-path as `DISPOSABLE_ROOT`; never reuse an existing checkout.
+Record the reviewed teammate-demo revision as `EXPECTED_HEAD`, its tracked
+bootstrap path as `BOOTSTRAP`, and that bootstrap blob's lowercase SHA-256 as
+`BOOTSTRAP_SHA256`. Record an absolute, normalized, absent path beneath one
+existing canonical directory as `DISPOSABLE_ROOT`; never create or reuse that
+destination before launch.
 
-Clone the repository into that empty path, fetch the accepted revision if
-needed, detach at `EXPECTED_HEAD`, and verify both of these commands before
-opening VS Code:
+From the source checkout containing the tracked launcher, run exactly:
 
 ```text
-git -C "$DISPOSABLE_ROOT" rev-parse HEAD
-git -C "$DISPOSABLE_ROOT" status --porcelain=v1 --untracked-files=all
+npm run teammate:launch -- \
+  --root "$DISPOSABLE_ROOT" \
+  --expected-head "$EXPECTED_HEAD" \
+  --bootstrap "$BOOTSTRAP" \
+  --bootstrap-sha256 "$BOOTSTRAP_SHA256" \
+  --json
 ```
 
-The first output must equal `EXPECTED_HEAD`; the second must be empty. Do not
-run `shield worktree prepare`. Do not copy configuration, trusted bindings,
-journals, signer records, passcodes, credentials, tokens, caches, mission
-state, evidence, or chat transcripts from another person or worktree.
+The repository-local launcher uses its own Git object repository. It does not
+clone, fetch, infer a branch, use a global `shield` or `nx`, or accept a source
+root. It verifies the bootstrap, reviewed plan, and derived prompt before
+creating a detached worktree. It then installs the exact lockfile with scripts
+disabled, verifies the two-task Nx graph, builds through the target's pinned Nx,
+and invokes only the target's built SHIELD preflight. Existing destinations and
+adjacent receipts fail closed; no automatic cleanup or retry occurs.
+
+Continue only when the result is `ready_for_host_confirmation`, authority is
+`none`, observed HEAD equals `EXPECTED_HEAD`, and the adjacent
+`$DISPOSABLE_ROOT.shield-teammate-launch-v1.json` receipt passes exact readback.
+The receipt and publication-safe projection bind the bootstrap, reviewed plan,
+prompt, target package and CLI, both complete `dist` manifests, and preflight
+digest. A failure emits no VS Code open action.
+
+Do not run `shield worktree prepare`. Do not copy configuration, trusted
+bindings, journals, signer records, passcodes, credentials, tokens, caches,
+mission state, evidence, or chat transcripts from another person or worktree.
 
 Tracked `AGENTS.md`, `.codex/config.toml`, and `.codex/agents/*.toml` are
 repository-shareable declarations. Anything under local `.shield`, host cache
 directories, credentials, signer storage, or chat history is not shareable
 trial context.
 
-## 2. Run the authority-neutral preflight
+## 2. Confirm the authority-neutral preflight and open action
 
-Open exactly `DISPOSABLE_ROOT` in VS Code. From that root run:
+The launcher composes the preflight through the built target-local CLI using
+this exact command shape; the operator does not substitute a global command:
 
 ```text
-shield teammate preflight --root "$DISPOSABLE_ROOT" --expected-head "$EXPECTED_HEAD" --json
+node "$DISPOSABLE_ROOT/packages/shield-team-system/dist/cli.mjs" teammate preflight \
+  --root "$DISPOSABLE_ROOT" --expected-head "$EXPECTED_HEAD" --json
 ```
 
-The command is read-only. It does not initialize SHIELD, copy policy, create a
-mission, request a PIN, invoke a model, contact GitHub, or grant authority. A
-fresh clone is expected to report `uninitialized_worktree`; this is a
-non-gating observation and can lead only to `ready_for_host_confirmation`.
+The preflight is read-only. It does not initialize SHIELD, copy policy, create
+a mission, request a PIN, invoke a model, contact GitHub, or grant authority. A
+fresh checkout must report `uninitialized_worktree`; this is a non-gating
+observation and can lead only to `ready_for_host_confirmation`.
+
+After verifying the successful launch result and receipt, execute the one
+returned visible action yourself:
+
+```text
+code --new-window "$DISPOSABLE_ROOT"
+```
+
+The launcher never executes that action or claims that VS Code opened.
 
 The other worktree classifications are closed:
 
@@ -144,22 +172,26 @@ the raw `DISPOSABLE_ROOT`, an `executablePath` field, or any absolute executable
 path. Never publish the raw report, host-path strings, transcripts, local
 `.shield` content, credentials, trust material, or passcodes.
 
-## 6. Safe stop and reset
+## 6. Safe stop and retained checkout
 
 Stop with exactly `GO_FOR_TEAMMATE_DEMO` or `REVISE_BEFORE_DEMO`. The former is
 the final descriptive setup disposition and does not authorize Issue #307
 preparation or execution.
 
-Cleanup is permitted only for the canonical disposable path created and
-recorded in section 1. Before cleanup, independently prove all of the following:
+The launcher performs no cleanup. Preserve the canonical disposable checkout
+and adjacent receipt for inspection after either success or any post-creation
+failure. Before any separately authorized cleanup, independently prove all of
+the following:
 
 - the path resolves exactly to the recorded `DISPOSABLE_ROOT` and is not a
   reused worktree;
 - its HEAD is exactly `EXPECTED_HEAD`;
 - its ownership matches the current operator;
 - `git status --porcelain=v1 --untracked-files=all` is empty;
-- `git ls-files --others --exclude-standard` is empty; and
-- an ignored-file inventory contains no files.
+- `git ls-files --others --exclude-standard` is empty;
+- ignored files are confined to lockfile-defined dependencies, the two built
+  `dist` roots, and the receipt-bound isolated Nx state directories; and
+- the adjacent receipt still has its recorded bytes and digest.
 
 Any mismatch or unexpected tracked, untracked, or ignored state stops for the
 operator. Force is forbidden. Do not remove a reused worktree and do not use a
