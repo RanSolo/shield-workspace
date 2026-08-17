@@ -64,16 +64,21 @@ while Hill's explicit allowlist is the only model-driven specialist route.
 
 ## Tool and routing boundaries
 
-- Hill: orchestration tools plus the `agent` tool; `agents` is exactly
+- Hill: tools are exactly `[read, search, web, agent]`; `agents` is exactly
   `[Daisy, Fury, May, Mack]`, using the exact case-sensitive declared names.
   Hill may inspect and coordinate but must not own
   production implementation. Handoffs expose the ordinary Daisy recon, Fury
   review, May implementation, and Mack validation routes. Every handoff uses an
   exact target, a gate-specific prompt, `send: false`, and no nested model.
-- Daisy: read/search/web tools only; no edit, execute, or agent tool.
-- Fury: read/search/web tools only; no edit, execute, or agent tool.
-- May: read/search/web/edit/execute tools; no agent tool.
-- Mack: read/search/execute tools; no edit or agent tool.
+- Daisy: tools are exactly `[read, search, web]`; no edit, execute, or agent
+  tool.
+- Fury: tools are exactly `[read, search, web]`; no edit, execute, or agent
+  tool. Fury consumes exact revision and digest evidence produced by the
+  versioned launcher and Mack packet. Missing or inconsistent identity evidence
+  fails closed; Fury never claims independent Git verification without an
+  execution tool.
+- May: tools are exactly `[read, search, web, edit, execute]`; no agent tool.
+- Mack: tools are exactly `[read, search, execute]`; no edit or agent tool.
 
 Specialists omit `agents`; they do not coordinate subagents.
 
@@ -118,6 +123,15 @@ Add one focused Node test that reads the tracked files and proves:
   and handoffs; every allowlist and handoff target resolves exactly once;
 - every handoff has `send: false` and no model at any depth;
 - every body preserves the shared human-authority and exact-revision rules;
+- each body preserves its mandatory seat clause: Hill coordinates but does not
+  implement; Daisy investigates without editing, implementing, or deciding
+  architecture; Fury performs technical review only and grants no human
+  authority; May implements only an exact Fury-approved plan after separately
+  recorded Coulson authority; Mack validates independently and never modifies
+  production behavior;
+- Fury's body requires launcher/Mack revision and digest evidence, fails closed
+  when it is absent or inconsistent, and forbids claims of independent Git
+  verification without an execution tool;
 - `.codex/agents` remains present and unchanged relative to the planning base.
 
 Update the teammate-trial guide to distinguish Copilot picker agents from
