@@ -12,10 +12,11 @@ import {
   readFile,
   readdir,
   realpath,
+  symlink,
   unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const TEAMMATE_LAUNCH_CONTRACT_VERSION = "shield.teammate-launch.v1";
@@ -24,6 +25,29 @@ const HASH_40 = /^[0-9a-f]{40}$/u;
 const HASH_64 = /^[0-9a-f]{64}$/u;
 const MAX_OUTPUT = 4 * 1024 * 1024;
 const RECEIPT_SUFFIX = ".shield-teammate-launch-v1.json";
+const SEATS = Object.freeze(["hill", "daisy", "fury", "may", "mack"]);
+const MACHINE_CHECKS = Object.freeze([
+  ["input.closed", "pass", "none"],
+  ["repository.root", "pass", "none"],
+  ["repository.expected_head", "pass", "none"],
+  ["repository.clean", "pass", "none"],
+  ["repository.declarations", "pass", "none"],
+  ["repository.tracked_shield", "pass", "none"],
+  ["package.team_system", "pass", "none"],
+  ["host.vscode", "pass", "none"],
+  ["host.openai_extension", "pass", "none"],
+  ["host.codex_cli", "pass", "none"],
+  ["shield.worktree_state", "observed", "uninitialized_worktree"],
+  ["repository.stable", "pass", "none"],
+]);
+const HOST_CONFIRMATION_FIELDS = Object.freeze([
+  "identity", "model", "reasoning_effort", "sandbox_mode", "repository_instructions", "mcp_inventory", "agent_creation",
+]);
+const HOST_CONFIRMATIONS = Object.freeze([
+  "host.agents_window_rendered",
+  "host.account_entitlement",
+  ...SEATS.flatMap((seat) => HOST_CONFIRMATION_FIELDS.map((field) => `host.seat.${seat}.${field}`)),
+]);
 const EXPECTED_GO_BINDINGS = Object.freeze([
   "acceptedIssue306ImplementationRevision",
   "issue306MergeRevision",
@@ -78,6 +102,12 @@ class LaunchFailure extends Error {
 }
 
 export class ProcessUncertain extends Error {}
+
+function preserveProcessUncertainty(error) {
+  if (error instanceof ProcessUncertain) {
+    throw new LaunchFailure("recovery_required", error.message, "recovery_required");
+  }
+}
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -227,8 +257,28 @@ export function runBoundedProcess(executable, args, options = {}) {
 export function createNativeDependencies() {
   return Object.freeze({
     runProcess: runBoundedProcess,
-    fs: Object.freeze({ access, link, lstat, mkdir, open, readFile, readdir, realpath, unlink }),
+    fs: Object.freeze({ access, link, lstat, mkdir, open, readFile, readdir, realpath, symlink, unlink }),
   });
+}
+
+async function resolveExecutable(fs, name, directories) {
+  for (const directory of directories) {
+    if (directory === "" || !isAbsolute(directory)) continue;
+    const candidate = join(directory, name);
+    try {
+      await fs.access(candidate, constants.X_OK);
+      const canonical = await fs.realpath(candidate);
+      if (isAbsolute(canonical)) return canonical;
+    } catch (error) {
+      preserveProcessUncertainty(error);
+      // Continue through the bounded lookup.
+    }
+  }
+  throw new Error(`executable_unavailable:${name}`);
+}
+
+function fixedExecutableDirectories() {
+  return [dirname(process.execPath), "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 }
 
 function gitArguments(root, args) {
@@ -255,7 +305,7 @@ function gitEnvironment() {
 }
 
 async function runGit(context, root, args, options = {}) {
-  const result = await context.dependencies.runProcess("git", gitArguments(root, args), {
+  const result = await context.dependencies.runProcess(context.gitExecutable, gitArguments(root, args), {
     cwd: root,
     env: gitEnvironment(),
     timeout: options.timeout ?? 15_000,
@@ -266,7 +316,7 @@ async function runGit(context, root, args, options = {}) {
 }
 
 async function gitResult(context, root, args, options = {}) {
-  return context.dependencies.runProcess("git", gitArguments(root, args), {
+  return context.dependencies.runProcess(context.gitExecutable, gitArguments(root, args), {
     cwd: root,
     env: gitEnvironment(),
     timeout: options.timeout ?? 15_000,
@@ -286,6 +336,7 @@ async function absent(fs, path) {
 
 async function resolveSource(context) {
   const fs = context.dependencies.fs;
+  context.gitExecutable = await resolveExecutable(fs, "git", fixedExecutableDirectories());
   const launcher = await fs.realpath(fileURLToPath(import.meta.url));
   const candidate = resolve(dirname(launcher), "..");
   const root = (await runGit(context, candidate, ["rev-parse", "--show-toplevel"])).trim();
@@ -311,13 +362,20 @@ async function validateRevision(context) {
     .filter((path) => basename(path) === ".gitattributes");
   for (const path of attributes) {
     const artifact = await readObjectArtifact(context, expected, path);
-    const lines = artifact.bytes.toString("utf8").split(/\r?\n/u);
-    if (lines.some((line) => {
-      const body = line.replace(/\\ /gu, "_").trim();
-      return body !== "" && !body.startsWith("#") && body.split(/\s+/u).slice(1)
-        .some((token) => /^(?:-?filter|!filter)(?:=|$)/u.test(token));
-    })) throw new Error(`checkout_filter:${path}`);
+    if (containsCheckoutFilterAttribute(artifact.bytes)) throw new Error(`checkout_filter:${path}`);
   }
+  if (!(await absent(context.dependencies.fs, join(context.source.common, "info", "attributes")))) {
+    throw new Error("git_common_info_attributes_present");
+  }
+}
+
+export function containsCheckoutFilterAttribute(bytes) {
+  if (!Buffer.isBuffer(bytes)) return false;
+  return bytes.toString("utf8").split(/\r?\n/u).some((line) => {
+    const body = line.replace(/\\ /gu, "_").trim();
+    return body !== "" && !body.startsWith("#") && body.split(/\s+/u).slice(1)
+      .some((token) => /^(?:-?filter|!filter)(?:=|$)/u.test(token));
+  });
 }
 
 function parseLsTreeEntry(output, expectedPath) {
@@ -334,7 +392,7 @@ async function readObjectArtifact(context, revision, path) {
     await runGit(context, context.source.root, ["ls-tree", "-z", revision, "--", path]),
     path,
   );
-  const result = await context.dependencies.runProcess("git", gitArguments(context.source.root, ["cat-file", "blob", entry.oid]), {
+  const result = await context.dependencies.runProcess(context.gitExecutable, gitArguments(context.source.root, ["cat-file", "blob", entry.oid]), {
     cwd: context.source.root,
     env: gitEnvironment(),
     timeout: 15_000,
@@ -409,6 +467,7 @@ async function validateArtifacts(context) {
   let bootstrap;
   try { bootstrap = await readObjectArtifact(context, context.input.expectedHead, context.input.bootstrapPath); }
   catch (error) {
+    preserveProcessUncertainty(error);
     if (String(error.message).includes("tree_entry")) throw new LaunchFailure("bootstrap_missing", error.message);
     throw error;
   }
@@ -440,6 +499,7 @@ async function validateArtifacts(context) {
     const predecessorPlan = await readObjectArtifact(context, metadata.predecessorBootstrap.sourceCommit, metadata.reviewedPlanPath);
     if (predecessorPlan.sha256 !== metadata.predecessorBootstrap.planSha256) throw new Error("predecessor_plan_digest_invalid");
   } catch (error) {
+    preserveProcessUncertainty(error);
     throw new LaunchFailure("bootstrap_mismatch", error.message);
   }
   if (planAtReview.sha256 !== metadata.reviewedPlanSha256 || planAtHead.sha256 !== metadata.reviewedPlanSha256 ||
@@ -461,8 +521,11 @@ async function validateDestination(context) {
   if (!parentStats.isDirectory() || parentStats.isSymbolicLink()) throw new Error("parent_not_canonical_directory");
   await fs.access(parent, constants.R_OK | constants.W_OK | constants.X_OK);
   const receiptPath = `${root}${RECEIPT_SUFFIX}`;
-  if (!(await absent(fs, root)) || !(await absent(fs, receiptPath))) throw new Error("destination_or_receipt_exists");
-  return { parent, parentIdentity: `${parentStats.dev}:${parentStats.ino}`, receiptPath };
+  const reservationPath = `${receiptPath}.lock`;
+  if (!(await absent(fs, root)) || !(await absent(fs, receiptPath)) || !(await absent(fs, reservationPath))) {
+    throw new Error("destination_receipt_or_reservation_exists");
+  }
+  return { parent, parentIdentity: `${parentStats.dev}:${parentStats.ino}`, receiptPath, reservationPath };
 }
 
 function registeredWorktrees(output) {
@@ -478,7 +541,7 @@ async function worktreeRegistered(context) {
 async function createWorktree(context) {
   let result;
   try {
-    result = await context.dependencies.runProcess("git", gitArguments(context.source.root, [
+    result = await context.dependencies.runProcess(context.gitExecutable, gitArguments(context.source.root, [
       "worktree", "add", "--detach", context.input.root, context.input.expectedHead,
     ]), { cwd: context.source.root, env: gitEnvironment(), timeout: 30_000, maxOutput: MAX_OUTPUT });
   } catch (error) {
@@ -491,6 +554,7 @@ async function createWorktree(context) {
         throw new LaunchFailure("worktree_create_failed", `git exited ${result.code ?? result.errorCode}`);
       }
     } catch (error) {
+      preserveProcessUncertainty(error);
       if (error instanceof LaunchFailure) throw error;
     }
     throw new LaunchFailure("recovery_required", "worktree creation post-state is not absent", "recovery_required");
@@ -501,13 +565,16 @@ async function targetGit(context, args) {
   return runGit(context, context.input.root, args);
 }
 
-async function assertParentAndReceipt(context, requireReceiptAbsent = true) {
+async function assertParentAndReceipt(context, requireReceiptAbsent = true, requireReservationAbsent = true) {
   const stats = await context.dependencies.fs.lstat(context.destination.parent);
   if (!stats.isDirectory() || stats.isSymbolicLink() || `${stats.dev}:${stats.ino}` !== context.destination.parentIdentity) {
     throw new Error("destination_parent_changed");
   }
   if (requireReceiptAbsent && !(await absent(context.dependencies.fs, context.destination.receiptPath))) {
     throw new Error("receipt_collision");
+  }
+  if (requireReservationAbsent && !(await absent(context.dependencies.fs, context.destination.reservationPath))) {
+    throw new Error("receipt_reservation_collision");
   }
 }
 
@@ -579,7 +646,7 @@ async function runKnownChild(context, executable, args, options, reasonCode, all
   let result;
   try { result = await context.dependencies.runProcess(executable, args, options); }
   catch (error) {
-    if (error instanceof ProcessUncertain) throw new LaunchFailure("recovery_required", error.message, "recovery_required");
+    preserveProcessUncertainty(error);
     throw error;
   }
   if (result.state !== "success") {
@@ -639,8 +706,23 @@ async function buildManifest(fs, root, label) {
   return { entries, digest: sha256(Buffer.from(stableJson(entries))) };
 }
 
-function exactPreflightReport(report, context) {
+export function validateExactPreflightReport(report, context) {
   const topKeys = ["schemaVersion", "contractVersion", "authority", "disposition", "reasonCode", "repository", "package", "declarations", "trackedShieldPaths", "host", "worktreeState", "machineChecks", "hostConfirmations"];
+  const semver = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u;
+  const declarationsExact = Array.isArray(report?.declarations) && report.declarations.length === SEATS.length &&
+    report.declarations.every((entry, index) => exactObject(entry, ["source", "seat", "configFile", "name", "model", "reasoningEffort", "sandboxMode", "repositoryInstructions"]) &&
+      entry.source === "declared" && entry.seat === SEATS[index] && entry.configFile === `.codex/agents/${SEATS[index]}.toml` &&
+      entry.name === SEATS[index] && typeof entry.model === "string" && /^[a-z0-9][a-z0-9.-]+$/u.test(entry.model) &&
+      ["low", "medium", "high", "xhigh"].includes(entry.reasoningEffort) &&
+      ["read-only", "workspace-write", "danger-full-access"].includes(entry.sandboxMode) &&
+      entry.repositoryInstructions === "AGENTS.md");
+  const checksExact = Array.isArray(report?.machineChecks) && report.machineChecks.length === MACHINE_CHECKS.length &&
+    report.machineChecks.every((entry, index) => exactObject(entry, ["id", "status", "reasonCode", "nextAction"]) &&
+      entry.id === MACHINE_CHECKS[index][0] && entry.status === MACHINE_CHECKS[index][1] &&
+      entry.reasonCode === MACHINE_CHECKS[index][2] && typeof entry.nextAction === "string" && entry.nextAction.length > 0);
+  const confirmationsExact = Array.isArray(report?.hostConfirmations) && report.hostConfirmations.length === HOST_CONFIRMATIONS.length &&
+    report.hostConfirmations.every((entry, index) => exactObject(entry, ["id", "status"]) &&
+      entry.id === HOST_CONFIRMATIONS[index] && entry.status === "unverified");
   if (!exactObject(report, topKeys) || report.schemaVersion !== 1 || report.contractVersion !== "shield.teammate-readiness.v1" ||
       report.authority !== "none" || report.disposition !== "ready_for_host_confirmation" ||
       report.reasonCode !== "ready_for_host_confirmation" ||
@@ -648,20 +730,25 @@ function exactPreflightReport(report, context) {
       report.repository.root !== context.input.root || report.repository.branch !== null ||
       report.repository.head !== context.input.expectedHead || report.repository.expectedHead !== context.input.expectedHead ||
       report.repository.clean !== true || !exactObject(report.package, ["name", "declaredVersion", "installedVersion"]) ||
-      report.package.name !== "@shield/team-system" || report.package.declaredVersion !== report.package.installedVersion ||
-      !Array.isArray(report.declarations) || !Array.isArray(report.trackedShieldPaths) || report.trackedShieldPaths.length !== 0 ||
+      report.package.name !== "@shield/team-system" || typeof report.package.declaredVersion !== "string" ||
+      !semver.test(report.package.declaredVersion) || report.package.declaredVersion !== report.package.installedVersion ||
+      !declarationsExact || !Array.isArray(report.trackedShieldPaths) || report.trackedShieldPaths.length !== 0 ||
       !exactObject(report.host, ["vscode", "openaiExtension", "codexCli"]) ||
       !exactObject(report.host.vscode, ["classification", "version", "build", "architecture"]) ||
+      report.host.vscode.classification !== "available" || typeof report.host.vscode.version !== "string" || !semver.test(report.host.vscode.version) ||
+      typeof report.host.vscode.build !== "string" || !HASH_40.test(report.host.vscode.build) ||
+      !["arm64", "armhf", "x64"].includes(report.host.vscode.architecture) ||
       !exactObject(report.host.openaiExtension, ["classification", "identifier", "version"]) ||
+      report.host.openaiExtension.classification !== "available" || report.host.openaiExtension.identifier !== "openai.chatgpt" ||
+      typeof report.host.openaiExtension.version !== "string" || !semver.test(report.host.openaiExtension.version) ||
       !exactObject(report.host.codexCli, ["classification", "source", "version", "executablePath"]) ||
+      report.host.codexCli.classification !== "available" || report.host.codexCli.source !== "path" ||
+      typeof report.host.codexCli.version !== "string" || !semver.test(report.host.codexCli.version) ||
+      typeof report.host.codexCli.executablePath !== "string" || !isAbsolute(report.host.codexCli.executablePath) ||
       !exactObject(report.worktreeState, ["classification", "ok", "message", "receiptDigest"]) ||
       report.worktreeState.classification !== "uninitialized_worktree" || report.worktreeState.ok !== false ||
       typeof report.worktreeState.message !== "string" || report.worktreeState.receiptDigest !== null ||
-      !Array.isArray(report.machineChecks) ||
-      !Array.isArray(report.hostConfirmations) ||
-      report.declarations.some((entry) => !exactObject(entry, ["source", "seat", "configFile", "name", "model", "reasoningEffort", "sandboxMode", "repositoryInstructions"])) ||
-      report.machineChecks.some((entry) => !exactObject(entry, ["id", "status", "reasonCode", "nextAction"])) ||
-      report.hostConfirmations.some((entry) => !exactObject(entry, ["id", "status"]) || entry.status !== "unverified")) {
+      !checksExact || !confirmationsExact) {
     throw new Error("preflight_schema_or_identity_invalid");
   }
   return report;
@@ -680,7 +767,7 @@ async function installAndBuild(context) {
     maxOutput: MAX_OUTPUT,
   }, "dependencies_unavailable", dependenciesOnly);
   try { await repositorySnapshot(context, "dependencies", { allowedIgnored: dependenciesOnly, requireDistAbsent: true }); }
-  catch (error) { throw new LaunchFailure("repository_drift", error.message); }
+  catch (error) { preserveProcessUncertainty(error); throw new LaunchFailure("repository_drift", error.message); }
 
   const rootManifest = JSON.parse((await fs.readFile(join(context.input.root, "package.json"))).toString("utf8"));
   const nxLock = lockfile.packages?.["node_modules/nx"];
@@ -709,7 +796,7 @@ async function installAndBuild(context) {
     cwd: context.input.root, env: nxEnvironment, timeout: 60_000, maxOutput: MAX_OUTPUT,
   }, "build_unavailable", dependenciesAndNx);
   try { validateTaskGraph(parseJsonOutput(graphResult, "task_graph")); }
-  catch (error) { throw new LaunchFailure("build_unavailable", error.message); }
+  catch (error) { preserveProcessUncertainty(error); throw new LaunchFailure("build_unavailable", error.message); }
 
   const distPrefixes = ["packages/mission-preparation/dist", "packages/shield-team-system/dist"];
   const builtInventory = dependencyInventoryValidator(packagePaths, [...nxExtra, ...distPrefixes]);
@@ -717,7 +804,7 @@ async function installAndBuild(context) {
     cwd: context.input.root, env: nxEnvironment, timeout: 120_000, maxOutput: MAX_OUTPUT,
   }, "build_unavailable", builtInventory);
   try { await repositorySnapshot(context, "build", { allowedIgnored: builtInventory }); }
-  catch (error) { throw new LaunchFailure("repository_drift", error.message); }
+  catch (error) { preserveProcessUncertainty(error); throw new LaunchFailure("repository_drift", error.message); }
   const missionPreparation = await buildManifest(fs, join(context.input.root, "packages/mission-preparation/dist"), "mission_preparation");
   const teamSystem = await buildManifest(fs, join(context.input.root, "packages/shield-team-system/dist"), "team_system");
   for (const required of [
@@ -730,8 +817,53 @@ async function installAndBuild(context) {
   return { lockfileDigest: sha256(lockBytes), nxVersion: pinned, nxStateRoot, packagePaths, builtInventory, missionPreparation, teamSystem };
 }
 
+async function createPreflightEnvironment(context) {
+  const fs = context.dependencies.fs;
+  const lookupDirectories = (process.env.PATH ?? "").split(delimiter);
+  let code;
+  let codex;
+  try {
+    [code, codex] = await Promise.all([
+      resolveExecutable(fs, "code", lookupDirectories),
+      resolveExecutable(fs, "codex", lookupDirectories),
+    ]);
+  } catch (error) {
+    preserveProcessUncertainty(error);
+    throw new LaunchFailure("preflight_not_ready", error.message);
+  }
+  const probeBin = join(context.build.nxStateRoot, "preflight-bin");
+  await ensureEmptyDirectory(fs, probeBin);
+  await Promise.all([
+    fs.symlink(code, join(probeBin, "code")),
+    fs.symlink(codex, join(probeBin, "codex")),
+    fs.symlink(context.gitExecutable, join(probeBin, "git")),
+  ]);
+  return closedEnvironment({
+    GIT_CONFIG_COUNT: "5",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_KEY_0: "advice.detachedHead",
+    GIT_CONFIG_KEY_1: "core.autocrlf",
+    GIT_CONFIG_KEY_2: "core.eol",
+    GIT_CONFIG_KEY_3: "core.fsmonitor",
+    GIT_CONFIG_KEY_4: "core.hooksPath",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_CONFIG_VALUE_0: "false",
+    GIT_CONFIG_VALUE_1: "false",
+    GIT_CONFIG_VALUE_2: "lf",
+    GIT_CONFIG_VALUE_3: "false",
+    GIT_CONFIG_VALUE_4: "/dev/null",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+    NX_CLOUD: "false",
+    NX_DAEMON: "false",
+    PATH: [probeBin, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
+  });
+}
+
 async function runPreflight(context) {
   const cli = join(context.input.root, "packages/shield-team-system/dist/cli.mjs");
+  const environment = await createPreflightEnvironment(context);
   let result;
   try {
     result = await context.dependencies.runProcess(process.execPath, [
@@ -739,12 +871,12 @@ async function runPreflight(context) {
       "--expected-head", context.input.expectedHead, "--json",
     ], {
       cwd: context.input.root,
-      env: { ...process.env, NX_CLOUD: "false", NX_DAEMON: "false" },
+      env: environment,
       timeout: 30_000,
       maxOutput: MAX_OUTPUT,
     });
   } catch (error) {
-    if (error instanceof ProcessUncertain) throw new LaunchFailure("recovery_required", error.message, "recovery_required");
+    preserveProcessUncertainty(error);
     throw error;
   }
   if (result.state !== "success") {
@@ -766,8 +898,9 @@ async function runPreflight(context) {
   let parsed;
   try { parsed = JSON.parse(result.stdout); }
   catch { throw new LaunchFailure("cli_unavailable", "target CLI returned malformed JSON"); }
-  try { exactPreflightReport(parsed, context); }
+  try { validateExactPreflightReport(parsed, context); }
   catch (error) {
+    preserveProcessUncertainty(error);
     if (parsed?.contractVersion === "shield.teammate-readiness.v1" && parsed?.authority === "none" && parsed?.disposition === "action_required") {
       throw new LaunchFailure("preflight_not_ready", `${parsed.reasonCode ?? "unknown"}`);
     }
@@ -844,7 +977,7 @@ async function publishReceipt(context, receipt) {
   const destination = context.destination.receiptPath;
   const nonce = randomBytes(12).toString("hex");
   const temporary = `${destination}.tmp-${process.pid}-${nonce}`;
-  const reservation = `${destination}.lock`;
+  const reservation = context.destination.reservationPath;
   const bytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`);
   try {
     await assertParentAndReceipt(context);
@@ -854,7 +987,7 @@ async function publishReceipt(context, receipt) {
     const reservationHandle = await fs.open(reservation, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
     try { await reservationHandle.sync(); }
     finally { await reservationHandle.close(); }
-    await assertParentAndReceipt(context);
+    await assertParentAndReceipt(context, true, false);
     await fs.link(temporary, destination);
     await fs.unlink(temporary);
     await fs.unlink(reservation);
@@ -891,27 +1024,27 @@ export async function launchTeammateTrial(input, dependencies = createNativeDepe
   try {
     validateInput(input);
     try { context.source = await resolveSource(context); }
-    catch (error) { throw new LaunchFailure("source_unavailable", error.message); }
+    catch (error) { preserveProcessUncertainty(error); throw new LaunchFailure("source_unavailable", error.message); }
     try { await validateRevision(context); }
     catch (error) {
-      if (error instanceof ProcessUncertain) throw new LaunchFailure("recovery_required", error.message, "recovery_required");
+      preserveProcessUncertainty(error);
       throw new LaunchFailure("revision_unavailable", error.message);
     }
     context.artifacts = await validateArtifacts(context);
     try { context.destination = await validateDestination(context); }
-    catch (error) { throw new LaunchFailure("destination_unsafe", error.message); }
+    catch (error) { preserveProcessUncertainty(error); throw new LaunchFailure("destination_unsafe", error.message); }
     await createWorktree(context);
     try { await repositorySnapshot(context, "checkout", { requireDistAbsent: true }); await assertParentAndReceipt(context); }
-    catch (error) { throw new LaunchFailure("checkout_mismatch", error.message); }
+    catch (error) { preserveProcessUncertainty(error); throw new LaunchFailure("checkout_mismatch", error.message); }
     context.build = await installAndBuild(context);
     context.preflight = await runPreflight(context);
     try { await finalProof(context); }
-    catch (error) { throw new LaunchFailure("repository_drift", error.message); }
+    catch (error) { preserveProcessUncertainty(error); throw new LaunchFailure("repository_drift", error.message); }
     const receipt = await makeReceipt(context);
     try { await publishReceipt(context, receipt); }
     catch (error) {
-      const disposition = error instanceof ProcessUncertain ? "recovery_required" : "recovery_required";
-      throw new LaunchFailure(error?.code === "EEXIST" ? "receipt_write_failed" : "receipt_write_failed", error.message, disposition);
+      preserveProcessUncertainty(error);
+      throw new LaunchFailure("receipt_write_failed", error.message, "recovery_required");
     }
     return {
       schemaVersion: 1,
@@ -937,11 +1070,12 @@ export async function launchTeammateTrial(input, dependencies = createNativeDepe
   }
 }
 
-function render(result) {
+export function renderTeammateLaunchResult(result) {
   if (result.disposition === "ready_for_host_confirmation") {
     return [
       `SHIELD teammate launch: ${result.disposition}; authority: ${result.authority}.`,
       `HEAD: ${result.repository.observedHead}`,
+      `Prompt: ${result.artifacts.prompt.path}`,
       `Receipt: ${result.receipt.path}`,
       `NEXT (operator-visible action; not executed): ${result.nextAction.display}`,
       "",
@@ -959,7 +1093,7 @@ async function main(argv) {
     return 2;
   }
   const result = await launchTeammateTrial(parsed.input);
-  process.stdout.write(parsed.json ? `${JSON.stringify(result, null, 2)}\n` : render(result));
+  process.stdout.write(parsed.json ? `${JSON.stringify(result, null, 2)}\n` : renderTeammateLaunchResult(result));
   if (result.disposition === "ready_for_host_confirmation") return 0;
   if (result.reasonCode === "invalid_input") return 2;
   return result.disposition === "recovery_required" ? 3 : 1;

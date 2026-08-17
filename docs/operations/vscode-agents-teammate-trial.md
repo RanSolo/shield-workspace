@@ -131,11 +131,13 @@ Any required mismatch or unobservable required setting produces
 `REVISE_BEFORE_DEMO`. Never convert an `unverified` item into an automated
 claim.
 
-## 4. Bootstrap fresh Hill and stop at the gate
+## 4. Bootstrap Hill from the receipt-bound prompt and stop at the gate
 
-Paste `.codex/prompts/fresh-hill-teammate-trial.md` into a fresh Hill chat after
-replacing `<EXPECTED_HEAD>`. Hill must identify all four of these from this
-guide alone:
+Use the prompt path printed by the launcher's human-readable result and bound as
+`result.artifacts.prompt.path` in its JSON result. For this frozen #307 trial it
+must be exactly `.codex/prompts/issue-307-teammate-demo.md`. Paste that tracked,
+receipt-bound prompt into a fresh Hill chat after replacing `<EXPECTED_HEAD>`.
+Hill must identify all four of these from this guide alone:
 
 1. Issue `#307`.
 2. Scope `standalone-guided-review`, `exploration/backend`, non-Coulson, using
