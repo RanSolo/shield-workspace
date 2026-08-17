@@ -93,11 +93,14 @@ const ROOT_DERIVED_GOLDEN_FIELDS = new Set([
   "schema9BindingDigest",
   "journalDigest",
   "projectionDigest",
-  "digest",
+]);
+const ROOT_DERIVED_GOLDEN_PATHS = new Set([
+  "implementationAuthority.digest",
+  "mayRuntimeBinding.digest",
 ]);
 
-function normalizeGoldenRepositoryEvidence(value, repositoryRoots, fieldName = "") {
-  if (ROOT_DERIVED_GOLDEN_FIELDS.has(fieldName)) {
+function normalizeGoldenRepositoryEvidence(value, repositoryRoots, fieldName = "", propertyPath = fieldName) {
+  if (ROOT_DERIVED_GOLDEN_FIELDS.has(fieldName) || ROOT_DERIVED_GOLDEN_PATHS.has(propertyPath)) {
     return `<root-derived:${fieldName}>`;
   }
   if (fieldName === "attestationIds" && Array.isArray(value)) {
@@ -110,11 +113,14 @@ function normalizeGoldenRepositoryEvidence(value, repositoryRoots, fieldName = "
     );
   }
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeGoldenRepositoryEvidence(item, repositoryRoots));
+    return value.map((item) => normalizeGoldenRepositoryEvidence(item, repositoryRoots, "", propertyPath));
   }
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, normalizeGoldenRepositoryEvidence(item, repositoryRoots, key)]),
+      Object.entries(value).map(([key, item]) => [
+        key,
+        normalizeGoldenRepositoryEvidence(item, repositoryRoots, key, propertyPath.length === 0 ? key : `${propertyPath}.${key}`),
+      ]),
     );
   }
   return value;
