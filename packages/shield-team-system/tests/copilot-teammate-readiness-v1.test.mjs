@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -35,7 +35,10 @@ async function fixture() {
   return { root, head: git(root, ["rev-parse", "HEAD"]) };
 }
 
-function hostDependencies(extension = "github.copilot-chat@0.32.3\n") {
+function hostDependencies(
+  extension = "github.copilot-chat@0.32.3\n",
+  version = { state: "success", stdout: `1.133.0\n${"a".repeat(40)}\narm64\n` },
+) {
   const calls = [];
   return {
     calls,
@@ -46,8 +49,8 @@ function hostDependencies(extension = "github.copilot-chat@0.32.3\n") {
       },
       execute: async (_executable, args) => {
         calls.push(["execute", ...args]);
-        if (args[0] === "--version") return { state: "success", stdout: `1.133.0\n${"a".repeat(40)}\narm64\n` };
-        return { state: "success", stdout: extension };
+        if (args[0] === "--version") return version;
+        return typeof extension === "string" ? { state: "success", stdout: extension } : extension;
       },
     },
   };
@@ -100,15 +103,108 @@ test("Copilot preflight binds ordered agent blobs, host-selected models, and unv
   }
 });
 
-test("Copilot preflight fails closed for a wrong extension, stale revision, or agent drift", async () => {
+test("closed Copilot extension observations remain advisory and preserve unverified host confirmations", async () => {
+  const target = await fixture();
+  const cases = [
+    ["bundled or unlisted", "", "unavailable", "copilot_extension_not_observed"],
+    ["wrong-PATH extension inventory", "openai.chatgpt@26.810.41047\n", "unavailable", "copilot_extension_not_observed"],
+    ["malformed entry", "github.copilot-chat@not-semver\n", "malformed", "copilot_extension_observation_malformed"],
+    ["duplicate entries", "github.copilot-chat@0.32.3\ngithub.copilot-chat@0.32.3\n", "malformed", "copilot_extension_observation_malformed"],
+    ["timed out probe", { state: "timeout", stdout: "" }, "timeout", "copilot_extension_observation_timeout"],
+    ["failed probe", { state: "failed", stdout: "" }, "unavailable", "copilot_extension_not_observed"],
+  ];
+  try {
+    for (const [label, extension, classification, reasonCode] of cases) {
+      const report = await runCopilotTeammateReadinessPreflightV1(
+        { root: target.root, expectedHead: target.head },
+        hostDependencies(extension).dependencies,
+      );
+      assert.equal(report.disposition, "ready_for_host_confirmation", label);
+      assert.deepEqual(report.host.copilotExtension, {
+        classification,
+        identifier: "github.copilot-chat",
+        version: null,
+      }, label);
+      assert.deepEqual(report.machineChecks.find((entry) => entry.id === "host.copilot_extension"), {
+        id: "host.copilot_extension",
+        status: "observed",
+        reasonCode,
+        nextAction: "Confirm the Copilot picker, account entitlement, and required agents visibly in VS Code.",
+      }, label);
+      assert.ok(report.hostConfirmations.every((entry) => entry.status === "unverified"), label);
+    }
+  } finally {
+    await rm(target.root, { recursive: true, force: false });
+  }
+});
+
+test("available Copilot extension uses the closed advisory no-action row", async () => {
   const target = await fixture();
   try {
-    const wrongHost = hostDependencies("openai.chatgpt@26.810.41047\n").dependencies;
-    const wrongExtension = await runCopilotTeammateReadinessPreflightV1({ root: target.root, expectedHead: target.head }, wrongHost);
-    assert.equal(wrongExtension.disposition, "action_required");
-    assert.equal(wrongExtension.host.copilotExtension.classification, "malformed");
-    assert.equal(wrongExtension.machineChecks.find((entry) => entry.id === "host.copilot_extension").status, "fail");
+    const report = await runCopilotTeammateReadinessPreflightV1(
+      { root: target.root, expectedHead: target.head },
+      hostDependencies().dependencies,
+    );
+    assert.deepEqual(report.machineChecks.find((entry) => entry.id === "host.copilot_extension"), {
+      id: "host.copilot_extension",
+      status: "observed",
+      reasonCode: "none",
+      nextAction: "No machine action is required for this check.",
+    });
+  } finally {
+    await rm(target.root, { recursive: true, force: false });
+  }
+});
 
+test("Copilot preflight still blocks absent or malformed VS Code host observations", async () => {
+  const target = await fixture();
+  const versions = [
+    { state: "unavailable", stdout: "" },
+    { state: "success", stdout: "not-a-vscode-version\n" },
+  ];
+  try {
+    for (const version of versions) {
+      const report = await runCopilotTeammateReadinessPreflightV1(
+        { root: target.root, expectedHead: target.head },
+        hostDependencies("", version).dependencies,
+      );
+      assert.equal(report.disposition, "action_required");
+      assert.equal(report.reasonCode, "host_probe_failed");
+      assert.equal(report.machineChecks.find((entry) => entry.id === "host.vscode").status, "fail");
+      assert.equal(report.machineChecks.find((entry) => entry.id === "host.copilot_extension").status, "observed");
+    }
+  } finally {
+    await rm(target.root, { recursive: true, force: false });
+  }
+});
+
+test("Copilot preflight still blocks missing or malformed agent cards", async () => {
+  for (const malformed of [false, true]) {
+    const target = await fixture();
+    try {
+      const mayCard = join(target.root, ".github/agents/may.agent.md");
+      if (malformed) await writeFile(mayCard, "malformed\n");
+      else await unlink(mayCard);
+      git(target.root, ["add", "-A"]);
+      git(target.root, ["commit", "--quiet", "-m", malformed ? "malformed card" : "missing card"]);
+      const head = git(target.root, ["rev-parse", "HEAD"]);
+      const report = await runCopilotTeammateReadinessPreflightV1(
+        { root: target.root, expectedHead: head },
+        hostDependencies("").dependencies,
+      );
+      assert.equal(report.disposition, "action_required");
+      assert.equal(report.reasonCode, "declaration_invalid");
+      assert.equal(report.machineChecks.find((entry) => entry.id === "repository.copilot_agents").status, "fail");
+      assert.equal(report.machineChecks.find((entry) => entry.id === "host.copilot_extension").status, "observed");
+    } finally {
+      await rm(target.root, { recursive: true, force: false });
+    }
+  }
+});
+
+test("Copilot preflight fails closed for a stale revision or agent drift", async () => {
+  const target = await fixture();
+  try {
     const stale = await runCopilotTeammateReadinessPreflightV1({ root: target.root, expectedHead: "b".repeat(40) }, hostDependencies().dependencies);
     assert.equal(stale.reasonCode, "expected_head_mismatch");
     assert.deepEqual(stale.agents, []);
