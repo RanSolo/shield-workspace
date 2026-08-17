@@ -5,6 +5,21 @@ trial. It is descriptive, grants no authority, and does not prepare or execute
 Issue #307. The operator records observations; repository declarations do not
 prove what the host loaded.
 
+## Agent-host distinction
+
+The workspace now carries two separate adapters. `.github/agents/*.agent.md`
+defines the five GitHub Copilot custom agents that must appear in the VS Code
+Copilot agent picker. `.codex/config.toml` and `.codex/agents/*.toml` define
+Codex subagents; their presence does not prove Copilot picker discovery.
+
+The frozen Issue #307 bootstrap v1 remains a Codex-only predecessor and cannot
+be reused for a Copilot trial. A later, separately reviewed bootstrap v2 must
+declare `agentHost: "github-copilot"`; only that closed value selects
+`shield.copilot-teammate-readiness.v1` and the Copilot adapter. The trial must
+stop unless the operator visibly discovers exactly `Hill`, `Daisy`, `Fury`,
+`May`, and `Mack` in the Copilot picker. Repository validation and preflight
+digests do not substitute for that host observation.
+
 ## Frozen bounded exercise
 
 - Issue: `#307`
@@ -77,6 +92,20 @@ node "$DISPOSABLE_ROOT/packages/shield-team-system/dist/cli.mjs" teammate prefli
   --root "$DISPOSABLE_ROOT" --expected-head "$EXPECTED_HEAD" --json
 ```
 
+That command is retained exactly for bootstrap v1 and selects
+`shield.teammate-readiness.v1`. A bootstrap v2 with
+`agentHost: "github-copilot"` instead requires the launcher to invoke:
+
+```text
+node "$DISPOSABLE_ROOT/packages/shield-team-system/dist/cli.mjs" teammate preflight \
+  --root "$DISPOSABLE_ROOT" --expected-head "$EXPECTED_HEAD" \
+  --host github-copilot --json
+```
+
+The Copilot route probes VS Code and `github.copilot-chat`; it does not probe
+the OpenAI extension or a global Codex CLI. It records the selected model as a
+host observation and leaves account entitlement unverified.
+
 The preflight is read-only. It does not initialize SHIELD, copy policy, create
 a mission, request a PIN, invoke a model, contact GitHub, or grant authority. A
 fresh checkout must report `uninitialized_worktree`; this is a non-gating
@@ -101,6 +130,17 @@ The other worktree classifications are closed:
 Any machine-check failure stops the trial at `REVISE_BEFORE_DEMO`.
 
 ## 3. Record host confirmations in order
+
+For a bootstrap v2 Copilot trial, retain the Copilot report's exact ordered
+confirmations: picker rendering, account entitlement, then each seat's
+identity, selected model, tools, instructions, and creation. Confirm visibly
+that the Copilot picker renders exactly the five canonical title-case seats,
+that each card has the expected tools and instructions, and that each creation
+succeeds. A missing card, unavailable tool, pinned or unobservable model, or
+unverified entitlement at the terminal gate produces `REVISE_BEFORE_DEMO`.
+
+The sequence below applies only to the retained bootstrap v1 Codex predecessor;
+it is not evidence for Copilot picker discovery.
 
 The raw report leaves every host-confirmation item `unverified`. Retain and
 record the complete setup sequence in this exact order, using the preflight's
@@ -168,6 +208,13 @@ PR evidence must use the publication-safe projection produced by
 projection replaces the repository root with `<DISPOSABLE_ROOT>`, omits every
 executable path, and identifies Codex only by source classification, OpenAI
 extension identity/version, and CLI version.
+
+For a bootstrap v2 Copilot report, use
+`projectCopilotTeammateReadinessForPublicationV1` from the built
+`packages/shield-team-system/dist/copilot-teammate-readiness-v1.mjs` module.
+That projection replaces the repository root with `<DISPOSABLE_ROOT>` and
+retains only the versioned adapter declarations, digests, machine observations,
+and still-unverified host confirmations.
 
 Before publication, validation must fail if the projected evidence contains
 the raw `DISPOSABLE_ROOT`, an `executablePath` field, or any absolute executable

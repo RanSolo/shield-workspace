@@ -10,10 +10,12 @@ import { fileURLToPath } from "node:url";
 import {
   ProcessUncertain,
   containsCheckoutFilterAttribute,
+  createCopilotReceiptAdapter,
   createNativeDependencies,
   inspectBootstrapBytes,
   launchTeammateTrial,
   renderTeammateLaunchResult,
+  validateExactCopilotPreflightReport,
   validateExactPreflightReport,
 } from "./teammate-launch.mjs";
 
@@ -30,7 +32,42 @@ function isGit(executable) {
 }
 
 function git(args, options = {}) {
-  return execFileSync("git", args, { cwd: workspaceRoot, encoding: "utf8", stdio: options.stdio ?? "pipe" });
+  return execFileSync("git", args, { cwd: workspaceRoot, encoding: "utf8", ...options, stdio: options.stdio ?? "pipe" });
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function createBootstrapV2Commit(indexPath) {
+  const v1 = JSON.parse(git(["show", `${expectedHead}:${bootstrapPath}`]));
+  const v2 = { ...v1, contractVersion: "shield.teammate-demo-bootstrap.v2", agentHost: "github-copilot" };
+  const bytes = Buffer.from(`${JSON.stringify(v2, null, 2)}\n`);
+  const bootstrapDigest = createHash("sha256").update(bytes).digest("hex");
+  const blob = git(["hash-object", "-w", "--stdin"], { input: bytes }).trim();
+  const environment = {
+    ...process.env,
+    GIT_AUTHOR_DATE: "2026-08-17T12:00:00Z",
+    GIT_COMMITTER_DATE: "2026-08-17T12:00:00Z",
+    GIT_INDEX_FILE: indexPath,
+  };
+  git(["read-tree", "HEAD"], { env: environment });
+  git(["update-index", "--add", "--cacheinfo", `100644,${blob},${bootstrapPath}`], { env: environment });
+  for (const path of [v1.reviewedPlanPath, `.codex/prompts/issue-${v1.issueId}-teammate-demo.md`]) {
+    const oid = git(["rev-parse", `${expectedHead}:${path}`]).trim();
+    git(["update-index", "--add", "--cacheinfo", `100644,${oid},${path}`], { env: environment });
+  }
+  const tree = git(["write-tree"], { env: environment }).trim();
+  const parent = git(["rev-parse", "HEAD"]).trim();
+  const head = git(["commit-tree", tree, "-p", parent, "-p", v1.reviewedPlanCommit], {
+    env: environment,
+    input: "test: bootstrap v2 fixture\n",
+  }).trim();
+  return { bootstrapDigest, head };
 }
 
 function input(root, head = expectedHead, digest = bootstrapSha256, path = bootstrapPath) {
@@ -95,6 +132,42 @@ function exactReport(root = "/fixture/checkout", head = "a".repeat(40)) {
   };
 }
 
+function exactCopilotReport(root = "/fixture/checkout", head = "a".repeat(40)) {
+  const seats = ["hill", "daisy", "fury", "may", "mack"];
+  const names = ["Hill", "Daisy", "Fury", "May", "Mack"];
+  const checkRows = [
+    ["input.closed", "pass", "none"], ["repository.root", "pass", "none"],
+    ["repository.expected_head", "pass", "none"], ["repository.clean", "pass", "none"],
+    ["repository.copilot_agents", "pass", "none"], ["host.vscode", "pass", "none"],
+    ["host.copilot_extension", "pass", "none"], ["repository.stable", "pass", "none"],
+  ];
+  const artifacts = seats.map((seat, index) => ({ path: `.github/agents/${seat}.agent.md`, sha256: String(index + 1).repeat(64) }));
+  return {
+    artifacts,
+    report: {
+      schemaVersion: 1,
+      contractVersion: "shield.copilot-teammate-readiness.v1",
+      authority: "none",
+      adapter: { kind: "github-copilot" },
+      disposition: "ready_for_host_confirmation",
+      reasonCode: "ready_for_host_confirmation",
+      repository: { root, branch: null, head, expectedHead: head, clean: true },
+      agents: seats.map((seat, index) => ({
+        seat, name: names[index], path: artifacts[index].path, sha256: artifacts[index].sha256, model: "host-selected",
+      })),
+      host: {
+        vscode: { classification: "available", version: "1.133.0", build: "b".repeat(40), architecture: "arm64" },
+        copilotExtension: { classification: "available", identifier: "github.copilot-chat", version: "0.32.3" },
+        entitlement: { status: "unverified" },
+      },
+      machineChecks: checkRows.map(([id, status, reasonCode]) => ({ id, status, reasonCode, nextAction: "bounded next action" })),
+      hostConfirmations: ["host.copilot_picker_rendered", "host.account_entitlement", ...seats.flatMap((seat) =>
+        ["identity", "selected_model", "tools", "instructions", "creation"].map((field) => `host.seat.${seat}.${field}`))]
+        .map((id) => ({ id, status: "unverified" })),
+    },
+  };
+}
+
 test("bootstrap parser rejects stale, malformed, and authority-bearing packets", () => {
   const bytes = Buffer.from(git(["show", `${expectedHead}:${bootstrapPath}`]));
   assert.equal(inspectBootstrapBytes(bytes, bootstrapSha256).authority, "none");
@@ -111,6 +184,23 @@ test("bootstrap parser rejects stale, malformed, and authority-bearing packets",
   const unknownBytes = Buffer.from(`${JSON.stringify(unknown)}\n`);
   const unknownDigest = createHash("sha256").update(unknownBytes).digest("hex");
   assert.throws(() => inspectBootstrapBytes(unknownBytes, unknownDigest), { reasonCode: "bootstrap_mismatch" });
+});
+
+test("bootstrap v2 requires the explicit GitHub Copilot host while v1 remains unchanged", () => {
+  const v1 = JSON.parse(git(["show", `${expectedHead}:${bootstrapPath}`]));
+  const v2 = { ...v1, contractVersion: "shield.teammate-demo-bootstrap.v2", agentHost: "github-copilot" };
+  const bytes = Buffer.from(`${JSON.stringify(v2)}\n`);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  assert.equal(inspectBootstrapBytes(bytes, digest).agentHost, "github-copilot");
+  for (const host of [undefined, "codex", "github-copilot-cloud"]) {
+    const changed = structuredClone(v2);
+    if (host === undefined) delete changed.agentHost;
+    else changed.agentHost = host;
+    const changedBytes = Buffer.from(`${JSON.stringify(changed)}\n`);
+    const changedDigest = createHash("sha256").update(changedBytes).digest("hex");
+    assert.throws(() => inspectBootstrapBytes(changedBytes, changedDigest), { reasonCode: "bootstrap_mismatch" });
+  }
+  assert.equal(inspectBootstrapBytes(Buffer.from(`${JSON.stringify(v1)}\n`), createHash("sha256").update(`${JSON.stringify(v1)}\n`).digest("hex")).contractVersion, "shield.teammate-demo-bootstrap.v1");
 });
 
 test("tracked checkout filter attributes are rejected", () => {
@@ -282,6 +372,123 @@ test("exact teammate-readiness validator rejects nested identity, ordering, clas
   assert.equal(report.hostConfirmations.length, 37);
 });
 
+test("Copilot report and durable receipt adapter reject wrong-host identity", () => {
+  const { artifacts, report } = exactCopilotReport();
+  const context = { input: { root: report.repository.root, expectedHead: report.repository.expectedHead }, artifacts: { copilotAgents: artifacts } };
+  assert.equal(validateExactCopilotPreflightReport(report, context), report);
+  assert.deepEqual(createCopilotReceiptAdapter(artifacts, report), {
+    kind: "github-copilot",
+    agents: artifacts,
+    extension: { classification: "available", identifier: "github.copilot-chat", version: "0.32.3" },
+  });
+  for (const mutate of [
+    (value) => { value.contractVersion = "shield.teammate-readiness.v1"; },
+    (value) => { value.adapter.kind = "codex"; },
+    (value) => { value.agents[0].model = "pinned"; },
+    (value) => { value.host.copilotExtension.identifier = "openai.chatgpt"; },
+    (value) => { value.host.entitlement.status = "verified"; },
+  ]) {
+    const changed = structuredClone(report);
+    mutate(changed);
+    assert.throws(() => validateExactCopilotPreflightReport(changed, context), /copilot_preflight_schema_or_identity_invalid/u);
+  }
+  const wrongHost = structuredClone(report);
+  wrongHost.adapter.kind = "codex";
+  assert.throws(() => createCopilotReceiptAdapter(artifacts, wrongHost), /copilot_receipt_adapter_invalid/u);
+});
+
+test("bootstrap v2 executes the Copilot preflight and binds its complete receipt evidence", { timeout: 300_000 }, async () => {
+  const positive = await fixture("shield-launch-copilot-v2-positive-");
+  const negative = await fixture("shield-launch-copilot-v2-wrong-host-");
+  const decoys = join(positive.base, "decoys");
+  await mkdir(decoys);
+  await writeFile(join(decoys, "code"), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.133.0\\n${"c".repeat(40)}\\narm64\\n'; exit 0; fi
+if [ "$1" = "--list-extensions" ] && [ "$2" = "--show-versions" ]; then printf 'github.copilot-chat@0.32.3\\n'; exit 0; fi
+exit 95
+`);
+  await chmod(join(decoys, "code"), 0o755);
+  const synthetic = createBootstrapV2Commit(join(positive.base, "synthetic-index"));
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${decoys}:${previousPath ?? ""}`;
+  const native = createNativeDependencies();
+  const executableLookups = [];
+  const preflightInvocations = [];
+  const preflightReports = [];
+  const dependencies = (wrongHost) => ({
+    ...native,
+    fs: {
+      ...native.fs,
+      access: async (path, mode) => {
+        if (["code", "codex"].includes(basename(path))) executableLookups.push(basename(path));
+        return native.fs.access(path, mode);
+      },
+    },
+    runProcess: async (executable, args, options) => {
+      const result = await native.runProcess(executable, args, options);
+      if (executable === process.execPath && args.includes("teammate") && args.includes("preflight")) {
+        preflightInvocations.push([...args]);
+        if (result.state === "success") {
+          const report = JSON.parse(result.stdout);
+          preflightReports.push(report);
+          if (wrongHost) {
+            report.adapter.kind = "codex";
+            return { ...result, stdout: `${JSON.stringify(report)}\n` };
+          }
+        }
+      }
+      return result;
+    },
+  });
+  try {
+    const result = await launchTeammateTrial(
+      input(positive.root, synthetic.head, synthetic.bootstrapDigest),
+      dependencies(false),
+    );
+    assert.equal(result.disposition, "ready_for_host_confirmation", JSON.stringify(result));
+    const cliPath = join(positive.root, "packages/shield-team-system/dist/cli.mjs");
+    assert.deepEqual(preflightInvocations[0], [
+      cliPath, "teammate", "preflight", "--root", positive.root,
+      "--expected-head", synthetic.head, "--host", "github-copilot", "--json",
+    ]);
+    assert.equal(executableLookups.includes("code"), true);
+    assert.equal(executableLookups.includes("codex"), false);
+    const report = preflightReports[0];
+    const expectedAgents = ["hill", "daisy", "fury", "may", "mack"].map((seat) => {
+      const path = `.github/agents/${seat}.agent.md`;
+      return { path, sha256: createHash("sha256").update(git(["show", `${synthetic.head}:${path}`])).digest("hex") };
+    });
+    assert.deepEqual(report.agents.map(({ path, sha256 }) => ({ path, sha256 })), expectedAgents);
+    const receipt = JSON.parse(await readFile(`${positive.root}${receiptSuffix}`, "utf8"));
+    assert.equal(receipt.adapter.kind, "github-copilot");
+    assert.deepEqual(receipt.adapter.agents, expectedAgents);
+    assert.equal(receipt.preflightReportSha256, createHash("sha256").update(stableJson(report)).digest("hex"));
+    assert.deepEqual(receipt.adapter.extension, {
+      classification: "available",
+      identifier: "github.copilot-chat",
+      version: "0.32.3",
+    });
+    assert.deepEqual(result.publicationSafeReceipt.adapter, receipt.adapter);
+
+    const rejected = await launchTeammateTrial(
+      input(negative.root, synthetic.head, synthetic.bootstrapDigest),
+      dependencies(true),
+    );
+    assert.equal(rejected.disposition, "action_required");
+    assert.equal(rejected.reasonCode, "cli_unavailable");
+    assert.equal(registered(negative.root), true);
+    assert.equal(preflightInvocations[1].includes("--host"), true);
+    assert.equal(preflightReports[1].contractVersion, "shield.copilot-teammate-readiness.v1");
+    assert.equal(executableLookups.includes("codex"), false);
+    await assert.rejects(readFile(`${negative.root}${receiptSuffix}`), { code: "ENOENT" });
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    await cleanup(negative);
+    await cleanup(positive);
+  }
+});
+
 test("human output prints the receipt-bound issue prompt path", () => {
   const result = {
     disposition: "ready_for_host_confirmation", authority: "none",
@@ -384,6 +591,7 @@ test("real exact-revision launch suppresses ambient checkout filters, uses fixed
   process.env.GIT_CONFIG_SYSTEM = ambientConfig;
   const native = createNativeDependencies();
   let preflightEnvironment;
+  let preflightArguments;
   let preflightOutput;
   let launcherGitConfigured = true;
   const dependencies = {
@@ -398,6 +606,7 @@ test("real exact-revision launch suppresses ambient checkout filters, uses fixed
       }
       if (executable === process.execPath && args.includes("teammate") && args.includes("preflight")) {
         preflightEnvironment = options.env;
+        preflightArguments = [...args];
       }
       const processResult = await native.runProcess(executable, args, options);
       if (executable === process.execPath && args.includes("teammate") && args.includes("preflight")) {
@@ -425,6 +634,8 @@ test("real exact-revision launch suppresses ambient checkout filters, uses fixed
     assert.equal(JSON.stringify(result.publicationSafeReceipt).includes(target.root), false);
     const receipt = JSON.parse(await readFile(`${target.root}${receiptSuffix}`, "utf8"));
     assert.equal(Object.hasOwn(receipt, "authority"), false);
+    assert.equal(Object.hasOwn(receipt, "adapter"), false);
+    assert.equal(receipt.contractVersion, "shield.teammate-launch.v1");
     assert.equal(receipt.repository.expectedHead, expectedHead);
     assert.equal(receipt.target.nxVersion, "23.1.0");
     assert.match(receipt.target.missionPreparationDistManifestSha256, /^[0-9a-f]{64}$/u);
@@ -438,6 +649,11 @@ test("real exact-revision launch suppresses ambient checkout filters, uses fixed
     assert.equal(preflightEnvironment.GIT_CONFIG_VALUE_5, "/dev/null");
     assert.equal(preflightEnvironment.SHELL, undefined);
     assert.equal(preflightEnvironment.PATH.includes(decoys), false);
+    assert.deepEqual(preflightArguments, [
+      join(target.root, "packages/shield-team-system/dist/cli.mjs"),
+      "teammate", "preflight", "--root", target.root,
+      "--expected-head", expectedHead, "--json",
+    ]);
     for (const marker of [shieldMarker, nxMarker, gitMarker, filterMarker, openMarker]) await assert.rejects(readFile(marker), { code: "ENOENT" });
   } finally {
     for (const [name, value] of Object.entries(previousEnvironment)) {

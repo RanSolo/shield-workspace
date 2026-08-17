@@ -363,6 +363,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/worktree-state-v1.d.mts",
     "dist/teammate-readiness-v1.mjs",
     "dist/teammate-readiness-v1.d.mts",
+    "dist/copilot-teammate-readiness-v1.mjs",
+    "dist/copilot-teammate-readiness-v1.d.mts",
     "dist/mission-intake-v1.mjs",
     "dist/mission-intake-v1.d.mts",
     "dist/mission-v2.mjs",
@@ -920,7 +922,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
 
   const bin = join(fixture, "node_modules", ".bin", "shield");
   const shieldHelp = execFileSync(bin, ["--help"], { cwd: fixture, encoding: "utf8" });
-  assert.match(shieldHelp, /shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> \[--json\]/u);
+  assert.match(shieldHelp, /shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> \[--host github-copilot\] \[--json\]/u);
   execFileSync(bin, [
     "init",
     "--repository-id", "fixture/typescript-consumer",

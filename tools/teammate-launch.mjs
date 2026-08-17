@@ -26,6 +26,8 @@ const HASH_64 = /^[0-9a-f]{64}$/u;
 const MAX_OUTPUT = 4 * 1024 * 1024;
 const RECEIPT_SUFFIX = ".shield-teammate-launch-v1.json";
 const SEATS = Object.freeze(["hill", "daisy", "fury", "may", "mack"]);
+const COPILOT_NAMES = Object.freeze(["Hill", "Daisy", "Fury", "May", "Mack"]);
+const COPILOT_AGENT_PATHS = Object.freeze(SEATS.map((seat) => `.github/agents/${seat}.agent.md`));
 const MACHINE_CHECKS = Object.freeze([
   ["input.closed", "pass", "none"],
   ["repository.root", "pass", "none"],
@@ -47,6 +49,21 @@ const HOST_CONFIRMATIONS = Object.freeze([
   "host.agents_window_rendered",
   "host.account_entitlement",
   ...SEATS.flatMap((seat) => HOST_CONFIRMATION_FIELDS.map((field) => `host.seat.${seat}.${field}`)),
+]);
+const COPILOT_MACHINE_CHECKS = Object.freeze([
+  ["input.closed", "pass", "none"],
+  ["repository.root", "pass", "none"],
+  ["repository.expected_head", "pass", "none"],
+  ["repository.clean", "pass", "none"],
+  ["repository.copilot_agents", "pass", "none"],
+  ["host.vscode", "pass", "none"],
+  ["host.copilot_extension", "pass", "none"],
+  ["repository.stable", "pass", "none"],
+]);
+const COPILOT_HOST_CONFIRMATIONS = Object.freeze([
+  "host.copilot_picker_rendered",
+  "host.account_entitlement",
+  ...SEATS.flatMap((seat) => ["identity", "selected_model", "tools", "instructions", "creation"].map((field) => `host.seat.${seat}.${field}`)),
 ]);
 const EXPECTED_GO_BINDINGS = Object.freeze([
   "acceptedIssue306ImplementationRevision",
@@ -90,6 +107,7 @@ const BOOTSTRAP_KEYS = Object.freeze([
   "requiredTerminalDisposition",
   "goEvidenceMustBind",
 ]);
+const BOOTSTRAP_V2_KEYS = Object.freeze([...BOOTSTRAP_KEYS, "agentHost"]);
 const PREDECESSOR_KEYS = Object.freeze(["sourceCommit", "planSha256", "status"]);
 
 class LaunchFailure extends Error {
@@ -406,8 +424,10 @@ async function readObjectArtifact(context, revision, path) {
 }
 
 function validateBootstrapObject(value) {
-  if (!exactObject(value, BOOTSTRAP_KEYS) || value.schemaVersion !== 1 ||
-      value.contractVersion !== "shield.teammate-demo-bootstrap.v1" || value.authority !== "none" ||
+  const isV1 = value?.contractVersion === "shield.teammate-demo-bootstrap.v1";
+  const isV2 = value?.contractVersion === "shield.teammate-demo-bootstrap.v2";
+  if ((!isV1 && !isV2) || !exactObject(value, isV2 ? BOOTSTRAP_V2_KEYS : BOOTSTRAP_KEYS) || value.schemaVersion !== 1 ||
+      (isV2 ? value.agentHost !== "github-copilot" : Object.hasOwn(value, "agentHost")) || value.authority !== "none" ||
       !Number.isSafeInteger(value.issueId) || value.issueId <= 0 ||
       !HASH_40.test(value.acceptedIssue306ImplementationRevision) || !HASH_40.test(value.issue306MergeRevision) ||
       !normalizedRepositoryPath(value.reviewedPlanPath, ".md") || !HASH_40.test(value.reviewedPlanCommit) ||
@@ -452,15 +472,16 @@ export function inspectBootstrapBytes(bytes, suppliedDigest) {
     throw new LaunchFailure("bootstrap_mismatch", "bootstrap digest mismatch");
   }
   const text = bytes.toString("utf8");
-  const expectedProperties = [...BOOTSTRAP_KEYS, ...PREDECESSOR_KEYS].sort();
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch { throw new LaunchFailure("bootstrap_mismatch", "bootstrap JSON is malformed"); }
+  const expectedRootKeys = parsed?.contractVersion === "shield.teammate-demo-bootstrap.v2" ? BOOTSTRAP_V2_KEYS : BOOTSTRAP_KEYS;
+  const expectedProperties = [...expectedRootKeys, ...PREDECESSOR_KEYS].sort();
   const observedProperties = jsonPropertyNames(text).sort();
   if (observedProperties.length !== expectedProperties.length ||
       observedProperties.some((name, index) => name !== expectedProperties[index])) {
     throw new LaunchFailure("bootstrap_mismatch", "bootstrap JSON has duplicate or unknown properties");
   }
-  let parsed;
-  try { parsed = JSON.parse(text); }
-  catch { throw new LaunchFailure("bootstrap_mismatch", "bootstrap JSON is malformed"); }
   try { return validateBootstrapObject(parsed); }
   catch (error) { throw new LaunchFailure("bootstrap_mismatch", error.message); }
 }
@@ -508,7 +529,16 @@ async function validateArtifacts(context) {
       planAtReview.oid !== planAtHead.oid) {
     throw new LaunchFailure("bootstrap_mismatch", "reviewed plan object or digest mismatch");
   }
-  return { bootstrap, metadata, plan: planAtHead, prompt, promptPath };
+  let copilotAgents = [];
+  if (metadata.contractVersion === "shield.teammate-demo-bootstrap.v2") {
+    try {
+      copilotAgents = await Promise.all(COPILOT_AGENT_PATHS.map((path) => readObjectArtifact(context, context.input.expectedHead, path)));
+    } catch (error) {
+      preserveProcessUncertainty(error);
+      throw new LaunchFailure("bootstrap_mismatch", `copilot_adapter_invalid:${error.message}`);
+    }
+  }
+  return { bootstrap, metadata, plan: planAtHead, prompt, promptPath, copilotAgents };
 }
 
 async function validateDestination(context) {
@@ -756,6 +786,40 @@ export function validateExactPreflightReport(report, context) {
   return report;
 }
 
+export function validateExactCopilotPreflightReport(report, context) {
+  const topKeys = ["schemaVersion", "contractVersion", "authority", "adapter", "disposition", "reasonCode", "repository", "agents", "host", "machineChecks", "hostConfirmations"];
+  const semver = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u;
+  const artifacts = context.artifacts?.copilotAgents ?? [];
+  const agentsExact = Array.isArray(report?.agents) && report.agents.length === SEATS.length && artifacts.length === SEATS.length &&
+    report.agents.every((entry, index) => exactObject(entry, ["seat", "name", "path", "sha256", "model"]) &&
+      entry.seat === SEATS[index] && entry.name === COPILOT_NAMES[index] && entry.path === COPILOT_AGENT_PATHS[index] &&
+      entry.sha256 === artifacts[index].sha256 && entry.model === "host-selected");
+  const checksExact = Array.isArray(report?.machineChecks) && report.machineChecks.length === COPILOT_MACHINE_CHECKS.length &&
+    report.machineChecks.every((entry, index) => exactObject(entry, ["id", "status", "reasonCode", "nextAction"]) &&
+      entry.id === COPILOT_MACHINE_CHECKS[index][0] && entry.status === COPILOT_MACHINE_CHECKS[index][1] &&
+      entry.reasonCode === COPILOT_MACHINE_CHECKS[index][2] && typeof entry.nextAction === "string" && entry.nextAction.length > 0);
+  const confirmationsExact = Array.isArray(report?.hostConfirmations) && report.hostConfirmations.length === COPILOT_HOST_CONFIRMATIONS.length &&
+    report.hostConfirmations.every((entry, index) => exactObject(entry, ["id", "status"]) &&
+      entry.id === COPILOT_HOST_CONFIRMATIONS[index] && entry.status === "unverified");
+  if (!exactObject(report, topKeys) || report.schemaVersion !== 1 || report.contractVersion !== "shield.copilot-teammate-readiness.v1" ||
+      report.authority !== "none" || !exactObject(report.adapter, ["kind"]) || report.adapter.kind !== "github-copilot" ||
+      report.disposition !== "ready_for_host_confirmation" || report.reasonCode !== "ready_for_host_confirmation" ||
+      !exactObject(report.repository, ["root", "branch", "head", "expectedHead", "clean"]) ||
+      report.repository.root !== context.input.root || report.repository.branch !== null ||
+      report.repository.head !== context.input.expectedHead || report.repository.expectedHead !== context.input.expectedHead || report.repository.clean !== true ||
+      !agentsExact || !exactObject(report.host, ["vscode", "copilotExtension", "entitlement"]) ||
+      !exactObject(report.host.vscode, ["classification", "version", "build", "architecture"]) ||
+      report.host.vscode.classification !== "available" || typeof report.host.vscode.version !== "string" || !semver.test(report.host.vscode.version) ||
+      typeof report.host.vscode.build !== "string" || !HASH_40.test(report.host.vscode.build) || !["arm64", "armhf", "x64"].includes(report.host.vscode.architecture) ||
+      !exactObject(report.host.copilotExtension, ["classification", "identifier", "version"]) ||
+      report.host.copilotExtension.classification !== "available" || report.host.copilotExtension.identifier !== "github.copilot-chat" ||
+      typeof report.host.copilotExtension.version !== "string" || !semver.test(report.host.copilotExtension.version) ||
+      !exactObject(report.host.entitlement, ["status"]) || report.host.entitlement.status !== "unverified" || !checksExact || !confirmationsExact) {
+    throw new Error("copilot_preflight_schema_or_identity_invalid");
+  }
+  return report;
+}
+
 async function installAndBuild(context) {
   const fs = context.dependencies.fs;
   const lockBytes = await fs.readFile(join(context.input.root, "package-lock.json"));
@@ -823,12 +887,12 @@ async function createPreflightEnvironment(context) {
   const fs = context.dependencies.fs;
   const lookupDirectories = (process.env.PATH ?? "").split(delimiter);
   let code;
-  let codex;
+  let codex = null;
   try {
-    [code, codex] = await Promise.all([
-      resolveExecutable(fs, "code", lookupDirectories),
-      resolveExecutable(fs, "codex", lookupDirectories),
-    ]);
+    code = await resolveExecutable(fs, "code", lookupDirectories);
+    if (context.artifacts.metadata.contractVersion === "shield.teammate-demo-bootstrap.v1") {
+      codex = await resolveExecutable(fs, "codex", lookupDirectories);
+    }
   } catch (error) {
     preserveProcessUncertainty(error);
     throw new LaunchFailure("preflight_not_ready", error.message);
@@ -837,7 +901,7 @@ async function createPreflightEnvironment(context) {
   await ensureEmptyDirectory(fs, probeBin);
   await Promise.all([
     fs.symlink(code, join(probeBin, "code")),
-    fs.symlink(codex, join(probeBin, "codex")),
+    ...(codex === null ? [] : [fs.symlink(codex, join(probeBin, "codex"))]),
     fs.symlink(context.gitExecutable, join(probeBin, "git")),
   ]);
   return closedEnvironment({
@@ -869,11 +933,15 @@ async function createPreflightEnvironment(context) {
 async function runPreflight(context) {
   const cli = join(context.input.root, "packages/shield-team-system/dist/cli.mjs");
   const environment = await createPreflightEnvironment(context);
+  const copilot = context.artifacts.metadata.contractVersion === "shield.teammate-demo-bootstrap.v2";
+  const contractVersion = copilot ? "shield.copilot-teammate-readiness.v1" : "shield.teammate-readiness.v1";
   let result;
   try {
     result = await context.dependencies.runProcess(process.execPath, [
       cli, "teammate", "preflight", "--root", context.input.root,
-      "--expected-head", context.input.expectedHead, "--json",
+      "--expected-head", context.input.expectedHead,
+      ...(copilot ? ["--host", "github-copilot"] : []),
+      "--json",
     ], {
       cwd: context.input.root,
       env: environment,
@@ -890,7 +958,7 @@ async function runPreflight(context) {
     if (result.state === "exit") {
       try {
         const report = JSON.parse(result.stdout);
-        if (report?.contractVersion === "shield.teammate-readiness.v1" && report?.authority === "none" &&
+        if (report?.contractVersion === contractVersion && report?.authority === "none" &&
             report?.disposition === "action_required" && typeof report.reasonCode === "string") {
           throw new LaunchFailure("preflight_not_ready", report.reasonCode);
         }
@@ -903,10 +971,10 @@ async function runPreflight(context) {
   let parsed;
   try { parsed = JSON.parse(result.stdout); }
   catch { throw new LaunchFailure("cli_unavailable", "target CLI returned malformed JSON"); }
-  try { validateExactPreflightReport(parsed, context); }
+  try { copilot ? validateExactCopilotPreflightReport(parsed, context) : validateExactPreflightReport(parsed, context); }
   catch (error) {
     preserveProcessUncertainty(error);
-    if (parsed?.contractVersion === "shield.teammate-readiness.v1" && parsed?.authority === "none" && parsed?.disposition === "action_required") {
+    if (parsed?.contractVersion === contractVersion && parsed?.authority === "none" && parsed?.disposition === "action_required") {
       throw new LaunchFailure("preflight_not_ready", `${parsed.reasonCode ?? "unknown"}`);
     }
     throw new LaunchFailure("cli_unavailable", error.message);
@@ -927,6 +995,26 @@ async function finalProof(context) {
 function repositoryId(origin) {
   const match = /(?:github\.com[/:])([^/]+)\/([^/]+?)(?:\.git)?$/u.exec(origin);
   return match === null ? `git-origin-sha256:${sha256(Buffer.from(origin))}` : `${match[1]}/${match[2]}`;
+}
+
+export function createCopilotReceiptAdapter(agentArtifacts, report) {
+  const semver = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u;
+  if (!Array.isArray(agentArtifacts) || agentArtifacts.length !== COPILOT_AGENT_PATHS.length ||
+      agentArtifacts.some((artifact, index) => artifact?.path !== COPILOT_AGENT_PATHS[index] || !HASH_64.test(artifact.sha256)) ||
+      report?.adapter?.kind !== "github-copilot" || report?.host?.copilotExtension?.classification !== "available" ||
+      report.host.copilotExtension.identifier !== "github.copilot-chat" ||
+      typeof report.host.copilotExtension.version !== "string" || !semver.test(report.host.copilotExtension.version)) {
+    throw new Error("copilot_receipt_adapter_invalid");
+  }
+  return {
+    kind: "github-copilot",
+    agents: agentArtifacts.map(({ path, sha256: digest }) => ({ path, sha256: digest })),
+    extension: {
+      classification: report.host.copilotExtension.classification,
+      identifier: report.host.copilotExtension.identifier,
+      version: report.host.copilotExtension.version,
+    },
+  };
 }
 
 function makeReceipt(context) {
@@ -956,6 +1044,9 @@ function makeReceipt(context) {
         },
         prompt: { path: context.artifacts.promptPath, sha256: context.artifacts.prompt.sha256 },
       },
+      ...(context.artifacts.metadata.contractVersion === "shield.teammate-demo-bootstrap.v2" ? {
+        adapter: createCopilotReceiptAdapter(context.artifacts.copilotAgents, context.preflight.report),
+      } : {}),
       target: {
         package: { name: "@shield/team-system", sha256: sha256(packageBytes) },
         cli: { path: "packages/shield-team-system/dist/cli.mjs", sha256: sha256(cliBytes) },
