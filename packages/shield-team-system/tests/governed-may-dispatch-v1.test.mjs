@@ -1163,10 +1163,14 @@ test("completes one exact governed dispatch after a valid profile-aware journal"
   assert.deepEqual(callCounts, {});
 });
 
-test("legacy envelope and packet digests match the predecessor vector and replay its terminal receipt", async () => {
-  const predecessorEnvelopeAndPacketDigest = "sha256:Gv0cRIlg5akLuKn9yBmZyI5OrkHUlmuJ4Hz0VlVszds";
+test("legacy envelope and packet digests match the stable predecessor fixture and replay its terminal receipt", async () => {
+  // The executable path is protocol input. Keep the vector independent of the host Node installation path.
+  const predecessorOperations = FIXTURE_PLANNED_OPERATIONS.map((operation) => operation.toolName === "runValidation"
+    ? Object.freeze({ ...operation, executable: "/fixture/bin/node" })
+    : operation);
+  const predecessorEnvelopeAndPacketDigest = "sha256:OF1ANAxaSgOf5yYoHqKwSCPfpO-FEzGo3I32gue5QXI";
   const predecessorPacketId = "packet:governed-may:kUFxwJgMBcM3rXUlww9OSoMQlQoo76TN_IalxTFD5dg";
-  const projection = validProjection({ lastSequence: 4 });
+  const projection = projectionForPlannedOperations(predecessorOperations).projection;
   const furyRecord = validFuryRecord(projection);
   const helicarrierCapture = {};
   const fresh = await runGovernedMayDispatchStepV1(validInput(), validDependencies({}, {
@@ -1175,6 +1179,12 @@ test("legacy envelope and packet digests match the predecessor vector and replay
     readDispatchReceipts: async () => validDispatchLedger(furyRecord),
     observeDeliveryWorkspace: async () => validWorkspaceObservation(projection, furyRecord),
     readTrackedFile: async () => validBlueprintBytes(),
+    plannedToolOperations: predecessorOperations,
+    validationCommands: [{ commandId: "validation:test", executable: "/fixture/bin/node", args: ["--test"], timeoutMs: 30_000 }],
+    loadPermissionContext: async (input) => ({
+      state: "ready",
+      context: validPermissionContext({ ...projection, lastSequence: input.plan.evaluatedThroughSequence }, input.expectedDecisionId),
+    }),
     helicarrier: passingHelicarrier(helicarrierCapture),
   }));
 
@@ -1190,6 +1200,7 @@ test("legacy envelope and packet digests match the predecessor vector and replay
     terminalState: "completed",
     dispatchEnvelopeDigest: predecessorEnvelopeAndPacketDigest,
     packetDigest: predecessorEnvelopeAndPacketDigest,
+    plannedOperations: predecessorOperations,
   });
   const started = entries.find(({ kind, accountableSeatId }) => kind === "dispatch.started" && accountableSeatId === "may");
   assert.ok(started.inputEvidenceRefs.some((ref) => ref.endsWith(`:${predecessorEnvelopeAndPacketDigest}`)));
@@ -1199,6 +1210,7 @@ test("legacy envelope and packet digests match the predecessor vector and replay
     readFuryEvidence: async () => validFuryLedger([furyRecord]),
     readDispatchReceipts: async () => validDispatchLedger(furyRecord, entries),
     readTrackedFile: async () => validBlueprintBytes(),
+    plannedToolOperations: predecessorOperations,
     validationCommands: [],
     observeDeliveryWorkspace: async () => { throw new Error("predecessor replay must not observe live workspace"); },
     observeMayToolPreflight: async () => { throw new Error("predecessor replay must not observe live tool state"); },

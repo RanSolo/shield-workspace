@@ -269,7 +269,7 @@ async function runProfileAwareMockedAppendScenario(scenario) {
     let journalCreated = false;
 
     mock.module("node:fs/promises", {
-      exports: {
+      namedExports: {
         ...realFs,
         open: async (path, flags, mode) => {
           const handle = await realFs.open(path, flags, mode);
