@@ -146,7 +146,7 @@ async function runMayControlMockedAppendScenario(scenario) {
     let logReadFileCalls = 0;
 
     mock.module("node:fs/promises", {
-      exports: {
+      namedExports: {
         ...realFs,
         open: async (path, flags, mode) => {
           const handle = await realFs.open(path, flags, mode);

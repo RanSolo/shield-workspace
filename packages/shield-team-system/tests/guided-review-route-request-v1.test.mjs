@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, link, mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, mkdir, readFile, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -130,7 +130,7 @@ function request(overrides = {}) {
 }
 
 async function root(prefix = "shield-guided-route-request-") {
-  return mkdtemp(join(tmpdir(), prefix));
+  return realpath(await mkdtemp(join(tmpdir(), prefix)));
 }
 
 test("route preparation request is closed, content-addressed, and cross-bound exactly", () => {

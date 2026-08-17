@@ -76,7 +76,7 @@ function authority(seatId) {
 }
 
 async function fixture(requireSimmons = false, repositoryTrustProfileId = "signed_human_gates") {
-  const root = await mkdtemp(join(tmpdir(), "shield-supervised-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-supervised-")));
   await writeFile(join(root, "package.json"), "{\"private\":true}\n");
   await mkdir(join(root, ".shield"));
   const coulson = authority("coulson");
@@ -2040,6 +2040,8 @@ test("an older locked writer cannot overwrite the next-session projection", asyn
   const value = await activeGuidedReviewProjectionFixture();
   const path = value.active.projection.projectionPath;
   const oldBytes = await readFile(path, "utf8");
+  const storedSession = JSON.parse(await readFile(value.active.paths.sessionPath, "utf8"));
+  const decidedAt = new Date(Date.parse(storedSession.startedAt) + 1).toISOString();
   let nextSessionDigest;
   let competing;
   const oldInput = { repositoryRoot: value.prepared.root, preparation: value.preparation, resolution: value.resolution,
@@ -2047,7 +2049,7 @@ test("an older locked writer cannot overwrite the next-session projection", asyn
   const oldResult = await projectCurrentGuidedReviewStepHostV1(oldInput, projectionDependencies(async () => {
     const answered = await answerCurrentGuidedReviewSessionHostV1({ repositoryRoot: value.prepared.root, resolution: value.resolution,
       expectedSessionDigest: value.active.sessionDigest, disposition: "pass", observation: "PASS", finding: null, condition: null,
-      decidedAt: "2026-08-14T12:00:00.000Z" });
+      decidedAt });
     assert.equal(answered.state, "ready", JSON.stringify(answered));
     nextSessionDigest = answered.value.sessionDigest;
     competing = await projectCurrentGuidedReviewStepHostV1({ ...oldInput, expectedSessionDigest: nextSessionDigest }, projectionDependencies());
