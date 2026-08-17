@@ -20,7 +20,7 @@ The source repositories remain active until migration, development, installation
 
 ## Setup
 
-Use Node.js 22.22.x. The team-system fault-injection suite relies on the Node 22.22 module-mocking contract.
+Use Node.js 22.22.0 or newer within Node 22 (`>=22.22.0 <23`). The team-system fault-injection suite relies on the Node 22.22 module-mocking contract.
 
 ```bash
 npm install

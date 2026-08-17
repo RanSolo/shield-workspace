@@ -76,7 +76,7 @@ function authority(seatId) {
 }
 
 async function fixture(requireSimmons = false, repositoryTrustProfileId = "signed_human_gates") {
-  const root = await mkdtemp(join(tmpdir(), "shield-supervised-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-supervised-")));
   await writeFile(join(root, "package.json"), "{\"private\":true}\n");
   await mkdir(join(root, ".shield"));
   const coulson = authority("coulson");

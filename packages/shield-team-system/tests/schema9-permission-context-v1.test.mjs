@@ -85,6 +85,41 @@ function canonicalSha256(value) {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
+const ROOT_DERIVED_GOLDEN_FIELDS = new Set([
+  "signatureBase64",
+  "attestationId",
+  "implementationAuthorityDigest",
+  "bindingDigest",
+  "schema9BindingDigest",
+  "journalDigest",
+  "projectionDigest",
+  "digest",
+]);
+
+function normalizeGoldenRepositoryEvidence(value, repositoryRoots, fieldName = "") {
+  if (ROOT_DERIVED_GOLDEN_FIELDS.has(fieldName)) {
+    return `<root-derived:${fieldName}>`;
+  }
+  if (fieldName === "attestationIds" && Array.isArray(value)) {
+    return value.map(() => "<root-derived:attestationId>");
+  }
+  if (typeof value === "string") {
+    return repositoryRoots.reduce(
+      (normalized, repositoryRoot) => normalized.replaceAll(repositoryRoot, "<repository-root>"),
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeGoldenRepositoryEvidence(item, repositoryRoots));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, normalizeGoldenRepositoryEvidence(item, repositoryRoots, key)]),
+    );
+  }
+  return value;
+}
+
 function missionBrief(profile = "standard", includeDaisy = false) {
   const profileGates = profile === "standard" ? ["coulson"] : profile === "high_assurance" ? ["coulson", "fitz"] : ["coulson", "simmons"];
   return createProfileAwareMissionBrief({
@@ -672,26 +707,26 @@ test("schema9 permission context load is ready on valid replay with all required
   assert.equal(context.attestations.every((attestation) => attestation.expiresAt === attestation.observedAt), true);
 });
 
-test("May replay, dispatch projection, permission context, and permission artifact retain fixed canonical bytes", async (context) => {
-  // Keep the protocol root stable while bypassing macOS's /tmp realpath alias in the trusted fixture host.
-  const repositoryRoot = "/tmp/shield-team-system-may-golden-v1";
-  await rm(repositoryRoot, { recursive: true, force: true });
-  await mkdir(repositoryRoot, { recursive: true });
-  context.after(() => rm(repositoryRoot, { recursive: true, force: true }));
-  const fixture = createProfileAwareFixture({ writableRoot: repositoryRoot });
-  await writeJournal(repositoryRoot, fixture.profile.missionId, fixture.entries);
+test("May replay, dispatch projection, permission context, and permission artifact retain fixed normalized canonical bytes", async (context) => {
+  const physicalRepositoryRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-team-system-may-golden-")));
+  context.after(() => rm(physicalRepositoryRoot, { recursive: true, force: true }));
+  const fixture = createProfileAwareFixture({ writableRoot: physicalRepositoryRoot });
+  await writeJournal(physicalRepositoryRoot, fixture.profile.missionId, fixture.entries);
   const plan = permissionPlanFromProjection(fixture.projection, {
     actionId: "edit:implementation",
     effectKey: "effect:implementation",
     validationId: "validation:lint",
   });
   const hostOps = {
-    realpath: async (path) => path,
-    access: async (path) => { assert.equal(path, repositoryRoot); },
+    realpath: (path) => realpath(path),
+    access: async (path) => {
+      assert.equal(path, physicalRepositoryRoot);
+      await fsAccess(path, constants.W_OK | constants.R_OK);
+    },
     now: () => "2026-08-10T18:00:00Z",
     execFile: async (_command, args) => {
       const command = args.join(" ");
-      if (command.endsWith("rev-parse --show-toplevel")) return `${repositoryRoot}\n`;
+      if (command.endsWith("rev-parse --show-toplevel")) return `${physicalRepositoryRoot}\n`;
       if (command.endsWith("rev-parse --abbrev-ref HEAD")) return "main\n";
       if (command.endsWith("rev-parse HEAD")) return `${FIXED_HEAD_REVISION}\n`;
       throw new Error(`Unsupported command: ${command}`);
@@ -700,7 +735,7 @@ test("May replay, dispatch projection, permission context, and permission artifa
   };
   const dispatch = await loadSchema9SeatDispatchProjectionV1({
     purpose: "specialist_dispatch",
-    repositoryRoot,
+    repositoryRoot: physicalRepositoryRoot,
     configuredJournalPath: ".shield/journals",
     missionId: fixture.profile.missionId,
     expectedSubjectId: fixture.profile.subjectId,
@@ -711,7 +746,7 @@ test("May replay, dispatch projection, permission context, and permission artifa
   });
   assert.equal(dispatch.state, "ready", dispatch.errors?.join(" "));
   const permission = await loadSchema9PermissionContextV1(makePermissionInput({
-    repositoryRoot,
+    repositoryRoot: physicalRepositoryRoot,
     missionId: fixture.profile.missionId,
     expectedDecisionId: "decision:schema9:may-golden",
     plan,
@@ -733,18 +768,19 @@ test("May replay, dispatch projection, permission context, and permission artifa
   });
   const decision = await authorize(plan);
   assert.equal(decision.outcome, "allow");
-  assert.equal(dispatch.projection.repositoryObservations.every(({ canonicalRoot }) => canonicalRoot === repositoryRoot), true);
-  assert.equal(permission.context.attestations.every(({ canonicalWritableRoot }) => canonicalWritableRoot === repositoryRoot), true);
+  assert.equal(dispatch.projection.repositoryObservations.every(({ canonicalRoot }) => canonicalRoot === physicalRepositoryRoot), true);
+  assert.equal(permission.context.attestations.every(({ canonicalWritableRoot }) => canonicalWritableRoot === physicalRepositoryRoot), true);
+  const goldenRepositoryRoots = [physicalRepositoryRoot];
   assert.deepEqual({
-    replay: canonicalSha256(fixture.projection),
-    dispatch: canonicalSha256(dispatch.projection),
-    permissionContext: canonicalSha256(permission.context),
-    permissionArtifact: canonicalSha256(decision.authorizationArtifact),
+    replay: canonicalSha256(normalizeGoldenRepositoryEvidence(fixture.projection, goldenRepositoryRoots)),
+    dispatch: canonicalSha256(normalizeGoldenRepositoryEvidence(dispatch.projection, goldenRepositoryRoots)),
+    permissionContext: canonicalSha256(normalizeGoldenRepositoryEvidence(permission.context, goldenRepositoryRoots)),
+    permissionArtifact: canonicalSha256(normalizeGoldenRepositoryEvidence(decision.authorizationArtifact, goldenRepositoryRoots)),
   }, {
-    replay: "18b2a24ada5a6cdf68621dd397b6f39ac5daac39eb63b42eb8e9380ac359c8d0",
-    dispatch: "caa940613decfdee82bb363209790c994d9fdc0687dfae7cef72ed4969217e00",
-    permissionContext: "b58ec8f713c639a70c3b73625485e206030c72cf7607538e4b3a2622fc3e58f9",
-    permissionArtifact: "302279567289c69d9c1c5d1c6940d0ac4012493cc8d59f400e432224321933e2",
+    replay: "34316675e7f81895043c5bda2cd5cf10d0fa6f3c3443920caf708d86c5cbd5d4",
+    dispatch: "8e49917e3d2fdbd35446c1ffdcec30d1015529d3bc72c831e04fc73d7fc60378",
+    permissionContext: "d18c588ca43ec25466205e13ba7cae32945a71559ee2b1aa5159a1aa9f61a931",
+    permissionArtifact: "45a76898719b46280df8fb1a3ed364f4a98e6e21d2fb3295e2b68f147e2d6a93",
   });
 });
 
