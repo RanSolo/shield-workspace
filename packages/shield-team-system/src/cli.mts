@@ -42,6 +42,10 @@ import {
   runTeammateReadinessPreflightV1,
   type TeammateReadinessReportV1,
 } from "./teammate-readiness-v1.mjs";
+import {
+  runCopilotTeammateReadinessPreflightV1,
+  type CopilotTeammateReadinessReportV1,
+} from "./copilot-teammate-readiness-v1.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".shield", "config.json");
 const PIPELINE_PROFILE_RELATIVE_PATH = join(".shield", "pipeline-profile.json");
@@ -84,7 +88,7 @@ function usage(): string {
     `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> [--repository-trust-profile <${REPOSITORY_TRUST_PROFILE_IDS.join("|")}>] [--fitz-binding-ref <ref>] [--simmons-binding-ref <ref>] [--adapters <${CONFIGURED_HOST_ADAPTER_IDS.join(",")}>] [--migrate-config] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
     "  shield doctor [--root <path>] [--json]",
     "  shield worktree prepare --source-root <path> --root <destination> [--json]",
-    "  shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> [--json]",
+    "  shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> [--host github-copilot] [--json]",
     "",
     guidedReviewUsage(),
     "",
@@ -772,7 +776,7 @@ async function runWorktree(args: string[]): Promise<number> {
   return worktreePreparationIsReadyV1(result) ? 0 : 1;
 }
 
-function renderTeammateReadiness(report: TeammateReadinessReportV1): string {
+function renderTeammateReadiness(report: TeammateReadinessReportV1 | CopilotTeammateReadinessReportV1): string {
   const lines = [
     `SHIELD teammate preflight: ${report.disposition} (${report.reasonCode}); authority: ${report.authority}.`,
     ...report.machineChecks.map((entry) =>
@@ -786,10 +790,14 @@ function renderTeammateReadiness(report: TeammateReadinessReportV1): string {
 async function runTeammate(args: string[]): Promise<number> {
   const [subcommand, ...rest] = args;
   if (subcommand !== "preflight") throw new CliError(`Unsupported teammate command: ${subcommand ?? "missing"}.\n${usage()}`);
-  const options = parseOptions(rest, ["--root", "--expected-head"], ["--json"]);
+  const options = parseOptions(rest, ["--root", "--expected-head", "--host"], ["--json"]);
   const root = required(options, "--root");
   const expectedHead = required(options, "--expected-head");
-  const report = await runTeammateReadinessPreflightV1({ root, expectedHead });
+  const host = options.values.get("--host");
+  if (host !== undefined && host !== "github-copilot") throw new CliError(`Unsupported teammate host: ${host}.`);
+  const report = host === "github-copilot"
+    ? await runCopilotTeammateReadinessPreflightV1({ root, expectedHead })
+    : await runTeammateReadinessPreflightV1({ root, expectedHead });
   process.stdout.write(options.flags.has("--json") ? `${JSON.stringify(report, null, 2)}\n` : renderTeammateReadiness(report));
   return report.reasonCode === "invalid_input" ? 2 : report.disposition === "ready_for_host_confirmation" ? 0 : 1;
 }

@@ -10,10 +10,12 @@ import { fileURLToPath } from "node:url";
 import {
   ProcessUncertain,
   containsCheckoutFilterAttribute,
+  createCopilotReceiptAdapter,
   createNativeDependencies,
   inspectBootstrapBytes,
   launchTeammateTrial,
   renderTeammateLaunchResult,
+  validateExactCopilotPreflightReport,
   validateExactPreflightReport,
 } from "./teammate-launch.mjs";
 
@@ -95,6 +97,42 @@ function exactReport(root = "/fixture/checkout", head = "a".repeat(40)) {
   };
 }
 
+function exactCopilotReport(root = "/fixture/checkout", head = "a".repeat(40)) {
+  const seats = ["hill", "daisy", "fury", "may", "mack"];
+  const names = ["Hill", "Daisy", "Fury", "May", "Mack"];
+  const checkRows = [
+    ["input.closed", "pass", "none"], ["repository.root", "pass", "none"],
+    ["repository.expected_head", "pass", "none"], ["repository.clean", "pass", "none"],
+    ["repository.copilot_agents", "pass", "none"], ["host.vscode", "pass", "none"],
+    ["host.copilot_extension", "pass", "none"], ["repository.stable", "pass", "none"],
+  ];
+  const artifacts = seats.map((seat, index) => ({ path: `.github/agents/${seat}.agent.md`, sha256: String(index + 1).repeat(64) }));
+  return {
+    artifacts,
+    report: {
+      schemaVersion: 1,
+      contractVersion: "shield.copilot-teammate-readiness.v1",
+      authority: "none",
+      adapter: { kind: "github-copilot" },
+      disposition: "ready_for_host_confirmation",
+      reasonCode: "ready_for_host_confirmation",
+      repository: { root, branch: null, head, expectedHead: head, clean: true },
+      agents: seats.map((seat, index) => ({
+        seat, name: names[index], path: artifacts[index].path, sha256: artifacts[index].sha256, model: "host-selected",
+      })),
+      host: {
+        vscode: { classification: "available", version: "1.133.0", build: "b".repeat(40), architecture: "arm64" },
+        copilotExtension: { classification: "available", identifier: "github.copilot-chat", version: "0.32.3" },
+        entitlement: { status: "unverified" },
+      },
+      machineChecks: checkRows.map(([id, status, reasonCode]) => ({ id, status, reasonCode, nextAction: "bounded next action" })),
+      hostConfirmations: ["host.copilot_picker_rendered", "host.account_entitlement", ...seats.flatMap((seat) =>
+        ["identity", "selected_model", "tools", "instructions", "creation"].map((field) => `host.seat.${seat}.${field}`))]
+        .map((id) => ({ id, status: "unverified" })),
+    },
+  };
+}
+
 test("bootstrap parser rejects stale, malformed, and authority-bearing packets", () => {
   const bytes = Buffer.from(git(["show", `${expectedHead}:${bootstrapPath}`]));
   assert.equal(inspectBootstrapBytes(bytes, bootstrapSha256).authority, "none");
@@ -111,6 +149,23 @@ test("bootstrap parser rejects stale, malformed, and authority-bearing packets",
   const unknownBytes = Buffer.from(`${JSON.stringify(unknown)}\n`);
   const unknownDigest = createHash("sha256").update(unknownBytes).digest("hex");
   assert.throws(() => inspectBootstrapBytes(unknownBytes, unknownDigest), { reasonCode: "bootstrap_mismatch" });
+});
+
+test("bootstrap v2 requires the explicit GitHub Copilot host while v1 remains unchanged", () => {
+  const v1 = JSON.parse(git(["show", `${expectedHead}:${bootstrapPath}`]));
+  const v2 = { ...v1, contractVersion: "shield.teammate-demo-bootstrap.v2", agentHost: "github-copilot" };
+  const bytes = Buffer.from(`${JSON.stringify(v2)}\n`);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  assert.equal(inspectBootstrapBytes(bytes, digest).agentHost, "github-copilot");
+  for (const host of [undefined, "codex", "github-copilot-cloud"]) {
+    const changed = structuredClone(v2);
+    if (host === undefined) delete changed.agentHost;
+    else changed.agentHost = host;
+    const changedBytes = Buffer.from(`${JSON.stringify(changed)}\n`);
+    const changedDigest = createHash("sha256").update(changedBytes).digest("hex");
+    assert.throws(() => inspectBootstrapBytes(changedBytes, changedDigest), { reasonCode: "bootstrap_mismatch" });
+  }
+  assert.equal(inspectBootstrapBytes(Buffer.from(`${JSON.stringify(v1)}\n`), createHash("sha256").update(`${JSON.stringify(v1)}\n`).digest("hex")).contractVersion, "shield.teammate-demo-bootstrap.v1");
 });
 
 test("tracked checkout filter attributes are rejected", () => {
@@ -280,6 +335,31 @@ test("exact teammate-readiness validator rejects nested identity, ordering, clas
   }
   assert.equal(report.machineChecks.length, 12);
   assert.equal(report.hostConfirmations.length, 37);
+});
+
+test("Copilot report and durable receipt adapter reject wrong-host identity", () => {
+  const { artifacts, report } = exactCopilotReport();
+  const context = { input: { root: report.repository.root, expectedHead: report.repository.expectedHead }, artifacts: { copilotAgents: artifacts } };
+  assert.equal(validateExactCopilotPreflightReport(report, context), report);
+  assert.deepEqual(createCopilotReceiptAdapter(artifacts, report), {
+    kind: "github-copilot",
+    agents: artifacts,
+    extension: { classification: "available", identifier: "github.copilot-chat", version: "0.32.3" },
+  });
+  for (const mutate of [
+    (value) => { value.contractVersion = "shield.teammate-readiness.v1"; },
+    (value) => { value.adapter.kind = "codex"; },
+    (value) => { value.agents[0].model = "pinned"; },
+    (value) => { value.host.copilotExtension.identifier = "openai.chatgpt"; },
+    (value) => { value.host.entitlement.status = "verified"; },
+  ]) {
+    const changed = structuredClone(report);
+    mutate(changed);
+    assert.throws(() => validateExactCopilotPreflightReport(changed, context), /copilot_preflight_schema_or_identity_invalid/u);
+  }
+  const wrongHost = structuredClone(report);
+  wrongHost.adapter.kind = "codex";
+  assert.throws(() => createCopilotReceiptAdapter(artifacts, wrongHost), /copilot_receipt_adapter_invalid/u);
 });
 
 test("human output prints the receipt-bound issue prompt path", () => {
