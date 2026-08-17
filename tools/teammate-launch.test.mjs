@@ -334,42 +334,82 @@ test("final proof Git uncertainty remains recovery-required", { timeout: 180_000
   } finally { await cleanup(target); }
 });
 
-test("real exact-revision launch uses fixed Git and fsmonitor config, no global shield or PATH nx, and returns one unexecuted open action", { timeout: 180_000 }, async () => {
+test("real exact-revision launch suppresses ambient checkout filters, uses fixed Git, and returns one unexecuted open action", { timeout: 180_000 }, async () => {
   const target = await fixture("shield-launch-positive-");
   const decoys = join(target.base, "decoys");
   const shieldMarker = join(target.base, "shield-invoked");
   const nxMarker = join(target.base, "nx-invoked");
   const gitMarker = join(target.base, "git-invoked");
+  const filterMarker = join(target.base, "ambient-filter-invoked");
   const openMarker = join(target.base, "code-open-invoked");
-  const actualCode = execFileSync("sh", ["-c", "command -v code"], { encoding: "utf8" }).trim();
+  const ambientHome = join(target.base, "ambient-home");
+  const ambientAttributes = join(target.base, "ambient-attributes");
+  const ambientConfig = join(target.base, "ambient-gitconfig");
+  const ambientFilter = join(target.base, "ambient-filter");
+  const controlRepository = join(target.base, "ambient-control");
   await mkdir(decoys);
+  await mkdir(join(ambientHome, ".config", "git"), { recursive: true });
+  await mkdir(controlRepository);
   await writeFile(join(decoys, "shield"), `#!/bin/sh\nprintf invoked > ${JSON.stringify(shieldMarker)}\nexit 97\n`);
   await writeFile(join(decoys, "nx"), `#!/bin/sh\nprintf invoked > ${JSON.stringify(nxMarker)}\nexit 98\n`);
   await writeFile(join(decoys, "git"), `#!/bin/sh\nprintf invoked > ${JSON.stringify(gitMarker)}\nexit 96\n`);
-  await writeFile(join(decoys, "code"), `#!/bin/sh\nif [ "$1" = "--new-window" ]; then printf invoked > ${JSON.stringify(openMarker)}; exit 99; fi\nexec ${JSON.stringify(actualCode)} "$@"\n`);
-  await Promise.all(["shield", "nx", "git", "code"].map((name) => chmod(join(decoys, name), 0o755)));
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${decoys}:${previousPath ?? ""}`;
+  await writeFile(join(decoys, "code"), `#!/bin/sh\nif [ "$1" = "--new-window" ]; then printf invoked > ${JSON.stringify(openMarker)}; exit 99; fi\nif [ "$1" = "--version" ]; then printf '1.133.0\\n${"a".repeat(40)}\\narm64\\n'; exit 0; fi\nif [ "$1" = "--list-extensions" ] && [ "$2" = "--show-versions" ]; then printf 'openai.chatgpt@26.810.41047\\n'; exit 0; fi\nexit 95\n`);
+  await writeFile(ambientAttributes, "* filter=ambient\n");
+  await writeFile(join(ambientHome, ".config", "git", "attributes"), "* filter=ambient\n");
+  await writeFile(ambientFilter, `#!/bin/sh\ncat\nprintf invoked > ${JSON.stringify(filterMarker)}\n`);
+  await writeFile(ambientConfig, `[core]\n\tattributesFile = ${ambientAttributes}\n[filter "ambient"]\n\tclean = ${ambientFilter}\n\tsmudge = ${ambientFilter}\n\trequired = true\n`);
+  await Promise.all([
+    ...["shield", "nx", "git", "code"].map((name) => chmod(join(decoys, name), 0o755)),
+    chmod(ambientFilter, 0o755),
+  ]);
+  const ambientEnvironment = {
+    ...process.env,
+    GIT_ATTR_NOSYSTEM: "0",
+    GIT_CONFIG_GLOBAL: ambientConfig,
+    GIT_CONFIG_SYSTEM: ambientConfig,
+    HOME: ambientHome,
+  };
+  execFileSync("git", ["init", "--quiet"], { cwd: controlRepository, env: ambientEnvironment });
+  await writeFile(join(controlRepository, "payload.txt"), "control\n");
+  execFileSync("git", ["add", "payload.txt"], { cwd: controlRepository, env: ambientEnvironment });
+  assert.equal(await readFile(filterMarker, "utf8"), "invoked");
+  await unlink(filterMarker);
+  const previousEnvironment = Object.fromEntries(
+    ["PATH", "HOME", "GIT_ATTR_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"].map((name) => [name, process.env[name]]),
+  );
+  process.env.PATH = `${decoys}:${previousEnvironment.PATH ?? ""}`;
+  process.env.HOME = ambientHome;
+  process.env.GIT_ATTR_NOSYSTEM = "0";
+  process.env.GIT_CONFIG_GLOBAL = ambientConfig;
+  process.env.GIT_CONFIG_SYSTEM = ambientConfig;
   const native = createNativeDependencies();
   let preflightEnvironment;
+  let preflightOutput;
   let launcherGitConfigured = true;
   const dependencies = {
     ...native,
     runProcess: async (executable, args, options) => {
       if (isGit(executable)) {
-        const index = args.indexOf("core.fsmonitor=false");
-        launcherGitConfigured &&= index > 0 && args[index - 1] === "-c" && executable !== join(decoys, "git");
+        const fsmonitorIndex = args.indexOf("core.fsmonitor=false");
+        const attributesIndex = args.indexOf("core.attributesFile=/dev/null");
+        launcherGitConfigured &&= fsmonitorIndex > 0 && args[fsmonitorIndex - 1] === "-c" &&
+          attributesIndex > 0 && args[attributesIndex - 1] === "-c" && options.env.GIT_ATTR_NOSYSTEM === "1" &&
+          executable !== join(decoys, "git");
       }
       if (executable === process.execPath && args.includes("teammate") && args.includes("preflight")) {
         preflightEnvironment = options.env;
       }
-      return native.runProcess(executable, args, options);
+      const processResult = await native.runProcess(executable, args, options);
+      if (executable === process.execPath && args.includes("teammate") && args.includes("preflight")) {
+        preflightOutput = processResult.stdout;
+      }
+      return processResult;
     },
   };
   try {
     const result = await launchTeammateTrial(input(target.root), dependencies);
     assert.equal(result.authority, "none");
-    assert.equal(result.disposition, "ready_for_host_confirmation");
+    assert.equal(result.disposition, "ready_for_host_confirmation", `${JSON.stringify(result)}\n${preflightOutput ?? ""}`);
     assert.equal(result.reasonCode, "ready_for_host_confirmation");
     assert.deepEqual(result.nextAction, {
       executable: "code",
@@ -392,11 +432,18 @@ test("real exact-revision launch uses fixed Git and fsmonitor config, no global 
     assert.equal(launcherGitConfigured, true);
     assert.equal(preflightEnvironment.GIT_CONFIG_KEY_3, "core.fsmonitor");
     assert.equal(preflightEnvironment.GIT_CONFIG_VALUE_3, "false");
+    assert.equal(preflightEnvironment.GIT_ATTR_NOSYSTEM, "1");
+    assert.equal(preflightEnvironment.GIT_CONFIG_COUNT, "6");
+    assert.equal(preflightEnvironment.GIT_CONFIG_KEY_5, "core.attributesFile");
+    assert.equal(preflightEnvironment.GIT_CONFIG_VALUE_5, "/dev/null");
     assert.equal(preflightEnvironment.SHELL, undefined);
     assert.equal(preflightEnvironment.PATH.includes(decoys), false);
-    for (const marker of [shieldMarker, nxMarker, gitMarker, openMarker]) await assert.rejects(readFile(marker), { code: "ENOENT" });
+    for (const marker of [shieldMarker, nxMarker, gitMarker, filterMarker, openMarker]) await assert.rejects(readFile(marker), { code: "ENOENT" });
   } finally {
-    process.env.PATH = previousPath;
+    for (const [name, value] of Object.entries(previousEnvironment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     await cleanup(target);
   }
 });

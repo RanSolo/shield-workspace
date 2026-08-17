@@ -289,6 +289,7 @@ function gitArguments(root, args) {
     "-c", "core.eol=lf",
     "-c", "core.fsmonitor=false",
     "-c", "core.hooksPath=/dev/null",
+    "-c", "core.attributesFile=/dev/null",
     "-C", root,
     ...args,
   ];
@@ -296,6 +297,7 @@ function gitArguments(root, args) {
 
 function gitEnvironment() {
   return closedEnvironment({
+    GIT_ATTR_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_SYSTEM: "/dev/null",
@@ -839,13 +841,15 @@ async function createPreflightEnvironment(context) {
     fs.symlink(context.gitExecutable, join(probeBin, "git")),
   ]);
   return closedEnvironment({
-    GIT_CONFIG_COUNT: "5",
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_CONFIG_COUNT: "6",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_KEY_0: "advice.detachedHead",
     GIT_CONFIG_KEY_1: "core.autocrlf",
     GIT_CONFIG_KEY_2: "core.eol",
     GIT_CONFIG_KEY_3: "core.fsmonitor",
     GIT_CONFIG_KEY_4: "core.hooksPath",
+    GIT_CONFIG_KEY_5: "core.attributesFile",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_SYSTEM: "/dev/null",
     GIT_CONFIG_VALUE_0: "false",
@@ -853,6 +857,7 @@ async function createPreflightEnvironment(context) {
     GIT_CONFIG_VALUE_2: "lf",
     GIT_CONFIG_VALUE_3: "false",
     GIT_CONFIG_VALUE_4: "/dev/null",
+    GIT_CONFIG_VALUE_5: "/dev/null",
     GIT_OPTIONAL_LOCKS: "0",
     GIT_TERMINAL_PROMPT: "0",
     NX_CLOUD: "false",
