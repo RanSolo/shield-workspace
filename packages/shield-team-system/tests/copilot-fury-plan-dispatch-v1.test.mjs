@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
+import { chmodSync } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { CopilotClient as RealCopilotClient, RuntimeConnection as RealRuntimeConnection } from "@github/copilot-sdk";
 
 import {
   COPILOT_FURY_PLAN_DISPATCH_ALLOWED_EFFECTS,
   COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS,
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
   COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID,
+  COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
@@ -250,6 +254,22 @@ function productionConfiguration(current) {
   };
 }
 
+function productionExecutionIdentity(current, claimKey = "a".repeat(32)) {
+  return {
+    claimKey,
+    receiptId: `receipt:${claimKey}`,
+    childTaskId: `task:${claimKey}`,
+    childSessionId: `session:${claimKey}`,
+    clientOptions: {
+      mode: "empty",
+      connection: { kind: "stdio" },
+      workingDirectory: current.root,
+      baseDirectory: join(current.root, ".shield", "runtime", "copilot-fury", claimKey),
+      logLevel: "none",
+    },
+  };
+}
+
 function productionPassOutput(plan) {
   return JSON.stringify({
     schemaVersion: 1,
@@ -267,7 +287,7 @@ function productionSdkHarness(options = {}) {
   const calls = { clientOptions: null, sessionConfig: null, construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0 };
   const event = (type, data) => ({ id: randomUUID(), parentId: null, timestamp: new Date().toISOString(), type, data });
   class CopilotClient {
-    constructor(clientOptions) { calls.clientOptions = clientOptions; calls.construct += 1; }
+    constructor(clientOptions) { calls.clientOptions = clientOptions; calls.construct += 1; options.onConstruct?.(clientOptions); }
     async start() { calls.start += 1; if (options.startFault) throw new Error("runtime startup fault"); }
     async listModels() { calls.listModels += 1; if (options.listModelsFault) throw new Error("model query fault"); return [{ id: "model:fury" }]; }
     async createSession(config) {
@@ -302,10 +322,16 @@ function productionSdkHarness(options = {}) {
     async stop() { calls.stop += 1; }
     async forceStop() { calls.forceStop += 1; }
   }
-  return { calls, module: { CopilotClient } };
+  const RuntimeConnection = { forStdio() { return { kind: "stdio", path: undefined, args: undefined, env: undefined }; } };
+  return { calls, module: { CopilotClient, RuntimeConnection } };
 }
 
 async function runProductionExecutor(current, harness) {
+  const identity = productionExecutionIdentity(current);
+  await mkdir(identity.clientOptions.baseDirectory, { recursive: true, mode: 0o700 });
+  await chmod(join(current.root, ".shield", "runtime"), 0o700);
+  await chmod(join(current.root, ".shield", "runtime", "copilot-fury"), 0o700);
+  await chmod(identity.clientOptions.baseDirectory, 0o700);
   const value = createCopilotFuryPlanExecutorV1({
     async loadSdk() { return harness.module; },
     async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
@@ -315,6 +341,7 @@ async function runProductionExecutor(current, harness) {
     requestedModel: current.request.requestedModel,
     requestedRuntime: current.request.requestedRuntime,
     requestedExecutor: current.request.requestedExecutor,
+    executionIdentity: identity,
   });
   assert.equal(preflight.state, "ready", JSON.stringify(preflight));
   assert.equal(harness.calls.construct, 0);
@@ -324,7 +351,9 @@ async function runProductionExecutor(current, harness) {
     repositoryRoot: current.root,
     card: { frontmatter: { name: "Fury", description: "Review the exact plan." }, body: "Review only." },
     cardIdentity: { sourceKind: "repository", logicalRef: ".github/agents/fury.agent.md", contentDigest: "a".repeat(64), repositoryRevision: current.request.headRevision, precedenceObservations: [] },
-    configuration: productionConfiguration(current),
+    configuration: { ...productionConfiguration(current), sessionId: identity.childSessionId },
+    executionIdentity: identity,
+    async revalidatePersistence() {},
     prompt: "Return the closed result.",
     repairLimit: 0,
     validateOutput: () => true,
@@ -847,6 +876,195 @@ test("immediate preterminal drift and PASS artifact replacement cannot return a 
   assert.equal(readbackResult.handoff, null);
 });
 
+test("real pinned SDK accepts the closed empty-mode explicit-stdio constructor options despite hostile ambient transport", async () => {
+  const baseDirectory = await mkdtemp(join(tmpdir(), "shield-copilot-constructor-"));
+  const previous = process.env.COPILOT_SDK_DEFAULT_CONNECTION;
+  try {
+    for (const hostile of ["inprocess", "definitely-invalid"]) {
+      process.env.COPILOT_SDK_DEFAULT_CONNECTION = hostile;
+      assert.doesNotThrow(() => new RealCopilotClient({
+        mode: "empty",
+        connection: RealRuntimeConnection.forStdio(),
+        workingDirectory: baseDirectory,
+        baseDirectory,
+        logLevel: "none",
+      }));
+    }
+  } finally {
+    if (previous === undefined) delete process.env.COPILOT_SDK_DEFAULT_CONNECTION;
+    else process.env.COPILOT_SDK_DEFAULT_CONNECTION = previous;
+  }
+});
+
+test("structural client projection and persistence ancestry fail closed before claim", async () => {
+  const malformed = await fixture();
+  const harness = productionSdkHarness();
+  const production = createCopilotFuryPlanExecutorV1({
+    async loadSdk() { return harness.module; },
+    async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+  });
+  const identity = productionExecutionIdentity(malformed);
+  const blocked = await production.preflight({
+    repositoryRoot: malformed.root,
+    requestedModel: malformed.request.requestedModel,
+    requestedRuntime: malformed.request.requestedRuntime,
+    requestedExecutor: malformed.request.requestedExecutor,
+    executionIdentity: { ...identity, clientOptions: { ...identity.clientOptions, connection: {} } },
+  });
+  assert.equal(blocked.state, "blocked");
+  assert.equal(harness.calls.construct, 0);
+
+  for (const prepare of [
+    async (current) => chmod(join(current.root, ".shield"), 0o777),
+    async (current) => {
+      const outside = await mkdtemp(join(tmpdir(), "shield-copilot-runtime-outside-"));
+      await symlink(outside, join(current.root, ".shield", "runtime"));
+    },
+  ]) {
+    const current = await fixture();
+    await prepare(current);
+    const fake = executor(current.plan);
+    let claims = 0;
+    const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
+      executor: fake.value,
+      userCopilotHome: current.userCopilotHome,
+      async claimDispatchPacket() { claims += 1; throw new Error("must not claim"); },
+    });
+    assert.equal(result.state, "invalid", JSON.stringify(result));
+    assert.equal(fake.calls.preflight, 0);
+    assert.equal(fake.calls.execute, 0);
+    assert.equal(claims, 0);
+  }
+});
+
+test("claim winner privately materializes deterministic persistence and replacement fails before start", async () => {
+  const current = await fixture();
+  const harness = productionSdkHarness({
+    outputText: productionPassOutput(current.plan),
+    onConstruct(options) { chmodSync(options.baseDirectory, 0o777); },
+  });
+  const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
+    executor: createCopilotFuryPlanExecutorV1({
+      async loadSdk() { return harness.module; },
+      async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+    }),
+    userCopilotHome: current.userCopilotHome,
+  });
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  assert.equal(harness.calls.construct, 1);
+  assert.equal(harness.calls.start, 0);
+  assert.equal(harness.calls.listModels, 0);
+  assert.equal(harness.calls.clientOptions.connection.kind, "stdio");
+  assert.equal(harness.calls.clientOptions.workingDirectory, current.root);
+  assert.ok(harness.calls.clientOptions.baseDirectory.startsWith(join(current.root, ".shield", "runtime", "copilot-fury") + "/"));
+  assert.match(harness.calls.clientOptions.baseDirectory.split("/").at(-1), /^[A-Za-z0-9_-]{32}$/u);
+
+  const denied = await fixture();
+  const fake = executor(denied.plan);
+  const claimDenied = await dispatchCopilotFuryPlanReviewV1(denied.request, {
+    executor: fake.value,
+    userCopilotHome: denied.userCopilotHome,
+    async claimDispatchPacket() { return { state: "invalid", code: "claim_denied", errors: ["claim denied"] }; },
+  });
+  assert.equal(claimDenied.state, "invalid");
+  await assert.rejects(lstat(join(denied.root, ".shield", "runtime")), { code: "ENOENT" });
+});
+
+test("exact empty-mode failure recovers once through an immutable deterministic V2 successor", async () => {
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, "receipt:Y40rTRNdpEsqc9t24wRZ470R0zzYyk5G");
+  const current = await fixture();
+  const failedExecutor = {
+    async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+    async execute() {
+      return {
+        state: "failed",
+        code: "COPILOT_EXECUTION_FAILED",
+        errors: ["CopilotClient was created with mode: 'empty' but neither 'baseDirectory' nor 'sessionFs' was set. Empty mode requires an explicit per-session persistence location; pick one."],
+        observations: {},
+      };
+    },
+  };
+  const predecessor = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: failedExecutor, userCopilotHome: current.userCopilotHome });
+  assert.equal(predecessor.state, "failed", JSON.stringify(predecessor));
+  const ledgerPath = join(current.root, ".shield", "dispatch-receipts.jsonl");
+  const predecessorLines = (await readFile(ledgerPath, "utf8")).trim().split("\n");
+  const predecessorEvidence = JSON.parse(await readFile(join(current.root, predecessor.evidencePath), "utf8"));
+  assert.equal(predecessorEvidence.contractVersion, "shield.copilot-fury-plan-dispatch.evidence.v1");
+
+  const recoveryExecutor = executor(current.plan);
+  const concurrent = await Promise.all([
+    dispatchCopilotFuryPlanReviewV1(current.request, { executor: recoveryExecutor.value, userCopilotHome: current.userCopilotHome }),
+    dispatchCopilotFuryPlanReviewV1(current.request, { executor: recoveryExecutor.value, userCopilotHome: current.userCopilotHome }),
+  ]);
+  const recovered = concurrent.find((result) => result.state === "completed" && result.disposition === "PASS");
+  assert.ok(recovered, JSON.stringify(concurrent));
+  assert.notEqual(recovered.receiptId, predecessor.receiptId);
+  assert.equal(recoveryExecutor.calls.execute, 1);
+  const successorEvidence = JSON.parse(await readFile(join(current.root, recovered.evidencePath), "utf8"));
+  assert.equal(successorEvidence.schemaVersion, 2);
+  assert.equal(successorEvidence.contractVersion, "shield.copilot-fury-plan-dispatch.evidence.v2");
+  assert.equal(successorEvidence.recovery.protocol, COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL);
+  assert.equal(successorEvidence.recovery.predecessorReceiptId, predecessor.receiptId);
+  assert.equal(successorEvidence.recovery.failedEvidenceDigest, predecessorEvidence.evidenceDigest);
+  assert.equal(successorEvidence.recovery.originalPacketDigest, predecessorEvidence.packetDigest);
+  assert.deepEqual(successorEvidence.packet, predecessorEvidence.packet);
+  assert.equal(successorEvidence.observations.sessionId, successorEvidence.recovery.successorExecutionIdentity.childSessionId);
+  assert.notEqual(successorEvidence.observations.sessionId, predecessorEvidence.sdkConfiguration.sessionId);
+  const allLines = (await readFile(ledgerPath, "utf8")).trim().split("\n");
+  assert.deepEqual(allLines.slice(0, predecessorLines.length), predecessorLines);
+  const successorStart = allLines.map((line) => JSON.parse(line)).find((entry) => entry.kind === "dispatch.started" && entry.receiptId === recovered.receiptId);
+  assert.ok(successorStart.inputEvidenceRefs.includes(successorEvidence.recovery.inputEvidenceBinding));
+
+  const retryExecutor = executor(current.plan);
+  const retry = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: retryExecutor.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(retry.state, "completed", JSON.stringify(retry));
+  assert.equal(retry.receiptId, recovered.receiptId);
+  assert.equal(retry.replayed, true);
+  assert.equal(retryExecutor.calls.execute, 0);
+});
+
+test("recovery rejects malformed predecessor evidence, stale packets, and successor claim conflicts", async () => {
+  const exactFailure = {
+    async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+    async execute() {
+      return { state: "failed", code: "COPILOT_EXECUTION_FAILED", errors: ["CopilotClient was created with mode: 'empty' but neither 'baseDirectory' nor 'sessionFs' was set. Empty mode requires an explicit per-session persistence location; pick one."], observations: {} };
+    },
+  };
+
+  const malformed = await fixture();
+  const predecessor = await dispatchCopilotFuryPlanReviewV1(malformed.request, { executor: exactFailure, userCopilotHome: malformed.userCopilotHome });
+  assert.equal(predecessor.state, "failed", JSON.stringify(predecessor));
+  await writeFile(join(malformed.root, predecessor.evidencePath), "{}\n");
+  const malformedExecutor = executor(malformed.plan);
+  const malformedRetry = await dispatchCopilotFuryPlanReviewV1(malformed.request, { executor: malformedExecutor.value, userCopilotHome: malformed.userCopilotHome });
+  assert.equal(malformedRetry.state, "invalid", JSON.stringify(malformedRetry));
+  assert.equal(malformedExecutor.calls.execute, 0);
+
+  const stale = await fixture();
+  const stalePredecessor = await dispatchCopilotFuryPlanReviewV1(stale.request, { executor: exactFailure, userCopilotHome: stale.userCopilotHome });
+  assert.equal(stalePredecessor.state, "failed", JSON.stringify(stalePredecessor));
+  const staleExecutor = executor(stale.plan);
+  const staleRetry = await dispatchCopilotFuryPlanReviewV1({ ...stale.request, timestamp: { value: "2026-08-18T12:02:00.000Z", provenance: "hostTrusted" } }, { executor: staleExecutor.value, userCopilotHome: stale.userCopilotHome });
+  assert.equal(staleRetry.state, "invalid", JSON.stringify(staleRetry));
+  assert.equal(staleRetry.code, "packet_claim_conflict");
+  assert.equal(staleExecutor.calls.execute, 0);
+
+  const conflict = await fixture();
+  const conflictPredecessor = await dispatchCopilotFuryPlanReviewV1(conflict.request, { executor: exactFailure, userCopilotHome: conflict.userCopilotHome });
+  assert.equal(conflictPredecessor.state, "failed", JSON.stringify(conflictPredecessor));
+  const conflictExecutor = executor(conflict.plan);
+  let claims = 0;
+  const conflictRetry = await dispatchCopilotFuryPlanReviewV1(conflict.request, {
+    executor: conflictExecutor.value,
+    userCopilotHome: conflict.userCopilotHome,
+    async claimDispatchPacket() { claims += 1; return { state: "invalid", code: "packet_claim_conflict", errors: ["successor conflict"] }; },
+  });
+  assert.equal(conflictRetry.state, "invalid", JSON.stringify(conflictRetry));
+  assert.equal(conflictRetry.code, "packet_claim_conflict");
+  assert.equal(claims, 1);
+  assert.equal(conflictExecutor.calls.execute, 0);
+});
+
 test("production executor binds loaded SDK and producer identity and confines permissions", async () => {
   const current = await fixture();
   const harness = productionSdkHarness();
@@ -1004,7 +1222,7 @@ test("production executor rejects SDK, event, cancellation, and runtime faults",
     async loadSdk() { return versionHarness.module; },
     async resolveLoadedPackageVersion() { return "1.0.10"; },
   });
-  const blocked = await versionExecutor.preflight({ repositoryRoot: version.root, requestedModel: version.request.requestedModel, requestedRuntime: version.request.requestedRuntime, requestedExecutor: version.request.requestedExecutor });
+  const blocked = await versionExecutor.preflight({ repositoryRoot: version.root, requestedModel: version.request.requestedModel, requestedRuntime: version.request.requestedRuntime, requestedExecutor: version.request.requestedExecutor, executionIdentity: productionExecutionIdentity(version) });
   assert.equal(blocked.state, "blocked", JSON.stringify(blocked));
 
   for (const harness of [
