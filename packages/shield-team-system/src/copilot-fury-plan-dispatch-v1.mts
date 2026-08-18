@@ -1147,7 +1147,7 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, claim: 
   return deepFreeze({ ...common, state: "completed" as const, disposition: "PASS" as const, evidencePath, handoff: { transitionPlanPath: evidence.artifacts.transitionPlanPath, reviewArtifactPath: evidence.artifacts.reviewArtifactPath, dispatchReceiptId: receipt.receiptId } });
 }
 
-type CopilotSdkModuleV1 = Readonly<{ CopilotClient: typeof CopilotClient }>;
+type CopilotSdkModuleV1 = Readonly<{ CopilotClient: unknown }>;
 
 export interface CopilotFuryProductionExecutorDependenciesV1 {
   readonly loadSdk?: () => Promise<CopilotSdkModuleV1>;
@@ -1174,10 +1174,11 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     try {
       const sdk = await (this.dependencies.loadSdk?.() ?? import("@github/copilot-sdk"));
       if (typeof sdk.CopilotClient !== "function") throw new Error("CopilotClient export is unavailable.");
+      const CopilotClientConstructor = sdk.CopilotClient as typeof CopilotClient;
       const packageVersion = await (this.dependencies.resolveLoadedPackageVersion?.() ?? resolveLoadedCopilotSdkPackageVersion());
       if (packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION) throw new Error(`Loaded Copilot SDK version ${packageVersion} does not match ${COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION}.`);
       this.loadedPackageVersion = packageVersion;
-      this.client = new sdk.CopilotClient({ mode: "empty", workingDirectory: input.repositoryRoot, logLevel: "none" });
+      this.client = new CopilotClientConstructor({ mode: "empty", workingDirectory: input.repositoryRoot, logLevel: "none" });
       await this.client.start();
       const models = await this.client.listModels();
       if (!models.some((model) => model.id === input.requestedModel)) throw new Error("Requested Copilot model is unavailable.");
