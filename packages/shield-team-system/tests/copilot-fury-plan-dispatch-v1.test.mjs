@@ -970,7 +970,7 @@ test("claim winner privately materializes deterministic persistence and replacem
   await assert.rejects(lstat(join(denied.root, ".shield", "runtime")), { code: "ENOENT" });
 });
 
-test("exact empty-mode failure recovers once through an immutable deterministic V2 successor", async () => {
+test("only the exact allowlisted empty-mode failure recovers through one immutable deterministic V2 successor", async () => {
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, "receipt:Y40rTRNdpEsqc9t24wRZ470R0zzYyk5G");
   const current = await fixture();
   const failedExecutor = {
@@ -990,11 +990,24 @@ test("exact empty-mode failure recovers once through an immutable deterministic 
   const predecessorLines = (await readFile(ledgerPath, "utf8")).trim().split("\n");
   const predecessorEvidence = JSON.parse(await readFile(join(current.root, predecessor.evidencePath), "utf8"));
   assert.equal(predecessorEvidence.contractVersion, "shield.copilot-fury-plan-dispatch.evidence.v1");
+  assert.notEqual(predecessor.receiptId, COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID);
+  const persistenceRoot = join(current.root, ".shield", "runtime", "copilot-fury");
+  const persistenceBeforeReplay = await readdir(persistenceRoot);
+
+  const nonAllowlistedExecutor = executor(current.plan);
+  const ordinaryReplay = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: nonAllowlistedExecutor.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(ordinaryReplay.state, "failed", JSON.stringify(ordinaryReplay));
+  assert.equal(ordinaryReplay.receiptId, predecessor.receiptId);
+  assert.equal(ordinaryReplay.replayed, true);
+  assert.equal(nonAllowlistedExecutor.calls.preflight, 0);
+  assert.equal(nonAllowlistedExecutor.calls.execute, 0);
+  assert.deepEqual(await readdir(persistenceRoot), persistenceBeforeReplay);
+  assert.deepEqual((await readFile(ledgerPath, "utf8")).trim().split("\n"), predecessorLines);
 
   const recoveryExecutor = executor(current.plan);
   const concurrent = await Promise.all([
-    dispatchCopilotFuryPlanReviewV1(current.request, { executor: recoveryExecutor.value, userCopilotHome: current.userCopilotHome }),
-    dispatchCopilotFuryPlanReviewV1(current.request, { executor: recoveryExecutor.value, userCopilotHome: current.userCopilotHome }),
+    dispatchCopilotFuryPlanReviewV1(current.request, { executor: recoveryExecutor.value, userCopilotHome: current.userCopilotHome, testOnlyRecoverableReceiptId: predecessor.receiptId }),
+    dispatchCopilotFuryPlanReviewV1(current.request, { executor: recoveryExecutor.value, userCopilotHome: current.userCopilotHome, testOnlyRecoverableReceiptId: predecessor.receiptId }),
   ]);
   const recovered = concurrent.find((result) => result.state === "completed" && result.disposition === "PASS");
   assert.ok(recovered, JSON.stringify(concurrent));
@@ -1016,11 +1029,59 @@ test("exact empty-mode failure recovers once through an immutable deterministic 
   assert.ok(successorStart.inputEvidenceRefs.includes(successorEvidence.recovery.inputEvidenceBinding));
 
   const retryExecutor = executor(current.plan);
-  const retry = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: retryExecutor.value, userCopilotHome: current.userCopilotHome });
+  const retry = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: retryExecutor.value, userCopilotHome: current.userCopilotHome, testOnlyRecoverableReceiptId: predecessor.receiptId });
   assert.equal(retry.state, "completed", JSON.stringify(retry));
   assert.equal(retry.receiptId, recovered.receiptId);
   assert.equal(retry.replayed, true);
   assert.equal(retryExecutor.calls.execute, 0);
+});
+
+test("allowlisted recovery exact-checks the complete predecessor claim identity before successor derivation", async (t) => {
+  const current = await fixture();
+  const exactFailure = {
+    async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+    async execute() {
+      return { state: "failed", code: "COPILOT_EXECUTION_FAILED", errors: ["CopilotClient was created with mode: 'empty' but neither 'baseDirectory' nor 'sessionFs' was set. Empty mode requires an explicit per-session persistence location; pick one."], observations: {} };
+    },
+  };
+  const predecessor = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: exactFailure, userCopilotHome: current.userCopilotHome });
+  assert.equal(predecessor.state, "failed", JSON.stringify(predecessor));
+  const ledger = await readSeatDispatchReceiptLedgerV1({ repositoryRoot: current.root, repositoryId: current.request.repositoryId, repositoryWorkspaceId: current.request.repositoryWorkspaceId });
+  assert.equal(ledger.state, "valid", JSON.stringify(ledger));
+  const projection = ledger.value.projections.find((candidate) => candidate.receiptId === predecessor.receiptId);
+  assert.ok(projection);
+  const mutations = {
+    dispatchId: (value) => ({ ...value, dispatchId: `${value.dispatchId}:other` }),
+    childTaskId: (value) => ({ ...value, childTaskId: `${value.childTaskId}:other` }),
+    childSessionId: (value) => ({ ...value, childSessionId: `${value.childSessionId}:other` }),
+    artifactId: (value) => ({ ...value, artifactId: `${value.artifactId}:other` }),
+    artifactRevision: (value) => ({ ...value, artifactRevision: "sha256:otherRevision" }),
+    configuredRuntime: (value) => ({ ...value, configuredRuntime: { ...value.configuredRuntime, model: "model:other" } }),
+    requestedRuntime: (value) => ({ ...value, requestedRuntime: { ...value.requestedRuntime, model: "model:other" } }),
+    toolExecution: (value) => ({ ...value, toolExecution: { ...value.toolExecution, executorBindingRef: "other-executor" } }),
+    startedAt: (value) => ({ ...value, startedAt: "2026-08-18T12:01:00.001Z" }),
+    inputEvidenceRefs: (value) => ({ ...value, inputEvidenceRefs: [...value.inputEvidenceRefs].reverse() }),
+  };
+  for (const [name, mutate] of Object.entries(mutations)) {
+    await t.test(name, async () => {
+      const fake = executor(current.plan);
+      const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
+        executor: fake.value,
+        userCopilotHome: current.userCopilotHome,
+        testOnlyRecoverableReceiptId: predecessor.receiptId,
+        async readDispatchLedger() {
+          return {
+            ...ledger,
+            value: { ...ledger.value, projections: ledger.value.projections.map((candidate) => candidate.receiptId === predecessor.receiptId ? mutate(candidate) : candidate) },
+          };
+        },
+      });
+      assert.equal(result.state, "invalid", JSON.stringify(result));
+      assert.equal(result.code, "PRECLAIM_VALIDATION_FAILED");
+      assert.equal(fake.calls.preflight, 0);
+      assert.equal(fake.calls.execute, 0);
+    });
+  }
 });
 
 test("recovery rejects malformed predecessor evidence, stale packets, and successor claim conflicts", async () => {
@@ -1036,7 +1097,7 @@ test("recovery rejects malformed predecessor evidence, stale packets, and succes
   assert.equal(predecessor.state, "failed", JSON.stringify(predecessor));
   await writeFile(join(malformed.root, predecessor.evidencePath), "{}\n");
   const malformedExecutor = executor(malformed.plan);
-  const malformedRetry = await dispatchCopilotFuryPlanReviewV1(malformed.request, { executor: malformedExecutor.value, userCopilotHome: malformed.userCopilotHome });
+  const malformedRetry = await dispatchCopilotFuryPlanReviewV1(malformed.request, { executor: malformedExecutor.value, userCopilotHome: malformed.userCopilotHome, testOnlyRecoverableReceiptId: predecessor.receiptId });
   assert.equal(malformedRetry.state, "invalid", JSON.stringify(malformedRetry));
   assert.equal(malformedExecutor.calls.execute, 0);
 
@@ -1044,7 +1105,7 @@ test("recovery rejects malformed predecessor evidence, stale packets, and succes
   const stalePredecessor = await dispatchCopilotFuryPlanReviewV1(stale.request, { executor: exactFailure, userCopilotHome: stale.userCopilotHome });
   assert.equal(stalePredecessor.state, "failed", JSON.stringify(stalePredecessor));
   const staleExecutor = executor(stale.plan);
-  const staleRetry = await dispatchCopilotFuryPlanReviewV1({ ...stale.request, timestamp: { value: "2026-08-18T12:02:00.000Z", provenance: "hostTrusted" } }, { executor: staleExecutor.value, userCopilotHome: stale.userCopilotHome });
+  const staleRetry = await dispatchCopilotFuryPlanReviewV1({ ...stale.request, timestamp: { value: "2026-08-18T12:02:00.000Z", provenance: "hostTrusted" } }, { executor: staleExecutor.value, userCopilotHome: stale.userCopilotHome, testOnlyRecoverableReceiptId: stalePredecessor.receiptId });
   assert.equal(staleRetry.state, "invalid", JSON.stringify(staleRetry));
   assert.equal(staleRetry.code, "packet_claim_conflict");
   assert.equal(staleExecutor.calls.execute, 0);
@@ -1057,6 +1118,7 @@ test("recovery rejects malformed predecessor evidence, stale packets, and succes
   const conflictRetry = await dispatchCopilotFuryPlanReviewV1(conflict.request, {
     executor: conflictExecutor.value,
     userCopilotHome: conflict.userCopilotHome,
+    testOnlyRecoverableReceiptId: conflictPredecessor.receiptId,
     async claimDispatchPacket() { claims += 1; return { state: "invalid", code: "packet_claim_conflict", errors: ["successor conflict"] }; },
   });
   assert.equal(conflictRetry.state, "invalid", JSON.stringify(conflictRetry));
