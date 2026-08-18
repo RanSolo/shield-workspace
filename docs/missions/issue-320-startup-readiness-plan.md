@@ -69,7 +69,8 @@ The structural classification is closed:
 
 | Observed state | Result |
 | --- | --- |
-| `.shield` absent, symlinked, aliased outside the canonical root, not a directory, or inaccessible | unavailable: `dispatch_receipt_path_unsafe` |
+| `.shield` absent while the canonical repository root is stable and has host-observed write/search permission for future authorized creation | ready; do not create it during probing |
+| `.shield` symlinked, aliased outside the canonical root, not a directory, or inaccessible | unavailable: `dispatch_receipt_path_unsafe` |
 | canonical `.shield` directory lacks host-observed write/search permission | unavailable: `dispatch_receipt_path_unsafe` |
 | receipt log absent with canonical safe `.shield`; lock absent | ready |
 | receipt log is one canonical regular file with link count one; lock absent | ready |
