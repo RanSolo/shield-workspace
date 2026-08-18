@@ -1,13 +1,13 @@
 import { execFile as execFileNode } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProxy } from "node:util/types";
 
-import type { CopilotClient, CopilotSession, PermissionRequest, SessionEvent } from "@github/copilot-sdk";
+import type { CopilotClient, CopilotSession, PermissionRequest, SessionEvent, Tool } from "@github/copilot-sdk";
 import { validateTransitionPlanV1OrV2, type TransitionPlanV1OrV2 } from "@shield/mission-preparation";
 
 import { parseShieldConfig } from "./config.mjs";
@@ -520,54 +520,87 @@ function gitBytes(root: string, args: readonly string[]): Promise<Buffer> {
   });
 }
 
-async function confinedExactHeadRead(repositoryRoot: string, headRevision: string, requestedPath: string): Promise<boolean> {
-  try {
-    const canonicalRoot = await realpath(repositoryRoot);
-    if (canonicalRoot !== repositoryRoot || typeof requestedPath !== "string" || requestedPath === "" || requestedPath.includes("\0")) return false;
-    let path: string;
-    if (isAbsolute(requestedPath)) {
-      if (resolve(requestedPath) !== requestedPath) return false;
-      path = requestedPath;
-    } else {
-      if (!normalizedRelativePath(requestedPath)) return false;
-      path = join(repositoryRoot, ...requestedPath.split("/"));
-    }
-    const relation = relative(repositoryRoot, path);
-    if (!normalizedRelativePath(relation.split(sep).join("/"))) return false;
-    let current = repositoryRoot;
-    for (const component of relation.split(sep)) {
-      current = join(current, component);
-      const stats = await lstat(current);
-      if (stats.isSymbolicLink()) return false;
-    }
-    if (await realpath(path) !== path) return false;
-    const before = await lstat(path);
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > MAX_INPUT_BYTES) return false;
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    let bytes: Buffer;
-    try {
-      const opened = await handle.stat();
-      if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) return false;
-      bytes = await handle.readFile();
-      const after = await handle.stat();
-      if (after.dev !== opened.dev || after.ino !== opened.ino || after.nlink !== 1 || after.size !== opened.size) return false;
-    } finally { await handle.close(); }
-    const currentHead = (await git(repositoryRoot, ["rev-parse", "--verify", "HEAD"])).trim();
-    if (currentHead !== headRevision) return false;
-    const expected = await gitBytes(repositoryRoot, ["show", `${headRevision}:${relation.split(sep).join("/")}`]);
-    return expected.equals(bytes);
-  } catch {
-    return false;
+function exactGitTreePath(repositoryRoot: string, requestedPath: unknown): string {
+  if (typeof requestedPath !== "string" || requestedPath === "" || requestedPath.includes("\0")) throw new Error("exact_git_tree_path_invalid");
+  if (!isAbsolute(requestedPath)) {
+    if (!normalizedRelativePath(requestedPath)) throw new Error("exact_git_tree_path_invalid");
+    return requestedPath;
   }
+  if (resolve(requestedPath) !== requestedPath) throw new Error("exact_git_tree_path_alias");
+  const relation = relative(repositoryRoot, requestedPath).split(sep).join("/");
+  if (!normalizedRelativePath(relation)) throw new Error("exact_git_tree_path_escape");
+  return relation;
 }
 
-function toolReadPath(toolArgs: unknown): string | null {
-  if (!safePlain(toolArgs)) return null;
-  for (const field of ["path", "filePath", "file", "directory"] as const) {
-    const value = toolArgs[field];
-    if (typeof value === "string") return value;
-  }
-  return null;
+async function exactGitTreeBytes(repositoryRoot: string, revision: string, requestedPath: unknown): Promise<Readonly<{ path: string; bytes: Buffer }>> {
+  if (await realpath(repositoryRoot) !== repositoryRoot) throw new Error("exact_git_tree_root_alias");
+  const path = exactGitTreePath(repositoryRoot, requestedPath);
+  const object = `${revision}:${path}`;
+  const type = (await git(repositoryRoot, ["cat-file", "-t", object])).trim();
+  const sizeText = (await git(repositoryRoot, ["cat-file", "-s", object])).trim();
+  const size = Number(sizeText);
+  if (type !== "blob" || !Number.isSafeInteger(size) || size < 0 || size > MAX_INPUT_BYTES) throw new Error("exact_git_tree_object_invalid");
+  const bytes = await gitBytes(repositoryRoot, ["cat-file", "blob", object]);
+  if (bytes.length !== size || !Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error("exact_git_tree_bytes_invalid");
+  return Object.freeze({ path, bytes });
+}
+
+function exactGitTreeTools(repositoryRoot: string, revision: string): readonly Tool[] {
+  const readTool: Tool = {
+    name: "read",
+    description: "Read one UTF-8 file from the exact immutable repository Git tree under review.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["path"],
+      properties: { path: { type: "string", description: "Repository-relative or canonical absolute file path." } },
+    },
+    overridesBuiltInTool: true,
+    skipPermission: true,
+    defer: "never",
+    handler: async (args: unknown) => {
+      if (!exact(args, ["path"])) throw new Error("exact_git_tree_read_arguments_invalid");
+      const file = await exactGitTreeBytes(repositoryRoot, revision, args.path);
+      return canonicalJson({ repositoryRevision: revision, path: file.path, content: file.bytes.toString("utf8") });
+    },
+  };
+  const searchTool: Tool = {
+    name: "search",
+    description: "Search UTF-8 files from the exact immutable repository Git tree under review.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["query"],
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 1024 },
+        path: { type: "string", description: "Optional repository-relative subtree." },
+      },
+    },
+    overridesBuiltInTool: true,
+    skipPermission: true,
+    defer: "never",
+    handler: async (args: unknown) => {
+      if ((!exact(args, ["query"]) && !exact(args, ["query", "path"])) || typeof args.query !== "string" || args.query.length < 1 || args.query.length > 1024 || (args.path !== undefined && typeof args.path !== "string")) throw new Error("exact_git_tree_search_arguments_invalid");
+      const prefix = args.path === undefined ? null : exactGitTreePath(repositoryRoot, args.path);
+      const listed = await gitBytes(repositoryRoot, ["ls-tree", "-r", "-z", "--name-only", revision]);
+      if (listed.length > MAX_INPUT_BYTES || !Buffer.from(listed.toString("utf8"), "utf8").equals(listed)) throw new Error("exact_git_tree_inventory_too_large");
+      const paths = listed.toString("utf8").split("\0").filter((path) => path !== "" && (prefix === null || path === prefix || path.startsWith(`${prefix}/`)));
+      if (paths.length > 4096) throw new Error("exact_git_tree_inventory_too_large");
+      const matches: { path: string; line: number; text: string }[] = [];
+      let scannedBytes = 0;
+      for (const path of paths) {
+        const file = await exactGitTreeBytes(repositoryRoot, revision, path);
+        scannedBytes += file.bytes.length;
+        if (scannedBytes > 8 * MAX_INPUT_BYTES) throw new Error("exact_git_tree_search_too_large");
+        for (const [index, text] of file.bytes.toString("utf8").split("\n").entries()) {
+          if (text.includes(args.query)) matches.push({ path, line: index + 1, text });
+          if (matches.length === 200) return canonicalJson({ repositoryRevision: revision, query: args.query, matches, truncated: true });
+        }
+      }
+      return canonicalJson({ repositoryRevision: revision, query: args.query, matches, truncated: false });
+    },
+  };
+  return Object.freeze([readTool, searchTool]);
 }
 
 async function stableTextFile(root: string, relativePath: string, label: string, maxBytes = MAX_INPUT_BYTES): Promise<StableFile> {
@@ -1067,19 +1100,25 @@ async function readReceiptForFinalProof(
   return receipt;
 }
 
-async function evidencePathForReplay(request: CopilotFuryPlanDispatchRequestV1, receipt: SeatDispatchReceiptProjectionV1, packetDigest: string): Promise<string | null> {
+async function terminalEvidencePathFromReceipt(request: CopilotFuryPlanDispatchRequestV1, receipt: SeatDispatchReceiptProjectionV1, packetDigest: string): Promise<string> {
+  if (receipt.outputEvidenceRefs === null) throw new Error("terminal_evidence_refs_unavailable");
   const directory = await existingEvidenceDirectory(request.repositoryRoot, request.missionId);
-  if (directory === null) return null;
-  const entries = (await readdir(directory.absolute)).filter((name) => /^dispatch-evidence-[A-Za-z0-9_-]+\.json$/u.test(name)).sort();
-  if (entries.length > 128) throw new Error("dispatch_evidence_inventory_unbounded");
+  if (directory === null) throw new Error("terminal_evidence_directory_unavailable");
   const matches: string[] = [];
-  for (const entry of entries) {
-    const relativePath = `${directory.relative}/${entry}`;
-    const evidence = await parseEvidenceFile(request.repositoryRoot, relativePath);
+  for (const evidenceDigest of receipt.outputEvidenceRefs.filter((ref) => DIGEST.test(ref))) {
+    const relativePath = `${directory.relative}/dispatch-evidence-${evidenceDigest.slice("sha256:".length)}.json`;
+    let evidence: Plain;
+    try {
+      evidence = await parseEvidenceFile(request.repositoryRoot, relativePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (evidence.evidenceDigest !== evidenceDigest) throw new Error("terminal_evidence_digest_binding_mismatch");
     if (evidence.receiptId === receipt.receiptId && evidence.packetDigest === packetDigest) matches.push(relativePath);
   }
-  if (matches.length > 1) throw new Error("dispatch_evidence_ambiguous");
-  return matches[0] ?? null;
+  if (matches.length !== 1) throw new Error(matches.length === 0 ? "terminal_evidence_unavailable" : "terminal_evidence_ambiguous");
+  return matches[0];
 }
 
 async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, claim: Extract<SeatDispatchPacketClaimContractResultV1, { state: "valid" }>["value"]): Promise<CopilotFuryPlanDispatchResultV1> {
@@ -1102,15 +1141,9 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, claim: 
     return deepFreeze({ ...common, state: "recovery_required" as const, code: receipt.originalDisposition.code, errors: [...receipt.originalDisposition.errors], evidencePath, handoff: null });
   }
   if (receipt.state === "started" || receipt.state === "resumed" || receipt.state === "interrupted") {
-    const evidencePath = await evidencePathForReplay(request, receipt, claim.packetDigest);
-    const evidence = evidencePath === null ? null : await parseEvidenceFile(request.repositoryRoot, evidencePath);
-    const errors = evidence !== null && Array.isArray(evidence.errors)
-      ? evidence.errors.filter((value): value is string => typeof value === "string")
-      : ["Existing dispatch is nonterminal and cannot be reinvoked."];
-    return deepFreeze({ ...common, state: "recovery_required" as const, code: "RECOVERY_REQUIRED", errors, evidencePath, handoff: null });
+    return deepFreeze({ ...common, state: "recovery_required" as const, code: "RECOVERY_REQUIRED", errors: ["Existing dispatch is nonterminal and cannot be reinvoked."], evidencePath: null, handoff: null });
   }
-  const evidencePath = await evidencePathForReplay(request, receipt, claim.packetDigest);
-  if (evidencePath === null) return deepFreeze({ ...common, state: "recovery_required" as const, code: "RECOVERY_REQUIRED", errors: ["Existing terminal dispatch evidence is unavailable."], evidencePath: null, handoff: null });
+  const evidencePath = await terminalEvidencePathFromReceipt(request, receipt, claim.packetDigest);
   const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
   if (receipt.outputEvidenceRefs === null || !receipt.outputEvidenceRefs.includes(evidence.evidenceDigest as string)) throw new Error("dispatch_evidence_receipt_binding_mismatch");
   if (receipt.state === "failed" || receipt.state === "cancelled") {
@@ -1199,6 +1232,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     let unauthorizedToolOrEffectObserved = false;
     let confirmedCancellation = false;
     const allowed = new Set<string>(input.configuration.availableTools);
+    const immutableTools = exactGitTreeTools(input.repositoryRoot, input.configuration.repositoryRevision);
     const onEvent = (event: SessionEvent) => {
       if (event.type === "session.start") startEvents.push(event);
       if (event.type === "session.model_change") modelChangeObserved = true;
@@ -1229,7 +1263,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
         requestCanvasRenderer: false,
         requestExtensions: false,
         enableMcpApps: false,
-        tools: [],
+        tools: [...immutableTools],
         mcpServers: {},
         pluginDirectories: [],
         skillDirectories: [],
@@ -1253,23 +1287,15 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
         onEvent,
         onPermissionRequest: async (request: PermissionRequest) => {
           const tool = "toolName" in request && typeof request.toolName === "string" ? request.toolName : request.kind;
-          const elevated = request.managedApprovalRequired === true || ("requestSandboxBypass" in request && request.requestSandboxBypass === true);
-          const confined = !elevated && request.kind === "read" && allowed.has("read")
-            ? await confinedExactHeadRead(input.repositoryRoot, input.configuration.repositoryRevision, request.path)
-            : false;
-          const decision = confined ? "allow" : "deny";
+          const decision = "deny" as const;
           policyDecisions.push({ tool, decision });
-          if (decision === "deny") unauthorizedToolOrEffectObserved = true;
-          return decision === "allow" ? { kind: "approve-once" as const } : { kind: "reject" as const, feedback: "This Fury operation is read-only and the requested effect is not allowed." };
+          unauthorizedToolOrEffectObserved = true;
+          return { kind: "reject" as const, feedback: "Only the host-backed exact-Git-tree read and search tools are available; SDK path/effect permissions are denied." };
         },
         hooks: {
           onPreToolUse: async (hookInput) => {
             const name = hookInput.toolName;
-            const requestedPath = toolReadPath(hookInput.toolArgs);
-            const confined = allowed.has(name) && requestedPath !== null
-              ? await confinedExactHeadRead(input.repositoryRoot, input.configuration.repositoryRevision, requestedPath)
-              : false;
-            const decision = confined ? "allow" as const : "deny" as const;
+            const decision = allowed.has(name) ? "allow" as const : "deny" as const;
             policyDecisions.push({ tool: name, decision });
             if (decision === "deny") unauthorizedToolOrEffectObserved = true;
             return { permissionDecision: decision, permissionDecisionReason: decision === "deny" ? "Tool is outside the fixed read-only Fury surface." : "Tool is in the fixed read-only Fury surface." };
@@ -1358,6 +1384,8 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
   let planFile: StableFile | null = null;
   let plan: TransitionPlanV1OrV2 | null = null;
   let preflightIdentity: Extract<CopilotFuryExecutorPreflightResultV1, { state: "ready" }> | null = null;
+  let terminalUncertain = false;
+  let originalDisposition: Readonly<{ code: string; errors: readonly string[] }> = { code: "DISPATCH_FAILED", errors: [] };
   try {
     observation = await observeRepository(request);
     planFile = await stableTextFile(request.repositoryRoot, request.transitionPlanPath, "transition_plan");
@@ -1437,8 +1465,11 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     const evidenceDirectory = await ensureEvidenceDirectory(request.repositoryRoot, request.missionId);
     await suppliedDependencies.afterClaimBeforeExecution?.();
     const execution = await executor.execute({ repositoryRoot: request.repositoryRoot, card: card.card, cardIdentity: card.identity, configuration, prompt: taskPrompt(request, plan), repairLimit: request.repairLimit, validateOutput: (text) => parseClosedResultText(text, plan as TransitionPlanV1OrV2).state === "valid" });
+    if (execution.state !== "completed") originalDisposition = { code: execution.code, errors: [...execution.errors] };
+    terminalUncertain = true;
     await suppliedDependencies.beforeTerminalRevalidation?.();
     const terminalObservation = await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
+    terminalUncertain = false;
     const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
     if (execution.state !== "completed") {
       const outcome = execution.state;
@@ -1446,6 +1477,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
       const evidenceBytes = `${canonicalJson(evidence)}\n`;
       const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, evidenceBytes);
       if (execution.state === "interrupted") {
+        terminalUncertain = true;
         await suppliedDependencies.beforeTerminalAppend?.();
         await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
         if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
@@ -1457,6 +1489,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
         return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: "recovery_required", code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
       }
       const terminalKind = execution.state === "cancelled" ? "dispatch.cancelled" : "dispatch.failed";
+      terminalUncertain = true;
       await suppliedDependencies.beforeTerminalAppend?.();
       await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
       if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
@@ -1470,6 +1503,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     if (!validExecutorObservations(execution.observations, request, configuration.sessionId)) throw new Error("executor_observation_mismatch");
     const result = parseClosedResultText(execution.outputText, plan);
     if (result.state === "invalid") throw new Error("invalid_fury_model_result");
+    originalDisposition = { code: result.value.verdict, errors: [] };
     let transitionPlanPath: string | null = null;
     let reviewArtifactPath: string | null = null;
     let review: MissionTransitionPlanReviewV1 | null = null;
@@ -1509,6 +1543,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     const refs = result.value.verdict === "PASS" && review !== null
       ? [review.reviewId, review.reviewDigest, review.reviewedArtifactId, review.reviewedArtifactRevision, evidence.evidenceDigest]
       : [plan.id, plan.digest, evidence.evidenceDigest];
+    terminalUncertain = true;
     await suppliedDependencies.beforeTerminalAppend?.();
     await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
     if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor || !validExecutorObservations(execution.observations, request, configuration.sessionId)) throw new Error("preterminal_executor_binding_mismatch");
@@ -1529,20 +1564,71 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
   } catch (error) {
     const message = error instanceof Error ? error.message : "Copilot Fury dispatch failed.";
     if (claimedReceipt === null || observation === null || card === null || configuration === null || plan === null || planFile === null || preflightIdentity === null) return invalid("PRECLAIM_VALIDATION_FAILED", message);
+    if (originalDisposition.errors.length === 0 && originalDisposition.code === "DISPATCH_FAILED") originalDisposition = { code: "DISPATCH_FAILED", errors: [message] };
+    const recovery = (errors: readonly string[], evidencePath: string | null = null): CopilotFuryPlanDispatchResultV1 => deepFreeze({
+      contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+      authority: "none" as const,
+      missionId: request.missionId,
+      state: "recovery_required" as const,
+      code: terminalUncertain ? originalDisposition.code : "RECOVERY_REQUIRED",
+      errors: [...errors],
+      receiptId: claimedReceipt?.receiptId ?? null,
+      evidencePath,
+      replayed: false,
+      handoff: null,
+    });
     try {
+      const ledger = await dependencies.readDispatchLedger({ repositoryRoot: request.repositoryRoot, repositoryId: request.repositoryId, repositoryWorkspaceId: request.repositoryWorkspaceId });
+      if (ledger.state === "invalid") throw new Error(`uncertain_terminal_ledger_read_failed:${ledger.code}`);
+      const matches = ledger.value.projections.filter((candidate) => candidate.receiptId === claimedReceipt?.receiptId);
+      if (matches.length !== 1) throw new Error("uncertain_terminal_receipt_ambiguous");
+      claimedReceipt = matches[0];
+      if (claimedReceipt.state !== "started" && claimedReceipt.state !== "resumed") {
+        try {
+          return await replayExisting(request, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: claimedReceipt, claimStatus: "already_claimed" });
+        } catch (verificationError) {
+          return recovery([message, verificationError instanceof Error ? verificationError.message : "Existing terminal receipt verification failed."]);
+        }
+      }
       const directory = await ensureEvidenceDirectory(request.repositoryRoot, request.missionId);
-      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, configuration, outcome: "failed", dispositionCode: "DISPATCH_FAILED", modelResult: null, observations: {}, errors: [message], artifacts: { transitionPlanPath: null, reviewArtifactPath: null } }));
+      if (!terminalUncertain) {
+        try {
+          await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
+          if (preflightIdentity.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflightIdentity.runtimeId !== request.requestedRuntime || preflightIdentity.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
+        } catch {
+          terminalUncertain = true;
+        }
+      }
+      const outcome = terminalUncertain ? "interrupted" as const : "failed" as const;
+      const disposition = terminalUncertain ? originalDisposition : { code: "DISPATCH_FAILED", errors: [message] };
+      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, configuration, outcome, dispositionCode: disposition.code, modelResult: null, observations: {}, errors: disposition.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null } }));
       const evidencePath = await writeContentAddressedArtifact(directory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
       const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
-      await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
-      if (preflightIdentity.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflightIdentity.runtimeId !== request.requestedRuntime || preflightIdentity.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
-      const receipt = await appendLifecycle(request, claimedReceipt, "dispatch.failed", timestamp, null, [evidence.evidenceDigest], dependencies);
-      const receiptReadback = await readReceiptForFinalProof(request, receipt.receiptId, plan, "failed", dependencies);
+      const receipt = terminalUncertain
+        ? await appendLifecycle(request, claimedReceipt, "dispatch.interrupted", timestamp, null, [evidence.evidenceDigest], dependencies, disposition)
+        : await appendLifecycle(request, claimedReceipt, "dispatch.failed", timestamp, null, [evidence.evidenceDigest], dependencies);
+      const receiptReadback = await readReceiptForFinalProof(request, receipt.receiptId, plan, outcome, dependencies);
       const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
-      if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || receiptReadback.outputEvidenceRefs === null || !receiptReadback.outputEvidenceRefs.includes(evidence.evidenceDigest)) throw new Error("failed_terminal_readback_mismatch");
+      if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest) throw new Error("recovery_evidence_readback_mismatch");
+      if (terminalUncertain) {
+        if (receiptReadback.recoveryEvidenceRefs === null || !receiptReadback.recoveryEvidenceRefs.includes(evidence.evidenceDigest) || receiptReadback.originalDisposition?.code !== disposition.code || canonicalJson(receiptReadback.originalDisposition.errors) !== canonicalJson(disposition.errors)) throw new Error("interrupted_terminal_readback_mismatch");
+        return recovery(disposition.errors, evidencePath);
+      }
+      if (receiptReadback.outputEvidenceRefs === null || !receiptReadback.outputEvidenceRefs.includes(evidence.evidenceDigest)) throw new Error("failed_terminal_readback_mismatch");
       return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: "failed", code: "DISPATCH_FAILED", errors: [message], receiptId: receipt.receiptId, evidencePath, replayed: false, handoff: null });
     } catch (terminalError) {
-      return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: "recovery_required", code: "RECOVERY_REQUIRED", errors: [message, terminalError instanceof Error ? terminalError.message : "Terminalization failed."], receiptId: claimedReceipt.receiptId, evidencePath: null, replayed: false, handoff: null });
+      try {
+        const ledger = await dependencies.readDispatchLedger({ repositoryRoot: request.repositoryRoot, repositoryId: request.repositoryId, repositoryWorkspaceId: request.repositoryWorkspaceId });
+        if (ledger.state === "valid") {
+          const matches = ledger.value.projections.filter((candidate) => candidate.receiptId === claimedReceipt?.receiptId);
+          if (matches.length === 1 && matches[0].state !== "started" && matches[0].state !== "resumed") {
+            try {
+              return await replayExisting(request, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: matches[0], claimStatus: "already_claimed" });
+            } catch { /* return the receipt-bound uncertainty below */ }
+          }
+        }
+      } catch { /* preserve the original readback uncertainty */ }
+      return recovery([message, terminalError instanceof Error ? terminalError.message : "Terminalization failed."]);
     }
   } finally { await executor.close?.().catch(() => undefined); }
 }

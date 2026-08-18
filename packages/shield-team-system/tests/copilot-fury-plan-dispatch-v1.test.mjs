@@ -20,6 +20,7 @@ import {
   dispatchCopilotFuryPlanReviewV1,
   validateCopilotFuryPlanDispatchRequestV1,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
+import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
@@ -474,31 +475,98 @@ test("post-claim drift and executor identity substitution terminate without PASS
   assert.equal(rejected.handoff, null);
 });
 
-test("terminal append and final evidence readback faults require recovery", async () => {
+test("terminal append uncertainty rereads the receipt and exact retry never reinvokes", async () => {
   const appendFault = await fixture();
   const appendExecutor = executor(appendFault.plan);
+  let uncertainAppend = true;
   const appendResult = await dispatchCopilotFuryPlanReviewV1(appendFault.request, {
     executor: appendExecutor.value,
     userCopilotHome: appendFault.userCopilotHome,
-    async appendDispatchReceipt() { return { state: "invalid", code: "terminal_append_fault", errors: ["terminal append failed"] }; },
-  });
-  assert.equal(appendResult.state, "recovery_required", JSON.stringify(appendResult));
-  assert.equal(appendResult.handoff, null);
-
-  const readbackFault = await fixture();
-  const readbackExecutor = executor(readbackFault.plan);
-  const readbackResult = await dispatchCopilotFuryPlanReviewV1(readbackFault.request, {
-    executor: readbackExecutor.value,
-    userCopilotHome: readbackFault.userCopilotHome,
-    async beforeFinalReadback() {
-      const missionRoot = join(readbackFault.root, ".shield", "audit", "copilot-fury-plan-dispatch", sha256(readbackFault.request.missionId));
-      const evidenceName = (await readdir(missionRoot)).find((name) => name.startsWith("dispatch-evidence-"));
-      assert.ok(evidenceName);
-      await writeFile(join(missionRoot, evidenceName), "{}\n");
+    async appendDispatchReceipt(input) {
+      const result = await appendSeatDispatchReceiptEntryV1(input);
+      if (uncertainAppend) {
+        uncertainAppend = false;
+        return { state: "invalid", code: "terminal_append_uncertain", errors: ["terminal append result was lost"] };
+      }
+      return result;
     },
   });
-  assert.equal(readbackResult.state, "recovery_required", JSON.stringify(readbackResult));
-  assert.equal(readbackResult.handoff, null);
+  assert.equal(appendResult.state, "completed", JSON.stringify(appendResult));
+  assert.equal(appendResult.disposition, "PASS");
+  assert.equal(appendExecutor.calls.execute, 1);
+  const retryExecutor = executor(appendFault.plan);
+  const retry = await dispatchCopilotFuryPlanReviewV1(appendFault.request, { executor: retryExecutor.value, userCopilotHome: appendFault.userCopilotHome });
+  assert.equal(retry.state, "completed", JSON.stringify(retry));
+  assert.equal(retry.disposition, "PASS");
+  assert.equal(retryExecutor.calls.execute, 0);
+});
+
+test("receipt readback uncertainty is deterministic on exact retry", async () => {
+  const current = await fixture();
+  const firstExecutor = executor(current.plan);
+  let reads = 0;
+  const first = await dispatchCopilotFuryPlanReviewV1(current.request, {
+    executor: firstExecutor.value,
+    userCopilotHome: current.userCopilotHome,
+    async readDispatchLedger(input) {
+      reads += 1;
+      if (reads >= 3) return { state: "invalid", code: "receipt_readback_uncertain", errors: ["receipt readback unavailable"] };
+      return readSeatDispatchReceiptLedgerV1(input);
+    },
+  });
+  assert.equal(first.state, "recovery_required", JSON.stringify(first));
+  const retryExecutor = executor(current.plan);
+  const retry = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: retryExecutor.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(retry.state, "completed", JSON.stringify(retry));
+  assert.equal(retry.disposition, "PASS");
+  assert.equal(firstExecutor.calls.execute, 1);
+  assert.equal(retryExecutor.calls.execute, 0);
+});
+
+test("terminal evidence, plan, and review readback faults recover on exact retry", async () => {
+  for (const artifactPrefix of ["dispatch-evidence-", "transition-plan-", "transition-plan-review-"]) {
+    const current = await fixture();
+    const firstExecutor = executor(current.plan);
+    let replacedPath;
+    let originalBytes;
+    const first = await dispatchCopilotFuryPlanReviewV1(current.request, {
+      executor: firstExecutor.value,
+      userCopilotHome: current.userCopilotHome,
+      async beforeFinalReadback() {
+        const missionRoot = join(current.root, ".shield", "audit", "copilot-fury-plan-dispatch", sha256(current.request.missionId));
+        const artifactName = (await readdir(missionRoot)).find((name) => name.startsWith(artifactPrefix) && (artifactPrefix !== "transition-plan-" || !name.startsWith("transition-plan-review-")));
+        assert.ok(artifactName);
+        replacedPath = join(missionRoot, artifactName);
+        originalBytes = await readFile(replacedPath, "utf8");
+        await writeFile(replacedPath, "{}\n");
+      },
+    });
+    assert.equal(first.state, "recovery_required", `${artifactPrefix}: ${JSON.stringify(first)}`);
+    assert.ok(replacedPath);
+    await writeFile(replacedPath, originalBytes);
+    const retryExecutor = executor(current.plan);
+    const retry = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: retryExecutor.value, userCopilotHome: current.userCopilotHome });
+    assert.equal(retry.state, "completed", `${artifactPrefix}: ${JSON.stringify(retry)}`);
+    assert.equal(retry.disposition, "PASS");
+    assert.equal(firstExecutor.calls.execute, 1);
+    assert.equal(retryExecutor.calls.execute, 0);
+  }
+});
+
+test("unreferenced self-identifying terminal evidence is ignored on replay", async () => {
+  const readbackFault = await fixture();
+  const readbackExecutor = executor(readbackFault.plan);
+  const first = await dispatchCopilotFuryPlanReviewV1(readbackFault.request, { executor: readbackExecutor.value, userCopilotHome: readbackFault.userCopilotHome });
+  assert.equal(first.state, "completed", JSON.stringify(first));
+  const missionRoot = join(readbackFault.root, ".shield", "audit", "copilot-fury-plan-dispatch", sha256(readbackFault.request.missionId));
+  const evidenceName = (await readdir(missionRoot)).find((name) => name.startsWith("dispatch-evidence-"));
+  assert.ok(evidenceName);
+  await writeFile(join(missionRoot, "dispatch-evidence-unreferenced.json"), await readFile(join(missionRoot, evidenceName), "utf8"));
+  const replayExecutor = executor(readbackFault.plan);
+  const replay = await dispatchCopilotFuryPlanReviewV1(readbackFault.request, { executor: replayExecutor.value, userCopilotHome: readbackFault.userCopilotHome });
+  assert.equal(replay.state, "completed", JSON.stringify(replay));
+  assert.equal(replay.disposition, "PASS");
+  assert.equal(replayExecutor.calls.execute, 0);
 });
 
 test("post-claim evidence-directory replacement cannot redirect artifacts", async () => {
@@ -561,15 +629,25 @@ test("duplicate-key model JSON fails closed before the result schema validator",
 
 test("immediate preterminal drift and PASS artifact replacement cannot return a handoff", async () => {
   const preterminal = await fixture();
+  const originalPlanBytes = await readFile(join(preterminal.root, preterminal.request.transitionPlanPath), "utf8");
+  const firstExecutor = executor(preterminal.plan);
   const preterminalResult = await dispatchCopilotFuryPlanReviewV1(preterminal.request, {
-    executor: executor(preterminal.plan).value,
+    executor: firstExecutor.value,
     userCopilotHome: preterminal.userCopilotHome,
     async beforeTerminalAppend() {
       await writeFile(join(preterminal.root, preterminal.request.transitionPlanPath), `${JSON.stringify(preterminal.plan)} \n`);
     },
   });
   assert.equal(preterminalResult.state, "recovery_required", JSON.stringify(preterminalResult));
+  assert.equal(preterminalResult.code, "PASS");
   assert.equal(preterminalResult.handoff, null);
+  await writeFile(join(preterminal.root, preterminal.request.transitionPlanPath), originalPlanBytes);
+  const retryExecutor = executor(preterminal.plan);
+  const preterminalRetry = await dispatchCopilotFuryPlanReviewV1(preterminal.request, { executor: retryExecutor.value, userCopilotHome: preterminal.userCopilotHome });
+  assert.equal(preterminalRetry.state, "recovery_required", JSON.stringify(preterminalRetry));
+  assert.equal(preterminalRetry.code, "PASS");
+  assert.equal(firstExecutor.calls.execute, 1);
+  assert.equal(retryExecutor.calls.execute, 0);
 
   const readback = await fixture();
   const readbackResult = await dispatchCopilotFuryPlanReviewV1(readback.request, {
@@ -596,20 +674,28 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal(result.observations.sessionProducerVersion, "1.0.79");
   assert.equal(harness.calls.clientOptions.mode, "empty");
   assert.deepEqual(harness.calls.sessionConfig.availableTools, ["read", "search"]);
-  assert.deepEqual(harness.calls.sessionConfig.tools, []);
+  assert.deepEqual(harness.calls.sessionConfig.tools.map((tool) => tool.name), ["read", "search"]);
+  assert.ok(harness.calls.sessionConfig.tools.every((tool) => tool.overridesBuiltInTool === true && tool.skipPermission === true && tool.defer === "never"));
   assert.deepEqual(harness.calls.sessionConfig.mcpServers, {});
   assert.equal(harness.calls.sessionConfig.enableConfigDiscovery, false);
   assert.equal(harness.calls.sessionConfig.enableFileHooks, false);
   assert.equal(harness.calls.sessionConfig.enableHostGitOperations, false);
   const exactPath = join(current.root, "package.json");
-  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review" })).kind, "approve-once");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review" })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", managedApprovalRequired: true })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", requestSandboxBypass: true })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "write", fileName: exactPath, diff: "", intention: "mutate", canOfferSessionApproval: false })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: "./package.json", intention: "alias" })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "read", toolArgs: { path: exactPath } })).permissionDecision, "allow");
-  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "search", toolArgs: { query: "Fury" } })).permissionDecision, "deny");
+  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "search", toolArgs: { query: "Fury" } })).permissionDecision, "allow");
   assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "write", toolArgs: { path: exactPath } })).permissionDecision, "deny");
+  await writeFile(exactPath, "{\"private\":false,\"substituted\":true}\n");
+  const immutableRead = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "read").handler({ path: exactPath }));
+  assert.equal(immutableRead.repositoryRevision, current.request.headRevision);
+  assert.equal(immutableRead.path, "package.json");
+  assert.equal(immutableRead.content, "{\"private\":true}\n");
+  const immutableSearch = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "search").handler({ query: "substituted" }));
+  assert.deepEqual(immutableSearch.matches, []);
   const aliasPath = join(current.root, "package-alias.json");
   await symlink(exactPath, aliasPath);
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: aliasPath, intention: "alias" })).kind, "reject");
