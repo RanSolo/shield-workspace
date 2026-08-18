@@ -14,7 +14,6 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
   COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID,
-  COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
@@ -22,6 +21,7 @@ import {
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
   createCopilotFuryPlanExecutorV1,
   dispatchCopilotFuryPlanReviewV1,
+  evaluateCopilotFuryRecoveryEligibilityV1,
   validateCopilotFuryPlanDispatchRequestV1,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
@@ -53,6 +53,31 @@ function git(root, args) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function recoveryClaimExpectation(receipt) {
+  return {
+    receiptId: receipt.receiptId,
+    dispatchId: receipt.dispatchId,
+    childTaskId: receipt.childTaskId,
+    childSessionId: receipt.childSessionId,
+    parentMissionId: receipt.parentMissionId,
+    parentMissionRevision: receipt.parentMissionRevision,
+    parentSessionId: receipt.parentSessionId,
+    accountableSeatId: receipt.accountableSeatId,
+    repositoryId: receipt.repositoryId,
+    repositoryWorkspaceId: receipt.repositoryWorkspaceId,
+    repositoryRevision: receipt.repositoryRevision,
+    subjectId: receipt.subjectId,
+    subjectRevision: receipt.subjectRevision,
+    artifactId: receipt.artifactId,
+    artifactRevision: receipt.artifactRevision,
+    configuredRuntime: receipt.configuredRuntime,
+    requestedRuntime: receipt.requestedRuntime,
+    toolExecution: receipt.toolExecution,
+    startedAt: receipt.startedAt,
+    inputEvidenceRefs: receipt.inputEvidenceRefs,
+  };
 }
 
 async function fixture({ repositoryCard = true } = {}) {
@@ -970,7 +995,7 @@ test("claim winner privately materializes deterministic persistence and replacem
   await assert.rejects(lstat(join(denied.root, ".shield", "runtime")), { code: "ENOENT" });
 });
 
-test("only the exact allowlisted empty-mode failure recovers through one immutable deterministic V2 successor", async () => {
+test("production ordinary-replays a non-allowlisted same-signature failure while pure mechanics remain deterministic", async () => {
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, "receipt:Y40rTRNdpEsqc9t24wRZ470R0zzYyk5G");
   const current = await fixture();
   const failedExecutor = {
@@ -1004,36 +1029,21 @@ test("only the exact allowlisted empty-mode failure recovers through one immutab
   assert.deepEqual(await readdir(persistenceRoot), persistenceBeforeReplay);
   assert.deepEqual((await readFile(ledgerPath, "utf8")).trim().split("\n"), predecessorLines);
 
-  const recoveryExecutor = executor(current.plan);
-  const concurrent = await Promise.all([
-    dispatchCopilotFuryPlanReviewV1(current.request, { executor: recoveryExecutor.value, userCopilotHome: current.userCopilotHome, testOnlyRecoverableReceiptId: predecessor.receiptId }),
-    dispatchCopilotFuryPlanReviewV1(current.request, { executor: recoveryExecutor.value, userCopilotHome: current.userCopilotHome, testOnlyRecoverableReceiptId: predecessor.receiptId }),
-  ]);
-  const recovered = concurrent.find((result) => result.state === "completed" && result.disposition === "PASS");
-  assert.ok(recovered, JSON.stringify(concurrent));
-  assert.notEqual(recovered.receiptId, predecessor.receiptId);
-  assert.equal(recoveryExecutor.calls.execute, 1);
-  const successorEvidence = JSON.parse(await readFile(join(current.root, recovered.evidencePath), "utf8"));
-  assert.equal(successorEvidence.schemaVersion, 2);
-  assert.equal(successorEvidence.contractVersion, "shield.copilot-fury-plan-dispatch.evidence.v2");
-  assert.equal(successorEvidence.recovery.protocol, COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL);
-  assert.equal(successorEvidence.recovery.predecessorReceiptId, predecessor.receiptId);
-  assert.equal(successorEvidence.recovery.failedEvidenceDigest, predecessorEvidence.evidenceDigest);
-  assert.equal(successorEvidence.recovery.originalPacketDigest, predecessorEvidence.packetDigest);
-  assert.deepEqual(successorEvidence.packet, predecessorEvidence.packet);
-  assert.equal(successorEvidence.observations.sessionId, successorEvidence.recovery.successorExecutionIdentity.childSessionId);
-  assert.notEqual(successorEvidence.observations.sessionId, predecessorEvidence.sdkConfiguration.sessionId);
-  const allLines = (await readFile(ledgerPath, "utf8")).trim().split("\n");
-  assert.deepEqual(allLines.slice(0, predecessorLines.length), predecessorLines);
-  const successorStart = allLines.map((line) => JSON.parse(line)).find((entry) => entry.kind === "dispatch.started" && entry.receiptId === recovered.receiptId);
-  assert.ok(successorStart.inputEvidenceRefs.includes(successorEvidence.recovery.inputEvidenceBinding));
-
-  const retryExecutor = executor(current.plan);
-  const retry = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: retryExecutor.value, userCopilotHome: current.userCopilotHome, testOnlyRecoverableReceiptId: predecessor.receiptId });
-  assert.equal(retry.state, "completed", JSON.stringify(retry));
-  assert.equal(retry.receiptId, recovered.receiptId);
-  assert.equal(retry.replayed, true);
-  assert.equal(retryExecutor.calls.execute, 0);
+  const ledger = await readSeatDispatchReceiptLedgerV1({ repositoryRoot: current.root, repositoryId: current.request.repositoryId, repositoryWorkspaceId: current.request.repositoryWorkspaceId });
+  assert.equal(ledger.state, "valid", JSON.stringify(ledger));
+  const receipt = ledger.value.projections.find((candidate) => candidate.receiptId === predecessor.receiptId);
+  assert.ok(receipt);
+  const expectation = recoveryClaimExpectation(receipt);
+  assert.deepEqual(evaluateCopilotFuryRecoveryEligibilityV1(receipt, expectation, COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID), { state: "not_allowlisted" });
+  const eligible = evaluateCopilotFuryRecoveryEligibilityV1(receipt, expectation, receipt.receiptId);
+  const replayedMechanics = evaluateCopilotFuryRecoveryEligibilityV1(receipt, expectation, receipt.receiptId);
+  assert.equal(eligible.state, "eligible", JSON.stringify(eligible));
+  assert.deepEqual(replayedMechanics, eligible);
+  assert.notEqual(eligible.successor.receiptId, receipt.receiptId);
+  assert.notEqual(eligible.successor.childSessionId, receipt.childSessionId);
+  assert.match(eligible.successor.packetId, /^packet:copilot-fury-recovery:/u);
+  assert.deepEqual(await readdir(persistenceRoot), persistenceBeforeReplay);
+  assert.deepEqual((await readFile(ledgerPath, "utf8")).trim().split("\n"), predecessorLines);
 });
 
 test("allowlisted recovery exact-checks the complete predecessor claim identity before successor derivation", async (t) => {
@@ -1050,6 +1060,7 @@ test("allowlisted recovery exact-checks the complete predecessor claim identity 
   assert.equal(ledger.state, "valid", JSON.stringify(ledger));
   const projection = ledger.value.projections.find((candidate) => candidate.receiptId === predecessor.receiptId);
   assert.ok(projection);
+  const expectation = recoveryClaimExpectation(projection);
   const mutations = {
     dispatchId: (value) => ({ ...value, dispatchId: `${value.dispatchId}:other` }),
     childTaskId: (value) => ({ ...value, childTaskId: `${value.childTaskId}:other` }),
@@ -1064,27 +1075,13 @@ test("allowlisted recovery exact-checks the complete predecessor claim identity 
   };
   for (const [name, mutate] of Object.entries(mutations)) {
     await t.test(name, async () => {
-      const fake = executor(current.plan);
-      const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
-        executor: fake.value,
-        userCopilotHome: current.userCopilotHome,
-        testOnlyRecoverableReceiptId: predecessor.receiptId,
-        async readDispatchLedger() {
-          return {
-            ...ledger,
-            value: { ...ledger.value, projections: ledger.value.projections.map((candidate) => candidate.receiptId === predecessor.receiptId ? mutate(candidate) : candidate) },
-          };
-        },
-      });
-      assert.equal(result.state, "invalid", JSON.stringify(result));
-      assert.equal(result.code, "PRECLAIM_VALIDATION_FAILED");
-      assert.equal(fake.calls.preflight, 0);
-      assert.equal(fake.calls.execute, 0);
+      const result = evaluateCopilotFuryRecoveryEligibilityV1(mutate(projection), expectation, predecessor.receiptId);
+      assert.deepEqual(result, { state: "invalid", code: "RECOVERABLE_PREDECESSOR_CLAIM_MISMATCH" });
     });
   }
 });
 
-test("recovery rejects malformed predecessor evidence, stale packets, and successor claim conflicts", async () => {
+test("ordinary replay rejects malformed predecessor evidence and stale packets without recovery effects", async () => {
   const exactFailure = {
     async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
     async execute() {
@@ -1097,7 +1094,7 @@ test("recovery rejects malformed predecessor evidence, stale packets, and succes
   assert.equal(predecessor.state, "failed", JSON.stringify(predecessor));
   await writeFile(join(malformed.root, predecessor.evidencePath), "{}\n");
   const malformedExecutor = executor(malformed.plan);
-  const malformedRetry = await dispatchCopilotFuryPlanReviewV1(malformed.request, { executor: malformedExecutor.value, userCopilotHome: malformed.userCopilotHome, testOnlyRecoverableReceiptId: predecessor.receiptId });
+  const malformedRetry = await dispatchCopilotFuryPlanReviewV1(malformed.request, { executor: malformedExecutor.value, userCopilotHome: malformed.userCopilotHome });
   assert.equal(malformedRetry.state, "invalid", JSON.stringify(malformedRetry));
   assert.equal(malformedExecutor.calls.execute, 0);
 
@@ -1105,26 +1102,11 @@ test("recovery rejects malformed predecessor evidence, stale packets, and succes
   const stalePredecessor = await dispatchCopilotFuryPlanReviewV1(stale.request, { executor: exactFailure, userCopilotHome: stale.userCopilotHome });
   assert.equal(stalePredecessor.state, "failed", JSON.stringify(stalePredecessor));
   const staleExecutor = executor(stale.plan);
-  const staleRetry = await dispatchCopilotFuryPlanReviewV1({ ...stale.request, timestamp: { value: "2026-08-18T12:02:00.000Z", provenance: "hostTrusted" } }, { executor: staleExecutor.value, userCopilotHome: stale.userCopilotHome, testOnlyRecoverableReceiptId: stalePredecessor.receiptId });
+  const staleRetry = await dispatchCopilotFuryPlanReviewV1({ ...stale.request, timestamp: { value: "2026-08-18T12:02:00.000Z", provenance: "hostTrusted" } }, { executor: staleExecutor.value, userCopilotHome: stale.userCopilotHome });
   assert.equal(staleRetry.state, "invalid", JSON.stringify(staleRetry));
   assert.equal(staleRetry.code, "packet_claim_conflict");
   assert.equal(staleExecutor.calls.execute, 0);
 
-  const conflict = await fixture();
-  const conflictPredecessor = await dispatchCopilotFuryPlanReviewV1(conflict.request, { executor: exactFailure, userCopilotHome: conflict.userCopilotHome });
-  assert.equal(conflictPredecessor.state, "failed", JSON.stringify(conflictPredecessor));
-  const conflictExecutor = executor(conflict.plan);
-  let claims = 0;
-  const conflictRetry = await dispatchCopilotFuryPlanReviewV1(conflict.request, {
-    executor: conflictExecutor.value,
-    userCopilotHome: conflict.userCopilotHome,
-    testOnlyRecoverableReceiptId: conflictPredecessor.receiptId,
-    async claimDispatchPacket() { claims += 1; return { state: "invalid", code: "packet_claim_conflict", errors: ["successor conflict"] }; },
-  });
-  assert.equal(conflictRetry.state, "invalid", JSON.stringify(conflictRetry));
-  assert.equal(conflictRetry.code, "packet_claim_conflict");
-  assert.equal(claims, 1);
-  assert.equal(conflictExecutor.calls.execute, 0);
 });
 
 test("production executor binds loaded SDK and producer identity and confines permissions", async () => {

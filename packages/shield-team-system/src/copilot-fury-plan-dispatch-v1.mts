@@ -233,6 +233,35 @@ export interface CopilotFuryExecutionIdentityV1 {
   readonly clientOptions: CopilotFuryClientOptionsProjectionV1;
 }
 
+export interface CopilotFuryRecoveryClaimExpectationV1 {
+  readonly receiptId: string;
+  readonly dispatchId: string;
+  readonly childTaskId: string;
+  readonly childSessionId: string;
+  readonly parentMissionId: string;
+  readonly parentMissionRevision: string;
+  readonly parentSessionId: string;
+  readonly accountableSeatId: "fury";
+  readonly repositoryId: string;
+  readonly repositoryWorkspaceId: string;
+  readonly repositoryRevision: string;
+  readonly subjectId: string;
+  readonly subjectRevision: string;
+  readonly artifactId: string;
+  readonly artifactRevision: string;
+  readonly configuredRuntime: SeatDispatchReceiptProjectionV1["configuredRuntime"];
+  readonly requestedRuntime: SeatDispatchReceiptProjectionV1["requestedRuntime"];
+  readonly toolExecution: SeatDispatchReceiptProjectionV1["toolExecution"];
+  readonly startedAt: string;
+  readonly inputEvidenceRefs: readonly string[];
+}
+
+export type CopilotFuryRecoveryEligibilityV1 = Readonly<
+  | { state: "not_allowlisted" }
+  | { state: "invalid"; code: "RECOVERABLE_PREDECESSOR_CLAIM_MISMATCH" }
+  | { state: "eligible"; successor: Readonly<{ packetId: string; claimKey: string; receiptId: string; childTaskId: string; childSessionId: string }> }
+>;
+
 export interface CopilotFuryPlanExecutorV1 {
   readonly preflight: (input: CopilotFuryExecutorPreflightInputV1) => Promise<CopilotFuryExecutorPreflightResultV1>;
   readonly execute: (input: CopilotFuryExecutorRunInputV1) => Promise<CopilotFuryExecutorRunResultV1>;
@@ -242,8 +271,6 @@ export interface CopilotFuryPlanExecutorV1 {
 export interface CopilotFuryPlanDispatchDependenciesV1 {
   readonly executor?: CopilotFuryPlanExecutorV1;
   readonly userCopilotHome?: string;
-  /** Test-only receipt identity seam; production callers must omit it so the fixed allowlist constant remains authoritative. */
-  readonly testOnlyRecoverableReceiptId?: string;
   readonly beforeClaim?: () => void | Promise<void>;
   readonly afterClaimBeforeExecution?: () => void | Promise<void>;
   readonly beforeTerminalRevalidation?: () => void | Promise<void>;
@@ -909,10 +936,14 @@ function claimIdentity(request: CopilotFuryPlanDispatchRequestV1, packetId: stri
   });
 }
 
-function deriveRecoverySuccessorIdentity(request: CopilotFuryPlanDispatchRequestV1, predecessorReceiptId: string, predecessorTerminalEntryDigest: string) {
+function recoverySuccessorCore(parentMissionId: string, parentSessionId: string, predecessorReceiptId: string, predecessorTerminalEntryDigest: string) {
   const token = digestBase64Url(`${COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL}\0${predecessorReceiptId}\0${predecessorTerminalEntryDigest}`)
     .replace(/^sha256:/u, "").slice(0, 32);
-  return claimIdentity(request, `packet:copilot-fury-recovery:${token}`);
+  const packetId = `packet:copilot-fury-recovery:${token}`;
+  const claimKey = createHash("sha256").update(new TextEncoder().encode(
+    `seat-dispatch-claim-v1\0${parentMissionId}\0${parentSessionId}\0${packetId}`,
+  )).digest("base64url").slice(0, 32);
+  return Object.freeze({ packetId, claimKey, receiptId: `receipt:${claimKey}`, childTaskId: `task:${claimKey}`, childSessionId: `session:${claimKey}` });
 }
 
 function executionIdentity(repositoryRoot: string, identity: Readonly<{ claimKey: string; receiptId: string; childTaskId: string; childSessionId: string }>): CopilotFuryExecutionIdentityV1 {
@@ -1390,19 +1421,53 @@ function predecessorClaimEvidence(
   ]);
 }
 
+export function evaluateCopilotFuryRecoveryEligibilityV1(
+  receipt: SeatDispatchReceiptProjectionV1,
+  expected: CopilotFuryRecoveryClaimExpectationV1,
+  allowlistedReceiptId: string,
+): CopilotFuryRecoveryEligibilityV1 {
+  if (receipt.state !== "failed" || receipt.receiptId !== allowlistedReceiptId) return Object.freeze({ state: "not_allowlisted" });
+  const matches = receipt.receiptId === expected.receiptId && receipt.dispatchId === expected.dispatchId && receipt.childTaskId === expected.childTaskId && receipt.childSessionId === expected.childSessionId && receipt.parentMissionId === expected.parentMissionId && receipt.parentMissionRevision === expected.parentMissionRevision && receipt.parentSessionId === expected.parentSessionId && receipt.accountableSeatId === expected.accountableSeatId && receipt.repositoryId === expected.repositoryId && receipt.repositoryWorkspaceId === expected.repositoryWorkspaceId && receipt.repositoryRevision === expected.repositoryRevision && receipt.subjectId === expected.subjectId && receipt.subjectRevision === expected.subjectRevision && receipt.artifactId === expected.artifactId && receipt.artifactRevision === expected.artifactRevision && canonicalJson(receipt.configuredRuntime) === canonicalJson(expected.configuredRuntime) && canonicalJson(receipt.requestedRuntime) === canonicalJson(expected.requestedRuntime) && canonicalJson(receipt.toolExecution) === canonicalJson(expected.toolExecution) && receipt.startedAt === expected.startedAt && sameArray(receipt.inputEvidenceRefs, expected.inputEvidenceRefs);
+  if (!matches) return Object.freeze({ state: "invalid", code: "RECOVERABLE_PREDECESSOR_CLAIM_MISMATCH" });
+  return Object.freeze({
+    state: "eligible",
+    successor: recoverySuccessorCore(receipt.parentMissionId, receipt.parentSessionId, receipt.receiptId, receipt.lastEntryDigest),
+  });
+}
+
 async function recoverablePredecessor(
   request: CopilotFuryPlanDispatchRequestV1,
   receipt: SeatDispatchReceiptProjectionV1,
   packetBytes: Uint8Array,
   packetDigest: string,
-  testOnlyRecoverableReceiptId: string | null,
   predecessorIdentity: ReturnType<typeof deriveSessionIdentity>,
   expectedInputEvidenceRefs: readonly string[],
   plan: TransitionPlanV1OrV2,
-): Promise<Readonly<{ packetBytes: Uint8Array; packetDigest: string; successor: ReturnType<typeof deriveRecoverySuccessorIdentity>; executionIdentity: CopilotFuryExecutionIdentityV1; startedAt: string; binding: RecoveryBindingV2 }> | null> {
-  if (receipt.state !== "failed" || (receipt.receiptId !== COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID && receipt.receiptId !== testOnlyRecoverableReceiptId)) return null;
-  const expectedToolExecution = { kind: "tool.execution.requested", executorBindingRef: request.requestedExecutor };
-  if (receipt.receiptId !== predecessorIdentity.receiptId || receipt.dispatchId !== `dispatch:${predecessorIdentity.claimKey}` || receipt.childTaskId !== predecessorIdentity.childTaskId || receipt.childSessionId !== predecessorIdentity.childSessionId || receipt.parentMissionId !== request.missionId || receipt.parentMissionRevision !== request.missionRevision || receipt.parentSessionId !== request.parentSessionId || receipt.accountableSeatId !== "fury" || receipt.repositoryId !== request.repositoryId || receipt.repositoryWorkspaceId !== request.repositoryWorkspaceId || receipt.repositoryRevision !== request.headRevision || receipt.subjectId !== request.subjectId || receipt.subjectRevision !== request.subjectRevision || receipt.artifactId !== plan.id || receipt.artifactRevision !== plan.digest || canonicalJson(receipt.configuredRuntime) !== canonicalJson(predecessorIdentity.configuredRuntime) || canonicalJson(receipt.requestedRuntime) !== canonicalJson(predecessorIdentity.requestedRuntime) || canonicalJson(receipt.toolExecution) !== canonicalJson(expectedToolExecution) || receipt.startedAt !== normalizedReceiptTimestamp(request.timestamp.value) || !sameArray(receipt.inputEvidenceRefs, expectedInputEvidenceRefs)) throw new Error("recoverable_predecessor_receipt_binding_mismatch");
+): Promise<Readonly<{ packetBytes: Uint8Array; packetDigest: string; successor: ReturnType<typeof claimIdentity>; executionIdentity: CopilotFuryExecutionIdentityV1; startedAt: string; binding: RecoveryBindingV2 }> | null> {
+  const eligibility = evaluateCopilotFuryRecoveryEligibilityV1(receipt, {
+    receiptId: predecessorIdentity.receiptId,
+    dispatchId: `dispatch:${predecessorIdentity.claimKey}`,
+    childTaskId: predecessorIdentity.childTaskId,
+    childSessionId: predecessorIdentity.childSessionId,
+    parentMissionId: request.missionId,
+    parentMissionRevision: request.missionRevision,
+    parentSessionId: request.parentSessionId,
+    accountableSeatId: "fury",
+    repositoryId: request.repositoryId,
+    repositoryWorkspaceId: request.repositoryWorkspaceId,
+    repositoryRevision: request.headRevision,
+    subjectId: request.subjectId,
+    subjectRevision: request.subjectRevision,
+    artifactId: plan.id,
+    artifactRevision: plan.digest,
+    configuredRuntime: predecessorIdentity.configuredRuntime,
+    requestedRuntime: predecessorIdentity.requestedRuntime,
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: request.requestedExecutor },
+    startedAt: normalizedReceiptTimestamp(request.timestamp.value),
+    inputEvidenceRefs: expectedInputEvidenceRefs,
+  }, COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID);
+  if (eligibility.state === "not_allowlisted") return null;
+  if (eligibility.state === "invalid") throw new Error("recoverable_predecessor_receipt_binding_mismatch");
   const evidencePath = await terminalEvidencePathFromReceipt(request, receipt, packetDigest);
   const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
   if (evidence.dispositionCode !== RECOVERABLE_FAILURE_CODE || canonicalJson(evidence.errors) !== canonicalJson([RECOVERABLE_FAILURE_MESSAGE])) return null;
@@ -1412,7 +1477,8 @@ async function recoverablePredecessor(
   if (!safePlain(evidence.packet)) throw new Error("recoverable_predecessor_packet_malformed");
   const reconstructed = new TextEncoder().encode(canonicalJson(evidence.packet));
   if (digestBase64Url(reconstructed) !== packetDigest || Buffer.compare(Buffer.from(reconstructed), Buffer.from(packetBytes)) !== 0) throw new Error("recoverable_predecessor_packet_mismatch");
-  const successor = deriveRecoverySuccessorIdentity(request, receipt.receiptId, receipt.lastEntryDigest);
+  const successor = claimIdentity(request, eligibility.successor.packetId);
+  if (successor.claimKey !== eligibility.successor.claimKey || successor.receiptId !== eligibility.successor.receiptId || successor.childTaskId !== eligibility.successor.childTaskId || successor.childSessionId !== eligibility.successor.childSessionId) throw new Error("recovery_successor_mechanics_mismatch");
   const successorExecutionIdentity = executionIdentity(request.repositoryRoot, successor);
   const predecessorBinding = deepFreeze({
     protocol: COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL,
@@ -1758,8 +1824,6 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     let packetBytes = new TextEncoder().encode(canonicalJson(packetBody(request, plan, card, observation, packetConfiguration)));
     packetDigest = digestBase64Url(packetBytes);
     const expectedPredecessorInputEvidence = predecessorClaimEvidence(request, plan, card, observation, predecessorIdentity, packetDigest);
-    const testOnlyRecoverableReceiptId = suppliedDependencies.testOnlyRecoverableReceiptId ?? null;
-    if (testOnlyRecoverableReceiptId !== null && (!id(testOnlyRecoverableReceiptId) || !testOnlyRecoverableReceiptId.startsWith("receipt:"))) return invalid("PRECLAIM_VALIDATION_FAILED", "Test-only recoverable receipt identity is malformed.");
     await validateEvidencePathBeforeClaim(request.repositoryRoot, request.missionId);
     const ledgerBefore = await dependencies.readDispatchLedger({ repositoryRoot: request.repositoryRoot, repositoryId: request.repositoryId, repositoryWorkspaceId: request.repositoryWorkspaceId });
     if (ledgerBefore.state === "invalid" && ledgerBefore.code !== "dispatch_receipt_missing") return invalid(ledgerBefore.code, ...ledgerBefore.errors);
@@ -1770,7 +1834,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     if (existing.length > 1) return invalid("duplicate_start", "Existing packet claim is ambiguous.");
     if (existing.length === 1) {
       if (!existing[0].inputEvidenceRefs.includes(exactBinding)) return invalid("packet_claim_conflict", "Existing packet claim conflicts with the exact request.");
-      const recovery = await recoverablePredecessor(request, existing[0], packetBytes, packetDigest, testOnlyRecoverableReceiptId, predecessorIdentity, expectedPredecessorInputEvidence, plan);
+      const recovery = await recoverablePredecessor(request, existing[0], packetBytes, packetDigest, predecessorIdentity, expectedPredecessorInputEvidence, plan);
       if (recovery === null) {
         return await replayExisting(request, {
           logPath: ledgerBefore.state === "valid" ? ledgerBefore.value.logPath : join(request.repositoryRoot, ".shield", "dispatch-receipts.jsonl"),
