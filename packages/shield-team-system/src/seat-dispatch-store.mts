@@ -837,11 +837,10 @@ function preparePacketClaim(input: unknown): SeatDispatchPacketClaimContractResu
   };
 }
 
-async function resolveStorePaths(
-  scope: SeatDispatchReceiptStoreScopeInput,
-  allowCreateShield: boolean,
+export async function resolveSeatDispatchStorePathsReadOnlyV1(
+  repositoryRootInput: string,
 ): Promise<SeatDispatchStoreContractResult<SeatDispatchStorePaths>> {
-  const resolvedInputRoot = resolve(scope.repositoryRoot);
+  const resolvedInputRoot = resolve(repositoryRootInput);
   let repositoryRoot: string;
   try {
     repositoryRoot = await realpath(resolvedInputRoot);
@@ -876,30 +875,13 @@ async function resolveStorePaths(
       if (code === "ELOOP") return invalid("unsafe_path", "Dispatch receipt shield path is unsafe.");
       return invalid("receipt_unavailable", `Dispatch receipt shield check failed: ${code ?? "unknown_error"}.`);
     }
-    if (!allowCreateShield) {
-      return valid({
-        repositoryRoot,
-        shieldDirectory,
-        logPath: join(shieldDirectory, "dispatch-receipts.jsonl"),
-        lockPath: join(shieldDirectory, "dispatch-receipts.jsonl.lock"),
-        shieldDirectoryExists: false,
-      });
-    }
-    try {
-      await mkdir(shieldDirectory);
-      if (!await syncDirectory(repositoryRoot)) {
-        return invalid("recovery_required", "Repository root sync failed after creating .shield.");
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        shieldDirectoryExists = true;
-      } else {
-      return invalid("receipt_unavailable", `Dispatch receipt shield directory could not be created: ${
-        (error as NodeJS.ErrnoException).code ?? "unknown_error"
-      }.`);
-      }
-    }
-    shieldDirectoryExists = true;
+    return valid({
+      repositoryRoot,
+      shieldDirectory,
+      logPath: join(shieldDirectory, "dispatch-receipts.jsonl"),
+      lockPath: join(shieldDirectory, "dispatch-receipts.jsonl.lock"),
+      shieldDirectoryExists: false,
+    });
   }
 
   let shieldPath;
@@ -921,6 +903,27 @@ async function resolveStorePaths(
     lockPath: join(shieldPath, "dispatch-receipts.jsonl.lock"),
     shieldDirectoryExists,
   });
+}
+
+async function resolveStorePaths(
+  scope: SeatDispatchReceiptStoreScopeInput,
+  allowCreateShield: boolean,
+): Promise<SeatDispatchStoreContractResult<SeatDispatchStorePaths>> {
+  const observed = await resolveSeatDispatchStorePathsReadOnlyV1(scope.repositoryRoot);
+  if (observed.state === "invalid" || observed.value.shieldDirectoryExists || !allowCreateShield) return observed;
+  try {
+    await mkdir(observed.value.shieldDirectory);
+    if (!await syncDirectory(observed.value.repositoryRoot)) {
+      return invalid("recovery_required", "Repository root sync failed after creating .shield.");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      return invalid("receipt_unavailable", `Dispatch receipt shield directory could not be created: ${
+        (error as NodeJS.ErrnoException).code ?? "unknown_error"
+      }.`);
+    }
+  }
+  return resolveSeatDispatchStorePathsReadOnlyV1(scope.repositoryRoot);
 }
 
 function parseReceiptLog(

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { chmodSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -19,11 +19,13 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
   COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF,
+  COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION,
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
   createCopilotFuryPlanExecutorV1,
   deriveCopilotSdkSessionIdV1,
   dispatchCopilotFuryPlanReviewV1,
   evaluateCopilotFuryRecoveryEligibilityV1,
+  probeCopilotFuryDispatchCapabilityV1,
   validateCopilotFurySuccessorExecutionConfigurationV3,
   validateCopilotFuryPlanDispatchRequestV1,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
@@ -399,6 +401,164 @@ test("closed request rejects aliases, accessors, proxies, and non-read-only conf
   const accessor = { ...current.request };
   Object.defineProperty(accessor, "missionId", { enumerable: true, get: () => current.request.missionId });
   assert.equal(validateCopilotFuryPlanDispatchRequestV1(accessor).state, "invalid");
+});
+
+function capabilitySdk(overrides = {}) {
+  const calls = { load: 0, metadata: 0, stdio: 0, construct: 0, start: 0, createSession: 0, listModels: 0 };
+  class CopilotClient {
+    constructor() { calls.construct += 1; }
+    async start() { calls.start += 1; }
+    async createSession() { calls.createSession += 1; }
+    async listModels() { calls.listModels += 1; }
+  }
+  const module = overrides.module ?? {
+    CopilotClient,
+    RuntimeConnection: {
+      forStdio() {
+        calls.stdio += 1;
+        return overrides.connection ?? { kind: "stdio", path: undefined, args: undefined, env: undefined };
+      },
+    },
+  };
+  return {
+    calls,
+    dependencies: {
+      async loadSdk() { calls.load += 1; if (overrides.loadError) throw new Error("missing sdk"); return module; },
+      async resolveLoadedPackageVersion() { calls.metadata += 1; return overrides.version ?? COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+      ...(overrides.beforeFinalObservation === undefined ? {} : { beforeFinalObservation: overrides.beforeFinalObservation }),
+    },
+  };
+}
+
+test("authority-none Fury capability probe binds production card, receipt path, SDK, and performs no SDK effects", async () => {
+  const current = await fixture();
+  const sdk = capabilitySdk();
+  const beforeShield = await readdir(join(current.root, ".shield"));
+  const report = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: current.root, expectedHead: current.request.headRevision },
+    { ...sdk.dependencies, userCopilotHome: current.userCopilotHome },
+  );
+  assert.equal(report.contractVersion, COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION);
+  assert.equal(report.authority, "none");
+  assert.equal(report.disposition, "ready");
+  assert.equal(report.reasonCode, "ready");
+  assert.deepEqual(report.package, { name: "@github/copilot-sdk", version: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION });
+  assert.deepEqual(report.target, { runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID });
+  assert.equal(report.card.sourceKind, "repository");
+  assert.equal(report.card.logicalRef, ".github/agents/fury.agent.md");
+  assert.equal(report.card.repositoryRevision, current.request.headRevision);
+  assert.deepEqual(report.card.precedenceObservations.map(({ sourceKind, disposition }) => ({ sourceKind, disposition })), [
+    { sourceKind: "repository", disposition: "selected" },
+    { sourceKind: "user", disposition: "absent" },
+  ]);
+  assert.deepEqual(report.dispatchReceipt, {
+    logicalPath: ".shield/dispatch-receipts.jsonl",
+    lockLogicalPath: ".shield/dispatch-receipts.jsonl.lock",
+    safety: "safe",
+  });
+  assert.deepEqual(sdk.calls, { load: 1, metadata: 1, stdio: 1, construct: 0, start: 0, createSession: 0, listModels: 0 });
+  assert.deepEqual(await readdir(join(current.root, ".shield")), beforeShield);
+  await assert.rejects(lstat(join(current.root, ".shield", "dispatch-receipts.jsonl")), { code: "ENOENT" });
+});
+
+test("Fury capability receipt-path probe accepts one regular file and rejects aliases, hardlinks, and unwritable state", async () => {
+  const current = await fixture();
+  const logPath = join(current.root, ".shield", "dispatch-receipts.jsonl");
+  const probe = () => probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: current.root, expectedHead: current.request.headRevision },
+    { ...capabilitySdk().dependencies, userCopilotHome: current.userCopilotHome },
+  );
+  await writeFile(logPath, "\n");
+  assert.equal((await probe()).reasonCode, "ready");
+
+  const outside = join(current.userCopilotHome, "outside-receipt");
+  await writeFile(outside, "\n");
+  await unlink(logPath);
+  await symlink(outside, logPath);
+  assert.equal((await probe()).reasonCode, "dispatch_receipt_path_unsafe");
+
+  await unlink(logPath);
+  await link(outside, logPath);
+  assert.equal((await probe()).reasonCode, "dispatch_receipt_path_unsafe");
+
+  await unlink(logPath);
+  await chmod(join(current.root, ".shield"), 0o500);
+  try { assert.equal((await probe()).reasonCode, "dispatch_receipt_path_unsafe"); }
+  finally { await chmod(join(current.root, ".shield"), 0o755); }
+});
+
+test("Fury capability probe exposes closed failure reasons and preserves precedence", async () => {
+  const invalid = await probeCopilotFuryDispatchCapabilityV1({ repositoryRoot: "relative", expectedHead: "bad" });
+  assert.equal(invalid.reasonCode, "invalid_input");
+  const unavailable = await probeCopilotFuryDispatchCapabilityV1({ repositoryRoot: join(tmpdir(), "missing-shield-capability"), expectedHead: "a".repeat(40) });
+  assert.equal(unavailable.reasonCode, "repository_unavailable");
+
+  const stale = await fixture();
+  const staleSdk = capabilitySdk({ loadError: true });
+  const staleResult = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: stale.root, expectedHead: "b".repeat(40) },
+    { ...staleSdk.dependencies, userCopilotHome: stale.userCopilotHome },
+  );
+  assert.equal(staleResult.reasonCode, "expected_head_mismatch");
+
+  const dirty = await fixture();
+  await writeFile(join(dirty.root, "dirty.txt"), "dirty\n");
+  const dirtyResult = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: dirty.root, expectedHead: dirty.request.headRevision },
+    { ...capabilitySdk({ loadError: true }).dependencies, userCopilotHome: dirty.userCopilotHome },
+  );
+  assert.equal(dirtyResult.reasonCode, "workspace_dirty");
+
+  const absent = await fixture({ repositoryCard: false });
+  const absentResult = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: absent.root, expectedHead: absent.request.headRevision },
+    { ...capabilitySdk().dependencies, userCopilotHome: absent.userCopilotHome },
+  );
+  assert.equal(absentResult.reasonCode, "fury_card_unavailable");
+
+  const shadowed = await fixture();
+  await writeFile(join(shadowed.userCopilotHome, "agents", "fury.agent.md"), FURY_CARD);
+  const shadowedResult = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: shadowed.root, expectedHead: shadowed.request.headRevision },
+    { ...capabilitySdk().dependencies, userCopilotHome: shadowed.userCopilotHome },
+  );
+  assert.equal(shadowedResult.reasonCode, "fury_card_shadowed");
+
+  const unsafe = await fixture();
+  await writeFile(join(unsafe.root, ".shield", "dispatch-receipts.jsonl.lock"), "held\n");
+  git(unsafe.root, ["add", "-f", ".shield/dispatch-receipts.jsonl.lock"]);
+  git(unsafe.root, ["commit", "-qm", "unsafe receipt lock fixture"]);
+  const unsafeHead = git(unsafe.root, ["rev-parse", "HEAD"]);
+  const unsafeResult = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: unsafe.root, expectedHead: unsafeHead },
+    { ...capabilitySdk({ loadError: true }).dependencies, userCopilotHome: unsafe.userCopilotHome },
+  );
+  assert.equal(unsafeResult.reasonCode, "dispatch_receipt_path_unsafe");
+
+  for (const [label, overrides, reasonCode, expectedStdio] of [
+    ["unavailable", { loadError: true }, "copilot_sdk_unavailable", 0],
+    ["version", { version: "1.0.10" }, "copilot_sdk_version_mismatch", 0],
+    ["exports", { module: { CopilotClient: class {}, RuntimeConnection: {} } }, "copilot_sdk_exports_invalid", 0],
+    ["stdio", { connection: { kind: "stdio", path: "/unsafe" } }, "copilot_stdio_projection_unsafe", 1],
+  ]) {
+    const current = await fixture();
+    const sdkCase = capabilitySdk(overrides);
+    const result = await probeCopilotFuryDispatchCapabilityV1(
+      { repositoryRoot: current.root, expectedHead: current.request.headRevision },
+      { ...sdkCase.dependencies, userCopilotHome: current.userCopilotHome },
+    );
+    assert.equal(result.reasonCode, reasonCode, label);
+    assert.equal(sdkCase.calls.stdio, expectedStdio, label);
+    assert.equal(sdkCase.calls.construct, 0, label);
+  }
+
+  const drift = await fixture();
+  const driftSdk = capabilitySdk({ beforeFinalObservation: async () => writeFile(join(drift.root, "drift.txt"), "drift\n") });
+  const driftResult = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: drift.root, expectedHead: drift.request.headRevision },
+    { ...driftSdk.dependencies, userCopilotHome: drift.userCopilotHome },
+  );
+  assert.equal(driftResult.reasonCode, "repository_drift");
 });
 
 test("repository Fury card PASS is durable, attributable, replay-safe, and confined", async () => {

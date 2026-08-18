@@ -15,6 +15,7 @@ import {
   SUPPORTED_MODE_IDS,
   SUPPORTED_SEAT_IDS,
   configuredAdapterIds,
+  composeCopilotDoctorReportV1,
   createShieldConfig,
   evaluateDoctor,
   formatShieldConfig,
@@ -174,6 +175,38 @@ test("doctor v2 emits adjacent independent config-only adapter checks", () => {
       assert.match(check.message, /repository configuration/iu);
     }
   }
+});
+
+test("host-selected Doctor composition is separate and preserves ordinary Doctor bytes and schema", () => {
+  const ordinary = evaluateDoctor({
+    repositoryRootReady: true,
+    packageVersion: SHIELD_PACKAGE_VERSION,
+    configPresent: true,
+    config: canonicalConfig(),
+  });
+  const bytes = JSON.stringify(ordinary);
+  const capability = {
+    authority: "none",
+    disposition: "ready",
+    reasonCode: "ready",
+    nextAction: "No machine action is required for this capability.",
+    observed: "retained",
+  };
+  const selected = composeCopilotDoctorReportV1(ordinary, capability);
+  assert.deepEqual(selected, {
+    reportVersion: 1,
+    contractVersion: "shield.doctor.host-selected.v1",
+    authority: "none",
+    host: "github-copilot",
+    ok: true,
+    doctor: ordinary,
+    hostCapability: capability,
+  });
+  assert.equal(JSON.stringify(ordinary), bytes);
+  assert.equal(ordinary.reportVersion, 2);
+  const unavailable = composeCopilotDoctorReportV1(ordinary, { ...capability, disposition: "unavailable", reasonCode: "repository_drift" });
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.hostCapability.reasonCode, "repository_drift");
 });
 
 test("doctor produces one redacted null adapter failure for every invalid adapter shape", () => {

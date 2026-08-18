@@ -189,6 +189,38 @@ export interface DoctorReportV2 {
   worktreeState: DoctorWorktreeState;
 }
 
+export interface DoctorHostCapabilityV1 {
+  readonly authority: "none";
+  readonly disposition: "ready" | "unavailable";
+  readonly reasonCode: string;
+  readonly nextAction: string;
+}
+
+export interface CopilotDoctorReportV1<TCapability extends DoctorHostCapabilityV1 = DoctorHostCapabilityV1> {
+  readonly reportVersion: 1;
+  readonly contractVersion: "shield.doctor.host-selected.v1";
+  readonly authority: "none";
+  readonly host: "github-copilot";
+  readonly ok: boolean;
+  readonly doctor: DoctorReportV2;
+  readonly hostCapability: TCapability;
+}
+
+export function composeCopilotDoctorReportV1<TCapability extends DoctorHostCapabilityV1>(
+  doctor: DoctorReportV2,
+  hostCapability: TCapability,
+): CopilotDoctorReportV1<TCapability> {
+  return {
+    reportVersion: 1,
+    contractVersion: "shield.doctor.host-selected.v1",
+    authority: "none",
+    host: "github-copilot",
+    ok: doctor.ok && hostCapability.disposition === "ready",
+    doctor,
+    hostCapability,
+  };
+}
+
 const CONFIG_V1_FIELDS = [
   "schemaVersion",
   "repositoryId",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -56,6 +56,17 @@ function hostDependencies(
   };
 }
 
+function capability(disposition = "ready", reasonCode = "ready") {
+  return {
+    schemaVersion: 1,
+    contractVersion: "shield.copilot-fury-dispatch-capability.v1",
+    authority: "none",
+    disposition,
+    reasonCode,
+    nextAction: disposition === "ready" ? "No machine action is required for this capability." : `Resolve ${reasonCode} and rerun.`,
+  };
+}
+
 test("Copilot host probe observes only VS Code and github.copilot-chat", async () => {
   const { calls, dependencies } = hostDependencies();
   const host = await probeCopilotTeammateHostV1(dependencies);
@@ -87,6 +98,23 @@ test("Copilot preflight binds ordered agent blobs, host-selected models, and unv
       { seat: "mack", path: ".github/agents/mack.agent.md", model: "host-selected" },
     ]);
     assert.ok(report.agents.every((agent) => /^[0-9a-f]{64}$/u.test(agent.sha256)));
+    assert.deepEqual(report.machineChecks.map(({ id }) => id), [
+      "input.closed",
+      "repository.root",
+      "repository.expected_head",
+      "repository.clean",
+      "repository.copilot_agents",
+      "platform.fury_dispatch",
+      "host.vscode",
+      "host.copilot_extension",
+      "repository.stable",
+    ]);
+    assert.deepEqual(report.machineChecks.find(({ id }) => id === "platform.fury_dispatch"), {
+      id: "platform.fury_dispatch",
+      status: "pass",
+      reasonCode: "ready",
+      nextAction: "No machine action is required for this capability.",
+    });
     assert.equal(report.hostConfirmations.length, 27);
     assert.deepEqual(report.hostConfirmations.slice(0, 4), [
       { id: "host.copilot_picker_rendered", status: "unverified" },
@@ -97,6 +125,38 @@ test("Copilot preflight binds ordered agent blobs, host-selected models, and unv
     assert.ok(report.hostConfirmations.every((entry) => entry.status === "unverified"));
     const projected = projectCopilotTeammateReadinessForPublicationV1(report);
     assert.equal(projected.repository.root, "<DISPOSABLE_ROOT>");
+    assert.equal(JSON.stringify(projected).includes(target.root), false);
+  } finally {
+    await rm(target.root, { recursive: true, force: false });
+  }
+});
+
+test("Copilot preflight uses the shared Fury capability row and fails before readiness", async () => {
+  const target = await fixture();
+  const canonicalRoot = await realpath(target.root);
+  let probes = 0;
+  try {
+    const report = await runCopilotTeammateReadinessPreflightV1(
+      { root: target.root, expectedHead: target.head },
+      {
+        ...hostDependencies().dependencies,
+        async probeFuryDispatchCapability(input) {
+          probes += 1;
+          assert.deepEqual(input, { repositoryRoot: canonicalRoot, expectedHead: target.head });
+          return capability("unavailable", "copilot_sdk_version_mismatch");
+        },
+      },
+    );
+    assert.equal(probes, 1);
+    assert.equal(report.disposition, "action_required");
+    assert.equal(report.reasonCode, "copilot_sdk_version_mismatch");
+    assert.deepEqual(report.machineChecks.find(({ id }) => id === "platform.fury_dispatch"), {
+      id: "platform.fury_dispatch",
+      status: "fail",
+      reasonCode: "copilot_sdk_version_mismatch",
+      nextAction: "Resolve copilot_sdk_version_mismatch and rerun.",
+    });
+    const projected = projectCopilotTeammateReadinessForPublicationV1(report);
     assert.equal(JSON.stringify(projected).includes(target.root), false);
   } finally {
     await rm(target.root, { recursive: true, force: false });

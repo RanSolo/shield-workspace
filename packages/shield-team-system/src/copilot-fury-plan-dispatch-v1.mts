@@ -1,7 +1,7 @@
 import { execFile as execFileNode } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
+import { access, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,6 @@ import type { CopilotClient, CopilotSession, PermissionRequest, SessionEvent, St
 import { validateTransitionPlanV1OrV2, type TransitionPlanV1OrV2 } from "@shield/mission-preparation";
 
 import { parseShieldConfig } from "./config.mjs";
-import { parseCopilotAgentCardV1, type CopilotAgentCardV1 } from "./copilot-teammate-readiness-v1.mjs";
 import {
   buildMissionTransitionPlanReviewV1,
   validateMissionTransitionPlanReviewV1,
@@ -29,6 +28,8 @@ import {
   appendSeatDispatchReceiptEntryV1,
   claimSeatDispatchPacketV1,
   readSeatDispatchReceiptLedgerV1,
+  resolveSeatDispatchStorePathsReadOnlyV1,
+  SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH,
   type SeatDispatchPacketClaimContractResultV1,
 } from "./seat-dispatch-store.mjs";
 
@@ -50,6 +51,38 @@ export const COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL = "copilot-fury-empty-
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID = "receipt:Y40rTRNdpEsqc9t24wRZ470R0zzYyk5G" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID = "receipt:3joci3m8iFvPsfeyceBy8b3uH8dfv111" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RESULT_RECEIPT_ID = "receipt:F4ZxcVBIKQJanHcOfEdTkzOHGS6IdNZ9" as const;
+export const COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION = "shield.copilot-fury-dispatch-capability.v1" as const;
+
+export type CopilotFuryDispatchCapabilityReasonV1 =
+  | "invalid_input"
+  | "repository_unavailable"
+  | "expected_head_mismatch"
+  | "workspace_dirty"
+  | "fury_card_unavailable"
+  | "fury_card_shadowed"
+  | "dispatch_receipt_path_unsafe"
+  | "copilot_sdk_unavailable"
+  | "copilot_sdk_version_mismatch"
+  | "copilot_sdk_exports_invalid"
+  | "copilot_stdio_projection_unsafe"
+  | "repository_drift"
+  | "ready";
+
+export const COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS = Object.freeze({
+  invalid_input: "Supply one canonical absolute repository root and the exact expected 40-character lowercase Git HEAD.",
+  repository_unavailable: "Restore an accessible canonical Git worktree and rerun the capability probe.",
+  expected_head_mismatch: "Check out the exact expected revision and rerun the capability probe.",
+  workspace_dirty: "Restore a clean worktree at the expected revision and rerun the capability probe.",
+  fury_card_unavailable: "Restore the exact-HEAD repository Fury agent card and rerun the capability probe.",
+  fury_card_shadowed: "Remove the ambient same-name user Fury card and rerun with repository-default card precedence.",
+  dispatch_receipt_path_unsafe: "Repair the canonical .shield dispatch-receipt path and permissions, then rerun the capability probe.",
+  copilot_sdk_unavailable: "Install the pinned @github/copilot-sdk dependency and rerun the capability probe.",
+  copilot_sdk_version_mismatch: `Install @github/copilot-sdk ${COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION} and rerun the capability probe.`,
+  copilot_sdk_exports_invalid: "Restore the required CopilotClient and RuntimeConnection.forStdio exports and rerun the capability probe.",
+  copilot_stdio_projection_unsafe: "Restore the closed stdio runtime projection and rerun the capability probe.",
+  repository_drift: "Restore one stable clean repository/card state and rerun the capability probe.",
+  ready: "No machine action is required for this capability.",
+} satisfies Record<CopilotFuryDispatchCapabilityReasonV1, string>);
 
 const RECOVERABLE_FAILURE_CODE = "COPILOT_EXECUTION_FAILED" as const;
 const RECOVERABLE_FAILURE_MESSAGE = "CopilotClient was created with mode: 'empty' but neither 'baseDirectory' nor 'sessionFs' was set. Empty mode requires an explicit per-session persistence location; pick one." as const;
@@ -88,6 +121,28 @@ const GIT_CONTEXT_VARIABLES = Object.freeze([
 ] as const);
 
 type Plain = Record<string, unknown>;
+
+export interface CopilotAgentHandoffV1 {
+  readonly label: string;
+  readonly agent: string;
+  readonly prompt: string;
+  readonly send: false;
+}
+
+export interface CopilotAgentCardV1 {
+  readonly frontmatter: {
+    readonly name: string;
+    readonly description: string;
+    readonly "argument-hint": string;
+    readonly target: "vscode";
+    readonly "user-invocable": true;
+    readonly "disable-model-invocation": boolean;
+    readonly tools: readonly string[];
+    readonly agents?: readonly string[];
+    readonly handoffs?: readonly CopilotAgentHandoffV1[];
+  };
+  readonly body: string;
+}
 
 export type CopilotFuryCardSelectionV1 =
   | Readonly<{ kind: "repository_default" }>
@@ -148,6 +203,32 @@ export interface CopilotFuryResolvedCardIdentityV1 {
     disposition: "selected" | "absent" | "shadowing_rejected" | "not_selected_explicit_override";
     contentDigest: string | null;
   }>[];
+}
+
+export interface CopilotFuryDispatchCapabilityReportV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: typeof COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION;
+  readonly authority: "none";
+  readonly disposition: "ready" | "unavailable";
+  readonly reasonCode: CopilotFuryDispatchCapabilityReasonV1;
+  readonly nextAction: string;
+  readonly repository: {
+    readonly before: { readonly root: string; readonly branch: string | null; readonly head: string | null; readonly clean: boolean | null };
+    readonly after: { readonly root: string; readonly branch: string | null; readonly head: string | null; readonly clean: boolean | null };
+  };
+  readonly package: { readonly name: "@github/copilot-sdk"; readonly version: string | null };
+  readonly target: { readonly runtimeId: typeof COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID; readonly executorId: typeof COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
+  readonly card: CopilotFuryResolvedCardIdentityV1 | null;
+  readonly dispatchReceipt: {
+    readonly logicalPath: typeof SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH;
+    readonly lockLogicalPath: string;
+    readonly safety: "safe" | "unsafe";
+  };
+}
+
+export interface CopilotFuryDispatchCapabilityDependenciesV1 extends CopilotFuryProductionExecutorDependenciesV1 {
+  readonly userCopilotHome?: string;
+  readonly beforeFinalObservation?: () => Promise<void>;
 }
 
 export interface CopilotFurySdkConfigurationV1 {
@@ -310,6 +391,7 @@ export type CopilotFuryPlanDispatchResultV1 =
 type StableFile = Readonly<{ path: string; bytes: string; identity: string; rawSha256: string }>;
 type RepositoryObservation = Readonly<{ canonicalRoot: string; identity: string; branch: string; headRevision: string; configBytes: string; journalBytes: string; journalDigest: string; journalSequence: number }>;
 type ResolvedCard = Readonly<{ card: CopilotAgentCardV1; bytes: string; identity: CopilotFuryResolvedCardIdentityV1; sourcePath: string | null }>;
+type CardResolutionRequest = Pick<CopilotFuryPlanDispatchRequestV1, "repositoryRoot" | "headRevision" | "cardSelection">;
 type RepositoryCardObservation = Readonly<
   | { state: "present"; card: CopilotAgentCardV1; bytes: string; contentDigest: string }
   | { state: "absent" }
@@ -330,6 +412,87 @@ function exact(value: unknown, fields: readonly string[]): value is Plain {
   return fields.every((field) => {
     const descriptor = Object.getOwnPropertyDescriptor(value, field);
     return descriptor !== undefined && descriptor.enumerable && Object.hasOwn(descriptor, "value") && descriptor.get === undefined && descriptor.set === undefined;
+  });
+}
+
+const COPILOT_CARD_ROOT_KEYS = Object.freeze([
+  "name", "description", "argument-hint", "target", "user-invocable",
+  "disable-model-invocation", "tools", "agents", "handoffs",
+]);
+const COPILOT_CARD_REQUIRED_KEYS = Object.freeze([
+  "name", "description", "argument-hint", "target", "user-invocable",
+  "disable-model-invocation", "tools",
+]);
+const COPILOT_CARD_HANDOFF_KEYS = Object.freeze(["label", "agent", "prompt", "send"]);
+
+function copilotCardScalar(value: string): string {
+  const normalized = value.trim();
+  if (normalized === "" || normalized !== value || /[\[\]{}]/u.test(value)) throw new Error("frontmatter_scalar_invalid");
+  return value;
+}
+
+function copilotCardBoolean(value: string): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error("frontmatter_boolean_invalid");
+}
+
+function copilotCardFlowList(value: string): readonly string[] {
+  if (!value.startsWith("[") || !value.endsWith("]")) throw new Error("frontmatter_list_invalid");
+  const inner = value.slice(1, -1).trim();
+  if (inner === "") return Object.freeze([]);
+  const entries = inner.split(",").map((entry) => entry.trim());
+  if (entries.some((entry) => !/^[A-Za-z][A-Za-z0-9-]*$/u.test(entry)) || new Set(entries).size !== entries.length) throw new Error("frontmatter_list_invalid");
+  return Object.freeze(entries);
+}
+
+export function parseCopilotAgentCardV1(text: string): CopilotAgentCardV1 {
+  if (typeof text !== "string" || text.includes("\r") || !text.startsWith("---\n")) throw new Error("frontmatter_missing");
+  const closing = text.indexOf("\n---\n", 4);
+  if (closing < 0) throw new Error("frontmatter_unclosed");
+  const lines = text.slice(4, closing).split("\n");
+  const root = new Map<string, unknown>();
+  const handoffs: Record<string, unknown>[] = [];
+  let currentHandoff: Record<string, unknown> | null = null;
+  for (const line of lines) {
+    if (line === "" || /\s$/u.test(line)) throw new Error("frontmatter_line_invalid");
+    const handoffStart = /^  - ([a-z-]+): (.+)$/u.exec(line);
+    const handoffField = /^    ([a-z-]+): (.+)$/u.exec(line);
+    const rootField = /^([a-z-]+):(?: (.*))?$/u.exec(line);
+    if (handoffStart !== null) {
+      if (!root.has("handoffs") || handoffStart[1] !== "label") throw new Error("frontmatter_handoff_invalid");
+      currentHandoff = { label: copilotCardScalar(handoffStart[2] as string) };
+      handoffs.push(currentHandoff);
+      continue;
+    }
+    if (handoffField !== null) {
+      if (currentHandoff === null || Object.hasOwn(currentHandoff, handoffField[1] as string)) throw new Error("frontmatter_handoff_invalid");
+      const key = handoffField[1] as string;
+      if (!COPILOT_CARD_HANDOFF_KEYS.includes(key) || key === "label") throw new Error("frontmatter_handoff_invalid");
+      currentHandoff[key] = key === "send" ? copilotCardBoolean(handoffField[2] as string) : copilotCardScalar(handoffField[2] as string);
+      continue;
+    }
+    if (rootField === null || line.startsWith(" ")) throw new Error("frontmatter_line_invalid");
+    currentHandoff = null;
+    const key = rootField[1] as string;
+    const value = rootField[2] ?? "";
+    if (!COPILOT_CARD_ROOT_KEYS.includes(key) || root.has(key)) throw new Error("frontmatter_key_invalid");
+    if (key === "handoffs") {
+      if (value !== "") throw new Error("frontmatter_handoff_invalid");
+      root.set(key, handoffs);
+    } else if (key === "tools" || key === "agents") root.set(key, copilotCardFlowList(value));
+    else if (key === "user-invocable" || key === "disable-model-invocation") root.set(key, copilotCardBoolean(value));
+    else root.set(key, copilotCardScalar(value));
+  }
+  if (COPILOT_CARD_REQUIRED_KEYS.some((key) => !root.has(key))) throw new Error("frontmatter_required_key_missing");
+  for (const handoff of handoffs) {
+    if (!exact(handoff, COPILOT_CARD_HANDOFF_KEYS) || handoff.send !== false) throw new Error("frontmatter_handoff_invalid");
+  }
+  const body = text.slice(closing + 5);
+  if (body.trim() === "") throw new Error("agent_body_missing");
+  return Object.freeze({
+    frontmatter: Object.freeze({ ...(Object.fromEntries(root) as unknown as CopilotAgentCardV1["frontmatter"]) }),
+    body,
   });
 }
 
@@ -805,7 +968,7 @@ async function observeRepository(request: CopilotFuryPlanDispatchRequestV1): Pro
   });
 }
 
-async function observeRepositoryCard(request: CopilotFuryPlanDispatchRequestV1): Promise<RepositoryCardObservation> {
+async function observeRepositoryCard(request: CardResolutionRequest): Promise<RepositoryCardObservation> {
   const entries = (await exactGitTreeInventory(request.repositoryRoot, request.headRevision))
     .filter((entry) => entry.path === COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF);
   if (entries.length === 0) return Object.freeze({ state: "absent" });
@@ -816,7 +979,7 @@ async function observeRepositoryCard(request: CopilotFuryPlanDispatchRequestV1):
   return deepFreeze({ state: "present", card, bytes, contentDigest: digestHex(bytes) });
 }
 
-async function resolveCard(request: CopilotFuryPlanDispatchRequestV1, userCopilotHome?: string): Promise<ResolvedCard> {
+async function resolveCard(request: CardResolutionRequest, userCopilotHome?: string): Promise<ResolvedCard> {
   const repository = await observeRepositoryCard(request);
   if (request.cardSelection.kind === "repository_default" && repository.state === "absent") throw new Error("repository_fury_card_absent");
   const base = userCopilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
@@ -827,7 +990,8 @@ async function resolveCard(request: CopilotFuryPlanDispatchRequestV1, userCopilo
     const canonicalBase = await realpath(resolve(base));
     const canonicalUserPath = await realpath(userPath);
     if (canonicalBase !== resolve(base) || canonicalUserPath !== userPath || relative(canonicalBase, canonicalUserPath).startsWith(`..${sep}`)) throw new Error("user_fury_card_unsafe_ancestry");
-    userCard = parseCopilotAgentCardV1(userFile.bytes);
+    try { userCard = parseCopilotAgentCardV1(userFile.bytes); }
+    catch { throw new Error("user_fury_card_malformed"); }
     if (userCard.frontmatter.name.toLocaleLowerCase("en-US") !== "fury") userCard = null;
   }
   if (request.cardSelection.kind === "repository_default") {
@@ -1702,6 +1866,45 @@ async function resolveLoadedCopilotSdkPackageVersion(): Promise<string> {
   return metadata.version;
 }
 
+class CopilotSdkCapabilityError extends Error {
+  constructor(readonly reasonCode: Extract<CopilotFuryDispatchCapabilityReasonV1,
+    "copilot_sdk_unavailable" | "copilot_sdk_version_mismatch" | "copilot_sdk_exports_invalid" | "copilot_stdio_projection_unsafe">, message: string) {
+    super(message);
+  }
+}
+
+async function inspectLoadedCopilotSdkCapability(
+  dependencies: CopilotFuryProductionExecutorDependenciesV1,
+): Promise<Readonly<{
+  packageVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION;
+  clientConstructor: typeof CopilotClient;
+  connection: StdioRuntimeConnection;
+}>> {
+  let sdk: CopilotSdkModuleV1;
+  let packageVersion: string;
+  try {
+    sdk = await (dependencies.loadSdk?.() ?? import("@github/copilot-sdk"));
+    packageVersion = await (dependencies.resolveLoadedPackageVersion?.() ?? resolveLoadedCopilotSdkPackageVersion());
+  } catch (error) {
+    throw new CopilotSdkCapabilityError("copilot_sdk_unavailable", error instanceof Error ? error.message : "Copilot SDK capability is unavailable.");
+  }
+  if (packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION) {
+    throw new CopilotSdkCapabilityError("copilot_sdk_version_mismatch", `Loaded Copilot SDK version ${packageVersion} does not match ${COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION}.`);
+  }
+  if (typeof sdk.CopilotClient !== "function" || !safePlain(sdk.RuntimeConnection) || typeof sdk.RuntimeConnection.forStdio !== "function") {
+    throw new CopilotSdkCapabilityError("copilot_sdk_exports_invalid", "CopilotClient or RuntimeConnection.forStdio export is unavailable.");
+  }
+  const connection = sdk.RuntimeConnection.forStdio() as unknown;
+  if (!safePlain(connection) || connection.kind !== "stdio" || connection.path !== undefined || connection.args !== undefined || connection.env !== undefined || Reflect.ownKeys(connection).some((key) => typeof key !== "string" || !["kind", "path", "args", "env"].includes(key))) {
+    throw new CopilotSdkCapabilityError("copilot_stdio_projection_unsafe", "RuntimeConnection.forStdio returned an unsafe projection.");
+  }
+  return Object.freeze({
+    packageVersion,
+    clientConstructor: sdk.CopilotClient as typeof CopilotClient,
+    connection: connection as unknown as StdioRuntimeConnection,
+  });
+}
+
 class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
   private client: CopilotClient | null = null;
   private clientConstructor: typeof CopilotClient | null = null;
@@ -1715,18 +1918,12 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     if (input.requestedRuntime !== COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID || input.requestedExecutor !== COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID) return { state: "blocked", code: "BLOCKED_ADAPTER_GAP", errors: ["Requested Copilot runtime or executor is unsupported."] };
     try {
       if (!validExecutionIdentity(input.executionIdentity, input.repositoryRoot)) throw new Error("Copilot client option projection is malformed.");
-      const sdk = await (this.dependencies.loadSdk?.() ?? import("@github/copilot-sdk"));
-      if (typeof sdk.CopilotClient !== "function" || !safePlain(sdk.RuntimeConnection) || typeof sdk.RuntimeConnection.forStdio !== "function") throw new Error("CopilotClient or RuntimeConnection.forStdio export is unavailable.");
-      const CopilotClientConstructor = sdk.CopilotClient as typeof CopilotClient;
-      const connection = sdk.RuntimeConnection.forStdio() as unknown;
-      if (!safePlain(connection) || connection.kind !== "stdio" || connection.path !== undefined || connection.args !== undefined || connection.env !== undefined || Reflect.ownKeys(connection).some((key) => typeof key !== "string" || !["kind", "path", "args", "env"].includes(key))) throw new Error("RuntimeConnection.forStdio returned an unsafe projection.");
-      const packageVersion = await (this.dependencies.resolveLoadedPackageVersion?.() ?? resolveLoadedCopilotSdkPackageVersion());
-      if (packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION) throw new Error(`Loaded Copilot SDK version ${packageVersion} does not match ${COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION}.`);
-      this.loadedPackageVersion = packageVersion;
-      this.clientConstructor = CopilotClientConstructor;
-      this.clientConnection = connection as unknown as StdioRuntimeConnection;
+      const capability = await inspectLoadedCopilotSdkCapability(this.dependencies);
+      this.loadedPackageVersion = capability.packageVersion;
+      this.clientConstructor = capability.clientConstructor;
+      this.clientConnection = capability.connection;
       this.preflightBinding = Object.freeze({ repositoryRoot: input.repositoryRoot, requestedModel: input.requestedModel, executionIdentity: canonicalJson(input.executionIdentity) });
-      return { state: "ready", packageVersion, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
+      return { state: "ready", packageVersion: capability.packageVersion, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
     } catch (error) {
       await this.close();
       return { state: "blocked", code: "BLOCKED_ADAPTER_GAP", errors: [error instanceof Error ? error.message : "Copilot SDK capability is unavailable."] };
@@ -1886,6 +2083,176 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
 
 export function createCopilotFuryPlanExecutorV1(dependencies: CopilotFuryProductionExecutorDependenciesV1 = {}): CopilotFuryPlanExecutorV1 {
   return new DefaultCopilotFuryExecutorV1(dependencies);
+}
+
+type StartupRepositorySnapshot = Readonly<{
+  root: string;
+  identity: string;
+  branch: string | null;
+  head: string;
+  status: string;
+  inventory: string;
+}>;
+
+async function captureStartupRepository(repositoryRoot: string): Promise<StartupRepositorySnapshot> {
+  const root = await realpath(repositoryRoot);
+  if (root !== repositoryRoot) throw new Error("repository_root_not_canonical");
+  const stats = await lstat(root);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("repository_root_unsafe");
+  if (resolve((await git(root, ["rev-parse", "--show-toplevel"])).trim()) !== root) throw new Error("repository_root_mismatch");
+  const head = (await git(root, ["rev-parse", "--verify", "HEAD"])).trim();
+  if (!GIT_REVISION.test(head)) throw new Error("repository_head_invalid");
+  let branch: string | null = null;
+  try { branch = (await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim(); }
+  catch { /* Detached HEAD is a stable closed observation. */ }
+  return Object.freeze({
+    root,
+    identity: `${stats.dev}:${stats.ino}`,
+    branch,
+    head,
+    status: await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+    inventory: await git(root, ["ls-files", "-z"]),
+  });
+}
+
+function sameStartupRepository(left: StartupRepositorySnapshot, right: StartupRepositorySnapshot): boolean {
+  return left.root === right.root && left.identity === right.identity && left.branch === right.branch && left.head === right.head &&
+    left.status === right.status && left.inventory === right.inventory;
+}
+
+async function dispatchReceiptPathIsSafe(repositoryRoot: string): Promise<boolean> {
+  const resolved = await resolveSeatDispatchStorePathsReadOnlyV1(repositoryRoot);
+  if (resolved.state === "invalid" || resolved.value.repositoryRoot !== repositoryRoot) return false;
+  const paths = resolved.value;
+  if (!paths.shieldDirectoryExists) {
+    try {
+      const before = await lstat(repositoryRoot);
+      await access(repositoryRoot, constants.W_OK | constants.X_OK);
+      const after = await lstat(repositoryRoot);
+      return before.isDirectory() && !before.isSymbolicLink() && before.dev === after.dev && before.ino === after.ino;
+    } catch { return false; }
+  }
+  try {
+    const parentBefore = await lstat(paths.shieldDirectory);
+    if (!parentBefore.isDirectory() || parentBefore.isSymbolicLink() || await realpath(paths.shieldDirectory) !== paths.shieldDirectory) return false;
+    await access(paths.shieldDirectory, constants.W_OK | constants.X_OK);
+    try {
+      await lstat(paths.lockPath);
+      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    try {
+      const before = await lstat(paths.logPath);
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || await realpath(paths.logPath) !== paths.logPath) return false;
+      const handle = await open(paths.logPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const opened = await handle.stat();
+        const after = await lstat(paths.logPath);
+        if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino ||
+            after.isSymbolicLink() || !after.isFile() || after.nlink !== 1 || after.dev !== opened.dev || after.ino !== opened.ino) return false;
+      } finally { await handle.close(); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    const parentAfter = await lstat(paths.shieldDirectory);
+    return parentAfter.isDirectory() && !parentAfter.isSymbolicLink() && parentAfter.dev === parentBefore.dev &&
+      parentAfter.ino === parentBefore.ino && await realpath(paths.shieldDirectory) === paths.shieldDirectory;
+  } catch { return false; }
+}
+
+function startupRepositoryProjection(snapshot: StartupRepositorySnapshot | null, fallbackRoot: string) {
+  return Object.freeze({
+    root: snapshot?.root ?? fallbackRoot,
+    branch: snapshot?.branch ?? null,
+    head: snapshot?.head ?? null,
+    clean: snapshot === null ? null : snapshot.status === "",
+  });
+}
+
+export async function probeCopilotFuryDispatchCapabilityV1(
+  input: { readonly repositoryRoot: string; readonly expectedHead: string },
+  dependencies: CopilotFuryDispatchCapabilityDependenciesV1 = {},
+): Promise<CopilotFuryDispatchCapabilityReportV1> {
+  const validInput = exact(input, ["repositoryRoot", "expectedHead"]) && typeof input.repositoryRoot === "string" &&
+    isAbsolute(input.repositoryRoot) && resolve(input.repositoryRoot) === input.repositoryRoot &&
+    typeof input.expectedHead === "string" && GIT_REVISION.test(input.expectedHead);
+  let before: StartupRepositorySnapshot | null = null;
+  let after: StartupRepositorySnapshot | null = null;
+  let card: ResolvedCard | null = null;
+  let cardReason: "fury_card_unavailable" | "fury_card_shadowed" | null = null;
+  let receiptSafe = false;
+  let sdkReason: Extract<CopilotFuryDispatchCapabilityReasonV1,
+    "copilot_sdk_unavailable" | "copilot_sdk_version_mismatch" | "copilot_sdk_exports_invalid" | "copilot_stdio_projection_unsafe"> | null = null;
+  let packageVersion: string | null = null;
+  if (validInput) {
+    try { before = await captureStartupRepository(input.repositoryRoot); } catch { /* Closed repository failure below. */ }
+  }
+  if (before !== null) {
+    try {
+      card = await resolveCard({
+        repositoryRoot: before.root,
+        headRevision: input.expectedHead,
+        cardSelection: { kind: "repository_default" },
+      }, dependencies.userCopilotHome);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      cardReason = message === "same_name_user_card_shadowing_requires_explicit_override" || message.startsWith("user_fury_card_")
+        ? "fury_card_shadowed"
+        : "fury_card_unavailable";
+    }
+    receiptSafe = await dispatchReceiptPathIsSafe(before.root);
+    try {
+      const sdk = await inspectLoadedCopilotSdkCapability(dependencies);
+      packageVersion = sdk.packageVersion;
+    } catch (error) {
+      sdkReason = error instanceof CopilotSdkCapabilityError ? error.reasonCode : "copilot_sdk_unavailable";
+    }
+    await dependencies.beforeFinalObservation?.();
+    try { after = await captureStartupRepository(before.root); } catch { /* Closed drift result below. */ }
+    if (after !== null) receiptSafe = receiptSafe && await dispatchReceiptPathIsSafe(after.root);
+    if (after !== null && card !== null) {
+      try {
+        const finalCard = await resolveCard({
+          repositoryRoot: after.root,
+          headRevision: input.expectedHead,
+          cardSelection: { kind: "repository_default" },
+        }, dependencies.userCopilotHome);
+        if (finalCard.bytes !== card.bytes || canonicalJson(finalCard.identity) !== canonicalJson(card.identity)) after = null;
+      } catch { after = null; }
+    }
+  }
+  const reasonCode: CopilotFuryDispatchCapabilityReasonV1 = !validInput
+    ? "invalid_input"
+    : before === null
+      ? "repository_unavailable"
+      : before.head !== input.expectedHead
+        ? "expected_head_mismatch"
+        : before.status !== ""
+          ? "workspace_dirty"
+          : cardReason ?? (card === null ? "fury_card_unavailable" : !receiptSafe
+            ? "dispatch_receipt_path_unsafe"
+            : sdkReason ?? (after === null || !sameStartupRepository(before, after) ? "repository_drift" : "ready"));
+  return deepFreeze({
+    schemaVersion: 1,
+    contractVersion: COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION,
+    authority: "none",
+    disposition: reasonCode === "ready" ? "ready" : "unavailable",
+    reasonCode,
+    nextAction: COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS[reasonCode],
+    repository: {
+      before: startupRepositoryProjection(before, typeof input.repositoryRoot === "string" ? input.repositoryRoot : ""),
+      after: startupRepositoryProjection(after, typeof input.repositoryRoot === "string" ? input.repositoryRoot : ""),
+    },
+    package: { name: "@github/copilot-sdk", version: packageVersion },
+    target: { runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID },
+    card: card?.identity ?? null,
+    dispatchReceipt: {
+      logicalPath: SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH,
+      lockLogicalPath: `${SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH}.lock`,
+      safety: receiptSafe ? "safe" : "unsafe",
+    },
+  });
 }
 
 function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1, childSessionId: string): boolean {

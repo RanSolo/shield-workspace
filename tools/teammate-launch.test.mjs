@@ -57,7 +57,13 @@ function createBootstrapV2Commit(indexPath) {
   };
   git(["read-tree", "HEAD"], { env: environment });
   git(["update-index", "--add", "--cacheinfo", `100644,${blob},${bootstrapPath}`], { env: environment });
-  for (const path of ["packages/shield-team-system/src/copilot-teammate-readiness-v1.mts"]) {
+  for (const path of [
+    "packages/shield-team-system/src/cli.mts",
+    "packages/shield-team-system/src/config.mts",
+    "packages/shield-team-system/src/copilot-fury-plan-dispatch-v1.mts",
+    "packages/shield-team-system/src/copilot-teammate-readiness-v1.mts",
+    "packages/shield-team-system/src/seat-dispatch-store.mts",
+  ]) {
     const implementationBlob = git(["hash-object", "-w", "--", path]).trim();
     git(["update-index", "--add", "--cacheinfo", `100644,${implementationBlob},${path}`], { env: environment });
   }
@@ -142,7 +148,8 @@ function exactCopilotReport(root = "/fixture/checkout", head = "a".repeat(40)) {
   const checkRows = [
     ["input.closed", "pass", "none"], ["repository.root", "pass", "none"],
     ["repository.expected_head", "pass", "none"], ["repository.clean", "pass", "none"],
-    ["repository.copilot_agents", "pass", "none"], ["host.vscode", "pass", "none"],
+    ["repository.copilot_agents", "pass", "none"], ["platform.fury_dispatch", "pass", "ready"],
+    ["host.vscode", "pass", "none"],
     ["host.copilot_extension", "observed", "none"], ["repository.stable", "pass", "none"],
   ];
   const artifacts = seats.map((seat, index) => ({ path: `.github/agents/${seat}.agent.md`, sha256: String(index + 1).repeat(64) }));
@@ -427,8 +434,8 @@ test("Copilot report rejects extension classification, row, action, and version 
     (value) => { value.host.copilotExtension.identifier = "openai.chatgpt"; },
     (value) => { value.host.entitlement.status = "verified"; },
     (value) => { value.host.copilotExtension.classification = "unknown"; },
-    (value) => { value.machineChecks[6].reasonCode = "copilot_extension_not_observed"; },
-    (value) => { value.machineChecks[6].nextAction = "bounded next action"; },
+    (value) => { value.machineChecks[7].reasonCode = "copilot_extension_not_observed"; },
+    (value) => { value.machineChecks[7].nextAction = "bounded next action"; },
     (value) => { value.host.copilotExtension.version = null; },
     (value) => {
       setCopilotExtensionObservation(value, "unavailable");
@@ -459,6 +466,7 @@ test("Copilot report rejects extension classification, row, action, and version 
 test("bootstrap v2 executes the Copilot preflight and binds its complete receipt evidence", { timeout: 300_000 }, async () => {
   const positive = await fixture("shield-launch-copilot-v2-positive-");
   const negative = await fixture("shield-launch-copilot-v2-wrong-host-");
+  const unavailable = await fixture("shield-launch-copilot-v2-capability-unavailable-");
   const decoys = join(positive.base, "decoys");
   await mkdir(decoys);
   await writeFile(join(decoys, "code"), `#!/bin/sh
@@ -474,7 +482,7 @@ exit 95
   const executableLookups = [];
   const preflightInvocations = [];
   const preflightReports = [];
-  const dependencies = (wrongHost) => ({
+  const dependencies = (mode) => ({
     ...native,
     fs: {
       ...native.fs,
@@ -490,9 +498,18 @@ exit 95
         if (result.state === "success") {
           const report = JSON.parse(result.stdout);
           preflightReports.push(report);
-          if (wrongHost) {
+          if (mode === "wrong-host") {
             report.adapter.kind = "codex";
             return { ...result, stdout: `${JSON.stringify(report)}\n` };
+          }
+          if (mode === "capability-unavailable") {
+            const row = report.machineChecks.find(({ id }) => id === "platform.fury_dispatch");
+            row.status = "fail";
+            row.reasonCode = "copilot_sdk_version_mismatch";
+            row.nextAction = "Install the pinned SDK and rerun the complete Copilot preflight.";
+            report.disposition = "action_required";
+            report.reasonCode = row.reasonCode;
+            return { state: "exit", code: 1, stdout: `${JSON.stringify(report)}\n`, stderr: "", errorCode: null };
           }
         }
       }
@@ -502,7 +519,7 @@ exit 95
   try {
     const result = await launchTeammateTrial(
       input(positive.root, synthetic.head, synthetic.bootstrapDigest),
-      dependencies(false),
+      dependencies("ready"),
     );
     assert.equal(result.disposition, "ready_for_host_confirmation", JSON.stringify(result));
     const cliPath = join(positive.root, "packages/shield-team-system/dist/cli.mjs");
@@ -531,7 +548,7 @@ exit 95
 
     const rejected = await launchTeammateTrial(
       input(negative.root, synthetic.head, synthetic.bootstrapDigest),
-      dependencies(true),
+      dependencies("wrong-host"),
     );
     assert.equal(rejected.disposition, "action_required");
     assert.equal(rejected.reasonCode, "cli_unavailable");
@@ -540,11 +557,23 @@ exit 95
     assert.equal(preflightReports[1].contractVersion, "shield.copilot-teammate-readiness.v1");
     assert.equal(executableLookups.includes("codex"), false);
     await assert.rejects(readFile(`${negative.root}${receiptSuffix}`), { code: "ENOENT" });
+
+    const blocked = await launchTeammateTrial(
+      input(unavailable.root, synthetic.head, synthetic.bootstrapDigest),
+      dependencies("capability-unavailable"),
+    );
+    assert.equal(blocked.disposition, "action_required");
+    assert.equal(blocked.reasonCode, "copilot_sdk_version_mismatch");
+    assert.equal(Object.hasOwn(blocked, "nextAction"), true);
+    assert.match(blocked.nextAction, /@github\/copilot-sdk 1\.0\.11/u);
+    assert.doesNotMatch(JSON.stringify(blocked), /code --new-window/u);
+    await assert.rejects(readFile(`${unavailable.root}${receiptSuffix}`), { code: "ENOENT" });
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
     await cleanup(negative);
     await cleanup(positive);
+    await cleanup(unavailable);
   }
 });
 

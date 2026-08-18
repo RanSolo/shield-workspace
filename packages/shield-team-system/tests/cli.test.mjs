@@ -9,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const workspaceRoot = resolve(packageRoot, "../..");
 const cli = join(packageRoot, "dist", "cli.mjs");
 const { migrateConfigFile } = await import("../dist/cli.mjs");
 const { createShieldConfig, formatShieldConfig } = await import("../dist/config.mjs");
@@ -1299,6 +1300,49 @@ test("doctor provides deterministic human and JSON results", async () => {
     JSON.parse(coulsonOnly.stdout).checks.find(({ id }) => id === "bindings").message,
     "Repository trust profile coulson_only_platform_review configures Coulson as the only required cryptographic seat. Fitz is GitHub-enforced external review; Simmons is conditional external feedback; neither is admitted as SHIELD evidence.",
   );
+});
+
+test("doctor host selection returns a separate Copilot capability report and rejects invalid hosts before probing", async () => {
+  const root = await fixture();
+  assert.equal(run(initArgs, root).status, 0);
+  await mkdir(join(root, ".github", "agents"), { recursive: true });
+  for (const seat of ["hill", "daisy", "fury", "may", "mack"]) {
+    await writeFile(
+      join(root, ".github", "agents", `${seat}.agent.md`),
+      await readFile(join(workspaceRoot, ".github", "agents", `${seat}.agent.md`)),
+    );
+  }
+  execFileSync("git", ["config", "user.email", "shield@example.invalid"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "SHIELD Doctor Fixture"], { cwd: root });
+  execFileSync("git", ["add", "package.json", "existing.txt", ".shield", ".github/agents"], { cwd: root });
+  execFileSync("git", ["commit", "--quiet", "-m", "doctor host fixture"], { cwd: root });
+  const isolatedHome = await mkdtemp(join(tmpdir(), "shield-doctor-home-"));
+
+  const selected = run(["doctor", "--host", "github-copilot", "--json"], root, { HOME: isolatedHome, COPILOT_HOME: isolatedHome });
+  assert.equal(selected.status, 0, selected.stderr);
+  const report = JSON.parse(selected.stdout);
+  assert.equal(report.contractVersion, "shield.doctor.host-selected.v1");
+  assert.equal(report.authority, "none");
+  assert.equal(report.host, "github-copilot");
+  assert.equal(report.ok, true);
+  assert.equal(report.doctor.reportVersion, 2);
+  assert.equal(report.hostCapability.reasonCode, "ready");
+  assert.equal(report.hostCapability.disposition, "ready");
+
+  await writeFile(join(root, ".shield", "dispatch-receipts.jsonl.lock"), "held\n");
+  execFileSync("git", ["add", "-f", ".shield/dispatch-receipts.jsonl.lock"], { cwd: root });
+  execFileSync("git", ["commit", "--quiet", "-m", "unsafe receipt lock"], { cwd: root });
+  const unavailable = run(["doctor", "--host", "github-copilot", "--json"], root, { HOME: isolatedHome, COPILOT_HOME: isolatedHome });
+  assert.equal(unavailable.status, 1, unavailable.stderr);
+  const unavailableReport = JSON.parse(unavailable.stdout);
+  assert.equal(unavailableReport.doctor.ok, true);
+  assert.equal(unavailableReport.hostCapability.reasonCode, "dispatch_receipt_path_unsafe");
+  assert.equal(unavailableReport.ok, false);
+
+  const invalid = run(["doctor", "--host", "unsupported", "--root", join(root, "missing"), "--json"], root);
+  assert.equal(invalid.status, 2);
+  assert.match(invalid.stderr, /Unsupported doctor host: unsupported/u);
+  assert.doesNotMatch(invalid.stderr, /does not exist/u);
 });
 
 test("doctor preserves raw invalid configuration and gives binding profile errors precedence", async () => {
