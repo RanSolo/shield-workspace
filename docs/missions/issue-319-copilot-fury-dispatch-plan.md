@@ -200,3 +200,22 @@ Stop and return to Fury before implementation if:
 ## Proving disposition
 
 After exact-head Mack validation and Fury conformance PASS, use the preserved NXT-458 mission only to prove that the new operation creates authentic reviewed-transition evidence. Do not implement NXT-458 or request a new PIN before its actual implementation boundary.
+
+## Final exact-head correction
+
+Fury reviewed implementation HEAD `5a9068aa7dc002b8193c3000b200a4c0224cbe06` after Mack's exact-head PASS and retained two blockers. This correction is limited to the existing Copilot dispatch adapter and its focused production-executor tests.
+
+### Immutable read execution
+
+- Do not authorize a later SDK path-based read after separately validating and closing a host file handle.
+- Execute `read` and `search` through host-backed tools that return bytes from the bound Git commit/tree or an equivalent immutable no-follow snapshot.
+- If `@github/copilot-sdk@1.0.11` cannot enforce that arrangement, return `BLOCKED_ADAPTER_GAP` before claim.
+- Add a production-executor regression that replaces a path after policy evaluation and proves substituted bytes are never observed.
+
+### Receipt-bound terminal recovery
+
+- Resolve terminal evidence exclusively through the receipt's `outputEvidenceRefs`; do not scan all mission evidence artifacts for matching self-declared receipt and packet identities.
+- If terminal append or final readback becomes uncertain, reread the ledger first. Preserve and verify an existing terminal receipt when present; otherwise append one receipt-bound `dispatch.interrupted` recovery artifact carrying the original disposition.
+- Exact retry must deterministically recover after terminal-append uncertainty, receipt/evidence/plan/review readback failure, and preterminal drift without reinvoking Copilot or producing ambiguous evidence.
+
+No other production or test path is authorized by this correction. The previously frozen identity, authority-none, publication, merge, deployment, release, and NXT-458 boundaries remain unchanged.
