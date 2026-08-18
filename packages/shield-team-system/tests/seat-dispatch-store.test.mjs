@@ -1307,6 +1307,72 @@ test("append and reads preserve exact log bytes", async () => {
   assert.equal(restart.result.value.receipts.length, 1);
 });
 
+test("interrupted recovery binding survives durable append, readback, and conflicting retry", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-seat-receipt-interrupted-recovery-"));
+  const start = started({
+    parentMissionRevision: "1111111111111111111111111111111111111111",
+    subjectRevision: "2222222222222222222222222222222222222222",
+    artifactRevision: "3333333333333333333333333333333333333333",
+    repositoryRevision: "4444444444444444444444444444444444444444",
+  });
+  const interrupted = lifecycle(start, {
+    kind: "dispatch.interrupted",
+    recoveryEvidenceRefs: ["evidence:recovery:dispatch-1"],
+    originalDisposition: {
+      code: "COPILOT_INTERRUPTED",
+      errors: ["connection closed after model response"],
+    },
+  });
+
+  const first = await appendReceipt(repositoryRoot, start);
+  assert.equal(first.state, "valid", first.errors?.join(" "));
+  const appended = await appendReceipt(repositoryRoot, interrupted, "owner-interrupted");
+  assert.equal(appended.state, "valid", appended.errors?.join(" "));
+  const logPath = appended.value.logPath;
+  const durableBytes = await readLogBytes(logPath);
+
+  const readback = await readSeatDispatchReceiptByReceiptIdV1({
+    repositoryRoot,
+    repositoryId: start.repositoryId,
+    repositoryWorkspaceId: start.repositoryWorkspaceId,
+    receiptId: start.receiptId,
+  });
+  assert.equal(readback.state, "valid", readback.errors?.join(" "));
+  assert.equal(readback.value.receipt.state, "interrupted");
+  assert.deepEqual(readback.value.receipt.recoveryEvidenceRefs, ["evidence:recovery:dispatch-1"]);
+  assert.deepEqual(readback.value.receipt.originalDisposition, {
+    code: "COPILOT_INTERRUPTED",
+    errors: ["connection closed after model response"],
+  });
+  assert.equal(readback.value.receipt.parentMissionRevision, "1".repeat(40));
+  assert.equal(readback.value.receipt.subjectRevision, "2".repeat(40));
+  assert.equal(readback.value.receipt.artifactRevision, "3".repeat(40));
+  assert.equal(readback.value.receipt.repositoryRevision, "4".repeat(40));
+  assert.equal(await readLogBytes(logPath), durableBytes);
+
+  const restartedModule = await import(`${seatDispatchStoreModule}?interrupted-recovery=${Date.now()}`);
+  const restarted = await restartedModule.readSeatDispatchReceiptByReceiptIdV1({
+    repositoryRoot,
+    repositoryId: start.repositoryId,
+    repositoryWorkspaceId: start.repositoryWorkspaceId,
+    receiptId: start.receiptId,
+  });
+  assert.deepEqual(restarted, readback);
+
+  const conflicting = lifecycle(start, {
+    kind: "dispatch.interrupted",
+    recoveryEvidenceRefs: ["evidence:recovery:dispatch-1"],
+    originalDisposition: {
+      code: "DIFFERENT_INTERRUPTION",
+      errors: ["different deterministic error"],
+    },
+  });
+  const conflict = await appendReceipt(repositoryRoot, conflicting, "owner-conflicting-interrupted");
+  assert.equal(conflict.state, "invalid");
+  assert.ok(conflict.code === "global_previous_digest" || conflict.code === "global_sequence_gap");
+  assert.equal(await readLogBytes(logPath), durableBytes);
+});
+
 test("raw ledger read is restart-safe, facade-exported, and usable for attribution", async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), "shield-seat-receipt-ledger-"));
   const start = started({

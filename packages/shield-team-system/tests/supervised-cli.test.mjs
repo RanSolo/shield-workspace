@@ -21,7 +21,7 @@ import {
   replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
-import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
+import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, runMissionCli, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
 import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 import {
@@ -45,9 +45,32 @@ import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
 } from "../dist/seat-dispatch-receipt-v1.mjs";
+import {
+  COPILOT_FURY_PLAN_DISPATCH_ALLOWED_EFFECTS,
+  COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS,
+  COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+  COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+  COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
+  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+} from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
+
+const COPILOT_FURY_CARD = `---
+name: Fury
+description: Review exact SHIELD plans and revisions for technical conformance.
+argument-hint: Provide the reviewed artifact, exact revision, digests, and gate evidence.
+target: vscode
+user-invocable: true
+disable-model-invocation: true
+tools: [read, search, web]
+---
+
+You are Fury. Review only the exact plan and return a technical verdict with authority none.
+`;
 
 function journalPath(root, missionId) {
   return join(root, ".shield", "journals", `${Buffer.from(missionId).toString("base64url")}.jsonl`);
@@ -3570,4 +3593,145 @@ test("revoked delegation begins ineligible and falls back to signed supervised a
   const approvalAt = new Date(Date.parse(evaluatedAt) + 1_000).toISOString();
   const requirement = projection.requirements.find(({ evidenceKind }) => evidenceKind === "mission_authorization"); const approval = signedEvidence(coulson, projection, requirement, "approved", 2, approvalAt); await writeEvidence(root, "approval.json", approval);
   const approved = run(root, ["mission", "approve", "--mission-id", brief.missionId, "--evidence", "approval.json", "--json"]); assert.equal(approved.status, 0, approved.stderr); projection = JSON.parse(approved.stdout); assert.equal(projection.authorization.source, "supervised"); assert.equal(projection.governance.state, "approved");
+});
+
+test("Copilot Fury dispatch CLI materializes the exact reviewed transition and replays it", async () => {
+  const current = await profileAwareFixture();
+  await mkdir(join(current.root, ".github", "agents"), { recursive: true });
+  await mkdir(join(current.root, "docs", "missions"), { recursive: true });
+  await writeFile(join(current.root, ".github", "agents", "fury.agent.md"), COPILOT_FURY_CARD);
+  runGit(current.root, ["init", "-q", "-b", "main"]);
+  runGit(current.root, ["config", "user.email", "shield@example.invalid"]);
+  runGit(current.root, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(current.root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore", ".github/agents/fury.agent.md"]);
+  runGit(current.root, ["commit", "-qm", "Copilot Fury dispatch base"]);
+  const baseRevision = runGit(current.root, ["rev-parse", "HEAD"]);
+  const built = buildMissionTransitionPlanV1({
+    missionId: current.brief.missionId,
+    subjectId: current.brief.subjectId,
+    repositoryId: "RanSolo/fixture",
+    planningBaseRevision: baseRevision,
+    parentPlanCommit: baseRevision,
+    parentPlanPath: "docs/missions/issue-319-cli-plan.md",
+    parentPlanRawSha256: "a".repeat(64),
+    transitionKind: "fresh_authorize_wheels_up",
+    boundedOutcome: "Exercise the exact Copilot Fury CLI handoff.",
+    approvedRelativePaths: ["implementation.md"],
+    publicationPaths: ["implementation.md"],
+    approvedActionIds: ["action:issue-319:cli"],
+    approvedEffectClasses: ["behavioral_implementation"],
+    approvedEffectKeys: ["effect:issue-319:cli"],
+    approvedCapabilities: ["capability:edit"],
+    validationCommandIds: ["validation:issue-319:cli"],
+    modelId: "model:may",
+    reasoningRuntimeId: "runtime:may",
+    toolExecutorId: "executor:may",
+    exclusions: [
+      "review.comment.publish", "review.pull_request.update_draft", "review.pull_request.mark_ready",
+      "merge", "deployment", "release", "final_acceptance",
+    ],
+  });
+  assert.equal(built.state, "built", JSON.stringify(built));
+  const planPath = "docs/missions/issue-319-cli-transition.json";
+  const planBytes = `${JSON.stringify(built.plan)}\n`;
+  await writeFile(join(current.root, planPath), planBytes);
+  runGit(current.root, ["add", planPath]);
+  runGit(current.root, ["commit", "-qm", "Copilot Fury dispatch plan"]);
+  const headRevision = runGit(current.root, ["rev-parse", "HEAD"]);
+  const request = {
+    schemaVersion: 1,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    authority: "none",
+    repositoryRoot: current.root,
+    repositoryId: "RanSolo/fixture",
+    repositoryWorkspaceId: "workspace:issue-319-cli",
+    branch: "main",
+    planningBaseRevision: baseRevision,
+    headRevision,
+    missionId: current.brief.missionId,
+    missionRevision: current.brief.revisionId,
+    subjectId: current.brief.subjectId,
+    subjectRevision: built.plan.digest,
+    parentSessionId: "session:hill:issue-319-cli",
+    transitionPlanPath: planPath,
+    transitionPlanRawSha256: createHash("sha256").update(planBytes).digest("hex"),
+    cardSelection: { kind: "repository_default" },
+    requestedModel: "model:fury",
+    requestedRuntime: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+    requestedExecutor: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+    allowedTools: [...COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS],
+    allowedEffects: [...COPILOT_FURY_PLAN_DISPATCH_ALLOWED_EFFECTS],
+    repairLimit: 1,
+    stopConditions: [...COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS],
+    timestamp: { value: "2026-08-18T12:01:00.000Z", provenance: "hostTrusted" },
+  };
+  await writeFile(join(current.root, "fury-dispatch-request.json"), `${JSON.stringify(request, null, 2)}\n`);
+  const calls = { preflight: 0, execute: 0 };
+  const executor = {
+    async preflight() {
+      calls.preflight += 1;
+      return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
+    },
+    async execute(input) {
+      calls.execute += 1;
+      return {
+        state: "completed",
+        outputText: JSON.stringify({
+          schemaVersion: 1,
+          contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+          authority: "none",
+          reviewerSeatId: "fury",
+          reviewedArtifactId: built.plan.id,
+          reviewedArtifactRevision: built.plan.digest,
+          verdict: "PASS",
+          findings: [],
+        }),
+        observations: {
+          sessionStartObserved: true,
+          sessionId: input.configuration.sessionId,
+          selectedAgent: "fury",
+          model: input.configuration.model,
+          assistantModel: input.configuration.model,
+          runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+          executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+          loadedSdkPackageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+          sessionProducer: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+          sessionProducerVersion: "1.0.79",
+          modelChangeObserved: false,
+          agentSubstitutionObserved: false,
+          unauthorizedToolOrEffectObserved: false,
+          policyDecisions: [],
+        },
+      };
+    },
+  };
+  const output = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { output.push(String(chunk)); return true; };
+  try {
+    assert.equal(await runMissionCli([
+      "mission", "dispatch-fury-plan-review", "--request", "fury-dispatch-request.json", "--root", current.root, "--json",
+    ], { copilotFuryPlanDispatch: { executor, userCopilotHome: join(current.root, "copilot-home") } }), 0);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  const dispatched = JSON.parse(output.join(""));
+  assert.equal(dispatched.state, "completed", JSON.stringify(dispatched));
+  assert.equal(dispatched.disposition, "PASS");
+  assert.equal(calls.preflight, 1);
+  assert.equal(calls.execute, 1);
+  const recordArgs = [
+    "mission", "record-reviewed-transition",
+    "--transition-plan", dispatched.handoff.transitionPlanPath,
+    "--review-artifact", dispatched.handoff.reviewArtifactPath,
+    "--dispatch-receipt-id", dispatched.handoff.dispatchReceiptId,
+    "--mission-id", current.brief.missionId,
+    "--root", current.root,
+  ];
+  const materialized = run(current.root, recordArgs);
+  assert.equal(materialized.status, 0, materialized.stderr);
+  assert.equal(JSON.parse(materialized.stdout).state, "materialized");
+  const replayed = run(current.root, recordArgs);
+  assert.equal(replayed.status, 0, replayed.stderr);
+  assert.equal(JSON.parse(replayed.stdout).state, "already_materialized");
 });

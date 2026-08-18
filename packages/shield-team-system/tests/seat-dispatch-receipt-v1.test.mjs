@@ -187,6 +187,74 @@ test("input evidence is start-only and terminal output evidence is terminal-only
   }));
 });
 
+test("interrupted recovery binding preserves exact evidence, disposition, and distinct revisions", () => {
+  const start = started({
+    parentMissionRevision: "1111111111111111111111111111111111111111",
+    subjectRevision: "2222222222222222222222222222222222222222",
+    artifactRevision: "3333333333333333333333333333333333333333",
+    repositoryRevision: "4444444444444444444444444444444444444444",
+  });
+  const interrupted = stepEvent(start, {
+    kind: "dispatch.interrupted",
+    recoveryEvidenceRefs: ["evidence:recovery:dispatch-1"],
+    originalDisposition: {
+      code: "COPILOT_INTERRUPTED",
+      errors: ["connection closed after model response"],
+    },
+  });
+
+  const result = replay([start, interrupted]);
+  assert.equal(result.state, "valid");
+  assert.equal(result.projections[0].state, "interrupted");
+  assert.deepEqual(result.projections[0].recoveryEvidenceRefs, ["evidence:recovery:dispatch-1"]);
+  assert.deepEqual(result.projections[0].originalDisposition, {
+    code: "COPILOT_INTERRUPTED",
+    errors: ["connection closed after model response"],
+  });
+  assert.equal(result.projections[0].parentMissionRevision, "1".repeat(40));
+  assert.equal(result.projections[0].subjectRevision, "2".repeat(40));
+  assert.equal(result.projections[0].artifactRevision, "3".repeat(40));
+  assert.equal(result.projections[0].repositoryRevision, "4".repeat(40));
+  assert.deepEqual(replay(JSON.parse(JSON.stringify([start, interrupted]))), result);
+
+  const legacyInterrupted = stepEvent(start);
+  const legacy = replay([start, legacyInterrupted]);
+  assert.equal(legacy.state, "valid");
+  assert.equal(legacy.projections[0].recoveryEvidenceRefs, null);
+  assert.equal(legacy.projections[0].originalDisposition, null);
+
+  const interruptedWithoutErrors = stepEvent(start, {
+    recoveryEvidenceRefs: ["evidence:recovery:dispatch-without-errors"],
+    originalDisposition: { code: "COPILOT_INTERRUPTED", errors: [] },
+  });
+  const withoutErrors = replay([start, interruptedWithoutErrors]);
+  assert.equal(withoutErrors.state, "valid");
+  assert.deepEqual(withoutErrors.projections[0].originalDisposition.errors, []);
+
+  assert.throws(() => stepEvent(start, { recoveryEvidenceRefs: ["evidence:recovery:dispatch-1"] }));
+  assert.throws(() => stepEvent(start, {
+    originalDisposition: { code: "COPILOT_INTERRUPTED", errors: ["connection closed"] },
+  }));
+  assert.throws(() => stepEvent(start, {
+    recoveryEvidenceRefs: [],
+    originalDisposition: { code: "COPILOT_INTERRUPTED", errors: ["connection closed"] },
+  }));
+  assert.throws(() => stepEvent(start, {
+    recoveryEvidenceRefs: ["evidence:recovery:dispatch-1"],
+    originalDisposition: { code: "COPILOT_INTERRUPTED", errors: "connection closed" },
+  }));
+  assert.throws(() => stepEvent(start, {
+    recoveryEvidenceRefs: ["evidence:recovery:dispatch-1"],
+    originalDisposition: { code: "COPILOT_INTERRUPTED", errors: ["connection closed"], extra: true },
+  }));
+
+  const tampered = JSON.parse(JSON.stringify(interrupted));
+  tampered.originalDisposition.code = "DIFFERENT_INTERRUPTION";
+  const tamperedReplay = replay([start, tampered]);
+  assert.equal(tamperedReplay.state, "invalid");
+  assert.equal(tamperedReplay.code, "digest_mismatch");
+});
+
 test("receipt-id/dispatch-id mapping is enforced from both directions", () => {
   const first = started();
   const dispatchReuse = started({

@@ -76,11 +76,13 @@ test("documents the exported TDD mission evaluator and its exact effect boundary
 
 test("exports only the documented public package specifiers", async () => {
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  assert.equal(manifest.optionalDependencies["@github/copilot-sdk"], "1.0.11");
   assert.deepEqual(Object.keys(manifest.exports), [
     ".",
     "./mission",
     "./intake",
     "./dispatch-receipts",
+    "./copilot-fury-plan-dispatch",
     "./journal",
     "./modes",
     "./workspace",
@@ -125,6 +127,7 @@ test("loads every supported runtime specifier", async () => {
   const mission = await import("@shield/team-system/mission");
   const intake = await import("@shield/team-system/intake");
   const dispatchReceipts = await import("@shield/team-system/dispatch-receipts");
+  const copilotFuryPlanDispatch = await import("@shield/team-system/copilot-fury-plan-dispatch");
   const journal = await import("@shield/team-system/journal");
   const modes = await import("@shield/team-system/modes");
   const workspace = await import("@shield/team-system/workspace");
@@ -169,6 +172,9 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof dispatchReceipts.readSeatDispatchReceiptByReceiptIdV1, "function");
   assert.equal(typeof dispatchReceipts.readSeatDispatchReceiptsByChildTaskSessionV1, "function");
   assert.equal(typeof dispatchReceipts.replaySeatDispatchReceiptsV1, "function");
+  assert.equal(typeof copilotFuryPlanDispatch.dispatchCopilotFuryPlanReviewV1, "function");
+  assert.equal(copilotFuryPlanDispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, "1.0.11");
+  assert.equal(copilotFuryPlanDispatch.COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_ROOT, ".shield/audit/copilot-fury-plan-dispatch");
   assert.equal(typeof mission.evaluateSpecialistIteration, "function");
   assert.equal(journal.JOURNAL_SCHEMA_VERSION, 1);
   assert.equal(modes.MODE_MANIFEST_SCHEMA_VERSION, 1);
@@ -415,6 +421,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     "dist/mission-builder-v1.d.mts",
     "dist/dispatch-receipts.mjs",
     "dist/dispatch-receipts.d.mts",
+    "dist/copilot-fury-plan-dispatch-v1.mjs",
+    "dist/copilot-fury-plan-dispatch-v1.d.mts",
     "dist/seat-dispatch-store.mjs",
     "dist/seat-dispatch-store.d.mts",
     "dist/seat-dispatch-receipt-v1.mjs",
@@ -516,7 +524,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   );
   execFileSync(
     "npm",
-    ["install", "--save-dev", "--save-exact", tarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    ["install", "--save-dev", "--save-exact", tarball, "--offline", "--omit=optional", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
     { cwd: fixture, stdio: "pipe" },
   );
   await writeFile(join(fixture, "tsconfig.json"), JSON.stringify({
@@ -636,12 +644,24 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type SeatDispatchStoreContractResult,
       type SeatDispatchReceiptStoreScopeInput,
     } from "@shield/team-system/dispatch-receipts";
+    import {
+      COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+      COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+      dispatchCopilotFuryPlanReviewV1,
+      type CopilotFuryPlanDispatchRequestV1,
+      type CopilotFuryPlanDispatchResultV1,
+    } from "@shield/team-system/copilot-fury-plan-dispatch";
 
     const missionPreparationCanonical = canonicalJsonV1({ value: { schema: "proof" } });
     if (missionPreparationCanonical.state !== "valid") {
       throw new Error("mission-preparation import did not execute correctly");
     }
     const schema: 2 = MISSION_SCHEMA_VERSION;
+    const copilotFuryDispatchContract: "shield.copilot-fury-plan-dispatch.request.v1" = COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION;
+    const copilotFurySdkVersion: "1.0.11" = COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION;
+    const copilotFuryDispatchRequest = null as unknown as CopilotFuryPlanDispatchRequestV1;
+    const copilotFuryDispatchResult = null as unknown as CopilotFuryPlanDispatchResultV1;
+    const dispatchCopilotFuryPlanReview = dispatchCopilotFuryPlanReviewV1;
     const state: MissionState = "approved";
     const flags: RiskFlags = {
       production: false, destructive: false, migration: false,
@@ -911,7 +931,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-  void [schema, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, worktreeContract, worktreeRequest, worktreeResult, worktreeReceipt, prepareWorktree, validateWorktreeReceipt, worktreeAuthority, worktreeReady, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, featureOperationContract, evaluateFeatureOperation, tddMissionContract, tddMissionInput, tddMissionEvaluation, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, transitionPlanInput, transitionPlanResult, transitionPlanNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+  void [schema, copilotFuryDispatchContract, copilotFurySdkVersion, copilotFuryDispatchRequest, copilotFuryDispatchResult, dispatchCopilotFuryPlanReview, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, worktreeContract, worktreeRequest, worktreeResult, worktreeReceipt, prepareWorktree, validateWorktreeReceipt, worktreeAuthority, worktreeReady, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, featureOperationContract, evaluateFeatureOperation, tddMissionContract, tddMissionInput, tddMissionEvaluation, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, transitionPlanInput, transitionPlanResult, transitionPlanNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
@@ -923,6 +943,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const bin = join(fixture, "node_modules", ".bin", "shield");
   const shieldHelp = execFileSync(bin, ["--help"], { cwd: fixture, encoding: "utf8" });
   assert.match(shieldHelp, /shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> \[--host github-copilot\] \[--json\]/u);
+  assert.match(shieldHelp, /shield mission dispatch-fury-plan-review --request <file> \[--root <path>\] \[--json\]/u);
   execFileSync(bin, [
     "init",
     "--repository-id", "fixture/typescript-consumer",
@@ -953,11 +974,12 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   );
   execFileSync(
     "npm",
-    ["install", "--save-dev", "--save-exact", tarball, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
+    ["install", "--save-dev", "--save-exact", tarball, "--offline", "--omit=optional", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--cache", npmCache],
     { cwd: javascriptFixture, stdio: "pipe" },
   );
   await writeFile(join(javascriptFixture, "consumer.mjs"), `
     import { appendSeatDispatchReceiptEntryV1, claimSeatDispatchPacketV1, readSeatDispatchReceiptByReceiptIdV1, readSeatDispatchReceiptsByChildTaskSessionV1, readSeatDispatchReceiptsByParentMissionSessionV1, SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH } from "@shield/team-system/dispatch-receipts";
+    import { COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, dispatchCopilotFuryPlanReviewV1 } from "@shield/team-system/copilot-fury-plan-dispatch";
     import { CONFIG_SCHEMA_VERSION, configuredAdapterIds, createShieldConfig, migrateShieldConfig } from "@shield/team-system/config";
     import { canonicalJsonV1 } from "@shield/mission-preparation";
     const packageBase = new URL("./node_modules/@shield/team-system/", import.meta.url);
@@ -965,6 +987,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     await import(new URL("dist/seat-dispatch-store.mjs", packageBase).href);
     await import(new URL("dist/seat-dispatch-receipt-v1.mjs", packageBase).href);
     await import(new URL("dist/implementation-authority-v1.mjs", packageBase).href);
+    await import(new URL("dist/copilot-fury-plan-dispatch-v1.mjs", packageBase).href);
     if (SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH !== ".shield/dispatch-receipts.jsonl") throw new Error("unexpected dispatch receipt log path");
     const parentResult = await readSeatDispatchReceiptsByParentMissionSessionV1({
       repositoryRoot: "/tmp/dispatch-store",
@@ -991,6 +1014,9 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     }
     if (typeof appendSeatDispatchReceiptEntryV1 !== "function" || typeof claimSeatDispatchPacketV1 !== "function" || typeof readSeatDispatchReceiptByReceiptIdV1 !== "function") {
       throw new Error("dispatch-receipts exports missing");
+    }
+    if (COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION !== "1.0.11" || typeof dispatchCopilotFuryPlanReviewV1 !== "function") {
+      throw new Error("copilot Fury plan dispatch exports missing");
     }
     if (CONFIG_SCHEMA_VERSION !== 3) throw new Error("unexpected config schema");
     const missionPreparationCanonical = canonicalJsonV1({ value: { schema: "proof" } });

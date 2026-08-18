@@ -453,7 +453,7 @@ function validDispatchIdentity(candidate: unknown): candidate is SeatDispatchRec
     receipt: identifier(value.receiptId),
     dispatch: identifier(value.dispatchId),
     parentMission: identifier(value.parentMissionId),
-    parentMissionRevision: revision(value.parentMissionRevision),
+    parentMissionRevision: dispatchOwnedRevision(value.parentMissionRevision),
     parentSession: identifier(value.parentSessionId),
     childTask: identifier(value.childTaskId),
     childSession: identifier(value.childSessionId),
@@ -461,19 +461,19 @@ function validDispatchIdentity(candidate: unknown): candidate is SeatDispatchRec
     repositoryWorkspace: identifier(value.repositoryWorkspaceId),
     repositoryRevision: revision(value.repositoryRevision),
     subject: identifier(value.subjectId),
-    subjectRevision: revision(value.subjectRevision),
+    subjectRevision: dispatchOwnedRevision(value.subjectRevision),
     artifact: TRANSITION_PLAN_ID.test(typeof value.artifactId === "string" ? value.artifactId : ""),
-    revision: digest(typeof value.artifactRevision === "string" ? value.artifactRevision : ""),
+    revision: dispatchOwnedRevision(value.artifactRevision),
   };
   if (!Object.values(matches).every((value) => value)) {
     return false;
   }
-  if (!identifier(value.receiptId) || !identifier(value.dispatchId) || !identifier(value.parentMissionId) || !revision(value.parentMissionRevision) ||
+  if (!identifier(value.receiptId) || !identifier(value.dispatchId) || !identifier(value.parentMissionId) || !dispatchOwnedRevision(value.parentMissionRevision) ||
     !identifier(value.parentSessionId) || !identifier(value.childTaskId) || !identifier(value.childSessionId) ||
     !repository(value.repositoryId) || !identifier(value.repositoryWorkspaceId) || !revision(value.repositoryRevision) ||
-    !identifier(value.subjectId) || !revision(value.subjectRevision) ||
+    !identifier(value.subjectId) || !dispatchOwnedRevision(value.subjectRevision) ||
     !TRANSITION_PLAN_ID.test(typeof value.artifactId === "string" ? value.artifactId : "") ||
-    !digest(typeof value.artifactRevision === "string" ? value.artifactRevision : "")) {
+    !dispatchOwnedRevision(value.artifactRevision)) {
     return false;
   }
   return true;
@@ -541,6 +541,10 @@ function revision(value: unknown): value is string {
 
 function digest(value: unknown): value is string {
   return typeof value === "string" && DIGEST.test(value);
+}
+
+function dispatchOwnedRevision(value: unknown): value is string {
+  return revision(value) || digest(value);
 }
 
 function sha256(value: unknown): value is string {

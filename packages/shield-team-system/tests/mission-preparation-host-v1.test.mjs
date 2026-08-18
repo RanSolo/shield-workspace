@@ -18,6 +18,7 @@ import {
   probeMissionJournalPresenceV1ForTest,
   resolvePreparedMissionTransitionV1,
   resolvePreparedMissionTransitionV1ForTest,
+  resolveSeatDispatchIdentityByReceiptIdV1,
   stableRegularTextFileV1ForTest,
 } from "../dist/mission-preparation-host-v1.mjs";
 import {
@@ -80,9 +81,12 @@ const MISSION_ID = "mission:issue-270";
 const SUBJECT_ID = "github:RanSolo/shield-workspace/issue/270";
 const REPOSITORY_ID = "RanSolo/shield-workspace";
 const WORKSPACE_ID = "workspace:issue-270";
-const SUBJECT_REVISION = "a".repeat(40);
+const SUBJECT_REVISION = `sha256:${"a".repeat(43)}`;
 const REPOSITORY_REVISION = "b".repeat(40);
-const PARENT_MISSION_REVISION = "c".repeat(40);
+const PARENT_MISSION_REVISION = `sha256:${"c".repeat(43)}`;
+const LEGACY_SUBJECT_REVISION = "1".repeat(40);
+const LEGACY_PARENT_MISSION_REVISION = "2".repeat(40);
+const LEGACY_ARTIFACT_REVISION = "3".repeat(40);
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
 
 test("prepared publication semantic tuple delegates to the shared closed identity material", () => {
@@ -408,6 +412,112 @@ function materializationInput(plan, review, binding, identity, repositoryRoot) {
 function repository() {
   return mkdtemp(join(tmpdir(), "shield-270-host-"));
 }
+
+test("dispatch identity resolver accepts legacy Git and closed digest owned revisions while repository revision stays Git-only", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const identities = [
+    dispatchIdentity(plan, review),
+    dispatchIdentity(plan, review, {
+      parentMissionRevision: LEGACY_PARENT_MISSION_REVISION,
+      subjectRevision: LEGACY_SUBJECT_REVISION,
+      artifactRevision: LEGACY_ARTIFACT_REVISION,
+    }),
+  ];
+  for (const identity of identities) {
+    const repositoryRoot = await repository();
+    await writeDispatchLog(repositoryRoot, [dispatchStarted(identity)]);
+
+    const resolved = await resolveSeatDispatchIdentityByReceiptIdV1({
+      repositoryRoot,
+      repositoryId: plan.repositoryId,
+      receiptId: identity.receiptId,
+    });
+    assert.equal(resolved.state, "resolved", JSON.stringify(resolved));
+    assert.equal(resolved.identity.parentMissionRevision, identity.parentMissionRevision);
+    assert.equal(resolved.identity.subjectRevision, identity.subjectRevision);
+    assert.equal(resolved.identity.artifactRevision, identity.artifactRevision);
+    assert.equal(resolved.identity.repositoryRevision, REPOSITORY_REVISION);
+  }
+});
+
+test("dispatch identity resolver rejects malformed owning-field revisions", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const malformed = [
+    ["parentMissionRevision", "sha256:short1"],
+    ["subjectRevision", "sha256:short1"],
+    ["artifactRevision", "sha256:short1"],
+    ["repositoryRevision", "abcdef1"],
+  ];
+  for (const [field, revisionValue] of malformed) {
+    const identity = dispatchIdentity(plan, review, { [field]: revisionValue });
+    const repositoryRoot = await repository();
+    await writeDispatchLog(repositoryRoot, [dispatchStarted(identity)]);
+
+    const resolved = await resolveSeatDispatchIdentityByReceiptIdV1({
+      repositoryRoot,
+      repositoryId: plan.repositoryId,
+      receiptId: identity.receiptId,
+    });
+    assert.equal(resolved.state, "invalid", field);
+    assert.deepEqual(resolved.errors, ["Named dispatch receipt identity is invalid."], field);
+  }
+});
+
+test("dispatch identity resolver rejects cross-field revision substitution", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const substitutions = [
+    { parentMissionRevision: REPOSITORY_REVISION, repositoryRevision: PARENT_MISSION_REVISION },
+    { subjectRevision: REPOSITORY_REVISION, repositoryRevision: SUBJECT_REVISION },
+    { artifactRevision: REPOSITORY_REVISION, repositoryRevision: plan.digest },
+  ];
+  for (const substitution of substitutions) {
+    const identity = dispatchIdentity(plan, review, substitution);
+    const repositoryRoot = await repository();
+    await writeDispatchLog(repositoryRoot, [dispatchStarted(identity)]);
+
+    const resolved = await resolveSeatDispatchIdentityByReceiptIdV1({
+      repositoryRoot,
+      repositoryId: plan.repositoryId,
+      receiptId: identity.receiptId,
+    });
+    assert.equal(resolved.state, "invalid", JSON.stringify(substitution));
+    assert.deepEqual(resolved.errors, ["Named dispatch receipt identity is invalid."], JSON.stringify(substitution));
+  }
+});
+
+test("materialization preserves exact revision equality across legacy and digest forms", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const ledgerIdentity = dispatchIdentity(plan, review);
+  const substitutions = [
+    ["parentMissionRevision", LEGACY_PARENT_MISSION_REVISION, "stale_mission_revision"],
+    ["subjectRevision", LEGACY_SUBJECT_REVISION, "stale_subject_revision"],
+    ["artifactRevision", LEGACY_ARTIFACT_REVISION, "stale_artifact_revision"],
+  ];
+  for (const [field, revisionValue, reason] of substitutions) {
+    const repositoryRoot = await repository();
+    const start = dispatchStarted(ledgerIdentity);
+    const completed = dispatchLifecycle(start, ledgerIdentity, "dispatch.completed", {
+      outputEvidenceRefs: reviewOutputRefs(review),
+    });
+    await writeDispatchLog(repositoryRoot, [start, completed]);
+    const inputIdentity = dispatchIdentity(plan, review, { [field]: revisionValue });
+
+    const result = await materializeReviewedMissionTransitionV1(materializationInput(
+      plan,
+      review,
+      expectedBinding(plan),
+      inputIdentity,
+      repositoryRoot,
+    ));
+    assert.equal(result.state, "invalid", field);
+    assert.equal(result.code, "invalid_attribution", field);
+    assert.ok(result.errors.includes(reason), field);
+  }
+});
 
 function transitionPlanReview(overrides = {}) {
   return {

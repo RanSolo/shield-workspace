@@ -108,6 +108,11 @@ export type SeatDispatchExecutorSelfReport = ExecutorSelfReportUnavailableV1 | E
 export type SeatDispatchExecutorHostObservation = ExecutorHostUnobservedV1 | ExecutorHostObservedV1;
 export type SeatDispatchToolExecution = ToolExecutionRequestedV1 | ToolExecutionNotRequestedV1;
 
+export interface SeatDispatchInterruptionDispositionV1 {
+  readonly code: string;
+  readonly errors: readonly string[];
+}
+
 interface EventInputCore {
   readonly receiptId: string;
   readonly dispatchId: string;
@@ -150,6 +155,8 @@ export interface SeatDispatchReceiptEventInterruptedV1 extends EventInputCore {
   readonly schemaVersion: 1;
   readonly contractVersion: typeof SEAT_DISPATCH_RECEIPT_CONTRACT_VERSION;
   readonly kind: typeof KIND_INTERRUPTED;
+  readonly recoveryEvidenceRefs?: readonly string[];
+  readonly originalDisposition?: SeatDispatchInterruptionDispositionV1;
   readonly entryDigest: string;
 }
 
@@ -212,6 +219,8 @@ export interface SeatDispatchReceiptProjectionV1 extends SeatDispatchReceiptIden
   readonly executorHostHistory: readonly ExecutorHostObservedV1[];
   readonly inputEvidenceRefs: readonly string[];
   readonly outputEvidenceRefs: readonly string[] | null;
+  readonly recoveryEvidenceRefs: readonly string[] | null;
+  readonly originalDisposition: SeatDispatchInterruptionDispositionV1 | null;
 }
 
 export type SeatDispatchAttributionReason =
@@ -289,6 +298,8 @@ export interface SeatDispatchReplayInvalidResult {
 export type SeatDispatchReplayResult = SeatDispatchReplayValidResult | SeatDispatchReplayInvalidResult;
 
 const MAX_EVIDENCE_REFERENCE_COUNT = 16;
+const MAX_DISPOSITION_ERROR_COUNT = 16;
+const MAX_DISPOSITION_ERROR_LENGTH = 2_048;
 
 interface ValidationResult<T> {
   readonly state: "valid" | "invalid";
@@ -412,6 +423,41 @@ function digest(value: unknown): value is string {
 
 function validateEvidenceRefs(input: unknown, label: string): string[] {
   return arrayChecks(input, label);
+}
+
+function validateInterruptionDisposition(value: unknown): ValidationResult<SeatDispatchInterruptionDispositionV1> {
+  const errors = exact(value, ["code", "errors"], "interruption original disposition");
+  if (errors.length > 0 || !plain(value) || !identifier(value.code)) {
+    return {
+      state: "invalid",
+      code: "malformed_event",
+      reasonCodes: errors.length > 0 ? errors : ["interruption original disposition code is invalid"],
+    };
+  }
+  const dispositionErrors = arrayValues(value.errors);
+  if (dispositionErrors === null || dispositionErrors.length > MAX_DISPOSITION_ERROR_COUNT) {
+    return {
+      state: "invalid",
+      code: "malformed_event",
+      reasonCodes: [`interruption original disposition errors must contain at most ${MAX_DISPOSITION_ERROR_COUNT} entries`],
+    };
+  }
+  if (dispositionErrors.some((entry) =>
+    typeof entry !== "string" || entry.length < 1 || entry.length > MAX_DISPOSITION_ERROR_LENGTH || entry.includes("\0")
+  )) {
+    return {
+      state: "invalid",
+      code: "malformed_event",
+      reasonCodes: ["interruption original disposition errors are invalid"],
+    };
+  }
+  return {
+    state: "valid",
+    value: {
+      code: value.code,
+      errors: [...dispositionErrors] as string[],
+    },
+  };
 }
 
 function canonical(value: unknown): unknown {
@@ -626,6 +672,8 @@ const EVENT_KINDS = new Set<SeatDispatchEventKindV1>(SEAT_DISPATCH_EVENT_KINDS);
 type SeatDispatchEventWithoutDigestV1 = Omit<SeatDispatchReceiptEventV1, "entryDigest"> & {
   readonly entryDigest?: string;
   readonly outputEvidenceRefs?: readonly string[];
+  readonly recoveryEvidenceRefs?: readonly string[];
+  readonly originalDisposition?: SeatDispatchInterruptionDispositionV1;
 };
 
 type SeatDispatchLifecycleEventWithoutDigestV1 = Omit<
@@ -641,7 +689,7 @@ function isSeatDispatchReceiptEventKind(value: unknown): value is SeatDispatchEv
   return typeof value === "string" && EVENT_KINDS.has(value as SeatDispatchEventKindV1);
 }
 
-function fieldsFor(kind: SeatDispatchReceiptEventV1["kind"]): readonly string[] {
+function fieldsFor(kind: SeatDispatchReceiptEventV1["kind"], hasInterruptionRecoveryBinding = false): readonly string[] {
   const baseFields: string[] = [
     "schemaVersion", "contractVersion", "kind", "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision",
     "repositoryRevision", "parentSessionId", "childTaskId", "childSessionId", "accountableSeatId", "repositoryId", "repositoryWorkspaceId",
@@ -654,6 +702,9 @@ function fieldsFor(kind: SeatDispatchReceiptEventV1["kind"]): readonly string[] 
   }
   if (kind === KIND_COMPLETED || kind === KIND_FAILED || kind === KIND_CANCELLED) {
     baseFields.push("outputEvidenceRefs");
+  }
+  if (kind === KIND_INTERRUPTED && hasInterruptionRecoveryBinding) {
+    baseFields.push("recoveryEvidenceRefs", "originalDisposition");
   }
   return baseFields;
 }
@@ -672,7 +723,23 @@ function eventIdentityValue(
     if (!kindDescriptor?.enumerable || !Object.hasOwn(kindDescriptor, "value") || !isSeatDispatchReceiptEventKind(kindDescriptor.value) || kindDescriptor.value === undefined) {
       return { state: "invalid", code: "malformed_event", reasonCodes: ["kind is invalid"] };
     }
-    const eventFields = fieldsFor(kindDescriptor.value);
+    const hasRecoveryEvidenceRefs = Object.hasOwn(event, "recoveryEvidenceRefs");
+    const hasOriginalDisposition = Object.hasOwn(event, "originalDisposition");
+    if (hasRecoveryEvidenceRefs !== hasOriginalDisposition) {
+      return {
+        state: "invalid",
+        code: "malformed_event",
+        reasonCodes: ["interruption recovery evidence and original disposition must be supplied together"],
+      };
+    }
+    if (kindDescriptor.value !== KIND_INTERRUPTED && hasRecoveryEvidenceRefs) {
+      return {
+        state: "invalid",
+        code: "malformed_event",
+        reasonCodes: ["interruption recovery binding is only allowed on dispatch.interrupted"],
+      };
+    }
+    const eventFields = fieldsFor(kindDescriptor.value, hasRecoveryEvidenceRefs);
     const validationFields = requireDigest ? eventFields : eventFields.filter((field) => field !== "entryDigest");
     const errors = exact(event, validationFields, "seat dispatch receipt event");
     if (errors.length > 0) return { state: "invalid", code: "malformed_event", reasonCodes: errors };
@@ -692,7 +759,9 @@ function eventIdentityValue(
   } catch {
     return { state: "invalid", code: "malformed_event", reasonCodes: ["seat dispatch receipt event is malformed"] };
   }
-  const validationFields = fieldsFor(checkedEvent.kind);
+  const hasInterruptionRecoveryBinding = checkedEvent.kind === KIND_INTERRUPTED &&
+    Object.hasOwn(checkedEvent, "recoveryEvidenceRefs") && Object.hasOwn(checkedEvent, "originalDisposition");
+  const validationFields = fieldsFor(checkedEvent.kind, hasInterruptionRecoveryBinding);
   const errors = requireDigest ? exact(checkedEvent, validationFields, "seat dispatch receipt event") : [];
   if (errors.length > 0) return { state: "invalid", code: "malformed_event", reasonCodes: errors };
   if (checkedEvent.schemaVersion !== SEAT_DISPATCH_RECEIPT_SCHEMA_VERSION || checkedEvent.contractVersion !== SEAT_DISPATCH_RECEIPT_CONTRACT_VERSION) {
@@ -786,6 +855,26 @@ function eventIdentityValue(
   if ((checkedEvent.kind === KIND_COMPLETED || checkedEvent.kind === KIND_FAILED || checkedEvent.kind === KIND_CANCELLED)) {
     const refs = validateEvidenceRefs((checkedEvent as SeatDispatchReceiptEventTerminalV1).outputEvidenceRefs, "output evidence");
     if (refs.length > 0) return { state: "invalid", code: "malformed_event", reasonCodes: refs };
+  }
+  if (checkedEvent.kind === KIND_INTERRUPTED && hasInterruptionRecoveryBinding) {
+    const refs = validateEvidenceRefs(checkedEvent.recoveryEvidenceRefs, "recovery evidence");
+    if (refs.length > 0 || checkedEvent.recoveryEvidenceRefs?.length === 0) {
+      return {
+        state: "invalid",
+        code: "malformed_event",
+        reasonCodes: refs.length > 0 ? refs : ["interrupted event recoveryEvidenceRefs must not be empty"],
+      };
+    }
+    const disposition = validateInterruptionDisposition(checkedEvent.originalDisposition);
+    if (disposition.state === "invalid" || disposition.value === undefined) {
+      return {
+        state: "invalid",
+        code: disposition.code ?? "malformed_event",
+        reasonCodes: disposition.reasonCodes ?? ["interruption original disposition is invalid"],
+      };
+    }
+    sanitized.recoveryEvidenceRefs = [...(checkedEvent.recoveryEvidenceRefs ?? [])];
+    sanitized.originalDisposition = disposition.value;
   }
 
   return {
@@ -908,6 +997,8 @@ function seedProjection(event: SeatDispatchReceiptEventStartedV1): SeatDispatchR
     executorHostHistory: isExecutorHostObserved(event.executorHostObserved) ? [event.executorHostObserved] : [],
     inputEvidenceRefs: event.inputEvidenceRefs,
     outputEvidenceRefs: null,
+    recoveryEvidenceRefs: null,
+    originalDisposition: null,
   };
 }
 
@@ -1003,6 +1094,12 @@ function toProjection(event: SeatDispatchReceiptEventV1, current: SeatDispatchRe
     outputEvidenceRefs: state === "completed" || state === "failed" || state === "cancelled"
       ? (event as SeatDispatchReceiptEventTerminalV1).outputEvidenceRefs
       : current.outputEvidenceRefs,
+    recoveryEvidenceRefs: event.kind === KIND_INTERRUPTED && event.recoveryEvidenceRefs !== undefined
+      ? event.recoveryEvidenceRefs
+      : current.recoveryEvidenceRefs,
+    originalDisposition: event.kind === KIND_INTERRUPTED && event.originalDisposition !== undefined
+      ? event.originalDisposition
+      : current.originalDisposition,
   } };
 }
 
@@ -1041,7 +1138,9 @@ export function createSeatDispatchLifecycleEventV1(
   if (!isSeatDispatchReceiptEventKind(inputKind) || inputKind === KIND_START) {
     throw new Error("invalid lifecycle event kind");
   }
-  const baseFields = fieldsFor(inputKind).filter((field) =>
+  const hasInterruptionRecoveryBinding = inputKind === KIND_INTERRUPTED &&
+    plain(input) && Object.hasOwn(input, "recoveryEvidenceRefs") && Object.hasOwn(input, "originalDisposition");
+  const baseFields = fieldsFor(inputKind, hasInterruptionRecoveryBinding).filter((field) =>
     field !== "schemaVersion" && field !== "contractVersion" && field !== "entryDigest"
   );
   const baseErrors = exact(input, baseFields, "seat dispatch lifecycle event");
