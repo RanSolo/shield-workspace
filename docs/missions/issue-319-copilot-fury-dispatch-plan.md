@@ -46,7 +46,7 @@ The missing operation is the bounded producer between those surfaces. GitHub Cop
 
 Fury reviewed implementation HEAD `70bf5550bd104b96d948f088b88ccbc4593dd6d9` and returned `REVISE`. The correction preserves the original objective and authority-none boundary. It does not authorize a second feature, generic scheduler, publication, merge, deployment, release, or NXT-458 execution.
 
-The seven findings are resolved in three tightly coupled packets:
+The seven findings and the integration-discovered identity mismatch are resolved in four tightly coupled packets:
 
 ### Packet A — stable execute-once and durable lifecycle (AC-2, AC-7, AC-10)
 
@@ -67,6 +67,12 @@ The seven findings are resolved in three tightly coupled packets:
 - Revalidate root/branch/HEAD, card, plan, journal, runtime, and executor immediately before terminal append.
 - After append, independently reread the completed receipt and all three content-addressed artifacts. Verify their paths, bytes, digests, identities, receipt references, and exact request bindings before returning PASS.
 - Add production-executor-level SDK configuration, event, permission, cancellation, and identity tests rather than proving only an injected fake.
+
+### Packet D — reviewed-transition identity compatibility (AC-2, AC-9, AC-14)
+
+- Preserve the receipt's distinct digest-form mission and subject revisions; do not coerce them back to repository Git revisions.
+- Extend the reviewed-transition dispatch-identity resolver to validate each identity using its owning contract: repository revision remains a 40-character Git object ID, while mission/subject/artifact revisions accept their existing closed digest identities.
+- Prove the real `dispatch-fury-plan-review` → `record-reviewed-transition` CLI handoff and reject cross-field substitution, malformed digest identities, and repository-revision substitution.
 
 ## Contract and control flow
 
@@ -154,6 +160,8 @@ Expected production paths:
 - `packages/shield-team-system/src/seat-dispatch-receipt-v1.mts` — minimal backward-compatible interrupted-event recovery-evidence and original-disposition binding.
 - `packages/shield-team-system/tests/seat-dispatch-receipt-v1.test.mjs` — receipt schema, lifecycle, exact replay, and compatibility coverage for the interruption extension.
 - `packages/shield-team-system/tests/seat-dispatch-store.test.mjs` — durable append/readback and conflicting-replay coverage for the extended interrupted event.
+- `packages/shield-team-system/src/mission-preparation-host-v1.mts` — preserve distinct repository Git revision and mission/subject/artifact digest identity contracts during reviewed-transition dispatch resolution.
+- `packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs` — focused valid/malformed/cross-field identity compatibility and substitution coverage.
 
 If implementation shows that a separate Nx package is required to isolate the optional SDK dependency, stop and return to Fury: do not create a project boundary or broaden the path list implicitly. The smallest current boundary is `@shield/team-system`, which already owns Copilot readiness, mission CLI, dispatch receipts, and transition materialization.
 
@@ -173,6 +181,8 @@ Focused tests must prove behavior rather than mirror helpers:
 10. package build, type surface, CLI help, and focused test targets through Nx.
 
 The corrective tests must additionally prove stable-operation conflicting retries after journal/card/timestamp drift; managed or sandbox-bypass read denial; exact-HEAD path confinement; loaded SDK and session-producer observation; transient agent deselection; duplicate JSON-key rejection; interruption evidence/code replay from the receipt; pre-terminal drift; and final replacement/readback faults for every returned artifact and the receipt.
+
+Packet D must prove the exact CLI handoff succeeds with digest-form mission and subject revisions while repository revision remains Git-bound, and that malformed or substituted identities fail closed.
 
 Validation uses Nx affected/focused targets against the exact base and HEAD and trusts valid Nx cache hits. May must produce one real focused execution for changed behavior. Mack independently evaluates the exact inputs, graph, cache provenance, and outputs; it reruns uncached targets only for a concrete cache or risk concern. Routine duplicated full-suite uncached execution is prohibited.
 
