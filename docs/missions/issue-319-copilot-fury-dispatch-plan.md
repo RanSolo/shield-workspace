@@ -42,6 +42,32 @@ The missing operation is the bounded producer between those surfaces. GitHub Cop
 | AC-13 | No authority expansion | request/result/receipt state `authority: none`; tools remain read-only; operation cannot implement, publish, merge, deploy, release, or approve |
 | AC-14 | Existing consumer proof | real CLI integration test feeds the returned three values to `record-reviewed-transition` and proves exact materialization/already-materialized replay |
 
+## Exact-head corrective revision
+
+Fury reviewed implementation HEAD `70bf5550bd104b96d948f088b88ccbc4593dd6d9` and returned `REVISE`. The correction preserves the original objective and authority-none boundary. It does not authorize a second feature, generic scheduler, publication, merge, deployment, release, or NXT-458 execution.
+
+The seven findings are resolved in three tightly coupled packets:
+
+### Packet A — stable execute-once and durable lifecycle (AC-2, AC-7, AC-10)
+
+- Derive the logical operation/packet identity only from immutable mission ID/revision, parent session, subject ID/revision, transition-plan ID/digest, repository ID/workspace/revision, and accountable seat. Timestamp, journal sequence/digest, card precedence, and other live observations remain packet evidence but cannot create a second logical operation.
+- Inspect the stable claim identity before invocation. Exact packet bytes replay from durable evidence; different packet bytes for the same logical operation return conflict and never invoke Copilot.
+- Extend the existing receipt contract minimally so `dispatch.interrupted` carries closed recovery evidence references and the original disposition code/errors needed for exact replay. Preserve interruption as nonterminal. Failed, cancelled, interrupted, PASS, and REVISE replay their original state/code/errors without reinvocation.
+- Preserve mission revision, subject revision, artifact revision, and repository revision in their distinct receipt fields.
+
+### Packet B — confined SDK execution identity (AC-3, AC-5, AC-13)
+
+- Verify the actually loaded `@github/copilot-sdk` package version and retain the observed `session.start.data.producer` runtime/version separately from the configured/requested runtime and executor identities.
+- Observe and reject model-change and custom-agent selected/deselected drift across the entire session.
+- Deny `managedApprovalRequired` and `requestSandboxBypass`. Canonicalize every requested read path, reject aliases/symlinks, and confine reads to an exact-HEAD repository snapshot. If the SDK does not expose enough information for that proof, return `BLOCKED_ADAPTER_GAP` before claim or invocation. Deny every non-read permission kind.
+
+### Packet C — terminal proof and adversarial output (AC-8, AC-9, AC-11)
+
+- Strictly parse model JSON with duplicate-key rejection before the closed schema validator.
+- Revalidate root/branch/HEAD, card, plan, journal, runtime, and executor immediately before terminal append.
+- After append, independently reread the completed receipt and all three content-addressed artifacts. Verify their paths, bytes, digests, identities, receipt references, and exact request bindings before returning PASS.
+- Add production-executor-level SDK configuration, event, permission, cancellation, and identity tests rather than proving only an injected fake.
+
 ## Contract and control flow
 
 ### 1. Closed request
@@ -75,6 +101,8 @@ An unrequested user override, ambiguous source, changed bytes, or display-name-o
 
 Canonicalize the validated request, transition plan, card identity, mission-journal projection digest/sequence, output contract, and SDK configuration into one packet. Claim it through `claimSeatDispatchPacketV1` with accountable seat `fury` and input evidence refs for the plan/card/request/journal digests.
 
+The claim key is derived from the immutable logical operation coordinates frozen in Packet A, not from mutable packet observations. The complete canonical packet digest is independently bound to that stable claim. A changed timestamp, journal observation, card observation, or other packet byte cannot mint a second receipt for the same operation.
+
 - `execute_once`: proceed.
 - exact completed PASS: verify durable plan/review/evidence artifacts and terminal receipt, then return the existing tuple.
 - exact completed REVISE, failed, cancelled, or nonterminal claim: return its original durable disposition; do not invoke again in this slice.
@@ -87,6 +115,8 @@ Add a narrow SDK executor interface so contract/durability tests inject a determ
 Create one SDK client in `empty` mode and one session with exactly one locally supplied custom agent named `fury`. Set the claim-generated child session ID as `sessionId`, preselect with `agent: "fury"`, use the resolved card body as its prompt, set `customAgentsLocalOnly`, disable runtime configuration/plugin/skill/MCP/hook discovery, select the requested model explicitly, and configure an exact session-level read-only `availableTools` list plus mutating-tool exclusions. Remove `web` from this v1 operation. Reject unauthorized calls in pre-tool hooks and deny every permission request outside the empty effect allowlist. The task prompt contains only exact plan/repository bindings and the closed output schema.
 
 Register `onEvent` during session creation. Require matching `session.start` session ID and selected model, `session.rpc.agent.getCurrent().agent.name === "fury"`, the current session model, and the final `assistant.message.model`. Reject any model-change event, agent deselection/substitution, unexpected tool/effect request, missing early observation, or executor/session substitution. Do not require or synthesize `subagent.started`; that event belongs to parent-delegated subagents, not this directly preselected active agent.
+
+The permission handler must reject managed-approval and sandbox-bypass requests. It may approve a read only after no-follow canonical confinement proves the path belongs to the exact-HEAD repository snapshot. It denies every other request. The host records the loaded SDK package version and observed session producer/runtime instead of copying configured constants into observed evidence.
 
 ### 5. Result and terminalization
 
@@ -107,7 +137,9 @@ Use this exact lifecycle table:
 - confirmed cancellation → `dispatch.cancelled`.
 - uncertain interruption → `dispatch.interrupted` plus `recovery_required`; interruption remains nonterminal.
 
-For PASS, recheck live Git/card/plan/journal identity, build and validate the existing review artifact from host-observed identity, persist/read back all evidence, append/read back `dispatch.completed`, and return the consumer tuple. Never convert REVISE into PASS or authority.
+Interrupted receipt evidence must bind the durable recovery artifact and original code/errors. Replay reads that binding from the receipt rather than scanning for an unreferenced self-identifying artifact.
+
+For PASS, recheck live Git/card/plan/journal identity immediately before terminal append, build and validate the existing review artifact from host-observed identity, persist/read back all evidence, append/read back `dispatch.completed`, then independently reread and validate the receipt plus transition-plan, review, and dispatch-evidence artifacts before returning the consumer tuple. Never convert REVISE into PASS or authority.
 
 ## Bounded implementation surface
 
@@ -119,6 +151,9 @@ Expected production paths:
 - `packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs` — focused contract, lifecycle, drift, replay, card precedence, and fault tests.
 - `packages/shield-team-system/tests/supervised-cli.test.mjs` — real CLI success/block/replay and handoff into `record-reviewed-transition`.
 - `packages/shield-team-system/tests/package-surface.test.mjs` — package/export/help contract.
+- `packages/shield-team-system/src/seat-dispatch-receipt-v1.mts` — minimal backward-compatible interrupted-event recovery-evidence and original-disposition binding.
+- `packages/shield-team-system/tests/seat-dispatch-receipt-v1.test.mjs` — receipt schema, lifecycle, exact replay, and compatibility coverage for the interruption extension.
+- `packages/shield-team-system/tests/seat-dispatch-store.test.mjs` — durable append/readback and conflicting-replay coverage for the extended interrupted event.
 
 If implementation shows that a separate Nx package is required to isolate the optional SDK dependency, stop and return to Fury: do not create a project boundary or broaden the path list implicitly. The smallest current boundary is `@shield/team-system`, which already owns Copilot readiness, mission CLI, dispatch receipts, and transition materialization.
 
@@ -137,7 +172,9 @@ Focused tests must prove behavior rather than mirror helpers:
 9. no Copilot invocation before a durable execute-once claim, empty-mode/discovery isolation, exact read-only tools, pre-tool rejection, and no unauthorized effect after the final policy decision;
 10. package build, type surface, CLI help, and focused test targets through Nx.
 
-Full `@shield/team-system` validation is required because the command extends the mission CLI and receipt/materialization contracts. Use uncached focused evidence first; use Nx affected/full targets according to the resulting graph.
+The corrective tests must additionally prove stable-operation conflicting retries after journal/card/timestamp drift; managed or sandbox-bypass read denial; exact-HEAD path confinement; loaded SDK and session-producer observation; transient agent deselection; duplicate JSON-key rejection; interruption evidence/code replay from the receipt; pre-terminal drift; and final replacement/readback faults for every returned artifact and the receipt.
+
+Validation uses Nx affected/focused targets against the exact base and HEAD and trusts valid Nx cache hits. May must produce one real focused execution for changed behavior. Mack independently evaluates the exact inputs, graph, cache provenance, and outputs; it reruns uncached targets only for a concrete cache or risk concern. Routine duplicated full-suite uncached execution is prohibited.
 
 ## Stop conditions
 
