@@ -499,14 +499,14 @@ function parseClosedResultText(text: string, plan: TransitionPlanV1OrV2) {
 }
 
 function cleanGitEnvironment(): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", LANG: "C", LC_ALL: "C" };
+  const environment: NodeJS.ProcessEnv = { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_OPTIONAL_LOCKS: "0", LANG: "C", LC_ALL: "C" };
   for (const name of GIT_CONTEXT_VARIABLES) delete environment[name];
   return environment;
 }
 
 function git(root: string, args: readonly string[]): Promise<string> {
   return new Promise((resolveValue, reject) => {
-    execFileNode("git", ["-C", root, ...args], { encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024, shell: false, env: cleanGitEnvironment() }, (error, stdout) => {
+    execFileNode("git", ["--no-replace-objects", "-C", root, ...args], { encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024, shell: false, env: cleanGitEnvironment() }, (error, stdout) => {
       if (error) reject(error); else resolveValue(stdout);
     });
   });
@@ -514,7 +514,7 @@ function git(root: string, args: readonly string[]): Promise<string> {
 
 function gitBytes(root: string, args: readonly string[]): Promise<Buffer> {
   return new Promise((resolveValue, reject) => {
-    execFileNode("git", ["-C", root, ...args], { encoding: "buffer", timeout: 15_000, maxBuffer: 4 * 1024 * 1024, shell: false, env: cleanGitEnvironment() }, (error, stdout) => {
+    execFileNode("git", ["--no-replace-objects", "-C", root, ...args], { encoding: "buffer", timeout: 15_000, maxBuffer: 4 * 1024 * 1024, shell: false, env: cleanGitEnvironment() }, (error, stdout) => {
       if (error) reject(error); else resolveValue(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
     });
   });
@@ -522,30 +522,82 @@ function gitBytes(root: string, args: readonly string[]): Promise<Buffer> {
 
 function exactGitTreePath(repositoryRoot: string, requestedPath: unknown): string {
   if (typeof requestedPath !== "string" || requestedPath === "" || requestedPath.includes("\0")) throw new Error("exact_git_tree_path_invalid");
+  let path: string;
   if (!isAbsolute(requestedPath)) {
     if (!normalizedRelativePath(requestedPath)) throw new Error("exact_git_tree_path_invalid");
-    return requestedPath;
+    path = requestedPath;
+  } else {
+    if (resolve(requestedPath) !== requestedPath) throw new Error("exact_git_tree_path_alias");
+    path = relative(repositoryRoot, requestedPath).split(sep).join("/");
+    if (!normalizedRelativePath(path)) throw new Error("exact_git_tree_path_escape");
   }
-  if (resolve(requestedPath) !== requestedPath) throw new Error("exact_git_tree_path_alias");
-  const relation = relative(repositoryRoot, requestedPath).split(sep).join("/");
-  if (!normalizedRelativePath(relation)) throw new Error("exact_git_tree_path_escape");
-  return relation;
+  if (path.split("/").some((component) => component.toLocaleLowerCase("en-US") === ".git")) throw new Error("exact_git_tree_path_git_metadata");
+  return path;
 }
 
-async function exactGitTreeBytes(repositoryRoot: string, revision: string, requestedPath: unknown): Promise<Readonly<{ path: string; bytes: Buffer }>> {
+type ExactGitTreeEntry = Readonly<{ mode: string; type: string; objectId: string; path: string }>;
+type ValidatedExactGitTreeToolCall = Readonly<
+  | { kind: "read"; file: ExactGitTreeEntry }
+  | { kind: "search"; query: string; files: readonly ExactGitTreeEntry[] }
+>;
+
+async function exactGitTreeInventory(repositoryRoot: string, revision: string): Promise<readonly ExactGitTreeEntry[]> {
   if (await realpath(repositoryRoot) !== repositoryRoot) throw new Error("exact_git_tree_root_alias");
-  const path = exactGitTreePath(repositoryRoot, requestedPath);
-  const object = `${revision}:${path}`;
-  const type = (await git(repositoryRoot, ["cat-file", "-t", object])).trim();
-  const sizeText = (await git(repositoryRoot, ["cat-file", "-s", object])).trim();
-  const size = Number(sizeText);
-  if (type !== "blob" || !Number.isSafeInteger(size) || size < 0 || size > MAX_INPUT_BYTES) throw new Error("exact_git_tree_object_invalid");
-  const bytes = await gitBytes(repositoryRoot, ["cat-file", "blob", object]);
-  if (bytes.length !== size || !Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error("exact_git_tree_bytes_invalid");
-  return Object.freeze({ path, bytes });
+  const listed = await gitBytes(repositoryRoot, ["ls-tree", "-r", "-t", "-z", "--full-tree", revision]);
+  if (listed.length > MAX_INPUT_BYTES || !Buffer.from(listed.toString("utf8"), "utf8").equals(listed)) throw new Error("exact_git_tree_inventory_too_large");
+  const entries: ExactGitTreeEntry[] = [];
+  for (const record of listed.toString("utf8").split("\0")) {
+    if (record === "") continue;
+    const tab = record.indexOf("\t");
+    if (tab < 0) throw new Error("exact_git_tree_inventory_malformed");
+    const [mode, type, objectId, ...extra] = record.slice(0, tab).split(" ");
+    const path = record.slice(tab + 1);
+    if (extra.length !== 0 || !/^[0-7]{6}$/u.test(mode ?? "") || (type !== "blob" && type !== "tree" && type !== "commit") || !/^[0-9a-f]{40,64}$/u.test(objectId ?? "") || !normalizedRelativePath(path) || path.split("/").some((component) => component.toLocaleLowerCase("en-US") === ".git")) throw new Error("exact_git_tree_inventory_malformed");
+    entries.push(Object.freeze({ mode, type, objectId, path }));
+    if (entries.length > 8192) throw new Error("exact_git_tree_inventory_too_large");
+  }
+  return Object.freeze(entries);
 }
 
-function exactGitTreeTools(repositoryRoot: string, revision: string): readonly Tool[] {
+function regularGitTreeFile(entry: ExactGitTreeEntry): boolean {
+  return entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755");
+}
+
+async function validateExactGitTreeToolCall(repositoryRoot: string, revision: string, toolName: string, args: unknown): Promise<Readonly<{ state: "valid"; value: ValidatedExactGitTreeToolCall } | { state: "invalid" }>> {
+  try {
+    const entries = await exactGitTreeInventory(repositoryRoot, revision);
+    if (toolName === "read") {
+      if (!exact(args, ["path"])) return { state: "invalid" };
+      const path = exactGitTreePath(repositoryRoot, args.path);
+      const entry = entries.find((candidate) => candidate.path === path);
+      if (entry === undefined || !regularGitTreeFile(entry)) return { state: "invalid" };
+      return { state: "valid", value: Object.freeze({ kind: "read", file: entry }) };
+    }
+    if (toolName !== "search" || (!exact(args, ["query"]) && !exact(args, ["query", "path"])) || typeof args.query !== "string" || args.query.length < 1 || args.query.length > 1024 || (args.path !== undefined && typeof args.path !== "string")) return { state: "invalid" };
+    const prefix = args.path === undefined ? null : exactGitTreePath(repositoryRoot, args.path);
+    if (prefix !== null) {
+      const target = entries.find((candidate) => candidate.path === prefix);
+      if (target === undefined || (target.type === "tree" ? target.mode !== "040000" : !regularGitTreeFile(target))) return { state: "invalid" };
+    }
+    const scoped = entries.filter((entry) => entry.type !== "tree" && (prefix === null || entry.path === prefix || entry.path.startsWith(`${prefix}/`)));
+    if (scoped.length > 4096 || scoped.some((entry) => !regularGitTreeFile(entry))) return { state: "invalid" };
+    return { state: "valid", value: Object.freeze({ kind: "search", query: args.query, files: Object.freeze(scoped) }) };
+  } catch {
+    return { state: "invalid" };
+  }
+}
+
+async function exactGitTreeBytes(repositoryRoot: string, file: ExactGitTreeEntry): Promise<Buffer> {
+  if (!regularGitTreeFile(file)) throw new Error("exact_git_tree_mode_invalid");
+  const sizeText = (await git(repositoryRoot, ["cat-file", "-s", file.objectId])).trim();
+  const size = Number(sizeText);
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_INPUT_BYTES) throw new Error("exact_git_tree_object_invalid");
+  const bytes = await gitBytes(repositoryRoot, ["cat-file", "blob", file.objectId]);
+  if (bytes.length !== size || !Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error("exact_git_tree_bytes_invalid");
+  return bytes;
+}
+
+function exactGitTreeTools(repositoryRoot: string, revision: string, onDenied: (toolName: string) => void): readonly Tool[] {
   const readTool: Tool = {
     name: "read",
     description: "Read one UTF-8 file from the exact immutable repository Git tree under review.",
@@ -559,9 +611,13 @@ function exactGitTreeTools(repositoryRoot: string, revision: string): readonly T
     skipPermission: true,
     defer: "never",
     handler: async (args: unknown) => {
-      if (!exact(args, ["path"])) throw new Error("exact_git_tree_read_arguments_invalid");
-      const file = await exactGitTreeBytes(repositoryRoot, revision, args.path);
-      return canonicalJson({ repositoryRevision: revision, path: file.path, content: file.bytes.toString("utf8") });
+      const validated = await validateExactGitTreeToolCall(repositoryRoot, revision, "read", args);
+      if (validated.state === "invalid" || validated.value.kind !== "read") {
+        onDenied("read");
+        throw new Error("exact_git_tree_read_arguments_invalid");
+      }
+      const bytes = await exactGitTreeBytes(repositoryRoot, validated.value.file);
+      return canonicalJson({ repositoryRevision: revision, path: validated.value.file.path, content: bytes.toString("utf8") });
     },
   };
   const searchTool: Tool = {
@@ -580,24 +636,23 @@ function exactGitTreeTools(repositoryRoot: string, revision: string): readonly T
     skipPermission: true,
     defer: "never",
     handler: async (args: unknown) => {
-      if ((!exact(args, ["query"]) && !exact(args, ["query", "path"])) || typeof args.query !== "string" || args.query.length < 1 || args.query.length > 1024 || (args.path !== undefined && typeof args.path !== "string")) throw new Error("exact_git_tree_search_arguments_invalid");
-      const prefix = args.path === undefined ? null : exactGitTreePath(repositoryRoot, args.path);
-      const listed = await gitBytes(repositoryRoot, ["ls-tree", "-r", "-z", "--name-only", revision]);
-      if (listed.length > MAX_INPUT_BYTES || !Buffer.from(listed.toString("utf8"), "utf8").equals(listed)) throw new Error("exact_git_tree_inventory_too_large");
-      const paths = listed.toString("utf8").split("\0").filter((path) => path !== "" && (prefix === null || path === prefix || path.startsWith(`${prefix}/`)));
-      if (paths.length > 4096) throw new Error("exact_git_tree_inventory_too_large");
+      const validated = await validateExactGitTreeToolCall(repositoryRoot, revision, "search", args);
+      if (validated.state === "invalid" || validated.value.kind !== "search") {
+        onDenied("search");
+        throw new Error("exact_git_tree_search_arguments_invalid");
+      }
       const matches: { path: string; line: number; text: string }[] = [];
       let scannedBytes = 0;
-      for (const path of paths) {
-        const file = await exactGitTreeBytes(repositoryRoot, revision, path);
-        scannedBytes += file.bytes.length;
+      for (const file of validated.value.files) {
+        const bytes = await exactGitTreeBytes(repositoryRoot, file);
+        scannedBytes += bytes.length;
         if (scannedBytes > 8 * MAX_INPUT_BYTES) throw new Error("exact_git_tree_search_too_large");
-        for (const [index, text] of file.bytes.toString("utf8").split("\n").entries()) {
-          if (text.includes(args.query)) matches.push({ path, line: index + 1, text });
-          if (matches.length === 200) return canonicalJson({ repositoryRevision: revision, query: args.query, matches, truncated: true });
+        for (const [index, text] of bytes.toString("utf8").split("\n").entries()) {
+          if (text.includes(validated.value.query)) matches.push({ path: file.path, line: index + 1, text });
+          if (matches.length === 200) return canonicalJson({ repositoryRevision: revision, query: validated.value.query, matches, truncated: true });
         }
       }
-      return canonicalJson({ repositoryRevision: revision, query: args.query, matches, truncated: false });
+      return canonicalJson({ repositoryRevision: revision, query: validated.value.query, matches, truncated: false });
     },
   };
   return Object.freeze([readTool, searchTool]);
@@ -1232,7 +1287,11 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     let unauthorizedToolOrEffectObserved = false;
     let confirmedCancellation = false;
     const allowed = new Set<string>(input.configuration.availableTools);
-    const immutableTools = exactGitTreeTools(input.repositoryRoot, input.configuration.repositoryRevision);
+    const recordDeniedTool = (tool: string) => {
+      policyDecisions.push({ tool, decision: "deny" });
+      unauthorizedToolOrEffectObserved = true;
+    };
+    const immutableTools = exactGitTreeTools(input.repositoryRoot, input.configuration.repositoryRevision, recordDeniedTool);
     const onEvent = (event: SessionEvent) => {
       if (event.type === "session.start") startEvents.push(event);
       if (event.type === "session.model_change") modelChangeObserved = true;
@@ -1295,7 +1354,10 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
         hooks: {
           onPreToolUse: async (hookInput) => {
             const name = hookInput.toolName;
-            const decision = allowed.has(name) ? "allow" as const : "deny" as const;
+            const validation = allowed.has(name)
+              ? await validateExactGitTreeToolCall(input.repositoryRoot, input.configuration.repositoryRevision, name, hookInput.toolArgs)
+              : { state: "invalid" as const };
+            const decision = validation.state === "valid" ? "allow" as const : "deny" as const;
             policyDecisions.push({ tool: name, decision });
             if (decision === "deny") unauthorizedToolOrEffectObserved = true;
             return { permissionDecision: decision, permissionDecisionReason: decision === "deny" ? "Tool is outside the fixed read-only Fury surface." : "Tool is in the fixed read-only Fury surface." };

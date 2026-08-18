@@ -271,6 +271,7 @@ function productionSdkHarness(options = {}) {
         },
         async sendAndWait() {
           if (options.eventType) config.onEvent(event(options.eventType, options.eventData ?? {}));
+          for (const toolCall of options.preToolUseCalls ?? []) await config.hooks.onPreToolUse(toolCall);
           if (options.cancel) {
             config.onEvent(event("abort", { reason: "user_initiated" }));
             throw new Error("request aborted");
@@ -689,18 +690,61 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "read", toolArgs: { path: exactPath } })).permissionDecision, "allow");
   assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "search", toolArgs: { query: "Fury" } })).permissionDecision, "allow");
   assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "write", toolArgs: { path: exactPath } })).permissionDecision, "deny");
-  await writeFile(exactPath, "{\"private\":false,\"substituted\":true}\n");
+  await writeFile(exactPath, "{\"private\":false,\"replacement\":\"one\"}\n");
+  git(current.root, ["add", "package.json"]);
+  git(current.root, ["commit", "-qm", "replacement object one"]);
+  const replacementOne = git(current.root, ["rev-parse", "HEAD"]);
+  git(current.root, ["replace", current.request.headRevision, replacementOne]);
+  await writeFile(exactPath, "{\"private\":false,\"replacement\":\"two\"}\n");
+  git(current.root, ["add", "package.json"]);
+  git(current.root, ["commit", "-qm", "replacement object two"]);
+  const replacementTwo = git(current.root, ["rev-parse", "HEAD"]);
+  git(current.root, ["replace", "-f", current.request.headRevision, replacementTwo]);
   const immutableRead = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "read").handler({ path: exactPath }));
   assert.equal(immutableRead.repositoryRevision, current.request.headRevision);
   assert.equal(immutableRead.path, "package.json");
   assert.equal(immutableRead.content, "{\"private\":true}\n");
-  const immutableSearch = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "search").handler({ query: "substituted" }));
-  assert.deepEqual(immutableSearch.matches, []);
+  for (const query of ["replacement object one", '"replacement":"one"', '"replacement":"two"']) {
+    const immutableSearch = JSON.parse(await harness.calls.sessionConfig.tools.find((tool) => tool.name === "search").handler({ query }));
+    assert.deepEqual(immutableSearch.matches, []);
+  }
   const aliasPath = join(current.root, "package-alias.json");
   await symlink(exactPath, aliasPath);
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: aliasPath, intention: "alias" })).kind, "reject");
   assert.equal(harness.calls.disconnect, 1);
   assert.equal(harness.calls.stop, 1);
+});
+
+test("production executor denies malformed, aliased, escaping, and Git-metadata tool arguments before execution", async () => {
+  for (const toolCall of [
+    { toolName: "read", toolArgs: {} },
+    { toolName: "read", toolArgs: { path: "./package.json" } },
+    { toolName: "read", toolArgs: { path: "../package.json" } },
+    { toolName: "read", toolArgs: { path: ".git/config" } },
+    { toolName: "search", toolArgs: { query: "Fury", path: "../" } },
+    { toolName: "search", toolArgs: { query: "Fury", extra: true } },
+  ]) {
+    const current = await fixture();
+    const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
+    assert.equal(result.state, "failed", `${JSON.stringify(toolCall)}: ${JSON.stringify(result)}`);
+    assert.equal(result.observations.unauthorizedToolOrEffectObserved, true);
+  }
+});
+
+test("production executor denies tracked symlink modes for read and search before execution", async () => {
+  const current = await fixture();
+  await symlink("package.json", join(current.root, "tracked-link.json"));
+  git(current.root, ["add", "tracked-link.json"]);
+  git(current.root, ["commit", "-qm", "add tracked symlink"]);
+  current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
+  for (const toolCall of [
+    { toolName: "read", toolArgs: { path: "tracked-link.json" } },
+    { toolName: "search", toolArgs: { query: "private" } },
+  ]) {
+    const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
+    assert.equal(result.state, "failed", `${JSON.stringify(toolCall)}: ${JSON.stringify(result)}`);
+    assert.equal(result.observations.unauthorizedToolOrEffectObserved, true);
+  }
 });
 
 test("production executor rejects SDK, event, cancellation, and runtime faults", async () => {
