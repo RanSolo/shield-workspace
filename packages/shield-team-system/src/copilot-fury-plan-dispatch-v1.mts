@@ -4,9 +4,10 @@ import { constants } from "node:fs";
 import { link, lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isProxy } from "node:util/types";
 
-import type { CopilotClient, CopilotSession, SessionEvent } from "@github/copilot-sdk";
+import type { CopilotClient, CopilotSession, PermissionRequest, SessionEvent } from "@github/copilot-sdk";
 import { validateTransitionPlanV1OrV2, type TransitionPlanV1OrV2 } from "@shield/mission-preparation";
 
 import { parseShieldConfig } from "./config.mjs";
@@ -144,6 +145,7 @@ export interface CopilotFurySdkConfigurationV1 {
   readonly packageVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION;
   readonly clientMode: "empty";
   readonly sessionId: string;
+  readonly repositoryRevision: string;
   readonly selectedAgent: "fury";
   readonly model: string;
   readonly customAgentsLocalOnly: true;
@@ -182,6 +184,9 @@ export interface CopilotFuryExecutorObservationsV1 {
   readonly assistantModel: string;
   readonly runtimeId: string;
   readonly executorId: string;
+  readonly loadedSdkPackageVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION;
+  readonly sessionProducer: string;
+  readonly sessionProducerVersion: string;
   readonly modelChangeObserved: false;
   readonly agentSubstitutionObserved: false;
   readonly unauthorizedToolOrEffectObserved: false;
@@ -323,6 +328,82 @@ function digestBase64Url(bytes: string | Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("base64url")}`;
 }
 
+function parseJsonRejectDuplicateKeys(text: string): unknown {
+  let offset = 0;
+  const whitespace = () => { while (text[offset] === " " || text[offset] === "\t" || text[offset] === "\r" || text[offset] === "\n") offset += 1; };
+  const parseString = (): string => {
+    const start = offset;
+    if (text[offset] !== '"') throw new Error("json_string_expected");
+    offset += 1;
+    while (offset < text.length) {
+      const character = text[offset];
+      if (character === '"') {
+        offset += 1;
+        return JSON.parse(text.slice(start, offset)) as string;
+      }
+      if (character === "\\") {
+        offset += 1;
+        if (text[offset] === "u") {
+          if (!/^[0-9a-fA-F]{4}$/u.test(text.slice(offset + 1, offset + 5))) throw new Error("json_escape_invalid");
+          offset += 5;
+          continue;
+        }
+        if (!/["\\/bfnrt]/u.test(text[offset] ?? "")) throw new Error("json_escape_invalid");
+      } else if (character === undefined || character.charCodeAt(0) < 0x20) throw new Error("json_string_invalid");
+      offset += 1;
+    }
+    throw new Error("json_string_unterminated");
+  };
+  const parseValue = (depth: number): unknown => {
+    if (depth > 64) throw new Error("json_depth_exceeded");
+    whitespace();
+    if (text[offset] === '"') return parseString();
+    if (text[offset] === "{") {
+      offset += 1;
+      whitespace();
+      const value: Plain = {};
+      const keys = new Set<string>();
+      if (text[offset] === "}") { offset += 1; return value; }
+      while (true) {
+        whitespace();
+        const key = parseString();
+        if (keys.has(key)) throw new Error("json_duplicate_key");
+        keys.add(key);
+        whitespace();
+        if (text[offset] !== ":") throw new Error("json_colon_expected");
+        offset += 1;
+        Object.defineProperty(value, key, { value: parseValue(depth + 1), enumerable: true, configurable: true, writable: true });
+        whitespace();
+        if (text[offset] === "}") { offset += 1; return value; }
+        if (text[offset] !== ",") throw new Error("json_object_separator_expected");
+        offset += 1;
+      }
+    }
+    if (text[offset] === "[") {
+      offset += 1;
+      whitespace();
+      const value: unknown[] = [];
+      if (text[offset] === "]") { offset += 1; return value; }
+      while (true) {
+        value.push(parseValue(depth + 1));
+        whitespace();
+        if (text[offset] === "]") { offset += 1; return value; }
+        if (text[offset] !== ",") throw new Error("json_array_separator_expected");
+        offset += 1;
+      }
+    }
+    const remainder = text.slice(offset);
+    const token = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/u.exec(remainder)?.[0];
+    if (token === undefined) throw new Error("json_value_expected");
+    offset += token.length;
+    return JSON.parse(token) as unknown;
+  };
+  const value = parseValue(0);
+  whitespace();
+  if (offset !== text.length) throw new Error("json_trailing_content");
+  return value;
+}
+
 function invalid(code: string, ...errors: readonly string[]): CopilotFuryPlanDispatchResultV1 {
   return deepFreeze({
     contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
@@ -413,7 +494,7 @@ export function validateCopilotFuryPlanResultV1(input: unknown, plan: Transition
 function parseClosedResultText(text: string, plan: TransitionPlanV1OrV2) {
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > MAX_RESULT_BYTES || text.trim() !== text || text === "") return { state: "invalid" as const };
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { return { state: "invalid" as const }; }
+  try { parsed = parseJsonRejectDuplicateKeys(text); } catch { return { state: "invalid" as const }; }
   return validateCopilotFuryPlanResultV1(parsed, plan);
 }
 
@@ -429,6 +510,64 @@ function git(root: string, args: readonly string[]): Promise<string> {
       if (error) reject(error); else resolveValue(stdout);
     });
   });
+}
+
+function gitBytes(root: string, args: readonly string[]): Promise<Buffer> {
+  return new Promise((resolveValue, reject) => {
+    execFileNode("git", ["-C", root, ...args], { encoding: "buffer", timeout: 15_000, maxBuffer: 4 * 1024 * 1024, shell: false, env: cleanGitEnvironment() }, (error, stdout) => {
+      if (error) reject(error); else resolveValue(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+    });
+  });
+}
+
+async function confinedExactHeadRead(repositoryRoot: string, headRevision: string, requestedPath: string): Promise<boolean> {
+  try {
+    const canonicalRoot = await realpath(repositoryRoot);
+    if (canonicalRoot !== repositoryRoot || typeof requestedPath !== "string" || requestedPath === "" || requestedPath.includes("\0")) return false;
+    let path: string;
+    if (isAbsolute(requestedPath)) {
+      if (resolve(requestedPath) !== requestedPath) return false;
+      path = requestedPath;
+    } else {
+      if (!normalizedRelativePath(requestedPath)) return false;
+      path = join(repositoryRoot, ...requestedPath.split("/"));
+    }
+    const relation = relative(repositoryRoot, path);
+    if (!normalizedRelativePath(relation.split(sep).join("/"))) return false;
+    let current = repositoryRoot;
+    for (const component of relation.split(sep)) {
+      current = join(current, component);
+      const stats = await lstat(current);
+      if (stats.isSymbolicLink()) return false;
+    }
+    if (await realpath(path) !== path) return false;
+    const before = await lstat(path);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > MAX_INPUT_BYTES) return false;
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let bytes: Buffer;
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) return false;
+      bytes = await handle.readFile();
+      const after = await handle.stat();
+      if (after.dev !== opened.dev || after.ino !== opened.ino || after.nlink !== 1 || after.size !== opened.size) return false;
+    } finally { await handle.close(); }
+    const currentHead = (await git(repositoryRoot, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (currentHead !== headRevision) return false;
+    const expected = await gitBytes(repositoryRoot, ["show", `${headRevision}:${relation.split(sep).join("/")}`]);
+    return expected.equals(bytes);
+  } catch {
+    return false;
+  }
+}
+
+function toolReadPath(toolArgs: unknown): string | null {
+  if (!safePlain(toolArgs)) return null;
+  for (const field of ["path", "filePath", "file", "directory"] as const) {
+    const value = toolArgs[field];
+    if (typeof value === "string") return value;
+  }
+  return null;
 }
 
 async function stableTextFile(root: string, relativePath: string, label: string, maxBytes = MAX_INPUT_BYTES): Promise<StableFile> {
@@ -556,8 +695,22 @@ async function resolveCard(request: CopilotFuryPlanDispatchRequestV1, userCopilo
   });
 }
 
-function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1, packetDigest: string) {
-  const token = packetDigest.replace(/^sha256:/u, "").slice(0, 32);
+function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1, plan: TransitionPlanV1OrV2) {
+  const operation = deepFreeze({
+    missionId: request.missionId,
+    missionRevision: request.missionRevision,
+    parentSessionId: request.parentSessionId,
+    subjectId: request.subjectId,
+    subjectRevision: request.subjectRevision,
+    transitionPlanId: plan.id,
+    transitionPlanDigest: plan.digest,
+    repositoryId: request.repositoryId,
+    repositoryWorkspaceId: request.repositoryWorkspaceId,
+    repositoryRevision: request.headRevision,
+    accountableSeatId: "fury",
+  });
+  const operationDigest = digestBase64Url(`copilot-fury-logical-operation-v1\0${canonicalJson(operation)}`);
+  const token = operationDigest.replace(/^sha256:/u, "").slice(0, 32);
   const packetId = `packet:copilot-fury:${token}`;
   const claimKey = createHash("sha256").update(new TextEncoder().encode(
     `seat-dispatch-claim-v1\0${request.missionId}\0${request.parentSessionId}\0${packetId}`,
@@ -569,6 +722,7 @@ function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1, packet
     lockOwnerId: `copilot-fury:${token}`,
     childTaskId: `task:${claimKey}`,
     childSessionId: `session:${claimKey}`,
+    operationDigest,
     configuredRuntime: Object.freeze({ kind: "runtime.configured" as const, runtimeId: request.requestedRuntime, model: request.requestedModel }),
     requestedRuntime: Object.freeze({ kind: "runtime.requested" as const, runtimeId: request.requestedRuntime, model: request.requestedModel }),
   });
@@ -580,6 +734,7 @@ function sdkConfiguration(request: CopilotFuryPlanDispatchRequestV1, childSessio
     packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
     clientMode: "empty" as const,
     sessionId: childSessionId,
+    repositoryRevision: request.headRevision,
     selectedAgent: "fury" as const,
     model: request.requestedModel,
     customAgentsLocalOnly: true as const,
@@ -778,6 +933,7 @@ async function appendLifecycle(
   observations: CopilotFuryExecutorObservationsV1 | null,
   evidenceRefs: readonly string[],
   dependencies: Required<Pick<CopilotFuryPlanDispatchDependenciesV1, "appendDispatchReceipt" | "readDispatchLedger">>,
+  interruptionDisposition?: Readonly<{ code: string; errors: readonly string[] }>,
 ): Promise<SeatDispatchReceiptProjectionV1> {
   const ledger = await dependencies.readDispatchLedger({ repositoryRoot: request.repositoryRoot, repositoryId: request.repositoryId, repositoryWorkspaceId: request.repositoryWorkspaceId });
   if (ledger.state === "invalid") throw new Error(`dispatch_ledger_read_failed:${ledger.code}`);
@@ -814,8 +970,13 @@ async function appendLifecycle(
     lifecycleSequence: latest.lifecycleSequence + 1,
     previousLifecycleDigest: latest.lastEntryDigest,
   };
+  if (kind === "dispatch.interrupted" && interruptionDisposition === undefined) throw new Error("interruption_disposition_missing");
   const event = kind === "dispatch.interrupted"
-    ? createSeatDispatchLifecycleEventV1(base as unknown as Parameters<typeof createSeatDispatchLifecycleEventV1>[0])
+    ? createSeatDispatchLifecycleEventV1({
+      ...base,
+      recoveryEvidenceRefs: [...evidenceRefs],
+      originalDisposition: { code: interruptionDisposition?.code, errors: [...(interruptionDisposition?.errors ?? [])] },
+    } as unknown as Parameters<typeof createSeatDispatchLifecycleEventV1>[0])
     : createSeatDispatchLifecycleEventV1({ ...base, outputEvidenceRefs: [...evidenceRefs] } as unknown as Parameters<typeof createSeatDispatchLifecycleEventV1>[0]);
   const appended = await dependencies.appendDispatchReceipt({ repositoryRoot: request.repositoryRoot, repositoryId: request.repositoryId, repositoryWorkspaceId: request.repositoryWorkspaceId, lockOwnerId: `terminal:${receipt.receiptId}`, event });
   if (appended.state === "invalid") throw new Error(`dispatch_terminal_append_failed:${appended.code}`);
@@ -832,6 +993,7 @@ function evidenceBody(input: {
   observation: RepositoryObservation;
   configuration: CopilotFurySdkConfigurationV1;
   outcome: "PASS" | "REVISE" | "failed" | "cancelled" | "interrupted";
+  dispositionCode: string | null;
   modelResult: CopilotFuryPlanResultV1 | null;
   observations: CopilotFuryExecutorObservationsV1 | Partial<CopilotFuryExecutorObservationsV1>;
   errors: readonly string[];
@@ -857,6 +1019,7 @@ function evidenceBody(input: {
     sdkConfiguration: input.configuration,
     missionJournal: { digest: input.observation.journalDigest, sequence: input.observation.journalSequence },
     outcome: input.outcome,
+    dispositionCode: input.dispositionCode,
     modelResult: input.modelResult,
     observations: input.observations,
     errors: [...input.errors],
@@ -880,12 +1043,28 @@ async function verifyLiveBinding(request: CopilotFuryPlanDispatchRequestV1, init
 async function parseEvidenceFile(repositoryRoot: string, relativePath: string): Promise<Plain> {
   const file = await stableTextFile(repositoryRoot, relativePath, "dispatch_evidence", MAX_EVIDENCE_BYTES);
   let parsed: unknown;
-  try { parsed = JSON.parse(file.bytes); } catch { throw new Error("dispatch_evidence_malformed"); }
+  try { parsed = parseJsonRejectDuplicateKeys(file.bytes); } catch { throw new Error("dispatch_evidence_malformed"); }
   if (!safePlain(parsed) || parsed.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION || typeof parsed.evidenceDigest !== "string") throw new Error("dispatch_evidence_malformed");
   const { evidenceDigest, ...body } = parsed;
   if (evidenceDigest !== digestBase64Url(`${COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION}\0${canonicalJson(body)}`)) throw new Error("dispatch_evidence_digest_mismatch");
   if (relativePath.split("/").at(-1) !== `dispatch-evidence-${evidenceDigest.slice("sha256:".length)}.json`) throw new Error("dispatch_evidence_path_digest_mismatch");
   return parsed;
+}
+
+async function readReceiptForFinalProof(
+  request: CopilotFuryPlanDispatchRequestV1,
+  receiptId: string,
+  plan: TransitionPlanV1OrV2,
+  expectedState: "completed" | "failed" | "cancelled" | "interrupted",
+  dependencies: Required<Pick<CopilotFuryPlanDispatchDependenciesV1, "readDispatchLedger">>,
+): Promise<SeatDispatchReceiptProjectionV1> {
+  const ledger = await dependencies.readDispatchLedger({ repositoryRoot: request.repositoryRoot, repositoryId: request.repositoryId, repositoryWorkspaceId: request.repositoryWorkspaceId });
+  if (ledger.state === "invalid") throw new Error(`terminal_receipt_readback_failed:${ledger.code}`);
+  const matches = ledger.value.projections.filter((candidate) => candidate.receiptId === receiptId);
+  if (matches.length !== 1) throw new Error("terminal_receipt_readback_ambiguous");
+  const receipt = matches[0];
+  if (receipt.state !== expectedState || receipt.parentMissionId !== request.missionId || receipt.parentMissionRevision !== request.missionRevision || receipt.parentSessionId !== request.parentSessionId || receipt.accountableSeatId !== "fury" || receipt.repositoryId !== request.repositoryId || receipt.repositoryWorkspaceId !== request.repositoryWorkspaceId || receipt.repositoryRevision !== request.headRevision || receipt.subjectId !== request.subjectId || receipt.subjectRevision !== request.subjectRevision || receipt.artifactId !== plan.id || receipt.artifactRevision !== plan.digest) throw new Error("terminal_receipt_binding_mismatch");
+  return receipt;
 }
 
 async function evidencePathForReplay(request: CopilotFuryPlanDispatchRequestV1, receipt: SeatDispatchReceiptProjectionV1, packetDigest: string): Promise<string | null> {
@@ -912,6 +1091,16 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, claim: 
     receiptId: receipt.receiptId,
     replayed: true,
   };
+  if (receipt.state === "interrupted" && receipt.recoveryEvidenceRefs !== null && receipt.originalDisposition !== null) {
+    if (receipt.recoveryEvidenceRefs.length !== 1) throw new Error("interrupted_recovery_binding_ambiguous");
+    const directory = await existingEvidenceDirectory(request.repositoryRoot, request.missionId);
+    const evidenceDigest = receipt.recoveryEvidenceRefs[0];
+    if (directory === null || !DIGEST.test(evidenceDigest)) throw new Error("interrupted_recovery_evidence_unavailable");
+    const evidencePath = `${directory.relative}/dispatch-evidence-${evidenceDigest.slice("sha256:".length)}.json`;
+    const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
+    if (evidence.evidenceDigest !== evidenceDigest || evidence.receiptId !== receipt.receiptId || evidence.packetDigest !== claim.packetDigest || evidence.outcome !== "interrupted" || evidence.dispositionCode !== receipt.originalDisposition.code || canonicalJson(evidence.errors) !== canonicalJson(receipt.originalDisposition.errors)) throw new Error("interrupted_recovery_binding_mismatch");
+    return deepFreeze({ ...common, state: "recovery_required" as const, code: receipt.originalDisposition.code, errors: [...receipt.originalDisposition.errors], evidencePath, handoff: null });
+  }
   if (receipt.state === "started" || receipt.state === "resumed" || receipt.state === "interrupted") {
     const evidencePath = await evidencePathForReplay(request, receipt, claim.packetDigest);
     const evidence = evidencePath === null ? null : await parseEvidenceFile(request.repositoryRoot, evidencePath);
@@ -925,7 +1114,8 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, claim: 
   const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
   if (receipt.outputEvidenceRefs === null || !receipt.outputEvidenceRefs.includes(evidence.evidenceDigest as string)) throw new Error("dispatch_evidence_receipt_binding_mismatch");
   if (receipt.state === "failed" || receipt.state === "cancelled") {
-    return deepFreeze({ ...common, state: receipt.state, code: String(evidence.outcome).toUpperCase(), errors: Array.isArray(evidence.errors) ? evidence.errors.filter((value): value is string => typeof value === "string") : [], evidencePath, handoff: null });
+    const dispositionCode = typeof evidence.dispositionCode === "string" && id(evidence.dispositionCode) ? evidence.dispositionCode : String(evidence.outcome).toUpperCase();
+    return deepFreeze({ ...common, state: receipt.state, code: dispositionCode, errors: Array.isArray(evidence.errors) ? evidence.errors.filter((value): value is string => typeof value === "string") : [], evidencePath, handoff: null });
   }
   if (evidence.outcome === "REVISE") {
     const planFile = await stableTextFile(request.repositoryRoot, request.transitionPlanPath, "replayed_input_transition_plan");
@@ -957,19 +1147,41 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, claim: 
   return deepFreeze({ ...common, state: "completed" as const, disposition: "PASS" as const, evidencePath, handoff: { transitionPlanPath: evidence.artifacts.transitionPlanPath, reviewArtifactPath: evidence.artifacts.reviewArtifactPath, dispatchReceiptId: receipt.receiptId } });
 }
 
+type CopilotSdkModuleV1 = Readonly<{ CopilotClient: typeof CopilotClient }>;
+
+export interface CopilotFuryProductionExecutorDependenciesV1 {
+  readonly loadSdk?: () => Promise<CopilotSdkModuleV1>;
+  readonly resolveLoadedPackageVersion?: () => Promise<string>;
+}
+
+async function resolveLoadedCopilotSdkPackageVersion(): Promise<string> {
+  const sdkEntry = fileURLToPath(import.meta.resolve("@github/copilot-sdk"));
+  const packageFile = await optionalStableAbsoluteFile(resolve(dirname(sdkEntry), "..", "package.json"), "copilot_sdk_package");
+  if (packageFile === null) throw new Error("Loaded Copilot SDK package metadata is unavailable.");
+  const metadata = parseJsonRejectDuplicateKeys(packageFile.bytes);
+  if (!safePlain(metadata) || metadata.name !== "@github/copilot-sdk" || typeof metadata.version !== "string") throw new Error("Loaded Copilot SDK package metadata is malformed.");
+  return metadata.version;
+}
+
 class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
   private client: CopilotClient | null = null;
+  private loadedPackageVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION | null = null;
+
+  constructor(private readonly dependencies: CopilotFuryProductionExecutorDependenciesV1 = {}) {}
 
   async preflight(input: CopilotFuryExecutorPreflightInputV1): Promise<CopilotFuryExecutorPreflightResultV1> {
     if (input.requestedRuntime !== COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID || input.requestedExecutor !== COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID) return { state: "blocked", code: "BLOCKED_ADAPTER_GAP", errors: ["Requested Copilot runtime or executor is unsupported."] };
     try {
-      const sdk = await import("@github/copilot-sdk");
+      const sdk = await (this.dependencies.loadSdk?.() ?? import("@github/copilot-sdk"));
       if (typeof sdk.CopilotClient !== "function") throw new Error("CopilotClient export is unavailable.");
+      const packageVersion = await (this.dependencies.resolveLoadedPackageVersion?.() ?? resolveLoadedCopilotSdkPackageVersion());
+      if (packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION) throw new Error(`Loaded Copilot SDK version ${packageVersion} does not match ${COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION}.`);
+      this.loadedPackageVersion = packageVersion;
       this.client = new sdk.CopilotClient({ mode: "empty", workingDirectory: input.repositoryRoot, logLevel: "none" });
       await this.client.start();
       const models = await this.client.listModels();
       if (!models.some((model) => model.id === input.requestedModel)) throw new Error("Requested Copilot model is unavailable.");
-      return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
+      return { state: "ready", packageVersion, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
     } catch (error) {
       await this.close();
       return { state: "blocked", code: "BLOCKED_ADAPTER_GAP", errors: [error instanceof Error ? error.message : "Copilot SDK capability is unavailable."] };
@@ -977,16 +1189,21 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
   }
 
   async execute(input: CopilotFuryExecutorRunInputV1): Promise<CopilotFuryExecutorRunResultV1> {
-    if (this.client === null) return { state: "failed", code: "SDK_NOT_READY", errors: ["Copilot SDK preflight was not retained."], observations: {} };
+    if (this.client === null || this.loadedPackageVersion === null) return { state: "failed", code: "SDK_NOT_READY", errors: ["Copilot SDK preflight was not retained."], observations: {} };
     const policyDecisions: { tool: string; decision: "allow" | "deny" }[] = [];
     const startEvents: Extract<SessionEvent, { type: "session.start" }>[] = [];
     const assistantEvents: Extract<SessionEvent, { type: "assistant.message" }>[] = [];
     let modelChangeObserved = false;
+    let agentSubstitutionObserved = false;
     let unauthorizedToolOrEffectObserved = false;
+    let confirmedCancellation = false;
     const allowed = new Set<string>(input.configuration.availableTools);
     const onEvent = (event: SessionEvent) => {
       if (event.type === "session.start") startEvents.push(event);
       if (event.type === "session.model_change") modelChangeObserved = true;
+      if (event.type === "subagent.selected" && event.data.agentName !== "fury") agentSubstitutionObserved = true;
+      if (event.type === "subagent.deselected") agentSubstitutionObserved = true;
+      if (event.type === "abort") confirmedCancellation = true;
       if (event.type === "assistant.message") assistantEvents.push(event);
     };
     let session: CopilotSession | null = null;
@@ -1033,9 +1250,13 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
         }],
         agent: "fury",
         onEvent,
-        onPermissionRequest: (request) => {
+        onPermissionRequest: async (request: PermissionRequest) => {
           const tool = "toolName" in request && typeof request.toolName === "string" ? request.toolName : request.kind;
-          const decision = request.kind === "read" && allowed.has("read") ? "allow" : "deny";
+          const elevated = request.managedApprovalRequired === true || ("requestSandboxBypass" in request && request.requestSandboxBypass === true);
+          const confined = !elevated && request.kind === "read" && allowed.has("read")
+            ? await confinedExactHeadRead(input.repositoryRoot, input.configuration.repositoryRevision, request.path)
+            : false;
+          const decision = confined ? "allow" : "deny";
           policyDecisions.push({ tool, decision });
           if (decision === "deny") unauthorizedToolOrEffectObserved = true;
           return decision === "allow" ? { kind: "approve-once" as const } : { kind: "reject" as const, feedback: "This Fury operation is read-only and the requested effect is not allowed." };
@@ -1043,7 +1264,11 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
         hooks: {
           onPreToolUse: async (hookInput) => {
             const name = hookInput.toolName;
-            const decision = allowed.has(name) ? "allow" as const : "deny" as const;
+            const requestedPath = toolReadPath(hookInput.toolArgs);
+            const confined = allowed.has(name) && requestedPath !== null
+              ? await confinedExactHeadRead(input.repositoryRoot, input.configuration.repositoryRevision, requestedPath)
+              : false;
+            const decision = confined ? "allow" as const : "deny" as const;
             policyDecisions.push({ tool: name, decision });
             if (decision === "deny") unauthorizedToolOrEffectObserved = true;
             return { permissionDecision: decision, permissionDecisionReason: decision === "deny" ? "Tool is outside the fixed read-only Fury surface." : "Tool is in the fixed read-only Fury surface." };
@@ -1058,7 +1283,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       const selectedBefore = await session.rpc.agent.getCurrent();
       const modelBefore = await session.rpc.model.getCurrent();
       const start = startEvents.at(-1);
-      if (start === undefined || start.data.sessionId !== input.configuration.sessionId || start.data.selectedModel !== input.configuration.model || selectedBefore.agent?.name !== "fury" || modelBefore.modelId !== input.configuration.model) throw new Error("Copilot session identity observation failed.");
+      if (start === undefined || start.data.sessionId !== input.configuration.sessionId || start.data.selectedModel !== input.configuration.model || start.data.producer !== COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID || typeof start.data.copilotVersion !== "string" || start.data.copilotVersion === "" || selectedBefore.agent?.name !== "fury" || modelBefore.modelId !== input.configuration.model || agentSubstitutionObserved) throw new Error("Copilot session identity observation failed.");
       let finalMessage = await session.sendAndWait({ prompt: input.prompt });
       let outputText = finalMessage?.data.content ?? "";
       for (let attempt = 0; attempt < input.repairLimit && !input.validateOutput(outputText); attempt += 1) {
@@ -1069,7 +1294,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       const modelAfter = await session.rpc.model.getCurrent();
       const finalAssistant = finalMessage ?? assistantEvents.at(-1);
       const assistantModel = finalAssistant?.data.model;
-      if (selectedAfter.agent?.name !== "fury" || modelAfter.modelId !== input.configuration.model || assistantModel !== input.configuration.model || modelChangeObserved || unauthorizedToolOrEffectObserved) throw new Error("Copilot session identity or policy drifted.");
+      if (selectedAfter.agent?.name !== "fury" || modelAfter.modelId !== input.configuration.model || assistantModel !== input.configuration.model || modelChangeObserved || agentSubstitutionObserved || unauthorizedToolOrEffectObserved) throw new Error("Copilot session identity or policy drifted.");
       return {
         state: "completed",
         outputText,
@@ -1081,32 +1306,36 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
           assistantModel,
           runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
           executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+          loadedSdkPackageVersion: this.loadedPackageVersion,
+          sessionProducer: start.data.producer,
+          sessionProducerVersion: start.data.copilotVersion,
           modelChangeObserved: false,
           agentSubstitutionObserved: false,
           unauthorizedToolOrEffectObserved: false,
-          policyDecisions,
+          policyDecisions: [...policyDecisions],
         }),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Copilot execution failed.";
       const interrupted = /timeout|disconnect|connection|socket|closed unexpectedly/iu.test(message);
-      return { state: interrupted ? "interrupted" : "failed", code: interrupted ? "COPILOT_INTERRUPTED" : "COPILOT_EXECUTION_FAILED", errors: [message], observations: { modelChangeObserved, unauthorizedToolOrEffectObserved } };
+      return { state: confirmedCancellation ? "cancelled" : interrupted ? "interrupted" : "failed", code: confirmedCancellation ? "COPILOT_CANCELLED" : interrupted ? "COPILOT_INTERRUPTED" : "COPILOT_EXECUTION_FAILED", errors: [message], observations: { modelChangeObserved, agentSubstitutionObserved, unauthorizedToolOrEffectObserved } };
     } finally { await session?.disconnect().catch(() => undefined); }
   }
 
   async close(): Promise<void> {
     const client = this.client;
     this.client = null;
+    this.loadedPackageVersion = null;
     if (client !== null) await client.stop().catch(async () => client.forceStop());
   }
 }
 
-export function createCopilotFuryPlanExecutorV1(): CopilotFuryPlanExecutorV1 {
-  return new DefaultCopilotFuryExecutorV1();
+export function createCopilotFuryPlanExecutorV1(dependencies: CopilotFuryProductionExecutorDependenciesV1 = {}): CopilotFuryPlanExecutorV1 {
+  return new DefaultCopilotFuryExecutorV1(dependencies);
 }
 
 function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1, childSessionId: string): boolean {
-  return observations.sessionStartObserved === true && observations.sessionId === childSessionId && observations.selectedAgent === "fury" && observations.model === request.requestedModel && observations.assistantModel === request.requestedModel && observations.runtimeId === request.requestedRuntime && observations.executorId === request.requestedExecutor && observations.modelChangeObserved === false && observations.agentSubstitutionObserved === false && observations.unauthorizedToolOrEffectObserved === false;
+  return observations.sessionStartObserved === true && observations.sessionId === childSessionId && observations.selectedAgent === "fury" && observations.model === request.requestedModel && observations.assistantModel === request.requestedModel && observations.runtimeId === request.requestedRuntime && observations.executorId === request.requestedExecutor && observations.loadedSdkPackageVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && observations.sessionProducer === request.requestedExecutor && typeof observations.sessionProducerVersion === "string" && observations.sessionProducerVersion.length > 0 && observations.sessionProducerVersion.length <= 255 && observations.modelChangeObserved === false && observations.agentSubstitutionObserved === false && observations.unauthorizedToolOrEffectObserved === false;
 }
 
 export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDependencies: CopilotFuryPlanDispatchDependenciesV1 = {}): Promise<CopilotFuryPlanDispatchResultV1> {
@@ -1127,6 +1356,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
   let observation: RepositoryObservation | null = null;
   let planFile: StableFile | null = null;
   let plan: TransitionPlanV1OrV2 | null = null;
+  let preflightIdentity: Extract<CopilotFuryExecutorPreflightResultV1, { state: "ready" }> | null = null;
   try {
     observation = await observeRepository(request);
     planFile = await stableTextFile(request.repositoryRoot, request.transitionPlanPath, "transition_plan");
@@ -1144,16 +1374,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
       if (message === "same_name_user_card_shadowing_requires_explicit_override" || message === "explicit_user_card_override_unavailable_or_mismatched") return invalid("FURY_CARD_SELECTION_INVALID", message);
       return blocked("BLOCKED_ADAPTER_GAP", message);
     }
-    const identitySeed = deepFreeze({
-      request,
-      transitionPlanId: plan.id,
-      transitionPlanDigest: plan.digest,
-      cardIdentity: card.identity,
-      missionJournal: { digest: observation.journalDigest, sequence: observation.journalSequence },
-      outputContract: outputContractDescription(plan),
-      sdkPackageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
-    });
-    const identity = deriveSessionIdentity(request, digestBase64Url(`${COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION}\0${canonicalJson(identitySeed)}`));
+    const identity = deriveSessionIdentity(request, plan);
     packetId = identity.packetId;
     configuration = sdkConfiguration(request, identity.childSessionId);
     const packetBytes = new TextEncoder().encode(canonicalJson(packetBody(request, plan, card, observation, configuration)));
@@ -1180,6 +1401,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     const preflight = await executor.preflight({ repositoryRoot: request.repositoryRoot, requestedModel: request.requestedModel, requestedRuntime: request.requestedRuntime, requestedExecutor: request.requestedExecutor });
     if (preflight.state === "blocked") return blocked(preflight.code, ...preflight.errors);
     if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) return blocked("BLOCKED_ADAPTER_GAP", "Copilot executor preflight identity mismatched the request.");
+    preflightIdentity = preflight;
     await suppliedDependencies.beforeClaim?.();
     await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
     const claim = await dependencies.claimDispatchPacket({
@@ -1188,11 +1410,11 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
       repositoryWorkspaceId: request.repositoryWorkspaceId,
       lockOwnerId: identity.lockOwnerId,
       parentMissionId: request.missionId,
-      parentMissionRevision: request.headRevision,
+      parentMissionRevision: request.missionRevision,
       parentSessionId: request.parentSessionId,
       accountableSeatId: "fury",
       subjectId: request.subjectId,
-      subjectRevision: request.headRevision,
+      subjectRevision: request.subjectRevision,
       artifactId: plan.id,
       artifactRevision: plan.digest,
       repositoryRevision: request.headRevision,
@@ -1219,19 +1441,29 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
     if (execution.state !== "completed") {
       const outcome = execution.state;
-      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, configuration, outcome, modelResult: null, observations: execution.observations, errors: execution.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null } }));
+      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, configuration, outcome, dispositionCode: execution.code, modelResult: null, observations: execution.observations, errors: execution.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null } }));
       const evidenceBytes = `${canonicalJson(evidence)}\n`;
       const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, evidenceBytes);
       if (execution.state === "interrupted") {
         await suppliedDependencies.beforeTerminalAppend?.();
-        await appendLifecycle(request, claim.value.receipt, "dispatch.interrupted", timestamp, null, [], dependencies);
+        await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
+        if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
+        const terminal = await appendLifecycle(request, claim.value.receipt, "dispatch.interrupted", timestamp, null, [evidence.evidenceDigest], dependencies, { code: execution.code, errors: execution.errors });
+        await suppliedDependencies.beforeFinalReadback?.();
+        const terminalReadback = await readReceiptForFinalProof(request, terminal.receiptId, plan, "interrupted", dependencies);
+        const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
+        if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || evidenceReadback.dispositionCode !== execution.code || terminalReadback.recoveryEvidenceRefs === null || !terminalReadback.recoveryEvidenceRefs.includes(evidence.evidenceDigest) || terminalReadback.originalDisposition?.code !== execution.code || canonicalJson(terminalReadback.originalDisposition.errors) !== canonicalJson(execution.errors)) throw new Error("interrupted_readback_mismatch");
         return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: "recovery_required", code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
       }
       const terminalKind = execution.state === "cancelled" ? "dispatch.cancelled" : "dispatch.failed";
       await suppliedDependencies.beforeTerminalAppend?.();
-      await appendLifecycle(request, claim.value.receipt, terminalKind, timestamp, null, [evidence.evidenceDigest], dependencies);
+      await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
+      if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
+      const terminal = await appendLifecycle(request, claim.value.receipt, terminalKind, timestamp, null, [evidence.evidenceDigest], dependencies);
       await suppliedDependencies.beforeFinalReadback?.();
-      await parseEvidenceFile(request.repositoryRoot, evidencePath);
+      const terminalReadback = await readReceiptForFinalProof(request, terminal.receiptId, plan, execution.state, dependencies);
+      const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
+      if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || evidenceReadback.receiptId !== terminal.receiptId || evidenceReadback.packetDigest !== claim.value.packetDigest || terminalReadback.outputEvidenceRefs === null || !terminalReadback.outputEvidenceRefs.includes(evidence.evidenceDigest)) throw new Error("terminal_readback_mismatch");
       return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: execution.state, code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
     }
     if (!validExecutorObservations(execution.observations, request, configuration.sessionId)) throw new Error("executor_observation_mismatch");
@@ -1240,6 +1472,8 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     let transitionPlanPath: string | null = null;
     let reviewArtifactPath: string | null = null;
     let review: MissionTransitionPlanReviewV1 | null = null;
+    let transitionPlanBytes: string | null = null;
+    let reviewArtifactBytes: string | null = null;
     if (result.value.verdict === "PASS") {
       const built = buildMissionTransitionPlanReviewV1({
         schemaVersion: 1,
@@ -1264,34 +1498,47 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
       });
       if (built.state === "invalid") throw new Error(`review_artifact_build_failed:${built.errors.join(" ")}`);
       review = built.review;
-      const planBytes = `${canonicalJson(plan)}\n`;
-      transitionPlanPath = await writeContentAddressedArtifact(evidenceDirectory, "transition-plan", plan.digest, planBytes);
-      const reviewBytes = `${canonicalJson(review)}\n`;
-      reviewArtifactPath = await writeContentAddressedArtifact(evidenceDirectory, "transition-plan-review", review.reviewDigest, reviewBytes);
+      transitionPlanBytes = `${canonicalJson(plan)}\n`;
+      transitionPlanPath = await writeContentAddressedArtifact(evidenceDirectory, "transition-plan", plan.digest, transitionPlanBytes);
+      reviewArtifactBytes = `${canonicalJson(review)}\n`;
+      reviewArtifactPath = await writeContentAddressedArtifact(evidenceDirectory, "transition-plan-review", review.reviewDigest, reviewArtifactBytes);
     }
-    const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, configuration, outcome: result.value.verdict, modelResult: result.value, observations: execution.observations, errors: [], artifacts: { transitionPlanPath, reviewArtifactPath } }));
+    const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, configuration, outcome: result.value.verdict, dispositionCode: null, modelResult: result.value, observations: execution.observations, errors: [], artifacts: { transitionPlanPath, reviewArtifactPath } }));
     const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
     const refs = result.value.verdict === "PASS" && review !== null
       ? [review.reviewId, review.reviewDigest, review.reviewedArtifactId, review.reviewedArtifactRevision, evidence.evidenceDigest]
       : [plan.id, plan.digest, evidence.evidenceDigest];
     await suppliedDependencies.beforeTerminalAppend?.();
+    await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
+    if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor || !validExecutorObservations(execution.observations, request, configuration.sessionId)) throw new Error("preterminal_executor_binding_mismatch");
     const terminal = await appendLifecycle(request, claim.value.receipt, "dispatch.completed", timestamp, execution.observations, refs, dependencies);
     await suppliedDependencies.beforeFinalReadback?.();
+    const terminalReadback = await readReceiptForFinalProof(request, terminal.receiptId, plan, "completed", dependencies);
     const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
-    if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || terminal.state !== "completed" || terminal.outputEvidenceRefs === null || !refs.every((ref) => terminal.outputEvidenceRefs?.includes(ref))) throw new Error("terminal_readback_mismatch");
+    if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || evidenceReadback.receiptId !== terminal.receiptId || evidenceReadback.packetDigest !== claim.value.packetDigest || canonicalJson(evidenceReadback.packet) !== canonicalJson(evidence.packet) || !safePlain(evidenceReadback.artifacts) || evidenceReadback.artifacts.transitionPlanPath !== transitionPlanPath || evidenceReadback.artifacts.reviewArtifactPath !== reviewArtifactPath || terminalReadback.outputEvidenceRefs === null || !refs.every((ref) => terminalReadback.outputEvidenceRefs?.includes(ref))) throw new Error("terminal_readback_mismatch");
     const common = { contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none" as const, missionId: request.missionId, state: "completed" as const, receiptId: terminal.receiptId, evidencePath, replayed: false };
     if (result.value.verdict === "REVISE") return deepFreeze({ ...common, disposition: "REVISE" as const, findings: [...result.value.findings], handoff: null });
-    if (transitionPlanPath === null || reviewArtifactPath === null) throw new Error("pass_artifacts_unavailable");
+    if (transitionPlanPath === null || reviewArtifactPath === null || transitionPlanBytes === null || reviewArtifactBytes === null || review === null) throw new Error("pass_artifacts_unavailable");
+    await readExactArtifact(join(request.repositoryRoot, ...transitionPlanPath.split("/")), transitionPlanBytes);
+    await readExactArtifact(join(request.repositoryRoot, ...reviewArtifactPath.split("/")), reviewArtifactBytes);
+    const transitionPlanReadback = validateTransitionPlanV1OrV2({ artifact: parseJsonRejectDuplicateKeys(transitionPlanBytes) });
+    const reviewReadback = validateMissionTransitionPlanReviewV1(parseJsonRejectDuplicateKeys(reviewArtifactBytes));
+    if (transitionPlanReadback.state === "invalid" || reviewReadback.state === "invalid" || transitionPlanPath.split("/").at(-1) !== `transition-plan-${plan.digest.slice("sha256:".length)}.json` || reviewArtifactPath.split("/").at(-1) !== `transition-plan-review-${review.reviewDigest.slice("sha256:".length)}.json` || transitionPlanReadback.value.digest !== plan.digest || reviewReadback.value.reviewDigest !== review.reviewDigest || reviewReadback.value.reviewedArtifactId !== plan.id || reviewReadback.value.reviewedArtifactRevision !== plan.digest || reviewReadback.value.reviewerRuntimeId !== execution.observations.runtimeId || reviewReadback.value.reviewerModelId !== execution.observations.assistantModel || reviewReadback.value.reviewerExecutorId !== execution.observations.executorId) throw new Error("pass_artifact_final_binding_mismatch");
     return deepFreeze({ ...common, disposition: "PASS" as const, handoff: { transitionPlanPath, reviewArtifactPath, dispatchReceiptId: terminal.receiptId } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Copilot Fury dispatch failed.";
-    if (claimedReceipt === null || observation === null || card === null || configuration === null || plan === null) return invalid("PRECLAIM_VALIDATION_FAILED", message);
+    if (claimedReceipt === null || observation === null || card === null || configuration === null || plan === null || planFile === null || preflightIdentity === null) return invalid("PRECLAIM_VALIDATION_FAILED", message);
     try {
       const directory = await ensureEvidenceDirectory(request.repositoryRoot, request.missionId);
-      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, configuration, outcome: "failed", modelResult: null, observations: {}, errors: [message], artifacts: { transitionPlanPath: null, reviewArtifactPath: null } }));
+      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, configuration, outcome: "failed", dispositionCode: "DISPATCH_FAILED", modelResult: null, observations: {}, errors: [message], artifacts: { transitionPlanPath: null, reviewArtifactPath: null } }));
       const evidencePath = await writeContentAddressedArtifact(directory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
       const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
+      await verifyLiveBinding(request, observation, planFile, card, suppliedDependencies.userCopilotHome);
+      if (preflightIdentity.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflightIdentity.runtimeId !== request.requestedRuntime || preflightIdentity.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
       const receipt = await appendLifecycle(request, claimedReceipt, "dispatch.failed", timestamp, null, [evidence.evidenceDigest], dependencies);
+      const receiptReadback = await readReceiptForFinalProof(request, receipt.receiptId, plan, "failed", dependencies);
+      const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
+      if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || receiptReadback.outputEvidenceRefs === null || !receiptReadback.outputEvidenceRefs.includes(evidence.evidenceDigest)) throw new Error("failed_terminal_readback_mismatch");
       return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: "failed", code: "DISPATCH_FAILED", errors: [message], receiptId: receipt.receiptId, evidencePath, replayed: false, handoff: null });
     } catch (terminalError) {
       return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: "recovery_required", code: "RECOVERY_REQUIRED", errors: [message, terminalError instanceof Error ? terminalError.message : "Terminalization failed."], receiptId: claimedReceipt.receiptId, evidencePath: null, replayed: false, handoff: null });

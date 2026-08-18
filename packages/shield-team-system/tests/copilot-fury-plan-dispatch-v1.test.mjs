@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -16,6 +16,7 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
   COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF,
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+  createCopilotFuryPlanExecutorV1,
   dispatchCopilotFuryPlanReviewV1,
   validateCopilotFuryPlanDispatchRequestV1,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
@@ -205,6 +206,9 @@ function executor(plan, verdict = "PASS") {
             assistantModel: input.configuration.model,
             runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
             executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+            loadedSdkPackageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+            sessionProducer: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+            sessionProducerVersion: "1.0.79",
             modelChangeObserved: false,
             agentSubstitutionObserved: false,
             unauthorizedToolOrEffectObserved: false,
@@ -215,6 +219,97 @@ function executor(plan, verdict = "PASS") {
       async close() { calls.close += 1; },
     },
   };
+}
+
+function productionConfiguration(current) {
+  return {
+    packageName: "@github/copilot-sdk",
+    packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+    clientMode: "empty",
+    sessionId: "session:production-executor-test",
+    repositoryRevision: current.request.headRevision,
+    selectedAgent: "fury",
+    model: current.request.requestedModel,
+    customAgentsLocalOnly: true,
+    enableConfigDiscovery: false,
+    skipCustomInstructions: true,
+    enableFileHooks: false,
+    enableHostGitOperations: false,
+    enableSessionStore: false,
+    enableSkills: false,
+    pluginDirectories: [],
+    skillDirectories: [],
+    instructionDirectories: [],
+    mcpServers: {},
+    availableTools: ["read", "search"],
+    excludedTools: ["write", "edit", "shell", "web", "mcp:*"],
+    allowedEffects: [],
+  };
+}
+
+function productionSdkHarness(options = {}) {
+  const calls = { clientOptions: null, sessionConfig: null, disconnect: 0, stop: 0, forceStop: 0 };
+  const event = (type, data) => ({ id: randomUUID(), parentId: null, timestamp: new Date().toISOString(), type, data });
+  class CopilotClient {
+    constructor(clientOptions) { calls.clientOptions = clientOptions; }
+    async start() {}
+    async listModels() { return [{ id: "model:fury" }]; }
+    async createSession(config) {
+      calls.sessionConfig = config;
+      config.onEvent(event("session.start", {
+        sessionId: config.sessionId,
+        selectedModel: config.model,
+        producer: options.producer ?? COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+        copilotVersion: options.producerVersion ?? "1.0.79",
+      }));
+      if (options.createFault) throw new Error("session create fault");
+      return {
+        rpc: {
+          agent: { async getCurrent() { return { agent: { name: "fury" } }; } },
+          model: { async getCurrent() { return { modelId: config.model }; } },
+        },
+        async sendAndWait() {
+          if (options.eventType) config.onEvent(event(options.eventType, options.eventData ?? {}));
+          if (options.cancel) {
+            config.onEvent(event("abort", { reason: "user_initiated" }));
+            throw new Error("request aborted");
+          }
+          const message = event("assistant.message", { content: "{}", model: config.model });
+          config.onEvent(message);
+          return message;
+        },
+        async disconnect() { calls.disconnect += 1; },
+      };
+    }
+    async stop() { calls.stop += 1; }
+    async forceStop() { calls.forceStop += 1; }
+  }
+  return { calls, module: { CopilotClient } };
+}
+
+async function runProductionExecutor(current, harness) {
+  const value = createCopilotFuryPlanExecutorV1({
+    async loadSdk() { return harness.module; },
+    async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+  });
+  const preflight = await value.preflight({
+    repositoryRoot: current.root,
+    requestedModel: current.request.requestedModel,
+    requestedRuntime: current.request.requestedRuntime,
+    requestedExecutor: current.request.requestedExecutor,
+  });
+  assert.equal(preflight.state, "ready", JSON.stringify(preflight));
+  const result = await value.execute({
+    repositoryRoot: current.root,
+    card: { frontmatter: { name: "Fury", description: "Review the exact plan." }, body: "Review only." },
+    cardIdentity: { sourceKind: "repository", logicalRef: ".github/agents/fury.agent.md", contentDigest: "a".repeat(64), repositoryRevision: current.request.headRevision, precedenceObservations: [] },
+    configuration: productionConfiguration(current),
+    prompt: "Return the closed result.",
+    repairLimit: 0,
+    validateOutput: () => true,
+  });
+  await value.close();
+  return result;
 }
 
 test("closed request rejects aliases, accessors, proxies, and non-read-only configuration", async () => {
@@ -322,6 +417,8 @@ test("failed, cancelled, and interrupted lifecycles replay without another model
     const replay = executor(current.plan);
     const second = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: replay.value, userCopilotHome: current.userCopilotHome });
     assert.equal(second.state, state === "interrupted" ? "recovery_required" : state, JSON.stringify(second));
+    assert.equal(second.code, first.code);
+    assert.deepEqual(second.errors, first.errors);
     assert.equal(second.replayed, true);
     assert.equal(replay.calls.preflight, 0);
     assert.equal(replay.calls.execute, 0);
@@ -360,7 +457,7 @@ test("post-claim drift and executor identity substitution terminate without PASS
       await writeFile(join(drift.root, drift.request.transitionPlanPath), `${JSON.stringify(drift.plan)} \n`);
     },
   });
-  assert.equal(drifted.state, "failed", JSON.stringify(drifted));
+  assert.equal(drifted.state, "recovery_required", JSON.stringify(drifted));
   assert.equal(drifted.handoff, null);
 
   const substituted = await fixture();
@@ -420,4 +517,129 @@ test("post-claim evidence-directory replacement cannot redirect artifacts", asyn
   assert.equal(result.state, "recovery_required", JSON.stringify(result));
   assert.equal(result.handoff, null);
   assert.deepEqual(await readdir(outside), []);
+});
+
+test("stable logical identity rejects conflicting packet bytes without reinvocation", async () => {
+  const current = await fixture();
+  const firstExecutor = executor(current.plan);
+  const first = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: firstExecutor.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(first.state, "completed", JSON.stringify(first));
+  const conflictExecutor = executor(current.plan);
+  const conflict = await dispatchCopilotFuryPlanReviewV1({
+    ...current.request,
+    timestamp: { value: "2026-08-18T12:02:00.000Z", provenance: "hostTrusted" },
+  }, { executor: conflictExecutor.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(conflict.state, "invalid", JSON.stringify(conflict));
+  assert.equal(conflict.code, "packet_claim_conflict");
+  assert.equal(conflictExecutor.calls.preflight, 0);
+  assert.equal(conflictExecutor.calls.execute, 0);
+  const entries = (await readFile(join(current.root, ".shield", "dispatch-receipts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const started = entries.find((entry) => entry.kind === "dispatch.started");
+  assert.equal(started.parentMissionRevision, current.request.missionRevision);
+  assert.equal(started.subjectRevision, current.request.subjectRevision);
+  assert.equal(started.repositoryRevision, current.request.headRevision);
+  assert.equal(started.artifactRevision, current.plan.digest);
+});
+
+test("duplicate-key model JSON fails closed before the result schema validator", async () => {
+  const current = await fixture();
+  const base = executor(current.plan);
+  const duplicateExecutor = {
+    ...base.value,
+    async execute(input) {
+      const completed = await base.value.execute(input);
+      return {
+        ...completed,
+        outputText: `{"schemaVersion":1,"contractVersion":"${COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION}","authority":"none","reviewerSeatId":"fury","reviewedArtifactId":"${current.plan.id}","reviewedArtifactRevision":"${current.plan.digest}","verdict":"PASS","verdict":"REVISE","findings":[]}`,
+      };
+    },
+  };
+  const result = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: duplicateExecutor, userCopilotHome: current.userCopilotHome });
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  assert.equal(result.handoff, null);
+});
+
+test("immediate preterminal drift and PASS artifact replacement cannot return a handoff", async () => {
+  const preterminal = await fixture();
+  const preterminalResult = await dispatchCopilotFuryPlanReviewV1(preterminal.request, {
+    executor: executor(preterminal.plan).value,
+    userCopilotHome: preterminal.userCopilotHome,
+    async beforeTerminalAppend() {
+      await writeFile(join(preterminal.root, preterminal.request.transitionPlanPath), `${JSON.stringify(preterminal.plan)} \n`);
+    },
+  });
+  assert.equal(preterminalResult.state, "recovery_required", JSON.stringify(preterminalResult));
+  assert.equal(preterminalResult.handoff, null);
+
+  const readback = await fixture();
+  const readbackResult = await dispatchCopilotFuryPlanReviewV1(readback.request, {
+    executor: executor(readback.plan).value,
+    userCopilotHome: readback.userCopilotHome,
+    async beforeFinalReadback() {
+      const missionRoot = join(readback.root, ".shield", "audit", "copilot-fury-plan-dispatch", sha256(readback.request.missionId));
+      const reviewName = (await readdir(missionRoot)).find((name) => name.startsWith("transition-plan-review-"));
+      assert.ok(reviewName);
+      await writeFile(join(missionRoot, reviewName), "{}\n");
+    },
+  });
+  assert.equal(readbackResult.state, "recovery_required", JSON.stringify(readbackResult));
+  assert.equal(readbackResult.handoff, null);
+});
+
+test("production executor binds loaded SDK and producer identity and confines permissions", async () => {
+  const current = await fixture();
+  const harness = productionSdkHarness();
+  const result = await runProductionExecutor(current, harness);
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(result.observations.loadedSdkPackageVersion, COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION);
+  assert.equal(result.observations.sessionProducer, COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID);
+  assert.equal(result.observations.sessionProducerVersion, "1.0.79");
+  assert.equal(harness.calls.clientOptions.mode, "empty");
+  assert.deepEqual(harness.calls.sessionConfig.availableTools, ["read", "search"]);
+  assert.deepEqual(harness.calls.sessionConfig.tools, []);
+  assert.deepEqual(harness.calls.sessionConfig.mcpServers, {});
+  assert.equal(harness.calls.sessionConfig.enableConfigDiscovery, false);
+  assert.equal(harness.calls.sessionConfig.enableFileHooks, false);
+  assert.equal(harness.calls.sessionConfig.enableHostGitOperations, false);
+  const exactPath = join(current.root, "package.json");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review" })).kind, "approve-once");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", managedApprovalRequired: true })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", requestSandboxBypass: true })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "write", fileName: exactPath, diff: "", intention: "mutate", canOfferSessionApproval: false })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: "./package.json", intention: "alias" })).kind, "reject");
+  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "read", toolArgs: { path: exactPath } })).permissionDecision, "allow");
+  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "search", toolArgs: { query: "Fury" } })).permissionDecision, "deny");
+  assert.equal((await harness.calls.sessionConfig.hooks.onPreToolUse({ toolName: "write", toolArgs: { path: exactPath } })).permissionDecision, "deny");
+  const aliasPath = join(current.root, "package-alias.json");
+  await symlink(exactPath, aliasPath);
+  assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: aliasPath, intention: "alias" })).kind, "reject");
+  assert.equal(harness.calls.disconnect, 1);
+  assert.equal(harness.calls.stop, 1);
+});
+
+test("production executor rejects SDK, event, cancellation, and runtime faults", async () => {
+  const version = await fixture();
+  const versionHarness = productionSdkHarness();
+  const versionExecutor = createCopilotFuryPlanExecutorV1({
+    async loadSdk() { return versionHarness.module; },
+    async resolveLoadedPackageVersion() { return "1.0.10"; },
+  });
+  const blocked = await versionExecutor.preflight({ repositoryRoot: version.root, requestedModel: version.request.requestedModel, requestedRuntime: version.request.requestedRuntime, requestedExecutor: version.request.requestedExecutor });
+  assert.equal(blocked.state, "blocked", JSON.stringify(blocked));
+
+  for (const harness of [
+    productionSdkHarness({ eventType: "session.model_change", eventData: { previousModel: "model:fury", newModel: "model:other" } }),
+    productionSdkHarness({ eventType: "subagent.deselected" }),
+    productionSdkHarness({ producer: "other-producer" }),
+    productionSdkHarness({ createFault: true }),
+  ]) {
+    const current = await fixture();
+    const result = await runProductionExecutor(current, harness);
+    assert.equal(result.state, "failed", JSON.stringify(result));
+  }
+
+  const cancelledFixture = await fixture();
+  const cancelled = await runProductionExecutor(cancelledFixture, productionSdkHarness({ cancel: true }));
+  assert.equal(cancelled.state, "cancelled", JSON.stringify(cancelled));
+  assert.equal(cancelled.code, "COPILOT_CANCELLED");
 });
