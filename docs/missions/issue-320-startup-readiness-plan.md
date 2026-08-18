@@ -16,7 +16,7 @@ This slice does not authorize implementation, dispatch a model, create mission a
 - `copilot-fury-plan-dispatch-v1.mts` owns the production SDK executor and already performs a pre-effect check for the pinned SDK version, required exports, and the closed stdio transport projection.
 - `copilot-teammate-readiness-v1.mts` verifies exact-HEAD Copilot agent cards and observes VS Code plus the Copilot extension, but it does not test whether the governed Fury executor can be constructed.
 - `shield doctor` validates configuration and configured publication adapters only. It cannot presently report the governed Copilot seat-dispatch capability.
-- `tools/teammate-launch.mjs` requires the Copilot teammate preflight to return `ready_for_host_confirmation` and enforces a closed ordered machine-check set. The launcher and its tests must admit the new row together; an unavailable capability must stop before any launch effect.
+- `tools/teammate-launch.mjs` requires the Copilot teammate preflight to return `ready_for_host_confirmation` and enforces a closed ordered machine-check set. The launcher and its tests must admit the new row together. Its current preparation order may already create a disposable checkout and run install/build; an unavailable capability must stop before readiness-receipt publication, host handoff, and mission authority.
 - The later transition/materialization boundary already validates dispatch evidence. Hardening only that boundary would still discover an unavailable adapter after mission authority and would not satisfy this slice.
 
 ## Acceptance criteria
@@ -24,7 +24,7 @@ This slice does not authorize implementation, dispatch a model, create mission a
 | ID | Required behavior | Exact evidence |
 | --- | --- | --- |
 | AC-1 | One authority-none capability probe validates the actually loaded pinned `@github/copilot-sdk`, required constructor/transport exports, safe stdio projection, production-equivalent Fury card precedence, and the production dispatch-receipt path without starting the SDK, creating a session, invoking a model, writing a receipt, or changing repository state. | Focused tests inject each closed failure reason and ready dependencies; spies prove only permitted metadata reads and `RuntimeConnection.forStdio()` occur. |
-| AC-2 | `shield teammate preflight --host github-copilot` and the supported teammate launcher admit the same ordered capability row. Unavailable capability returns `action_required` and aborts before launch effects; ready capability preserves `ready_for_host_confirmation`. | Contract, CLI, and mandatory root launcher tests prove exact ordering, complete checks, failure precedence, non-zero exit, redaction, zero launch calls on failure, and successful ready-path acceptance. |
+| AC-2 | `shield teammate preflight --host github-copilot` and the supported teammate launcher admit the same ordered capability row. Unavailable capability returns `action_required` and stops before readiness-receipt publication, host handoff, and mission authority; ready capability preserves `ready_for_host_confirmation`. | Contract, CLI, and mandatory root launcher tests prove exact ordering, complete checks, failure precedence, non-zero exit, redaction, no receipt/handoff/authority calls on failure, and successful ready-path acceptance. Disposable checkout/install/build preparation is explicitly permitted before this check. |
 | AC-3 | `shield doctor --host github-copilot` composes a separate host-selected report from the same capability result and actionable next step, while ordinary `shield doctor`, `evaluateDoctor`, and `DoctorReportV2` remain byte/schema compatible. | Doctor evaluator/CLI tests prove selected-host failure/success/drift, ordinary Doctor compatibility, and no authority or filesystem mutation. |
 
 ## Design
@@ -41,7 +41,7 @@ Expose a narrow immutable result from the Copilot Fury adapter module (or a new 
 - the fixed dispatch-receipt logical path and safety classification, never a secret or journal body;
 - before/after repository identity proving the result remained bound to one root, branch, HEAD, clean state, and card.
 
-The probe accepts an absolute repository root and exact expected HEAD. It reuses the production repository-default Fury card resolver, including ambient user-card precedence and shadowing rejection, and the production executor's SDK/transport checks rather than copying approximations. An explicit user-card override is not a startup default and cannot make this probe ready. Extract shared pure/internal checkers where needed.
+The probe accepts an absolute repository root and exact expected HEAD. It reuses the production repository-default Fury card resolver, including ambient user-card precedence and shadowing rejection, and the production executor's SDK/transport checks rather than copying approximations. An explicit user-card override is not a startup default and cannot make this probe ready. Shared checkers must remain in the listed production modules; no unnamed source module is authorized.
 
 Permitted operations are limited to Git/repository observations, agent-card and package-metadata reads, no-follow receipt-path metadata inspection, dynamic SDK module load, and `RuntimeConnection.forStdio()` projection construction. Forbidden operations include SDK client construction, client start, model listing, session creation, model invocation, permission requests, filesystem writes, journal or receipt parsing, and authority creation.
 
@@ -63,7 +63,20 @@ The closed failure precedence is:
 
 Each reason has one constant next action. Tests must prove precedence when multiple failures coexist.
 
-The receipt path is not configurable: it is the existing `.shield/dispatch-receipts.jsonl`. Extract one read-only path-resolution primitive from `seat-dispatch-store.mts` and use it both in production receipt operations and this probe. Define exact outcomes for absent `.shield`, existing log and lock objects, symlinks, non-directories, aliases, and filesystem errors. Do not parse or create the ledger. This slice does not pretend a read-only probe can guarantee a future write.
+The receipt path is not configurable: it is the existing `.shield/dispatch-receipts.jsonl`; its lock is the store's existing fixed sibling lock path. Extract one read-only path-resolution primitive from `seat-dispatch-store.mts` and use it both in production receipt operations and this probe. Do not parse or create the ledger. This slice does not pretend a read-only probe can guarantee a future write.
+
+The structural classification is closed:
+
+| Observed state | Result |
+| --- | --- |
+| `.shield` absent, symlinked, aliased outside the canonical root, not a directory, or inaccessible | unavailable: `dispatch_receipt_path_unsafe` |
+| canonical `.shield` directory lacks host-observed write/search permission | unavailable: `dispatch_receipt_path_unsafe` |
+| receipt log absent with canonical safe `.shield`; lock absent | ready |
+| receipt log is one canonical regular file with link count one; lock absent | ready |
+| receipt log is symlink, non-regular, multiply linked, replaced during observation, or aliases another object | unavailable: `dispatch_receipt_path_unsafe` |
+| lock exists in any form, including a regular file | unavailable: `dispatch_receipt_path_unsafe` |
+| `ENOENT` while observing optional log or lock after stable parent observation | treat that optional object as absent, then reobserve the parent before returning |
+| any other filesystem error, or parent/root drift between observations | unavailable: `dispatch_receipt_path_unsafe` (repository identity drift remains `repository_drift` when that stronger check applies) |
 
 ### Teammate preflight
 
