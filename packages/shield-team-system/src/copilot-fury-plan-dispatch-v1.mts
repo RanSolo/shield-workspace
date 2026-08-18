@@ -597,6 +597,16 @@ async function exactGitTreeBytes(repositoryRoot: string, file: ExactGitTreeEntry
   return bytes;
 }
 
+async function stableExactHeadTransitionPlan(request: CopilotFuryPlanDispatchRequestV1): Promise<StableFile> {
+  const worktree = await stableTextFile(request.repositoryRoot, request.transitionPlanPath, "transition_plan");
+  const path = exactGitTreePath(request.repositoryRoot, request.transitionPlanPath);
+  const entry = (await exactGitTreeInventory(request.repositoryRoot, request.headRevision)).find((candidate) => candidate.path === path);
+  if (entry === undefined || !regularGitTreeFile(entry)) throw new Error("transition_plan_head_blob_unavailable");
+  const headBytes = await exactGitTreeBytes(request.repositoryRoot, entry);
+  if (!headBytes.equals(Buffer.from(worktree.bytes, "utf8"))) throw new Error("transition_plan_worktree_head_mismatch");
+  return worktree;
+}
+
 function exactGitTreeTools(repositoryRoot: string, revision: string, onDenied: (toolName: string) => void): readonly Tool[] {
   const readTool: Tool = {
     name: "read",
@@ -1122,7 +1132,7 @@ function evidenceWithDigest(body: ReturnType<typeof evidenceBody>) {
 
 async function verifyLiveBinding(request: CopilotFuryPlanDispatchRequestV1, initial: RepositoryObservation, initialPlan: StableFile, initialCard: ResolvedCard, userCopilotHome?: string): Promise<RepositoryObservation> {
   const current = await observeRepository(request);
-  const plan = await stableTextFile(request.repositoryRoot, request.transitionPlanPath, "transition_plan");
+  const plan = await stableExactHeadTransitionPlan(request);
   const card = await resolveCard(request, userCopilotHome);
   if (current.identity !== initial.identity || current.configBytes !== initial.configBytes || current.journalBytes !== initial.journalBytes || current.journalDigest !== initial.journalDigest || current.journalSequence !== initial.journalSequence || plan.identity !== initialPlan.identity || plan.bytes !== initialPlan.bytes || plan.rawSha256 !== initialPlan.rawSha256 || card.bytes !== initialCard.bytes || canonicalJson(card.identity) !== canonicalJson(initialCard.identity)) throw new Error("dispatch_input_drift");
   return current;
@@ -1253,7 +1263,9 @@ async function resolveLoadedCopilotSdkPackageVersion(): Promise<string> {
 
 class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
   private client: CopilotClient | null = null;
+  private clientConstructor: typeof CopilotClient | null = null;
   private loadedPackageVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION | null = null;
+  private preflightBinding: Readonly<{ repositoryRoot: string; requestedModel: string }> | null = null;
 
   constructor(private readonly dependencies: CopilotFuryProductionExecutorDependenciesV1 = {}) {}
 
@@ -1266,10 +1278,8 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       const packageVersion = await (this.dependencies.resolveLoadedPackageVersion?.() ?? resolveLoadedCopilotSdkPackageVersion());
       if (packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION) throw new Error(`Loaded Copilot SDK version ${packageVersion} does not match ${COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION}.`);
       this.loadedPackageVersion = packageVersion;
-      this.client = new CopilotClientConstructor({ mode: "empty", workingDirectory: input.repositoryRoot, logLevel: "none" });
-      await this.client.start();
-      const models = await this.client.listModels();
-      if (!models.some((model) => model.id === input.requestedModel)) throw new Error("Requested Copilot model is unavailable.");
+      this.clientConstructor = CopilotClientConstructor;
+      this.preflightBinding = Object.freeze({ repositoryRoot: input.repositoryRoot, requestedModel: input.requestedModel });
       return { state: "ready", packageVersion, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
     } catch (error) {
       await this.close();
@@ -1278,7 +1288,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
   }
 
   async execute(input: CopilotFuryExecutorRunInputV1): Promise<CopilotFuryExecutorRunResultV1> {
-    if (this.client === null || this.loadedPackageVersion === null) return { state: "failed", code: "SDK_NOT_READY", errors: ["Copilot SDK preflight was not retained."], observations: {} };
+    if (this.clientConstructor === null || this.loadedPackageVersion === null || this.preflightBinding === null || this.preflightBinding.repositoryRoot !== input.repositoryRoot || this.preflightBinding.requestedModel !== input.configuration.model) return { state: "failed", code: "SDK_NOT_READY", errors: ["Copilot SDK preflight was not retained or did not match execution."], observations: {} };
     const policyDecisions: { tool: string; decision: "allow" | "deny" }[] = [];
     const startEvents: Extract<SessionEvent, { type: "session.start" }>[] = [];
     const assistantEvents: Extract<SessionEvent, { type: "assistant.message" }>[] = [];
@@ -1302,6 +1312,10 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     };
     let session: CopilotSession | null = null;
     try {
+      this.client = new this.clientConstructor({ mode: "empty", workingDirectory: input.repositoryRoot, logLevel: "none" });
+      await this.client.start();
+      const models = await this.client.listModels();
+      if (!models.some((model) => model.id === input.configuration.model)) throw new Error("Requested Copilot model is unavailable.");
       session = await this.client.createSession({
         sessionId: input.configuration.sessionId,
         model: input.configuration.model,
@@ -1414,7 +1428,9 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
   async close(): Promise<void> {
     const client = this.client;
     this.client = null;
+    this.clientConstructor = null;
     this.loadedPackageVersion = null;
+    this.preflightBinding = null;
     if (client !== null) await client.stop().catch(async () => client.forceStop());
   }
 }
@@ -1450,7 +1466,11 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
   let originalDisposition: Readonly<{ code: string; errors: readonly string[] }> = { code: "DISPATCH_FAILED", errors: [] };
   try {
     observation = await observeRepository(request);
-    planFile = await stableTextFile(request.repositoryRoot, request.transitionPlanPath, "transition_plan");
+    try {
+      planFile = await stableExactHeadTransitionPlan(request);
+    } catch (error) {
+      return invalid("TRANSITION_PLAN_HEAD_MISMATCH", error instanceof Error ? error.message : "Transition plan is not the literal HEAD blob.");
+    }
     if (planFile.rawSha256 !== request.transitionPlanRawSha256) return invalid("TRANSITION_PLAN_DIGEST_MISMATCH", "Transition plan raw SHA-256 does not match the request.");
     let parsedPlan: unknown;
     try { parsedPlan = JSON.parse(planFile.bytes); } catch { return invalid("INVALID_TRANSITION_PLAN", "Transition plan contains malformed JSON."); }

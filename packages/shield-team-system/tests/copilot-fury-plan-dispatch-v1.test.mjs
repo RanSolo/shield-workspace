@@ -248,14 +248,28 @@ function productionConfiguration(current) {
   };
 }
 
+function productionPassOutput(plan) {
+  return JSON.stringify({
+    schemaVersion: 1,
+    contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+    authority: "none",
+    reviewerSeatId: "fury",
+    reviewedArtifactId: plan.id,
+    reviewedArtifactRevision: plan.digest,
+    verdict: "PASS",
+    findings: [],
+  });
+}
+
 function productionSdkHarness(options = {}) {
-  const calls = { clientOptions: null, sessionConfig: null, disconnect: 0, stop: 0, forceStop: 0 };
+  const calls = { clientOptions: null, sessionConfig: null, construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0 };
   const event = (type, data) => ({ id: randomUUID(), parentId: null, timestamp: new Date().toISOString(), type, data });
   class CopilotClient {
-    constructor(clientOptions) { calls.clientOptions = clientOptions; }
-    async start() {}
-    async listModels() { return [{ id: "model:fury" }]; }
+    constructor(clientOptions) { calls.clientOptions = clientOptions; calls.construct += 1; }
+    async start() { calls.start += 1; if (options.startFault) throw new Error("runtime startup fault"); }
+    async listModels() { calls.listModels += 1; if (options.listModelsFault) throw new Error("model query fault"); return [{ id: "model:fury" }]; }
     async createSession(config) {
+      calls.createSession += 1;
       calls.sessionConfig = config;
       config.onEvent(event("session.start", {
         sessionId: config.sessionId,
@@ -276,7 +290,7 @@ function productionSdkHarness(options = {}) {
             config.onEvent(event("abort", { reason: "user_initiated" }));
             throw new Error("request aborted");
           }
-          const message = event("assistant.message", { content: "{}", model: config.model });
+          const message = event("assistant.message", { content: options.outputText ?? "{}", model: config.model });
           config.onEvent(message);
           return message;
         },
@@ -301,6 +315,9 @@ async function runProductionExecutor(current, harness) {
     requestedExecutor: current.request.requestedExecutor,
   });
   assert.equal(preflight.state, "ready", JSON.stringify(preflight));
+  assert.equal(harness.calls.construct, 0);
+  assert.equal(harness.calls.start, 0);
+  assert.equal(harness.calls.listModels, 0);
   const result = await value.execute({
     repositoryRoot: current.root,
     card: { frontmatter: { name: "Fury", description: "Review the exact plan." }, body: "Review only." },
@@ -387,6 +404,31 @@ test("adapter gap is blocked before receipt or artifact effects", async () => {
   assert.equal(result.code, "BLOCKED_ADAPTER_GAP");
   await assert.rejects(readFile(join(current.root, ".shield", "dispatch-receipts.jsonl"), "utf8"), { code: "ENOENT" });
   await assert.rejects(lstat(join(current.root, ".shield", "audit")), { code: "ENOENT" });
+});
+
+test("modified and untracked transition-plan bytes are rejected against literal HEAD before preflight", async () => {
+  const modified = await fixture();
+  const modifiedBytes = `${JSON.stringify(modified.plan)} \n`;
+  await writeFile(join(modified.root, modified.request.transitionPlanPath), modifiedBytes);
+  const modifiedExecutor = executor(modified.plan);
+  const modifiedResult = await dispatchCopilotFuryPlanReviewV1({ ...modified.request, transitionPlanRawSha256: sha256(modifiedBytes) }, { executor: modifiedExecutor.value, userCopilotHome: modified.userCopilotHome });
+  assert.equal(modifiedResult.state, "invalid", JSON.stringify(modifiedResult));
+  assert.equal(modifiedResult.code, "TRANSITION_PLAN_HEAD_MISMATCH");
+  assert.equal(modifiedExecutor.calls.preflight, 0);
+  assert.equal(modifiedExecutor.calls.execute, 0);
+
+  const untracked = await fixture();
+  const untrackedPath = "docs/missions/substituted-transition-plan.json";
+  const untrackedBytes = `${JSON.stringify(untracked.plan)}\n`;
+  await writeFile(join(untracked.root, untrackedPath), untrackedBytes);
+  const untrackedExecutor = executor(untracked.plan);
+  const untrackedResult = await dispatchCopilotFuryPlanReviewV1({ ...untracked.request, transitionPlanPath: untrackedPath, transitionPlanRawSha256: sha256(untrackedBytes) }, { executor: untrackedExecutor.value, userCopilotHome: untracked.userCopilotHome });
+  assert.equal(untrackedResult.state, "invalid", JSON.stringify(untrackedResult));
+  assert.equal(untrackedResult.code, "TRANSITION_PLAN_HEAD_MISMATCH");
+  assert.equal(untrackedExecutor.calls.preflight, 0);
+  assert.equal(untrackedExecutor.calls.execute, 0);
+  await assert.rejects(readFile(join(modified.root, ".shield", "dispatch-receipts.jsonl"), "utf8"), { code: "ENOENT" });
+  await assert.rejects(readFile(join(untracked.root, ".shield", "dispatch-receipts.jsonl"), "utf8"), { code: "ENOENT" });
 });
 
 test("REVISE completes without a reviewed-transition handoff", async () => {
@@ -744,6 +786,74 @@ test("production executor denies tracked symlink modes for read and search befor
     const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
     assert.equal(result.state, "failed", `${JSON.stringify(toolCall)}: ${JSON.stringify(result)}`);
     assert.equal(result.observations.unauthorizedToolOrEffectObserved, true);
+  }
+});
+
+test("production runtime startup is claim-bound for concurrent losers and exact retries", async () => {
+  const current = await fixture();
+  const harness = productionSdkHarness({ outputText: productionPassOutput(current.plan) });
+  const createExecutor = () => createCopilotFuryPlanExecutorV1({
+    async loadSdk() { return harness.module; },
+    async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+  });
+  const results = await Promise.all([
+    dispatchCopilotFuryPlanReviewV1(current.request, { executor: createExecutor(), userCopilotHome: current.userCopilotHome }),
+    dispatchCopilotFuryPlanReviewV1(current.request, { executor: createExecutor(), userCopilotHome: current.userCopilotHome }),
+  ]);
+  assert.ok(results.some((result) => result.state === "completed" && result.disposition === "PASS"), JSON.stringify(results));
+  assert.equal(harness.calls.construct, 1);
+  assert.equal(harness.calls.start, 1);
+  assert.equal(harness.calls.listModels, 1);
+  assert.equal(harness.calls.createSession, 1);
+
+  const retryHarness = productionSdkHarness({ outputText: productionPassOutput(current.plan) });
+  const retry = await dispatchCopilotFuryPlanReviewV1(current.request, {
+    executor: createCopilotFuryPlanExecutorV1({
+      async loadSdk() { return retryHarness.module; },
+      async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+    }),
+    userCopilotHome: current.userCopilotHome,
+  });
+  assert.equal(retry.state, "completed", JSON.stringify(retry));
+  assert.equal(retry.disposition, "PASS");
+  assert.equal(retryHarness.calls.construct, 0);
+  assert.equal(retryHarness.calls.start, 0);
+  assert.equal(retryHarness.calls.listModels, 0);
+});
+
+test("post-claim runtime start and model-query failures terminalize once and retries do not start Copilot", async () => {
+  for (const fault of [{ startFault: true, expectedListCalls: 0 }, { listModelsFault: true, expectedListCalls: 1 }]) {
+    const current = await fixture();
+    const startupHarness = productionSdkHarness(fault);
+    const first = await dispatchCopilotFuryPlanReviewV1(current.request, {
+      executor: createCopilotFuryPlanExecutorV1({
+        async loadSdk() { return startupHarness.module; },
+        async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+      }),
+      userCopilotHome: current.userCopilotHome,
+    });
+    assert.equal(first.state, "failed", JSON.stringify(first));
+    assert.equal(first.code, "COPILOT_EXECUTION_FAILED");
+    assert.ok(first.receiptId);
+    assert.equal(startupHarness.calls.construct, 1);
+    assert.equal(startupHarness.calls.start, 1);
+    assert.equal(startupHarness.calls.listModels, fault.expectedListCalls);
+    assert.equal(startupHarness.calls.createSession, 0);
+
+    const retryHarness = productionSdkHarness({ outputText: productionPassOutput(current.plan) });
+    const retry = await dispatchCopilotFuryPlanReviewV1(current.request, {
+      executor: createCopilotFuryPlanExecutorV1({
+        async loadSdk() { return retryHarness.module; },
+        async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+      }),
+      userCopilotHome: current.userCopilotHome,
+    });
+    assert.equal(retry.state, "failed", JSON.stringify(retry));
+    assert.equal(retry.code, first.code);
+    assert.equal(retry.replayed, true);
+    assert.equal(retryHarness.calls.construct, 0);
+    assert.equal(retryHarness.calls.start, 0);
+    assert.equal(retryHarness.calls.listModels, 0);
   }
 });
 
