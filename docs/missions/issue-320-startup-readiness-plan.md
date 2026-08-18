@@ -4,7 +4,8 @@
 
 - Issue: `#320`
 - Repository: `RanSolo/shield-workspace`
-- Planning base and exact reviewed revision: `ebf8dfe65bb83315e8789b46bfd3aa0703ab16ea`
+- Planning base: `ebf8dfe65bb83315e8789b46bfd3aa0703ab16ea`
+- Exact plan commit and plan-content SHA-256 are separate immutable review-packet bindings supplied to Fury; neither is represented by the planning base.
 - Authority during planning and technical review: `none`
 - Objective: make the already-merged GitHub Copilot Fury dispatch capability observable before mission authority by adding one shared, effect-free capability probe to teammate preflight and Doctor.
 
@@ -15,16 +16,16 @@ This slice does not authorize implementation, dispatch a model, create mission a
 - `copilot-fury-plan-dispatch-v1.mts` owns the production SDK executor and already performs a pre-effect check for the pinned SDK version, required exports, and the closed stdio transport projection.
 - `copilot-teammate-readiness-v1.mts` verifies exact-HEAD Copilot agent cards and observes VS Code plus the Copilot extension, but it does not test whether the governed Fury executor can be constructed.
 - `shield doctor` validates configuration and configured publication adapters only. It cannot presently report the governed Copilot seat-dispatch capability.
-- `tools/teammate-launch.mjs` requires the Copilot teammate preflight to return `ready_for_host_confirmation`; therefore a new failing machine check prevents the supported teammate startup path from proceeding.
+- `tools/teammate-launch.mjs` requires the Copilot teammate preflight to return `ready_for_host_confirmation` and enforces a closed ordered machine-check set. The launcher and its tests must admit the new row together; an unavailable capability must stop before any launch effect.
 - The later transition/materialization boundary already validates dispatch evidence. Hardening only that boundary would still discover an unavailable adapter after mission authority and would not satisfy this slice.
 
 ## Acceptance criteria
 
 | ID | Required behavior | Exact evidence |
 | --- | --- | --- |
-| AC-1 | One authority-none capability probe validates the actually loaded pinned `@github/copilot-sdk`, required constructor/transport exports, safe stdio projection, canonical Fury card provenance, and structurally safe durable dispatch-receipt location without starting the SDK, creating a session, invoking a model, writing a receipt, or changing repository state. | Focused tests inject absent, malformed, wrong-version, unsafe-transport, invalid-card, unsafe-receipt-path, and ready dependencies and prove zero execution/effect calls. |
-| AC-2 | `shield teammate preflight --host github-copilot` includes the capability result as an ordered machine check and cannot return `ready_for_host_confirmation` when it is unavailable. It reports all machine checks while preserving deterministic first-failure precedence. | Contract and CLI tests prove exact reason codes, complete ordered checks, non-zero exit, publication redaction, and the unchanged ready path. |
-| AC-3 | `shield doctor --host github-copilot` reports the same capability result and actionable next step, while ordinary `shield doctor` remains backward compatible and does not imply Copilot is required for repositories that did not request that host. | Doctor evaluator/CLI tests prove host-selected failure and success, ordinary Doctor compatibility, and no authority or filesystem mutation. |
+| AC-1 | One authority-none capability probe validates the actually loaded pinned `@github/copilot-sdk`, required constructor/transport exports, safe stdio projection, production-equivalent Fury card precedence, and the production dispatch-receipt path without starting the SDK, creating a session, invoking a model, writing a receipt, or changing repository state. | Focused tests inject each closed failure reason and ready dependencies; spies prove only permitted metadata reads and `RuntimeConnection.forStdio()` occur. |
+| AC-2 | `shield teammate preflight --host github-copilot` and the supported teammate launcher admit the same ordered capability row. Unavailable capability returns `action_required` and aborts before launch effects; ready capability preserves `ready_for_host_confirmation`. | Contract, CLI, and mandatory root launcher tests prove exact ordering, complete checks, failure precedence, non-zero exit, redaction, zero launch calls on failure, and successful ready-path acceptance. |
+| AC-3 | `shield doctor --host github-copilot` composes a separate host-selected report from the same capability result and actionable next step, while ordinary `shield doctor`, `evaluateDoctor`, and `DoctorReportV2` remain byte/schema compatible. | Doctor evaluator/CLI tests prove selected-host failure/success/drift, ordinary Doctor compatibility, and no authority or filesystem mutation. |
 
 ## Design
 
@@ -34,22 +35,43 @@ Expose a narrow immutable result from the Copilot Fury adapter module (or a new 
 
 - contract/version and `authority: "none"`;
 - disposition `ready | unavailable`;
-- stable reason code and actionable next step;
-- loaded SDK package/version and runtime/executor identity when ready;
-- Fury card logical ref, exact-HEAD digest, and repository revision;
-- dispatch-receipt logical path classification, never a secret or journal body.
+- one closed reason code and matching closed next action;
+- observed SDK package/version and configured target runtime/executor identity when ready;
+- complete production card identity: source kind, logical ref, exact-HEAD digest, repository revision, and ordered precedence observations;
+- the fixed dispatch-receipt logical path and safety classification, never a secret or journal body;
+- before/after repository identity proving the result remained bound to one root, branch, HEAD, clean state, and card.
 
-The probe accepts an absolute repository root and exact expected HEAD. It reuses the existing strict card parser and the production executor's SDK/transport checks rather than copying a second approximation. Extract a shared pure/internal checker if needed. It may inspect existing filesystem metadata with no-follow operations, but it must not create directories, files, SDK clients, sessions, receipts, or authority.
+The probe accepts an absolute repository root and exact expected HEAD. It reuses the production repository-default Fury card resolver, including ambient user-card precedence and shadowing rejection, and the production executor's SDK/transport checks rather than copying approximations. An explicit user-card override is not a startup default and cannot make this probe ready. Extract shared pure/internal checkers where needed.
 
-The receipt-path check is structural and fail-closed: the configured/default dispatch receipt path and each existing ancestor must stay inside the repository's `.shield` state boundary, must not traverse symlinks or non-directories, and must not alias an unsafe object. This slice does not pretend that a read-only probe can guarantee a future write.
+Permitted operations are limited to Git/repository observations, agent-card and package-metadata reads, no-follow receipt-path metadata inspection, dynamic SDK module load, and `RuntimeConnection.forStdio()` projection construction. Forbidden operations include SDK client construction, client start, model listing, session creation, model invocation, permission requests, filesystem writes, journal or receipt parsing, and authority creation.
+
+The closed failure precedence is:
+
+1. `invalid_input`;
+2. `repository_unavailable`;
+3. `expected_head_mismatch`;
+4. `workspace_dirty`;
+5. `fury_card_unavailable`;
+6. `fury_card_shadowed`;
+7. `dispatch_receipt_path_unsafe`;
+8. `copilot_sdk_unavailable`;
+9. `copilot_sdk_version_mismatch`;
+10. `copilot_sdk_exports_invalid`;
+11. `copilot_stdio_projection_unsafe`;
+12. `repository_drift`;
+13. `ready`.
+
+Each reason has one constant next action. Tests must prove precedence when multiple failures coexist.
+
+The receipt path is not configurable: it is the existing `.shield/dispatch-receipts.jsonl`. Extract one read-only path-resolution primitive from `seat-dispatch-store.mts` and use it both in production receipt operations and this probe. Define exact outcomes for absent `.shield`, existing log and lock objects, symlinks, non-directories, aliases, and filesystem errors. Do not parse or create the ledger. This slice does not pretend a read-only probe can guarantee a future write.
 
 ### Teammate preflight
 
-Add one ordered `platform.fury_dispatch` machine check after exact agent-card validation and before host confirmations. Preserve the current complete check list and repository-stability re-observation. A failed capability probe yields `action_required`, a stable capability-specific reason, and a single rerun instruction. Publication projection continues to redact the absolute root.
+Add one ordered `platform.fury_dispatch` machine check after exact agent-card validation. Update the launcher's closed expected set in the same commit. Preserve the complete check list and repository-stability re-observation. A failed capability probe yields `action_required`, its capability-specific reason, and one rerun instruction. Publication projection continues to redact the absolute root.
 
 ### Doctor
 
-Add optional `--host github-copilot` to Doctor. Only the selected-host form runs the asynchronous shared probe and appends a host-capability check to the Doctor report. The no-host command preserves its current schema and behavior. Invalid hosts fail as CLI usage errors before probing.
+Add optional `--host github-copilot` to Doctor. Preserve synchronous `evaluateDoctor`, `DoctorReportV2`, and no-host JSON/human output exactly. The selected-host CLI path captures canonical repository identity, runs the shared probe against that exact HEAD, reobserves identity, and returns a separate closed host-selected composition report. Drift has the stable `repository_drift` result. Invalid hosts fail as CLI usage errors before probing.
 
 Doctor must not conflate configured GitHub/Atlassian communication adapters with the GitHub Copilot seat runtime. The new check is explicitly a host capability, not a new authority or communication-adapter admission.
 
@@ -59,8 +81,10 @@ Expected production paths:
 
 - `packages/shield-team-system/src/copilot-fury-plan-dispatch-v1.mts`
 - `packages/shield-team-system/src/copilot-teammate-readiness-v1.mts`
+- `packages/shield-team-system/src/seat-dispatch-store.mts`
 - `packages/shield-team-system/src/config.mts`
 - `packages/shield-team-system/src/cli.mts`
+- `tools/teammate-launch.mjs`
 
 Expected tests:
 
@@ -68,13 +92,15 @@ Expected tests:
 - `packages/shield-team-system/tests/copilot-teammate-readiness-v1.test.mjs`
 - `packages/shield-team-system/tests/config.test.mjs`
 - `packages/shield-team-system/tests/cli.test.mjs`
-- `tools/teammate-launch.test.mjs` only if its closed expected machine-check set requires adjustment.
+- `packages/shield-team-system/tests/seat-dispatch-store.test.mjs`
+- `tools/teammate-launch.test.mjs`
 
 No package, lockfile, agent-card, mission-journal, authority, dispatch receipt, or Nx project-boundary change is expected.
 
 ## Validation
 
 - Run the focused changed tests through the existing `@shield/team-system` Nx target with cache enabled.
+- Run `node --test tools/teammate-launch.test.mjs` explicitly because it is outside the Team System test target.
 - Run `nx affected` build/test from the frozen base to implementation HEAD with cache enabled.
 - Run `git diff --check` and verify the base-to-HEAD path allowlist.
 - Mack independently validates exact HEAD and may trust valid Nx cache hits; an uncached rerun requires a concrete cache or risk concern.
