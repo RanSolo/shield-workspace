@@ -13,6 +13,7 @@ import {
   projectCopilotTeammateReadinessForPublicationV1,
   runCopilotTeammateReadinessPreflightV1,
 } from "../dist/copilot-teammate-readiness-v1.mjs";
+import { COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS } from "../dist/config.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -56,14 +57,35 @@ function hostDependencies(
   };
 }
 
-function capability(disposition = "ready", reasonCode = "ready") {
+function capability(root, head, disposition = "ready", reasonCode = "ready") {
   return {
     schemaVersion: 1,
     contractVersion: "shield.copilot-fury-dispatch-capability.v1",
     authority: "none",
     disposition,
     reasonCode,
-    nextAction: disposition === "ready" ? "No machine action is required for this capability." : `Resolve ${reasonCode} and rerun.`,
+    nextAction: COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS[reasonCode],
+    repository: {
+      before: { root, branch: "master", head, clean: true },
+      after: { root, branch: "master", head, clean: true },
+    },
+    package: { name: "@github/copilot-sdk", version: disposition === "ready" ? "1.0.11" : null },
+    target: { runtimeId: "github-copilot-sdk:1.0.11", executorId: "copilot-agent" },
+    card: {
+      sourceKind: "repository",
+      logicalRef: ".github/agents/fury.agent.md",
+      contentDigest: "b".repeat(64),
+      repositoryRevision: head,
+      precedenceObservations: [
+        { sourceKind: "repository", logicalRef: ".github/agents/fury.agent.md", disposition: "selected", contentDigest: "b".repeat(64) },
+        { sourceKind: "user", logicalRef: "user://agents/fury.agent.md", disposition: "absent", contentDigest: null },
+      ],
+    },
+    dispatchReceipt: {
+      logicalPath: ".shield/dispatch-receipts.jsonl",
+      lockLogicalPath: ".shield/dispatch-receipts.jsonl.lock",
+      safety: "safe",
+    },
   };
 }
 
@@ -143,7 +165,7 @@ test("Copilot preflight uses the shared Fury capability row and fails before rea
         async probeFuryDispatchCapability(input) {
           probes += 1;
           assert.deepEqual(input, { repositoryRoot: canonicalRoot, expectedHead: target.head });
-          return capability("unavailable", "copilot_sdk_version_mismatch");
+          return capability(canonicalRoot, target.head, "unavailable", "copilot_sdk_version_mismatch");
         },
       },
     );
@@ -154,10 +176,39 @@ test("Copilot preflight uses the shared Fury capability row and fails before rea
       id: "platform.fury_dispatch",
       status: "fail",
       reasonCode: "copilot_sdk_version_mismatch",
-      nextAction: "Resolve copilot_sdk_version_mismatch and rerun.",
+      nextAction: COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS.copilot_sdk_version_mismatch,
     });
     const projected = projectCopilotTeammateReadinessForPublicationV1(report);
     assert.equal(JSON.stringify(projected).includes(target.root), false);
+  } finally {
+    await rm(target.root, { recursive: true, force: false });
+  }
+});
+
+test("Copilot preflight rejects malformed, truncated, extra, and inconsistent Fury capability reports", async () => {
+  const target = await fixture();
+  const canonicalRoot = await realpath(target.root);
+  const valid = capability(canonicalRoot, target.head);
+  const cases = [
+    { ...valid, target: undefined },
+    { ...valid, extra: true },
+    { ...valid, disposition: "unavailable" },
+    { ...valid, card: { ...valid.card, precedenceObservations: valid.card.precedenceObservations.slice(0, 1) } },
+  ];
+  try {
+    for (const candidate of cases) {
+      const report = await runCopilotTeammateReadinessPreflightV1(
+        { root: target.root, expectedHead: target.head },
+        { ...hostDependencies().dependencies, async probeFuryDispatchCapability() { return candidate; } },
+      );
+      assert.equal(report.disposition, "action_required");
+      assert.deepEqual(report.machineChecks.find(({ id }) => id === "platform.fury_dispatch"), {
+        id: "platform.fury_dispatch",
+        status: "fail",
+        reasonCode: "fury_card_unavailable",
+        nextAction: "Restore the exact-HEAD repository Fury agent card and rerun the capability probe.",
+      });
+    }
   } finally {
     await rm(target.root, { recursive: true, force: false });
   }

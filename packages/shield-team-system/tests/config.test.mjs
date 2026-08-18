@@ -5,6 +5,7 @@ import {
   CONFIG_SCHEMA_V2_VERSION,
   CONFIG_SCHEMA_VERSION,
   CONFIGURED_HOST_ADAPTER_IDS,
+  COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS,
   DOCTOR_REPORT_VERSION,
   LEGACY_CONFIG_SCHEMA_VERSION,
   REPOSITORY_TRUST_PROFILE_IDS,
@@ -22,6 +23,7 @@ import {
   migrateShieldConfig,
   parseShieldConfig,
   repositoryTrustProfileId,
+  validateAndProjectCopilotFuryDispatchCapabilityReportV1,
   validateShieldConfig,
 } from "../dist/config.mjs";
 
@@ -186,11 +188,33 @@ test("host-selected Doctor composition is separate and preserves ordinary Doctor
   });
   const bytes = JSON.stringify(ordinary);
   const capability = {
+    schemaVersion: 1,
+    contractVersion: "shield.copilot-fury-dispatch-capability.v1",
     authority: "none",
     disposition: "ready",
     reasonCode: "ready",
-    nextAction: "No machine action is required for this capability.",
-    observed: "retained",
+    nextAction: COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS.ready,
+    repository: {
+      before: { root: "/fixture", branch: "main", head: "a".repeat(40), clean: true },
+      after: { root: "/fixture", branch: "main", head: "a".repeat(40), clean: true },
+    },
+    package: { name: "@github/copilot-sdk", version: "1.0.11" },
+    target: { runtimeId: "github-copilot-sdk:1.0.11", executorId: "copilot-agent" },
+    card: {
+      sourceKind: "repository",
+      logicalRef: ".github/agents/fury.agent.md",
+      contentDigest: "b".repeat(64),
+      repositoryRevision: "a".repeat(40),
+      precedenceObservations: [
+        { sourceKind: "repository", logicalRef: ".github/agents/fury.agent.md", disposition: "selected", contentDigest: "b".repeat(64) },
+        { sourceKind: "user", logicalRef: "user://agents/fury.agent.md", disposition: "absent", contentDigest: null },
+      ],
+    },
+    dispatchReceipt: {
+      logicalPath: ".shield/dispatch-receipts.jsonl",
+      lockLogicalPath: ".shield/dispatch-receipts.jsonl.lock",
+      safety: "safe",
+    },
   };
   const selected = composeCopilotDoctorReportV1(ordinary, capability);
   assert.deepEqual(selected, {
@@ -204,9 +228,34 @@ test("host-selected Doctor composition is separate and preserves ordinary Doctor
   });
   assert.equal(JSON.stringify(ordinary), bytes);
   assert.equal(ordinary.reportVersion, 2);
-  const unavailable = composeCopilotDoctorReportV1(ordinary, { ...capability, disposition: "unavailable", reasonCode: "repository_drift" });
+  assert.notEqual(selected.hostCapability, capability);
+  assert.equal(Object.isFrozen(selected.hostCapability), true);
+  assert.equal(Object.isFrozen(selected.hostCapability.card.precedenceObservations), true);
+  const unavailable = composeCopilotDoctorReportV1(ordinary, {
+    ...capability,
+    disposition: "unavailable",
+    reasonCode: "repository_drift",
+    nextAction: COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS.repository_drift,
+  });
   assert.equal(unavailable.ok, false);
   assert.equal(unavailable.hostCapability.reasonCode, "repository_drift");
+
+  const malformed = [
+    { ...capability, extra: true },
+    { ...capability, target: undefined },
+    { ...capability, disposition: "unavailable" },
+    { ...capability, card: { ...capability.card, precedenceObservations: capability.card.precedenceObservations.slice(0, 1) } },
+  ];
+  for (const candidate of malformed) {
+    assert.throws(() => composeCopilotDoctorReportV1(ordinary, candidate), /copilot_fury_dispatch_capability_report_invalid/u);
+  }
+  const accessor = { ...capability };
+  Object.defineProperty(accessor, "reasonCode", { enumerable: true, get() { throw new Error("must not execute"); } });
+  assert.throws(() => validateAndProjectCopilotFuryDispatchCapabilityReportV1(accessor), /copilot_fury_dispatch_capability_report_invalid/u);
+  assert.throws(() => composeCopilotDoctorReportV1(ordinary, new Proxy(capability, {
+    get() { throw new Error("must not execute"); },
+  })), /copilot_fury_dispatch_capability_report_invalid/u);
+  assert.equal(JSON.stringify(ordinary), bytes);
 });
 
 test("doctor produces one redacted null adapter failure for every invalid adapter shape", () => {

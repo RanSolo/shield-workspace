@@ -10,7 +10,15 @@ import { isProxy } from "node:util/types";
 import type { CopilotClient, CopilotSession, PermissionRequest, SessionEvent, StdioRuntimeConnection, Tool } from "@github/copilot-sdk";
 import { validateTransitionPlanV1OrV2, type TransitionPlanV1OrV2 } from "@shield/mission-preparation";
 
-import { parseShieldConfig } from "./config.mjs";
+import {
+  COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION,
+  COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS,
+  parseShieldConfig,
+  validateAndProjectCopilotFuryDispatchCapabilityReportV1,
+  type CopilotFuryDispatchCapabilityReasonV1,
+  type CopilotFuryDispatchCapabilityReportV1,
+  type CopilotFuryResolvedCardIdentityV1,
+} from "./config.mjs";
 import {
   buildMissionTransitionPlanReviewV1,
   validateMissionTransitionPlanReviewV1,
@@ -51,38 +59,13 @@ export const COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL = "copilot-fury-empty-
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID = "receipt:Y40rTRNdpEsqc9t24wRZ470R0zzYyk5G" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID = "receipt:3joci3m8iFvPsfeyceBy8b3uH8dfv111" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RESULT_RECEIPT_ID = "receipt:F4ZxcVBIKQJanHcOfEdTkzOHGS6IdNZ9" as const;
-export const COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION = "shield.copilot-fury-dispatch-capability.v1" as const;
-
-export type CopilotFuryDispatchCapabilityReasonV1 =
-  | "invalid_input"
-  | "repository_unavailable"
-  | "expected_head_mismatch"
-  | "workspace_dirty"
-  | "fury_card_unavailable"
-  | "fury_card_shadowed"
-  | "dispatch_receipt_path_unsafe"
-  | "copilot_sdk_unavailable"
-  | "copilot_sdk_version_mismatch"
-  | "copilot_sdk_exports_invalid"
-  | "copilot_stdio_projection_unsafe"
-  | "repository_drift"
-  | "ready";
-
-export const COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS = Object.freeze({
-  invalid_input: "Supply one canonical absolute repository root and the exact expected 40-character lowercase Git HEAD.",
-  repository_unavailable: "Restore an accessible canonical Git worktree and rerun the capability probe.",
-  expected_head_mismatch: "Check out the exact expected revision and rerun the capability probe.",
-  workspace_dirty: "Restore a clean worktree at the expected revision and rerun the capability probe.",
-  fury_card_unavailable: "Restore the exact-HEAD repository Fury agent card and rerun the capability probe.",
-  fury_card_shadowed: "Remove the ambient same-name user Fury card and rerun with repository-default card precedence.",
-  dispatch_receipt_path_unsafe: "Repair the canonical .shield dispatch-receipt path and permissions, then rerun the capability probe.",
-  copilot_sdk_unavailable: "Install the pinned @github/copilot-sdk dependency and rerun the capability probe.",
-  copilot_sdk_version_mismatch: `Install @github/copilot-sdk ${COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION} and rerun the capability probe.`,
-  copilot_sdk_exports_invalid: "Restore the required CopilotClient and RuntimeConnection.forStdio exports and rerun the capability probe.",
-  copilot_stdio_projection_unsafe: "Restore the closed stdio runtime projection and rerun the capability probe.",
-  repository_drift: "Restore one stable clean repository/card state and rerun the capability probe.",
-  ready: "No machine action is required for this capability.",
-} satisfies Record<CopilotFuryDispatchCapabilityReasonV1, string>);
+export {
+  COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION,
+  COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS,
+  validateAndProjectCopilotFuryDispatchCapabilityReportV1,
+  type CopilotFuryDispatchCapabilityReasonV1,
+  type CopilotFuryDispatchCapabilityReportV1,
+};
 
 const RECOVERABLE_FAILURE_CODE = "COPILOT_EXECUTION_FAILED" as const;
 const RECOVERABLE_FAILURE_MESSAGE = "CopilotClient was created with mode: 'empty' but neither 'baseDirectory' nor 'sessionFs' was set. Empty mode requires an explicit per-session persistence location; pick one." as const;
@@ -192,39 +175,7 @@ export interface CopilotFuryPlanResultV1 {
   readonly findings: readonly CopilotFuryPlanFindingV1[];
 }
 
-export interface CopilotFuryResolvedCardIdentityV1 {
-  readonly sourceKind: "repository" | "explicit_user_override";
-  readonly logicalRef: string;
-  readonly contentDigest: string;
-  readonly repositoryRevision: string | null;
-  readonly precedenceObservations: readonly Readonly<{
-    sourceKind: "repository" | "user";
-    logicalRef: string;
-    disposition: "selected" | "absent" | "shadowing_rejected" | "not_selected_explicit_override";
-    contentDigest: string | null;
-  }>[];
-}
-
-export interface CopilotFuryDispatchCapabilityReportV1 {
-  readonly schemaVersion: 1;
-  readonly contractVersion: typeof COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION;
-  readonly authority: "none";
-  readonly disposition: "ready" | "unavailable";
-  readonly reasonCode: CopilotFuryDispatchCapabilityReasonV1;
-  readonly nextAction: string;
-  readonly repository: {
-    readonly before: { readonly root: string; readonly branch: string | null; readonly head: string | null; readonly clean: boolean | null };
-    readonly after: { readonly root: string; readonly branch: string | null; readonly head: string | null; readonly clean: boolean | null };
-  };
-  readonly package: { readonly name: "@github/copilot-sdk"; readonly version: string | null };
-  readonly target: { readonly runtimeId: typeof COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID; readonly executorId: typeof COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
-  readonly card: CopilotFuryResolvedCardIdentityV1 | null;
-  readonly dispatchReceipt: {
-    readonly logicalPath: typeof SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH;
-    readonly lockLogicalPath: string;
-    readonly safety: "safe" | "unsafe";
-  };
-}
+export type { CopilotFuryResolvedCardIdentityV1 };
 
 export interface CopilotFuryDispatchCapabilityDependenciesV1 extends CopilotFuryProductionExecutorDependenciesV1 {
   readonly userCopilotHome?: string;
@@ -1873,6 +1824,16 @@ class CopilotSdkCapabilityError extends Error {
   }
 }
 
+function ownEnumerableDataValue(value: unknown, key: string): Readonly<{ state: "valid"; value: unknown }> | Readonly<{ state: "invalid" }> {
+  try {
+    if (value === null || (typeof value !== "object" && typeof value !== "function") || isProxy(value)) return { state: "invalid" };
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") ||
+        descriptor.get !== undefined || descriptor.set !== undefined) return { state: "invalid" };
+    return { state: "valid", value: descriptor.value };
+  } catch { return { state: "invalid" }; }
+}
+
 async function inspectLoadedCopilotSdkCapability(
   dependencies: CopilotFuryProductionExecutorDependenciesV1,
 ): Promise<Readonly<{
@@ -1891,17 +1852,44 @@ async function inspectLoadedCopilotSdkCapability(
   if (packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION) {
     throw new CopilotSdkCapabilityError("copilot_sdk_version_mismatch", `Loaded Copilot SDK version ${packageVersion} does not match ${COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION}.`);
   }
-  if (typeof sdk.CopilotClient !== "function" || !safePlain(sdk.RuntimeConnection) || typeof sdk.RuntimeConnection.forStdio !== "function") {
+  const clientExport = ownEnumerableDataValue(sdk, "CopilotClient");
+  const runtimeExport = ownEnumerableDataValue(sdk, "RuntimeConnection");
+  if (clientExport.state === "invalid" || typeof clientExport.value !== "function" || runtimeExport.state === "invalid" ||
+      !safePlain(runtimeExport.value)) {
     throw new CopilotSdkCapabilityError("copilot_sdk_exports_invalid", "CopilotClient or RuntimeConnection.forStdio export is unavailable.");
   }
-  const connection = sdk.RuntimeConnection.forStdio() as unknown;
-  if (!safePlain(connection) || connection.kind !== "stdio" || connection.path !== undefined || connection.args !== undefined || connection.env !== undefined || Reflect.ownKeys(connection).some((key) => typeof key !== "string" || !["kind", "path", "args", "env"].includes(key))) {
+  const forStdio = ownEnumerableDataValue(runtimeExport.value, "forStdio");
+  if (forStdio.state === "invalid" || typeof forStdio.value !== "function") {
+    throw new CopilotSdkCapabilityError("copilot_sdk_exports_invalid", "CopilotClient or RuntimeConnection.forStdio export is unavailable.");
+  }
+  let connection: unknown;
+  try { connection = Reflect.apply(forStdio.value, runtimeExport.value, []); }
+  catch (error) {
+    throw new CopilotSdkCapabilityError("copilot_stdio_projection_unsafe", error instanceof Error ? error.message : "RuntimeConnection.forStdio threw.");
+  }
+  const connectionFields = ["kind", "path", "args", "env"] as const;
+  const projected = new Map<string, unknown>();
+  let connectionSafe = safePlain(connection);
+  if (connectionSafe) {
+    try {
+      const keys = Reflect.ownKeys(connection as object);
+      connectionSafe = keys.length === connectionFields.length && keys.every((key) => typeof key === "string" && connectionFields.includes(key as typeof connectionFields[number]));
+      for (const field of connectionFields) {
+        const observed = ownEnumerableDataValue(connection, field);
+        if (observed.state === "invalid") connectionSafe = false;
+        else projected.set(field, observed.value);
+      }
+    } catch { connectionSafe = false; }
+  }
+  if (!connectionSafe || projected.get("kind") !== "stdio" || projected.get("path") !== undefined ||
+      projected.get("args") !== undefined || projected.get("env") !== undefined) {
     throw new CopilotSdkCapabilityError("copilot_stdio_projection_unsafe", "RuntimeConnection.forStdio returned an unsafe projection.");
   }
+  const canonicalConnection = Object.freeze({ kind: "stdio" as const, path: undefined, args: undefined, env: undefined });
   return Object.freeze({
     packageVersion,
-    clientConstructor: sdk.CopilotClient as typeof CopilotClient,
-    connection: connection as unknown as StdioRuntimeConnection,
+    clientConstructor: clientExport.value as typeof CopilotClient,
+    connection: canonicalConnection as unknown as StdioRuntimeConnection,
   });
 }
 
@@ -2120,45 +2108,64 @@ function sameStartupRepository(left: StartupRepositorySnapshot, right: StartupRe
     left.status === right.status && left.inventory === right.inventory;
 }
 
-async function dispatchReceiptPathIsSafe(repositoryRoot: string): Promise<boolean> {
+type DispatchReceiptLogObservation = Readonly<{ state: "absent" } | { state: "present"; identity: string }>;
+type DispatchReceiptPathObservation = Readonly<
+  | { shieldDirectoryExists: false; rootIdentity: string }
+  | { shieldDirectoryExists: true; shieldIdentity: string; log: DispatchReceiptLogObservation }
+>;
+
+async function observeOptionalReceiptLogNoFollow(path: string): Promise<DispatchReceiptLogObservation | null> {
+  let handle;
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? { state: "absent" } : null; }
+  try {
+    const opened = await handle.stat();
+    const pathEntry = await lstat(path);
+    if (!opened.isFile() || opened.nlink !== 1 || pathEntry.isSymbolicLink() || !pathEntry.isFile() || pathEntry.nlink !== 1 ||
+        pathEntry.dev !== opened.dev || pathEntry.ino !== opened.ino || await realpath(path) !== path) return null;
+    return Object.freeze({ state: "present" as const, identity: `${opened.dev}:${opened.ino}` });
+  } catch { return null; }
+  finally { await handle.close().catch(() => undefined); }
+}
+
+async function receiptLockIsAbsentNoFollow(path: string): Promise<boolean> {
+  let handle;
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  await handle.close().catch(() => undefined);
+  return false;
+}
+
+async function observeDispatchReceiptPath(repositoryRoot: string): Promise<DispatchReceiptPathObservation | null> {
   const resolved = await resolveSeatDispatchStorePathsReadOnlyV1(repositoryRoot);
-  if (resolved.state === "invalid" || resolved.value.repositoryRoot !== repositoryRoot) return false;
+  if (resolved.state === "invalid" || resolved.value.repositoryRoot !== repositoryRoot) return null;
   const paths = resolved.value;
   if (!paths.shieldDirectoryExists) {
     try {
       const before = await lstat(repositoryRoot);
       await access(repositoryRoot, constants.W_OK | constants.X_OK);
       const after = await lstat(repositoryRoot);
-      return before.isDirectory() && !before.isSymbolicLink() && before.dev === after.dev && before.ino === after.ino;
-    } catch { return false; }
+      return before.isDirectory() && !before.isSymbolicLink() && before.dev === after.dev && before.ino === after.ino
+        ? Object.freeze({ shieldDirectoryExists: false as const, rootIdentity: `${before.dev}:${before.ino}` })
+        : null;
+    } catch { return null; }
   }
   try {
     const parentBefore = await lstat(paths.shieldDirectory);
-    if (!parentBefore.isDirectory() || parentBefore.isSymbolicLink() || await realpath(paths.shieldDirectory) !== paths.shieldDirectory) return false;
+    if (!parentBefore.isDirectory() || parentBefore.isSymbolicLink() || await realpath(paths.shieldDirectory) !== paths.shieldDirectory) return null;
     await access(paths.shieldDirectory, constants.W_OK | constants.X_OK);
-    try {
-      await lstat(paths.lockPath);
-      return false;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-    }
-    try {
-      const before = await lstat(paths.logPath);
-      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || await realpath(paths.logPath) !== paths.logPath) return false;
-      const handle = await open(paths.logPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        const opened = await handle.stat();
-        const after = await lstat(paths.logPath);
-        if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino ||
-            after.isSymbolicLink() || !after.isFile() || after.nlink !== 1 || after.dev !== opened.dev || after.ino !== opened.ino) return false;
-      } finally { await handle.close(); }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-    }
+    if (!await receiptLockIsAbsentNoFollow(paths.lockPath)) return null;
+    const log = await observeOptionalReceiptLogNoFollow(paths.logPath);
+    if (log === null) return null;
     const parentAfter = await lstat(paths.shieldDirectory);
-    return parentAfter.isDirectory() && !parentAfter.isSymbolicLink() && parentAfter.dev === parentBefore.dev &&
-      parentAfter.ino === parentBefore.ino && await realpath(paths.shieldDirectory) === paths.shieldDirectory;
-  } catch { return false; }
+    if (!parentAfter.isDirectory() || parentAfter.isSymbolicLink() || parentAfter.dev !== parentBefore.dev ||
+        parentAfter.ino !== parentBefore.ino || await realpath(paths.shieldDirectory) !== paths.shieldDirectory) return null;
+    return Object.freeze({
+      shieldDirectoryExists: true as const,
+      shieldIdentity: `${parentBefore.dev}:${parentBefore.ino}`,
+      log,
+    });
+  } catch { return null; }
 }
 
 function startupRepositoryProjection(snapshot: StartupRepositorySnapshot | null, fallbackRoot: string) {
@@ -2182,6 +2189,7 @@ export async function probeCopilotFuryDispatchCapabilityV1(
   let card: ResolvedCard | null = null;
   let cardReason: "fury_card_unavailable" | "fury_card_shadowed" | null = null;
   let receiptSafe = false;
+  let receiptBefore: DispatchReceiptPathObservation | null = null;
   let sdkReason: Extract<CopilotFuryDispatchCapabilityReasonV1,
     "copilot_sdk_unavailable" | "copilot_sdk_version_mismatch" | "copilot_sdk_exports_invalid" | "copilot_stdio_projection_unsafe"> | null = null;
   let packageVersion: string | null = null;
@@ -2201,7 +2209,8 @@ export async function probeCopilotFuryDispatchCapabilityV1(
         ? "fury_card_shadowed"
         : "fury_card_unavailable";
     }
-    receiptSafe = await dispatchReceiptPathIsSafe(before.root);
+    receiptBefore = await observeDispatchReceiptPath(before.root);
+    receiptSafe = receiptBefore !== null;
     try {
       const sdk = await inspectLoadedCopilotSdkCapability(dependencies);
       packageVersion = sdk.packageVersion;
@@ -2210,7 +2219,10 @@ export async function probeCopilotFuryDispatchCapabilityV1(
     }
     await dependencies.beforeFinalObservation?.();
     try { after = await captureStartupRepository(before.root); } catch { /* Closed drift result below. */ }
-    if (after !== null) receiptSafe = receiptSafe && await dispatchReceiptPathIsSafe(after.root);
+    if (after !== null) {
+      const receiptAfter = await observeDispatchReceiptPath(after.root);
+      receiptSafe = receiptBefore !== null && receiptAfter !== null && canonicalJson(receiptBefore) === canonicalJson(receiptAfter);
+    }
     if (after !== null && card !== null) {
       try {
         const finalCard = await resolveCard({
@@ -2233,7 +2245,7 @@ export async function probeCopilotFuryDispatchCapabilityV1(
           : cardReason ?? (card === null ? "fury_card_unavailable" : !receiptSafe
             ? "dispatch_receipt_path_unsafe"
             : sdkReason ?? (after === null || !sameStartupRepository(before, after) ? "repository_drift" : "ready"));
-  return deepFreeze({
+  return validateAndProjectCopilotFuryDispatchCapabilityReportV1(deepFreeze({
     schemaVersion: 1,
     contractVersion: COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION,
     authority: "none",
@@ -2252,7 +2264,7 @@ export async function probeCopilotFuryDispatchCapabilityV1(
       lockLogicalPath: `${SEAT_DISPATCH_RECEIPTS_LOG_RELATIVE_PATH}.lock`,
       safety: receiptSafe ? "safe" : "unsafe",
     },
-  });
+  }));
 }
 
 function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1, childSessionId: string): boolean {

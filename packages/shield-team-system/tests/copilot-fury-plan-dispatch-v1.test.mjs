@@ -352,8 +352,9 @@ function productionSdkHarness(options = {}) {
     async stop() { calls.stop += 1; }
     async forceStop() { calls.forceStop += 1; }
   }
-  const RuntimeConnection = { forStdio() { return { kind: "stdio", path: undefined, args: undefined, env: undefined }; } };
-  return { calls, module: { CopilotClient, RuntimeConnection } };
+  const connection = { kind: "stdio", path: undefined, args: undefined, env: undefined };
+  const RuntimeConnection = { forStdio() { return connection; } };
+  return { calls, connection, module: { CopilotClient, RuntimeConnection } };
 }
 
 async function runProductionExecutor(current, harness) {
@@ -461,6 +462,51 @@ test("authority-none Fury capability probe binds production card, receipt path, 
   await assert.rejects(lstat(join(current.root, ".shield", "dispatch-receipts.jsonl")), { code: "ENOENT" });
 });
 
+test("Fury SDK inspection rejects hostile descriptors, proxies, and throws without invoking accessors", async () => {
+  const run = async (module) => {
+    const current = await fixture();
+    return probeCopilotFuryDispatchCapabilityV1(
+      { repositoryRoot: current.root, expectedHead: current.request.headRevision },
+      {
+        async loadSdk() { return module; },
+        async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+        userCopilotHome: current.userCopilotHome,
+      },
+    );
+  };
+  let getterCalls = 0;
+  const accessorModule = { RuntimeConnection: { forStdio() { return { kind: "stdio", path: undefined, args: undefined, env: undefined }; } } };
+  Object.defineProperty(accessorModule, "CopilotClient", { enumerable: true, get() { getterCalls += 1; throw new Error("must not execute"); } });
+  assert.equal((await run(accessorModule)).reasonCode, "copilot_sdk_exports_invalid");
+  assert.equal(getterCalls, 0);
+
+  let proxyReads = 0;
+  const proxiedModule = new Proxy({ CopilotClient: class {}, RuntimeConnection: {} }, {
+    get(target, key, receiver) { if (key !== "then") proxyReads += 1; return Reflect.get(target, key, receiver); },
+  });
+  assert.equal((await run(proxiedModule)).reasonCode, "copilot_sdk_exports_invalid");
+  assert.equal(proxyReads, 0);
+
+  const runtimeAccessor = {};
+  Object.defineProperty(runtimeAccessor, "forStdio", { enumerable: true, get() { getterCalls += 1; throw new Error("must not execute"); } });
+  assert.equal((await run({ CopilotClient: class {}, RuntimeConnection: runtimeAccessor })).reasonCode, "copilot_sdk_exports_invalid");
+  assert.equal(getterCalls, 0);
+
+  const connectionAccessor = { path: undefined, args: undefined, env: undefined };
+  Object.defineProperty(connectionAccessor, "kind", { enumerable: true, get() { getterCalls += 1; throw new Error("must not execute"); } });
+  assert.equal((await run({ CopilotClient: class {}, RuntimeConnection: { forStdio() { return connectionAccessor; } } })).reasonCode, "copilot_stdio_projection_unsafe");
+  assert.equal(getterCalls, 0);
+
+  proxyReads = 0;
+  const connectionProxy = new Proxy({ kind: "stdio", path: undefined, args: undefined, env: undefined }, {
+    get(target, key, receiver) { proxyReads += 1; return Reflect.get(target, key, receiver); },
+  });
+  assert.equal((await run({ CopilotClient: class {}, RuntimeConnection: { forStdio() { return connectionProxy; } } })).reasonCode, "copilot_stdio_projection_unsafe");
+  assert.equal(proxyReads, 0);
+
+  assert.equal((await run({ CopilotClient: class {}, RuntimeConnection: { forStdio() { throw new Error("stdio failure"); } } })).reasonCode, "copilot_stdio_projection_unsafe");
+});
+
 test("Fury capability receipt-path probe accepts one regular file and rejects aliases, hardlinks, and unwritable state", async () => {
   const current = await fixture();
   const logPath = join(current.root, ".shield", "dispatch-receipts.jsonl");
@@ -485,6 +531,35 @@ test("Fury capability receipt-path probe accepts one regular file and rejects al
   await chmod(join(current.root, ".shield"), 0o500);
   try { assert.equal((await probe()).reasonCode, "dispatch_receipt_path_unsafe"); }
   finally { await chmod(join(current.root, ".shield"), 0o755); }
+});
+
+test("Fury capability revalidates receipt lock absence and log identity at the final no-follow boundary", async () => {
+  const locked = await fixture();
+  const lockResult = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: locked.root, expectedHead: locked.request.headRevision },
+    {
+      ...capabilitySdk().dependencies,
+      userCopilotHome: locked.userCopilotHome,
+      beforeFinalObservation: async () => writeFile(join(locked.root, ".shield", "dispatch-receipts.jsonl.lock"), "injected\n"),
+    },
+  );
+  assert.equal(lockResult.reasonCode, "dispatch_receipt_path_unsafe");
+
+  const replaced = await fixture();
+  const logPath = join(replaced.root, ".shield", "dispatch-receipts.jsonl");
+  await writeFile(logPath, "before\n");
+  const logResult = await probeCopilotFuryDispatchCapabilityV1(
+    { repositoryRoot: replaced.root, expectedHead: replaced.request.headRevision },
+    {
+      ...capabilitySdk().dependencies,
+      userCopilotHome: replaced.userCopilotHome,
+      beforeFinalObservation: async () => {
+        await unlink(logPath);
+        await writeFile(logPath, "replacement\n");
+      },
+    },
+  );
+  assert.equal(logResult.reasonCode, "dispatch_receipt_path_unsafe");
 });
 
 test("Fury capability probe exposes closed failure reasons and preserves precedence", async () => {
@@ -1351,6 +1426,9 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal(result.observations.sessionProducer, COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID);
   assert.equal(result.observations.sessionProducerVersion, "1.0.79");
   assert.equal(harness.calls.clientOptions.mode, "empty");
+  assert.deepEqual(harness.calls.clientOptions.connection, { kind: "stdio", path: undefined, args: undefined, env: undefined });
+  assert.notEqual(harness.calls.clientOptions.connection, harness.connection);
+  assert.equal(Object.isFrozen(harness.calls.clientOptions.connection), true);
   assert.deepEqual(harness.calls.sessionConfig.availableTools, ["read", "search"]);
   assert.deepEqual(harness.calls.sessionConfig.tools.map((tool) => tool.name), ["read", "search"]);
   assert.ok(harness.calls.sessionConfig.tools.every((tool) => tool.overridesBuiltInTool === true && tool.skipPermission === true && tool.defer === "never"));

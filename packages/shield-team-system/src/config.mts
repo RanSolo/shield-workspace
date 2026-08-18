@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { isProxy } from "node:util/types";
 
 export const LEGACY_CONFIG_SCHEMA_VERSION = 1 as const;
 export const CONFIG_SCHEMA_V2_VERSION = 2 as const;
@@ -189,35 +190,230 @@ export interface DoctorReportV2 {
   worktreeState: DoctorWorktreeState;
 }
 
-export interface DoctorHostCapabilityV1 {
-  readonly authority: "none";
-  readonly disposition: "ready" | "unavailable";
-  readonly reasonCode: string;
-  readonly nextAction: string;
+export const COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION = "shield.copilot-fury-dispatch-capability.v1" as const;
+export const COPILOT_FURY_DISPATCH_CAPABILITY_REASON_CODES = Object.freeze([
+  "invalid_input",
+  "repository_unavailable",
+  "expected_head_mismatch",
+  "workspace_dirty",
+  "fury_card_unavailable",
+  "fury_card_shadowed",
+  "dispatch_receipt_path_unsafe",
+  "copilot_sdk_unavailable",
+  "copilot_sdk_version_mismatch",
+  "copilot_sdk_exports_invalid",
+  "copilot_stdio_projection_unsafe",
+  "repository_drift",
+  "ready",
+] as const);
+export type CopilotFuryDispatchCapabilityReasonV1 = (typeof COPILOT_FURY_DISPATCH_CAPABILITY_REASON_CODES)[number];
+
+export const COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS = Object.freeze({
+  invalid_input: "Supply one canonical absolute repository root and the exact expected 40-character lowercase Git HEAD.",
+  repository_unavailable: "Restore an accessible canonical Git worktree and rerun the capability probe.",
+  expected_head_mismatch: "Check out the exact expected revision and rerun the capability probe.",
+  workspace_dirty: "Restore a clean worktree at the expected revision and rerun the capability probe.",
+  fury_card_unavailable: "Restore the exact-HEAD repository Fury agent card and rerun the capability probe.",
+  fury_card_shadowed: "Remove the ambient same-name user Fury card and rerun with repository-default card precedence.",
+  dispatch_receipt_path_unsafe: "Repair the canonical .shield dispatch-receipt path and permissions, then rerun the capability probe.",
+  copilot_sdk_unavailable: "Install the pinned @github/copilot-sdk dependency and rerun the capability probe.",
+  copilot_sdk_version_mismatch: "Install @github/copilot-sdk 1.0.11 and rerun the capability probe.",
+  copilot_sdk_exports_invalid: "Restore the required CopilotClient and RuntimeConnection.forStdio exports and rerun the capability probe.",
+  copilot_stdio_projection_unsafe: "Restore the closed stdio runtime projection and rerun the capability probe.",
+  repository_drift: "Restore one stable clean repository/card state and rerun the capability probe.",
+  ready: "No machine action is required for this capability.",
+} satisfies Record<CopilotFuryDispatchCapabilityReasonV1, string>);
+
+export interface CopilotFuryResolvedCardIdentityV1 {
+  readonly sourceKind: "repository" | "explicit_user_override";
+  readonly logicalRef: string;
+  readonly contentDigest: string;
+  readonly repositoryRevision: string | null;
+  readonly precedenceObservations: readonly Readonly<{
+    sourceKind: "repository" | "user";
+    logicalRef: string;
+    disposition: "selected" | "absent" | "shadowing_rejected" | "not_selected_explicit_override";
+    contentDigest: string | null;
+  }>[];
 }
 
-export interface CopilotDoctorReportV1<TCapability extends DoctorHostCapabilityV1 = DoctorHostCapabilityV1> {
+export interface CopilotFuryDispatchCapabilityReportV1 {
+  readonly schemaVersion: 1;
+  readonly contractVersion: typeof COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION;
+  readonly authority: "none";
+  readonly disposition: "ready" | "unavailable";
+  readonly reasonCode: CopilotFuryDispatchCapabilityReasonV1;
+  readonly nextAction: string;
+  readonly repository: {
+    readonly before: { readonly root: string; readonly branch: string | null; readonly head: string | null; readonly clean: boolean | null };
+    readonly after: { readonly root: string; readonly branch: string | null; readonly head: string | null; readonly clean: boolean | null };
+  };
+  readonly package: { readonly name: "@github/copilot-sdk"; readonly version: string | null };
+  readonly target: { readonly runtimeId: "github-copilot-sdk:1.0.11"; readonly executorId: "copilot-agent" };
+  readonly card: CopilotFuryResolvedCardIdentityV1 | null;
+  readonly dispatchReceipt: {
+    readonly logicalPath: ".shield/dispatch-receipts.jsonl";
+    readonly lockLogicalPath: ".shield/dispatch-receipts.jsonl.lock";
+    readonly safety: "safe" | "unsafe";
+  };
+}
+
+export interface CopilotDoctorReportV1 {
   readonly reportVersion: 1;
   readonly contractVersion: "shield.doctor.host-selected.v1";
   readonly authority: "none";
   readonly host: "github-copilot";
   readonly ok: boolean;
   readonly doctor: DoctorReportV2;
-  readonly hostCapability: TCapability;
+  readonly hostCapability: CopilotFuryDispatchCapabilityReportV1;
 }
 
-export function composeCopilotDoctorReportV1<TCapability extends DoctorHostCapabilityV1>(
+const CAPABILITY_REPORT_FIELDS = [
+  "schemaVersion", "contractVersion", "authority", "disposition", "reasonCode", "nextAction",
+  "repository", "package", "target", "card", "dispatchReceipt",
+] as const;
+const CAPABILITY_REPOSITORY_FIELDS = ["before", "after"] as const;
+const CAPABILITY_REPOSITORY_OBSERVATION_FIELDS = ["root", "branch", "head", "clean"] as const;
+const CAPABILITY_PACKAGE_FIELDS = ["name", "version"] as const;
+const CAPABILITY_TARGET_FIELDS = ["runtimeId", "executorId"] as const;
+const CAPABILITY_CARD_FIELDS = ["sourceKind", "logicalRef", "contentDigest", "repositoryRevision", "precedenceObservations"] as const;
+const CAPABILITY_PRECEDENCE_FIELDS = ["sourceKind", "logicalRef", "disposition", "contentDigest"] as const;
+const CAPABILITY_RECEIPT_FIELDS = ["logicalPath", "lockLogicalPath", "safety"] as const;
+const CAPABILITY_GIT_REVISION = /^[0-9a-f]{40}$/u;
+const CAPABILITY_SHA256 = /^[0-9a-f]{64}$/u;
+
+function capabilityDataObject(value: unknown, fields: readonly string[]): Record<string, unknown> | null {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value) || isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== fields.length || keys.some((key) => typeof key !== "string" || !fields.includes(key))) return null;
+    const projection: Record<string, unknown> = {};
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      if (descriptor === undefined || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") || descriptor.get !== undefined || descriptor.set !== undefined) return null;
+      projection[field] = descriptor.value;
+    }
+    return projection;
+  } catch { return null; }
+}
+
+function capabilityArray(value: unknown, length: number): readonly unknown[] | null {
+  try {
+    if (!Array.isArray(value) || isProxy(value) || value.length !== length) return null;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== length + 1 || keys.at(-1) !== "length") return null;
+    const projected: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      if (keys[index] !== String(index)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor === undefined || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") || descriptor.get !== undefined || descriptor.set !== undefined) return null;
+      projected.push(descriptor.value);
+    }
+    return projected;
+  } catch { return null; }
+}
+
+function capabilityRepositoryObservation(value: unknown): CopilotFuryDispatchCapabilityReportV1["repository"]["before"] | null {
+  const observed = capabilityDataObject(value, CAPABILITY_REPOSITORY_OBSERVATION_FIELDS);
+  if (observed === null || typeof observed.root !== "string" ||
+      !(observed.branch === null || typeof observed.branch === "string") ||
+      !(observed.head === null || typeof observed.head === "string" && CAPABILITY_GIT_REVISION.test(observed.head)) ||
+      !(observed.clean === null || typeof observed.clean === "boolean")) return null;
+  return Object.freeze({ root: observed.root, branch: observed.branch, head: observed.head, clean: observed.clean });
+}
+
+function capabilityCard(value: unknown): CopilotFuryResolvedCardIdentityV1 | null {
+  const card = capabilityDataObject(value, CAPABILITY_CARD_FIELDS);
+  if (card === null || (card.sourceKind !== "repository" && card.sourceKind !== "explicit_user_override") ||
+      typeof card.logicalRef !== "string" || typeof card.contentDigest !== "string" || !CAPABILITY_SHA256.test(card.contentDigest) ||
+      !(card.repositoryRevision === null || typeof card.repositoryRevision === "string" && CAPABILITY_GIT_REVISION.test(card.repositoryRevision))) return null;
+  const observations = capabilityArray(card.precedenceObservations, 2);
+  if (observations === null) return null;
+  const projected = observations.map((entry) => capabilityDataObject(entry, CAPABILITY_PRECEDENCE_FIELDS));
+  if (projected.some((entry) => entry === null)) return null;
+  const repository = projected[0] as Record<string, unknown>;
+  const user = projected[1] as Record<string, unknown>;
+  const observationValid = (entry: Record<string, unknown>) =>
+    (entry.sourceKind === "repository" || entry.sourceKind === "user") && typeof entry.logicalRef === "string" &&
+    (entry.disposition === "selected" || entry.disposition === "absent" || entry.disposition === "shadowing_rejected" || entry.disposition === "not_selected_explicit_override") &&
+    (entry.contentDigest === null || typeof entry.contentDigest === "string" && CAPABILITY_SHA256.test(entry.contentDigest));
+  if (!observationValid(repository) || !observationValid(user) || repository.sourceKind !== "repository" ||
+      repository.logicalRef !== ".github/agents/fury.agent.md" || user.sourceKind !== "user" || user.logicalRef !== "user://agents/fury.agent.md") return null;
+  if (card.sourceKind === "repository") {
+    if (card.logicalRef !== ".github/agents/fury.agent.md" || card.repositoryRevision === null || repository.disposition !== "selected" ||
+        repository.contentDigest !== card.contentDigest || user.disposition !== "absent" || user.contentDigest !== null) return null;
+  } else if (card.logicalRef !== "user://agents/fury.agent.md" || card.repositoryRevision !== null || user.disposition !== "selected" ||
+      user.contentDigest !== card.contentDigest || !((repository.disposition === "absent" && repository.contentDigest === null) ||
+      (repository.disposition === "not_selected_explicit_override" && typeof repository.contentDigest === "string"))) return null;
+  return Object.freeze({
+    sourceKind: card.sourceKind,
+    logicalRef: card.logicalRef,
+    contentDigest: card.contentDigest,
+    repositoryRevision: card.repositoryRevision,
+    precedenceObservations: Object.freeze(projected.map((entry) => Object.freeze({ ...(entry as Record<string, unknown>) }))) as CopilotFuryResolvedCardIdentityV1["precedenceObservations"],
+  });
+}
+
+export function validateAndProjectCopilotFuryDispatchCapabilityReportV1(
+  value: unknown,
+): CopilotFuryDispatchCapabilityReportV1 {
+  const report = capabilityDataObject(value, CAPABILITY_REPORT_FIELDS);
+  const repository = report === null ? null : capabilityDataObject(report.repository, CAPABILITY_REPOSITORY_FIELDS);
+  const before = repository === null ? null : capabilityRepositoryObservation(repository.before);
+  const after = repository === null ? null : capabilityRepositoryObservation(repository.after);
+  const packageObservation = report === null ? null : capabilityDataObject(report.package, CAPABILITY_PACKAGE_FIELDS);
+  const target = report === null ? null : capabilityDataObject(report.target, CAPABILITY_TARGET_FIELDS);
+  const receipt = report === null ? null : capabilityDataObject(report.dispatchReceipt, CAPABILITY_RECEIPT_FIELDS);
+  const card = report?.card === null ? null : capabilityCard(report?.card);
+  const reasonCode = report?.reasonCode;
+  const validReason = typeof reasonCode === "string" && COPILOT_FURY_DISPATCH_CAPABILITY_REASON_CODES.includes(reasonCode as CopilotFuryDispatchCapabilityReasonV1);
+  if (report === null || before === null || after === null || packageObservation === null || target === null || receipt === null ||
+      report.schemaVersion !== 1 || report.contractVersion !== COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION || report.authority !== "none" ||
+      (report.disposition !== "ready" && report.disposition !== "unavailable") || !validReason ||
+      report.nextAction !== COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS[reasonCode as CopilotFuryDispatchCapabilityReasonV1] ||
+      (report.disposition === "ready") !== (reasonCode === "ready") ||
+      packageObservation.name !== "@github/copilot-sdk" || !(packageObservation.version === null || typeof packageObservation.version === "string") ||
+      target.runtimeId !== "github-copilot-sdk:1.0.11" || target.executorId !== "copilot-agent" ||
+      receipt.logicalPath !== ".shield/dispatch-receipts.jsonl" || receipt.lockLogicalPath !== ".shield/dispatch-receipts.jsonl.lock" ||
+      (receipt.safety !== "safe" && receipt.safety !== "unsafe") || (report.card !== null && card === null) ||
+      (reasonCode === "dispatch_receipt_path_unsafe" && receipt.safety !== "unsafe") ||
+      (reasonCode === "ready" && (packageObservation.version !== "1.0.11" || card === null || receipt.safety !== "safe" ||
+        before.root === "" || before.root !== after.root || before.branch !== after.branch || before.head === null || before.head !== after.head ||
+        before.clean !== true || after.clean !== true))) {
+    throw new Error("copilot_fury_dispatch_capability_report_invalid");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    contractVersion: COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION,
+    authority: "none",
+    disposition: report.disposition,
+    reasonCode: reasonCode as CopilotFuryDispatchCapabilityReasonV1,
+    nextAction: report.nextAction as string,
+    repository: Object.freeze({ before, after }),
+    package: Object.freeze({ name: "@github/copilot-sdk", version: packageObservation.version as string | null }),
+    target: Object.freeze({ runtimeId: "github-copilot-sdk:1.0.11", executorId: "copilot-agent" }),
+    card,
+    dispatchReceipt: Object.freeze({
+      logicalPath: ".shield/dispatch-receipts.jsonl",
+      lockLogicalPath: ".shield/dispatch-receipts.jsonl.lock",
+      safety: receipt.safety as "safe" | "unsafe",
+    }),
+  });
+}
+
+export function composeCopilotDoctorReportV1(
   doctor: DoctorReportV2,
-  hostCapability: TCapability,
-): CopilotDoctorReportV1<TCapability> {
+  hostCapability: unknown,
+): CopilotDoctorReportV1 {
+  const capability = validateAndProjectCopilotFuryDispatchCapabilityReportV1(hostCapability);
   return {
     reportVersion: 1,
     contractVersion: "shield.doctor.host-selected.v1",
     authority: "none",
     host: "github-copilot",
-    ok: doctor.ok && hostCapability.disposition === "ready",
+    ok: doctor.ok && capability.disposition === "ready",
     doctor,
-    hostCapability,
+    hostCapability: capability,
   };
 }
 

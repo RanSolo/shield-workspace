@@ -11,6 +11,7 @@ import {
   type CopilotAgentHandoffV1,
   type CopilotFuryDispatchCapabilityReportV1,
 } from "./copilot-fury-plan-dispatch-v1.mjs";
+import { validateAndProjectCopilotFuryDispatchCapabilityReportV1 } from "./config.mjs";
 
 export { parseCopilotAgentCardV1, type CopilotAgentCardV1, type CopilotAgentHandoffV1 };
 
@@ -64,7 +65,7 @@ export interface CopilotTeammateReadinessDependenciesV1 {
   readonly beforeFinalObservation?: () => Promise<void>;
   readonly probeFuryDispatchCapability?: (
     input: { readonly repositoryRoot: string; readonly expectedHead: string },
-  ) => Promise<CopilotFuryDispatchCapabilityReportV1>;
+  ) => Promise<unknown>;
 }
 
 const REQUIRED_KEYS = Object.freeze([
@@ -304,7 +305,11 @@ export async function runCopilotTeammateReadinessPreflightV1(
   }
   if (initial !== null && declarationsReady) {
     const probe = dependencies.probeFuryDispatchCapability ?? probeCopilotFuryDispatchCapabilityV1;
-    try { capability = await probe({ repositoryRoot: initial.root, expectedHead: input.expectedHead }); }
+    try {
+      capability = validateAndProjectCopilotFuryDispatchCapabilityReportV1(
+        await probe({ repositoryRoot: initial.root, expectedHead: input.expectedHead }),
+      );
+    }
     catch { /* The closed capability row reports unavailability. */ }
   }
   const host = inputValid && initial !== null ? await probeCopilotTeammateHostV1(dependencies) : unavailableHost();
