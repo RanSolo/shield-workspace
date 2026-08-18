@@ -31,12 +31,12 @@ The missing operation is the bounded producer between those surfaces. GitHub Cop
 | AC-2 | Exact mission/repository/plan binding | closed request validator, live root/branch/HEAD checks immediately before claim and immediately before terminal append |
 | AC-3 | Proven Fury card precedence | resolver records canonical seat `fury`, source kind, portable logical ref, content digest, repository revision when applicable, and complete precedence observations before claim |
 | AC-4 | Explicit user override only | repository card is default; an existing same-name user card blocks unless its logical ref and digest are explicitly supplied in the request |
-| AC-5 | Truthful Copilot execution identity | preselected SDK custom agent built from the resolved card; pinned requested model; observed SDK/session lifecycle, model, runtime, executor, task, and session identity retained as evidence |
+| AC-5 | Truthful Copilot execution identity | preselected SDK custom agent built from the resolved card; claim-derived session identity; pinned requested model; observed session start, selected agent, assistant model, runtime, and executor retained durably |
 | AC-6 | Fail before effects | all closed-input, card, preflight, Git, plan, output-path, and executor checks precede `claimSeatDispatchPacketV1`; no model call occurs unless the claim says `execute_once` |
-| AC-7 | Durable lifecycle | claim writes `dispatch.started`; exact terminal append writes completed, failed, interrupted, or cancelled and is read back before return |
+| AC-7 | Durable lifecycle | claim writes `dispatch.started`; completed/failed/cancelled terminal events and nonterminal interrupted events follow the existing state machine and are read back before return |
 | AC-8 | Closed structured result | Fury receives a closed JSON output contract; prose, extra fields, malformed JSON, identity drift, or unsupported verdict fails closed |
-| AC-9 | Exact handoff | PASS builds `mission.transition-plan-review.v1`, preserves the validated transition plan, writes both artifacts durably, and returns their relative paths plus terminal receipt ID |
-| AC-10 | Replay safety | identical completed replay returns the same tuple without invoking Copilot; started/nonterminal replay returns actionable recovery without invoking again; conflicting packet returns invalid |
+| AC-9 | Exact handoff | PASS builds `mission.transition-plan-review.v1`, preserves the validated transition plan, writes both artifacts and closed dispatch evidence durably, and returns their relative paths plus terminal receipt ID |
+| AC-10 | Replay safety | each completed PASS/REVISE, failed, cancelled, or nonterminal replay returns its original deterministic disposition without invoking Copilot; conflicting packet returns invalid |
 | AC-11 | Drift safety | card, HEAD, mission, plan, runtime, or executor mismatch after claim produces a non-success terminal/recovery result and never a PASS handoff |
 | AC-12 | Capability gap | absent SDK runtime, Copilot entitlement/session capability, card resolution, or host observation returns `BLOCKED_ADAPTER_GAP` and fabricates nothing |
 | AC-13 | No authority expansion | request/result/receipt state `authority: none`; tools remain read-only; operation cannot implement, publish, merge, deploy, release, or approve |
@@ -51,12 +51,11 @@ Define `shield.copilot-fury-plan-dispatch.request.v1` with only:
 - repository root/id/workspace id, branch, planning base, exact HEAD;
 - mission ID/revision, subject ID/revision, parent session ID;
 - validated transition-plan relative input path and digest;
-- exact output relative paths for the preserved plan and Fury review;
 - resolved-card selection: repository default or explicit user override logical ref plus expected digest;
 - requested model/runtime/executor identifiers;
 - read-only allowed tools/effects, repair limit, stop conditions, and host-trusted timestamp.
 
-Normalize enumerable data before any asynchronous operation. Reject proxies, accessors, symbols, non-enumerable fields, unknown fields, aliases, paths outside the canonical root, and output paths that already contain conflicting bytes.
+Normalize enumerable data before any asynchronous operation. Reject proxies, accessors, symbols, non-enumerable fields, unknown fields, and aliases. Output paths are host-derived under the fixed mission-scoped `.shield/audit/copilot-fury-plan-dispatch/` evidence subtree; callers cannot choose repository write destinations.
 
 ### 2. Card resolution
 
@@ -74,37 +73,48 @@ An unrequested user override, ambiguous source, changed bytes, or display-name-o
 
 ### 3. Execute-once claim
 
-Canonicalize the validated request, transition plan, card identity, output contract, and SDK configuration into one packet. Claim it through `claimSeatDispatchPacketV1` with accountable seat `fury` and input evidence refs for the plan/card/request digests.
+Canonicalize the validated request, transition plan, card identity, mission-journal projection digest/sequence, output contract, and SDK configuration into one packet. Claim it through `claimSeatDispatchPacketV1` with accountable seat `fury` and input evidence refs for the plan/card/request/journal digests.
 
 - `execute_once`: proceed.
-- exact completed claim: verify durable artifacts and terminal receipt, then return the existing tuple.
-- exact nonterminal claim: return `recovery_required`; do not invoke again in this slice.
+- exact completed PASS: verify durable plan/review/evidence artifacts and terminal receipt, then return the existing tuple.
+- exact completed REVISE, failed, cancelled, or nonterminal claim: return its original durable disposition; do not invoke again in this slice.
 - conflict or malformed ledger: fail closed.
 
 ### 4. Copilot host invocation
 
 Add a narrow SDK executor interface so contract/durability tests inject a deterministic fake while the production dependency uses pinned `@github/copilot-sdk@1.0.11`.
 
-Create one session with exactly one supplied custom agent named `fury`, preselect it with `agent: "fury"`, use the resolved card body as its prompt, retain the card's read-only tool restrictions, select the requested model explicitly, and deny any permission request outside the empty effect allowlist. The task prompt contains only the exact plan/repository bindings and the closed output schema.
+Create one SDK client in `empty` mode and one session with exactly one locally supplied custom agent named `fury`. Set the claim-generated child session ID as `sessionId`, preselect with `agent: "fury"`, use the resolved card body as its prompt, set `customAgentsLocalOnly`, disable runtime configuration/plugin/skill/MCP/hook discovery, select the requested model explicitly, and configure an exact session-level read-only `availableTools` list plus mutating-tool exclusions. Remove `web` from this v1 operation. Reject unauthorized calls in pre-tool hooks and deny every permission request outside the empty effect allowlist. The task prompt contains only exact plan/repository bindings and the closed output schema.
 
-Capture SDK lifecycle/session evidence. A missing observation, selected agent other than canonical `fury`, model mismatch, unexpected tool/effect request, or executor/session substitution is not attributable success.
+Register `onEvent` during session creation. Require matching `session.start` session ID and selected model, `session.rpc.agent.getCurrent().agent.name === "fury"`, the current session model, and the final `assistant.message.model`. Reject any model-change event, agent deselection/substitution, unexpected tool/effect request, missing early observation, or executor/session substitution. Do not require or synthesize `subagent.started`; that event belongs to parent-delegated subagents, not this directly preselected active agent.
 
 ### 5. Result and terminalization
 
-Accept a closed Fury result with either:
+Accept a closed Fury result containing only reviewed-artifact identity echoes, verdict, and bounded findings:
 
-- `PASS` and the exact fields required to call `buildMissionTransitionPlanReviewV1`; or
+- `PASS`; or
 - `REVISE` with bounded structured findings and no reviewed-transition handoff.
 
-For PASS, recheck live Git/card/plan identity, build and validate the existing review artifact, atomically persist the exact validated plan and review, sync/read back both, append `dispatch.completed` with their evidence refs, replay/read back the terminal receipt, and return the three consumer values. For REVISE, malformed output, interruption, cancellation, SDK failure, or post-claim drift, append the matching non-success terminal event when its identity remains safely known; otherwise return `recovery_required`. Never convert REVISE into PASS or authority.
+The host—not Fury—injects every mission, plan, reviewer runtime/model/executor, and repository identity field required by `buildMissionTransitionPlanReviewV1`.
+
+Before lifecycle append, write one closed content-addressed dispatch-evidence artifact containing the normalized packet/card provenance and precedence, SDK package/runtime configuration, mission-journal projection digest/sequence, selected agent/tools/policy decisions, session and model observations, validated model result, and resulting artifact identities. Constrain it and all output artifacts to the fixed mission evidence subtree; use no-follow creation, atomic write/sync/readback, and alias/symlink/hardlink checks. Reference its digest from the receipt so a later session can reconstruct provenance without packet bytes.
+
+Use this exact lifecycle table:
+
+- PASS → `dispatch.completed`, durable evidence plus PASS plan/review artifacts, and the three-value handoff.
+- REVISE → `dispatch.completed`, durable REVISE evidence, and no reviewed-transition handoff.
+- SDK or output failure → `dispatch.failed`.
+- confirmed cancellation → `dispatch.cancelled`.
+- uncertain interruption → `dispatch.interrupted` plus `recovery_required`; interruption remains nonterminal.
+
+For PASS, recheck live Git/card/plan/journal identity, build and validate the existing review artifact from host-observed identity, persist/read back all evidence, append/read back `dispatch.completed`, and return the consumer tuple. Never convert REVISE into PASS or authority.
 
 ## Bounded implementation surface
 
 Expected production paths:
 
-- `packages/shield-team-system/src/copilot-fury-plan-dispatch-v1.mts` — closed contracts, card resolver, execute-once host composition, durable artifact write/readback, and SDK executor seam.
+- `packages/shield-team-system/src/copilot-fury-plan-dispatch-v1.mts` — closed contracts, card resolver, execute-once host composition, fixed evidence-path derivation, durable artifact write/readback, and SDK executor seam; export this implementation directly.
 - `packages/shield-team-system/src/mission-cli.mts` — add `mission dispatch-fury-plan-review` and concise help/output.
-- `packages/shield-team-system/src/copilot-fury-plan-dispatch.mts` — deliberate public facade if required by package export conventions.
 - `packages/shield-team-system/package.json` and `package-lock.json` — pin the Copilot SDK and expose only the deliberate host API.
 - `packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs` — focused contract, lifecycle, drift, replay, card precedence, and fault tests.
 - `packages/shield-team-system/tests/supervised-cli.test.mjs` — real CLI success/block/replay and handoff into `record-reviewed-transition`.
@@ -120,11 +130,11 @@ Focused tests must prove behavior rather than mirror helpers:
 2. explicit digest-bound user override success;
 3. silent same-name user shadowing rejection before claim;
 4. missing SDK/Copilot capability yields `BLOCKED_ADAPTER_GAP` with no receipt/artifact;
-5. prose-only, malformed JSON, extra field, REVISE, wrong seat, wrong model/runtime/executor/session, and mismatched plan output;
-6. interruption after claim, exact duplicate retry, conflicting retry, and existing nonterminal receipt;
+5. prose-only, malformed JSON, extra field, REVISE, wrong seat echo, wrong model/runtime/executor/session, model change, agent deselection, and mismatched plan output;
+6. lifecycle-table coverage for PASS, REVISE, failed, cancelled, interrupted, exact duplicate retry, conflicting retry, and every existing durable state without reinvocation;
 7. card, HEAD, branch, root, plan, mission, runtime, and executor drift at each pre-effect/readback boundary;
-8. output symlink/alias/replacement, partial write, sync/close failure, terminal append failure, and final readback mismatch;
-9. no Copilot invocation before a durable execute-once claim and no unauthorized tool/effect after the final policy decision;
+8. fixed evidence-subtree confinement, arbitrary caller path rejection, output symlink/alias/hardlink/replacement, partial write, sync/close failure, terminal append failure, and final readback mismatch;
+9. no Copilot invocation before a durable execute-once claim, empty-mode/discovery isolation, exact read-only tools, pre-tool rejection, and no unauthorized effect after the final policy decision;
 10. package build, type surface, CLI help, and focused test targets through Nx.
 
 Full `@shield/team-system` validation is required because the command extends the mission CLI and receipt/materialization contracts. Use uncached focused evidence first; use Nx affected/full targets according to the resulting graph.
