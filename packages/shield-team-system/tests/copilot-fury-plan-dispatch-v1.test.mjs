@@ -14,14 +14,17 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
   COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID,
+  COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
   COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF,
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
   createCopilotFuryPlanExecutorV1,
+  deriveCopilotSdkSessionIdV1,
   dispatchCopilotFuryPlanReviewV1,
   evaluateCopilotFuryRecoveryEligibilityV1,
+  validateCopilotFurySuccessorExecutionConfigurationV3,
   validateCopilotFuryPlanDispatchRequestV1,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
@@ -376,7 +379,7 @@ async function runProductionExecutor(current, harness) {
     repositoryRoot: current.root,
     card: { frontmatter: { name: "Fury", description: "Review the exact plan." }, body: "Review only." },
     cardIdentity: { sourceKind: "repository", logicalRef: ".github/agents/fury.agent.md", contentDigest: "a".repeat(64), repositoryRevision: current.request.headRevision, precedenceObservations: [] },
-    configuration: { ...productionConfiguration(current), sessionId: identity.childSessionId },
+    configuration: { ...productionConfiguration(current), sessionId: deriveCopilotSdkSessionIdV1(identity.childSessionId) },
     executionIdentity: identity,
     async revalidatePersistence() {},
     prompt: "Return the closed result.",
@@ -425,6 +428,21 @@ test("repository Fury card PASS is durable, attributable, replay-safe, and confi
   assert.equal(replay.replayed, true);
   assert.deepEqual(replay.handoff, first.handoff);
   assert.equal(replayExecutor.calls.execute, 0);
+});
+
+test("SDK-rendered action text may precede one closed Fury result object", async () => {
+  const current = await fixture();
+  const fake = executor(current.plan, "REVISE");
+  const decorated = {
+    ...fake.value,
+    async execute(input) {
+      const result = await fake.value.execute(input);
+      return { ...result, outputText: `Actions completed without host effects.\n${result.outputText}` };
+    },
+  };
+  const result = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: decorated, userCopilotHome: current.userCopilotHome });
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(result.disposition, "REVISE");
 });
 
 test("explicit digest-bound user override succeeds while silent shadowing fails before claim", async () => {
@@ -921,6 +939,60 @@ test("real pinned SDK accepts the closed empty-mode explicit-stdio constructor o
   }
 });
 
+test("real pinned SDK accepts the deterministic transport UUID at session.create", { timeout: 60_000 }, async () => {
+  const workingDirectory = await mkdtemp(join(tmpdir(), "shield-copilot-session-create-"));
+  const client = new RealCopilotClient({
+    mode: "empty",
+    connection: RealRuntimeConnection.forStdio(),
+    workingDirectory,
+    baseDirectory: workingDirectory,
+    logLevel: "none",
+  });
+  let session;
+  try {
+    await client.start();
+    const models = await client.listModels();
+    assert.ok(models.length > 0);
+    const sessionId = deriveCopilotSdkSessionIdV1("session:" + "a".repeat(32));
+    assert.match(sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    assert.equal(sessionId, deriveCopilotSdkSessionIdV1("session:" + "a".repeat(32)));
+    session = await client.createSession({
+      sessionId,
+      model: models[0].id,
+      workingDirectory,
+      enableConfigDiscovery: false,
+      skipCustomInstructions: true,
+      enableSkills: false,
+      mcpServers: {},
+      tools: [],
+      availableTools: [],
+    });
+    assert.equal(session.sessionId, sessionId);
+  } finally {
+    await session?.disconnect();
+    await client.stop();
+  }
+});
+
+test("successor V3 exact-binds the complete execution configuration to its packet", async () => {
+  const current = await fixture();
+  const childSessionId = "session:" + "a".repeat(32);
+  const packetConfiguration = { ...productionConfiguration(current), sessionId: childSessionId };
+  const executionConfiguration = {
+    ...packetConfiguration,
+    sessionId: deriveCopilotSdkSessionIdV1(childSessionId),
+  };
+  assert.equal(validateCopilotFurySuccessorExecutionConfigurationV3(packetConfiguration, executionConfiguration, childSessionId), true);
+  for (const mutation of [
+    { ...executionConfiguration, model: "model:other" },
+    { ...executionConfiguration, availableTools: ["read"] },
+    { ...executionConfiguration, extra: true },
+    { ...executionConfiguration, sessionId: randomUUID() },
+  ]) {
+    assert.equal(validateCopilotFurySuccessorExecutionConfigurationV3(packetConfiguration, mutation, childSessionId), false);
+  }
+});
+
 test("structural client projection and persistence ancestry fail closed before claim", async () => {
   const malformed = await fixture();
   const harness = productionSdkHarness();
@@ -997,6 +1069,7 @@ test("claim winner privately materializes deterministic persistence and replacem
 
 test("production ordinary-replays a non-allowlisted same-signature failure while pure mechanics remain deterministic", async () => {
   assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID, "receipt:Y40rTRNdpEsqc9t24wRZ470R0zzYyk5G");
+  assert.equal(COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID, "receipt:3joci3m8iFvPsfeyceBy8b3uH8dfv111");
   const current = await fixture();
   const failedExecutor = {
     async preflight() { return { state: "ready", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
