@@ -153,6 +153,10 @@ import {
   renderAuthorizeWheelsUpHumanV1,
   renderAuthorizeWheelsUpReceiptHumanV1,
 } from "./mission-human-output-v1.mjs";
+import {
+  dispatchCopilotFuryPlanReviewV1,
+  type CopilotFuryPlanDispatchDependenciesV1,
+} from "./copilot-fury-plan-dispatch-v1.mjs";
 
 const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
@@ -1323,6 +1327,27 @@ async function recordReviewedTransition(args: string[]): Promise<number> {
   return result.state === "materialized" || result.state === "already_materialized" ? 0 : 1;
 }
 
+async function dispatchFuryPlanReview(
+  args: string[],
+  dependencies: CopilotFuryPlanDispatchDependenciesV1 = {},
+): Promise<number> {
+  const options = parseOptions(args, ["--root", "--request"], ["--json"]);
+  const root = await exactRoot(options.values.get("--root"), true);
+  const request = await secureJsonFileBeneathRoot(root, required(options, "--request"), "Copilot Fury dispatch request");
+  const result = await dispatchCopilotFuryPlanReviewV1(request, dependencies);
+  const human = result.state === "completed" && result.disposition === "PASS"
+    ? [
+        `state: ${result.state}`,
+        `disposition: ${result.disposition}`,
+        `transitionPlanPath: ${result.handoff.transitionPlanPath}`,
+        `reviewArtifactPath: ${result.handoff.reviewArtifactPath}`,
+        `dispatchReceiptId: ${result.handoff.dispatchReceiptId}`,
+      ].join("\n")
+    : `state: ${result.state}\n${"code" in result ? `code: ${result.code}` : `disposition: ${result.disposition}`}`;
+  output(result, options.flags.has("--json"), human);
+  return result.state === "completed" ? 0 : 1;
+}
+
 function renderAlreadyAuthorized(result: Extract<Awaited<ReturnType<typeof resolvePreparedMissionTransitionV1>>, { state: "already_authorized" }>): string {
   return [
     `state: ${result.state}`,
@@ -2295,6 +2320,7 @@ export function missionUsage(): string {
     "  shield mission signer setup [--seat coulson] [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission dispatch-fury-plan-review --request <file> [--root <path>] [--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
     "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
@@ -2312,12 +2338,16 @@ export function missionUsage(): string {
   ].join("\n");
 }
 
-export async function runMissionCli(args: string[]): Promise<number> {
+export async function runMissionCli(
+  args: string[],
+  dependencies: Readonly<{ copilotFuryPlanDispatch?: CopilotFuryPlanDispatchDependenciesV1 }> = {},
+): Promise<number> {
   const [group, action, ...rest] = args;
   if (group === "mission") {
     if (action === "begin") return begin(rest);
     if (action === "authorize") return authorize(rest);
     if (action === "authorize-wheels-up") return authorizeWheelsUp(rest);
+    if (action === "dispatch-fury-plan-review") return dispatchFuryPlanReview(rest, dependencies.copilotFuryPlanDispatch);
     if (action === "record-reviewed-transition") return recordReviewedTransition(rest);
     if (action === "prepare-next") return prepareNext(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
