@@ -279,6 +279,16 @@ function furyDispatchCapabilityCheck(
   });
 }
 
+function capabilityMatchesCurrentPreflight(
+  capability: CopilotFuryDispatchCapabilityReportV1,
+  root: string,
+  expectedHead: string,
+): boolean {
+  return capability.repository.before.root === root && capability.repository.after.root === root &&
+    capability.repository.before.head === expectedHead && capability.repository.after.head === expectedHead &&
+    (capability.card === null || capability.card.sourceKind === "repository" && capability.card.repositoryRevision === expectedHead);
+}
+
 function sameRepository(left: RepositorySnapshot, right: RepositorySnapshot): boolean {
   return left.root === right.root && left.identity === right.identity && left.branch === right.branch && left.head === right.head &&
     left.status === right.status && left.inventory === right.inventory;
@@ -306,9 +316,11 @@ export async function runCopilotTeammateReadinessPreflightV1(
   if (initial !== null && declarationsReady) {
     const probe = dependencies.probeFuryDispatchCapability ?? probeCopilotFuryDispatchCapabilityV1;
     try {
-      capability = validateAndProjectCopilotFuryDispatchCapabilityReportV1(
+      const projected = validateAndProjectCopilotFuryDispatchCapabilityReportV1(
         await probe({ repositoryRoot: initial.root, expectedHead: input.expectedHead }),
       );
+      if (!capabilityMatchesCurrentPreflight(projected, initial.root, input.expectedHead)) throw new Error("copilot_fury_dispatch_capability_binding_mismatch");
+      capability = projected;
     }
     catch { /* The closed capability row reports unavailability. */ }
   }

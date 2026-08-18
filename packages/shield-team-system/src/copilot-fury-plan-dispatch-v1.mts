@@ -1830,6 +1830,8 @@ function ownEnumerableDataValue(value: unknown, key: string): Readonly<{ state: 
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") ||
         descriptor.get !== undefined || descriptor.set !== undefined) return { state: "invalid" };
+    if ((typeof descriptor.value === "object" && descriptor.value !== null || typeof descriptor.value === "function") &&
+        isProxy(descriptor.value)) return { state: "invalid" };
     return { state: "valid", value: descriptor.value };
   } catch { return { state: "invalid" }; }
 }

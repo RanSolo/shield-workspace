@@ -487,6 +487,25 @@ test("Fury SDK inspection rejects hostile descriptors, proxies, and throws witho
   assert.equal((await run(proxiedModule)).reasonCode, "copilot_sdk_exports_invalid");
   assert.equal(proxyReads, 0);
 
+  let constructCalls = 0;
+  const proxiedClient = new Proxy(class {}, {
+    construct(target, args, newTarget) { constructCalls += 1; return Reflect.construct(target, args, newTarget); },
+  });
+  assert.equal((await run({
+    CopilotClient: proxiedClient,
+    RuntimeConnection: { forStdio() { return { kind: "stdio", path: undefined, args: undefined, env: undefined }; } },
+  })).reasonCode, "copilot_sdk_exports_invalid");
+  assert.equal(constructCalls, 0);
+
+  let applyCalls = 0;
+  const proxiedForStdio = new Proxy(function forStdio() {
+    return { kind: "stdio", path: undefined, args: undefined, env: undefined };
+  }, {
+    apply(target, thisArgument, args) { applyCalls += 1; return Reflect.apply(target, thisArgument, args); },
+  });
+  assert.equal((await run({ CopilotClient: class {}, RuntimeConnection: { forStdio: proxiedForStdio } })).reasonCode, "copilot_sdk_exports_invalid");
+  assert.equal(applyCalls, 0);
+
   const runtimeAccessor = {};
   Object.defineProperty(runtimeAccessor, "forStdio", { enumerable: true, get() { getterCalls += 1; throw new Error("must not execute"); } });
   assert.equal((await run({ CopilotClient: class {}, RuntimeConnection: runtimeAccessor })).reasonCode, "copilot_sdk_exports_invalid");

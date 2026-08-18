@@ -185,7 +185,7 @@ test("Copilot preflight uses the shared Fury capability row and fails before rea
   }
 });
 
-test("Copilot preflight rejects malformed, truncated, extra, and inconsistent Fury capability reports", async () => {
+test("Copilot preflight rejects malformed, inconsistent, and cross-repository Fury capability reports", async () => {
   const target = await fixture();
   const canonicalRoot = await realpath(target.root);
   const valid = capability(canonicalRoot, target.head);
@@ -194,6 +194,9 @@ test("Copilot preflight rejects malformed, truncated, extra, and inconsistent Fu
     { ...valid, extra: true },
     { ...valid, disposition: "unavailable" },
     { ...valid, card: { ...valid.card, precedenceObservations: valid.card.precedenceObservations.slice(0, 1) } },
+    { ...valid, card: { ...valid.card, repositoryRevision: "c".repeat(40) } },
+    capability("/cross-repository", target.head),
+    capability(canonicalRoot, "c".repeat(40)),
   ];
   try {
     for (const candidate of cases) {

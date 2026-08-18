@@ -245,6 +245,9 @@ test("host-selected Doctor composition is separate and preserves ordinary Doctor
     { ...capability, target: undefined },
     { ...capability, disposition: "unavailable" },
     { ...capability, card: { ...capability.card, precedenceObservations: capability.card.precedenceObservations.slice(0, 1) } },
+    { ...capability, repository: { ...capability.repository, after: { ...capability.repository.after, root: "/other" } } },
+    { ...capability, repository: { ...capability.repository, after: { ...capability.repository.after, head: "c".repeat(40) } } },
+    { ...capability, card: { ...capability.card, repositoryRevision: "c".repeat(40) } },
   ];
   for (const candidate of malformed) {
     assert.throws(() => composeCopilotDoctorReportV1(ordinary, candidate), /copilot_fury_dispatch_capability_report_invalid/u);
@@ -255,6 +258,15 @@ test("host-selected Doctor composition is separate and preserves ordinary Doctor
   assert.throws(() => composeCopilotDoctorReportV1(ordinary, new Proxy(capability, {
     get() { throw new Error("must not execute"); },
   })), /copilot_fury_dispatch_capability_report_invalid/u);
+  const coherentDrift = validateAndProjectCopilotFuryDispatchCapabilityReportV1({
+    ...capability,
+    disposition: "unavailable",
+    reasonCode: "repository_drift",
+    nextAction: COPILOT_FURY_DISPATCH_CAPABILITY_NEXT_ACTIONS.repository_drift,
+    repository: { ...capability.repository, after: { ...capability.repository.after, head: "c".repeat(40) } },
+  });
+  assert.equal(coherentDrift.reasonCode, "repository_drift");
+  assert.equal(coherentDrift.card.repositoryRevision, coherentDrift.repository.before.head);
   assert.equal(JSON.stringify(ordinary), bytes);
 });
 

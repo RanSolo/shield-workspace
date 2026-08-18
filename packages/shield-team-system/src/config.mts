@@ -376,6 +376,8 @@ export function validateAndProjectCopilotFuryDispatchCapabilityReportV1(
       target.runtimeId !== "github-copilot-sdk:1.0.11" || target.executorId !== "copilot-agent" ||
       receipt.logicalPath !== ".shield/dispatch-receipts.jsonl" || receipt.lockLogicalPath !== ".shield/dispatch-receipts.jsonl.lock" ||
       (receipt.safety !== "safe" && receipt.safety !== "unsafe") || (report.card !== null && card === null) ||
+      before.root !== after.root || (reasonCode !== "repository_drift" && before.head !== after.head) ||
+      (card?.sourceKind === "repository" && (before.head === null || card.repositoryRevision !== before.head)) ||
       (reasonCode === "dispatch_receipt_path_unsafe" && receipt.safety !== "unsafe") ||
       (reasonCode === "ready" && (packageObservation.version !== "1.0.11" || card === null || receipt.safety !== "safe" ||
         before.root === "" || before.root !== after.root || before.branch !== after.branch || before.head === null || before.head !== after.head ||
