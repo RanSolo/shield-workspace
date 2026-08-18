@@ -18,6 +18,7 @@ import {
   probeMissionJournalPresenceV1ForTest,
   resolvePreparedMissionTransitionV1,
   resolvePreparedMissionTransitionV1ForTest,
+  resolveSeatDispatchIdentityByReceiptIdV1,
   stableRegularTextFileV1ForTest,
 } from "../dist/mission-preparation-host-v1.mjs";
 import {
@@ -80,9 +81,9 @@ const MISSION_ID = "mission:issue-270";
 const SUBJECT_ID = "github:RanSolo/shield-workspace/issue/270";
 const REPOSITORY_ID = "RanSolo/shield-workspace";
 const WORKSPACE_ID = "workspace:issue-270";
-const SUBJECT_REVISION = "a".repeat(40);
+const SUBJECT_REVISION = `sha256:${"a".repeat(43)}`;
 const REPOSITORY_REVISION = "b".repeat(40);
-const PARENT_MISSION_REVISION = "c".repeat(40);
+const PARENT_MISSION_REVISION = `sha256:${"c".repeat(43)}`;
 const BASE_TIMESTAMP = "2026-08-01T00:00:00.000Z";
 
 test("prepared publication semantic tuple delegates to the shared closed identity material", () => {
@@ -408,6 +409,66 @@ function materializationInput(plan, review, binding, identity, repositoryRoot) {
 function repository() {
   return mkdtemp(join(tmpdir(), "shield-270-host-"));
 }
+
+test("dispatch identity resolver accepts digest-owned revisions and a Git repository revision", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const identity = dispatchIdentity(plan, review);
+  const repositoryRoot = await repository();
+  await writeDispatchLog(repositoryRoot, [dispatchStarted(identity)]);
+
+  const resolved = await resolveSeatDispatchIdentityByReceiptIdV1({
+    repositoryRoot,
+    repositoryId: plan.repositoryId,
+    receiptId: identity.receiptId,
+  });
+  assert.equal(resolved.state, "resolved", JSON.stringify(resolved));
+  assert.equal(resolved.identity.parentMissionRevision, PARENT_MISSION_REVISION);
+  assert.equal(resolved.identity.subjectRevision, SUBJECT_REVISION);
+  assert.equal(resolved.identity.artifactRevision, plan.digest);
+  assert.equal(resolved.identity.repositoryRevision, REPOSITORY_REVISION);
+});
+
+test("dispatch identity resolver rejects malformed mission, subject, and artifact digest revisions", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  for (const field of ["parentMissionRevision", "subjectRevision", "artifactRevision"]) {
+    const identity = dispatchIdentity(plan, review, { [field]: "sha256:short1" });
+    const repositoryRoot = await repository();
+    await writeDispatchLog(repositoryRoot, [dispatchStarted(identity)]);
+
+    const resolved = await resolveSeatDispatchIdentityByReceiptIdV1({
+      repositoryRoot,
+      repositoryId: plan.repositoryId,
+      receiptId: identity.receiptId,
+    });
+    assert.equal(resolved.state, "invalid", field);
+    assert.deepEqual(resolved.errors, ["Named dispatch receipt identity is invalid."], field);
+  }
+});
+
+test("dispatch identity resolver rejects cross-field revision substitution", async () => {
+  const plan = transitionPlan();
+  const review = reviewForPlan(plan);
+  const substitutions = [
+    { parentMissionRevision: REPOSITORY_REVISION, repositoryRevision: PARENT_MISSION_REVISION },
+    { subjectRevision: REPOSITORY_REVISION, repositoryRevision: SUBJECT_REVISION },
+    { artifactRevision: REPOSITORY_REVISION, repositoryRevision: plan.digest },
+  ];
+  for (const substitution of substitutions) {
+    const identity = dispatchIdentity(plan, review, substitution);
+    const repositoryRoot = await repository();
+    await writeDispatchLog(repositoryRoot, [dispatchStarted(identity)]);
+
+    const resolved = await resolveSeatDispatchIdentityByReceiptIdV1({
+      repositoryRoot,
+      repositoryId: plan.repositoryId,
+      receiptId: identity.receiptId,
+    });
+    assert.equal(resolved.state, "invalid", JSON.stringify(substitution));
+    assert.deepEqual(resolved.errors, ["Named dispatch receipt identity is invalid."], JSON.stringify(substitution));
+  }
+});
 
 function transitionPlanReview(overrides = {}) {
   return {
