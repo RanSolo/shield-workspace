@@ -976,6 +976,18 @@ export function deriveCopilotSdkSessionIdV1(childSessionId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+export function validateCopilotFurySuccessorExecutionConfigurationV3(
+  packetConfiguration: unknown,
+  executionConfiguration: unknown,
+  childSessionId: string,
+): boolean {
+  if (!safePlain(packetConfiguration) || !safePlain(executionConfiguration)) return false;
+  return canonicalJson(executionConfiguration) === canonicalJson({
+    ...packetConfiguration,
+    sessionId: deriveCopilotSdkSessionIdV1(childSessionId),
+  });
+}
+
 function validExecutionIdentity(value: unknown, repositoryRoot: string): value is CopilotFuryExecutionIdentityV1 {
   if (!exact(value, ["claimKey", "receiptId", "childTaskId", "childSessionId", "clientOptions"])) return false;
   if (typeof value.claimKey !== "string" || !/^[A-Za-z0-9_-]{32}$/u.test(value.claimKey) || value.receiptId !== `receipt:${value.claimKey}` || value.childTaskId !== `task:${value.claimKey}` || value.childSessionId !== `session:${value.claimKey}`) return false;
@@ -1610,7 +1622,7 @@ function validateSuccessorEvidence(evidence: Plain, receipt: SeatDispatchReceipt
   if (!receipt.inputEvidenceRefs.includes(recovery.inputEvidenceBinding) || receipt.receiptId !== recovery.successorExecutionIdentity.receiptId || receipt.childSessionId !== recovery.successorExecutionIdentity.childSessionId || receipt.childTaskId !== recovery.successorExecutionIdentity.childTaskId) throw new Error("successor_receipt_binding_mismatch");
   if (boundV3) {
     if (!safePlain(evidence.packet) || digestBase64Url(new TextEncoder().encode(canonicalJson(evidence.packet))) !== recovery.originalPacketDigest || evidence.packetDigest !== recovery.originalPacketDigest) throw new Error("successor_packet_binding_mismatch");
-    if (!safePlain(evidence.executionSdkConfiguration) || evidence.executionSdkConfiguration.sessionId !== deriveCopilotSdkSessionIdV1(recovery.successorExecutionIdentity.childSessionId)) throw new Error("successor_execution_configuration_mismatch");
+    if (!safePlain(evidence.packet.sdkConfiguration) || canonicalJson(evidence.sdkConfiguration) !== canonicalJson(evidence.packet.sdkConfiguration) || !validateCopilotFurySuccessorExecutionConfigurationV3(evidence.packet.sdkConfiguration, evidence.executionSdkConfiguration, recovery.successorExecutionIdentity.childSessionId)) throw new Error("successor_execution_configuration_mismatch");
   }
 }
 

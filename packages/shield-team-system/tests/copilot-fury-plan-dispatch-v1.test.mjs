@@ -24,6 +24,7 @@ import {
   deriveCopilotSdkSessionIdV1,
   dispatchCopilotFuryPlanReviewV1,
   evaluateCopilotFuryRecoveryEligibilityV1,
+  validateCopilotFurySuccessorExecutionConfigurationV3,
   validateCopilotFuryPlanDispatchRequestV1,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
@@ -970,6 +971,25 @@ test("real pinned SDK accepts the deterministic transport UUID at session.create
   } finally {
     await session?.disconnect();
     await client.stop();
+  }
+});
+
+test("successor V3 exact-binds the complete execution configuration to its packet", async () => {
+  const current = await fixture();
+  const childSessionId = "session:" + "a".repeat(32);
+  const packetConfiguration = { ...productionConfiguration(current), sessionId: childSessionId };
+  const executionConfiguration = {
+    ...packetConfiguration,
+    sessionId: deriveCopilotSdkSessionIdV1(childSessionId),
+  };
+  assert.equal(validateCopilotFurySuccessorExecutionConfigurationV3(packetConfiguration, executionConfiguration, childSessionId), true);
+  for (const mutation of [
+    { ...executionConfiguration, model: "model:other" },
+    { ...executionConfiguration, availableTools: ["read"] },
+    { ...executionConfiguration, extra: true },
+    { ...executionConfiguration, sessionId: randomUUID() },
+  ]) {
+    assert.equal(validateCopilotFurySuccessorExecutionConfigurationV3(packetConfiguration, mutation, childSessionId), false);
   }
 });
 
