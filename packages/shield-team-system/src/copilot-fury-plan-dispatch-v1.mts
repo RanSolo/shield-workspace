@@ -36,6 +36,7 @@ export const COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION = "shield.copil
 export const COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION = "shield.copilot-fury-plan-result.v1" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION = "shield.copilot-fury-plan-dispatch.evidence.v1" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION = "shield.copilot-fury-plan-dispatch.evidence.v2" as const;
+export const COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION_V3 = "shield.copilot-fury-plan-dispatch.evidence.v3" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION = "1.0.11" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID = "github-copilot-sdk:1.0.11" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID = "copilot-agent" as const;
@@ -1312,7 +1313,8 @@ function evidenceBody(input: {
   receiptId: string;
   card: ResolvedCard;
   observation: RepositoryObservation;
-  configuration: CopilotFurySdkConfigurationV1;
+  packetConfiguration: CopilotFurySdkConfigurationV1;
+  executionConfiguration: CopilotFurySdkConfigurationV1;
   outcome: "PASS" | "REVISE" | "failed" | "cancelled" | "interrupted";
   dispositionCode: string | null;
   modelResult: CopilotFuryPlanResultV1 | null;
@@ -1325,7 +1327,7 @@ function evidenceBody(input: {
     authority: "none",
     packetId: input.packetId,
     packetDigest: input.packetDigest,
-    packet: packetBody(input.request, input.plan, input.card, input.observation, input.configuration),
+    packet: packetBody(input.request, input.plan, input.card, input.observation, input.packetConfiguration),
     receiptId: input.receiptId,
     missionId: input.request.missionId,
     missionRevision: input.request.missionRevision,
@@ -1336,7 +1338,7 @@ function evidenceBody(input: {
     repositoryRevision: input.request.headRevision,
     transitionPlanRawSha256: input.request.transitionPlanRawSha256,
     cardIdentity: input.card.identity,
-    sdkConfiguration: input.configuration,
+    sdkConfiguration: input.packetConfiguration,
     missionJournal: { digest: input.observation.journalDigest, sequence: input.observation.journalSequence },
     outcome: input.outcome,
     dispositionCode: input.dispositionCode,
@@ -1347,7 +1349,7 @@ function evidenceBody(input: {
   };
   return input.recovery === undefined || input.recovery === null
     ? deepFreeze({ schemaVersion: 1, contractVersion: COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION, ...common })
-    : deepFreeze({ schemaVersion: 2, contractVersion: COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION, ...common, recovery: input.recovery });
+    : deepFreeze({ schemaVersion: 3, contractVersion: COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION_V3, ...common, executionSdkConfiguration: input.executionConfiguration, recovery: input.recovery });
 }
 
 function evidenceWithDigest(body: ReturnType<typeof evidenceBody>) {
@@ -1367,7 +1369,7 @@ async function parseEvidenceFile(repositoryRoot: string, relativePath: string): 
   const file = await stableTextFile(repositoryRoot, relativePath, "dispatch_evidence", MAX_EVIDENCE_BYTES);
   let parsed: unknown;
   try { parsed = parseJsonRejectDuplicateKeys(file.bytes); } catch { throw new Error("dispatch_evidence_malformed"); }
-  if (!safePlain(parsed) || (parsed.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION && parsed.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION) || typeof parsed.evidenceDigest !== "string") throw new Error("dispatch_evidence_malformed");
+  if (!safePlain(parsed) || (parsed.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION && parsed.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION && parsed.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION_V3) || typeof parsed.evidenceDigest !== "string") throw new Error("dispatch_evidence_malformed");
   const { evidenceDigest, ...body } = parsed;
   if (evidenceDigest !== digestBase64Url(`${parsed.contractVersion}\0${canonicalJson(body)}`)) throw new Error("dispatch_evidence_digest_mismatch");
   if (relativePath.split("/").at(-1) !== `dispatch-evidence-${evidenceDigest.slice("sha256:".length)}.json`) throw new Error("dispatch_evidence_path_digest_mismatch");
@@ -1602,8 +1604,14 @@ async function recoverablePredecessor(
 }
 
 function validateSuccessorEvidence(evidence: Plain, receipt: SeatDispatchReceiptProjectionV1, recovery: RecoveryBindingV2): void {
-  if (evidence.schemaVersion !== 2 || evidence.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION || !safePlain(evidence.recovery) || canonicalJson(evidence.recovery) !== canonicalJson(recovery)) throw new Error("successor_evidence_binding_mismatch");
+  const legacyV2 = evidence.schemaVersion === 2 && evidence.contractVersion === COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION;
+  const boundV3 = evidence.schemaVersion === 3 && evidence.contractVersion === COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION_V3;
+  if ((!legacyV2 && !boundV3) || !safePlain(evidence.recovery) || canonicalJson(evidence.recovery) !== canonicalJson(recovery)) throw new Error("successor_evidence_binding_mismatch");
   if (!receipt.inputEvidenceRefs.includes(recovery.inputEvidenceBinding) || receipt.receiptId !== recovery.successorExecutionIdentity.receiptId || receipt.childSessionId !== recovery.successorExecutionIdentity.childSessionId || receipt.childTaskId !== recovery.successorExecutionIdentity.childTaskId) throw new Error("successor_receipt_binding_mismatch");
+  if (boundV3) {
+    if (!safePlain(evidence.packet) || digestBase64Url(new TextEncoder().encode(canonicalJson(evidence.packet))) !== recovery.originalPacketDigest || evidence.packetDigest !== recovery.originalPacketDigest) throw new Error("successor_packet_binding_mismatch");
+    if (!safePlain(evidence.executionSdkConfiguration) || evidence.executionSdkConfiguration.sessionId !== deriveCopilotSdkSessionIdV1(recovery.successorExecutionIdentity.childSessionId)) throw new Error("successor_execution_configuration_mismatch");
+  }
 }
 
 async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, claim: Extract<SeatDispatchPacketClaimContractResultV1, { state: "valid" }>["value"], recovery: RecoveryBindingV2 | null = null): Promise<CopilotFuryPlanDispatchResultV1> {
@@ -2020,7 +2028,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
     const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
     if (execution.state !== "completed") {
       const outcome = execution.state;
-      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, configuration, outcome, dispositionCode: execution.code, modelResult: null, observations: execution.observations, errors: execution.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
+      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: execution.code, modelResult: null, observations: execution.observations, errors: execution.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
       const evidenceBytes = `${canonicalJson(evidence)}\n`;
       const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, evidenceBytes);
       if (execution.state === "interrupted") {
@@ -2087,7 +2095,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
       reviewArtifactBytes = `${canonicalJson(review)}\n`;
       reviewArtifactPath = await writeContentAddressedArtifact(evidenceDirectory, "transition-plan-review", review.reviewDigest, reviewArtifactBytes);
     }
-    const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, configuration, outcome: result.value.verdict, dispositionCode: null, modelResult: result.value, observations: execution.observations, errors: [], artifacts: { transitionPlanPath, reviewArtifactPath }, recovery: recoveryBinding }));
+    const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest: claim.value.packetDigest, receiptId: claim.value.receipt.receiptId, card, observation: terminalObservation, packetConfiguration, executionConfiguration: configuration, outcome: result.value.verdict, dispositionCode: null, modelResult: result.value, observations: execution.observations, errors: [], artifacts: { transitionPlanPath, reviewArtifactPath }, recovery: recoveryBinding }));
     const evidencePath = await writeContentAddressedArtifact(evidenceDirectory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
     const refs = result.value.verdict === "PASS" && review !== null
       ? [review.reviewId, review.reviewDigest, review.reviewedArtifactId, review.reviewedArtifactRevision, evidence.evidenceDigest]
@@ -2151,7 +2159,7 @@ export async function dispatchCopilotFuryPlanReviewV1(input: unknown, suppliedDe
       }
       const outcome = terminalUncertain ? "interrupted" as const : "failed" as const;
       const disposition = terminalUncertain ? originalDisposition : { code: "DISPATCH_FAILED", errors: [message] };
-      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, configuration, outcome, dispositionCode: disposition.code, modelResult: null, observations: {}, errors: disposition.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
+      const evidence = evidenceWithDigest(evidenceBody({ request, plan, packetId, packetDigest, receiptId: claimedReceipt.receiptId, card, observation, packetConfiguration, executionConfiguration: configuration, outcome, dispositionCode: disposition.code, modelResult: null, observations: {}, errors: disposition.errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null }, recovery: recoveryBinding }));
       const evidencePath = await writeContentAddressedArtifact(directory, "dispatch-evidence", evidence.evidenceDigest, `${canonicalJson(evidence)}\n`);
       const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
       const receipt = terminalUncertain
