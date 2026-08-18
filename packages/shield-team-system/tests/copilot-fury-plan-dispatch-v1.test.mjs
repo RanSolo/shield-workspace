@@ -51,7 +51,7 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-async function fixture() {
+async function fixture({ repositoryCard = true } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "shield-copilot-fury-dispatch-")));
   const userCopilotHome = await realpath(await mkdtemp(join(tmpdir(), "shield-copilot-fury-home-")));
   await mkdir(join(root, ".shield", "journals"), { recursive: true });
@@ -81,12 +81,14 @@ async function fixture() {
   });
   await writeFile(join(root, ".shield", "config.json"), formatShieldConfig(config));
   await writeFile(join(root, ".shield", ".gitignore"), "/journals/\n/audit/\n/dispatch-receipts.jsonl\n");
-  await writeFile(join(root, ".github", "agents", "fury.agent.md"), FURY_CARD);
+  if (repositoryCard) await writeFile(join(root, ".github", "agents", "fury.agent.md"), FURY_CARD);
   await writeFile(join(root, "package.json"), "{\"private\":true}\n");
   git(root, ["init", "-q", "-b", "main"]);
   git(root, ["config", "user.email", "shield@example.invalid"]);
   git(root, ["config", "user.name", "SHIELD Fixture"]);
-  git(root, ["add", ".shield/config.json", ".shield/.gitignore", ".github/agents/fury.agent.md", "package.json"]);
+  const basePaths = [".shield/config.json", ".shield/.gitignore", "package.json"];
+  if (repositoryCard) basePaths.push(".github/agents/fury.agent.md");
+  git(root, ["add", ...basePaths]);
   git(root, ["commit", "-qm", "dispatch base"]);
   const baseRevision = git(root, ["rev-parse", "HEAD"]);
   const missionId = "mission:issue-319-fixture";
@@ -389,6 +391,144 @@ test("explicit digest-bound user override succeeds while silent shadowing fails 
   assert.equal(accepted.state, "completed", JSON.stringify(accepted));
   assert.equal(accepted.disposition, "PASS");
   assert.equal(explicit.calls.execute, 1);
+});
+
+test("exact digest-bound user override succeeds without a repository card and replays execute-once evidence", async () => {
+  const current = await fixture({ repositoryCard: false });
+  const userBytes = FURY_CARD.replace("Review only", "Perform exact review only");
+  await writeFile(join(current.userCopilotHome, "agents", "fury.agent.md"), userBytes);
+  const request = {
+    ...current.request,
+    cardSelection: { kind: "explicit_user_override", logicalRef: COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF, expectedSha256: sha256(userBytes) },
+  };
+  const firstExecutor = executor(current.plan);
+  const first = await dispatchCopilotFuryPlanReviewV1(request, { executor: firstExecutor.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(first.state, "completed", JSON.stringify(first));
+  assert.equal(first.disposition, "PASS");
+  assert.equal(first.authority, "none");
+  assert.equal(firstExecutor.calls.preflight, 1);
+  assert.equal(firstExecutor.calls.execute, 1);
+  const evidence = JSON.parse(await readFile(join(current.root, first.evidencePath), "utf8"));
+  assert.equal(evidence.cardIdentity.sourceKind, "explicit_user_override");
+  assert.equal(evidence.cardIdentity.contentDigest, sha256(userBytes));
+  assert.equal(evidence.cardIdentity.repositoryRevision, null);
+  assert.deepEqual(evidence.cardIdentity.precedenceObservations, [
+    { sourceKind: "repository", logicalRef: ".github/agents/fury.agent.md", disposition: "absent", contentDigest: null },
+    { sourceKind: "user", logicalRef: COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF, disposition: "selected", contentDigest: sha256(userBytes) },
+  ]);
+
+  const replayExecutor = executor(current.plan);
+  const replay = await dispatchCopilotFuryPlanReviewV1(request, { executor: replayExecutor.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(replay.state, "completed", JSON.stringify(replay));
+  assert.equal(replay.disposition, "PASS");
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.handoff, first.handoff);
+  assert.equal(replayExecutor.calls.preflight, 0);
+  assert.equal(replayExecutor.calls.execute, 0);
+});
+
+test("repository default without a repository card fails before preflight, claim, ledger, audit, or execution", async () => {
+  const current = await fixture({ repositoryCard: false });
+  const calls = { ledger: 0, claim: 0 };
+  const fake = executor(current.plan);
+  const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
+    executor: fake.value,
+    userCopilotHome: current.userCopilotHome,
+    async readDispatchLedger() { calls.ledger += 1; throw new Error("must not read ledger"); },
+    async claimDispatchPacket() { calls.claim += 1; throw new Error("must not claim"); },
+  });
+  assert.equal(result.state, "blocked", JSON.stringify(result));
+  assert.equal(result.code, "BLOCKED_ADAPTER_GAP");
+  assert.equal(fake.calls.preflight, 0);
+  assert.equal(fake.calls.execute, 0);
+  assert.deepEqual(calls, { ledger: 0, claim: 0 });
+  await assert.rejects(readFile(join(current.root, ".shield", "dispatch-receipts.jsonl"), "utf8"), { code: "ENOENT" });
+  await assert.rejects(lstat(join(current.root, ".shield", "audit")), { code: "ENOENT" });
+});
+
+test("invalid explicit user cards without a repository card retain the pre-effect boundary", async (t) => {
+  const cases = [
+    { name: "missing", prepare: async () => "0".repeat(64) },
+    { name: "malformed", prepare: async (current) => { const bytes = "not a card\n"; await writeFile(join(current.userCopilotHome, "agents", "fury.agent.md"), bytes); return sha256(bytes); } },
+    { name: "wrong seat", prepare: async (current) => { const bytes = FURY_CARD.replace("name: Fury", "name: May"); await writeFile(join(current.userCopilotHome, "agents", "fury.agent.md"), bytes); return sha256(bytes); } },
+    { name: "unsafe path", prepare: async (current) => { const outside = join(current.userCopilotHome, "outside.agent.md"); await writeFile(outside, FURY_CARD); await symlink(outside, join(current.userCopilotHome, "agents", "fury.agent.md")); return sha256(FURY_CARD); } },
+    { name: "digest mismatch", prepare: async (current) => { await writeFile(join(current.userCopilotHome, "agents", "fury.agent.md"), FURY_CARD); return "0".repeat(64); } },
+  ];
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const current = await fixture({ repositoryCard: false });
+      const expectedSha256 = await testCase.prepare(current);
+      const fake = executor(current.plan);
+      const calls = { ledger: 0, claim: 0 };
+      const result = await dispatchCopilotFuryPlanReviewV1({
+        ...current.request,
+        cardSelection: { kind: "explicit_user_override", logicalRef: COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF, expectedSha256 },
+      }, {
+        executor: fake.value,
+        userCopilotHome: current.userCopilotHome,
+        async readDispatchLedger() { calls.ledger += 1; throw new Error("must not read ledger"); },
+        async claimDispatchPacket() { calls.claim += 1; throw new Error("must not claim"); },
+      });
+      assert.ok(result.state === "invalid" || result.state === "blocked", JSON.stringify(result));
+      assert.equal(fake.calls.preflight, 0);
+      assert.equal(fake.calls.execute, 0);
+      assert.deepEqual(calls, { ledger: 0, claim: 0 });
+      await assert.rejects(readFile(join(current.root, ".shield", "dispatch-receipts.jsonl"), "utf8"), { code: "ENOENT" });
+      await assert.rejects(lstat(join(current.root, ".shield", "audit")), { code: "ENOENT" });
+    });
+  }
+});
+
+test("replacement refs cannot turn literal-HEAD repository-card absence into presence", async () => {
+  const current = await fixture({ repositoryCard: false });
+  const userBytes = FURY_CARD.replace("Review only", "Review the literal tree only");
+  await writeFile(join(current.userCopilotHome, "agents", "fury.agent.md"), userBytes);
+  git(current.root, ["switch", "-qc", "replacement-card"]);
+  await writeFile(join(current.root, ".github", "agents", "fury.agent.md"), FURY_CARD);
+  git(current.root, ["add", ".github/agents/fury.agent.md"]);
+  git(current.root, ["commit", "-qm", "replacement adds repository card"]);
+  const replacementRevision = git(current.root, ["rev-parse", "HEAD"]);
+  git(current.root, ["switch", "-q", "main"]);
+  git(current.root, ["replace", current.request.headRevision, replacementRevision]);
+  assert.equal(git(current.root, ["show", `${current.request.headRevision}:.github/agents/fury.agent.md`]), FURY_CARD.trim());
+
+  const request = {
+    ...current.request,
+    cardSelection: { kind: "explicit_user_override", logicalRef: COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF, expectedSha256: sha256(userBytes) },
+  };
+  const fake = executor(current.plan);
+  const result = await dispatchCopilotFuryPlanReviewV1(request, { executor: fake.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(result.disposition, "PASS");
+  assert.equal(fake.calls.execute, 1);
+  const evidence = JSON.parse(await readFile(join(current.root, result.evidencePath), "utf8"));
+  assert.deepEqual(evidence.cardIdentity.precedenceObservations[0], {
+    sourceKind: "repository",
+    logicalRef: ".github/agents/fury.agent.md",
+    disposition: "absent",
+    contentDigest: null,
+  });
+});
+
+test("a non-regular exact-tree repository card cannot be classified as absent for an override", async () => {
+  const current = await fixture({ repositoryCard: false });
+  const userBytes = FURY_CARD.replace("Review only", "Review only from the user card");
+  await writeFile(join(current.userCopilotHome, "agents", "fury.agent.md"), userBytes);
+  await symlink("../../package.json", join(current.root, ".github", "agents", "fury.agent.md"));
+  git(current.root, ["add", ".github/agents/fury.agent.md"]);
+  git(current.root, ["commit", "-qm", "add unsafe repository card"]);
+  current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
+  const fake = executor(current.plan);
+  const result = await dispatchCopilotFuryPlanReviewV1({
+    ...current.request,
+    cardSelection: { kind: "explicit_user_override", logicalRef: COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF, expectedSha256: sha256(userBytes) },
+  }, { executor: fake.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(result.state, "blocked", JSON.stringify(result));
+  assert.equal(result.code, "BLOCKED_ADAPTER_GAP");
+  assert.equal(fake.calls.preflight, 0);
+  assert.equal(fake.calls.execute, 0);
+  await assert.rejects(readFile(join(current.root, ".shield", "dispatch-receipts.jsonl"), "utf8"), { code: "ENOENT" });
+  await assert.rejects(lstat(join(current.root, ".shield", "audit")), { code: "ENOENT" });
 });
 
 test("adapter gap is blocked before receipt or artifact effects", async () => {

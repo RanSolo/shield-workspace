@@ -252,6 +252,10 @@ export type CopilotFuryPlanDispatchResultV1 =
 type StableFile = Readonly<{ path: string; bytes: string; identity: string; rawSha256: string }>;
 type RepositoryObservation = Readonly<{ canonicalRoot: string; identity: string; branch: string; headRevision: string; configBytes: string; journalBytes: string; journalDigest: string; journalSequence: number }>;
 type ResolvedCard = Readonly<{ card: CopilotAgentCardV1; bytes: string; identity: CopilotFuryResolvedCardIdentityV1; sourcePath: string | null }>;
+type RepositoryCardObservation = Readonly<
+  | { state: "present"; card: CopilotAgentCardV1; bytes: string; contentDigest: string }
+  | { state: "absent" }
+>;
 
 function safePlain(value: unknown): value is Plain {
   try {
@@ -741,11 +745,20 @@ async function observeRepository(request: CopilotFuryPlanDispatchRequestV1): Pro
   });
 }
 
+async function observeRepositoryCard(request: CopilotFuryPlanDispatchRequestV1): Promise<RepositoryCardObservation> {
+  const entries = (await exactGitTreeInventory(request.repositoryRoot, request.headRevision))
+    .filter((entry) => entry.path === COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF);
+  if (entries.length === 0) return Object.freeze({ state: "absent" });
+  if (entries.length !== 1 || !regularGitTreeFile(entries[0] as ExactGitTreeEntry)) throw new Error("repository_fury_card_head_blob_invalid");
+  const bytes = (await exactGitTreeBytes(request.repositoryRoot, entries[0] as ExactGitTreeEntry)).toString("utf8");
+  const card = parseCopilotAgentCardV1(bytes);
+  if (card.frontmatter.name.toLocaleLowerCase("en-US") !== "fury") throw new Error("repository_fury_card_seat_mismatch");
+  return deepFreeze({ state: "present", card, bytes, contentDigest: digestHex(bytes) });
+}
+
 async function resolveCard(request: CopilotFuryPlanDispatchRequestV1, userCopilotHome?: string): Promise<ResolvedCard> {
-  const repositoryBytes = await git(request.repositoryRoot, ["show", `${request.headRevision}:${COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF}`]);
-  const repositoryDigest = digestHex(repositoryBytes);
-  const repositoryCard = parseCopilotAgentCardV1(repositoryBytes);
-  if (repositoryCard.frontmatter.name.toLocaleLowerCase("en-US") !== "fury") throw new Error("repository_fury_card_seat_mismatch");
+  const repository = await observeRepositoryCard(request);
+  if (request.cardSelection.kind === "repository_default" && repository.state === "absent") throw new Error("repository_fury_card_absent");
   const base = userCopilotHome ?? process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
   const userPath = join(resolve(base), "agents", "fury.agent.md");
   const userFile = await optionalStableAbsoluteFile(userPath, "user_fury_card");
@@ -758,18 +771,19 @@ async function resolveCard(request: CopilotFuryPlanDispatchRequestV1, userCopilo
     if (userCard.frontmatter.name.toLocaleLowerCase("en-US") !== "fury") userCard = null;
   }
   if (request.cardSelection.kind === "repository_default") {
+    if (repository.state !== "present") throw new Error("repository_fury_card_absent");
     if (userCard !== null && userFile !== null) throw new Error("same_name_user_card_shadowing_requires_explicit_override");
     return deepFreeze({
-      card: repositoryCard,
-      bytes: repositoryBytes,
+      card: repository.card,
+      bytes: repository.bytes,
       sourcePath: null,
       identity: {
         sourceKind: "repository",
         logicalRef: COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF,
-        contentDigest: repositoryDigest,
+        contentDigest: repository.contentDigest,
         repositoryRevision: request.headRevision,
         precedenceObservations: [
-          { sourceKind: "repository", logicalRef: COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF, disposition: "selected", contentDigest: repositoryDigest },
+          { sourceKind: "repository", logicalRef: COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF, disposition: "selected", contentDigest: repository.contentDigest },
           { sourceKind: "user", logicalRef: COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF, disposition: "absent", contentDigest: null },
         ],
       },
@@ -786,7 +800,9 @@ async function resolveCard(request: CopilotFuryPlanDispatchRequestV1, userCopilo
       contentDigest: userFile.rawSha256,
       repositoryRevision: null,
       precedenceObservations: [
-        { sourceKind: "repository", logicalRef: COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF, disposition: "not_selected_explicit_override", contentDigest: repositoryDigest },
+        repository.state === "present"
+          ? { sourceKind: "repository", logicalRef: COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF, disposition: "not_selected_explicit_override", contentDigest: repository.contentDigest }
+          : { sourceKind: "repository", logicalRef: COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF, disposition: "absent", contentDigest: null },
         { sourceKind: "user", logicalRef: COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF, disposition: "selected", contentDigest: userFile.rawSha256 },
       ],
     },
