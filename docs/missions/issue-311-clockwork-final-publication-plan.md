@@ -40,9 +40,10 @@ and are reuse-only dependencies:
 4. `github/publication-gate.mjs`, `github/pr-workspace.mjs`, and
    `github/adapter-v1.mjs` own journal-gated GitHub delivery, publication
    scope evaluation, exact-draft reuse, and receipt validation.
-5. Issue #309's teammate launcher owns disposable exact-revision specialist
-   worktrees. Issue #311 must not detach a governed implementation worktree
-   to run Mack or Fury.
+5. The merged Issue #309 plan is the exact plan-only predecessor scenario.
+   Its launcher is authority-neutral teammate-demo preparation, not a general
+   Mack/Fury runner. Issue #311 uses separate disposable exact-revision
+   worktrees and must not detach a governed implementation worktree.
 
 These dependencies include the merged #286 prepared-publication seam and #279
 semantic identity/idempotency work. Issue #311 must compose them. It must not
@@ -101,9 +102,12 @@ fresh replay after every key turn. `reusable` never prompts or appends.
 Add `final-publication-receipt-store-v1.mts` as a confined append-only ledger
 at `.shield/final-publication-receipts.jsonl`. It uses exclusive locking,
 no-follow regular-file checks, exact replay, file sync, parent-directory sync,
-and readback. Its key binds the canonical mission revision, final semantic
-authority, deterministic adapter-v2 request, repository, branch, base, HEAD,
-target, title digest, and body digest.
+and readback. Its claim preimage is a closed canonical object binding the
+canonical mission revision, final semantic authority, repository, branch,
+base, HEAD, operation, target, publication authorization, proposed paths,
+requested effects, title digest, and body digest. It deliberately excludes
+`requestId`, `candidateId`, `sourceRef`, and `capturedAt`. SHA-256 of that
+preimage is the claim digest.
 
 The closed states are:
 
@@ -148,12 +152,15 @@ enters readback-only reconciliation. Unknown state must never be converted to
 a retryable failure.
 
 Derive deterministic `requestId`, `candidateId`, and `sourceRef` from the claim
-key with domain-separated SHA-256 formulas. Capture the sole host-trusted
-`capturedAt` before appending `started`; store it in that record. Bind all four
-identities to the claim digest. The terminal record stores the complete exact
+digest with separate domain-tagged SHA-256 formulas, then construct the exact
+adapter-v2 request. Capture the sole host-trusted `capturedAt` before appending
+`started`; store it once in the closed identity envelope. The `started` record
+also stores a digest over the claim digest, all three derived IDs, and that
+timestamp. Replay recomputes the claim digest and three derived IDs, validates
+the stored timestamp and complete envelope digest, and never recaptures or
+claims to derive `capturedAt`. The terminal record stores the complete exact
 validated communication-result candidate, or enough canonical receipt/scope
-material to reconstruct byte-identical candidate fields. Every replay
-recomputes and rejects any identity mismatch.
+material to reconstruct byte-identical candidate fields.
 
 Persist a terminal publication receipt and exact result candidate before
 appending that existing trusted candidate to the mission journal. On restart,
@@ -208,18 +215,20 @@ exact-revision worktrees with fixed `git worktree add --detach` commands from
 the governed repository, proves their HEADs, and routes the registered Mack
 and Fury custom agents to those roots. The specialists return genuine terminal
 packets to Hill; neither packet is an input accepted by `publish-reviewed` and
-neither becomes SHIELD authority. Hill records the exact commands, disposable
-roots, specialist runtime/model identities, terminal dispositions,
-governed-worktree branch/HEAD before and after, final publication receipt, and
-exact retry result in Mack-owned
-`docs/missions/issue-311-clockwork-final-publication-validation.md`.
+neither becomes SHIELD authority. Hill records the exact commands, host
+dispatch receipts, disposable roots, specialist runtime/model/executor
+identities, terminal dispositions, governed-worktree branch/HEAD before and
+after, final publication receipt, and exact retry result in Hill-owned
+`.shield/reports/issue-311-clockwork-final-publication-validation.json`.
 
 Only after both genuine terminal packets does Hill run the built exact-HEAD
 `shield mission publish-reviewed` command in the still-attached governed
 worktree. The proof ends after one draft URL and one no-effect retry. Technical
 review remains an upstream orchestration gate, not a caller assertion accepted
 by the command and not a new SHIELD authority class. May must not create the
-validation report or simulate its evidence; Mack owns it after implementation.
+cumulative report or simulate its evidence. Mack independently returns its own
+Mack-owned validation artifact; Hill binds its digest into the cumulative
+report alongside Fury's separate host dispatch receipt and terminal digest.
 
 ## Acceptance-criteria mapping
 
@@ -315,22 +324,51 @@ The cumulative AC-12 operator proof runs these command surfaces rather than a
 fixture that asserts specialist success:
 
 ```text
+test "$(git rev-parse HEAD:docs/missions/issue-309-teammate-launch-plan.md)" = "6cb588d58a60fdc7dbcd10848b186be30f9df111"
+test "$(git show HEAD:docs/missions/issue-309-teammate-launch-plan.md | shasum -a 256 | cut -d ' ' -f 1)" = "52ce67014ac27466da641e79eb9dd937d5f00b39802d4366a7f4e215135b6f69"
+governed_branch_before="$(git -C <governed-root> branch --show-current)"
+governed_head_before="$(git -C <governed-root> rev-parse HEAD)"
 git worktree add --detach <absent-mack-root> <implementation-head>
-git -C <absent-mack-root> rev-parse HEAD
+test "$(git -C <absent-mack-root> rev-parse HEAD)" = "<implementation-head>"
+test "$(git -C <absent-mack-root> rev-parse HEAD^{tree})" = "<implementation-tree>"
 git worktree add --detach <absent-fury-root> <implementation-head>
-git -C <absent-fury-root> rev-parse HEAD
+test "$(git -C <absent-fury-root> rev-parse HEAD)" = "<implementation-head>"
+test "$(git -C <absent-fury-root> rev-parse HEAD^{tree})" = "<implementation-tree>"
 node packages/shield-team-system/dist/cli.mjs mission publish-reviewed --mission-id mission:issue-311-clockwork-final-publication --base-branch <observed-default-branch> --root <governed-root> --human
 node packages/shield-team-system/dist/cli.mjs mission publish-reviewed --mission-id mission:issue-311-clockwork-final-publication --base-branch <observed-default-branch> --root <governed-root> --json </dev/null
+test "$(git -C <governed-root> branch --show-current)" = "$governed_branch_before"
+test "$(git -C <governed-root> rev-parse HEAD)" = "$governed_head_before"
 ```
 
-The first four commands prepare and prove the disposable roots without
-detaching or switching the governed worktree. Hill then uses the Codex custom
-agent interface to route the registered Mack and Fury seats and verifies their
-actual terminal packets before either publication command. The validation
-report must include the custom-agent dispatch receipts or complete terminal
-artifacts, not a Hill-authored verdict assertion. The second publication
-invocation must return the same receipt without reading stdin or causing an
-external effect.
+The predecessor checks and worktree commands prepare and prove the disposable
+roots without detaching or switching the governed worktree. Between those
+checks and either publication command, Hill performs this closed host
+procedure:
+
+1. Invoke the Codex custom-agent dispatch operation with registered
+   `agent_type: "mack"`, `fork_context: false`, the canonical Mack root, exact
+   implementation commit/tree, and this plan's validation commands.
+2. Retain the host-generated dispatch receipt. Require it to bind agent type
+   `mack`, `.codex/agents/mack.toml` from the implementation commit, canonical
+   root, commit/tree, actual runtime/model, and host-tool executor identity.
+3. Wait for terminal Mack PASS, retain Mack's independent validation artifact,
+   and bind its complete-byte SHA-256 to that dispatch receipt.
+4. Invoke the same host operation with registered `agent_type: "fury"`,
+   `fork_context: false`, the distinct canonical Fury root, exact commit/tree,
+   and Mack artifact digest for conformance review.
+5. Require a distinct host-generated receipt binding agent type `fury`,
+   `.codex/agents/fury.toml`, canonical Fury root, commit/tree, actual
+   runtime/model, and a host-tool executor identity distinct from Mack's.
+6. Wait for terminal Fury APPROVE and bind the complete terminal-packet digest
+   to the Fury dispatch receipt.
+
+A terminal message without its matching host-generated dispatch receipt is
+not evidence and stops the proof. Hill validates each receipt against the
+exact committed agent configuration before recording it. The second
+publication invocation must return the same receipt without reading stdin or
+causing an external effect. The final equality checks prove the governed
+branch and HEAD remained unchanged. Hill alone writes the cumulative report;
+Mack's independently returned artifact remains Mack-owned evidence.
 
 Mack validates the exact clean implementation commit independently in a
 disposable worktree and records actual command evidence. Fury then performs
