@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -89,7 +89,7 @@ function binding(seatId) {
   };
 }
 
-async function fixture({ trackedFiles = [] } = {}) {
+async function fixture({ trackedFiles = [], paths = {} } = {}) {
   const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-worktree-state-")));
   const sourceRoot = join(parent, "source");
   const destinationRoot = join(parent, "destination");
@@ -110,11 +110,12 @@ async function fixture({ trackedFiles = [] } = {}) {
   git(sourceRoot, ["worktree", "add", "--quiet", "-b", `lane-${process.pid}-${Date.now()}`, destinationRoot, "HEAD"]);
   const coulson = binding("coulson");
   const fitz = binding("fitz");
-  const config = createShieldConfig({
+  const createdConfig = createShieldConfig({
     repositoryId: "RanSolo/worktree-fixture",
     coulsonBindingRef: coulson.signingKeyRef,
     fitzBindingRef: fitz.signingKeyRef,
   });
+  const config = { ...createdConfig, paths: { ...createdConfig.paths, ...paths } };
   await mkdir(join(sourceRoot, ".shield"), { recursive: true });
   await writeFile(join(sourceRoot, ".shield", "config.json"), formatShieldConfig(config));
   await writeFile(
@@ -234,6 +235,76 @@ test("accepts mission-local state directories after preparation without weakenin
   const fileReplay = await prepareWorktreeStateV1(file);
   assert.equal(fileReplay.state, "blocked");
   assert.equal(fileReplay.reasonCode, "prepared_state_stale");
+
+  const unsafeMode = await fixture();
+  assert.equal((await prepareWorktreeStateV1(unsafeMode)).state, "ready");
+  await mkdir(join(unsafeMode.destinationRoot, ".shield", "journals"));
+  await chmod(join(unsafeMode.destinationRoot, ".shield", "journals"), 0o777);
+  await assertStaleDoctor(unsafeMode.destinationRoot);
+  const unsafeModeReplay = await prepareWorktreeStateV1(unsafeMode);
+  assert.equal(unsafeModeReplay.state, "blocked");
+  assert.equal(unsafeModeReplay.reasonCode, "prepared_state_stale");
+});
+
+test("derives admitted mission-state roots and ignore bytes from the installed configuration", async () => {
+  const paths = {
+    journals: ".shield/mission-state/journals",
+    reports: ".shield/mission-state/reports",
+    temp: ".shield/runtime/scratch",
+  };
+  const current = await fixture({ paths });
+  const prepared = await prepareWorktreeStateV1(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  assert.equal(
+    await readFile(join(current.destinationRoot, ".shield", ".gitignore"), "utf8"),
+    "/mission-state/journals/\n/mission-state/reports/\n/runtime/scratch/\n",
+  );
+  await mkdir(join(current.destinationRoot, paths.journals), { recursive: true });
+  await writeFile(join(current.destinationRoot, paths.journals, "mission.jsonl"), "{\"sequence\":0}\n");
+  await mkdir(join(current.destinationRoot, paths.reports), { recursive: true });
+  await writeFile(join(current.destinationRoot, paths.reports, "mission.json"), "{}\n");
+  await mkdir(join(current.destinationRoot, paths.temp, "mission"), { recursive: true });
+  await writeFile(join(current.destinationRoot, paths.temp, "mission", "scratch.json"), "{}\n");
+
+  const doctor = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true });
+  assert.equal(doctor.classification, "prepared_worktree");
+  assert.match(doctor.message, /mission-local state directories are present/u);
+  assert.equal((await prepareWorktreeStateV1(current)).state, "already_prepared");
+
+  const defaultsNotConfigured = await fixture({ paths });
+  assert.equal((await prepareWorktreeStateV1(defaultsNotConfigured)).state, "ready");
+  await mkdir(join(defaultsNotConfigured.destinationRoot, ".shield", "journals"));
+  await writeFile(join(defaultsNotConfigured.destinationRoot, ".shield", "journals", "unexpected.jsonl"), "{}\n");
+  await assertStaleDoctor(defaultsNotConfigured.destinationRoot);
+  const rejected = await prepareWorktreeStateV1(defaultsNotConfigured);
+  assert.equal(rejected.state, "blocked");
+  assert.equal(rejected.reasonCode, "prepared_state_stale");
+});
+
+test("retains admitted mission-state identities through replay and rejects replacement or unsafe mode", async () => {
+  for (const scenario of ["replacement", "wrong-mode"]) {
+    const current = await fixture();
+    assert.equal((await prepareWorktreeStateV1(current)).state, "ready");
+    const journals = join(current.destinationRoot, ".shield", "journals");
+    await mkdir(journals);
+    await writeFile(join(journals, "mission.jsonl"), "{\"sequence\":0}\n");
+    const receiptBytes = await readFile(join(current.destinationRoot, ".shield", "worktree-state.json"));
+    const replayed = await prepareWorktreeStateV1ForTest(current, {
+      phase: async (phase) => {
+        if (phase !== "before_replay_ready") return;
+        if (scenario === "replacement") {
+          await rename(journals, join(dirname(current.destinationRoot), `displaced-journals-${process.pid}-${Date.now()}`));
+          await mkdir(journals);
+          await writeFile(join(journals, "mission.jsonl"), "{\"sequence\":0}\n");
+        } else {
+          await chmod(journals, 0o777);
+        }
+      },
+    });
+    assert.equal(replayed.state, "blocked", `${scenario}: ${JSON.stringify(replayed)}`);
+    assert.equal(replayed.reasonCode, "source_policy_drift", scenario);
+    assert.deepEqual(await readFile(join(current.destinationRoot, ".shield", "worktree-state.json")), receiptBytes);
+  }
 });
 
 test("real prepared-worktree inspection preserves stale index bytes and metadata", async () => {
