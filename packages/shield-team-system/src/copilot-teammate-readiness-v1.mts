@@ -4,6 +4,17 @@ import { constants } from "node:fs";
 import { access, lstat, realpath } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 
+import {
+  parseCopilotAgentCardV1,
+  probeCopilotFuryDispatchCapabilityV1,
+  type CopilotAgentCardV1,
+  type CopilotAgentHandoffV1,
+  type CopilotFuryDispatchCapabilityReportV1,
+} from "./copilot-fury-plan-dispatch-v1.mjs";
+import { validateAndProjectCopilotFuryDispatchCapabilityReportV1 } from "./config.mjs";
+
+export { parseCopilotAgentCardV1, type CopilotAgentCardV1, type CopilotAgentHandoffV1 };
+
 export const COPILOT_TEAMMATE_READINESS_CONTRACT_VERSION = "shield.copilot-teammate-readiness.v1" as const;
 export const COPILOT_TEAMMATE_ADAPTER_KIND = "github-copilot" as const;
 export const COPILOT_TEAMMATE_SEATS = Object.freeze(["hill", "daisy", "fury", "may", "mack"] as const);
@@ -13,28 +24,6 @@ export const COPILOT_AGENT_PATHS = Object.freeze(
 
 type CopilotSeatId = (typeof COPILOT_TEAMMATE_SEATS)[number];
 type ProbeClassification = "available" | "unavailable" | "malformed" | "timeout";
-
-export interface CopilotAgentHandoffV1 {
-  readonly label: string;
-  readonly agent: string;
-  readonly prompt: string;
-  readonly send: false;
-}
-
-export interface CopilotAgentCardV1 {
-  readonly frontmatter: {
-    readonly name: string;
-    readonly description: string;
-    readonly "argument-hint": string;
-    readonly target: "vscode";
-    readonly "user-invocable": true;
-    readonly "disable-model-invocation": boolean;
-    readonly tools: readonly string[];
-    readonly agents?: readonly string[];
-    readonly handoffs?: readonly CopilotAgentHandoffV1[];
-  };
-  readonly body: string;
-}
 
 export interface CopilotTeammateReadinessReportV1 {
   readonly schemaVersion: 1;
@@ -74,17 +63,15 @@ export interface CopilotTeammateReadinessDependenciesV1 {
   readonly execute?: (executable: string, args: readonly string[]) => Promise<CopilotFixedProbeResultV1>;
   readonly findExecutable?: (name: "code") => Promise<string | null>;
   readonly beforeFinalObservation?: () => Promise<void>;
+  readonly probeFuryDispatchCapability?: (
+    input: { readonly repositoryRoot: string; readonly expectedHead: string },
+  ) => Promise<unknown>;
 }
 
-const ROOT_KEYS = Object.freeze([
-  "name", "description", "argument-hint", "target", "user-invocable",
-  "disable-model-invocation", "tools", "agents", "handoffs",
-]);
 const REQUIRED_KEYS = Object.freeze([
   "name", "description", "argument-hint", "target", "user-invocable",
   "disable-model-invocation", "tools",
 ]);
-const HANDOFF_KEYS = Object.freeze(["label", "agent", "prompt", "send"]);
 const EXPECTED_NAMES = Object.freeze(["Hill", "Daisy", "Fury", "May", "Mack"]);
 const EXPECTED_TOOLS = Object.freeze({
   hill: Object.freeze(["read", "search", "web", "agent"]),
@@ -100,79 +87,6 @@ const GIT_CONTEXT_VARIABLES = Object.freeze(["GIT_COMMON_DIR", "GIT_DIR", "GIT_I
 function exactObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) &&
     Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
-}
-
-function nonemptyScalar(value: string): string {
-  const normalized = value.trim();
-  if (normalized === "" || normalized !== value || /[\[\]{}]/u.test(value)) throw new Error("frontmatter_scalar_invalid");
-  return value;
-}
-
-function parseBoolean(value: string): boolean {
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new Error("frontmatter_boolean_invalid");
-}
-
-function parseFlowList(value: string): readonly string[] {
-  if (!value.startsWith("[") || !value.endsWith("]")) throw new Error("frontmatter_list_invalid");
-  const inner = value.slice(1, -1).trim();
-  if (inner === "") return Object.freeze([]);
-  const entries = inner.split(",").map((entry) => entry.trim());
-  if (entries.some((entry) => !/^[A-Za-z][A-Za-z0-9-]*$/u.test(entry)) || new Set(entries).size !== entries.length) {
-    throw new Error("frontmatter_list_invalid");
-  }
-  return Object.freeze(entries);
-}
-
-export function parseCopilotAgentCardV1(text: string): CopilotAgentCardV1 {
-  if (typeof text !== "string" || text.includes("\r") || !text.startsWith("---\n")) throw new Error("frontmatter_missing");
-  const closing = text.indexOf("\n---\n", 4);
-  if (closing < 0) throw new Error("frontmatter_unclosed");
-  const lines = text.slice(4, closing).split("\n");
-  const root = new Map<string, unknown>();
-  const handoffs: Record<string, unknown>[] = [];
-  let currentHandoff: Record<string, unknown> | null = null;
-  for (const line of lines) {
-    if (line === "" || /\s$/u.test(line)) throw new Error("frontmatter_line_invalid");
-    const handoffStart = /^  - ([a-z-]+): (.+)$/u.exec(line);
-    const handoffField = /^    ([a-z-]+): (.+)$/u.exec(line);
-    const rootField = /^([a-z-]+):(?: (.*))?$/u.exec(line);
-    if (handoffStart !== null) {
-      if (!root.has("handoffs") || handoffStart[1] !== "label") throw new Error("frontmatter_handoff_invalid");
-      currentHandoff = { label: nonemptyScalar(handoffStart[2] as string) };
-      handoffs.push(currentHandoff);
-      continue;
-    }
-    if (handoffField !== null) {
-      if (currentHandoff === null || Object.hasOwn(currentHandoff, handoffField[1] as string)) throw new Error("frontmatter_handoff_invalid");
-      const key = handoffField[1] as string;
-      if (!HANDOFF_KEYS.includes(key) || key === "label") throw new Error("frontmatter_handoff_invalid");
-      currentHandoff[key] = key === "send" ? parseBoolean(handoffField[2] as string) : nonemptyScalar(handoffField[2] as string);
-      continue;
-    }
-    if (rootField === null || line.startsWith(" ")) throw new Error("frontmatter_line_invalid");
-    currentHandoff = null;
-    const key = rootField[1] as string;
-    const value = rootField[2] ?? "";
-    if (!ROOT_KEYS.includes(key) || root.has(key)) throw new Error("frontmatter_key_invalid");
-    if (key === "handoffs") {
-      if (value !== "") throw new Error("frontmatter_handoff_invalid");
-      root.set(key, handoffs);
-    } else if (key === "tools" || key === "agents") root.set(key, parseFlowList(value));
-    else if (key === "user-invocable" || key === "disable-model-invocation") root.set(key, parseBoolean(value));
-    else root.set(key, nonemptyScalar(value));
-  }
-  if (REQUIRED_KEYS.some((key) => !root.has(key))) throw new Error("frontmatter_required_key_missing");
-  for (const handoff of handoffs) {
-    if (!exactObject(handoff, HANDOFF_KEYS) || handoff.send !== false) throw new Error("frontmatter_handoff_invalid");
-  }
-  const body = text.slice(closing + 5);
-  if (body.trim() === "") throw new Error("agent_body_missing");
-  return Object.freeze({
-    frontmatter: Object.freeze({ ...(Object.fromEntries(root) as unknown as CopilotAgentCardV1["frontmatter"]) }),
-    body,
-  });
 }
 
 export function validateCopilotAgentSetV1(
@@ -354,6 +268,27 @@ function copilotExtensionObservation(
   return Object.freeze({ id: "host.copilot_extension", status: "observed", ...observations[classification] });
 }
 
+function furyDispatchCapabilityCheck(
+  capability: CopilotFuryDispatchCapabilityReportV1 | null,
+): CopilotTeammateReadinessReportV1["machineChecks"][number] {
+  return Object.freeze({
+    id: "platform.fury_dispatch",
+    status: capability?.disposition === "ready" ? "pass" : "fail",
+    reasonCode: capability?.reasonCode ?? "fury_card_unavailable",
+    nextAction: capability?.nextAction ?? "Restore the exact-HEAD repository Fury agent card and rerun the capability probe.",
+  });
+}
+
+function capabilityMatchesCurrentPreflight(
+  capability: CopilotFuryDispatchCapabilityReportV1,
+  root: string,
+  expectedHead: string,
+): boolean {
+  return capability.repository.before.root === root && capability.repository.after.root === root &&
+    capability.repository.before.head === expectedHead && capability.repository.after.head === expectedHead &&
+    (capability.card === null || capability.card.sourceKind === "repository" && capability.card.repositoryRevision === expectedHead);
+}
+
 function sameRepository(left: RepositorySnapshot, right: RepositorySnapshot): boolean {
   return left.root === right.root && left.identity === right.identity && left.branch === right.branch && left.head === right.head &&
     left.status === right.status && left.inventory === right.inventory;
@@ -368,6 +303,7 @@ export async function runCopilotTeammateReadinessPreflightV1(
   let initial: RepositorySnapshot | null = null;
   let agents: CopilotTeammateReadinessReportV1["agents"] = [];
   let declarationsReady = false;
+  let capability: CopilotFuryDispatchCapabilityReportV1 | null = null;
   if (inputValid) {
     try {
       initial = await captureRepository(input.root);
@@ -376,6 +312,17 @@ export async function runCopilotTeammateReadinessPreflightV1(
         declarationsReady = true;
       }
     } catch { /* A closed machine check reports the failure. */ }
+  }
+  if (initial !== null && declarationsReady) {
+    const probe = dependencies.probeFuryDispatchCapability ?? probeCopilotFuryDispatchCapabilityV1;
+    try {
+      const projected = validateAndProjectCopilotFuryDispatchCapabilityReportV1(
+        await probe({ repositoryRoot: initial.root, expectedHead: input.expectedHead }),
+      );
+      if (!capabilityMatchesCurrentPreflight(projected, initial.root, input.expectedHead)) throw new Error("copilot_fury_dispatch_capability_binding_mismatch");
+      capability = projected;
+    }
+    catch { /* The closed capability row reports unavailability. */ }
   }
   const host = inputValid && initial !== null ? await probeCopilotTeammateHostV1(dependencies) : unavailableHost();
   await dependencies.beforeFinalObservation?.();
@@ -387,6 +334,7 @@ export async function runCopilotTeammateReadinessPreflightV1(
     check("repository.expected_head", initial?.head === input.expectedHead, "expected_head_mismatch"),
     check("repository.clean", initial?.status === "", "workspace_dirty"),
     check("repository.copilot_agents", declarationsReady, "declaration_invalid"),
+    furyDispatchCapabilityCheck(capability),
     check("host.vscode", host.vscode.classification === "available", "host_probe_failed"),
     copilotExtensionObservation(host.copilotExtension.classification),
     check("repository.stable", initial !== null && final !== null && sameRepository(initial, final), "repository_drift"),

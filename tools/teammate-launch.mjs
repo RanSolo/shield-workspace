@@ -56,6 +56,7 @@ const COPILOT_MACHINE_CHECKS = Object.freeze([
   ["repository.expected_head", "pass", "none"],
   ["repository.clean", "pass", "none"],
   ["repository.copilot_agents", "pass", "none"],
+  ["platform.fury_dispatch", "pass", "ready"],
   ["host.vscode", "pass", "none"],
   ["host.copilot_extension", null, null],
   ["repository.stable", "pass", "none"],
@@ -108,6 +109,16 @@ const NEXT_ACTION = Object.freeze({
   build_unavailable: "Repair the exact target-local two-project Nx build, then choose a new destination.",
   cli_unavailable: "Repair the exact target-local SHIELD CLI, then choose a new destination.",
   preflight_not_ready: "Resolve the authority-neutral preflight finding, then choose a new destination.",
+  repository_unavailable: "Restore an accessible canonical Git worktree and rerun the capability probe.",
+  expected_head_mismatch: "Check out the exact expected revision and rerun the capability probe.",
+  workspace_dirty: "Restore a clean worktree at the expected revision and rerun the capability probe.",
+  fury_card_unavailable: "Restore the exact-HEAD repository Fury agent card and rerun the capability probe.",
+  fury_card_shadowed: "Remove the ambient same-name user Fury card and rerun with repository-default card precedence.",
+  dispatch_receipt_path_unsafe: "Repair the canonical .shield dispatch-receipt path and permissions, then rerun the capability probe.",
+  copilot_sdk_unavailable: "Install the pinned @github/copilot-sdk dependency and rerun the capability probe.",
+  copilot_sdk_version_mismatch: "Install @github/copilot-sdk 1.0.11 and rerun the capability probe.",
+  copilot_sdk_exports_invalid: "Restore the required CopilotClient and RuntimeConnection.forStdio exports and rerun the capability probe.",
+  copilot_stdio_projection_unsafe: "Restore the closed stdio runtime projection and rerun the capability probe.",
   repository_drift: "Preserve the checkout and receipt boundary for inspection; do not continue from this attempt.",
   receipt_write_failed: "Preserve the checkout and adjacent receipt artifacts for inspection; do not retry in place.",
   recovery_required: "Stop and inspect the retained checkout, Git registration, process state, and receipt boundary.",
@@ -997,7 +1008,9 @@ async function runPreflight(context) {
         const report = JSON.parse(result.stdout);
         if (report?.contractVersion === contractVersion && report?.authority === "none" &&
             report?.disposition === "action_required" && typeof report.reasonCode === "string") {
-          throw new LaunchFailure("preflight_not_ready", report.reasonCode);
+          const capability = report.machineChecks?.find?.((entry) => entry?.id === "platform.fury_dispatch");
+          throw new LaunchFailure(capability?.status === "fail" && capability.reasonCode === report.reasonCode &&
+            Object.hasOwn(NEXT_ACTION, report.reasonCode) ? report.reasonCode : "preflight_not_ready", report.reasonCode);
         }
       } catch (error) {
         if (error instanceof LaunchFailure) throw error;
@@ -1012,7 +1025,10 @@ async function runPreflight(context) {
   catch (error) {
     preserveProcessUncertainty(error);
     if (parsed?.contractVersion === contractVersion && parsed?.authority === "none" && parsed?.disposition === "action_required") {
-      throw new LaunchFailure("preflight_not_ready", `${parsed.reasonCode ?? "unknown"}`);
+      const capability = parsed.machineChecks?.find?.((entry) => entry?.id === "platform.fury_dispatch");
+      const reasonCode = typeof parsed.reasonCode === "string" ? parsed.reasonCode : "unknown";
+      throw new LaunchFailure(capability?.status === "fail" && capability.reasonCode === reasonCode &&
+        Object.hasOwn(NEXT_ACTION, reasonCode) ? reasonCode : "preflight_not_ready", reasonCode);
     }
     throw new LaunchFailure("cli_unavailable", error.message);
   }

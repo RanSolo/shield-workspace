@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, open, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,6 +16,7 @@ import {
   readSeatDispatchReceiptByReceiptIdV1,
   readSeatDispatchReceiptsByParentMissionSessionV1,
   readSeatDispatchReceiptsByChildTaskSessionV1,
+  resolveSeatDispatchStorePathsReadOnlyV1,
 } from "../dist/seat-dispatch-store.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
@@ -38,6 +39,28 @@ function readLogBytes(logPath) {
     }
   });
 }
+
+test("read-only dispatch-store path resolution shares fixed production paths without creating .shield", async () => {
+  const repositoryRoot = await realpath(await mkdtemp(join(tmpdir(), "shield-seat-paths-")));
+  const absent = await resolveSeatDispatchStorePathsReadOnlyV1(repositoryRoot);
+  assert.equal(absent.state, "valid");
+  assert.deepEqual(absent.value, {
+    repositoryRoot,
+    shieldDirectory: join(repositoryRoot, ".shield"),
+    logPath: join(repositoryRoot, ".shield", "dispatch-receipts.jsonl"),
+    lockPath: join(repositoryRoot, ".shield", "dispatch-receipts.jsonl.lock"),
+    shieldDirectoryExists: false,
+  });
+  await assert.rejects(lstat(join(repositoryRoot, ".shield")), { code: "ENOENT" });
+
+  const outside = await realpath(await mkdtemp(join(tmpdir(), "shield-seat-paths-outside-")));
+  await symlink(outside, join(repositoryRoot, ".shield"));
+  const unsafe = await resolveSeatDispatchStorePathsReadOnlyV1(repositoryRoot);
+  assert.equal(unsafe.state, "invalid");
+  assert.equal(unsafe.code, "unsafe_path");
+  assert.deepEqual(await rm(repositoryRoot, { recursive: true, force: false }), undefined);
+  assert.deepEqual(await rm(outside, { recursive: true, force: false }), undefined);
+});
 
 function baseIdentity(overrides = {}) {
   return {

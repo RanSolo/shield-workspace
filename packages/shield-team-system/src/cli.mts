@@ -12,6 +12,7 @@ import {
   CONFIGURED_HOST_ADAPTER_IDS,
   SHIELD_PACKAGE_VERSION,
   createShieldConfig,
+  composeCopilotDoctorReportV1,
   evaluateDoctor,
   formatShieldConfig,
   migrateShieldConfig,
@@ -23,6 +24,7 @@ import {
   type ShieldConfigV2,
   type ShieldConfigV3,
   type DoctorReportV2,
+  type CopilotDoctorReportV1,
 } from "./config.mjs";
 import {
   STARTER_PIPELINE_IDS,
@@ -46,6 +48,7 @@ import {
   runCopilotTeammateReadinessPreflightV1,
   type CopilotTeammateReadinessReportV1,
 } from "./copilot-teammate-readiness-v1.mjs";
+import { probeCopilotFuryDispatchCapabilityV1 } from "./copilot-fury-plan-dispatch-v1.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".shield", "config.json");
 const PIPELINE_PROFILE_RELATIVE_PATH = join(".shield", "pipeline-profile.json");
@@ -86,7 +89,7 @@ function usage(): string {
   return [
     "Usage:",
     `  shield init --repository-id <owner/name> --coulson-binding-ref <ref> [--repository-trust-profile <${REPOSITORY_TRUST_PROFILE_IDS.join("|")}>] [--fitz-binding-ref <ref>] [--simmons-binding-ref <ref>] [--adapters <${CONFIGURED_HOST_ADAPTER_IDS.join(",")}>] [--migrate-config] [--starter-pipeline <${STARTER_PIPELINE_IDS.join("|")}>] [--root <path>]`,
-    "  shield doctor [--root <path>] [--json]",
+    "  shield doctor [--root <path>] [--host github-copilot] [--json]",
     "  shield worktree prepare --source-root <path> --root <destination> [--json]",
     "  shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> [--host github-copilot] [--json]",
     "",
@@ -697,8 +700,14 @@ function renderDoctor(report: DoctorReportV2): string {
   return `${lines.join("\n")}\n`;
 }
 
+function renderCopilotDoctor(report: CopilotDoctorReportV1): string {
+  return `${renderDoctor(report.doctor)}${report.hostCapability.disposition === "ready" ? "PASS" : "FAIL"} host-capability [github-copilot]: ${report.hostCapability.reasonCode}; NEXT: ${report.hostCapability.nextAction}\n${report.ok ? "SHIELD doctor host selection: healthy." : "SHIELD doctor host selection: action required."}\n`;
+}
+
 async function runDoctor(args: string[]): Promise<number> {
-  const options = parseOptions(args, ["--root"], ["--json"]);
+  const options = parseOptions(args, ["--root", "--host"], ["--json"]);
+  const host = options.values.get("--host");
+  if (host !== undefined && host !== "github-copilot") throw new CliError(`Unsupported doctor host: ${host}.`);
   const root = await inspectRoot(options.values.get("--root"), false);
   const rootIssue = await repositoryRootIssue(root);
   const shieldDirectory = join(root, ".shield");
@@ -741,9 +750,25 @@ async function runDoctor(args: string[]): Promise<number> {
       report.ok = false;
     }
   }
-  process.stdout.write(options.flags.has("--json")
-    ? `${JSON.stringify(report, null, 2)}\n`
-    : renderDoctor(report));
+  if (host === "github-copilot") {
+    let expectedHead = "0".repeat(40);
+    try {
+      const observed = await execFileAsync("git", ["rev-parse", "--verify", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+        env: cleanGitEnvironment(),
+      });
+      const candidate = observed.stdout.trim();
+      if (/^[0-9a-f]{40}$/u.test(candidate)) expectedHead = candidate;
+    } catch { /* The capability reports repository unavailability. */ }
+    const selected = composeCopilotDoctorReportV1(
+      report,
+      await probeCopilotFuryDispatchCapabilityV1({ repositoryRoot: root, expectedHead }),
+    );
+    process.stdout.write(options.flags.has("--json") ? `${JSON.stringify(selected, null, 2)}\n` : renderCopilotDoctor(selected));
+    return selected.ok ? 0 : 1;
+  }
+  process.stdout.write(options.flags.has("--json") ? `${JSON.stringify(report, null, 2)}\n` : renderDoctor(report));
   return report.ok ? 0 : 1;
 }
 
