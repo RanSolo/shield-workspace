@@ -40,7 +40,7 @@ export {
   prepareDeliveryWorkspaceForDispatch,
   renderMissionHandoff,
 } from "../github/delivery-workspace.mjs";
-export { validatePRWorkspaceReceipt } from "../github/pr-workspace.mjs";
+export { reconcilePRPublication, validatePRWorkspaceReceipt } from "../github/pr-workspace.mjs";
 export {
   REVIEW_PUBLICATION_AUTHORITY_KINDS,
   REVIEW_PUBLICATION_CONTRACT_VERSION,

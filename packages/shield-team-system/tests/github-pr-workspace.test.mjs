@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createOrUpdatePR } from "../github/pr-workspace.mjs";
+import { createOrUpdatePR, reconcilePRPublication } from "../github/pr-workspace.mjs";
 import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 
 const head = "0123456789012345678901234567890123456789";
@@ -361,6 +361,88 @@ test("lookup, creation, and readback failures never fabricate a PR URL", () => {
     assert.equal(result.state, "blocked");
     assert.equal(Object.hasOwn(result, "prUrl"), false);
   }
+});
+
+test("final publication reconciliation proves exact delivery or joint absence without mutation", () => {
+  const fixture = publicationFixture("create", 9);
+  const defaultBranch = JSON.stringify({
+    nameWithOwner: "RanSolo/shield-workspace",
+    defaultBranchRef: { name: "main" },
+  });
+  const absent = runner([
+    ...scopeChecks().slice(0, -1),
+    ok(defaultBranch),
+    ok(`${base}\trefs/heads/main`),
+    ok(),
+    ok("[]"),
+  ]);
+  const absentResult = reconcilePRPublication(
+    plan(), fixture.authority, fixture.request.proposedChangedPaths,
+    fixture.request.requestedEffects, { run: absent, body: "Mission body", realpath: (value) => value },
+  );
+  assert.equal(absentResult.state, "not_applied");
+  assert.equal(absent.calls.some(({ executable, args }) => executable === "git" && args[0] === "push"), false);
+
+  const delivered = runner([
+    ...scopeChecks().slice(0, -1),
+    ok(defaultBranch),
+    ok(`${base}\trefs/heads/main`),
+    ok(`${head}\trefs/heads/${plan().branchSlug}`),
+    ok(JSON.stringify([existingDraft()])),
+  ]);
+  const deliveredResult = reconcilePRPublication(
+    plan(), fixture.authority, fixture.request.proposedChangedPaths,
+    fixture.request.requestedEffects, { run: delivered, body: "Mission body", realpath: (value) => value },
+  );
+  assert.equal(deliveredResult.state, "delivered");
+  assert.equal(deliveredResult.receipt.prUrl, "https://github.com/RanSolo/shield-workspace/pull/4");
+  assert.equal(delivered.calls.some(({ executable, args }) => executable === "gh" && args[0] === "pr" && ["create", "edit"].includes(args[1])), false);
+});
+
+test("final-publication request skips an exact remote HEAD and blocks remote drift before effects", () => {
+  const publication = publicationJournalFixture({
+    schemaVersion: 9,
+    missionId: "mission:final-publication",
+    subjectId: "issue:311",
+    headRevisionId: head,
+    baseRevisionId: base,
+    branch: plan().branchSlug,
+    authorizedPaths: [plan().missionBriefPath],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+    operation: "publish_mission_brief",
+    targetRef: `github:repository:RanSolo/shield-workspace:branch:${plan().branchSlug}:base:main`,
+    requestId: "request:final-publication:execute-once",
+  });
+  const run = runner([
+    ...initialChecks(), ok("[]"), ...scopeChecks(),
+    ok(`${head}\trefs/heads/${plan().branchSlug}`),
+    ok("created"),
+    ok(JSON.stringify([existingDraft()])),
+  ]);
+  const result = createOrUpdatePR(plan(), {
+    run,
+    body: "Mission body",
+    publicationRequestId: publication.requestId,
+    loadJournal: publication.loadJournal,
+    realpath: (value) => value,
+  });
+  assert.equal(result.state, "success");
+  assert.equal(run.calls.some(({ executable, args }) => executable === "git" && args[0] === "push"), false);
+
+  const drift = runner([
+    ...initialChecks(), ok("[]"), ...scopeChecks(),
+    ok(`${"b".repeat(40)}\trefs/heads/${plan().branchSlug}`),
+  ]);
+  const blocked = createOrUpdatePR(plan(), {
+    run: drift,
+    body: "Mission body",
+    publicationRequestId: publication.requestId,
+    loadJournal: publication.loadJournal,
+    realpath: (value) => value,
+  });
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.reason, "remote_branch_head_mismatch");
+  assert.equal(drift.calls.some(({ executable, args }) => executable === "gh" && args[0] === "pr" && args[1] === "create"), false);
 });
 
 test("unsafe bodies and thrown runner errors fail closed before GitHub publication", () => {

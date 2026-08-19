@@ -161,6 +161,7 @@ import {
   prepareReviewedMissionTransitionV1,
   type CopilotFuryReviewedTransitionHostDependenciesV1,
 } from "./copilot-fury-reviewed-transition-host-v1.mjs";
+import { runFinalPublicationTransitionV1, type FinalPublicationTransitionResultV1 } from "./final-publication-transition-v1.mjs";
 
 const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
@@ -1571,7 +1572,7 @@ async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"y
   }
 }
 
-async function prepareNext(args: string[]): Promise<number> {
+async function prepareNext(args: string[], behavior: Readonly<{ suppressPublicationSuccessOutput?: boolean }> = {}): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
     "--guided-review-response", "--guided-review-question-digest", "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition",
     "--guided-review-observation", "--guided-review-condition"], ["--json", "--human", "--passcode-stdin"]);
@@ -1779,7 +1780,9 @@ async function prepareNext(args: string[]): Promise<number> {
         appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
         ...(revalidateGuidedReviewBundle === undefined ? {} : { revalidateGuidedReviewBundle }),
       });
-      output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
+      if (behavior.suppressPublicationSuccessOutput !== true) {
+        output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
+      }
       return 0;
     } catch (error) {
       throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
@@ -1839,6 +1842,61 @@ async function prepareNext(args: string[]): Promise<number> {
   } catch (error) {
     throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
   }
+}
+
+function renderFinalPublicationTransitionHumanV1(result: FinalPublicationTransitionResultV1): string {
+  if (result.state === "published" || result.state === "reused") {
+    return [
+      `classification: ${result.classification}`,
+      `action: ${result.state}`,
+      `draftUrl: ${result.prUrl}`,
+    ].join("\n");
+  }
+  if (result.state === "paused") {
+    return `classification: ${result.classification}\naction: ${result.action}`;
+  }
+  if (result.state === "recovery_required") {
+    return `classification: ${result.classification}\nstop: ${result.reason}\naction: ${result.action}`;
+  }
+  return `classification: ${result.classification}\naction: authorization decision required`;
+}
+
+async function publishReviewed(args: string[]): Promise<number> {
+  const valueOptions = ["--root", "--mission-id", "--base-branch", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
+    "--guided-review-response", "--guided-review-question-digest", "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition",
+    "--guided-review-observation", "--guided-review-condition"] as const;
+  const options = parseOptions(args, valueOptions, ["--json", "--human", "--passcode-stdin"]);
+  if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
+  const root = await exactRoot(options.values.get("--root"), true);
+  const missionId = required(options, "--mission-id");
+  const baseBranch = required(options, "--base-branch");
+  const prepareArgs = args.reduce<string[]>((selected, value, index) => {
+    if (value === "--base-branch") return selected;
+    if (index > 0 && args[index - 1] === "--base-branch") return selected;
+    selected.push(value);
+    return selected;
+  }, []);
+  let authorizationExitCode = 0;
+  let authorizationProducedOutput = false;
+  const result = await runFinalPublicationTransitionV1({ repositoryRoot: root, missionId, baseBranch }, {
+    onClassification: (classification) => {
+      const destination = options.flags.has("--json") ? process.stderr : outputStream;
+      destination.write(`classification: ${classification}\n`);
+    },
+    authorizePreparedPublication: async () => {
+      authorizationProducedOutput = true;
+      authorizationExitCode = await prepareNext(prepareArgs, { suppressPublicationSuccessOutput: true });
+      if (authorizationExitCode !== 0) return "paused";
+      const replay = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
+      return replay.state === "publication_already_authorized" ? "authorized" : "paused";
+    },
+  });
+  if (!(result.state === "paused" && authorizationProducedOutput)) {
+    output(result, options.flags.has("--json"), renderFinalPublicationTransitionHumanV1(result));
+  }
+  if (result.state === "published" || result.state === "reused") return 0;
+  if (result.state === "paused") return authorizationExitCode;
+  return 1;
 }
 
 function canonicalDigest(value: unknown): string {
@@ -2350,6 +2408,7 @@ export function missionUsage(): string {
     "  shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <file> --fury-model <model-id> --root <path> [--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
     "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission publish-reviewed --mission-id <id> --base-branch <branch> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest>] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",
@@ -2384,6 +2443,7 @@ export async function runMissionCli(
     );
     if (action === "record-reviewed-transition") return recordReviewedTransition(rest);
     if (action === "prepare-next") return prepareNext(rest);
+    if (action === "publish-reviewed") return publishReviewed(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
     if (action === "publication-authorize") return publicationAuthorize(rest);
     if (action === "publication-request") return publicationRequest(rest);

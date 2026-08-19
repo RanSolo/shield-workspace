@@ -21,7 +21,7 @@ import {
   replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
-import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, readInteractivePasscode, runMissionCli, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
+import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, missionUsage, readInteractivePasscode, runMissionCli, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
 import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 import {
@@ -58,6 +58,18 @@ import {
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
+
+test("publish-reviewed final publication command has a closed base assertion and concise documented surface", async () => {
+  assert.match(missionUsage(), /shield mission publish-reviewed --mission-id <id> --base-branch <branch>/u);
+  await assert.rejects(
+    runMissionCli(["mission", "publish-reviewed", "--mission-id", "mission:missing-base", "--root", packageRoot, "--json"]),
+    /Missing required option: --base-branch/u,
+  );
+  await assert.rejects(
+    runMissionCli(["mission", "publish-reviewed", "--mission-id", "mission:closed", "--base-branch", "main", "--authority", "caller", "--root", packageRoot]),
+    /Unknown option: --authority/u,
+  );
+});
 
 const COPILOT_FURY_CARD = `---
 name: Fury

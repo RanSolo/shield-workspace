@@ -277,6 +277,48 @@ function readMatchingPRs(run, commands, plan, cwd) {
   return { state: "ok", pr: matches[0] ?? null };
 }
 
+function readCanonicalDefaultBranch(run, commands, plan, cwd) {
+  const result = call(
+    run,
+    commands,
+    "gh",
+    [
+      "repo", "view", `${plan.repositoryOwner}/${plan.repositoryName}`,
+      "--json", "nameWithOwner,defaultBranchRef",
+    ],
+    { cwd },
+  );
+  if (result.exitCode !== 0) return { state: "error", reason: "default_branch_lookup_failed" };
+  let value;
+  try {
+    value = JSON.parse(result.stdout);
+  } catch {
+    return { state: "error", reason: "default_branch_lookup_invalid_json" };
+  }
+  if (!isPlainObject(value) || Object.keys(value).length !== 2 ||
+      value.nameWithOwner !== `${plan.repositoryOwner}/${plan.repositoryName}` ||
+      !isPlainObject(value.defaultBranchRef) ||
+      Object.keys(value.defaultBranchRef).length !== 1 ||
+      typeof value.defaultBranchRef.name !== "string" || value.defaultBranchRef.name.length === 0) {
+    return { state: "error", reason: "default_branch_lookup_mismatch" };
+  }
+  return { state: "ok", branch: value.defaultBranchRef.name };
+}
+
+function readRemoteBranch(run, commands, branch, cwd) {
+  const result = call(run, commands, "git", ["ls-remote", "--refs", "origin", `refs/heads/${branch}`], { cwd });
+  if (result.exitCode !== 0) return { state: "error", reason: "remote_branch_lookup_failed" };
+  const output = result.stdout.trim();
+  if (output === "") return { state: "absent" };
+  const lines = output.split("\n");
+  if (lines.length !== 1) return { state: "error", reason: "remote_branch_lookup_ambiguous" };
+  const match = /^(?<revision>[0-9a-f]{40,64})\trefs\/heads\/(?<branch>[^\s]+)$/u.exec(lines[0]);
+  if (!match?.groups || match.groups.branch !== branch) {
+    return { state: "error", reason: "remote_branch_lookup_malformed" };
+  }
+  return { state: "present", revision: match.groups.revision };
+}
+
 function verifiedReceipt(plan, artifactRevisionId, pr) {
   const candidate = {
     schemaVersion: 1,
@@ -298,6 +340,73 @@ function verifiedReceipt(plan, artifactRevisionId, pr) {
     artifactRevisionId,
     ...(Number.isInteger(pr?.number) ? { prNumber: pr.number } : {}),
   });
+}
+
+/**
+ * Reconciles a final draft publication without mutating Git or GitHub.
+ * The result is deliberately closed: only an exact remote branch and exact
+ * open draft are delivered; proven joint absence is not_applied; every other
+ * observation requires operator recovery.
+ */
+export function reconcilePRPublication(plan, authority, proposedChangedPaths, requestedEffects, options = {}) {
+  const run = options.run ?? defaultRun;
+  const cwd = options.cwd;
+  const body = options.body;
+  const commands = [];
+  if (typeof run !== "function" || !isPlainObject(plan) || typeof body !== "string" || body.trim() === "" ||
+      !Array.isArray(proposedChangedPaths) || !Array.isArray(requestedEffects)) {
+    return { state: "recovery_required", reason: "reconciliation_input_invalid", commands };
+  }
+  const scope = evaluatePRPublicationScope(authority, proposedChangedPaths, requestedEffects, {
+    run,
+    cwd,
+    realpath: options.realpath,
+  });
+  commands.push(...scope.commands);
+  if (scope.state !== "allowed") {
+    return { state: "recovery_required", reason: scope.reason, commands };
+  }
+  const artifactRevisionId = scope.binding.headRevisionId;
+  if (scope.binding.repositoryId !== `${plan.repositoryOwner}/${plan.repositoryName}` ||
+      scope.binding.branch !== plan.branchSlug) {
+    return { state: "recovery_required", reason: "publication_binding_mismatch", commands };
+  }
+  const canonical = readCanonicalDefaultBranch(run, commands, plan, cwd);
+  if (canonical.state !== "ok") return { state: "recovery_required", reason: canonical.reason, commands };
+  if (canonical.branch !== plan.baseBranch) {
+    return { state: "recovery_required", reason: "default_branch_mismatch", commands };
+  }
+  const base = readRemoteBranch(run, commands, plan.baseBranch, cwd);
+  if (base.state !== "present" || base.revision !== scope.binding.baseRevisionId) {
+    return { state: "recovery_required", reason: base.state === "error" ? base.reason : "publication_target_mismatch", commands };
+  }
+  const remote = readRemoteBranch(run, commands, plan.branchSlug, cwd);
+  if (remote.state === "error") return { state: "recovery_required", reason: remote.reason, commands };
+  const lookup = readMatchingPRs(run, commands, plan, cwd);
+  if (lookup.state === "error") return { state: "recovery_required", reason: lookup.reason, commands };
+  if (remote.state === "absent" && lookup.pr === null) {
+    return {
+      state: "not_applied",
+      publicationScope: { scopeDigest: scope.scopeDigest, binding: scope.binding },
+      commands,
+    };
+  }
+  if (remote.state !== "present" || remote.revision !== artifactRevisionId || lookup.pr === null) {
+    return { state: "recovery_required", reason: "publication_state_mismatch", commands };
+  }
+  if (lookup.pr.state !== "OPEN" || lookup.pr.isDraft !== true || lookup.pr.title !== plan.prTitle || lookup.pr.body !== body) {
+    return { state: "recovery_required", reason: "draft_pull_request_mismatch", commands };
+  }
+  const receipt = verifiedReceipt(plan, artifactRevisionId, lookup.pr);
+  if (receipt.state !== "valid") {
+    return { state: "recovery_required", reason: "draft_receipt_invalid", commands };
+  }
+  return {
+    state: "delivered",
+    receipt: receipt.receipt,
+    publicationScope: { scopeDigest: scope.scopeDigest, binding: scope.binding },
+    commands,
+  };
 }
 
 /**
@@ -437,8 +546,20 @@ export function createOrUpdatePR(plan, options = {}) {
     };
   }
 
-  const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
-  if (push.exitCode !== 0) return blockedAfterScope("branch_push_failed", commands, scope);
+  if (publication.request.requestId.startsWith("request:final-publication:")) {
+    const remoteBranch = readRemoteBranch(run, commands, plan.branchSlug, cwd);
+    if (remoteBranch.state === "error") return blockedAfterScope(remoteBranch.reason, commands, scope);
+    if (remoteBranch.state === "present" && remoteBranch.revision !== artifactRevisionId) {
+      return blockedAfterScope("remote_branch_head_mismatch", commands, scope);
+    }
+    if (remoteBranch.state === "absent") {
+      const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
+      if (push.exitCode !== 0) return blockedAfterScope("branch_push_failed", commands, scope);
+    }
+  } else {
+    const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
+    if (push.exitCode !== 0) return blockedAfterScope("branch_push_failed", commands, scope);
+  }
 
   if (lookup.pr === null) {
     const created = call(
