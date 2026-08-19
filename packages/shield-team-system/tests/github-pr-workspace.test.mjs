@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createOrUpdatePR, reconcilePRPublication } from "../github/pr-workspace.mjs";
+import { createOrUpdatePR, installFinalPublicationEffectGuard, reconcilePRPublication } from "../github/pr-workspace.mjs";
 import { publicationJournalFixture } from "./fixtures/review-publication-journal.mjs";
 
 const head = "0123456789012345678901234567890123456789";
@@ -56,8 +56,14 @@ const initialChecks = () => [
 const scopeChecks = () => [
   ok("/workspace/shield-workspace"), ok("git@github.com:RanSolo/shield-workspace.git"),
   ok(plan().branchSlug), ok(head), ok(base), ok(),
-  ok(`${plan().missionBriefPath}\0`), ok(), ok(), ok(base),
+  ok(`${plan().missionBriefPath}\0`), ok(), ok(),
 ];
+const defaultBranch = () => ok(JSON.stringify({
+  nameWithOwner: "RanSolo/shield-workspace",
+  defaultBranchRef: { name: "main" },
+}));
+const mutationBaseChecks = () => [defaultBranch(), ok(`${base}\trefs/heads/main`)];
+const genericBaseCheck = () => ok(base);
 
 function existingDraft(overrides = {}) {
   return {
@@ -79,7 +85,7 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
   const run = runner([
     ...initialChecks(),
     ok("[]"),
-    ...scopeChecks(),
+    ...scopeChecks(), genericBaseCheck(),
     ok(),
     ok("https://github.com/RanSolo/shield-workspace/pull/4"),
     ok(JSON.stringify([{
@@ -119,7 +125,7 @@ test("draft PR workspace consumes a real schema-9 queued publication request", (
   const run = runner([
     ...initialChecks(),
     ok("[]"),
-    ...scopeChecks(),
+    ...scopeChecks(), genericBaseCheck(),
     ok(),
     ok("https://github.com/RanSolo/shield-workspace/pull/4"),
     ok(JSON.stringify([{
@@ -147,7 +153,7 @@ test("draft PR workspace consumes a real schema-9 queued publication request", (
 test("replayed schema-9 create request verifies an exact existing draft without mutation", () => {
   const publication = publicationFixture("create", 9);
   const run = runner([
-    ...initialChecks(), ok(JSON.stringify([existingDraft()])), ...scopeChecks(),
+    ...initialChecks(), ok(JSON.stringify([existingDraft()])), ...scopeChecks(), genericBaseCheck(),
   ]);
   const result = createOrUpdatePR(plan(), {
     run,
@@ -181,7 +187,7 @@ test("exact-create resume blocks presentation and identity drift before mutation
   ];
   for (const [observed, reason, reachesScope] of cases) {
     const run = runner([
-      ...initialChecks(), ok(JSON.stringify([observed])), ...(reachesScope ? scopeChecks() : []),
+      ...initialChecks(), ok(JSON.stringify([observed])), ...(reachesScope ? [...scopeChecks(), genericBaseCheck()] : []),
     ]);
     const result = createOrUpdatePR(plan(), {
       run,
@@ -212,7 +218,7 @@ test("reuses exactly one open draft PR and updates its body", () => {
     baseRefName: "main",
   }];
   const run = runner([
-    ...initialChecks(), ok(JSON.stringify(existing)), ...scopeChecks(),
+    ...initialChecks(), ok(JSON.stringify(existing)), ...scopeChecks(), genericBaseCheck(),
     ok(), ok(), ok(JSON.stringify(existing)),
   ]);
   const result = createOrUpdatePR(plan(), {
@@ -286,7 +292,7 @@ test("live remote base branch must resolve to the signed base revision", () => {
   const run = runner([
     ...initialChecks(),
     ok("[]"),
-    ...scopeChecks().slice(0, -1),
+    ...scopeChecks(),
     ok("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
   ]);
   const result = createOrUpdatePR(plan(), {
@@ -341,11 +347,11 @@ test("lookup, creation, and readback failures never fabricate a PR URL", () => {
       { exitCode: 1, stdout: "", stderr: "offline" },
     ],
     [
-      ...initialChecks(), ok("[]"), ...scopeChecks(), ok(),
+      ...initialChecks(), ok("[]"), ...scopeChecks(), genericBaseCheck(), ok(),
       { exitCode: 1, stdout: "", stderr: "denied" },
     ],
     [
-      ...initialChecks(), ok("[]"), ...scopeChecks(), ok(),
+      ...initialChecks(), ok("[]"), ...scopeChecks(), genericBaseCheck(), ok(),
       ok("created"), ok("[]"),
     ],
   ];
@@ -365,13 +371,9 @@ test("lookup, creation, and readback failures never fabricate a PR URL", () => {
 
 test("final publication reconciliation proves exact delivery or joint absence without mutation", () => {
   const fixture = publicationFixture("create", 9);
-  const defaultBranch = JSON.stringify({
-    nameWithOwner: "RanSolo/shield-workspace",
-    defaultBranchRef: { name: "main" },
-  });
   const absent = runner([
-    ...scopeChecks().slice(0, -1),
-    ok(defaultBranch),
+    ...scopeChecks(),
+    defaultBranch(),
     ok(`${base}\trefs/heads/main`),
     ok(),
     ok("[]"),
@@ -384,8 +386,8 @@ test("final publication reconciliation proves exact delivery or joint absence wi
   assert.equal(absent.calls.some(({ executable, args }) => executable === "git" && args[0] === "push"), false);
 
   const delivered = runner([
-    ...scopeChecks().slice(0, -1),
-    ok(defaultBranch),
+    ...scopeChecks(),
+    defaultBranch(),
     ok(`${base}\trefs/heads/main`),
     ok(`${head}\trefs/heads/${plan().branchSlug}`),
     ok(JSON.stringify([existingDraft()])),
@@ -416,9 +418,16 @@ test("final-publication request skips an exact remote HEAD and blocks remote dri
   const run = runner([
     ...initialChecks(), ok("[]"), ...scopeChecks(),
     ok(`${head}\trefs/heads/${plan().branchSlug}`),
+    ...mutationBaseChecks(),
     ok("created"),
     ok(JSON.stringify([existingDraft()])),
   ]);
+  const guardedEffects = [];
+  const guard = installFinalPublicationEffectGuard(publication.requestId, (effect) => {
+    guardedEffects.push(effect);
+    return true;
+  });
+  assert.equal(guard.state, "installed");
   const result = createOrUpdatePR(plan(), {
     run,
     body: "Mission body",
@@ -426,7 +435,9 @@ test("final-publication request skips an exact remote HEAD and blocks remote dri
     loadJournal: publication.loadJournal,
     realpath: (value) => value,
   });
+  assert.equal(guard.uninstall(), true);
   assert.equal(result.state, "success");
+  assert.deepEqual(guardedEffects, ["review.pull_request.create_draft"]);
   assert.equal(run.calls.some(({ executable, args }) => executable === "git" && args[0] === "push"), false);
 
   const drift = runner([
@@ -443,6 +454,84 @@ test("final-publication request skips an exact remote HEAD and blocks remote dri
   assert.equal(blocked.state, "blocked");
   assert.equal(blocked.reason, "remote_branch_head_mismatch");
   assert.equal(drift.calls.some(({ executable, args }) => executable === "gh" && args[0] === "pr" && args[1] === "create"), false);
+});
+
+test("execution re-observes the unique canonical default and live base immediately before mutation", () => {
+  const publication = publicationJournalFixture({
+    schemaVersion: 9,
+    missionId: "mission:final-publication-drift",
+    subjectId: "issue:311",
+    headRevisionId: head,
+    baseRevisionId: base,
+    branch: plan().branchSlug,
+    authorizedPaths: [plan().missionBriefPath],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+    operation: "publish_mission_brief",
+    targetRef: `github:repository:RanSolo/shield-workspace:branch:${plan().branchSlug}:base:main`,
+    requestId: "request:final-publication:default-drift",
+  });
+  const observations = [
+    [ok(JSON.stringify({ nameWithOwner: "RanSolo/shield-workspace", defaultBranchRef: { name: "release" } })), "default_branch_mismatch"],
+    [defaultBranch(), "publication_target_mismatch", ok(`${"c".repeat(40)}\trefs/heads/main`)],
+    [ok(JSON.stringify({ nameWithOwner: "RanSolo/other", defaultBranchRef: { name: "main" } })), "default_branch_lookup_mismatch"],
+  ];
+  for (const [canonical, reason, baseObservation] of observations) {
+    const run = runner([
+      ...initialChecks(), ok("[]"), ...scopeChecks(), ok(), canonical,
+      ...(baseObservation ? [baseObservation] : []),
+    ]);
+    const guard = installFinalPublicationEffectGuard(publication.requestId, () => true);
+    assert.equal(guard.state, "installed");
+    const result = createOrUpdatePR(plan(), {
+      run, body: "Mission body", publicationRequestId: publication.requestId,
+      loadJournal: publication.loadJournal, realpath: (value) => value,
+    });
+    assert.equal(guard.uninstall(), true);
+    assert.equal(result.state, "blocked");
+    assert.equal(result.reason, reason);
+    assert.equal(run.calls.some(({ executable, args }) => executable === "git" && args[0] === "push"), false);
+  }
+});
+
+test("final publication claimant possession is checked separately before push and PR creation", () => {
+  const publication = publicationJournalFixture({
+    schemaVersion: 9,
+    missionId: "mission:final-publication-guard",
+    subjectId: "issue:311",
+    headRevisionId: head,
+    baseRevisionId: base,
+    branch: plan().branchSlug,
+    authorizedPaths: [plan().missionBriefPath],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+    operation: "publish_mission_brief",
+    targetRef: `github:repository:RanSolo/shield-workspace:branch:${plan().branchSlug}:base:main`,
+    requestId: "request:final-publication:guard-window",
+  });
+
+  const missing = runner([...initialChecks(), ok("[]"), ...scopeChecks(), ok(), ...mutationBaseChecks()]);
+  const missingResult = createOrUpdatePR(plan(), {
+    run: missing, body: "Mission body", publicationRequestId: publication.requestId,
+    loadJournal: publication.loadJournal, realpath: (value) => value,
+  });
+  assert.equal(missingResult.reason, "final_publication_claimant_required");
+  assert.equal(missing.calls.some(({ executable, args }) => executable === "git" && args[0] === "push"), false);
+
+  const effects = [];
+  const interrupted = runner([...initialChecks(), ok("[]"), ...scopeChecks(), ok(), ...mutationBaseChecks(), ok()]);
+  const guard = installFinalPublicationEffectGuard(publication.requestId, (effect) => {
+    effects.push(effect);
+    return effects.length === 1;
+  });
+  assert.equal(guard.state, "installed");
+  const result = createOrUpdatePR(plan(), {
+    run: interrupted, body: "Mission body", publicationRequestId: publication.requestId,
+    loadJournal: publication.loadJournal, realpath: (value) => value,
+  });
+  assert.equal(guard.uninstall(), true);
+  assert.equal(result.reason, "final_publication_claimant_required");
+  assert.deepEqual(effects, ["review.branch.push", "review.pull_request.create_draft"]);
+  assert.equal(interrupted.calls.filter(({ executable, args }) => executable === "git" && args[0] === "push").length, 1);
+  assert.equal(interrupted.calls.some(({ executable, args }) => executable === "gh" && args[0] === "pr" && args[1] === "create"), false);
 });
 
 test("unsafe bodies and thrown runner errors fail closed before GitHub publication", () => {

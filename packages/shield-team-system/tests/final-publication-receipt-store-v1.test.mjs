@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, realpath, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,8 +11,10 @@ import {
   computeFinalPublicationContentDigestV1,
   deriveFinalPublicationIdentityV1,
   readFinalPublicationReceiptLedgerV1,
+  replayFinalPublicationReceiptLedgerV1,
   recordFinalPublicationDeliveredV1,
   recordFinalPublicationOwnerTerminalV1,
+  verifyFinalPublicationClaimantForEffectV1,
   verifyFinalPublicationClaimantV1,
 } from "../dist/final-publication-receipt-store-v1.mjs";
 import { computeReviewPublicationAuthoritySemanticIdentityV1, evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
@@ -160,6 +162,14 @@ test("claim identity is deterministic while capturedAt is stored once and claima
 
   assert.equal((await verifyFinalPublicationClaimantV1({ repositoryRoot: root, claimDigest, capability: "wrong" })).state, "invalid");
   assert.equal((await verifyFinalPublicationClaimantV1({ repositoryRoot: root, claimDigest, capability: first.value.capability })).state, "valid");
+  assert.equal(verifyFinalPublicationClaimantForEffectV1({ repositoryRoot: root, claimDigest, capability: "wrong" }).state, "invalid");
+  assert.equal(verifyFinalPublicationClaimantForEffectV1({ repositoryRoot: root, claimDigest, capability: first.value.capability }).state, "valid");
+  const lockPath = join(root, ".shield", "final-publication-receipts.jsonl.lock");
+  await writeFile(lockPath, "held");
+  const contended = verifyFinalPublicationClaimantForEffectV1({ repositoryRoot: root, claimDigest, capability: first.value.capability });
+  assert.equal(contended.state, "invalid");
+  assert.equal(contended.code, "ledger_busy");
+  await unlink(lockPath);
   const terminal = await recordFinalPublicationOwnerTerminalV1({
     repositoryRoot: root,
     claimDigest,
@@ -170,6 +180,7 @@ test("claim identity is deterministic while capturedAt is stored once and claima
   assert.equal(terminal.state, "valid");
   assert.equal(terminal.value.terminal.state, "not_applied");
   assert.equal((await verifyFinalPublicationClaimantV1({ repositoryRoot: root, claimDigest, capability: first.value.capability })).state, "invalid");
+  assert.equal(verifyFinalPublicationClaimantForEffectV1({ repositoryRoot: root, claimDigest, capability: first.value.capability }).state, "invalid");
 });
 
 test("positive readback may durably terminalize delivery and exact retry cannot conflict", async () => {
@@ -218,4 +229,46 @@ test("malformed, conflicting, and unsafe ledger state fails closed", async () =>
   const replay = await readFinalPublicationReceiptLedgerV1(unsafe);
   assert.equal(replay.state, "invalid");
   assert.equal(replay.code, "ledger_unavailable");
+});
+
+test("delivered append and replay reject every stale or foreign receipt and result envelope", async () => {
+  const mutations = [
+    (delivery) => delivery.receipt.repositoryOwner = "Foreign",
+    (delivery) => delivery.receipt.baseBranch = "release",
+    (delivery) => delivery.receipt.branchSlug = "agent/foreign",
+    (delivery) => delivery.receipt.artifactRevisionId = "3".repeat(40),
+    (delivery) => delivery.candidate.candidateId = "candidate:foreign",
+    (delivery) => delivery.candidate.sourceRef = "source:foreign",
+    (delivery) => delivery.candidate.capturedAt = { value: "2026-08-19T21:00:00Z", provenance: "hostTrusted" },
+    (delivery) => delivery.candidate.missionId = "mission:foreign",
+    (delivery) => delivery.candidate.subjectId = "github:RanSolo/shield-workspace/issue/999",
+    (delivery) => delivery.candidate.revisionId = "sha256:foreign-revision",
+    (delivery) => delivery.candidate.payload.requestId = "request:foreign",
+    (delivery) => delivery.candidate.payload.targetRef = "github:repository:RanSolo/shield-workspace:branch:agent/foreign:base:main",
+    (delivery) => delivery.candidate.payload.publicationBinding.headRevisionId = "4".repeat(40),
+  ];
+  for (const mutate of mutations) {
+    const root = await fixtureRoot();
+    const started = await claimFinalPublicationV1({ repositoryRoot: root, preimage: preimage(root), capturedAt });
+    assert.equal(started.state, "valid");
+    const delivery = structuredClone(deliveredCandidate(root, started.value.identity));
+    mutate(delivery);
+    const terminal = {
+      schemaVersion: 1,
+      contractVersion: FINAL_PUBLICATION_RECEIPT_CONTRACT_VERSION,
+      sequence: 1,
+      state: "delivered",
+      claimDigest: started.value.identity.claimDigest,
+      receipt: delivery.receipt,
+      candidate: delivery.candidate,
+    };
+    assert.equal(replayFinalPublicationReceiptLedgerV1([started.value.projection.started, terminal]).state, "invalid");
+    const appended = await recordFinalPublicationDeliveredV1({
+      repositoryRoot: root,
+      claimDigest: started.value.identity.claimDigest,
+      receipt: delivery.receipt,
+      candidate: delivery.candidate,
+    });
+    assert.equal(appended.state, "invalid");
+  }
 });

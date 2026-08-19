@@ -1,5 +1,16 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { constants } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { lstat, open, realpath, unlink } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -203,6 +214,48 @@ function validReceipt(value: unknown): value is FinalPublicationReceiptV1 {
     value.state === "OPEN" && value.isDraft === true;
 }
 
+function deliveredMatchesStarted(
+  started: Extract<FinalPublicationReceiptEntryV1, { state: "started" }>,
+  delivered: Extract<FinalPublicationReceiptEntryV1, { state: "delivered" }>,
+): boolean {
+  const { preimage } = started;
+  const repositoryParts = preimage.repositoryId.split("/");
+  if (repositoryParts.length !== 2 || repositoryParts.some((part) => part.length === 0)) return false;
+  const [repositoryOwner, repositoryName] = repositoryParts;
+  const receipt = delivered.receipt;
+  const expectedTargetRef = `github:repository:${preimage.repositoryId}:branch:${preimage.branch}:base:${receipt.baseBranch}`;
+  if (delivered.claimDigest !== started.claimDigest || receipt.repositoryOwner !== repositoryOwner ||
+      receipt.repositoryName !== repositoryName || receipt.branchSlug !== preimage.branch ||
+      receipt.artifactRevisionId !== preimage.headRevisionId || preimage.targetRef !== expectedTargetRef) return false;
+
+  let identity: FinalPublicationIdentityEnvelopeV1;
+  try { identity = deriveFinalPublicationIdentityV1(started.claimDigest, started.capturedAt); } catch { return false; }
+  const candidate = delivered.candidate;
+  const expectedBinding = {
+    authorityKind: preimage.authority.authorityKind,
+    authorityRef: preimage.authority.authorityRef,
+    missionId: preimage.authority.missionId,
+    subjectId: preimage.authority.subjectId,
+    missionRevisionId: preimage.authority.missionRevisionId,
+    repositoryId: preimage.authority.repositoryId,
+    canonicalRepositoryRoot: preimage.authority.canonicalRepositoryRoot,
+    branch: preimage.authority.branch,
+    baseRevisionId: preimage.authority.baseRevisionId,
+    headRevisionId: preimage.authority.headRevisionId,
+    authorizedPaths: preimage.authority.authorizedPaths,
+    permittedEffects: preimage.authority.permittedEffects,
+    requestedEffects: preimage.requestedEffects,
+  };
+  return candidate.adapterId === "github" && candidate.candidateId === identity.candidateId &&
+    candidate.sourceRef === identity.sourceRef && canonicalJson(candidate.capturedAt) === canonicalJson(identity.capturedAt) &&
+    candidate.missionId === preimage.missionId && candidate.subjectId === preimage.authority.subjectId &&
+    candidate.revisionId === preimage.missionRevisionId && candidate.humanPrincipalId === null && candidate.bindingId === null &&
+    candidate.payload.requestId === identity.requestId && candidate.payload.outcome === "delivered" &&
+    candidate.payload.failureReason === null && candidate.payload.receiptRef === receipt.prUrl &&
+    candidate.payload.operation === preimage.operation && candidate.payload.targetRef === preimage.targetRef &&
+    canonicalJson(candidate.payload.publicationBinding) === canonicalJson(expectedBinding);
+}
+
 function parseEntry(value: unknown, index: number): FinalPublicationStoreResultV1<FinalPublicationReceiptEntryV1> {
   if (!plain(value) || value.schemaVersion !== 1 || value.contractVersion !== FINAL_PUBLICATION_RECEIPT_CONTRACT_VERSION || value.sequence !== index) {
     return invalid("malformed_ledger", `Final publication receipt entry ${index} identity is invalid.`);
@@ -256,6 +309,10 @@ export function replayFinalPublicationReceiptLedgerV1(entries: readonly unknown[
   }
   if (parsed.length > 0 && parsed[0].state !== "started") return invalid("ordering_invalid", "Final publication receipt ledger must begin with started.");
   if (parsed.length === 2 && parsed[1].claimDigest !== parsed[0].claimDigest) return invalid("claim_mismatch", "Final publication terminal claim digest differs from started.");
+  if (parsed.length === 2 && parsed[0].state === "started" && parsed[1].state === "delivered" &&
+      !deliveredMatchesStarted(parsed[0], parsed[1])) {
+    return invalid("terminal_identity_mismatch", "Final publication delivered receipt or result identity differs from started.");
+  }
   return valid(snapshot({
     entries: parsed,
     started: (parsed[0] ?? null) as Extract<FinalPublicationReceiptEntryV1, { state: "started" }> | null,
@@ -500,6 +557,104 @@ export async function verifyFinalPublicationClaimantV1(input: {
     if (!await release(token.value)) result = invalid("recovery_required", "Final publication claimant lock release could not be verified.");
   }
   return result!;
+}
+
+function syncDirectorySync(path: string): boolean {
+  let descriptor: number | undefined;
+  let synced = false;
+  try { descriptor = openSync(path, constants.O_RDONLY); fsyncSync(descriptor); synced = true; } catch { synced = false; } finally {
+    if (descriptor !== undefined) try { closeSync(descriptor); } catch { synced = false; }
+  }
+  return synced;
+}
+
+/**
+ * Synchronous because the existing GitHub workspace mutation seam is
+ * synchronous. The commitment is checked while holding the same exclusive
+ * ledger lock used by append operations, and the lock is released before the
+ * guarded effect begins.
+ */
+export function verifyFinalPublicationClaimantForEffectV1(input: {
+  repositoryRoot: string;
+  claimDigest: string;
+  capability: string;
+}): FinalPublicationStoreResultV1<FinalPublicationReceiptProjectionV1> {
+  let lockDescriptor: number | undefined;
+  let ledgerDescriptor: number | undefined;
+  let lockPath = "";
+  let marker = "";
+  let lockIdentity: ReturnType<typeof fstatSync> | undefined;
+  let result: FinalPublicationStoreResultV1<FinalPublicationReceiptProjectionV1> = invalid("recovery_required", "Final publication effect guard did not complete.");
+  try {
+    const canonicalRoot = realpathSync(input.repositoryRoot);
+    if (canonicalRoot !== resolve(input.repositoryRoot)) return invalid("unsafe_path", "Repository root must already be canonical.");
+    const shield = resolve(canonicalRoot, ".shield");
+    const canonicalShield = realpathSync(shield);
+    if (relative(canonicalRoot, canonicalShield) !== ".shield") return invalid("unsafe_path", "Final publication ledger root escapes the repository.");
+    const ledgerPath = resolve(canonicalShield, "final-publication-receipts.jsonl");
+    lockPath = `${ledgerPath}.lock`;
+    marker = randomBytes(24).toString("base64url");
+    lockDescriptor = openSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    lockIdentity = fstatSync(lockDescriptor);
+    if (!lockIdentity.isFile() || lockIdentity.isSymbolicLink() || writeSync(lockDescriptor, marker, null, "utf8") !== Buffer.byteLength(marker)) {
+      return invalid("recovery_required", "Final publication effect guard lock is unsafe.");
+    }
+    fsyncSync(lockDescriptor);
+    closeSync(lockDescriptor); lockDescriptor = undefined;
+    if (!syncDirectorySync(canonicalShield)) return invalid("recovery_required", "Final publication effect guard lock was not durable.");
+    const pathLockIdentity = lstatSync(lockPath);
+    if (pathLockIdentity.isSymbolicLink() || !pathLockIdentity.isFile() || pathLockIdentity.dev !== lockIdentity.dev || pathLockIdentity.ino !== lockIdentity.ino) {
+      return invalid("recovery_required", "Final publication effect guard lock identity changed.");
+    }
+
+    ledgerDescriptor = openSync(ledgerPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const ledgerIdentity = fstatSync(ledgerDescriptor);
+    const pathLedgerIdentity = lstatSync(ledgerPath);
+    if (!ledgerIdentity.isFile() || ledgerIdentity.isSymbolicLink() || pathLedgerIdentity.isSymbolicLink() || !pathLedgerIdentity.isFile() ||
+        ledgerIdentity.dev !== pathLedgerIdentity.dev || ledgerIdentity.ino !== pathLedgerIdentity.ino || ledgerIdentity.size > MAX_LEDGER_BYTES) {
+      return invalid("unsafe_ledger", "Final publication ledger identity is unsafe.");
+    }
+    const bytes = readFileSync(ledgerDescriptor, "utf8");
+    if (bytes === "" || !bytes.endsWith("\n")) return invalid("malformed_ledger", "Final publication ledger has an incomplete final record.");
+    const entries: unknown[] = [];
+    for (const line of bytes.slice(0, -1).split("\n")) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch { return invalid("malformed_ledger", "Final publication ledger contains invalid JSON."); }
+      if (canonicalJson(parsed) !== line) return invalid("malformed_ledger", "Final publication ledger record is not canonical.");
+      entries.push(parsed);
+    }
+    const replay = replayFinalPublicationReceiptLedgerV1(entries);
+    if (replay.state === "invalid") return replay;
+    if (replay.value.terminal !== null) result = invalid("claim_terminal", "Final publication claim is already terminal.");
+    else if (replay.value.started?.claimDigest !== input.claimDigest || !capabilityMatches(replay.value.started, input.capability)) {
+      result = invalid("claimant_required", "Final publication claimant capability is absent or invalid.");
+    } else result = valid(replay.value);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    result = invalid(code === "EEXIST" ? "ledger_busy" : "recovery_required", `Final publication effect guard failed: ${code ?? "unknown"}.`);
+  } finally {
+    if (ledgerDescriptor !== undefined) try { closeSync(ledgerDescriptor); } catch { result = invalid("recovery_required", "Final publication effect guard ledger close failed."); }
+    if (lockDescriptor !== undefined) try { closeSync(lockDescriptor); } catch { result = invalid("recovery_required", "Final publication effect guard lock close failed."); }
+    if (lockPath !== "" && lockIdentity !== undefined) {
+      let releaseDescriptor: number | undefined;
+      try {
+        releaseDescriptor = openSync(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const current = fstatSync(releaseDescriptor);
+        const contents = readFileSync(releaseDescriptor, "utf8");
+        if (current.isSymbolicLink() || !current.isFile() || current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino || contents !== marker) {
+          result = invalid("recovery_required", "Final publication effect guard lock release identity failed.");
+        } else {
+          closeSync(releaseDescriptor); releaseDescriptor = undefined;
+          unlinkSync(lockPath);
+          if (!syncDirectorySync(dirname(lockPath))) result = invalid("recovery_required", "Final publication effect guard lock release was not durable.");
+        }
+      } catch { result = invalid("recovery_required", "Final publication effect guard lock release failed."); }
+      finally {
+        if (releaseDescriptor !== undefined) try { closeSync(releaseDescriptor); } catch { result = invalid("recovery_required", "Final publication effect guard lock release close failed."); }
+      }
+    }
+  }
+  return result;
 }
 
 export async function recordFinalPublicationDeliveredV1(input: {

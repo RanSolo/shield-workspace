@@ -21,6 +21,7 @@ const RECEIPT_FIELDS = Object.freeze([
   "isDraft",
 ]);
 const IMMUTABLE_GIT_REVISION = /^[0-9a-f]{40,64}$/;
+const finalPublicationEffectGuards = new Map();
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) &&
@@ -95,6 +96,31 @@ function blockedAfterScope(reason, commands, scope) {
     },
     commands,
   };
+}
+
+export function installFinalPublicationEffectGuard(publicationRequestId, guard) {
+  if (typeof publicationRequestId !== "string" || !publicationRequestId.startsWith("request:final-publication:") ||
+      typeof guard !== "function" || finalPublicationEffectGuards.has(publicationRequestId)) {
+    return { state: "blocked", reason: "effect_guard_installation_failed" };
+  }
+  const registration = Object.freeze({ guard });
+  finalPublicationEffectGuards.set(publicationRequestId, registration);
+  let active = true;
+  return {
+    state: "installed",
+    uninstall() {
+      if (!active || finalPublicationEffectGuards.get(publicationRequestId) !== registration) return false;
+      active = false;
+      return finalPublicationEffectGuards.delete(publicationRequestId);
+    },
+  };
+}
+
+function verifyFinalPublicationEffectGuard(publicationRequestId, effect) {
+  if (typeof publicationRequestId !== "string" || !publicationRequestId.startsWith("request:final-publication:")) return true;
+  const registration = finalPublicationEffectGuards.get(publicationRequestId);
+  if (!registration) return false;
+  try { return registration.guard(effect) === true; } catch { return false; }
 }
 
 function call(run, commands, executable, args, options) {
@@ -319,6 +345,17 @@ function readRemoteBranch(run, commands, branch, cwd) {
   return { state: "present", revision: match.groups.revision };
 }
 
+function verifyCanonicalMutationBase(run, commands, plan, expectedBaseRevisionId, cwd) {
+  const canonical = readCanonicalDefaultBranch(run, commands, plan, cwd);
+  if (canonical.state !== "ok") return canonical;
+  if (canonical.branch !== plan.baseBranch) return { state: "error", reason: "default_branch_mismatch" };
+  const base = readRemoteBranch(run, commands, canonical.branch, cwd);
+  if (base.state !== "present" || base.revision !== expectedBaseRevisionId) {
+    return { state: "error", reason: base.state === "error" ? base.reason : "publication_target_mismatch" };
+  }
+  return { state: "ok" };
+}
+
 function verifiedReceipt(plan, artifactRevisionId, pr) {
   const candidate = {
     schemaVersion: 1,
@@ -508,19 +545,20 @@ export function createOrUpdatePR(plan, options = {}) {
       scope.binding.headRevisionId !== artifactRevisionId) {
     return blocked("publication_binding_mismatch", commands);
   }
-  const observedBase = call(
-    run,
-    commands,
-    "git",
-    ["ls-remote", "--exit-code", "origin", `refs/heads/${plan.baseBranch}`],
-    { cwd },
-  );
-  const liveBaseRevisionId = observedBase.stdout.trim().split(/\s+/u)[0] ?? "";
-  if (observedBase.exitCode !== 0 ||
-      liveBaseRevisionId !== scope.binding.baseRevisionId) {
-    return blocked("publication_target_mismatch", commands);
+  const finalPublicationRequest = publication.request.requestId.startsWith("request:final-publication:");
+  if (!finalPublicationRequest) {
+    const observedBase = call(
+      run,
+      commands,
+      "git",
+      ["ls-remote", "--exit-code", "origin", `refs/heads/${plan.baseBranch}`],
+      { cwd },
+    );
+    const liveBaseRevisionId = observedBase.stdout.trim().split(/\s+/u)[0] ?? "";
+    if (observedBase.exitCode !== 0 || liveBaseRevisionId !== scope.binding.baseRevisionId) {
+      return blocked("publication_target_mismatch", commands);
+    }
   }
-
   if (verifyExisting) {
     if (lookup.pr.title !== plan.prTitle) {
       return blockedAfterScope("matching_pr_title_mismatch", commands, scope);
@@ -546,22 +584,33 @@ export function createOrUpdatePR(plan, options = {}) {
     };
   }
 
-  if (publication.request.requestId.startsWith("request:final-publication:")) {
+  let pushRequired = true;
+  if (finalPublicationRequest) {
     const remoteBranch = readRemoteBranch(run, commands, plan.branchSlug, cwd);
     if (remoteBranch.state === "error") return blockedAfterScope(remoteBranch.reason, commands, scope);
     if (remoteBranch.state === "present" && remoteBranch.revision !== artifactRevisionId) {
       return blockedAfterScope("remote_branch_head_mismatch", commands, scope);
     }
-    if (remoteBranch.state === "absent") {
-      const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
-      if (push.exitCode !== 0) return blockedAfterScope("branch_push_failed", commands, scope);
+    pushRequired = remoteBranch.state === "absent";
+  }
+
+  if (finalPublicationRequest) {
+    const mutationBase = verifyCanonicalMutationBase(run, commands, plan, scope.binding.baseRevisionId, cwd);
+    if (mutationBase.state !== "ok") return blockedAfterScope(mutationBase.reason, commands, scope);
+  }
+
+  if (pushRequired) {
+    if (!verifyFinalPublicationEffectGuard(publication.request.requestId, "review.branch.push")) {
+      return blockedAfterScope("final_publication_claimant_required", commands, scope);
     }
-  } else {
     const push = call(run, commands, "git", ["push", "-u", "origin", plan.branchSlug], { cwd });
     if (push.exitCode !== 0) return blockedAfterScope("branch_push_failed", commands, scope);
   }
 
   if (lookup.pr === null) {
+    if (!verifyFinalPublicationEffectGuard(publication.request.requestId, "review.pull_request.create_draft")) {
+      return blockedAfterScope("final_publication_claimant_required", commands, scope);
+    }
     const created = call(
       run,
       commands,
@@ -599,6 +648,9 @@ export function createOrUpdatePR(plan, options = {}) {
     };
   }
 
+  if (!verifyFinalPublicationEffectGuard(publication.request.requestId, "review.pull_request.update_draft")) {
+    return blockedAfterScope("final_publication_claimant_required", commands, scope);
+  }
   const edited = call(
     run,
     commands,

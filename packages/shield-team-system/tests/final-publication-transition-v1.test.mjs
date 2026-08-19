@@ -6,9 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  classifyFinalPublicationCanonicalStateV1ForTest,
   observeFinalPublicationWorktreeV1ForTest,
   runFinalPublicationTransitionV1,
 } from "../dist/final-publication-transition-v1.mjs";
+import { computeReviewPublicationAuthorityDigest } from "../dist/review-publication-v1.mjs";
 
 const repositoryId = "RanSolo/shield-workspace";
 const branch = "agent/final-publication-transition";
@@ -88,4 +90,128 @@ test("closed transition input fails incompatible before repository or publicatio
   assert.equal(result.state, "recovery_required");
   assert.equal(result.classification, "incompatible");
   assert.match(result.reason, /input is malformed/u);
+});
+
+function canonicalClassificationFixture() {
+  const missionId = "mission:classification";
+  const authority = {
+    publicationScopeSchemaVersion: 1,
+    contractVersion: "review-publication.v1",
+    authorityKind: "review.publish",
+    authorityRef: `authorization:${missionId}:review-publish:1`,
+    missionId,
+    subjectId: "github:RanSolo/shield-workspace/issue/311",
+    missionRevisionId: "sha256:mission-classification",
+    repositoryId,
+    canonicalRepositoryRoot: "/workspace/shield-workspace",
+    branch,
+    baseRevisionId: "a".repeat(40),
+    headRevisionId: "b".repeat(40),
+    authorizedPaths: ["docs/missions/issue-311.md"],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+  };
+  const authorization = {
+    authorizationId: authority.authorityRef,
+    authorityDigest: computeReviewPublicationAuthorityDigest(authority),
+    authorityKind: "review.publish",
+    missionId,
+    subjectId: authority.subjectId,
+    missionRevisionId: authority.missionRevisionId,
+    artifactRevisionId: authority.headRevisionId,
+    humanPrincipalId: "human:coulson",
+    humanBindingId: "binding:coulson",
+    signingKeyRef: "key:coulson",
+    previousJournalSequence: 0,
+    journalSequence: 1,
+    sourceRef: "cli:prepare-next:publication-authorize:1",
+  };
+  const record = {
+    entryId: `entry:${missionId}:1`,
+    journalSequence: 1,
+    authority,
+    authorization,
+    aliases: [],
+  };
+  const request = {
+    requestId: "request:final-publication:classification",
+    adapterContractVersion: 2,
+    adapterId: "github",
+    operation: "publish_mission_brief",
+    missionId,
+    subjectId: authority.subjectId,
+    revisionId: authority.missionRevisionId,
+    artifactRevisionId: authority.headRevisionId,
+    targetRef: `github:repository:${repositoryId}:branch:${branch}:base:main`,
+    publicationAuthorizationId: authorization.authorizationId,
+    proposedChangedPaths: [...authority.authorizedPaths],
+    requestedEffects: [...authority.permittedEffects],
+  };
+  const journal = {
+    kind: "profile-aware",
+    entries: [
+      { type: "mission.intake", payload: {} },
+      { type: "review.publication_authorized", sequence: 1, entryId: record.entryId,
+        payload: { authority, authorization: { payload: authorization } } },
+    ],
+    projection: {
+      missionId,
+      brief: { subjectId: authority.subjectId, revisionId: authority.missionRevisionId },
+      publicationAuthorizations: [{ authority: { authorityKind: "wheels_up" }, aliases: [] }, record],
+      communication: { requests: [] },
+    },
+  };
+  const reusable = {
+    schemaVersion: 1,
+    state: "publication_already_authorized",
+    missionId,
+    missionRevisionId: authority.missionRevisionId,
+    authorizationId: authorization.authorizationId,
+    authorityDigest: authorization.authorityDigest,
+    journalSequence: 1,
+  };
+  return { authority, authorization, journal, record, request, reusable };
+}
+
+test("canonical preparation outcomes alone classify supersedable, reusable, consumed, and incompatible", () => {
+  const fixture = canonicalClassificationFixture();
+  assert.equal(classifyFinalPublicationCanonicalStateV1ForTest({ state: "publication_ready" }, fixture.journal).classification, "supersedable");
+  assert.equal(classifyFinalPublicationCanonicalStateV1ForTest(fixture.reusable, fixture.journal).classification, "reusable");
+
+  fixture.journal.entries.push({ type: "communication.requested", payload: { request: fixture.request } });
+  fixture.journal.projection.communication.requests.push({ ...fixture.request, state: "queued" });
+  const consumed = classifyFinalPublicationCanonicalStateV1ForTest({
+    state: "blocked",
+    reasonCode: "authority_conflict",
+    errors: ["Existing prepared publication authorization has already been consumed or conflicted by a publication request."],
+  }, fixture.journal);
+  assert.equal(consumed.classification, "consumed");
+  assert.equal(consumed.resumable, true);
+
+  const incompatible = classifyFinalPublicationCanonicalStateV1ForTest({
+    state: "blocked", reasonCode: "repository_observation_stale", errors: ["drift"],
+  }, fixture.journal);
+  assert.equal(incompatible.classification, "incompatible");
+  assert.equal(incompatible.resumable, false);
+});
+
+test("canonical consumed classification rejects foreign, multiple, terminal, and provenance-broken request chains", () => {
+  const blocked = {
+    state: "blocked",
+    reasonCode: "authority_conflict",
+    errors: ["Existing prepared publication authorization has already been consumed or conflicted by a publication request."],
+  };
+  for (const mutate of [
+    (fixture) => fixture.journal.projection.publicationAuthorizations[1].authorization.sourceRef = "foreign",
+    (fixture) => fixture.journal.projection.communication.requests.push({ ...fixture.request, requestId: "request:foreign", state: "queued" }),
+    (fixture) => fixture.journal.projection.communication.requests[0].state = "failed",
+    (fixture) => fixture.journal.entries.splice(2, 1),
+  ]) {
+    const fixture = canonicalClassificationFixture();
+    fixture.journal.entries.push({ type: "communication.requested", payload: { request: fixture.request } });
+    fixture.journal.projection.communication.requests.push({ ...fixture.request, state: "queued" });
+    mutate(fixture);
+    const result = classifyFinalPublicationCanonicalStateV1ForTest(blocked, fixture.journal);
+    assert.equal(result.resumable, false);
+    assert.equal(result.authority, null);
+  }
 });

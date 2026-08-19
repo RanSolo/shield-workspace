@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 // @ts-expect-error The package-internal GitHub adapter is JavaScript and intentionally has no private declaration surface.
 import { deliverGitHubCommunication, createGitHubPublicationResultCandidate } from "../github/adapter-v1.mjs";
 // @ts-expect-error The package-internal PR workspace is JavaScript; its public reconciliation declaration lives in public/github.d.mts.
-import { githubPRWorkspaceTargetRef, reconcilePRPublication } from "../github/pr-workspace.mjs";
+import { githubPRWorkspaceTargetRef, installFinalPublicationEffectGuard, reconcilePRPublication } from "../github/pr-workspace.mjs";
 import { parseShieldConfig, type ShieldConfig } from "./config.mjs";
 import {
   computeFinalPublicationContentDigestV1,
@@ -15,6 +15,7 @@ import {
   claimFinalPublicationV1,
   recordFinalPublicationDeliveredV1,
   recordFinalPublicationOwnerTerminalV1,
+  verifyFinalPublicationClaimantForEffectV1,
   verifyFinalPublicationClaimantV1,
   FINAL_PUBLICATION_RECEIPT_CONTRACT_VERSION,
   type FinalPublicationClaimPreimageV1,
@@ -24,6 +25,7 @@ import {
 import {
   resolvePreparedMissionTransitionV1,
   type PreparedPublicationReadyResultV1,
+  type ResolvePreparedMissionTransitionResultV1,
 } from "./mission-preparation-host-v1.mjs";
 import { readMissionReviewedTransitionGraphV1, type MissionReviewedTransitionGraphV1 } from "./mission-preparation-store-v1.mjs";
 import {
@@ -42,6 +44,7 @@ import {
 } from "./profile-aware-mission-v1.mjs";
 import {
   computeReviewPublicationAuthoritySemanticIdentityV1,
+  computeReviewPublicationAuthorityDigest,
   type ReviewPublicationAuthorityV1,
 } from "./review-publication-v1.mjs";
 import type { ReviewPublicationCommunicationRequestPayload, ReviewPublicationCommunicationResultAdapterCandidate } from "./adapter-v1.mjs";
@@ -214,16 +217,6 @@ export async function observeFinalPublicationWorktreeV1ForTest(input: {
     input.expectedBranch, input.expectedInitialHead);
 }
 
-async function changedPaths(root: string, base: string, head: string): Promise<string[]> {
-  const result = await git(root, ["diff", "--name-only", "--no-renames", "-z", base, head, "--"]);
-  if (result.stdout !== "" && !result.stdout.endsWith("\0")) throw new Error("Git changed-path observation is malformed.");
-  return result.stdout === "" ? [] : result.stdout.slice(0, -1).split("\0").sort();
-}
-
-function sameAuthorityMeaning(authority: ReviewPublicationAuthorityV1, expected: Omit<ReviewPublicationAuthorityV1, "authorityRef">): boolean {
-  return canonicalJson({ ...authority, authorityRef: "authority:comparison" }) === canonicalJson({ ...expected, authorityRef: "authority:comparison" });
-}
-
 type Classification = Readonly<{
   classification: FinalPublicationClassificationV1;
   authority: ReviewPublicationAuthorityV1 | null;
@@ -233,46 +226,90 @@ type Classification = Readonly<{
   reason: string | null;
 }>;
 
-async function classifyExisting(
-  root: string,
-  projection: ProfileAwareProjectionV1,
-  graph: MissionReviewedTransitionGraphV1,
-  head: string,
-): Promise<Classification> {
-  if (projection.publicationAuthorizations.some(({ aliases }) => aliases.length !== 0)) {
-    return { classification: "incompatible", authority: null, authorizationId: null, request: null, resumable: false, reason: "Publication authority aliases are incompatible with the final transition." };
+const CANONICAL_CONSUMED_ERROR = "Existing prepared publication authorization has already been consumed or conflicted by a publication request.";
+
+function verifiedPreparedPublicationRecord(journal: ProfileJournal, authorizationId?: string) {
+  const records = journal.projection.publicationAuthorizations.filter(({ authority }) => authority.authorityKind === "review.publish");
+  if (records.length !== 1 || journal.projection.publicationAuthorizations.length !== 2 ||
+      journal.projection.publicationAuthorizations.some(({ aliases }) => aliases.length !== 0)) return null;
+  const record = records[0];
+  const sequence = record.journalSequence;
+  const authorization = record.authorization;
+  const entry = journal.entries[sequence];
+  if ((authorizationId !== undefined && authorization.authorizationId !== authorizationId) ||
+      entry?.type !== "review.publication_authorized" || entry.sequence !== sequence || entry.entryId !== record.entryId ||
+      record.authority.authorityRef !== `authorization:${journal.projection.missionId}:review-publish:${sequence}` ||
+      authorization.authorizationId !== record.authority.authorityRef ||
+      authorization.authorityDigest !== computeReviewPublicationAuthorityDigest(record.authority) ||
+      authorization.authorityKind !== "review.publish" || authorization.previousJournalSequence !== sequence - 1 ||
+      authorization.journalSequence !== sequence ||
+      !new RegExp(`^cli:prepare-next:publication-authorize:${sequence}(?::(?:guided-review|guided-review-v2):sha256:[A-Za-z0-9_-]{43})?$`, "u").test(authorization.sourceRef) ||
+      canonicalJson(entry.payload.authority) !== canonicalJson(record.authority) ||
+      canonicalJson(entry.payload.authorization.payload) !== canonicalJson(authorization)) return null;
+  return record;
+}
+
+function classifyCanonicalState(
+  prepared: ResolvePreparedMissionTransitionResultV1,
+  journal: ProfileJournal,
+): Classification {
+  if (prepared.state === "publication_ready") {
+    return { classification: "supersedable", authority: null, authorizationId: null, request: null, resumable: false, reason: null };
   }
-  const implementation = projection.implementationAuthority;
-  if (implementation === null) return { classification: "incompatible", authority: null, authorizationId: null, request: null, resumable: false, reason: "Implementation authority is absent." };
-  const paths = await changedPaths(root, implementation.baseRevision, head);
-  const expected: Omit<ReviewPublicationAuthorityV1, "authorityRef"> = {
-    publicationScopeSchemaVersion: 1 as const, contractVersion: "review-publication.v1" as const, authorityKind: "review.publish" as const,
-    missionId: projection.missionId, subjectId: projection.brief.subjectId, missionRevisionId: projection.brief.revisionId,
-    repositoryId: implementation.repositoryId, canonicalRepositoryRoot: implementation.canonicalWritableRoot,
-    branch: implementation.branch, baseRevisionId: implementation.baseRevision, headRevisionId: head,
-    authorizedPaths: paths, permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
-  };
-  if (paths.length === 0 || !paths.includes(graph.transitionPlan.parentPlanPath) ||
-      paths.some((path) => !graph.transitionPlan.approvedRelativePaths.some((approved) => path === approved || path.startsWith(`${approved}/`)))) {
-    return { classification: "incompatible", authority: null, authorizationId: null, request: null, resumable: false, reason: "Current base-to-HEAD paths do not match the protected publication scope." };
+  if (prepared.state === "publication_already_authorized") {
+    const record = verifiedPreparedPublicationRecord(journal, prepared.authorizationId);
+    if (record === null || prepared.missionId !== journal.projection.missionId ||
+        prepared.missionRevisionId !== journal.projection.brief.revisionId || prepared.journalSequence !== record.journalSequence ||
+        prepared.authorityDigest !== record.authorization.authorityDigest || journal.projection.communication.requests.length !== 0) {
+      return { classification: "incompatible", authority: null, authorizationId: null, request: null, resumable: false,
+        reason: "Canonical reusable publication authority does not match the replayed journal chain." };
+    }
+    return { classification: "reusable", authority: record.authority, authorizationId: prepared.authorizationId, request: null, resumable: true, reason: null };
   }
-  const matches = projection.publicationAuthorizations.filter(({ authority }) => authority.authorityKind === "review.publish" && sameAuthorityMeaning(authority, expected));
-  const nonInitial = projection.publicationAuthorizations.filter(({ authority }) => authority.authorityKind !== "wheels_up");
-  if (matches.length !== 1 || nonInitial.length !== 1) {
-    return { classification: "incompatible", authority: null, authorizationId: null, request: null, resumable: false, reason: "Final semantic publication authority is absent, stale, or ambiguous." };
+  if (prepared.state !== "blocked" || prepared.reasonCode !== "authority_conflict" ||
+      prepared.errors.length !== 1 || prepared.errors[0] !== CANONICAL_CONSUMED_ERROR) {
+    const reason = prepared.state === "blocked" ? `${prepared.reasonCode}: ${prepared.errors.join(" ")}` : `Canonical mission preparation returned ${prepared.state}.`;
+    return { classification: "incompatible", authority: null, authorizationId: null, request: null, resumable: false, reason };
   }
-  const record = matches[0];
-  const requests = projection.communication.requests.filter((request) => request.adapterContractVersion === 2 &&
+
+  // This exact canonical blocked outcome is emitted only after preparedPublicationResult
+  // and prepared-authorization provenance have succeeded. The journal check below
+  // then closes the authority-to-request chain without rebuilding authority meaning.
+  const record = verifiedPreparedPublicationRecord(journal);
+  if (record === null) return { classification: "consumed", authority: null, authorizationId: null, request: null, resumable: false,
+    reason: "Canonical consumed outcome has no exact prepared-authorization provenance." };
+  const requests = journal.projection.communication.requests.filter((request) => request.adapterContractVersion === 2 &&
     request.publicationAuthorizationId === record.authorization.authorizationId);
-  const foreign = projection.communication.requests.filter((request) => !requests.includes(request));
-  if (foreign.length > 0 || requests.length > 1) {
-    return { classification: "consumed", authority: record.authority, authorizationId: record.authorization.authorizationId, request: null, resumable: false, reason: "Publication request history is foreign or multiple." };
+  if (requests.length !== 1 || journal.projection.communication.requests.length !== 1) {
+    return { classification: "consumed", authority: null, authorizationId: null, request: null, resumable: false,
+      reason: "Canonical consumed outcome has a foreign or ambiguous request chain." };
   }
-  if (requests.length === 0) return { classification: "reusable", authority: record.authority, authorizationId: record.authorization.authorizationId, request: null, resumable: true, reason: null };
   const request = requests[0];
+  const requestEntries = journal.entries.filter((entry): entry is Extract<ProfileAwareMissionEntryV1, { type: "communication.requested" }> =>
+    entry.type === "communication.requested" && entry.payload.request.requestId === request.requestId);
+  if (requestEntries.length !== 1 || !exactProjectedRequest(request, requestEntries[0].payload.request)) {
+    return { classification: "consumed", authority: null, authorizationId: null, request: null, resumable: false,
+      reason: "Canonical consumed request does not replay from one exact journal entry." };
+  }
   const resumable = request.state === "queued" || request.state === "delivered";
-  return { classification: "consumed", authority: record.authority, authorizationId: record.authorization.authorizationId,
-    request, resumable, reason: resumable ? null : `Publication request is terminal ${request.state}.` };
+  const resultEntries = journal.entries.filter((entry): entry is Extract<ProfileAwareMissionEntryV1, { type: "communication.result_recorded" }> =>
+    entry.type === "communication.result_recorded" && entry.payload.candidate.payload.requestId === request.requestId);
+  if ((request.state === "queued" && resultEntries.length !== 0) ||
+      (request.state === "delivered" && (resultEntries.length !== 1 || resultEntries[0].payload.candidate.candidateId !== request.candidateId ||
+        resultEntries[0].payload.candidate.sourceRef !== request.sourceRef || resultEntries[0].payload.candidate.payload.receiptRef !== request.receiptRef))) {
+    return { classification: "consumed", authority: null, authorizationId: null, request: null, resumable: false,
+      reason: "Canonical consumed result chain is stale or ambiguous." };
+  }
+  return { classification: "consumed", authority: resumable ? record.authority : null,
+    authorizationId: resumable ? record.authorization.authorizationId : null,
+    request: resumable ? request : null, resumable, reason: resumable ? null : `Publication request is terminal ${request.state}.` };
+}
+
+export function classifyFinalPublicationCanonicalStateV1ForTest(
+  prepared: ResolvePreparedMissionTransitionResultV1,
+  journal: ProfileJournal,
+): Classification {
+  return classifyCanonicalState(prepared, journal);
 }
 
 function renderPublication(graph: MissionReviewedTransitionGraphV1, projection: ProfileAwareProjectionV1, authority: ReviewPublicationAuthorityV1) {
@@ -396,7 +433,7 @@ export async function runFinalPublicationTransitionV1(
     if (initial.authority.repositoryId !== configSnapshot.config.repositoryId || initial.authority.canonicalRepositoryRoot !== root) {
       throw new Error("Initial publication authority repository binding differs from the governed root.");
     }
-    const attached = await observeAndAttach(root, configSnapshot.config, initial.authority.branch, initial.authority.headRevisionId);
+    await observeAndAttach(root, configSnapshot.config, initial.authority.branch, initial.authority.headRevisionId);
     const graphRead = await readMissionReviewedTransitionGraphV1({ repositoryRoot: root, missionId });
     if (graphRead.state !== "read") throw new Error(`${graphRead.code}: ${graphRead.errors.join(" ")}`);
     const graph = graphRead.graph;
@@ -412,15 +449,13 @@ export async function runFinalPublicationTransitionV1(
       prepared = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
       if (prepared.state !== "publication_already_authorized") throw new Error("Prepared publication authorization did not replay as the canonical reusable state.");
       journal = await journalSnapshot(root, configSnapshot.config, missionId);
-      classification = await classifyExisting(root, journal.current.projection, graph, attached.head);
+      classification = classifyCanonicalState(prepared, journal.current);
     } else if (prepared.state === "publication_already_authorized") {
-      classification = await classifyExisting(root, journal.current.projection, graph, attached.head);
+      classification = classifyCanonicalState(prepared, journal.current);
     } else {
-      classification = await classifyExisting(root, journal.current.projection, graph, attached.head);
-      if (classification.classification === "incompatible" && prepared.state === "blocked" && classification.reason === null) {
-        classification = { ...classification, reason: `${prepared.reasonCode}: ${prepared.errors.join(" ")}` };
-      }
+      classification = classifyCanonicalState(prepared, journal.current);
     }
+    dependencies.onClassification?.(classification.classification);
     if (classification.authority === null || classification.authorizationId === null || !classification.resumable) {
       return recovery(missionId, classification.classification, classification.reason ?? "Final publication state is not safely resumable.");
     }
@@ -489,13 +524,23 @@ export async function runFinalPublicationTransitionV1(
       }
       const possession = await verifyFinalPublicationClaimantV1({ repositoryRoot: root, claimDigest, capability });
       if (possession.state === "invalid") throw new Error(`${possession.code}: ${possession.errors.join(" ")}`);
+      const guard = installFinalPublicationEffectGuard(request.requestId, () =>
+        verifyFinalPublicationClaimantForEffectV1({ repositoryRoot: root, claimDigest, capability }).state === "valid");
+      if (guard.state !== "installed") throw new Error(guard.reason);
       const deliver = dependencies.deliver ?? deliverGitHubCommunication;
-      const delivered = deliver(request.requestId, {
-        candidateId: identity.candidateId, sourceRef: identity.sourceRef, capturedAt: identity.capturedAt,
-        workspacePlan: plan, body: rendered.body, proposedChangedPaths: [...authority.authorizedPaths],
-      }, { loadJournal: () => withRequest.entries, cwd: root });
+      let delivered: ReturnType<typeof deliverGitHubCommunication>;
+      let guardReleased = false;
+      try {
+        delivered = deliver(request.requestId, {
+          candidateId: identity.candidateId, sourceRef: identity.sourceRef, capturedAt: identity.capturedAt,
+          workspacePlan: plan, body: rendered.body, proposedChangedPaths: [...authority.authorizedPaths],
+        }, { loadJournal: () => withRequest.entries, cwd: root });
+      } finally {
+        guardReleased = guard.uninstall();
+      }
       observed = reconcile(plan, authority, authority.authorizedPaths, authority.permittedEffects, { body: rendered.body, cwd: root });
       if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed);
+      if (!guardReleased) throw new Error("Final publication effect guard release could not be verified.");
       const attempted = mutatingCommandAttempted(delivered.commands ?? []);
       if (observed.state === "not_applied" && !attempted) {
         const terminal = await recordFinalPublicationOwnerTerminalV1({ repositoryRoot: root, claimDigest, capability, state: "not_applied", reason: delivered.state === "blocked" ? delivered.reason : "pre_effect_failure" });
