@@ -379,6 +379,48 @@ test("prepares the real linked-worktree bootstrap-journal baseline without rewri
   assert.equal(git(current.destinationRoot, ["status", "--porcelain"]), "");
 });
 
+test("binds tracked baselines to the configured custom journal root for ready, replay, and doctor", async () => {
+  const paths = {
+    journals: ".shield/mission-state/journals",
+    reports: ".shield/mission-state/reports",
+    temp: ".shield/runtime/scratch",
+  };
+  const trackedPath = `${paths.journals}/bootstrap/custom.jsonl`;
+  const current = await fixture({
+    paths,
+    trackedFiles: [{ path: trackedPath, bytes: "custom-root\n" }],
+  });
+  const prepared = await prepareWorktreeStateV1(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  assert.deepEqual(prepared.receipt.trackedBaselineExclusions.map(({ path }) => path), [trackedPath]);
+  assert.equal(validateWorktreeStateReceiptV1(prepared.receipt), true);
+
+  const replay = await prepareWorktreeStateV1(current);
+  assert.equal(replay.state, "already_prepared", JSON.stringify(replay));
+  const doctor = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true });
+  assert.equal(doctor.classification, "prepared_worktree");
+  assert.equal(doctor.receiptDigest, prepared.receipt.receiptDigest);
+
+  const wrongRootReceipt = structuredClone(prepared.receipt);
+  wrongRootReceipt.trackedBaselineExclusions[0].path = ".shield/journals/bootstrap/custom.jsonl";
+  const digestBoundWrongRoot = withReceiptDigest(wrongRootReceipt);
+  assert.equal(validateWorktreeStateReceiptV1(digestBoundWrongRoot), true);
+  await writeReceipt(current.destinationRoot, digestBoundWrongRoot);
+  const rejectedReplay = await prepareWorktreeStateV1(current);
+  assert.equal(rejectedReplay.state, "blocked");
+  assert.equal(rejectedReplay.reasonCode, "prepared_state_stale");
+  await assertStaleDoctor(current.destinationRoot);
+
+  const unconfiguredDefault = await fixture({
+    paths,
+    trackedFiles: [{ path: ".shield/journals/unconfigured.jsonl", bytes: "unconfigured-default\n" }],
+  });
+  const rejectedReady = await prepareWorktreeStateV1(unconfiguredDefault);
+  assert.equal(rejectedReady.state, "blocked");
+  assert.equal(rejectedReady.reasonCode, "destination_conflict");
+  assert.equal(await exists(join(unconfiguredDefault.destinationRoot, ".shield", "config.json")), false);
+});
+
 test("allows only exact tracked journal files and necessary real ancestors", async () => {
   const nested = await fixture({ trackedFiles: [{ path: ".shield/journals/bootstrap/nested.jsonl", bytes: "nested\n" }] });
   const nestedResult = await prepareWorktreeStateV1(nested);
@@ -567,9 +609,13 @@ test("binds optional tracked baseline exclusions into receipts and rejects live 
   duplicate.trackedBaselineExclusions[1].path = duplicate.trackedBaselineExclusions[0].path;
   assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(duplicate)), false);
 
-  const outside = structuredClone(prepared.receipt);
-  outside.trackedBaselineExclusions[0].path = ".shield/evidence/outside.jsonl";
-  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(outside)), false);
+  const differentlyScoped = structuredClone(prepared.receipt);
+  differentlyScoped.trackedBaselineExclusions[0].path = ".shield/evidence/outside.jsonl";
+  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(differentlyScoped)), true);
+
+  const malformedPath = structuredClone(prepared.receipt);
+  malformedPath.trackedBaselineExclusions[0].path = "evidence/outside.jsonl";
+  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(malformedPath)), false);
 
   const sixtyFour = structuredClone(prepared.receipt);
   sixtyFour.trackedBaselineExclusions[0].headBlobOid = "a".repeat(64);

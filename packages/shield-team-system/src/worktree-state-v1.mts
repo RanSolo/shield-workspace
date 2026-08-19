@@ -262,6 +262,7 @@ interface SourceSnapshot {
 }
 
 interface MissionStatePolicy {
+  readonly journalRoot: string;
   readonly roots: readonly string[];
   readonly ignoreBytes: Buffer;
 }
@@ -317,6 +318,7 @@ interface HeldTrackedBaselineFile {
 }
 
 interface TrackedBaselineSnapshot {
+  readonly journalRoot: string;
   readonly exclusions: readonly WorktreeTrackedBaselineExclusionV1[];
   readonly files: readonly HeldTrackedBaselineFile[];
   readonly directories: readonly HeldDirectory[];
@@ -525,7 +527,7 @@ function registryProjection(registry: TrustedBindingRegistry): readonly Worktree
 function missionStatePolicy(config: ShieldConfig): MissionStatePolicy {
   const roots = Object.freeze([config.paths.journals, config.paths.reports, config.paths.temp]);
   const ignoreBytes = Buffer.from(roots.map((path) => `/${path.slice(`${SHIELD_DIRECTORY}/`.length)}/\n`).join(""), "utf8");
-  return Object.freeze({ roots, ignoreBytes });
+  return Object.freeze({ journalRoot: config.paths.journals, roots, ignoreBytes });
 }
 
 function validatePolicyAgreement(config: ShieldConfig, registry: TrustedBindingRegistry): boolean {
@@ -646,10 +648,15 @@ function exactUtf8(bytes: Buffer): string | null {
   return Buffer.from(value, "utf8").equals(bytes) ? value : null;
 }
 
-function validBaselinePath(path: string): boolean {
+function validBaselinePathSyntax(path: string): boolean {
   const components = path.split("/");
-  return components.length >= 3 && components[0] === SHIELD_DIRECTORY && components[1] === "journals" &&
-    components.slice(2).every((component) => component.length > 0 && component !== "." && component !== "..");
+  return !path.includes("\\") && !path.includes("\0") && components.length >= 3 &&
+    components[0] === SHIELD_DIRECTORY &&
+    components.slice(1).every((component) => component.length > 0 && component !== "." && component !== "..");
+}
+
+function baselinePathWithinJournalRoot(path: string, journalRoot: string): boolean {
+  return validBaselinePathSyntax(path) && path.startsWith(`${journalRoot}/`);
 }
 
 function validGitObjectId(value: string): boolean {
@@ -695,6 +702,7 @@ function parseIndexBaselineEntries(bytes: Buffer): readonly { path: string; gitM
 async function observeTrackedBaselineEntries(
   destinationRoot: string,
   destinationHead: string,
+  journalRoot: string,
 ): Promise<readonly GitTrackedBaselineEntry[]> {
   const [headBytes, indexBytes] = await Promise.all([
     gitBytes(destinationRoot, ["ls-tree", "-rz", "--full-tree", destinationHead, "--", SHIELD_DIRECTORY]),
@@ -709,13 +717,13 @@ async function observeTrackedBaselineEntries(
   for (let indexPosition = 0; indexPosition < head.length; indexPosition += 1) {
     const headEntry = head[indexPosition]!;
     const indexEntry = index[indexPosition]!;
-    if (!validBaselinePath(headEntry.path) || headEntry.path !== indexEntry.path ||
+    if (!baselinePathWithinJournalRoot(headEntry.path, journalRoot) || headEntry.path !== indexEntry.path ||
       (headEntry.gitMode !== "100644" && headEntry.gitMode !== "100755") ||
       headEntry.gitMode !== indexEntry.gitMode || headEntry.blobOid !== indexEntry.blobOid ||
       (indexPosition > 0 && head[indexPosition - 1]!.path === headEntry.path)) {
       throw new Blocked(
         "destination_conflict",
-        "Only identical destination HEAD/index regular files beneath .shield/journals may be tolerated.",
+        `Only identical destination HEAD/index regular files beneath configured journal root ${journalRoot} may be tolerated; unconfigured default .shield/journals is rejected.`,
       );
     }
     result.push({
@@ -934,10 +942,11 @@ async function captureTrackedBaseline(
   destinationRoot: string,
   destinationHead: string,
   shieldHeld: HeldDirectory | null,
+  journalRoot: string,
 ): Promise<TrackedBaselineSnapshot> {
-  const entries = await observeTrackedBaselineEntries(destinationRoot, destinationHead);
+  const entries = await observeTrackedBaselineEntries(destinationRoot, destinationHead, journalRoot);
   if (entries.length === 0) {
-    return { exclusions: Object.freeze([]), files: Object.freeze([]), directories: Object.freeze([]) };
+    return { journalRoot, exclusions: Object.freeze([]), files: Object.freeze([]), directories: Object.freeze([]) };
   }
   if (shieldHeld === null) {
     throw new Blocked("destination_conflict", "Destination tracked baseline paths are absent from the worktree.");
@@ -955,6 +964,7 @@ async function captureTrackedBaseline(
     }
     for (const entry of entries) files.push(await captureTrackedBaselineFile(destinationRoot, entry));
     const snapshot = {
+      journalRoot,
       exclusions: Object.freeze(files.map((file) => file.record)),
       files: Object.freeze(files),
       directories: Object.freeze(directories),
@@ -991,7 +1001,7 @@ async function trackedBaselineStillExact(
         (await exactHandleBytes(file.handle, file.identity.size)).equals(file.bytes)) continue;
       return false;
     }
-    const currentEntries = await observeTrackedBaselineEntries(destinationRoot, destinationHead);
+    const currentEntries = await observeTrackedBaselineEntries(destinationRoot, destinationHead, snapshot.journalRoot);
     return canonicalJson(currentEntries) === canonicalJson(snapshot.exclusions.map((record) => ({
       path: record.path,
       gitMode: record.gitMode,
@@ -1030,7 +1040,7 @@ async function destinationLayoutExact(
     for (const directory of baseline.directories) {
       const relative = directory.path.slice(dirname(shieldHeld.path).length + 1);
       if (pathWithinMissionState(relative, missionRoots)) continue;
-      expected.set(relative, new Set());
+      if (!expected.has(relative)) expected.set(relative, new Set());
       const parent = dirname(relative);
       const siblings = expected.get(parent);
       if (siblings === undefined) return false;
@@ -1261,7 +1271,7 @@ export function validateWorktreeStateReceiptV1(input: unknown): input is Worktre
     let previousPath: string | null = null;
     for (const record of input.trackedBaselineExclusions) {
       if (!exact(record, ["path", "gitMode", "headBlobOid", "indexBlobOid", "byteSha256"]) ||
-        typeof record.path !== "string" || !validBaselinePath(record.path) ||
+        typeof record.path !== "string" || !validBaselinePathSyntax(record.path) ||
         (record.gitMode !== "100644" && record.gitMode !== "100755") ||
         typeof record.headBlobOid !== "string" || !validGitObjectId(record.headBlobOid) ||
         typeof record.indexBlobOid !== "string" || record.indexBlobOid !== record.headBlobOid ||
@@ -1353,6 +1363,9 @@ async function validateInstalledReceipt(
     const registry = validateTrustedBindingRegistry(registryJson);
     if (config.state !== "valid" || registry.state !== "valid" || !validatePolicyAgreement(config.value, registry.value)) return false;
     const installedMissionStatePolicy = missionStatePolicy(config.value);
+    if ((receipt.trackedBaselineExclusions ?? []).some(({ path }) =>
+      !baselinePathWithinJournalRoot(path, installedMissionStatePolicy.journalRoot)) ||
+      (trackedBaseline !== undefined && trackedBaseline.journalRoot !== installedMissionStatePolicy.journalRoot)) return false;
     return config.value.repositoryId === receipt.repositoryId &&
       canonicalJson(registryProjection(registry.value)) === canonicalJson(receipt.publicBindings) &&
       sha256(canonicalJson(config.value)) === receipt.policy.configSemanticSha256 &&
@@ -1517,6 +1530,7 @@ async function cleanupTrackedArtifact(
 async function preflightDestination(
   destinationRoot: string,
   destinationHead: string,
+  sourceMissionStatePolicy: MissionStatePolicy,
   retain: (held: HeldDirectory) => void,
 ): Promise<{
   readonly receipt: WorktreeStateReceiptV1 | null;
@@ -1526,7 +1540,9 @@ async function preflightDestination(
 }> {
   const held = await holdShieldDirectoryIfPresent(destinationRoot);
   if (held === null) {
-    const baseline = await captureTrackedBaseline(destinationRoot, destinationHead, null);
+    const baseline = await captureTrackedBaseline(
+      destinationRoot, destinationHead, null, sourceMissionStatePolicy.journalRoot,
+    );
     return { receipt: null, baseline, missionState: null, missionStatePolicy: null };
   }
   retain(held);
@@ -1552,6 +1568,7 @@ async function preflightDestination(
     destinationRoot,
     destinationHead,
     held,
+    (installedMissionStatePolicy ?? sourceMissionStatePolicy).journalRoot,
   );
   try {
     if (receipt !== null && installedMissionStatePolicy !== null) {
@@ -1635,6 +1652,7 @@ export async function prepareWorktreeStateV1ForTest(
     const preflight = await preflightDestination(
       destinationRoot,
       observed.destination.head,
+      snapshot.missionStatePolicy,
       (held) => { shieldHeld = held; },
     );
     trackedBaseline = preflight.baseline;
@@ -1804,7 +1822,9 @@ async function doctorPreparedReceipt(
     const installedMissionStatePolicy = await readInstalledMissionStatePolicy(root, receipt);
     if (installedMissionStatePolicy === null) return { valid: false, missionStatePresent: false };
     const observation = await observeGitRoot(root);
-    baseline = await captureTrackedBaseline(root, observation.head, shieldHeld);
+    baseline = await captureTrackedBaseline(
+      root, observation.head, shieldHeld, installedMissionStatePolicy.journalRoot,
+    );
     missionState = await captureMissionState(shieldHeld, installedMissionStatePolicy);
     if (!await destinationLayoutExact(
       shieldHeld, baseline, POLICY_SHIELD_FILES, missionState,
