@@ -186,6 +186,56 @@ test("prepares the exact authority-neutral four-file state and replays without w
   assert.equal(stale.ok, false);
 });
 
+test("accepts mission-local state directories after preparation without weakening policy siblings", async () => {
+  const current = await fixture();
+  const prepared = await prepareWorktreeStateV1(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  const receiptBytes = await readFile(join(current.destinationRoot, ".shield", "worktree-state.json"));
+  await mkdir(join(current.destinationRoot, ".shield", "journals"), { recursive: true });
+  await writeFile(join(current.destinationRoot, ".shield", "journals", "mission.jsonl"), "{\"sequence\":0}\n");
+  await mkdir(join(current.destinationRoot, ".shield", "reports"), { recursive: true });
+  await writeFile(join(current.destinationRoot, ".shield", "reports", "mission.json"), "{}\n");
+  await mkdir(join(current.destinationRoot, ".shield", "tmp", "mission"), { recursive: true });
+  await writeFile(join(current.destinationRoot, ".shield", "tmp", "mission", "scratch.json"), "{}\n");
+
+  const doctor = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true });
+  assert.deepEqual(doctor, {
+    classification: "prepared_worktree",
+    ok: true,
+    message: "Prepared worktree policy and immutable provenance receipt are exact; mission-local state directories are present.",
+    receiptDigest: prepared.receipt.receiptDigest,
+  });
+  const replay = await prepareWorktreeStateV1(current);
+  assert.equal(replay.state, "already_prepared", JSON.stringify(replay));
+  assert.deepEqual(await readFile(join(current.destinationRoot, ".shield", "worktree-state.json")), receiptBytes);
+  assert.equal(git(current.destinationRoot, ["status", "--porcelain"]), "");
+
+  const unknown = await fixture();
+  assert.equal((await prepareWorktreeStateV1(unknown)).state, "ready");
+  await mkdir(join(unknown.destinationRoot, ".shield", "evidence"));
+  await writeFile(join(unknown.destinationRoot, ".shield", "evidence", "local.json"), "{}\n");
+  await assertStaleDoctor(unknown.destinationRoot);
+  const unknownReplay = await prepareWorktreeStateV1(unknown);
+  assert.equal(unknownReplay.state, "blocked");
+  assert.equal(unknownReplay.reasonCode, "prepared_state_stale");
+
+  const symlinked = await fixture();
+  assert.equal((await prepareWorktreeStateV1(symlinked)).state, "ready");
+  await symlink("../package.json", join(symlinked.destinationRoot, ".shield", "tmp"));
+  await assertStaleDoctor(symlinked.destinationRoot);
+  const symlinkedReplay = await prepareWorktreeStateV1(symlinked);
+  assert.equal(symlinkedReplay.state, "blocked");
+  assert.equal(symlinkedReplay.reasonCode, "prepared_state_stale");
+
+  const file = await fixture();
+  assert.equal((await prepareWorktreeStateV1(file)).state, "ready");
+  await writeFile(join(file.destinationRoot, ".shield", "tmp"), "not a directory\n");
+  await assertStaleDoctor(file.destinationRoot);
+  const fileReplay = await prepareWorktreeStateV1(file);
+  assert.equal(fileReplay.state, "blocked");
+  assert.equal(fileReplay.reasonCode, "prepared_state_stale");
+});
+
 test("real prepared-worktree inspection preserves stale index bytes and metadata", async () => {
   const current = await fixture();
   const prepared = await prepareWorktreeStateV1(current);

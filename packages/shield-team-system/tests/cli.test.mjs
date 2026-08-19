@@ -1517,6 +1517,24 @@ test("worktree prepare exposes closed JSON, concise replay output, and prepared 
   const report = JSON.parse(doctor.stdout);
   assert.equal(report.worktreeState.classification, "prepared_worktree");
   assert.equal(report.worktreeState.receiptDigest, receipt.receipt.receiptDigest);
+
+  await mkdir(join(destinationRoot, ".shield", "journals"), { recursive: true });
+  await writeFile(join(destinationRoot, ".shield", "journals", "mission.jsonl"), "{\"sequence\":0}\n");
+  await mkdir(join(destinationRoot, ".shield", "tmp", "mission"), { recursive: true });
+  await writeFile(join(destinationRoot, ".shield", "tmp", "mission", "scratch.json"), "{}\n");
+  const missionStateDoctor = run(["doctor", "--root", await realpath(destinationRoot), "--json"], destinationRoot);
+  assert.equal(missionStateDoctor.status, 0, missionStateDoctor.stderr);
+  const missionStateReport = JSON.parse(missionStateDoctor.stdout);
+  assert.equal(missionStateReport.worktreeState.classification, "prepared_worktree");
+  assert.equal(missionStateReport.worktreeState.receiptDigest, receipt.receipt.receiptDigest);
+  assert.match(missionStateReport.worktreeState.message, /mission-local state directories are present/u);
+
+  const missionStateReplay = run([
+    "worktree", "prepare", "--source-root", await realpath(sourceRoot),
+    "--root", await realpath(destinationRoot), "--json",
+  ], destinationRoot);
+  assert.equal(missionStateReplay.status, 0, missionStateReplay.stderr);
+  assert.equal(JSON.parse(missionStateReplay.stdout).state, "already_prepared");
 });
 
 test("worktree prepare renders root filesystem failures as closed blocked results", async () => {

@@ -54,6 +54,8 @@ const REGISTRY_PATH = ".shield/trusted-human-bindings.json" as const;
 const IGNORE_PATH = ".shield/.gitignore" as const;
 const IGNORE_BYTES = Buffer.from("/journals/\n/reports/\n/tmp/\n", "utf8");
 const SHIELD_DIRECTORY = ".shield" as const;
+const POLICY_SHIELD_FILES = Object.freeze([".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"] as const);
+const MISSION_STATE_DIRECTORIES = Object.freeze(["journals", "reports", "tmp"] as const);
 const LOCK_NAME = ".worktree-prepare.lock" as const;
 const TEMP_PREFIX = ".worktree-prepare-" as const;
 const MAX_POLICY_BYTES = 1024 * 1024;
@@ -980,14 +982,23 @@ async function destinationLayoutExact(
   shieldHeld: HeldDirectory,
   baseline: TrackedBaselineSnapshot,
   allowedShieldFiles: readonly string[],
+  allowedMissionStateDirectories: readonly string[] = [],
 ): Promise<boolean> {
   try {
     if (!await directoryStillHeld(shieldHeld.path, shieldHeld) || !await directoryChainStillHeld(baseline.directories)) return false;
     const expected = new Map<string, Set<string>>();
     const shieldRelative = SHIELD_DIRECTORY;
     expected.set(shieldRelative, new Set(allowedShieldFiles));
+    const missionStateDirectorySet = new Set(allowedMissionStateDirectories);
+    const shieldActual = await readdir(shieldHeld.path);
+    for (const name of shieldActual) {
+      if (!missionStateDirectorySet.has(name)) continue;
+      if (!await missionStateDirectoryStillSafe(join(shieldHeld.path, name))) return false;
+      expected.get(shieldRelative)?.add(name);
+    }
     for (const directory of baseline.directories) {
       const relative = directory.path.slice(dirname(shieldHeld.path).length + 1);
+      if (isMissionStateRelativePath(relative, missionStateDirectorySet)) continue;
       expected.set(relative, new Set());
       const parent = dirname(relative);
       const siblings = expected.get(parent);
@@ -995,6 +1006,7 @@ async function destinationLayoutExact(
       siblings.add(basename(relative));
     }
     for (const file of baseline.files) {
+      if (isMissionStateRelativePath(dirname(file.record.path), missionStateDirectorySet)) continue;
       const siblings = expected.get(dirname(file.record.path));
       if (siblings === undefined) return false;
       siblings.add(basename(file.record.path));
@@ -1007,6 +1019,27 @@ async function destinationLayoutExact(
     return true;
   } catch {
     return false;
+  }
+}
+
+function isMissionStateRelativePath(relative: string, allowedDirectories: ReadonlySet<string>): boolean {
+  const [root, directory] = relative.split("/");
+  return root === SHIELD_DIRECTORY && directory !== undefined && allowedDirectories.has(directory);
+}
+
+async function missionStateDirectoryStillSafe(path: string): Promise<boolean> {
+  let held: HeldDirectory | null = null;
+  try {
+    held = await holdDirectory(path);
+    const stats = await lstat(path);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) return false;
+    const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
+    if (currentUid !== null && Number(stats.uid) !== currentUid) return false;
+    return await directoryStillHeld(path, held);
+  } catch {
+    return false;
+  } finally {
+    if (held !== null) await held.handle.close().catch(() => undefined);
   }
 }
 
@@ -1402,8 +1435,7 @@ async function preflightDestination(
     if (receiptPresent) {
       const receipt = await readStoredReceipt(destinationRoot);
       if (receipt === null) throw new Blocked("prepared_state_stale", "Destination worktree receipt is malformed or unsafe.");
-      const allowed = [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"];
-      if (!await destinationLayoutExact(held, baseline, allowed) ||
+      if (!await destinationLayoutExact(held, baseline, POLICY_SHIELD_FILES, MISSION_STATE_DIRECTORIES) ||
         !await validateInstalledReceipt(destinationRoot, receipt, undefined, undefined, baseline)) {
         throw new Blocked("prepared_state_stale", "Destination prepared policy is partial, drifted, or contains conflicting state.");
       }
@@ -1484,7 +1516,7 @@ export async function prepareWorktreeStateV1ForTest(
       if (shieldHeld === null || !await reobserveStable(
         snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
       ) || !await destinationLayoutExact(
-        shieldHeld, trackedBaseline, [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+        shieldHeld, trackedBaseline, POLICY_SHIELD_FILES, MISSION_STATE_DIRECTORIES,
       ) || !await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination, trackedBaseline)) {
         throw new Blocked("source_policy_drift", "Source policy, repository, or prepared destination changed before replay success.");
       }
@@ -1580,7 +1612,7 @@ export async function prepareWorktreeStateV1ForTest(
       if (!await lockOwned(heldLock) || !await reobserveStable(
         snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
       ) || !await destinationLayoutExact(
-        shieldHeld, trackedBaseline, [LOCK_NAME, ".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+        shieldHeld, trackedBaseline, [LOCK_NAME, ...POLICY_SHIELD_FILES],
       ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination, trackedBaseline)) {
         throw new Error("Post-installation revalidation failed.");
       }
@@ -1588,7 +1620,7 @@ export async function prepareWorktreeStateV1ForTest(
       if (!await lockOwned(heldLock) || !await reobserveStable(
         snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
       ) || !await destinationLayoutExact(
-        shieldHeld, trackedBaseline, [LOCK_NAME, ".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+        shieldHeld, trackedBaseline, [LOCK_NAME, ...POLICY_SHIELD_FILES],
       ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination, trackedBaseline)) {
         throw new Error("Final ready-boundary revalidation failed.");
       }
@@ -1627,21 +1659,25 @@ async function doctorPreparedReceipt(
   root: string,
   receipt: WorktreeStateReceiptV1,
   shieldHeld: HeldDirectory,
-): Promise<boolean> {
+): Promise<{ readonly valid: boolean; readonly missionStatePresent: boolean }> {
   let baseline: TrackedBaselineSnapshot | null = null;
   try {
     const observation = await observeGitRoot(root);
     baseline = await captureTrackedBaseline(root, observation.head, shieldHeld);
     if (!await destinationLayoutExact(
-      shieldHeld, baseline, [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
-    ) || !await validateInstalledReceipt(root, receipt, undefined, undefined, baseline)) return false;
+      shieldHeld, baseline, POLICY_SHIELD_FILES, MISSION_STATE_DIRECTORIES,
+    ) || !await validateInstalledReceipt(root, receipt, undefined, undefined, baseline)) return { valid: false, missionStatePresent: false };
     const listing = await git(root, ["worktree", "list", "--porcelain"]);
     const registered = listing?.split("\n").filter((line) => line.startsWith("worktree "))
       .map((line) => line.slice("worktree ".length)).includes(root) ?? false;
-    return registered && observation.commonGitDirectory === receipt.commonGitDirectory &&
-      observation.originRepositoryId === receipt.repositoryId;
+    const missionStatePresent = (await readdir(shieldHeld.path)).some((name) => MISSION_STATE_DIRECTORIES.includes(name as typeof MISSION_STATE_DIRECTORIES[number]));
+    return {
+      valid: registered && observation.commonGitDirectory === receipt.commonGitDirectory &&
+        observation.originRepositoryId === receipt.repositoryId,
+      missionStatePresent,
+    };
   } catch {
-    return false;
+    return { valid: false, missionStatePresent: false };
   } finally {
     await closeTrackedBaseline(baseline);
   }
@@ -1700,12 +1736,17 @@ export async function inspectWorktreeStateV1(input: {
         : stale("Existing worktree policy is malformed and no valid preparation receipt is available.");
     }
     const receipt = await readStoredReceipt(input.root);
-    if (receipt !== null && input.configPresent && input.configValid && await doctorPreparedReceipt(input.root, receipt, shieldHeld) &&
+    const prepared = receipt !== null && input.configPresent && input.configValid
+      ? await doctorPreparedReceipt(input.root, receipt, shieldHeld)
+      : { valid: false, missionStatePresent: false };
+    if (receipt !== null && prepared.valid &&
       await directoryChainStillHeld(rootHeld.directories) && await directoryStillHeld(shieldHeld.path, shieldHeld)) {
       return deepFreeze({
         classification: "prepared_worktree",
         ok: true,
-        message: "Prepared worktree policy and immutable provenance receipt are exact.",
+        message: prepared.missionStatePresent
+          ? "Prepared worktree policy and immutable provenance receipt are exact; mission-local state directories are present."
+          : "Prepared worktree policy and immutable provenance receipt are exact.",
         receiptDigest: receipt.receiptDigest,
       });
     }
