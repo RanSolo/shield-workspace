@@ -52,8 +52,8 @@ export const WORKTREE_STATE_EXCLUSIONS = Object.freeze([
 const CONFIG_PATH = ".shield/config.json" as const;
 const REGISTRY_PATH = ".shield/trusted-human-bindings.json" as const;
 const IGNORE_PATH = ".shield/.gitignore" as const;
-const IGNORE_BYTES = Buffer.from("/journals/\n/reports/\n/tmp/\n", "utf8");
 const SHIELD_DIRECTORY = ".shield" as const;
+const POLICY_SHIELD_FILES = Object.freeze([".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"] as const);
 const LOCK_NAME = ".worktree-prepare.lock" as const;
 const TEMP_PREFIX = ".worktree-prepare-" as const;
 const MAX_POLICY_BYTES = 1024 * 1024;
@@ -258,6 +258,13 @@ interface SourceSnapshot {
   readonly policy: WorktreePolicySnapshotV1;
   readonly publicBindings: readonly WorktreePublicBindingV1[];
   readonly policyDirectory: HeldDirectory;
+  readonly missionStatePolicy: MissionStatePolicy;
+}
+
+interface MissionStatePolicy {
+  readonly journalRoot: string;
+  readonly roots: readonly string[];
+  readonly ignoreBytes: Buffer;
 }
 
 interface FileIdentity {
@@ -311,8 +318,14 @@ interface HeldTrackedBaselineFile {
 }
 
 interface TrackedBaselineSnapshot {
+  readonly journalRoot: string;
   readonly exclusions: readonly WorktreeTrackedBaselineExclusionV1[];
   readonly files: readonly HeldTrackedBaselineFile[];
+  readonly directories: readonly HeldDirectory[];
+}
+
+interface HeldMissionState {
+  readonly roots: readonly string[];
   readonly directories: readonly HeldDirectory[];
 }
 
@@ -511,6 +524,12 @@ function registryProjection(registry: TrustedBindingRegistry): readonly Worktree
     .sort((left, right) => compareBytes(left.seatId, right.seatId) || compareBytes(left.bindingId, right.bindingId)));
 }
 
+function missionStatePolicy(config: ShieldConfig): MissionStatePolicy {
+  const roots = Object.freeze([config.paths.journals, config.paths.reports, config.paths.temp]);
+  const ignoreBytes = Buffer.from(roots.map((path) => `/${path.slice(`${SHIELD_DIRECTORY}/`.length)}/\n`).join(""), "utf8");
+  return Object.freeze({ journalRoot: config.paths.journals, roots, ignoreBytes });
+}
+
 function validatePolicyAgreement(config: ShieldConfig, registry: TrustedBindingRegistry): boolean {
   const bindingIds = new Set<string>();
   const keyRefs = new Set<string>();
@@ -572,6 +591,7 @@ async function captureSourcePolicy(sourceRoot: string): Promise<SourceSnapshot> 
       policy,
       publicBindings: registryProjection(parsedRegistry.value),
       policyDirectory,
+      missionStatePolicy: missionStatePolicy(parsedConfig.value),
     };
   } catch (error) {
     await configFile.handle.close().catch(() => undefined);
@@ -628,10 +648,15 @@ function exactUtf8(bytes: Buffer): string | null {
   return Buffer.from(value, "utf8").equals(bytes) ? value : null;
 }
 
-function validBaselinePath(path: string): boolean {
+function validBaselinePathSyntax(path: string): boolean {
   const components = path.split("/");
-  return components.length >= 3 && components[0] === SHIELD_DIRECTORY && components[1] === "journals" &&
-    components.slice(2).every((component) => component.length > 0 && component !== "." && component !== "..");
+  return !path.includes("\\") && !path.includes("\0") && components.length >= 3 &&
+    components[0] === SHIELD_DIRECTORY &&
+    components.slice(1).every((component) => component.length > 0 && component !== "." && component !== "..");
+}
+
+function baselinePathWithinJournalRoot(path: string, journalRoot: string): boolean {
+  return validBaselinePathSyntax(path) && path.startsWith(`${journalRoot}/`);
 }
 
 function validGitObjectId(value: string): boolean {
@@ -677,6 +702,7 @@ function parseIndexBaselineEntries(bytes: Buffer): readonly { path: string; gitM
 async function observeTrackedBaselineEntries(
   destinationRoot: string,
   destinationHead: string,
+  journalRoot: string,
 ): Promise<readonly GitTrackedBaselineEntry[]> {
   const [headBytes, indexBytes] = await Promise.all([
     gitBytes(destinationRoot, ["ls-tree", "-rz", "--full-tree", destinationHead, "--", SHIELD_DIRECTORY]),
@@ -691,13 +717,13 @@ async function observeTrackedBaselineEntries(
   for (let indexPosition = 0; indexPosition < head.length; indexPosition += 1) {
     const headEntry = head[indexPosition]!;
     const indexEntry = index[indexPosition]!;
-    if (!validBaselinePath(headEntry.path) || headEntry.path !== indexEntry.path ||
+    if (!baselinePathWithinJournalRoot(headEntry.path, journalRoot) || headEntry.path !== indexEntry.path ||
       (headEntry.gitMode !== "100644" && headEntry.gitMode !== "100755") ||
       headEntry.gitMode !== indexEntry.gitMode || headEntry.blobOid !== indexEntry.blobOid ||
       (indexPosition > 0 && head[indexPosition - 1]!.path === headEntry.path)) {
       throw new Blocked(
         "destination_conflict",
-        "Only identical destination HEAD/index regular files beneath .shield/journals may be tolerated.",
+        `Only identical destination HEAD/index regular files beneath configured journal root ${journalRoot} may be tolerated; unconfigured default .shield/journals is rejected.`,
       );
     }
     result.push({
@@ -916,9 +942,12 @@ async function captureTrackedBaseline(
   destinationRoot: string,
   destinationHead: string,
   shieldHeld: HeldDirectory | null,
+  journalRoot: string,
 ): Promise<TrackedBaselineSnapshot> {
-  const entries = await observeTrackedBaselineEntries(destinationRoot, destinationHead);
-  if (entries.length === 0) return { exclusions: Object.freeze([]), files: Object.freeze([]), directories: Object.freeze([]) };
+  const entries = await observeTrackedBaselineEntries(destinationRoot, destinationHead, journalRoot);
+  if (entries.length === 0) {
+    return { journalRoot, exclusions: Object.freeze([]), files: Object.freeze([]), directories: Object.freeze([]) };
+  }
   if (shieldHeld === null) {
     throw new Blocked("destination_conflict", "Destination tracked baseline paths are absent from the worktree.");
   }
@@ -926,10 +955,16 @@ async function captureTrackedBaseline(
   const files: HeldTrackedBaselineFile[] = [];
   try {
     for (const relative of trackedBaselineDirectoryPaths(entries)) {
-      directories.push(await holdDirectory(join(destinationRoot, relative)));
+      const held = await holdDirectory(join(destinationRoot, relative));
+      if (!await missionStateDirectoryStillHeld(held)) {
+        await held.handle.close().catch(() => undefined);
+        throw new Blocked("destination_conflict", "Tracked mission-state ancestors must have a safe owner, mode, and identity.");
+      }
+      directories.push(held);
     }
     for (const entry of entries) files.push(await captureTrackedBaselineFile(destinationRoot, entry));
     const snapshot = {
+      journalRoot,
       exclusions: Object.freeze(files.map((file) => file.record)),
       files: Object.freeze(files),
       directories: Object.freeze(directories),
@@ -953,7 +988,9 @@ async function trackedBaselineStillExact(
   destinationHead: string,
 ): Promise<boolean> {
   try {
-    if (!await directoryChainStillHeld(snapshot.directories)) return false;
+    for (const directory of snapshot.directories) {
+      if (!await missionStateDirectoryStillHeld(directory)) return false;
+    }
     for (const file of snapshot.files) {
       const handleStats = await file.handle.stat();
       const current = identity(handleStats);
@@ -964,7 +1001,7 @@ async function trackedBaselineStillExact(
         (await exactHandleBytes(file.handle, file.identity.size)).equals(file.bytes)) continue;
       return false;
     }
-    const currentEntries = await observeTrackedBaselineEntries(destinationRoot, destinationHead);
+    const currentEntries = await observeTrackedBaselineEntries(destinationRoot, destinationHead, snapshot.journalRoot);
     return canonicalJson(currentEntries) === canonicalJson(snapshot.exclusions.map((record) => ({
       path: record.path,
       gitMode: record.gitMode,
@@ -980,21 +1017,37 @@ async function destinationLayoutExact(
   shieldHeld: HeldDirectory,
   baseline: TrackedBaselineSnapshot,
   allowedShieldFiles: readonly string[],
+  missionState: HeldMissionState | null = null,
 ): Promise<boolean> {
   try {
-    if (!await directoryStillHeld(shieldHeld.path, shieldHeld) || !await directoryChainStillHeld(baseline.directories)) return false;
+    if (!await directoryStillHeld(shieldHeld.path, shieldHeld) || !await directoryChainStillHeld(baseline.directories) ||
+      (missionState !== null && !await missionStateStillHeld(missionState))) return false;
     const expected = new Map<string, Set<string>>();
     const shieldRelative = SHIELD_DIRECTORY;
     expected.set(shieldRelative, new Set(allowedShieldFiles));
+    const missionRoots = new Set(missionState?.roots ?? []);
+    for (const root of missionRoots) {
+      const components = root.split("/");
+      for (let index = 1; index < components.length; index += 1) {
+        const parent = components.slice(0, index).join("/");
+        const child = components[index]!;
+        expected.get(parent)?.add(child);
+        if (index < components.length - 1 && !expected.has(`${parent}/${child}`)) {
+          expected.set(`${parent}/${child}`, new Set());
+        }
+      }
+    }
     for (const directory of baseline.directories) {
       const relative = directory.path.slice(dirname(shieldHeld.path).length + 1);
-      expected.set(relative, new Set());
+      if (pathWithinMissionState(relative, missionRoots)) continue;
+      if (!expected.has(relative)) expected.set(relative, new Set());
       const parent = dirname(relative);
       const siblings = expected.get(parent);
       if (siblings === undefined) return false;
       siblings.add(basename(relative));
     }
     for (const file of baseline.files) {
+      if (pathWithinMissionState(file.record.path, missionRoots)) continue;
       const siblings = expected.get(dirname(file.record.path));
       if (siblings === undefined) return false;
       siblings.add(basename(file.record.path));
@@ -1007,6 +1060,77 @@ async function destinationLayoutExact(
     return true;
   } catch {
     return false;
+  }
+}
+
+function pathWithinMissionState(path: string, roots: ReadonlySet<string>): boolean {
+  return [...roots].some((root) => path === root || path.startsWith(`${root}/`));
+}
+
+function missionStateDirectorySafe(stats: Awaited<ReturnType<FileHandle["stat"]>>): boolean {
+  const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
+  return stats.isDirectory() && (currentUid === null || Number(stats.uid) === currentUid) &&
+    (Number(stats.mode) & 0o22) === 0;
+}
+
+async function missionStateDirectoryStillHeld(held: HeldDirectory): Promise<boolean> {
+  try {
+    const handleStats = await held.handle.stat();
+    const pathStats = await lstat(held.path);
+    return missionStateDirectorySafe(handleStats) && missionStateDirectorySafe(pathStats) && !pathStats.isSymbolicLink() &&
+      (Number(handleStats.mode) & 0o7777) === held.identity.mode &&
+      Number(handleStats.dev) === held.identity.dev && Number(handleStats.ino) === held.identity.ino &&
+      Number(pathStats.dev) === held.identity.dev && Number(pathStats.ino) === held.identity.ino;
+  } catch {
+    return false;
+  }
+}
+
+async function missionStateStillHeld(snapshot: HeldMissionState): Promise<boolean> {
+  for (const directory of snapshot.directories) {
+    if (!await missionStateDirectoryStillHeld(directory)) return false;
+  }
+  return true;
+}
+
+async function closeMissionState(snapshot: HeldMissionState | null): Promise<void> {
+  if (snapshot !== null) await closeDirectories(snapshot.directories);
+}
+
+async function captureMissionState(shieldHeld: HeldDirectory, policy: MissionStatePolicy): Promise<HeldMissionState> {
+  const directories = new Map<string, HeldDirectory>();
+  const roots: string[] = [];
+  try {
+    for (const root of policy.roots) {
+      const absoluteRoot = join(dirname(shieldHeld.path), root);
+      try {
+        await lstat(absoluteRoot);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      const components = root.split("/");
+      for (let index = 2; index <= components.length; index += 1) {
+        const relative = components.slice(0, index).join("/");
+        if (directories.has(relative)) continue;
+        const held = await holdDirectory(join(dirname(shieldHeld.path), relative));
+        if (!await missionStateDirectoryStillHeld(held)) {
+          await held.handle.close().catch(() => undefined);
+          throw new Error("Mission-state directory owner, mode, or identity is unsafe.");
+        }
+        directories.set(relative, held);
+      }
+      roots.push(root);
+    }
+    const snapshot = {
+      roots: Object.freeze(roots.sort(compareBytes)),
+      directories: Object.freeze([...directories.entries()].sort(([left], [right]) => compareBytes(left, right)).map(([, held]) => held)),
+    };
+    if (!await missionStateStillHeld(snapshot)) throw new Error("Mission-state directory identity changed during capture.");
+    return snapshot;
+  } catch (error) {
+    await closeDirectories([...directories.values()]);
+    throw error;
   }
 }
 
@@ -1084,7 +1208,7 @@ function receiptBody(
     publicBindings: snapshot.publicBindings,
     installedPaths: WORKTREE_STATE_INSTALLED_PATHS,
     installedByteDigests: {
-      [IGNORE_PATH]: sha256(IGNORE_BYTES),
+      [IGNORE_PATH]: sha256(snapshot.missionStatePolicy.ignoreBytes),
       [CONFIG_PATH]: snapshot.configFile.digest,
       [REGISTRY_PATH]: snapshot.registryFile.digest,
     },
@@ -1147,7 +1271,7 @@ export function validateWorktreeStateReceiptV1(input: unknown): input is Worktre
     let previousPath: string | null = null;
     for (const record of input.trackedBaselineExclusions) {
       if (!exact(record, ["path", "gitMode", "headBlobOid", "indexBlobOid", "byteSha256"]) ||
-        typeof record.path !== "string" || !validBaselinePath(record.path) ||
+        typeof record.path !== "string" || !validBaselinePathSyntax(record.path) ||
         (record.gitMode !== "100644" && record.gitMode !== "100755") ||
         typeof record.headBlobOid !== "string" || !validGitObjectId(record.headBlobOid) ||
         typeof record.indexBlobOid !== "string" || record.indexBlobOid !== record.headBlobOid ||
@@ -1189,6 +1313,27 @@ async function readStoredReceipt(destinationRoot: string): Promise<WorktreeState
   return validateWorktreeStateReceiptV1(parsed) && bytes.equals(receiptBytes(parsed)) ? deepFreeze(parsed) : null;
 }
 
+async function readInstalledMissionStatePolicy(
+  destinationRoot: string,
+  receipt: WorktreeStateReceiptV1,
+): Promise<MissionStatePolicy | null> {
+  try {
+    const [configBytes, ignoreBytes] = await Promise.all([
+      readNoFollowRegular(join(destinationRoot, CONFIG_PATH)),
+      readNoFollowRegular(join(destinationRoot, IGNORE_PATH)),
+    ]);
+    const config = parseShieldConfig(configBytes.toString("utf8"));
+    if (config.state !== "valid" || sha256(configBytes) !== receipt.installedByteDigests[CONFIG_PATH] ||
+      receipt.policy.configByteSha256 !== sha256(configBytes)) return null;
+    const policy = missionStatePolicy(config.value);
+    return ignoreBytes.equals(policy.ignoreBytes) && sha256(ignoreBytes) === receipt.installedByteDigests[IGNORE_PATH]
+      ? policy
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 async function validateInstalledReceipt(
   destinationRoot: string,
   receipt: WorktreeStateReceiptV1,
@@ -1217,11 +1362,15 @@ async function validateInstalledReceipt(
     catch { return false; }
     const registry = validateTrustedBindingRegistry(registryJson);
     if (config.state !== "valid" || registry.state !== "valid" || !validatePolicyAgreement(config.value, registry.value)) return false;
+    const installedMissionStatePolicy = missionStatePolicy(config.value);
+    if ((receipt.trackedBaselineExclusions ?? []).some(({ path }) =>
+      !baselinePathWithinJournalRoot(path, installedMissionStatePolicy.journalRoot)) ||
+      (trackedBaseline !== undefined && trackedBaseline.journalRoot !== installedMissionStatePolicy.journalRoot)) return false;
     return config.value.repositoryId === receipt.repositoryId &&
       canonicalJson(registryProjection(registry.value)) === canonicalJson(receipt.publicBindings) &&
       sha256(canonicalJson(config.value)) === receipt.policy.configSemanticSha256 &&
       sha256(canonicalJson(registry.value)) === receipt.policy.registrySemanticSha256 &&
-      ignoreBytes.equals(IGNORE_BYTES) &&
+      ignoreBytes.equals(installedMissionStatePolicy.ignoreBytes) &&
       sha256(ignoreBytes) === receipt.installedByteDigests[IGNORE_PATH] &&
       sha256(configBytes) === receipt.installedByteDigests[CONFIG_PATH] &&
       sha256(registryBytes) === receipt.installedByteDigests[REGISTRY_PATH] &&
@@ -1381,12 +1530,20 @@ async function cleanupTrackedArtifact(
 async function preflightDestination(
   destinationRoot: string,
   destinationHead: string,
+  sourceMissionStatePolicy: MissionStatePolicy,
   retain: (held: HeldDirectory) => void,
-): Promise<{ readonly receipt: WorktreeStateReceiptV1 | null; readonly baseline: TrackedBaselineSnapshot }> {
+): Promise<{
+  readonly receipt: WorktreeStateReceiptV1 | null;
+  readonly baseline: TrackedBaselineSnapshot;
+  readonly missionState: HeldMissionState | null;
+  readonly missionStatePolicy: MissionStatePolicy | null;
+}> {
   const held = await holdShieldDirectoryIfPresent(destinationRoot);
   if (held === null) {
-    const baseline = await captureTrackedBaseline(destinationRoot, destinationHead, null);
-    return { receipt: null, baseline };
+    const baseline = await captureTrackedBaseline(
+      destinationRoot, destinationHead, null, sourceMissionStatePolicy.journalRoot,
+    );
+    return { receipt: null, baseline, missionState: null, missionStatePolicy: null };
   }
   retain(held);
   const entries = await readdir(held.path);
@@ -1396,24 +1553,42 @@ async function preflightDestination(
   if (entries.includes(LOCK_NAME)) {
     throw new Blocked("preparation_in_progress", "Destination preparation lock is already held.");
   }
-  const baseline = await captureTrackedBaseline(destinationRoot, destinationHead, held);
+  let missionState: HeldMissionState | null = null;
+  let receipt: WorktreeStateReceiptV1 | null = null;
+  let installedMissionStatePolicy: MissionStatePolicy | null = null;
+  if (entries.includes("worktree-state.json")) {
+    receipt = await readStoredReceipt(destinationRoot);
+    if (receipt === null) throw new Blocked("prepared_state_stale", "Destination worktree receipt is malformed or unsafe.");
+    installedMissionStatePolicy = await readInstalledMissionStatePolicy(destinationRoot, receipt);
+    if (installedMissionStatePolicy === null) {
+      throw new Blocked("prepared_state_stale", "Destination installed configuration or generated ignore policy is malformed or stale.");
+    }
+  }
+  const baseline = await captureTrackedBaseline(
+    destinationRoot,
+    destinationHead,
+    held,
+    (installedMissionStatePolicy ?? sourceMissionStatePolicy).journalRoot,
+  );
   try {
-    const receiptPresent = entries.includes("worktree-state.json");
-    if (receiptPresent) {
-      const receipt = await readStoredReceipt(destinationRoot);
-      if (receipt === null) throw new Blocked("prepared_state_stale", "Destination worktree receipt is malformed or unsafe.");
-      const allowed = [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"];
-      if (!await destinationLayoutExact(held, baseline, allowed) ||
+    if (receipt !== null && installedMissionStatePolicy !== null) {
+      try {
+        missionState = await captureMissionState(held, installedMissionStatePolicy);
+      } catch {
+        throw new Blocked("prepared_state_stale", "Configured mission-state roots have an unsafe owner, mode, or path identity.");
+      }
+      if (!await destinationLayoutExact(held, baseline, POLICY_SHIELD_FILES, missionState) ||
         !await validateInstalledReceipt(destinationRoot, receipt, undefined, undefined, baseline)) {
         throw new Blocked("prepared_state_stale", "Destination prepared policy is partial, drifted, or contains conflicting state.");
       }
-      return { receipt, baseline };
+      return { receipt, baseline, missionState, missionStatePolicy: installedMissionStatePolicy };
     }
     if (!await destinationLayoutExact(held, baseline, [])) {
       throw new Blocked("destination_conflict", "Destination .shield contains existing policy, mission, secret, cache, or staging state.");
     }
-    return { receipt: null, baseline };
+    return { receipt: null, baseline, missionState: null, missionStatePolicy: null };
   } catch (error) {
+    await closeMissionState(missionState);
     await closeTrackedBaseline(baseline);
     throw error;
   }
@@ -1451,6 +1626,7 @@ export async function prepareWorktreeStateV1ForTest(
   let destinationHeld: HeldRoot | null = null;
   let snapshot: SourceSnapshot | null = null;
   let trackedBaseline: TrackedBaselineSnapshot | null = null;
+  let missionState: HeldMissionState | null = null;
   let shieldHeld: HeldDirectory | null = null;
   let heldLock: HeldLock | null = null;
   let installedCount = 0;
@@ -1473,10 +1649,20 @@ export async function prepareWorktreeStateV1ForTest(
     await dependencies.phase?.("source_captured");
     const observed = await observeRepositories(sourceRoot, destinationRoot, snapshot.config.repositoryId);
     await dependencies.phase?.("repositories_observed");
-    const preflight = await preflightDestination(destinationRoot, observed.destination.head, (held) => { shieldHeld = held; });
+    const preflight = await preflightDestination(
+      destinationRoot,
+      observed.destination.head,
+      snapshot.missionStatePolicy,
+      (held) => { shieldHeld = held; },
+    );
     trackedBaseline = preflight.baseline;
+    missionState = preflight.missionState;
     const existing = preflight.receipt;
     if (existing !== null) {
+      if (preflight.missionStatePolicy === null ||
+        canonicalJson(preflight.missionStatePolicy.roots) !== canonicalJson(snapshot.missionStatePolicy.roots)) {
+        throw new Blocked("prepared_state_stale", "Existing installed mission-state paths do not match current source policy.");
+      }
       if (!await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination, trackedBaseline)) {
         throw new Blocked("prepared_state_stale", "Existing receipt does not match current source policy or repository identity.");
       }
@@ -1484,7 +1670,7 @@ export async function prepareWorktreeStateV1ForTest(
       if (shieldHeld === null || !await reobserveStable(
         snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
       ) || !await destinationLayoutExact(
-        shieldHeld, trackedBaseline, [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+        shieldHeld, trackedBaseline, POLICY_SHIELD_FILES, missionState,
       ) || !await validateInstalledReceipt(destinationRoot, existing, snapshot, observed.destination, trackedBaseline)) {
         throw new Blocked("source_policy_drift", "Source policy, repository, or prepared destination changed before replay success.");
       }
@@ -1523,7 +1709,7 @@ export async function prepareWorktreeStateV1ForTest(
       const nonce = dependencies.nonce?.() ?? randomBytes(16).toString("hex");
       if (!/^[A-Za-z0-9_-]{8,128}$/u.test(nonce)) throw new Error("Invalid preparation nonce.");
       const installs: readonly { relative: string; bytes: Buffer }[] = [
-        { relative: IGNORE_PATH, bytes: IGNORE_BYTES },
+        { relative: IGNORE_PATH, bytes: snapshot.missionStatePolicy.ignoreBytes },
         { relative: CONFIG_PATH, bytes: snapshot.configFile.bytes },
         { relative: REGISTRY_PATH, bytes: snapshot.registryFile.bytes },
         { relative: WORKTREE_STATE_RELATIVE_PATH, bytes: receiptBytes(expectedReceipt) },
@@ -1580,7 +1766,7 @@ export async function prepareWorktreeStateV1ForTest(
       if (!await lockOwned(heldLock) || !await reobserveStable(
         snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
       ) || !await destinationLayoutExact(
-        shieldHeld, trackedBaseline, [LOCK_NAME, ".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+        shieldHeld, trackedBaseline, [LOCK_NAME, ...POLICY_SHIELD_FILES],
       ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination, trackedBaseline)) {
         throw new Error("Post-installation revalidation failed.");
       }
@@ -1588,7 +1774,7 @@ export async function prepareWorktreeStateV1ForTest(
       if (!await lockOwned(heldLock) || !await reobserveStable(
         snapshot, observed.source, observed.destination, sourceHeld, destinationHeld, shieldHeld, trackedBaseline,
       ) || !await destinationLayoutExact(
-        shieldHeld, trackedBaseline, [LOCK_NAME, ".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
+        shieldHeld, trackedBaseline, [LOCK_NAME, ...POLICY_SHIELD_FILES],
       ) || !await validateInstalledReceipt(destinationRoot, expectedReceipt, snapshot, observed.destination, trackedBaseline)) {
         throw new Error("Final ready-boundary revalidation failed.");
       }
@@ -1613,6 +1799,7 @@ export async function prepareWorktreeStateV1ForTest(
       if (!await cleanupTrackedArtifact(heldLock, dependencies)) cleanupUncertain = true;
       try { await heldLock.handle.close(); } catch { cleanupUncertain = true; }
     }
+    await closeMissionState(missionState);
     if (shieldHeld !== null) await shieldHeld.handle.close().catch(() => { cleanupUncertain = true; });
     await closeTrackedBaseline(trackedBaseline);
     await closeSnapshot(snapshot);
@@ -1627,22 +1814,38 @@ async function doctorPreparedReceipt(
   root: string,
   receipt: WorktreeStateReceiptV1,
   shieldHeld: HeldDirectory,
-): Promise<boolean> {
+  rootHeld: HeldRoot,
+): Promise<{ readonly valid: boolean; readonly missionStatePresent: boolean }> {
   let baseline: TrackedBaselineSnapshot | null = null;
+  let missionState: HeldMissionState | null = null;
   try {
+    const installedMissionStatePolicy = await readInstalledMissionStatePolicy(root, receipt);
+    if (installedMissionStatePolicy === null) return { valid: false, missionStatePresent: false };
     const observation = await observeGitRoot(root);
-    baseline = await captureTrackedBaseline(root, observation.head, shieldHeld);
+    baseline = await captureTrackedBaseline(
+      root, observation.head, shieldHeld, installedMissionStatePolicy.journalRoot,
+    );
+    missionState = await captureMissionState(shieldHeld, installedMissionStatePolicy);
     if (!await destinationLayoutExact(
-      shieldHeld, baseline, [".gitignore", "config.json", "trusted-human-bindings.json", "worktree-state.json"],
-    ) || !await validateInstalledReceipt(root, receipt, undefined, undefined, baseline)) return false;
+      shieldHeld, baseline, POLICY_SHIELD_FILES, missionState,
+    ) || !await validateInstalledReceipt(root, receipt, undefined, undefined, baseline)) return { valid: false, missionStatePresent: false };
     const listing = await git(root, ["worktree", "list", "--porcelain"]);
     const registered = listing?.split("\n").filter((line) => line.startsWith("worktree "))
       .map((line) => line.slice("worktree ".length)).includes(root) ?? false;
-    return registered && observation.commonGitDirectory === receipt.commonGitDirectory &&
-      observation.originRepositoryId === receipt.repositoryId;
+    const missionStatePresent = missionState.roots.length > 0;
+    return {
+      valid: registered && observation.commonGitDirectory === receipt.commonGitDirectory &&
+        observation.originRepositoryId === receipt.repositoryId &&
+        await directoryChainStillHeld(rootHeld.directories) && await directoryStillHeld(shieldHeld.path, shieldHeld) &&
+        await missionStateStillHeld(missionState) &&
+        await destinationLayoutExact(shieldHeld, baseline, POLICY_SHIELD_FILES, missionState) &&
+        await validateInstalledReceipt(root, receipt, undefined, undefined, baseline),
+      missionStatePresent,
+    };
   } catch {
-    return false;
+    return { valid: false, missionStatePresent: false };
   } finally {
+    await closeMissionState(missionState);
     await closeTrackedBaseline(baseline);
   }
 }
@@ -1700,12 +1903,16 @@ export async function inspectWorktreeStateV1(input: {
         : stale("Existing worktree policy is malformed and no valid preparation receipt is available.");
     }
     const receipt = await readStoredReceipt(input.root);
-    if (receipt !== null && input.configPresent && input.configValid && await doctorPreparedReceipt(input.root, receipt, shieldHeld) &&
-      await directoryChainStillHeld(rootHeld.directories) && await directoryStillHeld(shieldHeld.path, shieldHeld)) {
+    const prepared = receipt !== null && input.configPresent && input.configValid
+      ? await doctorPreparedReceipt(input.root, receipt, shieldHeld, rootHeld)
+      : { valid: false, missionStatePresent: false };
+    if (receipt !== null && prepared.valid) {
       return deepFreeze({
         classification: "prepared_worktree",
         ok: true,
-        message: "Prepared worktree policy and immutable provenance receipt are exact.",
+        message: prepared.missionStatePresent
+          ? "Prepared worktree policy and immutable provenance receipt are exact; mission-local state directories are present."
+          : "Prepared worktree policy and immutable provenance receipt are exact.",
         receiptDigest: receipt.receiptDigest,
       });
     }

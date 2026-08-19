@@ -1503,6 +1503,58 @@ test("worktree prepare exposes closed JSON, concise replay output, and prepared 
   assert.equal(receipt.authority, "none");
   assert.equal(receipt.receipt.repositoryId, "RanSolo/fixture");
 
+  const missionId = "mission:test:prepared-worktree-cli";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Exercise the real prepared-worktree mission lifecycle.",
+    subjectId: "issue:test:prepared-worktree-cli",
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, hillHighRisk: false, merge: false, deploy: false, release: false,
+    },
+    participants: ["hill", "may", "coulson", "fitz"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-19T12:00:00Z", provenance: "humanRecorded" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const { revisionId: _revisionId, ...briefContent } = brief;
+  const briefPath = join(destinationRoot, ".shield", "tmp", "worktree-brief.json");
+  await mkdir(dirname(briefPath), { recursive: true });
+  await writeFile(briefPath, `${JSON.stringify(briefContent, null, 2)}\n`);
+  const begun = run(["mission", "begin", "--profile-aware", "--brief", briefPath, "--json"], destinationRoot);
+  assert.equal(begun.status, 0, begun.stderr);
+  const journalPath = profileJournalPath(destinationRoot, missionId);
+  const identity = async (path) => {
+    const observed = await lstat(path);
+    return { dev: observed.dev, ino: observed.ino, mode: observed.mode, uid: observed.uid, gid: observed.gid };
+  };
+  const missionBefore = {
+    briefBytes: await readFile(briefPath),
+    briefIdentity: await identity(briefPath),
+    journalBytes: await readFile(journalPath),
+    journalIdentity: await identity(journalPath),
+    journalsIdentity: await identity(dirname(journalPath)),
+    tempIdentity: await identity(dirname(briefPath)),
+  };
+
+  const status = run(["mission", "status", "--mission-id", missionId, "--json"], destinationRoot);
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).schemaVersion, 9);
+
+  const doctor = run(["doctor", "--root", await realpath(destinationRoot), "--json"], destinationRoot);
+  assert.equal(doctor.status, 0, doctor.stderr);
+  const report = JSON.parse(doctor.stdout);
+  assert.equal(report.worktreeState.classification, "prepared_worktree");
+  assert.equal(report.worktreeState.receiptDigest, receipt.receipt.receiptDigest);
+  assert.match(report.worktreeState.message, /mission-local state directories are present/u);
+
   const replay = run([
     "worktree", "prepare", "--source-root", await realpath(sourceRoot),
     "--root", await realpath(destinationRoot),
@@ -1511,12 +1563,12 @@ test("worktree prepare exposes closed JSON, concise replay output, and prepared 
   assert.match(replay.stdout, /^ALREADY PREPARED\n/u);
   assert.match(replay.stdout, /Repository: RanSolo\/fixture/u);
   assert.doesNotMatch(replay.stdout + replay.stderr, /PIN|passcode/iu);
-
-  const doctor = run(["doctor", "--root", await realpath(destinationRoot), "--json"], destinationRoot);
-  assert.equal(doctor.status, 0, doctor.stderr);
-  const report = JSON.parse(doctor.stdout);
-  assert.equal(report.worktreeState.classification, "prepared_worktree");
-  assert.equal(report.worktreeState.receiptDigest, receipt.receipt.receiptDigest);
+  assert.deepEqual(await readFile(briefPath), missionBefore.briefBytes);
+  assert.deepEqual(await identity(briefPath), missionBefore.briefIdentity);
+  assert.deepEqual(await readFile(journalPath), missionBefore.journalBytes);
+  assert.deepEqual(await identity(journalPath), missionBefore.journalIdentity);
+  assert.deepEqual(await identity(dirname(journalPath)), missionBefore.journalsIdentity);
+  assert.deepEqual(await identity(dirname(briefPath)), missionBefore.tempIdentity);
 });
 
 test("worktree prepare renders root filesystem failures as closed blocked results", async () => {

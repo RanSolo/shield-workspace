@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { constants } from "node:fs";
-import { link, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -89,7 +89,7 @@ function binding(seatId) {
   };
 }
 
-async function fixture({ trackedFiles = [] } = {}) {
+async function fixture({ trackedFiles = [], paths = {} } = {}) {
   const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-worktree-state-")));
   const sourceRoot = join(parent, "source");
   const destinationRoot = join(parent, "destination");
@@ -110,11 +110,12 @@ async function fixture({ trackedFiles = [] } = {}) {
   git(sourceRoot, ["worktree", "add", "--quiet", "-b", `lane-${process.pid}-${Date.now()}`, destinationRoot, "HEAD"]);
   const coulson = binding("coulson");
   const fitz = binding("fitz");
-  const config = createShieldConfig({
+  const createdConfig = createShieldConfig({
     repositoryId: "RanSolo/worktree-fixture",
     coulsonBindingRef: coulson.signingKeyRef,
     fitzBindingRef: fitz.signingKeyRef,
   });
+  const config = { ...createdConfig, paths: { ...createdConfig.paths, ...paths } };
   await mkdir(join(sourceRoot, ".shield"), { recursive: true });
   await writeFile(join(sourceRoot, ".shield", "config.json"), formatShieldConfig(config));
   await writeFile(
@@ -184,6 +185,126 @@ test("prepares the exact authority-neutral four-file state and replays without w
   const stale = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: false });
   assert.equal(stale.classification, "stale_or_malformed_worktree_state");
   assert.equal(stale.ok, false);
+});
+
+test("accepts mission-local state directories after preparation without weakening policy siblings", async () => {
+  const current = await fixture();
+  const prepared = await prepareWorktreeStateV1(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  const receiptBytes = await readFile(join(current.destinationRoot, ".shield", "worktree-state.json"));
+  await mkdir(join(current.destinationRoot, ".shield", "journals"), { recursive: true });
+  await writeFile(join(current.destinationRoot, ".shield", "journals", "mission.jsonl"), "{\"sequence\":0}\n");
+  await mkdir(join(current.destinationRoot, ".shield", "reports"), { recursive: true });
+  await writeFile(join(current.destinationRoot, ".shield", "reports", "mission.json"), "{}\n");
+  await mkdir(join(current.destinationRoot, ".shield", "tmp", "mission"), { recursive: true });
+  await writeFile(join(current.destinationRoot, ".shield", "tmp", "mission", "scratch.json"), "{}\n");
+
+  const doctor = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true });
+  assert.deepEqual(doctor, {
+    classification: "prepared_worktree",
+    ok: true,
+    message: "Prepared worktree policy and immutable provenance receipt are exact; mission-local state directories are present.",
+    receiptDigest: prepared.receipt.receiptDigest,
+  });
+  const replay = await prepareWorktreeStateV1(current);
+  assert.equal(replay.state, "already_prepared", JSON.stringify(replay));
+  assert.deepEqual(await readFile(join(current.destinationRoot, ".shield", "worktree-state.json")), receiptBytes);
+  assert.equal(git(current.destinationRoot, ["status", "--porcelain"]), "");
+
+  const unknown = await fixture();
+  assert.equal((await prepareWorktreeStateV1(unknown)).state, "ready");
+  await mkdir(join(unknown.destinationRoot, ".shield", "evidence"));
+  await writeFile(join(unknown.destinationRoot, ".shield", "evidence", "local.json"), "{}\n");
+  await assertStaleDoctor(unknown.destinationRoot);
+  const unknownReplay = await prepareWorktreeStateV1(unknown);
+  assert.equal(unknownReplay.state, "blocked");
+  assert.equal(unknownReplay.reasonCode, "prepared_state_stale");
+
+  const symlinked = await fixture();
+  assert.equal((await prepareWorktreeStateV1(symlinked)).state, "ready");
+  await symlink("../package.json", join(symlinked.destinationRoot, ".shield", "tmp"));
+  await assertStaleDoctor(symlinked.destinationRoot);
+  const symlinkedReplay = await prepareWorktreeStateV1(symlinked);
+  assert.equal(symlinkedReplay.state, "blocked");
+  assert.equal(symlinkedReplay.reasonCode, "prepared_state_stale");
+
+  const file = await fixture();
+  assert.equal((await prepareWorktreeStateV1(file)).state, "ready");
+  await writeFile(join(file.destinationRoot, ".shield", "tmp"), "not a directory\n");
+  await assertStaleDoctor(file.destinationRoot);
+  const fileReplay = await prepareWorktreeStateV1(file);
+  assert.equal(fileReplay.state, "blocked");
+  assert.equal(fileReplay.reasonCode, "prepared_state_stale");
+
+  const unsafeMode = await fixture();
+  assert.equal((await prepareWorktreeStateV1(unsafeMode)).state, "ready");
+  await mkdir(join(unsafeMode.destinationRoot, ".shield", "journals"));
+  await chmod(join(unsafeMode.destinationRoot, ".shield", "journals"), 0o777);
+  await assertStaleDoctor(unsafeMode.destinationRoot);
+  const unsafeModeReplay = await prepareWorktreeStateV1(unsafeMode);
+  assert.equal(unsafeModeReplay.state, "blocked");
+  assert.equal(unsafeModeReplay.reasonCode, "prepared_state_stale");
+});
+
+test("derives admitted mission-state roots and ignore bytes from the installed configuration", async () => {
+  const paths = {
+    journals: ".shield/mission-state/journals",
+    reports: ".shield/mission-state/reports",
+    temp: ".shield/runtime/scratch",
+  };
+  const current = await fixture({ paths });
+  const prepared = await prepareWorktreeStateV1(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  assert.equal(
+    await readFile(join(current.destinationRoot, ".shield", ".gitignore"), "utf8"),
+    "/mission-state/journals/\n/mission-state/reports/\n/runtime/scratch/\n",
+  );
+  await mkdir(join(current.destinationRoot, paths.journals), { recursive: true });
+  await writeFile(join(current.destinationRoot, paths.journals, "mission.jsonl"), "{\"sequence\":0}\n");
+  await mkdir(join(current.destinationRoot, paths.reports), { recursive: true });
+  await writeFile(join(current.destinationRoot, paths.reports, "mission.json"), "{}\n");
+  await mkdir(join(current.destinationRoot, paths.temp, "mission"), { recursive: true });
+  await writeFile(join(current.destinationRoot, paths.temp, "mission", "scratch.json"), "{}\n");
+
+  const doctor = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true });
+  assert.equal(doctor.classification, "prepared_worktree");
+  assert.match(doctor.message, /mission-local state directories are present/u);
+  assert.equal((await prepareWorktreeStateV1(current)).state, "already_prepared");
+
+  const defaultsNotConfigured = await fixture({ paths });
+  assert.equal((await prepareWorktreeStateV1(defaultsNotConfigured)).state, "ready");
+  await mkdir(join(defaultsNotConfigured.destinationRoot, ".shield", "journals"));
+  await writeFile(join(defaultsNotConfigured.destinationRoot, ".shield", "journals", "unexpected.jsonl"), "{}\n");
+  await assertStaleDoctor(defaultsNotConfigured.destinationRoot);
+  const rejected = await prepareWorktreeStateV1(defaultsNotConfigured);
+  assert.equal(rejected.state, "blocked");
+  assert.equal(rejected.reasonCode, "prepared_state_stale");
+});
+
+test("retains admitted mission-state identities through replay and rejects replacement or unsafe mode", async () => {
+  for (const scenario of ["replacement", "wrong-mode"]) {
+    const current = await fixture();
+    assert.equal((await prepareWorktreeStateV1(current)).state, "ready");
+    const journals = join(current.destinationRoot, ".shield", "journals");
+    await mkdir(journals);
+    await writeFile(join(journals, "mission.jsonl"), "{\"sequence\":0}\n");
+    const receiptBytes = await readFile(join(current.destinationRoot, ".shield", "worktree-state.json"));
+    const replayed = await prepareWorktreeStateV1ForTest(current, {
+      phase: async (phase) => {
+        if (phase !== "before_replay_ready") return;
+        if (scenario === "replacement") {
+          await rename(journals, join(dirname(current.destinationRoot), `displaced-journals-${process.pid}-${Date.now()}`));
+          await mkdir(journals);
+          await writeFile(join(journals, "mission.jsonl"), "{\"sequence\":0}\n");
+        } else {
+          await chmod(journals, 0o777);
+        }
+      },
+    });
+    assert.equal(replayed.state, "blocked", `${scenario}: ${JSON.stringify(replayed)}`);
+    assert.equal(replayed.reasonCode, "source_policy_drift", scenario);
+    assert.deepEqual(await readFile(join(current.destinationRoot, ".shield", "worktree-state.json")), receiptBytes);
+  }
 });
 
 test("real prepared-worktree inspection preserves stale index bytes and metadata", async () => {
@@ -256,6 +377,48 @@ test("prepares the real linked-worktree bootstrap-journal baseline without rewri
   const doctor = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true });
   assert.equal(doctor.classification, "prepared_worktree");
   assert.equal(git(current.destinationRoot, ["status", "--porcelain"]), "");
+});
+
+test("binds tracked baselines to the configured custom journal root for ready, replay, and doctor", async () => {
+  const paths = {
+    journals: ".shield/mission-state/journals",
+    reports: ".shield/mission-state/reports",
+    temp: ".shield/runtime/scratch",
+  };
+  const trackedPath = `${paths.journals}/bootstrap/custom.jsonl`;
+  const current = await fixture({
+    paths,
+    trackedFiles: [{ path: trackedPath, bytes: "custom-root\n" }],
+  });
+  const prepared = await prepareWorktreeStateV1(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  assert.deepEqual(prepared.receipt.trackedBaselineExclusions.map(({ path }) => path), [trackedPath]);
+  assert.equal(validateWorktreeStateReceiptV1(prepared.receipt), true);
+
+  const replay = await prepareWorktreeStateV1(current);
+  assert.equal(replay.state, "already_prepared", JSON.stringify(replay));
+  const doctor = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true });
+  assert.equal(doctor.classification, "prepared_worktree");
+  assert.equal(doctor.receiptDigest, prepared.receipt.receiptDigest);
+
+  const wrongRootReceipt = structuredClone(prepared.receipt);
+  wrongRootReceipt.trackedBaselineExclusions[0].path = ".shield/journals/bootstrap/custom.jsonl";
+  const digestBoundWrongRoot = withReceiptDigest(wrongRootReceipt);
+  assert.equal(validateWorktreeStateReceiptV1(digestBoundWrongRoot), true);
+  await writeReceipt(current.destinationRoot, digestBoundWrongRoot);
+  const rejectedReplay = await prepareWorktreeStateV1(current);
+  assert.equal(rejectedReplay.state, "blocked");
+  assert.equal(rejectedReplay.reasonCode, "prepared_state_stale");
+  await assertStaleDoctor(current.destinationRoot);
+
+  const unconfiguredDefault = await fixture({
+    paths,
+    trackedFiles: [{ path: ".shield/journals/unconfigured.jsonl", bytes: "unconfigured-default\n" }],
+  });
+  const rejectedReady = await prepareWorktreeStateV1(unconfiguredDefault);
+  assert.equal(rejectedReady.state, "blocked");
+  assert.equal(rejectedReady.reasonCode, "destination_conflict");
+  assert.equal(await exists(join(unconfiguredDefault.destinationRoot, ".shield", "config.json")), false);
 });
 
 test("allows only exact tracked journal files and necessary real ancestors", async () => {
@@ -446,9 +609,13 @@ test("binds optional tracked baseline exclusions into receipts and rejects live 
   duplicate.trackedBaselineExclusions[1].path = duplicate.trackedBaselineExclusions[0].path;
   assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(duplicate)), false);
 
-  const outside = structuredClone(prepared.receipt);
-  outside.trackedBaselineExclusions[0].path = ".shield/evidence/outside.jsonl";
-  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(outside)), false);
+  const differentlyScoped = structuredClone(prepared.receipt);
+  differentlyScoped.trackedBaselineExclusions[0].path = ".shield/evidence/outside.jsonl";
+  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(differentlyScoped)), true);
+
+  const malformedPath = structuredClone(prepared.receipt);
+  malformedPath.trackedBaselineExclusions[0].path = "evidence/outside.jsonl";
+  assert.equal(validateWorktreeStateReceiptV1(withReceiptDigest(malformedPath)), false);
 
   const sixtyFour = structuredClone(prepared.receipt);
   sixtyFour.trackedBaselineExclusions[0].headBlobOid = "a".repeat(64);
