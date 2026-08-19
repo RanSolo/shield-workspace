@@ -21,7 +21,17 @@ import {
   replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
 import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
-import { assertPublicationAuthorizationFreshness, assertRepositoryConfigFresh, missionUsage, readInteractivePasscode, runMissionCli, validateAuthorizeWheelsUpInput } from "../dist/mission-cli.mjs";
+import {
+  assertPublicationAuthorizationFreshness,
+  assertRepositoryConfigFresh,
+  emitFinalPublicationClassificationV1ForTest,
+  emitFinalPublicationTransitionV1ForTest,
+  missionUsage,
+  readInteractivePasscode,
+  renderFinalPublicationDecisionV1ForTest,
+  runMissionCli,
+  validateAuthorizeWheelsUpInput,
+} from "../dist/mission-cli.mjs";
 import { batchSignerTestOnly, captureMissionSignerSnapshot, signerTestOnly } from "../dist/mission-signer.mjs";
 import { evaluateReviewPublicationV1 } from "../dist/review-publication-v1.mjs";
 import {
@@ -69,6 +79,111 @@ test("publish-reviewed final publication command has a closed base assertion and
     runMissionCli(["mission", "publish-reviewed", "--mission-id", "mission:closed", "--base-branch", "main", "--authority", "caller", "--root", packageRoot]),
     /Unknown option: --authority/u,
   );
+});
+
+test("publish-reviewed decision rendering excludes Packet C internals in human and machine modes", () => {
+  const hostRoot = "/private/tmp/secret-governed-root";
+  const decision = {
+    schemaVersion: 1,
+    schemaId: "shield.prepared-review-publication-decision.v1",
+    missionId: "mission:issue-311",
+    subjectId: "github:RanSolo/shield-workspace/issue/311",
+    missionRevisionId: "a".repeat(40),
+    repository: {
+      repositoryId: "RanSolo/shield-workspace",
+      canonicalRoot: hostRoot,
+      branch: "agent/issue-311",
+      baseRevision: "b".repeat(40),
+      headRevision: "c".repeat(40),
+    },
+    authorizedPaths: ["docs/missions/issue-311.md"],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+    exclusions: ["merge", "deploy", "release"],
+    remainingHumanGates: ["coulson.final_acceptance"],
+    guidedReview: {
+      planDigest: "SECRET_PLAN_DIGEST",
+      bundleDigest: "SECRET_BUNDLE_DIGEST",
+      forkDigest: "SECRET_FORK_DIGEST",
+      choice: "yes",
+      disposition: "completed",
+      required: true,
+      rationale: "SECRET_RAW_JOURNAL",
+      method: "SECRET_COMMAND_TRANSCRIPT",
+      plannedParticipantRelationship: "reviewer",
+      coveredCriterionRefs: ["AC-1"],
+      evidenceRequirements: ["SECRET_SIGNER_DATA"],
+      gateOwnerSeatId: "coulson",
+      sessionDigest: "SECRET_SESSION_DIGEST",
+      participantId: "SECRET_PARTICIPANT",
+      participantRelationship: "reviewer",
+      participantBindingRef: "SECRET_BINDING",
+      pinPurpose: "guided_review_and_publication",
+    },
+  };
+  for (const human of [true, false]) {
+    const rendered = renderFinalPublicationDecisionV1ForTest(decision, human);
+    assert.match(rendered, /mission:issue-311/u);
+    assert.match(rendered, /RanSolo\/shield-workspace/u);
+    assert.doesNotMatch(rendered, new RegExp(hostRoot, "u"));
+    assert.doesNotMatch(rendered, /SECRET_/u);
+    assert.doesNotMatch(rendered, /canonicalRoot|authorizedPaths|permittedEffects|signingKeyRef|commandTranscript|journal/u);
+  }
+});
+
+test("publish-reviewed actual stdout and stderr are concise, redacted, and classify exactly once", () => {
+  const stdout = [];
+  const stderr = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  try {
+    emitFinalPublicationClassificationV1ForTest("supersedable", false);
+    emitFinalPublicationTransitionV1ForTest({
+      state: "published",
+      classification: "consumed",
+      missionId: "mission:issue-311",
+      receipt: {
+        canonicalRoot: "/private/tmp/secret-governed-root",
+        rawJournal: "SECRET_RAW_JOURNAL",
+        signer: "SECRET_SIGNER_DATA",
+        commands: ["SECRET_COMMAND_TRANSCRIPT"],
+      },
+      prUrl: "https://github.com/RanSolo/shield-workspace/pull/311",
+    }, false, false);
+    const humanStdout = stdout.join("");
+    assert.equal((humanStdout.match(/classification:/gu) ?? []).length, 1);
+    assert.match(humanStdout, /action: published/u);
+    assert.match(humanStdout, /pull\/311/u);
+    assert.equal(stderr.join(""), "");
+    assert.doesNotMatch(humanStdout, /private\/tmp|SECRET_|canonicalRoot|rawJournal|signer|commands/u);
+
+    stdout.length = 0;
+    stderr.length = 0;
+    emitFinalPublicationClassificationV1ForTest("supersedable", true);
+    emitFinalPublicationTransitionV1ForTest({
+      state: "recovery_required",
+      classification: "incompatible",
+      missionId: "mission:issue-311",
+      reason: "/private/tmp/secret-governed-root/.shield/journal.jsonl contains SECRET_RAW_JOURNAL",
+      action: "Inspect the durable mission and publication receipts; do not retry an external effect.",
+    }, true, false);
+    const machineStdout = stdout.join("");
+    const machineStderr = stderr.join("");
+    assert.equal((machineStderr.match(/classification:/gu) ?? []).length, 1);
+    assert.equal((machineStdout.match(/classification/gu) ?? []).length, 0);
+    assert.doesNotMatch(`${machineStdout}${machineStderr}`, /private\/tmp|SECRET_|canonicalRoot|rawJournal|signer|commands/u);
+    assert.deepEqual(JSON.parse(machineStdout), {
+      schemaVersion: 1,
+      state: "recovery_required",
+      missionId: "mission:issue-311",
+      stop: "Final publication could not continue safely.",
+      action: "Inspect the durable mission and publication receipts; do not retry an external effect.",
+    });
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
 });
 
 const COPILOT_FURY_CARD = `---

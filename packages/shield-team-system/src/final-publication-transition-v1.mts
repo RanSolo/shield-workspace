@@ -68,6 +68,18 @@ export interface FinalPublicationTransitionDependenciesV1 {
   readonly now?: () => string;
   readonly reconcile?: typeof reconcilePRPublication;
   readonly deliver?: typeof deliverGitHubCommunication;
+  readonly onCheckpoint?: (checkpoint: FinalPublicationTransitionCheckpointV1) => void;
+  readonly host?: FinalPublicationTransitionHostV1;
+}
+
+export type FinalPublicationTransitionCheckpointV1 = "claim" | "terminal" | "result";
+
+/** Test-only abrupt process boundary used by the transition fault matrix. */
+export class FinalPublicationProcessStopV1ForTest extends Error {
+  constructor(readonly checkpoint: string) {
+    super(`Final publication process stopped after ${checkpoint}.`);
+    this.name = "FinalPublicationProcessStopV1ForTest";
+  }
 }
 
 type ProfileJournal = Extract<MissionJournalDisplay, { kind: "profile-aware" }>;
@@ -394,6 +406,28 @@ async function appendResult(root: string, config: ShieldConfig, missionId: strin
   if (appended.state === "invalid") throw new Error(`${appended.code}: ${appended.errors.join(" ")}`);
 }
 
+type FinalPublicationTransitionHostV1 = Readonly<{
+  stableConfig?: typeof stableConfig;
+  journalSnapshot?: typeof journalSnapshot;
+  observeAndAttach?: typeof observeAndAttach;
+  readGraph?: typeof readMissionReviewedTransitionGraphV1;
+  resolvePrepared?: typeof resolvePreparedMissionTransitionV1;
+  git?: typeof git;
+  claim?: typeof claimFinalPublicationV1;
+  appendRequest?: typeof appendRequest;
+  appendResult?: typeof appendResult;
+  verifyClaimant?: typeof verifyFinalPublicationClaimantV1;
+  verifyClaimantForEffect?: typeof verifyFinalPublicationClaimantForEffectV1;
+  installEffectGuard?: typeof installFinalPublicationEffectGuard;
+  createResultCandidate?: typeof createGitHubPublicationResultCandidate;
+  recordDelivered?: typeof recordFinalPublicationDeliveredV1;
+  recordOwnerTerminal?: typeof recordFinalPublicationOwnerTerminalV1;
+}>;
+
+function isProcessStop(error: unknown): error is FinalPublicationProcessStopV1ForTest {
+  return error instanceof FinalPublicationProcessStopV1ForTest;
+}
+
 function mutatingCommandAttempted(commands: readonly { executable: string; args: readonly string[] }[]): boolean {
   return commands.some(({ executable, args }) => (executable === "git" && args[0] === "push") ||
     (executable === "gh" && args[0] === "pr" && ["create", "edit"].includes(args[1] ?? "")));
@@ -407,13 +441,22 @@ async function finishDelivered(
   request: ReviewPublicationCommunicationRequestPayload,
   identity: FinalPublicationIdentityEnvelopeV1,
   reconciliation: Extract<ReturnType<typeof reconcilePRPublication>, { state: "delivered" }>,
+  dependencies: FinalPublicationTransitionDependenciesV1,
 ): Promise<FinalPublicationTransitionResultV1> {
-  const built = createGitHubPublicationResultCandidate(request, identity, "delivered", null, reconciliation.receipt.prUrl, reconciliation.publicationScope);
+  const createResultCandidate = dependencies.host?.createResultCandidate ?? createGitHubPublicationResultCandidate;
+  const recordDelivered = dependencies.host?.recordDelivered ?? recordFinalPublicationDeliveredV1;
+  const appendResultHost = dependencies.host?.appendResult ?? appendResult;
+  const built = createResultCandidate(request, identity, "delivered", null, reconciliation.receipt.prUrl, reconciliation.publicationScope);
   if (built.state !== "candidate") return recovery(missionId, "consumed", "Exact delivered result candidate could not be reconstructed.");
   const candidate = built.candidate as ReviewPublicationCommunicationResultAdapterCandidate;
-  const recorded = await recordFinalPublicationDeliveredV1({ repositoryRoot: root, claimDigest, receipt: reconciliation.receipt, candidate });
+  const recorded = await recordDelivered({ repositoryRoot: root, claimDigest, receipt: reconciliation.receipt, candidate });
   if (recorded.state === "invalid") return recovery(missionId, "consumed", `${recorded.code}: ${recorded.errors.join(" ")}`);
-  try { await appendResult(root, config, missionId, candidate); } catch (error) { return recovery(missionId, "consumed", error instanceof Error ? error.message : String(error)); }
+  dependencies.onCheckpoint?.("terminal");
+  try { await appendResultHost(root, config, missionId, candidate); } catch (error) {
+    if (isProcessStop(error)) throw error;
+    return recovery(missionId, "consumed", error instanceof Error ? error.message : String(error));
+  }
+  dependencies.onCheckpoint?.("result");
   return Object.freeze({ state: "published", classification: "consumed", missionId, receipt: reconciliation.receipt, prUrl: reconciliation.receipt.prUrl });
 }
 
@@ -426,18 +469,32 @@ export async function runFinalPublicationTransitionV1(
       typeof input.repositoryRoot !== "string" || input.repositoryRoot.length === 0) return recovery(String(missionId), "incompatible", "Final publication input is malformed.");
   const root = resolve(input.repositoryRoot);
   try {
-    const configSnapshot = await stableConfig(root);
+    const stableConfigHost = dependencies.host?.stableConfig ?? stableConfig;
+    const journalSnapshotHost = dependencies.host?.journalSnapshot ?? journalSnapshot;
+    const observeAndAttachHost = dependencies.host?.observeAndAttach ?? observeAndAttach;
+    const readGraph = dependencies.host?.readGraph ?? readMissionReviewedTransitionGraphV1;
+    const resolvePrepared = dependencies.host?.resolvePrepared ?? resolvePreparedMissionTransitionV1;
+    const gitHost = dependencies.host?.git ?? git;
+    const claim = dependencies.host?.claim ?? claimFinalPublicationV1;
+    const appendRequestHost = dependencies.host?.appendRequest ?? appendRequest;
+    const appendResultHost = dependencies.host?.appendResult ?? appendResult;
+    const verifyClaimant = dependencies.host?.verifyClaimant ?? verifyFinalPublicationClaimantV1;
+    const verifyClaimantForEffect = dependencies.host?.verifyClaimantForEffect ?? verifyFinalPublicationClaimantForEffectV1;
+    const installEffectGuard = dependencies.host?.installEffectGuard ?? installFinalPublicationEffectGuard;
+    const createResultCandidate = dependencies.host?.createResultCandidate ?? createGitHubPublicationResultCandidate;
+    const recordOwnerTerminal = dependencies.host?.recordOwnerTerminal ?? recordFinalPublicationOwnerTerminalV1;
+    const configSnapshot = await stableConfigHost(root);
     if (!REPOSITORY.test(configSnapshot.config.repositoryId)) throw new Error("Configured repository identity is malformed.");
-    let journal = await journalSnapshot(root, configSnapshot.config, missionId);
+    let journal = await journalSnapshotHost(root, configSnapshot.config, missionId);
     const initial = initialAuthority(journal.current.projection);
     if (initial.authority.repositoryId !== configSnapshot.config.repositoryId || initial.authority.canonicalRepositoryRoot !== root) {
       throw new Error("Initial publication authority repository binding differs from the governed root.");
     }
-    await observeAndAttach(root, configSnapshot.config, initial.authority.branch, initial.authority.headRevisionId);
-    const graphRead = await readMissionReviewedTransitionGraphV1({ repositoryRoot: root, missionId });
+    await observeAndAttachHost(root, configSnapshot.config, initial.authority.branch, initial.authority.headRevisionId);
+    const graphRead = await readGraph({ repositoryRoot: root, missionId });
     if (graphRead.state !== "read") throw new Error(`${graphRead.code}: ${graphRead.errors.join(" ")}`);
     const graph = graphRead.graph;
-    let prepared = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
+    let prepared = await resolvePrepared({ missionId, repositoryRoot: root });
     let classification: Classification;
     if (prepared.state === "publication_ready") {
       if (dependencies.authorizePreparedPublication === undefined) {
@@ -446,9 +503,9 @@ export async function runFinalPublicationTransitionV1(
       dependencies.onClassification?.("supersedable");
       const authorization = await dependencies.authorizePreparedPublication(prepared);
       if (authorization === "paused") return Object.freeze({ state: "paused", classification: "supersedable", missionId, action: "Complete the displayed Guided Review or authorization decision, then rerun the same command." });
-      prepared = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
+      prepared = await resolvePrepared({ missionId, repositoryRoot: root });
       if (prepared.state !== "publication_already_authorized") throw new Error("Prepared publication authorization did not replay as the canonical reusable state.");
-      journal = await journalSnapshot(root, configSnapshot.config, missionId);
+      journal = await journalSnapshotHost(root, configSnapshot.config, missionId);
       classification = classifyCanonicalState(prepared, journal.current);
     } else if (prepared.state === "publication_already_authorized") {
       classification = classifyCanonicalState(prepared, journal.current);
@@ -468,7 +525,7 @@ export async function runFinalPublicationTransitionV1(
     const rendered = renderPublication(graph, journal.current.projection, authority);
     plan.prTitle = rendered.title;
     if (!authority.authorizedPaths.includes(plan.missionBriefPath)) return recovery(missionId, "incompatible", "Protected parent plan is not included in final publication paths.");
-    await git(root, ["ls-files", "--error-unmatch", "--", plan.missionBriefPath]);
+    await gitHost(root, ["ls-files", "--error-unmatch", "--", plan.missionBriefPath]);
     const targetRef = githubPRWorkspaceTargetRef(plan);
     const preimage: FinalPublicationClaimPreimageV1 = {
       schemaVersion: 1, contractVersion: FINAL_PUBLICATION_RECEIPT_CONTRACT_VERSION, missionId,
@@ -483,9 +540,10 @@ export async function runFinalPublicationTransitionV1(
     const reconcile = dependencies.reconcile ?? reconcilePRPublication;
     let observed = reconcile(plan, authority, authority.authorizedPaths, authority.permittedEffects, { body: rendered.body, cwd: root });
     if (observed.state === "recovery_required") return recovery(missionId, classification.classification, observed.reason);
-    const claimed = await claimFinalPublicationV1({ repositoryRoot: root, preimage,
+    const claimed = await claim({ repositoryRoot: root, preimage,
       capturedAt: { value: (dependencies.now ?? (() => new Date().toISOString()))(), provenance: "hostTrusted" } });
     if (claimed.state === "invalid") return recovery(missionId, classification.classification, `${claimed.code}: ${claimed.errors.join(" ")}`);
+    dependencies.onCheckpoint?.("claim");
     const identity = claimed.value.identity;
     const request = publicationRequest(journal.current.projection, authority, classification.authorizationId, identity, targetRef);
     if (classification.request !== null && !exactProjectedRequest(classification.request, request)) {
@@ -497,35 +555,38 @@ export async function runFinalPublicationTransitionV1(
         if (observed.state !== "delivered" || canonicalJson(observed.receipt) !== canonicalJson(ledger.terminal.receipt)) {
           return recovery(missionId, "consumed", "Durable delivered receipt no longer matches exact GitHub readback.");
         }
-        const rebuilt = createGitHubPublicationResultCandidate(request, identity, "delivered", null, observed.receipt.prUrl, observed.publicationScope);
+        const rebuilt = createResultCandidate(request, identity, "delivered", null, observed.receipt.prUrl, observed.publicationScope);
         if (rebuilt.state !== "candidate" || canonicalJson(rebuilt.candidate) !== canonicalJson(ledger.terminal.candidate)) {
           return recovery(missionId, "consumed", "Durable delivered result no longer reconstructs byte-identically.");
         }
-        try { await appendResult(root, configSnapshot.config, missionId, ledger.terminal.candidate); } catch (error) { return recovery(missionId, "consumed", error instanceof Error ? error.message : String(error)); }
+        try { await appendResultHost(root, configSnapshot.config, missionId, ledger.terminal.candidate); } catch (error) {
+          if (isProcessStop(error)) throw error;
+          return recovery(missionId, "consumed", error instanceof Error ? error.message : String(error));
+        }
         return Object.freeze({ state: "reused", classification: "consumed", missionId, receipt: ledger.terminal.receipt, prUrl: ledger.terminal.receipt.prUrl });
       }
       if (ledger.terminal !== null) return recovery(missionId, "consumed", `Final publication is terminal ${ledger.terminal.state}.`);
-      if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed);
+      if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies);
       return recovery(missionId, "consumed", "A prior claimant is readback-only and positive delivery is not yet proven.");
     }
-    if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed);
+    if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies);
     const capability = claimed.value.capability;
     try {
-      const currentConfig = await stableConfig(root);
+      const currentConfig = await stableConfigHost(root);
       if (currentConfig.bytes !== configSnapshot.bytes || currentConfig.identity !== configSnapshot.identity || canonicalJson(currentConfig.config) !== canonicalJson(configSnapshot.config)) {
         throw new Error("Repository configuration changed after the final publication claim.");
       }
       const withRequest = classification.request === null
-        ? await appendRequest(root, configSnapshot.config, missionId, request, identity, claimDigest, capability)
-        : (await journalSnapshot(root, configSnapshot.config, missionId)).current;
+        ? await appendRequestHost(root, configSnapshot.config, missionId, request, identity, claimDigest, capability)
+        : (await journalSnapshotHost(root, configSnapshot.config, missionId)).current;
       const projected = withRequest.projection.communication.requests.filter(({ requestId }) => requestId === request.requestId);
       if (projected.length !== 1 || !exactProjectedRequest(projected[0], request) || projected[0].state !== "queued") {
         throw new Error("Durable final publication request is not the exact queued request.");
       }
-      const possession = await verifyFinalPublicationClaimantV1({ repositoryRoot: root, claimDigest, capability });
+      const possession = await verifyClaimant({ repositoryRoot: root, claimDigest, capability });
       if (possession.state === "invalid") throw new Error(`${possession.code}: ${possession.errors.join(" ")}`);
-      const guard = installFinalPublicationEffectGuard(request.requestId, () =>
-        verifyFinalPublicationClaimantForEffectV1({ repositoryRoot: root, claimDigest, capability }).state === "valid");
+      const guard = installEffectGuard(request.requestId, () =>
+        verifyClaimantForEffect({ repositoryRoot: root, claimDigest, capability }).state === "valid");
       if (guard.state !== "installed") throw new Error(guard.reason);
       const deliver = dependencies.deliver ?? deliverGitHubCommunication;
       let delivered: ReturnType<typeof deliverGitHubCommunication>;
@@ -539,22 +600,24 @@ export async function runFinalPublicationTransitionV1(
         guardReleased = guard.uninstall();
       }
       observed = reconcile(plan, authority, authority.authorizedPaths, authority.permittedEffects, { body: rendered.body, cwd: root });
-      if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed);
+      if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies);
       if (!guardReleased) throw new Error("Final publication effect guard release could not be verified.");
       const attempted = mutatingCommandAttempted(delivered.commands ?? []);
       if (observed.state === "not_applied" && !attempted) {
-        const terminal = await recordFinalPublicationOwnerTerminalV1({ repositoryRoot: root, claimDigest, capability, state: "not_applied", reason: delivered.state === "blocked" ? delivered.reason : "pre_effect_failure" });
+        const terminal = await recordOwnerTerminal({ repositoryRoot: root, claimDigest, capability, state: "not_applied", reason: delivered.state === "blocked" ? delivered.reason : "pre_effect_failure" });
         return terminal.state === "invalid" ? recovery(missionId, "consumed", `${terminal.code}: ${terminal.errors.join(" ")}`) : recovery(missionId, "consumed", "Publication was proven not applied before any GitHub effect.", "Resolve the pre-effect failure; a fresh governed authority is required before another effect attempt.");
       }
       const reason = observed.state === "recovery_required" ? observed.reason : "effect_attempt_not_delivered";
-      const terminal = await recordFinalPublicationOwnerTerminalV1({ repositoryRoot: root, claimDigest, capability, state: "recovery_required", reason });
+      const terminal = await recordOwnerTerminal({ repositoryRoot: root, claimDigest, capability, state: "recovery_required", reason });
       return terminal.state === "invalid" ? recovery(missionId, "consumed", `${terminal.code}: ${terminal.errors.join(" ")}`) : recovery(missionId, "consumed", reason);
     } catch (error) {
+      if (isProcessStop(error)) throw error;
       const reason = error instanceof Error ? error.message : String(error);
-      const terminal = await recordFinalPublicationOwnerTerminalV1({ repositoryRoot: root, claimDigest, capability, state: "recovery_required", reason: reason.slice(0, 256) });
+      const terminal = await recordOwnerTerminal({ repositoryRoot: root, claimDigest, capability, state: "recovery_required", reason: reason.slice(0, 256) });
       return terminal.state === "invalid" ? recovery(missionId, "consumed", `${reason} ${terminal.code}: ${terminal.errors.join(" ")}`) : recovery(missionId, "consumed", reason);
     }
   } catch (error) {
+    if (isProcessStop(error)) throw error;
     return recovery(missionId, "incompatible", error instanceof Error ? error.message : String(error));
   }
 }
