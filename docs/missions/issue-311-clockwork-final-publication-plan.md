@@ -113,11 +113,25 @@ The closed states are:
 - `not_applied`: absence of both remote branch and matching PR was proven;
 - `recovery_required`: effect state is mismatched, ambiguous, or unobservable.
 
-Only the first `started` claimant may execute. It atomically appends the
-existing deterministic communication request through the existing mission
-store, reloads and revalidates the request/authority, and invokes the existing
-GitHub delivery. Concurrent or restarted callers replay the ledger and do not
-invoke push or PR creation.
+`started` contains a random one-time claimant capability retained only by the
+process that won the exclusive append. The persisted record stores only its
+SHA-256 commitment. Possession is checked under the ledger lock before every
+effect and before appending any negative or intermediate terminal state. Only
+that first claimant may execute, terminalize `not_applied`, or terminalize
+`recovery_required`. It atomically appends the existing communication request
+through the existing mission store, reloads and revalidates the
+request/authority, and invokes the existing GitHub delivery.
+
+Concurrent or restarted non-claimants replay the ledger and never invoke push
+or PR creation. A non-claimant may append `delivered` only after exact positive
+readback proves the final draft. Absence, branch-without-PR, mismatch, lookup
+failure, or uncertainty returns a non-mutating actionable stop while a
+`started` claim exists. It cannot race the live claimant by converting an
+intermediate observation into terminal state. The original claimant may
+append `not_applied` only after a proven pre-effect failure with both remote
+branch and matching PR absent. A process crash that loses the claimant
+capability deliberately remains readback-only unless positive delivery is
+later proven; it is never made effect-retryable.
 
 Extend `github/pr-workspace.mjs` with one readback-only reconciliation helper
 that reuses current lookup, scope, and receipt validation:
@@ -133,11 +147,19 @@ skips push, and any other value blocks. Any nonzero or uncertain child result
 enters readback-only reconciliation. Unknown state must never be converted to
 a retryable failure.
 
-Persist a terminal publication receipt before appending the existing trusted
-communication-result candidate. On restart, a delivered receipt with a
-missing result appends that same deterministic candidate once under the
-existing journal CAS. A matching result returns the same URL; a mismatch fails
-closed. `started` and `recovery_required` remain readback-only.
+Derive deterministic `requestId`, `candidateId`, and `sourceRef` from the claim
+key with domain-separated SHA-256 formulas. Capture the sole host-trusted
+`capturedAt` before appending `started`; store it in that record. Bind all four
+identities to the claim digest. The terminal record stores the complete exact
+validated communication-result candidate, or enough canonical receipt/scope
+material to reconstruct byte-identical candidate fields. Every replay
+recomputes and rejects any identity mismatch.
+
+Persist a terminal publication receipt and exact result candidate before
+appending that existing trusted candidate to the mission journal. On restart,
+a delivered receipt with a missing result appends the byte-identical candidate
+once under the existing journal CAS. A matching result returns the same URL; a
+mismatch fails closed. `started` and `recovery_required` remain readback-only.
 `not_applied` is actionable and terminal; it is not silently retried.
 
 All publication inputs are derived:
@@ -152,8 +174,12 @@ All publication inputs are derived:
   paths, exclusions, and explicit draft-only / no-merge / no-deploy /
   no-release / no-final-acceptance language.
 
-The base branch is the sole operator-supplied topology value. Its live origin
-ref must equal the authority base on every execution or reconciliation pass.
+The target base branch is derived read-only from GitHub's unique canonical
+repository default branch and its live origin ref must equal the authority
+base on every execution or reconciliation pass. `--base-branch` is retained
+only as a required operator equality assertion against that observed canonical
+default; it cannot select topology. A missing, renamed, aliased, ambiguous, or
+drifted default branch fails before effects.
 
 ### Packet C — one command and closed output
 
@@ -174,11 +200,26 @@ decision, action/result, durable URL/receipt, or one actionable stop. Raw
 journal entries, signer data, request/result JSON, command transcripts, and
 host paths are not printed.
 
-The #309 integration fixture runs Mack and Fury in disposable exact-revision
-worktrees, returns their terminal evidence to Hill, preserves the governed
-worktree attachment, then exercises reviewed-final to one draft PR. Technical
+The #309 integration is an operator proof, not a fabricated unit-test verdict.
+Issue #309 supplies the plan-only predecessor scenario; its teammate-demo
+launcher is not a general specialist runner and must not be misused at an
+arbitrary #311 implementation revision. Hill creates two absent disposable
+exact-revision worktrees with fixed `git worktree add --detach` commands from
+the governed repository, proves their HEADs, and routes the registered Mack
+and Fury custom agents to those roots. The specialists return genuine terminal
+packets to Hill; neither packet is an input accepted by `publish-reviewed` and
+neither becomes SHIELD authority. Hill records the exact commands, disposable
+roots, specialist runtime/model identities, terminal dispositions,
+governed-worktree branch/HEAD before and after, final publication receipt, and
+exact retry result in Mack-owned
+`docs/missions/issue-311-clockwork-final-publication-validation.md`.
+
+Only after both genuine terminal packets does Hill run the built exact-HEAD
+`shield mission publish-reviewed` command in the still-attached governed
+worktree. The proof ends after one draft URL and one no-effect retry. Technical
 review remains an upstream orchestration gate, not a caller assertion accepted
-by this command and not a new SHIELD authority class.
+by the command and not a new SHIELD authority class. May must not create the
+validation report or simulate its evidence; Mack owns it after implementation.
 
 ## Acceptance-criteria mapping
 
@@ -195,7 +236,7 @@ by this command and not a new SHIELD authority class.
 | AC-9 minimum key turns | Existing Guided Review resume and exact-authorization retry are composed; no duplicate review or PIN is introduced. |
 | AC-10 execute-once draft | Packet B durably claims before effects, reconciles uncertain outcomes read-only, and records one URL/result. |
 | AC-11 authority boundary | The command never claims implementation complete, ready-for-review, merge, deployment, release, or final acceptance. |
-| AC-12 #309 integration | Packet C proves plan-only to reviewed-final to draft PR with disposable specialist roots and no governed-worktree detachment. |
+| AC-12 #309 integration | The exact operator proof starts from the #309 plan-only predecessor, uses disposable exact-revision Mack/Fury roots and genuine registered terminal packets, preserves the attached governed root, and records one draft receipt plus a no-effect retry without verdict fixtures. |
 
 ## Smallest authorized implementation path inventory
 
@@ -263,9 +304,33 @@ git diff --check
 
 Negative controls cover every detached-repair predicate, base/HEAD/config/
 journal drift, all four authority classifications, Guided Review policy and
-cancellation, wrong PIN and signer/CAS failure, concurrent claims, malformed
-or unsafe ledger state, process stops after claim/push/PR/terminal/result,
-remote and PR ambiguity, exact retry, and prohibited authority implications.
+cancellation, wrong PIN and signer/CAS failure, concurrent claims paused before
+push and between push/PR creation, non-claimant negative-state prohibition,
+deterministic request/candidate/source/time replay, malformed or unsafe ledger
+state, process stops after claim/push/PR/terminal/result, remote and PR
+ambiguity, default-branch alias/drift, exact retry, and prohibited authority
+implications.
+
+The cumulative AC-12 operator proof runs these command surfaces rather than a
+fixture that asserts specialist success:
+
+```text
+git worktree add --detach <absent-mack-root> <implementation-head>
+git -C <absent-mack-root> rev-parse HEAD
+git worktree add --detach <absent-fury-root> <implementation-head>
+git -C <absent-fury-root> rev-parse HEAD
+node packages/shield-team-system/dist/cli.mjs mission publish-reviewed --mission-id mission:issue-311-clockwork-final-publication --base-branch <observed-default-branch> --root <governed-root> --human
+node packages/shield-team-system/dist/cli.mjs mission publish-reviewed --mission-id mission:issue-311-clockwork-final-publication --base-branch <observed-default-branch> --root <governed-root> --json </dev/null
+```
+
+The first four commands prepare and prove the disposable roots without
+detaching or switching the governed worktree. Hill then uses the Codex custom
+agent interface to route the registered Mack and Fury seats and verifies their
+actual terminal packets before either publication command. The validation
+report must include the custom-agent dispatch receipts or complete terminal
+artifacts, not a Hill-authored verdict assertion. The second publication
+invocation must return the same receipt without reading stdin or causing an
+external effect.
 
 Mack validates the exact clean implementation commit independently in a
 disposable worktree and records actual command evidence. Fury then performs
