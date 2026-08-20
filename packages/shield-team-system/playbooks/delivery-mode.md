@@ -72,6 +72,18 @@ subject, or ownership change requires renewed Fury review. The gate is
 host-asserted, stateless, and non-authoritative; Coulson approval remains
 independently required.
 
+For the cold mission-transition rail, Hill invokes
+`shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <committed-json-path> --fury-model <model-id> --root <explicit-root> --json`.
+The authority-none compositor derives the request from the exact prepared
+worktree, mission journal, committed transition plan, repository Fury card,
+runtime, and executor contracts. It executes Fury with `repairLimit: 1` and
+passes only the returned receipt-bound PASS artifacts to the reviewed-transition
+materializer. Hill never copies a verdict, receipt, or artifact path through an
+intermediate request. `REVISE` and every closed dispatch or recovery outcome
+stop without graph creation. Only `materialized` or `already_materialized`
+permits the separate `shield mission prepare-next` graph-consumer command;
+`prepare-next` never invokes a model.
+
 ### 4. PR Mission Workspace
 
 Maria Hill validates the approved workspace plan through

@@ -157,6 +157,10 @@ import {
   dispatchCopilotFuryPlanReviewV1,
   type CopilotFuryPlanDispatchDependenciesV1,
 } from "./copilot-fury-plan-dispatch-v1.mjs";
+import {
+  prepareReviewedMissionTransitionV1,
+  type CopilotFuryReviewedTransitionHostDependenciesV1,
+} from "./copilot-fury-reviewed-transition-host-v1.mjs";
 
 const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
@@ -1348,6 +1352,28 @@ async function dispatchFuryPlanReview(
   return result.state === "completed" ? 0 : 1;
 }
 
+async function prepareReviewedTransition(
+  args: string[],
+  dependencies: CopilotFuryReviewedTransitionHostDependenciesV1 = {},
+  operation: typeof prepareReviewedMissionTransitionV1 = prepareReviewedMissionTransitionV1,
+): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--transition-plan", "--fury-model"], ["--json"]);
+  const root = await exactRoot(required(options, "--root"), true);
+  const result = await operation({
+    missionId: required(options, "--mission-id"),
+    repositoryRoot: root,
+    transitionPlanPath: required(options, "--transition-plan"),
+    furyModel: required(options, "--fury-model"),
+  }, dependencies);
+  const human = result.state === "materialized" || result.state === "already_materialized"
+    ? `state: ${result.state}\ngraphId: ${result.graphId}`
+    : result.state === "completed"
+      ? `state: ${result.state}\ndisposition: ${result.disposition}`
+      : `state: ${result.state}\n${"code" in result ? `code: ${result.code}` : ""}`.trimEnd();
+  output(result, options.flags.has("--json"), human);
+  return result.state === "materialized" || result.state === "already_materialized" || result.state === "completed" ? 0 : 1;
+}
+
 function renderAlreadyAuthorized(result: Extract<Awaited<ReturnType<typeof resolvePreparedMissionTransitionV1>>, { state: "already_authorized" }>): string {
   return [
     `state: ${result.state}`,
@@ -2321,6 +2347,7 @@ export function missionUsage(): string {
     "  shield mission authorize --mission-id <id> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission dispatch-fury-plan-review --request <file> [--root <path>] [--json]",
+    "  shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <file> --fury-model <model-id> --root <path> [--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
     "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
@@ -2340,7 +2367,11 @@ export function missionUsage(): string {
 
 export async function runMissionCli(
   args: string[],
-  dependencies: Readonly<{ copilotFuryPlanDispatch?: CopilotFuryPlanDispatchDependenciesV1 }> = {},
+  dependencies: Readonly<{
+    copilotFuryPlanDispatch?: CopilotFuryPlanDispatchDependenciesV1;
+    copilotFuryReviewedTransition?: CopilotFuryReviewedTransitionHostDependenciesV1;
+    prepareReviewedMissionTransition?: typeof prepareReviewedMissionTransitionV1;
+  }> = {},
 ): Promise<number> {
   const [group, action, ...rest] = args;
   if (group === "mission") {
@@ -2348,6 +2379,9 @@ export async function runMissionCli(
     if (action === "authorize") return authorize(rest);
     if (action === "authorize-wheels-up") return authorizeWheelsUp(rest);
     if (action === "dispatch-fury-plan-review") return dispatchFuryPlanReview(rest, dependencies.copilotFuryPlanDispatch);
+    if (action === "prepare-reviewed-transition") return prepareReviewedTransition(
+      rest, dependencies.copilotFuryReviewedTransition, dependencies.prepareReviewedMissionTransition,
+    );
     if (action === "record-reviewed-transition") return recordReviewedTransition(rest);
     if (action === "prepare-next") return prepareNext(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
