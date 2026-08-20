@@ -515,6 +515,25 @@ export function validatePRWorkspaceReceipt(
   },
 ): { state: "valid"; receipt: PRWorkspaceReceipt } | { state: "invalid"; reason: string };
 
+export type PRPublicationReconciliation =
+  | { state: "delivered"; receipt: PRWorkspaceReceipt; publicationScope: { scopeDigest: string; binding: Record<string, unknown> }; commands: PRWorkspaceCommand[] }
+  | { state: "not_applied"; publicationScope: { scopeDigest: string; binding: Record<string, unknown> }; commands: PRWorkspaceCommand[] }
+  | { state: "recovery_required"; reason: string; commands: PRWorkspaceCommand[] };
+
+export interface PRWorkspaceCommand {
+  executable: string;
+  args: string[];
+  exitCode: number;
+}
+
+export function reconcilePRPublication(
+  plan: DeliveryWorkspacePlan,
+  authority: unknown,
+  proposedChangedPaths: readonly string[],
+  requestedEffects: readonly string[],
+  options: { body: string; run?: CommandRunner; cwd?: string; realpath?: (path: string) => string },
+): PRPublicationReconciliation;
+
 export function renderMissionHandoff(input: {
   seatId: "hill" | "daisy" | "fury" | "may" | "fitz" | "simmons" | "coulson";
   kind:

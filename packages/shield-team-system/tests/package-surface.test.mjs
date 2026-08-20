@@ -323,6 +323,7 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(typeof github.evaluateFuryPlanReviewEvidenceV1, "function");
   assert.equal(typeof github.replayFuryPlanReviewEvidenceLedgerV1, "function");
   assert.equal(github.deriveFuryPlanReviewEvidenceV1, undefined);
+  assert.equal(typeof github.reconcilePRPublication, "function");
   assert.equal(typeof github.validatePRWorkspaceReceipt, "function");
   assert.equal(typeof github.renderMissionHandoff, "function");
 });
@@ -585,6 +586,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       evaluateFuryPlanGateV1,
       evaluateFuryPlanReviewEvidenceV1,
       prepareDeliveryWorkspaceForDispatch,
+      reconcilePRPublication,
       replayFuryPlanReviewEvidenceLedgerV1,
       renderMissionHandoff,
       validatePRWorkspaceReceipt,
@@ -594,6 +596,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
       type FuryPlanReviewEvidenceEvaluationV1,
       type GitHubFollowUpCandidateInput,
       type PRWorkspaceReceipt,
+      type PRPublicationReconciliation,
     } from "@shield/team-system/github";
     import {
       IMPLEMENTATION_AUTHORITY_CONTRACT_VERSION,
@@ -844,6 +847,8 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const daisyAuthority: DaisyCoordinationAuthorityV1 = null as unknown as DaisyCoordinationAuthorityV1;
     const validateDaisyAuthority = validateDaisyCoordinationAuthorityV1;
     const replayFuryEvidence = replayFuryPlanReviewEvidenceLedgerV1;
+    const reconcilePublication = reconcilePRPublication;
+    const reconciliation = null as unknown as PRPublicationReconciliation;
     const validateReceipt = validatePRWorkspaceReceipt;
     const renderHandoff = renderMissionHandoff;
     const workspaceReceipt = null as unknown as PRWorkspaceReceipt;

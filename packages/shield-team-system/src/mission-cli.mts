@@ -161,6 +161,11 @@ import {
   prepareReviewedMissionTransitionV1,
   type CopilotFuryReviewedTransitionHostDependenciesV1,
 } from "./copilot-fury-reviewed-transition-host-v1.mjs";
+import {
+  runFinalPublicationTransitionV1,
+  type FinalPublicationClassificationV1,
+  type FinalPublicationTransitionResultV1,
+} from "./final-publication-transition-v1.mjs";
 
 const CONFIG_PATH = join(".shield", "config.json");
 const BINDINGS_PATH = join(".shield", "trusted-human-bindings.json");
@@ -1552,6 +1557,65 @@ function renderPreparedReviewPublicationHumanV1(decision: PreparedReviewPublicat
   ].join("\n");
 }
 
+function finalPublicationDecisionViewV1(decision: PreparedReviewPublicationDecisionV1) {
+  return Object.freeze({
+    schemaVersion: 1,
+    state: "authorization_decision_required",
+    missionId: decision.missionId,
+    missionRevisionId: decision.missionRevisionId,
+    repositoryId: decision.repository.repositoryId,
+    branch: decision.repository.branch,
+    baseRevision: decision.repository.baseRevision,
+    headRevision: decision.repository.headRevision,
+    guidedReview: decision.guidedReview === undefined ? null : Object.freeze({
+      choice: decision.guidedReview.choice,
+      disposition: decision.guidedReview.disposition,
+      required: decision.guidedReview.required,
+    }),
+  });
+}
+
+function renderFinalPublicationDecisionHumanV1(decision: PreparedReviewPublicationDecisionV1): string {
+  const view = finalPublicationDecisionViewV1(decision);
+  return [
+    "FINAL PUBLICATION AUTHORIZATION",
+    `Mission: ${view.missionId}`,
+    `Revision: ${view.missionRevisionId}`,
+    `Repository: ${view.repositoryId}`,
+    `Branch: ${view.branch}`,
+    `Base: ${view.baseRevision}`,
+    `HEAD: ${view.headRevision}`,
+    "Decision: authorize one draft-only review publication.",
+    ...(view.guidedReview === null ? [] : [
+      `Guided Review choice: ${view.guidedReview.choice}`,
+      `Guided Review disposition: ${view.guidedReview.disposition}`,
+      `Guided Review required: ${view.guidedReview.required}`,
+    ]),
+  ].join("\n");
+}
+
+export function renderFinalPublicationDecisionV1ForTest(decision: PreparedReviewPublicationDecisionV1, human: boolean): string {
+  const view = finalPublicationDecisionViewV1(decision);
+  return human ? renderFinalPublicationDecisionHumanV1(decision) :
+    `SHIELD_FINAL_PUBLICATION_DECISION_BEGIN\n${canonicalJson(view)}\nSHIELD_FINAL_PUBLICATION_DECISION_END`;
+}
+
+function outputFinalPublicationAuthorizationProgressV1(
+  state: string,
+  missionId: string,
+  action: string,
+  json: boolean,
+  details: Readonly<Record<string, string>> = {},
+): void {
+  const view = Object.freeze({ schemaVersion: 1, state, missionId, action, ...details });
+  output(view, json, [
+    `state: ${state}`,
+    `mission: ${missionId}`,
+    `action: ${action}`,
+    ...Object.entries(details).map(([key, value]) => `${key}: ${value}`),
+  ].join("\n"));
+}
+
 async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"yes" | "no" | "cancel"> {
   const configured = options.values.get("--guided-review-choice")?.toLowerCase();
   if (configured !== undefined) {
@@ -1571,7 +1635,10 @@ async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"y
   }
 }
 
-async function prepareNext(args: string[]): Promise<number> {
+async function prepareNext(args: string[], behavior: Readonly<{
+  suppressPublicationSuccessOutput?: boolean;
+  finalPublicationDecisionOutput?: boolean;
+}> = {}): Promise<number> {
   const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
     "--guided-review-response", "--guided-review-question-digest", "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition",
     "--guided-review-observation", "--guided-review-condition"], ["--json", "--human", "--passcode-stdin"]);
@@ -1582,6 +1649,16 @@ async function prepareNext(args: string[]): Promise<number> {
     { missionId, repositoryRoot: root },
     { observePublicationRepository: observePublicationRepositoryV1 },
   );
+  if (behavior.finalPublicationDecisionOutput === true && result.state !== "publication_ready") {
+    const replayable = result.state === "publication_already_authorized";
+    outputFinalPublicationAuthorizationProgressV1(
+      replayable ? "authorization_already_recorded" : "authorization_paused",
+      missionId,
+      replayable ? "Resume the final publication transition." : "Inspect the governed authorization state, then rerun the same command.",
+      options.flags.has("--json"),
+    );
+    return replayable ? 0 : 1;
+  }
   if (result.state === "blocked") {
     if (options.flags.has("--json")) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     else process.stderr.write(`Preparation blocked — ${result.reasonCode}: ${result.errors.join(" ")}\n`);
@@ -1652,7 +1729,11 @@ async function prepareNext(args: string[]): Promise<number> {
           const context = await secureJsonFileBeneathRoot(root, contextPath, "Guided Review context");
           const prepared = await prepareGuidedReviewRouteRequestHostV1({ preparation: result, repositoryRoot: root, context });
           if (prepared.state === "invalid") throw new MissionCliError(`${prepared.code}: ${prepared.errors.join(" ")}`, 1);
-          output(prepared, options.flags.has("--json"), renderRoutePreparationRequired(prepared));
+          if (behavior.finalPublicationDecisionOutput === true) {
+            outputFinalPublicationAuthorizationProgressV1("guided_review_route_preparation_required", missionId,
+              "Complete the local Guided Review route preparation, then rerun the same command.", options.flags.has("--json"),
+              { exactRevision: prepared.exactRevision, requestDigest: prepared.requestDigest });
+          } else output(prepared, options.flags.has("--json"), renderRoutePreparationRequired(prepared));
           return 0;
         }
       }
@@ -1684,7 +1765,11 @@ async function prepareNext(args: string[]): Promise<number> {
         let conversationAnswered: Extract<Awaited<ReturnType<typeof answerGuidedReviewConversationHostV1>>, { state: "answered" }> | null = null;
         if (resumed.state === "route_preparation_required") {
           if (currentAnswer !== null) throw new MissionCliError("Guided Review has no current question until Fury route preparation completes.", 1);
-          output(resumed, options.flags.has("--json"), renderRoutePreparationRequired(resumed));
+          if (behavior.finalPublicationDecisionOutput === true) {
+            outputFinalPublicationAuthorizationProgressV1("guided_review_route_preparation_required", missionId,
+              "Complete the local Guided Review route preparation, then rerun the same command.", options.flags.has("--json"),
+              { exactRevision: resumed.exactRevision, requestDigest: resumed.requestDigest });
+          } else output(resumed, options.flags.has("--json"), renderRoutePreparationRequired(resumed));
           return 0;
         }
         if (resumed.state === "guided_review_in_progress") {
@@ -1707,12 +1792,20 @@ async function prepareNext(args: string[]): Promise<number> {
                 questionEnvelope: displayed.questionEnvelope, answerEnvelope: answerEnvelope.value, decidedAt: new Date().toISOString() });
               if (answered.state === "invalid") throw new MissionCliError(`${answered.code}: ${answered.errors.join(" ")}`, 1);
               if (answered.state === "confirmation_required") {
-                output(answered, options.flags.has("--json"), ["GUIDED REVIEW ANSWER CONFIRMATION REQUIRED",
+                if (behavior.finalPublicationDecisionOutput === true) {
+                  outputFinalPublicationAuthorizationProgressV1("guided_review_answer_confirmation_required", missionId,
+                    "Confirm one accepted answer, then rerun the same command.", options.flags.has("--json"),
+                    { questionDigest: answered.questionEnvelope.questionDigest });
+                } else output(answered, options.flags.has("--json"), ["GUIDED REVIEW ANSWER CONFIRMATION REQUIRED",
                   `Question digest: ${answered.questionEnvelope.questionDigest}`, `Accepted answers: ${answered.acceptedAnswers.join(", ")}`].join("\n"));
                 return 0;
               }
               if (answered.state === "follow_up_required") {
-                output(answered, options.flags.has("--json"), ["GUIDED REVIEW ANSWER FOLLOW-UP REQUIRED",
+                if (behavior.finalPublicationDecisionOutput === true) {
+                  outputFinalPublicationAuthorizationProgressV1("guided_review_answer_follow_up_required", missionId,
+                    "Supply the required Guided Review follow-up, then rerun the same command.", options.flags.has("--json"),
+                    { questionDigest: answered.questionEnvelope.questionDigest, requiredField: answered.requiredField });
+                } else output(answered, options.flags.has("--json"), ["GUIDED REVIEW ANSWER FOLLOW-UP REQUIRED",
                   `Question digest: ${answered.questionEnvelope.questionDigest}`, `Answer: ${answered.canonicalAnswer}`,
                   `Required: ${answered.requiredField}`].join("\n"));
                 return 0;
@@ -1735,14 +1828,25 @@ async function prepareNext(args: string[]): Promise<number> {
           if (answerConsumed && projection.state !== "ready") {
             const recorded = Object.freeze({ schemaVersion: 1, state: "guided_review_decision_recorded", missionId: resumed.missionId,
               exactRevision: resumed.exactRevision, sessionDigest: resumed.sessionDigest, projection, session: resumed });
-            output(recorded, options.flags.has("--json"), ["GUIDED REVIEW DECISION RECORDED", `Session: ${resumed.sessionDigest}`,
+            if (behavior.finalPublicationDecisionOutput === true) {
+              outputFinalPublicationAuthorizationProgressV1("guided_review_decision_recorded", missionId,
+                "Resolve the local Guided Review projection, then rerun the same command.", options.flags.has("--json"),
+                { sessionDigest: resumed.sessionDigest });
+            } else output(recorded, options.flags.has("--json"), ["GUIDED REVIEW DECISION RECORDED", `Session: ${resumed.sessionDigest}`,
               `Projection: ${projection.code}: ${projection.errors.join(" ")}`].join("\n"));
             return 0;
           }
           if (displayed?.state !== "question_ready") throw new MissionCliError("Current Guided Review question envelope is unavailable.", 1);
           const inProgress = Object.freeze({ ...resumed, projection, questionEnvelope: displayed.questionEnvelope,
             automatedChecks: displayed.automatedChecks });
-          output(inProgress, options.flags.has("--json"), renderGuidedReviewInProgress(resumed, projection,
+          if (behavior.finalPublicationDecisionOutput === true) {
+            outputFinalPublicationAuthorizationProgressV1("guided_review_in_progress", missionId,
+              "Answer the displayed Guided Review question, then rerun the same command.", options.flags.has("--json"), {
+                exactRevision: resumed.exactRevision,
+                questionDigest: displayed.questionEnvelope.questionDigest,
+                checkpoint: resumed.currentStage?.checkpointId ?? "none",
+              });
+          } else output(inProgress, options.flags.has("--json"), renderGuidedReviewInProgress(resumed, projection,
             displayed.questionEnvelope, displayed.automatedChecks));
           return 0;
         }
@@ -1771,17 +1875,24 @@ async function prepareNext(args: string[]): Promise<number> {
         humanMode,
         decisionOutput: { write: (value) => promptOutput.write(value) },
       }, {
-        renderDecision: (decision, renderHuman) => renderHuman
-          ? renderPreparedReviewPublicationHumanV1(decision)
-          : `SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN\n${canonicalJson(decision)}\nSHIELD_REVIEW_PUBLICATION_DECISION_END`,
+        renderDecision: (decision, renderHuman) => behavior.finalPublicationDecisionOutput === true
+          ? renderFinalPublicationDecisionV1ForTest(decision, renderHuman)
+          : renderHuman
+            ? renderPreparedReviewPublicationHumanV1(decision)
+            : `SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN\n${canonicalJson(decision)}\nSHIELD_REVIEW_PUBLICATION_DECISION_END`,
         readPasscode: () => passcodeFromOptions(options, promptOutput),
         signPayload: (binding, passcode, payload) => signMissionPayload(binding, passcode, payload, missionId),
         appendEntryAtomic: appendProfileAwareMissionEntriesAtomicV1,
         ...(revalidateGuidedReviewBundle === undefined ? {} : { revalidateGuidedReviewBundle }),
       });
-      output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
+      if (behavior.suppressPublicationSuccessOutput !== true) {
+        output(executed.projection, options.flags.has("--json"), profileAwareStatusText(executed.projection));
+      }
       return 0;
     } catch (error) {
+      if (behavior.finalPublicationDecisionOutput === true) {
+        throw new MissionCliError("Final publication authorization could not continue safely; inspect local governed state and rerun the same command.", 1);
+      }
       throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
     }
   }
@@ -1839,6 +1950,105 @@ async function prepareNext(args: string[]): Promise<number> {
   } catch (error) {
     throw error instanceof MissionCliError ? error : new MissionCliError(error instanceof Error ? error.message : String(error), 1);
   }
+}
+
+function finalPublicationTransitionOutputV1(result: FinalPublicationTransitionResultV1, includeClassification: boolean) {
+  const common = {
+    schemaVersion: 1,
+    state: result.state,
+    missionId: result.missionId,
+    ...(includeClassification ? { classification: result.classification } : {}),
+  };
+  if (result.state === "published" || result.state === "reused") {
+    return Object.freeze({ ...common, action: result.state, draftUrl: result.prUrl });
+  }
+  if (result.state === "paused") return Object.freeze({ ...common, action: result.action });
+  if (result.state === "recovery_required") return Object.freeze({
+    ...common,
+    stop: "Final publication could not continue safely.",
+    action: result.action,
+  });
+  return Object.freeze({ ...common, action: "authorization decision required" });
+}
+
+function renderFinalPublicationTransitionHumanV1(result: FinalPublicationTransitionResultV1, includeClassification = true): string {
+  const classification = includeClassification ? [`classification: ${result.classification}`] : [];
+  if (result.state === "published" || result.state === "reused") {
+    return [
+      ...classification,
+      `action: ${result.state}`,
+      `draftUrl: ${result.prUrl}`,
+    ].join("\n");
+  }
+  if (result.state === "paused") {
+    return [...classification, `action: ${result.action}`].join("\n");
+  }
+  if (result.state === "recovery_required") {
+    return [...classification, "stop: Final publication could not continue safely.", `action: ${result.action}`].join("\n");
+  }
+  return [...classification, "action: authorization decision required"].join("\n");
+}
+
+export function emitFinalPublicationTransitionV1ForTest(
+  result: FinalPublicationTransitionResultV1,
+  json: boolean,
+  includeClassification = true,
+): void {
+  output(finalPublicationTransitionOutputV1(result, includeClassification), json,
+    renderFinalPublicationTransitionHumanV1(result, includeClassification));
+}
+
+export function emitFinalPublicationClassificationV1ForTest(
+  classification: FinalPublicationClassificationV1,
+  json: boolean,
+): void {
+  const destination = json ? process.stderr : outputStream;
+  destination.write(`classification: ${classification}\n`);
+}
+
+async function publishReviewed(args: string[]): Promise<number> {
+  const valueOptions = ["--root", "--mission-id", "--base-branch", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
+    "--guided-review-response", "--guided-review-question-digest", "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition",
+    "--guided-review-observation", "--guided-review-condition"] as const;
+  const options = parseOptions(args, valueOptions, ["--json", "--human", "--passcode-stdin"]);
+  if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
+  const root = await exactRoot(options.values.get("--root"), true);
+  const missionId = required(options, "--mission-id");
+  const baseBranch = required(options, "--base-branch");
+  const prepareArgs = args.reduce<string[]>((selected, value, index) => {
+    if (value === "--base-branch") return selected;
+    if (index > 0 && args[index - 1] === "--base-branch") return selected;
+    selected.push(value);
+    return selected;
+  }, []);
+  let authorizationExitCode = 0;
+  let authorizationProducedOutput = false;
+  let classificationEmitted = false;
+  const emitClassification = (classification: FinalPublicationClassificationV1) => {
+    if (classificationEmitted) return;
+    emitFinalPublicationClassificationV1ForTest(classification, options.flags.has("--json"));
+    classificationEmitted = true;
+  };
+  const result = await runFinalPublicationTransitionV1({ repositoryRoot: root, missionId, baseBranch }, {
+    onClassification: () => undefined,
+    authorizePreparedPublication: async () => {
+      authorizationProducedOutput = true;
+      emitClassification("supersedable");
+      authorizationExitCode = await prepareNext(prepareArgs, {
+        suppressPublicationSuccessOutput: true,
+        finalPublicationDecisionOutput: true,
+      });
+      if (authorizationExitCode !== 0) return "paused";
+      const replay = await resolvePreparedMissionTransitionV1({ missionId, repositoryRoot: root });
+      return replay.state === "publication_already_authorized" ? "authorized" : "paused";
+    },
+  });
+  if (!(result.state === "paused" && authorizationProducedOutput)) {
+    emitFinalPublicationTransitionV1ForTest(result, options.flags.has("--json"), !classificationEmitted);
+  }
+  if (result.state === "published" || result.state === "reused") return 0;
+  if (result.state === "paused") return authorizationExitCode;
+  return 1;
 }
 
 function canonicalDigest(value: unknown): string {
@@ -2350,6 +2560,7 @@ export function missionUsage(): string {
     "  shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <file> --fury-model <model-id> --root <path> [--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
     "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission publish-reviewed --mission-id <id> --base-branch <branch> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest>] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-request --mission-id <id> --input <file> [--root <path>] [--json]",
@@ -2384,6 +2595,7 @@ export async function runMissionCli(
     );
     if (action === "record-reviewed-transition") return recordReviewedTransition(rest);
     if (action === "prepare-next") return prepareNext(rest);
+    if (action === "publish-reviewed") return publishReviewed(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
     if (action === "publication-authorize") return publicationAuthorize(rest);
     if (action === "publication-request") return publicationRequest(rest);
