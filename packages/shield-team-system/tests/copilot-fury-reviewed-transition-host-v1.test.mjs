@@ -209,6 +209,14 @@ function runNodeModule(source, args) {
   });
 }
 
+async function waitForPath(path, label) {
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+  }
+}
+
 function executor(plan, verdict = "PASS") {
   const calls = { preflight: 0, execute: 0, requests: [] };
   return {
@@ -541,11 +549,15 @@ test("concurrent create-once callers share one seed and invoke the model once", 
 test("cross-process creation converges on one durable seed and one model execution", async () => {
   const current = await fixture();
   const counter = join(current.root, ".shield", "cross-process-executions.txt");
+  const held = join(current.root, ".shield", "seed-install-held");
+  const observed = join(current.root, ".shield", "seed-install-observed");
+  const release = join(current.root, ".shield", "seed-install-release");
   const hostUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs", import.meta.url).href;
   const dispatchUrl = new URL("../dist/copilot-fury-plan-dispatch-v1.mjs", import.meta.url).href;
   const source = `
-    import { appendFile } from "node:fs/promises";
-    const [hostUrl, dispatchUrl, input64, plan64, counter] = process.argv.slice(1);
+    import { existsSync } from "node:fs";
+    import { appendFile, link, lstat } from "node:fs/promises";
+    const [hostUrl, dispatchUrl, input64, plan64, counter, role, held, observed, release] = process.argv.slice(1);
     const { prepareReviewedMissionTransitionV1 } = await import(hostUrl);
     const dispatch = await import(dispatchUrl);
     const input = JSON.parse(Buffer.from(input64, "base64url").toString("utf8"));
@@ -562,7 +574,21 @@ test("cross-process creation converges on one durable seed and one model executi
       },
       async close() {},
     };
-    const result = await prepareReviewedMissionTransitionV1(input, { dispatchDependencies: { executor } });
+    const seedPersistence = {
+      async lstatPath(path) {
+        const value = await lstat(path);
+        if (role === "second" && path.endsWith("request-seed.installing") && !existsSync(observed)) await appendFile(observed, "observed\\n");
+        return value;
+      },
+      async linkPath(existingPath, newPath) {
+        if (role === "first" && newPath.endsWith("request-seed.json")) {
+          await appendFile(held, "held\\n");
+          while (!existsSync(release)) await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+        }
+        await link(existingPath, newPath);
+      },
+    };
+    const result = await prepareReviewedMissionTransitionV1(input, { dispatchDependencies: { executor }, seedPersistence });
     process.stdout.write(JSON.stringify(result));
   `;
   const args = [
@@ -572,8 +598,25 @@ test("cross-process creation converges on one durable seed and one model executi
     Buffer.from(JSON.stringify(current.plan)).toString("base64url"),
     counter,
   ];
-  const results = await Promise.all([runNodeModule(source, args), runNodeModule(source, args)]);
+  const first = runNodeModule(source, [...args, "first", held, observed, release]);
+  await Promise.race([
+    waitForPath(held, "first process to hold the install marker"),
+    first.then((result) => { throw new Error(`first process exited before holding marker: ${JSON.stringify(result)}`); }),
+  ]);
+  const second = runNodeModule(source, [...args, "second", held, observed, release]);
+  await waitForPath(observed, "second process to observe the active install marker");
+  await writeFile(release, "release\n");
+  const results = await Promise.all([first, second]);
   for (const result of results) assert.equal(result.status, 0, result.stderr);
+  const parsed = results.map(({ stdout }) => JSON.parse(stdout));
+  for (const result of parsed) {
+    assert.equal(result.state, "completed", JSON.stringify(result));
+    assert.equal(result.disposition, "REVISE", JSON.stringify(result));
+  }
+  assert.equal(parsed[1].receiptId, parsed[0].receiptId);
+  assert.equal(parsed[1].evidencePath, parsed[0].evidencePath);
+  assert.deepEqual(parsed[1].findings, parsed[0].findings);
+  assert.deepEqual(new Set(parsed.map(({ replayed }) => replayed)), new Set([false, true]));
   assert.equal((await readFile(counter, "utf8")).trim().split("\n").length, 1);
   const seeds = execFileSync("find", [join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "request-seed.json"], { encoding: "utf8" })
     .trim().split("\n").filter(Boolean);
@@ -606,64 +649,62 @@ test("both post-PASS checkpoints close every named mutable identity drift withou
   }
 });
 
-test("seed and handoff ancestor replacement or aliasing is rejected even when final file inodes and bytes are preserved", async () => {
-  {
-    const current = await fixture();
-    const fake = executor(current.plan);
-    const result = await prepareReviewedMissionTransitionV1(current.input, {
-      dispatchDependencies: { executor: fake.value },
-      afterDispatch: async () => {
+test("seed and handoff ancestor replacement or aliasing is rejected at every checkpoint", async () => {
+  for (const checkpoint of ["beforeDispatch", "afterDispatch", "beforeMaterialization"]) {
+    for (const mode of ["replacement", "alias"]) {
+      const current = await fixture();
+      const fake = executor(current.plan);
+      const mutate = async () => {
         const path = seedPath(current.root);
         const directory = dirname(path);
-        const moved = `${directory}.moved`;
+        const moved = `${directory}.${checkpoint}.${mode}.moved`;
         await rename(directory, moved);
-        await mkdir(directory, { mode: 0o700 });
-        await rename(join(moved, "request-seed.json"), path);
-      },
-    });
-    assert.equal(result.state, "recovery_required", JSON.stringify(result));
-    assert.match(result.errors.join(" "), /request_seed_ancestor_replaced_or_changed/u);
-    assert.equal(graphExists(current), false);
+        if (mode === "alias") await symlink(moved, directory, "dir");
+        else {
+          await mkdir(directory, { mode: 0o700 });
+          await rename(join(moved, "request-seed.json"), path);
+        }
+      };
+      const result = await prepareReviewedMissionTransitionV1(current.input, {
+        dispatchDependencies: { executor: fake.value },
+        [checkpoint]: mutate,
+      });
+      assert.equal(result.state, "recovery_required", `${checkpoint}/${mode}: ${JSON.stringify(result)}`);
+      assert.match(result.errors.join(" "), /seed_ancestor|request_seed_ancestor/u, `${checkpoint}/${mode}`);
+      assert.equal(graphExists(current), false, `${checkpoint}/${mode}`);
+    }
   }
 
-  {
-    const current = await fixture();
-    const fake = executor(current.plan);
-    const result = await prepareReviewedMissionTransitionV1(current.input, {
-      dispatchDependencies: { executor: fake.value },
-      afterDispatch: async () => {
-        const directory = dirname(seedPath(current.root));
-        const moved = `${directory}.moved`;
-        await rename(directory, moved);
-        await symlink(moved, directory, "dir");
-      },
-    });
-    assert.equal(result.state, "recovery_required", JSON.stringify(result));
-    assert.match(result.errors.join(" "), /seed_ancestor_unsafe_directory|seed_ancestor_directory_identity_changed/u);
-    assert.equal(graphExists(current), false);
-  }
-
-  {
-    const current = await fixture();
-    const fake = executor(current.plan);
-    let handoff;
-    const result = await prepareReviewedMissionTransitionV1(current.input, {
-      dispatchDependencies: { executor: fake.value },
-      afterDispatch: async (dispatch) => { handoff = dispatch.handoff; },
-      beforeMaterialization: async () => {
+  for (const checkpoint of ["afterDispatch", "beforeMaterialization"]) {
+    for (const mode of ["replacement", "alias"]) {
+      const current = await fixture();
+      const fake = executor(current.plan);
+      let handoff;
+      const mutate = async () => {
         assert.ok(handoff);
         const directories = new Set([dirname(join(current.root, handoff.transitionPlanPath)), dirname(join(current.root, handoff.reviewArtifactPath))]);
         for (const directory of directories) {
-          const moved = `${directory}.moved`;
+          const moved = `${directory}.${checkpoint}.${mode}.moved`;
           await rename(directory, moved);
-          await mkdir(directory, { mode: 0o700 });
-          for (const entry of await readdir(moved)) await rename(join(moved, entry), join(directory, entry));
+          if (mode === "alias") await symlink(moved, directory, "dir");
+          else {
+            await mkdir(directory, { mode: 0o700 });
+            for (const entry of await readdir(moved)) await rename(join(moved, entry), join(directory, entry));
+          }
         }
-      },
-    });
-    assert.equal(result.state, "recovery_required", JSON.stringify(result));
-    assert.match(result.errors.join(" "), /ancestor_replaced_or_changed/u);
-    assert.equal(graphExists(current), false);
+      };
+      const result = await prepareReviewedMissionTransitionV1(current.input, {
+        dispatchDependencies: { executor: fake.value },
+        afterDispatch: async (dispatch) => {
+          handoff = dispatch.handoff;
+          if (checkpoint === "afterDispatch") await mutate();
+        },
+        beforeMaterialization: checkpoint === "beforeMaterialization" ? mutate : undefined,
+      });
+      assert.equal(result.state, "recovery_required", `${checkpoint}/${mode}: ${JSON.stringify(result)}`);
+      assert.match(result.errors.join(" "), /ancestor/u, `${checkpoint}/${mode}`);
+      assert.equal(graphExists(current), false, `${checkpoint}/${mode}`);
+    }
   }
 });
 

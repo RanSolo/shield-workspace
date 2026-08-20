@@ -55,6 +55,9 @@ const MISSION_JOURNAL_FIELDS = ["sequence", "digest"] as const;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const REVISION = /^[0-9a-f]{40}$/u;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
+const SEED_INSTALL_WAIT_ATTEMPTS = 100;
+const SEED_INSTALL_WAIT_INTERVAL_MS = 5;
+const DISPATCH_LOCK_WAIT_ATTEMPTS = 1_000;
 const GIT_CONTEXT_VARIABLES = Object.freeze([
   "GIT_COMMON_DIR", "GIT_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_WORK_TREE",
 ] as const);
@@ -642,6 +645,60 @@ async function seedInstallMarkerPresent(path: string, operations: CopilotFuryRev
   }
 }
 
+async function waitForSeedInstallMarkerRemoval(
+  path: string,
+  operations: CopilotFuryReviewedTransitionSeedPersistenceV1,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < SEED_INSTALL_WAIT_ATTEMPTS; attempt += 1) {
+    if (!await seedInstallMarkerPresent(path, operations)) return true;
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, SEED_INSTALL_WAIT_INTERVAL_MS));
+  }
+  return !await seedInstallMarkerPresent(path, operations);
+}
+
+async function convergedSeedAfterMarkerRemoval(
+  observation: HostObservation,
+  input: PrepareReviewedMissionTransitionInputV1,
+  relativePath: string,
+  operations: CopilotFuryReviewedTransitionSeedPersistenceV1,
+): Promise<SeedResolution | PrepareReviewedMissionTransitionClosedResultV1> {
+  const absolutePath = join(observation.repositoryRoot, ...relativePath.split("/"));
+  const seedDirectory = dirname(absolutePath);
+  const installingPath = join(seedDirectory, "request-seed.installing");
+  try {
+    if (await seedInstallMarkerPresent(installingPath, operations)) {
+      return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "Concurrent seed creation did not reach a durably verified terminal state.");
+    }
+    const candidate = await readSeed(absolutePath);
+    if (candidate.state === "missing") {
+      return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "Concurrent seed creation removed its marker without installing a durable request seed.");
+    }
+    if (!validSeedShape(candidate.value)) return closed("recovery_required", "REQUEST_SEED_MALFORMED", "The durable request seed is malformed or unsafe.");
+    const expected = seedFor(observation, requestFor(observation, input, candidate.value.request.timestamp.value));
+    if (canonicalJson(candidate.value) !== canonicalJson(expected)) {
+      return closed("conflict", "REQUEST_SEED_CONFLICT", "Concurrent creation installed a different immutable request seed.");
+    }
+    if (candidate.file.bytes !== `${canonicalJson(candidate.value)}\n`) {
+      return closed("recovery_required", "REQUEST_SEED_NONCANONICAL", "Concurrent creation installed noncanonical seed bytes.");
+    }
+    const stats = await operations.lstatPath(absolutePath);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || (stats.mode & 0o777) !== 0o600 ||
+        !candidate.file.identity.startsWith(`${stats.dev}:${stats.ino}:${stats.size}:`)) throw new Error("request_seed_identity_unsafe");
+    const chain = await directoryChain(observation.repositoryRoot, seedDirectory, "seed_ancestor", operations);
+    if (await seedInstallMarkerPresent(installingPath, operations)) throw new Error("seed_install_marker_reappeared");
+    const readback = await readSeed(absolutePath);
+    if (readback.state === "missing" || readback.file.bytes !== candidate.file.bytes || readback.file.identity !== candidate.file.identity) {
+      throw new Error("request_seed_replaced_or_changed");
+    }
+    const readbackChain = await directoryChain(observation.repositoryRoot, seedDirectory, "seed_ancestor", operations);
+    if (!sameDirectoryChain(readbackChain, chain)) throw new Error("seed_ancestor_identity_changed");
+    if (await seedInstallMarkerPresent(installingPath, operations)) throw new Error("seed_install_marker_reappeared");
+    return Object.freeze({ seed: candidate.value, file: readback.file, relativePath, directoryChain: readbackChain });
+  } catch (error) {
+    return closed("recovery_required", "REQUEST_SEED_UNAVAILABLE", error instanceof Error ? error.message : String(error));
+  }
+}
+
 function matchingLogicalClaim(projection: SeatDispatchReceiptProjectionV1, operation: ReturnType<typeof logicalOperation>): boolean {
   return projection.parentMissionId === operation.missionId && projection.parentMissionRevision === operation.missionRevision &&
     projection.parentSessionId === operation.parentSessionId && projection.repositoryId === operation.repositoryId &&
@@ -733,7 +790,10 @@ async function resolveSeed(
   const installingPath = join(seedDirectory, "request-seed.installing");
   try {
     if (await seedInstallMarkerPresent(installingPath, operations)) {
-      return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "A durable or transient seed install marker requires explicit identity-safe recovery.");
+      if (!await waitForSeedInstallMarkerRemoval(installingPath, operations)) {
+        return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "A seed install marker remained active beyond the bounded convergence window.");
+      }
+      return await convergedSeedAfterMarkerRemoval(observation, input, relativePath, operations);
     }
   } catch (error) {
     return closed("recovery_required", "REQUEST_SEED_UNAVAILABLE", error instanceof Error ? error.message : String(error));
@@ -766,24 +826,14 @@ async function resolveSeed(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === "seed_install_in_progress") {
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        await new Promise<void>((resolveWait) => setTimeout(resolveWait, 2));
-        if (await seedInstallMarkerPresent(installingPath, operations)) continue;
-        const raced = await readSeed(absolutePath).catch(() => ({ state: "missing" as const }));
-        if (raced.state === "present" && validSeedShape(raced.value)) {
-          const expected = seedFor(observation, requestFor(observation, input, raced.value.request.timestamp.value));
-          if (canonicalJson(raced.value) !== canonicalJson(expected)) {
-            return closed("conflict", "REQUEST_SEED_CONFLICT", "Concurrent creation installed a different immutable request seed.");
-          }
-          if (raced.file.bytes !== `${canonicalJson(raced.value)}\n`) {
-            return closed("recovery_required", "REQUEST_SEED_NONCANONICAL", "Concurrent creation installed noncanonical seed bytes.");
-          }
-          const chain = await directoryChain(observation.repositoryRoot, seedDirectory, "seed_ancestor", operations);
-          return Object.freeze({ seed: raced.value, file: raced.file, relativePath, directoryChain: chain });
+      try {
+        if (!await waitForSeedInstallMarkerRemoval(installingPath, operations)) {
+          return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "Concurrent seed creation did not reach a durably verified terminal state.");
         }
-        break;
+      } catch (waitError) {
+        return closed("recovery_required", "REQUEST_SEED_UNAVAILABLE", waitError instanceof Error ? waitError.message : String(waitError));
       }
-      return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "Concurrent seed creation did not reach a durably verified terminal state.");
+      return await convergedSeedAfterMarkerRemoval(observation, input, relativePath, operations);
     }
     if (message === "seed_create_conflict") {
       const raced = await readSeed(absolutePath).catch(() => ({ state: "missing" as const }));
@@ -922,6 +972,12 @@ function validateInput(input: unknown): PrepareReviewedMissionTransitionInputV1 
 
 const inFlightReviewedTransitions = new Map<string, Promise<PrepareReviewedMissionTransitionResultV1>>();
 
+function concurrentDispatchPending(result: CopilotFuryPlanDispatchResultV1): boolean {
+  return (result.state === "invalid" && result.code === "dispatch_receipt_lock_held") ||
+    (result.state === "recovery_required" && result.code === "RECOVERY_REQUIRED" && result.errors.length === 1 &&
+      result.errors[0] === "Existing dispatch is nonterminal and cannot be reinvoked.");
+}
+
 export async function prepareReviewedMissionTransitionV1(
   input: unknown,
   dependencies: CopilotFuryReviewedTransitionHostDependenciesV1 = {},
@@ -948,7 +1004,13 @@ export async function prepareReviewedMissionTransitionV1(
     }
 
     const dispatch = dependencies.dispatchPlanReview ?? dispatchCopilotFuryPlanReviewV1;
-    const dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
+    let dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
+    for (let attempt = 0;
+      concurrentDispatchPending(dispatchResult) && attempt < DISPATCH_LOCK_WAIT_ATTEMPTS;
+      attempt += 1) {
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, SEED_INSTALL_WAIT_INTERVAL_MS));
+      dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
+    }
     if (dispatchResult.state !== "completed" || dispatchResult.disposition !== "PASS") return dispatchResult;
 
     try {
