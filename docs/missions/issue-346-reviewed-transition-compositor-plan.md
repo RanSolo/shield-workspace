@@ -86,6 +86,7 @@ Before any dispatch claim or model invocation, derive and validate:
   plan ID/digest, and exact mission/subject/repository/base/parent bindings;
 - repository-default Fury card identity at exact HEAD;
 - fixed #319 read-only tools, no effects, stop conditions, runtime, and executor;
+- host-constant `repairLimit: 1`, included in the seed and exact request;
 - stable repository workspace ID derived from repository ID plus prepared lane
   identity, never the absolute path alone;
 - stable parent-session ID derived from mission revision plus plan digest, never
@@ -97,19 +98,28 @@ or mismatched state before dispatch.
 
 ## Create-once request seed
 
-Persist a closed request seed under a host-derived mission/plan-scoped location
-inside `.shield/audit`. The seed contains only immutable logical request inputs
+Persist a closed request seed under a host-derived logical-operation location
+inside `.shield/audit`. Its path is a domain-separated canonical hash of the
+repository/workspace identity, mission revision, parent session, and transition
+plan ID/digest. Model and timestamp are deliberately excluded from the path.
+The seed contains all immutable logical request inputs, fixed `repairLimit: 1`,
 and one host-trusted timestamp selected on first creation. Use no-follow,
 create-only, fsync, atomic install, exact readback, mode, inode, confinement,
 and directory-sync rules consistent with existing SHIELD stores.
 
 - Exact retry reuses byte-identical seed and timestamp.
-- A different model, plan, mission, repository, card, runtime, executor, tool,
-  effect, stop-condition, or workspace/session identity conflicts before model
-  invocation.
+- A different model, card, runtime, executor, repair limit, tool, effect,
+  stop-condition, or workspace/session identity for the same logical operation
+  conflicts before model invocation.
+- A newly validated transition-plan digest creates a distinct review operation,
+  allowing the normal REVISE-to-revised-plan path.
 - Missing after a durable dispatch claim, malformed bytes, replacement, partial
   write, or uncertain persistence returns recovery-required; never mint a new
   logical request around an existing claim.
+- Before creating a missing seed, scan the raw receipt ledger for that exact
+  logical operation. An existing claim without its seed is recovery-required.
+- Concurrent create resolves to one byte-identical seed; no loser dispatches a
+  second model request.
 
 ## Dispatch and materialization sequence
 
@@ -120,11 +130,21 @@ and directory-sync rules consistent with existing SHIELD stores.
    - PASS with complete handoff: continue;
    - REVISE, blocked, failed, cancelled, interrupted/recovery, conflict, or
      malformed: return it without graph creation.
-5. On PASS only, resolve the returned dispatch receipt identity through the
-   existing raw ledger path and call
-   `materializeReviewedMissionTransitionV1` directly with the returned plan and
-   review artifacts.
-6. Return `materialized` or `already_materialized`. Do not reinterpret a
+5. On PASS only, reobserve root, branch, HEAD, cleanliness, prepared-worktree
+   receipt, mission revision/state, journal sequence/digest, plan, Fury card,
+   and seed after dispatcher return and again immediately before
+   materialization. Any drift returns a closed recovery/conflict result without
+   graph creation.
+6. Resolve the returned dispatch receipt identity through the existing raw
+   ledger path. Before materialization, require exact equality between the
+   resolved identity and the seed/request for receipt ID, mission ID/revision,
+   parent session, repository ID/workspace/HEAD, subject ID/revision, plan
+   ID/digest, Fury seat, requested/configured runtime and model, and executor
+   binding. Missing, duplicate, substituted, or conflicting identity is
+   recovery-required.
+7. Call `materializeReviewedMissionTransitionV1` directly with the returned
+   plan and review artifacts.
+8. Return `materialized` or `already_materialized`. Do not reinterpret a
    materialization conflict or recovery state.
 
 No output is copied through Hill or accepted back from the caller.
@@ -137,7 +157,11 @@ No output is copied through Hill or accepted back from the caller.
 | Canonical request derivation | exact request projection assertions from live fixture state |
 | Stable identities | path-independent workspace and chat-independent session tests |
 | Execute-once retry | byte-identical seed/request replay with one model invocation |
+| Logical operation scope | concurrent create, missing-seed-after-claim, conflicting-model, and REVISE-to-revised-plan tests |
 | Direct PASS handoff | real compositor-to-dispatcher-to-materializer integration test |
+| Post-PASS drift closure | after-dispatch and pre-materialization fault hooks covering HEAD, journal, plan, card, seed, and receipt replacement |
+| Receipt rebinding | field-by-field substitution matrix for receipt, mission, session, repository/workspace/HEAD, subject, plan, seat, runtime/model, and executor |
+| Frozen repair policy | request and seed assertions require `repairLimit: 1` |
 | Non-PASS preservation | exhaustive closed outcome table with absent graph |
 | No caller evidence | unknown-field and attempted verdict/receipt/path injection tests |
 | Prepare-next separation | package/CLI tests prove no compositor call from prepare-next |
