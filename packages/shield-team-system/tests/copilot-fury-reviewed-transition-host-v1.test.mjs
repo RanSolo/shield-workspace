@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import test from "node:test";
 
 import {
@@ -13,6 +14,7 @@ import {
 } from "../dist/copilot-fury-reviewed-transition-host-v1.mjs";
 import {
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
@@ -21,6 +23,7 @@ import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import { resolveSeatDispatchIdentityByReceiptIdV1 } from "../dist/mission-preparation-host-v1.mjs";
 import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import { readSeatDispatchReceiptLedgerSnapshotV1 } from "../dist/seat-dispatch-store.mjs";
 import {
   MISSION_130_JOURNAL_DIGEST,
   createProfileAwareMissionBegunEntry,
@@ -154,13 +157,56 @@ async function fixture() {
   await writeFile(join(root, planPath), `${JSON.stringify(built.plan)}\n`);
   git(root, ["add", planPath]);
   git(root, ["commit", "--quiet", "-m", "reviewed transition plan"]);
+  const headRevision = git(root, ["rev-parse", "HEAD"]);
   return {
     root: await realpath(root),
     missionId,
+    missionRevision: brief.revisionId,
+    subjectId,
+    baseRevision,
+    headRevision,
+    branch: "issue-346-lane",
+    journalPath,
     plan: built.plan,
     planPath,
     input: { missionId, repositoryRoot: await realpath(root), transitionPlanPath: planPath, furyModel: "model:fury" },
   };
+}
+
+function graphExists(current) {
+  const digest = createHash("sha256").update(current.missionId).digest("hex");
+  return existsSync(join(current.root, ".shield", "audit", "mission-preparation", digest, "reviewed-transition.json"));
+}
+
+async function replaceFileWithSameBytes(path) {
+  const bytes = await readFile(path);
+  const mode = (await lstat(path)).mode & 0o777;
+  await rename(path, `${path}.replaced`);
+  await writeFile(path, bytes, { mode });
+}
+
+function findInstallMarker(root) {
+  const seedRoot = join(root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT);
+  if (!existsSync(seedRoot)) return "";
+  try {
+    return execFileSync("find", [seedRoot, "-name", "request-seed.installing"], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function runNodeModule(source, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", source, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (status) => resolve({ status, stdout, stderr }));
+  });
 }
 
 function executor(plan, verdict = "PASS") {
@@ -233,6 +279,33 @@ test("derives repairLimit=1 and stable identities, then directly materializes an
   assert.equal(seed.request.timestamp.value, "2026-08-19T12:01:00.000Z");
   assert.match(seed.request.repositoryWorkspaceId, /^workspace:reviewed-transition:/u);
   assert.match(seed.request.parentSessionId, /^session:reviewed-transition:/u);
+  assert.deepEqual(seed.request, {
+    schemaVersion: 1,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    authority: "none",
+    repositoryRoot: current.root,
+    repositoryId: "RanSolo/reviewed-transition-fixture",
+    repositoryWorkspaceId: seed.logicalOperation.repositoryWorkspaceId,
+    branch: current.branch,
+    planningBaseRevision: current.baseRevision,
+    headRevision: current.headRevision,
+    missionId: current.missionId,
+    missionRevision: current.missionRevision,
+    subjectId: current.subjectId,
+    subjectRevision: current.plan.digest,
+    parentSessionId: seed.logicalOperation.parentSessionId,
+    transitionPlanPath: current.planPath,
+    transitionPlanRawSha256: sha256(`${JSON.stringify(current.plan)}\n`),
+    cardSelection: { kind: "repository_default" },
+    requestedModel: "model:fury",
+    requestedRuntime: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+    requestedExecutor: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+    allowedTools: ["read", "search"],
+    allowedEffects: [],
+    repairLimit: 1,
+    stopConditions: ["PASS", "REVISE", "cancelled", "failed"],
+    timestamp: { value: "2026-08-19T12:01:00.000Z", provenance: "hostTrusted" },
+  });
 
   const replayExecutor = executor(current.plan);
   const replay = await prepareReviewedMissionTransitionV1(current.input, {
@@ -252,6 +325,7 @@ test("preserves REVISE exactly, creates no graph, and conflicts a different mode
   assert.equal(revised.disposition, "REVISE");
   assert.equal(revised.handoff, null);
   assert.equal(reviseExecutor.calls.execute, 1);
+  assert.equal(graphExists(current), false);
 
   const conflictingExecutor = executor(current.plan);
   const conflict = await prepareReviewedMissionTransitionV1({ ...current.input, furyModel: "model:other-fury" }, { dispatchDependencies: { executor: conflictingExecutor.value } });
@@ -259,6 +333,40 @@ test("preserves REVISE exactly, creates no graph, and conflicts a different mode
   assert.equal(conflict.code, "REQUEST_SEED_CONFLICT");
   assert.equal(conflictingExecutor.calls.preflight, 0);
   assert.equal(conflictingExecutor.calls.execute, 0);
+  assert.equal(graphExists(current), false);
+});
+
+test("preserves every non-PASS dispatcher outcome exactly and never creates a graph", async () => {
+  const cases = [
+    { state: "completed", disposition: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }], handoff: null },
+    { state: "blocked", code: "BLOCKED_ADAPTER_GAP", errors: ["blocked"], receiptId: null, evidencePath: null, replayed: false, handoff: null },
+    { state: "failed", code: "DISPATCH_FAILED", errors: ["failed"], receiptId: "receipt:failed", evidencePath: null, replayed: false, handoff: null },
+    { state: "cancelled", code: "DISPATCH_CANCELLED", errors: ["cancelled"], receiptId: "receipt:cancelled", evidencePath: null, replayed: false, handoff: null },
+    { state: "recovery_required", code: "DISPATCH_INTERRUPTED", errors: ["interrupted"], receiptId: "receipt:interrupted", evidencePath: null, replayed: false, handoff: null },
+    { state: "invalid", code: "MALFORMED_DISPATCH_RESULT", errors: ["malformed"], receiptId: null, evidencePath: null, replayed: false, handoff: null },
+  ];
+  for (const specific of cases) {
+    const current = await fixture();
+    const outcome = Object.freeze({
+      contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+      authority: "none",
+      ...(specific.state === "completed" || specific.state === "failed" || specific.state === "cancelled" || specific.state === "recovery_required"
+        ? { missionId: current.missionId, receiptId: null, evidencePath: null, replayed: false }
+        : {}),
+      ...specific,
+    });
+    let materializations = 0;
+    const result = await prepareReviewedMissionTransitionV1(current.input, {
+      dispatchPlanReview: async () => outcome,
+      materializeReviewedTransition: async () => {
+        materializations += 1;
+        throw new Error("must_not_materialize");
+      },
+    });
+    assert.deepEqual(result, outcome, specific.state);
+    assert.equal(materializations, 0, specific.state);
+    assert.equal(graphExists(current), false, specific.state);
+  }
 });
 
 test("a missing seed after a durable claim is recovery-required and never invokes a second model", async () => {
@@ -271,6 +379,101 @@ test("a missing seed after a durable claim is recovery-required and never invoke
   assert.equal(retry.state, "recovery_required", JSON.stringify(retry));
   assert.equal(retry.code, "REQUEST_SEED_MISSING_AFTER_CLAIM");
   assert.equal(retryExecutor.calls.execute, 0);
+});
+
+test("directory creation and seed install are durably synced", async () => {
+  const current = await fixture();
+  const fake = executor(current.plan, "REVISE");
+  const created = [];
+  const synced = [];
+  const handles = new WeakMap();
+  const result = await prepareReviewedMissionTransitionV1(current.input, {
+    dispatchDependencies: { executor: fake.value },
+    seedPersistence: {
+      mkdirPath: async (path, mode) => { await mkdir(path, { mode }); created.push(path); },
+      openPath: async (path, flags, mode) => {
+        const handle = await open(path, flags, mode);
+        handles.set(handle, path);
+        return handle;
+      },
+      syncDirectoryHandle: async (handle) => { synced.push(handles.get(handle)); await handle.sync(); },
+    },
+  });
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(result.disposition, "REVISE");
+  for (const directory of created) assert.ok(synced.includes(directory), `created directory was not fsynced: ${directory}`);
+  assert.ok(synced.filter((path) => path === dirname(seedPath(current.root))).length >= 3, "seed install directory was not synced for claim, install, and cleanup");
+});
+
+test("partial write and fsync, link, or unlink uncertainty leaves durable recovery on every retry", async () => {
+  const faults = {
+    partial: {
+      writeFileHandle: async (handle, bytes) => {
+        const length = Math.max(1, bytes.byteLength - 1);
+        await handle.write(bytes, 0, length, null);
+        return length;
+      },
+    },
+    "file fsync": { syncFileHandle: async () => { throw new Error("injected_file_fsync_failure"); } },
+    "directory fsync": {
+      syncDirectoryHandle: async (handle) => {
+        if (findInstallMarker(currentFault.root) !== "") throw new Error("injected_directory_fsync_failure");
+        await handle.sync();
+      },
+    },
+    link: { linkPath: async () => { throw new Error("injected_link_failure"); } },
+    unlink: { unlinkPath: async () => { throw new Error("injected_unlink_failure"); } },
+  };
+  let currentFault;
+  for (const [label, seedPersistence] of Object.entries(faults)) {
+    currentFault = await fixture();
+    const firstExecutor = executor(currentFault.plan);
+    const first = await prepareReviewedMissionTransitionV1(currentFault.input, {
+      dispatchDependencies: { executor: firstExecutor.value },
+      seedPersistence,
+    });
+    assert.equal(first.state, "recovery_required", `${label}: ${JSON.stringify(first)}`);
+    assert.equal(first.code, "REQUEST_SEED_PERSISTENCE_UNCERTAIN", label);
+    assert.notEqual(findInstallMarker(currentFault.root), "", label);
+    assert.equal(firstExecutor.calls.preflight, 0, label);
+    assert.equal(firstExecutor.calls.execute, 0, label);
+
+    const retryExecutor = executor(currentFault.plan);
+    const retry = await prepareReviewedMissionTransitionV1(currentFault.input, { dispatchDependencies: { executor: retryExecutor.value } });
+    assert.equal(retry.state, "recovery_required", `${label} retry: ${JSON.stringify(retry)}`);
+    assert.equal(retry.code, "REQUEST_SEED_INSTALL_INCOMPLETE", label);
+    assert.equal(retryExecutor.calls.preflight, 0, label);
+    assert.equal(retryExecutor.calls.execute, 0, label);
+  }
+});
+
+test("malformed, partial, hard-linked, or aliased durable seeds fail closed before retry dispatch", async () => {
+  const mutations = {
+    malformed: async (current, path) => writeFile(path, "{\n"),
+    partial: async (current, path) => {
+      const bytes = await readFile(path);
+      await writeFile(path, bytes.subarray(0, Math.floor(bytes.byteLength / 2)));
+    },
+    hardlink: async (current, path) => link(path, join(current.root, ".shield", "seed-hardlink")),
+    alias: async (current, path) => {
+      const directory = dirname(path);
+      const moved = `${directory}.real`;
+      await rename(directory, moved);
+      await symlink(moved, directory, "dir");
+    },
+  };
+  for (const [label, mutate] of Object.entries(mutations)) {
+    const current = await fixture();
+    const firstExecutor = executor(current.plan, "REVISE");
+    assert.equal((await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: firstExecutor.value } })).state, "completed");
+    await mutate(current, seedPath(current.root));
+    const retryExecutor = executor(current.plan);
+    const retry = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: retryExecutor.value } });
+    assert.equal(retry.state, "recovery_required", `${label}: ${JSON.stringify(retry)}`);
+    assert.equal(retryExecutor.calls.preflight, 0, label);
+    assert.equal(retryExecutor.calls.execute, 0, label);
+    assert.equal(graphExists(current), false, label);
+  }
 });
 test("a newly committed revised plan digest creates a distinct logical review operation", async () => {
   const current = await fixture();
@@ -335,15 +538,133 @@ test("concurrent create-once callers share one seed and invoke the model once", 
   assert.equal(seeds.length, 1);
 });
 
-test("post-PASS repository drift closes before graph materialization", async () => {
+test("cross-process creation converges on one durable seed and one model execution", async () => {
   const current = await fixture();
-  const fake = executor(current.plan);
-  const result = await prepareReviewedMissionTransitionV1(current.input, {
-    dispatchDependencies: { executor: fake.value },
-    afterDispatch: async () => writeFile(join(current.root, "drift.txt"), "drift\n"),
-  });
-  assert.equal(result.state, "recovery_required", JSON.stringify(result));
-  assert.equal(result.code, "POST_PASS_REOBSERVATION_FAILED");
+  const counter = join(current.root, ".shield", "cross-process-executions.txt");
+  const hostUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs", import.meta.url).href;
+  const dispatchUrl = new URL("../dist/copilot-fury-plan-dispatch-v1.mjs", import.meta.url).href;
+  const source = `
+    import { appendFile } from "node:fs/promises";
+    const [hostUrl, dispatchUrl, input64, plan64, counter] = process.argv.slice(1);
+    const { prepareReviewedMissionTransitionV1 } = await import(hostUrl);
+    const dispatch = await import(dispatchUrl);
+    const input = JSON.parse(Buffer.from(input64, "base64url").toString("utf8"));
+    const plan = JSON.parse(Buffer.from(plan64, "base64url").toString("utf8"));
+    const executor = {
+      async preflight() { return { state: "ready", packageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+      async execute(input) {
+        await appendFile(counter, "execute\\n");
+        return {
+          state: "completed",
+          outputText: JSON.stringify({ schemaVersion: 1, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }] }),
+          observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [] },
+        };
+      },
+      async close() {},
+    };
+    const result = await prepareReviewedMissionTransitionV1(input, { dispatchDependencies: { executor } });
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const args = [
+    hostUrl,
+    dispatchUrl,
+    Buffer.from(JSON.stringify(current.input)).toString("base64url"),
+    Buffer.from(JSON.stringify(current.plan)).toString("base64url"),
+    counter,
+  ];
+  const results = await Promise.all([runNodeModule(source, args), runNodeModule(source, args)]);
+  for (const result of results) assert.equal(result.status, 0, result.stderr);
+  assert.equal((await readFile(counter, "utf8")).trim().split("\n").length, 1);
+  const seeds = execFileSync("find", [join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "request-seed.json"], { encoding: "utf8" })
+    .trim().split("\n").filter(Boolean);
+  assert.equal(seeds.length, 1);
+  assert.equal(findInstallMarker(current.root), "");
+  assert.equal(graphExists(current), false);
+});
+
+test("both post-PASS checkpoints close every named mutable identity drift without a graph", async () => {
+  const drift = {
+    HEAD: async (current) => { git(current.root, ["commit", "--quiet", "--allow-empty", "-m", "drift head"]); },
+    journal: async (current) => replaceFileWithSameBytes(current.journalPath),
+    plan: async (current) => replaceFileWithSameBytes(join(current.root, current.planPath)),
+    card: async (current) => replaceFileWithSameBytes(join(current.root, ".github", "agents", "fury.agent.md")),
+    seed: async (current) => replaceFileWithSameBytes(seedPath(current.root)),
+    receipt: async (current) => replaceFileWithSameBytes(join(current.root, ".shield", "dispatch-receipts.jsonl")),
+  };
+  for (const checkpoint of ["afterDispatch", "beforeMaterialization"]) {
+    for (const [label, mutate] of Object.entries(drift)) {
+      const current = await fixture();
+      const fake = executor(current.plan);
+      const result = await prepareReviewedMissionTransitionV1(current.input, {
+        dispatchDependencies: { executor: fake.value },
+        [checkpoint]: async () => mutate(current),
+      });
+      assert.equal(result.state, "recovery_required", `${checkpoint}/${label}: ${JSON.stringify(result)}`);
+      assert.equal(result.code, "POST_PASS_REOBSERVATION_FAILED", `${checkpoint}/${label}`);
+      assert.equal(graphExists(current), false, `${checkpoint}/${label}`);
+    }
+  }
+});
+
+test("seed and handoff ancestor replacement or aliasing is rejected even when final file inodes and bytes are preserved", async () => {
+  {
+    const current = await fixture();
+    const fake = executor(current.plan);
+    const result = await prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: fake.value },
+      afterDispatch: async () => {
+        const path = seedPath(current.root);
+        const directory = dirname(path);
+        const moved = `${directory}.moved`;
+        await rename(directory, moved);
+        await mkdir(directory, { mode: 0o700 });
+        await rename(join(moved, "request-seed.json"), path);
+      },
+    });
+    assert.equal(result.state, "recovery_required", JSON.stringify(result));
+    assert.match(result.errors.join(" "), /request_seed_ancestor_replaced_or_changed/u);
+    assert.equal(graphExists(current), false);
+  }
+
+  {
+    const current = await fixture();
+    const fake = executor(current.plan);
+    const result = await prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: fake.value },
+      afterDispatch: async () => {
+        const directory = dirname(seedPath(current.root));
+        const moved = `${directory}.moved`;
+        await rename(directory, moved);
+        await symlink(moved, directory, "dir");
+      },
+    });
+    assert.equal(result.state, "recovery_required", JSON.stringify(result));
+    assert.match(result.errors.join(" "), /seed_ancestor_unsafe_directory|seed_ancestor_directory_identity_changed/u);
+    assert.equal(graphExists(current), false);
+  }
+
+  {
+    const current = await fixture();
+    const fake = executor(current.plan);
+    let handoff;
+    const result = await prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: fake.value },
+      afterDispatch: async (dispatch) => { handoff = dispatch.handoff; },
+      beforeMaterialization: async () => {
+        assert.ok(handoff);
+        const directories = new Set([dirname(join(current.root, handoff.transitionPlanPath)), dirname(join(current.root, handoff.reviewArtifactPath))]);
+        for (const directory of directories) {
+          const moved = `${directory}.moved`;
+          await rename(directory, moved);
+          await mkdir(directory, { mode: 0o700 });
+          for (const entry of await readdir(moved)) await rename(join(moved, entry), join(directory, entry));
+        }
+      },
+    });
+    assert.equal(result.state, "recovery_required", JSON.stringify(result));
+    assert.match(result.errors.join(" "), /ancestor_replaced_or_changed/u);
+    assert.equal(graphExists(current), false);
+  }
 });
 
 test("receipt resolver identity is rebound field by field to the exact derived request", async () => {
@@ -390,6 +711,61 @@ test("receipt resolver identity is rebound field by field to the exact derived r
   assert.equal(materializations, 0);
 });
 
+test("a correlated resolver and valid raw-ledger substitution still cannot rebind the derived request", async () => {
+  const current = await fixture();
+  const fake = executor(current.plan);
+  const substitutions = [
+    ["receipt", (identity) => ({ ...identity, receiptId: "receipt:substituted" })],
+    ["mission", (identity) => ({ ...identity, parentMissionId: "mission:substituted" })],
+    ["mission revision", (identity) => ({ ...identity, parentMissionRevision: "sha256:substituted" })],
+    ["session", (identity) => ({ ...identity, parentSessionId: "session:substituted" })],
+    ["repository", (identity) => ({ ...identity, repositoryId: "RanSolo/substituted" })],
+    ["workspace", (identity) => ({ ...identity, repositoryWorkspaceId: "workspace:substituted" })],
+    ["HEAD", (identity) => ({ ...identity, repositoryRevision: "f".repeat(40) })],
+    ["subject", (identity) => ({ ...identity, subjectId: "issue:substituted" })],
+    ["subject revision", (identity) => ({ ...identity, subjectRevision: "sha256:substituted" })],
+    ["plan", (identity) => ({ ...identity, artifactId: "transition-plan:substituted" })],
+    ["plan revision", (identity) => ({ ...identity, artifactRevision: "sha256:substituted" })],
+    ["seat", (identity) => ({ ...identity, accountableSeatId: "may" })],
+    ["configured runtime", (identity) => ({ ...identity, configuredRuntime: { ...identity.configuredRuntime, runtimeId: "runtime:substituted" } })],
+    ["configured model", (identity) => ({ ...identity, configuredRuntime: { ...identity.configuredRuntime, model: "model:substituted" } })],
+    ["requested runtime", (identity) => ({ ...identity, requestedRuntime: { ...identity.requestedRuntime, runtimeId: "runtime:substituted" } })],
+    ["requested model", (identity) => ({ ...identity, requestedRuntime: { ...identity.requestedRuntime, model: "model:substituted" } })],
+    ["executor", (identity) => ({ ...identity, toolExecution: { ...identity.toolExecution, executorBindingRef: "executor:substituted" } })],
+  ];
+  let materializations = 0;
+  for (const [label, substitute] of substitutions) {
+    const result = await prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: fake.value },
+      resolveDispatchIdentity: async (input) => {
+        const resolved = await resolveSeatDispatchIdentityByReceiptIdV1(input);
+        return resolved.state === "resolved" ? { state: "resolved", identity: substitute(resolved.identity) } : resolved;
+      },
+      readDispatchLedgerSnapshot: async (input) => {
+        const snapshot = await readSeatDispatchReceiptLedgerSnapshotV1(input);
+        if (snapshot.state === "invalid") return snapshot;
+        return {
+          state: "accepted",
+          value: {
+            ...snapshot.value,
+            entries: snapshot.value.entries.map((entry) => entry.kind === "dispatch.started" ? substitute(entry) : entry),
+            projections: snapshot.value.projections.map(substitute),
+          },
+        };
+      },
+      materializeReviewedTransition: async () => {
+        materializations += 1;
+        throw new Error("must_not_materialize");
+      },
+    });
+    assert.equal(result.state, "recovery_required", `${label}: ${JSON.stringify(result)}`);
+    assert.match(result.errors.join(" "), /dispatch_receipt_request_binding_mismatch/u, label);
+  }
+  assert.equal(fake.calls.execute, 1);
+  assert.equal(materializations, 0);
+  assert.equal(graphExists(current), false);
+});
+
 test("receipt replacement immediately before materialization is recovery-required", async () => {
   const current = await fixture();
   const fake = executor(current.plan);
@@ -420,4 +796,17 @@ test("closed host request rejects caller evidence and path aliases before dispat
   }
   assert.equal(fake.calls.preflight, 0);
   assert.equal(fake.calls.execute, 0);
+});
+
+test("prepare-next remains a graph-only consumer and creates no review seed or dispatch claim when the graph is absent", async () => {
+  const current = await fixture();
+  const cli = new URL("../dist/cli.mjs", import.meta.url);
+  const result = spawnSync(process.execPath, [cli.pathname, "mission", "prepare-next", "--mission-id", current.missionId, "--json"], {
+    cwd: current.root,
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.equal(existsSync(join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT)), false);
+  assert.equal(existsSync(join(current.root, ".shield", "dispatch-receipts.jsonl")), false);
+  assert.equal(graphExists(current), false);
 });
