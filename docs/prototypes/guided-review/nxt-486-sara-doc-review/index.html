@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NXT-486 Guided Document Review</title>
+  <style>
+    :root {
+      --bg: #f7f3ea;
+      --panel: #fffdf8;
+      --ink: #24211c;
+      --muted: #6d6558;
+      --red: #ba1a1a;
+      --green: #217346;
+      --yellow: #fff176;
+      --yellow-outline: #f4b400;
+      --border: #ddd2bd;
+      --blue: #315f9f;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(300px, 420px) minmax(500px, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 18px;
+      border-right: 1px solid var(--border);
+      background: #fff8e8;
+    }
+
+    main {
+      padding: 28px;
+      overflow: auto;
+    }
+
+    h1, h2, h3 {
+      line-height: 1.15;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.35rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin-bottom: 18px;
+      font-size: 0.92rem;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+
+    .ac-row {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 8px;
+      align-items: start;
+      padding: 8px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      margin-bottom: 8px;
+    }
+
+    .ac-row.active {
+      border-color: #f1a7a7;
+      background: #fff0f0;
+    }
+
+    .ac-row.passed {
+      border-color: #9ad3b2;
+      background: #eefaf3;
+    }
+
+    .badge {
+      display: inline-grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      color: white;
+      font-weight: 800;
+      font-size: 0.8rem;
+      background: var(--red);
+    }
+
+    .passed .badge {
+      background: var(--green);
+    }
+
+    .pending .badge {
+      background: #a67c00;
+    }
+
+    .ac-title {
+      font-weight: 750;
+    }
+
+    .ac-detail {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .question {
+      border-left: 5px solid var(--red);
+    }
+
+    .question.done {
+      border-left-color: var(--green);
+    }
+
+    .question-label {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 0.75rem;
+      font-weight: 800;
+    }
+
+    #questionText {
+      margin: 8px 0 12px;
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 9px 13px;
+      font-weight: 800;
+      color: white;
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    }
+
+    button:hover {
+      filter: brightness(0.96);
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    .pass {
+      background: var(--green);
+    }
+
+    .fail {
+      background: var(--red);
+    }
+
+    .conditional {
+      background: #9a6700;
+    }
+
+    .reset {
+      background: #5b5b5b;
+    }
+
+    .source-link a {
+      color: var(--blue);
+      font-weight: 700;
+    }
+
+    .review-doc {
+      max-width: 980px;
+      margin: 0 auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 28px;
+    }
+
+    .review-section {
+      border-radius: 12px;
+      padding: 8px 12px;
+      margin: 8px -12px;
+      transition: background 160ms ease, outline 160ms ease, box-shadow 160ms ease;
+    }
+
+    .review-section.active-highlight {
+      background: var(--yellow);
+      outline: 5px solid var(--yellow-outline);
+      box-shadow: 0 0 0 9px rgba(244, 180, 0, 0.18);
+    }
+
+    .review-section.active-highlight::before {
+      content: "➤ REVIEW HERE";
+      display: block;
+      color: #6b4f00;
+      font-size: 0.76rem;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      margin-bottom: 5px;
+    }
+
+    code {
+      background: #f0eadc;
+      border: 1px solid #e5d8bf;
+      border-radius: 4px;
+      padding: 0 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      background: #28231b;
+      color: #fff4d7;
+      padding: 12px;
+      border-radius: 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 0.92rem;
+    }
+
+    th, td {
+      border: 1px solid var(--border);
+      padding: 8px;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f1eadb;
+      text-align: left;
+    }
+
+    .receipt {
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      color: #40392f;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <h1>NXT-486 Guided Review</h1>
+      <div class="subtitle">SARA XML Generation Process Overview</div>
+
+      <div class="card source-link">
+        <div><strong>Sources</strong></div>
+        <div><a href="https://asmark.atlassian.net/browse/NXT-486" target="_blank" rel="noreferrer">NXT-486 Jira</a></div>
+        <div><a href="https://asmark.atlassian.net/wiki/spaces/IT/pages/1327661074/SARA+XML+Generation+Process+Overview" target="_blank" rel="noreferrer">Confluence document</a></div>
+      </div>
+
+      <div class="card">
+        <div class="question-label">Acceptance Criteria</div>
+        <div id="acList"></div>
+      </div>
+
+      <div id="questionCard" class="card question">
+        <div class="question-label">Current question</div>
+        <div id="questionText"></div>
+        <div class="buttons">
+          <button class="pass" data-answer="PASS">PASS</button>
+          <button class="fail" data-answer="FAIL">FAIL</button>
+          <button class="conditional" data-answer="CONDITIONAL PASS">CONDITIONAL</button>
+          <button class="reset" id="resetButton" type="button">RESET</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="question-label">Review receipt</div>
+        <div id="receipt" class="receipt">No answers yet.</div>
+      </div>
+    </aside>
+
+    <main>
+      <article class="review-doc">
+        <h1>SARA Data Flow and Access Query Mapping</h1>
+
+        <section id="purpose" class="review-section">
+          <h2>Purpose</h2>
+          <p>This document records the current SARA Tier II data flow from the Access <code>frmAutoXML</code> form through XML creation and final delivery. It is intended to support the SARA reorganization spike by identifying Access forms, macros, and queries involved in processing; movement from source tables to staging tables to Tier II export tables; loop boundaries and sequential processing behavior; XML generation and file output behavior; and current bottlenecks, operational assumptions, and risks.</p>
+          <p>This is a description of the observed legacy implementation. It does not propose a replacement design.</p>
+        </section>
+
+        <section id="quick-summary" class="review-section">
+          <h2>Quick Summary</h2>
+          <ol>
+            <li><strong>Access data preparation:</strong> <code>frmAutoXML</code> processes one SARA code at a time, clears/rebuilds <code>SARASingle</code>, and appends facility/contact/phone/chemical/location/attachment/state-specific rows into linked Tier II tables.</li>
+            <li><strong>CGI serialization:</strong> <code>create-sara-xmls.cgi</code> reads every facility in <code>SaraTier2Facilities</code>, builds one XML document per facility, and writes to <code>data/SaraXml/Hold/</code>.</li>
+            <li><strong>Planetpress File Delivery:</strong> a batch script creates a Planetpress trigger and moves/zips XML and SitePlan files for delivery.</li>
+          </ol>
+          <p>The Access preparation stage relies on shared temporary staging tables and only one user can safely run the process at a time.</p>
+        </section>
+
+        <section id="end-to-end-flow" class="review-section">
+          <h2>End-to-End Flow</h2>
+          <p>The document walks through <code>frmAutoXML</code>, Auto Run, per-code staging rebuild, validation gate, Tier II table construction, state-specific processing, XML creation, and Create/Send Zip Files.</p>
+        </section>
+
+        <section id="auto-run" class="review-section">
+          <h2>Command1 / Auto Run</h2>
+          <p>On <code>frmAutoXML</code>, <code>Command1</code> is captioned <code>Auto Run</code> and runs <code>mcrAutoPopulateTablesRun</code>. That macro prompts the user, then runs <code>mcrAutoPopulateTables</code> with repeat expression <code>[Forms]![frmAutoXML]![Code] Is Not Null</code>.</p>
+          <p><code>mcrAutoPopulateTables</code> sets TempVar <code>varCode</code>, runs <code>mcrProcessSARA</code>, runs <code>mcrPrintProcessEncamp</code>, closes <code>frmProcessSARA</code>, and advances to the next record.</p>
+        </section>
+
+        <section id="staging-rebuild" class="review-section">
+          <h2>Rebuild of per-code staging data</h2>
+          <p><code>mcrProcessSARA</code> clears <code>SARASingle</code>, runs <code>qryAppendToSARASingleByCode</code>, clears <code>SaraSingleEhs</code>, runs <code>qryEhsSaraSingle</code>, deletes <code>EmailSARA</code> and <code>EmailSARATier2Submit</code> rows, and updates <code>SARASingle.TotalPage</code>.</p>
+        </section>
+
+        <section id="query-mapping" class="review-section">
+          <h2>Access Query Mapping</h2>
+          <p>The page inventories queries called by the Auto Run chain, nested state-specific macro, and helper saved queries. It groups them by staging/cleanup, facility records/identifiers, contacts, phone records, chemicals/locations/mixtures/attachments, and state-specific records.</p>
+          <table>
+            <thead>
+              <tr><th>Query</th><th>Operation/Target</th><th>Function</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>qryAppendToSARASingleByCode</code></td><td>Append</td><td>Builds current-code <code>SARASingle</code> from SARA source tables.</td></tr>
+              <tr><td><code>qryEhsSaraSingle</code></td><td>Append</td><td>Counts EHS-marked products into <code>SaraSingleEhs</code>.</td></tr>
+              <tr><td><code>qryMakeTier2Facilities</code></td><td><code>Tier2Facilities</code></td><td>Appends the facility record and related metadata.</td></tr>
+              <tr><td><code>qryMakeTier2ChemicalsInInventory</code></td><td><code>Tier2ChemicalsInInventory</code></td><td>Appends chemical inventory records from <code>SARASingle</code>.</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="local-temp-tables" class="review-section">
+          <h2>Local staging tables</h2>
+          <table>
+            <thead>
+              <tr><th>Table</th><th>Role</th><th>Lifetime</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>SARASingle</code></td><td>Per-code working set assembled from SARA source tables.</td><td>Cleared and rebuilt for every <code>frmAutoXML</code> iteration.</td></tr>
+              <tr><td><code>SaraSingleEhs</code></td><td>Per-code EHS count derived from <code>SARASingle</code>.</td><td>Cleared and rebuilt for every iteration.</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="linked-tier2-tables" class="review-section">
+          <h2>Linked SQL Server Tier II tables</h2>
+          <p>The document lists linked SQL Server staging tables written by Access and then read by CGI, including <code>Tier2Facilities</code>, <code>Tier2FacilityIDs</code>, <code>Tier2Contacts</code>, <code>Tier2Phone</code>, <code>Tier2ChemicalsInInventory</code>, <code>Tier2ChemInvLocations</code>, <code>Tier2SitePlanLink</code>, and <code>Tier2ContainerLocation</code>.</p>
+          <p>It notes these are wiped after a batch has been fully processed.</p>
+        </section>
+
+        <section id="source-helper-tables" class="review-section">
+          <h2>Source and helper tables</h2>
+          <p>The page identifies source/helper data including <code>FacilitySARA</code>, <code>EverythingSARA</code>, <code>ProductsSARA</code>, <code>Asmark</code>, <code>SERCStateInfo</code>, <code>CWResponses</code>, <code>eFileArchive</code>, <code>NAICSDescriptions</code>, <code>VirginChemList</code>, and related location/state tables.</p>
+        </section>
+
+        <section id="looping" class="review-section">
+          <h2>Looping and Sequential Processing Points</h2>
+          <p>The Access loop repeats <code>mcrAutoPopulateTables</code> while <code>[Forms]![frmAutoXML]![Code] Is Not Null</code>. Each iteration advances to the next Code record.</p>
+          <p>The CGI script selects every <code>FacilityRecordID</code> from <code>SaraTier2Facilities</code> and serially processes every facility. Within each facility, chemical, mixture, storage-location, contact, and phone reads are nested loops.</p>
+        </section>
+
+        <section id="bottlenecks" class="review-section">
+          <h2>Bottlenecks and Risks</h2>
+          <ul>
+            <li>The process is driven by one Access form and one user's macro session.</li>
+            <li>Macro actions are serial and do not allow for parallel work.</li>
+            <li>Shared local staging tables represent the current iteration, so concurrent users would overwrite each other's staging state.</li>
+            <li>A failure or stop condition occurs inside the sequential chain and requires operational intervention before continuing.</li>
+            <li>Partial completion can leave some Tier II tables populated while later tables or later facilities are incomplete.</li>
+          </ul>
+        </section>
+      </article>
+    </main>
+  </div>
+
+  <script>
+    const checkpoints = [
+      {
+        ac: "A map or document detailing the current SARA data flow is created.",
+        short: "Current data-flow map/doc exists",
+        question: "Does the document clearly satisfy the first AC: a current SARA data-flow map/document exists?",
+        highlightIds: ["purpose", "quick-summary", "end-to-end-flow"]
+      },
+      {
+        ac: "Access queries and macros involved in the process are listed and their functions described.",
+        short: "Access queries/macros listed and described",
+        question: "Does the document list the Access queries/macros involved and describe their functions well enough?",
+        highlightIds: ["auto-run", "staging-rebuild", "query-mapping"]
+      },
+      {
+        ac: "A list of temporary tables and their roles in the current process is provided.",
+        short: "Temporary tables and roles listed",
+        question: "Does the document list the temporary/staging tables and explain their roles/lifetimes clearly?",
+        highlightIds: ["local-temp-tables", "linked-tier2-tables", "source-helper-tables"]
+      },
+      {
+        ac: "Bottlenecks related to single-user operation and sequential processing are documented.",
+        short: "Single-user/sequential bottlenecks documented",
+        question: "Does the document clearly document the single-user and sequential-processing bottlenecks?",
+        highlightIds: ["looping", "bottlenecks"]
+      }
+    ];
+
+    let current = Number(localStorage.getItem("nxt486Current") ?? "0");
+    const answers = JSON.parse(localStorage.getItem("nxt486Answers") ?? "{}");
+
+    const acList = document.querySelector("#acList");
+    const questionText = document.querySelector("#questionText");
+    const questionCard = document.querySelector("#questionCard");
+    const receipt = document.querySelector("#receipt");
+
+    function clampCurrent() {
+      if (current < 0) current = 0;
+      if (current >= checkpoints.length) current = checkpoints.length - 1;
+    }
+
+    function acStatus(index) {
+      const answer = answers[index]?.answer;
+      if (answer === "PASS") return "passed";
+      if (index === current) return "active";
+      return "pending";
+    }
+
+    function renderAcList() {
+      acList.innerHTML = "";
+      checkpoints.forEach((checkpoint, index) => {
+        const status = acStatus(index);
+        const row = document.createElement("div");
+        row.className = `ac-row ${status}`;
+        row.innerHTML = `
+          <div class="badge">${status === "passed" ? "✓" : index + 1}</div>
+          <div>
+            <div class="ac-title">${checkpoint.short}</div>
+            <div class="ac-detail">${checkpoint.ac}</div>
+          </div>
+        `;
+        row.addEventListener("click", () => {
+          current = index;
+          save();
+          render();
+        });
+        acList.appendChild(row);
+      });
+    }
+
+    function renderHighlights() {
+      document.querySelectorAll(".review-section").forEach(section => {
+        section.classList.remove("active-highlight");
+      });
+      const active = checkpoints[current];
+      active.highlightIds.forEach(id => {
+        document.querySelector(`#${id}`)?.classList.add("active-highlight");
+      });
+      document.querySelector(`#${active.highlightIds[0]}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+    }
+
+    function renderQuestion() {
+      const answer = answers[current]?.answer;
+      questionText.textContent = checkpoints[current].question;
+      questionCard.classList.toggle("done", answer === "PASS");
+    }
+
+    function renderReceipt() {
+      const lines = checkpoints.map((checkpoint, index) => {
+        const record = answers[index];
+        const result = record ? `${record.answer}${record.timestamp ? ` @ ${record.timestamp}` : ""}` : "PENDING";
+        return `AC ${index + 1}: ${result}\n  ${checkpoint.ac}${record?.note ? `\n  Note: ${record.note}` : ""}`;
+      });
+      receipt.textContent = lines.join("\n\n");
+    }
+
+    function save() {
+      localStorage.setItem("nxt486Current", String(current));
+      localStorage.setItem("nxt486Answers", JSON.stringify(answers));
+    }
+
+    function render() {
+      clampCurrent();
+      renderAcList();
+      renderQuestion();
+      renderReceipt();
+      renderHighlights();
+    }
+
+    document.querySelectorAll("button[data-answer]").forEach(button => {
+      button.addEventListener("click", () => {
+        const answer = button.dataset.answer;
+        let note = "";
+        if (answer !== "PASS") {
+          note = prompt(`Optional note for ${answer}:`, "") ?? "";
+        }
+        answers[current] = {
+          answer,
+          note,
+          timestamp: new Date().toLocaleString()
+        };
+        if (answer === "PASS" && current < checkpoints.length - 1) {
+          current += 1;
+        }
+        save();
+        render();
+      });
+    });
+
+    document.querySelector("#resetButton").addEventListener("click", () => {
+      if (!confirm("Reset this guided review state in this browser?")) return;
+      Object.keys(answers).forEach(key => delete answers[key]);
+      current = 0;
+      save();
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
