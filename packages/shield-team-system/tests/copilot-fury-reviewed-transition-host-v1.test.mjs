@@ -274,6 +274,10 @@ function seedCompletionPath(root) {
   return join(dirname(seedPath(root)), "request-seed.complete");
 }
 
+function seedCompletingPath(root) {
+  return join(dirname(seedPath(root)), "request-seed.completing");
+}
+
 test("derives repairLimit=1 and stable identities, then directly materializes and replays one PASS", async () => {
   const current = await fixture();
   const firstExecutor = executor(current.plan);
@@ -414,8 +418,9 @@ test("directory creation and seed install are durably synced", async () => {
   assert.equal(result.state, "completed", JSON.stringify(result));
   assert.equal(result.disposition, "REVISE");
   for (const directory of created) assert.ok(synced.includes(directory), `created directory was not fsynced: ${directory}`);
-  assert.ok(synced.filter((path) => path === dirname(seedPath(current.root))).length >= 4, "seed install directory was not synced for claim, install, cleanup, and completion");
+  assert.ok(synced.filter((path) => path === dirname(seedPath(current.root))).length >= 5, "seed install directory was not synced for claim, install, cleanup, completion, and completion-marker cleanup");
   assert.equal((await lstat(seedCompletionPath(current.root))).mode & 0o777, 0o600);
+  assert.equal(existsSync(seedCompletingPath(current.root)), false);
 });
 
 test("observers cannot dispatch while cleanup fsync is blocked or after it fails", async () => {
@@ -486,6 +491,167 @@ test("observers cannot dispatch while cleanup fsync is blocked or after it fails
     const observed = await observerHost.prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: observerExecutor.value } });
     assert.equal(observed.state, "recovery_required", JSON.stringify(observed));
     assert.match(observed.errors.join(" "), /request(?:-|_)seed(?:\.|_)complete|request_seed_completion/u);
+    assert.equal(observerExecutor.calls.preflight, 0);
+    assert.equal(observerExecutor.calls.execute, 0);
+  }
+});
+
+test("observers cannot dispatch while completion-file fsync is blocked or after it fails", async () => {
+  {
+    const current = await fixture();
+    const installingExecutor = executor(current.plan, "REVISE");
+    const handles = new WeakMap();
+    let releaseCompletion;
+    let observeBlockedCompletion;
+    const blockedCompletion = new Promise((resolveBlocked) => { observeBlockedCompletion = resolveBlocked; });
+    const completionRelease = new Promise((resolveRelease) => { releaseCompletion = resolveRelease; });
+    const installing = prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: installingExecutor.value },
+      seedPersistence: {
+        openPath: async (path, flags, mode) => {
+          const handle = await open(path, flags, mode);
+          handles.set(handle, path);
+          return handle;
+        },
+        syncFileHandle: async (handle) => {
+          if (handles.get(handle)?.endsWith("request-seed.completing")) {
+            observeBlockedCompletion();
+            await completionRelease;
+          }
+          await handle.sync();
+        },
+      },
+    });
+    await blockedCompletion;
+    assert.equal(existsSync(seedCompletingPath(current.root)), true);
+    assert.equal(existsSync(seedCompletionPath(current.root)), false);
+    const observerUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs?completion-file-observer=blocked", import.meta.url);
+    const observerHost = await import(observerUrl.href);
+    const observerExecutor = executor(current.plan);
+    const observed = await observerHost.prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: observerExecutor.value } });
+    try {
+      assert.equal(observed.state, "recovery_required", JSON.stringify(observed));
+      assert.equal(observerExecutor.calls.preflight, 0);
+      assert.equal(observerExecutor.calls.execute, 0);
+      assert.equal(installingExecutor.calls.preflight, 0);
+      assert.equal(installingExecutor.calls.execute, 0);
+    } finally {
+      releaseCompletion();
+    }
+    const installed = await installing;
+    assert.equal(installed.state, "completed", JSON.stringify(installed));
+    assert.equal(installingExecutor.calls.execute, 1);
+  }
+
+  {
+    const current = await fixture();
+    const installingExecutor = executor(current.plan);
+    const handles = new WeakMap();
+    const failed = await prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: installingExecutor.value },
+      seedPersistence: {
+        openPath: async (path, flags, mode) => {
+          const handle = await open(path, flags, mode);
+          handles.set(handle, path);
+          return handle;
+        },
+        syncFileHandle: async (handle) => {
+          if (handles.get(handle)?.endsWith("request-seed.completing")) throw new Error("injected_completion_file_fsync_failure");
+          await handle.sync();
+        },
+      },
+    });
+    assert.equal(failed.state, "recovery_required", JSON.stringify(failed));
+    assert.equal(failed.code, "REQUEST_SEED_PERSISTENCE_UNCERTAIN");
+    assert.equal(existsSync(seedCompletingPath(current.root)), true);
+    assert.equal(existsSync(seedCompletionPath(current.root)), false);
+    assert.equal(installingExecutor.calls.preflight, 0);
+    assert.equal(installingExecutor.calls.execute, 0);
+    const observerUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs?completion-file-observer=failed", import.meta.url);
+    const observerHost = await import(observerUrl.href);
+    const observerExecutor = executor(current.plan);
+    const observed = await observerHost.prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: observerExecutor.value } });
+    assert.equal(observed.state, "recovery_required", JSON.stringify(observed));
+    assert.equal(observerExecutor.calls.preflight, 0);
+    assert.equal(observerExecutor.calls.execute, 0);
+  }
+});
+
+test("observers cannot dispatch while final-witness directory fsync is blocked or after it fails", async () => {
+  {
+    const current = await fixture();
+    const installingExecutor = executor(current.plan, "REVISE");
+    let finalWitnessLinked = false;
+    let releaseDirectory;
+    let observeBlockedDirectory;
+    const blockedDirectory = new Promise((resolveBlocked) => { observeBlockedDirectory = resolveBlocked; });
+    const directoryRelease = new Promise((resolveRelease) => { releaseDirectory = resolveRelease; });
+    const installing = prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: installingExecutor.value },
+      seedPersistence: {
+        linkPath: async (existingPath, newPath) => {
+          await link(existingPath, newPath);
+          if (newPath.endsWith("request-seed.complete")) finalWitnessLinked = true;
+        },
+        syncDirectoryHandle: async (handle) => {
+          if (finalWitnessLinked) {
+            observeBlockedDirectory();
+            await directoryRelease;
+            finalWitnessLinked = false;
+          }
+          await handle.sync();
+        },
+      },
+    });
+    await blockedDirectory;
+    assert.equal(existsSync(seedCompletingPath(current.root)), true);
+    assert.equal(existsSync(seedCompletionPath(current.root)), true);
+    const observerUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs?completion-directory-observer=blocked", import.meta.url);
+    const observerHost = await import(observerUrl.href);
+    const observerExecutor = executor(current.plan);
+    const observed = await observerHost.prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: observerExecutor.value } });
+    try {
+      assert.equal(observed.state, "recovery_required", JSON.stringify(observed));
+      assert.equal(observerExecutor.calls.preflight, 0);
+      assert.equal(observerExecutor.calls.execute, 0);
+      assert.equal(installingExecutor.calls.preflight, 0);
+      assert.equal(installingExecutor.calls.execute, 0);
+    } finally {
+      releaseDirectory();
+    }
+    const installed = await installing;
+    assert.equal(installed.state, "completed", JSON.stringify(installed));
+    assert.equal(installingExecutor.calls.execute, 1);
+  }
+
+  {
+    const current = await fixture();
+    const installingExecutor = executor(current.plan);
+    let finalWitnessLinked = false;
+    const failed = await prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: installingExecutor.value },
+      seedPersistence: {
+        linkPath: async (existingPath, newPath) => {
+          await link(existingPath, newPath);
+          if (newPath.endsWith("request-seed.complete")) finalWitnessLinked = true;
+        },
+        syncDirectoryHandle: async (handle) => {
+          if (finalWitnessLinked) throw new Error("injected_final_witness_directory_fsync_failure");
+          await handle.sync();
+        },
+      },
+    });
+    assert.equal(failed.state, "recovery_required", JSON.stringify(failed));
+    assert.equal(failed.code, "REQUEST_SEED_PERSISTENCE_UNCERTAIN");
+    assert.equal(existsSync(seedCompletingPath(current.root)), true);
+    assert.equal(existsSync(seedCompletionPath(current.root)), true);
+    assert.equal(installingExecutor.calls.preflight, 0);
+    assert.equal(installingExecutor.calls.execute, 0);
+    const observerUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs?completion-directory-observer=failed", import.meta.url);
+    const observerHost = await import(observerUrl.href);
+    const observerExecutor = executor(current.plan);
+    const observed = await observerHost.prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: observerExecutor.value } });
+    assert.equal(observed.state, "recovery_required", JSON.stringify(observed));
     assert.equal(observerExecutor.calls.preflight, 0);
     assert.equal(observerExecutor.calls.execute, 0);
   }
