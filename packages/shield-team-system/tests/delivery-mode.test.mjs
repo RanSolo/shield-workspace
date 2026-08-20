@@ -33,6 +33,7 @@ test("delivery mode defines the planned-work contract and role boundaries", asyn
 test("delivery playbook encodes stages, readiness, and validation gates", async () => {
   const playbook = await readRepoFile("playbooks/delivery-mode.md");
 
+  const hill = await readRepoFile("agents/maria-hill-orchestrator.agent.md");
   for (const stage of [
     "1. Mission Intake",
     "2. Requirements & Scope",
@@ -86,6 +87,12 @@ test("delivery playbook encodes stages, readiness, and validation gates", async 
   assert.match(playbook, /prepareDeliveryWorkspaceForDispatch/);
   assert.match(playbook, /Specialist implementation does not begin unless the guard\s+returns literal `dispatch_ready`/);
   assert.match(playbook, /final PR-body updates never\s+replace the chronological handoff trail/);
+  assert.match(playbook, /shield mission prepare-reviewed-transition/);
+  assert.match(playbook, /repairLimit: 1/);
+  assert.match(playbook, /receipt-bound PASS artifacts/);
+  assert.match(playbook, /Only `materialized` or `already_materialized`/);
+  assert.match(playbook, /`prepare-next` never invokes a model/);
+  assert.match(hill, /prepare-reviewed-transition[\s\S]*prepare-next[\s\S]*never invokes Fury or another model/u);
 });
 
 test("begin mission playbook is present for delivery mode intake", async () => {

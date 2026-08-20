@@ -42,6 +42,15 @@ Keep the mission moving without pulling Nick Fury, Daisy Johnson, or Melinda May
   Reuse the guard after Fury's exact-revision plan review and dispatch only when
   it returns literal `dispatch_ready` with an eligible gate and exact matching
   draft-PR receipt.
+* When a committed mission transition plan reaches Fury review, run
+  `shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <committed-json-path> --fury-model <model-id> --root <explicit-root> --json`.
+  This authority-none host derives the closed request, executes Fury once, and
+  materializes only its receipt-bound PASS handoff. Do not author or copy a
+  dispatch request, verdict, receipt ID, review path, runtime identity, or
+  executor identity. On `REVISE` or any closed failure, stop at that result.
+  Run `shield mission prepare-next` only after the compositor returns
+  `materialized` or `already_materialized`; `prepare-next` is a graph consumer
+  and never invokes Fury or another model.
 * Publish major human-facing mission handoffs incrementally with seat-derived
   attribution; do not replace the historical trail with a final summary.
 * Organize newly created backlog items into a recommended roadmap when a backlog refinement mission is requested.

@@ -248,6 +248,50 @@ test("authorize-wheels-up rejects conflicting human and JSON output modes", () =
   assert.match(result.stderr, /--human and --json are mutually exclusive/u);
 });
 
+test("prepare-reviewed-transition CLI accepts only canonical host inputs and returns the compositor result", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-reviewed-transition-cli-")));
+  const calls = [];
+  const output = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { output.push(String(chunk)); return true; };
+  try {
+    const status = await runMissionCli([
+      "mission", "prepare-reviewed-transition",
+      "--mission-id", "mission:issue-346",
+      "--transition-plan", "docs/missions/issue-346-transition-plan.json",
+      "--fury-model", "model:fury",
+      "--root", root,
+      "--json",
+    ], {
+      prepareReviewedMissionTransition: async (input, dependencies) => {
+        calls.push({ input, dependencies });
+        return { state: "already_materialized", graphPath: join(root, ".shield", "graph.json"), graphId: "reviewed-transition-graph:test", graphDigest: "sha256:test" };
+      },
+    });
+    assert.equal(status, 0);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.deepEqual(calls, [{
+    input: {
+      missionId: "mission:issue-346",
+      repositoryRoot: root,
+      transitionPlanPath: "docs/missions/issue-346-transition-plan.json",
+      furyModel: "model:fury",
+    },
+    dependencies: {},
+  }]);
+  assert.equal(JSON.parse(output.join("")).state, "already_materialized");
+  await assert.rejects(
+    runMissionCli([
+      "mission", "prepare-reviewed-transition", "--mission-id", "mission:issue-346",
+      "--transition-plan", "docs/missions/issue-346-transition-plan.json", "--fury-model", "model:fury",
+      "--dispatch-receipt-id", "receipt:caller", "--root", root,
+    ], { prepareReviewedMissionTransition: async () => { throw new Error("must not be called"); } }),
+    /Unknown option: --dispatch-receipt-id/u,
+  );
+});
+
 const BOOTSTRAP_ARGS = [
   "mission", "signer", "bootstrap",
   "--seat", "coulson",

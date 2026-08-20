@@ -120,6 +120,17 @@ test("exports only the documented public package specifiers", async () => {
   for (const target of Object.values(manifest.exports)) {
     assert.deepEqual(Object.keys(target), ["types", "import"]);
   }
+  assert.equal(manifest.exports["./copilot-fury-reviewed-transition-host"], undefined);
+});
+
+test("reviewed-transition compositor remains an internal CLI host and prepare-next remains a graph-only consumer", async () => {
+  const missionCli = await readFile(join(packageRoot, "src", "mission-cli.mts"), "utf8");
+  assert.match(missionCli, /if \(action === "prepare-reviewed-transition"\) return prepareReviewedTransition/u);
+  const prepareNextStart = missionCli.indexOf("async function prepareNext(");
+  const prepareNextEnd = missionCli.indexOf("\nasync function ", prepareNextStart + 1);
+  assert.notEqual(prepareNextStart, -1);
+  const prepareNextSource = missionCli.slice(prepareNextStart, prepareNextEnd === -1 ? undefined : prepareNextEnd);
+  assert.doesNotMatch(prepareNextSource, /prepareReviewedMissionTransitionV1|dispatchCopilotFuryPlanReviewV1/u);
 });
 
 test("loads every supported runtime specifier", async () => {
@@ -944,6 +955,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
   const shieldHelp = execFileSync(bin, ["--help"], { cwd: fixture, encoding: "utf8" });
   assert.match(shieldHelp, /shield teammate preflight --root <absolute-path> --expected-head <40-lowercase-hex> \[--host github-copilot\] \[--json\]/u);
   assert.match(shieldHelp, /shield mission dispatch-fury-plan-review --request <file> \[--root <path>\] \[--json\]/u);
+  assert.match(shieldHelp, /shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <file> --fury-model <model-id> --root <path> \[--json\]/u);
   execFileSync(bin, [
     "init",
     "--repository-id", "fixture/typescript-consumer",
