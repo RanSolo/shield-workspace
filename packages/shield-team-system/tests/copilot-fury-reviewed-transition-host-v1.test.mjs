@@ -3,7 +3,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
@@ -270,6 +270,10 @@ function seedPath(root) {
   return token;
 }
 
+function seedCompletionPath(root) {
+  return join(dirname(seedPath(root)), "request-seed.complete");
+}
+
 test("derives repairLimit=1 and stable identities, then directly materializes and replays one PASS", async () => {
   const current = await fixture();
   const firstExecutor = executor(current.plan);
@@ -410,7 +414,81 @@ test("directory creation and seed install are durably synced", async () => {
   assert.equal(result.state, "completed", JSON.stringify(result));
   assert.equal(result.disposition, "REVISE");
   for (const directory of created) assert.ok(synced.includes(directory), `created directory was not fsynced: ${directory}`);
-  assert.ok(synced.filter((path) => path === dirname(seedPath(current.root))).length >= 3, "seed install directory was not synced for claim, install, and cleanup");
+  assert.ok(synced.filter((path) => path === dirname(seedPath(current.root))).length >= 4, "seed install directory was not synced for claim, install, cleanup, and completion");
+  assert.equal((await lstat(seedCompletionPath(current.root))).mode & 0o777, 0o600);
+});
+
+test("observers cannot dispatch while cleanup fsync is blocked or after it fails", async () => {
+  {
+    const current = await fixture();
+    const installingExecutor = executor(current.plan, "REVISE");
+    let cleanupPending = false;
+    let releaseCleanup;
+    let observeBlockedCleanup;
+    const blockedCleanup = new Promise((resolveBlocked) => { observeBlockedCleanup = resolveBlocked; });
+    const cleanupRelease = new Promise((resolveRelease) => { releaseCleanup = resolveRelease; });
+    const installing = prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: installingExecutor.value },
+      seedPersistence: {
+        unlinkPath: async (path) => { await unlink(path); cleanupPending = path.endsWith("request-seed.installing"); },
+        syncDirectoryHandle: async (handle) => {
+          if (cleanupPending) {
+            observeBlockedCleanup();
+            await cleanupRelease;
+            cleanupPending = false;
+          }
+          await handle.sync();
+        },
+      },
+    });
+    await blockedCleanup;
+    assert.equal(existsSync(seedCompletionPath(current.root)), false);
+    const observerUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs?cleanup-observer=blocked", import.meta.url);
+    const observerHost = await import(observerUrl.href);
+    const observerExecutor = executor(current.plan);
+    const observed = await observerHost.prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: observerExecutor.value } });
+    try {
+      assert.equal(observed.state, "recovery_required", JSON.stringify(observed));
+      assert.match(observed.errors.join(" "), /request(?:-|_)seed(?:\.|_)complete|request_seed_completion/u);
+      assert.equal(observerExecutor.calls.preflight, 0);
+      assert.equal(observerExecutor.calls.execute, 0);
+      assert.equal(installingExecutor.calls.execute, 0);
+    } finally {
+      releaseCleanup();
+    }
+    const installed = await installing;
+    assert.equal(installed.state, "completed", JSON.stringify(installed));
+    assert.equal(installingExecutor.calls.execute, 1);
+  }
+
+  {
+    const current = await fixture();
+    const installingExecutor = executor(current.plan);
+    let cleanupPending = false;
+    const failed = await prepareReviewedMissionTransitionV1(current.input, {
+      dispatchDependencies: { executor: installingExecutor.value },
+      seedPersistence: {
+        unlinkPath: async (path) => { await unlink(path); cleanupPending = path.endsWith("request-seed.installing"); },
+        syncDirectoryHandle: async (handle) => {
+          if (cleanupPending) throw new Error("injected_cleanup_fsync_failure");
+          await handle.sync();
+        },
+      },
+    });
+    assert.equal(failed.state, "recovery_required", JSON.stringify(failed));
+    assert.equal(failed.code, "REQUEST_SEED_PERSISTENCE_UNCERTAIN");
+    assert.equal(installingExecutor.calls.preflight, 0);
+    assert.equal(installingExecutor.calls.execute, 0);
+    assert.equal(existsSync(seedCompletionPath(current.root)), false);
+    const observerUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs?cleanup-observer=failed", import.meta.url);
+    const observerHost = await import(observerUrl.href);
+    const observerExecutor = executor(current.plan);
+    const observed = await observerHost.prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: observerExecutor.value } });
+    assert.equal(observed.state, "recovery_required", JSON.stringify(observed));
+    assert.match(observed.errors.join(" "), /request(?:-|_)seed(?:\.|_)complete|request_seed_completion/u);
+    assert.equal(observerExecutor.calls.preflight, 0);
+    assert.equal(observerExecutor.calls.execute, 0);
+  }
 });
 
 test("partial write and fsync, link, or unlink uncertainty leaves durable recovery on every retry", async () => {
@@ -483,6 +561,32 @@ test("malformed, partial, hard-linked, or aliased durable seeds fail closed befo
     assert.equal(graphExists(current), false, label);
   }
 });
+
+test("permissive-mode durable seeds are rejected on direct and converged replay paths", async () => {
+  for (const replayPath of ["direct", "converged"]) {
+    const current = await fixture();
+    const firstExecutor = executor(current.plan, "REVISE");
+    assert.equal((await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: firstExecutor.value } })).state, "completed");
+    const path = seedPath(current.root);
+    await chmod(path, 0o644);
+    let markerRemoval;
+    if (replayPath === "converged") {
+      const marker = join(dirname(path), "request-seed.installing");
+      await writeFile(marker, "installing\n", { mode: 0o600 });
+      markerRemoval = new Promise((resolveRemoval, rejectRemoval) => {
+        setTimeout(() => unlink(marker).then(resolveRemoval, rejectRemoval), 25);
+      });
+    }
+    const replayExecutor = executor(current.plan);
+    const replay = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: replayExecutor.value } });
+    await markerRemoval;
+    assert.equal(replay.state, "recovery_required", `${replayPath}: ${JSON.stringify(replay)}`);
+    assert.match(replay.errors.join(" "), /request_seed_(?:unsafe_file|identity_unsafe)/u, replayPath);
+    assert.equal(replayExecutor.calls.preflight, 0, replayPath);
+    assert.equal(replayExecutor.calls.execute, 0, replayPath);
+  }
+});
+
 test("a newly committed revised plan digest creates a distinct logical review operation", async () => {
   const current = await fixture();
   const reviseExecutor = executor(current.plan, "REVISE");
@@ -622,6 +726,80 @@ test("cross-process creation converges on one durable seed and one model executi
     .trim().split("\n").filter(Boolean);
   assert.equal(seeds.length, 1);
   assert.equal(findInstallMarker(current.root), "");
+  assert.equal(graphExists(current), false);
+});
+
+test("a dispatch beyond the bounded host wait stays pending and eventually replays the exact terminal receipt", async () => {
+  const current = await fixture();
+  const counter = join(current.root, ".shield", "slow-cross-process-executions.txt");
+  const held = join(current.root, ".shield", "slow-dispatch-held");
+  const release = join(current.root, ".shield", "slow-dispatch-release");
+  const hostUrl = new URL("../dist/copilot-fury-reviewed-transition-host-v1.mjs", import.meta.url).href;
+  const dispatchUrl = new URL("../dist/copilot-fury-plan-dispatch-v1.mjs", import.meta.url).href;
+  const source = `
+    import { existsSync } from "node:fs";
+    import { appendFile } from "node:fs/promises";
+    const [hostUrl, dispatchUrl, input64, plan64, counter, role, held, release] = process.argv.slice(1);
+    const { prepareReviewedMissionTransitionV1 } = await import(hostUrl);
+    const dispatch = await import(dispatchUrl);
+    const input = JSON.parse(Buffer.from(input64, "base64url").toString("utf8"));
+    const plan = JSON.parse(Buffer.from(plan64, "base64url").toString("utf8"));
+    const executor = {
+      async preflight() { return { state: "ready", packageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID }; },
+      async execute(input) {
+        await appendFile(counter, "execute\\n");
+        if (role === "owner") {
+          await appendFile(held, "held\\n");
+          while (!existsSync(release)) await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+        }
+        return {
+          state: "completed",
+          outputText: JSON.stringify({ schemaVersion: 1, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }] }),
+          observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [] },
+        };
+      },
+      async close() {},
+    };
+    const result = await prepareReviewedMissionTransitionV1(input, { dispatchDependencies: { executor } });
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const args = [
+    hostUrl,
+    dispatchUrl,
+    Buffer.from(JSON.stringify(current.input)).toString("base64url"),
+    Buffer.from(JSON.stringify(current.plan)).toString("base64url"),
+    counter,
+  ];
+  const owner = runNodeModule(source, [...args, "owner", held, release]);
+  await Promise.race([
+    waitForPath(held, "owner dispatch to begin model execution"),
+    owner.then((result) => { throw new Error(`owner process exited before model hold: ${JSON.stringify(result)}`); }),
+  ]);
+  const observer = await runNodeModule(source, [...args, "observer", held, release]);
+  assert.equal(observer.status, 0, observer.stderr);
+  const pending = JSON.parse(observer.stdout);
+  assert.equal(pending.state, "blocked", JSON.stringify(pending));
+  assert.equal(pending.code, "DISPATCH_PENDING", JSON.stringify(pending));
+  assert.equal(graphExists(current), false);
+  assert.equal((await readFile(counter, "utf8")).trim().split("\n").length, 1);
+
+  await writeFile(release, "release\n");
+  const ownerResult = await owner;
+  assert.equal(ownerResult.status, 0, ownerResult.stderr);
+  const completed = JSON.parse(ownerResult.stdout);
+  assert.equal(completed.state, "completed", JSON.stringify(completed));
+  assert.equal(completed.disposition, "REVISE", JSON.stringify(completed));
+
+  const replayProcess = await runNodeModule(source, [...args, "replay", held, release]);
+  assert.equal(replayProcess.status, 0, replayProcess.stderr);
+  const replayed = JSON.parse(replayProcess.stdout);
+  assert.equal(replayed.state, "completed", JSON.stringify(replayed));
+  assert.equal(replayed.disposition, "REVISE", JSON.stringify(replayed));
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.receiptId, completed.receiptId);
+  assert.equal(replayed.evidencePath, completed.evidencePath);
+  assert.deepEqual(replayed.findings, completed.findings);
+  assert.equal((await readFile(counter, "utf8")).trim().split("\n").length, 1);
   assert.equal(graphExists(current), false);
 });
 

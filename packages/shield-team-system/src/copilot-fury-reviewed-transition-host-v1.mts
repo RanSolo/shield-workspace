@@ -57,7 +57,8 @@ const REVISION = /^[0-9a-f]{40}$/u;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const SEED_INSTALL_WAIT_ATTEMPTS = 100;
 const SEED_INSTALL_WAIT_INTERVAL_MS = 5;
-const DISPATCH_LOCK_WAIT_ATTEMPTS = 1_000;
+const DISPATCH_LOCK_WAIT_MS = 5_000;
+const SEED_COMPLETION_FILE = "request-seed.complete";
 const GIT_CONTEXT_VARIABLES = Object.freeze([
   "GIT_COMMON_DIR", "GIT_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_WORK_TREE",
 ] as const);
@@ -175,6 +176,7 @@ type HostObservation = Readonly<{
 type SeedResolution = Readonly<{
   seed: CopilotFuryReviewedTransitionSeedV1;
   file: StableFile;
+  completionFile: StableFile;
   relativePath: string;
   directoryChain: DirectoryChain;
 }>;
@@ -622,9 +624,26 @@ async function ensureSeedDirectory(
   return { path: current, chain: await directoryChain(root, current, "seed_ancestor", operations) };
 }
 
-async function readSeed(path: string): Promise<{ state: "missing" } | { state: "present"; file: StableFile; value: unknown }> {
+async function secureSeedFile(
+  path: string,
+  label: string,
+  operations: CopilotFuryReviewedTransitionSeedPersistenceV1,
+): Promise<StableFile> {
+  const file = await stableFile(path, label);
+  const stats = await operations.lstatPath(path);
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || (stats.mode & 0o777) !== 0o600 ||
+      !file.identity.startsWith(`${stats.dev}:${stats.ino}:${stats.size}:`)) throw new Error(`${label}_identity_unsafe`);
+  const readback = await stableFile(path, label);
+  if (readback.bytes !== file.bytes || readback.identity !== file.identity) throw new Error(`${label}_replaced_or_changed`);
+  return readback;
+}
+
+async function readSeed(
+  path: string,
+  operations: CopilotFuryReviewedTransitionSeedPersistenceV1,
+): Promise<{ state: "missing" } | { state: "present"; file: StableFile; value: unknown }> {
   try {
-    const file = await stableFile(path, "request_seed");
+    const file = await secureSeedFile(path, "request_seed", operations);
     let value: unknown;
     try { value = JSON.parse(file.bytes); } catch { return { state: "present", file, value: null }; }
     return { state: "present", file, value };
@@ -632,6 +651,29 @@ async function readSeed(path: string): Promise<{ state: "missing" } | { state: "
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "missing" };
     throw error;
   }
+}
+
+function completionWitnessBytes(seedBytes: string): string {
+  return `sha256:${sha256(seedBytes)}\n`;
+}
+
+async function waitForSeedCompletion(
+  path: string,
+  expectedBytes: string,
+  operations: CopilotFuryReviewedTransitionSeedPersistenceV1,
+): Promise<StableFile> {
+  let lastError = "request_seed_completion_missing";
+  for (let attempt = 0; attempt < SEED_INSTALL_WAIT_ATTEMPTS; attempt += 1) {
+    try {
+      const file = await secureSeedFile(path, "request_seed_completion", operations);
+      if (file.bytes === expectedBytes) return file;
+      lastError = "request_seed_completion_mismatch";
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, SEED_INSTALL_WAIT_INTERVAL_MS));
+  }
+  throw new Error(`request_seed_completion_incomplete:${lastError}`);
 }
 
 async function seedInstallMarkerPresent(path: string, operations: CopilotFuryReviewedTransitionSeedPersistenceV1): Promise<boolean> {
@@ -656,7 +698,7 @@ async function waitForSeedInstallMarkerRemoval(
   return !await seedInstallMarkerPresent(path, operations);
 }
 
-async function convergedSeedAfterMarkerRemoval(
+async function acceptExistingSeed(
   observation: HostObservation,
   input: PrepareReviewedMissionTransitionInputV1,
   relativePath: string,
@@ -665,11 +707,12 @@ async function convergedSeedAfterMarkerRemoval(
   const absolutePath = join(observation.repositoryRoot, ...relativePath.split("/"));
   const seedDirectory = dirname(absolutePath);
   const installingPath = join(seedDirectory, "request-seed.installing");
+  const completionPath = join(seedDirectory, SEED_COMPLETION_FILE);
   try {
     if (await seedInstallMarkerPresent(installingPath, operations)) {
       return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "Concurrent seed creation did not reach a durably verified terminal state.");
     }
-    const candidate = await readSeed(absolutePath);
+    const candidate = await readSeed(absolutePath, operations);
     if (candidate.state === "missing") {
       return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "Concurrent seed creation removed its marker without installing a durable request seed.");
     }
@@ -681,19 +724,21 @@ async function convergedSeedAfterMarkerRemoval(
     if (candidate.file.bytes !== `${canonicalJson(candidate.value)}\n`) {
       return closed("recovery_required", "REQUEST_SEED_NONCANONICAL", "Concurrent creation installed noncanonical seed bytes.");
     }
-    const stats = await operations.lstatPath(absolutePath);
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || (stats.mode & 0o777) !== 0o600 ||
-        !candidate.file.identity.startsWith(`${stats.dev}:${stats.ino}:${stats.size}:`)) throw new Error("request_seed_identity_unsafe");
+    const completionFile = await waitForSeedCompletion(completionPath, completionWitnessBytes(candidate.file.bytes), operations);
     const chain = await directoryChain(observation.repositoryRoot, seedDirectory, "seed_ancestor", operations);
     if (await seedInstallMarkerPresent(installingPath, operations)) throw new Error("seed_install_marker_reappeared");
-    const readback = await readSeed(absolutePath);
+    const readback = await readSeed(absolutePath, operations);
     if (readback.state === "missing" || readback.file.bytes !== candidate.file.bytes || readback.file.identity !== candidate.file.identity) {
       throw new Error("request_seed_replaced_or_changed");
+    }
+    const completionReadback = await secureSeedFile(completionPath, "request_seed_completion", operations);
+    if (completionReadback.bytes !== completionFile.bytes || completionReadback.identity !== completionFile.identity) {
+      throw new Error("request_seed_completion_replaced_or_changed");
     }
     const readbackChain = await directoryChain(observation.repositoryRoot, seedDirectory, "seed_ancestor", operations);
     if (!sameDirectoryChain(readbackChain, chain)) throw new Error("seed_ancestor_identity_changed");
     if (await seedInstallMarkerPresent(installingPath, operations)) throw new Error("seed_install_marker_reappeared");
-    return Object.freeze({ seed: candidate.value, file: readback.file, relativePath, directoryChain: readbackChain });
+    return Object.freeze({ seed: candidate.value, file: readback.file, completionFile: completionReadback, relativePath, directoryChain: readbackChain });
   } catch (error) {
     return closed("recovery_required", "REQUEST_SEED_UNAVAILABLE", error instanceof Error ? error.message : String(error));
   }
@@ -728,16 +773,20 @@ async function installSeed(
   relativePath: string,
   bytes: string,
   operations: CopilotFuryReviewedTransitionSeedPersistenceV1,
-): Promise<{ file: StableFile; directoryChain: DirectoryChain }> {
+): Promise<void> {
   const ensured = await ensureSeedDirectory(root, relativePath, operations);
   const directory = ensured.path;
   const finalPath = join(root, ...relativePath.split("/"));
   const installingPath = join(directory, "request-seed.installing");
+  const completionPath = join(directory, SEED_COMPLETION_FILE);
   let handle: FileHandle | undefined;
-  let claimed = false;
   try {
-    handle = await operations.openPath(installingPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    claimed = true;
+    try {
+      handle = await operations.openPath(installingPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("seed_install_in_progress");
+      throw error;
+    }
     const encoded = Buffer.from(bytes, "utf8");
     if (await operations.writeFileHandle(handle, encoded) !== encoded.byteLength) throw new Error("seed_partial_write");
     await operations.syncFileHandle(handle);
@@ -746,7 +795,7 @@ async function installSeed(
     const verifiedDirectory = await openVerifiedDirectory(directory, "seed_directory", operations);
     try { await operations.syncDirectoryHandle(verifiedDirectory.handle); } finally { await verifiedDirectory.handle.close(); }
 
-    const raced = await readSeed(finalPath);
+    const raced = await readSeed(finalPath, operations);
     if (raced.state === "present") {
       if (raced.file.bytes !== bytes) throw new Error("seed_create_conflict");
     } else {
@@ -759,21 +808,23 @@ async function installSeed(
     if (!sameDirectoryChain(installedChain, ensured.chain)) throw new Error("seed_ancestor_identity_changed");
 
     await operations.unlinkPath(installingPath);
-    claimed = false;
     const cleanedDirectory = await openVerifiedDirectory(directory, "seed_directory", operations);
     try { await operations.syncDirectoryHandle(cleanedDirectory.handle); } finally { await cleanedDirectory.handle.close(); }
+
+    handle = await operations.openPath(completionPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const completionBytes = Buffer.from(completionWitnessBytes(bytes), "utf8");
+    if (await operations.writeFileHandle(handle, completionBytes) !== completionBytes.byteLength) throw new Error("seed_completion_partial_write");
+    await operations.syncFileHandle(handle);
+    await handle.close();
+    handle = undefined;
+    const completedDirectory = await openVerifiedDirectory(directory, "seed_directory", operations);
+    try { await operations.syncDirectoryHandle(completedDirectory.handle); } finally { await completedDirectory.handle.close(); }
   } catch (error) {
     await handle?.close().catch(() => undefined);
-    if (!claimed && (error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("seed_install_in_progress");
     throw error;
   }
-  const file = await stableFile(finalPath, "request_seed");
-  if (file.bytes !== bytes) throw new Error("seed_create_conflict");
-  const mode = (await lstat(finalPath)).mode & 0o777;
-  if (mode !== 0o600) throw new Error("seed_mode_invalid");
   const finalChain = await directoryChain(root, directory, "seed_ancestor", operations);
   if (!sameDirectoryChain(finalChain, ensured.chain)) throw new Error("seed_ancestor_identity_changed");
-  return { file, directoryChain: finalChain };
 }
 
 async function resolveSeed(
@@ -793,27 +844,17 @@ async function resolveSeed(
       if (!await waitForSeedInstallMarkerRemoval(installingPath, operations)) {
         return closed("recovery_required", "REQUEST_SEED_INSTALL_INCOMPLETE", "A seed install marker remained active beyond the bounded convergence window.");
       }
-      return await convergedSeedAfterMarkerRemoval(observation, input, relativePath, operations);
+      return await acceptExistingSeed(observation, input, relativePath, operations);
     }
   } catch (error) {
     return closed("recovery_required", "REQUEST_SEED_UNAVAILABLE", error instanceof Error ? error.message : String(error));
   }
   let existing: Awaited<ReturnType<typeof readSeed>>;
-  try { existing = await readSeed(absolutePath); } catch (error) {
+  try { existing = await readSeed(absolutePath, operations); } catch (error) {
     return closed("recovery_required", "REQUEST_SEED_UNAVAILABLE", error instanceof Error ? error.message : String(error));
   }
   if (existing.state === "present") {
-    if (!validSeedShape(existing.value)) return closed("recovery_required", "REQUEST_SEED_MALFORMED", "The durable request seed is malformed or unsafe.");
-    const expected = seedFor(observation, requestFor(observation, input, existing.value.request.timestamp.value));
-    if (canonicalJson(existing.value) !== canonicalJson(expected)) {
-      return closed("conflict", "REQUEST_SEED_CONFLICT", "The logical operation already has a different immutable request seed.");
-    }
-    if (existing.file.bytes !== `${canonicalJson(existing.value)}\n`) return closed("recovery_required", "REQUEST_SEED_NONCANONICAL", "The durable request seed bytes are not canonical.");
-    let chain: DirectoryChain;
-    try { chain = await directoryChain(observation.repositoryRoot, seedDirectory, "seed_ancestor", operations); } catch (error) {
-      return closed("recovery_required", "REQUEST_SEED_UNAVAILABLE", error instanceof Error ? error.message : String(error));
-    }
-    return Object.freeze({ seed: existing.value, file: existing.file, relativePath, directoryChain: chain });
+    return await acceptExistingSeed(observation, input, relativePath, operations);
   }
   try {
     if (await missingSeedHasClaim(observation, readLedger)) return closed("recovery_required", "REQUEST_SEED_MISSING_AFTER_CLAIM", "A dispatch claim exists for this logical operation but its request seed is missing.");
@@ -821,8 +862,8 @@ async function resolveSeed(
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return closed("invalid", "HOST_TIMESTAMP_INVALID", "The host-trusted clock did not return a valid Date.");
     const seed = seedFor(observation, requestFor(observation, input, date.toISOString()));
     const bytes = `${canonicalJson(seed)}\n`;
-    const installed = await installSeed(observation.repositoryRoot, relativePath, bytes, operations);
-    return Object.freeze({ seed, file: installed.file, relativePath, directoryChain: installed.directoryChain });
+    await installSeed(observation.repositoryRoot, relativePath, bytes, operations);
+    return await acceptExistingSeed(observation, input, relativePath, operations);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === "seed_install_in_progress") {
@@ -833,21 +874,10 @@ async function resolveSeed(
       } catch (waitError) {
         return closed("recovery_required", "REQUEST_SEED_UNAVAILABLE", waitError instanceof Error ? waitError.message : String(waitError));
       }
-      return await convergedSeedAfterMarkerRemoval(observation, input, relativePath, operations);
+      return await acceptExistingSeed(observation, input, relativePath, operations);
     }
     if (message === "seed_create_conflict") {
-      const raced = await readSeed(absolutePath).catch(() => ({ state: "missing" as const }));
-      if (raced.state === "present" && validSeedShape(raced.value)) {
-        const expected = seedFor(observation, requestFor(observation, input, raced.value.request.timestamp.value));
-        if (canonicalJson(raced.value) !== canonicalJson(expected)) {
-          return closed("conflict", "REQUEST_SEED_CONFLICT", "Concurrent creation installed a different immutable request seed.");
-        }
-        if (raced.file.bytes !== `${canonicalJson(raced.value)}\n`) {
-          return closed("recovery_required", "REQUEST_SEED_NONCANONICAL", "Concurrent creation installed noncanonical seed bytes.");
-        }
-        const chain = await directoryChain(observation.repositoryRoot, seedDirectory, "seed_ancestor", operations);
-        return Object.freeze({ seed: raced.value, file: raced.file, relativePath, directoryChain: chain });
-      }
+      return await acceptExistingSeed(observation, input, relativePath, operations);
     }
     return closed("recovery_required", "REQUEST_SEED_PERSISTENCE_UNCERTAIN", message);
   }
@@ -866,8 +896,12 @@ async function reobserveExact(
   if (await seedInstallMarkerPresent(join(dirname(join(expected.repositoryRoot, ...seed.relativePath.split("/"))), "request-seed.installing"), operations)) {
     throw new Error("request_seed_install_incomplete");
   }
-  const readback = await stableFile(join(expected.repositoryRoot, ...seed.relativePath.split("/")), "request_seed");
+  const seedDirectory = dirname(join(expected.repositoryRoot, ...seed.relativePath.split("/")));
+  const readback = await secureSeedFile(join(expected.repositoryRoot, ...seed.relativePath.split("/")), "request_seed", operations);
   if (readback.bytes !== seed.file.bytes || readback.identity !== seed.file.identity) throw new Error("request_seed_replaced_or_changed");
+  const completionReadback = await secureSeedFile(join(seedDirectory, SEED_COMPLETION_FILE), "request_seed_completion", operations);
+  if (completionReadback.bytes !== seed.completionFile.bytes || completionReadback.identity !== seed.completionFile.identity ||
+      completionReadback.bytes !== completionWitnessBytes(readback.bytes)) throw new Error("request_seed_completion_replaced_or_changed");
   return observed;
 }
 
@@ -978,6 +1012,20 @@ function concurrentDispatchPending(result: CopilotFuryPlanDispatchResultV1): boo
       result.errors[0] === "Existing dispatch is nonterminal and cannot be reinvoked.");
 }
 
+function boundedDispatchPending(): CopilotFuryPlanDispatchResultV1 {
+  return Object.freeze({
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    authority: "none" as const,
+    state: "blocked" as const,
+    code: "DISPATCH_PENDING",
+    errors: Object.freeze(["The exact dispatch receipt remains nonterminal after the bounded host wait."]),
+    receiptId: null,
+    evidencePath: null,
+    replayed: false,
+    handoff: null,
+  });
+}
+
 export async function prepareReviewedMissionTransitionV1(
   input: unknown,
   dependencies: CopilotFuryReviewedTransitionHostDependenciesV1 = {},
@@ -1005,11 +1053,21 @@ export async function prepareReviewedMissionTransitionV1(
 
     const dispatch = dependencies.dispatchPlanReview ?? dispatchCopilotFuryPlanReviewV1;
     let dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
-    for (let attempt = 0;
-      concurrentDispatchPending(dispatchResult) && attempt < DISPATCH_LOCK_WAIT_ATTEMPTS;
-      attempt += 1) {
-      await new Promise<void>((resolveWait) => setTimeout(resolveWait, SEED_INSTALL_WAIT_INTERVAL_MS));
+    let pendingReceiptId: string | null = null;
+    const dispatchWaitDeadline = Date.now() + DISPATCH_LOCK_WAIT_MS;
+    while (concurrentDispatchPending(dispatchResult) && Date.now() < dispatchWaitDeadline) {
+      if (dispatchResult.receiptId !== null) {
+        if (pendingReceiptId !== null && dispatchResult.receiptId !== pendingReceiptId) {
+          return closed("recovery_required", "DISPATCH_RECEIPT_IDENTITY_DRIFT", "Concurrent dispatch replay changed receipt identity.");
+        }
+        pendingReceiptId = dispatchResult.receiptId;
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, Math.min(SEED_INSTALL_WAIT_INTERVAL_MS, dispatchWaitDeadline - Date.now())));
       dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
+    }
+    if (concurrentDispatchPending(dispatchResult)) return boundedDispatchPending();
+    if (pendingReceiptId !== null && dispatchResult.receiptId !== pendingReceiptId) {
+      return closed("recovery_required", "DISPATCH_RECEIPT_IDENTITY_DRIFT", "Concurrent dispatch terminal replay changed receipt identity.");
     }
     if (dispatchResult.state !== "completed" || dispatchResult.disposition !== "PASS") return dispatchResult;
 
