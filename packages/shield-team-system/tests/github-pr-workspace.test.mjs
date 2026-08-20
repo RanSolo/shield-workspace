@@ -75,6 +75,8 @@ function existingDraft(overrides = {}) {
     state: "OPEN",
     headRefName: plan().branchSlug,
     headRefOid: head,
+    headRepository: { nameWithOwner: "RanSolo/shield-workspace" },
+    isCrossRepository: false,
     baseRefName: "main",
     ...overrides,
   };
@@ -96,6 +98,8 @@ test("creates a draft PR and verifies it through GitHub readback", () => {
       state: "OPEN",
       headRefName: plan().branchSlug,
       headRefOid: head,
+      headRepository: { nameWithOwner: "RanSolo/shield-workspace" },
+      isCrossRepository: false,
       baseRefName: "main",
     }])),
   ]);
@@ -136,6 +140,8 @@ test("draft PR workspace consumes a real schema-9 queued publication request", (
       state: "OPEN",
       headRefName: plan().branchSlug,
       headRefOid: head,
+      headRepository: { nameWithOwner: "RanSolo/shield-workspace" },
+      isCrossRepository: false,
       baseRefName: "main",
     }])),
   ]);
@@ -215,6 +221,8 @@ test("reuses exactly one open draft PR and updates its body", () => {
     state: "OPEN",
     headRefName: plan().branchSlug,
     headRefOid: head,
+    headRepository: { nameWithOwner: "RanSolo/shield-workspace" },
+    isCrossRepository: false,
     baseRefName: "main",
   }];
   const run = runner([
@@ -399,6 +407,58 @@ test("final publication reconciliation proves exact delivery or joint absence wi
   assert.equal(deliveredResult.state, "delivered");
   assert.equal(deliveredResult.receipt.prUrl, "https://github.com/RanSolo/shield-workspace/pull/4");
   assert.equal(delivered.calls.some(({ executable, args }) => executable === "gh" && args[0] === "pr" && ["create", "edit"].includes(args[1])), false);
+  assert.match(delivered.calls.at(-1).args.at(-1), /headRepository,isCrossRepository/u);
+});
+
+test("fork PRs with the origin branch name and exact OID cannot satisfy reconciliation or creation readback", () => {
+  const fixture = publicationFixture("create", 9);
+  const finalFixture = publicationJournalFixture({
+    schemaVersion: 9,
+    missionId: "mission:final-publication-fork-readback",
+    subjectId: "issue:311",
+    headRevisionId: head,
+    baseRevisionId: base,
+    branch: plan().branchSlug,
+    authorizedPaths: [plan().missionBriefPath],
+    permittedEffects: ["review.branch.push", "review.pull_request.create_draft"],
+    operation: "publish_mission_brief",
+    targetRef: `github:repository:RanSolo/shield-workspace:branch:${plan().branchSlug}:base:main`,
+    requestId: "request:final-publication:fork-readback",
+  });
+  const fork = existingDraft({ headRepository: { nameWithOwner: "ForkOwner/shield-workspace" }, isCrossRepository: true });
+  for (const mismatched of [
+    fork,
+    existingDraft({ isCrossRepository: true }),
+    existingDraft({ headRepository: { nameWithOwner: "ForkOwner/shield-workspace" } }),
+  ]) {
+    const reconciliation = runner([
+      ...scopeChecks(), defaultBranch(), ok(`${base}\trefs/heads/main`),
+      ok(`${head}\trefs/heads/${plan().branchSlug}`), ok(JSON.stringify([mismatched])),
+    ]);
+    const reconciled = reconcilePRPublication(
+      plan(), fixture.authority, fixture.request.proposedChangedPaths,
+      fixture.request.requestedEffects, { run: reconciliation, body: "Mission body", realpath: (value) => value },
+    );
+    assert.equal(reconciled.state, "recovery_required");
+    assert.equal(reconciled.reason, "pr_head_repository_mismatch");
+  }
+
+  const creation = runner([
+    ...initialChecks(), ok("[]"), ...scopeChecks(), ok(), ...mutationBaseChecks(), ok(), ok("created"), ok(JSON.stringify([fork])),
+  ]);
+  const guard = installFinalPublicationEffectGuard(finalFixture.requestId, () => true);
+  assert.equal(guard.state, "installed");
+  const created = createOrUpdatePR(plan(), {
+    run: creation,
+    body: "Mission body",
+    publicationRequestId: finalFixture.requestId,
+    loadJournal: finalFixture.loadJournal,
+    realpath: (value) => value,
+  });
+  assert.equal(guard.uninstall(), true);
+  assert.equal(created.state, "blocked");
+  assert.equal(created.reason, "pr_head_repository_mismatch");
+  assert.equal(Object.hasOwn(created, "prUrl"), false);
 });
 
 test("final-publication request skips an exact remote HEAD and blocks remote drift before effects", () => {

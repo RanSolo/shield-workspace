@@ -315,6 +315,9 @@ function transitionHarness(options = {}) {
     stopUsed: false,
     configReads: 0,
     classifications: [],
+    events: [],
+    appendRequestWrites: 0,
+    requestCapabilities: [],
     calls: { claim: 0, deliver: 0, appendRequest: 0, appendResult: 0, appendResultWrites: 0, delivered: 0, ownerTerminal: 0 },
   };
   const identity = {
@@ -376,9 +379,20 @@ function transitionHarness(options = {}) {
       state.ledger = { terminal: null };
       return { state: "valid", value: { state: "claimed", capability: "claimant-capability", identity, projection: projection() } };
     },
-    appendRequest: async (_root, _config, _missionId, request) => {
+    appendRequest: async (_root, _config, _missionId, request, _identity, _claimDigest, capability) => {
       state.calls.appendRequest += 1;
+      state.requestCapabilities.push(capability);
+      const existing = journal.projection.communication.requests.filter(({ requestId }) => requestId === request.requestId);
+      if (existing.length === 1 && journal.projection.communication.requests.length === 1) {
+        const projected = Object.fromEntries(Object.keys(request).map((field) => [field, existing[0][field]]));
+        assert.equal(canonicalJson(projected), canonicalJson(request));
+        state.events.push("request-readback");
+        return journal;
+      }
       if (options.journalDrift === true) throw new Error("journal compare conflict");
+      assert.equal(journal.projection.communication.requests.length, 0);
+      state.appendRequestWrites += 1;
+      state.events.push("request");
       journal.entries.push({ type: "communication.requested", payload: { request } });
       journal.projection.communication.requests.push({ ...request, state: "queued" });
       return journal;
@@ -390,6 +404,8 @@ function transitionHarness(options = {}) {
         return;
       }
       state.calls.appendResultWrites += 1;
+      assert.equal(journal.projection.communication.requests.length, 1);
+      state.events.push("result");
       state.candidate = candidate;
       const request = journal.projection.communication.requests[0];
       request.state = "delivered";
@@ -407,6 +423,8 @@ function transitionHarness(options = {}) {
     createResultCandidate: (request) => ({ state: "candidate", candidate: createCandidate(request) }),
     recordDelivered: async ({ candidate }) => {
       state.calls.delivered += 1;
+      assert.equal(journal.projection.communication.requests.length, 1);
+      state.events.push("delivered");
       if (state.ledger.terminal === null) state.ledger.terminal = { state: "delivered", receipt, candidate };
       else assert.equal(canonicalJson(candidate), canonicalJson(state.ledger.terminal.candidate));
       return { state: "valid", value: projection() };
@@ -441,7 +459,7 @@ function transitionHarness(options = {}) {
       ] };
     },
   };
-  return { root, missionId, state, dependencies, authority };
+  return { root, missionId, state, dependencies, authority, journal };
 }
 
 function runHarness(harness, overrides = {}) {
@@ -459,8 +477,11 @@ test("complete reusable execution becomes consumed and exact retry is a no-effec
   assert.equal(first.prUrl, "https://github.com/RanSolo/shield-workspace/pull/311");
   assert.deepEqual(harness.state.classifications, ["reusable"]);
   assert.deepEqual(harness.state.calls, {
-    claim: 1, deliver: 1, appendRequest: 1, appendResult: 1, appendResultWrites: 1, delivered: 1, ownerTerminal: 0,
+    claim: 1, deliver: 1, appendRequest: 2, appendResult: 1, appendResultWrites: 1, delivered: 1, ownerTerminal: 0,
   });
+  assert.equal(harness.state.appendRequestWrites, 1);
+  assert.ok(harness.state.events.indexOf("request") < harness.state.events.indexOf("delivered"));
+  assert.ok(harness.state.events.indexOf("delivered") < harness.state.events.indexOf("result"));
 
   const resultBytes = canonicalJson(harness.state.candidate);
   const retry = await runHarness(harness);
@@ -468,7 +489,7 @@ test("complete reusable execution becomes consumed and exact retry is a no-effec
   assert.equal(retry.classification, "consumed");
   assert.equal(canonicalJson(harness.state.candidate), resultBytes);
   assert.equal(harness.state.calls.deliver, 1);
-  assert.equal(harness.state.calls.appendRequest, 1);
+  assert.equal(harness.state.appendRequestWrites, 1);
   assert.equal(harness.state.calls.appendResultWrites, 1);
   assert.deepEqual(harness.state.classifications, ["reusable", "consumed"]);
 });
@@ -527,6 +548,16 @@ test("restarted nonclaimants are readback-only until exact positive delivery is 
   assert.equal(absent.state, "recovery_required");
   assert.equal(claimed.state.calls.deliver, 0);
   assert.equal(claimed.state.calls.ownerTerminal, 0);
+  assert.equal(claimed.state.appendRequestWrites, 0);
+
+  claimed.state.remote = "delivered";
+  const recovered = await runHarness(claimed);
+  assert.equal(recovered.state, "published");
+  assert.equal(recovered.prUrl, "https://github.com/RanSolo/shield-workspace/pull/311");
+  assert.equal(claimed.state.appendRequestWrites, 1);
+  assert.equal(claimed.state.requestCapabilities.at(-1), null);
+  assert.ok(claimed.state.events.indexOf("request") < claimed.state.events.indexOf("delivered"));
+  assert.ok(claimed.state.events.indexOf("delivered") < claimed.state.events.indexOf("result"));
 
   const pushed = transitionHarness({ stopAt: "push" });
   await assert.rejects(runHarness(pushed), FinalPublicationProcessStopV1ForTest);
@@ -534,6 +565,32 @@ test("restarted nonclaimants are readback-only until exact positive delivery is 
   assert.equal(partial.state, "recovery_required");
   assert.equal(pushed.state.calls.deliver, 1);
   assert.equal(pushed.state.calls.ownerTerminal, 0);
+});
+
+test("reusable positive readback and a prior delivered-ledger split restore the exact request before result", async () => {
+  const positive = transitionHarness();
+  positive.state.remote = "delivered";
+  const published = await runHarness(positive);
+  assert.equal(published.state, "published");
+  assert.equal(positive.state.calls.deliver, 0);
+  assert.equal(positive.state.appendRequestWrites, 1);
+  assert.equal(positive.state.requestCapabilities[0], "claimant-capability");
+  assert.deepEqual(positive.state.events.slice(0, 3), ["request", "delivered", "result"]);
+
+  const split = transitionHarness({ stopAt: "terminal" });
+  split.state.remote = "delivered";
+  await assert.rejects(runHarness(split), (error) => error instanceof FinalPublicationProcessStopV1ForTest && error.checkpoint === "terminal");
+  const exactRequestId = split.state.ledger.terminal.candidate.payload.requestId;
+  const exactRequestBytes = canonicalJson(split.journal.entries.find(({ type }) => type === "communication.requested").payload.request);
+  split.journal.entries = split.journal.entries.filter(({ type }) => type !== "communication.requested");
+  split.journal.projection.communication.requests.splice(0);
+  const repaired = await runHarness(split);
+  assert.equal(repaired.state, "reused");
+  assert.equal(split.state.appendRequestWrites, 2);
+  assert.equal(split.state.requestCapabilities.at(-1), null);
+  assert.equal(split.journal.projection.communication.requests[0].requestId, exactRequestId);
+  assert.equal(canonicalJson(split.journal.entries.find(({ type }) => type === "communication.requested").payload.request), exactRequestBytes);
+  assert.equal(split.state.calls.appendResultWrites, 1);
 });
 
 test("transition-level config, journal CAS, and HEAD drift fail closed without publication", async () => {

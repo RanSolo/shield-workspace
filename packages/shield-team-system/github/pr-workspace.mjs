@@ -266,7 +266,7 @@ export function evaluatePRPublicationScope(
     : { state: "blocked", reason: evaluation.reasonCode, scopeDigest: null, commands };
 }
 
-function readMatchingPRs(run, commands, plan, cwd) {
+function readMatchingPRs(run, commands, plan, cwd, requireOriginHead = false) {
   const result = call(
     run,
     commands,
@@ -274,7 +274,7 @@ function readMatchingPRs(run, commands, plan, cwd) {
     [
       "pr", "list", "--repo", `${plan.repositoryOwner}/${plan.repositoryName}`,
       "--head", plan.branchSlug, "--state", "all",
-      "--json", "number,title,body,url,isDraft,state,headRefName,headRefOid,baseRefName",
+      "--json", "number,title,body,url,isDraft,state,headRefName,headRefOid,headRepository,isCrossRepository,baseRefName",
     ],
     { cwd },
   );
@@ -288,7 +288,7 @@ function readMatchingPRs(run, commands, plan, cwd) {
   }
   if (!Array.isArray(values)) return { state: "error", reason: "pr_lookup_invalid_shape" };
 
-  const matches = values.filter(
+  const branchMatches = values.filter(
     (value) =>
       value &&
       Number.isInteger(value.number) &&
@@ -296,8 +296,16 @@ function readMatchingPRs(run, commands, plan, cwd) {
       value.headRefName === plan.branchSlug &&
       value.baseRefName === plan.baseBranch,
   );
-  if (values.length > 0 && matches.length === 0) {
+  if (values.length > 0 && branchMatches.length === 0) {
     return { state: "error", reason: "pr_lookup_mismatch" };
+  }
+  const matches = requireOriginHead
+    ? branchMatches.filter((value) => value.isCrossRepository === false &&
+      isPlainObject(value.headRepository) &&
+      value.headRepository.nameWithOwner === `${plan.repositoryOwner}/${plan.repositoryName}`)
+    : branchMatches;
+  if (requireOriginHead && branchMatches.length > 0 && matches.length === 0) {
+    return { state: "error", reason: "pr_head_repository_mismatch" };
   }
   if (matches.length > 1) return { state: "error", reason: "multiple_matching_prs" };
   return { state: "ok", pr: matches[0] ?? null };
@@ -356,7 +364,11 @@ function verifyCanonicalMutationBase(run, commands, plan, expectedBaseRevisionId
   return { state: "ok" };
 }
 
-function verifiedReceipt(plan, artifactRevisionId, pr) {
+function verifiedReceipt(plan, artifactRevisionId, pr, requireOriginHead = false) {
+  if (requireOriginHead && (pr?.isCrossRepository !== false || !isPlainObject(pr?.headRepository) ||
+      pr.headRepository.nameWithOwner !== `${plan.repositoryOwner}/${plan.repositoryName}`)) {
+    return { state: "invalid", reason: "receipt_head_repository_mismatch" };
+  }
   const candidate = {
     schemaVersion: 1,
     repositoryOwner: plan.repositoryOwner,
@@ -419,7 +431,7 @@ export function reconcilePRPublication(plan, authority, proposedChangedPaths, re
   }
   const remote = readRemoteBranch(run, commands, plan.branchSlug, cwd);
   if (remote.state === "error") return { state: "recovery_required", reason: remote.reason, commands };
-  const lookup = readMatchingPRs(run, commands, plan, cwd);
+  const lookup = readMatchingPRs(run, commands, plan, cwd, true);
   if (lookup.state === "error") return { state: "recovery_required", reason: lookup.reason, commands };
   if (remote.state === "absent" && lookup.pr === null) {
     return {
@@ -434,7 +446,7 @@ export function reconcilePRPublication(plan, authority, proposedChangedPaths, re
   if (lookup.pr.state !== "OPEN" || lookup.pr.isDraft !== true || lookup.pr.title !== plan.prTitle || lookup.pr.body !== body) {
     return { state: "recovery_required", reason: "draft_pull_request_mismatch", commands };
   }
-  const receipt = verifiedReceipt(plan, artifactRevisionId, lookup.pr);
+  const receipt = verifiedReceipt(plan, artifactRevisionId, lookup.pr, true);
   if (receipt.state !== "valid") {
     return { state: "recovery_required", reason: "draft_receipt_invalid", commands };
   }
@@ -566,7 +578,7 @@ export function createOrUpdatePR(plan, options = {}) {
     if (lookup.pr.body !== body) {
       return blockedAfterScope("matching_pr_body_mismatch", commands, scope);
     }
-    const receipt = verifiedReceipt(plan, artifactRevisionId, lookup.pr);
+    const receipt = verifiedReceipt(plan, artifactRevisionId, lookup.pr, finalPublicationRequest);
     if (receipt.state !== "valid") {
       return blockedAfterScope("existing_pr_failed_verification", commands, scope);
     }
@@ -624,12 +636,12 @@ export function createOrUpdatePR(plan, options = {}) {
     );
     if (created.exitCode !== 0) return blockedAfterScope("pr_create_failed", commands, scope);
 
-    const verified = readMatchingPRs(run, commands, plan, cwd);
+    const verified = readMatchingPRs(run, commands, plan, cwd, finalPublicationRequest);
     if (verified.state === "error") {
       return blockedAfterScope(verified.reason, commands, scope);
     }
     const receipt = verified.state === "ok"
-      ? verifiedReceipt(plan, artifactRevisionId, verified.pr)
+      ? verifiedReceipt(plan, artifactRevisionId, verified.pr, finalPublicationRequest)
       : { state: "invalid" };
     if (receipt.state !== "valid") {
       return blockedAfterScope("created_pr_failed_readback", commands, scope);
@@ -663,11 +675,11 @@ export function createOrUpdatePR(plan, options = {}) {
     { cwd, input: body },
   );
   if (edited.exitCode !== 0) return blockedAfterScope("pr_update_failed", commands, scope);
-  const verified = readMatchingPRs(run, commands, plan, cwd);
+  const verified = readMatchingPRs(run, commands, plan, cwd, finalPublicationRequest);
   if (verified.state === "error") {
     return blockedAfterScope(verified.reason, commands, scope);
   }
-  const receipt = verifiedReceipt(plan, artifactRevisionId, verified.pr);
+  const receipt = verifiedReceipt(plan, artifactRevisionId, verified.pr, finalPublicationRequest);
   if (receipt.state !== "valid" || receipt.receipt.prNumber !== lookup.pr.number) {
     return blockedAfterScope("updated_pr_failed_readback", commands, scope);
   }

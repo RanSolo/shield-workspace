@@ -358,23 +358,27 @@ async function appendRequest(
   request: ReviewPublicationCommunicationRequestPayload,
   identity: FinalPublicationIdentityEnvelopeV1,
   claimDigest: string,
-  capability: string,
+  capability: string | null,
 ): Promise<ProfileJournal> {
   const initial = await journalSnapshot(root, config, missionId);
   const existing = initial.current.projection.communication.requests.filter(({ requestId }) => requestId === request.requestId);
-  if (existing.length === 1 && exactProjectedRequest(existing[0], request)) {
+  if (existing.length === 1 && initial.current.projection.communication.requests.length === 1 && exactProjectedRequest(existing[0], request)) {
     return initial.current;
   }
-  if (existing.length !== 0) throw new Error("Deterministic final publication request identity is ambiguous or conflicting.");
-  const possession = await verifyFinalPublicationClaimantV1({ repositoryRoot: root, claimDigest, capability });
-  if (possession.state === "invalid") throw new Error(`${possession.code}: ${possession.errors.join(" ")}`);
+  if (initial.current.projection.communication.requests.length !== 0) throw new Error("Deterministic final publication request identity is ambiguous or conflicting.");
+  if (capability !== null) {
+    const possession = await verifyFinalPublicationClaimantV1({ repositoryRoot: root, claimDigest, capability });
+    if (possession.state === "invalid") throw new Error(`${possession.code}: ${possession.errors.join(" ")}`);
+  }
   const entry = createProfileAwareCommunicationRequestEntryV1({ projection: initial.current.projection, request, timestamp: identity.capturedAt });
   const appended = await appendProfileAwareMissionEntriesAtomicV1({ repositoryRoot: root, configuredJournalPath: config.paths.journals,
     missionId, entries: [entry], expectedStartingJournalSha256: initial.sha256 });
   if (appended.state === "invalid") throw new Error(`${appended.code}: ${appended.errors.join(" ")}`);
   const fresh = await journalSnapshot(root, config, missionId);
   const match = fresh.current.projection.communication.requests.filter(({ requestId }) => requestId === request.requestId);
-  if (match.length !== 1) throw new Error("Deterministic final publication request append did not replay exactly.");
+  if (match.length !== 1 || fresh.current.projection.communication.requests.length !== 1 || !exactProjectedRequest(match[0], request)) {
+    throw new Error("Deterministic final publication request append did not replay exactly.");
+  }
   return fresh.current;
 }
 
@@ -442,10 +446,25 @@ async function finishDelivered(
   identity: FinalPublicationIdentityEnvelopeV1,
   reconciliation: Extract<ReturnType<typeof reconcilePRPublication>, { state: "delivered" }>,
   dependencies: FinalPublicationTransitionDependenciesV1,
+  capability: string | null,
+  completionState: "published" | "reused" = "published",
 ): Promise<FinalPublicationTransitionResultV1> {
+  const appendRequestHost = dependencies.host?.appendRequest ?? appendRequest;
   const createResultCandidate = dependencies.host?.createResultCandidate ?? createGitHubPublicationResultCandidate;
   const recordDelivered = dependencies.host?.recordDelivered ?? recordFinalPublicationDeliveredV1;
   const appendResultHost = dependencies.host?.appendResult ?? appendResult;
+  let withRequest: ProfileJournal;
+  try {
+    withRequest = await appendRequestHost(root, config, missionId, request, identity, claimDigest, capability);
+  } catch (error) {
+    if (isProcessStop(error)) throw error;
+    return recovery(missionId, "consumed", error instanceof Error ? error.message : String(error));
+  }
+  const projected = withRequest.projection.communication.requests.filter(({ requestId }) => requestId === request.requestId);
+  if (projected.length !== 1 || withRequest.projection.communication.requests.length !== 1 ||
+      !exactProjectedRequest(projected[0], request) || (projected[0].state !== "queued" && projected[0].state !== "delivered")) {
+    return recovery(missionId, "consumed", "Delivered final publication request did not replay exactly before receipt recording.");
+  }
   const built = createResultCandidate(request, identity, "delivered", null, reconciliation.receipt.prUrl, reconciliation.publicationScope);
   if (built.state !== "candidate") return recovery(missionId, "consumed", "Exact delivered result candidate could not be reconstructed.");
   const candidate = built.candidate as ReviewPublicationCommunicationResultAdapterCandidate;
@@ -457,7 +476,7 @@ async function finishDelivered(
     return recovery(missionId, "consumed", error instanceof Error ? error.message : String(error));
   }
   dependencies.onCheckpoint?.("result");
-  return Object.freeze({ state: "published", classification: "consumed", missionId, receipt: reconciliation.receipt, prUrl: reconciliation.receipt.prUrl });
+  return Object.freeze({ state: completionState, classification: "consumed", missionId, receipt: reconciliation.receipt, prUrl: reconciliation.receipt.prUrl });
 }
 
 export async function runFinalPublicationTransitionV1(
@@ -477,7 +496,6 @@ export async function runFinalPublicationTransitionV1(
     const gitHost = dependencies.host?.git ?? git;
     const claim = dependencies.host?.claim ?? claimFinalPublicationV1;
     const appendRequestHost = dependencies.host?.appendRequest ?? appendRequest;
-    const appendResultHost = dependencies.host?.appendResult ?? appendResult;
     const verifyClaimant = dependencies.host?.verifyClaimant ?? verifyFinalPublicationClaimantV1;
     const verifyClaimantForEffect = dependencies.host?.verifyClaimantForEffect ?? verifyFinalPublicationClaimantForEffectV1;
     const installEffectGuard = dependencies.host?.installEffectGuard ?? installFinalPublicationEffectGuard;
@@ -559,17 +577,15 @@ export async function runFinalPublicationTransitionV1(
         if (rebuilt.state !== "candidate" || canonicalJson(rebuilt.candidate) !== canonicalJson(ledger.terminal.candidate)) {
           return recovery(missionId, "consumed", "Durable delivered result no longer reconstructs byte-identically.");
         }
-        try { await appendResultHost(root, configSnapshot.config, missionId, ledger.terminal.candidate); } catch (error) {
-          if (isProcessStop(error)) throw error;
-          return recovery(missionId, "consumed", error instanceof Error ? error.message : String(error));
-        }
-        return Object.freeze({ state: "reused", classification: "consumed", missionId, receipt: ledger.terminal.receipt, prUrl: ledger.terminal.receipt.prUrl });
+        return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies, null, "reused");
       }
       if (ledger.terminal !== null) return recovery(missionId, "consumed", `Final publication is terminal ${ledger.terminal.state}.`);
-      if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies);
+      if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies, null);
       return recovery(missionId, "consumed", "A prior claimant is readback-only and positive delivery is not yet proven.");
     }
-    if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies);
+    if (observed.state === "delivered") {
+      return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies, claimed.value.capability);
+    }
     const capability = claimed.value.capability;
     try {
       const currentConfig = await stableConfigHost(root);
@@ -600,7 +616,9 @@ export async function runFinalPublicationTransitionV1(
         guardReleased = guard.uninstall();
       }
       observed = reconcile(plan, authority, authority.authorizedPaths, authority.permittedEffects, { body: rendered.body, cwd: root });
-      if (observed.state === "delivered") return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies);
+      if (observed.state === "delivered") {
+        return finishDelivered(root, configSnapshot.config, missionId, claimDigest, request, identity, observed, dependencies, capability);
+      }
       if (!guardReleased) throw new Error("Final publication effect guard release could not be verified.");
       const attempted = mutatingCommandAttempted(delivered.commands ?? []);
       if (observed.state === "not_applied" && !attempted) {
