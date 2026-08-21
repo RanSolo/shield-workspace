@@ -1569,6 +1569,31 @@ test("worktree prepare exposes closed JSON, concise replay output, and prepared 
   assert.deepEqual(await identity(journalPath), missionBefore.journalIdentity);
   assert.deepEqual(await identity(dirname(journalPath)), missionBefore.journalsIdentity);
   assert.deepEqual(await identity(dirname(briefPath)), missionBefore.tempIdentity);
+
+  await writeFile(join(destinationRoot, "package.json"), "{\"private\":true,\"advanced\":true}\n");
+  execFileSync("git", ["add", "package.json"], { cwd: destinationRoot });
+  execFileSync("git", ["commit", "--quiet", "-m", "advance prepared CLI lane"], { cwd: destinationRoot });
+  const refreshed = run([
+    "worktree", "prepare", "--source-root", await realpath(sourceRoot),
+    "--root", await realpath(destinationRoot), "--json",
+  ], destinationRoot);
+  assert.equal(refreshed.status, 0, refreshed.stderr);
+  const refreshedResult = JSON.parse(refreshed.stdout);
+  assert.equal(refreshedResult.contractVersion, "worktree.state.v2");
+  assert.equal(refreshedResult.state, "refreshed");
+  assert.equal(refreshedResult.receipt.supersedes.receiptDigest, receipt.receipt.receiptDigest);
+  const refreshedReplay = run([
+    "worktree", "prepare", "--source-root", await realpath(sourceRoot),
+    "--root", await realpath(destinationRoot),
+  ], destinationRoot);
+  assert.equal(refreshedReplay.status, 0, refreshedReplay.stderr);
+  assert.match(refreshedReplay.stdout, /^ALREADY REFRESHED\n/u);
+  assert.match(refreshedReplay.stdout, new RegExp(`Active receipt: ${refreshedResult.receipt.receiptDigest}`, "u"));
+  assert.match(refreshedReplay.stdout, new RegExp(`Predecessor receipt: ${receipt.receipt.receiptDigest}`, "u"));
+  assert.deepEqual(await readFile(briefPath), missionBefore.briefBytes);
+  assert.deepEqual(await identity(briefPath), missionBefore.briefIdentity);
+  assert.deepEqual(await readFile(journalPath), missionBefore.journalBytes);
+  assert.deepEqual(await identity(journalPath), missionBefore.journalIdentity);
 });
 
 test("worktree prepare renders root filesystem failures as closed blocked results", async () => {

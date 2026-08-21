@@ -36,9 +36,10 @@ import { MissionCliError, missionUsage, runMissionCli } from "./mission-cli.mjs"
 import { GuidedReviewCliError, guidedReviewUsage, runGuidedReviewCli } from "./guided-review-cli-v1.mjs";
 import {
   inspectWorktreeStateV1,
-  prepareWorktreeStateV1,
+  prepareOrRefreshWorktreeStateV2,
   worktreePreparationIsReadyV1,
-  type WorktreePreparationResultV1,
+  worktreePreparationIsReadyV2,
+  type WorktreePreparationResultV1OrV2,
 } from "./worktree-state-v1.mjs";
 import {
   runTeammateReadinessPreflightV1,
@@ -772,20 +773,32 @@ async function runDoctor(args: string[]): Promise<number> {
   return report.ok ? 0 : 1;
 }
 
-function renderWorktreePreparation(result: WorktreePreparationResultV1): string {
-  if (!worktreePreparationIsReadyV1(result)) {
+function worktreePreparationSucceeded(result: WorktreePreparationResultV1OrV2): boolean {
+  return result.contractVersion === "worktree.state.v1"
+    ? worktreePreparationIsReadyV1(result)
+    : worktreePreparationIsReadyV2(result);
+}
+
+function renderWorktreePreparation(result: WorktreePreparationResultV1OrV2): string {
+  if (result.state !== "ready" && result.state !== "already_prepared" &&
+    result.state !== "refreshed" && result.state !== "already_refreshed") {
     return `${result.state.toUpperCase()}: ${result.reasonCode}\n${result.summary}\nNEXT: ${result.nextAction}\n`;
   }
   const receipt = result.receipt;
-  return [
-    result.state === "ready" ? "READY" : "ALREADY PREPARED",
+  const lines = [
+    result.state === "refreshed" ? "REFRESHED"
+      : result.state === "already_refreshed" ? "ALREADY REFRESHED"
+        : result.state === "ready" ? "READY" : "ALREADY PREPARED",
     `Destination: ${receipt.destination.root}`,
     `Repository: ${receipt.repositoryId}`,
     `Branch: ${receipt.destination.branch ?? "detached"}`,
     `HEAD: ${receipt.destination.head}`,
-    `Receipt: ${receipt.receiptDigest}`,
-    "",
-  ].join("\n");
+    `${receipt.contractVersion === "worktree.state.v2" ? "Active receipt" : "Receipt"}: ${receipt.receiptDigest}`,
+  ];
+  if (receipt.contractVersion === "worktree.state.v2") {
+    lines.push(`Predecessor receipt: ${receipt.supersedes.receiptDigest}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 async function runWorktree(args: string[]): Promise<number> {
@@ -794,11 +807,11 @@ async function runWorktree(args: string[]): Promise<number> {
   const options = parseOptions(rest, ["--source-root", "--root"], ["--json"]);
   const sourceRoot = required(options, "--source-root");
   const destinationRoot = required(options, "--root");
-  const result = await prepareWorktreeStateV1({ sourceRoot, destinationRoot });
+  const result = await prepareOrRefreshWorktreeStateV2({ sourceRoot, destinationRoot });
   process.stdout.write(options.flags.has("--json")
     ? `${JSON.stringify(result, null, 2)}\n`
     : renderWorktreePreparation(result));
-  return worktreePreparationIsReadyV1(result) ? 0 : 1;
+  return worktreePreparationSucceeded(result) ? 0 : 1;
 }
 
 function renderTeammateReadiness(report: TeammateReadinessReportV1 | CopilotTeammateReadinessReportV1): string {

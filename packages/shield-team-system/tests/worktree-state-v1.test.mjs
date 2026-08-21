@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, link, lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rename, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
@@ -13,11 +13,16 @@ import {
   WORKTREE_STATE_EXCLUSIONS,
   WORKTREE_STATE_INSTALLED_PATHS,
   inspectWorktreeStateV1,
+  prepareOrRefreshWorktreeStateV2,
+  prepareOrRefreshWorktreeStateV2ForTest,
   prepareWorktreeStateV1,
   prepareWorktreeStateV1ForTest,
   validateWorktreeStateReceiptV1,
+  validateWorktreeStateReceiptV2,
+  validateWorktreeStateReceiptFileChainV1OrV2,
   worktreePreparationAuthorityV1,
   worktreePreparationIsReadyV1,
+  worktreePreparationIsReadyV2,
 } from "../dist/worktree-state-v1.mjs";
 
 function git(root, args) {
@@ -141,6 +146,96 @@ const TRACKED_JOURNALS = [
 
 async function trackedFixture() {
   return fixture({ trackedFiles: TRACKED_JOURNALS });
+}
+
+async function advanceDestination(current, message = "advance prepared lane") {
+  const path = join(current.destinationRoot, "package.json");
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  manifest.advance = (manifest.advance ?? 0) + 1;
+  await writeFile(path, `${JSON.stringify(manifest)}\n`);
+  git(current.destinationRoot, ["add", "package.json"]);
+  git(current.destinationRoot, ["commit", "--quiet", "-m", message]);
+}
+
+function runAbruptRefresh(current, operation, occurrence) {
+  const source = `
+    import { pathToFileURL } from "node:url";
+    const [modulePath, sourceRoot, destinationRoot, operation, occurrenceText] = process.argv.slice(1);
+    const { prepareOrRefreshWorktreeStateV2ForTest } = await import(pathToFileURL(modulePath).href);
+    let observed = 0;
+    await prepareOrRefreshWorktreeStateV2ForTest({ sourceRoot, destinationRoot }, {
+      nonce: () => "crashboundary",
+      filesystem: ({ operation: current }) => {
+        if (current === operation && ++observed === Number(occurrenceText)) process.kill(process.pid, "SIGKILL");
+      },
+    });
+    process.exitCode = 91;
+  `;
+  const modulePath = new URL("../dist/worktree-state-v1.mjs", import.meta.url).pathname;
+  return new Promise((resolveChild, rejectChild) => {
+    const child = spawn(process.execPath, [
+      "--input-type=module", "--eval", source, modulePath, current.sourceRoot, current.destinationRoot, operation, String(occurrence),
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", rejectChild);
+    child.once("close", (status, signal) => resolveChild({ status, signal, stderr }));
+  });
+}
+
+async function installRepresentativeMissionState(root) {
+  const records = [];
+  for (const [relative, bytes] of [
+    [".shield/journals/mission.jsonl", "journal\n"],
+    [".shield/reports/mission.json", "report\n"],
+    [".shield/tmp/mission/scratch.json", "temporary mission data\n"],
+    [".shield/artifacts/result.json", "artifact\n"],
+    [".shield/audit/evidence.json", "audit\n"],
+    [".shield/runtime/context.json", "runtime\n"],
+    [".shield/dispatch-receipts.jsonl", "dispatch\n"],
+  ]) {
+    const path = join(root, relative);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, bytes);
+    records.push({ path, bytes: await readFile(path), stats: await lstat(path) });
+  }
+  return records;
+}
+
+async function assertMissionStateIdentity(records) {
+  for (const before of records) {
+    const after = await lstat(before.path);
+    assert.deepEqual(await readFile(before.path), before.bytes, before.path);
+    assert.equal(after.dev, before.stats.dev, before.path);
+    assert.equal(after.ino, before.stats.ino, before.path);
+  }
+}
+
+function successorReceipt(predecessor, head) {
+  return withReceiptDigest({
+    schemaVersion: 1,
+    contractVersion: "worktree.state.v2",
+    authority: "none",
+    state: "refreshed",
+    reasonCode: "prepared_state_refreshed",
+    summary: "Prepared-worktree provenance was refreshed after an exact same-branch fast-forward; no authority was granted.",
+    repositoryId: predecessor.repositoryId,
+    commonGitDirectory: predecessor.commonGitDirectory,
+    destination: { ...predecessor.destination, head },
+    policy: predecessor.policy,
+    publicBindings: predecessor.publicBindings,
+    trackedBaselineExclusions: predecessor.trackedBaselineExclusions ?? [],
+    installedPaths: predecessor.installedPaths,
+    installedByteDigests: predecessor.installedByteDigests,
+    exclusions: predecessor.exclusions,
+    supersedes: {
+      contractVersion: predecessor.contractVersion,
+      receiptDigest: predecessor.receiptDigest,
+      destinationBranch: predecessor.destination.branch,
+      destinationHead: predecessor.destination.head,
+    },
+  });
 }
 
 test("prepares the exact authority-neutral four-file state and replays without writes", async () => {
@@ -1040,4 +1135,362 @@ test("rejects unsafe source, destination, and doctor ancestor components", async
   });
   assert.equal(doctorResult.classification, "stale_or_malformed_worktree_state");
   assert.equal(doctorResult.ok, false);
+});
+
+test("refreshes a clean same-branch fast-forward into one deterministic v2 chain without touching mission state", async () => {
+  const current = await fixture();
+  const prepared = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  const activePath = join(current.destinationRoot, ".shield", "worktree-state.json");
+  const predecessorBytes = await readFile(activePath);
+  await mkdir(join(current.destinationRoot, ".shield", "journals"), { recursive: true });
+  await mkdir(join(current.destinationRoot, ".shield", "audit"), { recursive: true });
+  await mkdir(join(current.destinationRoot, ".shield", "artifacts"), { recursive: true });
+  await mkdir(join(current.destinationRoot, ".shield", "runtime"), { recursive: true });
+  await mkdir(join(current.destinationRoot, ".shield", "tmp"), { recursive: true });
+  const missionPaths = [
+    [join(current.destinationRoot, ".shield", "journals", "mission.jsonl"), "journal\n"],
+    [join(current.destinationRoot, ".shield", "audit", "receipt.json"), "audit\n"],
+    [join(current.destinationRoot, ".shield", "artifacts", "result.json"), "artifact\n"],
+    [join(current.destinationRoot, ".shield", "runtime", "context.json"), "runtime\n"],
+    [join(current.destinationRoot, ".shield", "tmp", "scratch.json"), "tmp\n"],
+    [join(current.destinationRoot, ".shield", "dispatch-receipts.jsonl"), "dispatch\n"],
+  ];
+  for (const [path, bytes] of missionPaths) await writeFile(path, bytes);
+  const beforeMission = await Promise.all(missionPaths.map(async ([path]) => ({
+    path,
+    bytes: await readFile(path),
+    stats: await lstat(path),
+  })));
+  await writeFile(join(current.destinationRoot, "package.json"), "{\"private\":true,\"version\":1}\n");
+  git(current.destinationRoot, ["add", "package.json"]);
+  git(current.destinationRoot, ["commit", "--quiet", "-m", "advance prepared lane"]);
+
+  const refreshed = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(refreshed.state, "refreshed", JSON.stringify(refreshed));
+  assert.equal(worktreePreparationIsReadyV2(refreshed), true);
+  assert.equal(validateWorktreeStateReceiptV2(refreshed.receipt), true);
+  assert.deepEqual(Object.keys(refreshed).sort(), [
+    "authority", "contractVersion", "destinationRoot", "exclusions", "nextAction", "reasonCode", "receipt",
+    "receiptDigest", "schemaVersion", "sourceRoot", "state", "summary",
+  ].sort());
+  assert.deepEqual(Object.keys(refreshed.receipt).sort(), [
+    "authority", "commonGitDirectory", "contractVersion", "destination", "exclusions", "installedByteDigests",
+    "installedPaths", "policy", "publicBindings", "reasonCode", "receiptDigest", "repositoryId", "schemaVersion",
+    "state", "summary", "supersedes", "trackedBaselineExclusions",
+  ].sort());
+  const { receiptDigest: resultDigest, ...resultBody } = refreshed;
+  assert.equal(resultDigest, sha256(canonicalJson(resultBody)));
+  assert.equal(validateWorktreeStateReceiptV2(withReceiptDigest({ ...refreshed.receipt, extra: true })), false);
+  assert.equal(refreshed.receipt.supersedes.receiptDigest, prepared.receipt.receiptDigest);
+  assert.equal(refreshed.receipt.supersedes.destinationHead, prepared.receipt.destination.head);
+  assert.equal(refreshed.receipt.destination.head, git(current.destinationRoot, ["rev-parse", "HEAD"]));
+  assert.deepEqual(
+    await readFile(join(current.destinationRoot, ".shield", "worktree-state-receipts", `${prepared.receipt.receiptDigest}.json`)),
+    predecessorBytes,
+  );
+  assert.equal(await validateWorktreeStateReceiptFileChainV1OrV2(current.destinationRoot, refreshed.receipt), true);
+  for (const before of beforeMission) {
+    const after = await lstat(before.path);
+    assert.deepEqual(await readFile(before.path), before.bytes);
+    assert.equal(after.dev, before.stats.dev);
+    assert.equal(after.ino, before.stats.ino);
+  }
+  const successorBytes = await readFile(activePath);
+  const alternateSource = join(dirname(current.destinationRoot), "alternate-source");
+  git(current.sourceRoot, ["worktree", "add", "--quiet", "-b", `source-${process.pid}-${Date.now()}`, alternateSource, "HEAD"]);
+  await mkdir(join(alternateSource, ".shield"));
+  for (const name of ["config.json", "trusted-human-bindings.json"]) {
+    await writeFile(join(alternateSource, ".shield", name), await readFile(join(current.sourceRoot, ".shield", name)));
+  }
+  const replay = await prepareOrRefreshWorktreeStateV2({
+    sourceRoot: await realpath(alternateSource),
+    destinationRoot: current.destinationRoot,
+  });
+  assert.equal(replay.state, "already_refreshed", JSON.stringify(replay));
+  assert.equal(replay.receipt.receiptDigest, refreshed.receipt.receiptDigest);
+  assert.equal(Object.hasOwn(replay.receipt, "source"), false);
+  assert.deepEqual(await readFile(activePath), successorBytes);
+  assert.deepEqual(await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true }), {
+    classification: "prepared_worktree",
+    ok: true,
+    message: "Prepared worktree policy and immutable provenance receipt are exact; mission-local state directories are present.",
+    receiptDigest: refreshed.receipt.receiptDigest,
+  });
+});
+
+test("refresh blocks dirty, detached, renamed, rewritten, policy-drifted, and unsafe baseline states before archive mutation", async (context) => {
+  const cases = [
+    ["dirty", "destination_dirty", async (current) => writeFile(join(current.destinationRoot, "dirty.txt"), "dirty\n")],
+    ["detached", "destination_detached", async (current) => { git(current.destinationRoot, ["checkout", "--quiet", "--detach"]); }],
+    ["renamed", "predecessor_branch_mismatch", async (current) => { git(current.destinationRoot, ["branch", "-m", `renamed-${Date.now()}`]); }],
+    ["rewritten", "predecessor_not_ancestor", async (current) => {
+      await writeFile(join(current.destinationRoot, "package.json"), "{\"private\":true,\"rewritten\":true}\n");
+      git(current.destinationRoot, ["add", "package.json"]);
+      git(current.destinationRoot, ["commit", "--quiet", "--amend", "-m", "rewritten lane"]);
+    }],
+    ["policy drift", "prepared_state_stale", async (current) => {
+      const path = join(current.sourceRoot, ".shield", "config.json");
+      const parsed = JSON.parse(await readFile(path, "utf8"));
+      await writeFile(path, `${JSON.stringify(parsed)}\n`);
+      await advanceDestination(current);
+    }],
+    ["unsafe baseline", "destination_conflict", async (current) => {
+      const path = join(current.destinationRoot, TRACKED_JOURNALS[0].path);
+      const duplicate = join(dirname(current.destinationRoot), "journal-hardlink-source.jsonl");
+      await writeFile(duplicate, await readFile(path));
+      await unlink(path);
+      await link(duplicate, path);
+    }, trackedFixture],
+  ];
+  for (const [name, reasonCode, mutate, create = fixture] of cases) {
+    await context.test(name, async () => {
+      const current = await create();
+      const prepared = await prepareOrRefreshWorktreeStateV2(current);
+      assert.equal(prepared.state, "ready");
+      const activePath = join(current.destinationRoot, ".shield", "worktree-state.json");
+      const activeBytes = await readFile(activePath);
+      await mutate(current);
+      const result = await prepareOrRefreshWorktreeStateV2(current);
+      assert.equal(result.state, "blocked", JSON.stringify(result));
+      assert.equal(result.reasonCode, reasonCode);
+      assert.deepEqual(await readFile(activePath), activeBytes);
+      assert.equal(await exists(join(current.destinationRoot, ".shield", "worktree-state-receipts")), false);
+    });
+  }
+});
+
+test("refresh binds the current tracked baseline after a safe committed change", async () => {
+  const current = await trackedFixture();
+  const prepared = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(prepared.state, "ready");
+  const changedPath = join(current.destinationRoot, TRACKED_JOURNALS[0].path);
+  await writeFile(changedPath, "changed tracked mission baseline\n");
+  git(current.destinationRoot, ["add", "--force", "--", TRACKED_JOURNALS[0].path]);
+  git(current.destinationRoot, ["commit", "--quiet", "-m", "advance tracked mission baseline"]);
+  const refreshed = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(refreshed.state, "refreshed", JSON.stringify(refreshed));
+  const record = refreshed.receipt.trackedBaselineExclusions.find(({ path }) => path === TRACKED_JOURNALS[0].path);
+  assert.equal(record.byteSha256, sha256(await readFile(changedPath)));
+  assert.equal(record.headBlobOid, git(current.destinationRoot, ["rev-parse", `HEAD:${TRACKED_JOURNALS[0].path}`]));
+});
+
+test("replacement refs cannot alter V2 baseline construction, chain identity, replay, or doctor verdicts", async () => {
+  const current = await trackedFixture();
+  const prepared = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  const predecessorHead = prepared.receipt.destination.head;
+  const baselinePath = join(current.destinationRoot, TRACKED_JOURNALS[0].path);
+  await writeFile(baselinePath, "replacement-immune current baseline\n");
+  git(current.destinationRoot, ["add", "--force", "--", TRACKED_JOURNALS[0].path]);
+  git(current.destinationRoot, ["commit", "--quiet", "-m", "advance replacement-immune baseline"]);
+  const currentHead = git(current.destinationRoot, ["--no-replace-objects", "rev-parse", "HEAD"]);
+  const predecessorTree = git(current.destinationRoot, ["--no-replace-objects", "rev-parse", `${predecessorHead}^{tree}`]);
+  const currentTree = git(current.destinationRoot, ["--no-replace-objects", "rev-parse", `${currentHead}^{tree}`]);
+  const predecessorReplacement = git(current.destinationRoot, ["commit-tree", currentTree, "-m", "replacement predecessor"]);
+  const currentReplacement = git(current.destinationRoot, ["commit-tree", predecessorTree, "-m", "replacement current"]);
+  git(current.destinationRoot, ["replace", predecessorHead, predecessorReplacement]);
+  git(current.destinationRoot, ["replace", currentHead, currentReplacement]);
+  assert.notEqual(
+    git(current.destinationRoot, ["rev-parse", `${currentHead}:${TRACKED_JOURNALS[0].path}`]),
+    git(current.destinationRoot, ["--no-replace-objects", "rev-parse", `${currentHead}:${TRACKED_JOURNALS[0].path}`]),
+  );
+
+  const refreshed = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(refreshed.state, "refreshed", JSON.stringify(refreshed));
+  assert.equal(refreshed.receipt.destination.head, currentHead);
+  assert.equal(
+    refreshed.receipt.trackedBaselineExclusions[0].headBlobOid,
+    git(current.destinationRoot, ["--no-replace-objects", "rev-parse", `${currentHead}:${TRACKED_JOURNALS[0].path}`]),
+  );
+  assert.equal(await validateWorktreeStateReceiptFileChainV1OrV2(current.destinationRoot, refreshed.receipt), true);
+  const replacedDoctor = await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true });
+  assert.equal(replacedDoctor.classification, "prepared_worktree");
+  assert.equal(replacedDoctor.receiptDigest, refreshed.receipt.receiptDigest);
+
+  git(current.destinationRoot, ["replace", "-d", predecessorHead]);
+  git(current.destinationRoot, ["replace", "-d", currentHead]);
+  const replay = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(replay.state, "already_refreshed", JSON.stringify(replay));
+  assert.equal(replay.receipt.receiptDigest, refreshed.receipt.receiptDigest);
+  assert.equal(await validateWorktreeStateReceiptFileChainV1OrV2(current.destinationRoot, replay.receipt), true);
+  assert.deepEqual(
+    await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true }),
+    replacedDoctor,
+  );
+});
+
+test("a valid 256-predecessor chain cannot be extended and remains byte-exact", async () => {
+  const current = await fixture();
+  const prepared = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+  const archiveRoot = join(current.destinationRoot, ".shield", "worktree-state-receipts");
+  await mkdir(archiveRoot, { mode: 0o700 });
+  let active = prepared.receipt;
+  for (let index = 1; index <= 256; index += 1) {
+    git(current.destinationRoot, ["commit", "--quiet", "--allow-empty", "-m", `receipt chain ${index}`]);
+    const head = git(current.destinationRoot, ["--no-replace-objects", "rev-parse", "HEAD"]);
+    await writeFile(join(archiveRoot, `${active.receiptDigest}.json`), `${canonicalJson(active)}\n`);
+    active = successorReceipt(active, head);
+  }
+  await writeReceipt(current.destinationRoot, active);
+  assert.equal(await validateWorktreeStateReceiptFileChainV1OrV2(current.destinationRoot, active), true);
+  await advanceDestination(current, "attempt receipt chain 257");
+  const activePath = join(current.destinationRoot, ".shield", "worktree-state.json");
+  const activeBytes = await readFile(activePath);
+  const archiveBefore = await Promise.all((await readdir(archiveRoot)).sort().map(async (name) => [name, await readFile(join(archiveRoot, name))]));
+
+  const rejected = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(rejected.state, "blocked", JSON.stringify(rejected));
+  assert.equal(rejected.reasonCode, "receipt_chain_invalid");
+  assert.deepEqual(await readFile(activePath), activeBytes);
+  const archiveAfter = await Promise.all((await readdir(archiveRoot)).sort().map(async (name) => [name, await readFile(join(archiveRoot, name))]));
+  assert.deepEqual(archiveAfter, archiveBefore);
+});
+
+test("missing, substituted, and extra archive entries fail closed and make doctor unhealthy", async (context) => {
+  for (const kind of ["missing", "substituted", "extra"]) {
+    await context.test(kind, async () => {
+      const current = await fixture();
+      const prepared = await prepareOrRefreshWorktreeStateV2(current);
+      await advanceDestination(current);
+      const refreshed = await prepareOrRefreshWorktreeStateV2(current);
+      assert.equal(refreshed.state, "refreshed", JSON.stringify(refreshed));
+      const archiveRoot = join(current.destinationRoot, ".shield", "worktree-state-receipts");
+      const predecessorPath = join(archiveRoot, `${prepared.receipt.receiptDigest}.json`);
+      if (kind === "missing") await unlink(predecessorPath);
+      if (kind === "substituted") await writeFile(predecessorPath, "{}\n");
+      if (kind === "extra") await writeFile(join(archiveRoot, `${"0".repeat(64)}.json`), "{}\n");
+      const replay = await prepareOrRefreshWorktreeStateV2(current);
+      assert.equal(replay.state, kind === "missing" ? "recovery_required" : "blocked", JSON.stringify(replay));
+      if (kind !== "missing") assert.equal(replay.reasonCode, "prepared_state_stale");
+      assert.equal((await inspectWorktreeStateV1({ root: current.destinationRoot, configPresent: true, configValid: true })).ok, false);
+    });
+  }
+});
+
+test("refresh filesystem seams return recovery without deleting ambiguous durable state", async (context) => {
+  const operations = [
+    "archive_directory_create", "archive_file_create", "archive_file_sync", "archive_readback", "successor_file_create",
+    "successor_file_sync", "active_receipt_replace", "active_receipt_readback", "directory_sync", "lock_release",
+  ];
+  for (const operation of operations) {
+    await context.test(operation, async () => {
+      const current = await fixture();
+      assert.equal((await prepareOrRefreshWorktreeStateV2(current)).state, "ready");
+      await advanceDestination(current, `advance for ${operation}`);
+      let injected = false;
+      const result = await prepareOrRefreshWorktreeStateV2ForTest(current, {
+        nonce: () => "faultboundary",
+        filesystem: ({ operation: observed }) => {
+          if (!injected && observed === operation) {
+            injected = true;
+            throw new Error(`injected ${operation}`);
+          }
+        },
+      });
+      assert.equal(injected, true, operation);
+      assert.equal(result.state, "recovery_required", JSON.stringify(result));
+      const entries = await readdir(join(current.destinationRoot, ".shield"));
+      if (operation === "successor_file_create" || operation === "successor_file_sync") {
+        assert.equal(entries.some((name) => name.startsWith(".worktree-refresh-") && name.endsWith(".tmp")), true);
+      }
+      if (operation === "active_receipt_replace" || operation === "active_receipt_readback" || operation === "lock_release") {
+        const replay = await prepareOrRefreshWorktreeStateV2(current);
+        assert.equal(replay.state, "already_refreshed", JSON.stringify(replay));
+      }
+    });
+  }
+});
+
+test("abrupt child termination retains each durable seam state and preserves mission state", async (context) => {
+  const cases = [
+    { operation: "archive_directory_create", occurrence: 1, phase: "old_empty_archive", expected: "refreshed" },
+    { operation: "directory_sync", occurrence: 1, phase: "old_empty_archive", expected: "refreshed" },
+    { operation: "archive_file_create", occurrence: 1, phase: "partial_archive", expected: "blocked" },
+    { operation: "archive_file_sync", occurrence: 1, phase: "old_exact_archive", expected: "refreshed" },
+    { operation: "archive_readback", occurrence: 1, phase: "old_exact_archive", expected: "refreshed" },
+    { operation: "directory_sync", occurrence: 2, phase: "old_exact_archive", expected: "refreshed" },
+    { operation: "successor_file_create", occurrence: 1, phase: "temporary", expected: "recovery_required" },
+    { operation: "successor_file_sync", occurrence: 1, phase: "temporary", expected: "recovery_required" },
+    { operation: "directory_sync", occurrence: 3, phase: "temporary", expected: "recovery_required" },
+    { operation: "active_receipt_replace", occurrence: 1, phase: "new_active", expected: "already_refreshed" },
+    { operation: "active_receipt_readback", occurrence: 1, phase: "new_active", expected: "already_refreshed" },
+    { operation: "directory_sync", occurrence: 4, phase: "new_active", expected: "already_refreshed" },
+    { operation: "lock_release", occurrence: 1, phase: "new_active_unlocked", expected: "already_refreshed" },
+    { operation: "directory_sync", occurrence: 5, phase: "new_active_unlocked", expected: "already_refreshed" },
+  ];
+  for (const crash of cases) {
+    await context.test(`${crash.operation}:${crash.occurrence}`, async () => {
+      const current = await fixture();
+      const prepared = await prepareOrRefreshWorktreeStateV2(current);
+      assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+      const missionState = await installRepresentativeMissionState(current.destinationRoot);
+      await advanceDestination(current, `abrupt ${crash.operation}:${crash.occurrence}`);
+      const activePath = join(current.destinationRoot, ".shield", "worktree-state.json");
+      const predecessorBytes = await readFile(activePath);
+      const child = await runAbruptRefresh(current, crash.operation, crash.occurrence);
+      assert.equal(child.signal, "SIGKILL", `${JSON.stringify(crash)}: ${child.stderr}`);
+      assert.equal(child.status, null, JSON.stringify(crash));
+
+      const shieldRoot = join(current.destinationRoot, ".shield");
+      const entries = (await readdir(shieldRoot)).sort();
+      const lockPath = join(shieldRoot, ".worktree-prepare.lock");
+      const lockPresent = entries.includes(".worktree-prepare.lock");
+      const temporaryNames = entries.filter((name) => name.startsWith(".worktree-refresh-") && name.endsWith(".tmp"));
+      const archiveRoot = join(shieldRoot, "worktree-state-receipts");
+      const archiveNames = await exists(archiveRoot) ? (await readdir(archiveRoot)).sort() : [];
+      const retainedActive = await readFile(activePath);
+      await assertMissionStateIdentity(missionState);
+
+      assert.equal(lockPresent, !crash.phase.endsWith("unlocked"), JSON.stringify(crash));
+      assert.equal(temporaryNames.length > 0, crash.phase === "temporary", JSON.stringify(crash));
+      assert.equal(retainedActive.equals(predecessorBytes), !crash.phase.startsWith("new_active"), JSON.stringify(crash));
+      if (crash.phase === "old_empty_archive") assert.deepEqual(archiveNames, []);
+      if (crash.phase === "partial_archive") {
+        assert.deepEqual(archiveNames, [`${prepared.receipt.receiptDigest}.json`]);
+        assert.equal((await readFile(join(archiveRoot, archiveNames[0]))).length, 0);
+      }
+      if (["old_exact_archive", "temporary", "new_active", "new_active_unlocked"].includes(crash.phase)) {
+        assert.deepEqual(archiveNames, [`${prepared.receipt.receiptDigest}.json`]);
+        assert.deepEqual(await readFile(join(archiveRoot, archiveNames[0])), predecessorBytes);
+      }
+
+      if (lockPresent) {
+        const locked = await prepareOrRefreshWorktreeStateV2(current);
+        assert.equal(locked.state, "blocked", JSON.stringify(locked));
+        assert.equal(locked.reasonCode, "preparation_in_progress");
+        await unlink(lockPath);
+        await syncDirectory(shieldRoot);
+      }
+      const observed = await prepareOrRefreshWorktreeStateV2(current);
+      assert.equal(observed.state, crash.expected, `${JSON.stringify(crash)}: ${JSON.stringify(observed)}`);
+      if (crash.phase === "partial_archive") assert.equal(observed.reasonCode, "prepared_state_stale");
+      await assertMissionStateIdentity(missionState);
+    });
+  }
+});
+
+test("concurrent refreshes serialize on the existing destination lock", async () => {
+  const current = await fixture();
+  assert.equal((await prepareOrRefreshWorktreeStateV2(current)).state, "ready");
+  await advanceDestination(current);
+  let announceLock;
+  let releaseLock;
+  const locked = new Promise((resolveLocked) => { announceLock = resolveLocked; });
+  const resume = new Promise((resolveResume) => { releaseLock = resolveResume; });
+  const first = prepareOrRefreshWorktreeStateV2ForTest(current, {
+    phase: async (phase) => {
+      if (phase === "lock_acquired") {
+        announceLock();
+        await resume;
+      }
+    },
+  });
+  await locked;
+  const rival = await prepareOrRefreshWorktreeStateV2(current);
+  assert.equal(rival.state, "blocked", JSON.stringify(rival));
+  assert.equal(rival.reasonCode, "preparation_in_progress");
+  releaseLock();
+  assert.equal((await first).state, "refreshed");
 });

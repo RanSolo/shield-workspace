@@ -241,9 +241,15 @@ test("loads every supported runtime specifier", async () => {
   assert.equal(Object.isFrozen(config.REPOSITORY_TRUST_PROFILES_V1), true);
   assert.equal(root.validateShieldConfig, config.validateShieldConfig);
   assert.equal(worktreeState.WORKTREE_STATE_CONTRACT_VERSION, "worktree.state.v1");
+  assert.equal(worktreeState.WORKTREE_STATE_SUCCESSOR_CONTRACT_VERSION, "worktree.state.v2");
   assert.equal(typeof worktreeState.prepareWorktreeStateV1, "function");
+  assert.equal(typeof worktreeState.prepareOrRefreshWorktreeStateV2, "function");
   assert.equal(typeof worktreeState.inspectWorktreeStateV1, "function");
   assert.equal(typeof worktreeState.validateWorktreeStateReceiptV1, "function");
+  assert.equal(typeof worktreeState.validateWorktreeStateReceiptV2, "function");
+  assert.equal(typeof worktreeState.validateWorktreeStateReceiptV1OrV2, "function");
+  assert.equal(typeof worktreeState.validateWorktreeStateReceiptFileChainV1OrV2, "function");
+  assert.equal(typeof worktreeState.worktreePreparationIsReadyV2, "function");
   assert.equal(worktreeState.worktreePreparationAuthorityV1({ state: "blocked" }), "none");
   assert.equal(supervision.SUPERVISED_JOURNAL_SCHEMA_VERSION, 2);
   assert.equal(supervision.RUNNER_JOURNAL_SCHEMA_VERSION, 5);
@@ -558,7 +564,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     import { validateMissionWorkspaceInput, type MissionWorkspaceInput } from "@shield/team-system/workspace";
     import { HILL_READINESS_SCHEMA_VERSION, evaluateHillReadinessV1, type HillReadinessCandidateV1, type HillReadinessHostObservationV1 } from "@shield/team-system/hill-readiness";
     import { CONFIG_SCHEMA_V2_VERSION, CONFIG_SCHEMA_VERSION, LEGACY_CONFIG_SCHEMA_VERSION, SUPPORTED_CONFIG_SCHEMA_VERSIONS, configuredAdapterIds, migrateShieldConfig, type ConfiguredHostAdapterId, type DoctorReport, type DoctorReportV2, type RepositoryTrustProfileId, type ShieldConfig, type ShieldConfigV1, type ShieldConfigV2, type ShieldConfigV3 } from "@shield/team-system/config";
-    import { WORKTREE_STATE_CONTRACT_VERSION, prepareWorktreeStateV1, validateWorktreeStateReceiptV1, worktreePreparationAuthorityV1, worktreePreparationIsReadyV1, type WorktreePreparationRequestV1, type WorktreePreparationResultV1, type WorktreeStateReceiptV1 } from "@shield/team-system/worktree-state";
+    import { WORKTREE_STATE_CONTRACT_VERSION, WORKTREE_STATE_SUCCESSOR_CONTRACT_VERSION, prepareOrRefreshWorktreeStateV2, prepareWorktreeStateV1, validateWorktreeStateReceiptFileChainV1OrV2, validateWorktreeStateReceiptV1, validateWorktreeStateReceiptV1OrV2, validateWorktreeStateReceiptV2, worktreePreparationAuthorityV1, worktreePreparationIsReadyV1, worktreePreparationIsReadyV2, type WorktreePreparationRequestV1, type WorktreePreparationResultV1, type WorktreePreparationResultV2, type WorktreeStateReceiptV1, type WorktreeStateReceiptV2 } from "@shield/team-system/worktree-state";
     import { RUNNER_JOURNAL_SCHEMA_VERSION, SUPERVISED_JOURNAL_SCHEMA_VERSION, createExecutionEffectEntry, createSupervisedMissionBrief, deriveRepositoryMissionBindings, selectCoulsonOperationBinding, type RunnerSupervisedEffectCandidate, type SupervisedMissionBrief } from "@shield/team-system/supervision";
     import { WHEELS_OFF_POLICY_ID, type WheelsOffDelegation } from "@shield/team-system/delegation";
     import { ADAPTER_CONTRACT_VERSION, type AdapterCandidateEnvelope } from "@shield/team-system/adapter";
@@ -714,13 +720,21 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const doctorV1Version: 1 = doctorV1.reportVersion;
     const doctorV2Version: 2 = doctorV2.reportVersion;
     const worktreeContract: "worktree.state.v1" = WORKTREE_STATE_CONTRACT_VERSION;
+    const worktreeSuccessorContract: "worktree.state.v2" = WORKTREE_STATE_SUCCESSOR_CONTRACT_VERSION;
     const worktreeRequest: WorktreePreparationRequestV1 = { sourceRoot: "/tmp/source", destinationRoot: "/tmp/destination" };
     const worktreeResult = null as unknown as WorktreePreparationResultV1;
     const worktreeReceipt = null as unknown as WorktreeStateReceiptV1;
+    const worktreeResultV2 = null as unknown as WorktreePreparationResultV2;
+    const worktreeReceiptV2 = null as unknown as WorktreeStateReceiptV2;
     const prepareWorktree = prepareWorktreeStateV1;
+    const prepareOrRefreshWorktree = prepareOrRefreshWorktreeStateV2;
     const validateWorktreeReceipt = validateWorktreeStateReceiptV1;
+    const validateWorktreeReceiptV2 = validateWorktreeStateReceiptV2;
+    const validateWorktreeReceiptV1OrV2 = validateWorktreeStateReceiptV1OrV2;
+    const validateWorktreeReceiptChain = validateWorktreeStateReceiptFileChainV1OrV2;
     const worktreeAuthority: "none" = worktreePreparationAuthorityV1(worktreeResult);
     const worktreeReady: boolean = worktreePreparationIsReadyV1(worktreeResult);
+    const worktreeReadyV2: boolean = worktreePreparationIsReadyV2(worktreeResultV2);
     const legacySchemaDiscriminant: 1 = configV1.schemaVersion;
     const priorSchemaDiscriminant: 2 = configV2.schemaVersion;
     const currentSchemaDiscriminant: 3 = configV3.schemaVersion;
@@ -947,7 +961,7 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     const qaHandoff = null as unknown as QaHandoffInputV0;
     const knowledgeContract: "knowledge.entry.v0" = KNOWLEDGE_ENTRY_CONTRACT_VERSION;
     const knowledgeEntry = null as unknown as KnowledgeEntryV0;
-  void [schema, copilotFuryDispatchContract, copilotFurySdkVersion, copilotFuryDispatchRequest, copilotFuryDispatchResult, dispatchCopilotFuryPlanReview, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, worktreeContract, worktreeRequest, worktreeResult, worktreeReceipt, prepareWorktree, validateWorktreeReceipt, worktreeAuthority, worktreeReady, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, featureOperationContract, evaluateFeatureOperation, tddMissionContract, tddMissionInput, tddMissionEvaluation, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, transitionPlanInput, transitionPlanResult, transitionPlanNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
+  void [schema, copilotFuryDispatchContract, copilotFurySdkVersion, copilotFuryDispatchRequest, copilotFuryDispatchResult, dispatchCopilotFuryPlanReview, state, risk, intakeContract, intakeRequest, intakeResult, iterationEvidence, iterationEvaluation, journalSchema, modeSchema, entry, manifest, hillReadinessSchema, hillCandidate, hillObservation, hillEvaluation, legacyConfigSchema, configSchema, supportedConfigSchemas, config, configV1, configV2, trustProfileId, legacySchemaDiscriminant, currentSchemaDiscriminant, worktreeContract, worktreeSuccessorContract, worktreeRequest, worktreeResult, worktreeReceipt, worktreeResultV2, worktreeReceiptV2, prepareWorktree, prepareOrRefreshWorktree, validateWorktreeReceipt, validateWorktreeReceiptV2, validateWorktreeReceiptV1OrV2, validateWorktreeReceiptChain, worktreeAuthority, worktreeReady, worktreeReadyV2, deriveBindings, selectCoulson, supervisedSchema, runnerJournalSchema, supervisedBrief, createBrief, runnerEffectCandidate, createEffectEntry, wheelsOffPolicy, delegation, adapterContract, adapterCandidate, runnerContract, runnerInput, permissionContract, runtimeBinding, evaluate, schema9PermissionContextInput, schema9PermissionContextResult, loadSchema9Context, auditSchema, auditRecord, replayAudit, reviewPublicationContract, reviewPublicationAuthority, reviewPublicationProposal, evaluateReviewPublication, pipelineContract, pipelineProfile, selectPipeline, sonarContract, sonarEvidence, evaluateSonar, qaContract, qaHandoff, createQaHandoffV0, evaluateQaValidationV0, knowledgeContract, knowledgeEntry, validateKnowledgeEntryV0, localToolRequest, runTools, mayToolRequest, mayToolDependencies, runMayTools, mayLoopRequest, mayLoopDependencies, runMayLoop, runCycle, deliver, followUpInput, createFollowUp, prepareWorkspace, furyContract, furyGate, evaluateFury, furyEvidenceContract, furyEvidenceCandidate, furyEvidenceEvaluation, implementationAuthorityContract, implementationAuthoritySchema, implementationAuthorityKind, authority, featureOperationContract, evaluateFeatureOperation, tddMissionContract, tddMissionInput, tddMissionEvaluation, replayFuryEvidence, validateReceipt, renderHandoff, workspaceReceipt, workspaceResult, dispatchScope, dispatchAppendInput, dispatchAppendResult, dispatchByReceiptInput, dispatchByParentInput, dispatchByChildInput, dispatchBySessionResult, packetClaimInput, packetClaimResult, packetClaimContract, claimPacket, assertPacketClaimNarrowing, transitionPlanInput, transitionPlanResult, transitionPlanNarrowing, validResume, missingResumeState, unexpectedResumeState, roleTaxonomyContract, dispatchSeatOnly, route, validatedRole, profileRole, profileRoleContract, profileRoleDiscriminant, legacyRoleDefinition, legacyRoleKind, legacyProfileRole, legacyProfileRoleRegistry, firstCanonicalRole, isKnownRole, canDispatch];
   `);
 
   const tsc = join(workspaceRoot, "node_modules", "typescript", "bin", "tsc");
