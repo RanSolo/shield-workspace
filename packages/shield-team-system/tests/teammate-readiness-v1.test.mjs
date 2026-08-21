@@ -39,7 +39,7 @@ function cliEnvironment(overrides = {}) {
 
 function seatCard(seat) {
   const values = {
-    hill: ["gpt-5.6-sol", "medium", "workspace-write"],
+    hill: ["gpt-5.6-luna", "medium", "workspace-write"],
     daisy: ["gpt-5.3-codex-spark", "medium", "read-only"],
     fury: ["gpt-5.6-sol", "high", "read-only"],
     may: ["gpt-5.6-sol", "high", "workspace-write"],
@@ -146,7 +146,7 @@ test("emits the closed report, exact machine-check order, and ordered unverified
   assert.deepEqual(report.machineChecks.map(({ status }) => status), ["pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "observed", "pass"]);
   assert.equal(report.machineChecks[10].reasonCode, "uninitialized_worktree");
   assert.deepEqual(report.declarations, [
-    ["hill", "gpt-5.6-sol", "medium", "workspace-write"],
+    ["hill", "gpt-5.6-luna", "medium", "workspace-write"],
     ["daisy", "gpt-5.3-codex-spark", "medium", "read-only"],
     ["fury", "gpt-5.6-sol", "high", "read-only"],
     ["may", "gpt-5.6-sol", "high", "workspace-write"],
