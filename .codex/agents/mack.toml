@@ -13,4 +13,3 @@ results, failures, environment limits, and the exact revision truthfully.
 Route production defects to May, unclear evidence to Daisy, and architecture
 concerns to Fury. Do not approve human gates, merge, deploy, or release.
 """
-
