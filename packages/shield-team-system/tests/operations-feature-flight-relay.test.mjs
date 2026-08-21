@@ -7,6 +7,10 @@ import {
   replaySeatDispatchReceiptsV1,
 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import {
+  FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_CONTRACT_VERSION,
+  FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_NEXT_ACTION,
+  FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE,
+  FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_RESULT_CODES,
   FEATURE_FLIGHT_RELAY_CONTRACT_VERSION,
   FEATURE_FLIGHT_RELAY_DELIVERED_CONTRACT_VERSION,
   FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION,
@@ -16,6 +20,8 @@ import {
   FEATURE_FLIGHT_RELAY_NEXT_ACTION,
   FEATURE_FLIGHT_RELAY_REQUESTED_OBSERVATION,
   canonicalFeatureFlightRelayBytesV1,
+  createFeatureFlightRelayAcknowledgedEntryV1,
+  createFeatureFlightRelayAcknowledgementV1,
   createFeatureFlightRelayDeliveredEntryV1,
   createFeatureFlightRelayDeliveryReceiptV1,
   createFeatureFlightRelayEntryV1,
@@ -23,11 +29,13 @@ import {
   createFeatureFlightRelayV1,
   featureFlightRelayDigestV1,
   inspectFeatureFlightRelaysV1,
+  reconcileFeatureFlightRelayAcknowledgementV1,
   reconcileFeatureFlightRelayDeliveryV1,
   reconcileFeatureFlightRelayEntryV1,
   replayFeatureFlightRelayLedgerV1,
   validateFeatureFlightRelayEntryV1,
   validateFeatureFlightRelayDeliveryReceiptV1,
+  validateFeatureFlightRelayAcknowledgementV1,
   validateFeatureFlightRelayV1,
 } from "../scripts/operations/feature-flight-relay.mjs";
 
@@ -38,6 +46,10 @@ const SLICE_1_PENDING_RELAY_BYTES = Buffer.from(
 );
 const SLICE_1_PENDING_ENTRY_BYTES = Buffer.from(
   "eyJhcnRpZmFjdFR5cGUiOiJmZWF0dXJlLWZsaWdodC1yZWxheS1lbnRyeSIsImF1dGhvcml0eSI6Im5vbmUiLCJjb250cmFjdFZlcnNpb24iOiJzaGllbGQuZmVhdHVyZS1mbGlnaHQtcmVsYXkucGVuZGluZy52MSIsImVudHJ5RGlnZXN0Ijoic2hhMjU2Olh4bGRSLWM4TWI2QnV2aGUtR190c0lkbm0xdi1tWUR4bHZ0blpna0lMcFEiLCJlbnRyeUlkIjoicmVsYXktZW50cnk6RXRHeHBubFkzTEVaeXFqRnlCdmtpNGl3M2NSNC1sMnkwZlBBUG5kY0xOODowIiwia2luZCI6InJlbGF5LnBlbmRpbmciLCJsaWZlY3ljbGVTZXF1ZW5jZSI6MCwibG9nU2VxdWVuY2UiOjAsIm5vdGljZSI6IkFkdmlzb3J5IHdha2UtdXAgcmVmZXJlbmNlIG9ubHkuIFRoaXMgcmVsYXkgZ3JhbnRzIG5vIGF1dGhvcml0eSwgcGVybWlzc2lvbiwgcmV2aWV3LCBhY2NlcHRhbmNlLCBkZWxpdmVyeSwgb3IgZXhlY3V0aW9uLiIsInByZXZpb3VzTGlmZWN5Y2xlRGlnZXN0IjpudWxsLCJwcmV2aW91c0xvZ0RpZ2VzdCI6bnVsbCwicmVsYXkiOnsiYXJ0aWZhY3RUeXBlIjoiZmVhdHVyZS1mbGlnaHQtcmVsYXkiLCJhdXRob3JpdHkiOiJub25lIiwiY29udHJhY3RWZXJzaW9uIjoic2hpZWxkLmZlYXR1cmUtZmxpZ2h0LXJlbGF5LnBlbmRpbmcudjEiLCJraW5kIjoicmVsYXkucGVuZGluZyIsIm5vdGljZSI6IkFkdmlzb3J5IHdha2UtdXAgcmVmZXJlbmNlIG9ubHkuIFRoaXMgcmVsYXkgZ3JhbnRzIG5vIGF1dGhvcml0eSwgcGVybWlzc2lvbiwgcmV2aWV3LCBhY2NlcHRhbmNlLCBkZWxpdmVyeSwgb3IgZXhlY3V0aW9uLiIsInJlY2lwaWVudCI6eyJjb250cm9sbGVySWRlbnRpdHkiOiJjb250cm9sbGVyOmhpbGw6aXNzdWUtMjQ4IiwibGFuZUlkIjoibGFuZTppc3N1ZS0yNDgiLCJzZWF0SWQiOiJoaWxsIn0sInJlbGF5RGlnZXN0Ijoic2hhMjU2OkV0R3hwbmxZM0xFWnlxakZ5QnZraTRpdzNjUjQtbDJ5MGZQQVBuZGNMTjgiLCJyZWxheUlkIjoicmVsYXk6RXRHeHBubFkzTEVaeXFqRnlCdmtpNGl3M2NSNC1sMnkwZlBBUG5kY0xOOCIsInJlcXVlc3RlZE9ic2VydmF0aW9uIjoib2JzZXJ2ZV90ZXJtaW5hbF9kaXNwYXRjaCIsInNjaGVtYVZlcnNpb24iOjEsInNvdXJjZSI6eyJhcnRpZmFjdElkIjoiYXJ0aWZhY3Q6aXNzdWUtMjQ4LXNsaWNlLTEiLCJhcnRpZmFjdFJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCIsImNoaWxkU2Vzc2lvbklkIjoic2Vzc2lvbjoyNDg6bWF5IiwiY2hpbGRUYXNrSWQiOiJ0YXNrOjI0ODptYXkiLCJkaXNwYXRjaElkIjoiZGlzcGF0Y2g6MjQ4OjEiLCJwYXJlbnRNaXNzaW9uSWQiOiJtaXNzaW9uOmlzc3VlLTI0OC1zbGljZS0xIiwicGFyZW50TWlzc2lvblJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCIsInBhcmVudFNlc3Npb25JZCI6InNlc3Npb246MjQ4OnBhcmVudCIsInJlY2VpcHRJZCI6InJlY2VpcHQ6MjQ4OjEiLCJyZXBvc2l0b3J5SWQiOiJyZXBvOnNoaWVsZC13b3Jrc3BhY2UiLCJyZXBvc2l0b3J5UmV2aXNpb24iOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0IiwicmVwb3NpdG9yeVdvcmtzcGFjZUlkIjoid29ya3NwYWNlOmlzc3VlLTI0OCIsInNvdXJjZUFjY291bnRhYmxlU2VhdElkIjoibWF5Iiwic3ViamVjdElkIjoiaXNzdWU6MjQ4Iiwic3ViamVjdFJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCJ9LCJ0ZXJtaW5hbCI6eyJlbnRyeURpZ2VzdCI6InNoYTI1NjotLXNwYVphdWxydmM5WkFZN252czNNRXViRzZjOWVkd2hkUWNnRWhXdy1VIiwia2luZCI6ImRpc3BhdGNoLmNvbXBsZXRlZCIsImxpZmVjeWNsZVNlcXVlbmNlIjoxLCJsb2dTZXF1ZW5jZSI6MX19LCJyZWxheURpZ2VzdCI6InNoYTI1NjpFdEd4cG5sWTNMRVp5cWpGeUJ2a2k0aXczY1I0LWwyeTBmUEFQbmRjTE44IiwicmVsYXlJZCI6InJlbGF5OkV0R3hwbmxZM0xFWnlxakZ5QnZraTRpdzNjUjQtbDJ5MGZQQVBuZGNMTjgiLCJzY2hlbWFWZXJzaW9uIjoxfQ==",
+  "base64",
+);
+const SLICE_2_DELIVERED_ENTRY_BYTES = Buffer.from(
+  "eyJhcnRpZmFjdFR5cGUiOiJmZWF0dXJlLWZsaWdodC1yZWxheS1lbnRyeSIsImF1dGhvcml0eSI6Im5vbmUiLCJjb250cmFjdFZlcnNpb24iOiJzaGllbGQuZmVhdHVyZS1mbGlnaHQtcmVsYXkuZGVsaXZlcmVkLnYxIiwiZGVsaXZlcnlSZWNlaXB0Ijp7ImFydGlmYWN0VHlwZSI6ImZlYXR1cmUtZmxpZ2h0LXJlbGF5LWRlbGl2ZXJ5LXJlY2VpcHQiLCJhdXRob3JpdHkiOiJub25lIiwiY29udHJhY3RWZXJzaW9uIjoic2hpZWxkLmZlYXR1cmUtZmxpZ2h0LXJlbGF5LmRlbGl2ZXJ5LXJlY2VpcHQudjEiLCJkZWxpdmVyeUtleSI6InJlbGF5LWRlbGl2ZXJ5OmNLNHZ2Tm5JRHhsTDBtT3laSWVvc1E4S2xCcXN0MlRJbHoxdm1qbHVuYzAiLCJub3RpY2UiOiJMb2NhbCBkZWxpdmVyeSBldmlkZW5jZSBvbmx5LiBUaGlzIHJlY2VpcHQgZ3JhbnRzIG5vIGF1dGhvcml0eSwgcGVybWlzc2lvbiwgcmV2aWV3LCBhY2NlcHRhbmNlLCBhY2tub3dsZWRnZW1lbnQsIG9yIGV4ZWN1dGlvbi4iLCJyZWNlaXB0RGlnZXN0Ijoic2hhMjU2OnBmSTBDcWlxVEc1dFM0WVBFN3FWZGt2Ym5lcjA1MWk3RU5rQXZwa3RqX00iLCJyZWNpcGllbnQiOnsiY29udHJvbGxlcklkZW50aXR5IjoiY29udHJvbGxlcjpoaWxsOmlzc3VlLTI0OCIsImxhbmVJZCI6ImxhbmU6aXNzdWUtMjQ4Iiwic2VhdElkIjoiaGlsbCJ9LCJyZWxheURpZ2VzdCI6InNoYTI1NjpFdEd4cG5sWTNMRVp5cWpGeUJ2a2k0aXczY1I0LWwyeTBmUEFQbmRjTE44IiwicmVsYXlJZCI6InJlbGF5OkV0R3hwbmxZM0xFWnlxakZ5QnZraTRpdzNjUjQtbDJ5MGZQQVBuZGNMTjgiLCJyZXBvc2l0b3J5SWQiOiJyZXBvOnNoaWVsZC13b3Jrc3BhY2UiLCJyZXBvc2l0b3J5UmV2aXNpb24iOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0IiwicmVwb3NpdG9yeVdvcmtzcGFjZUlkIjoid29ya3NwYWNlOmlzc3VlLTI0OCIsInNjaGVtYVZlcnNpb24iOjF9LCJlbnRyeURpZ2VzdCI6InNoYTI1NjpUd2wtcU9veFRGNW5tM1poMXJUZGg1QWF1Q2V3ZWFzTG55VWdjRlNaOURjIiwiZW50cnlJZCI6InJlbGF5LWVudHJ5OkV0R3hwbmxZM0xFWnlxakZ5QnZraTRpdzNjUjQtbDJ5MGZQQVBuZGNMTjg6MSIsImtpbmQiOiJyZWxheS5kZWxpdmVyZWQiLCJsaWZlY3ljbGVTZXF1ZW5jZSI6MSwibG9nU2VxdWVuY2UiOjEsIm5vdGljZSI6IkxvY2FsIGRlbGl2ZXJ5IGV2aWRlbmNlIG9ubHkuIFRoaXMgcmVjZWlwdCBncmFudHMgbm8gYXV0aG9yaXR5LCBwZXJtaXNzaW9uLCByZXZpZXcsIGFjY2VwdGFuY2UsIGFja25vd2xlZGdlbWVudCwgb3IgZXhlY3V0aW9uLiIsInByZXZpb3VzTGlmZWN5Y2xlRGlnZXN0Ijoic2hhMjU2Olh4bGRSLWM4TWI2QnV2aGUtR190c0lkbm0xdi1tWUR4bHZ0blpna0lMcFEiLCJwcmV2aW91c0xvZ0RpZ2VzdCI6InNoYTI1NjpYeGxkUi1jOE1iNkJ1dmhlLUdfdHNJZG5tMXYtbVlEeGx2dG5aZ2tJTHBRIiwicmVsYXkiOnsiYXJ0aWZhY3RUeXBlIjoiZmVhdHVyZS1mbGlnaHQtcmVsYXkiLCJhdXRob3JpdHkiOiJub25lIiwiY29udHJhY3RWZXJzaW9uIjoic2hpZWxkLmZlYXR1cmUtZmxpZ2h0LXJlbGF5LnBlbmRpbmcudjEiLCJraW5kIjoicmVsYXkucGVuZGluZyIsIm5vdGljZSI6IkFkdmlzb3J5IHdha2UtdXAgcmVmZXJlbmNlIG9ubHkuIFRoaXMgcmVsYXkgZ3JhbnRzIG5vIGF1dGhvcml0eSwgcGVybWlzc2lvbiwgcmV2aWV3LCBhY2NlcHRhbmNlLCBkZWxpdmVyeSwgb3IgZXhlY3V0aW9uLiIsInJlY2lwaWVudCI6eyJjb250cm9sbGVySWRlbnRpdHkiOiJjb250cm9sbGVyOmhpbGw6aXNzdWUtMjQ4IiwibGFuZUlkIjoibGFuZTppc3N1ZS0yNDgiLCJzZWF0SWQiOiJoaWxsIn0sInJlbGF5RGlnZXN0Ijoic2hhMjU2OkV0R3hwbmxZM0xFWnlxakZ5QnZraTRpdzNjUjQtbDJ5MGZQQVBuZGNMTjgiLCJyZWxheUlkIjoicmVsYXk6RXRHeHBubFkzTEVaeXFqRnlCdmtpNGl3M2NSNC1sMnkwZlBBUG5kY0xOOCIsInJlcXVlc3RlZE9ic2VydmF0aW9uIjoib2JzZXJ2ZV90ZXJtaW5hbF9kaXNwYXRjaCIsInNjaGVtYVZlcnNpb24iOjEsInNvdXJjZSI6eyJhcnRpZmFjdElkIjoiYXJ0aWZhY3Q6aXNzdWUtMjQ4LXNsaWNlLTEiLCJhcnRpZmFjdFJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCIsImNoaWxkU2Vzc2lvbklkIjoic2Vzc2lvbjoyNDg6bWF5IiwiY2hpbGRUYXNrSWQiOiJ0YXNrOjI0ODptYXkiLCJkaXNwYXRjaElkIjoiZGlzcGF0Y2g6MjQ4OjEiLCJwYXJlbnRNaXNzaW9uSWQiOiJtaXNzaW9uOmlzc3VlLTI0OC1zbGljZS0xIiwicGFyZW50TWlzc2lvblJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCIsInBhcmVudFNlc3Npb25JZCI6InNlc3Npb246MjQ4OnBhcmVudCIsInJlY2VpcHRJZCI6InJlY2VpcHQ6MjQ4OjEiLCJyZXBvc2l0b3J5SWQiOiJyZXBvOnNoaWVsZC13b3Jrc3BhY2UiLCJyZXBvc2l0b3J5UmV2aXNpb24iOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0IiwicmVwb3NpdG9yeVdvcmtzcGFjZUlkIjoid29ya3NwYWNlOmlzc3VlLTI0OCIsInNvdXJjZUFjY291bnRhYmxlU2VhdElkIjoibWF5Iiwic3ViamVjdElkIjoiaXNzdWU6MjQ4Iiwic3ViamVjdFJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCJ9LCJ0ZXJtaW5hbCI6eyJlbnRyeURpZ2VzdCI6InNoYTI1NjotLXNwYVphdWxydmM5WkFZN252czNNRXViRzZjOWVkd2hkUWNnRWhXdy1VIiwia2luZCI6ImRpc3BhdGNoLmNvbXBsZXRlZCIsImxpZmVjeWNsZVNlcXVlbmNlIjoxLCJsb2dTZXF1ZW5jZSI6MX19LCJyZWxheURpZ2VzdCI6InNoYTI1NjpFdEd4cG5sWTNMRVp5cWpGeUJ2a2k0aXczY1I0LWwyeTBmUEFQbmRjTE44IiwicmVsYXlJZCI6InJlbGF5OkV0R3hwbmxZM0xFWnlxakZ5QnZraTRpdzNjUjQtbDJ5MGZQQVBuZGNMTjgiLCJzY2hlbWFWZXJzaW9uIjoxfQ==",
   "base64",
 );
 
@@ -435,6 +447,205 @@ test("rejects skipped, reversed, repeated, post-delivery, and malformed delivery
     pendingEntry: pending,
     acknowledgement: true,
   }), /fields are not closed/u);
+});
+
+test("preserves literal Slice 1 and Slice 2 bytes plus exact legacy replay and conditional omissions", () => {
+  const pending = JSON.parse(SLICE_1_PENDING_ENTRY_BYTES.toString("utf8"));
+  const delivered = JSON.parse(SLICE_2_DELIVERED_ENTRY_BYTES.toString("utf8"));
+  assert.deepEqual(canonicalFeatureFlightRelayBytesV1(pending), SLICE_1_PENDING_ENTRY_BYTES);
+  assert.deepEqual(canonicalFeatureFlightRelayBytesV1(delivered), SLICE_2_DELIVERED_ENTRY_BYTES);
+  assert.equal(validateFeatureFlightRelayEntryV1(delivered).state, "valid");
+  const pendingReplay = replayFeatureFlightRelayLedgerV1([pending]);
+  const deliveredReplay = replayFeatureFlightRelayLedgerV1([pending, delivered]);
+  assert.deepEqual(pendingReplay.entries, [pending]);
+  assert.deepEqual(deliveredReplay.entries, [pending, delivered]);
+  assert.equal(Object.hasOwn(pendingReplay.inspection, "delivered"), false);
+  assert.equal(Object.hasOwn(pendingReplay.inspection, "acknowledged"), false);
+  assert.equal(Object.hasOwn(deliveredReplay.inspection, "acknowledged"), false);
+  assert.deepEqual(deliveredReplay.inspection.delivered, [
+    {
+      schemaVersion: 1,
+      artifactType: "feature-flight-relay-projection",
+      contractVersion: FEATURE_FLIGHT_RELAY_CONTRACT_VERSION,
+      authority: "none",
+      notice: "Read-only advisory projection. Await a separately authorized delivery binding.",
+      relayId: delivered.relayId,
+      relayDigest: delivered.relayDigest,
+      source: delivered.relay.source,
+      terminal: delivered.relay.terminal,
+      recipient: delivered.relay.recipient,
+      lifecycleState: "delivered",
+      repositoryRevision: delivered.relay.source.repositoryRevision,
+      nextAction: FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION,
+      lastEntryDigest: delivered.entryDigest,
+      deliveryReceipt: delivered.deliveryReceipt,
+    },
+  ]);
+});
+
+test("derives a closed authority-none acknowledgement only from delivered and authoritative evidence", async () => {
+  const { relay, entries } = await relayFrom();
+  const pending = createFeatureFlightRelayEntryV1({ logSequence: 0, previousLogDigest: null, relay });
+  const delivered = createFeatureFlightRelayDeliveredEntryV1({
+    logSequence: 1,
+    previousLogDigest: pending.entryDigest,
+    pendingEntry: pending,
+  });
+  const sourceReplay = replaySeatDispatchReceiptsV1(entries);
+  const acknowledgementResult = createFeatureFlightRelayAcknowledgementV1({ deliveredEntry: delivered, sourceReplay });
+  assert.equal(acknowledgementResult.state, "valid", acknowledgementResult.reasonCodes?.join(" "));
+  const acknowledgement = acknowledgementResult.value;
+  assert.equal(acknowledgement.contractVersion, FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_CONTRACT_VERSION);
+  assert.equal(acknowledgement.authority, "none");
+  assert.equal(acknowledgement.notice, FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE);
+  assert.equal(acknowledgement.outcome, "authoritative_terminal_observed");
+  assert.equal(acknowledgement.deliveredEntryDigest, delivered.entryDigest);
+  assert.equal(acknowledgement.deliveryReceiptDigest, delivered.deliveryReceipt.receiptDigest);
+  assert.deepEqual(acknowledgement.recipient, relay.recipient);
+  assert.deepEqual(acknowledgement.terminal, relay.terminal);
+  assert.equal(validateFeatureFlightRelayAcknowledgementV1(acknowledgement, delivered).state, "valid");
+  assert.deepEqual(Object.keys(acknowledgement).sort(), [
+    "acknowledgementDigest", "artifactType", "authority", "contractVersion", "deliveredEntryDigest", "deliveryReceiptDigest",
+    "dispatchId", "notice", "outcome", "receiptId", "recipient", "relayDigest", "relayId", "repositoryId",
+    "repositoryRevision", "repositoryWorkspaceId", "schemaVersion", "terminal",
+  ]);
+
+  const acknowledgedResult = createFeatureFlightRelayAcknowledgedEntryV1({
+    logSequence: 2,
+    previousLogDigest: delivered.entryDigest,
+    deliveredEntry: delivered,
+    sourceReplay,
+  });
+  assert.equal(acknowledgedResult.state, "valid", acknowledgedResult.reasonCodes?.join(" "));
+  const acknowledged = acknowledgedResult.value;
+  assert.equal(acknowledged.kind, "relay.acknowledged");
+  assert.equal(acknowledged.lifecycleSequence, 2);
+  assert.equal(acknowledged.previousLifecycleDigest, delivered.entryDigest);
+  assert.deepEqual(acknowledged.acknowledgement, acknowledgement);
+  assert.equal(validateFeatureFlightRelayEntryV1(acknowledged).state, "valid");
+  assert.equal(createFeatureFlightRelayAcknowledgedEntryV1({
+    logSequence: 2,
+    previousLogDigest: delivered.entryDigest,
+    deliveredEntry: delivered,
+    sourceReplay,
+    outcome: "caller_controlled",
+  }).code, "malformed_input");
+});
+
+test("replays pending to delivered to acknowledged and projects closed no-action inspection", async () => {
+  const { relay, entries } = await relayFrom("dispatch.failed");
+  const pending = createFeatureFlightRelayEntryV1({ logSequence: 0, previousLogDigest: null, relay });
+  const delivered = createFeatureFlightRelayDeliveredEntryV1({
+    logSequence: 1,
+    previousLogDigest: pending.entryDigest,
+    pendingEntry: pending,
+  });
+  const acknowledged = createFeatureFlightRelayAcknowledgedEntryV1({
+    logSequence: 2,
+    previousLogDigest: delivered.entryDigest,
+    deliveredEntry: delivered,
+    sourceReplay: replaySeatDispatchReceiptsV1(entries),
+  }).value;
+  const replay = replayFeatureFlightRelayLedgerV1([pending, delivered, acknowledged]);
+  assert.equal(replay.state, "valid");
+  assert.equal(replay.inspection.pending.length, 0);
+  assert.equal(Object.hasOwn(replay.inspection, "delivered"), false);
+  assert.equal(replay.inspection.acknowledged.length, 1);
+  assert.equal(replay.inspection.acknowledged[0].lifecycleState, "acknowledged");
+  assert.equal(replay.inspection.acknowledged[0].nextAction, FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_NEXT_ACTION);
+  assert.equal(replay.inspection.acknowledged[0].authority, "none");
+  assert.equal(replay.inspection.acknowledged[0].notice, FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE);
+  assert.deepEqual(replay.inspection.acknowledged[0].acknowledgement, acknowledged.acknowledgement);
+
+  assert.equal(replayFeatureFlightRelayLedgerV1([pending, acknowledged]).code, "global_chain_invalid");
+  assert.equal(replayFeatureFlightRelayLedgerV1([pending, delivered, delivered]).code, "duplicate_event");
+  assert.equal(replayFeatureFlightRelayLedgerV1([pending, delivered, acknowledged, acknowledged]).code, "duplicate_event");
+  assert.equal(reconcileFeatureFlightRelayEntryV1([pending, delivered], acknowledged).code, "illegal_transition");
+  const reversed = structuredClone(acknowledged);
+  reversed.previousLifecycleDigest = pending.entryDigest;
+  reversed.entryDigest = featureFlightRelayDigestV1(
+    Object.fromEntries(Object.entries(reversed).filter(([field]) => !["entryId", "entryDigest"].includes(field))),
+    "shield.feature-flight-relay.acknowledged.entry.v1",
+  );
+  assert.equal(replayFeatureFlightRelayLedgerV1([pending, delivered, reversed]).code, "lifecycle_chain_invalid");
+});
+
+test("reconciles exact acknowledgement retries and closes source, recipient, and terminal failures", async () => {
+  const { relay, entries } = await relayFrom();
+  const pending = createFeatureFlightRelayEntryV1({ logSequence: 0, previousLogDigest: null, relay });
+  const delivered = createFeatureFlightRelayDeliveredEntryV1({
+    logSequence: 1,
+    previousLogDigest: pending.entryDigest,
+    pendingEntry: pending,
+  });
+  const sourceReplay = replaySeatDispatchReceiptsV1(entries);
+  const expected = { relayId: relay.relayId, relayDigest: relay.relayDigest, source: relay.source, recipient: relay.recipient };
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([], expected, sourceReplay).code, "relay_missing");
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending], expected, sourceReplay).code, "delivery_missing");
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], {
+    ...expected,
+    relayDigest: featureFlightRelayDigestV1("conflict"),
+  }, sourceReplay).code, "conflicting_reuse");
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], {
+    ...expected,
+    source: { ...expected.source, repositoryId: "repo:other" },
+  }, sourceReplay).code, "relay_missing");
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], {
+    ...expected,
+    source: { ...expected.source, repositoryRevision: "5".repeat(40) },
+  }, sourceReplay).code, "source_stale");
+  const sourceMismatches = {
+    receiptId: "receipt:other", dispatchId: "dispatch:other", parentMissionId: "mission:other",
+    parentMissionRevision: "5".repeat(40), parentSessionId: "session:other", childTaskId: "task:other",
+    childSessionId: "session:other", sourceAccountableSeatId: "daisy", repositoryId: "repo:other",
+    repositoryWorkspaceId: "workspace:other", subjectId: "issue:other", subjectRevision: "5".repeat(40),
+    artifactId: "artifact:other", artifactRevision: "5".repeat(40),
+  };
+  for (const [field, value] of Object.entries(sourceMismatches)) {
+    assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], {
+      ...expected,
+      source: { ...expected.source, [field]: value },
+    }, sourceReplay).code, "relay_missing", field);
+  }
+  for (const [field, value] of [["seatId", "may"], ["laneId", "lane:other"], ["controllerIdentity", "controller:other"]]) {
+    const result = reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], {
+      ...expected,
+      recipient: { ...expected.recipient, [field]: value },
+    }, sourceReplay);
+    assert.equal(result.code, "recipient_mismatch", field);
+  }
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], { ...expected, extra: true }, sourceReplay).code, "malformed_input");
+
+  const accepted = reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], expected, sourceReplay);
+  assert.equal(accepted.state, "accepted", accepted.reasonCodes?.join(" "));
+  assert.equal(accepted.appended, true);
+  const duplicate = reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered, accepted.entry], expected);
+  assert.equal(duplicate.state, "duplicate");
+  assert.equal(duplicate.code, "duplicate");
+  assert.equal(duplicate.appended, false);
+  assert.deepEqual(duplicate.acknowledgement, accepted.acknowledgement);
+
+  const nonTerminalReplay = replaySeatDispatchReceiptsV1([entries[0]]);
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], expected, nonTerminalReplay).code, "terminal_source_required");
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], expected, {
+    state: "invalid", code: "digest_mismatch", reasonCodes: [],
+  }).code, "source_replay_invalid");
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], expected, {
+    ...sourceReplay,
+    projections: [sourceReplay.projections[0], structuredClone(sourceReplay.projections[0])],
+  }).code, "terminal_source_ambiguous");
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], expected, {
+    ...sourceReplay,
+    entries: [entries[0]],
+  }).code, "terminal_source_ambiguous");
+  const mismatchedTerminal = structuredClone(sourceReplay);
+  mismatchedTerminal.entries[1].kind = "dispatch.failed";
+  assert.equal(reconcileFeatureFlightRelayAcknowledgementV1([pending, delivered], expected, mismatchedTerminal).code, "terminal_source_mismatch");
+  assert.deepEqual(FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_RESULT_CODES, [
+    "relay_missing", "delivery_missing", "source_ledger_unavailable", "source_replay_invalid", "terminal_source_ambiguous",
+    "terminal_source_required", "terminal_source_mismatch", "recipient_mismatch", "source_stale", "duplicate",
+    "conflicting_reuse", "illegal_transition", "recovery_required",
+  ]);
 });
 
 test("canonical helper rejects unsafe values", () => {

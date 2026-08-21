@@ -8,13 +8,16 @@ import { readSeatDispatchReceiptLedgerV1 } from "../../dist/seat-dispatch-store.
 export const FEATURE_FLIGHT_RELAY_SCHEMA_VERSION = 1;
 export const FEATURE_FLIGHT_RELAY_CONTRACT_VERSION = "shield.feature-flight-relay.pending.v1";
 export const FEATURE_FLIGHT_RELAY_DELIVERED_CONTRACT_VERSION = "shield.feature-flight-relay.delivered.v1";
+export const FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_CONTRACT_VERSION = "shield.feature-flight-relay.acknowledged.v1";
 export const FEATURE_FLIGHT_RELAY_DELIVERY_RECEIPT_CONTRACT_VERSION = "shield.feature-flight-relay.delivery-receipt.v1";
 export const FEATURE_FLIGHT_RELAY_NOTICE = "Advisory wake-up reference only. This relay grants no authority, permission, review, acceptance, delivery, or execution.";
 export const FEATURE_FLIGHT_RELAY_INSPECTION_NOTICE = "Read-only advisory projection. Await a separately authorized delivery binding.";
 export const FEATURE_FLIGHT_RELAY_DELIVERY_NOTICE = "Local delivery evidence only. This receipt grants no authority, permission, review, acceptance, acknowledgement, or execution.";
+export const FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE = "Authoritative observation evidence only. This acknowledgement grants no authority, permission, approval, acceptance, execution, wake/resume, or successor authority.";
 export const FEATURE_FLIGHT_RELAY_REQUESTED_OBSERVATION = "observe_terminal_dispatch";
 export const FEATURE_FLIGHT_RELAY_NEXT_ACTION = "await_delivery_binding";
 export const FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION = "reread_authoritative_state_and_acknowledge";
+export const FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_NEXT_ACTION = "no_automatic_action";
 export const FEATURE_FLIGHT_RELAY_MAX_BYTES = 4096;
 export const FEATURE_FLIGHT_RELAY_MAX_LEDGER_ENTRIES = 4096;
 export const FEATURE_FLIGHT_RELAY_TERMINAL_KINDS = Object.freeze([
@@ -33,6 +36,21 @@ export const FEATURE_FLIGHT_RELAY_DELIVERY_RESULT_CODES = Object.freeze([
   "illegal_transition",
   "recovery_required",
 ]);
+export const FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_RESULT_CODES = Object.freeze([
+  "relay_missing",
+  "delivery_missing",
+  "source_ledger_unavailable",
+  "source_replay_invalid",
+  "terminal_source_ambiguous",
+  "terminal_source_required",
+  "terminal_source_mismatch",
+  "recipient_mismatch",
+  "source_stale",
+  "duplicate",
+  "conflicting_reuse",
+  "illegal_transition",
+  "recovery_required",
+]);
 
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/u;
 const RELAY_ID = /^relay:[A-Za-z0-9_-]{43}$/u;
@@ -40,6 +58,7 @@ const DELIVERY_KEY = /^relay-delivery:[A-Za-z0-9_-]{43}$/u;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const TERMINAL_KINDS = new Set(FEATURE_FLIGHT_RELAY_TERMINAL_KINDS);
+const DISPATCH_STATES = new Set(["started", "interrupted", "resumed", "completed", "failed", "cancelled"]);
 const ACCOUNTABLE_SEATS = new Set(["hill", "daisy", "fury", "may", "mack"]);
 const SOURCE_FIELDS = [
   "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision", "parentSessionId", "childTaskId",
@@ -58,11 +77,18 @@ const ENTRY_FIELDS = [
   "logSequence", "lifecycleSequence", "relayId", "relayDigest", "previousLogDigest", "previousLifecycleDigest", "relay",
 ];
 const DELIVERED_ENTRY_FIELDS = [...ENTRY_FIELDS, "deliveryReceipt"];
+const ACKNOWLEDGED_ENTRY_FIELDS = [...ENTRY_FIELDS, "acknowledgement"];
 const DELIVERY_RECEIPT_FIELDS = [
   "schemaVersion", "artifactType", "contractVersion", "authority", "notice", "deliveryKey", "relayId", "relayDigest",
   "recipient", "repositoryId", "repositoryWorkspaceId", "repositoryRevision", "receiptDigest",
 ];
 const DELIVERY_RECEIPT_BODY_FIELDS = DELIVERY_RECEIPT_FIELDS.filter((field) => field !== "receiptDigest");
+const ACKNOWLEDGEMENT_FIELDS = [
+  "schemaVersion", "artifactType", "contractVersion", "authority", "notice", "outcome", "relayId", "relayDigest",
+  "deliveredEntryDigest", "deliveryReceiptDigest", "recipient", "repositoryId", "repositoryWorkspaceId",
+  "repositoryRevision", "receiptId", "dispatchId", "terminal", "acknowledgementDigest",
+];
+const ACKNOWLEDGEMENT_BODY_FIELDS = ACKNOWLEDGEMENT_FIELDS.filter((field) => field !== "acknowledgementDigest");
 const CREATE_FROM_DISPATCH_FIELDS = ["repositoryRoot", ...SOURCE_FIELDS, ...RECIPIENT_FIELDS.map((field) => `recipient${field[0].toUpperCase()}${field.slice(1)}`), "requestedObservation"];
 
 const fail = (code, message) => Object.freeze({ state: "invalid", code, reasonCodes: Object.freeze([message]) });
@@ -242,6 +268,10 @@ function deliveryReceiptBody(value) {
   return Object.fromEntries(DELIVERY_RECEIPT_BODY_FIELDS.map((field) => [field, value[field]]));
 }
 
+function acknowledgementBody(value) {
+  return Object.fromEntries(ACKNOWLEDGEMENT_BODY_FIELDS.map((field) => [field, value[field]]));
+}
+
 function deliveryIdentityBody(relay) {
   return {
     relayId: relay.relayId,
@@ -314,6 +344,50 @@ export function validateFeatureFlightRelayDeliveryReceiptV1(input, expectedRelay
   catch (error) { return fail("delivery_stale", error instanceof Error ? error.message : "Relay delivery receipt validation failed."); }
 }
 
+function validateAcknowledgementObject(input, expectedDeliveredEntryInput = undefined) {
+  const value = snapshot(input, "feature-flight relay acknowledgement");
+  exact(value, ACKNOWLEDGEMENT_FIELDS, "feature-flight relay acknowledgement");
+  if (value.schemaVersion !== 1 || value.artifactType !== "feature-flight-relay-acknowledgement" ||
+      value.contractVersion !== FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_CONTRACT_VERSION || value.authority !== "none" ||
+      value.notice !== FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE || value.outcome !== "authoritative_terminal_observed" ||
+      !RELAY_ID.test(value.relayId ?? "") || !DIGEST.test(value.relayDigest ?? "") ||
+      !DIGEST.test(value.deliveredEntryDigest ?? "") || !DIGEST.test(value.deliveryReceiptDigest ?? "")) {
+    throw new Error("Feature Flight relay acknowledgement contract identity is invalid.");
+  }
+  validateRecipient(value.recipient, "acknowledgement recipient");
+  identifier(value.repositoryId, "acknowledgement.repositoryId");
+  identifier(value.repositoryWorkspaceId, "acknowledgement.repositoryWorkspaceId");
+  revision(value.repositoryRevision, "acknowledgement.repositoryRevision");
+  identifier(value.receiptId, "acknowledgement.receiptId");
+  identifier(value.dispatchId, "acknowledgement.dispatchId");
+  validateTerminal(value.terminal, "acknowledgement terminal");
+  if (value.acknowledgementDigest !== featureFlightRelayDigestV1(
+    acknowledgementBody(value),
+    "shield.feature-flight-relay.acknowledgement.v1",
+  )) throw new Error("Feature Flight relay acknowledgement digest is invalid.");
+  if (expectedDeliveredEntryInput !== undefined) {
+    const deliveredEntry = validateDeliveredEntryObject(expectedDeliveredEntryInput);
+    const relay = deliveredEntry.relay;
+    if (value.relayId !== relay.relayId || value.relayDigest !== relay.relayDigest ||
+        value.deliveredEntryDigest !== deliveredEntry.entryDigest ||
+        value.deliveryReceiptDigest !== deliveredEntry.deliveryReceipt.receiptDigest ||
+        value.repositoryId !== relay.source.repositoryId ||
+        value.repositoryWorkspaceId !== relay.source.repositoryWorkspaceId ||
+        value.repositoryRevision !== relay.source.repositoryRevision ||
+        value.receiptId !== relay.source.receiptId || value.dispatchId !== relay.source.dispatchId ||
+        !canonicalFeatureFlightRelayBytesV1(value.recipient).equals(canonicalFeatureFlightRelayBytesV1(relay.recipient)) ||
+        !canonicalFeatureFlightRelayBytesV1(value.terminal).equals(canonicalFeatureFlightRelayBytesV1(relay.terminal))) {
+      throw new Error("Feature Flight relay acknowledgement does not exactly bind its delivered relay.");
+    }
+  }
+  return freeze(value);
+}
+
+export function validateFeatureFlightRelayAcknowledgementV1(input, expectedDeliveredEntry = undefined) {
+  try { return freeze({ state: "valid", value: validateAcknowledgementObject(input, expectedDeliveredEntry), reasonCodes: [] }); }
+  catch (error) { return fail("acknowledgement_invalid", error instanceof Error ? error.message : "Relay acknowledgement validation failed."); }
+}
+
 function flattenedCreationInput(input) {
   const value = snapshot(input, "terminal relay creation input");
   exact(value, CREATE_FROM_DISPATCH_FIELDS, "terminal relay creation input");
@@ -342,6 +416,115 @@ function sourceMatches(projection, source) {
     projection.repositoryRevision === source.repositoryRevision && projection.subjectId === source.subjectId &&
     projection.subjectRevision === source.subjectRevision && projection.artifactId === source.artifactId &&
     projection.artifactRevision === source.artifactRevision;
+}
+
+function validateAuthoritativeReplayShape(input) {
+  const replay = snapshot(input, "authoritative dispatch replay");
+  exact(replay, ["state", "entries", "projections"], "authoritative dispatch replay");
+  if (replay.state !== "valid" || !Array.isArray(replay.entries) || !Array.isArray(replay.projections)) {
+    throw new Error("Authoritative dispatch replay is not valid.");
+  }
+  for (const projection of replay.projections) {
+    if (projection === null || typeof projection !== "object" || Array.isArray(projection)) {
+      throw new Error("Authoritative dispatch projection is malformed.");
+    }
+    for (const field of SOURCE_FIELDS) {
+      const projectionField = field === "sourceAccountableSeatId" ? "accountableSeatId" : field;
+      if (!Object.hasOwn(projection, projectionField)) throw new Error(`Authoritative dispatch projection.${projectionField} is missing.`);
+      if (field.endsWith("Revision")) revision(projection[projectionField], `authoritative dispatch projection.${projectionField}`);
+      else identifier(projection[projectionField], `authoritative dispatch projection.${projectionField}`);
+    }
+    if (!DISPATCH_STATES.has(projection.state) || !DIGEST.test(projection.lastEntryDigest ?? "") ||
+        !Number.isSafeInteger(projection.logSequence) || projection.logSequence < 0 ||
+        !Number.isSafeInteger(projection.lifecycleSequence) || projection.lifecycleSequence < 0) {
+      throw new Error("Authoritative dispatch projection terminal fields are malformed.");
+    }
+  }
+  for (const entry of replay.entries) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry) || !Object.hasOwn(entry, "kind") ||
+        !Object.hasOwn(entry, "receiptId") || !Object.hasOwn(entry, "dispatchId") ||
+        !DIGEST.test(entry.entryDigest ?? "") || !Number.isSafeInteger(entry.logSequence) || entry.logSequence < 0 ||
+        !Number.isSafeInteger(entry.lifecycleSequence) || entry.lifecycleSequence < 0) {
+      throw new Error("Authoritative dispatch entry is malformed.");
+    }
+    identifier(entry.kind, "authoritative dispatch entry.kind");
+    identifier(entry.receiptId, "authoritative dispatch entry.receiptId");
+    identifier(entry.dispatchId, "authoritative dispatch entry.dispatchId");
+  }
+  return freeze(replay);
+}
+
+function selectAuthoritativeTerminal(deliveredEntry, sourceReplayInput) {
+  let replay;
+  try { replay = validateAuthoritativeReplayShape(sourceReplayInput); }
+  catch (error) {
+    return fail("source_replay_invalid", error instanceof Error ? error.message : "Authoritative dispatch replay is malformed.");
+  }
+  const relay = deliveredEntry.relay;
+  const matches = replay.projections.filter((projection) => sourceMatches(projection, relay.source));
+  if (matches.length !== 1) return fail("terminal_source_ambiguous", `Expected exactly one authoritative dispatch projection; found ${matches.length}.`);
+  const projection = matches[0];
+  if (!TERMINAL_KINDS.has(`dispatch.${projection.state}`)) {
+    return fail("terminal_source_required", "Authoritative dispatch projection is not terminal.");
+  }
+  const entries = replay.entries.filter((entry) => entry.entryDigest === projection.lastEntryDigest);
+  if (entries.length !== 1) return fail("terminal_source_ambiguous", `Expected exactly one authoritative terminal entry; found ${entries.length}.`);
+  const terminal = entries[0];
+  if (!TERMINAL_KINDS.has(terminal.kind) || terminal.kind !== `dispatch.${projection.state}` ||
+      terminal.receiptId !== relay.source.receiptId || terminal.dispatchId !== relay.source.dispatchId ||
+      terminal.entryDigest !== relay.terminal.entryDigest || terminal.kind !== relay.terminal.kind ||
+      terminal.logSequence !== projection.logSequence || terminal.lifecycleSequence !== projection.lifecycleSequence ||
+      terminal.logSequence !== relay.terminal.logSequence || terminal.lifecycleSequence !== relay.terminal.lifecycleSequence) {
+    return fail("terminal_source_mismatch", "Authoritative terminal entry does not exactly bind the frozen relay source.");
+  }
+  return freeze({ state: "valid", terminal: {
+    kind: terminal.kind,
+    entryDigest: terminal.entryDigest,
+    logSequence: terminal.logSequence,
+    lifecycleSequence: terminal.lifecycleSequence,
+  } });
+}
+
+function createAcknowledgement(deliveredEntryInput, sourceReplayInput) {
+  const deliveredEntry = validateDeliveredEntryObject(deliveredEntryInput);
+  const selected = selectAuthoritativeTerminal(deliveredEntry, sourceReplayInput);
+  if (selected.state !== "valid") return selected;
+  const relay = deliveredEntry.relay;
+  const body = {
+    schemaVersion: 1,
+    artifactType: "feature-flight-relay-acknowledgement",
+    contractVersion: FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_CONTRACT_VERSION,
+    authority: "none",
+    notice: FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE,
+    outcome: "authoritative_terminal_observed",
+    relayId: relay.relayId,
+    relayDigest: relay.relayDigest,
+    deliveredEntryDigest: deliveredEntry.entryDigest,
+    deliveryReceiptDigest: deliveredEntry.deliveryReceipt.receiptDigest,
+    recipient: relay.recipient,
+    repositoryId: relay.source.repositoryId,
+    repositoryWorkspaceId: relay.source.repositoryWorkspaceId,
+    repositoryRevision: relay.source.repositoryRevision,
+    receiptId: relay.source.receiptId,
+    dispatchId: relay.source.dispatchId,
+    terminal: selected.terminal,
+  };
+  return freeze({ state: "valid", value: validateAcknowledgementObject({
+    ...body,
+    acknowledgementDigest: featureFlightRelayDigestV1(body, "shield.feature-flight-relay.acknowledgement.v1"),
+  }, deliveredEntry) });
+}
+
+export function createFeatureFlightRelayAcknowledgementV1(input) {
+  let value;
+  try {
+    value = snapshot(input, "feature-flight relay acknowledgement input");
+    exact(value, ["deliveredEntry", "sourceReplay"], "feature-flight relay acknowledgement input");
+  } catch (error) {
+    return fail("malformed_input", error instanceof Error ? error.message : "Relay acknowledgement input is malformed.");
+  }
+  try { return createAcknowledgement(value.deliveredEntry, value.sourceReplay); }
+  catch (error) { return fail("illegal_transition", error instanceof Error ? error.message : "Relay acknowledgement transition is invalid."); }
 }
 
 export async function createFeatureFlightRelayFromSeatDispatchV1(input, injected = {}) {
@@ -446,10 +629,43 @@ function validateDeliveredEntryObject(input) {
   return freeze(value);
 }
 
+function validateAcknowledgedEntryObject(input) {
+  const value = snapshot(input, "relay acknowledged entry");
+  exact(value, ACKNOWLEDGED_ENTRY_FIELDS, "relay acknowledged entry");
+  const relay = validateRelayObject(value.relay);
+  const acknowledgement = validateAcknowledgementObject(value.acknowledgement);
+  if (value.schemaVersion !== 1 || value.artifactType !== "feature-flight-relay-entry" ||
+      value.contractVersion !== FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_CONTRACT_VERSION || value.authority !== "none" ||
+      value.notice !== FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE || value.kind !== "relay.acknowledged") {
+    throw new Error("Relay acknowledged entry contract identity is invalid.");
+  }
+  if (!Number.isSafeInteger(value.logSequence) || value.logSequence < 2 || value.lifecycleSequence !== 2 ||
+      !DIGEST.test(value.previousLogDigest ?? "") || !DIGEST.test(value.previousLifecycleDigest ?? "")) {
+    throw new Error("Relay acknowledged entry chain fields are malformed.");
+  }
+  if (value.relayId !== relay.relayId || value.relayDigest !== relay.relayDigest ||
+      acknowledgement.relayId !== relay.relayId || acknowledgement.relayDigest !== relay.relayDigest ||
+      acknowledgement.repositoryId !== relay.source.repositoryId ||
+      acknowledgement.repositoryWorkspaceId !== relay.source.repositoryWorkspaceId ||
+      acknowledgement.repositoryRevision !== relay.source.repositoryRevision ||
+      acknowledgement.receiptId !== relay.source.receiptId || acknowledgement.dispatchId !== relay.source.dispatchId ||
+      !canonicalFeatureFlightRelayBytesV1(acknowledgement.recipient).equals(canonicalFeatureFlightRelayBytesV1(relay.recipient)) ||
+      !canonicalFeatureFlightRelayBytesV1(acknowledgement.terminal).equals(canonicalFeatureFlightRelayBytesV1(relay.terminal)) ||
+      value.entryId !== `relay-entry:${relay.relayId.slice(6)}:2`) {
+    throw new Error("Relay acknowledged entry identity does not match its relay.");
+  }
+  if (value.entryDigest !== featureFlightRelayDigestV1(
+    entryBody(value, ACKNOWLEDGED_ENTRY_FIELDS),
+    "shield.feature-flight-relay.acknowledged.entry.v1",
+  )) throw new Error("Relay acknowledged entry digest is invalid.");
+  return freeze(value);
+}
+
 function validateEntryObject(input) {
   const value = snapshot(input, "relay lifecycle entry");
   if (value?.kind === "relay.pending") return validatePendingEntryObject(value);
   if (value?.kind === "relay.delivered") return validateDeliveredEntryObject(value);
+  if (value?.kind === "relay.acknowledged") return validateAcknowledgedEntryObject(value);
   throw new Error("Relay lifecycle entry kind is unsupported.");
 }
 
@@ -508,6 +724,51 @@ export function createFeatureFlightRelayDeliveredEntryV1(input) {
   });
 }
 
+export function createFeatureFlightRelayAcknowledgedEntryV1(input) {
+  let value;
+  try {
+    value = snapshot(input, "relay acknowledged entry input");
+    exact(value, ["logSequence", "previousLogDigest", "deliveredEntry", "sourceReplay"], "relay acknowledged entry input");
+    if (!Number.isSafeInteger(value.logSequence) || value.logSequence < 2 || !DIGEST.test(value.previousLogDigest ?? "")) {
+      throw new Error("Relay acknowledged entry global chain input is malformed.");
+    }
+  } catch (error) {
+    return fail("malformed_input", error instanceof Error ? error.message : "Relay acknowledged entry input is malformed.");
+  }
+  let deliveredEntry;
+  try { deliveredEntry = validateDeliveredEntryObject(value.deliveredEntry); }
+  catch (error) { return fail("illegal_transition", error instanceof Error ? error.message : "Relay acknowledged entry predecessor is invalid."); }
+  const acknowledgementResult = createAcknowledgement(deliveredEntry, value.sourceReplay);
+  if (acknowledgementResult.state !== "valid") return acknowledgementResult;
+  const relay = deliveredEntry.relay;
+  const body = {
+    schemaVersion: 1,
+    artifactType: "feature-flight-relay-entry",
+    contractVersion: FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_CONTRACT_VERSION,
+    authority: "none",
+    notice: FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE,
+    kind: "relay.acknowledged",
+    logSequence: value.logSequence,
+    lifecycleSequence: 2,
+    relayId: relay.relayId,
+    relayDigest: relay.relayDigest,
+    previousLogDigest: value.previousLogDigest,
+    previousLifecycleDigest: deliveredEntry.entryDigest,
+    relay,
+    acknowledgement: acknowledgementResult.value,
+  };
+  const entryId = `relay-entry:${relay.relayId.slice(6)}:2`;
+  try {
+    return freeze({ state: "valid", value: validateAcknowledgedEntryObject({
+      ...body,
+      entryId,
+      entryDigest: featureFlightRelayDigestV1(body, "shield.feature-flight-relay.acknowledged.entry.v1"),
+    }) });
+  } catch (error) {
+    return fail("illegal_transition", error instanceof Error ? error.message : "Relay acknowledgement transition is invalid.");
+  }
+}
+
 export function validateFeatureFlightRelayEntryV1(input) {
   try { return freeze({ state: "valid", value: validateEntryObject(input), reasonCodes: [] }); }
   catch (error) { return fail("entry_invalid", error instanceof Error ? error.message : "Relay entry validation failed."); }
@@ -515,23 +776,29 @@ export function validateFeatureFlightRelayEntryV1(input) {
 
 function projectionFor(entry) {
   const relay = entry.relay;
+  const lifecycleState = entry.kind === "relay.pending" ? "pending"
+    : entry.kind === "relay.delivered" ? "delivered" : "acknowledged";
   const projection = {
     schemaVersion: 1,
     artifactType: "feature-flight-relay-projection",
-    contractVersion: FEATURE_FLIGHT_RELAY_CONTRACT_VERSION,
+    contractVersion: entry.kind === "relay.acknowledged"
+      ? FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_CONTRACT_VERSION : FEATURE_FLIGHT_RELAY_CONTRACT_VERSION,
     authority: "none",
-    notice: FEATURE_FLIGHT_RELAY_INSPECTION_NOTICE,
+    notice: entry.kind === "relay.acknowledged"
+      ? FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_NOTICE : FEATURE_FLIGHT_RELAY_INSPECTION_NOTICE,
     relayId: relay.relayId,
     relayDigest: relay.relayDigest,
     source: snapshot(relay.source),
     terminal: snapshot(relay.terminal),
     recipient: snapshot(relay.recipient),
-    lifecycleState: entry.kind === "relay.pending" ? "pending" : "delivered",
+    lifecycleState,
     repositoryRevision: relay.source.repositoryRevision,
-    nextAction: entry.kind === "relay.pending" ? FEATURE_FLIGHT_RELAY_NEXT_ACTION : FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION,
+    nextAction: entry.kind === "relay.pending" ? FEATURE_FLIGHT_RELAY_NEXT_ACTION
+      : entry.kind === "relay.delivered" ? FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION : FEATURE_FLIGHT_RELAY_ACKNOWLEDGED_NEXT_ACTION,
     lastEntryDigest: entry.entryDigest,
   };
   if (entry.kind === "relay.delivered") projection.deliveryReceipt = snapshot(entry.deliveryReceipt);
+  if (entry.kind === "relay.acknowledged") projection.acknowledgement = snapshot(entry.acknowledgement);
   return freeze(projection);
 }
 
@@ -572,13 +839,26 @@ export function replayFeatureFlightRelayLedgerV1(input, expectedRecipientInput =
       }
       relayStates.set(entry.relayId, { genesis: entry, last: entry });
       sourceDigests.set(sourceKey, entry.relayId);
-    } else {
+    } else if (entry.kind === "relay.delivered") {
       if (relayState === undefined) return fail("illegal_transition", "Relay delivered entry is missing its pending lifecycle genesis.");
-      if (relayState.last.kind !== "relay.pending") return fail("illegal_transition", "Relay lifecycle cannot transition after delivery.");
+      if (relayState.last.kind !== "relay.pending") return fail("illegal_transition", "Relay lifecycle can reach delivery only from pending.");
       if (entry.previousLifecycleDigest !== relayState.genesis.entryDigest || entry.lifecycleSequence !== 1 ||
           entry.relayDigest !== relayState.genesis.relayDigest ||
           !canonicalFeatureFlightRelayBytesV1(entry.relay).equals(canonicalFeatureFlightRelayBytesV1(relayState.genesis.relay))) {
         return fail("lifecycle_chain_invalid", "Relay lifecycle sequence or predecessor digest chain is broken.");
+      }
+      relayState.last = entry;
+    } else {
+      if (relayState === undefined) return fail("illegal_transition", "Relay acknowledged entry is missing its pending lifecycle genesis.");
+      if (relayState.last.kind !== "relay.delivered") return fail("illegal_transition", "Relay acknowledgement requires the exact delivered predecessor.");
+      if (entry.previousLifecycleDigest !== relayState.last.entryDigest || entry.lifecycleSequence !== 2 ||
+          entry.relayDigest !== relayState.genesis.relayDigest ||
+          !canonicalFeatureFlightRelayBytesV1(entry.relay).equals(canonicalFeatureFlightRelayBytesV1(relayState.genesis.relay))) {
+        return fail("lifecycle_chain_invalid", "Relay acknowledgement lifecycle sequence or predecessor digest chain is broken.");
+      }
+      try { validateAcknowledgementObject(entry.acknowledgement, relayState.last); }
+      catch (error) {
+        return fail("lifecycle_chain_invalid", error instanceof Error ? error.message : "Relay acknowledgement binding is invalid.");
       }
       relayState.last = entry;
     }
@@ -592,6 +872,7 @@ export function replayFeatureFlightRelayLedgerV1(input, expectedRecipientInput =
   }
   const pending = projections.filter((projection) => projection.lifecycleState === "pending");
   const delivered = projections.filter((projection) => projection.lifecycleState === "delivered");
+  const acknowledged = projections.filter((projection) => projection.lifecycleState === "acknowledged");
   const inspection = freeze({
     schemaVersion: 1,
     artifactType: "feature-flight-relay-inspection",
@@ -602,6 +883,7 @@ export function replayFeatureFlightRelayLedgerV1(input, expectedRecipientInput =
     lastEntryDigest: replayed.at(-1)?.entryDigest ?? null,
     pending,
     ...(delivered.length === 0 ? {} : { delivered }),
+    ...(acknowledged.length === 0 ? {} : { acknowledged }),
   });
   return freeze({ state: "valid", entries: replayed, relays: projections, inspection });
 }
@@ -676,12 +958,80 @@ export function reconcileFeatureFlightRelayDeliveryV1(entriesInput, expectedInpu
   }) : appended;
 }
 
+export function reconcileFeatureFlightRelayAcknowledgementV1(entriesInput, expectedInput, sourceReplayInput) {
+  let expected;
+  try {
+    expected = snapshot(expectedInput, "expected relay acknowledgement binding");
+    exact(expected, ["relayId", "relayDigest", "source", "recipient"], "expected relay acknowledgement binding");
+    if (!RELAY_ID.test(expected.relayId ?? "") || !DIGEST.test(expected.relayDigest ?? "")) {
+      throw new Error("Expected relay identity is malformed.");
+    }
+    validateSource(expected.source, "expected acknowledgement source");
+    exact(expected.recipient, RECIPIENT_FIELDS, "expected acknowledgement recipient");
+    for (const field of RECIPIENT_FIELDS) identifier(expected.recipient[field], `expected acknowledgement recipient.${field}`);
+  } catch (error) {
+    return fail("malformed_input", error instanceof Error ? error.message : "Expected relay acknowledgement binding is malformed.");
+  }
+  const replay = replayFeatureFlightRelayLedgerV1(entriesInput);
+  if (replay.state !== "valid") return replay;
+  const lifecycle = replay.entries.filter((entry) => entry.relayId === expected.relayId);
+  if (lifecycle.length === 0) return fail("relay_missing", "Expected relay is absent from the replayed ledger.");
+  const genesis = lifecycle[0];
+  if (genesis.relayDigest !== expected.relayDigest) {
+    return fail("conflicting_reuse", "Expected relay digest conflicts with the durable relay identity.");
+  }
+  if (genesis.relay.source.repositoryId !== expected.source.repositoryId ||
+      genesis.relay.source.repositoryWorkspaceId !== expected.source.repositoryWorkspaceId) {
+    return fail("relay_missing", "Expected repository and workspace do not select the durable relay.");
+  }
+  if (!canonicalFeatureFlightRelayBytesV1(genesis.relay.recipient).equals(canonicalFeatureFlightRelayBytesV1(expected.recipient))) {
+    return fail("recipient_mismatch", "Expected recipient does not match the frozen relay recipient.");
+  }
+  if (genesis.relay.source.repositoryRevision !== expected.source.repositoryRevision) {
+    return fail("source_stale", "Expected source revision disagrees with the frozen relay source.");
+  }
+  if (!canonicalFeatureFlightRelayBytesV1(genesis.relay.source).equals(canonicalFeatureFlightRelayBytesV1(expected.source))) {
+    return fail("relay_missing", "Expected source identity does not select the durable relay.");
+  }
+  const deliveredEntry = lifecycle.find((entry) => entry.kind === "relay.delivered");
+  if (deliveredEntry === undefined) return fail("delivery_missing", "Expected relay has not reached its delivered lifecycle.");
+  const durableAcknowledgement = lifecycle.find((entry) => entry.kind === "relay.acknowledged");
+  if (durableAcknowledgement !== undefined) {
+    return freeze({
+      state: "duplicate",
+      code: "duplicate",
+      appended: false,
+      entry: durableAcknowledgement,
+      acknowledgement: durableAcknowledgement.acknowledgement,
+      projection: replay,
+    });
+  }
+  const created = createFeatureFlightRelayAcknowledgedEntryV1({
+    logSequence: replay.entries.length,
+    previousLogDigest: replay.entries.at(-1)?.entryDigest ?? null,
+    deliveredEntry,
+    sourceReplay: sourceReplayInput,
+  });
+  if (created.state !== "valid") return created;
+  const appended = replayFeatureFlightRelayLedgerV1([...replay.entries, created.value]);
+  return appended.state === "valid" ? freeze({
+    state: "accepted",
+    appended: true,
+    entry: created.value,
+    acknowledgement: created.value.acknowledgement,
+    projection: appended,
+  }) : appended;
+}
+
 export function reconcileFeatureFlightRelayEntryV1(entriesInput, candidateInput) {
   const replay = replayFeatureFlightRelayLedgerV1(entriesInput);
   if (replay.state !== "valid") return replay;
   let candidate;
   try { candidate = validateEntryObject(candidateInput); }
   catch (error) { return fail("entry_invalid", error instanceof Error ? error.message : "Candidate relay entry is invalid."); }
+  if (candidate.kind === "relay.acknowledged") {
+    return fail("illegal_transition", "Relay acknowledgements must be derived through the closed authoritative reconciliation API.");
+  }
   const sameId = replay.entries.find((entry) => entry.entryId === candidate.entryId);
   if (sameId !== undefined) {
     return sameId.entryDigest === candidate.entryDigest
