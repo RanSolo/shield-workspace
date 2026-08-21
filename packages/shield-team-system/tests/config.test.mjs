@@ -324,6 +324,21 @@ test("doctor carries the closed worktree-state classification without treating p
     receiptDigest: "a".repeat(64),
   });
 
+  const refreshed = evaluateDoctor({
+    repositoryRootReady: true,
+    packageVersion: SHIELD_PACKAGE_VERSION,
+    configPresent: true,
+    config,
+    worktreeState: {
+      classification: "prepared_worktree",
+      ok: true,
+      message: "Prepared successor receipt and predecessor archive are exact.",
+      receiptDigest: "b".repeat(64),
+    },
+  });
+  assert.equal(refreshed.ok, true);
+  assert.equal(refreshed.worktreeState.receiptDigest, "b".repeat(64));
+
   const stale = evaluateDoctor({
     repositoryRootReady: true,
     packageVersion: SHIELD_PACKAGE_VERSION,

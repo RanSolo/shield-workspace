@@ -35,7 +35,11 @@ import { journalByteSha256, readMissionJournalForDisplay, resolveSupervisedMissi
 import { canonicalJson } from "./mission-v2.mjs";
 import { readSeatDispatchReceiptLedgerSnapshotV1 } from "./seat-dispatch-store.mjs";
 import type { SeatDispatchReceiptIdentityV1, SeatDispatchReceiptProjectionV1 } from "./seat-dispatch-receipt-v1.mjs";
-import { validateWorktreeStateReceiptV1, type WorktreeStateReceiptV1 } from "./worktree-state-v1.mjs";
+import {
+  validateWorktreeStateReceiptFileChainV1OrV2,
+  validateWorktreeStateReceiptV1OrV2,
+  type WorktreeStateReceiptV1OrV2,
+} from "./worktree-state-v1.mjs";
 
 export const COPILOT_FURY_REVIEWED_TRANSITION_HOST_CONTRACT_VERSION = "shield.copilot-fury-reviewed-transition-host.v1" as const;
 export const COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION = "shield.copilot-fury-reviewed-transition-seed.v1" as const;
@@ -161,7 +165,7 @@ type HostObservation = Readonly<{
   headRevision: string;
   planningBaseRevision: string;
   policyIdentity: string;
-  preparedWorktreeReceipt: WorktreeStateReceiptV1;
+  preparedWorktreeReceipt: WorktreeStateReceiptV1OrV2;
   preparedWorktreeFile: StableFile;
   missionRevision: string;
   subjectId: string;
@@ -402,13 +406,18 @@ async function observeHost(input: PrepareReviewedMissionTransitionInputV1): Prom
   const preparedWorktreeFile = await stableFile(join(canonicalRoot, ".shield", "worktree-state.json"), "prepared_worktree_receipt");
   let preparedWorktreeReceipt: unknown;
   try { preparedWorktreeReceipt = JSON.parse(preparedWorktreeFile.bytes); } catch { throw new Error("prepared_worktree_receipt_malformed"); }
-  if (!validateWorktreeStateReceiptV1(preparedWorktreeReceipt) || preparedWorktreeReceipt.repositoryId !== parsedConfig.value.repositoryId ||
+  if (!validateWorktreeStateReceiptV1OrV2(preparedWorktreeReceipt) ||
+      !await validateWorktreeStateReceiptFileChainV1OrV2(canonicalRoot, preparedWorktreeReceipt) ||
+      preparedWorktreeReceipt.repositoryId !== parsedConfig.value.repositoryId ||
       preparedWorktreeReceipt.destination.root !== canonicalRoot || preparedWorktreeReceipt.destination.branch !== branch ||
-      preparedWorktreeReceipt.installedByteDigests[".shield/config.json"] !== configFile.rawSha256) throw new Error("prepared_worktree_receipt_mismatch");
+      preparedWorktreeReceipt.destination.head !== headRevision ||
+      preparedWorktreeReceipt.installedByteDigests[".shield/config.json"] !== configFile.rawSha256 ||
+      preparedWorktreeReceipt.policy.configByteSha256 !== configFile.rawSha256) throw new Error("prepared_worktree_receipt_mismatch");
   const ignoreFile = await stableFile(join(canonicalRoot, ".shield", ".gitignore"), "prepared_worktree_ignore");
   const registryFile = await stableFile(join(canonicalRoot, ".shield", "trusted-human-bindings.json"), "prepared_worktree_registry");
   if (preparedWorktreeReceipt.installedByteDigests[".shield/.gitignore"] !== ignoreFile.rawSha256 ||
-      preparedWorktreeReceipt.installedByteDigests[".shield/trusted-human-bindings.json"] !== registryFile.rawSha256) throw new Error("prepared_worktree_policy_mismatch");
+      preparedWorktreeReceipt.installedByteDigests[".shield/trusted-human-bindings.json"] !== registryFile.rawSha256 ||
+      preparedWorktreeReceipt.policy.registryByteSha256 !== registryFile.rawSha256) throw new Error("prepared_worktree_policy_mismatch");
   const rawCommonDirectory = (await git(canonicalRoot, ["rev-parse", "--git-common-dir"])).trim();
   const commonDirectory = await realpath(isAbsolute(rawCommonDirectory) ? rawCommonDirectory : resolve(canonicalRoot, rawCommonDirectory));
   if (preparedWorktreeReceipt.commonGitDirectory !== commonDirectory || preparedWorktreeReceipt.destination.commonGitDirectory !== commonDirectory ||

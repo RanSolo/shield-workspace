@@ -29,7 +29,7 @@ import {
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
 } from "../dist/profile-aware-mission-v1.mjs";
-import { prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
+import { prepareOrRefreshWorktreeStateV2, prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
 
 const FURY_CARD = `---
 name: Fury
@@ -158,7 +158,11 @@ async function fixture() {
   git(root, ["add", planPath]);
   git(root, ["commit", "--quiet", "-m", "reviewed transition plan"]);
   const headRevision = git(root, ["rev-parse", "HEAD"]);
+  const refreshed = await prepareOrRefreshWorktreeStateV2({ sourceRoot: await realpath(sourceRoot), destinationRoot: await realpath(root) });
+  assert.equal(refreshed.state, "refreshed", JSON.stringify(refreshed));
+  assert.equal(refreshed.receipt.destination.head, headRevision);
   return {
+    sourceRoot: await realpath(sourceRoot),
     root: await realpath(root),
     missionId,
     missionRevision: brief.revisionId,
@@ -332,6 +336,60 @@ test("derives repairLimit=1 and stable identities, then directly materializes an
   assert.equal(replayExecutor.calls.execute, 0);
   assert.equal(JSON.parse(await readFile(seedPath(current.root), "utf8")).request.timestamp.value, "2026-08-19T12:01:00.000Z");
 });
+
+test("committed-plan host rejects a broken v2 prepared-worktree predecessor chain before dispatch", async () => {
+  const current = await fixture();
+  const active = JSON.parse(await readFile(join(current.root, ".shield", "worktree-state.json"), "utf8"));
+  await writeFile(join(current.root, ".shield", "worktree-state-receipts", `${active.supersedes.receiptDigest}.json`), "{}\n");
+  const blockedExecutor = executor(current.plan);
+  const result = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: blockedExecutor.value } });
+  assert.equal(result.state, "invalid", JSON.stringify(result));
+  assert.equal(result.code, "HOST_PRECONDITION_FAILED");
+  assert.equal(blockedExecutor.calls.preflight, 0);
+  assert.equal(blockedExecutor.calls.execute, 0);
+});
+
+test("committed-plan host keeps the same V2 chain identity and verdict under replacement refs", async () => {
+  const current = await fixture();
+  const activePath = join(current.root, ".shield", "worktree-state.json");
+  const activeBytes = await readFile(activePath);
+  const active = JSON.parse(activeBytes);
+  const replacementPath = ".shield/journals/replacement-ref.jsonl";
+  await mkdir(dirname(join(current.sourceRoot, replacementPath)), { recursive: true });
+  await writeFile(join(current.sourceRoot, replacementPath), "replacement-only baseline\n");
+  git(current.sourceRoot, ["add", "--force", "--", replacementPath]);
+  const replacementTree = git(current.sourceRoot, ["write-tree"]);
+  git(current.sourceRoot, ["reset", "--quiet", "HEAD", "--", replacementPath]);
+  const replacementCommit = git(current.sourceRoot, ["commit-tree", replacementTree, "-m", "replacement chain observation"]);
+  for (const revision of [active.destination.head, active.supersedes.destinationHead]) {
+    git(current.root, ["replace", revision, replacementCommit]);
+    assert.equal(git(current.root, ["ls-tree", "-r", "--name-only", revision, "--", replacementPath]), replacementPath);
+    assert.equal(git(current.root, ["--no-replace-objects", "ls-tree", "-r", "--name-only", revision, "--", replacementPath]), "");
+  }
+  const replacementExecutor = executor(current.plan, "REVISE");
+  const result = await prepareReviewedMissionTransitionV1(current.input, {
+    dispatchDependencies: { executor: replacementExecutor.value },
+    now: () => new Date("2026-08-19T12:01:00.000Z"),
+  });
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(result.disposition, "REVISE");
+  assert.equal(replacementExecutor.calls.execute, 1);
+  assert.deepEqual(await readFile(activePath), activeBytes);
+  for (const revision of [active.destination.head, active.supersedes.destinationHead]) git(current.root, ["replace", "-d", revision]);
+  const replayExecutor = executor(current.plan, "PASS");
+  const replay = await prepareReviewedMissionTransitionV1(current.input, {
+    dispatchDependencies: { executor: replayExecutor.value },
+    now: () => new Date("2030-01-01T00:00:00.000Z"),
+  });
+  assert.equal(replay.state, result.state, JSON.stringify(replay));
+  assert.equal(replay.disposition, result.disposition);
+  assert.equal(replay.receiptId, result.receiptId);
+  assert.equal(replay.evidencePath, result.evidencePath);
+  assert.deepEqual(replay.findings, result.findings);
+  assert.equal(replay.replayed, true);
+  assert.equal(replayExecutor.calls.execute, 0);
+});
+
 
 test("preserves REVISE exactly, creates no graph, and conflicts a different model in the same plan scope", async () => {
   const current = await fixture();
@@ -770,6 +828,8 @@ test("a newly committed revised plan digest creates a distinct logical review op
   await writeFile(join(current.root, current.planPath), `${JSON.stringify(rebuilt.plan)}\n`);
   git(current.root, ["add", current.planPath]);
   git(current.root, ["commit", "--quiet", "-m", "revise transition plan"]);
+  const planRefresh = await prepareOrRefreshWorktreeStateV2({ sourceRoot: current.sourceRoot, destinationRoot: current.root });
+  assert.equal(planRefresh.state, "refreshed", JSON.stringify(planRefresh));
 
   const passExecutor = executor(rebuilt.plan);
   const second = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: passExecutor.value } });

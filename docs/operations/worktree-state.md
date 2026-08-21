@@ -15,10 +15,13 @@ shield worktree prepare \
   --root /absolute/path/to/new-destination
 ```
 
-Add `--json` to receive the closed `worktree.state.v1` result. A successful
-human result starts with `READY` or `ALREADY PREPARED` and reports only the
-destination, repository, branch, HEAD, and receipt digest. The command never
-requests a PIN or passcode.
+Add `--json` to receive the closed result. Initial preparation and exact V1
+replay retain their byte-compatible `worktree.state.v1` results. A proven
+same-branch fast-forward returns `worktree.state.v2`; exact successor replay
+returns that same V2 receipt. Successful human output starts with `READY`,
+`ALREADY PREPARED`, `REFRESHED`, or `ALREADY REFRESHED`. Refreshed output also
+reports the predecessor receipt digest. The command never requests a PIN or
+passcode.
 
 The source and destination must be distinct registered worktrees of the same
 Git repository. Their canonical Git common directory and normalized `origin`
@@ -51,6 +54,44 @@ file and directory synchronization, and exact final readback. Exact replay
 returns `already_prepared` without rewriting any installed byte. Partial,
 foreign, unsafe, or drifted state fails closed.
 
+## Refresh after a fast-forward
+
+The same `shield worktree prepare` command refreshes an installed receipt only
+when the destination is clean, remains on the receipt's exact attached branch,
+and its current HEAD is a strict Git descendant of the recorded HEAD. The host
+independently reobserves the source policy, repository and common Git directory,
+installed bytes, public bindings, tracked baseline, configured mission-state
+roots, branch, HEAD, ancestry, and receipt chain before any receipt mutation and
+again before success. Equal HEAD is an exact replay. Dirty, detached, renamed,
+rewritten, divergent, substituted, or policy-drifted state stops before receipt
+mutation.
+
+A V2 successor contains no mutable source Git observation. It binds the current
+destination branch and HEAD, exact policy and installed-byte digests, current
+tracked baseline, and one `supersedes` link containing the predecessor contract,
+digest, branch, and HEAD. This makes the successor deterministic for any exact
+governed source worktree supplying the same policy bytes.
+
+Before replacing the active receipt, refresh preserves the predecessor's exact
+canonical bytes at:
+
+```text
+.shield/worktree-state-receipts/<predecessor-receipt-digest>.json
+```
+
+The archive is append-only and content addressed. Every consumer follows the
+unique chain back to the initial V1 receipt and rejects missing, extra,
+substituted, cyclic, or overlong chains. Archive rows are public provenance;
+they are neither authority nor mission state.
+
+Refresh retains no-follow identities for configured mission-state directories,
+representative audit state, and the public dispatch-receipt file when present.
+It never enumerates contents below preserved mission directories and never
+writes journals, reports, temporary mission data, audit evidence, dispatch
+receipts, signer data, passcodes, or caches. Tracked journal baseline files are
+revalidated against Git and retained bytes, but no recursive snapshot of
+arbitrary untracked mission contents is claimed.
+
 The receipt contains only public policy provenance: repository observations,
 policy and installed-byte digests, public binding IDs, seats, and signing-key
 references. Its `authority` is always `none`. The receipt digest is SHA-256 of
@@ -65,7 +106,8 @@ reobserve branch, HEAD, cleanliness, journals, signers, and current authority.
 
 ## Doctor classifications
 
-`shield doctor` reports one closed worktree-state classification:
+`shield doctor` reports one closed worktree-state classification for V1 and V2
+active receipts:
 
 - `uninitialized_worktree`: no configuration or preparation receipt exists;
 - `manual_policy_present`: valid manually initialized policy exists without a
@@ -73,7 +115,8 @@ reobserve branch, HEAD, cleanliness, journals, signers, and current authority.
 - `prepared_worktree`: the receipt, installed bytes, and repository identity
   are exact;
 - `stale_or_malformed_worktree_state`: provenance or installed policy is
-  malformed, unsafe, drifted, partial, or belongs to another repository.
+  malformed, unsafe, drifted, partial, has an incomplete predecessor archive,
+  or belongs to another repository.
 
 Doctor is read-only. It does not select a source or repair prepared state.
 
@@ -83,12 +126,16 @@ A `blocked` result is a proven pre-install failure and is safe to retry after
 the named condition is corrected. `preparation_in_progress` means another
 preparer owns the destination lock.
 
-A `recovery_required` result means a filesystem, durability, readback, or lock
-release outcome became uncertain after installation could have begun. Stop
-automated retries and inspect the destination `.shield` directory using
-identity-safe operator procedures. Do not delete or overwrite uncertain files.
-If all four exact files were durably installed despite an interruption, a later
-exact replay classifies them as `already_prepared`.
+A `recovery_required` result means a filesystem, durability, readback, active
+replacement, or lock-release outcome became uncertain after installation or
+refresh mutation could have begun. Stop automated mutation and inspect the
+active receipt, content-addressed archive, preparation lock, and staging paths
+using identity-safe operator procedures. Do not delete or overwrite uncertain
+files. The ordinary command resumes only the closed durable states it can prove:
+an exact archived predecessor plus old active receipt can continue successor
+staging, while an exact mutually bound successor and archive replay as
+`already_refreshed`. A staging path, missing successor predecessor, or ambiguous
+replacement remains recovery-required without cleanup.
 
 ## Manual fallback
 
