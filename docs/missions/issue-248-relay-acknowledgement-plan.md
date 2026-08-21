@@ -36,7 +36,7 @@ This slice proves receipt and authoritative observation. It does not wake or res
 - Select exactly one authoritative dispatch projection matching every immutable source identity. Require a terminal state and exactly one terminal entry matching `lastEntryDigest`, terminal kind, receipt/dispatch IDs, log sequence, lifecycle sequence, and the relay's frozen terminal reference.
 - Missing, malformed, unsafe, ambiguous, non-terminal, stale, or mismatched authoritative evidence fails before acknowledgement append. Repository revision is a frozen identity; this slice does not inspect live Git or infer mission-authority freshness.
 - After exact verification, append the acknowledgement and monotonic witness through the existing append/sync/readback machinery. Exact retry returns `duplicate` only after lock acquisition and exact acknowledgement reconciliation.
-- Freeze the recovery windows: before acknowledgement append, retry normally; after exact acknowledgement-and-witness readback but before return, retry reconciles as `duplicate`; ledger/witness skew, uncertain append, or a process crash retaining the lock returns `recovery_required`, with no duplicate and no automatic lock removal. Automatic skew or stale-lock repair is outside this slice.
+- Freeze the recovery windows: before acknowledgement append, retry normally; after exact acknowledgement-and-witness readback and successful lock release but before return, retry reconciles as `duplicate`; before lock release—including a process crash retaining the lock—and for ledger/witness skew or uncertain append, retry returns `recovery_required`, with no duplicate and no automatic lock removal. Automatic skew or stale-lock repair is outside this slice.
 
 ## AC3 — Hill inspection and closed precedence
 
