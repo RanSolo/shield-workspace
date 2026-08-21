@@ -940,25 +940,18 @@ export async function deliverFeatureFlightRelayToHillInboxV1(input, injected = {
 
   let hierarchy;
   let reconciliation;
-  let current;
   let preflightError;
-  let duplicateResult;
   try {
     hierarchy = await openHierarchy(scope, io, false);
-    current = await readCombinedSnapshot(hierarchy, scope, io, true);
+    const current = await readCombinedSnapshot(hierarchy, scope, io, true);
     reconciliation = reconcileDelivery(current, scope);
-    if (reconciliation.state === "duplicate") {
-      const observed = await readDeliveryReceiptSnapshot(hierarchy, reconciliation.deliveryReceipt, io);
-      duplicateResult = duplicateDeliveryValue(hierarchy, current, reconciliation, observed);
-    }
   } catch (error) { preflightError = error; }
   if (hierarchy !== undefined) {
     try { await closeHierarchy(hierarchy); } catch (error) { preflightError ??= error; }
   }
   if (preflightError !== undefined) return deliveryResultFromError(preflightError);
-  if (duplicateResult !== undefined) return duplicateResult;
-  if (reconciliation?.state !== "accepted") {
-    return invalid("recovery_required", "Relay delivery preflight did not select one pending relay.");
+  if (!["accepted", "duplicate"].includes(reconciliation?.state)) {
+    return invalid("recovery_required", "Relay delivery preflight did not select one deliverable relay.");
   }
   return deliverPendingUnderLock(scope, io);
 }

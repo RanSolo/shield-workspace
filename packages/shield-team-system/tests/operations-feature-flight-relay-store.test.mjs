@@ -292,7 +292,7 @@ test("delivers one pending relay through a confined create-once Hill inbox recei
   assert.equal(restarted.value.replay.inspection.delivered[0].authority, "none");
 });
 
-test("exact delivery retry queries the same receipt without another effect or lifecycle append", async (t) => {
+test("exact delivery retry queries the same receipt without another provider effect or lifecycle append", async (t) => {
   const record = await fixture();
   t.after(() => rm(record.root, { recursive: true, force: true }));
   const pending = (await sourceAppend(record)).value.entry;
@@ -300,15 +300,15 @@ test("exact delivery retry queries the same receipt without another effect or li
   assert.equal(first.state, "valid", first.errors?.join(" "));
   const receiptBefore = await lstat(first.value.receiptPath);
   const bytesBefore = await readFile(first.value.receiptPath);
-  let writes = 0;
-  const retry = await deliver(record, pending, {}, injectedOpen(async (_path, flags) => {
-    if (pathIsWrite(flags)) writes += 1;
+  const writePaths = [];
+  const retry = await deliver(record, pending, {}, injectedOpen(async (path, flags) => {
+    if (pathIsWrite(flags)) writePaths.push(path);
   }));
   assert.equal(retry.state, "valid", retry.errors?.join(" "));
   assert.equal(retry.value.status, "duplicate");
   assert.equal(retry.value.code, "duplicate");
   assert.equal(retry.value.appended, false);
-  assert.equal(writes, 0);
+  assert.deepEqual(writePaths, [first.value.log.paths.lockPath]);
   assert.equal(retry.value.entry.entryDigest, first.value.entry.entryDigest);
   assert.deepEqual(retry.value.deliveryReceipt, first.value.deliveryReceipt);
   assert.deepEqual(await readFile(first.value.receiptPath), bytesBefore);
@@ -316,6 +316,46 @@ test("exact delivery retry queries the same receipt without another effect or li
   assert.equal(receiptAfter.dev, receiptBefore.dev);
   assert.equal(receiptAfter.ino, receiptBefore.ino);
   assert.equal((await readFeatureFlightRelayLogV1(record.scope)).value.entries.length, 2);
+});
+
+test("durable delivery remains recovery_required until the first caller releases its lock", async (t) => {
+  const record = await fixture();
+  t.after(() => rm(record.root, { recursive: true, force: true }));
+  const pending = (await sourceAppend(record)).value.entry;
+  const paths = deriveFeatureFlightRelayStorePathsV1({
+    root: record.root,
+    repositoryId: REPOSITORY_ID,
+    repositoryWorkspaceId: WORKSPACE_ID,
+  });
+  let signalLockUnlink;
+  const lockUnlinkStarted = new Promise((resolve) => { signalLockUnlink = resolve; });
+  let allowLockUnlink;
+  const lockUnlinkRelease = new Promise((resolve) => { allowLockUnlink = resolve; });
+  let delayed = false;
+  const firstPromise = deliver(record, pending, {}, {
+    async unlink(path) {
+      if (!delayed && path === paths.lockPath) {
+        delayed = true;
+        signalLockUnlink();
+        await lockUnlinkRelease;
+      }
+      return unlink(path);
+    },
+  });
+
+  await lockUnlinkStarted;
+  assert.equal((await readFeatureFlightRelayLogV1(record.scope)).value.entries.length, 2);
+  const concurrentRetry = await deliver(record, pending);
+  assert.equal(concurrentRetry.state, "invalid");
+  assert.equal(concurrentRetry.code, "recovery_required");
+
+  allowLockUnlink();
+  const first = await firstPromise;
+  assert.equal(first.state, "valid", first.errors?.join(" "));
+  assert.equal(first.value.status, "delivered");
+  const retryAfterRelease = await deliver(record, pending);
+  assert.equal(retryAfterRelease.state, "valid", retryAfterRelease.errors?.join(" "));
+  assert.equal(retryAfterRelease.value.status, "duplicate");
 });
 
 test("restart reconciles a durable receipt after a crash before delivered lifecycle append", async (t) => {
