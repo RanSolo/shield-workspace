@@ -26,21 +26,23 @@ This slice does not deliver the relay to an agent and does not execute a success
 
 ### AC1 — exact compact relay identity
 
-- Accept only replayed terminal `dispatch.completed`, `dispatch.failed`, or `dispatch.cancelled` evidence from the existing seat-dispatch receipt contract.
-- Derive one relay identity from the exact mission/session/repository/revision, source receipt identity and sequence, recipient seat/lane/controller scope, and requested observation.
+- Read the ledger through `readSeatDispatchReceiptLedgerV1`, replay it through `replaySeatDispatchReceiptsV1`, select exactly one terminal projection, and match its terminal entry through `lastEntryDigest`. Reject zero or multiple matches. Do not use `evaluateSeatDispatchAttributionV1` as the terminal selector because attribution intentionally accepts only completed work.
+- Accept only replayed terminal `dispatch.completed`, `dispatch.failed`, or `dispatch.cancelled` evidence; reject started, interrupted, and resumed entries.
+- Derive the relay ID as SHA-256 over canonical bytes with domain `shield.feature-flight-relay.pending.v1` and the exact ordered tuple: receipt ID, dispatch ID, parent mission ID/revision/session, child task/session, source accountable seat, repository ID/workspace/revision, subject ID/revision, artifact ID/revision, terminal kind, terminal entry digest, global log sequence, lifecycle sequence, recipient seat, recipient lane, recipient controller identity, and requested observation.
+- Keep `sourceAccountableSeatId`, `recipientSeatId`, lane, and controller identity as separate required values; never infer one from another.
 - Emit only references and digests. The relay declares `authority: "none"` and contains no prompt, model output, passcode, signer material, credentials, or private journal entry.
 - Reject malformed, stale, ambiguous, unsupported, proxy/accessor, unknown-field, and recipient-mismatch inputs.
 
 ### AC2 — create-once durable replay
 
-- Append the relay through a confined no-follow store with a global digest chain and per-relay lifecycle.
+- Append exactly one `relay.pending` event through a confined no-follow store with a global digest chain and one-entry per-relay lifecycle. Delivery, acknowledgement, consumption, and successor lifecycle entries are unsupported in Slice 1.
 - Exact replay is idempotent and byte-stable; conflicting identity reuse fails closed.
 - Partial write, sync/close/readback failure, lock uncertainty, concurrency, interruption, symlink, alias, mode, inode replacement, and rollback never produce false success or duplicate relay meaning.
 - Recovery returns a closed `recovery_required` result when exact durable state cannot be proven.
 
 ### AC3 — useful inspection projection
 
-- Project pending relays with exact relay/source/recipient identity, lifecycle state, repository revision, and smallest next action.
+- Project pending relays with exact relay/source/recipient identity, lifecycle state `pending`, repository revision, and the closed advisory next action `await_delivery_binding`.
 - A bare model/thread status, polling timeout, caller-supplied `done`, or prose `PACKET_COMPLETE` cannot create a relay.
 - The projection is advisory and cannot satisfy authority, permission, review, acceptance, or execution gates.
 
@@ -79,6 +81,8 @@ No later failure may mask an earlier malformed or uncertain durable state.
 ## Validation
 
 - Focused relay contract and store tests through the `@shield/team-system` Nx target.
+- Explicit contract cases: completed/failed/cancelled accepted; started/interrupted/resumed rejected; malformed or ambiguous replay rejected; every source and recipient identity mismatch rejected.
+- Explicit store cases: exact retry without append, conflicting identity, canonical-byte stability, global/per-relay chain replay, concurrent claim, partial write, sync/close/readback uncertainty, interruption, symlink/alias/mode/inode replacement, and rollback recovery.
 - Cache-enabled Nx affected build/test from exact base to exact implementation HEAD.
 - Confirm the affected project set; do not run Multiband unless Nx classifies it as affected.
 - `git diff --check` and exact changed-path allowlist verification.
