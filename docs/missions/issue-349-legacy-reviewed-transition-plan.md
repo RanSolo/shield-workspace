@@ -74,18 +74,34 @@ or any identity mismatch returns one closed actionable result before dispatch.
 ## Exact candidate mapping
 
 The host calls the existing builder for a
-`mission.transition-plan.v1` candidate with literal
-`transitionKind: fresh_authorize_wheels_up` and these exact sources:
+`mission.transition-plan.v1` candidate with these exact field mappings:
 
-- `boundedOutcome`: mission brief objective.
-- `planningBaseRevision`, model, approved paths/actions/effects/capabilities,
-  and validation command IDs: implementation authority.
-- runtime and executor identity: active runtime binding.
-- publication paths: sole publication authority.
-- `parentPlanCommit`: implementation-authority artifact revision.
-- `parentPlanPath` and `parentPlanRawSha256`: the sole observed immutable
-  legacy Markdown blob.
-- exclusions: the existing literal `EXCLUSIONS_V1` constant.
+- `missionId` <- journal projection `missionId`, exactly equal to
+  `--mission-id` and every lineage record.
+- `subjectId` <- mission brief `subjectId`.
+- `repositoryId` <- validated configured repository ID, exactly equal to the
+  remote and every lineage repository ID.
+- `boundedOutcome` <- mission brief `objective`.
+- `planningBaseRevision` <- implementation authority `baseRevision`.
+- `modelId` <- implementation authority `modelId`.
+- `approvedRelativePaths` <- implementation authority
+  `approvedRelativePaths`.
+- `approvedActionIds` <- implementation authority `approvedActionIds`.
+- `approvedEffectClasses` <- implementation authority
+  `approvedEffectClasses`.
+- `approvedEffectKeys` <- implementation authority `approvedEffectKeys`.
+- `approvedCapabilities` <- implementation authority
+  `approvedCapabilities`.
+- `validationCommandIds` <- implementation authority
+  `validationCommandIds`.
+- `reasoningRuntimeId` <- active runtime binding `reasoningRuntimeId`.
+- `toolExecutorId` <- active runtime binding `toolExecutorId`.
+- `publicationPaths` <- sole publication authority `authorizedPaths`.
+- `parentPlanCommit` <- implementation authority `artifactRevisionId`.
+- `parentPlanPath` <- the sole eligible regular Git path.
+- `parentPlanRawSha256` <- SHA-256 of that immutable Git blob's raw bytes.
+- `transitionKind` <- literal `fresh_authorize_wheels_up`.
+- `exclusions` <- literal existing `EXCLUSIONS_V1`.
 
 No field is inferred from Markdown or filled by a caller.
 
