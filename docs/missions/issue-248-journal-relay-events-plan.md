@@ -3,7 +3,8 @@
 ## Exact planning identity
 
 - Repository: `RanSolo/shield-workspace`
-- Planning base: `cdaf96fcfff069cbce36c8136eb87a17f2da36a6`
+- Planning base: `2fdae3eb760c639d6d768074e3cdc83d640ab9e8`
+- Recovery source: unmerged branch `agent/issue-248-relay-events` at `9ae6809d26eee287c0f07dc4694c09a563d6a7ea`; its three implementation packets are candidates to reconcile, not evidence that current-main conformance already exists.
 - Issue: #248
 - Related orchestration objective: #167
 - Authority: planning only; this document grants no implementation, dispatch, publication, merge, deployment, release, or human authority.
@@ -195,7 +196,7 @@ No later failure may mask an earlier malformed or uncertain durable state.
 - Focused Team System relay store/host/package-surface tests.
 - Packed-install `shield-ops` consumer proof; the relay remains an internal operations/CLI seam with no new public declaration export.
 - Full-suite validation on Node.js `24.18.0`.
-- Under Node.js `22.22.0`, run the identical `npm exec nx -- run @shield/team-system:test --skip-nx-cache` command at planning base `cdaf96fcfff069cbce36c8136eb87a17f2da36a6` and at the implementation revision. Persist sorted failing test identities, exit code, and raw-output SHA-256 for both runs in the validation packet. The implementation passes comparison only when it introduces no new failing identity and no previously passing changed relay/controller test fails; unavailable Node 22 evidence leaves this validation incomplete rather than assuming the #302 baseline.
+- Run the cache-enabled exact affected target set from planning base `2fdae3eb760c639d6d768074e3cdc83d640ab9e8` to the implementation revision, plus focused relay/controller tests. Persist command, exact base/head, affected project set, cache outcome, exit code, and output digest. Do not invoke Multiband when Nx does not classify it as affected.
 - `git diff --check` and exact changed-path allowlist verification.
 
 ## Exclusions
