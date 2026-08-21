@@ -844,18 +844,12 @@ async function closeSnapshot(snapshot: SourceSnapshot | null): Promise<void> {
 }
 
 function gitEnvironment(): NodeJS.ProcessEnv {
-  return {
-    PATH: process.env.PATH ?? "",
-    LANG: "C",
-    LC_ALL: "C",
-    GIT_OPTIONAL_LOCKS: "0",
-    GIT_NO_REPLACE_OBJECTS: "1",
-  };
+  return { PATH: process.env.PATH ?? "", LANG: "C", LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" };
 }
 
 async function git(root: string, args: readonly string[], allowFailure = false): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
+    const { stdout } = await execFileAsync("git", [...args], {
       cwd: root,
       encoding: "utf8",
       env: gitEnvironment(),
@@ -870,10 +864,43 @@ async function git(root: string, args: readonly string[], allowFailure = false):
 
 async function gitBytes(root: string, args: readonly string[], maxBuffer = 1024 * 1024): Promise<Buffer> {
   try {
-    const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
+    const { stdout } = await execFileAsync("git", [...args], {
       cwd: root,
       encoding: "buffer",
       env: gitEnvironment(),
+      maxBuffer,
+    });
+    return Buffer.from(stdout);
+  } catch {
+    throw new Blocked("destination_conflict", "Destination tracked baseline could not be observed exactly.");
+  }
+}
+
+async function gitWithoutReplacements(root: string, args: readonly string[], allowFailure = false): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...gitEnvironment(), GIT_NO_REPLACE_OBJECTS: "1" },
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout.replace(/\r\n/gu, "\n").replace(/\n$/u, "");
+  } catch {
+    if (allowFailure) return null;
+    throw new Blocked("root_invalid", "Both roots must be accessible registered Git worktrees.");
+  }
+}
+
+async function gitBytesWithoutReplacements(
+  root: string,
+  args: readonly string[],
+  maxBuffer = 1024 * 1024,
+): Promise<Buffer> {
+  try {
+    const { stdout } = await execFileAsync("git", ["--no-replace-objects", ...args], {
+      cwd: root,
+      encoding: "buffer",
+      env: { ...gitEnvironment(), GIT_NO_REPLACE_OBJECTS: "1" },
       maxBuffer,
     });
     return Buffer.from(stdout);
@@ -942,10 +969,12 @@ async function observeTrackedBaselineEntries(
   destinationRoot: string,
   destinationHead: string,
   journalRoot: string,
+  withoutReplacements = false,
 ): Promise<readonly GitTrackedBaselineEntry[]> {
+  const readGitBytes = withoutReplacements ? gitBytesWithoutReplacements : gitBytes;
   const [headBytes, indexBytes] = await Promise.all([
-    gitBytes(destinationRoot, ["ls-tree", "-rz", "--full-tree", destinationHead, "--", SHIELD_DIRECTORY]),
-    gitBytes(destinationRoot, ["ls-files", "--stage", "-z", "--", SHIELD_DIRECTORY]),
+    readGitBytes(destinationRoot, ["ls-tree", "-rz", "--full-tree", destinationHead, "--", SHIELD_DIRECTORY]),
+    readGitBytes(destinationRoot, ["ls-files", "--stage", "-z", "--", SHIELD_DIRECTORY]),
   ]);
   const head = [...parseHeadBaselineEntries(headBytes)].sort((left, right) => compareBytes(left.path, right.path));
   const index = [...parseIndexBaselineEntries(indexBytes)].sort((left, right) => compareBytes(left.path, right.path));
@@ -1019,28 +1048,33 @@ async function captureCanonicalRoot(root: string): Promise<HeldRoot> {
   }
 }
 
-async function observeGitRoot(root: string): Promise<WorktreeGitObservationV1> {
-  const top = await git(root, ["rev-parse", "--show-toplevel"]);
+async function observeGitRoot(root: string, withoutReplacements = false): Promise<WorktreeGitObservationV1> {
+  const runGit = withoutReplacements ? gitWithoutReplacements : git;
+  const top = await runGit(root, ["rev-parse", "--show-toplevel"]);
   if (top === null || await realpath(top).catch(() => "") !== root) {
     throw new Blocked("root_invalid", "Selected roots must be exact Git worktree top-level directories.");
   }
-  const commonOutput = await git(root, ["rev-parse", "--git-common-dir"]);
+  const commonOutput = await runGit(root, ["rev-parse", "--git-common-dir"]);
   if (commonOutput === null) throw new Blocked("root_invalid", "Git common-directory observation failed.");
   const commonGitDirectory = await realpath(resolve(root, commonOutput)).catch(() => "");
   if (commonGitDirectory.length === 0) throw new Blocked("root_invalid", "Git common directory is inaccessible.");
-  const origin = await git(root, ["remote", "get-url", "origin"]);
+  const origin = await runGit(root, ["remote", "get-url", "origin"]);
   const originRepositoryId = origin === null ? null : normalizedOriginRepositoryId(origin);
   if (originRepositoryId === null) throw new Blocked("repository_mismatch", "Origin repository identity is missing or unsupported.");
-  const head = await git(root, ["rev-parse", "--verify", "HEAD"]);
+  const head = await runGit(root, ["rev-parse", "--verify", "HEAD"]);
   if (head === null || !/^[0-9a-f]{40,64}$/u.test(head)) throw new Blocked("root_invalid", "Git HEAD observation failed.");
-  const branch = await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"], true);
-  const porcelainStatus = await git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  const branch = await runGit(root, ["symbolic-ref", "--quiet", "--short", "HEAD"], true);
+  const porcelainStatus = await runGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
   if (porcelainStatus === null) throw new Blocked("root_invalid", "Git status observation failed.");
   return Object.freeze({ root, commonGitDirectory, originRepositoryId, branch, head, porcelainStatus });
 }
 
-async function assertRegisteredWorktrees(source: WorktreeGitObservationV1, destination: WorktreeGitObservationV1): Promise<void> {
-  const listing = await git(source.root, ["worktree", "list", "--porcelain"]);
+async function assertRegisteredWorktrees(
+  source: WorktreeGitObservationV1,
+  destination: WorktreeGitObservationV1,
+  withoutReplacements = false,
+): Promise<void> {
+  const listing = await (withoutReplacements ? gitWithoutReplacements : git)(source.root, ["worktree", "list", "--porcelain"]);
   if (listing === null) throw new Blocked("repository_mismatch", "Registered worktree observation failed.");
   const registered = new Set<string>();
   for (const line of listing.split("\n")) {
@@ -1054,16 +1088,19 @@ async function assertRegisteredWorktrees(source: WorktreeGitObservationV1, desti
   }
 }
 
-async function observeRepositories(sourceRoot: string, destinationRoot: string, repositoryId: string): Promise<{
+async function observeRepositories(sourceRoot: string, destinationRoot: string, repositoryId: string, withoutReplacements = false): Promise<{
   source: WorktreeGitObservationV1;
   destination: WorktreeGitObservationV1;
 }> {
-  const [source, destination] = await Promise.all([observeGitRoot(sourceRoot), observeGitRoot(destinationRoot)]);
+  const [source, destination] = await Promise.all([
+    observeGitRoot(sourceRoot, withoutReplacements),
+    observeGitRoot(destinationRoot, withoutReplacements),
+  ]);
   if (source.commonGitDirectory !== destination.commonGitDirectory ||
     source.originRepositoryId !== destination.originRepositoryId || source.originRepositoryId !== repositoryId) {
     throw new Blocked("repository_mismatch", "Roots, origin, and source policy must identify the same repository.");
   }
-  await assertRegisteredWorktrees(source, destination);
+  await assertRegisteredWorktrees(source, destination, withoutReplacements);
   if (destination.branch === null) throw new Blocked("destination_detached", "Destination worktree must be attached to a branch.");
   if (destination.porcelainStatus !== "") throw new Blocked("destination_dirty", "Destination worktree must be clean before preparation.");
   return { source, destination };
@@ -1116,6 +1153,7 @@ async function closeDirectories(directories: readonly HeldDirectory[]): Promise<
 async function captureTrackedBaselineFile(
   destinationRoot: string,
   entry: GitTrackedBaselineEntry,
+  withoutReplacements = false,
 ): Promise<HeldTrackedBaselineFile> {
   const absolutePath = join(destinationRoot, entry.path);
   let handle: FileHandle;
@@ -1140,7 +1178,7 @@ async function captureTrackedBaselineFile(
       Number(pathStats.dev) !== capturedIdentity.dev || Number(pathStats.ino) !== capturedIdentity.ino) {
       throw new Blocked("destination_conflict", "Tracked baseline file identity changed during capture.");
     }
-    const blobBytes = await gitBytes(
+    const blobBytes = await (withoutReplacements ? gitBytesWithoutReplacements : gitBytes)(
       destinationRoot,
       ["cat-file", "blob", entry.headBlobOid],
       Math.max(1024, bytes.length + 1),
@@ -1182,8 +1220,9 @@ async function captureTrackedBaseline(
   destinationHead: string,
   shieldHeld: HeldDirectory | null,
   journalRoot: string,
+  withoutReplacements = false,
 ): Promise<TrackedBaselineSnapshot> {
-  const entries = await observeTrackedBaselineEntries(destinationRoot, destinationHead, journalRoot);
+  const entries = await observeTrackedBaselineEntries(destinationRoot, destinationHead, journalRoot, withoutReplacements);
   if (entries.length === 0) {
     return { journalRoot, exclusions: Object.freeze([]), files: Object.freeze([]), directories: Object.freeze([]) };
   }
@@ -1201,14 +1240,14 @@ async function captureTrackedBaseline(
       }
       directories.push(held);
     }
-    for (const entry of entries) files.push(await captureTrackedBaselineFile(destinationRoot, entry));
+    for (const entry of entries) files.push(await captureTrackedBaselineFile(destinationRoot, entry, withoutReplacements));
     const snapshot = {
       journalRoot,
       exclusions: Object.freeze(files.map((file) => file.record)),
       files: Object.freeze(files),
       directories: Object.freeze(directories),
     };
-    if (!await trackedBaselineStillExact(snapshot, destinationRoot, destinationHead)) {
+    if (!await trackedBaselineStillExact(snapshot, destinationRoot, destinationHead, withoutReplacements)) {
       throw new Blocked("destination_conflict", "Destination tracked baseline changed during preflight.");
     }
     return snapshot;
@@ -1225,6 +1264,7 @@ async function trackedBaselineStillExact(
   snapshot: TrackedBaselineSnapshot,
   destinationRoot: string,
   destinationHead: string,
+  withoutReplacements = false,
 ): Promise<boolean> {
   try {
     for (const directory of snapshot.directories) {
@@ -1240,7 +1280,9 @@ async function trackedBaselineStillExact(
         (await exactHandleBytes(file.handle, file.identity.size)).equals(file.bytes)) continue;
       return false;
     }
-    const currentEntries = await observeTrackedBaselineEntries(destinationRoot, destinationHead, snapshot.journalRoot);
+    const currentEntries = await observeTrackedBaselineEntries(
+      destinationRoot, destinationHead, snapshot.journalRoot, withoutReplacements,
+    );
     return canonicalJson(currentEntries) === canonicalJson(snapshot.exclusions.map((record) => ({
       path: record.path,
       gitMode: record.gitMode,
@@ -1745,7 +1787,9 @@ async function receiptBaselineMatchesRecordedHead(
   journalRoot: string,
 ): Promise<boolean> {
   try {
-    const bytes = await gitBytes(destinationRoot, ["ls-tree", "-rz", "--full-tree", receipt.destination.head, "--", SHIELD_DIRECTORY]);
+    const bytes = await gitBytesWithoutReplacements(
+      destinationRoot, ["ls-tree", "-rz", "--full-tree", receipt.destination.head, "--", SHIELD_DIRECTORY],
+    );
     const head = [...parseHeadBaselineEntries(bytes)].sort((left, right) => compareBytes(left.path, right.path));
     const records = receipt.trackedBaselineExclusions ?? [];
     if (head.length !== records.length) return false;
@@ -1755,7 +1799,7 @@ async function receiptBaselineMatchesRecordedHead(
       if (!baselinePathWithinJournalRoot(entry.path, journalRoot) || entry.path !== record.path ||
         entry.gitMode !== record.gitMode || entry.blobOid !== record.headBlobOid ||
         record.indexBlobOid !== record.headBlobOid ||
-        sha256(await gitBytes(destinationRoot, ["cat-file", "blob", entry.blobOid])) !== record.byteSha256) return false;
+        sha256(await gitBytesWithoutReplacements(destinationRoot, ["cat-file", "blob", entry.blobOid])) !== record.byteSha256) return false;
     }
     return true;
   } catch {
@@ -2139,13 +2183,16 @@ async function reobserveStable(
   destinationHeld: HeldRoot,
   shieldHeld: HeldDirectory | null,
   trackedBaseline: TrackedBaselineSnapshot,
+  withoutReplacements = false,
 ): Promise<boolean> {
   if (!await directoryChainStillHeld(sourceHeld.directories) || !await directoryChainStillHeld(destinationHeld.directories) ||
     !await directoryStillHeld(snapshot.policyDirectory.path, snapshot.policyDirectory) ||
     (shieldHeld !== null && !await directoryStillHeld(shieldHeld.path, shieldHeld)) ||
     !await revalidateCapturedFile(snapshot.configFile) || !await revalidateCapturedFile(snapshot.registryFile) ||
-    !await trackedBaselineStillExact(trackedBaseline, destination.root, destination.head)) return false;
-  const current = await observeRepositories(source.root, destination.root, snapshot.config.repositoryId);
+    !await trackedBaselineStillExact(trackedBaseline, destination.root, destination.head, withoutReplacements)) return false;
+  const current = await observeRepositories(
+    source.root, destination.root, snapshot.config.repositoryId, withoutReplacements,
+  );
   return canonicalJson(current.source) === canonicalJson(source) && canonicalJson(current.destination) === canonicalJson(destination);
 }
 
@@ -2403,7 +2450,7 @@ async function refreshStateStillExact(input: {
       (input.archiveHeld !== null && !await missionStateDirectoryStillHeld(input.archiveHeld)) ||
       !await revalidateCapturedFile(input.snapshot.configFile) ||
       !await revalidateCapturedFile(input.snapshot.registryFile) ||
-      !await trackedBaselineStillExact(input.trackedBaseline, input.destination.root, input.destination.head) ||
+      !await trackedBaselineStillExact(input.trackedBaseline, input.destination.root, input.destination.head, true) ||
       !await missionStateStillHeld(input.missionState) ||
       !await destinationLayoutExact(input.shieldHeld, input.trackedBaseline, input.allowedShieldFiles, input.missionState)) return false;
     if (input.retainedActive !== null && !await revalidateCapturedFile(input.retainedActive)) return false;
@@ -2413,6 +2460,7 @@ async function refreshStateStillExact(input: {
       input.sourceRoot,
       input.destination.root,
       input.snapshot.config.repositoryId,
+      true,
     );
     if (canonicalJson(current.destination) !== canonicalJson(input.destination)) return false;
     if (!await validateInstalledReceipt(
@@ -2550,7 +2598,7 @@ export async function prepareOrRefreshWorktreeStateV2ForTest(
     destinationRoot = destinationHeld.root;
     if (sourceRoot === destinationRoot) throw new RefreshBlocked("roots_not_distinct", "Source and destination must be distinct worktrees.");
     snapshot = await captureSourcePolicy(sourceRoot);
-    const observed = await observeRepositories(sourceRoot, destinationRoot, snapshot.config.repositoryId);
+    const observed = await observeRepositories(sourceRoot, destinationRoot, snapshot.config.repositoryId, true);
     shieldHeld = await holdShieldDirectoryIfPresent(destinationRoot);
     if (shieldHeld === null) throw new RefreshBlocked("prepared_state_stale", "An active receipt exists without a safe destination .shield directory.");
     const entries = await readdir(shieldHeld.path);
@@ -2579,6 +2627,7 @@ export async function prepareOrRefreshWorktreeStateV2ForTest(
       observed.destination.head,
       shieldHeld,
       installedMissionStatePolicy.journalRoot,
+      true,
     );
     try { missionState = await captureMissionState(shieldHeld, refreshMissionStatePolicy(installedMissionStatePolicy)); }
     catch { throw new RefreshBlocked("prepared_state_stale", "Configured mission-state roots have an unsafe owner, mode, or path identity."); }
@@ -2770,9 +2819,10 @@ async function doctorPreparedReceipt(
   try {
     const installedMissionStatePolicy = await readInstalledMissionStatePolicy(root, receipt);
     if (installedMissionStatePolicy === null) return { valid: false, missionStatePresent: false };
-    const observation = await observeGitRoot(root);
+    const observation = await observeGitRoot(root, true);
     baseline = await captureTrackedBaseline(
       root, observation.head, shieldHeld, installedMissionStatePolicy.journalRoot,
+      true,
     );
     missionState = await captureMissionState(
       shieldHeld,
@@ -2790,7 +2840,7 @@ async function doctorPreparedReceipt(
     ) || observation.branch === null || observation.porcelainStatus !== "" ||
       !await validateInstalledReceipt(root, receipt, undefined, observation, baseline) ||
       !await validateWorktreeStateReceiptFileChainV1OrV2(root, receipt)) return { valid: false, missionStatePresent: false };
-    const listing = await git(root, ["worktree", "list", "--porcelain"]);
+    const listing = await gitWithoutReplacements(root, ["worktree", "list", "--porcelain"]);
     const registered = listing?.split("\n").filter((line) => line.startsWith("worktree "))
       .map((line) => line.slice("worktree ".length)).includes(root) ?? false;
     const missionStatePresent = missionState.roots.length > 0;

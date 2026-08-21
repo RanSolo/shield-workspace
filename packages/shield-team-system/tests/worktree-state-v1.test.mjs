@@ -282,6 +282,36 @@ test("prepares the exact authority-neutral four-file state and replays without w
   assert.equal(stale.ok, false);
 });
 
+test("V1 preparation preserves replacement-ref outcome and result bytes", async () => {
+  const current = await trackedFixture();
+  const trackedPath = TRACKED_JOURNALS[0].path;
+  const originalBlob = git(current.destinationRoot, ["rev-parse", `HEAD:${trackedPath}`]);
+  const replacementBlob = gitInput(current.destinationRoot, ["hash-object", "-w", "--stdin"], "replacement bytes\n");
+  git(current.destinationRoot, ["replace", originalBlob, replacementBlob]);
+
+  const body = {
+    schemaVersion: 1,
+    contractVersion: "worktree.state.v1",
+    authority: "none",
+    state: "blocked",
+    reasonCode: "destination_conflict",
+    summary: "Tracked baseline worktree bytes do not equal the destination Git blob.",
+    nextAction: "Correct the reported state without copying mission or secret data, then retry.",
+    sourceRoot: current.sourceRoot,
+    destinationRoot: current.destinationRoot,
+    exclusions: WORKTREE_STATE_EXCLUSIONS,
+    receipt: null,
+  };
+  const expected = { ...body, receiptDigest: sha256(canonicalJson(body)) };
+  const first = await prepareWorktreeStateV1(current);
+  const replay = await prepareWorktreeStateV1(current);
+
+  assert.deepEqual(first, expected);
+  assert.deepEqual(Buffer.from(`${canonicalJson(first)}\n`), Buffer.from(`${canonicalJson(expected)}\n`));
+  assert.deepEqual(replay, expected);
+  assert.equal(await exists(join(current.destinationRoot, ".shield", "worktree-state.json")), false);
+});
+
 test("accepts mission-local state directories after preparation without weakening policy siblings", async () => {
   const current = await fixture();
   const prepared = await prepareWorktreeStateV1(current);
@@ -1234,6 +1264,10 @@ test("refresh blocks dirty, detached, renamed, rewritten, policy-drifted, and un
       const parsed = JSON.parse(await readFile(path, "utf8"));
       await writeFile(path, `${JSON.stringify(parsed)}\n`);
       await advanceDestination(current);
+    }],
+    ["repository identity drift", "repository_mismatch", async (current) => {
+      await advanceDestination(current);
+      git(current.destinationRoot, ["remote", "set-url", "origin", "git@github.com:RanSolo/other-repository.git"]);
     }],
     ["unsafe baseline", "destination_conflict", async (current) => {
       const path = join(current.destinationRoot, TRACKED_JOURNALS[0].path);
