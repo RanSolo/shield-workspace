@@ -5,20 +5,26 @@ import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { isProxy } from "node:util/types";
 
 import { strictParseJson } from "../model/strict-json.mjs";
+import { replaySeatDispatchReceiptsV1 } from "../../dist/seat-dispatch-receipt-v1.mjs";
+import { readSeatDispatchReceiptLedgerV1 } from "../../dist/seat-dispatch-store.mjs";
 import {
+  FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_RESULT_CODES,
   FEATURE_FLIGHT_RELAY_CONTRACT_VERSION,
   FEATURE_FLIGHT_RELAY_MAX_LEDGER_ENTRIES,
   FEATURE_FLIGHT_RELAY_NOTICE,
   canonicalFeatureFlightRelayBytesV1,
   canonicalFeatureFlightRelayValueV1,
+  createFeatureFlightRelayAcknowledgedEntryV1,
   createFeatureFlightRelayDeliveredEntryV1,
   createFeatureFlightRelayDeliveryReceiptV1,
   createFeatureFlightRelayEntryV1,
   createFeatureFlightRelayFromSeatDispatchV1,
   featureFlightRelayDigestV1,
+  reconcileFeatureFlightRelayAcknowledgementV1,
   reconcileFeatureFlightRelayDeliveryV1,
   replayFeatureFlightRelayLedgerV1,
   validateFeatureFlightRelayDeliveryReceiptV1,
+  validateFeatureFlightRelayAcknowledgementV1,
 } from "./feature-flight-relay.mjs";
 
 export const FEATURE_FLIGHT_RELAY_STORE_DIRECTORY = "relay-ledgers";
@@ -32,6 +38,7 @@ const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/u;
 const RELAY_ID = /^relay:[A-Za-z0-9_-]{43}$/u;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/u;
 const LOCK_OWNER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,127}$/u;
+const ACCOUNTABLE_SEATS = new Set(["hill", "daisy", "fury", "may", "mack"]);
 const CREATE_FIELDS = [
   "repositoryRoot", "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision", "parentSessionId",
   "childTaskId", "childSessionId", "sourceAccountableSeatId", "repositoryId", "repositoryWorkspaceId",
@@ -40,9 +47,17 @@ const CREATE_FIELDS = [
 ];
 const APPEND_FIELDS = ["root", "excludedRoots", "lockOwnerId", ...CREATE_FIELDS];
 const RECIPIENT_FIELDS = ["seatId", "laneId", "controllerIdentity"];
+const SOURCE_FIELDS = [
+  "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision", "parentSessionId", "childTaskId",
+  "childSessionId", "sourceAccountableSeatId", "repositoryId", "repositoryWorkspaceId", "repositoryRevision",
+  "subjectId", "subjectRevision", "artifactId", "artifactRevision",
+];
 const DELIVERY_FIELDS = [
   "root", "excludedRoots", "lockOwnerId", "repositoryId", "repositoryWorkspaceId", "repositoryRevision",
   "relayId", "relayDigest", "recipient",
+];
+const ACKNOWLEDGEMENT_FIELDS = [
+  "root", "excludedRoots", "lockOwnerId", "repositoryRoot", "relayId", "relayDigest", "source", "recipient",
 ];
 const WITNESS_FIELDS = [
   "schemaVersion", "artifactType", "contractVersion", "authority", "notice", "repositoryId",
@@ -50,6 +65,11 @@ const WITNESS_FIELDS = [
   "relayHeadDigest", "witnessDigest",
 ];
 const defaultIo = Object.freeze({ lstat, mkdir, open, realpath, unlink });
+const ACKNOWLEDGEMENT_CLASSIFICATION_REPLAY = Object.freeze({
+  state: "valid",
+  entries: Object.freeze([]),
+  projections: Object.freeze([]),
+});
 
 const valid = (value) => Object.freeze({ state: "valid", value });
 const invalid = (code, message) => Object.freeze({ state: "invalid", code, errors: Object.freeze([message]) });
@@ -150,6 +170,41 @@ function deliveryScopeSnapshot(input) {
     }
   }
   return value;
+}
+
+function acknowledgementScopeSnapshot(input) {
+  const value = snapshot(input, "relay acknowledgement input");
+  exact(value, ACKNOWLEDGEMENT_FIELDS, "relay acknowledgement input");
+  const scope = scopeSnapshot({
+    root: value.root,
+    excludedRoots: value.excludedRoots,
+    lockOwnerId: value.lockOwnerId,
+    repositoryId: value.source?.repositoryId,
+    repositoryWorkspaceId: value.source?.repositoryWorkspaceId,
+  }, ["root", "excludedRoots", "lockOwnerId", "repositoryId", "repositoryWorkspaceId"], "relay acknowledgement scope");
+  if (typeof value.repositoryRoot !== "string" || !isAbsolute(value.repositoryRoot) ||
+      normalize(value.repositoryRoot) !== value.repositoryRoot || resolve(value.repositoryRoot) !== value.repositoryRoot ||
+      !RELAY_ID.test(value.relayId ?? "") || !DIGEST.test(value.relayDigest ?? "")) {
+    throw new StoreFailure("malformed_input", "Relay acknowledgement identity is malformed.");
+  }
+  exact(value.source, SOURCE_FIELDS, "relay acknowledgement input.source");
+  for (const field of SOURCE_FIELDS) {
+    const pattern = field.endsWith("Revision") ? REVISION : IDENTIFIER;
+    if (!pattern.test(value.source[field] ?? "")) {
+      throw new StoreFailure("malformed_input", "relay acknowledgement input.source." + field + " is malformed.");
+    }
+  }
+  if (!ACCOUNTABLE_SEATS.has(value.source.sourceAccountableSeatId)) {
+    throw new StoreFailure("malformed_input", "relay acknowledgement input.source.sourceAccountableSeatId is malformed.");
+  }
+  exact(value.recipient, RECIPIENT_FIELDS, "relay acknowledgement input.recipient");
+  for (const field of RECIPIENT_FIELDS) {
+    if (!IDENTIFIER.test(value.recipient[field] ?? "")) {
+      throw new StoreFailure("malformed_input", "relay acknowledgement input.recipient." + field + " is malformed.");
+    }
+  }
+  return Object.freeze({ ...scope, repositoryRoot: value.repositoryRoot, relayId: value.relayId,
+    relayDigest: value.relayDigest, source: value.source, recipient: value.recipient });
 }
 
 function storeFilename(repositoryId, repositoryWorkspaceId) {
@@ -786,6 +841,57 @@ async function appendDeliveredLifecycle(hierarchy, scope, current, entry, io) {
   return after;
 }
 
+async function appendAcknowledgedLifecycle(hierarchy, scope, current, entry, io) {
+  const relayLine = lineFor(entry);
+  await appendLine(
+    hierarchy.paths.logPath,
+    hierarchy.directory,
+    current.log,
+    relayLine,
+    hierarchy,
+    io,
+    "Relay ledger",
+  );
+
+  let logAfter;
+  try { logAfter = await readRelaySnapshot(hierarchy, scope, io); }
+  catch (error) {
+    storeFailure("recovery_required", "Acknowledged relay post-append readback is uncertain: " +
+      (error instanceof Error ? error.message : "unknown_error") + ".");
+  }
+  const expectedRelayBytes = Buffer.concat([current.log.bytes, relayLine]);
+  if (!sameBytes(logAfter.bytes, expectedRelayBytes) || logAfter.entries.length !== current.log.entries.length + 1 ||
+      logAfter.entries.at(-1)?.entryDigest !== entry.entryDigest) {
+    storeFailure("recovery_required", "Acknowledged relay exact readback does not match the lifecycle append.");
+  }
+
+  const witness = createWitness(scope, current.witness, logAfter);
+  const witnessLine = lineFor(witness);
+  await appendLine(
+    hierarchy.paths.witnessPath,
+    hierarchy.witnessDirectory,
+    current.witness,
+    witnessLine,
+    hierarchy,
+    io,
+    "Relay head witness",
+  );
+
+  let after;
+  try { after = await readCombinedSnapshot(hierarchy, scope, io); }
+  catch (error) {
+    storeFailure("recovery_required", "Acknowledged relay and witness readback is uncertain: " +
+      (error instanceof Error ? error.message : "unknown_error") + ".");
+  }
+  const expectedWitnessBytes = Buffer.concat([current.witness.bytes, witnessLine]);
+  if (!sameBytes(after.log.bytes, expectedRelayBytes) || !sameBytes(after.witness.bytes, expectedWitnessBytes) ||
+      after.log.entries.at(-1)?.entryDigest !== entry.entryDigest ||
+      after.witness.entries.at(-1)?.witnessDigest !== witness.witnessDigest) {
+    storeFailure("recovery_required", "Acknowledged relay and monotonic witness exact readback does not match the append.");
+  }
+  return after;
+}
+
 function deliveryBinding(scope) {
   return Object.freeze({
     relayId: scope.relayId,
@@ -793,6 +899,15 @@ function deliveryBinding(scope) {
     repositoryId: scope.repositoryId,
     repositoryWorkspaceId: scope.repositoryWorkspaceId,
     repositoryRevision: scope.repositoryRevision,
+    recipient: canonicalFeatureFlightRelayValueV1(scope.recipient),
+  });
+}
+
+function acknowledgementBinding(scope) {
+  return Object.freeze({
+    relayId: scope.relayId,
+    relayDigest: scope.relayDigest,
+    source: canonicalFeatureFlightRelayValueV1(scope.source),
     recipient: canonicalFeatureFlightRelayValueV1(scope.recipient),
   });
 }
@@ -861,6 +976,135 @@ function deliveryResultFromError(error) {
     "recovery_required",
     error instanceof Error ? error.message : "Relay delivery store operation requires recovery.",
   );
+}
+
+const ACKNOWLEDGEMENT_FAILURE_CODES = new Set(FEATURE_FLIGHT_RELAY_ACKNOWLEDGEMENT_RESULT_CODES);
+
+function acknowledgementResultFromError(error) {
+  if (error instanceof StoreFailure && ACKNOWLEDGEMENT_FAILURE_CODES.has(error.code)) {
+    return invalid(error.code, error.message);
+  }
+  return invalid(
+    "recovery_required",
+    error instanceof Error ? error.message : "Relay acknowledgement store operation requires recovery.",
+  );
+}
+
+function reconcileAcknowledgement(current, scope, sourceReplay) {
+  const reconciliation = reconcileFeatureFlightRelayAcknowledgementV1(
+    current.log.entries,
+    acknowledgementBinding(scope),
+    sourceReplay,
+  );
+  if (reconciliation.state === "accepted" || reconciliation.state === "duplicate") return reconciliation;
+  storeFailure(
+    reconciliation.code ?? "recovery_required",
+    reconciliation.reasonCodes?.[0] ?? "Relay acknowledgement reconciliation failed.",
+  );
+}
+
+function directAcknowledgedEntry(current, reconciliation, sourceReplay) {
+  const deliveredEntry = current.log.entries.find((entry) => entry.kind === "relay.delivered" &&
+    entry.relayId === reconciliation.acknowledgement.relayId);
+  if (deliveredEntry === undefined) storeFailure("delivery_missing", "Relay acknowledgement has no exact delivered predecessor.");
+  const created = createFeatureFlightRelayAcknowledgedEntryV1({
+    logSequence: current.log.entries.length,
+    previousLogDigest: current.log.entries.at(-1)?.entryDigest ?? null,
+    deliveredEntry,
+    sourceReplay,
+  });
+  if (created.state !== "valid") {
+    storeFailure(created.code ?? "illegal_transition", created.reasonCodes?.[0] ?? "Relay acknowledgement transition is invalid.");
+  }
+  const validation = validateFeatureFlightRelayAcknowledgementV1(created.value.acknowledgement, deliveredEntry);
+  if (validation.state !== "valid" || created.value.entryDigest !== reconciliation.entry.entryDigest ||
+      !sameBytes(
+        canonicalFeatureFlightRelayBytesV1(created.value.acknowledgement),
+        canonicalFeatureFlightRelayBytesV1(reconciliation.acknowledgement),
+      )) {
+    storeFailure("recovery_required", "Direct acknowledged lifecycle derivation disagrees with contract reconciliation.");
+  }
+  return created.value;
+}
+
+async function readAuthoritativeDispatchReplay(scope, dependencies) {
+  const readLedger = dependencies.readSeatDispatchReceiptLedgerV1 ?? readSeatDispatchReceiptLedgerV1;
+  const replayReceipts = dependencies.replaySeatDispatchReceiptsV1 ?? replaySeatDispatchReceiptsV1;
+  if (typeof readLedger !== "function" || typeof replayReceipts !== "function") {
+    storeFailure("source_replay_invalid", "Authoritative dispatch dependencies are malformed.");
+  }
+  let ledger;
+  try {
+    ledger = await readLedger({
+      repositoryRoot: scope.repositoryRoot,
+      repositoryId: scope.source.repositoryId,
+      repositoryWorkspaceId: scope.source.repositoryWorkspaceId,
+    });
+  } catch (error) {
+    storeFailure("source_ledger_unavailable", error instanceof Error ? error.message : "Dispatch receipt ledger read failed.");
+  }
+  if (ledger?.state !== "valid") {
+    storeFailure("source_ledger_unavailable", `Dispatch receipt ledger read failed: ${ledger?.code ?? "unknown"}.`);
+  }
+  let replay;
+  try { replay = replayReceipts(ledger.value?.entries); }
+  catch (error) {
+    storeFailure("source_replay_invalid", error instanceof Error ? error.message : "Dispatch receipt replay failed.");
+  }
+  if (replay?.state !== "valid") {
+    storeFailure("source_replay_invalid", `Dispatch receipt replay failed: ${replay?.code ?? "unknown"}.`);
+  }
+  return replay;
+}
+
+async function acknowledgeDeliveredUnderLock(scope, io, dependencies) {
+  let hierarchy;
+  let token;
+  let result;
+  let terminalError;
+  try {
+    hierarchy = await openHierarchy(scope, io, false);
+    token = await acquireLock(hierarchy, scope, io);
+    const current = await readCombinedSnapshot(hierarchy, scope, io, true);
+
+    let classification;
+    try { classification = reconcileAcknowledgement(current, scope, ACKNOWLEDGEMENT_CLASSIFICATION_REPLAY); }
+    catch (error) {
+      if (!(error instanceof StoreFailure) || error.code !== "terminal_source_ambiguous") throw error;
+    }
+    if (classification?.state === "duplicate") {
+      result = valid(Object.freeze({
+        status: "duplicate",
+        code: "duplicate",
+        appended: false,
+        log: readValue(hierarchy, current),
+        entry: classification.entry,
+        acknowledgement: classification.acknowledgement,
+      }));
+    } else {
+      const sourceReplay = await readAuthoritativeDispatchReplay(scope, dependencies);
+      const reconciliation = reconcileAcknowledgement(current, scope, sourceReplay);
+      if (reconciliation.state !== "accepted") {
+        storeFailure("recovery_required", "Relay acknowledgement classification changed during its locked reconciliation.");
+      }
+      const entry = directAcknowledgedEntry(current, reconciliation, sourceReplay);
+      const after = await appendAcknowledgedLifecycle(hierarchy, scope, current, entry, io);
+      result = valid(Object.freeze({
+        status: "acknowledged",
+        appended: true,
+        log: readValue(hierarchy, after),
+        entry,
+        acknowledgement: entry.acknowledgement,
+      }));
+    }
+  } catch (error) { terminalError = error; }
+  if (token !== undefined && hierarchy !== undefined) {
+    try { await releaseLock(token, hierarchy, io); } catch (error) { terminalError ??= error; }
+  }
+  if (hierarchy !== undefined) {
+    try { await closeHierarchy(hierarchy); } catch (error) { terminalError ??= error; }
+  }
+  return terminalError === undefined ? result : acknowledgementResultFromError(terminalError);
 }
 
 async function deliverPendingUnderLock(scope, io) {
@@ -954,6 +1198,14 @@ export async function deliverFeatureFlightRelayToHillInboxV1(input, injected = {
     return invalid("recovery_required", "Relay delivery preflight did not select one deliverable relay.");
   }
   return deliverPendingUnderLock(scope, io);
+}
+
+export async function acknowledgeFeatureFlightRelayFromSeatDispatchV1(input, injected = {}) {
+  let scope;
+  try { scope = acknowledgementScopeSnapshot(input); }
+  catch (error) { return resultFromError(error, "malformed_input"); }
+  const io = Object.freeze({ ...defaultIo, ...injected });
+  return acknowledgeDeliveredUnderLock(scope, io, injected);
 }
 
 export async function appendFeatureFlightRelayFromSeatDispatchIfAbsentV1(input, injected = {}) {

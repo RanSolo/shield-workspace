@@ -22,14 +22,17 @@ import test from "node:test";
 
 import {
   appendSeatDispatchReceiptEntryV1,
+  readSeatDispatchReceiptLedgerV1,
 } from "../dist/seat-dispatch-store.mjs";
 import {
   createSeatDispatchLifecycleEventV1,
   createSeatDispatchStartedEventV1,
+  replaySeatDispatchReceiptsV1,
 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import * as relayStoreModule from "../scripts/operations/feature-flight-relay-store.mjs";
 import {
   FEATURE_FLIGHT_RELAY_HILL_INBOX_DIRECTORY,
+  acknowledgeFeatureFlightRelayFromSeatDispatchV1,
   appendFeatureFlightRelayFromSeatDispatchIfAbsentV1,
   deliverFeatureFlightRelayToHillInboxV1,
   deriveFeatureFlightRelayStorePathsV1,
@@ -186,6 +189,19 @@ const deliveryInput = (record, pending, overrides = {}) => ({
 });
 const deliver = (record, pending, overrides = {}, injected = {}) =>
   deliverFeatureFlightRelayToHillInboxV1(deliveryInput(record, pending, overrides), injected);
+const acknowledgementInput = (record, delivered, overrides = {}) => ({
+  root: record.root,
+  excludedRoots: [],
+  lockOwnerId: "owner:hill:issue-248:acknowledgement",
+  repositoryRoot: record.root,
+  relayId: delivered.relayId,
+  relayDigest: delivered.relayDigest,
+  source: delivered.relay.source,
+  recipient: delivered.relay.recipient,
+  ...overrides,
+});
+const acknowledge = (record, delivered, overrides = {}, injected = {}) =>
+  acknowledgeFeatureFlightRelayFromSeatDispatchV1(acknowledgementInput(record, delivered, overrides), injected);
 const pathIsWrite = (flags) => typeof flags === "number" && (flags & fsConstants.O_WRONLY) === fsConstants.O_WRONLY;
 const injectedOpen = (decorate) => ({
   async open(path, flags, mode) {
@@ -292,6 +308,165 @@ test("delivers one pending relay through a confined create-once Hill inbox recei
   assert.equal(restarted.value.replay.inspection.delivered[0].authority, "none");
 });
 
+test("Hill rereads the authoritative dispatch ledger under lock and appends one exact acknowledgement plus witness", async (t) => {
+  const record = await fixture();
+  t.after(() => rm(record.root, { recursive: true, force: true }));
+  const pending = (await sourceAppend(record)).value.entry;
+  const delivery = await deliver(record, pending);
+  const delivered = delivery.value.entry;
+  const bytesBefore = Buffer.from(delivery.value.log.bytes);
+  let authoritativeReadUnderLock = false;
+  const result = await acknowledge(record, delivered, {}, {
+    async readSeatDispatchReceiptLedgerV1(input) {
+      const lock = await lstat(delivery.value.log.paths.lockPath);
+      authoritativeReadUnderLock = lock.isFile();
+      return readSeatDispatchReceiptLedgerV1(input);
+    },
+  });
+
+  assert.equal(result.state, "valid", result.errors?.join(" "));
+  assert.equal(result.value.status, "acknowledged");
+  assert.equal(result.value.appended, true);
+  assert.equal(authoritativeReadUnderLock, true);
+  assert.equal(result.value.entry.kind, "relay.acknowledged");
+  assert.equal(result.value.entry.acknowledgement.deliveredEntryDigest, delivered.entryDigest);
+  assert.equal(result.value.entry.acknowledgement.deliveryReceiptDigest, delivered.deliveryReceipt.receiptDigest);
+  assert.deepEqual(result.value.entry.acknowledgement.recipient, delivered.relay.recipient);
+  assert.deepEqual(result.value.entry.acknowledgement.terminal, delivered.relay.terminal);
+  assert.deepEqual(
+    result.value.log.bytes,
+    Buffer.concat([bytesBefore, canonicalFeatureFlightRelayBytesV1(result.value.entry), Buffer.from("\n")]),
+  );
+  assert.equal(result.value.log.entries.length, 3);
+  assert.equal(result.value.log.witness.entries.length, 3);
+  assert.equal(result.value.log.witness.head.relayHeadDigest, result.value.entry.entryDigest);
+
+  const restarted = await readFeatureFlightRelayLogV1(record.scope);
+  assert.equal(restarted.state, "valid", restarted.errors?.join(" "));
+  assert.deepEqual(restarted.value.bytes, result.value.log.bytes);
+  assert.equal(Object.hasOwn(restarted.value.replay.inspection, "delivered"), false);
+  assert.equal(restarted.value.replay.inspection.acknowledged.length, 1);
+  assert.equal(restarted.value.replay.inspection.acknowledged[0].nextAction, "no_automatic_action");
+  assert.equal(restarted.value.replay.inspection.acknowledged[0].authority, "none");
+
+  let sourceReads = 0;
+  const writePaths = [];
+  const retry = await acknowledge(record, delivered, {}, {
+    async readSeatDispatchReceiptLedgerV1() { sourceReads += 1; throw new Error("duplicate must not reread source"); },
+    ...injectedOpen(async (path, flags) => { if (pathIsWrite(flags)) writePaths.push(path); }),
+  });
+  assert.equal(retry.state, "valid", retry.errors?.join(" "));
+  assert.equal(retry.value.status, "duplicate");
+  assert.equal(retry.value.code, "duplicate");
+  assert.equal(retry.value.appended, false);
+  assert.equal(sourceReads, 0);
+  assert.deepEqual(writePaths, [delivery.value.log.paths.lockPath]);
+  assert.equal(retry.value.entry.entryDigest, result.value.entry.entryDigest);
+  assert.deepEqual(retry.value.acknowledgement, result.value.acknowledgement);
+  assert.deepEqual(retry.value.log.bytes, result.value.log.bytes);
+});
+
+test("acknowledgement closes authoritative ledger failures before append", async (t) => {
+  const record = await fixture();
+  t.after(() => rm(record.root, { recursive: true, force: true }));
+  const pending = (await sourceAppend(record)).value.entry;
+  const delivered = (await deliver(record, pending)).value.entry;
+  const before = (await readFeatureFlightRelayLogV1(record.scope)).value;
+
+  assert.equal((await acknowledge(record, delivered, {}, {
+    async readSeatDispatchReceiptLedgerV1() { throw new Error("missing source ledger"); },
+  })).code, "source_ledger_unavailable");
+  assert.equal((await acknowledge(record, delivered, {}, {
+    async readSeatDispatchReceiptLedgerV1() { return { state: "invalid", code: "store_missing" }; },
+  })).code, "source_ledger_unavailable");
+  assert.equal((await acknowledge(record, delivered, {}, {
+    async readSeatDispatchReceiptLedgerV1() { return { state: "valid", value: { entries: [{ malformed: true }] } }; },
+  })).code, "source_replay_invalid");
+  assert.equal((await acknowledge(record, delivered, {}, {
+    replaySeatDispatchReceiptsV1() { return { state: "invalid", code: "mixed_repository_identity" }; },
+  })).code, "source_replay_invalid");
+
+  const authoritative = replaySeatDispatchReceiptsV1(record.receiptEntries);
+  assert.equal((await acknowledge(record, delivered, {}, {
+    replaySeatDispatchReceiptsV1() {
+      return { ...authoritative, projections: [authoritative.projections[0], structuredClone(authoritative.projections[0])] };
+    },
+  })).code, "terminal_source_ambiguous");
+  assert.equal((await acknowledge(record, delivered, {}, {
+    replaySeatDispatchReceiptsV1() { return replaySeatDispatchReceiptsV1([record.receiptEntries[0]]); },
+  })).code, "terminal_source_required");
+  for (const mismatchKind of ["kind", "receiptId", "dispatchId", "entryDigest", "logSequence", "lifecycleSequence"]) {
+    const result = await acknowledge(record, delivered, {}, {
+      replaySeatDispatchReceiptsV1() {
+        const mismatch = structuredClone(authoritative);
+        const entry = mismatch.entries[1];
+        const projection = mismatch.projections[0];
+        if (mismatchKind === "kind") entry.kind = "dispatch.failed";
+        if (mismatchKind === "receiptId") entry.receiptId = "receipt:other";
+        if (mismatchKind === "dispatchId") entry.dispatchId = "dispatch:other";
+        if (mismatchKind === "entryDigest") {
+          entry.entryDigest = "sha256:" + "A".repeat(43);
+          projection.lastEntryDigest = entry.entryDigest;
+        }
+        if (mismatchKind === "logSequence") entry.logSequence = projection.logSequence = entry.logSequence + 1;
+        if (mismatchKind === "lifecycleSequence") {
+          entry.lifecycleSequence = projection.lifecycleSequence = entry.lifecycleSequence + 1;
+        }
+        return mismatch;
+      },
+    });
+    assert.equal(result.code, "terminal_source_mismatch", mismatchKind);
+  }
+
+  const after = (await readFeatureFlightRelayLogV1(record.scope)).value;
+  assert.deepEqual(after.bytes, before.bytes);
+  assert.deepEqual(after.witness, before.witness);
+  assert.equal(after.entries.length, 2);
+
+  const retry = await acknowledge(record, delivered);
+  assert.equal(retry.state, "valid", retry.errors?.join(" "));
+  assert.equal(retry.value.status, "acknowledged");
+});
+
+test("acknowledgement selection binds exact relay, every source identity, revision, and recipient field", async (t) => {
+  const record = await fixture();
+  t.after(() => rm(record.root, { recursive: true, force: true }));
+  const pending = (await sourceAppend(record)).value.entry;
+  const delivered = (await deliver(record, pending)).value.entry;
+  let sourceReads = 0;
+  const mustNotRead = {
+    async readSeatDispatchReceiptLedgerV1() { sourceReads += 1; throw new Error("selection failure reached source"); },
+  };
+
+  assert.equal((await acknowledge(record, delivered, { relayId: "relay:" + "A".repeat(43) }, mustNotRead)).code, "relay_missing");
+  assert.equal((await acknowledge(record, delivered, { relayDigest: "sha256:" + "A".repeat(43) }, mustNotRead)).code, "conflicting_reuse");
+  const sourceMismatches = {
+    receiptId: "receipt:other", dispatchId: "dispatch:other", parentMissionId: "mission:other",
+    parentMissionRevision: "5".repeat(40), parentSessionId: "session:other", childTaskId: "task:other",
+    childSessionId: "session:other", sourceAccountableSeatId: "daisy", repositoryId: "repo:other",
+    repositoryWorkspaceId: "workspace:other", subjectId: "issue:other", subjectRevision: "5".repeat(40),
+    artifactId: "artifact:other", artifactRevision: "5".repeat(40),
+  };
+  for (const [field, value] of Object.entries(sourceMismatches)) {
+    const result = await acknowledge(record, delivered, {
+      source: { ...delivered.relay.source, [field]: value },
+    }, mustNotRead);
+    const expected = field === "repositoryRevision" ? "source_stale" : "relay_missing";
+    assert.equal(result.code, expected, field);
+  }
+  for (const [field, value] of [["seatId", "may"], ["laneId", "lane:other"], ["controllerIdentity", "controller:other"]]) {
+    const result = await acknowledge(record, delivered, {
+      recipient: { ...delivered.relay.recipient, [field]: value },
+    }, mustNotRead);
+    assert.equal(result.code, "recipient_mismatch", field);
+  }
+  assert.equal(sourceReads, 0);
+  assert.equal((await acknowledgeFeatureFlightRelayFromSeatDispatchV1({
+    ...acknowledgementInput(record, delivered), unknown: true,
+  })).code, "malformed_input");
+  assert.equal((await readFeatureFlightRelayLogV1(record.scope)).value.entries.length, 2);
+});
+
 test("exact delivery retry queries the same receipt without another provider effect or lifecycle append", async (t) => {
   const record = await fixture();
   t.after(() => rm(record.root, { recursive: true, force: true }));
@@ -356,6 +531,143 @@ test("durable delivery remains recovery_required until the first caller releases
   const retryAfterRelease = await deliver(record, pending);
   assert.equal(retryAfterRelease.state, "valid", retryAfterRelease.errors?.join(" "));
   assert.equal(retryAfterRelease.value.status, "duplicate");
+});
+
+test("held and retained acknowledgement locks require recovery, then exact retry succeeds", async (t) => {
+  await t.test("held before append", async () => {
+    const record = await fixture();
+    t.after(() => rm(record.root, { recursive: true, force: true }));
+    const pending = (await sourceAppend(record)).value.entry;
+    const delivered = (await deliver(record, pending)).value.entry;
+    let releaseSync;
+    const release = new Promise((resolve) => { releaseSync = resolve; });
+    let signal;
+    const held = new Promise((resolve) => { signal = resolve; });
+    let delayed = false;
+    const firstPromise = acknowledge(record, delivered, {}, injectedOpen(async (path, flags, handle) => {
+      if (!delayed && path.endsWith(".lock") && pathIsWrite(flags)) {
+        delayed = true;
+        const original = handle.sync.bind(handle);
+        handle.sync = async () => { await original(); signal(); await release; };
+      }
+    }));
+    await held;
+    const concurrent = await acknowledge(record, delivered);
+    assert.equal(concurrent.state, "invalid");
+    assert.equal(concurrent.code, "recovery_required");
+    assert.equal((await readFeatureFlightRelayLogV1(record.scope)).value.entries.length, 2);
+    releaseSync();
+    const first = await firstPromise;
+    assert.equal(first.state, "valid", first.errors?.join(" "));
+    assert.equal(first.value.status, "acknowledged");
+  });
+
+  await t.test("retained after durable readback", async () => {
+    const record = await fixture();
+    t.after(() => rm(record.root, { recursive: true, force: true }));
+    const pending = (await sourceAppend(record)).value.entry;
+    const deliveredResult = await deliver(record, pending);
+    const delivered = deliveredResult.value.entry;
+    const paths = deliveredResult.value.log.paths;
+    let signalUnlink;
+    const unlinkStarted = new Promise((resolve) => { signalUnlink = resolve; });
+    let allowUnlink;
+    const unlinkRelease = new Promise((resolve) => { allowUnlink = resolve; });
+    let delayed = false;
+    const firstPromise = acknowledge(record, delivered, {}, {
+      async unlink(path) {
+        if (!delayed && path === paths.lockPath) {
+          delayed = true;
+          signalUnlink();
+          await unlinkRelease;
+        }
+        return unlink(path);
+      },
+    });
+    await unlinkStarted;
+    assert.equal((await readFeatureFlightRelayLogV1(record.scope)).value.entries.length, 3);
+    const retainedRetry = await acknowledge(record, delivered);
+    assert.equal(retainedRetry.state, "invalid");
+    assert.equal(retainedRetry.code, "recovery_required");
+    allowUnlink();
+    const first = await firstPromise;
+    assert.equal(first.state, "valid", first.errors?.join(" "));
+    const retry = await acknowledge(record, delivered);
+    assert.equal(retry.state, "valid", retry.errors?.join(" "));
+    assert.equal(retry.value.status, "duplicate");
+  });
+});
+
+test("retry after successful acknowledgement lock release reconciles duplicate before the first return", async (t) => {
+  const record = await fixture();
+  t.after(() => rm(record.root, { recursive: true, force: true }));
+  const pending = (await sourceAppend(record)).value.entry;
+  const deliveredResult = await deliver(record, pending);
+  const delivered = deliveredResult.value.entry;
+  const paths = deliveredResult.value.log.paths;
+  let signalClose;
+  const closeStarted = new Promise((resolve) => { signalClose = resolve; });
+  let allowClose;
+  const closeRelease = new Promise((resolve) => { allowClose = resolve; });
+  let delayed = false;
+  const firstPromise = acknowledge(record, delivered, {}, injectedOpen(async (path, flags, handle) => {
+    if (!delayed && path === record.root && !pathIsWrite(flags)) {
+      delayed = true;
+      const original = handle.close.bind(handle);
+      handle.close = async () => { signalClose(); await closeRelease; return original(); };
+    }
+  }));
+
+  await closeStarted;
+  await assert.rejects(lstat(paths.lockPath), { code: "ENOENT" });
+  const retry = await acknowledge(record, delivered);
+  assert.equal(retry.state, "valid", retry.errors?.join(" "));
+  assert.equal(retry.value.status, "duplicate");
+  allowClose();
+  const first = await firstPromise;
+  assert.equal(first.state, "valid", first.errors?.join(" "));
+  assert.equal(first.value.status, "acknowledged");
+});
+
+test("acknowledgement and witness uncertainty never reports acknowledgement success", async (t) => {
+  for (const fault of ["ack-partial", "ack-sync", "ack-close", "ack-readback", "witness-sync"]) {
+    await t.test(fault, async () => {
+      const record = await fixture();
+      t.after(() => rm(record.root, { recursive: true, force: true }));
+      const pending = (await sourceAppend(record)).value.entry;
+      const deliveredResult = await deliver(record, pending);
+      const delivered = deliveredResult.value.entry;
+      const paths = deliveredResult.value.log.paths;
+      let acknowledgementWriteOpened = false;
+      let changed = false;
+      const injected = injectedOpen(async (path, flags, handle) => {
+        if (path === paths.logPath && pathIsWrite(flags)) {
+          acknowledgementWriteOpened = true;
+          if (fault === "ack-partial") {
+            const original = handle.write.bind(handle);
+            handle.write = async (...args) => {
+              const written = await original(...args);
+              return { ...written, bytesWritten: written.bytesWritten - 1 };
+            };
+          }
+          if (fault === "ack-sync") handle.sync = async () => { const error = new Error("sync fault"); error.code = "EIO"; throw error; };
+          if (fault === "ack-close") {
+            const original = handle.close.bind(handle);
+            handle.close = async () => { await original(); throw new Error("close fault"); };
+          }
+        } else if (path === paths.logPath && acknowledgementWriteOpened && fault === "ack-readback" && !changed) {
+          changed = true;
+          const original = handle.readFile.bind(handle);
+          handle.readFile = async (...args) => Buffer.from((await original(...args)).toString("utf8").replace("relay.acknowledged", "relay.acknowledgex"));
+        } else if (path === paths.witnessPath && pathIsWrite(flags) && fault === "witness-sync") {
+          handle.sync = async () => { const error = new Error("witness sync fault"); error.code = "EIO"; throw error; };
+        }
+      });
+      const result = await acknowledge(record, delivered, {}, injected);
+      assert.equal(result.state, "invalid", fault);
+      assert.equal(result.code, "recovery_required", fault);
+    });
+  }
 });
 
 test("restart reconciles a durable receipt after a crash before delivered lifecycle append", async (t) => {
