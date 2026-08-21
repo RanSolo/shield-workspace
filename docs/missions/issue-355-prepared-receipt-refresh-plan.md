@@ -5,8 +5,10 @@
 - Parent proving campaign: `#341`
 - Triggering correction: `#353`
 - Repository: `RanSolo/shield-workspace`
-- Branch: `agent/issue-355-prepared-receipt-refresh`
-- Planning base and pre-plan HEAD: `887c7bcf5cd457129fd376a73b2047a0ea5f8cb0`
+- Branch: `agent/issue-355-prepared-receipt-refresh-v2`
+- Planning base and pre-plan HEAD: `b977e7c78cd12e270b177c0097b73e69a34e01f8`
+- Plan revision: the exact commit containing this file, supplied to Fury and
+  Coulson from Git rather than inferred from prose
 - Subject: `github:RanSolo/shield-workspace/issue/355`
 - Preserved mission: `mission:issue-341-cold-hill-intake`
 - Preserved historical Fury receipt: `receipt:kvJpFeA5sXIxpjS78gw26U9svFbdV320`
@@ -20,8 +22,8 @@ legitimately advanced after the original preparation receipt was installed.
 `shield doctor` therefore reports `stale_or_malformed_worktree_state`, and an
 authority-none `shield worktree prepare` retry returns
 `prepared_state_stale`. The immutable V1 receipt has no supported successor
-operation, so a reusable Alpha, Bravo, or Hill worktree becomes permanently
-unusable after ordinary forward delivery.
+operation on current main, so a reusable Alpha, Bravo, or Hill worktree becomes
+permanently unusable after ordinary forward delivery.
 
 No journal, authority, signer, audit artifact, dispatch receipt, passcode, or
 historical evidence was modified while reproducing the stop.
@@ -33,7 +35,8 @@ refresh an exact prepared-worktree receipt after a proven clean same-branch
 fast-forward. The caller supplies only source and destination roots. The host
 derives the predecessor, current repository state, ancestry, policy, tracked
 baseline, and successor identity. No separate repair ritual or caller-authored
-refresh packet is introduced.
+refresh packet is introduced for the healthy clean-fast-forward case. Unsafe or
+uncertain lock state remains an explicit disposition boundary.
 
 ## Contract
 
@@ -120,10 +123,16 @@ refresh packet is introduced.
    | exact predecessor archive plus exact mutually-bound new active, no temp/lock | `already_refreshed`, no writes |
    | new active without its exact predecessor archive | `recovery_required` |
    | any temporary/staging path without a provably live owned operation | `recovery_required`, no cleanup |
-   | any pre-existing lock | `preparation_in_progress`, no cleanup or mutation |
+   | any pre-existing lock | `preparation_in_progress`, no cleanup or mutation; operator disposition is required because V2 has no trusted cross-process liveness oracle |
    | malformed/substituted archive or active receipt | `prepared_state_stale` before mutation |
    | archive plus old active after an interrupted pre-replacement sync | resume only after exact archive/readback and all live facts revalidate |
    | archive plus new active after replacement or directory-sync uncertainty | exact replay succeeds only after active/archive mutual binding and all live facts revalidate; otherwise `recovery_required` |
+
+   V2 does not claim automatic stale-lock recovery. A pre-existing lock remains
+   an explicit external/manual disposition boundary; the command never guesses
+   that another process is dead or deletes an unowned lock. This narrower
+   boundary is separate from deterministic replay of exact archive/active
+   receipt states.
 
    File-create, file-sync, archive readback, successor-create, successor-sync,
    atomic replacement, active readback, directory-sync, and lock-release are
@@ -146,9 +155,9 @@ refresh packet is introduced.
    predecessor, missing or substituted archive, broken predecessor chain,
    policy drift, unsafe mission-state identity, or repository drift remains
    unhealthy.
-8. Upgrade the legacy and committed-plan reviewed-transition hosts through the
-   explicit V1-or-V2 file-aware chain validator. Each consumer independently
-   observes and binds active receipt root, repository, common Git directory,
+8. Upgrade the committed-plan reviewed-transition host present on current main
+   through the explicit V1-or-V2 file-aware chain validator. The consumer
+   independently observes and binds active receipt root, repository, common Git directory,
    branch, HEAD, policy bytes, and—when V2—the exact archived predecessor chain
    before consuming provenance. It then continues to independently reobserve
    journal, signer, dispatch, plan, and authority facts. The strict V1 validator
@@ -163,10 +172,10 @@ refresh packet is introduced.
 | WRF-3 | Successor binds current branch/HEAD and exact predecessor identity. | V2 validator and substitution vectors. |
 | WRF-4 | Policy, tracked baseline, and configured mission-root identities remain exact; refresh never writes mission contents. | Retained descriptors plus representative before/after byte fixtures. |
 | WRF-5 | Dirty, detached, branch-renamed, rewritten, divergent, repository/policy/baseline drift fails before mutation. | One negative vector per boundary. |
-| WRF-6 | Archive, active replacement, concurrency, interruption, and durability uncertainty fail closed and recover deterministically. | Fault-injection and race matrix. |
+| WRF-6 | Archive, active replacement, concurrency, interruption, and durability uncertainty produce deterministic fail-closed outcomes; exact durable states replay, while an unowned pre-existing lock requires explicit external disposition. | Fault-injection and race matrix. |
 | WRF-7 | Doctor recognizes only a complete exact successor chain as healthy. | Doctor/config tests for valid and malformed chains. |
 | WRF-8 | Package and CLI surfaces remain closed and backward compatible. | Package consumer, help, JSON, and human projection tests. |
-| WRF-9 | Preserved #341 mission advances beyond `prepared_state_stale` without repeated intake, planning, or human decisions. | Exact proving replay with tool host `887c7bc`. |
+| WRF-9 | The refreshed prepared-worktree lane passes Doctor and is ready for the separately governed #341 continuation without repeated intake, planning, or human decisions. | Exact `worktree prepare` replay and Doctor using the current implementation HEAD. |
 
 ## Bounded paths
 
@@ -174,13 +183,11 @@ refresh packet is introduced.
 - `docs/operations/worktree-state.md`
 - `packages/shield-team-system/src/worktree-state-v1.mts`
 - `packages/shield-team-system/src/cli.mts`
-- `packages/shield-team-system/src/legacy-reviewed-transition-v1.mts`
 - `packages/shield-team-system/src/copilot-fury-reviewed-transition-host-v1.mts`
 - `packages/shield-team-system/tests/worktree-state-v1.test.mjs`
 - `packages/shield-team-system/tests/cli.test.mjs`
 - `packages/shield-team-system/tests/config.test.mjs`
 - `packages/shield-team-system/tests/package-surface.test.mjs`
-- `packages/shield-team-system/tests/legacy-reviewed-transition-v1.test.mjs`
 - `packages/shield-team-system/tests/copilot-fury-reviewed-transition-host-v1.test.mjs`
 
 No mission journal schema, reviewed-transition plan/result/dispatch contract,
@@ -191,9 +198,14 @@ or unrelated Nx project change is in scope.
 ## Validation
 
 - `npm exec -- nx run @shield/team-system:build`
-- focused worktree-state, CLI, config, and package-surface tests
-- `npm exec -- nx affected -t build test --base=887c7bcf5cd457129fd376a73b2047a0ea5f8cb0 --head=<exact-implementation-head> --exclude=@shield/multiband --nxBail`
-- `git diff --check 887c7bcf5cd457129fd376a73b2047a0ea5f8cb0..<exact-implementation-head>`
+- focused worktree-state, CLI, config, committed-plan-host, and package-surface tests
+- complete `@shield/team-system:test`, including the four merged #248 relay
+  contract/store suites, with normal Nx cache enabled
+- `npm exec -- nx affected -t build test --base=b977e7c78cd12e270b177c0097b73e69a34e01f8 --head=<exact-implementation-head> --exclude=@shield/multiband --nxBail`
+- `git diff --check b977e7c78cd12e270b177c0097b73e69a34e01f8..<exact-implementation-head>`
+- changed-path allowlist proof must show zero modifications to
+  `feature-flight-relay.mjs`, `feature-flight-relay-store.mjs`, or either #248
+  relay test file
 
 ## Stop conditions
 
@@ -204,8 +216,8 @@ reinterpretation, human authority change, or scope outside the bounded paths.
 
 ## Proving disposition
 
-After Mack and Fury technical clearance, rebuild the external tool host and run
-the same #341 `worktree prepare` followed by
-`continue-legacy-reviewed-transition`. Preserve the old REVISE receipt and all
-mission evidence. Record and immediately pursue the next deterministic rail
+After Mack and Fury technical clearance, rebuild the current tool host and run
+the same #341 `worktree prepare` followed by Doctor. Preserve the old mission,
+review, and authority evidence unchanged. The separately governed #341 lane may
+then continue from its durable state and record the next deterministic rail
 edge. #355 contributes to but does not close #341.
