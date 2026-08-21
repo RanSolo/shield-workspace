@@ -83,8 +83,8 @@ No later failure may mask an earlier malformed or uncertain durable state.
 - Focused relay contract and store tests through the `@shield/team-system` Nx target.
 - Explicit contract cases: completed/failed/cancelled accepted; started/interrupted/resumed rejected; malformed or ambiguous replay rejected; every source and recipient identity mismatch rejected.
 - Explicit store cases: exact retry without append, conflicting identity, canonical-byte stability, global/per-relay chain replay, concurrent claim, partial write, sync/close/readback uncertainty, interruption, symlink/alias/mode/inode replacement, and rollback recovery.
-- Cache-enabled Nx affected build/test from exact base to exact implementation HEAD.
-- Confirm the affected project set; do not run Multiband unless Nx classifies it as affected.
+- Use Nx affected discovery from exact base to exact implementation HEAD to record the complete downstream project set.
+- Run cache-enabled `@shield/team-system:build` and `@shield/team-system:test` for this Team System-owned slice. Do not make the unrelated Multiband application build/test a release condition: its page-data build requires repository-external application environment such as `POSTGRES_PRISMA_URL` and Google Fonts network access. Record Multiband when it appears in the affected graph, but validate it only in a mission that supplies that application's explicit environment contract.
 - `git diff --check` and exact changed-path allowlist verification.
 
 ## Explicit exclusions
