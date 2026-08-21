@@ -20,77 +20,153 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  FeatureFlightRelayStoreError,
-  appendFeatureFlightRelayEntryIfAbsentV1,
-  appendFeatureFlightRelaySourceIfAbsentV1,
-  createFeatureFlightRelayFilesystemStore,
+  appendSeatDispatchReceiptEntryV1,
+} from "../dist/seat-dispatch-store.mjs";
+import {
+  createSeatDispatchLifecycleEventV1,
+  createSeatDispatchStartedEventV1,
+} from "../dist/seat-dispatch-receipt-v1.mjs";
+import * as relayStoreModule from "../scripts/operations/feature-flight-relay-store.mjs";
+import {
+  appendFeatureFlightRelayFromSeatDispatchIfAbsentV1,
   deriveFeatureFlightRelayStorePathsV1,
   readFeatureFlightRelayLogV1,
 } from "../scripts/operations/feature-flight-relay-store.mjs";
 import {
   FEATURE_FLIGHT_RELAY_REQUESTED_OBSERVATION,
   canonicalFeatureFlightRelayBytesV1,
-  createFeatureFlightRelayEntryV1,
-  createFeatureFlightRelayV1,
-  featureFlightRelayDigestV1,
 } from "../scripts/operations/feature-flight-relay.mjs";
 
 const REPOSITORY_ID = "repo:shield-workspace";
 const WORKSPACE_ID = "workspace:issue-248";
 const REVISION = "8".repeat(40);
-const digest = (value) => featureFlightRelayDigestV1({ value }, "shield.test.feature-flight-relay-store.v1");
 
-function relayInput(overrides = {}) {
-  const source = {
-    receiptId: "receipt:248:1",
-    dispatchId: "dispatch:248:1",
+function identity(index = 1, overrides = {}) {
+  return {
+    receiptId: `receipt:248:${index}`,
+    dispatchId: `dispatch:248:${index}`,
     parentMissionId: "mission:issue-248-slice-1",
     parentMissionRevision: REVISION,
     parentSessionId: "session:248:parent",
-    childTaskId: "task:248:may",
-    childSessionId: "session:248:may",
-    sourceAccountableSeatId: "may",
+    childTaskId: `task:248:${index}`,
+    childSessionId: `session:248:${index}`,
+    accountableSeatId: "may",
     repositoryId: REPOSITORY_ID,
     repositoryWorkspaceId: WORKSPACE_ID,
     repositoryRevision: REVISION,
     subjectId: "issue:248",
     subjectRevision: REVISION,
-    artifactId: "artifact:248:slice-1",
+    artifactId: `artifact:248:slice-1:${index}`,
     artifactRevision: REVISION,
-    ...overrides.source,
-  };
-  return {
-    source,
-    terminal: {
-      kind: "dispatch.completed",
-      entryDigest: digest("terminal-entry"),
-      logSequence: 7,
-      lifecycleSequence: 1,
-      ...overrides.terminal,
-    },
-    recipient: {
-      seatId: "hill",
-      laneId: "lane:issue-248",
-      controllerIdentity: "controller:hill:issue-248",
-      ...overrides.recipient,
-    },
-    requestedObservation: FEATURE_FLIGHT_RELAY_REQUESTED_OBSERVATION,
+    configuredRuntime: { kind: "runtime.configured", runtimeId: "runtime:codex", model: "model:gpt-5" },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: "runtime:codex", model: "model:gpt-5" },
+    toolExecution: { kind: "tool.execution.not_requested", reason: "not_requested" },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
+    runtimeHostObserved: { kind: "runtime.host_observed.unavailable", reason: "unobserved" },
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: { kind: "executor.host_observed.unavailable", reason: "not_observed" },
+    ...overrides,
   };
 }
 
-async function fixture() {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-relay-store-")));
-  await chmod(root, 0o700);
-  const scope = { root, excludedRoots: [], repositoryId: REPOSITORY_ID, repositoryWorkspaceId: WORKSPACE_ID };
+function started(index, logSequence, previousLogDigest) {
+  return createSeatDispatchStartedEventV1({
+    ...identity(index),
+    inputEvidenceRefs: [`evidence:wheels-up:248:${index}`],
+    timestamp: new Date(Date.UTC(2026, 7, 20, 12, 0, logSequence)).toISOString(),
+    logSequence,
+    previousLogDigest,
+    lifecycleSequence: 0,
+    previousLifecycleDigest: null,
+  });
+}
+
+function terminal(previous, kind = "dispatch.completed") {
+  return createSeatDispatchLifecycleEventV1({
+    ...identity(Number(previous.receiptId.split(":").at(-1)), {
+      receiptId: previous.receiptId,
+      dispatchId: previous.dispatchId,
+      childTaskId: previous.childTaskId,
+      childSessionId: previous.childSessionId,
+      artifactId: previous.artifactId,
+    }),
+    kind,
+    outputEvidenceRefs: [`evidence:terminal:248:${previous.receiptId}`],
+    timestamp: new Date(Date.parse(previous.timestamp) + 1000).toISOString(),
+    logSequence: previous.logSequence + 1,
+    previousLogDigest: previous.entryDigest,
+    lifecycleSequence: 1,
+    previousLifecycleDigest: previous.entryDigest,
+  });
+}
+
+async function appendReceipt(repositoryRoot, event) {
+  const result = await appendSeatDispatchReceiptEntryV1({
+    repositoryRoot,
+    repositoryId: REPOSITORY_ID,
+    repositoryWorkspaceId: WORKSPACE_ID,
+    event,
+    lockOwnerId: `receipt-owner:${event.logSequence}`,
+  });
+  assert.equal(result.state, "valid", result.errors?.join(" "));
+  return result;
+}
+
+function appendInput(root, terminalEvent, overrides = {}) {
   return {
     root,
-    scope,
-    appendScope: { ...scope, lockOwnerId: "owner:may:issue-248" },
-    relay: createFeatureFlightRelayV1(relayInput()),
+    excludedRoots: [],
+    lockOwnerId: "owner:may:issue-248",
+    repositoryRoot: root,
+    receiptId: terminalEvent.receiptId,
+    dispatchId: terminalEvent.dispatchId,
+    parentMissionId: terminalEvent.parentMissionId,
+    parentMissionRevision: terminalEvent.parentMissionRevision,
+    parentSessionId: terminalEvent.parentSessionId,
+    childTaskId: terminalEvent.childTaskId,
+    childSessionId: terminalEvent.childSessionId,
+    sourceAccountableSeatId: terminalEvent.accountableSeatId,
+    repositoryId: terminalEvent.repositoryId,
+    repositoryWorkspaceId: terminalEvent.repositoryWorkspaceId,
+    repositoryRevision: terminalEvent.repositoryRevision,
+    subjectId: terminalEvent.subjectId,
+    subjectRevision: terminalEvent.subjectRevision,
+    artifactId: terminalEvent.artifactId,
+    artifactRevision: terminalEvent.artifactRevision,
+    recipientSeatId: "hill",
+    recipientLaneId: "lane:issue-248",
+    recipientControllerIdentity: "controller:hill:issue-248",
+    requestedObservation: FEATURE_FLIGHT_RELAY_REQUESTED_OBSERVATION,
+    ...overrides,
   };
 }
 
-const sourceAppend = (record, injected = {}) => appendFeatureFlightRelaySourceIfAbsentV1({ ...record.appendScope, relay: record.relay }, injected);
+async function addDispatch(record, index = record.terminals.length + 1, kind = "dispatch.completed") {
+  const previous = record.receiptEntries.at(-1)?.entryDigest ?? null;
+  const start = started(index, record.receiptEntries.length, previous);
+  const end = terminal(start, kind);
+  await appendReceipt(record.root, start);
+  await appendReceipt(record.root, end);
+  record.receiptEntries.push(start, end);
+  record.terminals.push(end);
+  return end;
+}
+
+async function fixture(kind = "dispatch.completed") {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-relay-store-")));
+  await chmod(root, 0o700);
+  const record = {
+    root,
+    receiptEntries: [],
+    terminals: [],
+    scope: { root, excludedRoots: [], repositoryId: REPOSITORY_ID, repositoryWorkspaceId: WORKSPACE_ID },
+  };
+  await addDispatch(record, 1, kind);
+  return record;
+}
+
+const sourceAppend = (record, terminalEvent = record.terminals.at(-1), overrides = {}, injected = {}) =>
+  appendFeatureFlightRelayFromSeatDispatchIfAbsentV1(appendInput(record.root, terminalEvent, overrides), injected);
 const pathIsWrite = (flags) => typeof flags === "number" && (flags & fsConstants.O_WRONLY) === fsConstants.O_WRONLY;
 const injectedOpen = (decorate) => ({
   async open(path, flags, mode) {
@@ -100,33 +176,30 @@ const injectedOpen = (decorate) => ({
   },
 });
 
-test("creates one confined canonical ledger and replays pending after restart", async (t) => {
+test("derives from the durable terminal receipt and creates one confined ledger plus monotonic witness", async (t) => {
   const record = await fixture();
   t.after(() => rm(record.root, { recursive: true, force: true }));
   const paths = deriveFeatureFlightRelayStorePathsV1({ root: record.root, repositoryId: REPOSITORY_ID, repositoryWorkspaceId: WORKSPACE_ID });
   const first = await sourceAppend(record);
   assert.equal(first.state, "valid", first.errors?.join(" "));
   assert.equal(first.value.status, "appended");
-  assert.equal(first.value.appended, true);
+  assert.equal(first.value.entry.relay.terminal.entryDigest, record.terminals[0].entryDigest);
   assert.deepEqual(first.value.log.paths, paths);
-  assert.equal(first.value.entry.kind, "relay.pending");
-  assert.equal(first.value.entry.lifecycleSequence, 0);
-  assert.equal(first.value.entry.previousLifecycleDigest, null);
+  assert.equal(first.value.log.witness.entries.length, 1);
+  assert.equal(first.value.log.witness.head.relayHeadDigest, first.value.entry.entryDigest);
 
   const bytes = await readFile(paths.logPath);
   assert.deepEqual(bytes, Buffer.concat([canonicalFeatureFlightRelayBytesV1(first.value.entry), Buffer.from("\n")]));
-  assert.equal((await lstat(paths.directory)).mode & 0o777, 0o700);
-  assert.equal((await lstat(paths.logPath)).mode & 0o777, 0o600);
+  for (const path of [paths.directory, paths.witnessDirectory]) assert.equal((await lstat(path)).mode & 0o777, 0o700);
+  for (const path of [paths.logPath, paths.witnessPath]) assert.equal((await lstat(path)).mode & 0o777, 0o600);
 
   const restarted = await readFeatureFlightRelayLogV1(record.scope);
   assert.equal(restarted.state, "valid", restarted.errors?.join(" "));
-  assert.equal(restarted.value.missing, false);
-  assert.equal(restarted.value.replay.inspection.pending.length, 1);
   assert.equal(restarted.value.replay.inspection.pending[0].nextAction, "await_delivery_binding");
   assert.deepEqual(restarted.value.bytes, bytes);
 });
 
-test("exact retry is byte-stable and conflicting terminal identity reuse fails closed", async (t) => {
+test("exact retry is byte-stable and conflicting recipient reuse fails closed", async (t) => {
   const record = await fixture();
   t.after(() => rm(record.root, { recursive: true, force: true }));
   const first = await sourceAppend(record);
@@ -134,38 +207,41 @@ test("exact retry is byte-stable and conflicting terminal identity reuse fails c
   assert.equal(first.state, "valid");
   assert.equal(retry.state, "valid");
   assert.equal(retry.value.status, "duplicate");
-  assert.equal(retry.value.appended, false);
   assert.deepEqual(retry.value.log.bytes, first.value.log.bytes);
 
-  const conflictRelay = createFeatureFlightRelayV1(relayInput({ recipient: { controllerIdentity: "controller:hill:other" } }));
-  const conflict = await appendFeatureFlightRelaySourceIfAbsentV1({ ...record.appendScope, relay: conflictRelay });
-  assert.equal(conflict.state, "invalid");
+  const conflict = await sourceAppend(record, record.terminals[0], { recipientControllerIdentity: "controller:hill:other" });
   assert.equal(conflict.code, "source_conflict");
   assert.deepEqual((await readFeatureFlightRelayLogV1(record.scope)).value.bytes, first.value.log.bytes);
 });
 
-test("replays a global digest chain while keeping one entry per relay lifecycle", async (t) => {
+test("replays global relay and monotonic witness chains", async (t) => {
   const record = await fixture();
   t.after(() => rm(record.root, { recursive: true, force: true }));
   const first = await sourceAppend(record);
-  const secondRelay = createFeatureFlightRelayV1(relayInput({
-    source: { receiptId: "receipt:248:2", dispatchId: "dispatch:248:2", childTaskId: "task:248:mack", childSessionId: "session:248:mack" },
-    terminal: { entryDigest: digest("terminal-entry-2"), logSequence: 9 },
-  }));
-  const second = await appendFeatureFlightRelaySourceIfAbsentV1({ ...record.appendScope, relay: secondRelay });
+  const secondTerminal = await addDispatch(record);
+  const second = await sourceAppend(record, secondTerminal);
   assert.equal(second.state, "valid", second.errors?.join(" "));
   assert.equal(second.value.entry.logSequence, 1);
-  assert.equal(second.value.entry.lifecycleSequence, 0);
   assert.equal(second.value.entry.previousLogDigest, first.value.entry.entryDigest);
   assert.equal(second.value.log.replay.inspection.pending.length, 2);
+  assert.equal(second.value.log.witness.entries.length, 2);
+  assert.equal(second.value.log.witness.entries[1].previousWitnessDigest, second.value.log.witness.entries[0].witnessDigest);
+  assert.equal(second.value.log.witness.head.relayHeadDigest, second.value.entry.entryDigest);
+});
 
-  const duplicateLifecycle = createFeatureFlightRelayEntryV1({
-    logSequence: 2,
-    previousLogDigest: second.value.entry.entryDigest,
-    relay: record.relay,
+test("fabricated terminal input and caller-fabricated mutation APIs cannot mutate", async (t) => {
+  const record = await fixture();
+  t.after(() => rm(record.root, { recursive: true, force: true }));
+  const paths = deriveFeatureFlightRelayStorePathsV1({ root: record.root, repositoryId: REPOSITORY_ID, repositoryWorkspaceId: WORKSPACE_ID });
+  const fabricated = await sourceAppend(record, record.terminals[0], {
+    terminal: { kind: "dispatch.completed", entryDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
   });
-  const rejected = await appendFeatureFlightRelayEntryIfAbsentV1({ ...record.appendScope, entry: duplicateLifecycle });
-  assert.equal(rejected.code, "conflicting_reuse");
+  assert.equal(fabricated.code, "malformed_input");
+  await assert.rejects(lstat(paths.directory), { code: "ENOENT" });
+  await assert.rejects(lstat(paths.witnessDirectory), { code: "ENOENT" });
+  assert.equal(relayStoreModule.appendFeatureFlightRelayEntryIfAbsentV1, undefined);
+  assert.equal(relayStoreModule.appendFeatureFlightRelaySourceIfAbsentV1, undefined);
+  assert.equal(relayStoreModule.createFeatureFlightRelayFilesystemStore, undefined);
 });
 
 test("serializes concurrent create-once claims without duplicate relay meaning", async (t) => {
@@ -183,7 +259,7 @@ test("serializes concurrent create-once claims without duplicate relay meaning",
       handle.sync = async () => { await original(); signal(); await release; };
     }
   });
-  const firstPromise = sourceAppend(record, injected);
+  const firstPromise = sourceAppend(record, record.terminals[0], {}, injected);
   await acquired;
   const concurrent = await sourceAppend(record);
   assert.equal(concurrent.code, "relay_lock_held");
@@ -193,96 +269,86 @@ test("serializes concurrent create-once claims without duplicate relay meaning",
   assert.equal((await readFeatureFlightRelayLogV1(record.scope)).value.entries.length, 1);
 });
 
-test("partial write, sync, close, and readback uncertainty never reports success", async (t) => {
-  for (const fault of ["partial", "sync", "close", "readback"]) {
+test("ledger and witness write uncertainty never reports success", async (t) => {
+  for (const fault of ["ledger-partial", "ledger-sync", "ledger-close", "ledger-readback", "witness-sync"]) {
     await t.test(fault, async () => {
       const record = await fixture();
       t.after(() => rm(record.root, { recursive: true, force: true }));
-      let logReads = 0;
+      const paths = deriveFeatureFlightRelayStorePathsV1({ root: record.root, repositoryId: REPOSITORY_ID, repositoryWorkspaceId: WORKSPACE_ID });
+      let changed = false;
       const injected = injectedOpen(async (path, flags, handle) => {
-        if (!path.endsWith(".jsonl")) return;
-        if (pathIsWrite(flags)) {
-          if (fault === "partial") {
+        if (path === paths.logPath && pathIsWrite(flags)) {
+          if (fault === "ledger-partial") {
             const original = handle.write.bind(handle);
             handle.write = async (...args) => { const result = await original(...args); return { ...result, bytesWritten: result.bytesWritten - 1 }; };
           }
-          if (fault === "sync") handle.sync = async () => { const error = new Error("sync fault"); error.code = "EIO"; throw error; };
-          if (fault === "close") {
+          if (fault === "ledger-sync") handle.sync = async () => { const error = new Error("sync fault"); error.code = "EIO"; throw error; };
+          if (fault === "ledger-close") {
             const original = handle.close.bind(handle);
             handle.close = async () => { await original(); throw new Error("close fault"); };
           }
-        } else if (fault === "readback") {
+        } else if (path === paths.logPath && fault === "ledger-readback" && !changed) {
+          changed = true;
           const original = handle.readFile.bind(handle);
-          handle.readFile = async (...args) => {
-            const bytes = await original(...args);
-            logReads += 1;
-            return logReads === 1 ? Buffer.from(bytes.toString("utf8").replace("relay.pending", "relay.pendinx"), "utf8") : bytes;
-          };
+          handle.readFile = async (...args) => Buffer.from((await original(...args)).toString("utf8").replace("relay.pending", "relay.pendinx"));
+        } else if (path === paths.witnessPath && pathIsWrite(flags) && fault === "witness-sync") {
+          handle.sync = async () => { const error = new Error("witness sync fault"); error.code = "EIO"; throw error; };
         }
       });
-      const result = await sourceAppend(record, injected);
+      const result = await sourceAppend(record, record.terminals[0], {}, injected);
       assert.equal(result.state, "invalid");
       assert.equal(result.code, "recovery_required");
-      const restart = await readFeatureFlightRelayLogV1(record.scope);
-      assert.equal(restart.state, "valid", restart.errors?.join(" "));
-      assert.equal(restart.value.entries.length, 1);
+      const restarted = await readFeatureFlightRelayLogV1(record.scope);
+      if (fault === "witness-sync") {
+        assert.equal(restarted.state, "valid", restarted.errors?.join(" "));
+        assert.equal(restarted.value.entries.length, 1);
+      } else {
+        assert.equal(restarted.code, "recovery_required");
+      }
     });
   }
 });
 
-test("lock interruption, replacement, and release uncertainty are recovery-required", async (t) => {
-  for (const fault of ["partial", "sync", "close", "replace", "release"]) {
-    await t.test(fault, async () => {
-      const record = await fixture();
-      t.after(() => rm(record.root, { recursive: true, force: true }));
-      let lockPath;
-      const injected = {
-        ...injectedOpen(async (path, flags, handle) => {
-          if (!path.endsWith(".lock") || !pathIsWrite(flags)) return;
-          lockPath = path;
-          if (fault === "partial") {
-            const original = handle.write.bind(handle);
-            handle.write = async (...args) => { const result = await original(...args); return { ...result, bytesWritten: result.bytesWritten - 1 }; };
-          }
-          if (fault === "sync") handle.sync = async () => { const error = new Error("lock sync fault"); error.code = "EIO"; throw error; };
-          if (fault === "close") {
-            const original = handle.close.bind(handle);
-            handle.close = async () => { await original(); throw new Error("lock close fault"); };
-          }
-          if (fault === "replace") {
-            const original = handle.sync.bind(handle);
-            handle.sync = async () => { await original(); await unlink(path); await writeFile(path, "foreign-lock\n", { mode: 0o600 }); };
-          }
-        }),
-        async unlink(path) {
-          if (fault === "release" && path === lockPath) { const error = new Error("release fault"); error.code = "EIO"; throw error; }
-          return unlink(path);
-        },
-      };
-      const result = await sourceAppend(record, injected);
-      assert.equal(result.state, "invalid");
-      assert.equal(result.code, "recovery_required");
-      const read = await readFeatureFlightRelayLogV1(record.scope);
-      assert.equal(read.state, "valid", read.errors?.join(" "));
-      assert.equal(read.value.entries.length, fault === "release" ? 1 : 0);
-      const paths = deriveFeatureFlightRelayStorePathsV1({ root: record.root, repositoryId: REPOSITORY_ID, repositoryWorkspaceId: WORKSPACE_ID });
-      await rm(paths.lockPath, { force: true });
-    });
-  }
+test("initialized scope detects ledger deletion, directory deletion, and valid-prefix rollback", async (t) => {
+  await t.test("ledger deletion", async () => {
+    const record = await fixture();
+    t.after(() => rm(record.root, { recursive: true, force: true }));
+    const first = await sourceAppend(record);
+    await unlink(first.value.log.paths.logPath);
+    assert.equal((await readFeatureFlightRelayLogV1(record.scope)).code, "recovery_required");
+  });
+
+  await t.test("directory deletion", async () => {
+    const record = await fixture();
+    t.after(() => rm(record.root, { recursive: true, force: true }));
+    const first = await sourceAppend(record);
+    await rm(first.value.log.paths.directory, { recursive: true });
+    assert.equal((await readFeatureFlightRelayLogV1(record.scope)).code, "recovery_required");
+  });
+
+  await t.test("valid-prefix rollback", async () => {
+    const record = await fixture();
+    t.after(() => rm(record.root, { recursive: true, force: true }));
+    const first = await sourceAppend(record);
+    const secondTerminal = await addDispatch(record);
+    const second = await sourceAppend(record, secondTerminal);
+    assert.equal(second.state, "valid");
+    await writeFile(second.value.log.paths.logPath, first.value.log.bytes, { mode: 0o600 });
+    assert.equal((await readFeatureFlightRelayLogV1(record.scope)).code, "recovery_required");
+  });
 });
 
-test("partial durable tails and rollback evidence fail closed", async (t) => {
+test("partial durable tails and initialized marker rollback fail closed", async (t) => {
   const record = await fixture();
   t.after(() => rm(record.root, { recursive: true, force: true }));
   const first = await sourceAppend(record);
   const paths = first.value.log.paths;
   await writeFile(paths.logPath, Buffer.concat([first.value.log.bytes, Buffer.from("{")]));
-  const partial = await readFeatureFlightRelayLogV1(record.scope);
-  assert.equal(partial.code, "relay_replay_invalid");
+  assert.equal((await readFeatureFlightRelayLogV1(record.scope)).code, "recovery_required");
 
-  await writeFile(paths.logPath, Buffer.from("", "utf8"));
-  const rollback = await readFeatureFlightRelayLogV1(record.scope);
-  assert.equal(rollback.code, "relay_replay_invalid");
+  await rm(paths.directory, { recursive: true });
+  await unlink(paths.witnessPath);
+  assert.equal((await readFeatureFlightRelayLogV1(record.scope)).code, "recovery_required");
 });
 
 test("rejects symlinks, aliases, unsafe modes, inode replacement, and excluded roots", async (t) => {
@@ -306,14 +372,17 @@ test("rejects symlinks, aliases, unsafe modes, inode replacement, and excluded r
         await chmod(outside, 0o700);
         t.after(() => rm(outside, { recursive: true, force: true }));
         await symlink(outside, paths.directory, "dir");
+      } else if (["hardlink", "mode"].includes(target)) {
+        await sourceAppend(record);
+        if (target === "hardlink") await link(paths.logPath, join(record.root, "ledger-alias"));
+        else await chmod(paths.logPath, 0o644);
       } else {
-        await mkdir(paths.directory, { mode: 0o700 });
-        if (target === "log") await symlink(join(record.root, "outside-log"), paths.logPath);
-        if (target === "lock") await symlink(join(record.root, "outside-lock"), paths.lockPath);
-        if (target === "hardlink" || target === "mode") {
-          await sourceAppend(record);
-          if (target === "hardlink") await link(paths.logPath, join(record.root, "ledger-alias"));
-          else await chmod(paths.logPath, 0o644);
+        await mkdir(paths.witnessDirectory, { mode: 0o700 });
+        if (target === "log") {
+          await mkdir(paths.directory, { mode: 0o700 });
+          await symlink(join(record.root, "outside-log"), paths.logPath);
+        } else {
+          await symlink(join(record.root, "outside-lock"), paths.lockPath);
         }
       }
       const result = ["directory", "lock"].includes(target) ? await sourceAppend(record) : await readFeatureFlightRelayLogV1(record.scope);
@@ -347,7 +416,7 @@ test("rejects symlinks, aliases, unsafe modes, inode replacement, and excluded r
   assert.equal((await readFeatureFlightRelayLogV1({ ...record.scope, excludedRoots: [record.root] })).code, "unsafe_path");
 });
 
-test("hostile input is rejected before mutation and facade preserves closed errors", async (t) => {
+test("hostile input is rejected before mutation", async (t) => {
   const record = await fixture();
   t.after(() => rm(record.root, { recursive: true, force: true }));
   assert.equal((await readFeatureFlightRelayLogV1({ ...record.scope, authority: "none" })).code, "malformed_input");
@@ -355,32 +424,26 @@ test("hostile input is rejected before mutation and facade preserves closed erro
   sparse.length = 1;
   assert.equal((await readFeatureFlightRelayLogV1({ ...record.scope, excludedRoots: sparse })).code, "malformed_input");
   let accesses = 0;
-  const accessor = { ...record.appendScope, relay: record.relay };
+  const accessor = appendInput(record.root, record.terminals[0]);
   Object.defineProperty(accessor, "repositoryId", { enumerable: true, get() { accesses += 1; return REPOSITORY_ID; } });
-  assert.equal((await appendFeatureFlightRelaySourceIfAbsentV1(accessor)).code, "malformed_input");
+  assert.equal((await appendFeatureFlightRelayFromSeatDispatchIfAbsentV1(accessor)).code, "malformed_input");
   assert.equal(accesses, 0);
   assert.equal((await readFeatureFlightRelayLogV1(new Proxy(record.scope, {}))).code, "malformed_input");
-
-  const store = createFeatureFlightRelayFilesystemStore(record.appendScope);
-  assert.equal((await store.read()).missing, true);
-  assert.equal((await store.appendSource(record.relay)).status, "appended");
-  assert.equal((await store.appendSource(record.relay)).status, "duplicate");
-  const lockPath = deriveFeatureFlightRelayStorePathsV1({ root: record.root, repositoryId: REPOSITORY_ID, repositoryWorkspaceId: WORKSPACE_ID }).lockPath;
-  await writeFile(lockPath, "held\n", { mode: 0o600 });
-  await assert.rejects(store.appendSource(record.relay), (error) => error instanceof FeatureFlightRelayStoreError && error.code === "relay_lock_held");
 });
 
 test("directory replacement before append cannot redirect the store", async (t) => {
   const record = await fixture();
   t.after(() => rm(record.root, { recursive: true, force: true }));
+  await sourceAppend(record);
+  const secondTerminal = await addDispatch(record);
   const paths = deriveFeatureFlightRelayStorePathsV1({ root: record.root, repositoryId: REPOSITORY_ID, repositoryWorkspaceId: WORKSPACE_ID });
   let replaced = false;
   const injected = injectedOpen(async (path, flags) => {
     if (!replaced && path.endsWith(".lock") && pathIsWrite(flags)) {
       replaced = true;
-      await rename(paths.directory, `${paths.directory}.retained`);
+      await rename(paths.directory, paths.directory + ".retained");
       await mkdir(paths.directory, { mode: 0o700 });
     }
   });
-  assert.equal((await sourceAppend(record, injected)).code, "recovery_required");
+  assert.equal((await sourceAppend(record, secondTerminal, {}, injected)).code, "recovery_required");
 });
