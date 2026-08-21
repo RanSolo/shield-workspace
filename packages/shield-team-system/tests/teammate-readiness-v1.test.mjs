@@ -40,10 +40,10 @@ function cliEnvironment(overrides = {}) {
 function seatCard(seat) {
   const values = {
     hill: ["gpt-5.6-luna", "medium", "workspace-write"],
-    daisy: ["gpt-5.3-codex-spark", "medium", "read-only"],
+    daisy: ["gpt-5.6-terra", "medium", "read-only"],
     fury: ["gpt-5.6-sol", "high", "read-only"],
-    may: ["gpt-5.6-sol", "high", "workspace-write"],
-    mack: ["gpt-5.3-codex-spark", "medium", "workspace-write"],
+    may: ["gpt-5.6-luna", "high", "workspace-write"],
+    mack: ["gpt-5.6-terra", "medium", "workspace-write"],
   }[seat];
   return `name = "${seat}"\ndescription = "fixture"\nmodel = "${values[0]}"\nmodel_reasoning_effort = "${values[1]}"\nsandbox_mode = "${values[2]}"\ndeveloper_instructions = """\nfixture\n"""\n`;
 }
@@ -147,10 +147,10 @@ test("emits the closed report, exact machine-check order, and ordered unverified
   assert.equal(report.machineChecks[10].reasonCode, "uninitialized_worktree");
   assert.deepEqual(report.declarations, [
     ["hill", "gpt-5.6-luna", "medium", "workspace-write"],
-    ["daisy", "gpt-5.3-codex-spark", "medium", "read-only"],
+    ["daisy", "gpt-5.6-terra", "medium", "read-only"],
     ["fury", "gpt-5.6-sol", "high", "read-only"],
-    ["may", "gpt-5.6-sol", "high", "workspace-write"],
-    ["mack", "gpt-5.3-codex-spark", "medium", "workspace-write"],
+    ["may", "gpt-5.6-luna", "high", "workspace-write"],
+    ["mack", "gpt-5.6-terra", "medium", "workspace-write"],
   ].map(([seat, model, reasoningEffort, sandboxMode]) => ({
     source: "declared", seat, configFile: `.codex/agents/${seat}.toml`, name: seat,
     model, reasoningEffort, sandboxMode, repositoryInstructions: "AGENTS.md",
