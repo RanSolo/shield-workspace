@@ -162,6 +162,10 @@ import {
   type CopilotFuryReviewedTransitionHostDependenciesV1,
 } from "./copilot-fury-reviewed-transition-host-v1.mjs";
 import {
+  continueLegacyReviewedTransitionV1,
+  type LegacyReviewedTransitionDependenciesV1,
+} from "./legacy-reviewed-transition-v1.mjs";
+import {
   runFinalPublicationTransitionV1,
   type FinalPublicationClassificationV1,
   type FinalPublicationTransitionResultV1,
@@ -1379,6 +1383,27 @@ async function prepareReviewedTransition(
   return result.state === "materialized" || result.state === "already_materialized" || result.state === "completed" ? 0 : 1;
 }
 
+async function continueLegacyReviewedTransition(
+  args: string[],
+  dependencies: LegacyReviewedTransitionDependenciesV1 = {},
+  operation: typeof continueLegacyReviewedTransitionV1 = continueLegacyReviewedTransitionV1,
+): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--fury-model"], ["--json"]);
+  const root = await exactRoot(required(options, "--root"), true);
+  const result = await operation({
+    missionId: required(options, "--mission-id"),
+    repositoryRoot: root,
+    furyModel: required(options, "--fury-model"),
+  }, dependencies);
+  const human = result.state === "materialized" || result.state === "already_materialized"
+    ? `state: ${result.state}\ngraphId: ${result.graphId}`
+    : result.state === "completed"
+      ? `state: ${result.state}\ndisposition: ${result.disposition}`
+      : `state: ${result.state}\n${"code" in result ? `code: ${result.code}` : ""}`.trimEnd();
+  output(result, options.flags.has("--json"), human);
+  return result.state === "materialized" || result.state === "already_materialized" || result.state === "completed" ? 0 : 1;
+}
+
 function renderAlreadyAuthorized(result: Extract<Awaited<ReturnType<typeof resolvePreparedMissionTransitionV1>>, { state: "already_authorized" }>): string {
   return [
     `state: ${result.state}`,
@@ -2558,6 +2583,7 @@ export function missionUsage(): string {
     "  shield mission authorize-wheels-up --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission dispatch-fury-plan-review --request <file> [--root <path>] [--json]",
     "  shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <file> --fury-model <model-id> --root <path> [--json]",
+    "  shield mission continue-legacy-reviewed-transition --mission-id <id> --fury-model <model-id> --root <path> [--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
     "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission publish-reviewed --mission-id <id> --base-branch <branch> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest>] [--root <path>] [--passcode-stdin] [--human|--json]",
@@ -2582,6 +2608,8 @@ export async function runMissionCli(
     copilotFuryPlanDispatch?: CopilotFuryPlanDispatchDependenciesV1;
     copilotFuryReviewedTransition?: CopilotFuryReviewedTransitionHostDependenciesV1;
     prepareReviewedMissionTransition?: typeof prepareReviewedMissionTransitionV1;
+    legacyReviewedTransition?: LegacyReviewedTransitionDependenciesV1;
+    continueLegacyReviewedTransition?: typeof continueLegacyReviewedTransitionV1;
   }> = {},
 ): Promise<number> {
   const [group, action, ...rest] = args;
@@ -2594,6 +2622,9 @@ export async function runMissionCli(
       rest, dependencies.copilotFuryReviewedTransition, dependencies.prepareReviewedMissionTransition,
     );
     if (action === "record-reviewed-transition") return recordReviewedTransition(rest);
+    if (action === "continue-legacy-reviewed-transition") return continueLegacyReviewedTransition(
+      rest, dependencies.legacyReviewedTransition, dependencies.continueLegacyReviewedTransition,
+    );
     if (action === "prepare-next") return prepareNext(rest);
     if (action === "publish-reviewed") return publishReviewed(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
