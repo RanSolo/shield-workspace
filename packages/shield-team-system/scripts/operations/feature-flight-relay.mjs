@@ -7,10 +7,14 @@ import { readSeatDispatchReceiptLedgerV1 } from "../../dist/seat-dispatch-store.
 
 export const FEATURE_FLIGHT_RELAY_SCHEMA_VERSION = 1;
 export const FEATURE_FLIGHT_RELAY_CONTRACT_VERSION = "shield.feature-flight-relay.pending.v1";
+export const FEATURE_FLIGHT_RELAY_DELIVERED_CONTRACT_VERSION = "shield.feature-flight-relay.delivered.v1";
+export const FEATURE_FLIGHT_RELAY_DELIVERY_RECEIPT_CONTRACT_VERSION = "shield.feature-flight-relay.delivery-receipt.v1";
 export const FEATURE_FLIGHT_RELAY_NOTICE = "Advisory wake-up reference only. This relay grants no authority, permission, review, acceptance, delivery, or execution.";
 export const FEATURE_FLIGHT_RELAY_INSPECTION_NOTICE = "Read-only advisory projection. Await a separately authorized delivery binding.";
+export const FEATURE_FLIGHT_RELAY_DELIVERY_NOTICE = "Local delivery evidence only. This receipt grants no authority, permission, review, acceptance, acknowledgement, or execution.";
 export const FEATURE_FLIGHT_RELAY_REQUESTED_OBSERVATION = "observe_terminal_dispatch";
 export const FEATURE_FLIGHT_RELAY_NEXT_ACTION = "await_delivery_binding";
+export const FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION = "reread_authoritative_state_and_acknowledge";
 export const FEATURE_FLIGHT_RELAY_MAX_BYTES = 4096;
 export const FEATURE_FLIGHT_RELAY_MAX_LEDGER_ENTRIES = 4096;
 export const FEATURE_FLIGHT_RELAY_TERMINAL_KINDS = Object.freeze([
@@ -18,9 +22,21 @@ export const FEATURE_FLIGHT_RELAY_TERMINAL_KINDS = Object.freeze([
   "dispatch.failed",
   "dispatch.cancelled",
 ]);
+export const FEATURE_FLIGHT_RELAY_DELIVERY_RESULT_CODES = Object.freeze([
+  "relay_missing",
+  "delivery_missing",
+  "recipient_mismatch",
+  "source_stale",
+  "delivery_stale",
+  "duplicate",
+  "conflicting_reuse",
+  "illegal_transition",
+  "recovery_required",
+]);
 
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/u;
 const RELAY_ID = /^relay:[A-Za-z0-9_-]{43}$/u;
+const DELIVERY_KEY = /^relay-delivery:[A-Za-z0-9_-]{43}$/u;
 const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const TERMINAL_KINDS = new Set(FEATURE_FLIGHT_RELAY_TERMINAL_KINDS);
@@ -41,6 +57,12 @@ const ENTRY_FIELDS = [
   "schemaVersion", "artifactType", "contractVersion", "authority", "notice", "kind", "entryId", "entryDigest",
   "logSequence", "lifecycleSequence", "relayId", "relayDigest", "previousLogDigest", "previousLifecycleDigest", "relay",
 ];
+const DELIVERED_ENTRY_FIELDS = [...ENTRY_FIELDS, "deliveryReceipt"];
+const DELIVERY_RECEIPT_FIELDS = [
+  "schemaVersion", "artifactType", "contractVersion", "authority", "notice", "deliveryKey", "relayId", "relayDigest",
+  "recipient", "repositoryId", "repositoryWorkspaceId", "repositoryRevision", "receiptDigest",
+];
+const DELIVERY_RECEIPT_BODY_FIELDS = DELIVERY_RECEIPT_FIELDS.filter((field) => field !== "receiptDigest");
 const CREATE_FROM_DISPATCH_FIELDS = ["repositoryRoot", ...SOURCE_FIELDS, ...RECIPIENT_FIELDS.map((field) => `recipient${field[0].toUpperCase()}${field.slice(1)}`), "requestedObservation"];
 
 const fail = (code, message) => Object.freeze({ state: "invalid", code, reasonCodes: Object.freeze([message]) });
@@ -216,6 +238,82 @@ export function createFeatureFlightRelayV1(input) {
   return validateRelayObject({ ...body, relayId: `relay:${relayDigest.slice(7)}`, relayDigest });
 }
 
+function deliveryReceiptBody(value) {
+  return Object.fromEntries(DELIVERY_RECEIPT_BODY_FIELDS.map((field) => [field, value[field]]));
+}
+
+function deliveryIdentityBody(relay) {
+  return {
+    relayId: relay.relayId,
+    relayDigest: relay.relayDigest,
+    repositoryId: relay.source.repositoryId,
+    repositoryWorkspaceId: relay.source.repositoryWorkspaceId,
+    repositoryRevision: relay.source.repositoryRevision,
+    recipient: relay.recipient,
+  };
+}
+
+export function featureFlightRelayDeliveryKeyV1(relayInput) {
+  const relay = validateRelayObject(relayInput);
+  const digest = featureFlightRelayDigestV1(deliveryIdentityBody(relay), "shield.feature-flight-relay.delivery-key.v1");
+  return `relay-delivery:${digest.slice(7)}`;
+}
+
+function validateDeliveryReceiptObject(input, expectedRelayInput = undefined) {
+  const value = snapshot(input, "feature-flight relay delivery receipt");
+  exact(value, DELIVERY_RECEIPT_FIELDS, "feature-flight relay delivery receipt");
+  if (value.schemaVersion !== 1 || value.artifactType !== "feature-flight-relay-delivery-receipt" ||
+      value.contractVersion !== FEATURE_FLIGHT_RELAY_DELIVERY_RECEIPT_CONTRACT_VERSION || value.authority !== "none" ||
+      value.notice !== FEATURE_FLIGHT_RELAY_DELIVERY_NOTICE || !DELIVERY_KEY.test(value.deliveryKey ?? "") ||
+      !RELAY_ID.test(value.relayId ?? "") || !DIGEST.test(value.relayDigest ?? "")) {
+    throw new Error("Feature Flight relay delivery receipt contract identity is invalid.");
+  }
+  validateRecipient(value.recipient, "delivery receipt recipient");
+  identifier(value.repositoryId, "delivery receipt.repositoryId");
+  identifier(value.repositoryWorkspaceId, "delivery receipt.repositoryWorkspaceId");
+  revision(value.repositoryRevision, "delivery receipt.repositoryRevision");
+  const expectedDigest = featureFlightRelayDigestV1(deliveryReceiptBody(value), "shield.feature-flight-relay.delivery-receipt.v1");
+  if (value.receiptDigest !== expectedDigest) throw new Error("Feature Flight relay delivery receipt digest is invalid.");
+  if (expectedRelayInput !== undefined) {
+    const relay = validateRelayObject(expectedRelayInput);
+    const expected = createFeatureFlightRelayDeliveryReceiptV1({ relay });
+    if (!canonicalFeatureFlightRelayBytesV1(value).equals(canonicalFeatureFlightRelayBytesV1(expected))) {
+      throw new Error("Feature Flight relay delivery receipt does not exactly bind its relay.");
+    }
+  }
+  return freeze(value);
+}
+
+export function createFeatureFlightRelayDeliveryReceiptV1(input) {
+  const value = snapshot(input, "feature-flight relay delivery receipt input");
+  exact(value, ["relay"], "feature-flight relay delivery receipt input");
+  const relay = validateRelayObject(value.relay);
+  const identity = deliveryIdentityBody(relay);
+  const body = {
+    schemaVersion: 1,
+    artifactType: "feature-flight-relay-delivery-receipt",
+    contractVersion: FEATURE_FLIGHT_RELAY_DELIVERY_RECEIPT_CONTRACT_VERSION,
+    authority: "none",
+    notice: FEATURE_FLIGHT_RELAY_DELIVERY_NOTICE,
+    deliveryKey: featureFlightRelayDeliveryKeyV1(relay),
+    relayId: identity.relayId,
+    relayDigest: identity.relayDigest,
+    recipient: identity.recipient,
+    repositoryId: identity.repositoryId,
+    repositoryWorkspaceId: identity.repositoryWorkspaceId,
+    repositoryRevision: identity.repositoryRevision,
+  };
+  return validateDeliveryReceiptObject({
+    ...body,
+    receiptDigest: featureFlightRelayDigestV1(body, "shield.feature-flight-relay.delivery-receipt.v1"),
+  });
+}
+
+export function validateFeatureFlightRelayDeliveryReceiptV1(input, expectedRelay = undefined) {
+  try { return freeze({ state: "valid", value: validateDeliveryReceiptObject(input, expectedRelay), reasonCodes: [] }); }
+  catch (error) { return fail("delivery_stale", error instanceof Error ? error.message : "Relay delivery receipt validation failed."); }
+}
+
 function flattenedCreationInput(input) {
   const value = snapshot(input, "terminal relay creation input");
   exact(value, CREATE_FROM_DISPATCH_FIELDS, "terminal relay creation input");
@@ -298,11 +396,11 @@ export async function createFeatureFlightRelayFromSeatDispatchV1(input, injected
   }
 }
 
-function entryBody(value) {
-  return Object.fromEntries(ENTRY_FIELDS.filter((field) => !["entryId", "entryDigest"].includes(field)).map((field) => [field, value[field]]));
+function entryBody(value, fields = ENTRY_FIELDS) {
+  return Object.fromEntries(fields.filter((field) => !["entryId", "entryDigest"].includes(field)).map((field) => [field, value[field]]));
 }
 
-function validateEntryObject(input) {
+function validatePendingEntryObject(input) {
   const value = snapshot(input, "relay pending entry");
   exact(value, ENTRY_FIELDS, "relay pending entry");
   const relay = validateRelayObject(value.relay);
@@ -320,6 +418,39 @@ function validateEntryObject(input) {
     throw new Error("Relay entry digest is invalid.");
   }
   return freeze(value);
+}
+
+function validateDeliveredEntryObject(input) {
+  const value = snapshot(input, "relay delivered entry");
+  exact(value, DELIVERED_ENTRY_FIELDS, "relay delivered entry");
+  const relay = validateRelayObject(value.relay);
+  const deliveryReceipt = validateDeliveryReceiptObject(value.deliveryReceipt, relay);
+  if (value.schemaVersion !== 1 || value.artifactType !== "feature-flight-relay-entry" ||
+      value.contractVersion !== FEATURE_FLIGHT_RELAY_DELIVERED_CONTRACT_VERSION || value.authority !== "none" ||
+      value.notice !== FEATURE_FLIGHT_RELAY_DELIVERY_NOTICE || value.kind !== "relay.delivered") {
+    throw new Error("Relay delivered entry contract identity is invalid.");
+  }
+  if (!Number.isSafeInteger(value.logSequence) || value.logSequence < 1 || value.lifecycleSequence !== 1 ||
+      !DIGEST.test(value.previousLogDigest ?? "") || !DIGEST.test(value.previousLifecycleDigest ?? "")) {
+    throw new Error("Relay delivered entry chain fields are malformed.");
+  }
+  if (value.relayId !== relay.relayId || value.relayDigest !== relay.relayDigest ||
+      deliveryReceipt.relayId !== relay.relayId || deliveryReceipt.relayDigest !== relay.relayDigest ||
+      value.entryId !== `relay-entry:${relay.relayId.slice(6)}:1`) {
+    throw new Error("Relay delivered entry identity does not match its relay.");
+  }
+  if (value.entryDigest !== featureFlightRelayDigestV1(
+    entryBody(value, DELIVERED_ENTRY_FIELDS),
+    "shield.feature-flight-relay.delivered.entry.v1",
+  )) throw new Error("Relay delivered entry digest is invalid.");
+  return freeze(value);
+}
+
+function validateEntryObject(input) {
+  const value = snapshot(input, "relay lifecycle entry");
+  if (value?.kind === "relay.pending") return validatePendingEntryObject(value);
+  if (value?.kind === "relay.delivered") return validateDeliveredEntryObject(value);
+  throw new Error("Relay lifecycle entry kind is unsupported.");
 }
 
 export function createFeatureFlightRelayEntryV1(input) {
@@ -342,7 +473,39 @@ export function createFeatureFlightRelayEntryV1(input) {
     relay,
   };
   const entryId = `relay-entry:${relay.relayId.slice(6)}:0`;
-  return validateEntryObject({ ...body, entryId, entryDigest: featureFlightRelayDigestV1(body, "shield.feature-flight-relay.pending.entry.v1") });
+  return validatePendingEntryObject({ ...body, entryId, entryDigest: featureFlightRelayDigestV1(body, "shield.feature-flight-relay.pending.entry.v1") });
+}
+
+export function createFeatureFlightRelayDeliveredEntryV1(input) {
+  const value = snapshot(input, "relay delivered entry input");
+  exact(value, ["logSequence", "previousLogDigest", "pendingEntry"], "relay delivered entry input");
+  const pendingEntry = validatePendingEntryObject(value.pendingEntry);
+  if (!Number.isSafeInteger(value.logSequence) || value.logSequence < 1 || !DIGEST.test(value.previousLogDigest ?? "")) {
+    throw new Error("Relay delivered entry global chain input is malformed.");
+  }
+  const relay = pendingEntry.relay;
+  const body = {
+    schemaVersion: 1,
+    artifactType: "feature-flight-relay-entry",
+    contractVersion: FEATURE_FLIGHT_RELAY_DELIVERED_CONTRACT_VERSION,
+    authority: "none",
+    notice: FEATURE_FLIGHT_RELAY_DELIVERY_NOTICE,
+    kind: "relay.delivered",
+    logSequence: value.logSequence,
+    lifecycleSequence: 1,
+    relayId: relay.relayId,
+    relayDigest: relay.relayDigest,
+    previousLogDigest: value.previousLogDigest,
+    previousLifecycleDigest: pendingEntry.entryDigest,
+    relay,
+    deliveryReceipt: createFeatureFlightRelayDeliveryReceiptV1({ relay }),
+  };
+  const entryId = `relay-entry:${relay.relayId.slice(6)}:1`;
+  return validateDeliveredEntryObject({
+    ...body,
+    entryId,
+    entryDigest: featureFlightRelayDigestV1(body, "shield.feature-flight-relay.delivered.entry.v1"),
+  });
 }
 
 export function validateFeatureFlightRelayEntryV1(input) {
@@ -352,7 +515,7 @@ export function validateFeatureFlightRelayEntryV1(input) {
 
 function projectionFor(entry) {
   const relay = entry.relay;
-  return freeze({
+  const projection = {
     schemaVersion: 1,
     artifactType: "feature-flight-relay-projection",
     contractVersion: FEATURE_FLIGHT_RELAY_CONTRACT_VERSION,
@@ -363,11 +526,13 @@ function projectionFor(entry) {
     source: snapshot(relay.source),
     terminal: snapshot(relay.terminal),
     recipient: snapshot(relay.recipient),
-    lifecycleState: "pending",
+    lifecycleState: entry.kind === "relay.pending" ? "pending" : "delivered",
     repositoryRevision: relay.source.repositoryRevision,
-    nextAction: FEATURE_FLIGHT_RELAY_NEXT_ACTION,
+    nextAction: entry.kind === "relay.pending" ? FEATURE_FLIGHT_RELAY_NEXT_ACTION : FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION,
     lastEntryDigest: entry.entryDigest,
-  });
+  };
+  if (entry.kind === "relay.delivered") projection.deliveryReceipt = snapshot(entry.deliveryReceipt);
+  return freeze(projection);
 }
 
 export function replayFeatureFlightRelayLedgerV1(input, expectedRecipientInput = undefined) {
@@ -382,9 +547,10 @@ export function replayFeatureFlightRelayLedgerV1(input, expectedRecipientInput =
     }
   } catch (error) { return fail("malformed_ledger", error instanceof Error ? error.message : "Relay ledger is malformed."); }
   const replayed = [];
-  const relayIds = new Map();
+  const relayStates = new Map();
   const sourceDigests = new Map();
   const entryDigests = new Set();
+  const entryIds = new Map();
   for (let index = 0; index < entries.length; index += 1) {
     let entry;
     try { entry = validateEntryObject(entries[index]); }
@@ -394,22 +560,38 @@ export function replayFeatureFlightRelayLedgerV1(input, expectedRecipientInput =
       : entry.logSequence !== index || entry.previousLogDigest !== replayed[index - 1].entryDigest) {
       return fail("global_chain_invalid", "Relay global sequence or digest chain is broken.");
     }
-    const previousRelay = relayIds.get(entry.relayId);
-    if (previousRelay !== undefined) {
-      return fail(previousRelay === entry.entryDigest ? "duplicate_event" : "conflicting_reuse", "Relay identity has more than one lifecycle entry.");
+    const reusedEntryId = entryIds.get(entry.entryId);
+    if (reusedEntryId !== undefined) return fail("conflicting_reuse", "Relay lifecycle entry ID was reused with conflicting content.");
+    const relayState = relayStates.get(entry.relayId);
+    if (entry.kind === "relay.pending") {
+      if (relayState !== undefined) return fail("illegal_transition", "Relay lifecycle cannot transition to a second pending entry.");
+      const sourceKey = `${entry.relay.source.receiptId}\0${entry.relay.source.dispatchId}\0${entry.relay.terminal.entryDigest}`;
+      const previousSource = sourceDigests.get(sourceKey);
+      if (previousSource !== undefined && previousSource !== entry.relayId) {
+        return fail("conflicting_reuse", "Terminal source is bound to a different relay identity.");
+      }
+      relayStates.set(entry.relayId, { genesis: entry, last: entry });
+      sourceDigests.set(sourceKey, entry.relayId);
+    } else {
+      if (relayState === undefined) return fail("illegal_transition", "Relay delivered entry is missing its pending lifecycle genesis.");
+      if (relayState.last.kind !== "relay.pending") return fail("illegal_transition", "Relay lifecycle cannot transition after delivery.");
+      if (entry.previousLifecycleDigest !== relayState.genesis.entryDigest || entry.lifecycleSequence !== 1 ||
+          entry.relayDigest !== relayState.genesis.relayDigest ||
+          !canonicalFeatureFlightRelayBytesV1(entry.relay).equals(canonicalFeatureFlightRelayBytesV1(relayState.genesis.relay))) {
+        return fail("lifecycle_chain_invalid", "Relay lifecycle sequence or predecessor digest chain is broken.");
+      }
+      relayState.last = entry;
     }
-    const sourceKey = `${entry.relay.source.receiptId}\0${entry.relay.source.dispatchId}\0${entry.relay.terminal.entryDigest}`;
-    const previousSource = sourceDigests.get(sourceKey);
-    if (previousSource !== undefined && previousSource !== entry.relayId) return fail("conflicting_reuse", "Terminal source is bound to a different relay identity.");
-    relayIds.set(entry.relayId, entry.entryDigest);
-    sourceDigests.set(sourceKey, entry.relayId);
+    entryIds.set(entry.entryId, entry.entryDigest);
     entryDigests.add(entry.entryDigest);
     replayed.push(entry);
   }
-  const projections = replayed.map(projectionFor);
+  const projections = [...relayStates.values()].map((state) => projectionFor(state.last));
   if (expectedRecipient !== undefined && projections.some((item) => JSON.stringify(item.recipient) !== JSON.stringify(expectedRecipient))) {
     return fail("recipient_mismatch", "Relay recipient does not match the expected controller binding.");
   }
+  const pending = projections.filter((projection) => projection.lifecycleState === "pending");
+  const delivered = projections.filter((projection) => projection.lifecycleState === "delivered");
   const inspection = freeze({
     schemaVersion: 1,
     artifactType: "feature-flight-relay-inspection",
@@ -418,7 +600,8 @@ export function replayFeatureFlightRelayLedgerV1(input, expectedRecipientInput =
     notice: FEATURE_FLIGHT_RELAY_INSPECTION_NOTICE,
     throughSequence: replayed.length - 1,
     lastEntryDigest: replayed.at(-1)?.entryDigest ?? null,
-    pending: projections,
+    pending,
+    ...(delivered.length === 0 ? {} : { delivered }),
   });
   return freeze({ state: "valid", entries: replayed, relays: projections, inspection });
 }
@@ -428,21 +611,100 @@ export function inspectFeatureFlightRelaysV1(input, expectedRecipient = undefine
   return replay.state === "valid" ? replay.inspection : replay;
 }
 
+export function reconcileFeatureFlightRelayDeliveryV1(entriesInput, expectedInput) {
+  let expected;
+  try {
+    expected = snapshot(expectedInput, "expected relay delivery binding");
+    exact(expected, [
+      "relayId", "relayDigest", "repositoryId", "repositoryWorkspaceId", "repositoryRevision", "recipient",
+    ], "expected relay delivery binding");
+    if (!RELAY_ID.test(expected.relayId ?? "") || !DIGEST.test(expected.relayDigest ?? "")) {
+      throw new Error("Expected relay identity is malformed.");
+    }
+    identifier(expected.repositoryId, "expected delivery repositoryId");
+    identifier(expected.repositoryWorkspaceId, "expected delivery repositoryWorkspaceId");
+    revision(expected.repositoryRevision, "expected delivery repositoryRevision");
+    exact(expected.recipient, RECIPIENT_FIELDS, "expected delivery recipient");
+    for (const field of RECIPIENT_FIELDS) identifier(expected.recipient[field], `expected delivery recipient.${field}`);
+  } catch (error) {
+    return fail("malformed_input", error instanceof Error ? error.message : "Expected relay delivery binding is malformed.");
+  }
+  const replay = replayFeatureFlightRelayLedgerV1(entriesInput);
+  if (replay.state !== "valid") return replay;
+  const lifecycle = replay.entries.filter((entry) => entry.relayId === expected.relayId);
+  if (lifecycle.length === 0) return fail("relay_missing", "Expected relay is absent from the replayed ledger.");
+  const genesis = lifecycle[0];
+  if (genesis.relayDigest !== expected.relayDigest) return fail("conflicting_reuse", "Expected relay digest conflicts with the durable relay identity.");
+  if (genesis.relay.source.repositoryId !== expected.repositoryId ||
+      genesis.relay.source.repositoryWorkspaceId !== expected.repositoryWorkspaceId) {
+    return fail("relay_missing", "Expected repository and workspace do not select the durable relay.");
+  }
+  if (genesis.relay.source.repositoryRevision !== expected.repositoryRevision) {
+    return fail("source_stale", "Expected source revision disagrees with the frozen relay source.");
+  }
+  if (JSON.stringify(genesis.relay.recipient) !== JSON.stringify(expected.recipient)) {
+    return fail("recipient_mismatch", "Expected recipient does not match the frozen relay recipient.");
+  }
+  const durableDelivery = lifecycle.find((entry) => entry.kind === "relay.delivered");
+  if (durableDelivery !== undefined) {
+    return freeze({
+      state: "duplicate",
+      code: "duplicate",
+      appended: false,
+      entry: durableDelivery,
+      deliveryReceipt: durableDelivery.deliveryReceipt,
+      projection: replay,
+    });
+  }
+  let entry;
+  try {
+    entry = createFeatureFlightRelayDeliveredEntryV1({
+      logSequence: replay.entries.length,
+      previousLogDigest: replay.entries.at(-1)?.entryDigest ?? null,
+      pendingEntry: genesis,
+    });
+  } catch (error) {
+    return fail("illegal_transition", error instanceof Error ? error.message : "Relay delivery transition is invalid.");
+  }
+  const appended = replayFeatureFlightRelayLedgerV1([...replay.entries, entry]);
+  return appended.state === "valid" ? freeze({
+    state: "accepted",
+    appended: true,
+    entry,
+    deliveryReceipt: entry.deliveryReceipt,
+    projection: appended,
+  }) : appended;
+}
+
 export function reconcileFeatureFlightRelayEntryV1(entriesInput, candidateInput) {
   const replay = replayFeatureFlightRelayLedgerV1(entriesInput);
   if (replay.state !== "valid") return replay;
   let candidate;
   try { candidate = validateEntryObject(candidateInput); }
   catch (error) { return fail("entry_invalid", error instanceof Error ? error.message : "Candidate relay entry is invalid."); }
-  const sameId = replay.entries.find((entry) => entry.entryId === candidate.entryId || entry.relayId === candidate.relayId);
+  const sameId = replay.entries.find((entry) => entry.entryId === candidate.entryId);
   if (sameId !== undefined) {
     return sameId.entryDigest === candidate.entryDigest
       ? freeze({ state: "duplicate", appended: false, projection: replay })
-      : fail("conflicting_reuse", "Relay identity was reused with conflicting content.");
+      : fail("conflicting_reuse", "Relay lifecycle entry identity was reused with conflicting content.");
   }
-  const sourceConflict = replay.entries.find((entry) => entry.relay.source.receiptId === candidate.relay.source.receiptId &&
-    entry.relay.source.dispatchId === candidate.relay.source.dispatchId && entry.relay.terminal.entryDigest === candidate.relay.terminal.entryDigest);
-  if (sourceConflict !== undefined) return fail("conflicting_reuse", "Terminal source was reused with a conflicting relay identity.");
+  const lifecycle = replay.entries.filter((entry) => entry.relayId === candidate.relayId);
+  if (candidate.kind === "relay.pending" && lifecycle.length !== 0) {
+    return fail("illegal_transition", "Relay lifecycle cannot transition to a second pending entry.");
+  }
+  if (candidate.kind === "relay.delivered") {
+    if (lifecycle.length !== 1 || lifecycle[0].kind !== "relay.pending" || candidate.lifecycleSequence !== 1 ||
+        candidate.previousLifecycleDigest !== lifecycle[0].entryDigest) {
+      return fail("illegal_transition", "Relay delivery requires the exact pending lifecycle genesis predecessor.");
+    }
+  }
+  if (candidate.kind === "relay.pending") {
+    const sourceConflict = replay.entries.find((entry) => entry.kind === "relay.pending" &&
+      entry.relay.source.receiptId === candidate.relay.source.receiptId &&
+      entry.relay.source.dispatchId === candidate.relay.source.dispatchId &&
+      entry.relay.terminal.entryDigest === candidate.relay.terminal.entryDigest);
+    if (sourceConflict !== undefined) return fail("conflicting_reuse", "Terminal source was reused with a conflicting relay identity.");
+  }
   if (candidate.logSequence !== replay.entries.length || candidate.previousLogDigest !== (replay.entries.at(-1)?.entryDigest ?? null)) {
     return fail("conflicting_reuse", "Relay global sequence was reused or skipped.");
   }
