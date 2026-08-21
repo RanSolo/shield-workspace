@@ -10,45 +10,46 @@
 
 ## Outcome
 
-Advance the merged authority-none relay through one durable, inspectable delivery lifecycle without waking an agent or executing a successor:
+Advance one merged authority-none relay through one real, local, queryable delivery effect without waking an agent or claiming acknowledgement:
 
 ```text
 relay.pending
+→ query/create/read back recipient-scoped local inbox receipt
 → relay.delivered
-→ reread exact durable source evidence
-→ relay.acknowledged
 ```
 
-Delivery and acknowledgement remain coordination facts, never authority. This slice ends with an acknowledged relay whose next action is `await_authority_replay`.
+This smaller slice supplies the trusted producer missing from the first plan. It ends at `relay.delivered` with next action `reread_authoritative_state_and_acknowledge`. Acknowledgement and successor execution remain later slices.
 
 ## Acceptance criteria
 
-### AC1 — closed create-once lifecycle
+### AC1 — queryable create-once local delivery provider
 
-- Add digest-bound `relay.delivered` and `relay.acknowledged` lifecycle entries to the existing global and per-relay chains.
-- Permit only `pending → delivered → acknowledged`; reject skipped, reversed, repeated-with-conflicting-content, unknown, or post-acknowledgement transitions.
-- Exact delivery and acknowledgement retries are explicit byte-stable duplicates and append nothing. A delivery/acknowledgement payload contains only reference identities and digests.
-- Preserve `authority: "none"` on every entry and projection. No lifecycle event can satisfy permission, review, acceptance, or execution.
+- Add one repository-local Hill inbox provider inside the confined relay store root. Its deterministic delivery key is SHA-256 over the relay ID/digest, repository/workspace identity, source repository revision, and the complete frozen recipient tuple: seat, lane, and controller identity.
+- The sole exported effectful delivery API accepts only store scope plus expected frozen relay/recipient identities. It rereads the durable relay store, selects exactly one pending relay, derives the key, queries before effect, creates with no-follow/exclusive semantics when absent, syncs, queries after effect, and requires exact readback.
+- The provider internally derives a closed authority-none delivery receipt containing only the delivery key, relay ID/digest, complete recipient binding, repository/workspace/revision references, and receipt digest. Callers cannot supply lifecycle kind, entry, outcome, delivery receipt, or receipt digest.
+- Exact retry queries and returns the identical receipt without another effect. A crash after receipt creation but before relay append is reconciled by querying that same deterministic receipt and appending the same delivered entry. Uncertain or non-queryable effect returns `recovery_required` and appends nothing.
+- This local provider delivers only to the existing Hill recipient frozen by Slice 1. Filesystem confinement plus exact frozen recipient matching is the provider identity boundary; arbitrary-seat delivery and remote host adapters are excluded.
 
-### AC2 — exact recipient and stale-state enforcement
+### AC2 — backward-compatible delivered lifecycle
 
-- Delivery binds the existing relay ID/digest, recipient seat, lane, controller identity, repository/workspace identity, source repository revision, and one host-observed delivery receipt ID/digest.
-- Acknowledgement binds the exact delivery entry digest, recipient identity, receiver-observation digest, and reread source-terminal entry digest.
-- Recipient mismatch, stale source revision, stale delivery identity, missing delivery, duplicate meaning, and conflicting reuse are distinct closed results. Missing delivery is never reported as missing authority; delivered or acknowledged is never reported as authority.
-- Slice 2 remains Hill-recipient-only because the merged Slice 1 recipient contract intentionally admits `hill`; widening to arbitrary seats is a separate contract change.
+- Preserve every canonical Slice 1 relay/genesis entry byte, digest, store filename, witness, and replay result without rewrite. The pending-v1 relay remains the lifecycle genesis.
+- Add one closed, versioned `relay.delivered` entry schema and digest domain with lifecycle sequence 1, exact genesis lifecycle predecessor digest, global predecessor digest, and internally derived delivery receipt identity.
+- Replay accepts exactly `pending → delivered`; rejects a second pending, skipped/reversed/unknown/post-delivery entries, conflicting reuse, and malformed chains. Exact already-durable delivery retry returns `duplicate` without another provider effect or ledger append.
+- Projection states are exactly `pending` and `delivered`, with next actions `await_delivery_binding` and `reread_authoritative_state_and_acknowledge`. Both remain `authority: "none"` and cannot satisfy permission, review, acceptance, acknowledgement, or execution.
+- Prove compatibility with literal canonical pending relay and genesis-entry bytes captured from base `784cedea633d52eae95d54e97686115ee3427e40`; rebuilding the fixture through revised constructors is insufficient.
 
-### AC3 — authoritative reread before acknowledgement
+### AC3 — closed outcomes and deterministic precedence
 
-- The sole effectful acknowledgement path rereads the durable seat-dispatch receipt ledger through `readSeatDispatchReceiptLedgerV1`, replays it through `replaySeatDispatchReceiptsV1`, and reselects the exact terminal source through the relay's frozen source identity and `lastEntryDigest`.
-- Zero, multiple, nonterminal, stale-revision, or mismatched source results fail before acknowledgement append.
-- Replay projects `pending`, `delivered`, and `acknowledged` separately. Their advisory next actions are respectively `await_delivery_binding`, `reread_authoritative_state_and_acknowledge`, and `await_authority_replay`.
-- This source reread does not claim mission authority exists. Successor classification, authority replay, execute-once claim, agent start/resume, and successor execution are excluded.
+- Closed delivery results distinguish: `relay_missing`, `delivery_missing`, `recipient_mismatch`, `source_stale`, `delivery_stale`, `duplicate`, `conflicting_reuse`, `illegal_transition`, and `recovery_required`. Missing delivery is never reported as missing authority, and delivered is never reported as authority.
+- Source staleness means disagreement among the expected delivery input, frozen relay source, and persisted local receipt; it does not inspect live Git or claim mission-authority freshness.
+- Evaluate in this order: malformed invocation; unsafe/unreplayable relay or inbox store; exact relay/repository/workspace and seat/lane/controller selection; existing receipt/lifecycle classification; provider query/create/query; relay/witness append and exact readback.
+- Exact already-durable retries intentionally return duplicate after exact relay/receipt reconciliation and do not re-run an external source or authority read. Acknowledgement will own durable dispatch-ledger reread in the next slice.
 
 ## Durable-store requirements
 
-Reuse the merged confined store, lock, exact readback, and monotonic witness. Every lifecycle append must update the relay ledger and witness under the same fail-closed discipline. Partial write, sync/close/readback uncertainty, lock contention, inode replacement, symlink/alias/mode violation, deletion, or rollback cannot report success or duplicate lifecycle meaning.
+Reuse the merged confined root, lock, exact readback, and monotonic witness. The inbox receipt and delivered lifecycle append are independently queryable and restart-reconcilable. Partial write, sync/close/readback uncertainty, lock contention, inode replacement, symlink/alias/mode violation, deletion, or rollback cannot report success or duplicate delivery meaning.
 
-Do not restore the historical raw caller-controlled mutation exports. Effectful delivery and acknowledgement APIs derive and validate their entries internally from the exact durable relay state and source receipt replay.
+Do not restore historical raw caller-controlled mutation exports.
 
 ## Authorized implementation candidates
 
@@ -63,14 +64,14 @@ Historical branch `agent/issue-248-relay-events` may inform lifecycle shapes onl
 ## Validation
 
 - Focused relay contract/store tests through the `@shield/team-system` Nx target.
-- Explicit cases: pending→delivered→acknowledged; exact duplicate retries; conflicting retries; skipped/reversed/post-terminal lifecycle; each recipient field mismatch; stale repository/source/delivery identities; missing delivery versus missing authority; exact durable source reread; malformed/proxy/accessor/unknown-field inputs; canonical byte stability; global/per-relay chain replay.
-- Re-run the merged store fault matrix for lifecycle append and witness update.
+- Explicit cases: pending→delivered; exact provider and lifecycle retries; crash after provider receipt before ledger append; conflicting retries; skipped/reversed/post-delivery lifecycle; each recipient field mismatch; stale repository/source/delivery identities; missing delivery versus missing authority; malformed/proxy/accessor/unknown-field inputs; literal Slice 1 compatibility bytes; canonical byte stability; global/per-relay chain replay.
+- Re-run the merged store fault matrix for inbox receipt creation, lifecycle append, and witness update.
 - Use Nx affected discovery from exact base to exact implementation HEAD. Run cache-enabled `@shield/team-system:build` and `@shield/team-system:test`; record Multiband if affected but do not make its external application environment an acceptance gate.
 - `git diff --check` and exact changed-path allowlist verification.
 
 ## Explicit exclusions
 
-- No mission-journal authority decision, successor classification, execute-once successor claim, agent/CLI wake or resume, scheduler, active-flight throttle, host-specific remote adapter, chat polling, publication, merge, deployment, release, or final acceptance.
+- No acknowledgement, dispatch-ledger reread, mission-journal authority decision, successor classification, execute-once successor claim, agent/CLI wake or resume, scheduler, active-flight throttle, remote host adapter, chat polling, publication, merge, deployment, release, or final acceptance.
 
 ## Human gate
 
