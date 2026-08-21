@@ -10,19 +10,27 @@ import {
   FEATURE_FLIGHT_RELAY_MAX_LEDGER_ENTRIES,
   FEATURE_FLIGHT_RELAY_NOTICE,
   canonicalFeatureFlightRelayBytesV1,
+  canonicalFeatureFlightRelayValueV1,
+  createFeatureFlightRelayDeliveredEntryV1,
+  createFeatureFlightRelayDeliveryReceiptV1,
   createFeatureFlightRelayEntryV1,
   createFeatureFlightRelayFromSeatDispatchV1,
   featureFlightRelayDigestV1,
+  reconcileFeatureFlightRelayDeliveryV1,
   replayFeatureFlightRelayLedgerV1,
+  validateFeatureFlightRelayDeliveryReceiptV1,
 } from "./feature-flight-relay.mjs";
 
 export const FEATURE_FLIGHT_RELAY_STORE_DIRECTORY = "relay-ledgers";
 export const FEATURE_FLIGHT_RELAY_WITNESS_DIRECTORY = "relay-head-witnesses";
+export const FEATURE_FLIGHT_RELAY_HILL_INBOX_DIRECTORY = "hill-relay-inbox";
 export const FEATURE_FLIGHT_RELAY_STORE_MAX_BYTES = 16 * 1024 * 1024;
 export const FEATURE_FLIGHT_RELAY_STORE_MAX_ENTRY_BYTES = 16 * 1024;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/u;
+const RELAY_ID = /^relay:[A-Za-z0-9_-]{43}$/u;
+const REVISION = /^(?:sha256:[A-Za-z0-9_-]{6,}|[0-9a-f]{7,64})$/u;
 const LOCK_OWNER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,127}$/u;
 const CREATE_FIELDS = [
   "repositoryRoot", "receiptId", "dispatchId", "parentMissionId", "parentMissionRevision", "parentSessionId",
@@ -31,6 +39,11 @@ const CREATE_FIELDS = [
   "recipientLaneId", "recipientControllerIdentity", "requestedObservation",
 ];
 const APPEND_FIELDS = ["root", "excludedRoots", "lockOwnerId", ...CREATE_FIELDS];
+const RECIPIENT_FIELDS = ["seatId", "laneId", "controllerIdentity"];
+const DELIVERY_FIELDS = [
+  "root", "excludedRoots", "lockOwnerId", "repositoryId", "repositoryWorkspaceId", "repositoryRevision",
+  "relayId", "relayDigest", "recipient",
+];
 const WITNESS_FIELDS = [
   "schemaVersion", "artifactType", "contractVersion", "authority", "notice", "repositoryId",
   "repositoryWorkspaceId", "witnessSequence", "previousWitnessDigest", "relayEntryCount", "relayByteLength",
@@ -124,6 +137,21 @@ function scopeSnapshot(input, fields, label) {
   return value;
 }
 
+function deliveryScopeSnapshot(input) {
+  const value = scopeSnapshot(input, DELIVERY_FIELDS, "relay delivery input");
+  if (!REVISION.test(value.repositoryRevision ?? "") || !RELAY_ID.test(value.relayId ?? "") ||
+      !DIGEST.test(value.relayDigest ?? "")) {
+    throw new StoreFailure("malformed_input", "Relay delivery identity is malformed.");
+  }
+  exact(value.recipient, RECIPIENT_FIELDS, "relay delivery input.recipient");
+  for (const field of RECIPIENT_FIELDS) {
+    if (!IDENTIFIER.test(value.recipient[field] ?? "")) {
+      throw new StoreFailure("malformed_input", "relay delivery input.recipient." + field + " is malformed.");
+    }
+  }
+  return value;
+}
+
 function storeFilename(repositoryId, repositoryWorkspaceId) {
   return createHash("sha256")
     .update("shield.feature-flight-relay-store.pending.v1\0")
@@ -131,6 +159,14 @@ function storeFilename(repositoryId, repositoryWorkspaceId) {
     .update("\0")
     .update(repositoryWorkspaceId)
     .digest("base64url") + ".jsonl";
+}
+
+function deliveryReceiptFilename(deliveryKey) {
+  return deliveryKey.slice("relay-delivery:".length) + ".json";
+}
+
+function deliveryReceiptPath(paths, receipt) {
+  return join(paths.inboxDirectory, deliveryReceiptFilename(receipt.deliveryKey));
 }
 
 export function deriveFeatureFlightRelayStorePathsV1(input) {
@@ -143,9 +179,18 @@ export function deriveFeatureFlightRelayStorePathsV1(input) {
   const filename = storeFilename(value.repositoryId, value.repositoryWorkspaceId);
   const directory = join(value.root, FEATURE_FLIGHT_RELAY_STORE_DIRECTORY);
   const witnessDirectory = join(value.root, FEATURE_FLIGHT_RELAY_WITNESS_DIRECTORY);
+  const inboxDirectory = join(value.root, FEATURE_FLIGHT_RELAY_HILL_INBOX_DIRECTORY);
   const logPath = join(directory, filename);
   const witnessPath = join(witnessDirectory, filename);
-  return Object.freeze({ root: value.root, directory, logPath, witnessDirectory, witnessPath, lockPath: witnessPath + ".lock" });
+  return Object.freeze({
+    root: value.root,
+    directory,
+    logPath,
+    witnessDirectory,
+    witnessPath,
+    lockPath: witnessPath + ".lock",
+    inboxDirectory,
+  });
 }
 
 async function retainDirectory(path, io) {
@@ -214,12 +259,12 @@ async function openHierarchy(scope, io, allowWitnessCreate) {
   });
   let directory;
   let witnessDirectory;
+  let inboxDirectory;
   let witnessDirectoryCreated = false;
   try {
-    [directory, witnessDirectory] = await Promise.all([
-      retainDirectory(paths.directory, io),
-      retainDirectory(paths.witnessDirectory, io),
-    ]);
+    directory = await retainDirectory(paths.directory, io);
+    witnessDirectory = await retainDirectory(paths.witnessDirectory, io);
+    inboxDirectory = await retainDirectory(paths.inboxDirectory, io);
     if (witnessDirectory === null && allowWitnessCreate) {
       if (directory !== null) storeFailure("recovery_required", "Relay witness directory is missing for an existing ledger scope.");
       await assertRetained(root, io);
@@ -234,10 +279,12 @@ async function openHierarchy(scope, io, allowWitnessCreate) {
     await assertRetained(root, io);
     if (directory !== null) await assertRetained(directory, io);
     if (witnessDirectory !== null) await assertRetained(witnessDirectory, io);
-    return { paths, root, directory, witnessDirectory, witnessDirectoryCreated };
+    if (inboxDirectory !== null) await assertRetained(inboxDirectory, io);
+    return { paths, root, directory, witnessDirectory, inboxDirectory, witnessDirectoryCreated };
   } catch (error) {
     await closeRetained(directory, "Relay ledger directory").catch(() => {});
     await closeRetained(witnessDirectory, "Relay witness directory").catch(() => {});
+    await closeRetained(inboxDirectory, "Hill relay inbox directory").catch(() => {});
     await closeRetained(root, "Relay store root").catch(() => {});
     throw error;
   }
@@ -258,6 +305,7 @@ async function ensureLedgerDirectory(hierarchy, io) {
 async function closeHierarchy(hierarchy) {
   let first;
   for (const [retained, label] of [
+    [hierarchy.inboxDirectory, "Hill relay inbox directory"],
     [hierarchy.directory, "Relay ledger directory"],
     [hierarchy.witnessDirectory, "Relay witness directory"],
     [hierarchy.root, "Relay store root"],
@@ -271,6 +319,25 @@ async function assertHierarchy(hierarchy, io) {
   await assertRetained(hierarchy.root, io);
   if (hierarchy.directory !== null) await assertRetained(hierarchy.directory, io);
   if (hierarchy.witnessDirectory !== null) await assertRetained(hierarchy.witnessDirectory, io);
+  if (hierarchy.inboxDirectory != null) await assertRetained(hierarchy.inboxDirectory, io);
+}
+
+async function openInboxDirectory(hierarchy, io, allowCreate) {
+  if (hierarchy.inboxDirectory !== null || !allowCreate) return hierarchy.inboxDirectory;
+  const path = hierarchy.paths.inboxDirectory;
+  let retained = hierarchy.inboxDirectory;
+  if (retained === null && allowCreate) {
+    await assertRetained(hierarchy.root, io);
+    let created = false;
+    try { await io.mkdir(path, { mode: 0o700 }); created = true; }
+    catch (error) { if (error?.code !== "EEXIST") throw error; }
+    if (created) await syncDirectory(hierarchy.root, "Relay store root");
+    retained = await retainDirectory(path, io);
+    if (retained === null) storeFailure("recovery_required", "Hill relay inbox directory is unavailable after creation.");
+  }
+  hierarchy.inboxDirectory = retained;
+  if (retained !== null) await assertRetained(retained, io);
+  return retained;
 }
 
 function safeRegular(stats) {
@@ -306,6 +373,86 @@ async function readFileSnapshot(path, hierarchy, io, label) {
   if (closeError !== undefined) storeFailure("recovery_required", label + " read close is uncertain.");
   await assertHierarchy(hierarchy, io);
   return { missing: false, bytes, identity: { dev: Number(opened.dev), ino: Number(opened.ino), size: opened.size } };
+}
+
+async function readDeliveryReceiptSnapshot(hierarchy, expectedReceipt, io) {
+  const inbox = await openInboxDirectory(hierarchy, io, false);
+  const path = deliveryReceiptPath(hierarchy.paths, expectedReceipt);
+  if (inbox === null) return { missing: true, path, bytes: Buffer.alloc(0), receipt: null, identity: null };
+  const file = await readFileSnapshot(path, hierarchy, io, "Hill relay inbox receipt");
+  if (file.missing) return { ...file, path, receipt: null };
+  const parsed = strictParseJson(file.bytes.toString("utf8"), {
+    maxBytes: FEATURE_FLIGHT_RELAY_STORE_MAX_ENTRY_BYTES,
+    maxDepth: 24,
+  });
+  if (parsed.state !== "valid" ||
+      !sameBytes(canonicalFeatureFlightRelayBytesV1(parsed.value), file.bytes)) {
+    storeFailure("recovery_required", "Hill relay inbox receipt is not strict canonical JSON.");
+  }
+  const validation = validateFeatureFlightRelayDeliveryReceiptV1(parsed.value);
+  if (validation.state !== "valid") {
+    storeFailure("recovery_required", "Hill relay inbox receipt does not satisfy its closed contract.");
+  }
+  return { ...file, path, receipt: validation.value };
+}
+
+function requireExactDeliveryReceipt(observed, expected) {
+  if (observed.receipt === null) storeFailure("delivery_missing", "Expected Hill relay inbox receipt is absent.");
+  const receipt = observed.receipt;
+  if (JSON.stringify(receipt.recipient) !== JSON.stringify(expected.recipient)) {
+    storeFailure("recipient_mismatch", "Persisted delivery receipt recipient disagrees with the frozen recipient.");
+  }
+  if (receipt.repositoryRevision !== expected.repositoryRevision) {
+    storeFailure("source_stale", "Persisted delivery receipt source revision disagrees with the frozen relay source.");
+  }
+  if (!sameBytes(canonicalFeatureFlightRelayBytesV1(receipt), canonicalFeatureFlightRelayBytesV1(expected))) {
+    storeFailure("delivery_stale", "Persisted delivery receipt does not exactly match the internally derived receipt.");
+  }
+  return receipt;
+}
+
+async function createDeliveryReceiptExclusive(hierarchy, receipt, io) {
+  const inbox = await openInboxDirectory(hierarchy, io, true);
+  const path = deliveryReceiptPath(hierarchy.paths, receipt);
+  const bytes = canonicalFeatureFlightRelayBytesV1(receipt);
+  if (bytes.length > FEATURE_FLIGHT_RELAY_STORE_MAX_ENTRY_BYTES) {
+    storeFailure("recovery_required", "Hill relay inbox receipt exceeds its compact byte limit.");
+  }
+  let handle;
+  let opened;
+  let closeError;
+  try {
+    await assertHierarchy(hierarchy, io);
+    handle = await io.open(
+      path,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    opened = await handle.stat();
+    if (!safeRegular(opened) || opened.size !== 0) {
+      storeFailure("recovery_required", "Hill relay inbox receipt target is unsafe.");
+    }
+    const written = await handle.write(bytes, 0, bytes.length, 0);
+    if (written.bytesWritten !== bytes.length) storeFailure("recovery_required", "Hill relay inbox receipt write was partial.");
+    await handle.sync();
+    const [retained, linked] = await Promise.all([handle.stat(), io.lstat(path).catch(() => null)]);
+    if (!safeRegular(retained) || !safeRegular(linked) || !sameInode(opened, retained) || !sameInode(opened, linked) ||
+        retained.size !== bytes.length) {
+      storeFailure("recovery_required", "Hill relay inbox receipt changed during exclusive creation.");
+    }
+  } catch (error) {
+    if (["EEXIST", "ELOOP", "ENOTDIR"].includes(error?.code)) {
+      storeFailure("recovery_required", "Hill relay inbox receipt exclusive creation could not be established.");
+    }
+    if (error instanceof StoreFailure) throw error;
+    storeFailure("recovery_required", "Hill relay inbox receipt creation is uncertain: " + (error?.code ?? "unknown_error") + ".");
+  } finally {
+    if (handle !== undefined) await handle.close().catch((error) => { closeError = error; });
+    if (closeError !== undefined) storeFailure("recovery_required", "Hill relay inbox receipt close is uncertain.");
+  }
+  await syncDirectory(inbox, "Hill relay inbox directory");
+  await assertHierarchy(hierarchy, io);
+  return { path, bytes, identity: { dev: Number(opened.dev), ino: Number(opened.ino), size: opened.size } };
 }
 
 function parseLines(snapshotValue, label) {
@@ -588,6 +735,183 @@ function createWitness(scope, current, logAfter) {
   }, scope);
 }
 
+async function appendDeliveredLifecycle(hierarchy, scope, current, entry, io) {
+  const relayLine = lineFor(entry);
+  await appendLine(
+    hierarchy.paths.logPath,
+    hierarchy.directory,
+    current.log,
+    relayLine,
+    hierarchy,
+    io,
+    "Relay ledger",
+  );
+
+  let logAfter;
+  try { logAfter = await readRelaySnapshot(hierarchy, scope, io); }
+  catch (error) {
+    storeFailure("recovery_required", "Delivered relay post-append readback is uncertain: " +
+      (error instanceof Error ? error.message : "unknown_error") + ".");
+  }
+  const expectedRelayBytes = Buffer.concat([current.log.bytes, relayLine]);
+  if (!sameBytes(logAfter.bytes, expectedRelayBytes) || logAfter.entries.length !== current.log.entries.length + 1 ||
+      logAfter.entries.at(-1)?.entryDigest !== entry.entryDigest) {
+    storeFailure("recovery_required", "Delivered relay exact readback does not match the lifecycle append.");
+  }
+
+  const witness = createWitness(scope, current.witness, logAfter);
+  const witnessLine = lineFor(witness);
+  await appendLine(
+    hierarchy.paths.witnessPath,
+    hierarchy.witnessDirectory,
+    current.witness,
+    witnessLine,
+    hierarchy,
+    io,
+    "Relay head witness",
+  );
+
+  let after;
+  try { after = await readCombinedSnapshot(hierarchy, scope, io); }
+  catch (error) {
+    storeFailure("recovery_required", "Delivered relay and witness readback is uncertain: " +
+      (error instanceof Error ? error.message : "unknown_error") + ".");
+  }
+  const expectedWitnessBytes = Buffer.concat([current.witness.bytes, witnessLine]);
+  if (!sameBytes(after.log.bytes, expectedRelayBytes) || !sameBytes(after.witness.bytes, expectedWitnessBytes) ||
+      after.log.entries.at(-1)?.entryDigest !== entry.entryDigest ||
+      after.witness.entries.at(-1)?.witnessDigest !== witness.witnessDigest) {
+    storeFailure("recovery_required", "Delivered relay and monotonic witness exact readback does not match the append.");
+  }
+  return after;
+}
+
+function deliveryBinding(scope) {
+  return Object.freeze({
+    relayId: scope.relayId,
+    relayDigest: scope.relayDigest,
+    repositoryId: scope.repositoryId,
+    repositoryWorkspaceId: scope.repositoryWorkspaceId,
+    repositoryRevision: scope.repositoryRevision,
+    recipient: canonicalFeatureFlightRelayValueV1(scope.recipient),
+  });
+}
+
+function reconcileDelivery(current, scope) {
+  const reconciliation = reconcileFeatureFlightRelayDeliveryV1(current.log.entries, deliveryBinding(scope));
+  if (reconciliation.state === "accepted" || reconciliation.state === "duplicate") return reconciliation;
+  storeFailure(
+    reconciliation.code ?? "recovery_required",
+    reconciliation.reasonCodes?.[0] ?? "Relay delivery reconciliation failed.",
+  );
+}
+
+function directDeliveredEntry(current, reconciliation) {
+  const pendingEntry = current.log.entries.find((entry) => entry.kind === "relay.pending" &&
+    entry.relayId === reconciliation.deliveryReceipt.relayId);
+  if (pendingEntry === undefined) storeFailure("illegal_transition", "Relay delivery has no exact pending lifecycle genesis.");
+  const derivedReceipt = createFeatureFlightRelayDeliveryReceiptV1({ relay: pendingEntry.relay });
+  if (!sameBytes(
+    canonicalFeatureFlightRelayBytesV1(derivedReceipt),
+    canonicalFeatureFlightRelayBytesV1(reconciliation.deliveryReceipt),
+  )) {
+    storeFailure("delivery_stale", "Internally derived delivery receipt disagrees with the reconciled binding.");
+  }
+  let entry;
+  try {
+    entry = createFeatureFlightRelayDeliveredEntryV1({
+      logSequence: current.log.entries.length,
+      previousLogDigest: current.log.entries.at(-1)?.entryDigest ?? null,
+      pendingEntry,
+    });
+  } catch (error) {
+    storeFailure("illegal_transition", error instanceof Error ? error.message : "Relay delivery transition is invalid.");
+  }
+  if (entry.entryDigest !== reconciliation.entry.entryDigest ||
+      !sameBytes(
+        canonicalFeatureFlightRelayBytesV1(entry.deliveryReceipt),
+        canonicalFeatureFlightRelayBytesV1(reconciliation.deliveryReceipt),
+      )) {
+    storeFailure("recovery_required", "Direct delivered lifecycle derivation disagrees with contract reconciliation.");
+  }
+  return entry;
+}
+
+function duplicateDeliveryValue(hierarchy, current, reconciliation, observed) {
+  requireExactDeliveryReceipt(observed, reconciliation.deliveryReceipt);
+  return valid(Object.freeze({
+    status: "duplicate",
+    code: "duplicate",
+    appended: false,
+    log: readValue(hierarchy, current),
+    entry: reconciliation.entry,
+    deliveryReceipt: reconciliation.deliveryReceipt,
+    receiptPath: observed.path,
+  }));
+}
+
+const DELIVERY_FAILURE_CODES = new Set([
+  "relay_missing", "delivery_missing", "recipient_mismatch", "source_stale", "delivery_stale", "duplicate",
+  "conflicting_reuse", "illegal_transition", "recovery_required",
+]);
+
+function deliveryResultFromError(error) {
+  if (error instanceof StoreFailure && DELIVERY_FAILURE_CODES.has(error.code)) return invalid(error.code, error.message);
+  return invalid(
+    "recovery_required",
+    error instanceof Error ? error.message : "Relay delivery store operation requires recovery.",
+  );
+}
+
+async function deliverPendingUnderLock(scope, io) {
+  let hierarchy;
+  let token;
+  let result;
+  let terminalError;
+  try {
+    hierarchy = await openHierarchy(scope, io, false);
+    token = await acquireLock(hierarchy, scope, io);
+    const current = await readCombinedSnapshot(hierarchy, scope, io);
+    const reconciliation = reconcileDelivery(current, scope);
+    const expectedReceipt = reconciliation.deliveryReceipt;
+    const before = await readDeliveryReceiptSnapshot(hierarchy, expectedReceipt, io);
+
+    if (reconciliation.state === "duplicate") {
+      result = duplicateDeliveryValue(hierarchy, current, reconciliation, before);
+    } else {
+      if (!before.missing) requireExactDeliveryReceipt(before, expectedReceipt);
+      if (before.missing) await createDeliveryReceiptExclusive(hierarchy, expectedReceipt, io);
+      const afterProvider = await readDeliveryReceiptSnapshot(hierarchy, expectedReceipt, io);
+      requireExactDeliveryReceipt(afterProvider, expectedReceipt);
+
+      const entry = directDeliveredEntry(current, reconciliation);
+      const after = await appendDeliveredLifecycle(hierarchy, scope, current, entry, io);
+      const finalReceipt = await readDeliveryReceiptSnapshot(hierarchy, expectedReceipt, io);
+      requireExactDeliveryReceipt(finalReceipt, expectedReceipt);
+      if (afterProvider.identity === null || finalReceipt.identity === null ||
+          afterProvider.identity.dev !== finalReceipt.identity.dev || afterProvider.identity.ino !== finalReceipt.identity.ino ||
+          !sameBytes(afterProvider.bytes, finalReceipt.bytes)) {
+        storeFailure("recovery_required", "Hill relay inbox receipt identity changed during lifecycle append.");
+      }
+      result = valid(Object.freeze({
+        status: "delivered",
+        appended: true,
+        log: readValue(hierarchy, after),
+        entry,
+        deliveryReceipt: expectedReceipt,
+        receiptPath: finalReceipt.path,
+      }));
+    }
+  } catch (error) { terminalError = error; }
+  if (token !== undefined && hierarchy !== undefined) {
+    try { await releaseLock(token, hierarchy, io); } catch (error) { terminalError ??= error; }
+  }
+  if (hierarchy !== undefined) {
+    try { await closeHierarchy(hierarchy); } catch (error) { terminalError ??= error; }
+  }
+  return terminalError === undefined ? result : deliveryResultFromError(terminalError);
+}
+
 async function appendUnderLock(scope, io, operation) {
   let hierarchy;
   let token;
@@ -606,6 +930,30 @@ async function appendUnderLock(scope, io, operation) {
     try { await closeHierarchy(hierarchy); } catch (error) { terminalError ??= error; }
   }
   return terminalError === undefined ? result : resultFromError(terminalError, "recovery_required");
+}
+
+export async function deliverFeatureFlightRelayToHillInboxV1(input, injected = {}) {
+  let scope;
+  try { scope = deliveryScopeSnapshot(input); }
+  catch (error) { return resultFromError(error, "malformed_input"); }
+  const io = Object.freeze({ ...defaultIo, ...injected });
+
+  let hierarchy;
+  let reconciliation;
+  let preflightError;
+  try {
+    hierarchy = await openHierarchy(scope, io, false);
+    const current = await readCombinedSnapshot(hierarchy, scope, io, true);
+    reconciliation = reconcileDelivery(current, scope);
+  } catch (error) { preflightError = error; }
+  if (hierarchy !== undefined) {
+    try { await closeHierarchy(hierarchy); } catch (error) { preflightError ??= error; }
+  }
+  if (preflightError !== undefined) return deliveryResultFromError(preflightError);
+  if (!["accepted", "duplicate"].includes(reconciliation?.state)) {
+    return invalid("recovery_required", "Relay delivery preflight did not select one deliverable relay.");
+  }
+  return deliverPendingUnderLock(scope, io);
 }
 
 export async function appendFeatureFlightRelayFromSeatDispatchIfAbsentV1(input, injected = {}) {

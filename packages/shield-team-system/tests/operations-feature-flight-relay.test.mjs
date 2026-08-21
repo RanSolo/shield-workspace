@@ -8,22 +8,38 @@ import {
 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import {
   FEATURE_FLIGHT_RELAY_CONTRACT_VERSION,
+  FEATURE_FLIGHT_RELAY_DELIVERED_CONTRACT_VERSION,
+  FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION,
+  FEATURE_FLIGHT_RELAY_DELIVERY_RECEIPT_CONTRACT_VERSION,
+  FEATURE_FLIGHT_RELAY_DELIVERY_RESULT_CODES,
   FEATURE_FLIGHT_RELAY_MAX_BYTES,
   FEATURE_FLIGHT_RELAY_NEXT_ACTION,
   FEATURE_FLIGHT_RELAY_REQUESTED_OBSERVATION,
   canonicalFeatureFlightRelayBytesV1,
+  createFeatureFlightRelayDeliveredEntryV1,
+  createFeatureFlightRelayDeliveryReceiptV1,
   createFeatureFlightRelayEntryV1,
   createFeatureFlightRelayFromSeatDispatchV1,
   createFeatureFlightRelayV1,
   featureFlightRelayDigestV1,
   inspectFeatureFlightRelaysV1,
+  reconcileFeatureFlightRelayDeliveryV1,
   reconcileFeatureFlightRelayEntryV1,
   replayFeatureFlightRelayLedgerV1,
   validateFeatureFlightRelayEntryV1,
+  validateFeatureFlightRelayDeliveryReceiptV1,
   validateFeatureFlightRelayV1,
 } from "../scripts/operations/feature-flight-relay.mjs";
 
 const REVISION = "4".repeat(40);
+const SLICE_1_PENDING_RELAY_BYTES = Buffer.from(
+  "eyJhcnRpZmFjdFR5cGUiOiJmZWF0dXJlLWZsaWdodC1yZWxheSIsImF1dGhvcml0eSI6Im5vbmUiLCJjb250cmFjdFZlcnNpb24iOiJzaGllbGQuZmVhdHVyZS1mbGlnaHQtcmVsYXkucGVuZGluZy52MSIsImtpbmQiOiJyZWxheS5wZW5kaW5nIiwibm90aWNlIjoiQWR2aXNvcnkgd2FrZS11cCByZWZlcmVuY2Ugb25seS4gVGhpcyByZWxheSBncmFudHMgbm8gYXV0aG9yaXR5LCBwZXJtaXNzaW9uLCByZXZpZXcsIGFjY2VwdGFuY2UsIGRlbGl2ZXJ5LCBvciBleGVjdXRpb24uIiwicmVjaXBpZW50Ijp7ImNvbnRyb2xsZXJJZGVudGl0eSI6ImNvbnRyb2xsZXI6aGlsbDppc3N1ZS0yNDgiLCJsYW5lSWQiOiJsYW5lOmlzc3VlLTI0OCIsInNlYXRJZCI6ImhpbGwifSwicmVsYXlEaWdlc3QiOiJzaGEyNTY6RXRHeHBubFkzTEVaeXFqRnlCdmtpNGl3M2NSNC1sMnkwZlBBUG5kY0xOOCIsInJlbGF5SWQiOiJyZWxheTpFdEd4cG5sWTNMRVp5cWpGeUJ2a2k0aXczY1I0LWwyeTBmUEFQbmRjTE44IiwicmVxdWVzdGVkT2JzZXJ2YXRpb24iOiJvYnNlcnZlX3Rlcm1pbmFsX2Rpc3BhdGNoIiwic2NoZW1hVmVyc2lvbiI6MSwic291cmNlIjp7ImFydGlmYWN0SWQiOiJhcnRpZmFjdDppc3N1ZS0yNDgtc2xpY2UtMSIsImFydGlmYWN0UmV2aXNpb24iOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0IiwiY2hpbGRTZXNzaW9uSWQiOiJzZXNzaW9uOjI0ODptYXkiLCJjaGlsZFRhc2tJZCI6InRhc2s6MjQ4Om1heSIsImRpc3BhdGNoSWQiOiJkaXNwYXRjaDoyNDg6MSIsInBhcmVudE1pc3Npb25JZCI6Im1pc3Npb246aXNzdWUtMjQ4LXNsaWNlLTEiLCJwYXJlbnRNaXNzaW9uUmV2aXNpb24iOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0IiwicGFyZW50U2Vzc2lvbklkIjoic2Vzc2lvbjoyNDg6cGFyZW50IiwicmVjZWlwdElkIjoicmVjZWlwdDoyNDg6MSIsInJlcG9zaXRvcnlJZCI6InJlcG86c2hpZWxkLXdvcmtzcGFjZSIsInJlcG9zaXRvcnlSZXZpc2lvbiI6IjQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQiLCJyZXBvc2l0b3J5V29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2U6aXNzdWUtMjQ4Iiwic291cmNlQWNjb3VudGFibGVTZWF0SWQiOiJtYXkiLCJzdWJqZWN0SWQiOiJpc3N1ZToyNDgiLCJzdWJqZWN0UmV2aXNpb24iOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0In0sInRlcm1pbmFsIjp7ImVudHJ5RGlnZXN0Ijoic2hhMjU2Oi0tc3BhWmF1bHJ2YzlaQVk3bnZzM01FdWJHNmM5ZWR3aGRRY2dFaFd3LVUiLCJraW5kIjoiZGlzcGF0Y2guY29tcGxldGVkIiwibGlmZWN5Y2xlU2VxdWVuY2UiOjEsImxvZ1NlcXVlbmNlIjoxfX0=",
+  "base64",
+);
+const SLICE_1_PENDING_ENTRY_BYTES = Buffer.from(
+  "eyJhcnRpZmFjdFR5cGUiOiJmZWF0dXJlLWZsaWdodC1yZWxheS1lbnRyeSIsImF1dGhvcml0eSI6Im5vbmUiLCJjb250cmFjdFZlcnNpb24iOiJzaGllbGQuZmVhdHVyZS1mbGlnaHQtcmVsYXkucGVuZGluZy52MSIsImVudHJ5RGlnZXN0Ijoic2hhMjU2Olh4bGRSLWM4TWI2QnV2aGUtR190c0lkbm0xdi1tWUR4bHZ0blpna0lMcFEiLCJlbnRyeUlkIjoicmVsYXktZW50cnk6RXRHeHBubFkzTEVaeXFqRnlCdmtpNGl3M2NSNC1sMnkwZlBBUG5kY0xOODowIiwia2luZCI6InJlbGF5LnBlbmRpbmciLCJsaWZlY3ljbGVTZXF1ZW5jZSI6MCwibG9nU2VxdWVuY2UiOjAsIm5vdGljZSI6IkFkdmlzb3J5IHdha2UtdXAgcmVmZXJlbmNlIG9ubHkuIFRoaXMgcmVsYXkgZ3JhbnRzIG5vIGF1dGhvcml0eSwgcGVybWlzc2lvbiwgcmV2aWV3LCBhY2NlcHRhbmNlLCBkZWxpdmVyeSwgb3IgZXhlY3V0aW9uLiIsInByZXZpb3VzTGlmZWN5Y2xlRGlnZXN0IjpudWxsLCJwcmV2aW91c0xvZ0RpZ2VzdCI6bnVsbCwicmVsYXkiOnsiYXJ0aWZhY3RUeXBlIjoiZmVhdHVyZS1mbGlnaHQtcmVsYXkiLCJhdXRob3JpdHkiOiJub25lIiwiY29udHJhY3RWZXJzaW9uIjoic2hpZWxkLmZlYXR1cmUtZmxpZ2h0LXJlbGF5LnBlbmRpbmcudjEiLCJraW5kIjoicmVsYXkucGVuZGluZyIsIm5vdGljZSI6IkFkdmlzb3J5IHdha2UtdXAgcmVmZXJlbmNlIG9ubHkuIFRoaXMgcmVsYXkgZ3JhbnRzIG5vIGF1dGhvcml0eSwgcGVybWlzc2lvbiwgcmV2aWV3LCBhY2NlcHRhbmNlLCBkZWxpdmVyeSwgb3IgZXhlY3V0aW9uLiIsInJlY2lwaWVudCI6eyJjb250cm9sbGVySWRlbnRpdHkiOiJjb250cm9sbGVyOmhpbGw6aXNzdWUtMjQ4IiwibGFuZUlkIjoibGFuZTppc3N1ZS0yNDgiLCJzZWF0SWQiOiJoaWxsIn0sInJlbGF5RGlnZXN0Ijoic2hhMjU2OkV0R3hwbmxZM0xFWnlxakZ5QnZraTRpdzNjUjQtbDJ5MGZQQVBuZGNMTjgiLCJyZWxheUlkIjoicmVsYXk6RXRHeHBubFkzTEVaeXFqRnlCdmtpNGl3M2NSNC1sMnkwZlBBUG5kY0xOOCIsInJlcXVlc3RlZE9ic2VydmF0aW9uIjoib2JzZXJ2ZV90ZXJtaW5hbF9kaXNwYXRjaCIsInNjaGVtYVZlcnNpb24iOjEsInNvdXJjZSI6eyJhcnRpZmFjdElkIjoiYXJ0aWZhY3Q6aXNzdWUtMjQ4LXNsaWNlLTEiLCJhcnRpZmFjdFJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCIsImNoaWxkU2Vzc2lvbklkIjoic2Vzc2lvbjoyNDg6bWF5IiwiY2hpbGRUYXNrSWQiOiJ0YXNrOjI0ODptYXkiLCJkaXNwYXRjaElkIjoiZGlzcGF0Y2g6MjQ4OjEiLCJwYXJlbnRNaXNzaW9uSWQiOiJtaXNzaW9uOmlzc3VlLTI0OC1zbGljZS0xIiwicGFyZW50TWlzc2lvblJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCIsInBhcmVudFNlc3Npb25JZCI6InNlc3Npb246MjQ4OnBhcmVudCIsInJlY2VpcHRJZCI6InJlY2VpcHQ6MjQ4OjEiLCJyZXBvc2l0b3J5SWQiOiJyZXBvOnNoaWVsZC13b3Jrc3BhY2UiLCJyZXBvc2l0b3J5UmV2aXNpb24iOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0IiwicmVwb3NpdG9yeVdvcmtzcGFjZUlkIjoid29ya3NwYWNlOmlzc3VlLTI0OCIsInNvdXJjZUFjY291bnRhYmxlU2VhdElkIjoibWF5Iiwic3ViamVjdElkIjoiaXNzdWU6MjQ4Iiwic3ViamVjdFJldmlzaW9uIjoiNDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NCJ9LCJ0ZXJtaW5hbCI6eyJlbnRyeURpZ2VzdCI6InNoYTI1NjotLXNwYVphdWxydmM5WkFZN252czNNRXViRzZjOWVkd2hkUWNnRWhXdy1VIiwia2luZCI6ImRpc3BhdGNoLmNvbXBsZXRlZCIsImxpZmVjeWNsZVNlcXVlbmNlIjoxLCJsb2dTZXF1ZW5jZSI6MX19LCJyZWxheURpZ2VzdCI6InNoYTI1NjpFdEd4cG5sWTNMRVp5cWpGeUJ2a2k0aXczY1I0LWwyeTBmUEFQbmRjTE44IiwicmVsYXlJZCI6InJlbGF5OkV0R3hwbmxZM0xFWnlxakZ5QnZraTRpdzNjUjQtbDJ5MGZQQVBuZGNMTjgiLCJzY2hlbWFWZXJzaW9uIjoxfQ==",
+  "base64",
+);
 
 function identity(overrides = {}) {
   return {
@@ -145,6 +161,22 @@ async function relayFrom(kind = "dispatch.completed", inputOverrides = {}) {
   assert.equal(result.state, "valid", result.reasonCodes?.join(" "));
   return { relay: result.value, entries: [start, terminal] };
 }
+
+test("preserves the literal Slice 1 pending relay and genesis entry bytes from the planning base", () => {
+  const entry = JSON.parse(SLICE_1_PENDING_ENTRY_BYTES.toString("utf8"));
+  const relay = entry.relay;
+  const relayBytes = Buffer.from(JSON.stringify(relay), "utf8");
+  assert.deepEqual(canonicalFeatureFlightRelayBytesV1(relay), relayBytes);
+  assert.deepEqual(canonicalFeatureFlightRelayBytesV1(entry), SLICE_1_PENDING_ENTRY_BYTES);
+  assert.equal(relay.relayDigest, "sha256:EtGxpnlY3LEZyqjFyBvki4iw3cR4-l2y0fPAPndcLN8");
+  assert.equal(entry.entryDigest, "sha256:XxldR-c8Mb6Buvhe-G_tsIdnm1v-mYDxlvtnZgkILpQ");
+  assert.equal(validateFeatureFlightRelayV1(relay).state, "valid");
+  assert.equal(validateFeatureFlightRelayEntryV1(entry).state, "valid");
+  const replay = replayFeatureFlightRelayLedgerV1([entry]);
+  assert.equal(replay.state, "valid");
+  assert.equal(replay.inspection.pending[0].lastEntryDigest, entry.entryDigest);
+  assert.equal(Object.hasOwn(replay.inspection, "delivered"), false);
+});
 
 test("derives a compact canonical authority-none relay from each exact terminal dispatch kind", async () => {
   const relays = [];
@@ -283,6 +315,126 @@ test("replays only one pending lifecycle entry and projects await_delivery_bindi
   });
   const conflict = createFeatureFlightRelayEntryV1({ logSequence: 1, previousLogDigest: entry.entryDigest, relay: conflictRelay });
   assert.equal(reconcileFeatureFlightRelayEntryV1([entry], conflict).code, "conflicting_reuse");
+});
+
+test("derives one closed authority-none delivery receipt and pending-to-delivered entry", async () => {
+  const { relay } = await relayFrom();
+  const pending = createFeatureFlightRelayEntryV1({ logSequence: 0, previousLogDigest: null, relay });
+  const receipt = createFeatureFlightRelayDeliveryReceiptV1({ relay });
+  assert.equal(receipt.contractVersion, FEATURE_FLIGHT_RELAY_DELIVERY_RECEIPT_CONTRACT_VERSION);
+  assert.equal(receipt.authority, "none");
+  assert.match(receipt.deliveryKey, /^relay-delivery:[A-Za-z0-9_-]{43}$/u);
+  assert.equal(validateFeatureFlightRelayDeliveryReceiptV1(receipt, relay).state, "valid");
+  assert.deepEqual(Object.keys(receipt).sort(), [
+    "artifactType", "authority", "contractVersion", "deliveryKey", "notice", "receiptDigest", "recipient", "relayDigest",
+    "relayId", "repositoryId", "repositoryRevision", "repositoryWorkspaceId", "schemaVersion",
+  ]);
+
+  const delivered = createFeatureFlightRelayDeliveredEntryV1({
+    logSequence: 1,
+    previousLogDigest: pending.entryDigest,
+    pendingEntry: pending,
+  });
+  assert.equal(delivered.kind, "relay.delivered");
+  assert.equal(delivered.contractVersion, FEATURE_FLIGHT_RELAY_DELIVERED_CONTRACT_VERSION);
+  assert.equal(delivered.lifecycleSequence, 1);
+  assert.equal(delivered.previousLifecycleDigest, pending.entryDigest);
+  assert.deepEqual(delivered.deliveryReceipt, receipt);
+  assert.equal(validateFeatureFlightRelayEntryV1(delivered).state, "valid");
+
+  const replay = replayFeatureFlightRelayLedgerV1([pending, delivered]);
+  assert.equal(replay.state, "valid");
+  assert.equal(replay.inspection.pending.length, 0);
+  assert.equal(replay.inspection.delivered[0].lifecycleState, "delivered");
+  assert.equal(replay.inspection.delivered[0].nextAction, FEATURE_FLIGHT_RELAY_DELIVERED_NEXT_ACTION);
+  assert.equal(replay.inspection.delivered[0].authority, "none");
+  assert.deepEqual(replay.inspection.delivered[0].deliveryReceipt, receipt);
+});
+
+test("reconciles only the exact delivery binding and returns exact durable retries as duplicate", async () => {
+  const { relay } = await relayFrom();
+  const pending = createFeatureFlightRelayEntryV1({ logSequence: 0, previousLogDigest: null, relay });
+  const expected = {
+    relayId: relay.relayId,
+    relayDigest: relay.relayDigest,
+    repositoryId: relay.source.repositoryId,
+    repositoryWorkspaceId: relay.source.repositoryWorkspaceId,
+    repositoryRevision: relay.source.repositoryRevision,
+    recipient: relay.recipient,
+  };
+  const accepted = reconcileFeatureFlightRelayDeliveryV1([pending], expected);
+  assert.equal(accepted.state, "accepted");
+  assert.equal(accepted.appended, true);
+  assert.equal(accepted.entry.kind, "relay.delivered");
+  const duplicate = reconcileFeatureFlightRelayDeliveryV1([pending, accepted.entry], expected);
+  assert.equal(duplicate.state, "duplicate");
+  assert.equal(duplicate.code, "duplicate");
+  assert.equal(duplicate.appended, false);
+  assert.equal(duplicate.entry.entryDigest, accepted.entry.entryDigest);
+  assert.deepEqual(duplicate.deliveryReceipt, accepted.deliveryReceipt);
+
+  assert.equal(reconcileFeatureFlightRelayDeliveryV1([], expected).code, "relay_missing");
+  assert.equal(reconcileFeatureFlightRelayDeliveryV1([pending], { ...expected, relayDigest: featureFlightRelayDigestV1("other") }).code, "conflicting_reuse");
+  assert.equal(reconcileFeatureFlightRelayDeliveryV1([pending], { ...expected, repositoryId: "repo:other" }).code, "relay_missing");
+  assert.equal(reconcileFeatureFlightRelayDeliveryV1([pending], { ...expected, repositoryRevision: "5".repeat(40) }).code, "source_stale");
+  for (const [field, value] of [["seatId", "may"], ["laneId", "lane:other"], ["controllerIdentity", "controller:other"]]) {
+    assert.equal(reconcileFeatureFlightRelayDeliveryV1([pending], {
+      ...expected,
+      recipient: { ...expected.recipient, [field]: value },
+    }).code, "recipient_mismatch", field);
+  }
+  assert.equal(reconcileFeatureFlightRelayDeliveryV1([pending], { ...expected, extra: true }).code, "malformed_input");
+  assert.deepEqual(FEATURE_FLIGHT_RELAY_DELIVERY_RESULT_CODES, [
+    "relay_missing", "delivery_missing", "recipient_mismatch", "source_stale", "delivery_stale", "duplicate",
+    "conflicting_reuse", "illegal_transition", "recovery_required",
+  ]);
+});
+
+test("rejects skipped, reversed, repeated, post-delivery, and malformed delivery lifecycles", async () => {
+  const { relay } = await relayFrom();
+  const pending = createFeatureFlightRelayEntryV1({ logSequence: 0, previousLogDigest: null, relay });
+  const delivered = createFeatureFlightRelayDeliveredEntryV1({
+    logSequence: 1,
+    previousLogDigest: pending.entryDigest,
+    pendingEntry: pending,
+  });
+  assert.equal(replayFeatureFlightRelayLedgerV1([delivered]).state, "invalid");
+
+  const secondPending = createFeatureFlightRelayEntryV1({ logSequence: 1, previousLogDigest: pending.entryDigest, relay });
+  assert.equal(replayFeatureFlightRelayLedgerV1([pending, secondPending]).code, "conflicting_reuse");
+  assert.equal(reconcileFeatureFlightRelayEntryV1([pending], delivered).state, "accepted");
+  assert.equal(reconcileFeatureFlightRelayEntryV1([pending, delivered], delivered).state, "duplicate");
+
+  const skipped = structuredClone(delivered);
+  skipped.lifecycleSequence = 2;
+  assert.equal(validateFeatureFlightRelayEntryV1(skipped).state, "invalid");
+  const wrongPredecessor = structuredClone(delivered);
+  wrongPredecessor.previousLifecycleDigest = featureFlightRelayDigestV1("wrong predecessor");
+  wrongPredecessor.entryDigest = featureFlightRelayDigestV1(
+    Object.fromEntries(Object.entries(wrongPredecessor).filter(([field]) => !["entryId", "entryDigest"].includes(field))),
+    "shield.feature-flight-relay.delivered.entry.v1",
+  );
+  assert.equal(replayFeatureFlightRelayLedgerV1([pending, wrongPredecessor]).code, "lifecycle_chain_invalid");
+
+  const postDelivery = structuredClone(delivered);
+  postDelivery.logSequence = 2;
+  postDelivery.previousLogDigest = delivered.entryDigest;
+  postDelivery.previousLifecycleDigest = delivered.entryDigest;
+  postDelivery.entryDigest = featureFlightRelayDigestV1(
+    Object.fromEntries(Object.entries(postDelivery).filter(([field]) => !["entryId", "entryDigest"].includes(field))),
+    "shield.feature-flight-relay.delivered.entry.v1",
+  );
+  assert.equal(replayFeatureFlightRelayLedgerV1([pending, delivered, postDelivery]).code, "conflicting_reuse");
+
+  assert.equal(validateFeatureFlightRelayDeliveryReceiptV1({ ...delivered.deliveryReceipt, receiptDigest: featureFlightRelayDigestV1("forged") }).code, "delivery_stale");
+  assert.equal(validateFeatureFlightRelayDeliveryReceiptV1({ ...delivered.deliveryReceipt, unknown: true }).code, "delivery_stale");
+  assert.equal(validateFeatureFlightRelayDeliveryReceiptV1(new Proxy({}, {})).code, "delivery_stale");
+  assert.throws(() => createFeatureFlightRelayDeliveredEntryV1({
+    logSequence: 1,
+    previousLogDigest: pending.entryDigest,
+    pendingEntry: pending,
+    acknowledgement: true,
+  }), /fields are not closed/u);
 });
 
 test("canonical helper rejects unsafe values", () => {
