@@ -43,7 +43,7 @@ function seatCard(seat) {
     daisy: ["gpt-5.6-terra", "medium", "read-only"],
     fury: ["gpt-5.6-sol", "high", "read-only"],
     may: ["gpt-5.6-luna", "high", "workspace-write"],
-    mack: ["gpt-5.6-terra", "medium", "workspace-write"],
+    mack: ["gpt-5.3-codex-spark", "medium", "workspace-write"],
   }[seat];
   return `name = "${seat}"\ndescription = "fixture"\nmodel = "${values[0]}"\nmodel_reasoning_effort = "${values[1]}"\nsandbox_mode = "${values[2]}"\ndeveloper_instructions = """\nfixture\n"""\n`;
 }
@@ -150,7 +150,7 @@ test("emits the closed report, exact machine-check order, and ordered unverified
     ["daisy", "gpt-5.6-terra", "medium", "read-only"],
     ["fury", "gpt-5.6-sol", "high", "read-only"],
     ["may", "gpt-5.6-luna", "high", "workspace-write"],
-    ["mack", "gpt-5.6-terra", "medium", "workspace-write"],
+    ["mack", "gpt-5.3-codex-spark", "medium", "workspace-write"],
   ].map(([seat, model, reasoningEffort, sandboxMode]) => ({
     source: "declared", seat, configFile: `.codex/agents/${seat}.toml`, name: seat,
     model, reasoningEffort, sandboxMode, repositoryInstructions: "AGENTS.md",

@@ -1,6 +1,6 @@
 name = "mack"
 description = "S.H.I.E.L.D. independent validator for focused and full-suite exact-revision evidence."
-model = "gpt-5.6-terra"
+model = "gpt-5.3-codex-spark"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
