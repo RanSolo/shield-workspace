@@ -48,13 +48,21 @@ following:
 1. The explicit root is an exact prepared worktree of the configured
    repository, on an attached clean branch and exact current HEAD.
 2. The mission is nonterminal, authorized, not executed, and has exactly one
-   active implementation authority and matching active runtime binding.
-3. The authority, binding, publication authority, journal, subject,
-   repository, branch, base, artifact revision, and approved paths agree.
-4. Exactly one regular `docs/missions/*.md` legacy-plan path is within the
+   active implementation authority, matching active runtime binding, and sole
+   publication authority.
+3. A reusable pure compatibility projector in the existing mission-preparation
+   host proves the derived candidate is an exact
+   `fresh_authorize_wheels_up` continuation of the current authorized lineage
+   before seed creation or Fury dispatch. It requires the canonical signed
+   four-entry lineage and rejects any legacy binding that the existing
+   compositor would later reject.
+4. The authority, binding, publication authority, journal, subject,
+   repository, branch, base, artifact revision, current HEAD, and every scope
+   vector are exactly equal—not merely compatible or subset-related.
+5. Exactly one regular `docs/missions/*.md` legacy-plan path is within the
    authority's approved paths, changed in the authority base-to-artifact range,
    and resolves to one immutable Git blob at the authority artifact revision.
-5. The transition candidate is built only with the existing mission-transition
+6. The transition candidate is built only with the existing mission-transition
    builder, uses the observed immutable legacy-plan path/blob digest as parent
    identity, and has host-owned exclusions for authority transfer, publication
    expansion, merge, deployment, release, destructive effects, and final
@@ -63,31 +71,61 @@ following:
 Zero or multiple candidates, substitution, dirty state, unsupported lineage,
 or any identity mismatch returns one closed actionable result before dispatch.
 
+## Exact candidate mapping
+
+The host calls the existing builder for a
+`mission.transition-plan.v1` candidate with literal
+`transitionKind: fresh_authorize_wheels_up` and these exact sources:
+
+- `boundedOutcome`: mission brief objective.
+- `planningBaseRevision`, model, approved paths/actions/effects/capabilities,
+  and validation command IDs: implementation authority.
+- runtime and executor identity: active runtime binding.
+- publication paths: sole publication authority.
+- `parentPlanCommit`: implementation-authority artifact revision.
+- `parentPlanPath` and `parentPlanRawSha256`: the sole observed immutable
+  legacy Markdown blob.
+- exclusions: the existing literal `EXCLUSIONS_V1` constant.
+
+No field is inferred from Markdown or filled by a caller.
+
 ## Composition and replay
 
 - Keep the existing committed-file `prepare-reviewed-transition` entrypoint
   unchanged.
-- Add an internal derived-source carrier used only by the legacy continuation
-  and reviewed-transition host. It binds canonical candidate bytes/raw digest
-  plus full provenance into a host-derived virtual path; no virtual artifact is
-  written or treated as a repository plan file.
+- Extract an internal, non-exported dispatch core. The exported request type,
+  dependency type, and `dispatchCopilotFuryPlanReviewV1` remain a
+  committed-Git-file-only wrapper with byte-compatible public packet, claim,
+  evidence, and replay behavior. The legacy continuation and
+  reviewed-transition host alone receive an opaque derived-source capability.
+- The derived source binds canonical candidate bytes/raw digest plus a complete
+  `derivationProvenanceDigest` into a host-derived virtual path; no virtual
+  artifact is written or treated as a repository plan file.
 - Persist/replay one create-once derivation seed keyed by canonical repository
   workspace, mission ID, and mission revision. Revalidate all mutable identity
   before dispatch and materialization.
-- Pass only the returned receipt-bound PASS handoff to the existing
-  materializer. `prepare-next` remains a graph-only consumer.
-- Exact retry reuses the seed and never invokes Fury twice. Any identity drift
+- Revalidate the full provenance digest at the materialization boundary and
+  pass only the returned receipt-bound PASS handoff to the unchanged
+  materializer. The graph schema remains unchanged; `prepare-next` remains a
+  graph-only consumer.
+- Before any missing-seed creation, scan claims by repository workspace,
+  mission ID, and mission revision regardless of candidate/model/provenance.
+  Any existing claim without the exact matching seed is recovery-required.
+  Exact retry reuses the seed and never invokes Fury twice; all identity drift
   conflicts or requires recovery before a second effect.
 
 ## Allowed paths
 
 - `packages/shield-team-system/src/legacy-reviewed-transition-v1.mts`
+- `packages/shield-team-system/src/copilot-fury-plan-dispatch-core-v1.mts`
 - `packages/shield-team-system/src/copilot-fury-plan-dispatch-v1.mts`
 - `packages/shield-team-system/src/copilot-fury-reviewed-transition-host-v1.mts`
+- `packages/shield-team-system/src/mission-preparation-host-v1.mts`
 - `packages/shield-team-system/src/mission-cli.mts`
 - `packages/shield-team-system/tests/legacy-reviewed-transition-v1.test.mjs`
 - `packages/shield-team-system/tests/copilot-fury-plan-dispatch-v1.test.mjs`
 - `packages/shield-team-system/tests/copilot-fury-reviewed-transition-host-v1.test.mjs`
+- `packages/shield-team-system/tests/mission-preparation-host-v1.test.mjs`
 - `packages/shield-team-system/tests/supervised-cli.test.mjs`
 - `packages/shield-team-system/agents/maria-hill-orchestrator.agent.md`
 - `packages/shield-team-system/playbooks/delivery-mode.md`
@@ -100,17 +138,20 @@ deployment, release, or final-acceptance change is permitted.
 
 ## Acceptance evidence
 
-1. A positive exact legacy fixture reaches the reviewed-transition compositor
+1. A lineage-compatible exact legacy fixture reaches the reviewed-transition compositor
    without caller-authored protected evidence and advances beyond the former
    `protected_evidence_mismatch` result.
 2. Missing, ambiguous, untracked, stale, substituted, linked, changed, or
    unsupported legacy-plan candidates fail before a Fury dispatch.
 3. Candidate bytes, raw digest, source kind, and full derivation provenance are
-   bound through seed, dispatch, returned handoff, and materialization.
+   bound through seed, dispatch, returned handoff, and revalidation immediately
+   before unchanged materialization.
 4. Public committed-plan behavior remains byte-compatible and cannot select the
    derived source.
-5. Exact replay yields one model effect; drift in mission, journal, branch,
-   head, authority, binding, plan blob, or reviewer model fails closed.
+5. Exact replay yields one model effect; process restart, concurrent claims,
+   missing seed after claim, public virtual-path injection, and drift in
+   mission, journal, branch, head, authority, binding, plan blob, candidate,
+   or reviewer model fail closed.
 6. A fresh Hill can discover the continuation command and invoke it before
    `prepare-next`, with no additional Coulson PIN.
 7. Focused tests plus cache-enabled Nx affected validation exclude Multiband.
