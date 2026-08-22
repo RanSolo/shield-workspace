@@ -1670,8 +1670,16 @@ function renderLegacyContinuationResult(result: Awaited<ReturnType<typeof contin
   return result.state === "materialized" || result.state === "already_materialized"
     ? `state: ${result.state}\ngraphId: ${result.graphId}`
     : result.state === "completed"
-      ? `state: ${result.state}\ndisposition: ${result.disposition}`
-      : `state: ${result.state}\n${"code" in result ? `code: ${result.code}` : ""}`.trimEnd();
+      ? [
+        `state: ${result.state}`,
+        `disposition: ${result.disposition}`,
+        ...(result.receiptId === null ? [] : [`receiptId: ${result.receiptId}`]),
+      ].join("\n")
+      : [
+        `state: ${result.state}`,
+        ...("code" in result ? [`code: ${result.code}`] : []),
+        ...("errors" in result ? [`errors: ${result.errors.join(" ")}`] : []),
+      ].join("\n");
 }
 
 function outputPreparationBlocked(
