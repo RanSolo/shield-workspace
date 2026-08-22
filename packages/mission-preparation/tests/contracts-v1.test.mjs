@@ -186,6 +186,28 @@ test("reviewed intake template and transition plan v2 are closed content-address
   assert.equal(api.validateTransitionPlanV2({ artifact: { ...plan, intakeTemplate: { ...template, digest: `sha256:${"Z".repeat(43)}` } } }).state, "invalid");
 });
 
+test("approved repository-relative paths accept dot paths without relaxing shared path contracts", () => {
+  const plan = fixture().plan;
+  const { id: _id, digest: _digest, ...body } = plan;
+  const approvedRelativePaths = [".codex/agents/mack.toml", ".codex/config.toml"];
+  const accepted = artifact({ ...body, approvedRelativePaths });
+  assert.equal(api.validateTransitionPlanV1({ artifact: accepted }).state, "valid");
+  assert.deepEqual(unwrap(api.validateTransitionPlanV1({ artifact: accepted })).approvedRelativePaths, approvedRelativePaths);
+  assert.notEqual(accepted.id, plan.id);
+  assert.notEqual(accepted.digest, plan.digest);
+
+  for (const path of [".", "../x", "/x"]) {
+    const rejected = artifact({ ...body, approvedRelativePaths: [path] });
+    assert.equal(api.validateTransitionPlanV1({ artifact: rejected }).state, "invalid", path);
+  }
+  for (const approvedRelativePaths of [
+    [".codex/config.toml", ".codex/agents/mack.toml"],
+    [".codex/config.toml", ".codex/config.toml"],
+  ]) {
+    assert.equal(api.validateTransitionPlanV1({ artifact: artifact({ ...body, approvedRelativePaths }) }).state, "invalid");
+  }
+});
+
 test("intake template rejects hostile, non-canonical, duplicate, unsorted, oversized, and extra data", () => {
   const body = ({ id, digest, ...value }) => value;
   const valid = intakeTemplate();

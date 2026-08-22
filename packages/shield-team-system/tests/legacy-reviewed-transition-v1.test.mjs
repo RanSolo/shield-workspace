@@ -126,7 +126,12 @@ async function fixture({ secondPlan = false, markdownPlan = true } = {}) {
   await mkdir(join(root, "docs", "missions"), { recursive: true });
   const planBytes = "# Human-reviewed plan\n\nCaller text must never become executable scope.\n";
   await writeFile(join(root, planPath), planBytes);
-  const approvedRelativePaths = [planPath, "src/implementation.mts"];
+  const approvedRelativePaths = [
+    ".codex/agents/mack.toml",
+    ".codex/config.toml",
+    planPath,
+    "src/implementation.mts",
+  ];
   if (secondPlan) {
     const alternate = "docs/missions/issue-341-alternate.md";
     await writeFile(join(root, alternate), "# Alternate\n");
@@ -172,9 +177,12 @@ async function fixture({ secondPlan = false, markdownPlan = true } = {}) {
     process.stdout.write = originalWrite;
   }
   assert.equal(status, 0);
+  await mkdir(join(root, ".codex", "agents"), { recursive: true });
+  await writeFile(join(root, ".codex", "agents", "mack.toml"), 'name = "mack"\n');
+  await writeFile(join(root, ".codex", "config.toml"), 'reviewer = "mack"\n');
   await mkdir(join(root, "src"));
   await writeFile(join(root, "src", "implementation.mts"), "export const implemented = true;\n");
-  git(root, ["add", "src/implementation.mts"]);
+  git(root, ["add", ".codex", "src/implementation.mts"]);
   git(root, ["commit", "--quiet", "-m", "authorized implementation"]);
   const headRevision = git(root, ["rev-parse", "HEAD"]);
   const refreshed = await prepareOrRefreshWorktreeStateV2({ sourceRoot: await realpath(source), destinationRoot: await realpath(root) });
@@ -190,6 +198,7 @@ async function fixture({ secondPlan = false, markdownPlan = true } = {}) {
     brief,
     planPath,
     planBytes,
+    approvedRelativePaths,
     baseRevision,
     artifactRevision,
     headRevision,
@@ -328,6 +337,9 @@ test("exact #341 legacy lineage derives one closed fresh_authorize_wheels_up car
   assert.equal(carrier.transitionPlan.parentPlanCommit, current.artifactRevision);
   assert.equal(carrier.transitionPlan.parentPlanPath, current.planPath);
   assert.equal(carrier.transitionPlan.parentPlanRawSha256, hash(current.planBytes));
+  assert.deepEqual(git(current.root, ["diff", "--name-only", current.baseRevision, current.headRevision]).split("\n"), current.approvedRelativePaths);
+  assert.deepEqual(carrier.transitionPlan.approvedRelativePaths, current.approvedRelativePaths);
+  assert.deepEqual(current.approvedRelativePaths.slice(0, 2), [".codex/agents/mack.toml", ".codex/config.toml"]);
   assert.equal(carrier.transitionPlanRawSha256, hash(carrier.canonicalPlanBytes));
   assert.equal(carrier.provenance.artifactPlanMode, "100644");
   assert.equal(carrier.provenance.currentPlanMode, "100644");

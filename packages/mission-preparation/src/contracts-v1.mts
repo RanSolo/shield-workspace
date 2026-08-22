@@ -394,6 +394,7 @@ export type PreparationReasonCodeV1 =
   | "freshness_evidence_incomplete";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const APPROVED_PATH_TOKEN = /^[A-Za-z0-9.][A-Za-z0-9._:/-]{0,255}$/;
 const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const REVISION = /^[0-9a-f]{40}$/;
 const MISSION_REVISION = /^(?:[0-9a-f]{40}|sha256:[A-Za-z0-9_-]{6,})$/;
@@ -432,7 +433,7 @@ function relativePath(value: unknown): value is string {
 }
 
 function approvedPath(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 256 && ID.test(value) && relativePath(value);
+  return typeof value === "string" && value.length <= 256 && APPROVED_PATH_TOKEN.test(value) && relativePath(value);
 }
 
 function sortedUniqueStrings(
