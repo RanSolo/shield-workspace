@@ -8,6 +8,10 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
+  COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2,
+  COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT,
+} from "../dist/copilot-fury-reviewed-transition-host-v1.mjs";
+import {
   LEGACY_REVIEWED_TRANSITION_SEED_ROOT,
   continueLegacyReviewedTransitionV1,
   preflightLegacyProtectedGraphAbsenceV1,
@@ -16,7 +20,8 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
-  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+  COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { executeAuthorizeWheelsUpV1 } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
@@ -281,14 +286,16 @@ function realPassExecutor(root) {
         return {
           state: "completed",
           outputText: JSON.stringify({
-            schemaVersion: 1,
-            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+            schemaVersion: 2,
+            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
             authority: "none",
             reviewerSeatId: "fury",
             reviewedArtifactId: plan.id,
             reviewedArtifactRevision: plan.digest,
             verdict: "PASS",
             findings: [],
+            reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+            repositoryRevision: input.configuration.repositoryRevision,
           }),
           observations: {
             sessionStartObserved: true,
@@ -638,19 +645,32 @@ test("broad mission claim without a derivation seed is recovery-required regardl
   assert.equal(existsSync(join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT)), false);
 });
 
-test("broad mission claim without a request seed is recovery-required on the real derived-source host path", async () => {
+test("a broad legacy mission claim does not collide with the V2 derived-source operation", async () => {
   const current = await fixture();
   const input = { missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury-review" };
   assert.equal((await continueLegacyReviewedTransitionV1(input, { reviewedTransitionHost: async () => reviseResult(current.missionId) })).state, "completed");
   await createBroadMissionClaim(current);
+  const before = await readSeatDispatchReceiptLedgerSnapshotV1({ repositoryRoot: current.root, repositoryId: current.repositoryId, repositoryWorkspaceId: repositoryWorkspaceId(current) });
+  assert.equal(before.state, "valid", JSON.stringify(before));
+  const historicalReceipt = canonicalJson(before.value.projections[0]);
+  const derivationSeedPath = execFileSync("find", [join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "derivation-seed.json"], { encoding: "utf8" }).trim();
+  const derivationSeedBytes = await readFile(derivationSeedPath, "utf8");
   const fake = realPassExecutor(current.root);
   const result = await continueLegacyReviewedTransitionV1(input, {
     reviewedTransitionDependencies: { dispatchDependencies: { executor: fake.value } },
   });
-  assert.deepEqual({ state: result.state, code: result.code }, { state: "recovery_required", code: "REQUEST_SEED_MISSING_AFTER_CLAIM" });
-  assert.equal(fake.calls.preflight, 0);
-  assert.equal(fake.calls.execute, 0);
-  assert.equal(graphExists(current), false);
+  assert.equal(result.state, "materialized", JSON.stringify(result));
+  assert.equal(fake.calls.execute, 1);
+  assert.equal(graphExists(current), true);
+  const after = await readSeatDispatchReceiptLedgerSnapshotV1({ repositoryRoot: current.root, repositoryId: current.repositoryId, repositoryWorkspaceId: repositoryWorkspaceId(current) });
+  assert.equal(after.state, "valid", JSON.stringify(after));
+  assert.equal(canonicalJson(after.value.projections.find((projection) => projection.receiptId === before.value.projections[0].receiptId)), historicalReceipt);
+  assert.equal(await readFile(derivationSeedPath, "utf8"), derivationSeedBytes);
+  const architectureSeedPath = execFileSync("find", [join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "request-seed.json"], { encoding: "utf8" }).trim();
+  const architectureSeed = JSON.parse(await readFile(architectureSeedPath, "utf8"));
+  assert.equal(architectureSeed.schemaVersion, 4);
+  assert.equal(architectureSeed.contractVersion, COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2);
+  assert.notEqual(dirname(architectureSeedPath), dirname(derivationSeedPath));
 });
 
 test("real derived-source host claims, records PASS, and materializes exactly once", async () => {

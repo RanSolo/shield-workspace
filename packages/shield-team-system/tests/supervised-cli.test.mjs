@@ -60,11 +60,12 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_ALLOWED_EFFECTS,
   COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS,
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
-  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
-  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+  COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { prepareOrRefreshWorktreeStateV2, prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
 
@@ -612,6 +613,7 @@ async function fakeCopilotSdkNodeArgs(root) {
   await mkdir(dirname(sdkEntry), { recursive: true });
   await writeFile(join(sdkRoot, "package.json"), `${JSON.stringify({ name: "@github/copilot-sdk", version: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION })}\n`);
   await writeFile(sdkEntry, `
+import { execFileSync } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 const event = (type, data) => ({ id: \`event:\${type}\`, parentId: null, timestamp: new Date().toISOString(), type, data });
@@ -627,7 +629,8 @@ export class CopilotClient {
         const directories = await readdir(seedRoot);
         const seed = JSON.parse(await readFile(join(seedRoot, directories[0], "derivation-seed.json"), "utf8"));
         const plan = seed.carrier.transitionPlan;
-        const content = JSON.stringify({ schemaVersion: 1, contractVersion: ${JSON.stringify(COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION)}, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "PASS", findings: [] });
+        const repositoryRevision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+        const content = JSON.stringify({ schemaVersion: 2, contractVersion: ${JSON.stringify(COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2)}, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "PASS", findings: [], reviewPhase: ${JSON.stringify(COPILOT_FURY_PLAN_REVIEW_PHASE_V2)}, repositoryRevision });
         const message = event("assistant.message", { content, model: config.model });
         config.onEvent(message);
         return message;
@@ -4212,8 +4215,8 @@ test("Copilot Fury dispatch CLI materializes the exact reviewed transition and r
   runGit(current.root, ["commit", "-qm", "Copilot Fury dispatch plan"]);
   const headRevision = runGit(current.root, ["rev-parse", "HEAD"]);
   const request = {
-    schemaVersion: 1,
-    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    schemaVersion: 2,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
     authority: "none",
     repositoryRoot: current.root,
     repositoryId: "RanSolo/fixture",
@@ -4237,6 +4240,7 @@ test("Copilot Fury dispatch CLI materializes the exact reviewed transition and r
     repairLimit: 1,
     stopConditions: [...COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS],
     timestamp: { value: "2026-08-18T12:01:00.000Z", provenance: "hostTrusted" },
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   };
   await writeFile(join(current.root, "fury-dispatch-request.json"), `${JSON.stringify(request, null, 2)}\n`);
   const calls = { preflight: 0, execute: 0 };
@@ -4250,14 +4254,16 @@ test("Copilot Fury dispatch CLI materializes the exact reviewed transition and r
       return {
         state: "completed",
         outputText: JSON.stringify({
-          schemaVersion: 1,
-          contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+          schemaVersion: 2,
+          contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
           authority: "none",
           reviewerSeatId: "fury",
           reviewedArtifactId: built.plan.id,
           reviewedArtifactRevision: built.plan.digest,
           verdict: "PASS",
           findings: [],
+          reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+          repositoryRevision: input.configuration.repositoryRevision,
         }),
         observations: {
           sessionStartObserved: true,

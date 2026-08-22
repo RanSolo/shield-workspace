@@ -13,14 +13,19 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS,
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
   COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
+  COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
   dispatchCopilotFuryPlanReviewV1,
   parseCopilotAgentCardV1,
   validateCopilotFuryPlanDispatchRequestV1,
+  validateCopilotFuryPlanDispatchRequestV2,
   type CopilotFuryPlanDispatchDependenciesV1,
   type CopilotFuryPlanDispatchRequestV1,
+  type CopilotFuryPlanDispatchRequestV2,
+  type CopilotFuryPlanDispatchRequestV1OrV2,
   type CopilotFuryPlanDispatchResultV1,
 } from "./copilot-fury-plan-dispatch-v1.mjs";
 import {
@@ -48,6 +53,8 @@ import {
 export const COPILOT_FURY_REVIEWED_TRANSITION_HOST_CONTRACT_VERSION = "shield.copilot-fury-reviewed-transition-host.v1" as const;
 export const COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION = "shield.copilot-fury-reviewed-transition-seed.v1" as const;
 export const COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_SEED_CONTRACT_VERSION = "shield.copilot-fury-reviewed-transition-seed.v2" as const;
+export const COPILOT_FURY_REVIEWED_TRANSITION_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2 = "shield.copilot-fury-reviewed-transition-seed.v3" as const;
+export const COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2 = "shield.copilot-fury-reviewed-transition-seed.v4" as const;
 export const COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT = ".shield/audit/copilot-fury-reviewed-transition" as const;
 export const COPILOT_FURY_REVIEWED_TRANSITION_REPAIR_LIMIT = 1 as const;
 
@@ -58,9 +65,12 @@ const SEED_V1_FIELDS = [
 const SEED_V2_FIELDS = [
   "schemaVersion", "contractVersion", "authority", "logicalOperation", "preparedWorktree", "furyCard", "missionJournal", "transitionPlanSource", "request",
 ] as const;
+const SEED_V3_FIELDS = SEED_V1_FIELDS;
+const SEED_V4_FIELDS = SEED_V2_FIELDS;
 const LOGICAL_OPERATION_FIELDS = [
   "repositoryId", "repositoryWorkspaceId", "missionId", "missionRevision", "parentSessionId", "transitionPlanId", "transitionPlanDigest",
 ] as const;
+const LOGICAL_OPERATION_FIELDS_V2 = [...LOGICAL_OPERATION_FIELDS, "repositoryRevision", "requestContractVersion", "reviewPhase"] as const;
 const PREPARED_WORKTREE_FIELDS = ["receiptDigest", "receiptRawSha256", "laneBranch"] as const;
 const FURY_CARD_FIELDS = ["logicalRef", "rawSha256", "repositoryRevision"] as const;
 const MISSION_JOURNAL_FIELDS = ["sequence", "digest"] as const;
@@ -144,7 +154,34 @@ export interface CopilotFuryReviewedTransitionSeedV2 extends Omit<CopilotFuryRev
   readonly transitionPlanSource: InternalDerivedTransitionPlanSourceV1;
 }
 
+type CopilotFuryReviewedTransitionLogicalOperationV2 = Readonly<{
+  repositoryId: string;
+  repositoryWorkspaceId: string;
+  missionId: string;
+  missionRevision: string;
+  parentSessionId: string;
+  transitionPlanId: string;
+  transitionPlanDigest: string;
+  repositoryRevision: string;
+  requestContractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2;
+  reviewPhase: typeof COPILOT_FURY_PLAN_REVIEW_PHASE_V2;
+}>;
+
+export interface CopilotFuryReviewedTransitionSeedV3 extends Omit<CopilotFuryReviewedTransitionSeedV1, "schemaVersion" | "contractVersion" | "logicalOperation" | "request"> {
+  readonly schemaVersion: 3;
+  readonly contractVersion: typeof COPILOT_FURY_REVIEWED_TRANSITION_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2;
+  readonly logicalOperation: CopilotFuryReviewedTransitionLogicalOperationV2;
+  readonly request: CopilotFuryPlanDispatchRequestV2;
+}
+
+export interface CopilotFuryReviewedTransitionSeedV4 extends Omit<CopilotFuryReviewedTransitionSeedV3, "schemaVersion" | "contractVersion"> {
+  readonly schemaVersion: 4;
+  readonly contractVersion: typeof COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2;
+  readonly transitionPlanSource: InternalDerivedTransitionPlanSourceV1;
+}
+
 export type CopilotFuryReviewedTransitionSeedV1OrV2 = CopilotFuryReviewedTransitionSeedV1 | CopilotFuryReviewedTransitionSeedV2;
+export type CopilotFuryReviewedTransitionSeedV1ToV4 = CopilotFuryReviewedTransitionSeedV1OrV2 | CopilotFuryReviewedTransitionSeedV3 | CopilotFuryReviewedTransitionSeedV4;
 
 export type PrepareReviewedMissionTransitionClosedResultV1 = Readonly<{
   contractVersion: typeof COPILOT_FURY_REVIEWED_TRANSITION_HOST_CONTRACT_VERSION;
@@ -199,7 +236,7 @@ type HostObservation = Readonly<{
 }>;
 
 type SeedResolution = Readonly<{
-  seed: CopilotFuryReviewedTransitionSeedV1OrV2;
+  seed: CopilotFuryReviewedTransitionSeedV1ToV4;
   file: StableFile;
   completionFile: StableFile;
   relativePath: string;
@@ -567,6 +604,7 @@ async function observeHost(input: PrepareReviewedMissionTransitionInputV1, deriv
 
 function immutableObservation(observation: HostObservation): unknown {
   return {
+    transitionPlanSource: observation.transitionPlanSource,
     repositoryRoot: observation.repositoryRoot,
     rootIdentity: observation.rootIdentity,
     repositoryId: observation.repositoryId,
@@ -593,7 +631,7 @@ function immutableObservation(observation: HostObservation): unknown {
   };
 }
 
-function logicalOperation(observation: HostObservation) {
+function logicalOperationV1(observation: HostObservation) {
   const parentSessionId = `session:reviewed-transition:${digestId("shield-reviewed-transition-parent-session-v1", {
     missionRevision: observation.missionRevision,
     transitionPlanDigest: observation.transitionPlan.digest,
@@ -609,17 +647,45 @@ function logicalOperation(observation: HostObservation) {
   });
 }
 
-function seedRelativePath(operation: ReturnType<typeof logicalOperation>): string {
+function seedRelativePathV1(operation: ReturnType<typeof logicalOperationV1>): string {
   const token = sha256(`shield-reviewed-transition-request-seed-path-v1\0${canonicalJson(operation)}`);
   return `${COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT}/${token}/request-seed.json`;
 }
 
-function requestFor(observation: HostObservation, input: PrepareReviewedMissionTransitionInputV1, timestamp: string): CopilotFuryPlanDispatchRequestV1 {
-  const operation = logicalOperation(observation);
+function logicalOperationV2(observation: HostObservation): CopilotFuryReviewedTransitionLogicalOperationV2 {
+  const parentSessionId = `session:reviewed-transition-v2:${digestId("shield-reviewed-transition-parent-session-v2", {
+    missionRevision: observation.missionRevision,
+    transitionPlanDigest: observation.transitionPlan.digest,
+    repositoryRevision: observation.headRevision,
+    requestContractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+  }).slice(0, 32)}`;
+  return Object.freeze({
+    repositoryId: observation.repositoryId,
+    repositoryWorkspaceId: observation.repositoryWorkspaceId,
+    missionId: observation.transitionPlan.missionId,
+    missionRevision: observation.missionRevision,
+    parentSessionId,
+    transitionPlanId: observation.transitionPlan.id,
+    transitionPlanDigest: observation.transitionPlan.digest,
+    repositoryRevision: observation.headRevision,
+    requestContractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+  });
+}
+
+function seedRelativePathV2(operation: CopilotFuryReviewedTransitionLogicalOperationV2): string {
+  const token = sha256(`shield-reviewed-transition-request-seed-path-v2\0${canonicalJson(operation)}`);
+  return `${COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT}/${token}/request-seed.json`;
+}
+
+function requestFor(observation: HostObservation, input: PrepareReviewedMissionTransitionInputV1, timestamp: string): CopilotFuryPlanDispatchRequestV2 {
+  const operation = logicalOperationV2(observation);
   const request = {
-    schemaVersion: 1 as const,
-    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    schemaVersion: 2 as const,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
     authority: "none" as const,
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
     repositoryRoot: observation.repositoryRoot,
     repositoryId: observation.repositoryId,
     repositoryWorkspaceId: observation.repositoryWorkspaceId,
@@ -643,15 +709,15 @@ function requestFor(observation: HostObservation, input: PrepareReviewedMissionT
     stopConditions: [...COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS] as ["PASS", "REVISE", "cancelled", "failed"],
     timestamp: { value: timestamp, provenance: "hostTrusted" as const },
   };
-  const checked = validateCopilotFuryPlanDispatchRequestV1(request);
+  const checked = validateCopilotFuryPlanDispatchRequestV2(request);
   if (checked.state === "invalid") throw new Error(`derived_dispatch_request_invalid:${checked.errors.join(" ")}`);
   return checked.value;
 }
 
-function seedFor(observation: HostObservation, request: CopilotFuryPlanDispatchRequestV1): CopilotFuryReviewedTransitionSeedV1OrV2 {
+function seedFor(observation: HostObservation, request: CopilotFuryPlanDispatchRequestV2): CopilotFuryReviewedTransitionSeedV3 | CopilotFuryReviewedTransitionSeedV4 {
   const bindings = {
     authority: "none" as const,
-    logicalOperation: logicalOperation(observation),
+    logicalOperation: logicalOperationV2(observation),
     preparedWorktree: Object.freeze({
       receiptDigest: observation.preparedWorktreeReceipt.receiptDigest,
       receiptRawSha256: observation.preparedWorktreeFile.rawSha256,
@@ -666,34 +732,42 @@ function seedFor(observation: HostObservation, request: CopilotFuryPlanDispatchR
   };
   if (observation.transitionPlanSource.kind === "committed_file") {
     return Object.freeze({
-      schemaVersion: 1,
-      contractVersion: COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION,
+      schemaVersion: 3,
+      contractVersion: COPILOT_FURY_REVIEWED_TRANSITION_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2,
       ...bindings,
       request,
     });
   }
   return Object.freeze({
-    schemaVersion: 2,
-    contractVersion: COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_SEED_CONTRACT_VERSION,
+    schemaVersion: 4,
+    contractVersion: COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2,
     ...bindings,
     transitionPlanSource: observation.transitionPlanSource,
     request,
   });
 }
 
-function validSeedBindings(value: Plain): boolean {
+function validSeedBindings(value: Plain, logicalFields: readonly string[]): boolean {
   return value.authority === "none" &&
-    exact(value.logicalOperation, LOGICAL_OPERATION_FIELDS) && exact(value.preparedWorktree, PREPARED_WORKTREE_FIELDS) &&
+    exact(value.logicalOperation, logicalFields) && exact(value.preparedWorktree, PREPARED_WORKTREE_FIELDS) &&
     exact(value.furyCard, FURY_CARD_FIELDS) && exact(value.missionJournal, MISSION_JOURNAL_FIELDS);
 }
 
-function validSeedShape(value: unknown): value is CopilotFuryReviewedTransitionSeedV1OrV2 {
-  if (!plain(value) || !validSeedBindings(value) || validateCopilotFuryPlanDispatchRequestV1(value.request).state !== "valid") return false;
+function validSeedShape(value: unknown): value is CopilotFuryReviewedTransitionSeedV1ToV4 {
+  if (!plain(value)) return false;
   if (value.schemaVersion === 1 && value.contractVersion === COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION) {
-    return exact(value, SEED_V1_FIELDS);
+    return validSeedBindings(value, LOGICAL_OPERATION_FIELDS) && validateCopilotFuryPlanDispatchRequestV1(value.request).state === "valid" && exact(value, SEED_V1_FIELDS);
   }
-  return value.schemaVersion === 2 && value.contractVersion === COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_SEED_CONTRACT_VERSION &&
-    exact(value, SEED_V2_FIELDS) && plain(value.transitionPlanSource) && value.transitionPlanSource.kind === "legacy_derived";
+  if (value.schemaVersion === 2 && value.contractVersion === COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_SEED_CONTRACT_VERSION) {
+    return validSeedBindings(value, LOGICAL_OPERATION_FIELDS) && validateCopilotFuryPlanDispatchRequestV1(value.request).state === "valid" &&
+      exact(value, SEED_V2_FIELDS) && plain(value.transitionPlanSource) && value.transitionPlanSource.kind === "legacy_derived";
+  }
+  if (value.schemaVersion === 3 && value.contractVersion === COPILOT_FURY_REVIEWED_TRANSITION_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2) {
+    return validSeedBindings(value, LOGICAL_OPERATION_FIELDS_V2) && validateCopilotFuryPlanDispatchRequestV2(value.request).state === "valid" && exact(value, SEED_V3_FIELDS);
+  }
+  return value.schemaVersion === 4 && value.contractVersion === COPILOT_FURY_REVIEWED_TRANSITION_DERIVED_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2 &&
+    validSeedBindings(value, LOGICAL_OPERATION_FIELDS_V2) && validateCopilotFuryPlanDispatchRequestV2(value.request).state === "valid" &&
+    exact(value, SEED_V4_FIELDS) && plain(value.transitionPlanSource) && value.transitionPlanSource.kind === "legacy_derived";
 }
 
 async function ensureSeedDirectory(
@@ -884,16 +958,18 @@ async function acceptExistingSeed(
   }
 }
 
-function matchingMissionClaim(projection: SeatDispatchReceiptProjectionV1, operation: ReturnType<typeof logicalOperation>): boolean {
+function matchingLogicalClaim(projection: SeatDispatchReceiptProjectionV1, operation: CopilotFuryReviewedTransitionLogicalOperationV2): boolean {
   return projection.parentMissionId === operation.missionId && projection.parentMissionRevision === operation.missionRevision &&
-    projection.repositoryWorkspaceId === operation.repositoryWorkspaceId;
+    projection.parentSessionId === operation.parentSessionId && projection.repositoryId === operation.repositoryId &&
+    projection.repositoryWorkspaceId === operation.repositoryWorkspaceId && projection.artifactId === operation.transitionPlanId &&
+    projection.artifactRevision === operation.transitionPlanDigest;
 }
 
 async function missingSeedHasClaim(
   observation: HostObservation,
   readLedger: typeof readSeatDispatchReceiptLedgerSnapshotV1,
 ): Promise<boolean> {
-  const operation = logicalOperation(observation);
+  const operation = logicalOperationV2(observation);
   const ledger = await readLedger({
     repositoryRoot: observation.repositoryRoot,
     repositoryId: observation.repositoryId,
@@ -903,7 +979,7 @@ async function missingSeedHasClaim(
     if (ledger.code === "dispatch_receipt_missing") return false;
     throw new Error(`dispatch_receipt_scan_failed:${ledger.code}:${ledger.errors.join(" ")}`);
   }
-  return ledger.value.projections.some((projection) => matchingMissionClaim(projection, operation));
+  return ledger.value.projections.some((projection) => matchingLogicalClaim(projection, operation));
 }
 
 async function installSeed(
@@ -979,8 +1055,10 @@ async function resolveSeed(
   operations: CopilotFuryReviewedTransitionSeedPersistenceV1,
   readLedger: typeof readSeatDispatchReceiptLedgerSnapshotV1,
 ): Promise<SeedResolution | PrepareReviewedMissionTransitionClosedResultV1> {
-  const operation = logicalOperation(observation);
-  const relativePath = seedRelativePath(operation);
+  const operation = logicalOperationV2(observation);
+  const relativePath = seedRelativePathV2(operation);
+  const legacyRelativePath = seedRelativePathV1(logicalOperationV1(observation));
+  if (relativePath === legacyRelativePath) return closed("conflict", "REQUEST_SEED_NAMESPACE_COLLISION", "The architecture-plan seed namespace collides with the historical V1 seed namespace.");
   const absolutePath = join(observation.repositoryRoot, ...relativePath.split("/"));
   const seedDirectory = dirname(absolutePath);
   const installingPath = join(seedDirectory, "request-seed.installing");
@@ -1089,7 +1167,7 @@ function identityEquals(left: SeatDispatchReceiptIdentityV1, right: SeatDispatch
   return canonicalJson(left) === canonicalJson(right);
 }
 
-function receiptMatchesRequest(projection: SeatDispatchReceiptProjectionV1, request: CopilotFuryPlanDispatchRequestV1, receiptId: string, plan: TransitionPlanV1OrV2): boolean {
+function receiptMatchesRequest(projection: SeatDispatchReceiptProjectionV1, request: CopilotFuryPlanDispatchRequestV1OrV2, receiptId: string, plan: TransitionPlanV1OrV2): boolean {
   return projection.receiptId === receiptId && projection.parentMissionId === request.missionId &&
     projection.parentMissionRevision === request.missionRevision && projection.parentSessionId === request.parentSessionId &&
     projection.repositoryId === request.repositoryId && projection.repositoryWorkspaceId === request.repositoryWorkspaceId &&
@@ -1104,7 +1182,7 @@ function receiptMatchesRequest(projection: SeatDispatchReceiptProjectionV1, requ
 
 async function receiptSnapshot(
   observation: HostObservation,
-  request: CopilotFuryPlanDispatchRequestV1,
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
   receiptId: string,
   plan: TransitionPlanV1OrV2,
   readLedger: typeof readSeatDispatchReceiptLedgerSnapshotV1 = readSeatDispatchReceiptLedgerSnapshotV1,
@@ -1211,7 +1289,7 @@ async function prepareReviewedMissionTransitionInternal(
 
     const dispatch = derivedSource === undefined
       ? dependencies.dispatchPlanReview ?? dispatchCopilotFuryPlanReviewV1
-      : (request: CopilotFuryPlanDispatchRequestV1, dispatchDependencies?: CopilotFuryPlanDispatchDependenciesV1) =>
+      : (request: CopilotFuryPlanDispatchRequestV1OrV2, dispatchDependencies?: CopilotFuryPlanDispatchDependenciesV1) =>
           (dependencies.dispatchDerivedPlanReview ?? dispatchCopilotFuryPlanReviewCoreV1)(request, derivedSource, dispatchDependencies);
     let dispatchResult = await dispatch(seed.seed.request, dependencies.dispatchDependencies);
     let pendingReceiptId: string | null = null;
@@ -1266,7 +1344,7 @@ async function prepareReviewedMissionTransitionInternal(
       if (derivedSource !== undefined) {
         const freshlyDerivedSource = await (rederiveDerivedSource as InternalDerivedTransitionPlanRederiverV1)();
         assertDerivedSourceProvenanceDigest(freshlyDerivedSource);
-        if (seed.seed.schemaVersion !== 2 ||
+        if (seed.seed.schemaVersion !== 4 ||
             canonicalJson(freshlyDerivedSource) !== canonicalJson(derivedSource) ||
             canonicalJson(freshlyDerivedSource) !== canonicalJson(seed.seed.transitionPlanSource)) {
           throw new Error("legacy_derived_source_pre_materialization_drift");

@@ -9,20 +9,24 @@ import test from "node:test";
 
 import {
   COPILOT_FURY_REVIEWED_TRANSITION_REPAIR_LIMIT,
+  COPILOT_FURY_REVIEWED_TRANSITION_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2,
+  COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION,
   COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT,
   prepareReviewedMissionTransitionV1,
 } from "../dist/copilot-fury-reviewed-transition-host-v1.mjs";
 import {
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
   COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
-  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+  COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
 import { resolveSeatDispatchIdentityByReceiptIdV1 } from "../dist/mission-preparation-host-v1.mjs";
-import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 import { readSeatDispatchReceiptLedgerSnapshotV1 } from "../dist/seat-dispatch-store.mjs";
 import {
   MISSION_130_JOURNAL_DIGEST,
@@ -50,6 +54,10 @@ function git(root, args) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function digestId(domain, value) {
+  return createHash("sha256").update(`${domain}\0${canonicalJson(value)}`).digest("base64url");
 }
 
 function binding(seatId) {
@@ -233,18 +241,20 @@ function executor(plan, verdict = "PASS") {
       },
       async execute(input) {
         calls.execute += 1;
-        const findings = verdict === "PASS" ? [] : [{ code: "PLAN_NEEDS_REVISION", message: "Revise the bounded plan." }];
+        const findings = verdict === "PASS" ? [] : [{ code: "PLAN_SCOPE_INVALID", message: "Revise the bounded plan." }];
         return {
           state: "completed",
           outputText: JSON.stringify({
-            schemaVersion: 1,
-            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+            schemaVersion: 2,
+            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
             authority: "none",
             reviewerSeatId: "fury",
             reviewedArtifactId: plan.id,
             reviewedArtifactRevision: plan.digest,
             verdict,
             findings,
+            reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+            repositoryRevision: input.configuration.repositoryRevision,
           }),
           observations: {
             sessionStartObserved: true,
@@ -291,17 +301,27 @@ test("derives repairLimit=1 and stable identities, then directly materializes an
   });
   assert.equal(first.state, "materialized", JSON.stringify(first));
   assert.equal(firstExecutor.calls.execute, 1);
-  const seed = JSON.parse(await readFile(seedPath(current.root), "utf8"));
+  const committedSeedPath = seedPath(current.root);
+  const committedCompletionPath = seedCompletionPath(current.root);
+  const seedBytes = await readFile(committedSeedPath, "utf8");
+  const completionBytes = await readFile(committedCompletionPath, "utf8");
+  const seed = JSON.parse(seedBytes);
+  assert.equal(completionBytes, `sha256:${sha256(seedBytes)}\n`);
   assert.equal(seed.authority, "none");
+  assert.equal(seed.schemaVersion, 3);
+  assert.equal(seed.contractVersion, COPILOT_FURY_REVIEWED_TRANSITION_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2);
+  assert.equal(seed.logicalOperation.repositoryRevision, current.headRevision);
+  assert.equal(seed.logicalOperation.requestContractVersion, COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2);
+  assert.equal(seed.logicalOperation.reviewPhase, COPILOT_FURY_PLAN_REVIEW_PHASE_V2);
   assert.equal(seed.request.repairLimit, COPILOT_FURY_REVIEWED_TRANSITION_REPAIR_LIMIT);
   assert.deepEqual(seed.request.allowedTools, ["read", "search"]);
   assert.deepEqual(seed.request.allowedEffects, []);
   assert.equal(seed.request.timestamp.value, "2026-08-19T12:01:00.000Z");
   assert.match(seed.request.repositoryWorkspaceId, /^workspace:reviewed-transition:/u);
-  assert.match(seed.request.parentSessionId, /^session:reviewed-transition:/u);
+  assert.match(seed.request.parentSessionId, /^session:reviewed-transition-v2:/u);
   assert.deepEqual(seed.request, {
-    schemaVersion: 1,
-    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    schemaVersion: 2,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
     authority: "none",
     repositoryRoot: current.root,
     repositoryId: "RanSolo/reviewed-transition-fixture",
@@ -325,6 +345,7 @@ test("derives repairLimit=1 and stable identities, then directly materializes an
     repairLimit: 1,
     stopConditions: ["PASS", "REVISE", "cancelled", "failed"],
     timestamp: { value: "2026-08-19T12:01:00.000Z", provenance: "hostTrusted" },
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   });
 
   const replayExecutor = executor(current.plan);
@@ -333,8 +354,53 @@ test("derives repairLimit=1 and stable identities, then directly materializes an
     now: () => new Date("2030-01-01T00:00:00.000Z"),
   });
   assert.equal(replay.state, "already_materialized", JSON.stringify(replay));
+  assert.equal(replayExecutor.calls.preflight, 0);
   assert.equal(replayExecutor.calls.execute, 0);
-  assert.equal(JSON.parse(await readFile(seedPath(current.root), "utf8")).request.timestamp.value, "2026-08-19T12:01:00.000Z");
+  assert.equal(await readFile(committedSeedPath, "utf8"), seedBytes);
+  assert.equal(await readFile(committedCompletionPath, "utf8"), completionBytes);
+  assert.equal(JSON.parse(seedBytes).request.timestamp.value, "2026-08-19T12:01:00.000Z");
+});
+
+test("preserved V1 seed bytes cannot shadow the noncolliding V3 architecture seed path or parent session", async () => {
+  const current = await fixture();
+  const repositoryWorkspaceId = `workspace:reviewed-transition:${digestId("shield-reviewed-transition-workspace-v1", { repositoryId: "RanSolo/reviewed-transition-fixture", laneBranch: current.branch }).slice(0, 32)}`;
+  const parentSessionId = `session:reviewed-transition:${digestId("shield-reviewed-transition-parent-session-v1", { missionRevision: current.missionRevision, transitionPlanDigest: current.plan.digest }).slice(0, 32)}`;
+  const logicalOperation = { repositoryId: "RanSolo/reviewed-transition-fixture", repositoryWorkspaceId, missionId: current.missionId, missionRevision: current.missionRevision, parentSessionId, transitionPlanId: current.plan.id, transitionPlanDigest: current.plan.digest };
+  const preparedBytes = await readFile(join(current.root, ".shield", "worktree-state.json"), "utf8");
+  const prepared = JSON.parse(preparedBytes);
+  const planBytes = `${JSON.stringify(current.plan)}\n`;
+  const historicalSeed = {
+    schemaVersion: 1, contractVersion: COPILOT_FURY_REVIEWED_TRANSITION_SEED_CONTRACT_VERSION, authority: "none", logicalOperation,
+    preparedWorktree: { receiptDigest: prepared.receiptDigest, receiptRawSha256: sha256(preparedBytes), laneBranch: current.branch },
+    furyCard: { logicalRef: ".github/agents/fury.agent.md", rawSha256: sha256(FURY_CARD), repositoryRevision: current.headRevision },
+    missionJournal: { sequence: 0, digest: `sha256:${sha256(await readFile(current.journalPath))}` },
+    request: {
+      schemaVersion: 1, contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", repositoryRoot: current.root,
+      repositoryId: "RanSolo/reviewed-transition-fixture", repositoryWorkspaceId, branch: current.branch, planningBaseRevision: current.baseRevision,
+      headRevision: current.headRevision, missionId: current.missionId, missionRevision: current.missionRevision, subjectId: current.subjectId,
+      subjectRevision: current.plan.digest, parentSessionId, transitionPlanPath: current.planPath, transitionPlanRawSha256: sha256(planBytes),
+      cardSelection: { kind: "repository_default" }, requestedModel: "model:fury", requestedRuntime: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+      requestedExecutor: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, allowedTools: ["read", "search"], allowedEffects: [], repairLimit: 1,
+      stopConditions: ["PASS", "REVISE", "cancelled", "failed"], timestamp: { value: "2026-08-19T12:01:00.000Z", provenance: "hostTrusted" },
+    },
+  };
+  const historicalBytes = `${canonicalJson(historicalSeed)}\n`;
+  const directory = join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT, sha256(`shield-reviewed-transition-request-seed-path-v1\0${canonicalJson(logicalOperation)}`));
+  const historicalPath = join(directory, "request-seed.json");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFile(historicalPath, historicalBytes, { mode: 0o600 });
+  await writeFile(join(directory, "request-seed.complete"), `sha256:${sha256(historicalBytes)}\n`, { mode: 0o600 });
+  const fake = executor(current.plan);
+  const result = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: fake.value }, now: () => new Date("2026-08-19T12:01:00.000Z") });
+  assert.equal(result.state, "materialized", JSON.stringify(result));
+  const paths = execFileSync("find", [join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "request-seed.json"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  const v3Path = paths.find((path) => path !== historicalPath);
+  assert.ok(v3Path);
+  const v3 = JSON.parse(await readFile(v3Path, "utf8"));
+  assert.equal(v3.schemaVersion, 3);
+  assert.notEqual(v3.logicalOperation.parentSessionId, parentSessionId);
+  assert.notEqual(dirname(v3Path), directory);
+  assert.equal(await readFile(historicalPath, "utf8"), historicalBytes);
 });
 
 test("committed-plan host rejects a broken v2 prepared-worktree predecessor chain before dispatch", async () => {
@@ -390,6 +456,44 @@ test("committed-plan host keeps the same V2 chain identity and verdict under rep
   assert.equal(replayExecutor.calls.execute, 0);
 });
 
+test("an unchanged plan across a repository-card-only HEAD advance gets distinct V3 seed and dispatch identities", async () => {
+  const current = await fixture();
+  const planPath = join(current.root, current.planPath);
+  const cardPath = join(current.root, ".github", "agents", "fury.agent.md");
+  const originalPlanBytes = await readFile(planPath);
+  const firstExecutor = executor(current.plan, "REVISE");
+  const first = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: firstExecutor.value }, now: () => new Date("2026-08-19T12:01:00.000Z") });
+  assert.equal(first.state, "completed", JSON.stringify(first));
+  const firstSeedPath = seedPath(current.root);
+  const firstSeed = JSON.parse(await readFile(firstSeedPath, "utf8"));
+  const firstEvidence = JSON.parse(await readFile(join(current.root, first.evidencePath), "utf8"));
+  await writeFile(cardPath, `${FURY_CARD}Architecture-plan card revision after HEAD advance.\n`);
+  git(current.root, ["add", ".github/agents/fury.agent.md"]);
+  git(current.root, ["commit", "--quiet", "-m", "advance Fury card only"]);
+  const secondHead = git(current.root, ["rev-parse", "HEAD"]);
+  const refreshed = await prepareOrRefreshWorktreeStateV2({ sourceRoot: current.sourceRoot, destinationRoot: current.root });
+  assert.equal(refreshed.state, "refreshed", JSON.stringify(refreshed));
+  assert.deepEqual(await readFile(planPath), originalPlanBytes);
+  const secondExecutor = executor(current.plan, "REVISE");
+  const second = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: secondExecutor.value }, now: () => new Date("2026-08-19T12:02:00.000Z") });
+  assert.equal(second.state, "completed", JSON.stringify(second));
+  const seedPaths = execFileSync("find", [join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "request-seed.json"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  const secondSeedPath = seedPaths.find((path) => path !== firstSeedPath);
+  assert.ok(secondSeedPath);
+  const secondSeed = JSON.parse(await readFile(secondSeedPath, "utf8"));
+  const secondEvidence = JSON.parse(await readFile(join(current.root, second.evidencePath), "utf8"));
+  const ledger = await readSeatDispatchReceiptLedgerSnapshotV1({ repositoryRoot: current.root, repositoryId: firstSeed.logicalOperation.repositoryId, repositoryWorkspaceId: firstSeed.logicalOperation.repositoryWorkspaceId });
+  assert.equal(ledger.state, "valid", JSON.stringify(ledger));
+  const firstClaim = ledger.value.projections.find((projection) => projection.receiptId === first.receiptId);
+  const secondClaim = ledger.value.projections.find((projection) => projection.receiptId === second.receiptId);
+  assert.equal(secondSeed.logicalOperation.repositoryRevision, secondHead);
+  assert.notEqual(dirname(secondSeedPath), dirname(firstSeedPath));
+  assert.notEqual(secondSeed.logicalOperation.parentSessionId, firstSeed.logicalOperation.parentSessionId);
+  assert.notEqual(secondEvidence.packetId, firstEvidence.packetId);
+  assert.notEqual(secondClaim.dispatchId, firstClaim.dispatchId);
+  assert.notEqual(second.receiptId, first.receiptId);
+});
+
 
 test("preserves REVISE exactly, creates no graph, and conflicts a different model in the same plan scope", async () => {
   const current = await fixture();
@@ -412,7 +516,7 @@ test("preserves REVISE exactly, creates no graph, and conflicts a different mode
 
 test("preserves every non-PASS dispatcher outcome exactly and never creates a graph", async () => {
   const cases = [
-    { state: "completed", disposition: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }], handoff: null },
+    { state: "completed", disposition: "REVISE", findings: [{ code: "PLAN_SCOPE_INVALID", message: "revise" }], handoff: null },
     { state: "blocked", code: "BLOCKED_ADAPTER_GAP", errors: ["blocked"], receiptId: null, evidencePath: null, replayed: false, handoff: null },
     { state: "failed", code: "DISPATCH_FAILED", errors: ["failed"], receiptId: "receipt:failed", evidencePath: null, replayed: false, handoff: null },
     { state: "cancelled", code: "DISPATCH_CANCELLED", errors: ["cancelled"], receiptId: "receipt:cancelled", evidencePath: null, replayed: false, handoff: null },
@@ -422,7 +526,7 @@ test("preserves every non-PASS dispatcher outcome exactly and never creates a gr
   for (const specific of cases) {
     const current = await fixture();
     const outcome = Object.freeze({
-      contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+      contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
       authority: "none",
       ...(specific.state === "completed" || specific.state === "failed" || specific.state === "cancelled" || specific.state === "recovery_required"
         ? { missionId: current.missionId, receiptId: null, evidencePath: null, replayed: false }
@@ -811,7 +915,7 @@ test("permissive-mode durable seeds are rejected on direct and converged replay 
   }
 });
 
-test("a newly committed revised plan digest cannot bypass a broad mission claim without its exact seed", async () => {
+test("a newly committed revised plan digest creates a distinct logical review operation", async () => {
   const current = await fixture();
   const reviseExecutor = executor(current.plan, "REVISE");
   const first = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: reviseExecutor.value } });
@@ -833,12 +937,11 @@ test("a newly committed revised plan digest cannot bypass a broad mission claim 
 
   const passExecutor = executor(rebuilt.plan);
   const second = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: passExecutor.value } });
-  assert.deepEqual({ state: second.state, code: second.code }, { state: "recovery_required", code: "REQUEST_SEED_MISSING_AFTER_CLAIM" });
-  assert.equal(passExecutor.calls.preflight, 0);
-  assert.equal(passExecutor.calls.execute, 0);
+  assert.equal(second.state, "materialized", JSON.stringify(second));
+  assert.equal(passExecutor.calls.execute, 1);
   const seeds = execFileSync("find", [join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "request-seed.json"], { encoding: "utf8" })
     .trim().split("\n").filter(Boolean);
-  assert.equal(seeds.length, 1);
+  assert.equal(seeds.length, 2);
 });
 
 test("workspace identity is stable across canonical roots for the same repository lane", async () => {
@@ -899,7 +1002,7 @@ test("cross-process creation converges on one durable seed and one model executi
         await appendFile(counter, "execute\\n");
         return {
           state: "completed",
-          outputText: JSON.stringify({ schemaVersion: 1, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }] }),
+          outputText: JSON.stringify({ schemaVersion: 2, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_SCOPE_INVALID", message: "revise" }], reviewPhase: dispatch.COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: input.configuration.repositoryRevision }),
           observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [] },
         };
       },
@@ -981,7 +1084,7 @@ test("a dispatch beyond the bounded host wait stays pending and eventually repla
         }
         return {
           state: "completed",
-          outputText: JSON.stringify({ schemaVersion: 1, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }] }),
+          outputText: JSON.stringify({ schemaVersion: 2, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_SCOPE_INVALID", message: "revise" }], reviewPhase: dispatch.COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: input.configuration.repositoryRevision }),
           observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [] },
         };
       },
