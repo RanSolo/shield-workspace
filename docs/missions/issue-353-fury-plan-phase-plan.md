@@ -40,7 +40,12 @@ upgrading, mutating, or reinterpreting it.
    the same phase plus `repositoryRevision`, equal to the request's exact
    40-character `headRevision`.
 2. Production reviewed-transition preparation emits V2 only. V1 validators and
-   evidence remain replay/readback-only for historical records.
+   evidence remain replay/readback-only for historical records. A V1 request
+   with no exact existing claim/terminal history returns
+   `FRESH_V1_REQUEST_PROHIBITED` before preflight, claim creation, audit write,
+   or model invocation. V1 replay covers exact completed, failed, cancelled,
+   interrupted, recovery, and conflicting histories without changing any
+   historical digest.
 3. Freeze V2 findings to:
    - `PLAN_SCOPE_INVALID`
    - `PLAN_AUTHORITY_INVALID`
@@ -55,8 +60,12 @@ upgrading, mutating, or reinterpreting it.
    - `PLAN_COMPATIBILITY_INVALID`
 4. `PASS` requires zero findings. `REVISE` requires one or more findings from
    that closed set. Unknown or out-of-phase codes, including
-   `BOUND_REVISION_EVIDENCE_ABSENT`, are malformed model output and follow the
-   existing bounded repair/fail-closed path.
+   `BOUND_REVISION_EVIDENCE_ABSENT`, are malformed model output. V2 uses a
+   dedicated repair-prompt seam that repeats the full result contract, review
+   phase, repository revision, plan ID/digest, raw plan SHA-256, and all eleven
+   allowed codes. Exhaustion appends exactly one failed terminal receipt with
+   stable code `FURY_PHASE_CONTRACT_EXHAUSTED`, no findings or handoff, and
+   replays without another model invocation.
 5. The V2 prompt and packet review only planned scope, authority, sequence,
    bindings, API feasibility, exclusions, determinism, replay, identity
    separation, compatibility, and test strategy. They explicitly forbid
@@ -71,9 +80,18 @@ upgrading, mutating, or reinterpreting it.
    `repositoryRevision` in the V2 logical operation and parent-session identity.
 8. V1 replay must bind the exact historical request, packet, result, receipt,
    repository revision, and evidence identity. It may replay byte-for-byte but
-   never enter a fresh production dispatch or be translated to V2.
-9. A card or contract change creates a fresh semantic V2 dispatch identity. The
-   historical #341 REVISE receipt remains immutable.
+   never enter a fresh production dispatch or be translated to V2. No-claim V1
+   is rejected before effects; every terminal/recovery replay state has exact
+   packet, receipt, and digest assertions.
+9. Use distinct architecture-plan seed contracts: v3 for committed plans and
+   v4 for legacy-derived plans. Their path domain includes request-contract
+   version, phase, and repository revision. Existing v1/v2 seed paths and bytes
+   remain unchanged and replay-only.
+10. V1-to-V2 contract/phase creates the fresh semantic operation boundary.
+    Selected card identity remains packet evidence: same-operation card drift
+    conflicts. A repository-card update becomes fresh only through its bound
+    repository HEAD; explicit user-card override drift also conflicts. The
+    historical #341 REVISE receipt remains immutable.
 
 ## Acceptance matrix
 
@@ -82,13 +100,15 @@ upgrading, mutating, or reinterpreting it.
 | FPR-1 | Production plan review is explicitly `architecture_plan`. | V2 request, prompt, packet, host-seed, and result tests. |
 | FPR-2 | Exact phase, repository revision, and plan identities are echoed and host-validated. | Positive and substituted phase/revision/plan vectors. |
 | FPR-3 | Mack and post-implementation evidence are forbidden for plan PASS. | Committed-file and legacy-derived PASS fixtures without Mack input. |
-| FPR-4 | Out-of-phase findings cannot become terminal REVISE. | Unknown-code, `BOUND_REVISION_EVIDENCE_ABSENT`, repair, and exhausted-repair vectors. |
+| FPR-4 | Out-of-phase findings cannot become terminal REVISE. | Exact V2 repair prompt; unknown-code, `BOUND_REVISION_EVIDENCE_ABSENT`, stable exhaustion receipt, and no-reinvoke replay vectors. |
 | FPR-5 | Legitimate architecture findings still produce REVISE. | Every allowed code plus PASS/findings cardinality checks. |
-| FPR-6 | Historical V1 evidence is replay-only and unchanged. | Exact V1 request/result/evidence/receipt replay and substitution tests. |
+| FPR-6 | Historical V1 evidence is replay-only and unchanged. | Exact completed, failed, cancelled, interrupted, recovery, conflict, substitution, and no-claim prohibition tests with digest assertions. |
 | FPR-7 | V2 identity includes exact current HEAD. | Logical-operation, parent-session, packet, claim, and head-drift vectors. |
-| FPR-8 | Corrected #341 request is fresh and old receipt immutable. | Legacy fixture derives distinct V2 identity while preserving the old receipt. |
-| FPR-9 | Public package and CLI fixtures remain coherent. | Package-surface and supervised-CLI tests updated only for V2 host output. |
-| FPR-10 | Validation stays cache-enabled and excludes Multiband. | Exact-SHA Nx affected evidence. |
+| FPR-8 | V3/v4 seeds cannot collide with historical v1/v2 seeds. | Seed-contract/path-domain and byte-preserving readback vectors. |
+| FPR-9 | Corrected #341 request is fresh and old receipt immutable. | Legacy fixture derives distinct V2 identity while preserving the old receipt. |
+| FPR-10 | Card identity remains evidence, not a free freshness dimension. | Repository-card and explicit-user-override same-operation drift conflicts. |
+| FPR-11 | Public package and CLI fixtures remain coherent. | Package-surface and supervised-CLI tests updated only for V2 host output. |
+| FPR-12 | Validation stays cache-enabled and excludes Multiband. | Exact-SHA Nx affected evidence. |
 
 ## Bounded paths
 
@@ -112,9 +132,10 @@ is in scope.
 
 1. Port the closed V2 request/result/taxonomy and phase-aware prompt into the
    current dispatcher core and adapter without restoring historical #349 code.
-2. Make the current reviewed-transition host emit V2 committed/derived seeds,
-   retain V1/V2 readback, bind exact current HEAD into operation/session
-   identity, and preserve V1 replay-only semantics.
+2. Make the current reviewed-transition host emit architecture-plan v3
+   committed and v4 derived seeds; retain historical v1/v2 readback and paths
+   byte-for-byte; bind request version, phase, and exact current HEAD into the
+   new seed path, operation, and parent-session identities.
 3. Update the Fury card and the five bounded test surfaces. Adapt current #361
    fixtures; do not restore stale historical fixtures.
 4. Run focused tests, package surface, then exact-SHA Nx affected build/test with
