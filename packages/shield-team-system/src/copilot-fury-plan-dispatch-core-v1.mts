@@ -1002,13 +1002,19 @@ async function validateExactGitTreeToolCall(repositoryRoot: string, revision: st
   }
 }
 
-async function exactGitTreeBytes(repositoryRoot: string, file: ExactGitTreeEntry): Promise<Buffer> {
+async function exactGitTreeObjectBytes(repositoryRoot: string, file: ExactGitTreeEntry): Promise<Buffer> {
   if (!regularGitTreeFile(file)) throw new Error("exact_git_tree_mode_invalid");
   const sizeText = (await git(repositoryRoot, ["cat-file", "-s", file.objectId])).trim();
   const size = Number(sizeText);
   if (!Number.isSafeInteger(size) || size < 0 || size > MAX_INPUT_BYTES) throw new Error("exact_git_tree_object_invalid");
   const bytes = await gitBytes(repositoryRoot, ["cat-file", "blob", file.objectId]);
-  if (bytes.length !== size || !Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error("exact_git_tree_bytes_invalid");
+  if (bytes.length !== size) throw new Error("exact_git_tree_bytes_invalid");
+  return bytes;
+}
+
+async function exactGitTreeBytes(repositoryRoot: string, file: ExactGitTreeEntry): Promise<Buffer> {
+  const bytes = await exactGitTreeObjectBytes(repositoryRoot, file);
+  if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error("exact_git_tree_bytes_invalid");
   return bytes;
 }
 
@@ -1122,11 +1128,11 @@ async function buildReviewArtifactMap(
   let totalBytes = 0;
   for (const entry of entriesByPath.values()) totalBytes += Buffer.byteLength(entry.bytes, "utf8");
   const fallbackFiles = headEntries.filter((entry) => regularGitTreeFile(entry) && !entriesByPath.has(entry.path)).sort((left, right) => compareLogicalPaths(left.path, right.path));
-  if (fallbackFiles.length + entriesByPath.size > MAX_REVIEW_ARTIFACT_ENTRIES) throw new Error("review_artifact_map_too_many_entries");
   for (const file of fallbackFiles) {
-    const bytes = await exactGitTreeBytes(request.repositoryRoot, file);
+    const bytes = await exactGitTreeObjectBytes(request.repositoryRoot, file);
     const text = bytes.toString("utf8");
-    if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error("review_artifact_fallback_not_utf8");
+    if (!Buffer.from(text, "utf8").equals(bytes)) continue;
+    if (entriesByPath.size >= MAX_REVIEW_ARTIFACT_ENTRIES) throw new Error("review_artifact_map_too_many_entries");
     totalBytes += bytes.length;
     if (totalBytes > MAX_REVIEW_ARTIFACT_BYTES) throw new Error("review_artifact_map_too_large");
     entriesByPath.set(file.path, Object.freeze({ path: file.path, bytes: text, rawSha256: digestHex(bytes), roles: Object.freeze([]), sourceIdentities: Object.freeze([`head:${request.headRevision}:${file.path}:${file.mode}:${file.objectId}:${bytes.length}:${digestHex(bytes)}`]) }));

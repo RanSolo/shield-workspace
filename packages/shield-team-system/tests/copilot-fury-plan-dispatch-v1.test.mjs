@@ -1869,6 +1869,62 @@ test("review artifact map enforces role cardinality, source identity, collision,
   await assert.rejects(buildCopilotFuryReviewArtifactMapV1(conflictingRequest, conflictingSource, equalPlan), /review_artifact_path_collision/u);
 });
 
+test("production fallback omits binary blobs while dispatch succeeds and binary tools are denied", async () => {
+  const current = await fixture();
+  const binaryPath = "assets/font.woff2";
+  await mkdir(join(current.root, "assets"), { recursive: true });
+  await writeFile(join(current.root, binaryPath), Buffer.from([0x00, 0xff, 0x10, 0x80, 0x01, 0xfe]));
+  git(current.root, ["add", binaryPath]);
+  git(current.root, ["commit", "-qm", "add binary fallback fixture"]);
+  current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
+
+  const transitionBytes = await readFile(join(current.root, current.request.transitionPlanPath), "utf8");
+  const map = await buildCopilotFuryReviewArtifactMapV1(current.request, {
+    kind: "committed_file",
+    file: { path: join(current.root, current.request.transitionPlanPath), bytes: transitionBytes, identity: "test-source", rawSha256: sha256(transitionBytes) },
+  }, current.plan);
+  validateCopilotFuryReviewArtifactMapV1(map);
+  assert.equal(map.entries.some((entry) => entry.path === binaryPath), false);
+
+  const successHarness = productionSdkHarness({ preToolUseCalls: [
+    { toolName: "read", toolArgs: { path: "package.json" } },
+    { toolName: "search", toolArgs: { query: "private" } },
+  ] });
+  const success = await runProductionExecutor(current, successHarness);
+  assert.equal(success.state, "completed", JSON.stringify(success));
+  assert.deepEqual(successHarness.calls.toolResults.map(({ name }) => name), ["read", "search"]);
+
+  for (const toolCall of [
+    { toolName: "read", toolArgs: { path: binaryPath } },
+    { toolName: "search", toolArgs: { query: "font", path: binaryPath } },
+  ]) {
+    const denied = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
+    assert.equal(denied.state, "failed", `${JSON.stringify(toolCall)}: ${JSON.stringify(denied)}`);
+    assert.equal(denied.observations.unauthorizedToolOrEffectObserved, true);
+  }
+});
+
+test("binary fallback omissions do not consume the artifact entry limit", async () => {
+  const current = await fixture();
+  const binaryDirectory = join(current.root, "binary-fallbacks");
+  await mkdir(binaryDirectory, { recursive: true });
+  for (let index = 0; index < 4095; index += 1) {
+    await writeFile(join(binaryDirectory, `${String(index).padStart(4, "0")}.bin`), Buffer.from([0xff, index & 0xff]));
+  }
+  git(current.root, ["add", "binary-fallbacks"]);
+  git(current.root, ["commit", "-qm", "add high-cardinality binary fallbacks"]);
+  current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
+
+  const transitionBytes = await readFile(join(current.root, current.request.transitionPlanPath), "utf8");
+  const map = await buildCopilotFuryReviewArtifactMapV1(current.request, {
+    kind: "committed_file",
+    file: { path: join(current.root, current.request.transitionPlanPath), bytes: transitionBytes, identity: "test-source", rawSha256: sha256(transitionBytes) },
+  }, current.plan);
+  validateCopilotFuryReviewArtifactMapV1(map);
+  assert.equal(map.entries.some((entry) => entry.path.startsWith("binary-fallbacks/")), false);
+  assert.ok(map.entries.length < 4096);
+});
+
 test("production executor binds loaded SDK and producer identity and confines permissions", async () => {
   const current = await fixture();
   const harness = productionSdkHarness({ preToolUseCalls: [
