@@ -23,6 +23,7 @@ import {
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
   COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
+import { buildCopilotFuryReviewArtifactMapV1, validateCopilotFuryReviewArtifactMapV1 } from "../dist/copilot-fury-plan-dispatch-core-v1.mjs";
 import { executeAuthorizeWheelsUpV1 } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { appendProfileAwareMissionEntriesAtomicV1 } from "../dist/mission-store.mjs";
@@ -52,6 +53,20 @@ function git(root, args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 }
 function hash(value) { return createHash("sha256").update(value).digest("hex"); }
+function executionObservation(input) {
+  return {
+    version: "shield.copilot-fury.execution-observation.v1",
+    sdkVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+    registeredToolNames: ["read", "search"],
+    sessionAvailableTools: ["custom:read", "custom:search"],
+    sessionExcludedTools: [...input.toolBinding.sessionExcludedTools],
+    customAgentTools: ["read", "search"],
+    modelFacingToolNames: ["read", "search"],
+    runtimeMetadataNames: ["read", "search"],
+    runtimeMetadataDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    artifactMapDigest: input.reviewArtifactMap.digest,
+  };
+}
 function binding(seatId, keyPair = generateKeyPairSync("ed25519")) {
   const publicKeySpkiBase64 = keyPair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
   return {
@@ -312,6 +327,7 @@ function realPassExecutor(root) {
             agentSubstitutionObserved: false,
             unauthorizedToolOrEffectObserved: false,
             policyDecisions: [],
+            executionObservation: executionObservation(input),
           },
         };
       },
@@ -461,6 +477,21 @@ test("exact #341 legacy lineage derives one closed fresh_authorize_wheels_up car
   assert.equal(carrier.provenance.artifactPlanObjectId, carrier.provenance.currentPlanObjectId);
   assert.match(carrier.virtualPath, /^\.shield\/audit\/legacy-reviewed-transition\/sha256:[A-Za-z0-9_-]{43}\/transition-plan\.json$/u);
   assert.equal(existsSync(join(current.root, carrier.virtualPath)), false);
+  const reviewArtifactMap = await buildCopilotFuryReviewArtifactMapV1({
+    repositoryRoot: current.root,
+    headRevision: current.headRevision,
+    transitionPlanPath: carrier.virtualPath,
+    transitionPlanRawSha256: carrier.transitionPlanRawSha256,
+  }, carrier, carrier.transitionPlan);
+  validateCopilotFuryReviewArtifactMapV1(reviewArtifactMap);
+  const virtualEntry = reviewArtifactMap.entries.find((entry) => entry.roles.includes("transition_plan"));
+  const parentEntry = reviewArtifactMap.entries.find((entry) => entry.roles.includes("parent_plan"));
+  assert.equal(virtualEntry.path, carrier.virtualPath);
+  assert.equal(virtualEntry.bytes, carrier.canonicalPlanBytes);
+  assert.ok(virtualEntry.sourceIdentities.some((identity) => identity.startsWith("virtual:")));
+  assert.equal(parentEntry.path, current.planPath);
+  assert.equal(parentEntry.bytes, current.planBytes);
+  assert.ok(parentEntry.sourceIdentities.some((identity) => identity.startsWith(`git:${current.artifactRevision}:`)));
   const seedRoot = join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT);
   assert.equal(existsSync(seedRoot), true);
 });
@@ -673,7 +704,7 @@ test("a broad legacy mission claim does not collide with the V2 derived-source o
   assert.notEqual(dirname(architectureSeedPath), dirname(derivationSeedPath));
 });
 
-test("real derived-source host claims, records PASS, and materializes exactly once", async () => {
+test("fresh corrected legacy-derived operation records PASS and materializes exactly once", async () => {
   const current = await fixture();
   const fake = realPassExecutor(current.root);
   const result = await continueLegacyReviewedTransitionV1(
@@ -695,6 +726,10 @@ test("real derived-source host claims, records PASS, and materializes exactly on
   assert.equal(ledger.state, "valid", JSON.stringify(ledger));
   assert.equal(ledger.value.projections.length, 1);
   assert.equal(ledger.value.projections[0].state, "completed");
+  const evidencePath = execFileSync("find", [join(current.root, ".shield", "audit", "copilot-fury-plan-dispatch"), "-name", "dispatch-evidence-*.json"], { encoding: "utf8" }).trim();
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  assert.equal(evidence.executionObservation.version, "shield.copilot-fury.execution-observation.v1");
+  assert.match(evidence.executionObservation.artifactMapDigest, /^sha256:[A-Za-z0-9_-]{43}$/u);
   assert.equal(graphExists(current), true);
 });
 

@@ -623,7 +623,7 @@ export class CopilotClient {
   async createSession(config) {
     config.onEvent(event("session.start", { sessionId: config.sessionId, selectedModel: config.model, producer: ${JSON.stringify(COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID)}, copilotVersion: "1.0.79" }));
     return {
-      rpc: { agent: { async getCurrent() { return { agent: { name: "fury" } }; } }, model: { async getCurrent() { return { modelId: config.model }; } } },
+      rpc: { agent: { async getCurrent() { return { agent: { name: "fury" } }; } }, model: { async getCurrent() { return { modelId: config.model }; } }, tools: { async initializeAndValidate() { return {}; }, async getCurrentMetadata() { return { tools: [{ name: "read", description: "read" }, { name: "search", description: "search" }] }; } } },
       async sendAndWait() {
         const seedRoot = join(process.cwd(), ".shield", "audit", "legacy-reviewed-transition");
         const directories = await readdir(seedRoot);
@@ -4176,10 +4176,13 @@ test("Copilot Fury dispatch CLI materializes the exact reviewed transition and r
   await mkdir(join(current.root, ".github", "agents"), { recursive: true });
   await mkdir(join(current.root, "docs", "missions"), { recursive: true });
   await writeFile(join(current.root, ".github", "agents", "fury.agent.md"), COPILOT_FURY_CARD);
+  const parentPlanPath = "docs/missions/issue-319-cli-plan.md";
+  const parentPlanBytes = "# Parent plan for the CLI exact-read fixture.\n";
+  await writeFile(join(current.root, parentPlanPath), parentPlanBytes);
   runGit(current.root, ["init", "-q", "-b", "main"]);
   runGit(current.root, ["config", "user.email", "shield@example.invalid"]);
   runGit(current.root, ["config", "user.name", "SHIELD Fixture"]);
-  runGit(current.root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore", ".github/agents/fury.agent.md"]);
+  runGit(current.root, ["add", "package.json", "mission-brief.json", ".shield/config.json", ".shield/trusted-human-bindings.json", ".shield/.gitignore", ".github/agents/fury.agent.md", parentPlanPath]);
   runGit(current.root, ["commit", "-qm", "Copilot Fury dispatch base"]);
   const baseRevision = runGit(current.root, ["rev-parse", "HEAD"]);
   const built = buildMissionTransitionPlanV1({
@@ -4188,8 +4191,8 @@ test("Copilot Fury dispatch CLI materializes the exact reviewed transition and r
     repositoryId: "RanSolo/fixture",
     planningBaseRevision: baseRevision,
     parentPlanCommit: baseRevision,
-    parentPlanPath: "docs/missions/issue-319-cli-plan.md",
-    parentPlanRawSha256: "a".repeat(64),
+    parentPlanPath,
+    parentPlanRawSha256: createHash("sha256").update(parentPlanBytes).digest("hex"),
     transitionKind: "fresh_authorize_wheels_up",
     boundedOutcome: "Exercise the exact Copilot Fury CLI handoff.",
     approvedRelativePaths: ["implementation.md"],
@@ -4280,6 +4283,18 @@ test("Copilot Fury dispatch CLI materializes the exact reviewed transition and r
           agentSubstitutionObserved: false,
           unauthorizedToolOrEffectObserved: false,
           policyDecisions: [],
+          executionObservation: {
+            version: "shield.copilot-fury.execution-observation.v1",
+            sdkVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+            registeredToolNames: ["read", "search"],
+            sessionAvailableTools: ["custom:read", "custom:search"],
+            sessionExcludedTools: [...input.toolBinding.sessionExcludedTools],
+            customAgentTools: ["read", "search"],
+            modelFacingToolNames: ["read", "search"],
+            runtimeMetadataNames: ["read", "search"],
+            runtimeMetadataDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            artifactMapDigest: input.reviewArtifactMap.digest,
+          },
         },
       };
     },

@@ -71,6 +71,9 @@ export const COPILOT_FURY_PLAN_DISPATCH_REPOSITORY_CARD_REF = ".github/agents/fu
 export const COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF = "user://agents/fury.agent.md" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS = Object.freeze(["read", "search"] as const);
 export const COPILOT_FURY_PLAN_DISPATCH_ALLOWED_EFFECTS = Object.freeze([] as const);
+export const COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION = "shield.copilot-fury.execution-tool-binding.v1" as const;
+export const COPILOT_FURY_EXECUTION_OBSERVATION_VERSION = "shield.copilot-fury.execution-observation.v1" as const;
+export const COPILOT_FURY_REVIEW_ARTIFACT_MAP_VERSION = "shield.copilot-fury.review-artifact-map.v1" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS = Object.freeze(["PASS", "REVISE", "cancelled", "failed"] as const);
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERY_PROTOCOL = "copilot-fury-empty-mode-recovery-v1" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID = "receipt:Y40rTRNdpEsqc9t24wRZ470R0zzYyk5G" as const;
@@ -118,6 +121,14 @@ const MAX_FINDING_TEXT = 4096;
 const MUTATING_TOOL_EXCLUSIONS = Object.freeze([
   "write", "edit", "apply_patch", "bash", "shell", "execute", "web", "mcp:*", "custom:*",
 ] as const);
+const EXECUTION_AVAILABLE_TOOLS = Object.freeze(["custom:read", "custom:search"] as const);
+const EXECUTION_AGENT_TOOLS = Object.freeze(["read", "search"] as const);
+const EXECUTION_MODEL_TOOLS = Object.freeze(["read", "search"] as const);
+const EXECUTION_EXCLUDED_TOOLS = Object.freeze([
+  "builtin:*", "mcp:*", "write", "edit", "apply_patch", "bash", "shell", "execute", "web", "custom:write", "custom:edit", "custom:apply_patch", "custom:bash", "custom:shell", "custom:execute", "custom:web",
+] as const);
+const MAX_REVIEW_ARTIFACT_ENTRIES = 4096;
+const MAX_REVIEW_ARTIFACT_BYTES = 8 * MAX_INPUT_BYTES;
 const GIT_CONTEXT_VARIABLES = Object.freeze([
   "GIT_COMMON_DIR", "GIT_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_WORK_TREE",
 ] as const);
@@ -248,17 +259,65 @@ export interface CopilotFurySdkConfigurationV1 {
   readonly allowedEffects: readonly [];
 }
 
+export interface CopilotFuryReviewArtifactMapEntryV1 {
+  readonly path: string;
+  readonly bytes: string;
+  readonly rawSha256: string;
+  readonly roles: readonly ("transition_plan" | "parent_plan")[];
+  readonly sourceIdentities: readonly string[];
+}
+
+export interface CopilotFuryReviewArtifactMapV1 {
+  readonly version: typeof COPILOT_FURY_REVIEW_ARTIFACT_MAP_VERSION;
+  readonly entries: readonly CopilotFuryReviewArtifactMapEntryV1[];
+  readonly digest: string;
+  readonly totalBytes: number;
+}
+
+export interface CopilotFuryToolDescriptorProjectionV1 {
+  readonly name: "read" | "search";
+  readonly parameters: Readonly<Record<string, unknown>>;
+  readonly overridesBuiltInTool: true;
+  readonly skipPermission: true;
+  readonly defer: "never";
+}
+
+export interface CopilotFuryExecutionToolBindingProjectionV1 {
+  readonly version: typeof COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION;
+  readonly sessionAvailableTools: readonly ["custom:read", "custom:search"];
+  readonly sessionExcludedTools: readonly string[];
+  readonly customAgentTools: readonly ["read", "search"];
+  readonly modelFacingToolNames: readonly ["read", "search"];
+  readonly registeredDescriptors: readonly [CopilotFuryToolDescriptorProjectionV1, CopilotFuryToolDescriptorProjectionV1];
+  readonly artifactMapDigest: string;
+}
+
+export interface CopilotFuryExecutionObservationV1 {
+  readonly version: typeof COPILOT_FURY_EXECUTION_OBSERVATION_VERSION;
+  readonly sdkVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION;
+  readonly registeredToolNames: readonly ["read", "search"];
+  readonly sessionAvailableTools: readonly ["custom:read", "custom:search"];
+  readonly sessionExcludedTools: readonly string[];
+  readonly customAgentTools: readonly ["read", "search"];
+  readonly modelFacingToolNames: readonly ["read", "search"];
+  readonly runtimeMetadataNames: readonly ["read", "search"];
+  readonly runtimeMetadataDigest: string;
+  readonly artifactMapDigest: string;
+}
+
 export interface CopilotFuryExecutorPreflightInputV1 {
   readonly repositoryRoot: string;
   readonly requestedModel: string;
   readonly requestedRuntime: string;
   readonly requestedExecutor: string;
   readonly executionIdentity: CopilotFuryExecutionIdentityV1;
+  readonly reviewArtifactMap: CopilotFuryReviewArtifactMapV1;
+  readonly toolBinding: CopilotFuryExecutionToolBindingProjectionV1;
 }
 
 export type CopilotFuryExecutorPreflightResultV1 = Readonly<
   | { state: "ready"; packageVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; runtimeId: string; executorId: string }
-  | { state: "blocked"; code: "BLOCKED_ADAPTER_GAP"; errors: readonly string[] }
+  | { state: "blocked"; code: "BLOCKED_ADAPTER_GAP" | "FURY_TOOL_BINDING_INVALID"; errors: readonly string[] }
 >;
 
 export interface CopilotFuryExecutorObservationsV1 {
@@ -276,6 +335,7 @@ export interface CopilotFuryExecutorObservationsV1 {
   readonly agentSubstitutionObserved: false;
   readonly unauthorizedToolOrEffectObserved: false;
   readonly policyDecisions: readonly Readonly<{ tool: string; decision: "allow" | "deny" }>[];
+  readonly executionObservation?: CopilotFuryExecutionObservationV1;
 }
 
 export type CopilotFuryExecutorRunResultV1 = Readonly<
@@ -294,6 +354,8 @@ export interface CopilotFuryExecutorRunInputV1 {
   readonly repairPrompt: string;
   readonly repairLimit: number;
   readonly validateOutput: (text: string) => boolean;
+  readonly reviewArtifactMap: CopilotFuryReviewArtifactMapV1;
+  readonly toolBinding: CopilotFuryExecutionToolBindingProjectionV1;
 }
 
 export interface CopilotFuryClientOptionsProjectionV1 {
@@ -940,14 +1002,153 @@ async function validateExactGitTreeToolCall(repositoryRoot: string, revision: st
   }
 }
 
-async function exactGitTreeBytes(repositoryRoot: string, file: ExactGitTreeEntry): Promise<Buffer> {
+async function exactGitTreeObjectBytes(repositoryRoot: string, file: ExactGitTreeEntry): Promise<Buffer> {
   if (!regularGitTreeFile(file)) throw new Error("exact_git_tree_mode_invalid");
   const sizeText = (await git(repositoryRoot, ["cat-file", "-s", file.objectId])).trim();
   const size = Number(sizeText);
   if (!Number.isSafeInteger(size) || size < 0 || size > MAX_INPUT_BYTES) throw new Error("exact_git_tree_object_invalid");
   const bytes = await gitBytes(repositoryRoot, ["cat-file", "blob", file.objectId]);
-  if (bytes.length !== size || !Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error("exact_git_tree_bytes_invalid");
+  if (bytes.length !== size) throw new Error("exact_git_tree_bytes_invalid");
   return bytes;
+}
+
+async function exactGitTreeBytes(repositoryRoot: string, file: ExactGitTreeEntry): Promise<Buffer> {
+  const bytes = await exactGitTreeObjectBytes(repositoryRoot, file);
+  if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error("exact_git_tree_bytes_invalid");
+  return bytes;
+}
+
+async function exactGitPinnedBlob(repositoryRoot: string, revision: string, requestedPath: string): Promise<Readonly<{ bytes: string; identity: string; rawSha256: string }>> {
+  if (!GIT_REVISION.test(revision) || !normalizedRelativePath(requestedPath)) throw new Error("pinned_git_blob_binding_invalid");
+  const listed = await gitBytes(repositoryRoot, ["ls-tree", "-z", revision, "--", requestedPath]);
+  if (listed.length > MAX_INPUT_BYTES || !Buffer.from(listed.toString("utf8"), "utf8").equals(listed)) throw new Error("pinned_git_blob_listing_invalid");
+  const records = listed.toString("utf8").split("\0").filter((record) => record !== "");
+  if (records.length !== 1) throw new Error("pinned_git_blob_missing");
+  const tab = records[0].indexOf("\t");
+  if (tab < 0) throw new Error("pinned_git_blob_listing_malformed");
+  const [mode, type, objectId, ...extra] = records[0].slice(0, tab).split(" ");
+  const path = records[0].slice(tab + 1);
+  if (extra.length !== 0 || path !== requestedPath || type !== "blob" || !/^(100644|100755)$/u.test(mode ?? "") || !GIT_REVISION.test(objectId ?? "")) throw new Error("pinned_git_blob_not_regular");
+  const entry = Object.freeze({ mode, type, objectId, path });
+  const bytes = await exactGitTreeBytes(repositoryRoot, entry);
+  const text = bytes.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error("pinned_git_blob_not_utf8");
+  return Object.freeze({
+    bytes: text,
+    rawSha256: digestHex(bytes),
+    identity: `git:${revision}:${path}:${mode}:${objectId}:${bytes.length}:${digestHex(bytes)}`,
+  });
+}
+
+type ReviewArtifactBinding = Readonly<{ path: string; bytes: string; rawSha256: string; role: "transition_plan" | "parent_plan"; identity: string }>;
+
+function compareLogicalPaths(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function artifactMapDigest(entries: readonly CopilotFuryReviewArtifactMapEntryV1[]): string {
+  return digestBase64Url(`copilot-fury-review-artifact-map-v1\0${canonicalJson({ version: COPILOT_FURY_REVIEW_ARTIFACT_MAP_VERSION, entries })}`);
+}
+
+function validateReviewArtifactMap(map: CopilotFuryReviewArtifactMapV1): void {
+  if (!exact(map, ["version", "entries", "digest", "totalBytes"])) throw new Error("review_artifact_map_malformed:shape");
+  if (map.version !== COPILOT_FURY_REVIEW_ARTIFACT_MAP_VERSION || !Array.isArray(map.entries) || map.entries.length > MAX_REVIEW_ARTIFACT_ENTRIES || !DIGEST.test(map.digest) || !Number.isSafeInteger(map.totalBytes) || map.totalBytes < 0 || map.totalBytes > MAX_REVIEW_ARTIFACT_BYTES) throw new Error("review_artifact_map_malformed:header");
+  let totalBytes = 0;
+  let previousPath: string | null = null;
+  let transitionRoleCount = 0;
+  let parentRoleCount = 0;
+  for (const entry of map.entries) {
+    if (!exact(entry, ["path", "bytes", "rawSha256", "roles", "sourceIdentities"])) throw new Error("review_artifact_map_entry_malformed:shape");
+    if (!normalizedRelativePath(entry.path) || entry.path.split("/").some((component) => component.toLocaleLowerCase("en-US") === ".git") || typeof entry.bytes !== "string" || !SHA256_HEX.test(entry.rawSha256 as string) || !Array.isArray(entry.roles) || entry.roles.some((role) => role !== "transition_plan" && role !== "parent_plan") || new Set(entry.roles).size !== entry.roles.length || !Array.isArray(entry.sourceIdentities) || entry.sourceIdentities.length < 1) throw new Error(`review_artifact_map_entry_malformed:${entry.path}`);
+    const sourceIdentities = entry.sourceIdentities as readonly unknown[];
+    if (sourceIdentities.some((identity) => typeof identity !== "string" || !/^[\x21-\x7e]{1,1024}$/u.test(identity)) || new Set(sourceIdentities).size !== sourceIdentities.length || sourceIdentities.some((identity, index) => index > 0 && compareLogicalPaths(sourceIdentities[index - 1] as string, identity as string) >= 0)) throw new Error(`review_artifact_map_entry_malformed:${entry.path}`);
+    const hasTransitionRole = entry.roles.includes("transition_plan");
+    const hasParentRole = entry.roles.includes("parent_plan");
+    transitionRoleCount += hasTransitionRole ? 1 : 0;
+    parentRoleCount += hasParentRole ? 1 : 0;
+    const transitionIdentities = entry.sourceIdentities.filter((identity) => identity.startsWith("virtual:") || identity.startsWith("head:"));
+    const parentIdentities = entry.sourceIdentities.filter((identity) => identity.startsWith("git:"));
+    const shadowIdentities = entry.sourceIdentities.filter((identity) => identity.startsWith("head-shadowed:"));
+    if (entry.sourceIdentities.some((identity) => !identity.startsWith("virtual:") && !identity.startsWith("head:") && !identity.startsWith("git:") && !identity.startsWith("head-shadowed:")) ||
+        transitionIdentities.length !== (hasTransitionRole || entry.roles.length === 0 ? 1 : 0) ||
+        parentIdentities.length !== (hasParentRole ? 1 : 0) ||
+        shadowIdentities.length > (entry.roles.length === 0 ? 0 : 1) ||
+        (entry.roles.length === 0 && entry.sourceIdentities.length !== 1)) throw new Error("review_artifact_map_source_identity_invalid");
+    if (previousPath !== null && compareLogicalPaths(previousPath, entry.path) >= 0) throw new Error("review_artifact_map_order_invalid");
+    previousPath = entry.path;
+    const bytes = Buffer.from(entry.bytes, "utf8");
+    if (bytes.length < 1 || bytes.length > MAX_INPUT_BYTES || !Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes) || digestHex(bytes) !== entry.rawSha256) throw new Error("review_artifact_map_bytes_invalid");
+    totalBytes += bytes.length;
+    if (totalBytes > MAX_REVIEW_ARTIFACT_BYTES) throw new Error("review_artifact_map_too_large");
+  }
+  if (transitionRoleCount !== 1 || parentRoleCount !== 1) throw new Error("review_artifact_map_role_cardinality_invalid");
+  if (totalBytes !== map.totalBytes || artifactMapDigest(map.entries) !== map.digest) throw new Error("review_artifact_map_digest_mismatch");
+}
+
+export function validateCopilotFuryReviewArtifactMapV1(map: CopilotFuryReviewArtifactMapV1): void {
+  validateReviewArtifactMap(map);
+}
+
+async function buildReviewArtifactMap(
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
+  source: InternalResolvedTransitionPlanSourceV1,
+  plan: TransitionPlanV1OrV2,
+): Promise<CopilotFuryReviewArtifactMapV1> {
+  const transitionPath = request.transitionPlanPath;
+  const transitionFile = source.kind === "legacy_derived"
+    ? Object.freeze({ bytes: source.canonicalPlanBytes, rawSha256: source.transitionPlanRawSha256, identity: `virtual:${source.virtualPath}:${source.provenanceDigest}:${source.transitionPlanRawSha256}` })
+    : Object.freeze({ bytes: source.file.bytes, rawSha256: source.file.rawSha256, identity: `head:${request.headRevision}:${transitionPath}:${source.file.identity}:${source.file.rawSha256}` });
+  const parent = await exactGitPinnedBlob(request.repositoryRoot, plan.parentPlanCommit, plan.parentPlanPath);
+  if (transitionFile.rawSha256 !== digestHex(transitionFile.bytes) || transitionFile.rawSha256 !== request.transitionPlanRawSha256 || parent.rawSha256 !== plan.parentPlanRawSha256) throw new Error("review_artifact_binding_digest_mismatch");
+  const bindings: ReviewArtifactBinding[] = [
+    { path: transitionPath, bytes: transitionFile.bytes, rawSha256: transitionFile.rawSha256, role: "transition_plan", identity: transitionFile.identity },
+    { path: plan.parentPlanPath, bytes: parent.bytes, rawSha256: parent.rawSha256, role: "parent_plan", identity: parent.identity },
+  ];
+  const boundByPath = new Map<string, { bytes: string; rawSha256: string; roles: Set<"transition_plan" | "parent_plan">; sourceIdentities: Set<string> }>();
+  for (const binding of bindings) {
+    if (!normalizedRelativePath(binding.path) || binding.path.split("/").some((component) => component.toLocaleLowerCase("en-US") === ".git")) throw new Error("review_artifact_path_invalid");
+    const existing = boundByPath.get(binding.path);
+    if (existing === undefined) boundByPath.set(binding.path, { bytes: binding.bytes, rawSha256: binding.rawSha256, roles: new Set([binding.role]), sourceIdentities: new Set([binding.identity]) });
+    else {
+      if (existing.bytes !== binding.bytes || existing.rawSha256 !== binding.rawSha256) throw new Error("review_artifact_path_collision");
+      existing.roles.add(binding.role);
+      existing.sourceIdentities.add(binding.identity);
+    }
+  }
+  const headEntries = await exactGitTreeInventory(request.repositoryRoot, request.headRevision);
+  const entriesByPath = new Map<string, CopilotFuryReviewArtifactMapEntryV1>();
+  for (const [path, bound] of boundByPath) {
+    const head = headEntries.find((entry) => entry.path === path);
+    if (head !== undefined) {
+      if (!regularGitTreeFile(head)) throw new Error("review_artifact_bound_path_not_regular");
+      bound.sourceIdentities.add(`head-shadowed:${request.headRevision}:${head.path}:${head.mode}:${head.objectId}`);
+    }
+    entriesByPath.set(path, Object.freeze({ path, bytes: bound.bytes, rawSha256: bound.rawSha256, roles: Object.freeze([...bound.roles].sort()) as readonly ("transition_plan" | "parent_plan")[], sourceIdentities: Object.freeze([...bound.sourceIdentities].sort(compareLogicalPaths)) }));
+  }
+  let totalBytes = 0;
+  for (const entry of entriesByPath.values()) totalBytes += Buffer.byteLength(entry.bytes, "utf8");
+  const fallbackFiles = headEntries.filter((entry) => regularGitTreeFile(entry) && !entriesByPath.has(entry.path)).sort((left, right) => compareLogicalPaths(left.path, right.path));
+  for (const file of fallbackFiles) {
+    const bytes = await exactGitTreeObjectBytes(request.repositoryRoot, file);
+    const text = bytes.toString("utf8");
+    if (!Buffer.from(text, "utf8").equals(bytes)) continue;
+    if (entriesByPath.size >= MAX_REVIEW_ARTIFACT_ENTRIES) throw new Error("review_artifact_map_too_many_entries");
+    totalBytes += bytes.length;
+    if (totalBytes > MAX_REVIEW_ARTIFACT_BYTES) throw new Error("review_artifact_map_too_large");
+    entriesByPath.set(file.path, Object.freeze({ path: file.path, bytes: text, rawSha256: digestHex(bytes), roles: Object.freeze([]), sourceIdentities: Object.freeze([`head:${request.headRevision}:${file.path}:${file.mode}:${file.objectId}:${bytes.length}:${digestHex(bytes)}`]) }));
+  }
+  const entries = Object.freeze([...entriesByPath.values()].sort((left, right) => compareLogicalPaths(left.path, right.path)));
+  const map = deepFreeze({ version: COPILOT_FURY_REVIEW_ARTIFACT_MAP_VERSION, entries, digest: artifactMapDigest(entries), totalBytes });
+  validateReviewArtifactMap(map);
+  return map;
+}
+
+export async function buildCopilotFuryReviewArtifactMapV1(
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
+  source: InternalResolvedTransitionPlanSourceV1,
+  plan: TransitionPlanV1OrV2,
+): Promise<CopilotFuryReviewArtifactMapV1> {
+  return buildReviewArtifactMap(request, source, plan);
 }
 
 async function stableExactHeadTransitionPlan(request: CopilotFuryPlanDispatchRequestV1OrV2): Promise<StableFile> {
@@ -1050,58 +1251,105 @@ export async function resolveCommittedTransitionPlanSourceV1(
     return Object.freeze({ state: "invalid", result: invalidFor(checked.value, "TRANSITION_PLAN_HEAD_MISMATCH", error instanceof Error ? error.message : "Transition plan is not the literal HEAD blob.") });
   }
 }
-function exactGitTreeTools(repositoryRoot: string, revision: string, onDenied: (toolName: string) => void): readonly Tool[] {
+const TOOL_READ_PARAMETERS = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  required: ["path"],
+  properties: { path: { type: "string", description: "Repository-relative or canonical absolute file path." } },
+});
+const TOOL_SEARCH_PARAMETERS = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  required: ["query"],
+  properties: {
+    query: { type: "string", minLength: 1, maxLength: 1024 },
+    path: { type: "string", description: "Optional repository-relative subtree." },
+  },
+});
+
+function executionToolDescriptors(artifactMapDigest: string): CopilotFuryExecutionToolBindingProjectionV1 {
+  return deepFreeze({
+    version: COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION,
+    sessionAvailableTools: [...EXECUTION_AVAILABLE_TOOLS] as ["custom:read", "custom:search"],
+    sessionExcludedTools: [...EXECUTION_EXCLUDED_TOOLS],
+    customAgentTools: [...EXECUTION_AGENT_TOOLS] as ["read", "search"],
+    modelFacingToolNames: [...EXECUTION_MODEL_TOOLS] as ["read", "search"],
+    registeredDescriptors: [
+      { name: "read", parameters: TOOL_READ_PARAMETERS, overridesBuiltInTool: true, skipPermission: true, defer: "never" },
+      { name: "search", parameters: TOOL_SEARCH_PARAMETERS, overridesBuiltInTool: true, skipPermission: true, defer: "never" },
+    ],
+    artifactMapDigest,
+  });
+}
+
+export function createCopilotFuryExecutionToolBindingV1(artifactMapDigest: string): CopilotFuryExecutionToolBindingProjectionV1 {
+  return executionToolDescriptors(artifactMapDigest);
+}
+
+function validateExecutionToolBinding(binding: CopilotFuryExecutionToolBindingProjectionV1, artifactMap: CopilotFuryReviewArtifactMapV1): void {
+  if (!exact(binding, ["version", "sessionAvailableTools", "sessionExcludedTools", "customAgentTools", "modelFacingToolNames", "registeredDescriptors", "artifactMapDigest"]) || binding.version !== COPILOT_FURY_EXECUTION_TOOL_BINDING_VERSION || binding.artifactMapDigest !== artifactMap.digest || !sameArray(binding.sessionAvailableTools, EXECUTION_AVAILABLE_TOOLS) || !sameArray(binding.customAgentTools, EXECUTION_AGENT_TOOLS) || !sameArray(binding.modelFacingToolNames, EXECUTION_MODEL_TOOLS) || !Array.isArray(binding.sessionExcludedTools) || binding.sessionExcludedTools.length !== EXECUTION_EXCLUDED_TOOLS.length || binding.sessionExcludedTools.some((value, index) => value !== EXECUTION_EXCLUDED_TOOLS[index]) || !Array.isArray(binding.registeredDescriptors) || binding.registeredDescriptors.length !== 2) throw new Error("FURY_TOOL_BINDING_INVALID");
+  const expected = executionToolDescriptors(binding.artifactMapDigest);
+  if (canonicalJson(binding.registeredDescriptors) !== canonicalJson(expected.registeredDescriptors)) throw new Error("FURY_TOOL_BINDING_INVALID");
+}
+
+function validateReviewArtifactToolCall(repositoryRoot: string, artifactMap: CopilotFuryReviewArtifactMapV1, toolName: string, args: unknown): Readonly<{ state: "valid"; value: Readonly<{ kind: "read"; entry: CopilotFuryReviewArtifactMapEntryV1 } | { kind: "search"; query: string; entries: readonly CopilotFuryReviewArtifactMapEntryV1[] }> } | { state: "invalid" }> {
+  try {
+    validateReviewArtifactMap(artifactMap);
+    const entries = artifactMap.entries;
+    if (toolName === "read") {
+      if (!exact(args, ["path"])) return { state: "invalid" };
+      const path = exactGitTreePath(repositoryRoot, args.path);
+      const entry = entries.find((candidate) => candidate.path === path);
+      return entry === undefined ? { state: "invalid" } : { state: "valid", value: { kind: "read", entry } };
+    }
+    if (toolName !== "search" || (!exact(args, ["query"]) && !exact(args, ["query", "path"])) || typeof args.query !== "string" || args.query.length < 1 || args.query.length > 1024 || (args.path !== undefined && typeof args.path !== "string")) return { state: "invalid" };
+    const prefix = args.path === undefined ? null : exactGitTreePath(repositoryRoot, args.path);
+    const scoped = entries.filter((entry) => prefix === null || entry.path === prefix || entry.path.startsWith(`${prefix}/`));
+    if (scoped.length === 0) return { state: "invalid" };
+    return { state: "valid", value: { kind: "search", query: args.query, entries: scoped } };
+  } catch {
+    return { state: "invalid" };
+  }
+}
+
+function reviewArtifactTools(repositoryRoot: string, revision: string, artifactMap: CopilotFuryReviewArtifactMapV1, onDenied: (toolName: string) => void): readonly Tool[] {
   const readTool: Tool = {
     name: "read",
     description: "Read one UTF-8 file from the exact immutable repository Git tree under review.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      required: ["path"],
-      properties: { path: { type: "string", description: "Repository-relative or canonical absolute file path." } },
-    },
+    parameters: TOOL_READ_PARAMETERS,
     overridesBuiltInTool: true,
     skipPermission: true,
     defer: "never",
     handler: async (args: unknown) => {
-      const validated = await validateExactGitTreeToolCall(repositoryRoot, revision, "read", args);
+      const validated = validateReviewArtifactToolCall(repositoryRoot, artifactMap, "read", args);
       if (validated.state === "invalid" || validated.value.kind !== "read") {
         onDenied("read");
-        throw new Error("exact_git_tree_read_arguments_invalid");
+        throw new Error("review_artifact_read_arguments_invalid");
       }
-      const bytes = await exactGitTreeBytes(repositoryRoot, validated.value.file);
-      return canonicalJson({ repositoryRevision: revision, path: validated.value.file.path, content: bytes.toString("utf8") });
+      return canonicalJson({ repositoryRevision: revision, path: validated.value.entry.path, content: validated.value.entry.bytes });
     },
   };
   const searchTool: Tool = {
     name: "search",
     description: "Search UTF-8 files from the exact immutable repository Git tree under review.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      required: ["query"],
-      properties: {
-        query: { type: "string", minLength: 1, maxLength: 1024 },
-        path: { type: "string", description: "Optional repository-relative subtree." },
-      },
-    },
+    parameters: TOOL_SEARCH_PARAMETERS,
     overridesBuiltInTool: true,
     skipPermission: true,
     defer: "never",
     handler: async (args: unknown) => {
-      const validated = await validateExactGitTreeToolCall(repositoryRoot, revision, "search", args);
+      const validated = validateReviewArtifactToolCall(repositoryRoot, artifactMap, "search", args);
       if (validated.state === "invalid" || validated.value.kind !== "search") {
         onDenied("search");
-        throw new Error("exact_git_tree_search_arguments_invalid");
+        throw new Error("review_artifact_search_arguments_invalid");
       }
       const matches: { path: string; line: number; text: string }[] = [];
       let scannedBytes = 0;
-      for (const file of validated.value.files) {
-        const bytes = await exactGitTreeBytes(repositoryRoot, file);
+      for (const entry of validated.value.entries) {
+        const bytes = Buffer.from(entry.bytes, "utf8");
         scannedBytes += bytes.length;
         if (scannedBytes > 8 * MAX_INPUT_BYTES) throw new Error("exact_git_tree_search_too_large");
-        for (const [index, text] of bytes.toString("utf8").split("\n").entries()) {
-          if (text.includes(validated.value.query)) matches.push({ path: file.path, line: index + 1, text });
+        for (const [index, text] of entry.bytes.split("\n").entries()) {
+          if (text.includes(validated.value.query)) matches.push({ path: entry.path, line: index + 1, text });
           if (matches.length === 200) return canonicalJson({ repositoryRevision: revision, query: validated.value.query, matches, truncated: true });
         }
       }
@@ -1812,6 +2060,7 @@ function evidenceBody(input: {
     dispositionCode: input.dispositionCode,
     modelResult: input.modelResult,
     observations: input.observations,
+    executionObservation: "executionObservation" in input.observations ? input.observations.executionObservation ?? null : null,
     errors: [...input.errors],
     artifacts: input.artifacts,
   };
@@ -1825,11 +2074,16 @@ function evidenceWithDigest(body: ReturnType<typeof evidenceBody>) {
   return deepFreeze({ ...body, evidenceDigest });
 }
 
-async function verifyLiveBinding(request: CopilotFuryPlanDispatchRequestV1OrV2, source: InternalResolvedTransitionPlanSourceV1, initial: RepositoryObservation, initialPlan: StableFile, initialCard: ResolvedCard, userCopilotHome?: string): Promise<RepositoryObservation> {
+async function verifyLiveBinding(request: CopilotFuryPlanDispatchRequestV1OrV2, source: InternalResolvedTransitionPlanSourceV1, initial: RepositoryObservation, initialPlan: StableFile, initialCard: ResolvedCard, initialArtifactMap: CopilotFuryReviewArtifactMapV1, userCopilotHome?: string): Promise<RepositoryObservation> {
   const current = await observeRepository(request);
   const plan = await revalidateResolvedTransitionPlanSource(request, source);
   const card = await resolveCard(request, userCopilotHome);
-  if (current.identity !== initial.identity || current.configBytes !== initial.configBytes || current.journalBytes !== initial.journalBytes || current.journalDigest !== initial.journalDigest || current.journalSequence !== initial.journalSequence || plan.identity !== initialPlan.identity || plan.bytes !== initialPlan.bytes || plan.rawSha256 !== initialPlan.rawSha256 || card.bytes !== initialCard.bytes || canonicalJson(card.identity) !== canonicalJson(initialCard.identity)) throw new Error("dispatch_input_drift");
+  let parsedPlan: unknown;
+  try { parsedPlan = parseJsonRejectDuplicateKeys(plan.bytes); } catch { throw new Error("dispatch_input_drift"); }
+  const validatedPlan = validateTransitionPlanV1OrV2({ artifact: parsedPlan });
+  if (validatedPlan.state === "invalid") throw new Error("dispatch_input_drift");
+  const currentArtifactMap = await buildReviewArtifactMap(request, source, validatedPlan.value);
+  if (current.identity !== initial.identity || current.configBytes !== initial.configBytes || current.journalBytes !== initial.journalBytes || current.journalDigest !== initial.journalDigest || current.journalSequence !== initial.journalSequence || plan.identity !== initialPlan.identity || plan.bytes !== initialPlan.bytes || plan.rawSha256 !== initialPlan.rawSha256 || card.bytes !== initialCard.bytes || canonicalJson(card.identity) !== canonicalJson(initialCard.identity) || currentArtifactMap.digest !== initialArtifactMap.digest || canonicalJson(currentArtifactMap) !== canonicalJson(initialArtifactMap)) throw new Error("dispatch_input_drift");
   return current;
 }
 
@@ -2321,7 +2575,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
   private clientConstructor: typeof CopilotClient | null = null;
   private loadedPackageVersion: typeof COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION | null = null;
   private clientConnection: StdioRuntimeConnection | null = null;
-  private preflightBinding: Readonly<{ repositoryRoot: string; requestedModel: string; executionIdentity: string }> | null = null;
+  private preflightBinding: Readonly<{ repositoryRoot: string; requestedModel: string; executionIdentity: string; artifactMapDigest: string; toolBinding: string }> | null = null;
 
   constructor(private readonly dependencies: CopilotFuryProductionExecutorDependenciesV1 = {}) {}
 
@@ -2329,11 +2583,19 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     if (input.requestedRuntime !== COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID || input.requestedExecutor !== COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID) return { state: "blocked", code: "BLOCKED_ADAPTER_GAP", errors: ["Requested Copilot runtime or executor is unsupported."] };
     try {
       if (!validExecutionIdentity(input.executionIdentity, input.repositoryRoot)) throw new Error("Copilot client option projection is malformed.");
+      validateReviewArtifactMap(input.reviewArtifactMap);
+      validateExecutionToolBinding(input.toolBinding, input.reviewArtifactMap);
+      const registeredDescriptors = reviewArtifactTools(input.repositoryRoot, "0".repeat(40), input.reviewArtifactMap, () => undefined).map((tool) => ({ name: tool.name, parameters: tool.parameters, overridesBuiltInTool: tool.overridesBuiltInTool, skipPermission: tool.skipPermission, defer: tool.defer }));
+      if (registeredDescriptors.length !== 2 || canonicalJson(registeredDescriptors) !== canonicalJson(input.toolBinding.registeredDescriptors)) throw new Error("FURY_TOOL_BINDING_INVALID");
+    } catch (error) {
+      return { state: "blocked", code: "FURY_TOOL_BINDING_INVALID", errors: [error instanceof Error ? error.message : "Fury tool binding is invalid."] };
+    }
+    try {
       const capability = await inspectLoadedCopilotSdkCapability(this.dependencies);
       this.loadedPackageVersion = capability.packageVersion;
       this.clientConstructor = capability.clientConstructor;
       this.clientConnection = capability.connection;
-      this.preflightBinding = Object.freeze({ repositoryRoot: input.repositoryRoot, requestedModel: input.requestedModel, executionIdentity: canonicalJson(input.executionIdentity) });
+      this.preflightBinding = Object.freeze({ repositoryRoot: input.repositoryRoot, requestedModel: input.requestedModel, executionIdentity: canonicalJson(input.executionIdentity), artifactMapDigest: input.reviewArtifactMap.digest, toolBinding: canonicalJson(input.toolBinding) });
       return { state: "ready", packageVersion: capability.packageVersion, runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID };
     } catch (error) {
       await this.close();
@@ -2342,7 +2604,13 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
   }
 
   async execute(input: CopilotFuryExecutorRunInputV1): Promise<CopilotFuryExecutorRunResultV1> {
-    if (this.clientConstructor === null || this.loadedPackageVersion === null || this.clientConnection === null || this.preflightBinding === null || this.preflightBinding.repositoryRoot !== input.repositoryRoot || this.preflightBinding.requestedModel !== input.configuration.model || this.preflightBinding.executionIdentity !== canonicalJson(input.executionIdentity) || !validExecutionIdentity(input.executionIdentity, input.repositoryRoot) || input.configuration.sessionId !== deriveCopilotSdkSessionIdV1(input.executionIdentity.childSessionId)) return { state: "failed", code: "SDK_NOT_READY", errors: ["Copilot SDK preflight was not retained or did not match execution."], observations: {} };
+    if (this.clientConstructor === null || this.loadedPackageVersion === null || this.clientConnection === null || this.preflightBinding === null || this.preflightBinding.repositoryRoot !== input.repositoryRoot || this.preflightBinding.requestedModel !== input.configuration.model || this.preflightBinding.executionIdentity !== canonicalJson(input.executionIdentity) || this.preflightBinding.artifactMapDigest !== input.reviewArtifactMap.digest || this.preflightBinding.toolBinding !== canonicalJson(input.toolBinding) || !validExecutionIdentity(input.executionIdentity, input.repositoryRoot) || input.configuration.sessionId !== deriveCopilotSdkSessionIdV1(input.executionIdentity.childSessionId)) return { state: "failed", code: "SDK_NOT_READY", errors: ["Copilot SDK preflight was not retained or did not match execution."], observations: {} };
+    try {
+      validateReviewArtifactMap(input.reviewArtifactMap);
+      validateExecutionToolBinding(input.toolBinding, input.reviewArtifactMap);
+    } catch (error) {
+      return { state: "failed", code: "FURY_TOOL_BINDING_INVALID", errors: [error instanceof Error ? error.message : "Fury tool binding is invalid."], observations: {} };
+    }
     const policyDecisions: { tool: string; decision: "allow" | "deny" }[] = [];
     const startEvents: Extract<SessionEvent, { type: "session.start" }>[] = [];
     const assistantEvents: Extract<SessionEvent, { type: "assistant.message" }>[] = [];
@@ -2350,12 +2618,13 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
     let agentSubstitutionObserved = false;
     let unauthorizedToolOrEffectObserved = false;
     let confirmedCancellation = false;
-    const allowed = new Set<string>(input.configuration.availableTools);
+    const allowed = new Set<string>(input.toolBinding.modelFacingToolNames);
     const recordDeniedTool = (tool: string) => {
       policyDecisions.push({ tool, decision: "deny" });
       unauthorizedToolOrEffectObserved = true;
     };
-    const immutableTools = exactGitTreeTools(input.repositoryRoot, input.configuration.repositoryRevision, recordDeniedTool);
+    const immutableTools = reviewArtifactTools(input.repositoryRoot, input.configuration.repositoryRevision, input.reviewArtifactMap, recordDeniedTool);
+    if (immutableTools.length !== 2 || immutableTools.map((tool) => tool.name).join("\0") !== "read\0search") return { state: "failed", code: "FURY_TOOL_BINDING_INVALID", errors: ["FURY_TOOL_BINDING_INVALID"], observations: {} };
     const onEvent = (event: SessionEvent) => {
       if (event.type === "session.start") startEvents.push(event);
       if (event.type === "session.model_change") modelChangeObserved = true;
@@ -2398,14 +2667,14 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
         skillDirectories: [],
         instructionDirectories: [],
         disabledSkills: [],
-        availableTools: [...input.configuration.availableTools],
-        excludedTools: [...input.configuration.excludedTools],
+        availableTools: [...input.toolBinding.sessionAvailableTools],
+        excludedTools: [...input.toolBinding.sessionExcludedTools],
         infiniteSessions: { enabled: false },
         customAgents: [{
           name: "fury",
           displayName: input.card.frontmatter.name,
           description: input.card.frontmatter.description,
-          tools: [...input.configuration.availableTools],
+          tools: [...input.toolBinding.customAgentTools],
           prompt: input.card.body,
           mcpServers: {},
           skills: [],
@@ -2425,7 +2694,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
           onPreToolUse: async (hookInput) => {
             const name = hookInput.toolName;
             const validation = allowed.has(name)
-              ? await validateExactGitTreeToolCall(input.repositoryRoot, input.configuration.repositoryRevision, name, hookInput.toolArgs)
+              ? validateReviewArtifactToolCall(input.repositoryRoot, input.reviewArtifactMap, name, hookInput.toolArgs)
               : { state: "invalid" as const };
             const decision = validation.state === "valid" ? "allow" as const : "deny" as const;
             policyDecisions.push({ tool: name, decision });
@@ -2441,6 +2710,18 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       });
       const selectedBefore = await session.rpc.agent.getCurrent();
       const modelBefore = await session.rpc.model.getCurrent();
+      const toolsRpc = session.rpc.tools as unknown as Readonly<{ initializeAndValidate?: () => Promise<unknown>; getCurrentMetadata?: () => Promise<unknown> }> | undefined;
+      if (toolsRpc === undefined || typeof toolsRpc.initializeAndValidate !== "function" || typeof toolsRpc.getCurrentMetadata !== "function") throw new Error("FURY_TOOL_BINDING_DRIFT");
+      let metadataResult: unknown;
+      try {
+        await toolsRpc.initializeAndValidate();
+        metadataResult = await toolsRpc.getCurrentMetadata();
+      } catch {
+        throw new Error("FURY_TOOL_BINDING_DRIFT");
+      }
+      if (!safePlain(metadataResult) || !Array.isArray(metadataResult.tools) || metadataResult.tools.length !== 2 || metadataResult.tools.some((tool) => !safePlain(tool) || typeof tool.name !== "string") || new Set(metadataResult.tools.map((tool) => tool.name)).size !== 2 || !sameArray([...metadataResult.tools.map((tool) => tool.name)].sort(), ["read", "search"])) throw new Error("FURY_TOOL_BINDING_DRIFT");
+      const runtimeMetadataNames = [...metadataResult.tools.map((tool) => tool.name)].sort() as ["read", "search"];
+      const runtimeMetadataDigest = digestBase64Url(canonicalJson(metadataResult.tools));
       const start = startEvents.at(-1);
       if (start === undefined || start.data.sessionId !== input.configuration.sessionId || start.data.selectedModel !== input.configuration.model || start.data.producer !== COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID || typeof start.data.copilotVersion !== "string" || start.data.copilotVersion === "" || selectedBefore.agent?.name !== "fury" || modelBefore.modelId !== input.configuration.model || agentSubstitutionObserved) throw new Error("Copilot session identity observation failed.");
       let finalMessage = await session.sendAndWait({ prompt: input.prompt });
@@ -2472,12 +2753,24 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
           agentSubstitutionObserved: false,
           unauthorizedToolOrEffectObserved: false,
           policyDecisions: [...policyDecisions],
+          executionObservation: deepFreeze({
+            version: COPILOT_FURY_EXECUTION_OBSERVATION_VERSION,
+            sdkVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+            registeredToolNames: ["read", "search"],
+            sessionAvailableTools: [...input.toolBinding.sessionAvailableTools],
+            sessionExcludedTools: [...input.toolBinding.sessionExcludedTools],
+            customAgentTools: [...input.toolBinding.customAgentTools],
+            modelFacingToolNames: [...input.toolBinding.modelFacingToolNames],
+            runtimeMetadataNames,
+            runtimeMetadataDigest,
+            artifactMapDigest: input.reviewArtifactMap.digest,
+          }),
         }),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Copilot execution failed.";
       const interrupted = /timeout|disconnect|connection|socket|closed unexpectedly/iu.test(message);
-      return { state: confirmedCancellation ? "cancelled" : interrupted ? "interrupted" : "failed", code: confirmedCancellation ? "COPILOT_CANCELLED" : interrupted ? "COPILOT_INTERRUPTED" : "COPILOT_EXECUTION_FAILED", errors: [message], observations: { modelChangeObserved, agentSubstitutionObserved, unauthorizedToolOrEffectObserved } };
+      return { state: confirmedCancellation ? "cancelled" : interrupted ? "interrupted" : "failed", code: message === "FURY_TOOL_BINDING_DRIFT" ? "FURY_TOOL_BINDING_DRIFT" : confirmedCancellation ? "COPILOT_CANCELLED" : interrupted ? "COPILOT_INTERRUPTED" : "COPILOT_EXECUTION_FAILED", errors: [message], observations: { modelChangeObserved, agentSubstitutionObserved, unauthorizedToolOrEffectObserved } };
     } finally { await session?.disconnect().catch(() => undefined); }
   }
 
@@ -2690,8 +2983,10 @@ export async function probeCopilotFuryDispatchCapabilityV1(
   }));
 }
 
-function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1OrV2, childSessionId: string): boolean {
-  return observations.sessionStartObserved === true && observations.sessionId === childSessionId && observations.selectedAgent === "fury" && observations.model === request.requestedModel && observations.assistantModel === request.requestedModel && observations.runtimeId === request.requestedRuntime && observations.executorId === request.requestedExecutor && observations.loadedSdkPackageVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && observations.sessionProducer === request.requestedExecutor && typeof observations.sessionProducerVersion === "string" && observations.sessionProducerVersion.length > 0 && observations.sessionProducerVersion.length <= 255 && observations.modelChangeObserved === false && observations.agentSubstitutionObserved === false && observations.unauthorizedToolOrEffectObserved === false;
+function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1OrV2, childSessionId: string, artifactMapDigest: string): boolean {
+  const executionObservation = observations.executionObservation;
+  const toolBindingObserved = executionObservation !== undefined && executionObservation.version === COPILOT_FURY_EXECUTION_OBSERVATION_VERSION && executionObservation.sdkVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && sameArray(executionObservation.registeredToolNames, EXECUTION_MODEL_TOOLS) && sameArray(executionObservation.sessionAvailableTools, EXECUTION_AVAILABLE_TOOLS) && sameArray(executionObservation.customAgentTools, EXECUTION_AGENT_TOOLS) && sameArray(executionObservation.modelFacingToolNames, EXECUTION_MODEL_TOOLS) && sameArray(executionObservation.runtimeMetadataNames, EXECUTION_MODEL_TOOLS) && Array.isArray(executionObservation.sessionExcludedTools) && executionObservation.sessionExcludedTools.length === EXECUTION_EXCLUDED_TOOLS.length && executionObservation.sessionExcludedTools.every((value, index) => value === EXECUTION_EXCLUDED_TOOLS[index]) && DIGEST.test(executionObservation.runtimeMetadataDigest) && executionObservation.artifactMapDigest === artifactMapDigest;
+  return toolBindingObserved && observations.sessionStartObserved === true && observations.sessionId === childSessionId && observations.selectedAgent === "fury" && observations.model === request.requestedModel && observations.assistantModel === request.requestedModel && observations.runtimeId === request.requestedRuntime && observations.executorId === request.requestedExecutor && observations.loadedSdkPackageVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && observations.sessionProducer === request.requestedExecutor && typeof observations.sessionProducerVersion === "string" && observations.sessionProducerVersion.length > 0 && observations.sessionProducerVersion.length <= 255 && observations.modelChangeObserved === false && observations.agentSubstitutionObserved === false && observations.unauthorizedToolOrEffectObserved === false;
 }
 
 export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source: InternalResolvedTransitionPlanSourceV1, suppliedDependencies: CopilotFuryPlanDispatchDependenciesV1 = {}): Promise<CopilotFuryPlanDispatchResultV1> {
@@ -2716,6 +3011,8 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
   let observation: RepositoryObservation | null = null;
   let planFile: StableFile | null = null;
   let plan: TransitionPlanV1OrV2 | null = null;
+  let reviewArtifactMap: CopilotFuryReviewArtifactMapV1 | null = null;
+  let toolBinding: CopilotFuryExecutionToolBindingProjectionV1 | null = null;
   let preflightIdentity: Extract<CopilotFuryExecutorPreflightResultV1, { state: "ready" }> | null = null;
   let terminalUncertain = false;
   let originalDisposition: Readonly<{ code: string; errors: readonly string[] }> = { code: "DISPATCH_FAILED", errors: [] };
@@ -2793,17 +3090,26 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION && existing.length === 0) {
       return invalidFor(request, "FRESH_V1_REQUEST_PROHIBITED", "Fresh V1 Fury plan dispatch is disabled; only exact historical claim replay or governed recovery is permitted.");
     }
+    try {
+      reviewArtifactMap = await buildReviewArtifactMap(request, source, plan);
+      toolBinding = executionToolDescriptors(reviewArtifactMap.digest);
+      validateReviewArtifactMap(reviewArtifactMap);
+      validateExecutionToolBinding(toolBinding, reviewArtifactMap);
+    } catch (error) {
+      return invalidFor(request, "FURY_TOOL_BINDING_INVALID", error instanceof Error ? error.message : "Fury review-artifact tool binding is invalid.");
+    }
     packetId = identity.packetId;
     activeExecutionIdentity ??= executionIdentity(request.repositoryRoot, identity);
     configuration = sdkConfiguration(request, deriveCopilotSdkSessionIdV1(activeExecutionIdentity.childSessionId));
     if (!validExecutionIdentity(activeExecutionIdentity, request.repositoryRoot)) return invalidFor(request, "PRECLAIM_VALIDATION_FAILED", "Copilot client option projection is malformed.");
     await validatePersistencePathBeforeClaim(request.repositoryRoot, activeExecutionIdentity.claimKey);
-    const preflight = await executor.preflight({ repositoryRoot: request.repositoryRoot, requestedModel: request.requestedModel, requestedRuntime: request.requestedRuntime, requestedExecutor: request.requestedExecutor, executionIdentity: activeExecutionIdentity });
-    if (preflight.state === "blocked") return blockedFor(request, preflight.code, ...preflight.errors);
+    if (reviewArtifactMap === null || toolBinding === null) return invalidFor(request, "FURY_TOOL_BINDING_INVALID", "Fury review-artifact tool binding is unavailable.");
+    const preflight = await executor.preflight({ repositoryRoot: request.repositoryRoot, requestedModel: request.requestedModel, requestedRuntime: request.requestedRuntime, requestedExecutor: request.requestedExecutor, executionIdentity: activeExecutionIdentity, reviewArtifactMap, toolBinding });
+    if (preflight.state === "blocked") return preflight.code === "FURY_TOOL_BINDING_INVALID" ? invalidFor(request, preflight.code, ...preflight.errors) : blockedFor(request, preflight.code, ...preflight.errors);
     if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) return blockedFor(request, "BLOCKED_ADAPTER_GAP", "Copilot executor preflight identity mismatched the request.");
     preflightIdentity = preflight;
     await suppliedDependencies.beforeClaim?.();
-    await verifyLiveBinding(request, source, observation, planFile, card, suppliedDependencies.userCopilotHome);
+    await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap, suppliedDependencies.userCopilotHome);
     const callerInputEvidenceRefs = recoveryBinding === null
       ? [...expectedPredecessorInputEvidence.slice(0, -1)]
       : [plan.id, plan.digest, `sha256:${request.transitionPlanRawSha256}`, `sha256:${card.identity.contentDigest}`, observation.journalDigest, recoveryBinding.inputEvidenceBinding];
@@ -2845,14 +3151,14 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     const persistence = await materializePersistencePath(request.repositoryRoot, activeExecutionIdentity.claimKey);
     if (persistence.baseDirectory !== activeExecutionIdentity.clientOptions.baseDirectory) throw new Error("copilot_persistence_projection_mismatch");
     await revalidatePersistenceSnapshot(persistence);
-    let execution = await executor.execute({ repositoryRoot: request.repositoryRoot, card: card.card, cardIdentity: card.identity, configuration, executionIdentity: activeExecutionIdentity, revalidatePersistence: () => revalidatePersistenceSnapshot(persistence), prompt: taskPrompt(request, plan), repairPrompt: repairPrompt(request, plan), repairLimit: request.repairLimit, validateOutput: (text) => parseClosedResultText(text, request, plan as TransitionPlanV1OrV2).state === "valid" });
+    let execution = await executor.execute({ repositoryRoot: request.repositoryRoot, card: card.card, cardIdentity: card.identity, configuration, executionIdentity: activeExecutionIdentity, revalidatePersistence: () => revalidatePersistenceSnapshot(persistence), prompt: taskPrompt(request, plan), repairPrompt: repairPrompt(request, plan), repairLimit: request.repairLimit, validateOutput: (text) => parseClosedResultText(text, request, plan as TransitionPlanV1OrV2).state === "valid", reviewArtifactMap, toolBinding });
     if (execution.state === "completed" && request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2 && parseClosedResultText(execution.outputText, request, plan).state === "invalid") {
       execution = { state: "failed", code: COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2, errors: ["Fury exhausted the bounded repair lifecycle without producing a valid architecture-plan result."], observations: execution.observations };
     }
     if (execution.state !== "completed") originalDisposition = { code: execution.code, errors: [...execution.errors] };
     terminalUncertain = true;
     await suppliedDependencies.beforeTerminalRevalidation?.();
-    const terminalObservation = await verifyLiveBinding(request, source, observation, planFile, card, suppliedDependencies.userCopilotHome);
+    const terminalObservation = await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap, suppliedDependencies.userCopilotHome);
     terminalUncertain = false;
     const timestamp = new Date(Math.max(Date.parse(request.timestamp.value) + 1, Date.now())).toISOString();
     if (execution.state !== "completed") {
@@ -2863,7 +3169,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       if (execution.state === "interrupted") {
         terminalUncertain = true;
         await suppliedDependencies.beforeTerminalAppend?.();
-        await verifyLiveBinding(request, source, observation, planFile, card, suppliedDependencies.userCopilotHome);
+        await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap as CopilotFuryReviewArtifactMapV1, suppliedDependencies.userCopilotHome);
         if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
         const terminal = await appendLifecycle(request, claim.value.receipt, "dispatch.interrupted", timestamp, null, [evidence.evidenceDigest], dependencies, { code: execution.code, errors: execution.errors });
         await suppliedDependencies.beforeFinalReadback?.();
@@ -2876,7 +3182,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       const terminalKind = execution.state === "cancelled" ? "dispatch.cancelled" : "dispatch.failed";
       terminalUncertain = true;
       await suppliedDependencies.beforeTerminalAppend?.();
-      await verifyLiveBinding(request, source, observation, planFile, card, suppliedDependencies.userCopilotHome);
+      await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap as CopilotFuryReviewArtifactMapV1, suppliedDependencies.userCopilotHome);
       if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
       const terminal = await appendLifecycle(request, claim.value.receipt, terminalKind, timestamp, null, [evidence.evidenceDigest], dependencies);
       await suppliedDependencies.beforeFinalReadback?.();
@@ -2886,7 +3192,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || evidenceReadback.receiptId !== terminal.receiptId || evidenceReadback.packetDigest !== claim.value.packetDigest || terminalReadback.outputEvidenceRefs === null || !terminalReadback.outputEvidenceRefs.includes(evidence.evidenceDigest)) throw new Error("terminal_readback_mismatch");
       return deepFreeze({ contractVersion: request.contractVersion, authority: "none", missionId: request.missionId, state: execution.state, code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
     }
-    if (!validExecutorObservations(execution.observations, request, configuration.sessionId)) throw new Error("executor_observation_mismatch");
+    if (!validExecutorObservations(execution.observations, request, configuration.sessionId, reviewArtifactMap.digest)) throw new Error("executor_observation_mismatch");
     const result = parseClosedResultText(execution.outputText, request, plan);
     if (result.state === "invalid") throw new Error("invalid_fury_model_result");
     originalDisposition = { code: result.value.verdict, errors: [] };
@@ -2931,8 +3237,8 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       : [plan.id, plan.digest, evidence.evidenceDigest];
     terminalUncertain = true;
     await suppliedDependencies.beforeTerminalAppend?.();
-    await verifyLiveBinding(request, source, observation, planFile, card, suppliedDependencies.userCopilotHome);
-    if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor || !validExecutorObservations(execution.observations, request, configuration.sessionId)) throw new Error("preterminal_executor_binding_mismatch");
+    await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap as CopilotFuryReviewArtifactMapV1, suppliedDependencies.userCopilotHome);
+    if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor || !validExecutorObservations(execution.observations, request, configuration.sessionId, reviewArtifactMap.digest)) throw new Error("preterminal_executor_binding_mismatch");
     const terminal = await appendLifecycle(request, claim.value.receipt, "dispatch.completed", timestamp, execution.observations, refs, dependencies);
     await suppliedDependencies.beforeFinalReadback?.();
     const terminalReadback = await readReceiptForFinalProof(request, terminal.receiptId, plan, "completed", dependencies);
@@ -2981,7 +3287,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       const directory = await ensureEvidenceDirectory(request.repositoryRoot, request.missionId);
       if (!terminalUncertain) {
         try {
-          await verifyLiveBinding(request, source, observation, planFile, card, suppliedDependencies.userCopilotHome);
+          await verifyLiveBinding(request, source, observation, planFile, card, reviewArtifactMap as CopilotFuryReviewArtifactMapV1, suppliedDependencies.userCopilotHome);
           if (preflightIdentity.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflightIdentity.runtimeId !== request.requestedRuntime || preflightIdentity.executorId !== request.requestedExecutor) throw new Error("preterminal_executor_binding_mismatch");
         } catch {
           terminalUncertain = true;
