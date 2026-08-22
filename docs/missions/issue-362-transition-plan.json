@@ -1,0 +1,63 @@
+{
+  "schemaId": "mission.transition-plan.v1",
+  "authority": "none",
+  "missionId": "mission:issue-362-publication-packet",
+  "subjectId": "github:RanSolo/shield-workspace/issue/362",
+  "repositoryId": "RanSolo/shield-workspace",
+  "planningBaseRevision": "d2174e32f384c1af1ec2d650ec30a4fbf8f9daec",
+  "parentPlanCommit": "bf85eced5c3d4e68cd0b3ac28168c815f2464db3",
+  "parentPlanPath": "docs/missions/issue-362-publication-key-turn-preparation-plan.md",
+  "parentPlanRawSha256": "ea7b11e0529fea85bff6745d11cbb58e48afd6903dd7bcbc2ebc75e88e9b350e",
+  "transitionKind": "fresh_authorize_wheels_up",
+  "boundedOutcome": "Compose the existing legacy reviewed-transition recovery into mission prepare-next so eligible missions reach canonical publication authorization without caller-authored authority JSON.",
+  "approvedRelativePaths": [
+    "docs/missions/issue-362-publication-key-turn-preparation-plan.md",
+    "docs/missions/issue-362-transition-plan.json",
+    "packages/shield-team-system/src/legacy-reviewed-transition-v1.mts",
+    "packages/shield-team-system/src/mission-cli.mts",
+    "packages/shield-team-system/tests/legacy-reviewed-transition-v1.test.mjs",
+    "packages/shield-team-system/tests/supervised-cli.test.mjs"
+  ],
+  "publicationPaths": [
+    "docs/missions/issue-362-publication-key-turn-preparation-plan.md",
+    "docs/missions/issue-362-transition-plan.json",
+    "packages/shield-team-system/src/legacy-reviewed-transition-v1.mts",
+    "packages/shield-team-system/src/mission-cli.mts",
+    "packages/shield-team-system/tests/legacy-reviewed-transition-v1.test.mjs",
+    "packages/shield-team-system/tests/supervised-cli.test.mjs"
+  ],
+  "approvedActionIds": [
+    "action:issue-362:implement",
+    "action:issue-362:validate"
+  ],
+  "approvedEffectClasses": [
+    "behavioral_implementation",
+    "verification"
+  ],
+  "approvedEffectKeys": [
+    "effect:issue-362:implementation",
+    "effect:issue-362:validation"
+  ],
+  "approvedCapabilities": [
+    "filesystem_write",
+    "process_execute"
+  ],
+  "validationCommandIds": [
+    "validation:issue-362:affected",
+    "validation:issue-362:focused"
+  ],
+  "modelId": "gpt-5.6-luna",
+  "reasoningRuntimeId": "runtime:codex-hosted-may-luna",
+  "toolExecutorId": "executor:codex-hosted-workspace-tools",
+  "exclusions": [
+    "review.comment.publish",
+    "review.pull_request.update_draft",
+    "review.pull_request.mark_ready",
+    "merge",
+    "deployment",
+    "release",
+    "final_acceptance"
+  ],
+  "id": "transition-plan:ewoqU3NntTzwixgeD8dD-yXzAgunb9lp06TnMkpoDVM",
+  "digest": "sha256:ewoqU3NntTzwixgeD8dD-yXzAgunb9lp06TnMkpoDVM"
+}
