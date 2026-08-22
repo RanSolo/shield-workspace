@@ -2078,6 +2078,13 @@ async function recoverablePredecessor(
     if (successorEligibility.state === "invalid") throw new Error("recoverable_successor_receipt_binding_mismatch");
     const failedSuccessorEvidencePath = await terminalEvidencePathFromReceipt(request, failedSuccessor, packetDigest);
     const failedSuccessorEvidence = await parseEvidenceFile(request.repositoryRoot, failedSuccessorEvidencePath);
+    if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION) {
+      validateHistoricalV1EvidenceBinding(failedSuccessorEvidence, request, failedSuccessor, packetDigest, {
+        plan,
+        packetId: activeRecovery.successor.packetId,
+        packetBytes: activeRecovery.packetBytes,
+      }, activeRecovery.binding);
+    }
     if (failedSuccessorEvidence.dispositionCode !== signature.dispositionCode || canonicalJson(failedSuccessorEvidence.errors) !== canonicalJson(signature.errors)) return activeRecovery;
     if (failedSuccessor.outputEvidenceRefs === null || failedSuccessor.outputEvidenceRefs.length !== 1 || !DIGEST.test(failedSuccessor.outputEvidenceRefs[0])) throw new Error("recoverable_successor_evidence_ambiguous");
     if (failedSuccessorEvidence.evidenceDigest !== failedSuccessor.outputEvidenceRefs[0] || failedSuccessorEvidence.receiptId !== failedSuccessor.receiptId || failedSuccessorEvidence.packetDigest !== packetDigest || failedSuccessorEvidence.outcome !== "failed") throw new Error("recoverable_successor_signature_mismatch");
@@ -2965,7 +2972,8 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       claimedReceipt = matches[0];
       if (claimedReceipt.state !== "started" && claimedReceipt.state !== "resumed") {
         try {
-          return await replayExisting(request, source, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: claimedReceipt, claimStatus: "already_claimed" }, recoveryBinding);
+          if (packetBytes === null) throw new Error("replay_packet_expectation_unavailable");
+          return await replayExisting(request, source, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: claimedReceipt, claimStatus: "already_claimed" }, recoveryBinding, { plan, packetId, packetBytes });
         } catch (verificationError) {
           return recovery([message, verificationError instanceof Error ? verificationError.message : "Existing terminal receipt verification failed."]);
         }
@@ -3004,7 +3012,8 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
           const matches = ledger.value.projections.filter((candidate) => candidate.receiptId === claimedReceipt?.receiptId);
           if (matches.length === 1 && matches[0].state !== "started" && matches[0].state !== "resumed") {
             try {
-              return await replayExisting(request, source, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: matches[0], claimStatus: "already_claimed" }, recoveryBinding);
+              if (packetBytes === null) throw new Error("replay_packet_expectation_unavailable");
+              return await replayExisting(request, source, { logPath: ledger.value.logPath, byteLength: 0, packetDigest, receipt: matches[0], claimStatus: "already_claimed" }, recoveryBinding, { plan, packetId, packetBytes });
             } catch { /* return the receipt-bound uncertainty below */ }
           }
         }

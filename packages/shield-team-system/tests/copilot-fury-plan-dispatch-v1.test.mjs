@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { chmodSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -23,6 +23,7 @@ import {
   COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION,
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+  COPILOT_FURY_PLAN_FINDING_CODES_V2,
   COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2,
   COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   createCopilotFuryPlanExecutorV1,
@@ -33,11 +34,12 @@ import {
   validateCopilotFurySuccessorExecutionConfigurationV3,
   validateCopilotFuryPlanDispatchRequestV1,
   validateCopilotFuryPlanDispatchRequestV2,
+  validateCopilotFuryPlanResultV2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
-import { computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
 import {
   MISSION_130_JOURNAL_DIGEST,
   createProfileAwareMissionBegunEntry,
@@ -63,6 +65,99 @@ function git(root, args) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function digestBase64Url(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("base64url")}`;
+}
+
+function v1Request(current, overrides = {}) {
+  const { reviewPhase: _reviewPhase, ...fields } = current.request;
+  return { ...fields, schemaVersion: 1, contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, ...overrides };
+}
+
+function v1Identity(current, request = v1Request(current)) {
+  const operation = {
+    missionId: request.missionId, missionRevision: request.missionRevision, parentSessionId: request.parentSessionId,
+    subjectId: request.subjectId, subjectRevision: request.subjectRevision, transitionPlanId: current.plan.id,
+    transitionPlanDigest: current.plan.digest, repositoryId: request.repositoryId,
+    repositoryWorkspaceId: request.repositoryWorkspaceId, repositoryRevision: request.headRevision, accountableSeatId: "fury",
+  };
+  const operationDigest = digestBase64Url(`copilot-fury-logical-operation-v1\0${canonicalJson(operation)}`);
+  const token = operationDigest.slice("sha256:".length, "sha256:".length + 32);
+  const packetId = `packet:copilot-fury:${token}`;
+  const claimKey = createHash("sha256").update(`seat-dispatch-claim-v1\0${request.missionId}\0${request.parentSessionId}\0${packetId}`).digest("base64url").slice(0, 32);
+  return { operationDigest, packetId, claimKey, receiptId: `receipt:${claimKey}`, childTaskId: `task:${claimKey}`, childSessionId: `session:${claimKey}` };
+}
+
+function historicalV1Packet(current, request) {
+  const identity = v1Identity(current, request);
+  const cardIdentity = {
+    sourceKind: "repository", logicalRef: ".github/agents/fury.agent.md", contentDigest: sha256(FURY_CARD), repositoryRevision: request.headRevision,
+    precedenceObservations: [
+      { sourceKind: "repository", logicalRef: ".github/agents/fury.agent.md", disposition: "selected", contentDigest: sha256(FURY_CARD) },
+      { sourceKind: "user", logicalRef: COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF, disposition: "absent", contentDigest: null },
+    ],
+  };
+  const sdkConfiguration = {
+    packageName: "@github/copilot-sdk", packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, clientMode: "empty",
+    sessionId: identity.childSessionId, repositoryRevision: request.headRevision, selectedAgent: "fury", model: request.requestedModel,
+    customAgentsLocalOnly: true, enableConfigDiscovery: false, skipCustomInstructions: true, enableFileHooks: false,
+    enableHostGitOperations: false, enableSessionStore: false, enableSkills: false, pluginDirectories: [], skillDirectories: [],
+    instructionDirectories: [], mcpServers: {}, availableTools: ["read", "search"],
+    excludedTools: ["write", "edit", "apply_patch", "bash", "shell", "execute", "web", "mcp:*", "custom:*"], allowedEffects: [],
+  };
+  const outputContract = canonicalJson({ schemaVersion: 1, contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: current.plan.id, reviewedArtifactRevision: current.plan.digest, verdict: "PASS | REVISE", findings: [{ code: "identifier (REVISE only)", message: "bounded actionable finding (REVISE only)" }] });
+  const packet = { schemaVersion: 1, contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", request, transitionPlan: current.plan, cardIdentity, cardBodyDigest: sha256(FURY_CARD.slice(FURY_CARD.indexOf("\n---\n") + 5)), missionJournal: { digest: current.journalDigest, sequence: 0 }, outputContract, sdkConfiguration };
+  return { identity, packet, packetDigest: digestBase64Url(canonicalJson(packet)), cardIdentity, sdkConfiguration };
+}
+
+function historicalV1Ledger(current, request, state, { mutateReceipt = (value) => value, mutateEvidence = (value) => value } = {}) {
+  const { identity, packet, packetDigest, cardIdentity, sdkConfiguration } = historicalV1Packet(current, request);
+  const inputEvidenceRefs = [current.plan.id, current.plan.digest, `sha256:${request.transitionPlanRawSha256}`, `sha256:${cardIdentity.contentDigest}`, current.journalDigest, `evidence:packet-binding:seat-dispatch-v1:${identity.claimKey}:${packetDigest}`];
+  const terminal = state !== "started" && state !== "resumed";
+  const dispositionCode = state === "completed" ? null : state === "interrupted" ? "DISPATCH_INTERRUPTED" : terminal ? `DISPATCH_${state.toUpperCase()}` : null;
+  const errors = dispositionCode === null ? [] : [`historical ${state}`];
+  let evidence = terminal ? {
+    schemaVersion: 1, contractVersion: "shield.copilot-fury-plan-dispatch.evidence.v1", authority: "none", packetId: identity.packetId,
+    packetDigest, packet, receiptId: identity.receiptId, missionId: request.missionId, missionRevision: request.missionRevision,
+    subjectId: request.subjectId, subjectRevision: request.subjectRevision, repositoryId: request.repositoryId,
+    repositoryWorkspaceId: request.repositoryWorkspaceId, repositoryRevision: request.headRevision,
+    transitionPlanRawSha256: request.transitionPlanRawSha256, cardIdentity, sdkConfiguration, missionJournal: packet.missionJournal,
+    outcome: state === "completed" ? "REVISE" : state, dispositionCode,
+    modelResult: state === "completed" ? { schemaVersion: 1, contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: current.plan.id, reviewedArtifactRevision: current.plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "Preserved historical finding." }] } : null,
+    observations: {}, errors, artifacts: { transitionPlanPath: null, reviewArtifactPath: null },
+  } : null;
+  if (evidence !== null) {
+    evidence = mutateEvidence(evidence);
+    evidence = { ...evidence, evidenceDigest: digestBase64Url(`${evidence.contractVersion}\0${canonicalJson(evidence)}`) };
+    const directory = join(current.root, ".shield", "audit", "copilot-fury-plan-dispatch", sha256(request.missionId));
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(join(directory, `dispatch-evidence-${evidence.evidenceDigest.slice("sha256:".length)}.json`), `${canonicalJson(evidence)}\n`, { mode: 0o600 });
+  }
+  const evidenceDigest = evidence?.evidenceDigest ?? null;
+  const projection = mutateReceipt({
+    schemaVersion: 1, contractVersion: "shield.seat-dispatch.event.v1", receiptId: identity.receiptId, dispatchId: `dispatch:${identity.claimKey}`,
+    parentMissionId: request.missionId, parentMissionRevision: request.missionRevision, parentSessionId: request.parentSessionId,
+    childTaskId: identity.childTaskId, childSessionId: identity.childSessionId, accountableSeatId: "fury", repositoryId: request.repositoryId,
+    repositoryWorkspaceId: request.repositoryWorkspaceId, repositoryRevision: request.headRevision, subjectId: request.subjectId,
+    subjectRevision: request.subjectRevision, artifactId: current.plan.id, artifactRevision: current.plan.digest,
+    configuredRuntime: { kind: "runtime.configured", runtimeId: request.requestedRuntime, model: request.requestedModel },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: request.requestedRuntime, model: request.requestedModel },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: request.requestedExecutor }, state, startedAt: request.timestamp.value,
+    lastEventTimestamp: terminal ? "2026-08-18T12:01:00.001Z" : request.timestamp.value, logSequence: terminal ? 1 : 0,
+    lastEntryDigest: digestBase64Url(`historical-v1-${state}`), previousLogDigest: terminal ? digestBase64Url("historical-v1-started") : null,
+    lifecycleSequence: terminal ? 1 : 0, previousLifecycleDigest: terminal ? digestBase64Url("historical-v1-started") : null,
+    runtimeSelfReportHistory: [], runtimeHostHistory: [], executorSelfReportHistory: [], executorHostHistory: [], inputEvidenceRefs,
+    outputEvidenceRefs: terminal && state !== "interrupted" ? [evidenceDigest] : null,
+    recoveryEvidenceRefs: state === "interrupted" ? [evidenceDigest] : null,
+    originalDisposition: state === "interrupted" ? { code: dispositionCode, errors } : null,
+  });
+  return { identity, projection, packetDigest: () => packetDigest, evidence: () => evidence, readDispatchLedger: async () => ({ state: "valid", value: { logPath: join(current.root, ".shield", "dispatch-receipts.jsonl"), entries: [], projections: [projection] } }) };
+}
+
+function architectureResult(current, overrides = {}) {
+  return { schemaVersion: 2, contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: current.plan.id, reviewedArtifactRevision: current.plan.digest, verdict: "PASS", findings: [], reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: current.request.headRevision, ...overrides };
 }
 
 function recoveryClaimExpectation(receipt) {
@@ -151,7 +246,8 @@ async function fixture({ repositoryCard = true } = {}) {
   });
   const begun = createProfileAwareMissionBegunEntry(brief, [binding]);
   const journalPath = join(root, config.paths.journals, `${Buffer.from(missionId).toString("base64url")}.jsonl`);
-  await writeFile(journalPath, `${JSON.stringify(begun)}\n`);
+  const journalBytes = `${JSON.stringify(begun)}\n`;
+  await writeFile(journalPath, journalBytes);
   const built = buildMissionTransitionPlanV1({
     missionId,
     subjectId,
@@ -213,7 +309,7 @@ async function fixture({ repositoryCard = true } = {}) {
     timestamp: { value: "2026-08-18T12:01:00.000Z", provenance: "hostTrusted" },
     reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   };
-  return { root, userCopilotHome, request, plan };
+  return { root, userCopilotHome, request, plan, journalDigest: `sha256:${sha256(journalBytes)}` };
 }
 
 function executor(plan, verdict = "PASS") {
@@ -325,7 +421,7 @@ function productionPassOutput(current) {
 }
 
 function productionSdkHarness(options = {}) {
-  const calls = { clientOptions: null, sessionConfig: null, construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0 };
+  const calls = { clientOptions: null, sessionConfig: null, prompts: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0 };
   const event = (type, data) => ({ id: randomUUID(), parentId: null, timestamp: new Date().toISOString(), type, data });
   class CopilotClient {
     constructor(clientOptions) { calls.clientOptions = clientOptions; calls.construct += 1; options.onConstruct?.(clientOptions); }
@@ -346,14 +442,15 @@ function productionSdkHarness(options = {}) {
           agent: { async getCurrent() { return { agent: { name: "fury" } }; } },
           model: { async getCurrent() { return { modelId: config.model }; } },
         },
-        async sendAndWait() {
+        async sendAndWait(request) {
+          calls.prompts.push(request.prompt);
           if (options.eventType) config.onEvent(event(options.eventType, options.eventData ?? {}));
           for (const toolCall of options.preToolUseCalls ?? []) await config.hooks.onPreToolUse(toolCall);
           if (options.cancel) {
             config.onEvent(event("abort", { reason: "user_initiated" }));
             throw new Error("request aborted");
           }
-          const message = event("assistant.message", { content: options.outputText ?? "{}", model: config.model });
+          const message = event("assistant.message", { content: options.outputTexts?.[calls.prompts.length - 1] ?? options.outputText ?? "{}", model: config.model });
           config.onEvent(message);
           return message;
         },
@@ -397,6 +494,7 @@ async function runProductionExecutor(current, harness) {
     executionIdentity: identity,
     async revalidatePersistence() {},
     prompt: "Return the closed result.",
+    repairPrompt: "Return repaired closed result.",
     repairLimit: 0,
     validateOutput: () => true,
   });
@@ -430,6 +528,74 @@ test("fresh V1 requests are rejected before preflight and never upgraded to V2",
   assert.equal(fake.calls.preflight, 0);
   assert.equal(fake.calls.execute, 0);
   assert.equal(result.contractVersion, COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION);
+});
+
+test("V2 architecture result closes all eleven findings, cardinality, phase, revision, and plan echoes", async () => {
+  const current = await fixture();
+  assert.equal(COPILOT_FURY_PLAN_FINDING_CODES_V2.length, 11);
+  assert.equal(validateCopilotFuryPlanResultV2(architectureResult(current), current.request, current.plan).state, "valid");
+  for (const code of COPILOT_FURY_PLAN_FINDING_CODES_V2) {
+    const result = architectureResult(current, { verdict: "REVISE", findings: [{ code, message: `Finding for ${code}.` }] });
+    assert.equal(validateCopilotFuryPlanResultV2(result, current.request, current.plan).state, "valid", code);
+  }
+  for (const [label, result] of [
+    ["phase", architectureResult(current, { reviewPhase: "implementation_conformance" })],
+    ["revision", architectureResult(current, { repositoryRevision: "0".repeat(40) })],
+    ["plan id", architectureResult(current, { reviewedArtifactId: `${current.plan.id}:other` })],
+    ["plan digest", architectureResult(current, { reviewedArtifactRevision: "sha256:other" })],
+    ["PASS cardinality", architectureResult(current, { findings: [{ code: "PLAN_SCOPE_INVALID", message: "Unexpected." }] })],
+    ["REVISE cardinality", architectureResult(current, { verdict: "REVISE", findings: [] })],
+    ["out-of-phase", architectureResult(current, { verdict: "REVISE", findings: [{ code: "BOUND_REVISION_EVIDENCE_ABSENT", message: "Later-phase evidence." }] })],
+  ]) assert.equal(validateCopilotFuryPlanResultV2(result, current.request, current.plan).state, "invalid", label);
+});
+
+test("historical V1 terminal and recovery histories replay byte-bound without preclaim", async () => {
+  for (const state of ["completed", "failed", "cancelled", "interrupted", "started", "resumed"]) {
+    const current = await fixture();
+    const request = v1Request(current, { parentSessionId: `${current.request.parentSessionId}:${state}` });
+    const history = historicalV1Ledger(current, request, state);
+    const fake = executor(current.plan);
+    let claims = 0;
+    const replay = await dispatchCopilotFuryPlanReviewV1(request, {
+      executor: fake.value, userCopilotHome: current.userCopilotHome, readDispatchLedger: history.readDispatchLedger,
+      async claimDispatchPacket() { claims += 1; throw new Error("historical replay must not claim"); },
+    });
+    assert.equal(replay.replayed, true, JSON.stringify(replay));
+    assert.equal(replay.receiptId, history.identity.receiptId);
+    assert.equal(claims, 0);
+    assert.equal(fake.calls.preflight, 0);
+    assert.equal(fake.calls.execute, 0);
+    if (state === "completed") {
+      assert.equal(replay.state, "completed");
+      assert.equal(replay.disposition, "REVISE");
+      assert.deepEqual(replay.findings, [{ code: "PLAN_NEEDS_REVISION", message: "Preserved historical finding." }]);
+    } else if (state === "failed" || state === "cancelled") assert.equal(replay.state, state);
+    else assert.equal(replay.state, "recovery_required");
+    if (history.evidence() !== null) {
+      const { evidenceDigest, ...body } = history.evidence();
+      assert.equal(evidenceDigest, digestBase64Url(`${history.evidence().contractVersion}\0${canonicalJson(body)}`));
+      assert.equal(history.evidence().packetDigest, history.packetDigest());
+    }
+  }
+});
+
+test("historical V1 rejects receipt and complete packet substitutions and preserves deterministic recovery identity", async () => {
+  const current = await fixture();
+  const request = v1Request(current, { parentSessionId: `${current.request.parentSessionId}:binding` });
+  const failed = historicalV1Ledger(current, request, "failed");
+  const eligibility = evaluateCopilotFuryRecoveryEligibilityV1(failed.projection, recoveryClaimExpectation(failed.projection), failed.projection.receiptId);
+  assert.equal(eligibility.state, "eligible", JSON.stringify(eligibility));
+  assert.deepEqual(evaluateCopilotFuryRecoveryEligibilityV1(failed.projection, recoveryClaimExpectation(failed.projection), failed.projection.receiptId), eligibility);
+  for (const history of [
+    historicalV1Ledger(current, request, "completed", { mutateReceipt: (value) => ({ ...value, repositoryRevision: "0".repeat(40) }) }),
+    historicalV1Ledger(current, request, "completed", { mutateEvidence: (value) => ({ ...value, packet: { ...value.packet, transitionPlan: { ...value.packet.transitionPlan, id: `${value.packet.transitionPlan.id}:substitute` } } }) }),
+  ]) {
+    const fake = executor(current.plan);
+    const result = await dispatchCopilotFuryPlanReviewV1(request, { executor: fake.value, userCopilotHome: current.userCopilotHome, readDispatchLedger: history.readDispatchLedger });
+    assert.equal(result.state, "invalid", JSON.stringify(result));
+    assert.equal(fake.calls.preflight, 0);
+    assert.equal(fake.calls.execute, 0);
+  }
 });
 
 test("V2 contract exhaustion terminalizes once with no findings and replays without execution", async () => {
@@ -481,6 +647,30 @@ test("V2 contract exhaustion terminalizes once with no findings and replays with
   assert.equal(replay.state, "failed", JSON.stringify(replay));
   assert.equal(replay.code, COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2);
   assert.equal(replay.replayed, true);
+});
+
+test("V2 production repair prompt is exact, phase-bound, and dedicated", async () => {
+  const current = await fixture();
+  const outOfPhase = JSON.stringify(architectureResult(current, { verdict: "REVISE", findings: [{ code: "BOUND_REVISION_EVIDENCE_ABSENT", message: "Later-phase evidence." }] }));
+  const harness = productionSdkHarness({ outputTexts: [outOfPhase, productionPassOutput(current)] });
+  const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
+    executor: createCopilotFuryPlanExecutorV1({ async loadSdk() { return harness.module; }, async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; } }),
+    userCopilotHome: current.userCopilotHome,
+  });
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(result.disposition, "PASS");
+  assert.equal(harness.calls.prompts.length, 2);
+  const [initialPrompt, repairPrompt] = harness.calls.prompts;
+  for (const prompt of harness.calls.prompts) {
+    assert.ok(prompt.includes(`reviewPhase=${COPILOT_FURY_PLAN_REVIEW_PHASE_V2}`));
+    assert.ok(prompt.includes(`repositoryRevision=${current.request.headRevision}`));
+    assert.ok(prompt.includes(`transitionPlanId=${current.plan.id}`));
+    assert.ok(prompt.includes(`transitionPlanDigest=${current.plan.digest}`));
+    for (const code of COPILOT_FURY_PLAN_FINDING_CODES_V2) assert.ok(prompt.includes(code), code);
+  }
+  assert.match(initialPrompt, /Do not require completed May implementation, Mack validation, publication evidence, final acceptance, or later human evidence/u);
+  assert.match(repairPrompt, /shield\.copilot-fury-plan-result\.v2/u);
+  assert.notEqual(repairPrompt, initialPrompt);
 });
 
 function capabilitySdk(overrides = {}) {
