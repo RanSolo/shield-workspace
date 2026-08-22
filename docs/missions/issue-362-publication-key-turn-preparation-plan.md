@@ -45,14 +45,18 @@ shield mission prepare-next \
 ```
 
 Normal graph-backed behavior remains byte-compatible. When the first canonical
-preparation result is `protected_evidence_mismatch`, the existing legacy
-operation receives the request only after its own new pre-effect guard proves
-that the protected mission-preparation graph root is genuinely absent:
+preparation result is `protected_evidence_mismatch`, `prepare-next` first calls
+one shared authority-none graph-absence preflight exported by the existing
+legacy module. The legacy operation calls the same preflight before any effect.
+Both paths must prove that the protected mission-preparation graph root is
+genuinely absent:
 
-- without `--fury-model`, return the same blocked result plus a structured
-  authority-none `nextAction` naming
-  `mission.continue-legacy-reviewed-transition`, the exact current mission,
-  and the requirement to select a Fury model;
+- if the shared preflight returns anything except exact absence, return its
+  closed result unchanged, regardless of whether `--fury-model` is present;
+- after exact absence, without `--fury-model`, return the same blocked result
+  plus a structured authority-none `nextAction` naming
+  `mission.prepare-next`, the exact current mission, and the requirement to
+  rerun with a selected Fury model;
 - with `--fury-model`, invoke the guarded
   `continueLegacyReviewedTransitionV1` operation using only mission ID,
   canonical root, and the selected reviewer model;
@@ -82,15 +86,19 @@ No authorization JSON exists in this flow.
 ## Closed non-overlap and identity rules
 
 1. The legacy bridge is attempted only for the exact first-pass
-   `protected_evidence_mismatch` state. Before seed creation, claim lookup, or
-   Fury dispatch, `continueLegacyReviewedTransitionV1` performs a no-follow
-   inspection of the canonical `.shield/audit/mission-preparation` graph root.
-   Exact `ENOENT` is the only legacy-eligible state. A directory, file, link,
-   replacement, permission/IO uncertainty, malformed graph, stale graph, or
-   any other existing protected evidence returns
-   `PROTECTED_GRAPH_NOT_ABSENT` with no seed/model/audit effect. Fresh Wheels
-   Up, runtime-binding, publication-ready, already-authorized, and every other
-   blocked result never enter the legacy operation.
+   `protected_evidence_mismatch` state. Export one closed, authority-none
+   `preflightLegacyProtectedGraphAbsenceV1` from the legacy module. Both
+   `prepare-next` and `continueLegacyReviewedTransitionV1` call it. It performs
+   a no-follow inspection of the canonical
+   `.shield/audit/mission-preparation` graph root. Exact `ENOENT` is the only
+   legacy-eligible state. A directory, file, link, replacement, permission/IO
+   uncertainty, malformed graph, stale graph, or any other existing protected
+   evidence returns `PROTECTED_GRAPH_NOT_ABSENT` with no seed/model/audit
+   effect. `prepare-next` runs this preflight before checking for
+   `--fury-model`, so unsafe evidence can never be mislabeled as a missing
+   reviewer selection. Fresh Wheels Up, runtime-binding, publication-ready,
+   already-authorized, and every other blocked result never enter the
+   preflight or legacy operation.
 2. `continueLegacyReviewedTransitionV1` remains the sole eligibility,
    derivation, reviewer identity, seed, dispatch, replay, and materialization
    owner. `prepare-next` does not inspect Markdown, infer scope, construct a
@@ -129,7 +137,7 @@ The closed composition table is:
 | State | Human stream | JSON stdout | Exit |
 | --- | --- | --- | --- |
 | first result is not `protected_evidence_mismatch` | unchanged existing stream | unchanged existing object | unchanged |
-| graph absent, Fury model missing | stderr: blocker plus copy-safe successor | `{schemaVersion:1,state:"blocked",reasonCode:"legacy_fury_model_required",missionId,nextAction:{authority:"none",owner:"hill",commandId:"mission.prepare-next",requiredOption:"--fury-model",humanGate:false}}` | 1 |
+| graph absent, Fury model missing | stderr: blocker plus `shield mission prepare-next --mission-id <id> --root <root> --fury-model <model-id>` | `{schemaVersion:1,state:"blocked",reasonCode:"legacy_fury_model_required",missionId,nextAction:{authority:"none",owner:"hill",commandId:"mission.prepare-next",requiredOption:"--fury-model",humanGate:false}}` | 1 |
 | protected graph not absent or legacy invalid/conflict/recovery | stderr: exact state/code/errors | exact legacy closed result | 1 |
 | Fury REVISE or non-PASS completed | stderr: exact disposition and receipt if present | exact dispatch terminal result | 1 |
 | dispatch pending/nonterminal | stderr: exact state/code | exact dispatch result | 1 |
@@ -168,8 +176,10 @@ is allowed.
    publication-already-authorized, and blocked fixtures never call the legacy
    operation and retain existing output/exit behavior.
 2. Corrupt, stale, malformed, linked, replaced, unreadable, or merely existing
-   protected graph roots cause the legacy operation to return
-   `PROTECTED_GRAPH_NOT_ABSENT` before seed, claim, audit, or model effects.
+   protected graph roots cause the shared preflight to return
+   `PROTECTED_GRAPH_NOT_ABSENT` before model-selection output, seed, claim,
+   audit, or model effects; the legacy operation independently repeats that
+   same preflight before effects.
 3. An exact missing-graph fixture without `--fury-model` returns one
    machine-readable, authority-none successor and performs no model, audit,
    journal, signer, Git, or GitHub effect.
