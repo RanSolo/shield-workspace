@@ -3,7 +3,10 @@
 ## Exact planning context
 
 - Repository: `RanSolo/shield-workspace`
-- Planning base and HEAD: `c2adf6a189bf0f04641bd454547f75b42b6f2df6`
+- Planning base: `c2adf6a189bf0f04641bd454547f75b42b6f2df6`
+- Exact plan commit and plan SHA-256: supplied and verified by each review packet;
+  intentionally not embedded in the plan because both identities change when this
+  file is committed.
 - Parent proving loop: #341
 - Authority: none
 - Observed edge: a fresh Hill can prepare and diagnose a worktree and read #341,
@@ -77,8 +80,10 @@ exact trusted-binding-registry bytes already used by profile-aware admission.
 
 It derives:
 
-- `missionId`: `mission:github:<owner>:<repo>:issue-<number>` using the canonical
-  repository/issue identity;
+- `missionId`: `mission:issue-intake:<base64url-sha256>` where the digest is over a
+  domain-separated canonical tuple of repository host ID and issue host ID. The
+  fixed format stays inside the existing mission-store filename bound even when
+  configured owner/repository names are maximal;
 - `subjectId`: `github:<owner>/<repo>/issue/<number>`;
 - objective: the validated issue title, preserving exact normalized text;
 - created time: stable GitHub `updatedAt` with `hostTrusted` provenance;
@@ -120,11 +125,31 @@ The explicit `--profile` is the only operator/Hill judgment required in V1. Ther
 is no silent profile default and no keyword/LLM classification.
 
 The compiled brief is passed through a strengthened shared
-`profileAwareMissionIntakeV1`. Its shared validator enforces closed risk flags,
-participant uniqueness and required membership, canonical Hill Delivery Mode,
-profile/gate consistency, and `requireSimmons` consistency for both existing
-`--brief` inputs and compiled issue inputs. Existing valid `--brief` journal bytes
-remain unchanged; no issue-only duplicate validator is added.
+`profileAwareMissionIntakeV1`. Its legacy-compatible shared validator enforces
+closed risk flags, participant uniqueness and required membership, profile/gate
+consistency, and `requireSimmons` consistency for both routes. It continues to
+accept every currently valid legacy mode array, including empty and non-Hill mode
+arrays. The issue compiler plus closed issue-intake begin variant separately require
+the exact canonical Hill Delivery activation. Existing valid `--brief` journal
+bytes remain unchanged; no issue-only duplicate general validator is added.
+
+### Result projection
+
+Successful creation and exact replay return the existing mission projection plus a
+closed next-action projection:
+
+```json
+{
+  "nextAction": {
+    "command": "shield mission prepare-next",
+    "missionId": "<derived-mission-id>"
+  }
+}
+```
+
+Human output prints the same copy-safe command using the explicit canonical root.
+The next action is guidance, not authority, and is derived only after the mission
+projection is valid.
 
 ### State and replay
 
@@ -159,6 +184,9 @@ readback remains `recovery_required`; it never blindly retries.
 | Risk assumptions visible | stable human projection snapshot and all flags asserted |
 | One authority-none effect | one issue-bound `mission.begun`; authorization remains waiting |
 | Replay safety | durable binding; exact/concurrent replay appends zero; each binding dimension conflicts |
+| Bounded mission identity | maximum owner/repo/issue identities initialize, status, and replay safely |
+| Legacy mode compatibility | empty/non-Hill legacy modes remain valid; issue variant requires Hill Delivery |
+| Directional output | JSON and human output include the exact `prepare-next` successor |
 | Normal successor | resulting mission is consumable by `mission status` and `mission prepare-next` |
 | Backward compatibility | existing `--brief` CLI vectors and journal bytes remain unchanged |
 
@@ -179,7 +207,8 @@ readback remains `recovery_required`; it never blindly retries.
 - Strengthen the shared profile-aware validator once and reuse it for both routes.
 - Extend the closed schema-9 begun entry with an issue-intake variant.
 - Test all profiles, participant/gate/risk consistency, deterministic identity,
-  durable binding admission, and unchanged valid legacy brief bytes.
+  maximum identity lengths, durable binding admission, issue-only Hill activation,
+  and unchanged valid legacy empty/non-Hill mode brief bytes.
 
 ### Packet C — CLI composition and replay
 
@@ -189,7 +218,8 @@ readback remains `recovery_required`; it never blindly retries.
 - Add opt-in replay-aware initialization under the existing journal lock.
 - Reobserve local state and issue B only for first creation.
 - Test happy path, exact/concurrent replay, every binding conflict, A/B drift,
-  recovery-required states, zero-mutation failures, and status/prepare-next.
+  recovery-required states, zero-mutation failures, JSON/human next-action output,
+  and status/prepare-next.
 
 Packets may be implemented sequentially by one May because B depends on A's closed
 observation and C depends on both. They are review packets, not independent
