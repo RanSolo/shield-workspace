@@ -666,9 +666,14 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     } from "@shield/team-system/dispatch-receipts";
     import {
       COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+      COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
+      COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+      COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+      COPILOT_FURY_PLAN_FINDING_CODES_V2,
       COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
       dispatchCopilotFuryPlanReviewV1,
       type CopilotFuryPlanDispatchRequestV1,
+      type CopilotFuryPlanDispatchRequestV2,
       type CopilotFuryPlanDispatchResultV1,
     } from "@shield/team-system/copilot-fury-plan-dispatch";
 
@@ -678,8 +683,13 @@ test("packs declarations and type-checks an external strict TypeScript consumer"
     }
     const schema: 2 = MISSION_SCHEMA_VERSION;
     const copilotFuryDispatchContract: "shield.copilot-fury-plan-dispatch.request.v1" = COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION;
+    const copilotFuryDispatchContractV2: "shield.copilot-fury-plan-dispatch.request.v2" = COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2;
+    const copilotFuryResultContractV2: "shield.copilot-fury-plan-result.v2" = COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2;
+    const copilotFuryReviewPhase: "architecture_plan" = COPILOT_FURY_PLAN_REVIEW_PHASE_V2;
+    const copilotFuryFindingCodes: readonly string[] = COPILOT_FURY_PLAN_FINDING_CODES_V2;
     const copilotFurySdkVersion: "1.0.11" = COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION;
     const copilotFuryDispatchRequest = null as unknown as CopilotFuryPlanDispatchRequestV1;
+    const copilotFuryDispatchRequestV2 = null as unknown as CopilotFuryPlanDispatchRequestV2;
     const copilotFuryDispatchResult = null as unknown as CopilotFuryPlanDispatchResultV1;
     const dispatchCopilotFuryPlanReview = dispatchCopilotFuryPlanReviewV1;
     const state: MissionState = "approved";

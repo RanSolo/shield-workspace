@@ -43,6 +43,23 @@ import {
 
 export const COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION = "shield.copilot-fury-plan-dispatch.request.v1" as const;
 export const COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION = "shield.copilot-fury-plan-result.v1" as const;
+export const COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2 = "shield.copilot-fury-plan-dispatch.request.v2" as const;
+export const COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2 = "shield.copilot-fury-plan-result.v2" as const;
+export const COPILOT_FURY_PLAN_REVIEW_PHASE_V2 = "architecture_plan" as const;
+export const COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2 = "FURY_PHASE_CONTRACT_EXHAUSTED" as const;
+export const COPILOT_FURY_PLAN_FINDING_CODES_V2 = Object.freeze([
+  "PLAN_SCOPE_INVALID",
+  "PLAN_AUTHORITY_INVALID",
+  "PLAN_SEQUENCE_INVALID",
+  "PLAN_BINDING_INVALID",
+  "PLAN_API_ASSUMPTION_INVALID",
+  "PLAN_TEST_STRATEGY_INSUFFICIENT",
+  "PLAN_EXCLUSION_INVALID",
+  "PLAN_DETERMINISM_INVALID",
+  "PLAN_REPLAY_INVALID",
+  "PLAN_IDENTITY_SEPARATION_INVALID",
+  "PLAN_COMPATIBILITY_INVALID",
+] as const);
 export const COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION = "shield.copilot-fury-plan-dispatch.evidence.v1" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION = "shield.copilot-fury-plan-dispatch.evidence.v2" as const;
 export const COPILOT_FURY_PLAN_DISPATCH_SUCCESSOR_EVIDENCE_CONTRACT_VERSION_V3 = "shield.copilot-fury-plan-dispatch.evidence.v3" as const;
@@ -77,6 +94,7 @@ const REQUEST_FIELDS = [
   "parentSessionId", "transitionPlanPath", "transitionPlanRawSha256", "cardSelection", "requestedModel",
   "requestedRuntime", "requestedExecutor", "allowedTools", "allowedEffects", "repairLimit", "stopConditions", "timestamp",
 ] as const;
+const REQUEST_FIELDS_V2 = [...REQUEST_FIELDS, "reviewPhase"] as const;
 const REPOSITORY_CARD_SELECTION_FIELDS = ["kind"] as const;
 const USER_CARD_SELECTION_FIELDS = ["kind", "logicalRef", "expectedSha256"] as const;
 const TIMESTAMP_FIELDS = ["value", "provenance"] as const;
@@ -84,6 +102,7 @@ const RESULT_FIELDS = [
   "schemaVersion", "contractVersion", "authority", "reviewerSeatId", "reviewedArtifactId", "reviewedArtifactRevision",
   "verdict", "findings",
 ] as const;
+const RESULT_FIELDS_V2 = [...RESULT_FIELDS, "reviewPhase", "repositoryRevision"] as const;
 const FINDING_FIELDS = ["code", "message"] as const;
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
@@ -158,6 +177,14 @@ export interface CopilotFuryPlanDispatchRequestV1 {
   readonly timestamp: Readonly<{ value: string; provenance: "hostTrusted" }>;
 }
 
+export interface CopilotFuryPlanDispatchRequestV2 extends Omit<CopilotFuryPlanDispatchRequestV1, "schemaVersion" | "contractVersion"> {
+  readonly schemaVersion: 2;
+  readonly contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2;
+  readonly reviewPhase: typeof COPILOT_FURY_PLAN_REVIEW_PHASE_V2;
+}
+
+export type CopilotFuryPlanDispatchRequestV1OrV2 = CopilotFuryPlanDispatchRequestV1 | CopilotFuryPlanDispatchRequestV2;
+
 export interface CopilotFuryPlanFindingV1 {
   readonly code: string;
   readonly message: string;
@@ -173,6 +200,22 @@ export interface CopilotFuryPlanResultV1 {
   readonly verdict: "PASS" | "REVISE";
   readonly findings: readonly CopilotFuryPlanFindingV1[];
 }
+
+export type CopilotFuryPlanFindingCodeV2 = typeof COPILOT_FURY_PLAN_FINDING_CODES_V2[number];
+
+export interface CopilotFuryPlanFindingV2 extends CopilotFuryPlanFindingV1 {
+  readonly code: CopilotFuryPlanFindingCodeV2;
+}
+
+export interface CopilotFuryPlanResultV2 extends Omit<CopilotFuryPlanResultV1, "schemaVersion" | "contractVersion" | "findings"> {
+  readonly schemaVersion: 2;
+  readonly contractVersion: typeof COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2;
+  readonly reviewPhase: typeof COPILOT_FURY_PLAN_REVIEW_PHASE_V2;
+  readonly repositoryRevision: string;
+  readonly findings: readonly CopilotFuryPlanFindingV2[];
+}
+
+export type CopilotFuryPlanResultV1OrV2 = CopilotFuryPlanResultV1 | CopilotFuryPlanResultV2;
 
 export type { CopilotFuryResolvedCardIdentityV1 };
 
@@ -248,6 +291,7 @@ export interface CopilotFuryExecutorRunInputV1 {
   readonly executionIdentity: CopilotFuryExecutionIdentityV1;
   readonly revalidatePersistence: () => Promise<void>;
   readonly prompt: string;
+  readonly repairPrompt: string;
   readonly repairLimit: number;
   readonly validateOutput: (text: string) => boolean;
 }
@@ -323,7 +367,7 @@ export type CopilotFuryPlanDispatchHandoffV1 = Readonly<{
 }>;
 
 type CommonDispatchResultV1 = Readonly<{
-  contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION;
+  contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION | typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2;
   authority: "none";
   missionId: string;
   receiptId: string | null;
@@ -336,7 +380,7 @@ export type CopilotFuryPlanDispatchResultV1 =
   | (CommonDispatchResultV1 & Readonly<{ state: "completed"; disposition: "REVISE"; findings: readonly CopilotFuryPlanFindingV1[]; handoff: null }>)
   | (CommonDispatchResultV1 & Readonly<{ state: "failed" | "cancelled"; code: string; errors: readonly string[]; handoff: null }>)
   | (CommonDispatchResultV1 & Readonly<{ state: "recovery_required"; code: string; errors: readonly string[]; handoff: null }>)
-  | Readonly<{ contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION; authority: "none"; state: "blocked" | "invalid"; code: string; errors: readonly string[]; receiptId: null; evidencePath: null; replayed: false; handoff: null }>;
+  | Readonly<{ contractVersion: typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION | typeof COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2; authority: "none"; state: "blocked" | "invalid"; code: string; errors: readonly string[]; receiptId: null; evidencePath: null; replayed: false; handoff: null }>;
 
 type StableFile = Readonly<{ path: string; bytes: string; identity: string; rawSha256: string }>;
 export type InternalLegacyDerivedTransitionPlanProvenanceV1 = Readonly<{
@@ -383,7 +427,7 @@ export type InternalResolvedTransitionPlanSourceV1 =
   | InternalDerivedTransitionPlanSourceV1;
 type RepositoryObservation = Readonly<{ canonicalRoot: string; identity: string; branch: string; headRevision: string; configBytes: string; journalBytes: string; journalDigest: string; journalSequence: number }>;
 type ResolvedCard = Readonly<{ card: CopilotAgentCardV1; bytes: string; identity: CopilotFuryResolvedCardIdentityV1; sourcePath: string | null }>;
-type CardResolutionRequest = Pick<CopilotFuryPlanDispatchRequestV1, "repositoryRoot" | "headRevision" | "cardSelection">;
+type CardResolutionRequest = Pick<CopilotFuryPlanDispatchRequestV1OrV2, "repositoryRoot" | "headRevision" | "cardSelection">;
 type RepositoryCardObservation = Readonly<
   | { state: "present"; card: CopilotAgentCardV1; bytes: string; contentDigest: string }
   | { state: "absent" }
@@ -649,6 +693,34 @@ function blocked(code: string, ...errors: readonly string[]): CopilotFuryPlanDis
   });
 }
 
+function invalidFor(request: CopilotFuryPlanDispatchRequestV1OrV2, code: string, ...errors: readonly string[]): CopilotFuryPlanDispatchResultV1 {
+  return deepFreeze({
+    contractVersion: request.contractVersion,
+    authority: "none" as const,
+    state: "invalid" as const,
+    code,
+    errors: errors.length > 0 ? [...errors] : [code],
+    receiptId: null,
+    evidencePath: null,
+    replayed: false,
+    handoff: null,
+  });
+}
+
+function blockedFor(request: CopilotFuryPlanDispatchRequestV1OrV2, code: string, ...errors: readonly string[]): CopilotFuryPlanDispatchResultV1 {
+  return deepFreeze({
+    contractVersion: request.contractVersion,
+    authority: "none" as const,
+    state: "blocked" as const,
+    code,
+    errors: errors.length > 0 ? [...errors] : [code],
+    receiptId: null,
+    evidencePath: null,
+    replayed: false,
+    handoff: null,
+  });
+}
+
 export function validateCopilotFuryPlanDispatchRequestV1(input: unknown): Readonly<
   | { state: "valid"; value: CopilotFuryPlanDispatchRequestV1 }
   | { state: "invalid"; code: "MALFORMED_REQUEST"; errors: readonly string[] }
@@ -683,6 +755,34 @@ export function validateCopilotFuryPlanDispatchRequestV1(input: unknown): Readon
   return { state: "valid", value: deepFreeze(value as unknown as CopilotFuryPlanDispatchRequestV1) };
 }
 
+export function validateCopilotFuryPlanDispatchRequestV2(input: unknown): Readonly<
+  | { state: "valid"; value: CopilotFuryPlanDispatchRequestV2 }
+  | { state: "invalid"; code: "MALFORMED_REQUEST"; errors: readonly string[] }
+> {
+  let snapshot: unknown;
+  try { snapshot = cloneClosed(input); } catch { return { state: "invalid", code: "MALFORMED_REQUEST", errors: ["Request is not closed ordinary data."] }; }
+  if (!exact(snapshot, REQUEST_FIELDS_V2)) return { state: "invalid", code: "MALFORMED_REQUEST", errors: ["Request fields are not closed."] };
+  const { reviewPhase: _reviewPhase, ...v1Projection } = snapshot;
+  const checkedV1 = validateCopilotFuryPlanDispatchRequestV1({
+    ...v1Projection,
+    schemaVersion: 1,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  });
+  const errors = checkedV1.state === "invalid" ? [...checkedV1.errors] : [];
+  if (snapshot.schemaVersion !== 2 || snapshot.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2) errors.push("Request schema or contract is invalid.");
+  if (snapshot.reviewPhase !== COPILOT_FURY_PLAN_REVIEW_PHASE_V2) errors.push("reviewPhase must be architecture_plan.");
+  if (errors.length > 0) return { state: "invalid", code: "MALFORMED_REQUEST", errors: Object.freeze([...new Set(errors)]) };
+  return { state: "valid", value: deepFreeze(snapshot as unknown as CopilotFuryPlanDispatchRequestV2) };
+}
+
+export function validateCopilotFuryPlanDispatchRequestV1OrV2(input: unknown): Readonly<
+  | { state: "valid"; value: CopilotFuryPlanDispatchRequestV1OrV2 }
+  | { state: "invalid"; code: "MALFORMED_REQUEST"; errors: readonly string[] }
+> {
+  if (safePlain(input) && input.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2) return validateCopilotFuryPlanDispatchRequestV2(input);
+  return validateCopilotFuryPlanDispatchRequestV1(input);
+}
+
 export function validateCopilotFuryPlanResultV1(input: unknown, plan: TransitionPlanV1OrV2): Readonly<
   | { state: "valid"; value: CopilotFuryPlanResultV1 }
   | { state: "invalid"; code: "INVALID_FURY_RESULT"; errors: readonly string[] }
@@ -708,13 +808,47 @@ export function validateCopilotFuryPlanResultV1(input: unknown, plan: Transition
   return { state: "valid", value: deepFreeze(value as unknown as CopilotFuryPlanResultV1) };
 }
 
-function parseClosedResultText(text: string, plan: TransitionPlanV1OrV2) {
+export function validateCopilotFuryPlanResultV2(
+  input: unknown,
+  request: CopilotFuryPlanDispatchRequestV2,
+  plan: TransitionPlanV1OrV2,
+): Readonly<
+  | { state: "valid"; value: CopilotFuryPlanResultV2 }
+  | { state: "invalid"; code: "INVALID_FURY_RESULT"; errors: readonly string[] }
+> {
+  let snapshot: unknown;
+  try { snapshot = cloneClosed(input); } catch { return { state: "invalid", code: "INVALID_FURY_RESULT", errors: ["Fury result is not closed ordinary data."] }; }
+  if (!exact(snapshot, RESULT_FIELDS_V2)) return { state: "invalid", code: "INVALID_FURY_RESULT", errors: ["Fury result fields are not closed."] };
+  const value = snapshot;
+  const errors: string[] = [];
+  if (value.schemaVersion !== 2 || value.contractVersion !== COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2 || value.authority !== "none" || value.reviewerSeatId !== "fury") errors.push("Fury result schema or identity is invalid.");
+  if (value.reviewPhase !== request.reviewPhase) errors.push("Fury result review-phase binding is stale or mismatched.");
+  if (typeof value.repositoryRevision !== "string" || !GIT_REVISION.test(value.repositoryRevision) || value.repositoryRevision !== request.headRevision) errors.push("Fury result repository-revision binding is stale or mismatched.");
+  if (value.reviewedArtifactId !== plan.id || value.reviewedArtifactRevision !== plan.digest) errors.push("Fury result reviewed-artifact binding is stale or mismatched.");
+  if (value.verdict !== "PASS" && value.verdict !== "REVISE") errors.push("Fury verdict is unsupported.");
+  if (!Array.isArray(value.findings) || isProxy(value.findings) || Object.getPrototypeOf(value.findings) !== Array.prototype || value.findings.length > MAX_FINDINGS || Reflect.ownKeys(value.findings).length !== value.findings.length + 1) {
+    errors.push("Fury findings are malformed or exceed their bound.");
+  } else {
+    const allowedCodes = new Set<string>(COPILOT_FURY_PLAN_FINDING_CODES_V2);
+    for (const finding of value.findings) {
+      if (!exact(finding, FINDING_FIELDS) || typeof finding.code !== "string" || !allowedCodes.has(finding.code) || typeof finding.message !== "string" || finding.message.trim() !== finding.message || finding.message.length < 1 || finding.message.length > MAX_FINDING_TEXT) errors.push("Fury finding is malformed or outside the architecture-plan taxonomy.");
+    }
+    if (value.verdict === "PASS" && value.findings.length !== 0) errors.push("PASS must have no findings.");
+    if (value.verdict === "REVISE" && value.findings.length === 0) errors.push("REVISE must have at least one finding.");
+  }
+  if (errors.length > 0) return { state: "invalid", code: "INVALID_FURY_RESULT", errors: Object.freeze([...new Set(errors)]) };
+  return { state: "valid", value: deepFreeze(value as unknown as CopilotFuryPlanResultV2) };
+}
+
+function parseClosedResultText(text: string, request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2) {
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > MAX_RESULT_BYTES || text === "") return { state: "invalid" as const };
   const objectStart = text.indexOf("{");
   if (objectStart < 0) return { state: "invalid" as const };
   let parsed: unknown;
   try { parsed = parseJsonRejectDuplicateKeys(text.slice(objectStart).trim()); } catch { return { state: "invalid" as const }; }
-  return validateCopilotFuryPlanResultV1(parsed, plan);
+  return request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2
+    ? validateCopilotFuryPlanResultV2(parsed, request, plan)
+    : validateCopilotFuryPlanResultV1(parsed, plan);
 }
 
 function cleanGitEnvironment(): NodeJS.ProcessEnv {
@@ -816,7 +950,7 @@ async function exactGitTreeBytes(repositoryRoot: string, file: ExactGitTreeEntry
   return bytes;
 }
 
-async function stableExactHeadTransitionPlan(request: CopilotFuryPlanDispatchRequestV1): Promise<StableFile> {
+async function stableExactHeadTransitionPlan(request: CopilotFuryPlanDispatchRequestV1OrV2): Promise<StableFile> {
   const worktree = await stableTextFile(request.repositoryRoot, request.transitionPlanPath, "transition_plan");
   const path = exactGitTreePath(request.repositoryRoot, request.transitionPlanPath);
   const entry = (await exactGitTreeInventory(request.repositoryRoot, request.headRevision)).find((candidate) => candidate.path === path);
@@ -840,7 +974,7 @@ const LEGACY_DERIVED_SOURCE_FIELDS = [
 ] as const;
 
 function validateLegacyDerivedTransitionPlanSource(
-  request: CopilotFuryPlanDispatchRequestV1,
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
   source: InternalDerivedTransitionPlanSourceV1,
 ): StableFile {
   if (!exact(source, LEGACY_DERIVED_SOURCE_FIELDS) || source.kind !== "legacy_derived" ||
@@ -888,7 +1022,7 @@ function validateLegacyDerivedTransitionPlanSource(
 }
 
 async function revalidateResolvedTransitionPlanSource(
-  request: CopilotFuryPlanDispatchRequestV1,
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
   source: InternalResolvedTransitionPlanSourceV1,
 ): Promise<StableFile> {
   if (source.kind === "legacy_derived") return validateLegacyDerivedTransitionPlanSource(request, source);
@@ -901,19 +1035,19 @@ async function revalidateResolvedTransitionPlanSource(
 
 export async function resolveCommittedTransitionPlanSourceV1(
   input: unknown,
-): Promise<Readonly<{ state: "valid"; request: CopilotFuryPlanDispatchRequestV1; source: InternalResolvedTransitionPlanSourceV1 }> | Readonly<{ state: "invalid"; result: CopilotFuryPlanDispatchResultV1 }>> {
-  const checked = validateCopilotFuryPlanDispatchRequestV1(input);
+): Promise<Readonly<{ state: "valid"; request: CopilotFuryPlanDispatchRequestV1OrV2; source: InternalResolvedTransitionPlanSourceV1 }> | Readonly<{ state: "invalid"; result: CopilotFuryPlanDispatchResultV1 }>> {
+  const checked = validateCopilotFuryPlanDispatchRequestV1OrV2(input);
   if (checked.state === "invalid") return Object.freeze({ state: "invalid", result: invalid(checked.code, ...checked.errors) });
   try {
     await observeRepository(checked.value);
   } catch (error) {
-    return Object.freeze({ state: "invalid", result: invalid("PRECLAIM_VALIDATION_FAILED", error instanceof Error ? error.message : "Copilot Fury dispatch preclaim validation failed.") });
+    return Object.freeze({ state: "invalid", result: invalidFor(checked.value, "PRECLAIM_VALIDATION_FAILED", error instanceof Error ? error.message : "Copilot Fury dispatch preclaim validation failed.") });
   }
   try {
     const file = await stableExactHeadTransitionPlan(checked.value);
     return Object.freeze({ state: "valid", request: checked.value, source: Object.freeze({ kind: "committed_file", file }) });
   } catch (error) {
-    return Object.freeze({ state: "invalid", result: invalid("TRANSITION_PLAN_HEAD_MISMATCH", error instanceof Error ? error.message : "Transition plan is not the literal HEAD blob.") });
+    return Object.freeze({ state: "invalid", result: invalidFor(checked.value, "TRANSITION_PLAN_HEAD_MISMATCH", error instanceof Error ? error.message : "Transition plan is not the literal HEAD blob.") });
   }
 }
 function exactGitTreeTools(repositoryRoot: string, revision: string, onDenied: (toolName: string) => void): readonly Tool[] {
@@ -1017,7 +1151,7 @@ async function optionalStableAbsoluteFile(path: string, label: string): Promise<
   }
 }
 
-async function observeRepository(request: CopilotFuryPlanDispatchRequestV1): Promise<RepositoryObservation> {
+async function observeRepository(request: CopilotFuryPlanDispatchRequestV1OrV2): Promise<RepositoryObservation> {
   const canonicalRoot = await realpath(request.repositoryRoot);
   if (canonicalRoot !== request.repositoryRoot) throw new Error("repository_root_not_canonical");
   const rootStats = await lstat(canonicalRoot);
@@ -1115,8 +1249,8 @@ async function resolveCard(request: CardResolutionRequest, userCopilotHome?: str
   });
 }
 
-function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1, plan: TransitionPlanV1OrV2) {
-  const operation = deepFreeze({
+function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2) {
+  const commonOperation = {
     missionId: request.missionId,
     missionRevision: request.missionRevision,
     parentSessionId: request.parentSessionId,
@@ -1128,10 +1262,15 @@ function deriveSessionIdentity(request: CopilotFuryPlanDispatchRequestV1, plan: 
     repositoryWorkspaceId: request.repositoryWorkspaceId,
     repositoryRevision: request.headRevision,
     accountableSeatId: "fury",
-  });
-  const operationDigest = digestBase64Url(`copilot-fury-logical-operation-v1\0${canonicalJson(operation)}`);
+  };
+  const operation = request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION
+    ? deepFreeze(commonOperation)
+    : deepFreeze({ ...commonOperation, requestContractVersion: request.contractVersion, reviewPhase: request.reviewPhase });
+  const operationDigest = digestBase64Url(`${request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION ? "copilot-fury-logical-operation-v1" : "copilot-fury-logical-operation-v2"}\0${canonicalJson(operation)}`);
   const token = operationDigest.replace(/^sha256:/u, "").slice(0, 32);
-  const packetId = `packet:copilot-fury:${token}`;
+  const packetId = request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION
+    ? `packet:copilot-fury:${token}`
+    : `packet:copilot-fury-v2:${token}`;
   const claimKey = createHash("sha256").update(new TextEncoder().encode(
     `seat-dispatch-claim-v1\0${request.missionId}\0${request.parentSessionId}\0${packetId}`,
   )).digest("base64url").slice(0, 32);
@@ -1172,7 +1311,7 @@ type RecoveryBindingV2 = Readonly<{
   successorExecutionIdentity: CopilotFuryExecutionIdentityV1;
 }>;
 
-function claimIdentity(request: CopilotFuryPlanDispatchRequestV1, packetId: string) {
+function claimIdentity(request: CopilotFuryPlanDispatchRequestV1OrV2, packetId: string) {
   const claimKey = createHash("sha256").update(new TextEncoder().encode(
     `seat-dispatch-claim-v1\0${request.missionId}\0${request.parentSessionId}\0${packetId}`,
   )).digest("base64url").slice(0, 32);
@@ -1305,7 +1444,7 @@ async function revalidatePersistenceSnapshot(snapshot: PersistenceSnapshot): Pro
   }
 }
 
-function sdkConfiguration(request: CopilotFuryPlanDispatchRequestV1, childSessionId: string): CopilotFurySdkConfigurationV1 {
+function sdkConfiguration(request: CopilotFuryPlanDispatchRequestV1OrV2, childSessionId: string): CopilotFurySdkConfigurationV1 {
   return deepFreeze({
     packageName: "@github/copilot-sdk" as const,
     packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
@@ -1344,7 +1483,56 @@ function outputContractDescription(plan: TransitionPlanV1OrV2): string {
   });
 }
 
-function taskPrompt(request: CopilotFuryPlanDispatchRequestV1, plan: TransitionPlanV1OrV2): string {
+function outputContractDescriptionV2(request: CopilotFuryPlanDispatchRequestV2, plan: TransitionPlanV1OrV2): string {
+  return canonicalJson({
+    schemaVersion: 2,
+    contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+    authority: "none",
+    reviewerSeatId: "fury",
+    reviewedArtifactId: plan.id,
+    reviewedArtifactRevision: plan.digest,
+    reviewPhase: request.reviewPhase,
+    repositoryRevision: request.headRevision,
+    verdict: "PASS | REVISE",
+    findings: [{ code: COPILOT_FURY_PLAN_FINDING_CODES_V2.join(" | "), message: "bounded actionable architecture-plan finding (REVISE only)" }],
+  });
+}
+
+function outputContractFor(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2): string {
+  return request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2
+    ? outputContractDescriptionV2(request, plan)
+    : outputContractDescription(plan);
+}
+
+function taskPrompt(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2): string {
+  if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2) {
+    return [
+      "Review the exact transition plan in the architecture_plan phase at the bound repository revision. Return only one compact JSON object; no Markdown or prose.",
+      "Evaluate only planned scope, authority, sequence, repository and artifact bindings, API feasibility, exclusions, determinism, replay and identity separation, compatibility, and test strategy.",
+      "Do not require completed May implementation, Mack validation, publication evidence, final acceptance, or later human evidence. This technical review grants no authority.",
+      "Use only the host-backed read and search tools. Do not invoke or describe bash, shell, filesystem, or Git commands. The runtime filesystem is not the repository authority.",
+      "The host tools read the exact bound Git tree. If a tool is needed, call read or search directly; do not infer repository unavailability from the runtime environment.",
+      `reviewPhase=${request.reviewPhase}`,
+      `repositoryRoot=${request.repositoryRoot}`,
+      `repositoryId=${request.repositoryId}`,
+      `branch=${request.branch}`,
+      `headRevision=${request.headRevision}`,
+      `repositoryRevision=${request.headRevision}`,
+      `planningBaseRevision=${request.planningBaseRevision}`,
+      `missionId=${request.missionId}`,
+      `missionRevision=${request.missionRevision}`,
+      `subjectId=${request.subjectId}`,
+      `subjectRevision=${request.subjectRevision}`,
+      `transitionPlanPath=${request.transitionPlanPath}`,
+      `transitionPlanRawSha256=${request.transitionPlanRawSha256}`,
+      `transitionPlanId=${plan.id}`,
+      `transitionPlanDigest=${plan.digest}`,
+      `transitionPlan=${canonicalJson(plan)}`,
+      `allowedFindingCodes=${canonicalJson(COPILOT_FURY_PLAN_FINDING_CODES_V2)}`,
+      `outputContract=${outputContractDescriptionV2(request, plan)}`,
+      "PASS requires findings=[]. REVISE requires one or more findings from allowedFindingCodes. Unknown or out-of-phase codes are malformed output.",
+    ].join("\n");
+  }
   return [
     "Review the exact transition plan at the bound repository revision. Return only one compact JSON object; no Markdown or prose.",
     "Use only the host-backed read and search tools. Do not invoke or describe bash, shell, filesystem, or Git commands. The runtime filesystem is not the repository authority.",
@@ -1363,22 +1551,44 @@ function taskPrompt(request: CopilotFuryPlanDispatchRequestV1, plan: TransitionP
     `transitionPlanId=${plan.id}`,
     `transitionPlanDigest=${plan.digest}`,
     `transitionPlan=${canonicalJson(plan)}`,
-    `outputContract=${outputContractDescription(plan)}`,
+    `outputContract=${outputContractFor(request, plan)}`,
     "PASS requires findings=[]. REVISE requires one or more closed findings. This review has authority none.",
   ].join("\n");
 }
 
-function packetBody(request: CopilotFuryPlanDispatchRequestV1, plan: TransitionPlanV1OrV2, card: ResolvedCard, observation: RepositoryObservation, configuration: CopilotFurySdkConfigurationV1) {
+function repairPrompt(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2): string {
+  if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION) return "Your prior response violated the closed output contract. Return only one corrected JSON object with exactly the required fields and identity echoes.";
+  return [
+    "Your prior response violated the closed architecture_plan output contract. Return only one corrected compact JSON object; no Markdown or prose.",
+    `reviewPhase=${request.reviewPhase}`,
+    `repositoryRevision=${request.headRevision}`,
+    `transitionPlanId=${plan.id}`,
+    `transitionPlanDigest=${plan.digest}`,
+    `transitionPlanRawSha256=${request.transitionPlanRawSha256}`,
+    `allowedFindingCodes=${canonicalJson(COPILOT_FURY_PLAN_FINDING_CODES_V2)}`,
+    `outputContract=${outputContractDescriptionV2(request, plan)}`,
+    "PASS requires findings=[]. REVISE requires at least one allowed finding. Unknown or out-of-phase finding codes are invalid.",
+  ].join("\n");
+}
+
+function packetBody(request: CopilotFuryPlanDispatchRequestV1OrV2, plan: TransitionPlanV1OrV2, card: ResolvedCard, observation: RepositoryObservation, configuration: CopilotFurySdkConfigurationV1) {
   return deepFreeze({
-    schemaVersion: 1,
-    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    schemaVersion: request.schemaVersion,
+    contractVersion: request.contractVersion,
     authority: "none",
     request,
     transitionPlan: plan,
     cardIdentity: card.identity,
     cardBodyDigest: digestHex(card.card.body),
     missionJournal: { digest: observation.journalDigest, sequence: observation.journalSequence },
-    outputContract: outputContractDescription(plan),
+    outputContract: outputContractFor(request, plan),
+    ...(request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2 ? {
+      reviewScope: {
+        reviewPhase: request.reviewPhase,
+        evaluates: ["scope", "authority", "sequence", "bindings", "api_feasibility", "exclusions", "determinism", "replay", "identity_separation", "compatibility", "test_strategy"],
+        excludes: ["completed_may_implementation", "mack_validation", "publication_evidence", "final_acceptance", "later_human_evidence"],
+      },
+    } : {}),
     sdkConfiguration: configuration,
   });
 }
@@ -1506,7 +1716,7 @@ function receiptExecutorObservation(observations: CopilotFuryExecutorObservation
 }
 
 async function appendLifecycle(
-  request: CopilotFuryPlanDispatchRequestV1,
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
   receipt: SeatDispatchReceiptProjectionV1,
   kind: "dispatch.completed" | "dispatch.failed" | "dispatch.cancelled" | "dispatch.interrupted",
   timestamp: string,
@@ -1564,7 +1774,7 @@ async function appendLifecycle(
 }
 
 function evidenceBody(input: {
-  request: CopilotFuryPlanDispatchRequestV1;
+  request: CopilotFuryPlanDispatchRequestV1OrV2;
   plan: TransitionPlanV1OrV2;
   packetId: string;
   packetDigest: string;
@@ -1575,7 +1785,7 @@ function evidenceBody(input: {
   executionConfiguration: CopilotFurySdkConfigurationV1;
   outcome: "PASS" | "REVISE" | "failed" | "cancelled" | "interrupted";
   dispositionCode: string | null;
-  modelResult: CopilotFuryPlanResultV1 | null;
+  modelResult: CopilotFuryPlanResultV1OrV2 | null;
   observations: CopilotFuryExecutorObservationsV1 | Partial<CopilotFuryExecutorObservationsV1>;
   errors: readonly string[];
   artifacts: Readonly<{ transitionPlanPath: string | null; reviewArtifactPath: string | null }>;
@@ -1615,7 +1825,7 @@ function evidenceWithDigest(body: ReturnType<typeof evidenceBody>) {
   return deepFreeze({ ...body, evidenceDigest });
 }
 
-async function verifyLiveBinding(request: CopilotFuryPlanDispatchRequestV1, source: InternalResolvedTransitionPlanSourceV1, initial: RepositoryObservation, initialPlan: StableFile, initialCard: ResolvedCard, userCopilotHome?: string): Promise<RepositoryObservation> {
+async function verifyLiveBinding(request: CopilotFuryPlanDispatchRequestV1OrV2, source: InternalResolvedTransitionPlanSourceV1, initial: RepositoryObservation, initialPlan: StableFile, initialCard: ResolvedCard, userCopilotHome?: string): Promise<RepositoryObservation> {
   const current = await observeRepository(request);
   const plan = await revalidateResolvedTransitionPlanSource(request, source);
   const card = await resolveCard(request, userCopilotHome);
@@ -1635,7 +1845,7 @@ async function parseEvidenceFile(repositoryRoot: string, relativePath: string): 
 }
 
 async function readReceiptForFinalProof(
-  request: CopilotFuryPlanDispatchRequestV1,
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
   receiptId: string,
   plan: TransitionPlanV1OrV2,
   expectedState: "completed" | "failed" | "cancelled" | "interrupted",
@@ -1650,7 +1860,7 @@ async function readReceiptForFinalProof(
   return receipt;
 }
 
-async function terminalEvidencePathFromReceipt(request: CopilotFuryPlanDispatchRequestV1, receipt: SeatDispatchReceiptProjectionV1, packetDigest: string): Promise<string> {
+async function terminalEvidencePathFromReceipt(request: CopilotFuryPlanDispatchRequestV1OrV2, receipt: SeatDispatchReceiptProjectionV1, packetDigest: string): Promise<string> {
   if (receipt.outputEvidenceRefs === null) throw new Error("terminal_evidence_refs_unavailable");
   const directory = await existingEvidenceDirectory(request.repositoryRoot, request.missionId);
   if (directory === null) throw new Error("terminal_evidence_directory_unavailable");
@@ -1683,7 +1893,7 @@ function normalizedReceiptTimestamp(value: string): string {
 }
 
 function predecessorClaimEvidence(
-  request: CopilotFuryPlanDispatchRequestV1,
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
   plan: TransitionPlanV1OrV2,
   card: ResolvedCard,
   observation: RepositoryObservation,
@@ -1703,16 +1913,50 @@ export function evaluateCopilotFuryRecoveryEligibilityV1(
   allowlistedReceiptId: string,
 ): CopilotFuryRecoveryEligibilityV1 {
   if (receipt.state !== "failed" || receipt.receiptId !== allowlistedReceiptId) return Object.freeze({ state: "not_allowlisted" });
-  const matches = receipt.receiptId === expected.receiptId && receipt.dispatchId === expected.dispatchId && receipt.childTaskId === expected.childTaskId && receipt.childSessionId === expected.childSessionId && receipt.parentMissionId === expected.parentMissionId && receipt.parentMissionRevision === expected.parentMissionRevision && receipt.parentSessionId === expected.parentSessionId && receipt.accountableSeatId === expected.accountableSeatId && receipt.repositoryId === expected.repositoryId && receipt.repositoryWorkspaceId === expected.repositoryWorkspaceId && receipt.repositoryRevision === expected.repositoryRevision && receipt.subjectId === expected.subjectId && receipt.subjectRevision === expected.subjectRevision && receipt.artifactId === expected.artifactId && receipt.artifactRevision === expected.artifactRevision && canonicalJson(receipt.configuredRuntime) === canonicalJson(expected.configuredRuntime) && canonicalJson(receipt.requestedRuntime) === canonicalJson(expected.requestedRuntime) && canonicalJson(receipt.toolExecution) === canonicalJson(expected.toolExecution) && receipt.startedAt === expected.startedAt && sameArray(receipt.inputEvidenceRefs, expected.inputEvidenceRefs);
-  if (!matches) return Object.freeze({ state: "invalid", code: "RECOVERABLE_PREDECESSOR_CLAIM_MISMATCH" });
+  if (!receiptMatchesClaimExpectation(receipt, expected)) return Object.freeze({ state: "invalid", code: "RECOVERABLE_PREDECESSOR_CLAIM_MISMATCH" });
   return Object.freeze({
     state: "eligible",
     successor: recoverySuccessorCore(receipt.parentMissionId, receipt.parentSessionId, receipt.receiptId, receipt.lastEntryDigest),
   });
 }
 
+function receiptMatchesClaimExpectation(receipt: SeatDispatchReceiptProjectionV1, expected: CopilotFuryRecoveryClaimExpectationV1): boolean {
+  return receipt.receiptId === expected.receiptId && receipt.dispatchId === expected.dispatchId && receipt.childTaskId === expected.childTaskId && receipt.childSessionId === expected.childSessionId && receipt.parentMissionId === expected.parentMissionId && receipt.parentMissionRevision === expected.parentMissionRevision && receipt.parentSessionId === expected.parentSessionId && receipt.accountableSeatId === expected.accountableSeatId && receipt.repositoryId === expected.repositoryId && receipt.repositoryWorkspaceId === expected.repositoryWorkspaceId && receipt.repositoryRevision === expected.repositoryRevision && receipt.subjectId === expected.subjectId && receipt.subjectRevision === expected.subjectRevision && receipt.artifactId === expected.artifactId && receipt.artifactRevision === expected.artifactRevision && canonicalJson(receipt.configuredRuntime) === canonicalJson(expected.configuredRuntime) && canonicalJson(receipt.requestedRuntime) === canonicalJson(expected.requestedRuntime) && canonicalJson(receipt.toolExecution) === canonicalJson(expected.toolExecution) && receipt.startedAt === expected.startedAt && sameArray(receipt.inputEvidenceRefs, expected.inputEvidenceRefs);
+}
+
+function predecessorClaimExpectation(
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
+  plan: TransitionPlanV1OrV2,
+  identity: ReturnType<typeof claimIdentity>,
+  inputEvidenceRefs: readonly string[],
+  startedAt = normalizedReceiptTimestamp(request.timestamp.value),
+): CopilotFuryRecoveryClaimExpectationV1 {
+  return Object.freeze({
+    receiptId: identity.receiptId,
+    dispatchId: `dispatch:${identity.claimKey}`,
+    childTaskId: identity.childTaskId,
+    childSessionId: identity.childSessionId,
+    parentMissionId: request.missionId,
+    parentMissionRevision: request.missionRevision,
+    parentSessionId: request.parentSessionId,
+    accountableSeatId: "fury",
+    repositoryId: request.repositoryId,
+    repositoryWorkspaceId: request.repositoryWorkspaceId,
+    repositoryRevision: request.headRevision,
+    subjectId: request.subjectId,
+    subjectRevision: request.subjectRevision,
+    artifactId: plan.id,
+    artifactRevision: plan.digest,
+    configuredRuntime: identity.configuredRuntime,
+    requestedRuntime: identity.requestedRuntime,
+    toolExecution: { kind: "tool.execution.requested" as const, executorBindingRef: request.requestedExecutor },
+    startedAt,
+    inputEvidenceRefs,
+  });
+}
+
 async function recoverablePredecessor(
-  request: CopilotFuryPlanDispatchRequestV1,
+  request: CopilotFuryPlanDispatchRequestV1OrV2,
   receipt: SeatDispatchReceiptProjectionV1,
   projections: readonly SeatDispatchReceiptProjectionV1[],
   packetBytes: Uint8Array,
@@ -1747,6 +1991,9 @@ async function recoverablePredecessor(
   if (eligibility.state === "invalid") throw new Error("recoverable_predecessor_receipt_binding_mismatch");
   const evidencePath = await terminalEvidencePathFromReceipt(request, receipt, packetDigest);
   const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
+  if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION) {
+    validateHistoricalV1EvidenceBinding(evidence, request, receipt, packetDigest, { plan, packetId: predecessorIdentity.packetId, packetBytes }, null);
+  }
   if (evidence.dispositionCode !== RECOVERABLE_FAILURE_CODE || canonicalJson(evidence.errors) !== canonicalJson([RECOVERABLE_FAILURE_MESSAGE])) return null;
   if (receipt.outputEvidenceRefs === null || receipt.outputEvidenceRefs.length !== 1 || !DIGEST.test(receipt.outputEvidenceRefs[0])) throw new Error("recoverable_predecessor_evidence_ambiguous");
   if (evidence.schemaVersion !== 1 || evidence.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION || evidence.evidenceDigest !== receipt.outputEvidenceRefs[0] || evidence.receiptId !== receipt.receiptId || evidence.packetDigest !== packetDigest || evidence.outcome !== "failed") throw new Error("recoverable_predecessor_signature_mismatch");
@@ -1872,10 +2119,35 @@ function validateSuccessorEvidence(evidence: Plain, receipt: SeatDispatchReceipt
   }
 }
 
-async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, source: InternalResolvedTransitionPlanSourceV1, claim: Extract<SeatDispatchPacketClaimContractResultV1, { state: "valid" }>["value"], recovery: RecoveryBindingV2 | null = null): Promise<CopilotFuryPlanDispatchResultV1> {
+type ReplayPacketExpectationV1 = Readonly<{
+  plan: TransitionPlanV1OrV2;
+  packetId: string;
+  packetBytes: Uint8Array;
+}>;
+
+function validateHistoricalV1EvidenceBinding(
+  evidence: Plain,
+  request: CopilotFuryPlanDispatchRequestV1,
+  receipt: SeatDispatchReceiptProjectionV1,
+  packetDigest: string,
+  expected: ReplayPacketExpectationV1,
+  recovery: RecoveryBindingV2 | null,
+): void {
+  if (recovery === null && (evidence.schemaVersion !== 1 || evidence.contractVersion !== COPILOT_FURY_PLAN_DISPATCH_EVIDENCE_CONTRACT_VERSION)) throw new Error("replayed_evidence_contract_mismatch");
+  if (evidence.authority !== "none" || evidence.packetId !== expected.packetId || evidence.packetDigest !== packetDigest || evidence.receiptId !== receipt.receiptId) throw new Error("replayed_evidence_identity_mismatch");
+  if (evidence.missionId !== request.missionId || evidence.missionRevision !== request.missionRevision || evidence.subjectId !== request.subjectId || evidence.subjectRevision !== request.subjectRevision || evidence.repositoryId !== request.repositoryId || evidence.repositoryWorkspaceId !== request.repositoryWorkspaceId || evidence.repositoryRevision !== request.headRevision || evidence.transitionPlanRawSha256 !== request.transitionPlanRawSha256) throw new Error("replayed_evidence_request_binding_mismatch");
+  if (!safePlain(evidence.packet)) throw new Error("replayed_evidence_packet_malformed");
+  const packetBytes = new TextEncoder().encode(canonicalJson(evidence.packet));
+  if (digestBase64Url(packetBytes) !== packetDigest || Buffer.compare(Buffer.from(packetBytes), Buffer.from(expected.packetBytes)) !== 0) throw new Error("replayed_evidence_packet_binding_mismatch");
+  if (!safePlain(evidence.packet.request) || canonicalJson(evidence.packet.request) !== canonicalJson(request) || !safePlain(evidence.packet.transitionPlan) || canonicalJson(evidence.packet.transitionPlan) !== canonicalJson(expected.plan)) throw new Error("replayed_evidence_packet_request_mismatch");
+  if (!safePlain(evidence.packet.cardIdentity) || !safePlain(evidence.packet.sdkConfiguration) || !safePlain(evidence.packet.missionJournal) || !safePlain(evidence.cardIdentity) || !safePlain(evidence.sdkConfiguration) || !safePlain(evidence.missionJournal) || canonicalJson(evidence.cardIdentity) !== canonicalJson(evidence.packet.cardIdentity) || canonicalJson(evidence.sdkConfiguration) !== canonicalJson(evidence.packet.sdkConfiguration) || canonicalJson(evidence.missionJournal) !== canonicalJson(evidence.packet.missionJournal)) throw new Error("replayed_evidence_packet_projection_mismatch");
+  if (!Array.isArray(evidence.errors) || evidence.errors.some((value) => typeof value !== "string") || !safePlain(evidence.artifacts)) throw new Error("replayed_evidence_shape_invalid");
+}
+
+async function replayExisting(request: CopilotFuryPlanDispatchRequestV1OrV2, source: InternalResolvedTransitionPlanSourceV1, claim: Extract<SeatDispatchPacketClaimContractResultV1, { state: "valid" }>["value"], recovery: RecoveryBindingV2 | null = null, expectedPacket?: ReplayPacketExpectationV1): Promise<CopilotFuryPlanDispatchResultV1> {
   const receipt = claim.receipt;
   const common = {
-    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    contractVersion: request.contractVersion,
     authority: "none" as const,
     missionId: request.missionId,
     receiptId: receipt.receiptId,
@@ -1888,6 +2160,10 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, source:
     if (directory === null || !DIGEST.test(evidenceDigest)) throw new Error("interrupted_recovery_evidence_unavailable");
     const evidencePath = `${directory.relative}/dispatch-evidence-${evidenceDigest.slice("sha256:".length)}.json`;
     const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
+    if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION) {
+      if (expectedPacket === undefined) throw new Error("historical_v1_replay_expectation_missing");
+      validateHistoricalV1EvidenceBinding(evidence, request, receipt, claim.packetDigest, expectedPacket, recovery);
+    }
     if (evidence.evidenceDigest !== evidenceDigest || evidence.receiptId !== receipt.receiptId || evidence.packetDigest !== claim.packetDigest || evidence.outcome !== "interrupted" || evidence.dispositionCode !== receipt.originalDisposition.code || canonicalJson(evidence.errors) !== canonicalJson(receipt.originalDisposition.errors)) throw new Error("interrupted_recovery_binding_mismatch");
     return deepFreeze({ ...common, state: "recovery_required" as const, code: receipt.originalDisposition.code, errors: [...receipt.originalDisposition.errors], evidencePath, handoff: null });
   }
@@ -1896,9 +2172,14 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, source:
   }
   const evidencePath = await terminalEvidencePathFromReceipt(request, receipt, claim.packetDigest);
   const evidence = await parseEvidenceFile(request.repositoryRoot, evidencePath);
+  if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION) {
+    if (expectedPacket === undefined) throw new Error("historical_v1_replay_expectation_missing");
+    validateHistoricalV1EvidenceBinding(evidence, request, receipt, claim.packetDigest, expectedPacket, recovery);
+  }
   if (recovery !== null) validateSuccessorEvidence(evidence, receipt, recovery);
   if (receipt.outputEvidenceRefs === null || !receipt.outputEvidenceRefs.includes(evidence.evidenceDigest as string)) throw new Error("dispatch_evidence_receipt_binding_mismatch");
   if (receipt.state === "failed" || receipt.state === "cancelled") {
+    if (evidence.outcome !== receipt.state) throw new Error("dispatch_evidence_outcome_invalid");
     const dispositionCode = typeof evidence.dispositionCode === "string" && id(evidence.dispositionCode) ? evidence.dispositionCode : String(evidence.outcome).toUpperCase();
     return deepFreeze({ ...common, state: receipt.state, code: dispositionCode, errors: Array.isArray(evidence.errors) ? evidence.errors.filter((value): value is string => typeof value === "string") : [], evidencePath, handoff: null });
   }
@@ -1908,7 +2189,9 @@ async function replayExisting(request: CopilotFuryPlanDispatchRequestV1, source:
     try { planInput = JSON.parse(planFile.bytes); } catch { throw new Error("replayed_input_transition_plan_malformed"); }
     const plan = validateTransitionPlanV1OrV2({ artifact: planInput });
     if (plan.state === "invalid") throw new Error("replayed_input_transition_plan_invalid");
-    const modelResult = validateCopilotFuryPlanResultV1(evidence.modelResult, plan.value);
+    const modelResult = request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2
+      ? validateCopilotFuryPlanResultV2(evidence.modelResult, request, plan.value)
+      : validateCopilotFuryPlanResultV1(evidence.modelResult, plan.value);
     if (modelResult.state === "invalid" || modelResult.value.verdict !== "REVISE") throw new Error("replayed_model_result_invalid");
     return deepFreeze({ ...common, state: "completed" as const, disposition: "REVISE" as const, findings: [...modelResult.value.findings], evidencePath, handoff: null });
   }
@@ -2156,7 +2439,7 @@ class DefaultCopilotFuryExecutorV1 implements CopilotFuryPlanExecutorV1 {
       let finalMessage = await session.sendAndWait({ prompt: input.prompt });
       let outputText = finalMessage?.data.content ?? "";
       for (let attempt = 0; attempt < input.repairLimit && !input.validateOutput(outputText); attempt += 1) {
-        finalMessage = await session.sendAndWait({ prompt: "Your prior response violated the closed output contract. Return only one corrected JSON object with exactly the required fields and identity echoes." });
+        finalMessage = await session.sendAndWait({ prompt: input.repairPrompt });
         outputText = finalMessage?.data.content ?? "";
       }
       const selectedAfter = await session.rpc.agent.getCurrent();
@@ -2400,12 +2683,12 @@ export async function probeCopilotFuryDispatchCapabilityV1(
   }));
 }
 
-function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1, childSessionId: string): boolean {
+function validExecutorObservations(observations: CopilotFuryExecutorObservationsV1, request: CopilotFuryPlanDispatchRequestV1OrV2, childSessionId: string): boolean {
   return observations.sessionStartObserved === true && observations.sessionId === childSessionId && observations.selectedAgent === "fury" && observations.model === request.requestedModel && observations.assistantModel === request.requestedModel && observations.runtimeId === request.requestedRuntime && observations.executorId === request.requestedExecutor && observations.loadedSdkPackageVersion === COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION && observations.sessionProducer === request.requestedExecutor && typeof observations.sessionProducerVersion === "string" && observations.sessionProducerVersion.length > 0 && observations.sessionProducerVersion.length <= 255 && observations.modelChangeObserved === false && observations.agentSubstitutionObserved === false && observations.unauthorizedToolOrEffectObserved === false;
 }
 
 export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source: InternalResolvedTransitionPlanSourceV1, suppliedDependencies: CopilotFuryPlanDispatchDependenciesV1 = {}): Promise<CopilotFuryPlanDispatchResultV1> {
-  const validatedRequest = validateCopilotFuryPlanDispatchRequestV1(input);
+  const validatedRequest = validateCopilotFuryPlanDispatchRequestV1OrV2(input);
   if (validatedRequest.state === "invalid") return invalid(validatedRequest.code, ...validatedRequest.errors);
   const request = validatedRequest.value;
   const dependencies = {
@@ -2421,6 +2704,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
   let recoveryBinding: RecoveryBindingV2 | null = null;
   let packetId = "";
   let packetDigest = "";
+  let packetBytes: Uint8Array | null = null;
   let card: ResolvedCard | null = null;
   let observation: RepositoryObservation | null = null;
   let planFile: StableFile | null = null;
@@ -2433,21 +2717,21 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     try {
       planFile = await revalidateResolvedTransitionPlanSource(request, source);
     } catch (error) {
-      return invalid("TRANSITION_PLAN_HEAD_MISMATCH", error instanceof Error ? error.message : "Transition plan is not the literal HEAD blob.");
+      return invalidFor(request, "TRANSITION_PLAN_HEAD_MISMATCH", error instanceof Error ? error.message : "Transition plan is not the literal HEAD blob.");
     }
-    if (planFile.rawSha256 !== request.transitionPlanRawSha256) return invalid("TRANSITION_PLAN_DIGEST_MISMATCH", "Transition plan raw SHA-256 does not match the request.");
+    if (planFile.rawSha256 !== request.transitionPlanRawSha256) return invalidFor(request, "TRANSITION_PLAN_DIGEST_MISMATCH", "Transition plan raw SHA-256 does not match the request.");
     let parsedPlan: unknown;
-    try { parsedPlan = JSON.parse(planFile.bytes); } catch { return invalid("INVALID_TRANSITION_PLAN", "Transition plan contains malformed JSON."); }
+    try { parsedPlan = JSON.parse(planFile.bytes); } catch { return invalidFor(request, "INVALID_TRANSITION_PLAN", "Transition plan contains malformed JSON."); }
     const validatedPlan = validateTransitionPlanV1OrV2({ artifact: parsedPlan });
-    if (validatedPlan.state === "invalid") return invalid("INVALID_TRANSITION_PLAN", ...validatedPlan.errors);
+    if (validatedPlan.state === "invalid") return invalidFor(request, "INVALID_TRANSITION_PLAN", ...validatedPlan.errors);
     plan = validatedPlan.value;
-    if (plan.missionId !== request.missionId || plan.subjectId !== request.subjectId || plan.repositoryId !== request.repositoryId || plan.planningBaseRevision !== request.planningBaseRevision || plan.digest !== request.subjectRevision) return invalid("TRANSITION_PLAN_BINDING_MISMATCH", "Transition plan identity does not match the request.");
+    if (plan.missionId !== request.missionId || plan.subjectId !== request.subjectId || plan.repositoryId !== request.repositoryId || plan.planningBaseRevision !== request.planningBaseRevision || plan.digest !== request.subjectRevision) return invalidFor(request, "TRANSITION_PLAN_BINDING_MISMATCH", "Transition plan identity does not match the request.");
     try {
       card = await resolveCard(request, suppliedDependencies.userCopilotHome);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Fury card resolution failed.";
-      if (message === "same_name_user_card_shadowing_requires_explicit_override" || message === "explicit_user_card_override_unavailable_or_mismatched") return invalid("FURY_CARD_SELECTION_INVALID", message);
-      return blocked("BLOCKED_ADAPTER_GAP", message);
+      if (message === "same_name_user_card_shadowing_requires_explicit_override" || message === "explicit_user_card_override_unavailable_or_mismatched") return invalidFor(request, "FURY_CARD_SELECTION_INVALID", message);
+      return blockedFor(request, "BLOCKED_ADAPTER_GAP", message);
     }
     const predecessorIdentity = deriveSessionIdentity(request, plan);
     let identity: ReturnType<typeof claimIdentity> = predecessorIdentity;
@@ -2455,14 +2739,14 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     packetId = predecessorIdentity.packetId;
     await validateEvidencePathBeforeClaim(request.repositoryRoot, request.missionId);
     const ledgerBefore = await dependencies.readDispatchLedger({ repositoryRoot: request.repositoryRoot, repositoryId: request.repositoryId, repositoryWorkspaceId: request.repositoryWorkspaceId });
-    if (ledgerBefore.state === "invalid" && ledgerBefore.code !== "dispatch_receipt_missing") return invalid(ledgerBefore.code, ...ledgerBefore.errors);
+    if (ledgerBefore.state === "invalid" && ledgerBefore.code !== "dispatch_receipt_missing") return invalidFor(request, ledgerBefore.code, ...ledgerBefore.errors);
     const projections = ledgerBefore.state === "valid" ? ledgerBefore.value.projections : [];
     const existing = projections.filter((candidate) => candidate.receiptId === predecessorIdentity.receiptId);
-    if (existing.length > 1) return invalid("duplicate_start", "Existing packet claim is ambiguous.");
+    if (existing.length > 1) return invalidFor(request, "duplicate_start", "Existing packet claim is ambiguous.");
     packetConfiguration = sdkConfiguration(request, deriveCopilotSdkSessionIdV1(predecessorIdentity.childSessionId));
-    let packetBytes = new TextEncoder().encode(canonicalJson(packetBody(request, plan, card, observation, packetConfiguration)));
+    packetBytes = new TextEncoder().encode(canonicalJson(packetBody(request, plan, card, observation, packetConfiguration)));
     packetDigest = digestBase64Url(packetBytes);
-    if (existing.length === 1) {
+    if (existing.length === 1 && request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION) {
       const legacyPacketConfiguration = sdkConfiguration(request, predecessorIdentity.childSessionId);
       const legacyPacketBytes = new TextEncoder().encode(canonicalJson(packetBody(request, plan, card, observation, legacyPacketConfiguration)));
       const legacyPacketDigest = digestBase64Url(legacyPacketBytes);
@@ -2477,7 +2761,10 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     const bindingPrefix = `evidence:packet-binding:seat-dispatch-v1:${predecessorIdentity.claimKey}:`;
     const exactBinding = `${bindingPrefix}${packetDigest}`;
     if (existing.length === 1) {
-      if (!existing[0].inputEvidenceRefs.includes(exactBinding)) return invalid("packet_claim_conflict", "Existing packet claim conflicts with the exact request.");
+      if (!existing[0].inputEvidenceRefs.includes(exactBinding)) return invalidFor(request, "packet_claim_conflict", "Existing packet claim conflicts with the exact request.");
+      if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION && !receiptMatchesClaimExpectation(existing[0], predecessorClaimExpectation(request, plan, predecessorIdentity, expectedPredecessorInputEvidence))) {
+        return invalidFor(request, "packet_claim_conflict", "Existing V1 packet claim conflicts with the complete request identity.");
+      }
       const recovery = await recoverablePredecessor(request, existing[0], projections, packetBytes, packetDigest, predecessorIdentity, expectedPredecessorInputEvidence, plan);
       if (recovery === null) {
         return await replayExisting(request, source, {
@@ -2486,7 +2773,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
           packetDigest,
           receipt: existing[0],
           claimStatus: "already_claimed",
-        });
+        }, null, { plan, packetId: predecessorIdentity.packetId, packetBytes });
       }
       identity = recovery.successor;
       activeExecutionIdentity = recovery.executionIdentity;
@@ -2495,18 +2782,25 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       packetBytes = recovery.packetBytes;
       packetDigest = recovery.packetDigest;
     }
-    if (existing.length === 0 && projections.some((candidate) => candidate.inputEvidenceRefs.some((ref) => ref.startsWith(bindingPrefix)))) return invalid("packet_claim_conflict", "Existing packet binding conflicts with the exact request.");
+    if (existing.length === 0 && projections.some((candidate) => candidate.inputEvidenceRefs.some((ref) => ref.startsWith(bindingPrefix)))) return invalidFor(request, "packet_claim_conflict", "Existing packet binding conflicts with the exact request.");
+    if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION && existing.length === 0) {
+      return invalidFor(request, "FRESH_V1_REQUEST_PROHIBITED", "Fresh V1 Fury plan dispatch is disabled; only exact historical claim replay or governed recovery is permitted.");
+    }
     packetId = identity.packetId;
     activeExecutionIdentity ??= executionIdentity(request.repositoryRoot, identity);
     configuration = sdkConfiguration(request, deriveCopilotSdkSessionIdV1(activeExecutionIdentity.childSessionId));
-    if (!validExecutionIdentity(activeExecutionIdentity, request.repositoryRoot)) return invalid("PRECLAIM_VALIDATION_FAILED", "Copilot client option projection is malformed.");
+    if (!validExecutionIdentity(activeExecutionIdentity, request.repositoryRoot)) return invalidFor(request, "PRECLAIM_VALIDATION_FAILED", "Copilot client option projection is malformed.");
     await validatePersistencePathBeforeClaim(request.repositoryRoot, activeExecutionIdentity.claimKey);
     const preflight = await executor.preflight({ repositoryRoot: request.repositoryRoot, requestedModel: request.requestedModel, requestedRuntime: request.requestedRuntime, requestedExecutor: request.requestedExecutor, executionIdentity: activeExecutionIdentity });
-    if (preflight.state === "blocked") return blocked(preflight.code, ...preflight.errors);
-    if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) return blocked("BLOCKED_ADAPTER_GAP", "Copilot executor preflight identity mismatched the request.");
+    if (preflight.state === "blocked") return blockedFor(request, preflight.code, ...preflight.errors);
+    if (preflight.packageVersion !== COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION || preflight.runtimeId !== request.requestedRuntime || preflight.executorId !== request.requestedExecutor) return blockedFor(request, "BLOCKED_ADAPTER_GAP", "Copilot executor preflight identity mismatched the request.");
     preflightIdentity = preflight;
     await suppliedDependencies.beforeClaim?.();
     await verifyLiveBinding(request, source, observation, planFile, card, suppliedDependencies.userCopilotHome);
+    const callerInputEvidenceRefs = recoveryBinding === null
+      ? [...expectedPredecessorInputEvidence.slice(0, -1)]
+      : [plan.id, plan.digest, `sha256:${request.transitionPlanRawSha256}`, `sha256:${card.identity.contentDigest}`, observation.journalDigest, recoveryBinding.inputEvidenceBinding];
+    const claimedInputEvidenceRefs = [...callerInputEvidenceRefs, `evidence:packet-binding:seat-dispatch-v1:${identity.claimKey}:${packetDigest}`];
     const claim = await dependencies.claimDispatchPacket({
       repositoryRoot: request.repositoryRoot,
       repositoryId: request.repositoryId,
@@ -2530,20 +2824,24 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       executorHostObserved: { kind: "executor.host_observed.unavailable", reason: "not_observed" },
       packetId: packetId,
       packetBytes,
-      inputEvidenceRefs: recoveryBinding === null
-        ? [...expectedPredecessorInputEvidence.slice(0, -1)]
-        : [plan.id, plan.digest, `sha256:${request.transitionPlanRawSha256}`, `sha256:${card.identity.contentDigest}`, observation.journalDigest, recoveryBinding.inputEvidenceBinding],
+      inputEvidenceRefs: callerInputEvidenceRefs,
       startedAt: claimStartedAt,
     });
-    if (claim.state === "invalid") return invalid(claim.code, ...claim.errors);
+    if (claim.state === "invalid") return invalidFor(request, claim.code, ...claim.errors);
     claimedReceipt = claim.value.receipt;
-    if (claim.value.claimStatus === "already_claimed") return await replayExisting(request, source, claim.value, recoveryBinding);
+    if (request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION && !receiptMatchesClaimExpectation(claim.value.receipt, predecessorClaimExpectation(request, plan, identity, claimedInputEvidenceRefs, normalizedReceiptTimestamp(claimStartedAt)))) {
+      return invalidFor(request, "packet_claim_conflict", "Existing V1 packet claim conflicts with the complete request identity.");
+    }
+    if (claim.value.claimStatus === "already_claimed") return await replayExisting(request, source, claim.value, recoveryBinding, { plan, packetId, packetBytes });
     const evidenceDirectory = await ensureEvidenceDirectory(request.repositoryRoot, request.missionId);
     await suppliedDependencies.afterClaimBeforeExecution?.();
     const persistence = await materializePersistencePath(request.repositoryRoot, activeExecutionIdentity.claimKey);
     if (persistence.baseDirectory !== activeExecutionIdentity.clientOptions.baseDirectory) throw new Error("copilot_persistence_projection_mismatch");
     await revalidatePersistenceSnapshot(persistence);
-    const execution = await executor.execute({ repositoryRoot: request.repositoryRoot, card: card.card, cardIdentity: card.identity, configuration, executionIdentity: activeExecutionIdentity, revalidatePersistence: () => revalidatePersistenceSnapshot(persistence), prompt: taskPrompt(request, plan), repairLimit: request.repairLimit, validateOutput: (text) => parseClosedResultText(text, plan as TransitionPlanV1OrV2).state === "valid" });
+    let execution = await executor.execute({ repositoryRoot: request.repositoryRoot, card: card.card, cardIdentity: card.identity, configuration, executionIdentity: activeExecutionIdentity, revalidatePersistence: () => revalidatePersistenceSnapshot(persistence), prompt: taskPrompt(request, plan), repairPrompt: repairPrompt(request, plan), repairLimit: request.repairLimit, validateOutput: (text) => parseClosedResultText(text, request, plan as TransitionPlanV1OrV2).state === "valid" });
+    if (execution.state === "completed" && request.contractVersion === COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2 && parseClosedResultText(execution.outputText, request, plan).state === "invalid") {
+      execution = { state: "failed", code: COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2, errors: ["Fury exhausted the bounded repair lifecycle without producing a valid architecture-plan result."], observations: execution.observations };
+    }
     if (execution.state !== "completed") originalDisposition = { code: execution.code, errors: [...execution.errors] };
     terminalUncertain = true;
     await suppliedDependencies.beforeTerminalRevalidation?.();
@@ -2566,7 +2864,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
         const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
         if (recoveryBinding !== null) validateSuccessorEvidence(evidenceReadback, terminalReadback, recoveryBinding);
         if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || evidenceReadback.dispositionCode !== execution.code || terminalReadback.recoveryEvidenceRefs === null || !terminalReadback.recoveryEvidenceRefs.includes(evidence.evidenceDigest) || terminalReadback.originalDisposition?.code !== execution.code || canonicalJson(terminalReadback.originalDisposition.errors) !== canonicalJson(execution.errors)) throw new Error("interrupted_readback_mismatch");
-        return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: "recovery_required", code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
+        return deepFreeze({ contractVersion: request.contractVersion, authority: "none", missionId: request.missionId, state: "recovery_required", code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
       }
       const terminalKind = execution.state === "cancelled" ? "dispatch.cancelled" : "dispatch.failed";
       terminalUncertain = true;
@@ -2579,10 +2877,10 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
       const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
       if (recoveryBinding !== null) validateSuccessorEvidence(evidenceReadback, terminalReadback, recoveryBinding);
       if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || evidenceReadback.receiptId !== terminal.receiptId || evidenceReadback.packetDigest !== claim.value.packetDigest || terminalReadback.outputEvidenceRefs === null || !terminalReadback.outputEvidenceRefs.includes(evidence.evidenceDigest)) throw new Error("terminal_readback_mismatch");
-      return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: execution.state, code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
+      return deepFreeze({ contractVersion: request.contractVersion, authority: "none", missionId: request.missionId, state: execution.state, code: execution.code, errors: [...execution.errors], receiptId: claim.value.receipt.receiptId, evidencePath, replayed: false, handoff: null });
     }
     if (!validExecutorObservations(execution.observations, request, configuration.sessionId)) throw new Error("executor_observation_mismatch");
-    const result = parseClosedResultText(execution.outputText, plan);
+    const result = parseClosedResultText(execution.outputText, request, plan);
     if (result.state === "invalid") throw new Error("invalid_fury_model_result");
     originalDisposition = { code: result.value.verdict, errors: [] };
     let transitionPlanPath: string | null = null;
@@ -2634,7 +2932,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     const evidenceReadback = await parseEvidenceFile(request.repositoryRoot, evidencePath);
     if (recoveryBinding !== null) validateSuccessorEvidence(evidenceReadback, terminalReadback, recoveryBinding);
     if (evidenceReadback.evidenceDigest !== evidence.evidenceDigest || evidenceReadback.receiptId !== terminal.receiptId || evidenceReadback.packetDigest !== claim.value.packetDigest || canonicalJson(evidenceReadback.packet) !== canonicalJson(evidence.packet) || !safePlain(evidenceReadback.artifacts) || evidenceReadback.artifacts.transitionPlanPath !== transitionPlanPath || evidenceReadback.artifacts.reviewArtifactPath !== reviewArtifactPath || terminalReadback.outputEvidenceRefs === null || !refs.every((ref) => terminalReadback.outputEvidenceRefs?.includes(ref))) throw new Error("terminal_readback_mismatch");
-    const common = { contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none" as const, missionId: request.missionId, state: "completed" as const, receiptId: terminal.receiptId, evidencePath, replayed: false };
+    const common = { contractVersion: request.contractVersion, authority: "none" as const, missionId: request.missionId, state: "completed" as const, receiptId: terminal.receiptId, evidencePath, replayed: false };
     if (result.value.verdict === "REVISE") return deepFreeze({ ...common, disposition: "REVISE" as const, findings: [...result.value.findings], handoff: null });
     if (transitionPlanPath === null || reviewArtifactPath === null || transitionPlanBytes === null || reviewArtifactBytes === null || review === null) throw new Error("pass_artifacts_unavailable");
     await readExactArtifact(join(request.repositoryRoot, ...transitionPlanPath.split("/")), transitionPlanBytes);
@@ -2645,10 +2943,10 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
     return deepFreeze({ ...common, disposition: "PASS" as const, handoff: { transitionPlanPath, reviewArtifactPath, dispatchReceiptId: terminal.receiptId } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Copilot Fury dispatch failed.";
-    if (claimedReceipt === null || observation === null || card === null || configuration === null || packetConfiguration === null || activeExecutionIdentity === null || plan === null || planFile === null || preflightIdentity === null) return invalid("PRECLAIM_VALIDATION_FAILED", message);
+    if (claimedReceipt === null || observation === null || card === null || configuration === null || packetConfiguration === null || activeExecutionIdentity === null || plan === null || planFile === null || preflightIdentity === null) return invalidFor(request, "PRECLAIM_VALIDATION_FAILED", message);
     if (originalDisposition.errors.length === 0 && originalDisposition.code === "DISPATCH_FAILED") originalDisposition = { code: "DISPATCH_FAILED", errors: [message] };
     const recovery = (errors: readonly string[], evidencePath: string | null = null): CopilotFuryPlanDispatchResultV1 => deepFreeze({
-      contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+      contractVersion: request.contractVersion,
       authority: "none" as const,
       missionId: request.missionId,
       state: "recovery_required" as const,
@@ -2698,7 +2996,7 @@ export async function dispatchCopilotFuryPlanReviewCoreV1(input: unknown, source
         return recovery(disposition.errors, evidencePath);
       }
       if (receiptReadback.outputEvidenceRefs === null || !receiptReadback.outputEvidenceRefs.includes(evidence.evidenceDigest)) throw new Error("failed_terminal_readback_mismatch");
-      return deepFreeze({ contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION, authority: "none", missionId: request.missionId, state: "failed", code: "DISPATCH_FAILED", errors: [message], receiptId: receipt.receiptId, evidencePath, replayed: false, handoff: null });
+      return deepFreeze({ contractVersion: request.contractVersion, authority: "none", missionId: request.missionId, state: "failed", code: "DISPATCH_FAILED", errors: [message], receiptId: receipt.receiptId, evidencePath, replayed: false, handoff: null });
     } catch (terminalError) {
       try {
         const ledger = await dependencies.readDispatchLedger({ repositoryRoot: request.repositoryRoot, repositoryId: request.repositoryId, repositoryWorkspaceId: request.repositoryWorkspaceId });

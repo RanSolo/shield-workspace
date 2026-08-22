@@ -16,7 +16,8 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
-  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+  COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { executeAuthorizeWheelsUpV1 } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
@@ -281,14 +282,16 @@ function realPassExecutor(root) {
         return {
           state: "completed",
           outputText: JSON.stringify({
-            schemaVersion: 1,
-            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+            schemaVersion: 2,
+            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
             authority: "none",
             reviewerSeatId: "fury",
             reviewedArtifactId: plan.id,
             reviewedArtifactRevision: plan.digest,
             verdict: "PASS",
             findings: [],
+            reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+            repositoryRevision: input.configuration.repositoryRevision,
           }),
           observations: {
             sessionStartObserved: true,
@@ -638,7 +641,7 @@ test("broad mission claim without a derivation seed is recovery-required regardl
   assert.equal(existsSync(join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT)), false);
 });
 
-test("broad mission claim without a request seed is recovery-required on the real derived-source host path", async () => {
+test("a broad legacy mission claim does not collide with the V2 derived-source operation", async () => {
   const current = await fixture();
   const input = { missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury-review" };
   assert.equal((await continueLegacyReviewedTransitionV1(input, { reviewedTransitionHost: async () => reviseResult(current.missionId) })).state, "completed");
@@ -647,10 +650,9 @@ test("broad mission claim without a request seed is recovery-required on the rea
   const result = await continueLegacyReviewedTransitionV1(input, {
     reviewedTransitionDependencies: { dispatchDependencies: { executor: fake.value } },
   });
-  assert.deepEqual({ state: result.state, code: result.code }, { state: "recovery_required", code: "REQUEST_SEED_MISSING_AFTER_CLAIM" });
-  assert.equal(fake.calls.preflight, 0);
-  assert.equal(fake.calls.execute, 0);
-  assert.equal(graphExists(current), false);
+  assert.equal(result.state, "materialized", JSON.stringify(result));
+  assert.equal(fake.calls.execute, 1);
+  assert.equal(graphExists(current), true);
 });
 
 test("real derived-source host claims, records PASS, and materializes exactly once", async () => {

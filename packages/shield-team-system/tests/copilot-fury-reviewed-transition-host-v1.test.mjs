@@ -9,15 +9,17 @@ import test from "node:test";
 
 import {
   COPILOT_FURY_REVIEWED_TRANSITION_REPAIR_LIMIT,
+  COPILOT_FURY_REVIEWED_TRANSITION_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2,
   COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT,
   prepareReviewedMissionTransitionV1,
 } from "../dist/copilot-fury-reviewed-transition-host-v1.mjs";
 import {
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
-  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
   COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
-  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+  COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
@@ -233,18 +235,20 @@ function executor(plan, verdict = "PASS") {
       },
       async execute(input) {
         calls.execute += 1;
-        const findings = verdict === "PASS" ? [] : [{ code: "PLAN_NEEDS_REVISION", message: "Revise the bounded plan." }];
+        const findings = verdict === "PASS" ? [] : [{ code: "PLAN_SCOPE_INVALID", message: "Revise the bounded plan." }];
         return {
           state: "completed",
           outputText: JSON.stringify({
-            schemaVersion: 1,
-            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+            schemaVersion: 2,
+            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
             authority: "none",
             reviewerSeatId: "fury",
             reviewedArtifactId: plan.id,
             reviewedArtifactRevision: plan.digest,
             verdict,
             findings,
+            reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+            repositoryRevision: input.configuration.repositoryRevision,
           }),
           observations: {
             sessionStartObserved: true,
@@ -293,15 +297,20 @@ test("derives repairLimit=1 and stable identities, then directly materializes an
   assert.equal(firstExecutor.calls.execute, 1);
   const seed = JSON.parse(await readFile(seedPath(current.root), "utf8"));
   assert.equal(seed.authority, "none");
+  assert.equal(seed.schemaVersion, 3);
+  assert.equal(seed.contractVersion, COPILOT_FURY_REVIEWED_TRANSITION_ARCHITECTURE_PLAN_SEED_CONTRACT_VERSION_V2);
+  assert.equal(seed.logicalOperation.repositoryRevision, current.headRevision);
+  assert.equal(seed.logicalOperation.requestContractVersion, COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2);
+  assert.equal(seed.logicalOperation.reviewPhase, COPILOT_FURY_PLAN_REVIEW_PHASE_V2);
   assert.equal(seed.request.repairLimit, COPILOT_FURY_REVIEWED_TRANSITION_REPAIR_LIMIT);
   assert.deepEqual(seed.request.allowedTools, ["read", "search"]);
   assert.deepEqual(seed.request.allowedEffects, []);
   assert.equal(seed.request.timestamp.value, "2026-08-19T12:01:00.000Z");
   assert.match(seed.request.repositoryWorkspaceId, /^workspace:reviewed-transition:/u);
-  assert.match(seed.request.parentSessionId, /^session:reviewed-transition:/u);
+  assert.match(seed.request.parentSessionId, /^session:reviewed-transition-v2:/u);
   assert.deepEqual(seed.request, {
-    schemaVersion: 1,
-    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    schemaVersion: 2,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
     authority: "none",
     repositoryRoot: current.root,
     repositoryId: "RanSolo/reviewed-transition-fixture",
@@ -325,6 +334,7 @@ test("derives repairLimit=1 and stable identities, then directly materializes an
     repairLimit: 1,
     stopConditions: ["PASS", "REVISE", "cancelled", "failed"],
     timestamp: { value: "2026-08-19T12:01:00.000Z", provenance: "hostTrusted" },
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   });
 
   const replayExecutor = executor(current.plan);
@@ -412,7 +422,7 @@ test("preserves REVISE exactly, creates no graph, and conflicts a different mode
 
 test("preserves every non-PASS dispatcher outcome exactly and never creates a graph", async () => {
   const cases = [
-    { state: "completed", disposition: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }], handoff: null },
+    { state: "completed", disposition: "REVISE", findings: [{ code: "PLAN_SCOPE_INVALID", message: "revise" }], handoff: null },
     { state: "blocked", code: "BLOCKED_ADAPTER_GAP", errors: ["blocked"], receiptId: null, evidencePath: null, replayed: false, handoff: null },
     { state: "failed", code: "DISPATCH_FAILED", errors: ["failed"], receiptId: "receipt:failed", evidencePath: null, replayed: false, handoff: null },
     { state: "cancelled", code: "DISPATCH_CANCELLED", errors: ["cancelled"], receiptId: "receipt:cancelled", evidencePath: null, replayed: false, handoff: null },
@@ -422,7 +432,7 @@ test("preserves every non-PASS dispatcher outcome exactly and never creates a gr
   for (const specific of cases) {
     const current = await fixture();
     const outcome = Object.freeze({
-      contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+      contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
       authority: "none",
       ...(specific.state === "completed" || specific.state === "failed" || specific.state === "cancelled" || specific.state === "recovery_required"
         ? { missionId: current.missionId, receiptId: null, evidencePath: null, replayed: false }
@@ -811,7 +821,7 @@ test("permissive-mode durable seeds are rejected on direct and converged replay 
   }
 });
 
-test("a newly committed revised plan digest cannot bypass a broad mission claim without its exact seed", async () => {
+test("a newly committed revised plan digest creates a distinct logical review operation", async () => {
   const current = await fixture();
   const reviseExecutor = executor(current.plan, "REVISE");
   const first = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: reviseExecutor.value } });
@@ -833,12 +843,11 @@ test("a newly committed revised plan digest cannot bypass a broad mission claim 
 
   const passExecutor = executor(rebuilt.plan);
   const second = await prepareReviewedMissionTransitionV1(current.input, { dispatchDependencies: { executor: passExecutor.value } });
-  assert.deepEqual({ state: second.state, code: second.code }, { state: "recovery_required", code: "REQUEST_SEED_MISSING_AFTER_CLAIM" });
-  assert.equal(passExecutor.calls.preflight, 0);
-  assert.equal(passExecutor.calls.execute, 0);
+  assert.equal(second.state, "materialized", JSON.stringify(second));
+  assert.equal(passExecutor.calls.execute, 1);
   const seeds = execFileSync("find", [join(current.root, COPILOT_FURY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "request-seed.json"], { encoding: "utf8" })
     .trim().split("\n").filter(Boolean);
-  assert.equal(seeds.length, 1);
+  assert.equal(seeds.length, 2);
 });
 
 test("workspace identity is stable across canonical roots for the same repository lane", async () => {
@@ -899,7 +908,7 @@ test("cross-process creation converges on one durable seed and one model executi
         await appendFile(counter, "execute\\n");
         return {
           state: "completed",
-          outputText: JSON.stringify({ schemaVersion: 1, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }] }),
+          outputText: JSON.stringify({ schemaVersion: 2, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_SCOPE_INVALID", message: "revise" }], reviewPhase: dispatch.COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: input.configuration.repositoryRevision }),
           observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [] },
         };
       },
@@ -981,7 +990,7 @@ test("a dispatch beyond the bounded host wait stays pending and eventually repla
         }
         return {
           state: "completed",
-          outputText: JSON.stringify({ schemaVersion: 1, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_NEEDS_REVISION", message: "revise" }] }),
+          outputText: JSON.stringify({ schemaVersion: 2, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_SCOPE_INVALID", message: "revise" }], reviewPhase: dispatch.COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: input.configuration.repositoryRevision }),
           observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [] },
         };
       },

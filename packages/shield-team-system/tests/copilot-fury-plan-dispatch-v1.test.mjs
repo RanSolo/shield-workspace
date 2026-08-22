@@ -13,6 +13,7 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_ALLOWED_TOOLS,
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
   COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_RECEIPT_ID,
   COPILOT_FURY_PLAN_DISPATCH_RECOVERABLE_SUCCESSOR_RECEIPT_ID,
   COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
@@ -21,6 +22,9 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_USER_CARD_REF,
   COPILOT_FURY_DISPATCH_CAPABILITY_CONTRACT_VERSION,
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+  COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2,
+  COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   createCopilotFuryPlanExecutorV1,
   deriveCopilotSdkSessionIdV1,
   dispatchCopilotFuryPlanReviewV1,
@@ -28,6 +32,7 @@ import {
   probeCopilotFuryDispatchCapabilityV1,
   validateCopilotFurySuccessorExecutionConfigurationV3,
   validateCopilotFuryPlanDispatchRequestV1,
+  validateCopilotFuryPlanDispatchRequestV2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
@@ -181,8 +186,8 @@ async function fixture({ repositoryCard = true } = {}) {
   git(root, ["commit", "-qm", "dispatch plan"]);
   const headRevision = git(root, ["rev-parse", "HEAD"]);
   const request = {
-    schemaVersion: 1,
-    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+    schemaVersion: 2,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION_V2,
     authority: "none",
     repositoryRoot: root,
     repositoryId: "RanSolo/fixture",
@@ -206,6 +211,7 @@ async function fixture({ repositoryCard = true } = {}) {
     repairLimit: 1,
     stopConditions: [...COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS],
     timestamp: { value: "2026-08-18T12:01:00.000Z", provenance: "hostTrusted" },
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
   };
   return { root, userCopilotHome, request, plan };
 }
@@ -222,18 +228,20 @@ function executor(plan, verdict = "PASS") {
       async execute(input) {
         calls.execute += 1;
         calls.configurations.push(input.configuration);
-        const findings = verdict === "PASS" ? [] : [{ code: "PLAN_NEEDS_REVISION", message: "Correct the bounded plan before implementation." }];
+        const findings = verdict === "PASS" ? [] : [{ code: "PLAN_SCOPE_INVALID", message: "Correct the bounded plan before implementation." }];
         return {
           state: "completed",
           outputText: JSON.stringify({
-            schemaVersion: 1,
-            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+            schemaVersion: 2,
+            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
             authority: "none",
             reviewerSeatId: "fury",
             reviewedArtifactId: plan.id,
             reviewedArtifactRevision: plan.digest,
             verdict,
             findings,
+            reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+            repositoryRevision: input.configuration.repositoryRevision,
           }),
           observations: {
             sessionStartObserved: true,
@@ -300,16 +308,19 @@ function productionExecutionIdentity(current, claimKey = "a".repeat(32)) {
   };
 }
 
-function productionPassOutput(plan) {
+function productionPassOutput(current) {
+  const plan = current.plan;
   return JSON.stringify({
-    schemaVersion: 1,
-    contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+    schemaVersion: 2,
+    contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
     authority: "none",
     reviewerSeatId: "fury",
     reviewedArtifactId: plan.id,
     reviewedArtifactRevision: plan.digest,
     verdict: "PASS",
     findings: [],
+    reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+    repositoryRevision: current.request.headRevision,
   });
 }
 
@@ -395,13 +406,81 @@ async function runProductionExecutor(current, harness) {
 
 test("closed request rejects aliases, accessors, proxies, and non-read-only configuration", async () => {
   const current = await fixture();
-  assert.equal(validateCopilotFuryPlanDispatchRequestV1(current.request).state, "valid");
+  assert.equal(validateCopilotFuryPlanDispatchRequestV2(current.request).state, "valid");
   assert.equal(validateCopilotFuryPlanDispatchRequestV1({ ...current.request, extra: true }).state, "invalid");
   assert.equal(validateCopilotFuryPlanDispatchRequestV1(new Proxy(current.request, {})).state, "invalid");
   assert.equal(validateCopilotFuryPlanDispatchRequestV1({ ...current.request, allowedTools: ["read", "search", "web"] }).state, "invalid");
   const accessor = { ...current.request };
   Object.defineProperty(accessor, "missionId", { enumerable: true, get: () => current.request.missionId });
-  assert.equal(validateCopilotFuryPlanDispatchRequestV1(accessor).state, "invalid");
+  assert.equal(validateCopilotFuryPlanDispatchRequestV2(accessor).state, "invalid");
+});
+
+test("fresh V1 requests are rejected before preflight and never upgraded to V2", async () => {
+  const current = await fixture();
+  const { reviewPhase: _reviewPhase, ...v1Fields } = current.request;
+  const request = {
+    ...v1Fields,
+    schemaVersion: 1,
+    contractVersion: COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION,
+  };
+  const fake = executor(current.plan);
+  const result = await dispatchCopilotFuryPlanReviewV1(request, { executor: fake.value, userCopilotHome: current.userCopilotHome });
+  assert.equal(result.state, "invalid", JSON.stringify(result));
+  assert.equal(result.code, "FRESH_V1_REQUEST_PROHIBITED");
+  assert.equal(fake.calls.preflight, 0);
+  assert.equal(fake.calls.execute, 0);
+  assert.equal(result.contractVersion, COPILOT_FURY_PLAN_DISPATCH_REQUEST_CONTRACT_VERSION);
+});
+
+test("V2 contract exhaustion terminalizes once with no findings and replays without execution", async () => {
+  const current = await fixture();
+  const base = executor(current.plan);
+  const invalidExecutor = {
+    ...base.value,
+    async execute(input) {
+      base.calls.execute += 1;
+      return {
+        state: "completed",
+        outputText: JSON.stringify({
+          schemaVersion: 2,
+          contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2,
+          authority: "none",
+          reviewerSeatId: "fury",
+          reviewedArtifactId: current.plan.id,
+          reviewedArtifactRevision: current.plan.digest,
+          verdict: "REVISE",
+          findings: [{ code: "BOUND_REVISION_EVIDENCE_ABSENT", message: "out of phase" }],
+          reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2,
+          repositoryRevision: input.configuration.repositoryRevision,
+        }),
+        observations: {
+          sessionStartObserved: true,
+          sessionId: input.configuration.sessionId,
+          selectedAgent: "fury",
+          model: input.configuration.model,
+          assistantModel: input.configuration.model,
+          runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+          executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+          loadedSdkPackageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+          sessionProducer: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+          sessionProducerVersion: "1.0.79",
+          modelChangeObserved: false,
+          agentSubstitutionObserved: false,
+          unauthorizedToolOrEffectObserved: false,
+          policyDecisions: [],
+        },
+      };
+    },
+  };
+  const first = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: invalidExecutor, userCopilotHome: current.userCopilotHome });
+  assert.equal(first.state, "failed", JSON.stringify(first));
+  assert.equal(first.code, COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2);
+  assert.deepEqual(first.handoff, null);
+  assert.equal(base.calls.execute, 1);
+  const replay = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: executor(current.plan).value, userCopilotHome: current.userCopilotHome });
+  assert.equal(replay.state, "failed", JSON.stringify(replay));
+  assert.equal(replay.code, COPILOT_FURY_PLAN_PHASE_CONTRACT_ERROR_CODE_V2);
+  assert.equal(replay.replayed, true);
 });
 
 function capabilitySdk(overrides = {}) {
@@ -1127,7 +1206,7 @@ test("duplicate-key model JSON fails closed before the result schema validator",
       const completed = await base.value.execute(input);
       return {
         ...completed,
-        outputText: `{"schemaVersion":1,"contractVersion":"${COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION}","authority":"none","reviewerSeatId":"fury","reviewedArtifactId":"${current.plan.id}","reviewedArtifactRevision":"${current.plan.digest}","verdict":"PASS","verdict":"REVISE","findings":[]}`,
+        outputText: `{"schemaVersion":2,"contractVersion":"${COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2}","authority":"none","reviewerSeatId":"fury","reviewedArtifactId":"${current.plan.id}","reviewedArtifactRevision":"${current.plan.digest}","verdict":"PASS","verdict":"REVISE","findings":[],"reviewPhase":"${COPILOT_FURY_PLAN_REVIEW_PHASE_V2}","repositoryRevision":"${current.request.headRevision}"}`,
       };
     },
   };
@@ -1291,7 +1370,7 @@ test("structural client projection and persistence ancestry fail closed before c
 test("claim winner privately materializes deterministic persistence and replacement fails before start", async () => {
   const current = await fixture();
   const harness = productionSdkHarness({
-    outputText: productionPassOutput(current.plan),
+    outputText: productionPassOutput(current),
     onConstruct(options) { chmodSync(options.baseDirectory, 0o777); },
   });
   const result = await dispatchCopilotFuryPlanReviewV1(current.request, {
@@ -1523,7 +1602,7 @@ test("production executor denies tracked symlink modes for read and search befor
 
 test("production runtime startup is claim-bound for concurrent losers and exact retries", async () => {
   const current = await fixture();
-  const harness = productionSdkHarness({ outputText: productionPassOutput(current.plan) });
+  const harness = productionSdkHarness({ outputText: productionPassOutput(current) });
   const createExecutor = () => createCopilotFuryPlanExecutorV1({
     async loadSdk() { return harness.module; },
     async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
@@ -1538,7 +1617,7 @@ test("production runtime startup is claim-bound for concurrent losers and exact 
   assert.equal(harness.calls.listModels, 1);
   assert.equal(harness.calls.createSession, 1);
 
-  const retryHarness = productionSdkHarness({ outputText: productionPassOutput(current.plan) });
+  const retryHarness = productionSdkHarness({ outputText: productionPassOutput(current) });
   const retry = await dispatchCopilotFuryPlanReviewV1(current.request, {
     executor: createCopilotFuryPlanExecutorV1({
       async loadSdk() { return retryHarness.module; },
@@ -1572,7 +1651,7 @@ test("post-claim runtime start and model-query failures terminalize once and ret
     assert.equal(startupHarness.calls.listModels, fault.expectedListCalls);
     assert.equal(startupHarness.calls.createSession, 0);
 
-    const retryHarness = productionSdkHarness({ outputText: productionPassOutput(current.plan) });
+    const retryHarness = productionSdkHarness({ outputText: productionPassOutput(current) });
     const retry = await dispatchCopilotFuryPlanReviewV1(current.request, {
       executor: createCopilotFuryPlanExecutorV1({
         async loadSdk() { return retryHarness.module; },
