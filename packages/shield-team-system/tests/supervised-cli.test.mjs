@@ -4283,6 +4283,18 @@ test("Copilot Fury dispatch CLI materializes the exact reviewed transition and r
           agentSubstitutionObserved: false,
           unauthorizedToolOrEffectObserved: false,
           policyDecisions: [],
+          executionObservation: {
+            version: "shield.copilot-fury.execution-observation.v1",
+            sdkVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+            registeredToolNames: ["read", "search"],
+            sessionAvailableTools: ["custom:read", "custom:search"],
+            sessionExcludedTools: [...input.toolBinding.sessionExcludedTools],
+            customAgentTools: ["read", "search"],
+            modelFacingToolNames: ["read", "search"],
+            runtimeMetadataNames: ["read", "search"],
+            runtimeMetadataDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            artifactMapDigest: input.reviewArtifactMap.digest,
+          },
         },
       };
     },

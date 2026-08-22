@@ -56,6 +56,21 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function executionObservation(input) {
+  return {
+    version: "shield.copilot-fury.execution-observation.v1",
+    sdkVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+    registeredToolNames: ["read", "search"],
+    sessionAvailableTools: ["custom:read", "custom:search"],
+    sessionExcludedTools: [...input.toolBinding.sessionExcludedTools],
+    customAgentTools: ["read", "search"],
+    modelFacingToolNames: ["read", "search"],
+    runtimeMetadataNames: ["read", "search"],
+    runtimeMetadataDigest: `sha256:${createHash("sha256").update('[{"name":"read"},{"name":"search"}]').digest("base64url")}`,
+    artifactMapDigest: input.reviewArtifactMap.digest,
+  };
+}
+
 function digestId(domain, value) {
   return createHash("sha256").update(`${domain}\0${canonicalJson(value)}`).digest("base64url");
 }
@@ -271,6 +286,7 @@ function executor(plan, verdict = "PASS") {
             agentSubstitutionObserved: false,
             unauthorizedToolOrEffectObserved: false,
             policyDecisions: [],
+            executionObservation: executionObservation(input),
           },
         };
       },
@@ -1003,7 +1019,7 @@ test("cross-process creation converges on one durable seed and one model executi
         return {
           state: "completed",
           outputText: JSON.stringify({ schemaVersion: 2, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_SCOPE_INVALID", message: "revise" }], reviewPhase: dispatch.COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: input.configuration.repositoryRevision }),
-          observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [] },
+          observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [], executionObservation: { version: "shield.copilot-fury.execution-observation.v1", sdkVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, registeredToolNames: ["read", "search"], sessionAvailableTools: ["custom:read", "custom:search"], sessionExcludedTools: [...input.toolBinding.sessionExcludedTools], customAgentTools: ["read", "search"], modelFacingToolNames: ["read", "search"], runtimeMetadataNames: ["read", "search"], runtimeMetadataDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", artifactMapDigest: input.reviewArtifactMap.digest } },
         };
       },
       async close() {},
@@ -1085,7 +1101,7 @@ test("a dispatch beyond the bounded host wait stays pending and eventually repla
         return {
           state: "completed",
           outputText: JSON.stringify({ schemaVersion: 2, contractVersion: dispatch.COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "REVISE", findings: [{ code: "PLAN_SCOPE_INVALID", message: "revise" }], reviewPhase: dispatch.COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: input.configuration.repositoryRevision }),
-          observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [] },
+          observations: { sessionStartObserved: true, sessionId: input.configuration.sessionId, selectedAgent: "fury", model: input.configuration.model, assistantModel: input.configuration.model, runtimeId: dispatch.COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, executorId: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, loadedSdkPackageVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, sessionProducer: dispatch.COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID, sessionProducerVersion: "1.0.79", modelChangeObserved: false, agentSubstitutionObserved: false, unauthorizedToolOrEffectObserved: false, policyDecisions: [], executionObservation: { version: "shield.copilot-fury.execution-observation.v1", sdkVersion: dispatch.COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION, registeredToolNames: ["read", "search"], sessionAvailableTools: ["custom:read", "custom:search"], sessionExcludedTools: [...input.toolBinding.sessionExcludedTools], customAgentTools: ["read", "search"], modelFacingToolNames: ["read", "search"], runtimeMetadataNames: ["read", "search"], runtimeMetadataDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", artifactMapDigest: input.reviewArtifactMap.digest } },
         };
       },
       async close() {},

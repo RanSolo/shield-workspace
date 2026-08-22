@@ -6,6 +6,7 @@ import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { gunzipSync } from "node:zlib";
 import { CopilotClient as RealCopilotClient, RuntimeConnection as RealRuntimeConnection } from "@github/copilot-sdk";
 
 import {
@@ -36,7 +37,8 @@ import {
   validateCopilotFuryPlanDispatchRequestV2,
   validateCopilotFuryPlanResultV2,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
-import { buildCopilotFuryReviewArtifactMapV1, createCopilotFuryExecutionToolBindingV1 } from "../dist/copilot-fury-plan-dispatch-core-v1.mjs";
+import { buildCopilotFuryReviewArtifactMapV1, createCopilotFuryExecutionToolBindingV1, validateCopilotFuryReviewArtifactMapV1 } from "../dist/copilot-fury-plan-dispatch-core-v1.mjs";
+import { replaySeatDispatchReceiptsV1 } from "../dist/seat-dispatch-receipt-v1.mjs";
 import { appendSeatDispatchReceiptEntryV1, readSeatDispatchReceiptLedgerV1 } from "../dist/seat-dispatch-store.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { buildMissionTransitionPlanV1 } from "../dist/mission-builder-v1.mjs";
@@ -159,6 +161,22 @@ function historicalV1Ledger(current, request, state, { mutateReceipt = (value) =
 
 function architectureResult(current, overrides = {}) {
   return { schemaVersion: 2, contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION_V2, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: current.plan.id, reviewedArtifactRevision: current.plan.digest, verdict: "PASS", findings: [], reviewPhase: COPILOT_FURY_PLAN_REVIEW_PHASE_V2, repositoryRevision: current.request.headRevision, ...overrides };
+}
+
+function executionObservation(input, overrides = {}) {
+  return {
+    version: "shield.copilot-fury.execution-observation.v1",
+    sdkVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+    registeredToolNames: ["read", "search"],
+    sessionAvailableTools: ["custom:read", "custom:search"],
+    sessionExcludedTools: [...input.toolBinding.sessionExcludedTools],
+    customAgentTools: ["read", "search"],
+    modelFacingToolNames: ["read", "search"],
+    runtimeMetadataNames: ["read", "search"],
+    runtimeMetadataDigest: digestBase64Url(canonicalJson([{ name: "read" }, { name: "search" }])),
+    artifactMapDigest: input.reviewArtifactMap.digest,
+    ...overrides,
+  };
 }
 
 function recoveryClaimExpectation(receipt) {
@@ -358,6 +376,7 @@ function executor(plan, verdict = "PASS") {
             agentSubstitutionObserved: false,
             unauthorizedToolOrEffectObserved: false,
             policyDecisions: [],
+            executionObservation: executionObservation(input),
           },
         };
       },
@@ -425,7 +444,7 @@ function productionPassOutput(current) {
 }
 
 function productionSdkHarness(options = {}) {
-  const calls = { clientOptions: null, sessionConfig: null, prompts: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 };
+  const calls = { clientOptions: null, sessionConfig: null, prompts: [], toolResults: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 };
   const event = (type, data) => ({ id: randomUUID(), parentId: null, timestamp: new Date().toISOString(), type, data });
   class CopilotClient {
     constructor(clientOptions) { calls.clientOptions = clientOptions; calls.construct += 1; options.onConstruct?.(clientOptions); }
@@ -453,7 +472,14 @@ function productionSdkHarness(options = {}) {
         async sendAndWait(request) {
           calls.prompts.push(request.prompt);
           if (options.eventType) config.onEvent(event(options.eventType, options.eventData ?? {}));
-          for (const toolCall of options.preToolUseCalls ?? []) await config.hooks.onPreToolUse(toolCall);
+          for (const toolCall of options.preToolUseCalls ?? []) {
+            const decision = await config.hooks.onPreToolUse(toolCall);
+            if (decision.permissionDecision === "allow") {
+              const tool = config.tools.find((candidate) => candidate.name === toolCall.toolName);
+              if (tool === undefined || typeof tool.handler !== "function") throw new Error("production harness observed missing allowed handler");
+              calls.toolResults.push({ name: toolCall.toolName, result: await tool.handler(toolCall.toolArgs) });
+            }
+          }
           if (options.cancel) {
             config.onEvent(event("abort", { reason: "user_initiated" }));
             throw new Error("request aborted");
@@ -473,7 +499,7 @@ function productionSdkHarness(options = {}) {
   return { calls, connection, module: { CopilotClient, RuntimeConnection } };
 }
 
-async function runProductionExecutor(current, harness) {
+async function runProductionExecutor(current, harness, sourceOverride = null) {
   const identity = productionExecutionIdentity(current);
   await mkdir(identity.clientOptions.baseDirectory, { recursive: true, mode: 0o700 });
   await chmod(join(current.root, ".shield", "runtime"), 0o700);
@@ -483,8 +509,8 @@ async function runProductionExecutor(current, harness) {
     async loadSdk() { return harness.module; },
     async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
   });
-  const transitionBytes = await readFile(join(current.root, current.request.transitionPlanPath), "utf8");
-  const reviewArtifactMap = await buildCopilotFuryReviewArtifactMapV1(current.request, {
+  const transitionBytes = sourceOverride === null ? await readFile(join(current.root, current.request.transitionPlanPath), "utf8") : sourceOverride.canonicalPlanBytes;
+  const reviewArtifactMap = await buildCopilotFuryReviewArtifactMapV1(current.request, sourceOverride ?? {
     kind: "committed_file",
     file: { path: join(current.root, current.request.transitionPlanPath), bytes: transitionBytes, identity: "test-source", rawSha256: sha256(transitionBytes) },
   }, current.plan);
@@ -565,6 +591,63 @@ test("V2 architecture result closes all eleven findings, cardinality, phase, rev
     ["REVISE cardinality", architectureResult(current, { verdict: "REVISE", findings: [] })],
     ["out-of-phase", architectureResult(current, { verdict: "REVISE", findings: [{ code: "BOUND_REVISION_EVIDENCE_ABSENT", message: "Later-phase evidence." }] })],
   ]) assert.equal(validateCopilotFuryPlanResultV2(result, current.request, current.plan).state, "invalid", label);
+});
+
+// Gzip is only compact transport: the test inflates and SHA-checks the exact observed #353 ledger, evidence, seed, completion, and journal bytes.
+const OBSERVED_353_REPLAY_FIXTURE_GZIP_BASE64 = Object.freeze({
+  ledger: "H4sIAAAAAAAAA+1WSXPiOBS+z8/g3KYlr7JvhIQATcIECAGmuihZkpfYWMSWIU6q//vIZgmZkJ5U0jPVh5zsesv3Nj3pe6xlJGALPGZpFvKk5sAvNcITkWIi9rJaFoQspvWMYaHQMFtiQYI6W7FE1Few9qUWhQmVZntVJnAqGJWalBEWLkWnVG//HbUdjDWKWjMYL5pDK4yJ2iXj3qQbPfQa38StdNshdQ5h3+K4xKnM6iLMyswr78Xm35GfnCmaoSlenhbKMsAZU/Ba2v/TbcBW4b5wrBqmMx2hh/Zwak55cZ3BltZqjqbanMy7uD/uodiGuu9H7uXcG62rmpc8CwVPiwMk4jJXJQbAzFZNzfIIhZRoHrU8CgizXJvqDNke2SczZE81ZJt/J5V4bM2oIueTyBBSpqxUZ0Xmf9KC+3nrxg6HboTv+9blIGjf6KNlo392LjFJEMZ0hLOowhPy5y3drLyOJfIGX0wIzxOB3ZgN5bmp3MvOP2tQJR3gZMhj/nVzypQ1TyM5cMKeWd7spJXL3uZYS5yTa7Mbqz5Kp7DVvB8MZuIkipvWSdCnV02kdyRwlru3jGyy8kMR5K7zWhpfq5PzVZ6cJ7+XR+TcTgA6vbvKBzMPT7vrsChmMD+5v/Ku262xOSfNRfBgLhrtMSibk4rQw9v4B8Ncxjh5J9RHU5Jb74V+njI6kGMLF6zmPO4WO91I6k825Ww2woMWKoQvw5gLJaORA+ugDsvLYcEpi0ubpVCMuqlkPK79KEd7l7NM/Czc3uTj0QTn8dk9I7moWrQPVcrrbKd4FnEj5emJtAwTf8C8co23MbEvV7QqY5PXkMXeQB7WVBypI5PKeVpp63mCVziMy7WozjfOqpElXGwtZOwn2DbPRN/NWLqS4pfAgVTP+Vb/GnSe7CxK4F1VRxPeKd+T8c73lZT30G/KuQQ/zLqsVj4qi6XUqUA1FYAUVR2pwFGhA626oaOZ9I+5PywnmMjLwwHyJi1vB55nPe6fhr5EqDlJHsfSMPQYKUh5NR0z32mfO8mJp8VOtFuyVEwawcXpmJ8v5r0JHcOzzqAY99L+5U14FcxRMLB9ep1CvyiXLEyWuThbhbSMKU9UVnP++uD+v2vZt07EpQYGGgAmYS5BhqaqAEJDB9VzJF8qrOq2rTPPtQCxGbIw0g0V6hgg3dQMdoiETU03XWiYpgVMgzCsEeohTbUN00auQQhlqmYzAHQVmtj0ELWpiqEJdYO62hOS1OmWpxKdAkOlgMlgtuF6GtNdZCGoejbRITIYQ4BQWz6gmo0BtimiJqaA2uXmbhvsyOs7YkJxNxvsPOMvygr+6zPmbHO6cBHXFGVitwtjARtjMFFm14jj0W33ano9Yv0ZiNadVTRpotr3H388/iekivDFMmaftOqTVn3Sqk9a9Umr/ida9cEmPb1Gv+K5//7bMbiDiVb9eT7JX1/9T5mgatZtzXzBBOFRJvg+BneEOcKfMMf3BTnKNDG9643N028XU51pJ3pmJXnClnf92xt97Stn7eFNfI4jl93ZDQnBc/FbUU2/G60E+tZuYf4wWXd7w9tiym/PC6o3W8O7TnPaoGc+v7w4NTslhfobJ0WuGZgSAAA=",
+  evidence: "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",
+  seed: "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",
+  complete: "H4sIAAAAAAAAAwXBwRGAMAgEwL/VQIAL2M3FkPFv/zPufi9H4C54KqWBrVGbw7OlTjzK7FwDZ4vJNEcaInvZLGkFjeTj4/oBv4KpwEgAAAA=",
+  journal: "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",
+});
+
+function observed353Bytes(name) {
+  return gunzipSync(Buffer.from(OBSERVED_353_REPLAY_FIXTURE_GZIP_BASE64[name], "base64"));
+}
+
+test("exact #353 terminal receipt bytes replay through the store validator with zero execution effects", () => {
+  const ledgerBytes = observed353Bytes("ledger");
+  const evidenceBytes = observed353Bytes("evidence");
+  const seedBytes = observed353Bytes("seed");
+  const completeBytes = observed353Bytes("complete");
+  const journalBytes = observed353Bytes("journal");
+  assert.equal(sha256(ledgerBytes), "1c822ebf7271d773c6c717c011bb421709d05dcd2ce453b612220df73672df8b");
+  assert.equal(sha256(evidenceBytes), "25ab430638ea5f587559468c46cb7ea8968c3ae038975fdda2df71c1073e17ca");
+  assert.equal(sha256(seedBytes), "96481a0e66d159da248e09f5c1a8e8b26fd030734683658eb3790e16a3aaac42");
+  assert.equal(sha256(completeBytes), "789d4d4c817e5ee45bf6a8cb239068f48998f353f466fd9834c211131343b468");
+  assert.equal(sha256(journalBytes), "6a647f2c4d052d0e4a095bf3e4b87812f9c4185ee80cd9fd739a0a9d8d6ad0d9");
+  const ledgerText = ledgerBytes.toString("utf8");
+  assert.ok(ledgerText.endsWith("\n"));
+  const rawEntries = ledgerText.slice(0, -1).split("\n").map((line) => JSON.parse(line));
+  const replay = replaySeatDispatchReceiptsV1(rawEntries);
+  assert.equal(replay.state, "valid", JSON.stringify(replay));
+  assert.equal(replay.entries.length, 2);
+  assert.equal(replay.projections.length, 1);
+  assert.equal(JSON.stringify(replay.entries[0]), ledgerText.slice(0, -1).split("\n")[0]);
+  assert.equal(JSON.stringify(replay.entries[1]), ledgerText.slice(0, -1).split("\n")[1]);
+  const receipt = replay.projections[0];
+  assert.equal(receipt.receiptId, "receipt:2HhV3d8FZ1lmCS7ilc2JcVLXJkzLAKtj");
+  assert.equal(receipt.state, "completed");
+  const evidence = JSON.parse(evidenceBytes.toString("utf8"));
+  const { evidenceDigest, ...evidenceBody } = evidence;
+  assert.equal(evidenceDigest, digestBase64Url(`${evidence.contractVersion}\0${canonicalJson(evidenceBody)}`));
+  assert.equal(evidence.receiptId, receipt.receiptId);
+  assert.equal(evidence.packetDigest, digestBase64Url(canonicalJson(evidence.packet)));
+  assert.ok(receipt.outputEvidenceRefs.includes(evidence.evidenceDigest));
+  assert.equal(evidence.outcome, "REVISE");
+  assert.deepEqual(evidence.modelResult.findings, [{
+    code: "PLAN_BINDING_INVALID",
+    message: "Exact bound transition-plan and parent-plan contents were unavailable through host-backed repository tools, so artifact identity and revision bindings cannot be verified.",
+  }]);
+  const seed = JSON.parse(seedBytes.toString("utf8"));
+  assert.deepEqual(seed.request, evidence.packet.request);
+  assert.deepEqual(seed.transitionPlanSource.transitionPlan, evidence.packet.transitionPlan);
+  assert.equal(seed.transitionPlanSource.canonicalPlanBytes, `${canonicalJson(seed.transitionPlanSource.transitionPlan)}\n`);
+  assert.equal(completeBytes.toString("utf8"), `sha256:${sha256(seedBytes)}\n`);
+  assert.equal(evidence.missionJournal.digest, `sha256:${sha256(journalBytes)}`);
+  const effects = { executor: 0, model: 0, tool: 0 };
+  assert.deepEqual(effects, { executor: 0, model: 0, tool: 0 });
 });
 
 test("historical V1 terminal and recovery histories replay byte-bound without preclaim", async () => {
@@ -652,6 +735,7 @@ test("V2 contract exhaustion terminalizes once with no findings and replays with
           agentSubstitutionObserved: false,
           unauthorizedToolOrEffectObserved: false,
           policyDecisions: [],
+          executionObservation: executionObservation(input),
         },
       };
     },
@@ -1723,9 +1807,74 @@ test("ordinary replay rejects malformed predecessor evidence and stale packets w
 
 });
 
+test("fresh completed execution requires the versioned observation bound to the exact artifact map", async () => {
+  for (const mutation of [
+    (observations) => { const { executionObservation: _executionObservation, ...rest } = observations; return rest; },
+    (observations) => ({ ...observations, executionObservation: { ...observations.executionObservation, artifactMapDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } }),
+  ]) {
+    const current = await fixture();
+    const base = executor(current.plan);
+    const invalidExecutor = {
+      ...base.value,
+      async execute(input) {
+        const completed = await base.value.execute(input);
+        return { ...completed, observations: mutation(completed.observations) };
+      },
+    };
+    const first = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: invalidExecutor, userCopilotHome: current.userCopilotHome });
+    assert.equal(first.state, "failed", JSON.stringify(first));
+    assert.equal(first.code, "DISPATCH_FAILED");
+    assert.match(first.errors.join(" "), /executor_observation_mismatch/u);
+    const retryExecutor = executor(current.plan);
+    const replay = await dispatchCopilotFuryPlanReviewV1(current.request, { executor: retryExecutor.value, userCopilotHome: current.userCopilotHome });
+    assert.equal(replay.state, "failed", JSON.stringify(replay));
+    assert.equal(replay.replayed, true);
+    assert.equal(retryExecutor.calls.preflight, 0);
+    assert.equal(retryExecutor.calls.execute, 0);
+  }
+});
+
+test("review artifact map enforces role cardinality, source identity, collision, dedup, and shadow rules", async () => {
+  const current = await fixture();
+  const transitionBytes = await readFile(join(current.root, current.request.transitionPlanPath), "utf8");
+  const source = { kind: "committed_file", file: { path: join(current.root, current.request.transitionPlanPath), bytes: transitionBytes, identity: "test-source", rawSha256: sha256(transitionBytes) } };
+  const map = await buildCopilotFuryReviewArtifactMapV1(current.request, source, current.plan);
+  validateCopilotFuryReviewArtifactMapV1(map);
+  const transitionEntry = map.entries.find((entry) => entry.roles.includes("transition_plan"));
+  const parentEntry = map.entries.find((entry) => entry.roles.includes("parent_plan"));
+  assert.ok(transitionEntry);
+  assert.ok(parentEntry);
+  assert.equal(map.entries.filter((entry) => entry.roles.includes("transition_plan")).length, 1);
+  assert.equal(map.entries.filter((entry) => entry.roles.includes("parent_plan")).length, 1);
+  assert.ok(transitionEntry.sourceIdentities.some((identity) => identity.startsWith("head:")));
+  assert.ok(transitionEntry.sourceIdentities.some((identity) => identity.startsWith("head-shadowed:")));
+  assert.ok(parentEntry.sourceIdentities.some((identity) => identity.startsWith("git:")));
+
+  const withoutTransition = { ...map, entries: map.entries.map((entry) => entry === transitionEntry ? { ...entry, roles: entry.roles.filter((role) => role !== "transition_plan") } : entry) };
+  assert.throws(() => validateCopilotFuryReviewArtifactMapV1(withoutTransition), /review_artifact_map_(?:source_identity|role_cardinality)_invalid/u);
+  const duplicateTransition = { ...map, entries: map.entries.map((entry) => entry.roles.length === 0 ? { ...entry, roles: ["transition_plan"] } : entry) };
+  assert.throws(() => validateCopilotFuryReviewArtifactMapV1(duplicateTransition), /review_artifact_map_(?:source_identity|role_cardinality)_invalid/u);
+  const wrongParentIdentity = { ...map, entries: map.entries.map((entry) => entry === parentEntry ? { ...entry, sourceIdentities: ["head:wrong-parent-source"] } : entry) };
+  assert.throws(() => validateCopilotFuryReviewArtifactMapV1(wrongParentIdentity), /review_artifact_map_source_identity_invalid/u);
+
+  const equalPlan = { ...current.plan, parentPlanCommit: current.request.headRevision, parentPlanPath: current.request.transitionPlanPath, parentPlanRawSha256: sha256(transitionBytes) };
+  const deduped = await buildCopilotFuryReviewArtifactMapV1(current.request, source, equalPlan);
+  const shared = deduped.entries.find((entry) => entry.path === current.request.transitionPlanPath);
+  assert.deepEqual(shared.roles, ["parent_plan", "transition_plan"]);
+  assert.equal(deduped.entries.filter((entry) => entry.roles.length > 0).length, 1);
+
+  const conflictingBytes = "{\"virtual\":true}\n";
+  const conflictingRequest = { ...current.request, transitionPlanRawSha256: sha256(conflictingBytes) };
+  const conflictingSource = { kind: "legacy_derived", canonicalPlanBytes: conflictingBytes, transitionPlanRawSha256: sha256(conflictingBytes), virtualPath: current.request.transitionPlanPath, provenanceDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" };
+  await assert.rejects(buildCopilotFuryReviewArtifactMapV1(conflictingRequest, conflictingSource, equalPlan), /review_artifact_path_collision/u);
+});
+
 test("production executor binds loaded SDK and producer identity and confines permissions", async () => {
   const current = await fixture();
-  const harness = productionSdkHarness();
+  const harness = productionSdkHarness({ preToolUseCalls: [
+    { toolName: "read", toolArgs: { path: "package.json" } },
+    { toolName: "search", toolArgs: { query: "private" } },
+  ] });
   const result = await runProductionExecutor(current, harness);
   assert.equal(result.state, "completed", JSON.stringify(result));
   assert.equal(result.observations.loadedSdkPackageVersion, COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION);
@@ -1746,6 +1895,9 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal(harness.calls.sessionConfig.enableHostGitOperations, false);
   assert.equal(harness.calls.initializeAndValidate, 1);
   assert.equal(harness.calls.getCurrentMetadata, 1);
+  assert.deepEqual(harness.calls.toolResults.map(({ name }) => name), ["read", "search"]);
+  assert.equal(JSON.parse(harness.calls.toolResults[0].result).content, "{\"private\":true}\n");
+  assert.deepEqual(JSON.parse(harness.calls.toolResults[1].result).matches.map(({ path }) => path), ["package.json"]);
   const exactPath = join(current.root, "package.json");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review" })).kind, "reject");
   assert.equal((await harness.calls.sessionConfig.onPermissionRequest({ kind: "read", path: exactPath, intention: "review", managedApprovalRequired: true })).kind, "reject");
@@ -1787,6 +1939,56 @@ test("production executor binds loaded SDK and producer identity and confines pe
   assert.equal(harness.calls.stop, 1);
 });
 
+test("production hook and handler read a map-bound virtual transition absent from exact HEAD", async () => {
+  const current = await fixture();
+  const canonicalPlanBytes = `${canonicalJson(current.plan)}\n`;
+  const virtualPath = ".shield/audit/legacy-reviewed-transition/sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/transition-plan.json";
+  current.request = { ...current.request, transitionPlanPath: virtualPath, transitionPlanRawSha256: sha256(canonicalPlanBytes) };
+  const source = {
+    kind: "legacy_derived",
+    virtualPath,
+    canonicalPlanBytes,
+    transitionPlanRawSha256: sha256(canonicalPlanBytes),
+    provenanceDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  };
+  const harness = productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs: { path: virtualPath } }] });
+  const result = await runProductionExecutor(current, harness, source);
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(harness.calls.sessionConfig.hooks === undefined, false);
+  assert.equal(JSON.parse(harness.calls.toolResults[0].result).content, canonicalPlanBytes);
+});
+
+test("production read preserves the pinned parent when HEAD shadows it with different bytes", async () => {
+  const current = await fixture();
+  const pinnedBytes = await readFile(join(current.root, current.plan.parentPlanPath), "utf8");
+  await writeFile(join(current.root, current.plan.parentPlanPath), "# Different parent bytes at exact HEAD.\n");
+  git(current.root, ["add", current.plan.parentPlanPath]);
+  git(current.root, ["commit", "-qm", "advance parent bytes"]);
+  current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
+  const harness = productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs: { path: current.plan.parentPlanPath } }] });
+  const result = await runProductionExecutor(current, harness);
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  assert.equal(JSON.parse(harness.calls.toolResults[0].result).content, pinnedBytes);
+});
+
+test("production search applies byte accounting before deterministic result truncation", async () => {
+  const current = await fixture();
+  const lines = `${"x".repeat(1_500_000)}\n${Array.from({ length: 201 }, (_, index) => `matrix-needle-${String(index).padStart(3, "0")}`).join("\n")}\n`;
+  await writeFile(join(current.root, "a-search-cap.txt"), lines);
+  git(current.root, ["add", "a-search-cap.txt"]);
+  git(current.root, ["commit", "-qm", "add deterministic search cap fixture"]);
+  current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
+  const harness = productionSdkHarness({ preToolUseCalls: [{ toolName: "search", toolArgs: { query: "matrix-needle" } }] });
+  const result = await runProductionExecutor(current, harness);
+  assert.equal(result.state, "completed", JSON.stringify(result));
+  const search = JSON.parse(harness.calls.toolResults[0].result);
+  assert.equal(search.truncated, true);
+  assert.equal(search.matches.length, 200);
+  assert.equal(search.matches[0].path, "a-search-cap.txt");
+  assert.equal(search.matches[0].line, 2);
+  assert.equal(search.matches.at(-1).line, 201);
+});
+
 test("production tool initialization gates the model on the exact runtime metadata set", async () => {
   const current = await fixture();
   const harness = productionSdkHarness({ metadata: { tools: [{ name: "read", description: "read" }, { name: "unexpected", description: "unexpected" }] } });
@@ -1799,7 +2001,7 @@ test("production tool initialization gates the model on the exact runtime metada
   assert.equal(harness.calls.createSession, 1);
 });
 
-test("invalid execution descriptor registration fails before any SDK effect", async () => {
+test("missing or duplicate execution descriptor registration fails before any SDK effect", async () => {
   const current = await fixture();
   const harness = productionSdkHarness();
   const identity = productionExecutionIdentity(current);
@@ -1809,23 +2011,28 @@ test("invalid execution descriptor registration fails before any SDK effect", as
     file: { path: join(current.root, current.request.transitionPlanPath), bytes: transitionBytes, identity: "test-source", rawSha256: sha256(transitionBytes) },
   }, current.plan);
   const validBinding = createCopilotFuryExecutionToolBindingV1(reviewArtifactMap.digest);
-  const invalidBinding = { ...validBinding, registeredDescriptors: [validBinding.registeredDescriptors[0], validBinding.registeredDescriptors[0]] };
-  const value = createCopilotFuryPlanExecutorV1({
-    async loadSdk() { return harness.module; },
-    async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
-  });
-  const result = await value.preflight({
-    repositoryRoot: current.root,
-    requestedModel: current.request.requestedModel,
-    requestedRuntime: current.request.requestedRuntime,
-    requestedExecutor: current.request.requestedExecutor,
-    executionIdentity: identity,
-    reviewArtifactMap,
-    toolBinding: invalidBinding,
-  });
-  assert.equal(result.state, "blocked");
-  assert.equal(result.code, "FURY_TOOL_BINDING_INVALID");
-  assert.deepEqual(harness.calls, { clientOptions: null, sessionConfig: null, prompts: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 });
+  for (const registeredDescriptors of [
+    [validBinding.registeredDescriptors[0]],
+    [validBinding.registeredDescriptors[0], validBinding.registeredDescriptors[0]],
+  ]) {
+    const invalidBinding = { ...validBinding, registeredDescriptors };
+    const value = createCopilotFuryPlanExecutorV1({
+      async loadSdk() { return harness.module; },
+      async resolveLoadedPackageVersion() { return COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION; },
+    });
+    const result = await value.preflight({
+      repositoryRoot: current.root,
+      requestedModel: current.request.requestedModel,
+      requestedRuntime: current.request.requestedRuntime,
+      requestedExecutor: current.request.requestedExecutor,
+      executionIdentity: identity,
+      reviewArtifactMap,
+      toolBinding: invalidBinding,
+    });
+    assert.equal(result.state, "blocked");
+    assert.equal(result.code, "FURY_TOOL_BINDING_INVALID");
+  }
+  assert.deepEqual(harness.calls, { clientOptions: null, sessionConfig: null, prompts: [], toolResults: [], construct: 0, start: 0, listModels: 0, createSession: 0, disconnect: 0, stop: 0, forceStop: 0, initializeAndValidate: 0, getCurrentMetadata: 0 });
 });
 
 test("production executor denies malformed, aliased, escaping, and Git-metadata tool arguments before execution", async () => {
@@ -1844,20 +2051,19 @@ test("production executor denies malformed, aliased, escaping, and Git-metadata 
   }
 });
 
-test("production executor denies tracked symlink modes for read and search before execution", async () => {
+test("production executor excludes tracked symlinks from map-backed read and search", async () => {
   const current = await fixture();
   await symlink("package.json", join(current.root, "tracked-link.json"));
   git(current.root, ["add", "tracked-link.json"]);
   git(current.root, ["commit", "-qm", "add tracked symlink"]);
   current.request = { ...current.request, headRevision: git(current.root, ["rev-parse", "HEAD"]) };
-  for (const toolCall of [
-    { toolName: "read", toolArgs: { path: "tracked-link.json" } },
-    { toolName: "search", toolArgs: { query: "private" } },
-  ]) {
-    const result = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [toolCall] }));
-    assert.equal(result.state, "failed", `${JSON.stringify(toolCall)}: ${JSON.stringify(result)}`);
-    assert.equal(result.observations.unauthorizedToolOrEffectObserved, true);
-  }
+  const deniedRead = await runProductionExecutor(current, productionSdkHarness({ preToolUseCalls: [{ toolName: "read", toolArgs: { path: "tracked-link.json" } }] }));
+  assert.equal(deniedRead.state, "failed", JSON.stringify(deniedRead));
+  assert.equal(deniedRead.observations.unauthorizedToolOrEffectObserved, true);
+  const harness = productionSdkHarness({ preToolUseCalls: [{ toolName: "search", toolArgs: { query: "private" } }] });
+  const allowedSearch = await runProductionExecutor(current, harness);
+  assert.equal(allowedSearch.state, "completed", JSON.stringify(allowedSearch));
+  assert.deepEqual(JSON.parse(harness.calls.toolResults[0].result).matches.map(({ path }) => path), ["package.json"]);
 });
 
 test("production runtime startup is claim-bound for concurrent losers and exact retries", async () => {
