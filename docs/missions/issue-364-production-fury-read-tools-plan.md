@@ -71,7 +71,7 @@ Make production Fury's two advertised tools genuinely available and immutable. `
 
 - `npm exec nx run @shield/team-system:build`
 - `npm exec nx run @shield/team-system:test:copilot-fury-plan-dispatch`
-- `npm exec nx exec --project=@shield/team-system -- node --test packages/shield-team-system/tests/copilot-fury-reviewed-transition-host-v1.test.mjs packages/shield-team-system/tests/legacy-reviewed-transition-v1.test.mjs packages/shield-team-system/tests/package-surface.test.mjs packages/shield-team-system/tests/supervised-cli.test.mjs`
+- `npm exec nx run @shield/team-system:test`
 - The focused fixtures must exercise SDK 1.0.11 `initializeAndValidate()`/`getCurrentMetadata()` with the exact production-built registry, source-qualified filter survival, missing/duplicate handler preclaim with zero effects, virtual/pinned/committed reads, equal/conflicting collisions, deterministic search/truncation, and historical no-invocation replay.
 - `npm exec nx affected -t build test --base=cbeb2c50ae92637fcd1dc3fd7fd0ce7b9d4e89fc --head=<exact-candidate-sha> --exclude=@shield/multiband --nxBail`
 - `git diff --check cbeb2c50ae92637fcd1dc3fd7fd0ce7b9d4e89fc..<exact-candidate-sha>`
