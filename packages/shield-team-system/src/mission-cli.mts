@@ -163,6 +163,7 @@ import {
 } from "./copilot-fury-reviewed-transition-host-v1.mjs";
 import {
   continueLegacyReviewedTransitionV1,
+  preflightLegacyProtectedGraphAbsenceV1,
   type LegacyReviewedTransitionDependenciesV1,
 } from "./legacy-reviewed-transition-v1.mjs";
 import {
@@ -1660,20 +1661,108 @@ async function guidedReviewChoiceFromOptions(options: ParsedOptions): Promise<"y
   }
 }
 
+type PrepareNextDependenciesV1 = Readonly<{
+  prepareSession?: typeof prepareMissionTransitionSessionV1;
+  continueLegacy?: typeof continueLegacyReviewedTransitionV1;
+}>;
+
+function renderLegacyContinuationResult(result: Awaited<ReturnType<typeof continueLegacyReviewedTransitionV1>>): string {
+  return result.state === "materialized" || result.state === "already_materialized"
+    ? `state: ${result.state}\ngraphId: ${result.graphId}`
+    : result.state === "completed"
+      ? [
+        `state: ${result.state}`,
+        `disposition: ${result.disposition}`,
+        ...(result.receiptId === null ? [] : [`receiptId: ${result.receiptId}`]),
+      ].join("\n")
+      : [
+        `state: ${result.state}`,
+        ...("code" in result ? [`code: ${result.code}`] : []),
+        ...("errors" in result ? [`errors: ${result.errors.join(" ")}`] : []),
+      ].join("\n");
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function outputPreparationBlocked(
+  result: Readonly<{ readonly state: string; readonly code?: string; readonly reasonCode?: string; readonly errors?: readonly string[] }>,
+  json: boolean,
+): void {
+  if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  else process.stderr.write(`Preparation blocked — ${result.code ?? result.reasonCode ?? result.state}: ${(result.errors ?? []).join(" ")}\n`);
+}
+
 async function prepareNext(args: string[], behavior: Readonly<{
   suppressPublicationSuccessOutput?: boolean;
   finalPublicationDecisionOutput?: boolean;
-}> = {}): Promise<number> {
-  const options = parseOptions(args, ["--root", "--mission-id", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
+}> = {}, dependencies: PrepareNextDependenciesV1 = {}): Promise<number> {
+  const options = parseOptions(args, ["--root", "--mission-id", "--fury-model", "--guided-review-choice", "--guided-review-context", "--guided-review-playbook", "--guided-review-session",
     "--guided-review-response", "--guided-review-question-digest", "--guided-review-answer", "--guided-review-finding", "--guided-review-disposition",
     "--guided-review-observation", "--guided-review-condition"], ["--json", "--human", "--passcode-stdin"]);
   if (options.flags.has("--json") && options.flags.has("--human")) throw new MissionCliError("--human and --json are mutually exclusive.");
   const root = await exactRoot(options.values.get("--root"), true);
   const missionId = required(options, "--mission-id");
-  const result = await prepareMissionTransitionSessionV1(
+  const prepareSession = dependencies.prepareSession ?? prepareMissionTransitionSessionV1;
+  let result = await prepareSession(
     { missionId, repositoryRoot: root },
     { observePublicationRepository: observePublicationRepositoryV1 },
   );
+  if (result.state === "blocked" && result.reasonCode === "protected_evidence_mismatch") {
+    const preflight = await preflightLegacyProtectedGraphAbsenceV1({ missionId, repositoryRoot: root });
+    if (preflight.state !== "absent") {
+      if (options.flags.has("--json")) output(preflight, true, renderLegacyContinuationResult(preflight));
+      else process.stderr.write(`${renderLegacyContinuationResult(preflight)}\n`);
+      return 1;
+    }
+    const furyModel = options.values.get("--fury-model");
+    if (furyModel === undefined) {
+      const nextAction = {
+        authority: "none" as const,
+        owner: "hill" as const,
+        commandId: "mission.prepare-next" as const,
+        requiredOption: "--fury-model" as const,
+        humanGate: false as const,
+      };
+      const missingModel = { schemaVersion: 1 as const, state: "blocked" as const, reasonCode: "legacy_fury_model_required" as const, missionId, nextAction };
+      const missingModelHuman = [
+        `Preparation blocked — ${result.reasonCode}: ${result.errors.join(" ")}`,
+        `Next action: shield mission prepare-next --mission-id ${shellQuote(missionId)} --root ${shellQuote(root)} --fury-model ${shellQuote("<model-id>")}`,
+      ].join("\n");
+      if (options.flags.has("--json")) output(missingModel, true, missingModelHuman);
+      else process.stderr.write(`${missingModelHuman}\n`);
+      return 1;
+    }
+    let legacyResult: Awaited<ReturnType<typeof continueLegacyReviewedTransitionV1>>;
+    try {
+      legacyResult = await (dependencies.continueLegacy ?? continueLegacyReviewedTransitionV1)({
+        missionId,
+        repositoryRoot: root,
+        furyModel,
+      });
+    } catch (error) {
+      const failed = {
+        schemaVersion: 1 as const,
+        state: "blocked" as const,
+        reasonCode: "legacy_continuation_failed" as const,
+        missionId,
+        errors: [error instanceof Error ? error.message : String(error)],
+      };
+      if (options.flags.has("--json")) output(failed, true, `Preparation blocked — ${failed.reasonCode}: ${failed.errors.join(" ")}`);
+      else process.stderr.write(`Preparation blocked — ${failed.reasonCode}: ${failed.errors.join(" ")}\n`);
+      return 1;
+    }
+    if (legacyResult.state !== "materialized" && legacyResult.state !== "already_materialized") {
+      if (options.flags.has("--json")) output(legacyResult, true, renderLegacyContinuationResult(legacyResult));
+      else process.stderr.write(`${renderLegacyContinuationResult(legacyResult)}\n`);
+      return 1;
+    }
+    result = await prepareSession(
+      { missionId, repositoryRoot: root },
+      { observePublicationRepository: observePublicationRepositoryV1 },
+    );
+  }
   if (behavior.finalPublicationDecisionOutput === true && result.state !== "publication_ready") {
     const replayable = result.state === "publication_already_authorized";
     outputFinalPublicationAuthorizationProgressV1(
@@ -1685,8 +1774,7 @@ async function prepareNext(args: string[], behavior: Readonly<{
     return replayable ? 0 : 1;
   }
   if (result.state === "blocked") {
-    if (options.flags.has("--json")) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    else process.stderr.write(`Preparation blocked — ${result.reasonCode}: ${result.errors.join(" ")}\n`);
+    outputPreparationBlocked(result, options.flags.has("--json"));
     return 1;
   }
   if (result.state === "already_authorized") {
@@ -2585,7 +2673,7 @@ export function missionUsage(): string {
     "  shield mission prepare-reviewed-transition --mission-id <id> --transition-plan <file> --fury-model <model-id> --root <path> [--json]",
     "  shield mission continue-legacy-reviewed-transition --mission-id <id> --fury-model <model-id> --root <path> [--json]",
     "  shield mission record-reviewed-transition --transition-plan <file> --review-artifact <file> --dispatch-receipt-id <id> --mission-id <id> [--root <path>]",
-    "  shield mission prepare-next --mission-id <id> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--root <path>] [--passcode-stdin] [--human|--json]",
+    "  shield mission prepare-next --mission-id <id> [--root <path>] [--fury-model <model-id>] [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest> [--guided-review-finding <text>|--guided-review-condition <text>]] [--passcode-stdin] [--human|--json]",
     "  shield mission publish-reviewed --mission-id <id> --base-branch <branch> [--guided-review-choice yes|no|cancel] [--guided-review-context <context.json>] [--guided-review-response <raw> --guided-review-question-digest <sha256:digest>] [--root <path>] [--passcode-stdin] [--human|--json]",
     "  shield mission authorize-daisy-coordination --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
     "  shield mission publication-authorize --mission-id <id> --input <file> [--root <path>] [--passcode-stdin] [--json]",
@@ -2610,6 +2698,7 @@ export async function runMissionCli(
     prepareReviewedMissionTransition?: typeof prepareReviewedMissionTransitionV1;
     legacyReviewedTransition?: LegacyReviewedTransitionDependenciesV1;
     continueLegacyReviewedTransition?: typeof continueLegacyReviewedTransitionV1;
+    prepareSession?: typeof prepareMissionTransitionSessionV1;
   }> = {},
 ): Promise<number> {
   const [group, action, ...rest] = args;
@@ -2625,7 +2714,10 @@ export async function runMissionCli(
     if (action === "continue-legacy-reviewed-transition") return continueLegacyReviewedTransition(
       rest, dependencies.legacyReviewedTransition, dependencies.continueLegacyReviewedTransition,
     );
-    if (action === "prepare-next") return prepareNext(rest);
+    if (action === "prepare-next") return prepareNext(rest, {}, {
+      ...(dependencies.prepareSession === undefined ? {} : { prepareSession: dependencies.prepareSession }),
+      ...(dependencies.continueLegacyReviewedTransition === undefined ? {} : { continueLegacy: dependencies.continueLegacyReviewedTransition }),
+    });
     if (action === "publish-reviewed") return publishReviewed(rest);
     if (action === "authorize-daisy-coordination") return authorizeDaisyCoordination(rest);
     if (action === "publication-authorize") return publicationAuthorize(rest);

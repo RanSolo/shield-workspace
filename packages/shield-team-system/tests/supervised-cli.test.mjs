@@ -20,7 +20,8 @@ import {
   MISSION_130_JOURNAL_DIGEST,
   replayProfileAwareMissionJournal,
 } from "../dist/profile-aware-mission-v1.mjs";
-import { appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
+import { appendProfileAwareMissionEntriesAtomicV1, appendProfileAwareMissionEntryV1 } from "../dist/mission-store.mjs";
+import { executeAuthorizeWheelsUpV1 } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import {
   assertPublicationAuthorizationFreshness,
   assertRepositoryConfigFresh,
@@ -65,6 +66,7 @@ import {
   COPILOT_FURY_PLAN_DISPATCH_STOP_CONDITIONS,
   COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
 } from "../dist/copilot-fury-plan-dispatch-v1.mjs";
+import { prepareOrRefreshWorktreeStateV2, prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "cli.mjs");
@@ -79,6 +81,15 @@ test("publish-reviewed final publication command has a closed base assertion and
     runMissionCli(["mission", "publish-reviewed", "--mission-id", "mission:closed", "--base-branch", "main", "--authority", "caller", "--root", packageRoot]),
     /Unknown option: --authority/u,
   );
+  await assert.rejects(
+    runMissionCli(["mission", "publish-reviewed", "--mission-id", "mission:closed", "--base-branch", "main", "--fury-model", "model:fury", "--root", packageRoot]),
+    /Unknown option: --fury-model/u,
+  );
+  const source = await readFile(new URL("../src/mission-cli.mts", import.meta.url), "utf8");
+  const start = source.indexOf("async function publishReviewed");
+  const end = source.indexOf("\nfunction canonicalDigest", start);
+  const consumer = source.slice(start, end);
+  assert.doesNotMatch(consumer, /PrepareNextDependenciesV1|--fury-model|continueLegacy/u);
 });
 
 test("publish-reviewed decision rendering excludes Packet C internals in human and machine modes", () => {
@@ -464,6 +475,173 @@ function runGit(root, args) {
   const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8", env: { ...process.env, LANG: "C", LC_ALL: "C" } });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim();
+}
+
+const LEGACY_PUBLICATION_FURY_CARD = `---
+name: Fury
+description: Review exact SHIELD plans and revisions for technical conformance.
+argument-hint: Provide the reviewed artifact and exact revision.
+target: vscode
+user-invocable: true
+disable-model-invocation: true
+tools: [read, search]
+---
+
+Review only the exact plan and return authority none.
+`;
+
+async function legacyPublicationCliFixture() {
+  const parent = await realpath(await mkdtemp(join(tmpdir(), "shield-issue-349-publication-cli-")));
+  const source = join(parent, "source");
+  const root = join(parent, "lane");
+  await mkdir(source);
+  runGit(source, ["init", "--quiet", "-b", "main"]);
+  runGit(source, ["config", "user.email", "shield@example.invalid"]);
+  runGit(source, ["config", "user.name", "SHIELD Fixture"]);
+  runGit(source, ["remote", "add", "origin", "git@github.com:RanSolo/issue-349-publication-fixture.git"]);
+  await mkdir(join(source, ".github", "agents"), { recursive: true });
+  await writeFile(join(source, ".gitignore"), ".shield/\n");
+  await writeFile(join(source, ".github", "agents", "fury.agent.md"), LEGACY_PUBLICATION_FURY_CARD);
+  await writeFile(join(source, "package.json"), "{\"private\":true}\n");
+  await writeFile(join(source, "outside-scope.ts"), "export const implemented = true;\n");
+  runGit(source, ["add", ".gitignore", ".github/agents/fury.agent.md", "package.json", "outside-scope.ts"]);
+  runGit(source, ["commit", "--quiet", "-m", "issue 349 legacy base"]);
+  const baseRevision = runGit(source, ["rev-parse", "HEAD"]);
+  runGit(source, ["worktree", "add", "--quiet", "-b", "issue-349-lane", root, "HEAD"]);
+
+  const coulson = authority("coulson");
+  const fitz = authority("fitz");
+  const config = createShieldConfig({
+    repositoryId: "RanSolo/issue-349-publication-fixture",
+    coulsonBindingRef: coulson.binding.signingKeyRef,
+    fitzBindingRef: fitz.binding.signingKeyRef,
+  });
+  await mkdir(join(source, ".shield"));
+  await writeFile(join(source, ".shield", "config.json"), formatShieldConfig(config));
+  await writeFile(join(source, ".shield", "trusted-human-bindings.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    bindings: [coulson.binding, fitz.binding],
+  }, null, 2)}\n`);
+  const prepared = await prepareWorktreeStateV1({ sourceRoot: await realpath(source), destinationRoot: await realpath(root) });
+  assert.equal(prepared.state, "ready", JSON.stringify(prepared));
+
+  const missionId = "mission:issue-349-publication-gate";
+  const subjectId = "github:RanSolo/issue-349-publication-fixture/issue/349";
+  const brief = createProfileAwareMissionBrief({
+    schemaVersion: 2,
+    missionId,
+    objective: "Continue the exact reviewed implementation into the existing publication gate.",
+    subjectId,
+    riskFlags: {
+      production: false, destructive: false, migration: false, credentialsOrSecurity: false,
+      externalCommunication: false, merge: false, deploy: false, release: false, hillHighRisk: false,
+    },
+    participants: ["coulson", "fitz", "fury", "hill", "may"].map((seatId) => ({ seatId })),
+    activatedModes: [],
+    requireSimmons: false,
+    createdAt: { value: "2026-08-19T12:00:00.000Z", provenance: "hostTrusted" },
+    profileId: "standard",
+    profileVersion: 1,
+    requiredExecutionGateRoleIds: ["coulson"],
+    requiredFinalAcceptanceGateRoleIds: ["coulson"],
+    predecessorMissionId: "mission:issue-130",
+    predecessorJournalDigest: MISSION_130_JOURNAL_DIGEST,
+  });
+  const begun = createProfileAwareMissionBegunEntry(brief, [coulson.binding, fitz.binding]);
+  await mkdir(dirname(journalPath(root, missionId)), { recursive: true });
+  await writeFile(journalPath(root, missionId), `${JSON.stringify(begun)}\n`);
+
+  const planPath = "docs/missions/issue-349-approved-plan.md";
+  await mkdir(join(root, "docs", "missions"), { recursive: true });
+  await writeFile(join(root, planPath), "# Human-reviewed Issue #349 plan\n\nContinue through publication preparation.\n");
+  const approvedRelativePaths = [".codex/agents/mack.toml", ".codex/config.toml", planPath, "src/implementation.mts"].sort((left, right) => left.localeCompare(right));
+  runGit(root, ["add", "docs/missions"]);
+  runGit(root, ["commit", "--quiet", "-m", "approved issue 349 legacy plan"]);
+
+  const originalWrite = process.stdout.write;
+  process.stdout.write = () => true;
+  let status;
+  try {
+    status = await executeAuthorizeWheelsUpV1({
+      root: await realpath(root),
+      config,
+      missionId,
+      intent: {
+        baseRevision,
+        modelId: "model:may-issue-349",
+        reasoningRuntimeId: "runtime:issue-349-reasoner",
+        toolExecutorId: "executor:issue-349-tool",
+        approvedRelativePaths,
+        approvedActionIds: ["action:issue-349:implement"],
+        approvedEffectClasses: ["behavioral_implementation", "verification"],
+        approvedEffectKeys: ["effect:issue-349:implementation"],
+        approvedCapabilities: ["capability:edit"],
+        validationCommandIds: ["validation:issue-349:test"],
+        publicationPaths: [planPath],
+      },
+      timestamp: { value: "2026-08-19T12:01:00.000Z", provenance: "hostTrusted" },
+      humanMode: false,
+      promptOutput: { write() {} },
+      dependencies: {
+        renderDecision: () => "",
+        readPasscode: async () => "test-only",
+        signBatch: async (_binding, _passcode, payloads) => payloads.map((payload) => sign(null, Buffer.from(canonicalJson(payload)), coulson.privateKey).toString("base64")),
+        appendBatchAtomic: appendProfileAwareMissionEntriesAtomicV1,
+      },
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.equal(status, 0);
+  await mkdir(join(root, ".codex", "agents"), { recursive: true });
+  await writeFile(join(root, ".codex", "agents", "mack.toml"), 'name = "mack"\n');
+  await writeFile(join(root, ".codex", "config.toml"), 'reviewer = "mack"\n');
+  await mkdir(join(root, "src"));
+  await writeFile(join(root, "src", "implementation.mts"), "export const implemented = true;\n");
+  runGit(root, ["add", ".codex", "src/implementation.mts"]);
+  runGit(root, ["commit", "--quiet", "-m", "authorized issue 349 implementation"]);
+  const refreshed = await prepareOrRefreshWorktreeStateV2({ sourceRoot: await realpath(source), destinationRoot: await realpath(root) });
+  assert.equal(refreshed.state, "refreshed", JSON.stringify(refreshed));
+  return { root: await realpath(root), missionId, coulson };
+}
+
+async function fakeCopilotSdkNodeArgs(root) {
+  const sdkRoot = join(root, ".shield", "tmp", "fake-copilot-sdk");
+  const sdkEntry = join(sdkRoot, "dist", "index.mjs");
+  const register = join(sdkRoot, "register.mjs");
+  await mkdir(dirname(sdkEntry), { recursive: true });
+  await writeFile(join(sdkRoot, "package.json"), `${JSON.stringify({ name: "@github/copilot-sdk", version: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION })}\n`);
+  await writeFile(sdkEntry, `
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+const event = (type, data) => ({ id: \`event:\${type}\`, parentId: null, timestamp: new Date().toISOString(), type, data });
+export class CopilotClient {
+  async start() {}
+  async listModels() { return [{ id: "model:fury-issue-349" }]; }
+  async createSession(config) {
+    config.onEvent(event("session.start", { sessionId: config.sessionId, selectedModel: config.model, producer: ${JSON.stringify(COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID)}, copilotVersion: "1.0.79" }));
+    return {
+      rpc: { agent: { async getCurrent() { return { agent: { name: "fury" } }; } }, model: { async getCurrent() { return { modelId: config.model }; } } },
+      async sendAndWait() {
+        const seedRoot = join(process.cwd(), ".shield", "audit", "legacy-reviewed-transition");
+        const directories = await readdir(seedRoot);
+        const seed = JSON.parse(await readFile(join(seedRoot, directories[0], "derivation-seed.json"), "utf8"));
+        const plan = seed.carrier.transitionPlan;
+        const content = JSON.stringify({ schemaVersion: 1, contractVersion: ${JSON.stringify(COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION)}, authority: "none", reviewerSeatId: "fury", reviewedArtifactId: plan.id, reviewedArtifactRevision: plan.digest, verdict: "PASS", findings: [] });
+        const message = event("assistant.message", { content, model: config.model });
+        config.onEvent(message);
+        return message;
+      },
+      async disconnect() {},
+    };
+  }
+  async stop() {}
+  async forceStop() {}
+}
+export const RuntimeConnection = { forStdio() { return { kind: "stdio", path: undefined, args: undefined, env: undefined }; } };
+`);
+  await writeFile(register, `import { registerHooks } from "node:module"; registerHooks({ resolve(specifier, context, nextResolve) { if (specifier === "@github/copilot-sdk") return { url: ${JSON.stringify(new URL(`file://${sdkEntry}`).href)}, shortCircuit: true }; return nextResolve(specifier, context); } });\n`);
+  return ["--import", register];
 }
 
 function evidenceGovernanceTarget(decision, resumeState = "approved") {
@@ -1832,11 +2010,235 @@ test("prepare-next exhaustively consumes the exported transition result without 
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const consumer = source.slice(start, end);
-  assert.match(consumer, /const result = await prepareMissionTransitionSessionV1\([^;]+\);/u);
+  assert.match(consumer, /const prepareSession = dependencies\.prepareSession \?\? prepareMissionTransitionSessionV1;/u);
+  assert.match(consumer, /let result = await prepareSession\([^;]+\);/u);
   assert.doesNotMatch(consumer, /prepareMissionTransitionSessionV1\([^;]+\) as/u);
   assert.match(consumer, /const ready: Extract<ResolvePreparedMissionTransitionResultV1, \{ state: "ready" \}> = result;/u);
   assert.match(consumer, /result\.state === "runtime_binding_ready"/u);
   assert.match(consumer, /result\.state === "runtime_binding_already_authorized"/u);
+});
+
+test("prepare-next composes the guarded legacy continuation with one preparation replay", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-prepare-next-composition-")));
+  const missionId = "mission:issue-362-composition";
+  const first = { state: "blocked", missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] };
+  const second = { state: "blocked", missionId, reasonCode: "repository_observation_stale", errors: ["second preparation blocked"] };
+  const calls = [];
+  let preparationCalls = 0;
+  const stdout = [];
+  const stderr = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  try {
+    const missingModelStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--json",
+    ], {
+      prepareSession: async () => first,
+      continueLegacyReviewedTransition: async () => { throw new Error("must not run without Fury model"); },
+    });
+    assert.equal(missingModelStatus, 1);
+    assert.deepEqual(JSON.parse(stdout.join("")), {
+      schemaVersion: 1,
+      state: "blocked",
+      reasonCode: "legacy_fury_model_required",
+      missionId,
+      nextAction: {
+        authority: "none",
+        owner: "hill",
+        commandId: "mission.prepare-next",
+        requiredOption: "--fury-model",
+        humanGate: false,
+      },
+    });
+    assert.equal(stderr.join(""), "");
+    stdout.length = 0;
+
+    const status = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury", "--json",
+    ], {
+      prepareSession: async () => {
+        preparationCalls += 1;
+        return preparationCalls === 1 ? first : second;
+      },
+      continueLegacyReviewedTransition: async (input) => {
+        calls.push(input);
+        return { state: "materialized", graphPath: "graph", graphId: "graph:id", graphDigest: "sha256:graph" };
+      },
+    });
+    assert.equal(status, 1);
+    assert.deepEqual(calls, [{ missionId, repositoryRoot: root, furyModel: "model:fury" }]);
+    assert.equal(preparationCalls, 2);
+    assert.deepEqual(JSON.parse(stdout.join("")), second);
+
+    stdout.length = 0;
+    stderr.length = 0;
+    let passPreparationCalls = 0;
+    const passStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury", "--json",
+    ], {
+      prepareSession: async () => { passPreparationCalls += 1; return first; },
+      continueLegacyReviewedTransition: async () => ({
+        authority: "none", missionId, state: "completed", disposition: "PASS", receiptId: "receipt:fury:pass",
+      }),
+    });
+    assert.equal(passStatus, 1);
+    assert.equal(passPreparationCalls, 1);
+    assert.equal(stderr.join(""), "");
+    assert.deepEqual(JSON.parse(stdout.join("")), {
+      authority: "none", missionId, state: "completed", disposition: "PASS", receiptId: "receipt:fury:pass",
+    });
+    assert.equal((stdout.join("").match(/"state"/gu) ?? []).length, 1);
+
+    for (const closed of [
+      { state: "invalid", code: "LEGACY_STATE_INELIGIBLE", errors: ["invalid legacy lineage", "no effects performed"] },
+      { state: "conflict", code: "LEGACY_STATE_CHANGED", errors: ["legacy evidence changed"] },
+      { state: "recovery_required", code: "RECOVERY_REQUIRED", errors: ["dispatch cannot be reinvoked"] },
+      { state: "failed", code: "COPILOT_EXECUTION_FAILED", errors: ["model execution failed"] },
+    ]) {
+      stdout.length = 0;
+      stderr.length = 0;
+      const closedStatus = await runMissionCli([
+        "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury",
+      ], {
+        prepareSession: async () => first,
+        continueLegacyReviewedTransition: async () => ({ authority: "none", missionId, ...closed }),
+      });
+      assert.equal(closedStatus, 1);
+      assert.equal(stdout.join(""), "");
+      assert.equal(stderr.join(""), `state: ${closed.state}\ncode: ${closed.code}\nerrors: ${closed.errors.join(" ")}\n`);
+    }
+
+    stdout.length = 0;
+    stderr.length = 0;
+    const reviseStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury",
+    ], {
+      prepareSession: async () => first,
+      continueLegacyReviewedTransition: async () => ({
+        authority: "none", missionId, state: "completed", disposition: "REVISE", receiptId: "receipt:fury:revise",
+      }),
+    });
+    assert.equal(reviseStatus, 1);
+    assert.equal(stdout.join(""), "");
+    assert.equal(stderr.join(""), "state: completed\ndisposition: REVISE\nreceiptId: receipt:fury:revise\n");
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+});
+
+test("prepare-next renders protected evidence exactly and shell-quotes missing-model roots", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield prepare '$;()-")));
+  const missionId = "mission:issue-362-shell-path";
+  const first = { state: "blocked", missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] };
+  const stdout = [];
+  const stderr = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  try {
+    const missingStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root,
+    ], {
+      prepareSession: async () => first,
+      continueLegacyReviewedTransition: async () => { throw new Error("must not run without a model"); },
+    });
+    assert.equal(missingStatus, 1);
+    assert.equal(stdout.join(""), "");
+    const quotedRoot = `'${root.replaceAll("'", `'"'"'`)}'`;
+    assert.equal(stderr.join(""), [
+      "Preparation blocked — protected_evidence_mismatch: graph missing",
+      `Next action: shield mission prepare-next --mission-id '${missionId}' --root ${quotedRoot} --fury-model '<model-id>'`,
+      "",
+    ].join("\n"));
+
+    stdout.length = 0;
+    stderr.length = 0;
+    const graphRoot = join(root, ".shield", "audit", "mission-preparation", createHash("sha256").update(missionId).digest("hex"));
+    await mkdir(graphRoot, { recursive: true });
+    const protectedStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury",
+    ], {
+      prepareSession: async () => first,
+      continueLegacyReviewedTransition: async () => { throw new Error("must not run with protected evidence"); },
+    });
+    assert.equal(protectedStatus, 1);
+    assert.equal(stdout.join(""), "");
+    assert.equal(stderr.join(""), [
+      "state: blocked",
+      "code: PROTECTED_GRAPH_NOT_ABSENT",
+      "errors: Protected mission-preparation graph state appeared during absence verification.",
+      "",
+    ].join("\n"));
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+});
+
+test("prepare-next returns protected graph evidence unchanged before model selection", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-prepare-next-protected-")));
+  const missionId = "mission:issue-362-protected";
+  const graphRoot = join(root, ".shield", "audit", "mission-preparation", createHash("sha256").update(missionId).digest("hex"));
+  await mkdir(graphRoot, { recursive: true });
+  const stdout = [];
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  try {
+    const status = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury", "--json",
+    ], {
+      prepareSession: async () => ({ state: "blocked", missionId, reasonCode: "protected_evidence_mismatch", errors: ["unsafe graph"] }),
+      continueLegacyReviewedTransition: async () => { throw new Error("must not run with protected evidence"); },
+    });
+    assert.equal(status, 1);
+    const result = JSON.parse(stdout.join(""));
+    assert.equal(result.authority, "none");
+    assert.equal(result.state, "blocked");
+    assert.equal(result.code, "PROTECTED_GRAPH_NOT_ABSENT");
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
+});
+
+test("spawned prepare-next derives Issue #349 legacy authority and reaches the publication gate", async () => {
+  const current = await legacyPublicationCliFixture();
+  const homeRoot = join(current.root, ".shield", "tmp", "isolated-home");
+  await mkdir(homeRoot, { recursive: true });
+  await signerTestOnly.createSigner({
+    seatId: "coulson",
+    bindingId: current.coulson.binding.bindingId,
+    humanPrincipalId: current.coulson.binding.humanPrincipalId,
+  }, "unused-publication-passcode", {
+    homeDirectory: homeRoot,
+    generateKeyPair: () => ({ privateKey: current.coulson.privateKey, publicKey: createPublicKey(current.coulson.privateKey) }),
+  });
+  const args = [
+    "mission", "prepare-next", "--mission-id", current.missionId, "--root", current.root,
+    "--fury-model", "model:fury-issue-349", "--guided-review-choice", "no", "--passcode-stdin", "--json",
+  ];
+  assert.equal(args.includes("--authority"), false);
+  assert.equal(args.includes("--input"), false);
+  const result = run(current.root, args, {
+    env: { HOME: homeRoot, COPILOT_HOME: homeRoot },
+    unsetEnv: ["FORCE_COLOR", "NO_COLOR"],
+    input: "\n",
+    nodeArgs: [...await fakeCopilotSdkNodeArgs(current.root), ...fixedClockNodeArgs("2026-08-19T12:03:00.000Z")],
+  });
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(result.stdout, "");
+  const decisionMatch = /^SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN\n(?<decision>[^\n]+)\nSHIELD_REVIEW_PUBLICATION_DECISION_END\nSHIELD: Passcode input was empty\.\n$/u.exec(result.stderr);
+  assert.ok(decisionMatch?.groups?.decision, result.stderr);
+  const decision = JSON.parse(decisionMatch.groups.decision);
+  assert.equal(decision.missionId, current.missionId);
+  assert.equal(decision.guidedReview.choice, "no");
+  assert.equal(decision.guidedReview.disposition, "skipped_by_operator");
+  assert.equal(result.stderr, `SHIELD_REVIEW_PUBLICATION_DECISION_BEGIN\n${JSON.stringify(decision)}\nSHIELD_REVIEW_PUBLICATION_DECISION_END\nSHIELD: Passcode input was empty.\n`);
+  const graph = JSON.parse(await readFile(deriveMissionReviewedTransitionGraphMaterializationPathV1(current.root, current.missionId).graphPath, "utf8"));
+  assert.equal(graph.transitionPlan.missionId, current.missionId);
 });
 
 test("prepare-next derives and signs one prepared publication without caller JSON or external effect", async () => {

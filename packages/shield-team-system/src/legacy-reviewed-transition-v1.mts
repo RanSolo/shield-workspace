@@ -26,6 +26,7 @@ import {
 import {
   projectFreshAuthorizeWheelsUpCompatibilityV1,
 } from "./mission-preparation-host-v1.mjs";
+import { deriveMissionReviewedTransitionGraphMaterializationPathV1 } from "./mission-preparation-store-v1.mjs";
 import {
   validateAuthorizeWheelsUpInput,
   type AuthorizeWheelsUpEnvironmentObservationV1,
@@ -51,6 +52,7 @@ export const LEGACY_REVIEWED_TRANSITION_SEED_ROOT = ".shield/audit/legacy-review
 
 const execFile = promisify(execFileNode);
 const INPUT_FIELDS = ["missionId", "repositoryRoot", "furyModel"] as const;
+const GRAPH_PREFLIGHT_INPUT_FIELDS = ["missionId", "repositoryRoot"] as const;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const REVISION = /^[0-9a-f]{40}$/u;
 const PLAN_PATH = /^docs\/missions\/[^/]+\.md$/u;
@@ -67,12 +69,27 @@ type Plain = Record<string, unknown>;
 type StableFile = Readonly<{ path: string; bytes: string; rawSha256: string; identity: string; mode: number }>;
 type DirectoryIdentity = Readonly<{ path: string; dev: number; ino: number }>;
 type DirectoryChain = readonly DirectoryIdentity[];
+type ProtectedDirectoryIdentity = Readonly<{
+  path: string;
+  handle: FileHandle;
+  dev: number;
+  ino: number;
+  mode: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}>;
 
 export interface ContinueLegacyReviewedTransitionInputV1 {
   readonly missionId: string;
   readonly repositoryRoot: string;
   readonly furyModel: string;
 }
+
+export type PreflightLegacyProtectedGraphAbsenceResultV1 = Readonly<
+  | { readonly authority: "none"; readonly state: "absent" }
+  | { readonly authority: "none"; readonly state: "blocked"; readonly code: string; readonly errors: readonly string[] }
+>;
 
 export interface LegacyReviewedTransitionDependenciesV1 {
   readonly reviewedTransitionHost?: typeof prepareReviewedMissionTransitionFromDerivedSourceV1;
@@ -94,6 +111,13 @@ export interface LegacyReviewedTransitionSeedPersistenceV1 {
   readonly syncDirectoryHandle: (handle: FileHandle) => Promise<void>;
 }
 
+export interface LegacyProtectedGraphPreflightDependenciesV1 {
+  readonly lstatPath?: typeof lstat;
+  readonly realpathPath?: typeof realpath;
+  readonly openPath?: typeof open;
+  readonly beforeFinalRevalidation?: () => void | Promise<void>;
+}
+
 export type ContinueLegacyReviewedTransitionClosedResultV1 = Readonly<{
   contractVersion: typeof LEGACY_REVIEWED_TRANSITION_CONTRACT_VERSION;
   authority: "none";
@@ -104,7 +128,8 @@ export type ContinueLegacyReviewedTransitionClosedResultV1 = Readonly<{
 
 export type ContinueLegacyReviewedTransitionResultV1 =
   | PrepareReviewedMissionTransitionResultV1
-  | ContinueLegacyReviewedTransitionClosedResultV1;
+  | ContinueLegacyReviewedTransitionClosedResultV1
+  | PreflightLegacyProtectedGraphAbsenceResultV1;
 
 type LegacyObservation = Readonly<{
   repositoryRoot: string;
@@ -843,12 +868,165 @@ function validateInput(input: unknown): ContinueLegacyReviewedTransitionInputV1 
   return Object.freeze({ missionId: input.missionId, repositoryRoot: input.repositoryRoot, furyModel: input.furyModel });
 }
 
+function validateGraphPreflightInput(input: unknown): Readonly<{ missionId: string; repositoryRoot: string }> | null {
+  if (!exact(input, GRAPH_PREFLIGHT_INPUT_FIELDS) || typeof input.repositoryRoot !== "string" || !isAbsolute(input.repositoryRoot) ||
+      resolve(input.repositoryRoot) !== input.repositoryRoot || typeof input.missionId !== "string" || !IDENTIFIER.test(input.missionId)) return null;
+  return Object.freeze({ missionId: input.missionId, repositoryRoot: input.repositoryRoot });
+}
+
+function protectedGraphNotAbsent(...errors: readonly string[]): PreflightLegacyProtectedGraphAbsenceResultV1 {
+  return Object.freeze({
+    authority: "none" as const,
+    state: "blocked" as const,
+    code: "PROTECTED_GRAPH_NOT_ABSENT",
+    errors: Object.freeze(errors.length === 0 ? ["The protected mission-preparation graph root is not absent."] : [...errors]),
+  });
+}
+
+export async function preflightLegacyProtectedGraphAbsenceV1(
+  input: unknown,
+  dependencies: LegacyProtectedGraphPreflightDependenciesV1 = {},
+): Promise<PreflightLegacyProtectedGraphAbsenceResultV1> {
+  const checked = validateGraphPreflightInput(input);
+  if (checked === null) return protectedGraphNotAbsent("Malformed protected graph absence preflight request.");
+  const lstatPath = dependencies.lstatPath ?? lstat;
+  const realpathPath = dependencies.realpathPath ?? realpath;
+  const openPath = dependencies.openPath ?? open;
+  let graphRoot: string;
+  let protectedDirectories: readonly string[];
+  try {
+    const canonicalRoot = await realpathPath(checked.repositoryRoot);
+    if (canonicalRoot !== checked.repositoryRoot) return protectedGraphNotAbsent("Repository root is not canonical.");
+    const rootStats = await lstatPath(canonicalRoot);
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) return protectedGraphNotAbsent("Repository root is not a safe directory.");
+    const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(canonicalRoot, checked.missionId);
+    graphRoot = paths.missionDirectory;
+    protectedDirectories = [canonicalRoot, paths.shieldDirectory, paths.auditDirectory, paths.missionPreparationDirectory];
+  } catch (error) {
+    return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+  }
+
+  const retained: ProtectedDirectoryIdentity[] = [];
+  let missingDirectory: string | null = null;
+  let result: PreflightLegacyProtectedGraphAbsenceResultV1 | null = null;
+  const sameIdentity = (left: Awaited<ReturnType<typeof lstat>>, right: ProtectedDirectoryIdentity): boolean =>
+    left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+  const revalidateRetained = async (): Promise<string | null> => {
+    for (const identity of retained) {
+      try {
+        const held = await identity.handle.stat();
+        const current = await lstatPath(identity.path);
+        if (!held.isDirectory() || current.isSymbolicLink() || !current.isDirectory() || !sameIdentity(current, identity) ||
+            held.dev !== identity.dev || held.ino !== identity.ino || held.mode !== identity.mode || held.size !== identity.size ||
+            held.mtimeMs !== identity.mtimeMs || held.ctimeMs !== identity.ctimeMs || await realpathPath(identity.path) !== identity.path) {
+          return "Protected mission-preparation graph ancestor changed during absence verification.";
+        }
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }
+    return null;
+  };
+  const requireAbsent = async (path: string): Promise<string | null> => {
+    try {
+      await lstatPath(path);
+      return "Protected mission-preparation graph state appeared during absence verification.";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : error instanceof Error ? error.message : String(error);
+    }
+  };
+
+  try {
+    for (const directory of protectedDirectories) {
+      let firstDirectory: Awaited<ReturnType<typeof lstat>>;
+      try {
+        firstDirectory = await lstatPath(directory);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          missingDirectory = directory;
+          break;
+        }
+        result = protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+        break;
+      }
+      if (firstDirectory.isSymbolicLink() || !firstDirectory.isDirectory()) {
+        result = protectedGraphNotAbsent("Protected mission-preparation graph parent is unsafe.");
+        break;
+      }
+      let handle: FileHandle | null = null;
+      try {
+        handle = await openPath(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        const held = await handle.stat();
+        if (!held.isDirectory() || held.dev !== firstDirectory.dev || held.ino !== firstDirectory.ino || held.mode !== firstDirectory.mode ||
+            held.size !== firstDirectory.size || held.mtimeMs !== firstDirectory.mtimeMs || held.ctimeMs !== firstDirectory.ctimeMs ||
+            await realpathPath(directory) !== directory) {
+          result = protectedGraphNotAbsent("Protected mission-preparation graph parent changed during absence verification.");
+          await handle.close();
+          break;
+        }
+        retained.push({
+          path: directory,
+          handle,
+          dev: held.dev,
+          ino: held.ino,
+          mode: held.mode,
+          size: held.size,
+          mtimeMs: held.mtimeMs,
+          ctimeMs: held.ctimeMs,
+        });
+        handle = null;
+      } catch (error) {
+        if (handle !== null) await handle.close().catch(() => undefined);
+        result = protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+        break;
+      }
+    }
+
+    if (result === null) {
+      const absentPath = missingDirectory ?? graphRoot;
+      const initialAbsenceError = await requireAbsent(absentPath);
+      if (initialAbsenceError !== null) result = protectedGraphNotAbsent(initialAbsenceError);
+    }
+    if (result === null) {
+      try {
+        await dependencies.beforeFinalRevalidation?.();
+      } catch (error) {
+        result = protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (result === null) {
+      const retainedError = await revalidateRetained();
+      if (retainedError !== null) result = protectedGraphNotAbsent(retainedError);
+    }
+    if (result === null) {
+      const finalAbsenceError = await requireAbsent(missingDirectory ?? graphRoot);
+      if (finalAbsenceError !== null) result = protectedGraphNotAbsent(finalAbsenceError);
+    }
+    if (result === null) {
+      const retainedError = await revalidateRetained();
+      result = retainedError === null
+        ? Object.freeze({ authority: "none" as const, state: "absent" as const })
+        : protectedGraphNotAbsent(retainedError);
+    }
+  } finally {
+    let closeError: unknown = null;
+    for (const identity of retained.reverse()) {
+      try { await identity.handle.close(); } catch (error) { closeError ??= error; }
+    }
+    if (closeError !== null) result = protectedGraphNotAbsent(closeError instanceof Error ? closeError.message : String(closeError));
+  }
+  return result ?? protectedGraphNotAbsent("Protected graph absence verification did not complete.");
+}
+
 export async function continueLegacyReviewedTransitionV1(
   input: unknown,
   dependencies: LegacyReviewedTransitionDependenciesV1 = {},
 ): Promise<ContinueLegacyReviewedTransitionResultV1> {
   const checked = validateInput(input);
   if (checked === null) return closed("invalid", "MALFORMED_LEGACY_CONTINUATION_REQUEST", "Legacy continuation accepts only missionId, repositoryRoot, and furyModel.");
+  const preflight = await preflightLegacyProtectedGraphAbsenceV1({ missionId: checked.missionId, repositoryRoot: checked.repositoryRoot });
+  if (preflight.state !== "absent") return preflight;
   let initial: LegacyObservation;
   try { initial = await observe(checked); } catch (error) {
     return closed("invalid", "LEGACY_STATE_INELIGIBLE", error instanceof Error ? error.message : String(error));
