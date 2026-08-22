@@ -23,17 +23,28 @@ import {
   type CopilotFuryReviewedTransitionHostDependenciesV1,
   type PrepareReviewedMissionTransitionResultV1,
 } from "./copilot-fury-reviewed-transition-host-v1.mjs";
+import {
+  projectFreshAuthorizeWheelsUpCompatibilityV1,
+} from "./mission-preparation-host-v1.mjs";
+import {
+  validateAuthorizeWheelsUpInput,
+  type AuthorizeWheelsUpEnvironmentObservationV1,
+} from "./authorize-wheels-up-executor-v1.mjs";
 import type {
   InternalDerivedTransitionPlanSourceV1,
   InternalLegacyDerivedTransitionPlanProvenanceV1,
 } from "./copilot-fury-plan-dispatch-core-v1.mjs";
 import { journalByteSha256, readMissionJournalForDisplay, resolveSupervisedMissionPaths } from "./mission-store.mjs";
 import { canonicalJson, computeRuntimeBindingDigest } from "./mission-v2.mjs";
+import { readSeatDispatchReceiptLedgerSnapshotV1 } from "./seat-dispatch-store.mjs";
 import {
   computeReviewPublicationAuthorityDigest,
   computeReviewPublicationAuthoritySemanticIdentityV1,
 } from "./review-publication-v1.mjs";
-import { validateWorktreeStateReceiptV1 } from "./worktree-state-v1.mjs";
+import {
+  validateWorktreeStateReceiptFileChainV1OrV2,
+  validateWorktreeStateReceiptV1OrV2,
+} from "./worktree-state-v1.mjs";
 
 export const LEGACY_REVIEWED_TRANSITION_CONTRACT_VERSION = "shield.legacy-reviewed-transition.v1" as const;
 export const LEGACY_REVIEWED_TRANSITION_SEED_ROOT = ".shield/audit/legacy-reviewed-transition" as const;
@@ -53,7 +64,7 @@ const LEGACY_EXCLUSIONS = Object.freeze([
 ] as const);
 
 type Plain = Record<string, unknown>;
-type StableFile = Readonly<{ path: string; bytes: string; rawSha256: string; identity: string }>;
+type StableFile = Readonly<{ path: string; bytes: string; rawSha256: string; identity: string; mode: number }>;
 type DirectoryIdentity = Readonly<{ path: string; dev: number; ino: number }>;
 type DirectoryChain = readonly DirectoryIdentity[];
 
@@ -117,6 +128,9 @@ type LegacyObservation = Readonly<{
   publicationAuthorityRef: string;
   publicationAuthoritySequence: number;
   legacyPlanObjectId: string;
+  legacyPlanMode: "100644" | "100755";
+  currentPlanObjectId: string;
+  currentPlanMode: "100644" | "100755";
   carrier: InternalDerivedTransitionPlanSourceV1;
 }>;
 
@@ -190,7 +204,7 @@ async function stableFile(path: string, label: string, requireSingleLink = false
     if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error(`${label}_not_utf8`);
     const after = await lstat(path);
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs || (requireSingleLink && after.nlink !== 1)) throw new Error(`${label}_changed`);
-    return Object.freeze({ path, bytes: bytes.toString("utf8"), rawSha256: sha256(bytes), identity: `${before.dev}:${before.ino}:${before.size}:${before.mtimeMs}` });
+    return Object.freeze({ path, bytes: bytes.toString("utf8"), rawSha256: sha256(bytes), identity: `${before.dev}:${before.ino}:${before.size}:${before.mtimeMs}`, mode: before.mode & 0o777 });
   } finally { await handle.close(); }
 }
 
@@ -224,14 +238,32 @@ function parseNullPaths(bytes: Buffer): readonly string[] {
   return Object.freeze(fields);
 }
 
-async function exactBlob(root: string, revision: string, path: string): Promise<Readonly<{ objectId: string; bytes: Buffer }>> {
+function parseExactTreeEntries(bytes: Buffer, approvedPaths: readonly string[]): readonly Readonly<{ mode: string; type: string; path: string }>[] {
+  if (!Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) throw new Error("compatibility_tree_not_utf8");
+  const records = bytes.toString("utf8").split("\0");
+  if (records.at(-1) !== "") throw new Error("compatibility_tree_malformed");
+  records.pop();
+  const approved = new Set(approvedPaths);
+  const seen = new Set<string>();
+  return Object.freeze(records.map((record) => {
+    const match = /^(?<mode>[0-9]{6}) (?<type>[a-z]+) [0-9a-f]{40,64}\t(?<path>[\s\S]+)$/u.exec(record);
+    const groups = match?.groups;
+    if (groups === undefined) throw new Error("compatibility_tree_malformed");
+    const path = groups.path;
+    if (path === undefined || !approved.has(path) || seen.has(path)) throw new Error("compatibility_tree_malformed");
+    seen.add(path);
+    return Object.freeze({ mode: groups.mode as string, type: groups.type as string, path });
+  }));
+}
+
+async function exactBlob(root: string, revision: string, path: string): Promise<Readonly<{ mode: "100644" | "100755"; objectId: string; bytes: Buffer }>> {
   const listing = await gitBytes(root, ["ls-tree", "-z", "--full-tree", revision, "--", path]);
   const records = listing.toString("utf8").split("\0").filter(Boolean);
   if (records.length !== 1) throw new Error("legacy_plan_blob_missing_or_ambiguous");
   const match = /^(100644|100755) blob ([0-9a-f]{40,64})\t(.+)$/u.exec(records[0] as string);
   if (match === null || match[3] !== path) throw new Error("legacy_plan_blob_not_regular");
   const bytes = await gitBytes(root, ["cat-file", "blob", match[2] as string]);
-  return Object.freeze({ objectId: match[2] as string, bytes });
+  return Object.freeze({ mode: match[1] as "100644" | "100755", objectId: match[2] as string, bytes });
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
@@ -254,12 +286,17 @@ async function observe(input: ContinueLegacyReviewedTransitionInputV1): Promise<
   const receiptFile = await stableFile(join(canonicalRoot, ".shield", "worktree-state.json"), "prepared_worktree_receipt");
   let receipt: unknown;
   try { receipt = JSON.parse(receiptFile.bytes); } catch { throw new Error("prepared_worktree_receipt_malformed"); }
-  if (!validateWorktreeStateReceiptV1(receipt) || receipt.repositoryId !== config.value.repositoryId || receipt.destination.root !== canonicalRoot ||
-      receipt.destination.branch !== branch || receipt.destination.originRepositoryId !== config.value.repositoryId ||
-      receipt.installedByteDigests[".shield/config.json"] !== configFile.rawSha256) throw new Error("prepared_worktree_receipt_mismatch");
+  if (!validateWorktreeStateReceiptV1OrV2(receipt) || !await validateWorktreeStateReceiptFileChainV1OrV2(canonicalRoot, receipt) ||
+      receipt.repositoryId !== config.value.repositoryId || receipt.destination.root !== canonicalRoot ||
+      receipt.destination.branch !== branch || receipt.destination.head !== headRevision ||
+      receipt.destination.originRepositoryId !== config.value.repositoryId ||
+      receipt.installedByteDigests[".shield/config.json"] !== configFile.rawSha256 ||
+      receipt.policy.configByteSha256 !== configFile.rawSha256) throw new Error("prepared_worktree_receipt_mismatch");
   const ignoreFile = await stableFile(join(canonicalRoot, ".shield", ".gitignore"), "prepared_worktree_ignore");
   const registryFile = await stableFile(join(canonicalRoot, ".shield", "trusted-human-bindings.json"), "prepared_worktree_registry");
-  if (receipt.installedByteDigests[".shield/.gitignore"] !== ignoreFile.rawSha256 || receipt.installedByteDigests[".shield/trusted-human-bindings.json"] !== registryFile.rawSha256) throw new Error("prepared_worktree_policy_mismatch");
+  if (receipt.installedByteDigests[".shield/.gitignore"] !== ignoreFile.rawSha256 ||
+      receipt.installedByteDigests[".shield/trusted-human-bindings.json"] !== registryFile.rawSha256 ||
+      receipt.policy.registryByteSha256 !== registryFile.rawSha256) throw new Error("prepared_worktree_policy_mismatch");
   const commonRaw = (await git(canonicalRoot, ["rev-parse", "--git-common-dir"])).trim();
   const common = await realpath(isAbsolute(commonRaw) ? commonRaw : resolve(canonicalRoot, commonRaw));
   if (receipt.commonGitDirectory !== common || receipt.destination.commonGitDirectory !== common) throw new Error("prepared_worktree_lane_mismatch");
@@ -329,7 +366,9 @@ async function observe(input: ContinueLegacyReviewedTransitionInputV1): Promise<
   const artifactBlob = await exactBlob(canonicalRoot, authority.artifactRevisionId, legacyPlanPath);
   const currentBlob = await exactBlob(canonicalRoot, headRevision, legacyPlanPath);
   const currentFile = await stableFile(join(canonicalRoot, ...legacyPlanPath.split("/")), "legacy_plan_current", true);
-  if (!currentBlob.bytes.equals(Buffer.from(currentFile.bytes, "utf8"))) throw new Error("legacy_plan_current_head_mismatch");
+  if (artifactBlob.objectId !== currentBlob.objectId || artifactBlob.mode !== currentBlob.mode) throw new Error("legacy_plan_artifact_head_mismatch");
+  const expectedCurrentMode = currentBlob.mode === "100755" ? 0o755 : 0o644;
+  if (!currentBlob.bytes.equals(Buffer.from(currentFile.bytes, "utf8")) || currentFile.mode !== expectedCurrentMode) throw new Error("legacy_plan_current_head_mismatch");
   const changedPaths = parseNullPaths(await gitBytes(canonicalRoot, ["diff", "--no-renames", "--name-only", "-z", authority.baseRevision, headRevision, "--"]));
   if (changedPaths.some((path) => !authority.approvedRelativePaths.includes(path))) throw new Error("advanced_head_scope_mismatch");
 
@@ -357,6 +396,68 @@ async function observe(input: ContinueLegacyReviewedTransitionInputV1): Promise<
   };
   const built = buildMissionTransitionPlanV1(planInput);
   if (built.state === "invalid") throw new Error(`unsupported_legacy_state:${built.errors.join(" ")}`);
+  validateAuthorizeWheelsUpInput({
+    baseRevision: built.plan.planningBaseRevision,
+    modelId: built.plan.modelId,
+    approvedRelativePaths: [...built.plan.approvedRelativePaths],
+    approvedActionIds: [...built.plan.approvedActionIds],
+    approvedEffectClasses: [...built.plan.approvedEffectClasses],
+    approvedEffectKeys: [...built.plan.approvedEffectKeys],
+    approvedCapabilities: [...built.plan.approvedCapabilities],
+    validationCommandIds: [...built.plan.validationCommandIds],
+    reasoningRuntimeId: built.plan.reasoningRuntimeId,
+    toolExecutorId: built.plan.toolExecutorId,
+    publicationPaths: [...built.plan.publicationPaths],
+  });
+  const begun = entries[0];
+  if (begun?.type !== "mission.begun") throw new Error("unsupported_legacy_lineage");
+  const coulsonBindings = begun.payload.trustedBindings.filter(({ seatId }) => seatId === "coulson");
+  if (coulsonBindings.length !== 1) throw new Error("legacy_signer_binding_mismatch");
+  const binding = coulsonBindings[0] as (typeof coulsonBindings)[number];
+  const configuredCoulsonRefs = config.value.trustedHumanBindingRefs.filter(({ seatId }) => seatId === "coulson");
+  const satisfiedRequirements = new Set(projection.evidence.map(({ requirementId }) => requirementId));
+  const approvedTreePaths = [...built.plan.approvedRelativePaths];
+  const literalTreePaths = approvedTreePaths.map((path) => `:(top,literal)${path}`);
+  const [baseTreeBytes, headTreeBytes] = await Promise.all([
+    gitBytes(canonicalRoot, ["ls-tree", "-rz", authority.baseRevision, "--", ...literalTreePaths]),
+    gitBytes(canonicalRoot, ["ls-tree", "-rz", headRevision, "--", ...literalTreePaths]),
+  ]);
+  const baseTreeEntries = parseExactTreeEntries(baseTreeBytes, approvedTreePaths);
+  const headTreeEntries = parseExactTreeEntries(headTreeBytes, approvedTreePaths);
+  const pathEntries = [...baseTreeEntries, ...headTreeEntries];
+  const compatibilityEnvironment: AuthorizeWheelsUpEnvironmentObservationV1 = {
+    current: { kind: "profile-aware", entries, projection },
+    configuredJournalPath: config.value.paths.journals,
+    repository: {
+      configuredRepositoryId: config.value.repositoryId,
+      originUrl: (await git(canonicalRoot, ["remote", "get-url", "origin"])).trim(),
+      remoteRepositoryId: config.value.repositoryId,
+      canonicalRoot,
+      gitTopLevel: canonicalRoot,
+      branch,
+      baseRevision: authority.baseRevision,
+      headRevision,
+      baseAncestor: true,
+      statusEntries: [],
+      changedPaths: [...changedPaths],
+      baseTreeEntries: [...baseTreeEntries],
+      headTreeEntries: [...headTreeEntries],
+    },
+    journalBytes: journalFile.bytes,
+    journalSha256: journalByteSha256(journalFile.bytes),
+    binding,
+    signerBindingMatchCount: configuredCoulsonRefs.filter(({ bindingRef }) => bindingRef === binding.signingKeyRef).length,
+    pendingCoulsonMissionAuthorizationCount: projection.requirements.filter(({ evidenceKind, requiredRoleId, phase, requirementId }) =>
+      evidenceKind === "mission_authorization" && requiredRoleId === "coulson" && phase === "authorization" && !satisfiedRequirements.has(requirementId)).length,
+    symlinkPaths: [...new Set(pathEntries.filter(({ mode }) => mode === "120000").map(({ path }) => path))].sort(),
+    gitlinkPaths: [...new Set(pathEntries.filter(({ mode, type }) => mode === "160000" || type === "commit").map(({ path }) => path))].sort(),
+    remainingHumanGates: projection.brief.requireSimmons
+      ? ["coulson.final_acceptance", "fitz.technical_review", "simmons.product_domain_review"]
+      : ["coulson.final_acceptance", "fitz.technical_review"],
+  };
+  if (projectFreshAuthorizeWheelsUpCompatibilityV1(built.plan, compatibilityEnvironment, true) === null) {
+    throw new Error("fresh_authorize_wheels_up_compatibility_mismatch");
+  }
   const canonicalPlanBytes = `${canonicalJson(built.plan)}\n`;
   const repositoryWorkspaceId = workspaceId(config.value.repositoryId, branch);
   const provenance: InternalLegacyDerivedTransitionPlanProvenanceV1 = Object.freeze({
@@ -381,6 +482,10 @@ async function observe(input: ContinueLegacyReviewedTransitionInputV1): Promise<
     artifactCommit: authority.artifactRevisionId,
     legacyPlanPath,
     legacyPlanBlobSha256: sha256(artifactBlob.bytes),
+    artifactPlanMode: artifactBlob.mode,
+    artifactPlanObjectId: artifactBlob.objectId,
+    currentPlanMode: currentBlob.mode,
+    currentPlanObjectId: currentBlob.objectId,
     branch,
     headRevision,
     derivedCandidateDigest: built.plan.digest,
@@ -419,6 +524,9 @@ async function observe(input: ContinueLegacyReviewedTransitionInputV1): Promise<
     publicationAuthorityRef: publication.authorityRef,
     publicationAuthoritySequence: publicationRecord.journalSequence,
     legacyPlanObjectId: artifactBlob.objectId,
+    legacyPlanMode: artifactBlob.mode,
+    currentPlanObjectId: currentBlob.objectId,
+    currentPlanMode: currentBlob.mode,
     carrier,
   });
 }
@@ -447,6 +555,9 @@ function immutableObservation(observation: LegacyObservation) {
     publicationAuthorityRef: observation.publicationAuthorityRef,
     publicationAuthoritySequence: observation.publicationAuthoritySequence,
     legacyPlanObjectId: observation.legacyPlanObjectId,
+    legacyPlanMode: observation.legacyPlanMode,
+    currentPlanObjectId: observation.currentPlanObjectId,
+    currentPlanMode: observation.currentPlanMode,
     carrier: observation.carrier,
   });
 }
@@ -623,6 +734,22 @@ async function readSeed(path: string, operations: LegacyReviewedTransitionSeedPe
 
 type LegacySeedResolution = Readonly<{ seed: LegacySeedV1; file: StableFile; relativePath: string; directoryChain: DirectoryChain }>;
 
+async function broadMissionClaimExists(observation: LegacyObservation): Promise<boolean> {
+  const ledger = await readSeatDispatchReceiptLedgerSnapshotV1({
+    repositoryRoot: observation.repositoryRoot,
+    repositoryId: observation.repositoryId,
+    repositoryWorkspaceId: observation.repositoryWorkspaceId,
+  });
+  if (ledger.state === "invalid") {
+    if (ledger.code === "dispatch_receipt_missing") return false;
+    throw new Error(`dispatch_receipt_scan_failed:${ledger.code}:${ledger.errors.join(" ")}`);
+  }
+  return ledger.value.projections.some((projection) =>
+    projection.repositoryWorkspaceId === observation.repositoryWorkspaceId &&
+    projection.parentMissionId === observation.carrier.provenance.missionId &&
+    projection.parentMissionRevision === observation.missionRevision);
+}
+
 async function resolveSeed(
   observation: LegacyObservation,
   furyModel: string,
@@ -646,6 +773,10 @@ async function resolveSeed(
   });
   const expectedBytes = `${canonicalJson(expected)}\n`;
   try {
+    const beforeDirectoryEffect = await readSeed(finalPath, operations);
+    if (beforeDirectoryEffect === null && await broadMissionClaimExists(observation)) {
+      return closed("recovery_required", "LEGACY_SEED_MISSING_AFTER_CLAIM", "A dispatch claim exists for this repository workspace, mission, and mission revision without the exact derivation seed.");
+    }
     const ensured = await ensureSeedDirectory(observation.repositoryRoot, relativePath, operations);
     try {
       const markerStats = await operations.lstatPath(marker);
@@ -661,6 +792,9 @@ async function resolveSeed(
       return Object.freeze({ seed: expected, file: readback.file, relativePath, directoryChain: ensured.chain });
     }
     await revalidateSeedDirectory(observation.repositoryRoot, directory, ensured.chain, operations);
+    if (await broadMissionClaimExists(observation)) {
+      return closed("recovery_required", "LEGACY_SEED_MISSING_AFTER_CLAIM", "A dispatch claim exists for this repository workspace, mission, and mission revision without the exact derivation seed.");
+    }
     const handle = await operations.openPath(marker, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
       const encoded = Buffer.from(expectedBytes, "utf8");
@@ -729,7 +863,12 @@ export async function continueLegacyReviewedTransitionV1(
     return closed("recovery_required", "LEGACY_PRE_DISPATCH_REOBSERVATION_FAILED", error instanceof Error ? error.message : String(error));
   }
   const host = dependencies.reviewedTransitionHost ?? prepareReviewedMissionTransitionFromDerivedSourceV1;
-  const result = await host({ missionId: checked.missionId, repositoryRoot: checked.repositoryRoot, furyModel: checked.furyModel }, initial.carrier, dependencies.reviewedTransitionDependencies);
+  const result = await host(
+    { missionId: checked.missionId, repositoryRoot: checked.repositoryRoot, furyModel: checked.furyModel },
+    initial.carrier,
+    dependencies.reviewedTransitionDependencies,
+    async () => (await observe(checked)).carrier,
+  );
   try {
     await dependencies.afterReviewedTransition?.(result);
     await reobserveExact(checked, initial, seed, persistence);

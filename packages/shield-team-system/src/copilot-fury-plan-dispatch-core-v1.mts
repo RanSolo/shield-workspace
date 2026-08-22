@@ -361,6 +361,10 @@ export type InternalLegacyDerivedTransitionPlanProvenanceV1 = Readonly<{
   artifactCommit: string;
   legacyPlanPath: string;
   legacyPlanBlobSha256: string;
+  artifactPlanMode: "100644" | "100755";
+  artifactPlanObjectId: string;
+  currentPlanMode: "100644" | "100755";
+  currentPlanObjectId: string;
   branch: string;
   headRevision: string;
   derivedCandidateDigest: string;
@@ -828,7 +832,8 @@ const LEGACY_PROVENANCE_FIELDS = [
   "implementationAuthoritySequence", "publicationAuthorityRef", "publicationAuthorityDigest",
   "publicationAuthoritySemanticIdentity", "publicationAuthorizationId", "publicationAuthoritySequence",
   "runtimeBindingId", "runtimeBindingVersion", "runtimeBindingDigest", "artifactCommit", "legacyPlanPath",
-  "legacyPlanBlobSha256", "branch", "headRevision", "derivedCandidateDigest",
+  "legacyPlanBlobSha256", "artifactPlanMode", "artifactPlanObjectId", "currentPlanMode", "currentPlanObjectId",
+  "branch", "headRevision", "derivedCandidateDigest",
 ] as const;
 const LEGACY_DERIVED_SOURCE_FIELDS = [
   "kind", "virtualPath", "canonicalPlanBytes", "transitionPlanRawSha256", "transitionPlan", "provenance", "provenanceDigest",
@@ -854,6 +859,9 @@ function validateLegacyDerivedTransitionPlanSource(
       !Number.isSafeInteger(provenance.publicationAuthoritySequence) || provenance.publicationAuthoritySequence < 0 ||
       !Number.isSafeInteger(provenance.runtimeBindingVersion) || provenance.runtimeBindingVersion < 1 ||
       !GIT_REVISION.test(provenance.artifactCommit) || !GIT_REVISION.test(provenance.headRevision) ||
+      ![provenance.artifactPlanObjectId, provenance.currentPlanObjectId].every((value) => GIT_REVISION.test(value)) ||
+      ![provenance.artifactPlanMode, provenance.currentPlanMode].every((value) => value === "100644" || value === "100755") ||
+      provenance.artifactPlanMode !== provenance.currentPlanMode || provenance.artifactPlanObjectId !== provenance.currentPlanObjectId ||
       !SHA256_HEX.test(provenance.legacyPlanBlobSha256) || !normalizedRelativePath(provenance.legacyPlanPath) ||
       ![provenance.journalDigest, provenance.implementationAuthorityDigest, provenance.publicationAuthorityDigest,
         provenance.publicationAuthoritySemanticIdentity, provenance.runtimeBindingDigest].every((value) => DIGEST.test(value)) ||

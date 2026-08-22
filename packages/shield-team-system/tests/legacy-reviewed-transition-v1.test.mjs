@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { existsSync } from "node:fs";
-import { link, unlink, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, unlink, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -11,16 +11,23 @@ import {
   LEGACY_REVIEWED_TRANSITION_SEED_ROOT,
   continueLegacyReviewedTransitionV1,
 } from "../dist/legacy-reviewed-transition-v1.mjs";
+import {
+  COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+  COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+  COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+  COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+} from "../dist/copilot-fury-plan-dispatch-v1.mjs";
 import { executeAuthorizeWheelsUpV1 } from "../dist/authorize-wheels-up-executor-v1.mjs";
 import { createShieldConfig, formatShieldConfig } from "../dist/config.mjs";
 import { appendProfileAwareMissionEntriesAtomicV1 } from "../dist/mission-store.mjs";
 import { canonicalJson, computeEd25519SigningKeyRef } from "../dist/mission-v2.mjs";
+import { claimSeatDispatchPacketV1, readSeatDispatchReceiptLedgerSnapshotV1 } from "../dist/seat-dispatch-store.mjs";
 import {
   MISSION_130_JOURNAL_DIGEST,
   createProfileAwareMissionBegunEntry,
   createProfileAwareMissionBrief,
 } from "../dist/profile-aware-mission-v1.mjs";
-import { prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
+import { prepareOrRefreshWorktreeStateV2, prepareWorktreeStateV1 } from "../dist/worktree-state-v1.mjs";
 
 const FURY_CARD = `---
 name: Fury
@@ -170,7 +177,23 @@ async function fixture({ secondPlan = false, markdownPlan = true } = {}) {
   git(root, ["add", "src/implementation.mts"]);
   git(root, ["commit", "--quiet", "-m", "authorized implementation"]);
   const headRevision = git(root, ["rev-parse", "HEAD"]);
-  return { root: await realpath(root), missionId, subjectId, brief, planPath, planBytes, baseRevision, artifactRevision, headRevision };
+  const refreshed = await prepareOrRefreshWorktreeStateV2({ sourceRoot: await realpath(source), destinationRoot: await realpath(root) });
+  assert.equal(refreshed.state, "refreshed", JSON.stringify(refreshed));
+  return {
+    sourceRoot: await realpath(source),
+    root: await realpath(root),
+    repositoryId: config.repositoryId,
+    branch: "issue-341-lane",
+    missionId,
+    missionRevision: brief.revisionId,
+    subjectId,
+    brief,
+    planPath,
+    planBytes,
+    baseRevision,
+    artifactRevision,
+    headRevision,
+  };
 }
 
 function reviseResult(missionId) {
@@ -186,6 +209,103 @@ function reviseResult(missionId) {
     replayed: false,
     handoff: null,
   });
+}
+
+function repositoryWorkspaceId(current) {
+  return `workspace:reviewed-transition:${createHash("sha256")
+    .update(`shield-reviewed-transition-workspace-v1\0${canonicalJson({ repositoryId: current.repositoryId, laneBranch: current.branch })}`)
+    .digest("base64url").slice(0, 32)}`;
+}
+
+async function createBroadMissionClaim(current) {
+  const workspace = repositoryWorkspaceId(current);
+  const claimed = await claimSeatDispatchPacketV1({
+    repositoryRoot: current.root,
+    repositoryId: current.repositoryId,
+    repositoryWorkspaceId: workspace,
+    lockOwnerId: "claim-owner:legacy-broad-scan",
+    parentMissionId: current.missionId,
+    parentMissionRevision: current.missionRevision,
+    parentSessionId: "session:unrelated-parent",
+    accountableSeatId: "fury",
+    subjectId: current.subjectId,
+    subjectRevision: "sha256:unrelated-subject-revision",
+    artifactId: "artifact:unrelated-plan",
+    artifactRevision: "sha256:unrelated-artifact-revision",
+    repositoryRevision: current.headRevision,
+    startedAt: "2026-08-19T12:02:00.000Z",
+    configuredRuntime: { kind: "runtime.configured", runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, model: "model:unrelated" },
+    requestedRuntime: { kind: "runtime.requested", runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID, model: "model:unrelated" },
+    toolExecution: { kind: "tool.execution.requested", executorBindingRef: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID },
+    runtimeSelfReport: { kind: "runtime.self_report.unavailable", reason: "not_reported" },
+    runtimeHostObserved: { kind: "runtime.host_observed.unavailable", reason: "unobserved" },
+    executorSelfReport: { kind: "executor.self_report.unavailable", reason: "not_reported" },
+    executorHostObserved: { kind: "executor.host_observed.unavailable", reason: "not_observed" },
+    packetId: "packet:unrelated-parent-and-artifact",
+    packetBytes: new TextEncoder().encode('{"unrelated":true}'),
+    inputEvidenceRefs: [],
+  });
+  assert.equal(claimed.state, "valid", JSON.stringify(claimed));
+  return workspace;
+}
+
+function realPassExecutor(root) {
+  const calls = { preflight: 0, execute: 0 };
+  return {
+    calls,
+    value: {
+      async preflight() {
+        calls.preflight += 1;
+        return {
+          state: "ready",
+          packageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+          runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+          executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+        };
+      },
+      async execute(input) {
+        calls.execute += 1;
+        const seedPath = execFileSync("find", [join(root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT), "-name", "derivation-seed.json"], { encoding: "utf8" }).trim();
+        const seed = JSON.parse(await readFile(seedPath, "utf8"));
+        const plan = seed.carrier.transitionPlan;
+        return {
+          state: "completed",
+          outputText: JSON.stringify({
+            schemaVersion: 1,
+            contractVersion: COPILOT_FURY_PLAN_RESULT_CONTRACT_VERSION,
+            authority: "none",
+            reviewerSeatId: "fury",
+            reviewedArtifactId: plan.id,
+            reviewedArtifactRevision: plan.digest,
+            verdict: "PASS",
+            findings: [],
+          }),
+          observations: {
+            sessionStartObserved: true,
+            sessionId: input.configuration.sessionId,
+            selectedAgent: "fury",
+            model: input.configuration.model,
+            assistantModel: input.configuration.model,
+            runtimeId: COPILOT_FURY_PLAN_DISPATCH_RUNTIME_ID,
+            executorId: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+            loadedSdkPackageVersion: COPILOT_FURY_PLAN_DISPATCH_SDK_VERSION,
+            sessionProducer: COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
+            sessionProducerVersion: "1.0.79",
+            modelChangeObserved: false,
+            agentSubstitutionObserved: false,
+            unauthorizedToolOrEffectObserved: false,
+            policyDecisions: [],
+          },
+        };
+      },
+      async close() {},
+    },
+  };
+}
+
+function graphExists(current) {
+  const token = createHash("sha256").update(current.missionId).digest("hex");
+  return existsSync(join(current.root, ".shield", "audit", "mission-preparation", token, "reviewed-transition.json"));
 }
 
 test("exact #341 legacy lineage derives one closed fresh_authorize_wheels_up carrier without parsing Markdown or writing a virtual file", async () => {
@@ -209,6 +329,9 @@ test("exact #341 legacy lineage derives one closed fresh_authorize_wheels_up car
   assert.equal(carrier.transitionPlan.parentPlanPath, current.planPath);
   assert.equal(carrier.transitionPlan.parentPlanRawSha256, hash(current.planBytes));
   assert.equal(carrier.transitionPlanRawSha256, hash(carrier.canonicalPlanBytes));
+  assert.equal(carrier.provenance.artifactPlanMode, "100644");
+  assert.equal(carrier.provenance.currentPlanMode, "100644");
+  assert.equal(carrier.provenance.artifactPlanObjectId, carrier.provenance.currentPlanObjectId);
   assert.match(carrier.virtualPath, /^\.shield\/audit\/legacy-reviewed-transition\/sha256:[A-Za-z0-9_-]{43}\/transition-plan\.json$/u);
   assert.equal(existsSync(join(current.root, carrier.virtualPath)), false);
   const seedRoot = join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT);
@@ -242,6 +365,7 @@ test("an outside-scope source renamed to an approved path closes before the revi
   await rename(join(current.root, "outside-scope.ts"), join(current.root, "src", "implementation.mts"));
   git(current.root, ["add", "--all"]);
   git(current.root, ["commit", "--quiet", "-m", "rename outside scope into approved path"]);
+  assert.equal((await prepareOrRefreshWorktreeStateV2({ sourceRoot: current.sourceRoot, destinationRoot: current.root })).state, "refreshed");
   assert.match(git(current.root, ["diff", "--name-status", current.baseRevision, "HEAD"]), /^R100\s+outside-scope\.ts\s+src\/implementation\.mts$/mu);
   let modelEffects = 0;
   const result = await continueLegacyReviewedTransitionV1({ missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury-review" }, {
@@ -352,6 +476,109 @@ test("zero or multiple legacy Markdown candidates and dirty or hard-linked curre
     const result = await continueLegacyReviewedTransitionV1({ missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury" });
     assert.match(result.errors[0], /legacy_plan_current_unsafe/u);
   });
+});
+
+test("post-authority legacy-plan content and mode changes fail before either seed or host effect", async (t) => {
+  for (const mutation of ["content", "mode"]) {
+    await t.test(mutation, async () => {
+      const current = await fixture();
+      const path = join(current.root, current.planPath);
+      if (mutation === "content") {
+        await writeFile(path, `${current.planBytes}\npost-authority change\n`);
+        git(current.root, ["add", current.planPath]);
+      } else {
+        await chmod(path, 0o755);
+        git(current.root, ["update-index", "--chmod=+x", current.planPath]);
+      }
+      git(current.root, ["commit", "--quiet", "-m", `post-authority legacy plan ${mutation}`]);
+      assert.equal((await prepareOrRefreshWorktreeStateV2({ sourceRoot: current.sourceRoot, destinationRoot: current.root })).state, "refreshed");
+      let hostEffects = 0;
+      const result = await continueLegacyReviewedTransitionV1(
+        { missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury-review" },
+        { reviewedTransitionHost: async () => { hostEffects += 1; return reviseResult(current.missionId); } },
+      );
+      assert.deepEqual({ state: result.state, code: result.code }, { state: "invalid", code: "LEGACY_STATE_INELIGIBLE" });
+      assert.match(result.errors.join(" "), /legacy_plan_artifact_head_mismatch/u);
+      assert.equal(hostEffects, 0);
+      assert.equal(existsSync(join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT)), false);
+    });
+  }
+});
+
+test("broad mission claim without a derivation seed is recovery-required regardless of parent session or artifact", async () => {
+  const current = await fixture();
+  await createBroadMissionClaim(current);
+  let hostEffects = 0;
+  const result = await continueLegacyReviewedTransitionV1(
+    { missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury-review" },
+    { reviewedTransitionHost: async () => { hostEffects += 1; return reviseResult(current.missionId); } },
+  );
+  assert.deepEqual({ state: result.state, code: result.code }, { state: "recovery_required", code: "LEGACY_SEED_MISSING_AFTER_CLAIM" });
+  assert.equal(hostEffects, 0);
+  assert.equal(existsSync(join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT)), false);
+});
+
+test("broad mission claim without a request seed is recovery-required on the real derived-source host path", async () => {
+  const current = await fixture();
+  const input = { missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury-review" };
+  assert.equal((await continueLegacyReviewedTransitionV1(input, { reviewedTransitionHost: async () => reviseResult(current.missionId) })).state, "completed");
+  await createBroadMissionClaim(current);
+  const fake = realPassExecutor(current.root);
+  const result = await continueLegacyReviewedTransitionV1(input, {
+    reviewedTransitionDependencies: { dispatchDependencies: { executor: fake.value } },
+  });
+  assert.deepEqual({ state: result.state, code: result.code }, { state: "recovery_required", code: "REQUEST_SEED_MISSING_AFTER_CLAIM" });
+  assert.equal(fake.calls.preflight, 0);
+  assert.equal(fake.calls.execute, 0);
+  assert.equal(graphExists(current), false);
+});
+
+test("real derived-source host claims, records PASS, and materializes exactly once", async () => {
+  const current = await fixture();
+  const fake = realPassExecutor(current.root);
+  const result = await continueLegacyReviewedTransitionV1(
+    { missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury-review" },
+    {
+      reviewedTransitionDependencies: {
+        dispatchDependencies: { executor: fake.value },
+        now: () => new Date("2026-08-19T12:02:00.000Z"),
+      },
+    },
+  );
+  assert.equal(result.state, "materialized", JSON.stringify(result));
+  assert.equal(fake.calls.execute, 1);
+  const ledger = await readSeatDispatchReceiptLedgerSnapshotV1({
+    repositoryRoot: current.root,
+    repositoryId: current.repositoryId,
+    repositoryWorkspaceId: repositoryWorkspaceId(current),
+  });
+  assert.equal(ledger.state, "valid", JSON.stringify(ledger));
+  assert.equal(ledger.value.projections.length, 1);
+  assert.equal(ledger.value.projections[0].state, "completed");
+  assert.equal(graphExists(current), true);
+});
+
+test("pre-materialization provenance drift blocks the real PASS handoff before graph creation", async () => {
+  const current = await fixture();
+  const fake = realPassExecutor(current.root);
+  const result = await continueLegacyReviewedTransitionV1(
+    { missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury-review" },
+    {
+      reviewedTransitionDependencies: {
+        dispatchDependencies: { executor: fake.value },
+        now: () => new Date("2026-08-19T12:02:00.000Z"),
+        beforeMaterialization: async () => {
+          await writeFile(join(current.root, "src", "implementation.mts"), "export const implemented = 'drifted';\n");
+          git(current.root, ["add", "src/implementation.mts"]);
+          git(current.root, ["commit", "--quiet", "-m", "pre-materialization provenance drift"]);
+          assert.equal((await prepareOrRefreshWorktreeStateV2({ sourceRoot: current.sourceRoot, destinationRoot: current.root })).state, "refreshed");
+        },
+      },
+    },
+  );
+  assert.deepEqual({ state: result.state, code: result.code }, { state: "recovery_required", code: "LEGACY_POST_DISPATCH_REOBSERVATION_FAILED" });
+  assert.equal(fake.calls.execute, 1);
+  assert.equal(graphExists(current), false);
 });
 
 test("legacy continuation input is closed and rejects caller plan, scope, verdict, receipt, runtime, and authority fields", async () => {

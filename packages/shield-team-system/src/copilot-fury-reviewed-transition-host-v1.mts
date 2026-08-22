@@ -173,6 +173,8 @@ export interface CopilotFuryReviewedTransitionHostDependenciesV1 {
   readonly beforeMaterialization?: () => void | Promise<void>;
 }
 
+export type InternalDerivedTransitionPlanRederiverV1 = () => Promise<InternalDerivedTransitionPlanSourceV1>;
+
 type HostObservation = Readonly<{
   transitionPlanSource: Readonly<{ kind: "committed_file"; transitionPlanPath: string; transitionPlanRawSha256: string }> | InternalDerivedTransitionPlanSourceV1;
   repositoryRoot: string;
@@ -232,6 +234,16 @@ function sha256(bytes: string | Uint8Array): string {
 
 function digestId(domain: string, value: unknown): string {
   return createHash("sha256").update(`${domain}\0${canonicalJson(value)}`).digest("base64url");
+}
+
+function assertDerivedSourceProvenanceDigest(source: InternalDerivedTransitionPlanSourceV1): void {
+  const expectedDigest = `sha256:${digestId("shield-legacy-derived-transition-plan-provenance-v1", source.provenance)}`;
+  const expectedPath = `.shield/audit/legacy-reviewed-transition/${expectedDigest}/transition-plan.json`;
+  if (source.provenanceDigest !== expectedDigest || source.virtualPath !== expectedPath ||
+      source.canonicalPlanBytes !== `${canonicalJson(source.transitionPlan)}\n` ||
+      source.transitionPlanRawSha256 !== sha256(source.canonicalPlanBytes)) {
+    throw new Error("legacy_derived_provenance_digest_mismatch");
+  }
 }
 
 function closed(state: PrepareReviewedMissionTransitionClosedResultV1["state"], code: string, ...errors: readonly string[]): PrepareReviewedMissionTransitionClosedResultV1 {
@@ -398,6 +410,18 @@ async function committedFile(root: string, revision: string, relativePath: strin
   return { file, objectId: match[2] as string };
 }
 
+async function exactGitBlobIdentity(root: string, revision: string, relativePath: string, label: string): Promise<Readonly<{
+  mode: "100644" | "100755";
+  objectId: string;
+}>> {
+  const listing = await gitBytes(root, ["ls-tree", "-z", "--full-tree", revision, "--", relativePath]);
+  const records = listing.toString("utf8").split("\0").filter(Boolean);
+  if (records.length !== 1) throw new Error(`${label}_entry_missing_or_ambiguous`);
+  const match = /^(100644|100755) blob ([0-9a-f]{40,64})\t(.+)$/u.exec(records[0] as string);
+  if (match === null || match[3] !== relativePath) throw new Error(`${label}_entry_not_regular`);
+  return Object.freeze({ mode: match[1] as "100644" | "100755", objectId: match[2] as string });
+}
+
 function repositoryIdFromRemote(remote: string): string | null {
   const value = remote.trim().replace(/\.git$/u, "");
   const match = /^(?:https?:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/\s]+\/[^/\s]+)$/iu.exec(value);
@@ -502,12 +526,17 @@ async function observeHost(input: PrepareReviewedMissionTransitionInputV1, deriv
   }).slice(0, 32)}`;
   if (derivedSource !== undefined) {
     const provenance = derivedSource.provenance;
+    const artifactPlan = await exactGitBlobIdentity(canonicalRoot, provenance.artifactCommit, provenance.legacyPlanPath, "legacy_artifact_plan");
+    const currentPlan = await exactGitBlobIdentity(canonicalRoot, headRevision, provenance.legacyPlanPath, "legacy_current_plan");
     if (provenance.repositoryId !== parsedConfig.value.repositoryId || provenance.repositoryRoot !== canonicalRoot ||
         provenance.repositoryWorkspaceId !== repositoryWorkspaceId || provenance.missionId !== input.missionId ||
         provenance.missionRevision !== projection.brief.revisionId || provenance.journalSequence !== projection.lastSequence ||
         provenance.journalDigest !== journalByteSha256(journalFile.bytes) || provenance.branch !== branch || provenance.headRevision !== headRevision ||
         provenance.derivedCandidateDigest !== transitionPlan.digest || provenance.artifactCommit !== transitionPlan.parentPlanCommit ||
-        provenance.legacyPlanPath !== transitionPlan.parentPlanPath || provenance.legacyPlanBlobSha256 !== transitionPlan.parentPlanRawSha256) {
+        provenance.legacyPlanPath !== transitionPlan.parentPlanPath || provenance.legacyPlanBlobSha256 !== transitionPlan.parentPlanRawSha256 ||
+        provenance.artifactPlanMode !== artifactPlan.mode || provenance.artifactPlanObjectId !== artifactPlan.objectId ||
+        provenance.currentPlanMode !== currentPlan.mode || provenance.currentPlanObjectId !== currentPlan.objectId ||
+        artifactPlan.mode !== currentPlan.mode || artifactPlan.objectId !== currentPlan.objectId) {
       throw new Error("legacy_derived_provenance_host_mismatch");
     }
   }
@@ -855,11 +884,9 @@ async function acceptExistingSeed(
   }
 }
 
-function matchingLogicalClaim(projection: SeatDispatchReceiptProjectionV1, operation: ReturnType<typeof logicalOperation>): boolean {
+function matchingMissionClaim(projection: SeatDispatchReceiptProjectionV1, operation: ReturnType<typeof logicalOperation>): boolean {
   return projection.parentMissionId === operation.missionId && projection.parentMissionRevision === operation.missionRevision &&
-    projection.parentSessionId === operation.parentSessionId && projection.repositoryId === operation.repositoryId &&
-    projection.repositoryWorkspaceId === operation.repositoryWorkspaceId && projection.artifactId === operation.transitionPlanId &&
-    projection.artifactRevision === operation.transitionPlanDigest;
+    projection.repositoryWorkspaceId === operation.repositoryWorkspaceId;
 }
 
 async function missingSeedHasClaim(
@@ -876,7 +903,7 @@ async function missingSeedHasClaim(
     if (ledger.code === "dispatch_receipt_missing") return false;
     throw new Error(`dispatch_receipt_scan_failed:${ledger.code}:${ledger.errors.join(" ")}`);
   }
-  return ledger.value.projections.some((projection) => matchingLogicalClaim(projection, operation));
+  return ledger.value.projections.some((projection) => matchingMissionClaim(projection, operation));
 }
 
 async function installSeed(
@@ -977,7 +1004,7 @@ async function resolveSeed(
     return await acceptExistingSeed(observation, input, relativePath, operations);
   }
   try {
-    if (await missingSeedHasClaim(observation, readLedger)) return closed("recovery_required", "REQUEST_SEED_MISSING_AFTER_CLAIM", "A dispatch claim exists for this logical operation but its request seed is missing.");
+    if (await missingSeedHasClaim(observation, readLedger)) return closed("recovery_required", "REQUEST_SEED_MISSING_AFTER_CLAIM", "A dispatch claim exists for this repository workspace, mission, and mission revision without the exact request seed.");
     const date = now();
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return closed("invalid", "HOST_TIMESTAMP_INVALID", "The host-trusted clock did not return a valid Date.");
     const seed = seedFor(observation, requestFor(observation, input, date.toISOString()));
@@ -1153,9 +1180,16 @@ async function prepareReviewedMissionTransitionInternal(
   input: unknown,
   dependencies: CopilotFuryReviewedTransitionHostDependenciesV1 = {},
   derivedSource?: InternalDerivedTransitionPlanSourceV1,
+  rederiveDerivedSource?: InternalDerivedTransitionPlanRederiverV1,
 ): Promise<PrepareReviewedMissionTransitionResultV1> {
   const checkedInput = validateInput(input);
   if (checkedInput === null) return closed("invalid", "MALFORMED_HOST_REQUEST", "Reviewed-transition host input fields are not closed or valid.");
+  if (derivedSource !== undefined && rederiveDerivedSource === undefined) {
+    return closed("invalid", "MALFORMED_DERIVED_SOURCE_CAPABILITY", "Derived transition sources require a fresh repository-backed rederivation capability.");
+  }
+  try { if (derivedSource !== undefined) assertDerivedSourceProvenanceDigest(derivedSource); } catch (error) {
+    return closed("invalid", "HOST_PRECONDITION_FAILED", error instanceof Error ? error.message : String(error));
+  }
   let initial: HostObservation;
   try { initial = await observeHost(checkedInput, derivedSource); } catch (error) {
     return closed("invalid", "HOST_PRECONDITION_FAILED", error instanceof Error ? error.message : String(error));
@@ -1228,14 +1262,49 @@ async function prepareReviewedMissionTransitionInternal(
       if (!identityEquals(resolved.identity, receipt.identity)) throw new Error("dispatch_resolver_identity_mismatch");
 
       await dependencies.beforeMaterialization?.();
-      const beforeMaterializationObservation = await reobserveExact(checkedInput, initial, seed, persistence, derivedSource);
+      let exactMaterializationSource = derivedSource;
+      if (derivedSource !== undefined) {
+        const freshlyDerivedSource = await (rederiveDerivedSource as InternalDerivedTransitionPlanRederiverV1)();
+        assertDerivedSourceProvenanceDigest(freshlyDerivedSource);
+        if (seed.seed.schemaVersion !== 2 ||
+            canonicalJson(freshlyDerivedSource) !== canonicalJson(derivedSource) ||
+            canonicalJson(freshlyDerivedSource) !== canonicalJson(seed.seed.transitionPlanSource)) {
+          throw new Error("legacy_derived_source_pre_materialization_drift");
+        }
+        exactMaterializationSource = freshlyDerivedSource;
+      }
+      const exactMaterializationObservation = await reobserveExact(
+        checkedInput,
+        initial,
+        seed,
+        persistence,
+        exactMaterializationSource,
+      );
+      if (exactMaterializationSource !== undefined) {
+        const freshlyDerivedRequest = requestFor(exactMaterializationObservation, checkedInput, seed.seed.request.timestamp.value);
+        if (canonicalJson(freshlyDerivedRequest) !== canonicalJson(seed.seed.request) ||
+            canonicalJson(transition.value) !== canonicalJson(exactMaterializationSource.transitionPlan)) {
+          throw new Error("legacy_derived_request_pre_materialization_drift");
+        }
+      }
       const transitionReadback = await secureHandoffFile(initial.repositoryRoot, dispatchResult.handoff.transitionPlanPath, "dispatch_transition_plan", transitionArtifact.directoryChain);
       const reviewReadback = await secureHandoffFile(initial.repositoryRoot, dispatchResult.handoff.reviewArtifactPath, "dispatch_review_artifact", reviewArtifact.directoryChain);
       if (transitionReadback.file.bytes !== transitionArtifact.file.bytes || transitionReadback.file.identity !== transitionArtifact.file.identity ||
           reviewReadback.file.bytes !== reviewArtifact.file.bytes || reviewReadback.file.identity !== reviewArtifact.file.identity) throw new Error("dispatch_handoff_artifact_replaced_or_changed");
-      const receiptReadback = await receiptSnapshot(beforeMaterializationObservation, seed.seed.request, dispatchResult.handoff.dispatchReceiptId, transition.value, readLedger);
+      const receiptReadback = await receiptSnapshot(exactMaterializationObservation, seed.seed.request, dispatchResult.handoff.dispatchReceiptId, transition.value, readLedger);
       if (!identityEquals(receipt.identity, receiptReadback.identity) || receipt.rawReceiptDigest !== receiptReadback.rawReceiptDigest ||
           receipt.ledgerFile.identity !== receiptReadback.ledgerFile.identity) throw new Error("dispatch_receipt_replaced_or_changed");
+      if (exactMaterializationSource !== undefined &&
+          (dispatchResult.handoff.dispatchReceiptId !== receiptReadback.projection.receiptId ||
+           receiptReadback.projection.artifactId !== exactMaterializationSource.transitionPlan.id ||
+           receiptReadback.projection.artifactRevision !== exactMaterializationSource.transitionPlan.digest ||
+           receiptReadback.projection.subjectRevision !== exactMaterializationSource.transitionPlan.digest)) {
+        throw new Error("legacy_derived_pass_handoff_pre_materialization_drift");
+      }
+
+      const finalResolved = await resolver({ repositoryRoot: initial.repositoryRoot, repositoryId: initial.repositoryId, receiptId: dispatchResult.handoff.dispatchReceiptId });
+      if (finalResolved.state === "invalid" || !identityEquals(finalResolved.identity, receiptReadback.identity) ||
+          !identityEquals(finalResolved.identity, resolved.identity)) throw new Error("dispatch_resolver_identity_mismatch");
 
       const materialize = dependencies.materializeReviewedTransition ?? materializeReviewedMissionTransitionV1;
       return await materialize({
@@ -1244,7 +1313,7 @@ async function prepareReviewedMissionTransitionInternal(
         transitionPlan: transition.value,
         reviewArtifact: review.value as MissionTransitionPlanReviewV1,
         expectedBinding: expectedBinding(transition.value),
-        dispatchIdentity: resolved.identity,
+        dispatchIdentity: finalResolved.identity,
       });
     } catch (error) {
       return closed("recovery_required", "POST_PASS_REOBSERVATION_FAILED", error instanceof Error ? error.message : String(error));
@@ -1269,11 +1338,12 @@ export async function prepareReviewedMissionTransitionFromDerivedSourceV1(
   input: Readonly<{ missionId: string; repositoryRoot: string; furyModel: string }>,
   source: InternalDerivedTransitionPlanSourceV1,
   dependencies: CopilotFuryReviewedTransitionHostDependenciesV1 = {},
+  rederiveSource?: InternalDerivedTransitionPlanRederiverV1,
 ): Promise<PrepareReviewedMissionTransitionResultV1> {
   return prepareReviewedMissionTransitionInternal({
     missionId: input.missionId,
     repositoryRoot: input.repositoryRoot,
     transitionPlanPath: source.virtualPath,
     furyModel: input.furyModel,
-  }, dependencies, source);
+  }, dependencies, source, rederiveSource);
 }

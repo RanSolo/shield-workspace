@@ -1632,10 +1632,12 @@ async function revalidateStoredAttribution(
   return [];
 }
 
-function initialWheelsUpLineage(
-  graph: import("./mission-preparation-store-v1.mjs").MissionReviewedTransitionGraphV1,
+export function projectFreshAuthorizeWheelsUpCompatibilityV1(
+  plan: TransitionPlanV1OrV2,
   environment: AuthorizeWheelsUpEnvironmentObservationV1,
+  requireExactRepositoryCompatibility = false,
 ): InitialWheelsUpLineageV1 | null {
+  if (plan.transitionKind !== "fresh_authorize_wheels_up") return null;
   const projection = environment.current.projection;
   if (projection.schemaVersion !== 9 || projection.authorization !== "authorized" || projection.implementationAuthorityState !== "authorized" ||
       projection.implementationAuthority === null || projection.runtimeBindings.length !== 1 || projection.activeRuntimeBindings.length !== 1 ||
@@ -1645,8 +1647,8 @@ function initialWheelsUpLineage(
   const kinds = ["governance.decided", "implementation.authorized", "runtime.binding_recorded", "review.publication_authorized"];
   const startingSequence = projection.lastSequence - 4;
   if (startingSequence < 0 || entries.length !== 4 || entries.some((entry, index) =>
-    entry.type !== kinds[index] || entry.schemaVersion !== 9 || entry.missionId !== graph.transitionPlan.missionId ||
-    entry.sequence !== startingSequence + index + 1 || entry.entryId !== `entry:${graph.transitionPlan.missionId}:${startingSequence + index + 1}`)) return null;
+    entry.type !== kinds[index] || entry.schemaVersion !== 9 || entry.missionId !== plan.missionId ||
+    entry.sequence !== startingSequence + index + 1 || entry.entryId !== `entry:${plan.missionId}:${startingSequence + index + 1}`)) return null;
   const governanceEntry = entries[0] as Extract<typeof entries[number], { type: "governance.decided" }>;
   const implementationEntry = entries[1] as Extract<typeof entries[number], { type: "implementation.authorized" }>;
   const runtimeEntry = entries[2] as Extract<typeof entries[number], { type: "runtime.binding_recorded" }>;
@@ -1656,7 +1658,6 @@ function initialWheelsUpLineage(
   const runtime = runtimeWrapper.binding;
   const publicationRecord = projection.publicationAuthorizations[0];
   const publication = publicationRecord.authority;
-  const plan = graph.transitionPlan;
   const binding = environment.binding;
   const initialHeadRevision = authority.headRevision;
   const authorizationRequirements = projection.requirements.filter(({ evidenceKind, requiredRoleId, phase }) =>
@@ -1834,6 +1835,9 @@ function initialWheelsUpLineage(
       environment.repository.branch === "HEAD" || environment.repository.baseRevision !== plan.planningBaseRevision ||
       canonicalJson(environment.remainingHumanGates) !== canonicalJson(expectedRemainingHumanGates) ||
       environment.journalSha256 !== journalByteSha256(environment.journalBytes)) return null;
+  if (requireExactRepositoryCompatibility && (!environment.repository.baseAncestor || !workspaceClean ||
+      environment.symlinkPaths.length !== 0 || environment.gitlinkPaths.length !== 0 ||
+      environment.repository.changedPaths.some((path) => !plan.approvedRelativePaths.includes(path)))) return null;
   const exactInitialRetry = workspaceClean && environment.repository.baseAncestor && environment.repository.headRevision === initialHeadRevision &&
     canonicalJson(environment.repository.changedPaths) === canonicalJson(plan.publicationPaths) &&
     environment.symlinkPaths.length === 0 && environment.gitlinkPaths.length === 0;
@@ -1903,6 +1907,13 @@ function initialWheelsUpLineage(
     authorizationManifestDigest,
   });
   return deepFreeze({ initialHeadRevision, exactRetry });
+}
+
+function initialWheelsUpLineage(
+  graph: import("./mission-preparation-store-v1.mjs").MissionReviewedTransitionGraphV1,
+  environment: AuthorizeWheelsUpEnvironmentObservationV1,
+): InitialWheelsUpLineageV1 | null {
+  return projectFreshAuthorizeWheelsUpCompatibilityV1(graph.transitionPlan, environment);
 }
 
 function publicationPathIsContained(path: string, approvedRoots: readonly string[]): boolean {
