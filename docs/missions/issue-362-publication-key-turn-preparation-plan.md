@@ -1,4 +1,4 @@
-# Issue #362 — canonical publication key-turn preparation
+# Issue #362 — clockwork publication preparation through `prepare-next`
 
 ## Exact identity
 
@@ -10,177 +10,158 @@
 - Mission: `mission:issue-362-publication-packet`
 - Authority at freeze: planning only
 
-## Observed seam
+## Architecture correction
 
-Issue #349 reached draft publication only after Hill manually authored a fresh
-publication mission's `authorize-wheels-up` input. Production validation caught
-an unsorted `approvedEffectKeys` vector and rejected an attempted conflicting
-publication meaning before the PIN. Once corrected, the existing Wheels Up and
-draft-publication rails succeeded.
+Issue #349 reached draft publication only after Hill manually created a fresh
+publication mission and hand-authored an `authorize-wheels-up` input. The
+production validators correctly rejected unsorted effect keys and conflicting
+publication meaning before the PIN.
 
-The repository already owns the downstream clockwork command
-`mission publish-reviewed`. Issue #362 must not replace or fork that command,
-the final-publication transition, the publication executor, semantic authority
-identity, signer, journal, or GitHub adapter. It fills only the earlier missing
-constructor for a fresh pending publication mission.
+That manual packet was unnecessary. Merged main already owns the complete
+canonical path:
+
+1. `continue-legacy-reviewed-transition` derives and Fury-reviews a protected
+   transition graph for an eligible legacy mission without caller-authored
+   authority fields.
+2. `prepare-next` derives exact implementation or publication meaning from that
+   protected graph and live mission/repository evidence.
+3. `publish-reviewed` composes prepared publication authorization and
+   execute-once draft delivery.
+
+Issue #362 must not add `prepare-publication`, write an authorization packet,
+invent execution identities, add a transition kind, or duplicate any of those
+engines. It adds the missing clockwork composition between steps 1 and 2.
 
 ## Bounded outcome
 
-Add one authority-none command:
+Extend the existing command:
 
 ```text
-shield mission prepare-publication \
-  --mission-id <fresh-pending-mission-id> \
-  --base-branch <operator-asserted-default-branch> \
+shield mission prepare-next \
+  --mission-id <id> \
   --root <canonical-root> \
-  [--json]
+  [--fury-model <model-id>] \
+  [existing Guided Review and passcode options]
 ```
 
-The caller supplies mission identity, the canonical root, and a base-branch
-equality assertion. The caller supplies no authorization JSON, path, action,
-effect, capability, validation, model, runtime, executor, publication meaning,
-or authority field.
+Normal graph-backed behavior remains byte-compatible. When and only when the
+first canonical preparation result is `protected_evidence_mismatch`:
 
-The command derives and preflights one canonical
-`authorize-wheels-up` input, writes it atomically beneath `.shield/tmp`, reads
-back the exact bytes, and returns the packet path/digest plus the exact existing
-`mission authorize-wheels-up` command. It never reads a passcode or creates
-authority.
+- without `--fury-model`, return the same blocked result plus a structured
+  authority-none `nextAction` naming
+  `mission.continue-legacy-reviewed-transition`, the exact current mission,
+  and the requirement to select a Fury model;
+- with `--fury-model`, invoke the existing
+  `continueLegacyReviewedTransitionV1` operation using only mission ID,
+  canonical root, and the selected reviewer model;
+- if the existing operation returns `materialized` or
+  `already_materialized`, rerun canonical preparation once and continue in the
+  same process through the unchanged `prepare-next` state machine;
+- if Fury returns REVISE, dispatch is pending, or the legacy operation returns
+  invalid/conflict/recovery-required, return that closed terminal result and do
+  not reach a PIN;
+- if the second preparation is not a canonical ready/replay state, return its
+  exact blocked result without another legacy attempt.
 
-## Eligibility and exact derivation
-
-Before writing the prepared packet, require:
-
-1. Exact canonical prepared worktree, configured/origin repository identity,
-   attached non-default branch, clean status, and stable HEAD/ref/worktree
-   ownership across repeated observation.
-2. One schema-9 mission whose brief ID equals `--mission-id`, whose subject and
-   repository match configuration, and whose state is fresh pending:
-   authorization `waiting`, implementation authority `waiting`, execution
-   `not-started`, final acceptance `waiting`, no implementation authority,
-   runtime binding, publication authority, or communication request, and one
-   pending Coulson mission-authorization requirement.
-3. Mission participants include Hill, May, Fury, Coulson and no malformed or
-   duplicate seat records. The command does not add participants or repair the
-   brief.
-4. The configured GitHub repository's canonical default branch equals the
-   caller's `--base-branch`; local `origin/<base>` exists. The merge base of
-   HEAD and that exact ref is a strict ancestor of HEAD.
-5. The merge-base-to-HEAD tree delta is non-empty and stable. Every changed
-   entry is a regular repository path accepted by the production publication
-   path contract; symlink, gitlink, deletion ambiguity, unsafe path, duplicate,
-   path count overflow, or observation drift blocks preparation.
-
-Derive the input exactly as follows:
-
-- `baseRevision` <- exact merge base with the verified default branch.
-- `approvedRelativePaths` and `publicationPaths` <- identical canonical
-  base-to-HEAD changed paths, sorted with the production path comparator.
-- `approvedActionIds` <- literals
-  `action:review-publication.execute` and
-  `action:review-publication.validate`.
-- `approvedEffectClasses` <- literal `verification`.
-- `approvedEffectKeys` <- literals
-  `effect:review-publication.execute` and
-  `effect:review-publication.validate`.
-- `approvedCapabilities` <- literals `filesystem_write` and
-  `process_execute`.
-- `validationCommandIds` <- literals
-  `validation:review-publication.exact-head` and
-  `validation:review-publication.paths`.
-- `modelId` <- literal `model:shield-publication-none`.
-- `reasoningRuntimeId` <- literal `runtime:shield-publication-host`.
-- `toolExecutorId` <- literal `executor:shield-cli`.
-
-These three execution identities deliberately record that packet preparation
-and publication are deterministic host operations, not a model conclusion.
-They remain pairwise distinct and distinct from mission seats.
-
-All vectors are canonicalized by constructors and then passed through the
-existing exported `validateAuthorizeWheelsUpInput`. The implementation exposes
-one authority-none preflight facade from the existing Wheels Up executor that
-uses the same private production preparation path as signing, but returns only
-a redacted readiness identity. The final authorization command still repeats
-the full production preparation before display, after signing, and before the
-journal append.
-
-## Atomic packet and replay
-
-- Destination:
-  `.shield/tmp/<filesystem-safe-mission-id>-publication-authorize-wheels-up.json`.
-- Canonical JSON plus one newline; SHA-256 is over the exact written bytes.
-- Create parent safely; reject symlinked/non-directory parents and
-  symlinked/non-regular destination files.
-- Write a sibling exclusive temporary file, fsync it, rename atomically, fsync
-  the parent, and read back through no-follow identity checks.
-- Exact replay returns `reused` with the same bytes, digest, and command.
-- An existing non-identical packet returns `packet_conflict`; it is never
-  overwritten.
-- Reobserve configuration, journal bytes/identity, repository, branch, base,
-  HEAD, changed paths, worktree receipt, and production preflight immediately
-  before rename. Any drift removes the temporary file and returns one closed
-  blocked result.
-
-## Output contract
-
-Human mode prints only:
+A successful eligible publication continuation therefore flows:
 
 ```text
-PUBLICATION KEY TURN READY
-Mission: <id>
-Revision: <short HEAD>
-Paths: <count>
-Next: <one copy-safe authorize-wheels-up command>
+missing protected graph
+→ exact #349 legacy derivation
+→ production Fury PASS
+→ durable reviewed-transition materialization
+→ canonical publication_ready
+→ existing Guided Review choice
+→ existing publication PIN
 ```
 
-JSON mode writes exactly one parseable object to stdout containing schema
-version, state (`prepared|reused|blocked`), mission ID, base/HEAD, packet path,
-packet byte digest, path count, and a structured next action. It does not emit
-raw journal, signer, trust registry, absolute paths beyond the explicitly
-selected canonical root/packet, or authority material.
+No authorization JSON exists in this flow.
+
+## Closed non-overlap and identity rules
+
+1. The legacy bridge is attempted only for the exact first-pass
+   `protected_evidence_mismatch` state. Fresh Wheels Up, runtime-binding,
+   publication-ready, already-authorized, and every other blocked result never
+   enter it.
+2. `continueLegacyReviewedTransitionV1` remains the sole eligibility,
+   derivation, reviewer identity, seed, dispatch, replay, and materialization
+   owner. `prepare-next` does not inspect Markdown, infer scope, construct a
+   transition plan, or accept a verdict/receipt/path/runtime identity.
+3. `--fury-model` selects only the actual production Fury reviewer used by the
+   existing dispatcher. It is not copied into implementation authority; the
+   reviewed transition graph retains the actual May model/runtime/executor
+   identities derived from existing signed mission lineage.
+4. Existing graph-backed publication derives base, HEAD, changed paths,
+   implementation scope, publication effects, signer binding, journal
+   sequence, and semantic authority through
+   `resolvePreparedMissionTransitionV1`. No default branch or GitHub state is
+   reconstructed by #362.
+5. At most one legacy continuation attempt and one post-materialization
+   preparation replay occur per invocation. Existing seed/claim/receipt
+   idempotency owns concurrent and restarted invocations.
+6. The command never catches and relabels a specific legacy or preparation
+   error as success. No fallback packet or manual command is generated.
+
+## Output
+
+Human mode remains concise:
+
+- missing `--fury-model`: the canonical blocker plus one copy-safe next action;
+- Fury REVISE or recovery: the existing closed state/code/disposition;
+- successful materialization: no intermediate receipt dump; immediately show
+  the existing next decision or PIN projection;
+- successful authorization: the existing concise receipt.
+
+JSON mode emits one parseable terminal object. It must not concatenate the
+legacy result and preparation result. A structured `transition` field may
+identify `legacy_materialized` only in the final ready/replay response; it is
+advisory provenance, not authority.
 
 ## Smallest implementation inventory
 
-- `packages/shield-team-system/src/publication-key-turn-preparation-v1.mts`
-- `packages/shield-team-system/src/authorize-wheels-up-executor-v1.mts`
-- `packages/shield-team-system/src/mission-cli.mts`
-- `packages/shield-team-system/tests/publication-key-turn-preparation-v1.test.mjs`
-- `packages/shield-team-system/tests/supervised-cli.test.mjs`
-- this plan
+May may modify only:
 
-No public package export, package dependency, lockfile, mission/authority
-schema, journal event, signer, runtime-binding schema, publication identity,
-GitHub adapter, final-publication executor, merge, deployment, release, or
-final-acceptance change is allowed.
+- `packages/shield-team-system/src/mission-cli.mts`
+- `packages/shield-team-system/tests/supervised-cli.test.mjs`
+
+This reviewed plan is immutable during implementation. No mission-preparation
+library, authority schema, transition schema, journal event, signer, runtime
+binding, publication identity/executor, GitHub adapter, package export,
+dependency, lockfile, merge, deployment, release, or final-acceptance change
+is allowed.
 
 ## Acceptance evidence
 
-1. A fresh pending fixture produces a packet accepted unchanged by
-   `validateAuthorizeWheelsUpInput` and by the production authority-none
-   preflight facade, then reaches the existing PIN boundary on first use.
-2. Reproductions of #349's unsorted effect keys and conflicting canonical
-   publication meaning cannot be emitted by the constructor.
-3. Exact replay performs no second write and returns byte-identical output.
-4. Existing conflicting packet, stale receipt, dirty status, default-branch
-   mismatch, branch/HEAD/ref drift, base drift, changed-path drift, unsafe tree
-   entries, ineligible mission state, config/journal replacement, and failed
-   production preflight all stop before packet replacement or signer access.
-5. Tests prove the preparation path never reads a signer, requests a PIN,
-   appends a journal entry, invokes a model, runs Git publication, or calls
-   GitHub.
-6. Existing `authorize-wheels-up`, `prepare-next`, and `publish-reviewed`
-   behavior remains unchanged.
+1. Existing graph-backed fresh Wheels Up, runtime-binding, publication-ready,
+   publication-already-authorized, and blocked fixtures never call the legacy
+   operation and retain existing output/exit behavior.
+2. An exact missing-graph fixture without `--fury-model` returns one
+   machine-readable, authority-none successor and performs no model, audit,
+   journal, signer, Git, or GitHub effect.
+3. The same fixture with `--fury-model` passes only mission ID, canonical root,
+   and model to the injected legacy operation.
+4. Materialized and already-materialized outcomes cause exactly one canonical
+   preparation replay and then reach the existing publication decision/PIN
+   path without caller JSON.
+5. Fury REVISE, dispatch pending, invalid, conflict, recovery-required, thrown
+   operation, and blocked second preparation produce no PIN and no second
+   legacy attempt.
+6. Exact retry and concurrent invocation rely on and preserve #349's existing
+   one-seed/one-dispatch/one-materialization semantics.
+7. A spawned real-CLI fixture reproduces the #349 manual-packet scenario and
+   reaches the publication gate through `prepare-next --fury-model` without
+   invoking `authorize-wheels-up --input` or `publication-authorize --input`.
 
 ## Validation
 
 - `npm exec -- nx run @shield/team-system:build`
-- focused publication-key-turn, Wheels Up, and supervised-CLI tests
+- `node --test --test-name-pattern='prepare-next|legacy continuation|publication' packages/shield-team-system/tests/supervised-cli.test.mjs`
 - `npm exec -- nx affected -t build test --base=d2174e32f384c1af1ec2d650ec30a4fbf8f9daec --head=HEAD --exclude=@shield/multiband`
 - `git diff --check d2174e32f384c1af1ec2d650ec30a4fbf8f9daec..HEAD`
 
 ## Stop conditions
 
-Return to Fury before implementation if the design requires caller-authored
-closed-schema fields, a second publication executor, a new authority meaning,
-model inference, passcode storage, a journal append during preparation, or any
-path outside the frozen inventory.
+Return to Fury before implementation if this cannot be expressed as a bounded
+composition in `mission-cli.mts`, if it requires any caller-authored authority
+field or durable packet, if it changes #349 replay semantics, or if it requires
+a path outside the two-file inventory.
