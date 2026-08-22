@@ -10,6 +10,7 @@ import test from "node:test";
 import {
   LEGACY_REVIEWED_TRANSITION_SEED_ROOT,
   continueLegacyReviewedTransitionV1,
+  preflightLegacyProtectedGraphAbsenceV1,
 } from "../dist/legacy-reviewed-transition-v1.mjs";
 import {
   COPILOT_FURY_PLAN_DISPATCH_EXECUTOR_ID,
@@ -316,6 +317,30 @@ function graphExists(current) {
   const token = createHash("sha256").update(current.missionId).digest("hex");
   return existsSync(join(current.root, ".shield", "audit", "mission-preparation", token, "reviewed-transition.json"));
 }
+
+test("protected graph absence preflight is authority-none and gates legacy effects", async () => {
+  const current = await fixture();
+  const absent = await preflightLegacyProtectedGraphAbsenceV1({ missionId: current.missionId, repositoryRoot: current.root });
+  assert.deepEqual(absent, { authority: "none", state: "absent" });
+
+  const graphRoot = join(current.root, ".shield", "audit", "mission-preparation", createHash("sha256").update(current.missionId).digest("hex"));
+  await mkdir(graphRoot, { recursive: true });
+  const present = await preflightLegacyProtectedGraphAbsenceV1({ missionId: current.missionId, repositoryRoot: current.root });
+  assert.equal(present.authority, "none");
+  assert.equal(present.state, "blocked");
+  assert.equal(present.code, "PROTECTED_GRAPH_NOT_ABSENT");
+
+  let hostEffects = 0;
+  const legacy = await continueLegacyReviewedTransitionV1(
+    { missionId: current.missionId, repositoryRoot: current.root, furyModel: "model:fury" },
+    { reviewedTransitionHost: async () => { hostEffects += 1; throw new Error("must not run"); } },
+  );
+  assert.equal(legacy.authority, "none");
+  assert.equal(legacy.state, "blocked");
+  assert.equal(legacy.code, "PROTECTED_GRAPH_NOT_ABSENT");
+  assert.equal(hostEffects, 0);
+  assert.equal(existsSync(join(current.root, LEGACY_REVIEWED_TRANSITION_SEED_ROOT)), false);
+});
 
 test("exact #341 legacy lineage derives one closed fresh_authorize_wheels_up carrier without parsing Markdown or writing a virtual file", async () => {
   const current = await fixture();

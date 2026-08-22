@@ -26,6 +26,7 @@ import {
 import {
   projectFreshAuthorizeWheelsUpCompatibilityV1,
 } from "./mission-preparation-host-v1.mjs";
+import { deriveMissionReviewedTransitionGraphMaterializationPathV1 } from "./mission-preparation-store-v1.mjs";
 import {
   validateAuthorizeWheelsUpInput,
   type AuthorizeWheelsUpEnvironmentObservationV1,
@@ -51,6 +52,7 @@ export const LEGACY_REVIEWED_TRANSITION_SEED_ROOT = ".shield/audit/legacy-review
 
 const execFile = promisify(execFileNode);
 const INPUT_FIELDS = ["missionId", "repositoryRoot", "furyModel"] as const;
+const GRAPH_PREFLIGHT_INPUT_FIELDS = ["missionId", "repositoryRoot"] as const;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@#-]{0,255}$/u;
 const REVISION = /^[0-9a-f]{40}$/u;
 const PLAN_PATH = /^docs\/missions\/[^/]+\.md$/u;
@@ -73,6 +75,11 @@ export interface ContinueLegacyReviewedTransitionInputV1 {
   readonly repositoryRoot: string;
   readonly furyModel: string;
 }
+
+export type PreflightLegacyProtectedGraphAbsenceResultV1 = Readonly<
+  | { readonly authority: "none"; readonly state: "absent" }
+  | { readonly authority: "none"; readonly state: "blocked"; readonly code: string; readonly errors: readonly string[] }
+>;
 
 export interface LegacyReviewedTransitionDependenciesV1 {
   readonly reviewedTransitionHost?: typeof prepareReviewedMissionTransitionFromDerivedSourceV1;
@@ -104,7 +111,8 @@ export type ContinueLegacyReviewedTransitionClosedResultV1 = Readonly<{
 
 export type ContinueLegacyReviewedTransitionResultV1 =
   | PrepareReviewedMissionTransitionResultV1
-  | ContinueLegacyReviewedTransitionClosedResultV1;
+  | ContinueLegacyReviewedTransitionClosedResultV1
+  | PreflightLegacyProtectedGraphAbsenceResultV1;
 
 type LegacyObservation = Readonly<{
   repositoryRoot: string;
@@ -843,12 +851,92 @@ function validateInput(input: unknown): ContinueLegacyReviewedTransitionInputV1 
   return Object.freeze({ missionId: input.missionId, repositoryRoot: input.repositoryRoot, furyModel: input.furyModel });
 }
 
+function validateGraphPreflightInput(input: unknown): Readonly<{ missionId: string; repositoryRoot: string }> | null {
+  if (!exact(input, GRAPH_PREFLIGHT_INPUT_FIELDS) || typeof input.repositoryRoot !== "string" || !isAbsolute(input.repositoryRoot) ||
+      resolve(input.repositoryRoot) !== input.repositoryRoot || typeof input.missionId !== "string" || !IDENTIFIER.test(input.missionId)) return null;
+  return Object.freeze({ missionId: input.missionId, repositoryRoot: input.repositoryRoot });
+}
+
+function protectedGraphNotAbsent(...errors: readonly string[]): PreflightLegacyProtectedGraphAbsenceResultV1 {
+  return Object.freeze({
+    authority: "none" as const,
+    state: "blocked" as const,
+    code: "PROTECTED_GRAPH_NOT_ABSENT",
+    errors: Object.freeze(errors.length === 0 ? ["The protected mission-preparation graph root is not absent."] : [...errors]),
+  });
+}
+
+export async function preflightLegacyProtectedGraphAbsenceV1(input: unknown): Promise<PreflightLegacyProtectedGraphAbsenceResultV1> {
+  const checked = validateGraphPreflightInput(input);
+  if (checked === null) return protectedGraphNotAbsent("Malformed protected graph absence preflight request.");
+  let graphRoot: string;
+  let protectedDirectories: readonly string[];
+  try {
+    const canonicalRoot = await realpath(checked.repositoryRoot);
+    if (canonicalRoot !== checked.repositoryRoot) return protectedGraphNotAbsent("Repository root is not canonical.");
+    const rootStats = await lstat(canonicalRoot);
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) return protectedGraphNotAbsent("Repository root is not a safe directory.");
+    const paths = deriveMissionReviewedTransitionGraphMaterializationPathV1(canonicalRoot, checked.missionId);
+    graphRoot = paths.missionDirectory;
+    protectedDirectories = [paths.shieldDirectory, paths.auditDirectory, paths.missionPreparationDirectory];
+  } catch (error) {
+    return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+  }
+
+  for (const directory of protectedDirectories) {
+    let firstDirectory: Awaited<ReturnType<typeof lstat>>;
+    try {
+      firstDirectory = await lstat(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return Object.freeze({ authority: "none", state: "absent" });
+      return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+    }
+    if (firstDirectory.isSymbolicLink() || !firstDirectory.isDirectory()) return protectedGraphNotAbsent("Protected mission-preparation graph parent is unsafe.");
+    try {
+      const secondDirectory = await lstat(directory);
+      if (secondDirectory.dev !== firstDirectory.dev || secondDirectory.ino !== firstDirectory.ino || secondDirectory.mode !== firstDirectory.mode ||
+          secondDirectory.mtimeMs !== firstDirectory.mtimeMs || secondDirectory.ctimeMs !== firstDirectory.ctimeMs) {
+        return protectedGraphNotAbsent("Protected mission-preparation graph parent changed during absence verification.");
+      }
+    } catch (error) {
+      return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  let first: Awaited<ReturnType<typeof lstat>>;
+  try {
+    first = await lstat(graphRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+    try {
+      await lstat(graphRoot);
+      return protectedGraphNotAbsent("Protected mission-preparation graph root appeared during absence verification.");
+    } catch (secondError) {
+      if ((secondError as NodeJS.ErrnoException).code === "ENOENT") return Object.freeze({ authority: "none", state: "absent" });
+      return protectedGraphNotAbsent(secondError instanceof Error ? secondError.message : String(secondError));
+    }
+  }
+
+  try {
+    const second = await lstat(graphRoot);
+    if (second.dev !== first.dev || second.ino !== first.ino || second.mode !== first.mode || second.size !== first.size ||
+        second.mtimeMs !== first.mtimeMs || second.ctimeMs !== first.ctimeMs) {
+      return protectedGraphNotAbsent("Protected mission-preparation graph root changed during absence verification.");
+    }
+  } catch (error) {
+    return protectedGraphNotAbsent(error instanceof Error ? error.message : String(error));
+  }
+  return protectedGraphNotAbsent();
+}
+
 export async function continueLegacyReviewedTransitionV1(
   input: unknown,
   dependencies: LegacyReviewedTransitionDependenciesV1 = {},
 ): Promise<ContinueLegacyReviewedTransitionResultV1> {
   const checked = validateInput(input);
   if (checked === null) return closed("invalid", "MALFORMED_LEGACY_CONTINUATION_REQUEST", "Legacy continuation accepts only missionId, repositoryRoot, and furyModel.");
+  const preflight = await preflightLegacyProtectedGraphAbsenceV1({ missionId: checked.missionId, repositoryRoot: checked.repositoryRoot });
+  if (preflight.state !== "absent") return preflight;
   let initial: LegacyObservation;
   try { initial = await observe(checked); } catch (error) {
     return closed("invalid", "LEGACY_STATE_INELIGIBLE", error instanceof Error ? error.message : String(error));

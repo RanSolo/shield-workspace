@@ -1832,11 +1832,96 @@ test("prepare-next exhaustively consumes the exported transition result without 
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const consumer = source.slice(start, end);
-  assert.match(consumer, /const result = await prepareMissionTransitionSessionV1\([^;]+\);/u);
+  assert.match(consumer, /const prepareSession = dependencies\.prepareSession \?\? prepareMissionTransitionSessionV1;/u);
+  assert.match(consumer, /let result = await prepareSession\([^;]+\);/u);
   assert.doesNotMatch(consumer, /prepareMissionTransitionSessionV1\([^;]+\) as/u);
   assert.match(consumer, /const ready: Extract<ResolvePreparedMissionTransitionResultV1, \{ state: "ready" \}> = result;/u);
   assert.match(consumer, /result\.state === "runtime_binding_ready"/u);
   assert.match(consumer, /result\.state === "runtime_binding_already_authorized"/u);
+});
+
+test("prepare-next composes the guarded legacy continuation with one preparation replay", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-prepare-next-composition-")));
+  const missionId = "mission:issue-362-composition";
+  const first = { state: "blocked", missionId, reasonCode: "protected_evidence_mismatch", errors: ["graph missing"] };
+  const second = { state: "blocked", missionId, reasonCode: "repository_observation_stale", errors: ["second preparation blocked"] };
+  const calls = [];
+  let preparationCalls = 0;
+  const stdout = [];
+  const stderr = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  try {
+    const missingModelStatus = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--json",
+    ], {
+      prepareSession: async () => first,
+      continueLegacyReviewedTransition: async () => { throw new Error("must not run without Fury model"); },
+    });
+    assert.equal(missingModelStatus, 1);
+    assert.deepEqual(JSON.parse(stdout.join("")), {
+      schemaVersion: 1,
+      state: "blocked",
+      reasonCode: "legacy_fury_model_required",
+      missionId,
+      nextAction: {
+        authority: "none",
+        owner: "hill",
+        commandId: "mission.prepare-next",
+        requiredOption: "--fury-model",
+        humanGate: false,
+      },
+    });
+    assert.equal(stderr.join(""), "");
+    stdout.length = 0;
+
+    const status = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury", "--json",
+    ], {
+      prepareSession: async () => {
+        preparationCalls += 1;
+        return preparationCalls === 1 ? first : second;
+      },
+      continueLegacyReviewedTransition: async (input) => {
+        calls.push(input);
+        return { state: "materialized", graphPath: "graph", graphId: "graph:id", graphDigest: "sha256:graph" };
+      },
+    });
+    assert.equal(status, 1);
+    assert.deepEqual(calls, [{ missionId, repositoryRoot: root, furyModel: "model:fury" }]);
+    assert.equal(preparationCalls, 2);
+    assert.deepEqual(JSON.parse(stdout.join("")), second);
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+});
+
+test("prepare-next returns protected graph evidence unchanged before model selection", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "shield-prepare-next-protected-")));
+  const missionId = "mission:issue-362-protected";
+  const graphRoot = join(root, ".shield", "audit", "mission-preparation", createHash("sha256").update(missionId).digest("hex"));
+  await mkdir(graphRoot, { recursive: true });
+  const stdout = [];
+  const originalStdoutWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  try {
+    const status = await runMissionCli([
+      "mission", "prepare-next", "--mission-id", missionId, "--root", root, "--fury-model", "model:fury", "--json",
+    ], {
+      prepareSession: async () => ({ state: "blocked", missionId, reasonCode: "protected_evidence_mismatch", errors: ["unsafe graph"] }),
+      continueLegacyReviewedTransition: async () => { throw new Error("must not run with protected evidence"); },
+    });
+    assert.equal(status, 1);
+    const result = JSON.parse(stdout.join(""));
+    assert.equal(result.authority, "none");
+    assert.equal(result.state, "blocked");
+    assert.equal(result.code, "PROTECTED_GRAPH_NOT_ABSENT");
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+  }
 });
 
 test("prepare-next derives and signs one prepared publication without caller JSON or external effect", async () => {
