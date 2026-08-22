@@ -23,11 +23,12 @@ shield mission begin --profile-aware \
   --json
 ```
 
-The command performs one bounded read through the configured GitHub host adapter,
-compiles a closed profile-aware brief, validates it through the existing profile-
-aware intake contract, and creates the same single `mission.begun` entry as the
-existing `--brief` route. It accepts no caller-authored brief, mission ID, subject
-ID, timestamp, participant list, gate list, risk JSON, or repository observation.
+The command performs bounded reads through the configured GitHub host adapter,
+compiles a closed profile-aware brief and durable issue-intake source binding,
+validates them through the shared profile-aware intake contract, and creates one
+schema-9 `mission.begun` entry. It accepts no caller-authored brief, mission ID,
+subject ID, timestamp, participant list, gate list, risk JSON, or repository
+observation.
 
 `--brief` and `--issue` are mutually exclusive. The existing `--brief` surface and
 journal bytes remain backward compatible.
@@ -37,28 +38,42 @@ journal bytes remain backward compatible.
 ### Host observation
 
 The GitHub adapter owns network/process observation. Team System receives only a
-closed observation produced by an injected runner. The production adapter invokes
-`gh issue view` once with explicit repository and JSON fields. It uses the existing
+closed observation produced by an injected byte runner. Each production observation
+invokes one frozen `gh api graphql` query that returns repository and issue host IDs
+in the same response. The runner uses `shell: false`, no stdin, a closed environment,
+frozen timeout and stdout/stderr bounds, fatal UTF-8 decoding, and then the existing
 strict bounded JSON parser rather than raw `JSON.parse`.
 
 The observation contains exactly:
 
-- repository ID;
-- issue number, canonical URL, title, body, state, labels, and host update time;
+- repository host ID and canonical `nameWithOwner`;
+- issue host ID, number, canonical URL, title, body, state, labels, and host
+  `updatedAt`;
 - a stable issue revision derived from canonical validated fields;
-- host-trusted observation time and source reference.
+- process-local `observedAt` and source reference, excluded from replay identity.
 
 The observer rejects malformed references, cross-repository observations, closed
 or unavailable issues, duplicate JSON keys, oversized/deep payloads, unknown
-fields, invalid UTF-8, authentication/rate-limit/process failures, and response
-identity mismatch. Observation is authority-none and has no write capability.
+fields, invalid UTF-8, authentication/rate-limit/process failures, malformed URLs,
+and repository/issue response identity mismatch. Labels are bytewise sorted before
+hashing. Observation is authority-none and has no write capability.
+
+### Acceptance-criteria extraction
+
+The compiler extracts exactly one second-level Markdown section whose normalized
+heading is `Acceptance criteria`. It accepts a bounded non-empty sequence of
+checkbox or bullet items, preserves their normalized text and order, and binds a
+canonical criteria digest into the issue revision/source binding. Missing,
+duplicate, empty, malformed, nested-ambiguous, oversized, or over-count sections
+fail before journal access. The criteria and digest appear in the concise human
+projection; they do not widen the closed profile-aware brief schema.
 
 ### Deterministic compilation
 
 The compiler is pure and versioned. It consumes configured repository identity,
-the validated issue observation, the explicit profile ID, current attached branch
-and exact HEAD, and the trusted binding registry already used by profile-aware
-admission.
+the validated issue observation and criteria, explicit profile ID, current attached
+branch and exact HEAD, prepared-worktree receipt, exact configuration bytes, and
+exact trusted-binding-registry bytes already used by profile-aware admission.
 
 It derives:
 
@@ -66,13 +81,30 @@ It derives:
   repository/issue identity;
 - `subjectId`: `github:<owner>/<repo>/issue/<number>`;
 - objective: the validated issue title, preserving exact normalized text;
-- created time: the host-trusted observation time;
+- created time: stable GitHub `updatedAt` with `hostTrusted` provenance;
 - profile/version and required human gates from the existing profile registry;
 - participants: Hill, Fury, May, required human seats, de-duplicated in canonical
   order;
 - Delivery Mode activation for Hill;
 - `requireSimmons` from the selected existing profile;
 - predecessor fields from the repository's existing canonical genesis convention.
+
+It also emits a closed `IssueIntakeSourceBindingV1`, persisted in the sequence-zero
+`mission.begun` entry, containing:
+
+- binding/compiler contract version;
+- configured repository identity plus host repository ID/`nameWithOwner`;
+- issue host ID, number, URL, canonical issue revision, `updatedAt`, and criteria
+  digest;
+- selected profile ID/version;
+- attached branch and exact HEAD;
+- prepared-worktree receipt digest;
+- exact config-byte and binding-registry-byte digests;
+- compiled profile-aware brief revision.
+
+Schema-9 admits two closed begin-entry variants: the unchanged legacy `--brief`
+entry and the issue-intake entry carrying this binding. The binding is durable
+identity evidence only; it grants no authority.
 
 Risk flags are explicitly a conservative intake assumption, not issue truth:
 
@@ -87,37 +119,46 @@ Risk flags are explicitly a conservative intake assumption, not issue truth:
 The explicit `--profile` is the only operator/Hill judgment required in V1. There
 is no silent profile default and no keyword/LLM classification.
 
-The compiled brief is passed through `profileAwareMissionIntakeV1`; the new route
-does not duplicate profile, binding, participant, mode, brief, or journal
-validation.
+The compiled brief is passed through a strengthened shared
+`profileAwareMissionIntakeV1`. Its shared validator enforces closed risk flags,
+participant uniqueness and required membership, canonical Hill Delivery Mode,
+profile/gate consistency, and `requireSimmons` consistency for both existing
+`--brief` inputs and compiled issue inputs. Existing valid `--brief` journal bytes
+remain unchanged; no issue-only duplicate validator is added.
 
 ### State and replay
 
-All issue observation, repository/HEAD reobservation, config/binding validation,
-brief compilation, and profile-aware intake validation complete before journal
-creation. HEAD, branch, issue revision, worktree receipt, config, or binding drift
-before append fails with no journal mutation.
+Option grammar/exclusivity is validated before network or journal access. The route
+then snapshots prepared-worktree, repository, branch/HEAD, config, and binding
+state; performs observation A; compiles/validates the brief and durable binding;
+and checks the journal under the existing lock.
 
-The first valid call creates exactly the existing schema-9 `mission.begun` entry.
-An exact replay resolves the same mission and returns the existing projection
-without appending. A replay whose issue revision, profile, repository, branch,
-HEAD, compiler version, or compiled brief differs fails as `conflicting_replay`.
-Uncertain append/readback uses the existing recovery-required behavior; it never
-blindly retries.
+- Existing byte-/contract-identical issue-intake entry: return its projection,
+  `replayed: true`, one host observation, zero writes.
+- Existing valid but nonidentical entry: `conflicting_replay`, zero writes.
+- Existing malformed/incomplete/unreadable/uncertain state: `recovery_required`.
+- No journal: revalidate all local snapshots, perform observation B, require A/B
+  repository ID, issue ID/number/URL, issue revision, `updatedAt`, and criteria
+  digest equality, then initialize exactly one entry.
+
+The replay-aware initializer is opt-in for issue intake and runs under the journal
+lock. Concurrent exact callers create one journal and receive equivalent
+projections. It never changes legacy initializer behavior. Uncertain append or
+readback remains `recovery_required`; it never blindly retries.
 
 ## Acceptance matrix
 
 | Criterion | Proof |
 | --- | --- |
 | No caller-authored brief JSON | real CLI `--issue` happy path |
-| One bounded GitHub read | injected-runner adapter test with exact argv/call count |
+| Bounded GitHub reads | exactly two on first creation; one on exact replay |
 | Strict closed response | duplicate key, unknown field, oversized, malformed, foreign repo tests |
 | Existing admission reused | compiler output accepted by `profileAwareMissionIntakeV1`; no parallel validator |
 | Exact repository binding | wrong root/repository/branch/HEAD and drift tests append zero |
 | Explicit profile judgment | missing/unknown profile fails before observation or journal mutation |
 | Risk assumptions visible | stable human projection snapshot and all flags asserted |
-| One authority-none effect | one `mission.begun`; authorization remains waiting |
-| Replay safety | exact replay appends zero; conflicting issue/profile/revision fails closed |
+| One authority-none effect | one issue-bound `mission.begun`; authorization remains waiting |
+| Replay safety | durable binding; exact/concurrent replay appends zero; each binding dimension conflicts |
 | Normal successor | resulting mission is consumable by `mission status` and `mission prepare-next` |
 | Backward compatibility | existing `--brief` CLI vectors and journal bytes remain unchanged |
 
@@ -125,27 +166,30 @@ blindly retries.
 
 ### Packet A — GitHub issue observer
 
-- Add the closed observation type, validator, injected-runner observer, strict JSON
-  parsing, and package export.
-- Test exact argv, stable canonical revision, failure precedence, and no write
-  commands.
+- Add the closed observation type, byte-runner observer, fatal UTF-8 plus strict
+  JSON parsing, GraphQL identity validation, deterministic criteria extraction,
+  and paired runtime/type exports.
+- Test exact argv/call count, stable revision/criteria digest, malformed bytes and
+  response failure precedence, and absence of write commands/network in fixtures.
 
 ### Packet B — issue-to-brief compiler
 
-- Add a pure versioned compiler adjacent to mission intake.
-- Reuse profile registry and `profileAwareMissionIntakeV1`.
-- Emit canonical brief plus concise human projection and provenance bindings.
-- Test all three profiles, participant/gate derivation, risk assumptions, and
-  deterministic identity.
+- Add the pure versioned compiler and closed durable source binding adjacent to
+  mission intake.
+- Strengthen the shared profile-aware validator once and reuse it for both routes.
+- Extend the closed schema-9 begun entry with an issue-intake variant.
+- Test all profiles, participant/gate/risk consistency, deterministic identity,
+  durable binding admission, and unchanged valid legacy brief bytes.
 
 ### Packet C — CLI composition and replay
 
 - Add mutually exclusive `--issue`/`--brief` forms to profile-aware begin.
-- Inject the issue observer through `runMissionCli` for deterministic tests.
-- Reobserve repository/worktree state before append and compose the existing
-  journal initializer.
-- Test happy path, exact replay, conflict, drift, zero-mutation failures, and
-  handoff into status/prepare-next.
+- Inject the byte observer through `runMissionCli`; use a hermetic fake `gh` first
+  on `PATH` for real subprocess CLI coverage.
+- Add opt-in replay-aware initialization under the existing journal lock.
+- Reobserve local state and issue B only for first creation.
+- Test happy path, exact/concurrent replay, every binding conflict, A/B drift,
+  recovery-required states, zero-mutation failures, and status/prepare-next.
 
 Packets may be implemented sequentially by one May because B depends on A's closed
 observation and C depends on both. They are review packets, not independent
@@ -156,16 +200,18 @@ missions or artificial lanes.
 - `docs/missions/issue-368-repository-issue-intake-plan.md`
 - `packages/shield-team-system/github/adapter-v1.mjs`
 - `packages/shield-team-system/public/github.mjs`
+- `packages/shield-team-system/public/github.d.mts`
 - `packages/shield-team-system/src/mission-cli.mts`
 - `packages/shield-team-system/src/mission-intake-v1.mts`
+- `packages/shield-team-system/src/mission-store.mts`
+- `packages/shield-team-system/src/profile-aware-mission-v1.mts`
 - `packages/shield-team-system/tests/cli.test.mjs`
 - `packages/shield-team-system/tests/github-adapter-v1.test.mjs`
 - `packages/shield-team-system/tests/mission-intake-v1.test.mjs`
+- `packages/shield-team-system/tests/mission-store.test.mjs`
+- `packages/shield-team-system/tests/package-surface.test.mjs`
+- `packages/shield-team-system/tests/profile-aware-mission-v1.test.mjs`
 - `packages/shield-team-system/tests/supervised-cli.test.mjs`
-
-If existing public package tests require an export assertion, add only
-`packages/shield-team-system/tests/package-surface.test.mjs`; otherwise it remains
-outside scope.
 
 ## Validation
 
